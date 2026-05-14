@@ -1,159 +1,218 @@
-# Turborepo starter
+# SoftSensor
 
-This Turborepo starter is maintained by the Turborepo core team.
+> Smart monitoring platform for industrial soft sensor management and AI model analytics.
 
-## Using this example
+---
 
-Run the following command:
+## Stack
 
-```sh
-npx create-turbo@latest
+| Layer    | Technology                                    |
+| -------- | --------------------------------------------- |
+| Monorepo | Turborepo + pnpm workspaces                   |
+| Frontend | Next.js 15 (App Router), React 19, TypeScript |
+| Backend  | NestJS 11, TypeScript                         |
+| Database | PostgreSQL via Prisma 7 (PrismaPg adapter)    |
+| Styling  | Tailwind CSS v4, shadcn/ui                    |
+| Runtime  | Node ≥ 20                                     |
+
+---
+
+## Project Structure
+
+```text
+SoftSensorProject/
+├── apps/
+│   ├── backend/           # NestJS API — port 8000
+│   └── client/            # Next.js frontend — port 3000
+├── packages/
+│   ├── prisma/            # @softsensor/prisma — shared DB layer
+│   ├── eslint-config/     # Shared ESLint config
+│   └── typescript-config/ # Shared tsconfig bases
+├── turbo.json
+├── pnpm-workspace.yaml
+└── package.json
 ```
 
-## What's inside?
+---
 
-This Turborepo includes the following packages/apps:
+## Getting Started
 
-### Apps and Packages
+### Prerequisites
 
-- `docs`: a [Next.js](https://nextjs.org/) app
-- `web`: another [Next.js](https://nextjs.org/) app
-- `@repo/ui`: a stub React component library shared by both `web` and `docs` applications
-- `@repo/eslint-config`: `eslint` configurations (includes `eslint-config-next` and `eslint-config-prettier`)
-- `@repo/typescript-config`: `tsconfig.json`s used throughout the monorepo
+- **Node.js** ≥ 20
+- **pnpm** ≥ 9 — `npm install -g pnpm`
+- **PostgreSQL** running locally or via Docker
 
-Each package/app is 100% [TypeScript](https://www.typescriptlang.org/).
+### 1. Clone & Install
 
-### Utilities
-
-This Turborepo has some additional tools already setup for you:
-
-- [TypeScript](https://www.typescriptlang.org/) for static type checking
-- [ESLint](https://eslint.org/) for code linting
-- [Prettier](https://prettier.io) for code formatting
-
-### Build
-
-To build all apps and packages, run the following command:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo build
+```bash
+git clone <repo-url>
+cd SoftSensorProject
+pnpm install
 ```
 
-Without global `turbo`, use your package manager:
+### 2. Environment Variables
 
-```sh
-cd my-turborepo
-npx turbo build
-pnpm dlx turbo build
-pnpm exec turbo build
+Copy the example env file at the root:
+
+```bash
+cp .env.example .env
 ```
 
-You can build a specific package by using a [filter](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters):
+Fill in the required values:
 
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
+```env
+# Database
+DATABASE_URL="postgresql://USER:PASSWORD@localhost:5432/softsensor"
 
-```sh
-turbo build --filter=docs
+# Backend
+SERVER_PORT=8000
+CORS_ORIGIN=http://localhost:3000
+
+# JWT
+JWT_SECRET=your_secret_here
+JWT_REFRESH_SECRET=your_refresh_secret_here
 ```
 
-Without global `turbo`:
+### 3. Database Setup
 
-```sh
-npx turbo build --filter=docs
-pnpm exec turbo build --filter=docs
-pnpm exec turbo build --filter=docs
+```bash
+# Generate Prisma client
+pnpm db:generate
+
+# Run migrations (creates tables)
+pnpm db:migrate
 ```
 
-### Develop
+### 4. Run Development Servers
 
-To develop all apps and packages, run the following command:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo dev
+```bash
+pnpm dev
 ```
 
-Without global `turbo`, use your package manager:
+Starts both apps concurrently:
 
-```sh
-cd my-turborepo
-npx turbo dev
-pnpm exec turbo dev
-pnpm exec turbo dev
+| App      | URL                                            |
+| -------- | ---------------------------------------------- |
+| Frontend | [http://localhost:3000](http://localhost:3000) |
+| Backend  | [http://localhost:8000](http://localhost:8000) |
+
+---
+
+## Available Scripts
+
+```bash
+# Development
+pnpm dev              # Run all apps concurrently
+
+# Build
+pnpm build            # Build all apps and packages
+
+# Quality
+pnpm lint             # Lint all
+pnpm type-check       # Type-check all (tsc --noEmit)
+
+# Single app
+pnpm --filter client dev
+pnpm --filter backend dev
+
+# Tests
+pnpm --filter backend test -- --testPathPattern=<filename>
 ```
 
-You can develop a specific package by using a [filter](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters):
+---
 
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
+## Database
 
-```sh
-turbo dev --filter=web
+Schema lives at `packages/prisma/prisma/schema.prisma` — **edit only this file**.
+
+### Workflow
+
+```bash
+# 1. Edit schema.prisma
+# 2. Regenerate client
+pnpm db:generate
+
+# 3. Create & apply migration
+pnpm db:migrate
 ```
 
-Without global `turbo`:
+### Multi-step Writes
 
-```sh
-npx turbo dev --filter=web
-pnpm exec turbo dev --filter=web
-pnpm exec turbo dev --filter=web
+Always use transactions for multi-step operations:
+
+```ts
+await prisma.$transaction([
+  prisma.user.create({ data: { ... } }),
+  prisma.sensor.create({ data: { ... } }),
+])
 ```
 
-### Remote Caching
+### Using PrismaService in Backend
 
-> [!TIP]
-> Vercel Remote Cache is free for all plans. Get started today at [vercel.com](https://vercel.com/signup?utm_source=remote-cache-sdk&utm_campaign=free_remote_cache).
+`PrismaModule` is `@Global()` — import it **once** in `AppModule`, then inject `PrismaService` anywhere:
 
-Turborepo can use a technique known as [Remote Caching](https://turborepo.dev/docs/core-concepts/remote-caching) to share cache artifacts across machines, enabling you to share build caches with your team and CI/CD pipelines.
+```ts
+// app.module.ts — import once
+@Module({
+  imports: [PrismaModule, ...],
+})
+export class AppModule {}
 
-By default, Turborepo will cache locally. To enable Remote Caching you will need an account with Vercel. If you don't have an account you can [create one](https://vercel.com/signup?utm_source=turborepo-examples), then enter the following commands:
+// any.service.ts — just inject
+@Injectable()
+export class SensorService {
+  constructor(private readonly prisma: PrismaService) {}
 
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo login
+  findAll() {
+    return this.prisma.sensor.findMany()
+  }
+}
 ```
 
-Without global `turbo`, use your package manager:
+### Adding a New Model
 
-```sh
-cd my-turborepo
-npx turbo login
-pnpm exec turbo login
-pnpm exec turbo login
+1. Edit `packages/prisma/prisma/schema.prisma`
+2. Run `pnpm db:generate` → regenerates client
+3. Run `pnpm db:migrate` → creates migration file + applies to DB
+4. Never edit files inside `packages/prisma/src/generated/` directly
+
+---
+
+## Architecture Overview
+
+### Backend — Strict Layered Pattern
+
+```text
+Request
+  └─▶ Controller   (route handlers, DTO validation)
+        └─▶ Service  (business logic)
+              └─▶ PrismaService  (DB queries)
 ```
 
-This will authenticate the Turborepo CLI with your [Vercel account](https://vercel.com/docs/concepts/personal-accounts/overview).
+- DTOs validated with `class-validator` + `class-transformer`
+- Long-running work (>500ms): use **BullMQ** — never block HTTP
+- Auth: `JwtAuthGuard` + `RolesGuard`; refresh tokens in `HttpOnly` cookies only
 
-Next, you can link your Turborepo to your Remote Cache by running the following command from the root of your Turborepo:
+### Frontend — Server-First
 
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
+- Default to **Server Components** — only add `"use client"` when hooks or event listeners are needed
+- Server data → `fetch()` with revalidation tags
+- Client server state → TanStack React Query (`staleTime: 60s`)
+- Complex client state → Zustand
+- UI components: shadcn/ui — **never edit** `components/ui/`, add via `npx shadcn add <component>`
 
-```sh
-turbo link
-```
+---
 
-Without global `turbo`:
+## Key Constraints
 
-```sh
-npx turbo link
-pnpm exec turbo link
-pnpm exec turbo link
-```
+- No `any` or `@ts-ignore` — zero tolerance
+- No mock data — always connect to real Prisma/APIs
+- Never skip `pnpm db:migrate` after schema changes
+- Never edit generated files in `packages/prisma/src/generated/`
 
-## Useful Links
+---
 
-Learn more about the power of Turborepo:
+## Further Reading
 
-- [Tasks](https://turborepo.dev/docs/crafting-your-repository/running-tasks)
-- [Caching](https://turborepo.dev/docs/crafting-your-repository/caching)
-- [Remote Caching](https://turborepo.dev/docs/core-concepts/remote-caching)
-- [Filtering](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters)
-- [Configuration Options](https://turborepo.dev/docs/reference/configuration)
-- [CLI Usage](https://turborepo.dev/docs/reference/command-line-reference)
+- [Codebase Reference](docs/CODEBASE.md) — detailed component APIs, Prisma patterns, coding style
