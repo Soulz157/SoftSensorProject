@@ -6,6 +6,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Read [`docs/CODEBASE.md`](docs/CODEBASE.md) before starting any task. It is the authoritative reference for project structure, component APIs, Prisma patterns, and coding style. Do not rely on assumptions — verify against that file first.
 
+## After Every Task
+
+After completing any coding task, always run these two commands in order before reporting done:
+
+```bash
+pnpm format   # format all files (prettier)
+pnpm build    # full build — catch any type/compile errors
+```
+
+Do not report a task as complete if either command fails. Fix all errors first.
+
 ## Commands
 
 ```bash
@@ -39,7 +50,7 @@ pnpm --filter backend test -- --testPathPattern=<filename>
 
 Turborepo + pnpm monorepo. Two apps, two packages:
 
-```
+```text
 apps/backend      # NestJS 10, port 3001
 apps/frontend     # Next.js 15 App Router, port 3000
 packages/database # @repo/database — shared PrismaService/PrismaModule
