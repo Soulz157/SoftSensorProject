@@ -6,7 +6,7 @@
     "dev": "dotenv run -- turbo dev",
     "dev:client": "dotenv run -- pnpm --filter=client dev",
     "dev:server": "dotenv run -- pnpm --filter=backend dev",
-    "lint": "eslint .",
+    "lint": "turbo lint",
     "format": "prettier --write \"**/*.{ts,tsx,md,json}\"",
     "check-types": "turbo run check-types",
     "clean": "turbo run clean && rimraf node_modules apps/*/node_modules .turbo",
