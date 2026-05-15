@@ -17,31 +17,36 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
       # ─── Setup Node ───
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'npm'
+          node-version: "20"
+          cache: "pnpm"
 
       # ─── Install ───
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       # ─── Lint ───
       - name: Lint
-        run: npm run lint
+        run: pnpm lint
 
       # ─── Type Check ───
       - name: Type check
-        run: npx tsc --noEmit
+        run: pnpm check-types
 
       # ─── Test ───
       - name: Run tests
-        run: npm run test -- --passWithNoTests
+        run: pnpm test -- --passWithNoTests
         env:
           NODE_ENV: test
 
       # ─── Build ───
       - name: Build
-        run: npm run build
+        run: pnpm build
