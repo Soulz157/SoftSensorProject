@@ -45,7 +45,7 @@ jobs:
 
       # ─── Test ───
       - name: Run tests
-        run: pnpm test -- --passWithNoTests
+        run: pnpm test:ci
         env:
           NODE_ENV: test
 

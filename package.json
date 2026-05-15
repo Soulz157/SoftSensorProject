@@ -8,6 +8,7 @@
     "dev:server": "dotenv run -- pnpm --filter=backend dev",
     "start": "dotenvx run -- turbo start",
     "test": "dotenvx run -- turbo test",
+    "test:ci": "dotenvx run --quiet -- turbo test -- --passWithNoTests",
     "test:coverage": "dotenvx run -- turbo test:cov",
     "lint": "turbo lint",
     "format": "prettier --write \"**/*.{ts,tsx,md,json}\"",
