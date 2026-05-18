@@ -71,7 +71,7 @@ Strict layered architecture — Controllers → Services → Prisma. No business
 - **Entry:** `src/main.ts` — global `ValidationPipe` (whitelist + transform), `HttpExceptionFilter`, `ClassSerializerInterceptor`, CORS from `CORS_ORIGIN` env
 - **Module pattern:** feature modules under `src/` — each has a controller, service, and DTOs folder
 - **DTOs:** validated with `class-validator` + `class-transformer`. Use `@Exclude()` on sensitive fields, `@Type()` on nested objects.
-- **Long-running work:** use BullMQ (Redis) — never block HTTP for operations >500ms
+- **Long-running work:** avoid blocking HTTP for operations >500ms; BullMQ not yet installed.
 - **Auth:** `JwtAuthGuard` + `RolesGuard`. Refresh tokens in `HttpOnly` cookies only.
 
 ### Database (`packages/prisma`)
@@ -81,17 +81,19 @@ Strict layered architecture — Controllers → Services → Prisma. No business
 - After any schema change: `pnpm db:generate` then `pnpm db:migrate:dev`.
 - Use `prisma.$transaction([...])` for multi-step writes.
 
-### Frontend (`apps/frontend`)
+### Frontend (`apps/client`)
 
 - **Default to Server Components.** Only add `"use client"` when hooks or event listeners are required. Never put `"use client"` on a layout unless unavoidable.
-- **Data fetching:** Next.js `fetch` with revalidation tags for server data; TanStack React Query (staleTime 60s) for client-side server state.
-- **State:** Zustand for complex client state, React Query for server state.
-- `next.config.ts` has `output: 'standalone'` and `reactCompiler: true` (`babel-plugin-react-compiler` devDep).
-- **UI components:** shadcn/ui — `src/components/ui/` files are generated and must not be edited. Add new components via `npx shadcn add <component>` (config at `components.json`).
-- `cn()` utility is at `src/lib/utils.ts`.
+- **Data fetching:** Next.js `fetch` with revalidation tags for server data.
+- **State:** Zustand for complex client state.
+- `next.config.js` — currently minimal; no standalone or React Compiler config.
+- **UI components:** shadcn/ui (style: `radix-nova`) — `components/ui/` files are generated and must not be edited. Add via `npx shadcn@latest add <component>` (config at `components.json`).
+- `cn()` utility is at `lib/utils.ts`.
 - Tailwind v4 — CSS-first. Use CSS variables (`bg-primary`, `text-destructive`). Never hardcode hex colors.
 - Every route segment needs `error.tsx` and `loading.tsx`.
-- Toast feedback via Sonner (configured in `app/layout.tsx`).
+- Toast feedback via Sonner (`components/ui/sonner`, imported in `app/layout.tsx`).
+- **Auth:** `next-auth` v5 (beta) with Credentials provider. Config at `lib/auth/authOptions.ts`. Auth pages under `app/(auth)/` route group. Session provider at `components/providers/session-providers.tsx`.
+- `ThemeProvider` at `components/providers/theme-provider.tsx`.
 
 ## Key constraints from AGENT.md
 

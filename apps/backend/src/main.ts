@@ -1,16 +1,23 @@
-import { NestFactory } from '@nestjs/core';
+import { NestFactory, Reflector } from '@nestjs/core';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import {
   FastifyAdapter,
   NestFastifyApplication,
 } from '@nestjs/platform-fastify';
-import { Logger, VersioningType } from '@nestjs/common';
+import {
+  ClassSerializerInterceptor,
+  Logger,
+  ValidationPipe,
+  VersioningType,
+} from '@nestjs/common';
 import fastifyCors from '@fastify/cors';
+import fastifyCookie from '@fastify/cookie';
 import { cleanupOpenApiDoc } from 'nestjs-zod';
 // import fastifyHelmet from '@fastify/helmet';
 // import fastifyCompress from '@fastify/compress';
 import { ConfigService } from '@nestjs/config';
 import { AppModule } from './app.module';
+import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestFastifyApplication>(
@@ -28,6 +35,12 @@ async function bootstrap() {
   app.setGlobalPrefix('api', {
     exclude: ['/health', '/swagger', '/swagger/{*path}'],
   });
+
+  await app.register(fastifyCookie);
+
+  app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
+  app.useGlobalFilters(new HttpExceptionFilter());
+  app.useGlobalInterceptors(new ClassSerializerInterceptor(app.get(Reflector)));
 
   const configService = app.get(ConfigService);
   const logger = new Logger('Bootstrap');

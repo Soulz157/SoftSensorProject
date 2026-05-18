@@ -30,7 +30,7 @@ export function AuthPanel() {
           size={24}
           className="group-hover:translate-x-1 transition-transform"
         />
-        <span>continue</span>
+        <Link href="/login">continue</Link>
       </Button>
     </div>
   )

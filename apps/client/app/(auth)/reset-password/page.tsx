@@ -1,30 +1,30 @@
-"use client";
+'use client'
 
-import { useState } from "react";
-import Link from "next/link";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { useState } from 'react'
+import Link from 'next/link'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
   Activity,
   Mail,
   ArrowRight,
   ArrowLeft,
   CheckCircle2,
-} from "lucide-react";
+} from 'lucide-react'
 
 export default function ResetPasswordPage() {
-  const [isLoading, setIsLoading] = useState(false);
-  const [isSubmitted, setIsSubmitted] = useState(false);
-  const [email, setEmail] = useState("");
+  const [isLoading, setIsLoading] = useState(false)
+  const [isSubmitted, setIsSubmitted] = useState(false)
+  const [email, setEmail] = useState('')
 
   const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsLoading(true);
+    e.preventDefault()
+    setIsLoading(true)
     // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    setIsLoading(false);
-    setIsSubmitted(true);
-  };
+    await new Promise(resolve => setTimeout(resolve, 1000))
+    setIsLoading(false)
+    setIsSubmitted(true)
+  }
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-6">
@@ -36,12 +36,12 @@ export default function ResetPasswordPage() {
           </div>
           <div className="text-center">
             <h1 className="text-2xl font-semibold text-foreground">
-              {isSubmitted ? "Check your email" : "Reset your password"}
+              {isSubmitted ? 'Check your email' : 'Reset your password'}
             </h1>
             <p className="mt-1 text-muted-foreground">
               {isSubmitted
                 ? "We've sent you a password reset link"
-                : "Enter your email to receive a reset link"}
+                : 'Enter your email to receive a reset link'}
             </p>
           </div>
         </div>
@@ -60,7 +60,7 @@ export default function ResetPasswordPage() {
                     type="email"
                     placeholder="name@company.com"
                     value={email}
-                    onChange={(e) => setEmail(e.target.value)}
+                    onChange={e => setEmail(e.target.value)}
                     className="pl-10 h-11 bg-secondary/50 border-border focus:bg-background transition-colors"
                     required
                   />
@@ -127,5 +127,5 @@ export default function ResetPasswordPage() {
         </div>
       </div>
     </div>
-  );
+  )
 }

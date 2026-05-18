@@ -1,6 +1,7 @@
 {
   "extends": "@repo/typescript-config/nextjs.json",
   "compilerOptions": {
+    "composite": false,
     "target": "ES2017",
     "lib": ["dom", "dom.iterable", "esnext"],
     "allowJs": true,
@@ -30,6 +31,7 @@
     "**/*.tsx",
     "next-env.d.ts",
     "next.config.js",
+    "types/**/*.d.ts",
     ".next/types/**/*.ts"
   ],
   "exclude": ["node_modules"]

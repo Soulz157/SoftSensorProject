@@ -25,7 +25,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { cn } from '@/lib/utils'
-import { useAuthStore } from '@/store/auth-store'
+import { useWorkspaceStore } from '@/store/auth-store'
 
 const WORKSPACE_ICONS = [
   { id: 'building', label: 'Building', Icon: Building2 },
@@ -48,7 +48,7 @@ const WORKSPACE_COLORS = [
 ]
 
 export function CreateWorkspaceForm() {
-  const createWorkspace = useAuthStore(s => s.createWorkspace)
+  const createWorkspace = useWorkspaceStore(s => s.createWorkspace)
   const [name, setName] = useState('')
   const [icon, setIcon] = useState('building')
   const [color, setColor] = useState('blue')

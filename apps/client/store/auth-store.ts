@@ -1,37 +1,17 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import type { CreateWorkspaceInput, User, Workspace } from '@/types/auth'
+import type { CreateWorkspaceInput, Workspace } from '@/types'
 
-interface AuthState {
-  accessToken: string | null
-  user: User | null
+interface WorkspaceState {
   workspaces: Workspace[]
-  isLoggedIn: boolean
-  login: (email: string, password: string) => void
-  logout: () => void
   createWorkspace: (data: CreateWorkspaceInput) => void
+  clearWorkspaces: () => void
 }
 
-export const useAuthStore = create<AuthState>()(
+export const useWorkspaceStore = create<WorkspaceState>()(
   persist(
-    (set, get) => ({
-      accessToken: null,
-      user: null,
+    set => ({
       workspaces: [],
-      get isLoggedIn() {
-        return !!get().accessToken
-      },
-
-      login: (email: string, _password: string) => {
-        set({
-          accessToken: 'placeholder-token',
-          user: { id: '1', name: email.split('@')[0] ?? email, email },
-        })
-      },
-
-      logout: () => {
-        set({ accessToken: null, user: null, workspaces: [] })
-      },
 
       createWorkspace: (data: CreateWorkspaceInput) => {
         const newWorkspace: Workspace = {
@@ -43,14 +23,12 @@ export const useAuthStore = create<AuthState>()(
         }
         set(state => ({ workspaces: [...state.workspaces, newWorkspace] }))
       },
+
+      clearWorkspaces: () => set({ workspaces: [] }),
     }),
     {
-      name: 'auth-store',
-      partialize: state => ({
-        accessToken: state.accessToken,
-        user: state.user,
-        workspaces: state.workspaces,
-      }),
+      name: 'workspace-store',
+      partialize: state => ({ workspaces: state.workspaces }),
     },
   ),
 )

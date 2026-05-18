@@ -1,10 +1,11 @@
-"use client";
+'use client'
 
-import { useState } from "react";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { useState } from 'react'
+import Link from 'next/link'
+import { signIn } from 'next-auth/react'
+import { toast } from 'sonner'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
   Activity,
   Eye,
@@ -14,33 +15,61 @@ import {
   User,
   Building2,
   ArrowRight,
-} from "lucide-react";
+} from 'lucide-react'
 
 export default function RegisterPage() {
-  const router = useRouter();
-  const [showPassword, setShowPassword] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false)
+  const [isLoading, setIsLoading] = useState(false)
   const [formData, setFormData] = useState({
-    name: "",
-    email: "",
-    company: "",
-    password: "",
-  });
+    name: '',
+    email: '',
+    company: '',
+    password: '',
+  })
 
   const passwordRequirements = [
-    { label: "8+ chars", met: formData.password.length >= 8 },
-    { label: "Uppercase", met: /[A-Z]/.test(formData.password) },
-    { label: "Number", met: /[0-9]/.test(formData.password) },
-  ];
+    { label: '8+ chars', met: formData.password.length >= 8 },
+    { label: 'Uppercase', met: /[A-Z]/.test(formData.password) },
+    { label: 'Number', met: /[0-9]/.test(formData.password) },
+  ]
 
   const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsLoading(true);
-    // Simulate registration
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    setIsLoading(false);
-    router.push("/");
-  };
+    e.preventDefault()
+    setIsLoading(true)
+    try {
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/v1/public/auth/register`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: formData.email,
+            username: formData.name,
+            password: formData.password,
+          }),
+        },
+      )
+      if (!res.ok) {
+        const err = (await res.json()) as { message?: string }
+        toast.error(err.message ?? 'Registration failed')
+        return
+      }
+      const result = await signIn('credentials', {
+        email: formData.email,
+        password: formData.password,
+        redirect: false,
+      })
+      if (result?.error) {
+        toast.error('Account created but login failed. Please sign in.')
+      } else {
+        window.location.href = '/dashboard'
+      }
+    } catch {
+      toast.error('Something went wrong. Please try again.')
+    } finally {
+      setIsLoading(false)
+    }
+  }
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-6">
@@ -73,7 +102,7 @@ export default function RegisterPage() {
                   type="text"
                   placeholder="John Doe"
                   value={formData.name}
-                  onChange={(e) =>
+                  onChange={e =>
                     setFormData({ ...formData, name: e.target.value })
                   }
                   className="pl-10 h-11 bg-secondary/50 border-border focus:bg-background transition-colors"
@@ -92,7 +121,7 @@ export default function RegisterPage() {
                   type="email"
                   placeholder="name@company.com"
                   value={formData.email}
-                  onChange={(e) =>
+                  onChange={e =>
                     setFormData({ ...formData, email: e.target.value })
                   }
                   className="pl-10 h-11 bg-secondary/50 border-border focus:bg-background transition-colors"
@@ -111,7 +140,7 @@ export default function RegisterPage() {
                   type="text"
                   placeholder="Acme Inc."
                   value={formData.company}
-                  onChange={(e) =>
+                  onChange={e =>
                     setFormData({ ...formData, company: e.target.value })
                   }
                   className="pl-10 h-11 bg-secondary/50 border-border focus:bg-background transition-colors"
@@ -127,10 +156,10 @@ export default function RegisterPage() {
               <div className="relative">
                 <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input
-                  type={showPassword ? "text" : "password"}
+                  type={showPassword ? 'text' : 'password'}
                   placeholder="Create a strong password"
                   value={formData.password}
-                  onChange={(e) =>
+                  onChange={e =>
                     setFormData({ ...formData, password: e.target.value })
                   }
                   className="pl-10 pr-10 h-11 bg-secondary/50 border-border focus:bg-background transition-colors"
@@ -154,12 +183,12 @@ export default function RegisterPage() {
                     <div
                       key={i}
                       className={`flex items-center gap-1.5 text-xs ${
-                        req.met ? "text-primary" : "text-muted-foreground"
+                        req.met ? 'text-primary' : 'text-muted-foreground'
                       }`}
                     >
                       <div
                         className={`h-1.5 w-1.5 rounded-full ${
-                          req.met ? "bg-primary" : "bg-muted-foreground/50"
+                          req.met ? 'bg-primary' : 'bg-muted-foreground/50'
                         }`}
                       />
                       {req.label}
@@ -189,14 +218,14 @@ export default function RegisterPage() {
           </form>
 
           <p className="text-center text-xs text-muted-foreground mt-4">
-            By creating an account, you agree to our{" "}
+            By creating an account, you agree to our{' '}
             <Link
               href="#"
               className="text-primary hover:text-primary/80 transition-colors"
             >
               Terms
-            </Link>{" "}
-            and{" "}
+            </Link>{' '}
+            and{' '}
             <Link
               href="#"
               className="text-primary hover:text-primary/80 transition-colors"
@@ -258,7 +287,7 @@ export default function RegisterPage() {
         </div>
 
         <p className="text-center text-sm text-muted-foreground">
-          Already have an account?{" "}
+          Already have an account?{' '}
           <Link
             href="/login"
             className="text-primary hover:text-primary/80 font-medium transition-colors"
@@ -268,5 +297,5 @@ export default function RegisterPage() {
         </p>
       </div>
     </div>
-  );
+  )
 }

@@ -17,7 +17,7 @@ import {
   Zap,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useAuthStore } from '@/store/auth-store'
+import { useWorkspaceStore } from '@/store/auth-store'
 
 interface NavItem {
   id: string
@@ -49,7 +49,7 @@ export function Sidebar({
   onWorkspaceToggle,
 }: SidebarProps) {
   const pathname = usePathname()
-  const workspaces = useAuthStore(s => s.workspaces)
+  const workspaces = useWorkspaceStore(s => s.workspaces)
   const currentWorkspace = workspaces.find(w => w.id === activeWorkspace)
 
   const navItems: NavItem[] = [

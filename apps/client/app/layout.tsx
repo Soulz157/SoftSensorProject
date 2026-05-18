@@ -4,8 +4,9 @@ import './globals.css'
 import { Geist } from 'next/font/google'
 import { cn } from '@/lib/utils'
 import { TooltipProvider } from '@/components/ui/tooltip'
-import { ThemeProvider } from '@/components/theme-provider'
+import { ThemeProvider } from '@/components/providers/theme-provider'
 import { Toaster } from '@/components/ui/sonner'
+import { SessionProviders } from '@/components/providers/session-provider'
 
 const geist = Geist({ subsets: ['latin'], variable: '--font-sans' })
 
@@ -37,8 +38,10 @@ export default function RootLayout({
     >
       <body className={`${geistSans.variable} ${geistMono.variable}`}>
         <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
-          <TooltipProvider>{children}</TooltipProvider>
-          <Toaster position="bottom-center" />
+          <SessionProviders>
+            <TooltipProvider>{children}</TooltipProvider>
+            <Toaster position="bottom-center" />
+          </SessionProviders>
         </ThemeProvider>
       </body>
     </html>

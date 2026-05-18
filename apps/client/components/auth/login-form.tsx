@@ -14,10 +14,10 @@ import {
 } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { useAuthStore } from '@/store/auth-store'
+import { signIn } from 'next-auth/react'
+import { toast } from 'sonner'
 
 export function LoginForm() {
-  const login = useAuthStore(s => s.login)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
@@ -26,7 +26,18 @@ export function LoginForm() {
     e.preventDefault()
     setLoading(true)
     try {
-      login(email, password)
+      const result = await signIn('credentials', {
+        email,
+        password,
+        redirect: false,
+      })
+      if (result?.error) {
+        toast.error('Invalid email or password')
+      } else {
+        window.location.href = '/dashboard'
+      }
+    } catch {
+      toast.error('Something went wrong')
     } finally {
       setLoading(false)
     }

@@ -1,8 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
 generator client {
   provider   = "prisma-client"
   output     = "../src/generated/client"
@@ -17,9 +12,102 @@ datasource db {
   provider = "postgresql"
 }
 
+enum Role {
+  USER
+  STAFF
+  ADMIN
+}
+
+enum AuthAction {
+  LOGIN
+  LOGOUT
+}
+
+enum WorkspaceAction {
+  CREATED
+  UPDATED
+  DELETED
+  MODEL_ADDED
+  MODEL_REMOVED
+  MODEL_UPDATED
+}
+
 model User {
-  id        Int      @id @default(autoincrement())
-  email     String   @unique
-  name      String?
+  id            String         @id @default(uuid())
+  email         String         @unique
+  username      String?
+  password      String
+  role          Role           @default(USER)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  workspaces    Workspace[]
+  refreshTokens RefreshToken[]
+  authLogs      AuthLog[]
+  workspaceLogs WorkspaceLog[]
+}
+
+model Workspace {
+  id        String         @id @default(uuid())
+  ownerId   String
+  owner     User           @relation(fields: [ownerId], references: [id])
+  name      String
+  icon      String
+  color     String
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  models    Model[]
+  logs      WorkspaceLog[]
+
+  @@index([ownerId])
+}
+
+model Model {
+  id          String    @id @default(uuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  name        String
+  data        Json?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([workspaceId])
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
   createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model AuthLog {
+  id        String     @id @default(uuid())
+  userId    String
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  action    AuthAction
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime   @default(now())
+
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model WorkspaceLog {
+  id          String          @id @default(uuid())
+  workspaceId String
+  workspace   Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User            @relation(fields: [userId], references: [id])
+  action      WorkspaceAction
+  details     Json?
+  createdAt   DateTime        @default(now())
+
+  @@index([workspaceId])
+  @@index([userId])
+  @@index([createdAt])
 }

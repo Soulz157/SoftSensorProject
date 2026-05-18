@@ -1,6 +1,5 @@
 import { AppLayout } from '@/components/app-layout'
 import { AuthPanel } from '@/components/auth/auth-panel'
-import { LandingHero } from '@/components/landing/landing-hero'
 
 export default function LandingPage() {
   return (

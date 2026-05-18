@@ -63,7 +63,7 @@ const inputClass =
 export default function SettingsPage() {
   const { theme, setTheme } = useTheme()
   const [mounted, setMounted] = useState(false)
-  useEffect(() => setMounted(true), [])
+  // useEffect(() => setMounted(true), [])
   const [activeTab, setActiveTab] = useState<Tab>('theme')
 
   const [accountForm, setAccountForm] = useState({

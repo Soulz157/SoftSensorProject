@@ -11,7 +11,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { useAuthStore } from '@/store/auth-store'
+import { useSession, signOut } from 'next-auth/react'
 
 interface NavbarProps {
   onCreateWorkspace?: () => void
@@ -33,7 +33,7 @@ function UserInitials({ name }: { name: string }) {
 }
 
 export function Navbar({ onCreateWorkspace, onMenuClick }: NavbarProps) {
-  const { isLoggedIn, user, logout } = useAuthStore()
+  const { data: session } = useSession()
   const [searchOpen, setSearchOpen] = useState(false)
 
   if (searchOpen) {
@@ -92,7 +92,7 @@ export function Navbar({ onCreateWorkspace, onMenuClick }: NavbarProps) {
           <span className="hidden sm:inline">Create Workspace</span>
         </Button>
 
-        {isLoggedIn && user ? (
+        {session?.user ? (
           <>
             <Button variant="ghost" size="icon" className="relative">
               <Bell className="h-5 w-5" />
@@ -102,13 +102,19 @@ export function Navbar({ onCreateWorkspace, onMenuClick }: NavbarProps) {
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="icon" className="rounded-full">
-                  <UserInitials name={user.name} />
+                  <UserInitials
+                    name={session.user.name ?? session.user.email ?? '?'}
+                  />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
                 <div className="px-2 py-1.5">
-                  <p className="text-sm font-medium">{user.name}</p>
-                  <p className="text-xs text-muted-foreground">{user.email}</p>
+                  <p className="text-sm font-medium">
+                    {session.user.name ?? session.user.email}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {session.user.email}
+                  </p>
                 </div>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem asChild>
@@ -116,7 +122,7 @@ export function Navbar({ onCreateWorkspace, onMenuClick }: NavbarProps) {
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
-                  onClick={logout}
+                  onClick={() => signOut({ callbackUrl: '/auth/login' })}
                   className="text-destructive focus:text-destructive"
                 >
                   Log out
