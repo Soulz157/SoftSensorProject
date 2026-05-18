@@ -1,29 +1,46 @@
-'use client'
+"use client";
 
-import { useState } from 'react'
-import Link from 'next/link'
-import { useRouter } from 'next/navigation'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Activity, Eye, EyeOff, Mail, Lock, ArrowRight } from 'lucide-react'
+import { useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Activity,
+  Eye,
+  EyeOff,
+  Mail,
+  Lock,
+  User,
+  Building2,
+  ArrowRight,
+} from "lucide-react";
 
-export default function LoginPage() {
-  const router = useRouter()
-  const [showPassword, setShowPassword] = useState(false)
-  const [isLoading, setIsLoading] = useState(false)
+export default function RegisterPage() {
+  const router = useRouter();
+  const [showPassword, setShowPassword] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const [formData, setFormData] = useState({
-    email: '',
-    password: '',
-  })
+    name: "",
+    email: "",
+    company: "",
+    password: "",
+  });
+
+  const passwordRequirements = [
+    { label: "8+ chars", met: formData.password.length >= 8 },
+    { label: "Uppercase", met: /[A-Z]/.test(formData.password) },
+    { label: "Number", met: /[0-9]/.test(formData.password) },
+  ];
 
   const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setIsLoading(true)
-    // Simulate login
-    await new Promise(resolve => setTimeout(resolve, 1000))
-    setIsLoading(false)
-    router.push('/')
-  }
+    e.preventDefault();
+    setIsLoading(true);
+    // Simulate registration
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    setIsLoading(false);
+    router.push("/");
+  };
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-6">
@@ -35,20 +52,39 @@ export default function LoginPage() {
           </div>
           <div className="text-center">
             <h1 className="text-2xl font-semibold text-foreground">
-              Welcome back
+              Create your account
             </h1>
             <p className="mt-1 text-muted-foreground">
-              Sign in to your SoftSensor account
+              Get started with SoftSensor today
             </p>
           </div>
         </div>
 
         {/* Form Card */}
         <div className="rounded-xl border border-border bg-card p-6 shadow-sm">
-          <form onSubmit={handleSubmit} className="space-y-5">
+          <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
               <label className="text-sm font-medium text-foreground">
-                Email
+                Full Name
+              </label>
+              <div className="relative">
+                <User className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  type="text"
+                  placeholder="John Doe"
+                  value={formData.name}
+                  onChange={(e) =>
+                    setFormData({ ...formData, name: e.target.value })
+                  }
+                  className="pl-10 h-11 bg-secondary/50 border-border focus:bg-background transition-colors"
+                  required
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-foreground">
+                Work Email
               </label>
               <div className="relative">
                 <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -56,7 +92,7 @@ export default function LoginPage() {
                   type="email"
                   placeholder="name@company.com"
                   value={formData.email}
-                  onChange={e =>
+                  onChange={(e) =>
                     setFormData({ ...formData, email: e.target.value })
                   }
                   className="pl-10 h-11 bg-secondary/50 border-border focus:bg-background transition-colors"
@@ -66,24 +102,35 @@ export default function LoginPage() {
             </div>
 
             <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <label className="text-sm font-medium text-foreground">
-                  Password
-                </label>
-                <Link
-                  href="/reset-password"
-                  className="text-sm text-primary hover:text-primary/80 transition-colors"
-                >
-                  Forgot password?
-                </Link>
+              <label className="text-sm font-medium text-foreground">
+                Company Name
+              </label>
+              <div className="relative">
+                <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  type="text"
+                  placeholder="Acme Inc."
+                  value={formData.company}
+                  onChange={(e) =>
+                    setFormData({ ...formData, company: e.target.value })
+                  }
+                  className="pl-10 h-11 bg-secondary/50 border-border focus:bg-background transition-colors"
+                  required
+                />
               </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-foreground">
+                Password
+              </label>
               <div className="relative">
                 <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input
-                  type={showPassword ? 'text' : 'password'}
-                  placeholder="Enter your password"
+                  type={showPassword ? "text" : "password"}
+                  placeholder="Create a strong password"
                   value={formData.password}
-                  onChange={e =>
+                  onChange={(e) =>
                     setFormData({ ...formData, password: e.target.value })
                   }
                   className="pl-10 pr-10 h-11 bg-secondary/50 border-border focus:bg-background transition-colors"
@@ -101,26 +148,62 @@ export default function LoginPage() {
                   )}
                 </button>
               </div>
+              {formData.password && (
+                <div className="flex gap-3 pt-1">
+                  {passwordRequirements.map((req, i) => (
+                    <div
+                      key={i}
+                      className={`flex items-center gap-1.5 text-xs ${
+                        req.met ? "text-primary" : "text-muted-foreground"
+                      }`}
+                    >
+                      <div
+                        className={`h-1.5 w-1.5 rounded-full ${
+                          req.met ? "bg-primary" : "bg-muted-foreground/50"
+                        }`}
+                      />
+                      {req.label}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             <Button
               type="submit"
-              className="w-full h-11 bg-primary hover:bg-primary/90 text-primary-foreground font-medium transition-all"
+              className="w-full h-11 bg-primary hover:bg-primary/90 text-primary-foreground font-medium transition-all mt-2"
               disabled={isLoading}
             >
               {isLoading ? (
                 <div className="flex items-center gap-2">
                   <div className="h-4 w-4 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin" />
-                  Signing in...
+                  Creating account...
                 </div>
               ) : (
                 <div className="flex items-center gap-2">
-                  Sign in
+                  Create account
                   <ArrowRight className="h-4 w-4" />
                 </div>
               )}
             </Button>
           </form>
+
+          <p className="text-center text-xs text-muted-foreground mt-4">
+            By creating an account, you agree to our{" "}
+            <Link
+              href="#"
+              className="text-primary hover:text-primary/80 transition-colors"
+            >
+              Terms
+            </Link>{" "}
+            and{" "}
+            <Link
+              href="#"
+              className="text-primary hover:text-primary/80 transition-colors"
+            >
+              Privacy Policy
+            </Link>
+          </p>
 
           <div className="relative my-6">
             <div className="absolute inset-0 flex items-center">
@@ -175,15 +258,15 @@ export default function LoginPage() {
         </div>
 
         <p className="text-center text-sm text-muted-foreground">
-          {"Don't have an account? "}
+          Already have an account?{" "}
           <Link
-            href="/register"
+            href="/login"
             className="text-primary hover:text-primary/80 font-medium transition-colors"
           >
-            Create account
+            Sign in
           </Link>
         </p>
       </div>
     </div>
-  )
+  );
 }

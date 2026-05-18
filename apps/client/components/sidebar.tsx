@@ -17,12 +17,7 @@ import {
   Zap,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-
-interface Workspace {
-  id: string
-  name: string
-  modelsCount: number
-}
+import { useAuthStore } from '@/store/auth-store'
 
 interface NavItem {
   id: string
@@ -31,8 +26,6 @@ interface NavItem {
   href: string
   badge?: number
 }
-
-const workspaces: Workspace[] = []
 
 interface SidebarProps {
   isOpen: boolean
@@ -56,6 +49,7 @@ export function Sidebar({
   onWorkspaceToggle,
 }: SidebarProps) {
   const pathname = usePathname()
+  const workspaces = useAuthStore(s => s.workspaces)
   const currentWorkspace = workspaces.find(w => w.id === activeWorkspace)
 
   const navItems: NavItem[] = [
@@ -63,7 +57,7 @@ export function Sidebar({
       id: 'dashboard',
       name: 'Dashboard',
       icon: <LayoutDashboard className="h-4 w-4" />,
-      href: '/',
+      href: '/dashboard',
     },
     {
       id: 'models',

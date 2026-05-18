@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
-import { Plus, Bell, User, Menu, Search, ArrowLeft } from 'lucide-react'
+import { Plus, Bell, Menu, Search, ArrowLeft } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -11,14 +11,29 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { useAuthStore } from '@/store/auth-store'
 
 interface NavbarProps {
   onCreateWorkspace?: () => void
   onMenuClick?: () => void
 }
 
+function UserInitials({ name }: { name: string }) {
+  const initials = name
+    .split(' ')
+    .map(n => n[0])
+    .join('')
+    .toUpperCase()
+    .slice(0, 2)
+  return (
+    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
+      {initials}
+    </div>
+  )
+}
+
 export function Navbar({ onCreateWorkspace, onMenuClick }: NavbarProps) {
-  const [isLoggedIn, setIsLoggedIn] = useState(false)
+  const { isLoggedIn, user, logout } = useAuthStore()
   const [searchOpen, setSearchOpen] = useState(false)
 
   if (searchOpen) {
@@ -50,7 +65,6 @@ export function Navbar({ onCreateWorkspace, onMenuClick }: NavbarProps) {
         >
           <Menu className="h-5 w-5" />
         </button>
-        {/* Mobile search icon */}
         <button
           onClick={() => setSearchOpen(true)}
           className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors sm:hidden"
@@ -73,34 +87,38 @@ export function Navbar({ onCreateWorkspace, onMenuClick }: NavbarProps) {
 
       {/* Right Actions */}
       <div className="flex items-center gap-2 sm:gap-3">
-        {/* Create Workspace Button */}
         <Button onClick={onCreateWorkspace} className="gap-2" size="sm">
           <Plus className="h-4 w-4" />
           <span className="hidden sm:inline">Create Workspace</span>
         </Button>
 
-        {isLoggedIn ? (
+        {isLoggedIn && user ? (
           <>
-            {/* Notifications */}
             <Button variant="ghost" size="icon" className="relative">
               <Bell className="h-5 w-5" />
               <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-primary" />
             </Button>
 
-            {/* User Menu */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="icon" className="rounded-full">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-primary-foreground">
-                    <User className="h-4 w-4" />
-                  </div>
+                  <UserInitials name={user.name} />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
-                <DropdownMenuItem>Profile</DropdownMenuItem>
-                <DropdownMenuItem>Account Settings</DropdownMenuItem>
+                <div className="px-2 py-1.5">
+                  <p className="text-sm font-medium">{user.name}</p>
+                  <p className="text-xs text-muted-foreground">{user.email}</p>
+                </div>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={() => setIsLoggedIn(false)}>
+                <DropdownMenuItem asChild>
+                  <Link href="/settings">Account Settings</Link>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={logout}
+                  className="text-destructive focus:text-destructive"
+                >
                   Log out
                 </DropdownMenuItem>
               </DropdownMenuContent>
@@ -108,7 +126,6 @@ export function Navbar({ onCreateWorkspace, onMenuClick }: NavbarProps) {
           </>
         ) : (
           <>
-            {/* Login / Register */}
             <Button variant="ghost" size="sm" asChild>
               <Link href="/login">Log in</Link>
             </Button>
