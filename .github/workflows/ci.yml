@@ -6,10 +6,38 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
+env:
+  REGISTRY: ghcr.io/soft-sensor-project
 
+permissions:
+  contents: read
+  packages: write
+  actions: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
+  detect-changes:
+    name: 🔍 Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      frontend: ${{ steps.changes.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            frontend:
+              - 'apps/frontend/**'
+              - '.github/workflows/ci-cd.yml'
+
   ci:
-    name: Lint → Type Check → Test → Build
+    name: CI — Lint · Type · Test · Build
     runs-on: ubuntu-latest
 
     steps:
@@ -48,7 +76,11 @@ jobs:
         run: pnpm test:ci
         env:
           NODE_ENV: test
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          API_KEY: ${{ secrets.API_KEY }}
 
       # ─── Build ───
       - name: Build
         run: pnpm build
+        env:
+          NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
