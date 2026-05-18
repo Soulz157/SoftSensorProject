@@ -26,7 +26,7 @@ async function bootstrap() {
   );
 
   app.setGlobalPrefix('api', {
-    exclude: ['/health', '/swagger(.*)'],
+    exclude: ['/health', '/swagger', '/swagger/{*path}'],
   });
 
   const configService = app.get(ConfigService);
@@ -43,7 +43,7 @@ async function bootstrap() {
       .build();
 
     const documentFactory = () =>
-      cleanupOpenApiDoc(SwaggerModule.createDocument(app, config));
+      cleanupOpenApiDoc(SwaggerModule.createDocument(app, config, {}));
 
     SwaggerModule.setup('swagger', app, documentFactory, {
       swaggerOptions: {
