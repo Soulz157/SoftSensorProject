@@ -8,7 +8,7 @@
 | -------- | ------------------------------------------------- |
 | Monorepo | Turborepo + pnpm workspaces                       |
 | Frontend | Next.js 15 (App Router), React 19, TypeScript 5.9 |
-| Backend  | NestJS 11, TypeScript 5.7                         |
+| Backend  | NestJS 11 + Fastify, TypeScript 5.7               |
 | Database | PostgreSQL via Prisma 7 (PrismaPg adapter)        |
 | Styling  | Tailwind CSS v4, shadcn/ui                        |
 | Runtime  | Node ≥ 20                                         |
@@ -37,13 +37,14 @@ SoftSensorProject/
 pnpm dev              # Run all apps concurrently (loads .env via dotenvx)
 pnpm build            # Build all
 pnpm lint             # Lint all
-pnpm type-check       # tsc --noEmit all
+pnpm check-types      # tsc --noEmit all
+pnpm format           # Prettier all files
 
 pnpm db:generate      # Regenerate Prisma client after schema changes
-pnpm db:migrate       # prisma migrate dev
+pnpm db:migrate:dev   # prisma migrate dev (loads .env via dotenvx)
 
 # Per-app
-pnpm --filter frontend dev
+pnpm --filter client dev
 pnpm --filter backend dev
 pnpm --filter backend test -- --testPathPattern=<filename>
 ```
@@ -52,14 +53,43 @@ pnpm --filter backend test -- --testPathPattern=<filename>
 
 ## Backend (`apps/backend/`)
 
+### HTTP Adapter
+
+Backend uses **Fastify** (`NestFastifyApplication`), not Express. This affects:
+
+- Middleware registration: `app.register(plugin)` not `app.use(middleware)`
+- Request/response types: `FastifyRequest` / `FastifyReply`
+- Cookie plugin: `@fastify/cookie` registered manually
+
 ### Structure
 
 ```
 apps/backend/
 └── src/
-    ├── main.ts          # Bootstrap — listens on SERVER_PORT (default 8000)
-    ├── app.module.ts    # Root module — ConfigModule.forRoot isGlobal:true
-    └── api/             # Feature modules (in progress)
+    ├── main.ts                      # Bootstrap — Fastify adapter, global prefix, versioning
+    ├── app.module.ts                # Root module
+    ├── api/
+    │   └── v1/
+    │       ├── auth/
+    │       │   ├── auth.module.ts
+    │       │   ├── public/          # POST /api/v1/public/auth/register, login
+    │       │   └── authorized/      # POST /api/v1/authorized/auth/logout, refresh
+    │       └── workspace/
+    │           ├── workspace.module.ts
+    │           ├── public/          # Public workspace endpoints
+    │           ├── authorized/      # User workspace endpoints
+    │           └── admin/           # Admin workspace endpoints
+    ├── common/
+    │   ├── filters/http-exception.filter.ts
+    │   └── decorators/             # @CurrentUser(), @Roles()
+    ├── guards/
+    │   ├── jwt-auth.guard.ts
+    │   └── roles.guard.ts
+    ├── lib/dto.ts                   # Shared response DTOs (ResponseFailedDto, etc.)
+    ├── types/
+    │   ├── request.type.ts
+    │   └── global.d.ts
+    └── utils/index.ts
 ```
 
 ### Architecture
@@ -68,17 +98,42 @@ Strict layered pattern: **Controller → Service → PrismaService**. No busines
 
 ```
 Request
-  └─▶ Controller     (route handlers, DTOs validation)
+  └─▶ Controller     (route handlers, DTO validation)
         └─▶ Service  (business logic)
               └─▶ PrismaService  (DB queries)
 ```
 
+### API Routes
+
+Global prefix: `api`. URI versioning with `defaultVersion: '1'`. All routes are `/api/v1/...`.
+
+Route groups per feature module:
+
+- `public/` — no auth guard
+- `authorized/` — `JwtAuthGuard` required
+- `admin/` — `JwtAuthGuard` + `RolesGuard` (ADMIN role)
+
 ### Conventions
 
-- DTOs validated with `class-validator` + `class-transformer`; use `@Exclude()` on sensitive fields
-- Long-running work (>500ms): delegate to BullMQ (Redis), never block HTTP
-- Auth: `JwtAuthGuard` + `RolesGuard`; refresh tokens in `HttpOnly` cookies only
-- Global `ValidationPipe` (whitelist + transform), `HttpExceptionFilter`, `ClassSerializerInterceptor`
+- DTOs validated with `class-validator` + `class-transformer`; also uses `nestjs-zod` where applicable
+- Use `@Exclude()` on sensitive fields; `@Type()` on nested objects
+- `ValidationPipe` is **not** globally active by default — wire it per controller or re-enable globally in `main.ts`
+- Global: `HttpExceptionFilter`, `ClassSerializerInterceptor`
+- CORS: from `CORS_ORIGINS` env (comma-separated). Credentials enabled.
+- Auth: `JwtAuthGuard` + `RolesGuard`. Refresh tokens in `HttpOnly` cookies only.
+- Long-running work (>500ms): delegate to BullMQ (not yet installed — block HTTP until added)
+- Swagger at `/swagger` (Fastify-compatible, uses `nestjs-zod`'s `cleanupOpenApiDoc`)
+
+### Error Response Shape
+
+```json
+{
+  "statusCode": 400,
+  "message": "Validation failed",
+  "error": "Bad Request",
+  "timestamp": "2026-05-14T08:26:40Z"
+}
+```
 
 ---
 
@@ -88,23 +143,114 @@ Request
 
 ```
 apps/client/
-├── app/                          # Next.js App Router
-│   ├── layout.tsx                # Root layout: fonts, ThemeProvider, TooltipProvider
-│   ├── globals.css               # Global Tailwind styles
-│   ├── page.tsx                  # / — LandingPage (client component)
-│   ├── login/
-│   │   └── page.tsx              # /login
-│   └── pagePrefer.tsx            # Preferences (in progress)
+├── app/
+│   ├── layout.tsx                    # Root layout: fonts, ThemeProvider, TooltipProvider, Sonner
+│   ├── globals.css
+│   ├── page.tsx                      # / — LandingPage
+│   ├── error.tsx                     # Root error boundary
+│   ├── loading.tsx                   # Root loading state
+│   ├── (auth)/                       # Auth route group (no layout nesting)
+│   │   ├── login/page.tsx
+│   │   ├── register/page.tsx
+│   │   └── reset-password/page.tsx
+│   ├── api/
+│   │   └── auth/                     # NextAuth route handler
+│   ├── dashboard/page.tsx
+│   ├── settings/page.tsx
+│   └── plans/page.tsx
 ├── components/
-│   ├── navbar.tsx                # Custom: top header
-│   ├── sidebar.tsx               # Custom: collapsible sidebar
-│   ├── theme-provider.tsx        # next-themes wrapper
-│   └── ui/                       # shadcn/ui — DO NOT EDIT (34 components)
+│   ├── navbar.tsx
+│   ├── sidebar.tsx
+│   ├── app-layout.tsx
+│   ├── dashboard-content.tsx
+│   ├── providers/
+│   │   ├── session-providers.tsx     # next-auth SessionProvider
+│   │   └── theme-provider.tsx        # next-themes wrapper
+│   └── ui/                           # shadcn/ui — DO NOT EDIT
 ├── hooks/
-│   └── use-mobile.ts             # useIsMobile() — 768px breakpoint
+│   ├── auth/
+│   │   ├── use-auth.ts
+│   │   └── use-register.ts
+│   ├── use-mobile.ts
+│   └── use-toadst.ts
 ├── lib/
-│   └── utils.ts                  # cn() — clsx + tailwind-merge
-└── public/                       # Static assets
+│   ├── auth/
+│   │   └── index.ts                  # NextAuth config + exported handlers/signIn/signOut/auth
+│   ├── validations/
+│   │   └── auth.dto.ts
+│   └── utils.ts                      # cn() — clsx + tailwind-merge
+├── services/
+│   └── auth.ts                       # authService — wraps fetchClient for auth endpoints
+├── store/
+│   └── auth-store.ts                 # useWorkspaceStore (Zustand + persist)
+├── types/
+│   └── index.ts                      # Shared TS interfaces (UserProfile, RegisterPayload, etc.)
+└── proxy.ts
+```
+
+### Environment Variables
+
+```bash
+NEXT_PUBLIC_API_URL=http://localhost:8000   # Backend base URL — used by fetchClient and NextAuth authorize
+NEXTAUTH_SECRET=...
+NEXTAUTH_URL=http://localhost:3000
+```
+
+> `NEXT_PUBLIC_BACKEND_URL` does **not** exist. Always use `NEXT_PUBLIC_API_URL`.
+
+### fetchClient (`lib/fetcher.ts`)
+
+Central HTTP client. Automatically:
+
+- Reads `NEXT_PUBLIC_API_URL` as base URL
+- Sets `Content-Type: application/json`
+- Injects `Authorization: Bearer <accessToken>` from session
+- On 401: calls `signOut({ callbackUrl: '/login' })`
+- On non-ok: throws `Error(errorData.message)`
+- Always calls `response.json()` — backend must return a JSON body on success
+
+```ts
+fetchClient(endpoint: string, options?: RequestInit): Promise<unknown>
+// endpoint is relative: '/api/v1/public/auth/register'
+```
+
+### Auth (`lib/auth/index.ts`)
+
+NextAuth v5 (beta) config. Credentials provider calls `NEXT_PUBLIC_API_URL/api/public/auth/login`.
+Exports: `handlers`, `signIn`, `signOut`, `auth`.
+OAuth providers (Google, Microsoft) are prepared but commented out.
+
+JWT strategy: `accessToken`, `id`, `role` stored in token → session.
+
+### Services (`services/`)
+
+Thin wrappers over `fetchClient`. Service methods must pass the full versioned path.
+
+```ts
+// Correct
+fetchClient('/api/v1/public/auth/register', {
+  method: 'POST',
+  body: JSON.stringify(data),
+})
+
+// login endpoint (used in NextAuth authorize) — note: no v1 prefix in auth config yet
+// '/api/public/auth/login'  ← verify against backend versioning
+```
+
+### Hooks (`hooks/auth/`)
+
+```ts
+useRegister() // → { register(data: RegisterPayload): Promise<void>, isLoading: boolean }
+useAuth() // → session management helpers
+```
+
+### Store (`store/auth-store.ts`)
+
+`useWorkspaceStore` — Zustand with `persist` middleware. Manages `workspaces[]` in localStorage.
+
+```ts
+useWorkspaceStore()
+// → { workspaces, createWorkspace(data), clearWorkspaces() }
 ```
 
 ---
@@ -115,8 +261,6 @@ apps/client/
 
 #### `navbar.tsx`
 
-Top header bar. Handles responsive search (mobile icon / desktop input), Create Workspace button, and login/user dropdown menu.
-
 ```ts
 interface NavbarProps {
   onCreateWorkspace?: () => void
@@ -124,12 +268,7 @@ interface NavbarProps {
 }
 ```
 
-State: `isLoggedIn`, `searchOpen` (local `useState`).  
-Responsive: search icon shown on mobile (`sm:hidden`), full input on desktop (`hidden sm:flex`).
-
 #### `sidebar.tsx`
-
-Collapsible navigation sidebar. Features: workspace switcher, nav items with active state detection, upgrade widget, mobile overlay with backdrop blur.
 
 ```ts
 interface SidebarProps {
@@ -144,16 +283,11 @@ interface SidebarProps {
 }
 ```
 
-Nav items: Dashboard `/`, Models `/models`, Analytics `/analytics`, Settings `/settings`, Plans & Billing `/plans`.  
 Active detection via `usePathname()` — exact match for `/`, `startsWith` for others.
-
-#### `theme-provider.tsx`
-
-Thin wrapper around `next-themes` `ThemeProvider`. Used in root layout with `defaultTheme="dark"` and `enableSystem`.
 
 ### shadcn/ui Components (`components/ui/` — immutable)
 
-> Never edit these files. Add new components via `npx shadcn add <component>`.
+> Never edit these files. Add new components via `npx shadcn@latest add <component>`.
 
 | Category   | Components                                                                                                            |
 | ---------- | --------------------------------------------------------------------------------------------------------------------- |
@@ -164,27 +298,13 @@ Thin wrapper around `next-themes` `ThemeProvider`. Used in root layout with `def
 | Data       | `table`, `chart`                                                                                                      |
 | Other      | `avatar`, `button`, `slider`                                                                                          |
 
-### Hooks
-
-#### `hooks/use-mobile.ts`
-
-```ts
-export function useIsMobile(): boolean
-// Returns true when viewport < 768px
-// Uses matchMedia — SSR-safe (undefined until mounted)
-```
-
 ### Utilities
 
 #### `lib/utils.ts`
 
 ```ts
-import { clsx, type ClassValue } from 'clsx'
-import { twMerge } from 'tailwind-merge'
-
 export function cn(...inputs: ClassValue[]): string
 // Merge Tailwind classes — resolves conflicts correctly
-// Usage: cn('p-4', isActive && 'bg-primary', className)
 ```
 
 ---
@@ -206,68 +326,16 @@ packages/prisma/
     └── generated/client/       # Prisma Client — DO NOT EDIT
 ```
 
-### Schema
-
-```prisma
-generator client {
-  provider   = "prisma-client"
-  output     = "../src/generated/client"
-  engineType = "client"
-}
-
-generator zod {
-  provider = "prisma-zod-generator"  // Auto-generates Zod schemas
-}
-
-datasource db {
-  provider = "postgresql"
-}
-
-model User {
-  id        Int      @id @default(autoincrement())
-  email     String   @unique
-  name      String?
-  createdAt DateTime @default(now())
-}
-```
-
-### PrismaService
-
-```ts
-@Injectable()
-export class PrismaService
-  extends PrismaClient
-  implements OnModuleInit, OnModuleDestroy
-{
-  constructor() {
-    const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL })
-    super({ adapter })
-  }
-  async onModuleInit() {
-    await this.$connect()
-  }
-  async onModuleDestroy() {
-    await this.$disconnect()
-  }
-}
-```
-
 ### PrismaModule
 
 `@Global()` — import **once** in `AppModule`, then inject `PrismaService` anywhere without re-importing.
-
-```ts
-@Global()
-@Module({ providers: [PrismaService], exports: [PrismaService] })
-export class PrismaModule {}
-```
 
 ### Workflow
 
 ```bash
 # After any schema.prisma change:
-pnpm db:generate   # regenerate Prisma client
-pnpm db:migrate    # run migrate dev (creates migration file + applies)
+pnpm db:generate      # regenerate Prisma client
+pnpm db:migrate:dev   # create migration file + apply
 
 # Multi-step writes — always use transactions:
 await prisma.$transaction([...])
@@ -275,13 +343,13 @@ await prisma.$transaction([...])
 
 ---
 
-## Coding Style — App Router Components
+## Coding Style
 
-### Server vs Client
+### Server vs Client Components
 
 ```
 Default → Server Component (no directive needed)
-Need useState / useEffect / event handlers → add 'use client'
+Needs useState / useEffect / event handlers → add 'use client'
 Layouts → NEVER add 'use client' unless absolutely unavoidable
 ```
 
@@ -290,54 +358,10 @@ Layouts → NEVER add 'use client' unless absolutely unavoidable
 Every route segment must have:
 
 ```
-app/
-└── some-route/
-    ├── page.tsx      # Required
-    ├── loading.tsx   # Required — shown during Suspense
-    └── error.tsx     # Required — error boundary
-```
-
-### Component Template (Client)
-
-```tsx
-'use client'
-
-import { useState } from 'react'
-import { SomeComponent } from '@/components/ui/some-component'
-import { cn } from '@/lib/utils'
-
-interface MyComponentProps {
-  title: string
-  onAction?: () => void
-}
-
-export function MyComponent({ title, onAction }: MyComponentProps) {
-  const [active, setActive] = useState(false)
-
-  return (
-    <div className={cn('flex items-center gap-3', active && 'bg-accent')}>
-      {title}
-    </div>
-  )
-}
-```
-
-### Component Template (Server)
-
-```tsx
-import { SomeComponent } from '@/components/ui/some-component'
-
-interface MyPageProps {
-  params: { id: string }
-}
-
-export default async function MyPage({ params }: MyPageProps) {
-  const data = await fetch(`/api/items/${params.id}`, {
-    next: { tags: ['item'] },
-  }).then(r => r.json())
-
-  return <SomeComponent data={data} />
-}
+app/some-route/
+├── page.tsx      # Required
+├── loading.tsx   # Required
+└── error.tsx     # Required
 ```
 
 ### Styling Rules
@@ -354,23 +378,29 @@ export default async function MyPage({ params }: MyPageProps) {
 
 ```
 Server data (static/ISR) → Next.js fetch() with revalidation tags
-Client server state      → TanStack React Query (staleTime: 60s)
+Client server state      → TanStack React Query
 Complex client state     → Zustand
+Client API calls         → fetchClient() via service layer (services/)
 ```
 
 ### Import Aliases
 
 ```ts
 '@/'              → apps/client/ root
-'@/components/ui' → shadcn components
+'@/components/ui' → shadcn components (immutable)
 '@/components'    → custom components
 '@/lib/utils'     → cn() and utilities
+'@/lib/auth'      → NextAuth config
 '@/hooks'         → custom hooks
+'@/services'      → API service layer
+'@/store'         → Zustand stores
+'@/types'         → shared TypeScript interfaces
 ```
 
 ### No-Nos
 
 - No `any` or `@ts-ignore` — zero tolerance
 - No mock data — always connect to real Prisma/APIs
-- Never edit `components/ui/**` — use `npx shadcn add`
-- Never skip `pnpm db:migrate` after schema changes
+- Never edit `components/ui/**` — use `npx shadcn@latest add`
+- Never skip `pnpm db:migrate:dev` after schema changes
+- Never use `NEXT_PUBLIC_BACKEND_URL` — correct var is `NEXT_PUBLIC_API_URL`

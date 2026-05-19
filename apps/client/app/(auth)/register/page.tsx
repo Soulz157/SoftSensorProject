@@ -2,10 +2,11 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
-import { signIn } from 'next-auth/react'
-import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import * as z from 'zod'
+import { useForm } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
 import {
   Activity,
   Eye,
@@ -16,59 +17,50 @@ import {
   Building2,
   ArrowRight,
 } from 'lucide-react'
+import { useRegister } from '@/hooks/auth/use-register'
+
+const formSchema = z
+  .object({
+    firstName: z.string().min(1, 'กรุณากรอกชื่อจริง'),
+    lastName: z.string().min(1, 'กรุณากรอกนามสกุล'),
+    email: z.string().email('รูปแบบอีเมลไม่ถูกต้อง'),
+    company: z.string().min(1, 'กรุณากรอกชื่อบริษัท'),
+    password: z
+      .string()
+      .min(8, 'รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร')
+      .regex(/[A-Z]/, 'รหัสผ่านต้องมีตัวอักษรพิมพ์ใหญ่')
+      .regex(/[0-9]/, 'รหัสผ่านต้องมีตัวเลข'),
+    confirmPassword: z.string().min(1, 'กรุณายืนยันรหัสผ่าน'),
+  })
+  .refine(data => data.password === data.confirmPassword, {
+    message: 'รหัสผ่านและยืนยันรหัสผ่านไม่ตรง',
+    path: ['confirmPassword'],
+  })
 
 export default function RegisterPage() {
+  const { register, isLoading } = useRegister()
+
   const [showPassword, setShowPassword] = useState(false)
-  const [isLoading, setIsLoading] = useState(false)
-  const [formData, setFormData] = useState({
-    name: '',
-    email: '',
-    company: '',
-    password: '',
+  const formData = useForm<z.infer<typeof formSchema>>({
+    resolver: zodResolver(formSchema),
+    defaultValues: {
+      firstName: '',
+      lastName: '',
+      email: '',
+      password: '',
+      confirmPassword: '',
+      company: '',
+    },
   })
 
   const passwordRequirements = [
-    { label: '8+ chars', met: formData.password.length >= 8 },
-    { label: 'Uppercase', met: /[A-Z]/.test(formData.password) },
-    { label: 'Number', met: /[0-9]/.test(formData.password) },
+    { label: '8+ chars', met: formData.watch('password').length >= 8 },
+    { label: 'Uppercase', met: /[A-Z]/.test(formData.watch('password')) },
+    { label: 'Number', met: /[0-9]/.test(formData.watch('password')) },
   ]
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setIsLoading(true)
-    try {
-      const res = await fetch(
-        `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/v1/public/auth/register`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            email: formData.email,
-            username: formData.name,
-            password: formData.password,
-          }),
-        },
-      )
-      if (!res.ok) {
-        const err = (await res.json()) as { message?: string }
-        toast.error(err.message ?? 'Registration failed')
-        return
-      }
-      const result = await signIn('credentials', {
-        email: formData.email,
-        password: formData.password,
-        redirect: false,
-      })
-      if (result?.error) {
-        toast.error('Account created but login failed. Please sign in.')
-      } else {
-        window.location.href = '/dashboard'
-      }
-    } catch {
-      toast.error('Something went wrong. Please try again.')
-    } finally {
-      setIsLoading(false)
-    }
+  const handleSubmit = async (values: z.infer<typeof formSchema>) => {
+    await register(values)
   }
 
   return (
@@ -91,23 +83,40 @@ export default function RegisterPage() {
 
         {/* Form Card */}
         <div className="rounded-xl border border-border bg-card p-6 shadow-sm">
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-foreground">
-                Full Name
-              </label>
-              <div className="relative">
-                <User className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input
-                  type="text"
-                  placeholder="John Doe"
-                  value={formData.name}
-                  onChange={e =>
-                    setFormData({ ...formData, name: e.target.value })
-                  }
-                  className="pl-10 h-11 bg-secondary/50 border-border focus:bg-background transition-colors"
-                  required
-                />
+          <form
+            onSubmit={formData.handleSubmit(handleSubmit)}
+            className="space-y-4"
+          >
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">
+                  First Name
+                </label>
+                <div className="relative">
+                  <User className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    type="text"
+                    placeholder="John"
+                    {...formData.register('firstName')}
+                    className="pl-10 h-11 bg-secondary/50 border-border focus:bg-background transition-colors"
+                    required
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">
+                  Last Name
+                </label>
+                <div className="relative">
+                  <User className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    type="text"
+                    placeholder="Doe"
+                    {...formData.register('lastName')}
+                    className="pl-10 h-11 bg-secondary/50 border-border focus:bg-background transition-colors"
+                    required
+                  />
+                </div>
               </div>
             </div>
 
@@ -120,10 +129,7 @@ export default function RegisterPage() {
                 <Input
                   type="email"
                   placeholder="name@company.com"
-                  value={formData.email}
-                  onChange={e =>
-                    setFormData({ ...formData, email: e.target.value })
-                  }
+                  {...formData.register('email')}
                   className="pl-10 h-11 bg-secondary/50 border-border focus:bg-background transition-colors"
                   required
                 />
@@ -139,10 +145,7 @@ export default function RegisterPage() {
                 <Input
                   type="text"
                   placeholder="Acme Inc."
-                  value={formData.company}
-                  onChange={e =>
-                    setFormData({ ...formData, company: e.target.value })
-                  }
+                  {...formData.register('company')}
                   className="pl-10 h-11 bg-secondary/50 border-border focus:bg-background transition-colors"
                   required
                 />
@@ -158,10 +161,7 @@ export default function RegisterPage() {
                 <Input
                   type={showPassword ? 'text' : 'password'}
                   placeholder="Create a strong password"
-                  value={formData.password}
-                  onChange={e =>
-                    setFormData({ ...formData, password: e.target.value })
-                  }
+                  {...formData.register('password')}
                   className="pl-10 pr-10 h-11 bg-secondary/50 border-border focus:bg-background transition-colors"
                   required
                 />
@@ -177,7 +177,7 @@ export default function RegisterPage() {
                   )}
                 </button>
               </div>
-              {formData.password && (
+              {formData.watch('password') && (
                 <div className="flex gap-3 pt-1">
                   {passwordRequirements.map((req, i) => (
                     <div
@@ -197,11 +197,38 @@ export default function RegisterPage() {
                 </div>
               )}
             </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-foreground ">
+                ConfirmPassword
+              </label>
+              <div className="relative">
+                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  type={'password'}
+                  placeholder="Create a strong password"
+                  {...formData.register('confirmPassword')}
+                  className="pl-10 pr-10 h-11 bg-secondary/50 border-border focus:bg-background transition-colors"
+                  required
+                />
+                {/* <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {showPassword ? (
+                    <EyeOff className="h-4 w-4" />
+                  ) : (
+                    <Eye className="h-4 w-4" />
+                  )}
+                </button> */}
+              </div>
+            </div>
 
             <Button
               type="submit"
               className="w-full h-11 bg-primary hover:bg-primary/90 text-primary-foreground font-medium transition-all mt-2"
               disabled={isLoading}
+              onSubmit={formData.handleSubmit(handleSubmit)}
             >
               {isLoading ? (
                 <div className="flex items-center gap-2">

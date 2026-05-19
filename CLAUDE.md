@@ -32,6 +32,9 @@ pnpm lint
 # Type-check all
 pnpm check-types
 
+# Format all
+pnpm format
+
 # Database
 pnpm db:generate       # regenerate Prisma client after schema changes
 pnpm db:migrate:dev    # run prisma migrate dev (loads .env via dotenvx)
@@ -51,7 +54,7 @@ pnpm --filter backend test -- --testPathPattern=<filename>
 Turborepo + pnpm monorepo. Two apps, three packages:
 
 ```text
-apps/backend            # NestJS 11, port 8000 (SERVER_PORT env)
+apps/backend            # NestJS 11 + Fastify, port 8000 (SERVER_PORT env)
 apps/client             # Next.js 15 App Router, port 3000
 packages/prisma         # @softsensor/prisma — shared PrismaService/PrismaModule
 packages/eslint-config  # shared ESLint config
@@ -68,11 +71,15 @@ packages/typescript-config # shared tsconfig bases
 
 Strict layered architecture — Controllers → Services → Prisma. No business logic in controllers.
 
-- **Entry:** `src/main.ts` — global `ValidationPipe` (whitelist + transform), `HttpExceptionFilter`, `ClassSerializerInterceptor`, CORS from `CORS_ORIGIN` env
-- **Module pattern:** feature modules under `src/` — each has a controller, service, and DTOs folder
-- **DTOs:** validated with `class-validator` + `class-transformer`. Use `@Exclude()` on sensitive fields, `@Type()` on nested objects.
+- **HTTP adapter:** Fastify (`NestFastifyApplication`) — not Express. Use `app.register()` for plugins.
+- **Entry:** `src/main.ts` — global prefix `api`, URI versioning `defaultVersion: '1'`, `HttpExceptionFilter`, `ClassSerializerInterceptor`, CORS from `CORS_ORIGINS` env
+- **API routes:** all under `/api/v1/...`. Route groups: `public/` (no auth), `authorized/` (JWT), `admin/` (JWT + RBAC)
+- **Module structure:** `src/api/v1/<feature>/` — each feature has `public/`, `authorized/`, `admin/` sub-modules with controller, service, and `dto/` folder
+- **DTOs:** `class-validator` + `class-transformer` + `nestjs-zod`. Use `@Exclude()` on sensitive fields, `@Type()` on nested objects.
+- **ValidationPipe:** currently commented out in `main.ts` — add per-controller or re-enable globally when needed.
 - **Long-running work:** avoid blocking HTTP for operations >500ms; BullMQ not yet installed.
 - **Auth:** `JwtAuthGuard` + `RolesGuard`. Refresh tokens in `HttpOnly` cookies only.
+- **Swagger:** available at `/swagger`.
 
 ### Database (`packages/prisma`)
 
@@ -84,15 +91,18 @@ Strict layered architecture — Controllers → Services → Prisma. No business
 ### Frontend (`apps/client`)
 
 - **Default to Server Components.** Only add `"use client"` when hooks or event listeners are required. Never put `"use client"` on a layout unless unavoidable.
+- **Auth route group:** auth pages live under `app/(auth)/` — login, register, reset-password.
+- **Auth config:** `lib/auth/index.ts` — NextAuth v5 config, exports `handlers`, `signIn`, `signOut`, `auth`.
+- **Session provider:** `components/providers/session-providers.tsx`.
+- **HTTP client:** `lib/fetcher.ts` → `fetchClient()`. Uses `NEXT_PUBLIC_API_URL` as base URL. Never use `NEXT_PUBLIC_BACKEND_URL` (does not exist).
+- **Service layer:** `services/` — thin wrappers over `fetchClient`. Always pass full versioned path (`/api/v1/...`).
+- **State:** Zustand (`store/`) for complex client state. `useWorkspaceStore` in `store/auth-store.ts`.
 - **Data fetching:** Next.js `fetch` with revalidation tags for server data.
-- **State:** Zustand for complex client state.
-- `next.config.js` — currently minimal; no standalone or React Compiler config.
 - **UI components:** shadcn/ui (style: `radix-nova`) — `components/ui/` files are generated and must not be edited. Add via `npx shadcn@latest add <component>` (config at `components.json`).
 - `cn()` utility is at `lib/utils.ts`.
 - Tailwind v4 — CSS-first. Use CSS variables (`bg-primary`, `text-destructive`). Never hardcode hex colors.
 - Every route segment needs `error.tsx` and `loading.tsx`.
 - Toast feedback via Sonner (`components/ui/sonner`, imported in `app/layout.tsx`).
-- **Auth:** `next-auth` v5 (beta) with Credentials provider. Config at `lib/auth/authOptions.ts`. Auth pages under `app/(auth)/` route group. Session provider at `components/providers/session-providers.tsx`.
 - `ThemeProvider` at `components/providers/theme-provider.tsx`.
 
 ## Key constraints from AGENT.md
@@ -102,3 +112,4 @@ Strict layered architecture — Controllers → Services → Prisma. No business
 - **Plan first** — for any new feature, outline schema + API contract + component structure before coding.
 - Never modify `schema.prisma` by hand and skip migrations — always `migrate dev`.
 - `components/ui/**` are immutable — never edit generated shadcn files.
+- **Env vars:** `NEXT_PUBLIC_API_URL` is the backend base URL — never use `NEXT_PUBLIC_BACKEND_URL`.

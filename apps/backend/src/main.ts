@@ -7,7 +7,7 @@ import {
 import {
   ClassSerializerInterceptor,
   Logger,
-  ValidationPipe,
+  // ValidationPipe,
   VersioningType,
 } from '@nestjs/common';
 import fastifyCors from '@fastify/cors';
@@ -33,41 +33,44 @@ async function bootstrap() {
   );
 
   app.setGlobalPrefix('api', {
-    exclude: ['/health', '/swagger', '/swagger/{*path}'],
+    exclude: ['/swagger', '/swagger/{*path}'],
   });
 
   await app.register(fastifyCookie);
 
-  app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
+  // app.useGlobalPipes(
+  //   new ValidationPipe({
+  //     whitelist: true,
+  //     transform: true,
+  //     forbidNonWhitelisted: true,
+  //   }),
+  // );
   app.useGlobalFilters(new HttpExceptionFilter());
   app.useGlobalInterceptors(new ClassSerializerInterceptor(app.get(Reflector)));
 
   const configService = app.get(ConfigService);
   const logger = new Logger('Bootstrap');
-  const isProduction = configService.get('NODE_ENV') === 'production';
 
-  if (!isProduction) {
-    const config = new DocumentBuilder()
-      .setTitle('Soft Sensor API')
-      .setDescription('API documentation for the Soft Sensor project')
-      .setVersion('1.0')
-      .addBearerAuth()
-      .addServer('/api')
-      .build();
+  const config = new DocumentBuilder()
+    .setTitle('Soft Sensor API')
+    .setDescription('API documentation for the Soft Sensor project')
+    .setVersion('1.0')
+    .addBearerAuth()
+    .addServer('/api')
+    .build();
 
-    const documentFactory = () =>
-      cleanupOpenApiDoc(SwaggerModule.createDocument(app, config, {}));
+  const documentFactory = () =>
+    cleanupOpenApiDoc(SwaggerModule.createDocument(app, config, {}));
 
-    SwaggerModule.setup('swagger', app, documentFactory, {
-      swaggerOptions: {
-        persistAuthorization: true,
-        docExpansion: 'none',
-        filter: true,
-        tagsSorter: 'alpha',
-        operationsSorter: 'alpha',
-      },
-    });
-  }
+  SwaggerModule.setup('swagger', app, documentFactory, {
+    swaggerOptions: {
+      persistAuthorization: true,
+      docExpansion: 'none',
+      filter: true,
+      tagsSorter: 'alpha',
+      operationsSorter: 'alpha',
+    },
+  });
 
   app.enableVersioning({
     type: VersioningType.URI,
@@ -102,9 +105,7 @@ async function bootstrap() {
     `Application running on port ${port} [${configService.get('NODE_ENV', 'development')}]`,
   );
 
-  if (!isProduction) {
-    logger.log(`Swagger available at http://localhost:${port}/swagger`);
-  }
+  logger.log(`Swagger available at http://localhost:${port}/swagger`);
 }
 
 bootstrap().catch((err) => {

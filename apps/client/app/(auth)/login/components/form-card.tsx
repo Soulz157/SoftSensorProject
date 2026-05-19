@@ -12,7 +12,10 @@ interface FormCardProps {
 }
 
 export function FormCard({ onSubmit, isLoading }: Readonly<FormCardProps>) {
-  const [formData, setFormData] = useState({ email: '', password: '' })
+  const [formData, setFormData] = useState({
+    email: '',
+    password: '',
+  })
   const [showPassword, setShowPassword] = useState(false)
 
   const handleSubmit = (e: React.FormEvent) => {
