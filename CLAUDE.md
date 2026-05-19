@@ -64,6 +64,7 @@ packages/typescript-config # shared tsconfig bases
 ### Hooks (`.claude/hooks/`)
 
 - PostToolUse on every Write/Edit: runs prettier → ESLint --fix → tsc --noEmit automatically.
+- After any Edit, if you need to Edit the same file again, re-Read first — the formatter may have changed indentation/spacing and old_string will no longer match.
 - PreToolUse blocks any write to `packages/prisma/src/generated/**` — edit `schema.prisma` instead.
 - Backend ESLint config is `eslint.config.mjs` (not `.js`) — NestJS is CommonJS; `.js` with ES imports triggers `MODULE_TYPELESS_PACKAGE_JSON` warning.
 
@@ -93,6 +94,8 @@ Strict layered architecture — Controllers → Services → Prisma. No business
 - **Default to Server Components.** Only add `"use client"` when hooks or event listeners are required. Never put `"use client"` on a layout unless unavoidable.
 - **Auth route group:** auth pages live under `app/(auth)/` — login, register, reset-password.
 - **Auth config:** `lib/auth/index.ts` — NextAuth v5 config, exports `handlers`, `signIn`, `signOut`, `auth`.
+- **`DecodedToken` in `lib/auth/index.ts`:** Fields must be camelCase (`firstName`, `lastName`) matching the JWT payload exactly — mismatched casing silently produces `undefined` session fields.
+- **Login response shape:** Backend returns `{ data: { accessToken } }`. `authorize` reads `user.data?.accessToken ?? user.accessToken` to handle both wrapped and flat shapes.
 - **Session provider:** `components/providers/session-providers.tsx`.
 - **HTTP client:** `lib/fetcher.ts` → `fetchClient()`. Uses `NEXT_PUBLIC_API_URL` as base URL. Never use `NEXT_PUBLIC_BACKEND_URL` (does not exist).
 - **Service layer:** `services/` — thin wrappers over `fetchClient`. Always pass full versioned path (`/api/v1/...`).

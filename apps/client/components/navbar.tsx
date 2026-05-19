@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
-import { Plus, Bell, Menu, Search, ArrowLeft } from 'lucide-react'
+import { Plus, Bell, Menu, Search } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -33,24 +33,32 @@ function UserInitials({ name }: { name: string }) {
 }
 
 export function Navbar({ onCreateWorkspace, onMenuClick }: NavbarProps) {
-  const { data: session } = useSession()
+  const { data: session, status } = useSession()
   const [searchOpen, setSearchOpen] = useState(false)
 
-  if (searchOpen) {
+  console.log('Navbar session:', session?.user)
+
+  if (status === 'loading') {
     return (
-      <header className="flex h-16 items-center gap-3 border-b border-border bg-card px-4 lg:px-6">
-        <button
-          onClick={() => setSearchOpen(false)}
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+      <header className="flex h-16 items-center justify-between border-b border-border bg-card px-4 lg:px-6">
+        {/* Left */}
+        <div className="flex items-center gap-3">
+          <div className="h-9 w-9 animate-pulse rounded-md bg-muted lg:hidden" />
+          <div className="h-9 w-9 animate-pulse rounded-md bg-muted sm:hidden" />
+        </div>
+        {/* Center — desktop search */}
+        <div
+          className="hidden flex-1 items-center gap-4 sm:flex"
+          style={{ maxWidth: '28rem' }}
         >
-          <ArrowLeft className="h-5 w-5" />
-        </button>
-        <input
-          autoFocus
-          type="text"
-          placeholder="Search workspaces, models..."
-          className="flex-1 h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-        />
+          <div className="h-9 w-full animate-pulse rounded-md bg-muted" />
+        </div>
+        {/* Right */}
+        <div className="flex items-center gap-2 sm:gap-3">
+          <div className="h-8 w-24 animate-pulse rounded-md bg-muted" />
+          <div className="h-9 w-9 animate-pulse rounded-md bg-muted" />
+          <div className="h-9 w-9 animate-pulse rounded-full bg-muted" />
+        </div>
       </header>
     )
   }
@@ -103,14 +111,19 @@ export function Navbar({ onCreateWorkspace, onMenuClick }: NavbarProps) {
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="icon" className="rounded-full">
                   <UserInitials
-                    name={session.user.name ?? session.user.email ?? '?'}
+                    name={
+                      `${session?.user?.firstName?.[0] || ''} ${session?.user?.lastName?.[0] || ''}`.toUpperCase() ||
+                      '?'
+                    }
                   />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
                 <div className="px-2 py-1.5">
                   <p className="text-sm font-medium">
-                    {session.user.name ?? session.user.email}
+                    {`${session?.user?.firstName || ''} ${session?.user?.lastName || ''}`.toUpperCase() ??
+                      session?.user.email ??
+                      'User'}
                   </p>
                   <p className="text-xs text-muted-foreground">
                     {session.user.email}

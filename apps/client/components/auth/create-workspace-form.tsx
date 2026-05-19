@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { useRouter } from 'next/navigation'
 import {
   Building2,
   Box,
@@ -53,6 +54,7 @@ export function CreateWorkspaceForm() {
   const [icon, setIcon] = useState('building')
   const [color, setColor] = useState('blue')
   const [loading, setLoading] = useState(false)
+  const router = useRouter()
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -63,6 +65,7 @@ export function CreateWorkspaceForm() {
       toast.success('Workspace created', {
         description: 'You can now create models and start monitoring!',
       })
+      router.push('/dashboard')
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Something went wrong')
     } finally {

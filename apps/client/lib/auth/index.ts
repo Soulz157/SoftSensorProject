@@ -9,6 +9,9 @@ interface DecodedToken {
   email: string
   role: string
   exp: number
+  firstName: string
+  lastName: string
+  company?: string
 }
 
 export const authConfig: NextAuthConfig = {
@@ -32,7 +35,7 @@ export const authConfig: NextAuthConfig = {
 
         try {
           const API_URL = process.env.NEXT_PUBLIC_API_URL
-          const res = await fetch(`${API_URL}/api/public/auth/login`, {
+          const res = await fetch(`${API_URL}/api/v1/public/auth/login`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -47,14 +50,17 @@ export const authConfig: NextAuthConfig = {
             throw new Error(user.message || 'อีเมลหรือรหัสผ่านไม่ถูกต้อง')
           }
 
-          if (user.data?.accessToken) {
-            const token = user.data.accessToken
-            const decoded: DecodedToken = jwtDecode(token)
+          const accessToken = user.data?.accessToken ?? user.accessToken
+          if (accessToken) {
+            const decoded: DecodedToken = jwtDecode(accessToken)
 
             return {
               id: decoded.id,
               role: decoded.role,
-              accessToken: token,
+              email: decoded.email,
+              firstName: decoded.firstName ?? '',
+              lastName: decoded.lastName ?? '',
+              accessToken,
             }
           }
           return null
@@ -76,7 +82,7 @@ export const authConfig: NextAuthConfig = {
         const provider =
           account.provider === 'microsoft-entra-id' ? 'microsoft' : 'google'
         const res = await fetch(
-          `${process.env.NEXT_PUBLIC_API_URL}/api/public/auth/oauth`,
+          `${process.env.NEXT_PUBLIC_API_URL}/api/v1/public/auth/oauth`,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -106,12 +112,17 @@ export const authConfig: NextAuthConfig = {
         token.accessToken = user.accessToken
         token.id = user.id
         token.role = user.role
+        token.firstName = user.firstName
+        token.lastName = user.lastName
       }
       return token
     },
     async session({ session, token }) {
       if (token && session.user) {
         session.user.id = token.id as string
+        session.user.email = token.email as string
+        session.user.firstName = token.firstName as string
+        session.user.lastName = token.lastName as string
         session.user.role = token.role as string
         session.user.accessToken = token.accessToken as string
       }

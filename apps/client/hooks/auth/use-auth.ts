@@ -18,6 +18,7 @@ export const useAuth = () => {
 
   const login = async (values: LoginFormValues) => {
     setIsLoading(true)
+
     try {
       const res = await signIn('credentials', {
         email: values.email,

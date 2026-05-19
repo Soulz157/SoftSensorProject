@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as argon2 from 'argon2';
-import { PrismaService } from '@softsensor/prisma';
+import { PrismaEnums, PrismaService } from '@softsensor/prisma';
 import { LoginRequestDto, RegisterRequestDto } from './dto/auth.public.dto';
 import { AppException } from '@softsensor/common';
 
@@ -9,7 +9,7 @@ import { AppException } from '@softsensor/common';
 export class AuthPublicService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly jwt: JwtService,
+    private readonly jwtService: JwtService,
   ) {}
 
   async registerService(args: RegisterRequestDto) {
@@ -35,7 +35,7 @@ export class AuthPublicService {
         firstName,
         lastName,
         company,
-        role: 'USER',
+        role: PrismaEnums.Role.USER,
       },
     });
 
@@ -86,16 +86,25 @@ export class AuthPublicService {
       });
     }
 
-    const token = this.jwt.sign({
-      id: user.id,
-      email: user.email,
-      role: user.role,
-    });
+    const accessToken = this.jwtService.sign<Auth.UserPayload>(
+      {
+        id: user.id,
+        email: user.email,
+        firstName: user.firstName ?? '',
+        lastName: user.lastName ?? '',
+        company: user.company ?? '',
+        role: user.role,
+      },
+      {
+        expiresIn: '1d',
+      },
+    );
 
     return {
+      statusCode: 200,
       message: 'เข้าสู่ระบบสำเร็จ',
       data: {
-        accessToken: token,
+        accessToken,
       },
     };
   }

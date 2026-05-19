@@ -16,7 +16,7 @@ export function AuthPanel() {
         </div>
       </div>
 
-      <h1 className="text-8xl md:text-[120px] font-black text-transparent bg-clip-text bg-gradient-to-b from-white to-zinc-500 tracking-tighter uppercase select-none mb-6 text-center leading-none">
+      <h1 className="text-8xl md:text-[120px] font-black text-transparent bg-clip-text bg-linear-to-b from-white to-zinc-500 tracking-tighter uppercase select-none mb-6 text-center leading-none">
         LOGIN
       </h1>
 

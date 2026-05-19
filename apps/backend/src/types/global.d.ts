@@ -6,6 +6,7 @@ declare global {
       firstName: string;
       lastName: string;
       role: string;
+      company?: string;
       accessToken?: string;
     }
   }

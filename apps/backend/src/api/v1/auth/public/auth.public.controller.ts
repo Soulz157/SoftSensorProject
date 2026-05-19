@@ -13,7 +13,6 @@ import {
   ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
-import { AppException } from '@softsensor/common';
 
 @Controller('public/auth')
 @ApiTags('Public Authentication')
