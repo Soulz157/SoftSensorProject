@@ -26,7 +26,8 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { cn } from '@/lib/utils'
-import { useWorkspaceStore } from '@/store/auth-store'
+import { useSetAtom } from 'jotai'
+import { createWorkspaceAtom } from '@/store/workspace'
 
 const WORKSPACE_ICONS = [
   { id: 'building', label: 'Building', Icon: Building2 },
@@ -49,7 +50,7 @@ const WORKSPACE_COLORS = [
 ]
 
 export function CreateWorkspaceForm() {
-  const createWorkspace = useWorkspaceStore(s => s.createWorkspace)
+  const createWorkspace = useSetAtom(createWorkspaceAtom)
   const [name, setName] = useState('')
   const [icon, setIcon] = useState('building')
   const [color, setColor] = useState('blue')

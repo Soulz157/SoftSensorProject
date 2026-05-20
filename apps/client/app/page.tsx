@@ -6,11 +6,12 @@ import { AppLayout } from '@/components/app-layout'
 import { CreateWorkspaceForm } from '@/components/auth'
 import { AuthPanel } from '@/components/auth/auth-panel'
 import { useSession } from 'next-auth/react'
-import { useWorkspaceStore } from '@/store/auth-store'
+import { useAtomValue } from 'jotai'
+import { workspacesAtom } from '@/store/workspace'
 
 export default function LandingPage() {
   const { data: session, status } = useSession()
-  const workspaces = useWorkspaceStore(s => s.workspaces)
+  const workspaces = useAtomValue(workspacesAtom)
   const router = useRouter()
 
   useEffect(() => {

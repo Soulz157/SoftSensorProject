@@ -43,3 +43,9 @@ export interface CreateWorkspaceInput {
   icon?: string
   color?: string
 }
+
+export interface UpdateWorkspacePayload {
+  name?: string
+  icon?: string
+  color?: string
+}

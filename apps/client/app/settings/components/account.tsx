@@ -1,58 +1,126 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { useSession } from 'next-auth/react'
+import { useRouter } from 'next/navigation'
 import { Camera, Pencil, X, Check } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
+import { useProfile } from '@/hooks/user/use-profile'
+import z from 'zod'
+import { useForm } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { toast } from 'sonner'
+import { useUpdateProfile } from '@/hooks/user/use-update-profile'
 
 const inputClass =
   'h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring'
 
+const profileSchema = z.object({
+  firstName: z.string().min(1, 'กรุณากรอกชื่อ'),
+  lastName: z.string().min(1, 'กรุณากรอกนามสกุล'),
+  company: z.string().optional(),
+})
+
 export function AccountTab() {
-  const { data: session } = useSession()
-  const [accountForm, setAccountForm] = useState({
-    firstName: '',
-    lastName: '',
-    email: '',
-    company: '',
-    password: '',
-    confirmPassword: '',
-  })
-  const [accountSaved, setAccountSaved] = useState(false)
+  const router = useRouter()
+  const { profile, loading, refetch } = useProfile()
+  const { updateProfile, isUpdating } = useUpdateProfile()
   const [isEditing, setIsEditing] = useState(false)
 
+  const form = useForm<z.infer<typeof profileSchema>>({
+    resolver: zodResolver(profileSchema),
+    defaultValues: {
+      firstName: profile?.firstName || '',
+      lastName: profile?.lastName || '',
+      company: profile?.company || '',
+    },
+  })
+
   useEffect(() => {
-    if (session?.user) {
-      setAccountForm(prev => ({
-        ...prev,
-        firstName: session.user.firstName ?? '',
-        lastName: session.user.lastName ?? '',
-        email: session.user.email ?? '',
-      }))
+    if (profile) {
+      form.reset({
+        firstName: profile.firstName || '',
+        lastName: profile.lastName || '',
+        company: profile.company || '',
+      })
     }
-  }, [session?.user])
+  }, [profile, form])
 
   const cancelEdit = () => {
+    form.reset()
     setIsEditing(false)
-    if (session?.user) {
-      setAccountForm(prev => ({
-        ...prev,
-        firstName: session.user.firstName ?? '',
-        lastName: session.user.lastName ?? '',
-        password: '',
-        confirmPassword: '',
-      }))
+  }
+
+  const onSubmit = async (values: z.infer<typeof profileSchema>) => {
+    const result = await updateProfile(values)
+    if (result.success) {
+      if (refetch) await refetch()
+      setIsEditing(false)
+      toast.success('อัปเดตข้อมูลสำเร็จ')
+    } else {
+      toast.error(result.error)
     }
   }
 
-  const saveAccount = () => {
-    setAccountSaved(true)
-    setTimeout(() => {
-      setAccountSaved(false)
-      setIsEditing(false)
-    }, 1500)
+  if (loading) {
+    return (
+      <>
+        <div>
+          <h2 className="text-xl font-semibold text-foreground">Account</h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            Manage your personal information and security.
+          </p>
+        </div>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0">
+            <Skeleton className="h-4 w-16" />
+            <Skeleton className="h-8 w-8 rounded-md" />
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <div className="flex items-center gap-4">
+              <Skeleton className="h-16 w-16 rounded-full" />
+              <div className="space-y-2">
+                <Skeleton className="h-4 w-32" />
+                <Skeleton className="h-3 w-48" />
+              </div>
+            </div>
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <Skeleton className="h-4 w-20" />
+                  <Skeleton className="h-9 w-full" />
+                </div>
+                <div className="space-y-1.5">
+                  <Skeleton className="h-4 w-20" />
+                  <Skeleton className="h-9 w-full" />
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Skeleton className="h-4 w-12" />
+                <Skeleton className="h-9 w-full" />
+              </div>
+              <div className="space-y-1.5">
+                <Skeleton className="h-4 w-16" />
+                <Skeleton className="h-9 w-full" />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <Skeleton className="h-4 w-16" />
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <Skeleton className="h-4 w-full" />
+            <Skeleton className="h-9 w-32" />
+          </CardContent>
+        </Card>
+      </>
+    )
   }
 
   return (
@@ -92,10 +160,9 @@ export function AccountTab() {
             <div className="relative">
               <div className="h-16 w-16 rounded-full bg-primary/20 flex items-center justify-center">
                 <span className="text-xl font-semibold text-primary">
-                  {(
-                    accountForm.firstName.charAt(0) +
-                    accountForm.lastName.charAt(0)
-                  ).toUpperCase() || '?'}
+                  {profile?.firstName && profile?.lastName
+                    ? `${profile.firstName.charAt(0)}${profile.lastName.charAt(0)}`.toUpperCase()
+                    : '?'}
                 </span>
               </div>
               <button className="absolute -bottom-1 -right-1 h-6 w-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center shadow hover:bg-primary/80 transition-colors">
@@ -104,11 +171,9 @@ export function AccountTab() {
             </div>
             <div>
               <p className="text-sm font-medium text-foreground">
-                {accountForm.firstName} {accountForm.lastName}
+                {profile?.firstName} {profile?.lastName}
               </p>
-              <p className="text-xs text-muted-foreground">
-                {accountForm.email}
-              </p>
+              <p className="text-xs text-muted-foreground">{profile?.email}</p>
             </div>
           </div>
 
@@ -123,12 +188,11 @@ export function AccountTab() {
                     inputClass,
                     !isEditing && 'opacity-60 cursor-default',
                   )}
-                  value={accountForm.firstName}
+                  value={profile?.firstName}
                   readOnly={!isEditing}
                   onChange={e =>
-                    setAccountForm({
-                      ...accountForm,
-                      firstName: e.target.value,
+                    form.setValue('firstName', e.target.value, {
+                      shouldDirty: true,
                     })
                   }
                 />
@@ -142,10 +206,12 @@ export function AccountTab() {
                     inputClass,
                     !isEditing && 'opacity-60 cursor-default',
                   )}
-                  value={accountForm.lastName}
+                  value={profile?.lastName}
                   readOnly={!isEditing}
                   onChange={e =>
-                    setAccountForm({ ...accountForm, lastName: e.target.value })
+                    form.setValue('lastName', e.target.value, {
+                      shouldDirty: true,
+                    })
                   }
                 />
               </div>
@@ -157,7 +223,7 @@ export function AccountTab() {
               <input
                 className={inputClass}
                 type="email"
-                value={accountForm.email}
+                value={profile?.email}
                 readOnly
                 disabled
               />
@@ -171,11 +237,13 @@ export function AccountTab() {
                   inputClass,
                   !isEditing && 'opacity-60 cursor-default',
                 )}
-                value={accountForm.company}
+                value={profile?.company}
                 placeholder="e.g. Acme Corporation"
                 readOnly={!isEditing}
                 onChange={e =>
-                  setAccountForm({ ...accountForm, company: e.target.value })
+                  form.setValue('company', e.target.value, {
+                    shouldDirty: true,
+                  })
                 }
               />
             </div>
@@ -185,40 +253,19 @@ export function AccountTab() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-sm font-medium">Change Password</CardTitle>
+          <CardTitle className="text-sm font-medium">Password</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-1.5">
-            <label className="text-sm font-medium text-foreground">
-              New Password
-            </label>
-            <input
-              className={inputClass}
-              type="password"
-              placeholder="••••••••"
-              value={accountForm.password}
-              onChange={e =>
-                setAccountForm({ ...accountForm, password: e.target.value })
-              }
-            />
-          </div>
-          <div className="space-y-1.5">
-            <label className="text-sm font-medium text-foreground">
-              Confirm Password
-            </label>
-            <input
-              className={inputClass}
-              type="password"
-              placeholder="••••••••"
-              value={accountForm.confirmPassword}
-              onChange={e =>
-                setAccountForm({
-                  ...accountForm,
-                  confirmPassword: e.target.value,
-                })
-              }
-            />
-          </div>
+        <CardContent className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            To change your password, you will be redirected to the reset
+            password page.
+          </p>
+          <Button
+            variant="outline"
+            onClick={() => router.push('/reset-password')}
+          >
+            Reset Password
+          </Button>
         </CardContent>
       </Card>
 
@@ -228,9 +275,12 @@ export function AccountTab() {
             <Button variant="outline" onClick={cancelEdit}>
               Cancel
             </Button>
-            <Button onClick={saveAccount} className="gap-2 min-w-32">
-              {accountSaved && <Check className="h-4 w-4" />}
-              {accountSaved ? 'Saved!' : 'Save Changes'}
+            <Button
+              onClick={form.handleSubmit(onSubmit)}
+              className="gap-2 min-w-32"
+            >
+              {isUpdating && <Check className="h-4 w-4" />}
+              {isUpdating ? 'Saved!' : 'Save Changes'}
             </Button>
           </>
         ) : (

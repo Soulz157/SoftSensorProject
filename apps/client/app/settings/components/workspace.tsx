@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import {
   Building2,
   Box,
@@ -11,12 +11,14 @@ import {
   Globe,
   Shield,
   Camera,
-  Check,
 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { useWorkspaceStore } from '@/store/auth-store'
+import { toast } from 'sonner'
+import { useWorkspaces } from '@/hooks/workspace/use-workspaces'
+import { useUpdateWorkspace } from '@/hooks/workspace/use-update-workspace'
+import type { Workspace } from '@/types'
 
 const workspaceIcons = [
   { id: 'building', label: 'Building', icon: Building2 },
@@ -42,45 +44,48 @@ const inputClass =
   'h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring'
 
 export function WorkspaceTab() {
-  const workspaces = useWorkspaceStore(s => s.workspaces)
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState('')
-  const [workspaceSaved, setWorkspaceSaved] = useState(false)
-  const [localWorkspaces, setLocalWorkspaces] = useState(workspaces)
+  const { workspaces } = useWorkspaces()
+  const { updateWorkspace, isUpdating } = useUpdateWorkspace()
+  const [preferredId, setPreferredId] = useState('')
+  const [drafts, setDrafts] = useState<Record<string, Partial<Workspace>>>({})
 
-  useEffect(() => {
-    setLocalWorkspaces(workspaces)
-    setSelectedWorkspaceId(currentSelectedId => {
-      if (!currentSelectedId && workspaces.length > 0) {
-        return workspaces[0]!.id
-      }
-      return currentSelectedId // Do nothing if one is already selected
-    })
-  }, [workspaces, selectedWorkspaceId])
+  const selectedWorkspaceId = workspaces.some(w => w.id === preferredId)
+    ? preferredId
+    : (workspaces[0]?.id ?? '')
 
-  const selectedWorkspace = localWorkspaces.find(
-    w => w.id === selectedWorkspaceId,
-  )
+  const selectedWorkspace = workspaces.find(w => w.id === selectedWorkspaceId)
+  const draft = drafts[selectedWorkspaceId] ?? {}
 
-  const updateWorkspace = (field: string, value: string) => {
-    setLocalWorkspaces(prev =>
-      prev.map(w =>
-        w.id === selectedWorkspaceId ? { ...w, [field]: value } : w,
-      ),
-    )
-    setWorkspaceSaved(false)
+  const effectiveName = draft.name ?? selectedWorkspace?.name ?? ''
+  const effectiveIcon = draft.icon ?? selectedWorkspace?.icon
+  const effectiveColor = draft.color ?? selectedWorkspace?.color
+
+  const setField = (field: keyof Workspace, value: string) => {
+    setDrafts(prev => ({
+      ...prev,
+      [selectedWorkspaceId]: { ...prev[selectedWorkspaceId], [field]: value },
+    }))
   }
 
-  const saveWorkspace = () => {
-    setWorkspaceSaved(true)
-    setTimeout(() => setWorkspaceSaved(false), 2000)
+  const saveWorkspace = async () => {
+    if (!selectedWorkspaceId) return
+    const result = await updateWorkspace(selectedWorkspaceId, {
+      name: effectiveName,
+      icon: effectiveIcon,
+      color: effectiveColor,
+    })
+    if (result.success) {
+      setDrafts(prev => ({ ...prev, [selectedWorkspaceId]: {} }))
+      toast.success('Workspace updated')
+    } else {
+      toast.error(result.error ?? 'Failed to update workspace')
+    }
   }
 
   const selectedColor =
-    workspaceColors.find(c => c.id === selectedWorkspace?.color)?.bg ??
-    'bg-primary'
+    workspaceColors.find(c => c.id === effectiveColor)?.bg ?? 'bg-primary'
   const SelectedIcon =
-    workspaceIcons.find(i => i.id === selectedWorkspace?.icon)?.icon ??
-    Building2
+    workspaceIcons.find(i => i.id === effectiveIcon)?.icon ?? Building2
 
   return (
     <>
@@ -92,13 +97,10 @@ export function WorkspaceTab() {
       </div>
 
       <div className="grid grid-cols-3 gap-2">
-        {localWorkspaces.map(w => (
+        {workspaces.map(w => (
           <button
             key={w.id}
-            onClick={() => {
-              setSelectedWorkspaceId(w.id)
-              setWorkspaceSaved(false)
-            }}
+            onClick={() => setPreferredId(w.id)}
             className={cn(
               'rounded-lg border-2 p-3 text-left transition-all',
               selectedWorkspaceId === w.id
@@ -132,7 +134,7 @@ export function WorkspaceTab() {
               </div>
               <div>
                 <p className="text-sm font-medium text-foreground">
-                  {selectedWorkspace.name}
+                  {effectiveName}
                 </p>
                 <p className="text-xs text-muted-foreground">
                   Workspace icon preview
@@ -146,8 +148,8 @@ export function WorkspaceTab() {
               </label>
               <input
                 className={inputClass}
-                value={selectedWorkspace.name}
-                onChange={e => updateWorkspace('name', e.target.value)}
+                value={effectiveName}
+                onChange={e => setField('name', e.target.value)}
               />
             </div>
 
@@ -160,10 +162,10 @@ export function WorkspaceTab() {
                   <button
                     key={id}
                     title={label}
-                    onClick={() => updateWorkspace('icon', id)}
+                    onClick={() => setField('icon', id)}
                     className={cn(
                       'h-9 w-9 rounded-md border-2 flex items-center justify-center transition-all',
-                      selectedWorkspace.icon === id
+                      effectiveIcon === id
                         ? 'border-primary bg-primary/10 text-primary'
                         : 'border-border text-muted-foreground hover:border-primary/50 hover:text-foreground',
                     )}
@@ -182,11 +184,11 @@ export function WorkspaceTab() {
                 {workspaceColors.map(({ id, bg }) => (
                   <button
                     key={id}
-                    onClick={() => updateWorkspace('color', id)}
+                    onClick={() => setField('color', id)}
                     className={cn(
                       'h-8 w-8 rounded-full transition-all',
                       bg,
-                      selectedWorkspace.color === id
+                      effectiveColor === id
                         ? 'ring-2 ring-offset-2 ring-foreground scale-110'
                         : 'hover:scale-105 opacity-70 hover:opacity-100',
                     )}
@@ -214,9 +216,12 @@ export function WorkspaceTab() {
 
       {selectedWorkspace && (
         <div className="flex justify-end">
-          <Button onClick={saveWorkspace} className="gap-2 min-w-32">
-            {workspaceSaved && <Check className="h-4 w-4" />}
-            {workspaceSaved ? 'Saved!' : 'Save Changes'}
+          <Button
+            onClick={saveWorkspace}
+            disabled={isUpdating}
+            className="gap-2 min-w-32"
+          >
+            {isUpdating ? 'Saving...' : 'Save Changes'}
           </Button>
         </div>
       )}

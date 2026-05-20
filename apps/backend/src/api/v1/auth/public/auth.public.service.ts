@@ -1,9 +1,17 @@
 import { Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as argon2 from 'argon2';
+import { randomBytes } from 'node:crypto';
 import { PrismaEnums, PrismaService } from '@softsensor/prisma';
 import { LoginRequestDto, RegisterRequestDto } from './dto/auth.public.dto';
 import { AppException } from '@softsensor/common';
+
+const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+interface LoginMeta {
+  ipAddress?: string;
+  userAgent?: string;
+}
 
 @Injectable()
 export class AuthPublicService {
@@ -54,11 +62,12 @@ export class AuthPublicService {
     };
   }
 
-  async loginService(args: LoginRequestDto) {
+  async loginService(
+    args: LoginRequestDto,
+    meta?: LoginMeta,
+  ): Promise<{ response: object; refreshToken: string }> {
     const { email, password } = args;
-    const user = await this.prisma.user.findUnique({
-      where: { email },
-    });
+    const user = await this.prisma.user.findUnique({ where: { email } });
 
     if (!user) {
       throw new AppException({
@@ -77,7 +86,6 @@ export class AuthPublicService {
     }
 
     const isPasswordValid = await argon2.verify(user.password, password);
-
     if (!isPasswordValid) {
       throw new AppException({
         statusCode: 400,
@@ -95,91 +103,84 @@ export class AuthPublicService {
         company: user.company ?? '',
         role: user.role,
       },
-      {
-        expiresIn: '1d',
-      },
+      { expiresIn: '15m' },
     );
 
+    const refreshToken = randomBytes(64).toString('hex');
+    const expiresAt = new Date(Date.now() + REFRESH_TOKEN_TTL_MS);
+
+    await this.prisma.$transaction([
+      this.prisma.refreshToken.create({
+        data: { token: refreshToken, userId: user.id, expiresAt },
+      }),
+      this.prisma.authLog.create({
+        data: {
+          userId: user.id,
+          action: PrismaEnums.AuthAction.LOGIN,
+          ipAddress: meta?.ipAddress,
+          userAgent: meta?.userAgent,
+        },
+      }),
+    ]);
+
     return {
-      statusCode: 200,
-      message: 'เข้าสู่ระบบสำเร็จ',
-      data: {
-        accessToken,
+      response: {
+        statusCode: 200,
+        message: 'เข้าสู่ระบบสำเร็จ',
+        type: 'SUCCESS',
+        data: { accessToken },
       },
+      refreshToken,
     };
   }
 
-  // async oauthLogin(dto: OAuthLoginDto) {
-  //   const {
-  //     provider,
-  //     providerAccountId,
-  //     email,
-  //     name,
-  //     accessToken,
-  //     refreshToken,
-  //     expiresAt,
-  //   } = dto;
+  async refreshService(
+    token: string,
+  ): Promise<{ response: object; refreshToken: string }> {
+    const record = await this.prisma.refreshToken.findUnique({
+      where: { token },
+      include: { user: true },
+    });
 
-  //   const existingAccount = await this.prisma.account.findUnique({
-  //     where: { provider_providerAccountId: { provider, providerAccountId } },
-  //     include: { user: true },
-  //   });
+    if (!record || record.expiresAt < new Date() || record.revokedAt) {
+      throw new AppException({
+        statusCode: 401,
+        message: 'Refresh token invalid or expired',
+        type: 'ERROR',
+      });
+    }
 
-  //   if (!email) {
-  //     throw new AppException(
-  //       statusCode: 400,
-  //       message: 'Email is required from OAuth provider',
-  //       type: "ERROR" ,
-  //     );
-  //   }
+    const { user } = record;
+    const accessToken = this.jwtService.sign<Auth.UserPayload>(
+      {
+        id: user.id,
+        email: user.email,
+        firstName: user.firstName ?? '',
+        lastName: user.lastName ?? '',
+        company: user.company ?? '',
+        role: user.role,
+      },
+      { expiresIn: '15m' },
+    );
 
-  //   if (existingAccount) {
-  //     return this.issueToken(existingAccount.user);
-  //   }
+    const newRefreshToken = randomBytes(64).toString('hex');
+    const expiresAt = new Date(Date.now() + REFRESH_TOKEN_TTL_MS);
 
-  //   const existingUser = await this.prisma.user.findUnique({
-  //     where: { email },
-  //   });
+    await this.prisma.$transaction([
+      this.prisma.refreshToken.delete({ where: { token } }),
+      this.prisma.refreshToken.create({
+        data: { token: newRefreshToken, userId: user.id, expiresAt },
+      }),
+    ]);
 
-  //   const user = existingUser
-  //     ? await this.prisma.account
-  //         .create({
-  //           data: {
-  //             userId: existingUser.id,
-  //             provider,
-  //             providerAccountId,
-  //             accessToken,
-  //             refreshToken,
-  //             expiresAt,
-  //           },
-  //           select: { user: true },
-  //         })
-  //         .then((a) => a.user)
-  //     : await this.prisma.user.create({
-  //         data: {
-  //           email,
-  //           username: name,
-  //           accounts: {
-  //             create: {
-  //               provider,
-  //               providerAccountId,
-  //               accessToken,
-  //               refreshToken,
-  //               expiresAt,
-  //             },
-  //           },
-  //         },
-  //       });
-
-  //   return this.issueToken(user);
-  // }
-
-  // private issueToken(user: { id: string; email: string; role: string }) {
-  //   const token = this.jwt.sign({
-  //     id: user.id,
-  //     email: user.email,
-  //     role: user.role,
-  //   });
-  //   return { accessToken: token };
-  // }
+    return {
+      response: {
+        statusCode: 200,
+        message: 'Token refreshed successfully',
+        type: 'SUCCESS',
+        data: { accessToken },
+      },
+      refreshToken: newRefreshToken,
+    };
+  }
 }

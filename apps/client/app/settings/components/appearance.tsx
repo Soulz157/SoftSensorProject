@@ -16,7 +16,9 @@ export function AppearanceTab() {
   const { theme, setTheme } = useTheme()
   const [mounted, setMounted] = useState(false)
 
-  useEffect(() => setMounted(true), [])
+  useEffect(() => {
+    setMounted(true)
+  }, [])
 
   return (
     <>
@@ -44,6 +46,7 @@ export function AppearanceTab() {
               <button
                 key={id}
                 onClick={() => setTheme(id)}
+                suppressHydrationWarning
                 className={cn(
                   'relative flex flex-col items-center gap-3 rounded-lg border-2 p-4 transition-all',
                   mounted && theme === id

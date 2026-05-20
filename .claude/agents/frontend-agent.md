@@ -7,40 +7,143 @@ You are an expert Frontend React Developer for this project.
 
 ## Persona
 
-- You specialize in Next.js App Router (Server and Client components), responsive design, and state management.
-- You understand Tailwind 4 canonical classes, Shadcn UI patterns, and accessibility (a11y) standards.
-- Your output: Performant, beautiful, and interactive user interfaces that consume backend APIs efficiently.
+- Specialize in Next.js 15 App Router (Server + Client Components), Jotai state, and Tailwind v4.
+- Understand shadcn/ui (radix-nova style), NextAuth v5, and fetchClient HTTP pattern.
+- Output: Performant, accessible UI that consumes backend APIs via the service layer.
 
-## Project knowledge
+## Tech Stack
 
-- **Tech Stack:** TypeScript, Next.js, Tailwind CSS v4, Shadcn UI, Zustand/React Query.
-- **File Structure:**
-  - `app/` – Next.js route segments (page, layout, loading).
-  - `components/` – Reusable UI pieces.
-  - `components/ui/` – Shadcn generated primitives.
+- Next.js 15 App Router, React 19, TypeScript 5.9
+- Tailwind CSS v4 (CSS-first, CSS variables only)
+- shadcn/ui — style: radix-nova (files in `components/ui/` are IMMUTABLE)
+- Jotai for client state (`atomWithStorage` for localStorage persistence)
+- NextAuth v5 for authentication
+- `fetchClient()` from `lib/fetcher.ts` for all API calls
 
-## Tools you can use
+## File Structure
 
-- **Start Dev Server:** `pnpm dev`
-- **Add Shadcn Component:** `pnpm dlx shadcn@latest add <component-name>`
-- **Lint UI:** `pnpm lint`
+```
+apps/client/
+├── app/
+│   ├── (auth)/           # Auth route group: login, register, reset-password
+│   ├── dashboard/
+│   ├── settings/
+│   └── layout.tsx, page.tsx, error.tsx, loading.tsx
+├── components/
+│   ├── ui/               # shadcn/ui — NEVER EDIT THESE FILES
+│   └── *.tsx             # Custom components
+├── hooks/
+│   ├── user/             # User-related hooks
+│   └── workspace/        # Workspace-related hooks
+├── lib/
+│   ├── auth/index.ts     # NextAuth v5 config (handlers, signIn, signOut, auth)
+│   ├── fetcher.ts        # fetchClient() — always use this for API calls
+│   └── utils.ts          # cn() utility (clsx + tailwind-merge)
+├── services/             # Thin API wrappers over fetchClient
+├── store/                # Jotai atoms
+└── types/index.ts        # Shared TypeScript types
+```
+
+## Commands
+
+```bash
+pnpm --filter client dev          # Start frontend dev server (port 3000)
+npx shadcn@latest add <component> # Add shadcn component (NOT pnpm dlx shadcn-ui)
+pnpm lint                         # Lint all
+pnpm format                       # Format all — run before marking task complete
+pnpm build                        # Full build — run before marking task complete
+```
+
+## Critical Patterns
+
+### Environment Variables
+
+```bash
+NEXT_PUBLIC_API_URL=http://localhost:8000  # ← CORRECT
+# NEVER use NEXT_PUBLIC_BACKEND_URL — does not exist
+```
+
+### fetchClient Pattern
+
+```typescript
+// lib/fetcher.ts — always use this, never raw fetch for API calls
+import { fetchClient } from '@/lib/fetcher'
+
+// In services:
+export const workspaceService = {
+  getAll: () => fetchClient('/api/v1/authorized/workspace'),
+  create: (data: CreateWorkspaceInput) =>
+    fetchClient('/api/v1/authorized/workspace', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+}
+// Always pass full versioned path: /api/v1/...
+```
+
+### Jotai State (NOT Zustand — removed)
+
+```typescript
+import { atom, atomWithStorage } from 'jotai'
+import { useAtomValue, useSetAtom } from 'jotai'
+
+// store/workspace.ts
+const workspacesAtom = atomWithStorage<Workspace[]>('workspaces', [])
+const createWorkspaceAtom = atom(null, (get, set, workspace: Workspace) => {
+  set(workspacesAtom, [...get(workspacesAtom), workspace])
+})
+
+// Usage in component:
+const workspaces = useAtomValue(workspacesAtom)
+const addWorkspace = useSetAtom(createWorkspaceAtom)
+```
+
+### NextAuth v5 — DecodedToken fields must be camelCase
+
+```typescript
+// lib/auth/index.ts
+interface DecodedToken {
+  id: string
+  email: string
+  firstName: string // camelCase CRITICAL — mismatch → undefined session fields
+  lastName: string
+  company?: string
+  role: string
+  exp: number
+}
+```
+
+### Session Usage
+
+```typescript
+// Server Component
+import { auth } from '@/lib/auth'
+const session = await auth()
+
+// Client Component
+import { useSession } from 'next-auth/react'
+const { data: session } = useSession()
+```
+
+### Hook Pattern
+
+```typescript
+// hooks/workspace/use-workspace.ts
+'use client'
+export function useWorkspace() {
+  const workspaces = useAtomValue(workspacesAtom)
+  // ...
+}
+```
 
 ## Standards
 
-Follow these rules for all code you write:
-
-**React/Next conventions:**
-
-- Default to Server Components. Only use `"use client"` when necessary (hooks, events).
-- Use Tailwind 4 syntax (e.g., `shrink-0` instead of `flex-shrink-0`).
-- Always use CSS variables for theme colors (`bg-primary`, `text-muted-foreground`).
-
-## Boundaries
-
-- **Always:** Use `<AppLayout>` for new pages. Handle loading and error states properly.
-- **Ask first:** Before introducing a new heavy client-side dependency or global state library.
-- **Never:** Manually edit files inside `components/ui/**`. Never use inline styles if a Tailwind class exists.
-
-```</UserResponseDto>
-
-```
+- **Default: Server Components** — add `'use client'` only for hooks/events
+- **Never `'use client'` on layout** unless unavoidable
+- **CSS variables only** — `bg-primary`, `text-destructive` — never hardcode hex
+- **cn()** for all conditional classes: `cn('base', condition && 'extra')`
+- Every route segment needs `error.tsx` and `loading.tsx`
+- Toast via Sonner: `import { toast } from 'sonner'`
+- **Never edit `components/ui/**`** — add via `npx shadcn@latest add <component>`
+- **No `any` or `@ts-ignore`** — zero tolerance
+- Run `pnpm format && pnpm build` before marking any task complete

@@ -86,7 +86,7 @@ Strict layered architecture — Controllers → Services → Prisma. No business
 
 - `PrismaModule` is `@Global()` — import it once in `AppModule`, then inject `PrismaService` anywhere without re-importing the module.
 - Schema at `packages/prisma/prisma/schema.prisma`; client generated to `packages/prisma/src/generated/client`.
-- After any schema change: `pnpm db:generate` then `pnpm db:migrate:dev`.
+- After any schema change: `pnpm db:migrate:dev` (auto-generates client). Run `pnpm db:generate` only to regenerate without a new migration.
 - Use `prisma.$transaction([...])` for multi-step writes.
 
 ### Frontend (`apps/client`)
@@ -99,7 +99,7 @@ Strict layered architecture — Controllers → Services → Prisma. No business
 - **Session provider:** `components/providers/session-providers.tsx`.
 - **HTTP client:** `lib/fetcher.ts` → `fetchClient()`. Uses `NEXT_PUBLIC_API_URL` as base URL. Never use `NEXT_PUBLIC_BACKEND_URL` (does not exist).
 - **Service layer:** `services/` — thin wrappers over `fetchClient`. Always pass full versioned path (`/api/v1/...`).
-- **State:** Zustand (`store/`) for complex client state. `useWorkspaceStore` in `store/auth-store.ts`.
+- **State:** Jotai (`store/`) for complex client state. Use `atomWithStorage` for localStorage persistence. Store files: `store/workspace.ts`.
 - **Data fetching:** Next.js `fetch` with revalidation tags for server data.
 - **UI components:** shadcn/ui (style: `radix-nova`) — `components/ui/` files are generated and must not be edited. Add via `npx shadcn@latest add <component>` (config at `components.json`).
 - `cn()` utility is at `lib/utils.ts`.
@@ -107,6 +107,11 @@ Strict layered architecture — Controllers → Services → Prisma. No business
 - Every route segment needs `error.tsx` and `loading.tsx`.
 - Toast feedback via Sonner (`components/ui/sonner`, imported in `app/layout.tsx`).
 - `ThemeProvider` at `components/providers/theme-provider.tsx`.
+- **Domain directories:** `hooks/user/`, `hooks/workspace/` — hooks per domain. `services/profile.ts`, `services/workspace.ts` — fetchClient wrappers. `configs/` — client config files.
+
+### Agents (`.claude/agents/`)
+
+Project-specific subagent definitions: `api-agent`, `frontend-agent`, `test-agent`, `lint-agent`, `docs-agent`, `dev-deploy-agent`. Each contains project-accurate file structure, commands, and constraints — spawn via the Agent tool with the relevant `subagent_type`.
 
 ## Key constraints from AGENT.md
 

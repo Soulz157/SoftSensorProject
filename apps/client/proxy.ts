@@ -7,16 +7,19 @@ const PUBLIC_PATHS = ['/', '/login', '/register', '/reset-password']
 export async function proxy(req: NextRequest) {
   const session = await auth()
   const isLoggedIn = !!session
+  const hasError = session?.error === 'RefreshTokenExpired'
   const path = req.nextUrl.pathname
   const isPublic = PUBLIC_PATHS.includes(path)
 
-  if (!isLoggedIn && !isPublic) {
-    const loginUrl = new URL('/login', req.nextUrl)
-    loginUrl.searchParams.set('callbackUrl', path)
-    return NextResponse.redirect(loginUrl)
+  if (!isLoggedIn || hasError) {
+    if (!isPublic) {
+      const loginUrl = new URL('/login', req.nextUrl)
+      loginUrl.searchParams.set('callbackUrl', path)
+      return NextResponse.redirect(loginUrl)
+    }
   }
 
-  if (isLoggedIn && isPublic && path !== '/') {
+  if (isLoggedIn && !hasError && isPublic && path !== '/') {
     return NextResponse.redirect(new URL('/dashboard', req.nextUrl))
   }
 

@@ -1,7 +1,5 @@
 import NextAuth, { type NextAuthConfig, type NextAuthResult } from 'next-auth'
 import CredentialsProvider from 'next-auth/providers/credentials'
-// import GoogleProvider from 'next-auth/providers/google'
-// import MicrosoftEntraId from 'next-auth/providers/microsoft-entra-id'
 import { jwtDecode } from 'jwt-decode'
 
 interface DecodedToken {
@@ -14,16 +12,13 @@ interface DecodedToken {
   company?: string
 }
 
+function parseRefreshTokenFromCookie(setCookieHeader: string | null): string {
+  if (!setCookieHeader) return ''
+  return setCookieHeader.match(/refresh_token=([^;]+)/)?.[1] ?? ''
+}
+
 export const authConfig: NextAuthConfig = {
   providers: [
-    // GoogleProvider({
-    //   clientId: process.env.GOOGLE_CLIENT_ID!,
-    //   clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
-    // }),
-    // MicrosoftEntraId({
-    //   clientId: process.env.MICROSOFT_CLIENT_ID!,
-    //   clientSecret: process.env.MICROSOFT_CLIENT_SECRET!,
-    // }),
     CredentialsProvider({
       name: 'Credentials',
       credentials: {
@@ -44,94 +39,100 @@ export const authConfig: NextAuthConfig = {
             }),
           })
 
-          const user = await res.json()
+          const body = await res.json()
 
           if (!res.ok) {
-            throw new Error(user.message || 'อีเมลหรือรหัสผ่านไม่ถูกต้อง')
+            throw new Error(body.message || 'อีเมลหรือรหัสผ่านไม่ถูกต้อง')
           }
 
-          const accessToken = user.data?.accessToken ?? user.accessToken
-          if (accessToken) {
-            const decoded: DecodedToken = jwtDecode(accessToken)
+          const accessToken: string = body.data?.accessToken ?? body.accessToken
+          if (!accessToken) return null
 
-            return {
-              id: decoded.id,
-              role: decoded.role,
-              email: decoded.email,
-              firstName: decoded.firstName ?? '',
-              lastName: decoded.lastName ?? '',
-              accessToken,
-            }
+          const decoded: DecodedToken = jwtDecode(accessToken)
+          const refreshToken = parseRefreshTokenFromCookie(
+            res.headers.get('set-cookie'),
+          )
+
+          return {
+            id: decoded.id,
+            role: decoded.role,
+            email: decoded.email,
+            firstName: decoded.firstName ?? '',
+            lastName: decoded.lastName ?? '',
+            accessToken,
+            refreshToken,
           }
-          return null
         } catch (error) {
-          if (error instanceof Error) {
-            throw new Error(error.message)
-          }
+          if (error instanceof Error) throw new Error(error.message)
           throw new Error('เกิดข้อผิดพลาดในการเชื่อมต่อ')
         }
       },
     }),
   ],
   callbacks: {
-    async signIn({ user, account }) {
-      if (
-        account?.provider === 'google' ||
-        account?.provider === 'microsoft-entra-id'
-      ) {
-        const provider =
-          account.provider === 'microsoft-entra-id' ? 'microsoft' : 'google'
-        const res = await fetch(
-          `${process.env.NEXT_PUBLIC_API_URL}/api/v1/public/auth/oauth`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              provider,
-              providerAccountId: account.providerAccountId,
-              email: user.email,
-              name: user.name,
-              accessToken: account.access_token,
-              refreshToken: account.refresh_token,
-              expiresAt: account.expires_at,
-            }),
-          },
-        )
-        if (!res.ok) return false
-        const body = await res.json()
-        const backendToken: string = body.accessToken
-        const decoded = jwtDecode<DecodedToken>(backendToken)
-        user.id = decoded.id
-        user.role = decoded.role
-        user.accessToken = backendToken
-      }
-      return true
-    },
     async jwt({ token, user }) {
       if (user) {
-        token.accessToken = user.accessToken
-        token.id = user.id
-        token.role = user.role
-        token.firstName = user.firstName
-        token.lastName = user.lastName
+        const decoded: DecodedToken = jwtDecode(user.accessToken)
+        return {
+          ...token,
+          id: user.id,
+          role: user.role,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          accessToken: user.accessToken,
+          refreshToken: user.refreshToken,
+          expiresAt: decoded.exp * 1000,
+        }
       }
-      return token
+
+      if (Date.now() < token.expiresAt - 60_000) return token
+
+      try {
+        const API_URL = process.env.NEXT_PUBLIC_API_URL
+        const res = await fetch(`${API_URL}/api/v1/public/auth/refresh`, {
+          method: 'POST',
+          headers: {
+            Cookie: `refresh_token=${token.refreshToken}`,
+          },
+        })
+
+        if (!res.ok) throw new Error('Refresh failed')
+
+        const body = await res.json()
+        const newAccessToken: string =
+          body.data?.accessToken ?? body.accessToken
+        const newRefreshToken =
+          parseRefreshTokenFromCookie(res.headers.get('set-cookie')) ||
+          token.refreshToken
+        const decoded: DecodedToken = jwtDecode(newAccessToken)
+
+        return {
+          ...token,
+          accessToken: newAccessToken,
+          refreshToken: newRefreshToken,
+          expiresAt: decoded.exp * 1000,
+          error: undefined,
+        }
+      } catch {
+        return { ...token, error: 'RefreshTokenExpired' as const }
+      }
     },
     async session({ session, token }) {
       if (token && session.user) {
-        session.user.id = token.id as string
-        session.user.email = token.email as string
-        session.user.firstName = token.firstName as string
-        session.user.lastName = token.lastName as string
-        session.user.role = token.role as string
-        session.user.accessToken = token.accessToken as string
+        session.user.id = token.id
+        session.user.email = token.email
+        session.user.firstName = token.firstName
+        session.user.lastName = token.lastName
+        session.user.role = token.role
+        session.user.accessToken = token.accessToken
       }
+      session.error = token.error
       return session
     },
   },
   session: {
     strategy: 'jwt',
-    maxAge: 24 * 60 * 60,
+    maxAge: 7 * 24 * 60 * 60,
   },
   pages: {
     signIn: '/login',

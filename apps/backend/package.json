@@ -22,8 +22,6 @@
     "clean": "rimraf dist node_modules"
   },
   "dependencies": {
-    "@softsensor/common": "workspace:*",
-    "@softsensor/prisma": "workspace:*",
     "@fastify/compress": "^8.3.1",
     "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^11.2.0",
@@ -37,10 +35,13 @@
     "@nestjs/platform-express": "^11.0.1",
     "@nestjs/platform-fastify": "^11.1.21",
     "@nestjs/swagger": "^11.4.2",
+    "@softsensor/common": "workspace:*",
+    "@softsensor/prisma": "workspace:*",
     "argon2": "^0.44.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
     "fastify": "^5.8.5",
+    "jsonwebtoken": "^9.0.3",
     "nestjs-zod": "^5.3.0",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
