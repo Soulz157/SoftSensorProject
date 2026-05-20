@@ -34,8 +34,6 @@ function UserInitials({ name }: { name: string }) {
 export function Navbar({ onCreateWorkspace, onMenuClick }: NavbarProps) {
   const { data: session, status } = useSession()
 
-  console.log('Navbar session:', session?.user)
-
   if (status === 'loading') {
     return (
       <header className="flex h-16 items-center justify-between border-b border-border bg-card px-4 lg:px-6">

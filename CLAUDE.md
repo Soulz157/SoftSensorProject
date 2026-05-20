@@ -96,10 +96,11 @@ Strict layered architecture — Controllers → Services → Prisma. No business
 - **Auth config:** `lib/auth/index.ts` — NextAuth v5 config, exports `handlers`, `signIn`, `signOut`, `auth`.
 - **`DecodedToken` in `lib/auth/index.ts`:** Fields must be camelCase (`firstName`, `lastName`) matching the JWT payload exactly — mismatched casing silently produces `undefined` session fields.
 - **Login response shape:** Backend returns `{ data: { accessToken } }`. `authorize` reads `user.data?.accessToken ?? user.accessToken` to handle both wrapped and flat shapes.
-- **Session provider:** `components/providers/session-providers.tsx`.
+- **Session provider:** `components/providers/session-provider.tsx`.
 - **HTTP client:** `lib/fetcher.ts` → `fetchClient()`. Uses `NEXT_PUBLIC_API_URL` as base URL. Never use `NEXT_PUBLIC_BACKEND_URL` (does not exist).
 - **Service layer:** `services/` — thin wrappers over `fetchClient`. Always pass full versioned path (`/api/v1/...`).
-- **State:** Jotai (`store/`) for complex client state. Use `atomWithStorage` for localStorage persistence. Store files: `store/workspace.ts`.
+- **State:** Jotai (`store/`) for complex client state. Use `atomWithStorage` for localStorage persistence. Store: `store/workspace.ts` — `workspacesAtom`, `createWorkspaceAtom`, `clearWorkspacesAtom`.
+- **Viewport (Next.js 15):** Export `viewport` separately from `metadata`. Never put viewport settings inside the `metadata` object — `metadata.viewport` is deprecated in Next.js 15 and causes `<__next_viewport_boundary__>` key warnings at runtime.
 - **Data fetching:** Next.js `fetch` with revalidation tags for server data.
 - **UI components:** shadcn/ui (style: `radix-nova`) — `components/ui/` files are generated and must not be edited. Add via `npx shadcn@latest add <component>` (config at `components.json`).
 - `cn()` utility is at `lib/utils.ts`.

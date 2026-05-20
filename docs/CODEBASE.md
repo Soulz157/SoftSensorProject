@@ -175,27 +175,31 @@ JWT payload (`Auth.UserPayload`): `id`, `email`, `firstName`, `lastName`, `compa
 ```
 apps/client/
 ├── app/
-│   ├── layout.tsx                    # Root layout: fonts, ThemeProvider, Jotai+SessionProviders, Sonner
+│   ├── layout.tsx                    # Root layout: fonts, AppProviders (Jotai + SessionProvider + ThemeProvider + Sonner)
 │   ├── globals.css
-│   ├── page.tsx                      # / — LandingPage (redirect to /dashboard if has workspaces)
-│   ├── error.tsx
+│   ├── error.tsx                     # Segment error boundary — no <html>/<body>, just inner content
 │   ├── loading.tsx
+│   ├── not-found.tsx
+│   ├── global-error.tsx              # Root error boundary — must have <html>/<body>
 │   ├── (auth)/                       # Auth route group — no layout nesting
 │   │   ├── login/
 │   │   │   ├── page.tsx
 │   │   │   └── components/          # form-card, login-header, social-login
 │   │   ├── register/page.tsx
 │   │   └── reset-password/page.tsx
-│   ├── api/auth/[...nextauth]/       # NextAuth route handler
-│   ├── dashboard/page.tsx
-│   ├── plans/page.tsx
-│   └── settings/
-│       ├── page.tsx                  # Thin shell — renders SettingsSidebar + tab components
-│       └── components/
-│           ├── settings-sidebar.tsx  # Tab: Tab type + SettingsSidebar component
-│           ├── appearance.tsx        # AppearanceTab — theme picker
-│           ├── account.tsx           # AccountTab — profile form (edit mode), change password
-│           └── workspace.tsx        # WorkspaceTab — workspace list + detail editor
+│   ├── (default)/                    # Default route group — passthrough layout (no extra providers)
+│   │   ├── layout.tsx                # Passthrough only — AppProviders already in root layout
+│   │   ├── page.tsx                  # / — LandingPage (redirect to /dashboard if has workspaces)
+│   │   ├── dashboard/page.tsx
+│   │   ├── plans/page.tsx
+│   │   └── settings/
+│   │       ├── page.tsx              # Thin shell — renders SettingsSidebar + tab components
+│   │       └── components/
+│   │           ├── settings-sidebar.tsx  # Tab: Tab type + SettingsSidebar component
+│   │           ├── appearance.tsx        # AppearanceTab — theme picker
+│   │           ├── account.tsx           # AccountTab — profile form (edit mode), change password
+│   │           └── workspace.tsx         # WorkspaceTab — workspace list + detail editor
+│   └── api/auth/[...nextauth]/       # NextAuth route handler
 ├── components/
 │   ├── navbar.tsx                   # Top bar — session-aware, skeleton on loading
 │   ├── sidebar.tsx                  # Left sidebar — workspace list, nav, collapse
@@ -227,7 +231,7 @@ apps/client/
 ├── services/
 │   └── auth.ts                      # authService.register, authService.logout
 ├── store/
-│   └── auth.ts                      # Jotai atoms — workspacesAtom, createWorkspaceAtom, clearWorkspacesAtom
+│   └── workspace.ts                 # Jotai atoms — workspacesAtom, createWorkspaceAtom, clearWorkspacesAtom
 ├── types/
 │   ├── index.ts                     # UserProfile, RegisterPayload, Workspace, CreateWorkspaceInput, …
 │   └── next-auth.d.ts               # Extends NextAuth Session/User/JWT with id, role, accessToken, firstName, lastName
@@ -284,15 +288,37 @@ Auth guard for all non-static routes. Redirects to `/login` when unauthenticated
 
 ### Providers (`components/providers/session-provider.tsx`)
 
-Wraps the whole app with both Jotai `Provider` and next-auth `SessionProvider`:
+`AppProviders` wraps the whole app — lives in root `app/layout.tsx` only. Do **not** add `SessionProvider` or `AppProviders` in segment layouts; that causes triple-nesting and breaks `useSession`.
 
 ```tsx
-<JotaiProvider>
-  <SessionProvider>{children}</SessionProvider>
-</JotaiProvider>
+<ThemeProvider>
+  <JotaiProvider>
+    <TooltipProvider>
+      <SessionProvider>
+        {children}
+        <Toaster />
+      </SessionProvider>
+    </TooltipProvider>
+  </JotaiProvider>
+</ThemeProvider>
 ```
 
-### State (`store/auth.ts`)
+### Viewport (Next.js 15)
+
+Export `viewport` **separately** from `metadata` in layouts/pages:
+
+```ts
+import type { Viewport } from 'next'
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+}
+```
+
+Never put viewport settings inside `metadata` — `metadata.viewport` is deprecated in Next.js 15 and causes `<__next_viewport_boundary__>` React key warnings.
+
+### State (`store/workspace.ts`)
 
 Jotai atoms — replaces the old Zustand store.
 
@@ -484,7 +510,7 @@ Client API calls          → fetchClient() via service layer (services/)
 '@/lib/utils'     → cn()
 '@/hooks'         → custom hooks
 '@/services'      → API service wrappers
-'@/store'         → Jotai atoms (auth.ts)
+'@/store'         → Jotai atoms (workspace.ts)
 '@/types'         → shared TypeScript interfaces
 ```
 

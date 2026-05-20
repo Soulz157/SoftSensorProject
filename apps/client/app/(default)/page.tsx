@@ -1,9 +1,11 @@
 'use client'
 
+export const dynamic = 'force-dynamic'
+
 import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { AppLayout } from '@/components/app-layout'
-import { CreateWorkspaceForm } from '@/components/auth'
+import { CreateWorkspaceForm } from '@/components/auth/create-workspace-form'
 import { AuthPanel } from '@/components/auth/auth-panel'
 import { useSession } from 'next-auth/react'
 import { useAtomValue } from 'jotai'

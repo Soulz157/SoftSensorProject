@@ -1,8 +1,11 @@
 /** @type {import('next').NextConfig} */
 
 const nextConfig = {
-    output: 'standalone',
-    reactCompiler: true,
-};
+  experimental: {},
+  output: 'standalone',
+  serverExternalPackages: [],
+  transpilePackages: ['@softsensor/database'],
 
-export default nextConfig;
+}
+
+export default nextConfig

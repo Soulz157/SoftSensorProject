@@ -18,6 +18,7 @@ function parseRefreshTokenFromCookie(setCookieHeader: string | null): string {
 }
 
 export const authConfig: NextAuthConfig = {
+  secret: process.env.NEXTAUTH_SECRET,
   providers: [
     CredentialsProvider({
       name: 'Credentials',
@@ -30,6 +31,7 @@ export const authConfig: NextAuthConfig = {
 
         try {
           const API_URL = process.env.NEXT_PUBLIC_API_URL
+
           const res = await fetch(`${API_URL}/api/v1/public/auth/login`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -89,7 +91,7 @@ export const authConfig: NextAuthConfig = {
 
       try {
         const API_URL = process.env.NEXT_PUBLIC_API_URL
-        const res = await fetch(`${API_URL}/api/v1/public/auth/refresh`, {
+        const res = await fetch(`${API_URL}/api/v1/authorized/auth/refresh`, {
           method: 'POST',
           headers: {
             Cookie: `refresh_token=${token.refreshToken}`,

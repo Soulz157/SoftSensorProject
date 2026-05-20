@@ -8,12 +8,14 @@ export const GetMeResponseSchema = createStandardResponseSchema(
     .object({
       id: z.string(),
       email: z.email(),
-      name: z.string(),
+      firstName: z.string(),
+      lastName: z.string(),
+      company: z.string().nullable(),
     })
     .strict(),
 );
 
-export const LogoutResponeSchema = createStandardResponseSchema(
+export const LogoutResponseSchema = createStandardResponseSchema(
   z.object({
     message: z.string().default('Logged out successfully'),
   }),
@@ -21,14 +23,22 @@ export const LogoutResponeSchema = createStandardResponseSchema(
 
 export const EditRequestSchema = z
   .object({
-    firstname: z.string().optional(),
-    lastname: z.string().optional(),
+    firstName: z.string().optional(),
+    lastName: z.string().optional(),
+    company: z.string().optional().default(''),
     email: z.email().optional(),
     role: z.enum(Role).optional(),
     password: z.string().optional(),
   })
   .strict();
 
+export const RefreshResponseSchema = createStandardResponseSchema(
+  z.object({
+    accessToken: z.string(),
+  }),
+);
+
+export class RefreshResponseDto extends createZodDto(RefreshResponseSchema) {}
 export class GetMeResponseDto extends createZodDto(GetMeResponseSchema) {}
-export class LogoutResponseDto extends createZodDto(LogoutResponeSchema) {}
+export class LogoutResponseDto extends createZodDto(LogoutResponseSchema) {}
 export class EditRequestDto extends createZodDto(EditRequestSchema) {}

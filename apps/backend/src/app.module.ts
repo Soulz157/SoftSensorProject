@@ -10,7 +10,7 @@ import { JwtModule } from '@nestjs/jwt/dist/jwt.module';
     ConfigModule.forRoot({ isGlobal: true }),
     JwtModule.register({
       global: true,
-      secret: process.env.JWT_SECRET,
+      secret: process.env.JWT_ACCESS_SECRET,
       signOptions: { expiresIn: '1d' },
     }),
     PrismaModule,

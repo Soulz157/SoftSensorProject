@@ -54,15 +54,8 @@ export const LoginResponseSchema = createStandardResponseSchema(
   }),
 );
 
-export const RefreshResponseSchema = createStandardResponseSchema(
-  z.object({
-    accessToken: z.string(),
-  }),
-);
-
 export class RegisterRequestDto extends createZodDto(RegisterRequestSchema) {}
 export class RegisterResponseDto extends createZodDto(RegisterResponseSchema) {}
 export class OAuthLoginDto extends createZodDto(OAuthLoginSchema) {}
 export class LoginRequestDto extends createZodDto(LoginRequestSchema) {}
 export class LoginResponseDto extends createZodDto(LoginResponseSchema) {}
-export class RefreshResponseDto extends createZodDto(RefreshResponseSchema) {}

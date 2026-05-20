@@ -1,7 +1,7 @@
 'use client'
-import { useState } from 'react'
+import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { signIn } from 'next-auth/react'
+import { signIn, signOut, useSession } from 'next-auth/react'
 import { toast } from 'sonner'
 import * as z from 'zod'
 
@@ -13,12 +13,22 @@ export const loginSchema = z.object({
 export type LoginFormValues = z.infer<typeof loginSchema>
 
 export const useAuth = () => {
+  const { data: session, status } = useSession({ required: false })
   const router = useRouter()
-  const [isLoading, setIsLoading] = useState(false)
+
+  const isLoading = status === 'loading'
+  const isAuthenticated = status === 'authenticated'
+
+  useEffect(() => {
+    if (session?.error === 'RefreshTokenExpired') {
+      toast.error('Session หมดอายุ', {
+        description: 'กรุณาเข้าสู่ระบบใหม่อีกครั้ง',
+      })
+      signOut({ callbackUrl: '/login' })
+    }
+  }, [session?.error])
 
   const login = async (values: LoginFormValues) => {
-    setIsLoading(true)
-
     try {
       const res = await signIn('credentials', {
         email: values.email,
@@ -27,6 +37,7 @@ export const useAuth = () => {
       })
 
       if (res?.error) {
+        console.log('Login error:', res.error)
         toast.error('เข้าสู่ระบบไม่สำเร็จ', {
           description: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง กรุณาลองใหม่อีกครั้ง',
         })
@@ -41,10 +52,19 @@ export const useAuth = () => {
       } else {
         toast.error('เกิดข้อผิดพลาดในการเชื่อมต่อ')
       }
-    } finally {
-      setIsLoading(false)
     }
   }
 
-  return { login, isLoading }
+  const logout = async () => {
+    await signOut({ callbackUrl: '/login' })
+  }
+
+  return {
+    user: session?.user ?? null,
+    accessToken: session?.user?.accessToken ?? null,
+    isLoading,
+    isAuthenticated,
+    login,
+    logout,
+  }
 }

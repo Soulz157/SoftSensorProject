@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import * as z from 'zod'
-import { useForm } from 'react-hook-form'
+import { useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import {
   Eye,
@@ -52,11 +52,16 @@ export function RegisterForm() {
       company: '',
     },
   })
+  const password = useWatch({
+    control: formData.control,
+    name: 'password',
+    defaultValue: '',
+  })
 
   const passwordRequirements = [
-    { label: '8+ chars', met: formData.watch('password').length >= 8 },
-    { label: 'Uppercase', met: /[A-Z]/.test(formData.watch('password')) },
-    { label: 'Number', met: /[0-9]/.test(formData.watch('password')) },
+    { label: '8+ chars', met: password.length >= 8 },
+    { label: 'Uppercase', met: /[A-Z]/.test(password) },
+    { label: 'Number', met: /[0-9]/.test(password) },
   ]
 
   const handleSubmit = async (values: z.infer<typeof formSchema>) => {
@@ -159,7 +164,7 @@ export function RegisterForm() {
               )}
             </button>
           </div>
-          {formData.watch('password') && (
+          {password && (
             <div className="flex gap-3 pt-1">
               {passwordRequirements.map((req, i) => (
                 <div

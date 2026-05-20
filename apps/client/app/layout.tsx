@@ -1,14 +1,8 @@
-import type { Metadata } from 'next'
+import type { Metadata, Viewport } from 'next'
 import localFont from 'next/font/local'
 import './globals.css'
-import { Geist } from 'next/font/google'
 import { cn } from '@/lib/utils'
-import { TooltipProvider } from '@/components/ui/tooltip'
-import { ThemeProvider } from '@/components/providers/theme-provider'
-import { Toaster } from '@/components/ui/sonner'
-import { SessionProviders } from '@/components/providers/session-provider'
-
-const geist = Geist({ subsets: ['latin'], variable: '--font-sans' })
+import { AppProviders } from '@/components/providers/session-provider'
 
 const geistSans = localFont({
   src: './fonts/GeistVF.woff',
@@ -18,6 +12,11 @@ const geistMono = localFont({
   src: './fonts/GeistMonoVF.woff',
   variable: '--font-geist-mono',
 })
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+}
 
 export const metadata: Metadata = {
   title: 'SoftSensor — Smart Monitoring Platform',
@@ -34,15 +33,10 @@ export default function RootLayout({
     <html
       lang="en"
       suppressHydrationWarning
-      className={cn('font-sans', 'font-sans', geist.variable)}
+      className={cn(geistSans.variable, geistMono.variable)}
     >
       <body className={`${geistSans.variable} ${geistMono.variable}`}>
-        <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
-          <SessionProviders>
-            <TooltipProvider>{children}</TooltipProvider>
-            <Toaster position="bottom-center" />
-          </SessionProviders>
-        </ThemeProvider>
+        <AppProviders>{children}</AppProviders>
       </body>
     </html>
   )

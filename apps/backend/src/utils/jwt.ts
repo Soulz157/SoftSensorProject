@@ -3,7 +3,14 @@
 // const ACCESS_SECRET = process.env.JWT_ACCESS_SECRET!;
 // const REFRESH_SECRET = process.env.JWT_REFRESH_SECRET!;
 
-export type JwtPayload = { userId: string; role: string };
+export type JwtPayload = {
+  id: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  company?: string;
+  role: string;
+};
 
 // export const signAccessToken = (payload: JwtPayload) =>
 //   jwt.sign(payload, ACCESS_SECRET, { expiresIn: '1d' }) as string;
