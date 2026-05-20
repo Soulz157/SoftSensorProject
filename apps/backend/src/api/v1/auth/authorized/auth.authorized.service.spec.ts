@@ -137,7 +137,7 @@ describe('AuthAuthorizedService', () => {
 
       // Assert
       expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
-      const [ops] = prismaMock.$transaction.mock.calls[0] as [unknown[]];
+      const [ops] = prismaMock.$transaction.mock.calls[0];
       expect(Array.isArray(ops)).toBe(true);
       expect(ops).toHaveLength(2);
     });
@@ -230,7 +230,7 @@ describe('AuthAuthorizedService', () => {
         (args: {
           data: { expiresAt: Date; token: string; userId: string };
         }) => {
-          capturedCreateArg = args.data as Record<string, unknown>;
+          capturedCreateArg = args.data;
           return Promise.resolve(args.data);
         },
       );

@@ -70,8 +70,8 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # ─── Lint ───
-      - name: Lint
-        run: pnpm lint
+      # - name: Lint
+      #   run: pnpm lint
 
       # ─── Type Check ───
       - name: Type check

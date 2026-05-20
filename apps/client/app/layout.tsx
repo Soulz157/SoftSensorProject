@@ -33,9 +33,9 @@ export default function RootLayout({
     <html
       lang="en"
       suppressHydrationWarning
-      className={cn(geistSans.variable, geistMono.variable)}
+      className={cn(geistSans.variable, geistMono.variable, 'font-sans')}
     >
-      <body className={`${geistSans.variable} ${geistMono.variable}`}>
+      <body className={cn(geistSans.variable, geistMono.variable, 'font-sans')}>
         <AppProviders>{children}</AppProviders>
       </body>
     </html>

@@ -27,12 +27,10 @@ export default function LandingPage() {
   }
 
   return (
-    <AppLayout>
-      <div className="flex h-full">
-        <div className="relative z-10 flex w-full items-center justify-center p-8">
-          {session?.user ? <CreateWorkspaceForm /> : <AuthPanel />}
-        </div>
+    <div className="flex h-full font-sans">
+      <div className="relative z-10 flex w-full items-center justify-center p-8 font-sans">
+        {session?.user ? <CreateWorkspaceForm /> : <AuthPanel />}
       </div>
-    </AppLayout>
+    </div>
   )
 }

@@ -47,17 +47,26 @@ export class AuthAuthorizedService {
   }
 
   async logoutService(userId: string, meta?: LogoutMeta) {
-    await this.prisma.$transaction([
-      this.prisma.refreshToken.deleteMany({ where: { userId } }),
-      this.prisma.authLog.create({
-        data: {
-          userId,
-          action: PrismaEnums.AuthAction.LOGOUT,
-          ipAddress: meta?.ipAddress,
-          userAgent: meta?.userAgent,
-        },
-      }),
-    ]);
+    try {
+      await this.prisma.$transaction([
+        this.prisma.refreshToken.deleteMany({ where: { userId } }),
+        this.prisma.authLog.create({
+          data: {
+            userId,
+            action: PrismaEnums.AuthAction.LOGOUT,
+            ipAddress: meta?.ipAddress,
+            userAgent: meta?.userAgent,
+          },
+        }),
+      ]);
+    } catch (error) {
+      throw new AppException({
+        statusCode: 500,
+        message: 'Logout failed',
+        data: error instanceof Error ? error.message : String(error),
+        type: 'ERROR',
+      });
+    }
 
     return {
       statusCode: 200,

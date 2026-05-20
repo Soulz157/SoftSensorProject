@@ -18,7 +18,7 @@ function parseRefreshTokenFromCookie(setCookieHeader: string | null): string {
 }
 
 export const authConfig: NextAuthConfig = {
-  secret: process.env.NEXTAUTH_SECRET,
+  secret: process.env.AUTH_SECRET ?? process.env.NEXTAUTH_SECRET,
   providers: [
     CredentialsProvider({
       name: 'Credentials',
