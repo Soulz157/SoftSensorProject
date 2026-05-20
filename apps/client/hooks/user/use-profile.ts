@@ -10,6 +10,11 @@ export function useProfile() {
   const [profile, setProfile] = useState<UserProfile | null>(null)
   const [loading, setLoading] = useState(false)
 
+  const clearProfile = useCallback(() => {
+    setLoading(false)
+    setProfile(null)
+  }, [])
+
   const fetchProfile = useCallback(async () => {
     setLoading(true)
 
@@ -28,16 +33,19 @@ export function useProfile() {
   }, [])
 
   useEffect(() => {
-    if (status === 'loading') {
-      return
-    }
-    if (status !== 'authenticated') {
-      setLoading(false)
-      setProfile(null)
-    } else {
-      fetchProfile()
-    }
+    if (status === 'loading') return
+    queueMicrotask(() => {
+      if (status !== 'authenticated') {
+        clearProfile()
+      } else {
+        fetchProfile()
+      }
+    })
   }, [fetchProfile, status])
 
-  return { profile, loading, refetch: fetchProfile }
+  return {
+    profile: status === 'authenticated' ? profile : null,
+    loading: status === 'authenticated' ? loading : false,
+    refetch: fetchProfile,
+  }
 }

@@ -1,6 +1,5 @@
 'use client'
 
-import { useState } from 'react'
 import Link from 'next/link'
 import { Plus, Bell, Menu, Search } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -34,7 +33,6 @@ function UserInitials({ name }: { name: string }) {
 
 export function Navbar({ onCreateWorkspace, onMenuClick }: NavbarProps) {
   const { data: session, status } = useSession()
-  const [searchOpen, setSearchOpen] = useState(false)
 
   console.log('Navbar session:', session?.user)
 
@@ -73,10 +71,7 @@ export function Navbar({ onCreateWorkspace, onMenuClick }: NavbarProps) {
         >
           <Menu className="h-5 w-5" />
         </button>
-        <button
-          onClick={() => setSearchOpen(true)}
-          className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors sm:hidden"
-        >
+        <button className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors sm:hidden">
           <Search className="h-5 w-5" />
         </button>
       </div>

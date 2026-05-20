@@ -13,6 +13,11 @@ export function useWorkspaces() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  const clearWorkspaces = useCallback(() => {
+    setLoading(false)
+    setWorkspaces([])
+  }, [setWorkspaces])
+
   const fetchWorkspaces = useCallback(async () => {
     setLoading(true)
     setError(null)
@@ -21,7 +26,7 @@ export function useWorkspaces() {
         data: Workspace[]
       }
       setWorkspaces(data.data)
-    } catch (e) {
+    } catch {
       const message = 'Failed to load workspaces'
       setError(message)
       toast.error(message)
@@ -32,13 +37,15 @@ export function useWorkspaces() {
 
   useEffect(() => {
     if (status === 'loading') return
-    if (status === 'unauthenticated') {
-      setLoading(false)
-      setWorkspaces([])
-    } else {
-      fetchWorkspaces()
-    }
-  }, [fetchWorkspaces, status, setWorkspaces])
+
+    queueMicrotask(() => {
+      if (status !== 'authenticated') {
+        clearWorkspaces()
+      } else {
+        fetchWorkspaces()
+      }
+    })
+  }, [fetchWorkspaces, clearWorkspaces, status])
 
   return { workspaces, loading, error, refetch: fetchWorkspaces }
 }
