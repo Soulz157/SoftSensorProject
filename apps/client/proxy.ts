@@ -4,7 +4,7 @@ import type { NextRequest } from 'next/server'
 
 const PUBLIC_PATHS = ['/', '/login', '/register', '/reset-password']
 
-export async function middleware(req: NextRequest) {
+export async function proxy(req: NextRequest) {
   const session = await auth()
   const isLoggedIn = !!session
   const hasError = session?.error === 'RefreshTokenExpired'

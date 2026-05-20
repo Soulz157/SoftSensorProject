@@ -55,7 +55,7 @@ Turborepo + pnpm monorepo. Two apps, three packages:
 
 ```text
 apps/backend            # NestJS 11 + Fastify, port 8000 (SERVER_PORT env)
-apps/client             # Next.js 15 App Router, port 3000
+apps/client             # Next.js 16 App Router, port 3000
 packages/prisma         # @softsensor/prisma — shared PrismaService/PrismaModule
 packages/eslint-config  # shared ESLint config
 packages/typescript-config # shared tsconfig bases
@@ -100,7 +100,7 @@ Strict layered architecture — Controllers → Services → Prisma. No business
 - **HTTP client:** `lib/fetcher.ts` → `fetchClient()`. Uses `NEXT_PUBLIC_API_URL` as base URL. Never use `NEXT_PUBLIC_BACKEND_URL` (does not exist).
 - **Service layer:** `services/` — thin wrappers over `fetchClient`. Always pass full versioned path (`/api/v1/...`).
 - **State:** Jotai (`store/`) for complex client state. Use `atomWithStorage` for localStorage persistence. Store: `store/workspace.ts` — `workspacesAtom`, `createWorkspaceAtom`, `clearWorkspacesAtom`.
-- **Viewport (Next.js 15):** Export `viewport` separately from `metadata`. Never put viewport settings inside the `metadata` object — `metadata.viewport` is deprecated in Next.js 15 and causes `<__next_viewport_boundary__>` key warnings at runtime.
+- **Viewport (Next.js 16):** Export `viewport` separately from `metadata`. Never put viewport settings inside the `metadata` object — `metadata.viewport` is deprecated and causes `<__next_viewport_boundary__>` key warnings at runtime.
 - **Data fetching:** Next.js `fetch` with revalidation tags for server data.
 - **UI components:** shadcn/ui (style: `radix-nova`) — `components/ui/` files are generated and must not be edited. Add via `npx shadcn@latest add <component>` (config at `components.json`).
 - `cn()` utility is at `lib/utils.ts`.
