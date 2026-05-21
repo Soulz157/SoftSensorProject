@@ -2,7 +2,17 @@
 
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { Camera, Pencil, X, Check } from 'lucide-react'
+import { Camera, Pencil, X, Loader2 } from 'lucide-react'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -28,6 +38,7 @@ export function AccountTab() {
   const { profile, loading, refetch } = useProfile()
   const { updateProfile, isUpdating } = useUpdateProfile()
   const [isEditing, setIsEditing] = useState(false)
+  const [confirmOpen, setConfirmOpen] = useState(false)
 
   const form = useForm<z.infer<typeof profileSchema>>({
     resolver: zodResolver(profileSchema),
@@ -53,14 +64,20 @@ export function AccountTab() {
     setIsEditing(false)
   }
 
-  const onSubmit = async (values: z.infer<typeof profileSchema>) => {
-    const result = await updateProfile(values)
+  const handleSaveClick = form.handleSubmit(() => {
+    setConfirmOpen(true)
+  })
+
+  const handleConfirmedSave = async () => {
+    const result = await updateProfile(form.getValues())
     if (result.success) {
       if (refetch) await refetch()
       setIsEditing(false)
+      setConfirmOpen(false)
       toast.success('อัปเดตข้อมูลสำเร็จ')
     } else {
       toast.error(result.error)
+      setConfirmOpen(false)
     }
   }
 
@@ -188,7 +205,7 @@ export function AccountTab() {
                     inputClass,
                     !isEditing && 'opacity-60 cursor-default',
                   )}
-                  value={profile?.firstName}
+                  value={form.watch('firstName')}
                   readOnly={!isEditing}
                   onChange={e =>
                     form.setValue('firstName', e.target.value, {
@@ -206,7 +223,7 @@ export function AccountTab() {
                     inputClass,
                     !isEditing && 'opacity-60 cursor-default',
                   )}
-                  value={profile?.lastName}
+                  value={form.watch('lastName')}
                   readOnly={!isEditing}
                   onChange={e =>
                     form.setValue('lastName', e.target.value, {
@@ -237,7 +254,7 @@ export function AccountTab() {
                   inputClass,
                   !isEditing && 'opacity-60 cursor-default',
                 )}
-                value={profile?.company}
+                value={form.watch('company') ?? ''}
                 placeholder="e.g. Acme Corporation"
                 readOnly={!isEditing}
                 onChange={e =>
@@ -275,12 +292,9 @@ export function AccountTab() {
             <Button variant="outline" onClick={cancelEdit}>
               Cancel
             </Button>
-            <Button
-              onClick={form.handleSubmit(onSubmit)}
-              className="gap-2 min-w-32"
-            >
-              {isUpdating && <Check className="h-4 w-4" />}
-              {isUpdating ? 'Saved!' : 'Save Changes'}
+            <Button onClick={handleSaveClick} className="gap-2 min-w-32">
+              {isUpdating && <Loader2 className="h-4 w-4 animate-spin" />}
+              {isUpdating ? 'Saving...' : 'Save Changes'}
             </Button>
           </>
         ) : (
@@ -294,6 +308,27 @@ export function AccountTab() {
           </Button>
         )}
       </div>
+
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirm Save</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to update your profile information?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isUpdating}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleConfirmedSave}
+              disabled={isUpdating}
+            >
+              {isUpdating && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+              Save
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   )
 }

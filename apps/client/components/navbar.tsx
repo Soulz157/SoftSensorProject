@@ -88,7 +88,11 @@ export function Navbar({ onCreateWorkspace, onMenuClick }: NavbarProps) {
 
       {/* Right Actions */}
       <div className="flex items-center gap-2 sm:gap-3">
-        <Button onClick={onCreateWorkspace} className="gap-2" size="sm">
+        <Button
+          onClick={onCreateWorkspace}
+          className="gap-2 cursor-pointer"
+          size="sm"
+        >
           <Plus className="h-4 w-4" />
           <span className="hidden sm:inline">Create Workspace</span>
         </Button>

@@ -39,8 +39,7 @@ export default function ResetPasswordPage() {
               onRetry={() => setIsSubmitted(false)}
             />
           )}
-        </div>
-        s{' '}
+        </div>{' '}
         <div className="flex items-center justify-center">
           <Link
             href="/login"

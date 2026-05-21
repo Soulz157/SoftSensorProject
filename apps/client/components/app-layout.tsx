@@ -1,18 +1,32 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { useAtom } from 'jotai'
+import { useRouter, usePathname } from 'next/navigation'
 import { Navbar } from '@/components/navbar'
 import { Sidebar } from '@/components/sidebar'
+import { sidebarCollapsedAtom } from '@/store/workspace'
+import { CreateWorkspaceDialog } from './create-workspace'
 
 interface AppLayoutProps {
   children?: React.ReactNode
 }
 
 export function AppLayout({ children }: AppLayoutProps) {
+  const router = useRouter()
+  const pathname = usePathname()
+  const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useAtom(sidebarCollapsedAtom)
   const [activeWorkspace, setActiveWorkspace] = useState('1')
   const [workspaceOpen, setWorkspaceOpen] = useState(true)
+
+  useEffect(() => {
+    if (sessionStorage.getItem('came-from-404')) {
+      sessionStorage.removeItem('came-from-404')
+      router.refresh()
+    }
+  }, [pathname, router])
 
   return (
     <div className="flex h-screen bg-background">
@@ -27,9 +41,17 @@ export function AppLayout({ children }: AppLayoutProps) {
         onWorkspaceToggle={() => setWorkspaceOpen(prev => !prev)}
       />
       <div className="flex flex-1 flex-col overflow-hidden">
-        <Navbar onMenuClick={() => setSidebarOpen(true)} />
+        <Navbar
+          onMenuClick={() => setSidebarOpen(true)}
+          onCreateWorkspace={() => setCreateDialogOpen(true)}
+        />
         <main className="flex-1 overflow-y-auto">{children}</main>
       </div>
+
+      <CreateWorkspaceDialog
+        open={createDialogOpen}
+        onClose={() => setCreateDialogOpen(false)}
+      />
     </div>
   )
 }

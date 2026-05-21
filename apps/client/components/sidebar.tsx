@@ -164,10 +164,10 @@ export function Sidebar({
 
         {/* Collapsed state: expand button at top */}
         {isCollapsed && (
-          <div className=" cursor-pointer hidden lg:flex justify-center py-3">
+          <div className=" hidden lg:flex justify-center py-3">
             <button
               onClick={onToggleCollapse}
-              className="flex h-8 w-8 items-center justify-center rounded-md text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground transition-colors"
+              className="cursor-pointer flex h-8 w-8 items-center justify-center rounded-md text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground transition-colors"
               title="Expand sidebar"
             >
               <PanelLeft className="h-4 w-4" />

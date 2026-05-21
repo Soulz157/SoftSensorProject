@@ -32,6 +32,12 @@ export const EditRequestSchema = z
   })
   .strict();
 
+export const EditResponseSchema = createStandardResponseSchema(
+  z.object({
+    message: z.string().default('อัปเดตข้อมูลผู้ใช้สำเร็จ'),
+  }),
+);
+
 export const RefreshResponseSchema = createStandardResponseSchema(
   z.object({
     accessToken: z.string(),
@@ -42,3 +48,4 @@ export class RefreshResponseDto extends createZodDto(RefreshResponseSchema) {}
 export class GetMeResponseDto extends createZodDto(GetMeResponseSchema) {}
 export class LogoutResponseDto extends createZodDto(LogoutResponseSchema) {}
 export class EditRequestDto extends createZodDto(EditRequestSchema) {}
+export class EditResponseDto extends createZodDto(EditResponseSchema) {}

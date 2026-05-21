@@ -17,9 +17,9 @@ export class AuthAuthorizedService {
     private readonly jwtService: JwtService,
   ) {}
 
-  async getMeService(userId: string) {
+  async getMeService(args: Auth.UserPayload) {
     const user = await this.prisma.user.findUnique({
-      where: { id: userId },
+      where: { id: args.id },
       select: {
         id: true,
         email: true,
@@ -43,6 +43,48 @@ export class AuthAuthorizedService {
       message: 'ดึงข้อมูลผู้ใช้สำเร็จ',
       type: 'SUCCESS',
       data: user,
+    };
+  }
+
+  async editMeService(userId: string, data: Auth.UserPayload) {
+    try {
+      const updatedUser = await this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          firstName: data.firstName,
+          lastName: data.lastName,
+          company: data.company,
+        },
+        select: {
+          id: true,
+          email: true,
+          firstName: true,
+          lastName: true,
+          company: true,
+          role: true,
+        },
+      });
+
+      if (!updatedUser) {
+        throw new AppException({
+          statusCode: 404,
+          message: 'User not found',
+          type: 'ERROR',
+        });
+      }
+    } catch (error) {
+      throw new AppException({
+        statusCode: 500,
+        message: 'Failed to update user information',
+        data: error instanceof Error ? error.message : String(error),
+        type: 'ERROR',
+      });
+    }
+
+    return {
+      statusCode: 200,
+      message: 'อัปเดตข้อมูลผู้ใช้สำเร็จ',
+      type: 'SUCCESS',
     };
   }
 

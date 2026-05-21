@@ -4,8 +4,8 @@ import { AuthPublicController } from './public/auth.public.controller';
 import { AuthPublicService } from './public/auth.public.service';
 import { AuthAuthorizedController } from './authorized/auth.authorized.controller';
 import { AuthAuthorizedService } from './authorized/auth.authorized.service';
-import { JwtAccessStrategy } from 'src/strategies/jwt.access.strategy';
-import { JwtRefreshStrategy } from '@/strategies/jwt.refresh.strategy';
+import { JwtAccessStrategy } from '@/strategies/jwt-access.strategy';
+import { JwtRefreshStrategy } from '@/strategies/jwt-refresh.strategy';
 
 @Module({
   imports: [PassportModule.register({ defaultStrategy: 'jwt-access' })],

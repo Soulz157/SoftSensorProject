@@ -4,6 +4,8 @@ import type { CreateWorkspaceInput, Workspace } from '@/types'
 
 export const workspacesAtom = atomWithStorage<Workspace[]>('workspaces', [])
 
+export const sidebarCollapsedAtom = atomWithStorage('sidebar-collapsed', false)
+
 export const createWorkspaceAtom = atom(
   null,
   (get, set, data: CreateWorkspaceInput) => {

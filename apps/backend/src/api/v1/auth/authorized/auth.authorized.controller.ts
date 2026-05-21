@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   HttpCode,
+  Patch,
   Post,
   Req,
   Res,
@@ -15,6 +16,7 @@ import {
   GetMeResponseDto,
   LogoutResponseDto,
   RefreshResponseDto,
+  EditResponseDto,
 } from './dto/auth.authorized.dto';
 import { ResponseFailedDto } from 'src/lib/dto';
 import {
@@ -44,7 +46,22 @@ export class AuthAuthorizedController {
     description: 'User information retrieved successfully',
   })
   async getMeController(@Users() user: Auth.UserPayload) {
-    return this.authAuthorizedService.getMeService(user.id);
+    return this.authAuthorizedService.getMeService(user);
+  }
+
+  @Patch('me')
+  @UseGuards(JwtAccessGuard)
+  @ApiOperation({ summary: 'Edit current user information' })
+  @ApiOkResponse({
+    type: EditResponseDto,
+    description: 'User information updated successfully',
+  })
+  async editMeController(
+    @Users() user: Auth.UserPayload,
+    @Req() req: FastifyRequest,
+  ) {
+    const data = req.body as Auth.UserPayload;
+    return this.authAuthorizedService.editMeService(user.id, data);
   }
 
   @Post('logout')
