@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   Building2,
   Box,
@@ -19,6 +19,7 @@ import { toast } from 'sonner'
 import { useWorkspaces } from '@/hooks/workspace/use-workspaces'
 import { useUpdateWorkspace } from '@/hooks/workspace/use-update-workspace'
 import type { Workspace } from '@/types'
+import { usePathname } from 'next/navigation'
 
 const workspaceIcons = [
   { id: 'building', label: 'Building', icon: Building2 },
@@ -44,7 +45,7 @@ const inputClass =
   'h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring'
 
 export function WorkspaceTab() {
-  const { workspaces } = useWorkspaces()
+  const { workspaces, refetch } = useWorkspaces()
   const { updateWorkspace, isUpdating } = useUpdateWorkspace()
   const [preferredId, setPreferredId] = useState('')
   const [drafts, setDrafts] = useState<Record<string, Partial<Workspace>>>({})
@@ -86,6 +87,18 @@ export function WorkspaceTab() {
     workspaceColors.find(c => c.id === effectiveColor)?.bg ?? 'bg-primary'
   const SelectedIcon =
     workspaceIcons.find(i => i.id === effectiveIcon)?.icon ?? Building2
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        refetch?.()
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () =>
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+  }, [refetch])
 
   return (
     <>

@@ -1,9 +1,9 @@
 'use client'
 
-import { Sun, User, Building2 } from 'lucide-react'
+import { Sun, User, Building2, CreditCard } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-export type Tab = 'theme' | 'account' | 'workspace'
+export type Tab = 'theme' | 'account' | 'workspace' | 'plans'
 
 interface SettingsSidebarProps {
   activeTab: Tab
@@ -21,6 +21,11 @@ export function SettingsSidebar({
       id: 'workspace',
       label: 'Workspace',
       icon: <Building2 className="h-4 w-4" />,
+    },
+    {
+      id: 'plans',
+      label: 'Plans & Billing',
+      icon: <CreditCard className="h-4 w-4" />,
     },
   ]
 

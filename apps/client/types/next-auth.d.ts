@@ -11,7 +11,7 @@ declare module 'next-auth/jwt' {
     firstName: string
     lastName: string
     expiresAt: number
-    error?: 'RefreshTokenExpired'
+    error?: 'RefreshTokenExpired' | 'OAuthLoginFailed'
   }
 }
 
@@ -33,6 +33,6 @@ declare module 'next-auth' {
       firstName: string
       lastName: string
     } & DefaultSession['user']
-    error?: 'RefreshTokenExpired'
+    error?: 'RefreshTokenExpired' | 'OAuthLoginFailed'
   }
 }

@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { WorkspaceAuthorizedController } from './workspace-authorized.controller';
+import { WorkspaceAuthorizedController } from './workspace.authorized.controller';
 
 describe('WorkspaceAuthorizedController', () => {
   let controller: WorkspaceAuthorizedController;

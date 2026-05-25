@@ -6,8 +6,11 @@ import { useAtom } from 'jotai'
 import { workspacesAtom } from '@/store/workspace'
 import { workspaceService } from '@/services/workspace'
 import type { Workspace } from '@/types'
+interface UseWorkspacesOptions {
+  enabled?: boolean
+}
 
-export function useWorkspaces() {
+export function useWorkspaces({ enabled = true }: UseWorkspacesOptions = {}) {
   const { status } = useSession()
   const [workspaces, setWorkspaces] = useAtom(workspacesAtom)
   const [loading, setLoading] = useState(false)
@@ -36,6 +39,7 @@ export function useWorkspaces() {
   }, [setWorkspaces])
 
   useEffect(() => {
+    if (!enabled) return
     if (status === 'loading') return
 
     queueMicrotask(() => {

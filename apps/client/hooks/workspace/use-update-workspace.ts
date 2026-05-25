@@ -1,20 +1,24 @@
 import { useState } from 'react'
-import { useAtom } from 'jotai'
+import { useSetAtom } from 'jotai'
+import { toast } from 'sonner'
 import { workspacesAtom } from '@/store/workspace'
+import { workspaceService } from '@/services/workspace'
 import type { UpdateWorkspacePayload } from '@/types'
 
 export function useUpdateWorkspace() {
   const [isUpdating, setIsUpdating] = useState(false)
-  const [, setWorkspaces] = useAtom(workspacesAtom)
+  const setWorkspaces = useSetAtom(workspacesAtom)
 
   const updateWorkspace = async (id: string, data: UpdateWorkspacePayload) => {
     setIsUpdating(true)
     try {
+      const updated = await workspaceService.updateWorkspace(id, data)
       setWorkspaces(prev =>
-        prev.map(w => (w.id === id ? { ...w, ...data } : w)),
+        prev.map(w => (w.id === id ? { ...w, ...updated } : w)),
       )
       return { success: true }
     } catch (error) {
+      toast.error('อัปเดต workspace ไม่สำเร็จ')
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error',

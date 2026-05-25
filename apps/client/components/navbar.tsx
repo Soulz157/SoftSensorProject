@@ -11,6 +11,9 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { useSession, signOut } from 'next-auth/react'
+import { useProfile } from '@/hooks/user/use-profile'
+import { useEffect } from 'react'
+import { usePathname } from 'next/navigation'
 
 interface NavbarProps {
   onCreateWorkspace?: () => void
@@ -32,9 +35,26 @@ function UserInitials({ name }: { name: string }) {
 }
 
 export function Navbar({ onCreateWorkspace, onMenuClick }: NavbarProps) {
-  const { data: session, status } = useSession()
+  const { data: session } = useSession()
+  const { profile, loading, refetch } = useProfile()
+  const pathname = usePathname()
 
-  if (status === 'loading') {
+  useEffect(() => {
+    refetch?.()
+  }, [pathname, refetch])
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        refetch?.()
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () =>
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+  }, [refetch])
+
+  if (loading) {
     return (
       <header className="flex h-16 items-center justify-between border-b border-border bg-card px-4 lg:px-6">
         {/* Left */}
@@ -109,7 +129,7 @@ export function Navbar({ onCreateWorkspace, onMenuClick }: NavbarProps) {
                 <Button variant="ghost" size="icon" className="rounded-full">
                   <UserInitials
                     name={
-                      `${session?.user?.firstName?.[0] || ''} ${session?.user?.lastName?.[0] || ''}`.toUpperCase() ||
+                      `${profile?.firstName?.[0] || ''} ${profile?.lastName?.[0] || ''}`.toUpperCase() ||
                       '?'
                     }
                   />
@@ -118,12 +138,12 @@ export function Navbar({ onCreateWorkspace, onMenuClick }: NavbarProps) {
               <DropdownMenuContent align="end" className="w-56">
                 <div className="px-2 py-1.5">
                   <p className="text-sm font-medium">
-                    {`${session?.user?.firstName || ''} ${session?.user?.lastName || ''}`.toUpperCase() ??
-                      session?.user.email ??
+                    {`${profile?.firstName || ''} ${profile?.lastName || ''}`.toUpperCase() ??
+                      profile?.email ??
                       'User'}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    {session.user.email}
+                    {profile?.email}
                   </p>
                 </div>
                 <DropdownMenuSeparator />

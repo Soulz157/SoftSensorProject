@@ -6,9 +6,13 @@ import { AuthAuthorizedController } from './authorized/auth.authorized.controlle
 import { AuthAuthorizedService } from './authorized/auth.authorized.service';
 import { JwtAccessStrategy } from '@/strategies/jwt-access.strategy';
 import { JwtRefreshStrategy } from '@/strategies/jwt-refresh.strategy';
+import { MailModule } from '../mail/mail.module';
 
 @Module({
-  imports: [PassportModule.register({ defaultStrategy: 'jwt-access' })],
+  imports: [
+    PassportModule.register({ defaultStrategy: 'jwt-access' }),
+    MailModule,
+  ],
   controllers: [AuthPublicController, AuthAuthorizedController],
   providers: [
     AuthPublicService,
@@ -16,6 +20,6 @@ import { JwtRefreshStrategy } from '@/strategies/jwt-refresh.strategy';
     JwtAccessStrategy,
     JwtRefreshStrategy,
   ],
-  exports: [],
+  exports: [AuthAuthorizedService],
 })
 export class AuthModule {}

@@ -2,15 +2,19 @@ import { z } from 'zod';
 import { createZodDto } from 'nestjs-zod';
 import { createStandardResponseSchema } from 'src/lib/dto';
 
-export const OAuthLoginSchema = createStandardResponseSchema(
+export const OAuthLoginRequestSchema = z.object({
+  provider: z.enum(['google', 'microsoft']),
+  providerAccountId: z.string().min(1),
+  email: z.string().email(),
+  name: z.string().optional(),
+  accessToken: z.string().min(1),
+  refreshToken: z.string().optional(),
+  expiresAt: z.number().int().optional(),
+});
+export const OAuthLoginResponseSchema = createStandardResponseSchema(
   z.object({
     provider: z.enum(['google', 'microsoft']),
-    providerAccountId: z.string().min(1),
-    email: z.string().email(),
-    name: z.string().optional(),
-    accessToken: z.string().optional(),
-    refreshToken: z.string().optional(),
-    expiresAt: z.number().int().optional(),
+    accessToken: z.string().min(1, 'accessToken ต้องไม่ว่างเปล่า'),
   }),
 );
 
@@ -53,9 +57,49 @@ export const LoginResponseSchema = createStandardResponseSchema(
     accessToken: z.string(),
   }),
 );
+export const ResetPasswordRequestSchema = z.object({
+  email: z
+    .email({ message: 'รูปแบบอีเมลไม่ถูกต้อง' })
+    .min(1, 'อีเมลต้องไม่ว่างเปล่า'),
+  token: z.string().min(1, 'Token ต้องไม่ว่างเปล่า'),
+  password: z.string().min(8, 'รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร'),
+});
+export const ResetPasswordResponseSchema = createStandardResponseSchema(
+  z.object({
+    message: z.string().default('เปลี่ยนรหัสผ่านสำเร็จ'),
+  }),
+);
+export const ForgotPasswordRequestSchema = z.object({
+  email: z
+    .email({ message: 'รูปแบบอีเมลไม่ถูกต้อง' })
+    .min(1, 'อีเมลต้องไม่ว่างเปล่า'),
+});
+export const ForgotPasswordResponseSchema = createStandardResponseSchema(
+  z.object({
+    message: z.string().default('เราได้ส่งอีเมลสำหรับรีเซ็ตรหัสผ่านไปให้แล้ว'),
+  }),
+);
+
+export class ForgotPasswordRequestDto extends createZodDto(
+  ForgotPasswordRequestSchema,
+) {}
+export class ForgotPasswordResponseDto extends createZodDto(
+  ForgotPasswordResponseSchema,
+) {}
+export class ResetPasswordRequestDto extends createZodDto(
+  ResetPasswordRequestSchema,
+) {}
+export class ResetPasswordResponseDto extends createZodDto(
+  ResetPasswordResponseSchema,
+) {}
 
 export class RegisterRequestDto extends createZodDto(RegisterRequestSchema) {}
 export class RegisterResponseDto extends createZodDto(RegisterResponseSchema) {}
-export class OAuthLoginDto extends createZodDto(OAuthLoginSchema) {}
 export class LoginRequestDto extends createZodDto(LoginRequestSchema) {}
 export class LoginResponseDto extends createZodDto(LoginResponseSchema) {}
+export class OAuthLoginRequestDto extends createZodDto(
+  OAuthLoginRequestSchema,
+) {}
+export class OAuthLoginResponseDto extends createZodDto(
+  OAuthLoginResponseSchema,
+) {}

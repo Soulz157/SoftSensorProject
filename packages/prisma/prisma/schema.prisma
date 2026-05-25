@@ -32,6 +32,13 @@ enum WorkspaceAction {
   MODEL_UPDATED
 }
 
+enum SubscriptionStatus {
+  ACTIVE
+  EXPIRED
+  CANCELED
+  TRIALING
+}
+
 model User {
   id            String         @id @default(uuid())
   email         String         @unique
@@ -47,6 +54,9 @@ model User {
   refreshTokens RefreshToken[]
   authLogs      AuthLog[]
   workspaceLogs WorkspaceLog[]
+
+  subscriptions      Subscription[]
+  passwordResetTokens PasswordResetToken[]
 }
 
 model Account {
@@ -73,6 +83,7 @@ model Workspace {
   color     String
   createdAt DateTime       @default(now())
   updatedAt DateTime       @updatedAt
+  deletedAt DateTime?
   models    Model[]
   logs      WorkspaceLog[]
 
@@ -89,6 +100,40 @@ model Model {
   updatedAt   DateTime  @updatedAt
 
   @@index([workspaceId])
+}
+
+model Plan {
+  id             String @id @default(uuid())
+  name           String @unique
+  maxWorkspaces  Int    @default(1)
+  price          Float?
+  durationMonths Int    @default(1)
+
+  subscriptions Subscription[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Subscription {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  planId String
+  plan   Plan   @relation(fields: [planId], references: [id])
+
+  status    SubscriptionStatus @default(ACTIVE)
+  startDate DateTime           @default(now())
+  endDate   DateTime
+
+  paymentId String? @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([status])
 }
 
 model RefreshToken {
@@ -130,4 +175,16 @@ model WorkspaceLog {
   @@index([workspaceId])
   @@index([userId])
   @@index([createdAt])
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([token])
 }

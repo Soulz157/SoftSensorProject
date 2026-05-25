@@ -1,4 +1,5 @@
 import {
+  Body,
   Controller,
   Get,
   HttpCode,
@@ -17,6 +18,9 @@ import {
   LogoutResponseDto,
   RefreshResponseDto,
   EditResponseDto,
+  EditRequestDto,
+  ChangePasswordRequestDto,
+  ChangePasswordResponseDto,
 } from './dto/auth.authorized.dto';
 import { ResponseFailedDto } from 'src/lib/dto';
 import {
@@ -39,6 +43,7 @@ export class AuthAuthorizedController {
   constructor(private readonly authAuthorizedService: AuthAuthorizedService) {}
 
   @Get('me')
+  @HttpCode(200)
   @UseGuards(JwtAccessGuard)
   @ApiOperation({ summary: 'Get current user information' })
   @ApiOkResponse({
@@ -50,6 +55,7 @@ export class AuthAuthorizedController {
   }
 
   @Patch('me')
+  @HttpCode(200)
   @UseGuards(JwtAccessGuard)
   @ApiOperation({ summary: 'Edit current user information' })
   @ApiOkResponse({
@@ -58,13 +64,28 @@ export class AuthAuthorizedController {
   })
   async editMeController(
     @Users() user: Auth.UserPayload,
-    @Req() req: FastifyRequest,
+    @Body() body: EditRequestDto,
   ) {
-    const data = req.body as Auth.UserPayload;
-    return this.authAuthorizedService.editMeService(user.id, data);
+    return this.authAuthorizedService.editMeService(user.id, body);
+  }
+
+  @Post('change-password')
+  @HttpCode(200)
+  @UseGuards(JwtAccessGuard)
+  @ApiOperation({ summary: 'Change current user password' })
+  @ApiOkResponse({
+    type: ChangePasswordResponseDto,
+    description: 'Password changed successfully',
+  })
+  async changePasswordController(
+    @Users() user: Auth.UserPayload,
+    @Body() body: ChangePasswordRequestDto,
+  ) {
+    return this.authAuthorizedService.changePasswordService(user, body);
   }
 
   @Post('logout')
+  @HttpCode(200)
   @UseGuards(JwtAccessGuard)
   @ApiOperation({ summary: 'Logout and invalidate all refresh tokens' })
   @ApiOkResponse({ type: LogoutResponseDto, description: 'Logout successful' })

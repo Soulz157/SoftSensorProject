@@ -19,7 +19,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 import { useProfile } from '@/hooks/user/use-profile'
 import z from 'zod'
-import { useForm } from 'react-hook-form'
+import { useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { toast } from 'sonner'
 import { useUpdateProfile } from '@/hooks/user/use-update-profile'
@@ -49,6 +49,8 @@ export function AccountTab() {
     },
   })
 
+  const watchedValues = useWatch({ control: form.control })
+
   useEffect(() => {
     if (profile) {
       form.reset({
@@ -58,6 +60,19 @@ export function AccountTab() {
       })
     }
   }, [profile, form])
+
+  useEffect(() => {
+    refetch?.()
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        refetch?.()
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () =>
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+  }, [refetch])
 
   const cancelEdit = () => {
     form.reset()
@@ -205,7 +220,7 @@ export function AccountTab() {
                     inputClass,
                     !isEditing && 'opacity-60 cursor-default',
                   )}
-                  value={form.watch('firstName')}
+                  value={watchedValues.firstName}
                   readOnly={!isEditing}
                   onChange={e =>
                     form.setValue('firstName', e.target.value, {
@@ -223,7 +238,7 @@ export function AccountTab() {
                     inputClass,
                     !isEditing && 'opacity-60 cursor-default',
                   )}
-                  value={form.watch('lastName')}
+                  value={watchedValues.lastName}
                   readOnly={!isEditing}
                   onChange={e =>
                     form.setValue('lastName', e.target.value, {
@@ -254,7 +269,7 @@ export function AccountTab() {
                   inputClass,
                   !isEditing && 'opacity-60 cursor-default',
                 )}
-                value={form.watch('company') ?? ''}
+                value={watchedValues.company || ''}
                 placeholder="e.g. Acme Corporation"
                 readOnly={!isEditing}
                 onChange={e =>
@@ -279,9 +294,9 @@ export function AccountTab() {
           </p>
           <Button
             variant="outline"
-            onClick={() => router.push('/reset-password')}
+            onClick={() => router.push('/change-password')}
           >
-            Reset Password
+            Change Password
           </Button>
         </CardContent>
       </Card>

@@ -79,12 +79,6 @@ export function Sidebar({
       icon: <Settings className="h-4 w-4" />,
       href: '/settings',
     },
-    {
-      id: 'plans',
-      name: 'Plans & Billing',
-      icon: <CreditCard className="h-4 w-4" />,
-      href: '/plans',
-    },
   ]
 
   const isActiveNav = (href: string) => {

@@ -41,7 +41,7 @@ export function useProfile() {
         fetchProfile()
       }
     })
-  }, [fetchProfile, status])
+  }, [fetchProfile, status, clearProfile])
 
   return {
     profile: status === 'authenticated' ? profile : null,

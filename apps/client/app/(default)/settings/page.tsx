@@ -10,6 +10,7 @@ import {
 import { AppearanceTab } from '@/app/(default)/settings/components/appearance'
 import { AccountTab } from '@/app/(default)/settings/components/account'
 import { WorkspaceTab } from '@/app/(default)/settings/components/workspace'
+import PlansPage from './components/plans'
 
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<Tab>('theme')
@@ -23,6 +24,7 @@ export default function SettingsPage() {
           {activeTab === 'theme' && <AppearanceTab />}
           {activeTab === 'account' && <AccountTab />}
           {activeTab === 'workspace' && <WorkspaceTab />}
+          {activeTab === 'plans' && <PlansPage />}
         </div>
       </div>
     </div>

@@ -7,18 +7,16 @@ import { ArrowLeft } from 'lucide-react'
 import { ResetPasswordHeader } from './components/reset-header'
 import { ResetPasswordForm } from './components/reset-form'
 import { ResetPasswordSuccess } from './components/reset-success'
+import { useResetPassword } from '@/hooks/auth/use-reset-password'
 
 export default function ResetPasswordPage() {
-  const [isLoading, setIsLoading] = useState(false)
-  const [isSubmitted, setIsSubmitted] = useState(false)
   const [email, setEmail] = useState('')
+  const { forgotPassword, isLoading, isSubmitted, setIsSubmitted } =
+    useResetPassword()
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    setIsLoading(true)
-    await new Promise(resolve => setTimeout(resolve, 1000))
-    setIsLoading(false)
-    setIsSubmitted(true)
+    await forgotPassword(email)
   }
 
   return (

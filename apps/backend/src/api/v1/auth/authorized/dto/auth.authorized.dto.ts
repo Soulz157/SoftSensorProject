@@ -44,6 +44,29 @@ export const RefreshResponseSchema = createStandardResponseSchema(
   }),
 );
 
+export const ChangePasswordRequestSchema = z
+  .object({
+    currentPassword: z.string(),
+    newPassword: z.string(),
+    confirmPassword: z.string(),
+  })
+  .refine((data) => data.newPassword === data.confirmPassword, {
+    message: 'รหัสผ่านไม่ตรงกัน',
+    path: ['confirmPassword'],
+  });
+export const ChangePasswordResponseSchema = createStandardResponseSchema(
+  z.object({
+    message: z.string().default('เราได้ส่งอีเมลสำหรับรีเซ็ตรหัสผ่านไปให้แล้ว'),
+  }),
+);
+
+export class ChangePasswordRequestDto extends createZodDto(
+  ChangePasswordRequestSchema,
+) {}
+export class ChangePasswordResponseDto extends createZodDto(
+  ChangePasswordResponseSchema,
+) {}
+
 export class RefreshResponseDto extends createZodDto(RefreshResponseSchema) {}
 export class GetMeResponseDto extends createZodDto(GetMeResponseSchema) {}
 export class LogoutResponseDto extends createZodDto(LogoutResponseSchema) {}

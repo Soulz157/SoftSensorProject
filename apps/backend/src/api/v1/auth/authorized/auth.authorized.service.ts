@@ -4,6 +4,12 @@ import { AppException } from '@softsensor/common';
 import { PrismaEnums, PrismaService } from '@softsensor/prisma';
 import { randomBytes } from 'crypto';
 import { REFRESH_TOKEN_TTL_MS } from '@/config/cookie.config';
+import * as argon2 from 'argon2';
+import {
+  ChangePasswordRequestDto,
+  EditRequestDto,
+} from './dto/auth.authorized.dto';
+import { MailAuthorizedService } from '../../mail/authorized/mail.authorized.service';
 
 interface LogoutMeta {
   ipAddress?: string;
@@ -15,6 +21,7 @@ export class AuthAuthorizedService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
+    private readonly mailerService: MailAuthorizedService,
   ) {}
 
   async getMeService(args: Auth.UserPayload) {
@@ -46,7 +53,7 @@ export class AuthAuthorizedService {
     };
   }
 
-  async editMeService(userId: string, data: Auth.UserPayload) {
+  async editMeService(userId: string, data: EditRequestDto) {
     try {
       const updatedUser = await this.prisma.user.update({
         where: { id: userId },
@@ -164,6 +171,78 @@ export class AuthAuthorizedService {
         data: { accessToken },
       },
       refreshToken: newRefreshToken,
+    };
+  }
+
+  async forgotPasswordService(email: string) {
+    const silentSuccess = {
+      statusCode: 200,
+      message: 'เราได้ส่งอีเมลสำหรับรีเซ็ตรหัสผ่านไปให้แล้ว',
+      type: 'SUCCESS',
+    };
+
+    const user = await this.prisma.user.findUnique({ where: { email } });
+    if (!user) return silentSuccess;
+
+    const token = randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+    const clientUrl = process.env.CLIENT_URL ?? 'http://localhost:3000';
+    const resetUrl = `${clientUrl}/reset-password/${token}?email=${encodeURIComponent(user.email)}`;
+
+    await this.prisma.$transaction([
+      this.prisma.passwordResetToken.deleteMany({ where: { userId: user.id } }),
+      this.prisma.passwordResetToken.create({
+        data: { userId: user.id, token, expiresAt },
+      }),
+    ]);
+
+    await this.mailerService.sendPasswordResetEmail(email, resetUrl);
+
+    return silentSuccess;
+  }
+
+  async changePasswordService(
+    users: Auth.UserPayload,
+    args: ChangePasswordRequestDto,
+  ) {
+    const { newPassword, currentPassword } = args;
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: users.id },
+      include: { passwordResetTokens: true },
+    });
+
+    if (!user) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'User not found',
+        type: 'ERROR',
+      });
+    }
+    const isCurrentPasswordValid = await argon2.verify(
+      user.password as string,
+      currentPassword,
+    );
+
+    if (!isCurrentPasswordValid) {
+      throw new AppException({
+        statusCode: 400,
+        message: 'Current password is incorrect',
+        type: 'ERROR',
+      });
+    }
+
+    const newHashedPassword = await argon2.hash(newPassword);
+
+    await this.prisma.user.update({
+      where: { id: users.id },
+      data: { password: newHashedPassword },
+    });
+
+    return {
+      statusCode: 200,
+      message: 'เปลี่ยนรหัสผ่านสำเร็จ',
+      type: 'SUCCESS',
     };
   }
 }

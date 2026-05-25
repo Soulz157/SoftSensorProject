@@ -46,7 +46,7 @@ pnpm --filter backend lint
 pnpm --filter client lint
 
 # Single backend test
-pnpm --filter backend test -- --testPathPattern=<filename>
+pnpm --filter backend test -- --testPathPatterns=<filename>   # Jest 30: plural
 ```
 
 ## Architecture
@@ -80,6 +80,8 @@ Strict layered architecture — Controllers → Services → Prisma. No business
 - **ValidationPipe:** currently commented out in `main.ts` — add per-controller or re-enable globally when needed.
 - **Long-running work:** avoid blocking HTTP for operations >500ms; BullMQ not yet installed.
 - **Auth:** `JwtAuthGuard` + `RolesGuard`. Refresh tokens in `HttpOnly` cookies only.
+- **Token issuance pattern:** 15m JWT via `jwtService.sign<Auth.UserPayload>` + 64-byte hex refresh token (`randomBytes(64).toString('hex')`) persisted to `RefreshToken` + `AuthLog` entry, all in a single `prisma.$transaction`. Canonical block: `auth.public.service.ts:100-127`. Reuse for every new auth path (OAuth, SSO, etc.) — do not invent a new token shape.
+- **Password reset URL:** Build as `${clientUrl}/reset-password/${token}?email=${encodeURIComponent(user.email)}` — token is a path segment matching frontend route `/reset-password/[token]`. Never use `/reset-password/confirm?token=` (route mismatch).
 - **Swagger:** available at `/swagger`.
 
 ### Database (`packages/prisma`)
@@ -88,6 +90,11 @@ Strict layered architecture — Controllers → Services → Prisma. No business
 - Schema at `packages/prisma/prisma/schema.prisma`; client generated to `packages/prisma/src/generated/client`.
 - After any schema change: `pnpm db:migrate:dev` (auto-generates client). Run `pnpm db:generate` only to regenerate without a new migration.
 - Use `prisma.$transaction([...])` for multi-step writes.
+- **OAuth identity:** `Account` model (`provider`, `providerAccountId` is `@@unique`) links OAuth identities to `User`. `User.password` is nullable for OAuth-only users. Resolution order in auth flows: `prisma.account.findUnique({ where: { provider_providerAccountId: ... } })` → fall back to `User.findUnique({ email })` → create both if neither exists.
+
+### Admin (`apps/client/app/admin/`)
+
+- **Admin layout:** `app/admin/layout.tsx` → `components/admin/app-layout.tsx` → `components/admin/sidebar.tsx` + `components/admin/navbar.tsx`. Collapse state in `store/admin.ts` (`adminSidebarCollapsedAtom`). Mirrors `(default)` route group pattern.
 
 ### Frontend (`apps/client`)
 
@@ -96,6 +103,7 @@ Strict layered architecture — Controllers → Services → Prisma. No business
 - **Auth config:** `lib/auth/index.ts` — NextAuth v5 config, exports `handlers`, `signIn`, `signOut`, `auth`.
 - **`DecodedToken` in `lib/auth/index.ts`:** Fields must be camelCase (`firstName`, `lastName`) matching the JWT payload exactly — mismatched casing silently produces `undefined` session fields.
 - **Login response shape:** Backend returns `{ data: { accessToken } }`. `authorize` reads `user.data?.accessToken ?? user.accessToken` to handle both wrapped and flat shapes.
+- **NextAuth type augmentation:** `apps/client/types/next-auth.d.ts` augments `JWT`, `User`, `Session` — required string fields: `id`, `accessToken`, `refreshToken`, `role`, `firstName`, `lastName`. NextAuth defaults leave `user.email`, `account.access_token`, `account.refresh_token` as `string | null | undefined` and `account.expires_at` as `number | undefined`. When assigning these into JWT inside the `jwt()` callback (e.g. new OAuth provider branch), coerce with `?? ''` / `?? 0` or `tsc` fails with TS2322.
 - **Session provider:** `components/providers/session-provider.tsx`.
 - **HTTP client:** `lib/fetcher.ts` → `fetchClient()`. Uses `NEXT_PUBLIC_API_URL` as base URL. Never use `NEXT_PUBLIC_BACKEND_URL` (does not exist).
 - **Service layer:** `services/` — thin wrappers over `fetchClient`. Always pass full versioned path (`/api/v1/...`).
@@ -105,10 +113,13 @@ Strict layered architecture — Controllers → Services → Prisma. No business
 - **UI components:** shadcn/ui (style: `radix-nova`) — `components/ui/` files are generated and must not be edited. Add via `npx shadcn@latest add <component>` (config at `components.json`).
 - `cn()` utility is at `lib/utils.ts`.
 - Tailwind v4 — CSS-first. Use CSS variables (`bg-primary`, `text-destructive`). Never hardcode hex colors.
+- **Tailwind v4 display conflict:** Never combine conflicting display utilities at the same breakpoint on one element (e.g. `lg:flex` + `lg:hidden` — `lg:flex` wins). Use conditional rendering (`{condition && <el>}`) instead.
 - Every route segment needs `error.tsx` and `loading.tsx`.
 - Toast feedback via Sonner (`components/ui/sonner`, imported in `app/layout.tsx`).
 - `ThemeProvider` at `components/providers/theme-provider.tsx`.
 - **Domain directories:** `hooks/user/`, `hooks/workspace/` — hooks per domain. `services/profile.ts`, `services/workspace.ts` — fetchClient wrappers. `configs/` — client config files.
+- **`searchParams.get()` returns `string | null`** — guard with `if (!value) { toast.error(...); return }` before passing to service functions typed as `string`.
+- **`useWatch` control:** Always destructure `control` from `useForm()` return value. Never reference `formSchema.control` — Zod schemas have no `.control` property.
 
 ### Agents (`.claude/agents/`)
 

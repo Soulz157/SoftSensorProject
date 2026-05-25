@@ -6,7 +6,7 @@ export const REFRESH_TOKEN_COOKIE: CookieSerializeOptions = {
   httpOnly: true,
   secure: isProduction,
   sameSite: isProduction ? 'strict' : 'lax',
-  maxAge: 7 * 24 * 60 * 60 * 1000,
+  maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
   path: '/api/v1/authorized/auth/refresh',
 };
 

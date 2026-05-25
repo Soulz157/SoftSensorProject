@@ -4,17 +4,28 @@ export const dynamic = 'force-dynamic'
 
 import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { AppLayout } from '@/components/app-layout'
 import { CreateWorkspaceForm } from '@/components/auth/create-workspace-form'
 import { AuthPanel } from '@/components/auth/auth-panel'
 import { useSession } from 'next-auth/react'
-import { useAtomValue } from 'jotai'
-import { workspacesAtom } from '@/store/workspace'
+import { useWorkspaces } from '@/hooks/workspace/use-workspaces'
+import { Spinner } from '@/components/ui/spinner'
 
 export default function LandingPage() {
   const { data: session, status } = useSession()
-  const workspaces = useAtomValue(workspacesAtom)
+
+  const { workspaces } = useWorkspaces({
+    enabled: status === 'authenticated',
+  })
+
   const router = useRouter()
+
+  // const fetchMicrosoftProfile = async () => {
+  //   const res = await fetch('https://graph.microsoft.com/v1.0/me', {
+  //     headers: { Authorization: `Bearer ${session?.user?.accessToken}` },
+  //   })
+  //   const data = await res.json()
+  //   console.log(data)
+  // }
 
   useEffect(() => {
     if (status === 'authenticated' && workspaces.length > 0) {
@@ -23,13 +34,13 @@ export default function LandingPage() {
   }, [status, workspaces.length, router])
 
   if (status === 'loading') {
-    return null
+    return <Spinner />
   }
 
   return (
     <div className="flex h-full font-sans">
       <div className="relative z-10 flex w-full items-center justify-center p-8 font-sans">
-        {session?.user ? <CreateWorkspaceForm /> : <AuthPanel />}
+        {session ? <CreateWorkspaceForm /> : <AuthPanel />}
       </div>
     </div>
   )

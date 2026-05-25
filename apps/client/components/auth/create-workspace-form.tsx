@@ -26,8 +26,10 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { cn } from '@/lib/utils'
-import { useSetAtom } from 'jotai'
-import { createWorkspaceAtom } from '@/store/workspace'
+import { useCreateWorkspace } from '@/hooks/workspace/use-create-workspace'
+import z from 'zod'
+import { useForm } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
 
 const WORKSPACE_ICONS = [
   { id: 'building', label: 'Building', Icon: Building2 },
@@ -48,29 +50,35 @@ const WORKSPACE_COLORS = [
   { id: 'rose', bg: 'bg-rose-500' },
   { id: 'cyan', bg: 'bg-cyan-500' },
 ]
+const workspaceSchema = z.object({
+  name: z.string().min(1, { message: 'Workspace name is required' }),
+  icon: z.string().min(1),
+  color: z.string().min(1),
+})
 
 export function CreateWorkspaceForm() {
-  const createWorkspace = useSetAtom(createWorkspaceAtom)
-  const [name, setName] = useState('')
+  const { createWorkspace, isCreating } = useCreateWorkspace()
   const [icon, setIcon] = useState('building')
   const [color, setColor] = useState('blue')
-  const [loading, setLoading] = useState(false)
   const router = useRouter()
+  type WorkspaceFormValues = z.infer<typeof workspaceSchema>
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!name.trim()) return
-    setLoading(true)
-    try {
-      createWorkspace({ name: name.trim(), icon, color })
+  const form = useForm<WorkspaceFormValues>({
+    resolver: zodResolver(workspaceSchema),
+    defaultValues: {
+      name: '',
+      icon: 'building',
+      color: 'blue',
+    },
+  })
+
+  const onSubmit = async (values: WorkspaceFormValues) => {
+    const result = await createWorkspace(values)
+    if (result.success) {
       toast.success('Workspace created', {
         description: 'You can now create models and start monitoring!',
       })
       router.push('/dashboard')
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Something went wrong')
-    } finally {
-      setLoading(false)
     }
   }
 
@@ -83,15 +91,14 @@ export function CreateWorkspaceForm() {
         </CardDescription>
       </CardHeader>
 
-      <form onSubmit={handleSubmit}>
+      <form onSubmit={form.handleSubmit(onSubmit)}>
         <CardContent className="space-y-5">
           <div className="space-y-2">
             <Label htmlFor="ws-name">Workspace name</Label>
             <Input
               id="ws-name"
               placeholder="e.g. Acme Corporation"
-              value={name}
-              onChange={e => setName(e.target.value)}
+              {...form.register('name')}
               required
             />
           </div>
@@ -140,8 +147,8 @@ export function CreateWorkspaceForm() {
             </div>
           </div>
 
-          <Button type="submit" className="w-full" disabled={loading}>
-            {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          <Button type="submit" className="w-full" disabled={isCreating}>
+            {isCreating && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             Create workspace
           </Button>
         </CardContent>
