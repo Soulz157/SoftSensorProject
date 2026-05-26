@@ -82,6 +82,8 @@ Strict layered architecture — Controllers → Services → Prisma. No business
 - **Auth:** `JwtAuthGuard` + `RolesGuard`. Refresh tokens in `HttpOnly` cookies only.
 - **Token issuance pattern:** 15m JWT via `jwtService.sign<Auth.UserPayload>` + 64-byte hex refresh token (`randomBytes(64).toString('hex')`) persisted to `RefreshToken` + `AuthLog` entry, all in a single `prisma.$transaction`. Canonical block: `auth.public.service.ts:100-127`. Reuse for every new auth path (OAuth, SSO, etc.) — do not invent a new token shape.
 - **Password reset URL:** Build as `${clientUrl}/reset-password/${token}?email=${encodeURIComponent(user.email)}` — token is a path segment matching frontend route `/reset-password/[token]`. Never use `/reset-password/confirm?token=` (route mismatch).
+- **Admin submodule pattern:** `<feature>/admin/` controllers use `@UseGuards(JwtAccessGuard, RolesGuard)` + `@Roles('ADMIN')`. Role enum: `USER | STAFF | ADMIN`. Canonical example: `auth/admin/auth.admin.controller.ts` (activity log + user stats) and `workspace/admin/workspace-admin.controller.ts`. Always register the new controller + service in the feature's `*.module.ts` — `AuthAdminController` + `AuthAdminService` live in `auth.module.ts`.
+- **Pagination DTO convention:** Zod `PaginationQuerySchema = z.object({ page: z.coerce.number().int().positive().default(1), limit: z.coerce.number().int().min(1).max(100).default(20) })`. Extend with `.extend(...)` for filters. Service runs `prisma.$transaction([findMany({ skip: (page-1)*limit, take: limit, ... }), count({ where })])` and returns `{ items, total, page, limit }` inside the standard envelope. Canonical: `auth/admin/auth.admin.service.ts`.
 - **Swagger:** available at `/swagger`.
 
 ### Database (`packages/prisma`)
@@ -94,7 +96,8 @@ Strict layered architecture — Controllers → Services → Prisma. No business
 
 ### Admin (`apps/client/app/admin/`)
 
-- **Admin layout:** `app/admin/layout.tsx` → `components/admin/app-layout.tsx` → `components/admin/sidebar.tsx` + `components/admin/navbar.tsx`. Collapse state in `store/admin.ts` (`adminSidebarCollapsedAtom`). Mirrors `(default)` route group pattern.
+- **Admin layout:** `app/admin/layout.tsx` is an async server component — calls `await auth()`, redirects unauthenticated → `/login`, non-`ADMIN` → `/`. Wraps children with `<AdminAppLayout>` (`components/admin/app-layout.tsx` → `sidebar.tsx` + `navbar.tsx`). Collapse state in `store/admin.ts` (`adminSidebarCollapsedAtom`). Never put `'use client'` here — the role gate must run server-side.
+- **Activity Log page:** `app/admin/activity/` — paginated tables for `AuthLog` feed + per-user weekly login count. Per-route components live under `app/admin/activity/components/` (not under `components/admin/activity/`).
 
 ### Frontend (`apps/client`)
 
@@ -117,7 +120,8 @@ Strict layered architecture — Controllers → Services → Prisma. No business
 - Every route segment needs `error.tsx` and `loading.tsx`.
 - Toast feedback via Sonner (`components/ui/sonner`, imported in `app/layout.tsx`).
 - `ThemeProvider` at `components/providers/theme-provider.tsx`.
-- **Domain directories:** `hooks/user/`, `hooks/workspace/` — hooks per domain. `services/profile.ts`, `services/workspace.ts` — fetchClient wrappers. `configs/` — client config files.
+- **Domain directories:** `hooks/user/`, `hooks/workspace/`, `hooks/admin/` — hooks per domain. `services/profile.ts`, `services/workspace.ts`, `services/activity.ts` — fetchClient wrappers. `configs/` — client config files.
+- **Paginated hook pattern (keepPreviousData):** Paginated client hooks (e.g. `hooks/admin/use-activity.ts`) return `{ data, loading, isFetching, error, refetch }`. Never `setData(null)` between refetches — previous items must stay visible during page changes. Derive `loading = isFetching && data === null` at return (true only on initial load); use `isFetching` to disable Prev/Next buttons + dim the table body (`cn(isFetching && 'opacity-60 transition-opacity')`). Skeleton rows render **only** on `loading`. Do NOT add `data` to the `useCallback` deps — compute the derived flag at return instead, otherwise you create a refetch loop.
 - **`searchParams.get()` returns `string | null`** — guard with `if (!value) { toast.error(...); return }` before passing to service functions typed as `string`.
 - **`useWatch` control:** Always destructure `control` from `useForm()` return value. Never reference `formSchema.control` — Zod schemas have no `.control` property.
 

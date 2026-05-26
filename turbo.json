@@ -13,9 +13,13 @@
       "outputs": ["coverage/**"],
       "env": ["NODE_ENV"]
     },
-    "test:cov": {
+    "test:coverage": {
       "dependsOn": ["^build"],
       "outputs": ["coverage/**"]
+    },
+    "test:ui": {
+      "cache": false,
+      "persistent": true
     },
     "lint": {
       "dependsOn": ["^lint"]

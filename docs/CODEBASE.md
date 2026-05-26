@@ -74,7 +74,8 @@ apps/backend/
     │       ├── auth/
     │       │   ├── auth.module.ts
     │       │   ├── public/          # POST /api/v1/public/auth/register, /login
-    │       │   └── authorized/      # POST /api/v1/authorized/auth/logout (Phase 1)
+    │       │   ├── authorized/      # POST /api/v1/authorized/auth/logout (Phase 1)
+    │       │   └── admin/           # GET  /api/v1/auth/admin/activity-log, /user-stats
     │       └── workspace/
     │           ├── workspace.module.ts
     │           ├── public/          # (placeholder — no active endpoints)
@@ -115,7 +116,49 @@ Route groups per feature module:
 
 - `public/` — no auth guard
 - `authorized/` — `JwtAuthGuard` required
-- `admin/` — `JwtAuthGuard` + `RolesGuard` (ADMIN role)
+- `admin/` — `JwtAccessGuard` + `RolesGuard` + `@Roles('ADMIN')` (Role enum: `USER | STAFF | ADMIN`)
+
+### Pagination Convention
+
+Admin list endpoints use a Zod-derived pagination DTO:
+
+```ts
+const PaginationQuerySchema = z.object({
+  page: z.coerce.number().int().positive().default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+})
+// Extend with filters:
+const ActivityLogQuerySchema = PaginationQuerySchema.extend({
+  action: z.enum(['LOGIN', 'LOGOUT']).optional(),
+  userId: z.string().optional(),
+})
+```
+
+Service shape:
+
+```ts
+const where = {
+  /* optional filters */
+}
+const [items, total] = await this.prisma.$transaction([
+  this.prisma.authLog.findMany({
+    where,
+    include: { user: { select: { id, firstName, lastName, email } } },
+    orderBy: { createdAt: 'desc' },
+    skip: (page - 1) * limit,
+    take: limit,
+  }),
+  this.prisma.authLog.count({ where }),
+])
+return {
+  statusCode: 200,
+  message: 'OK',
+  type: 'SUCCESS',
+  data: { items, total, page, limit },
+}
+```
+
+Canonical example: `apps/backend/src/api/v1/auth/admin/auth.admin.service.ts`.
 
 ### Active Endpoints
 
@@ -125,6 +168,8 @@ Route groups per feature module:
 | POST   | `/api/v1/public/auth/login`        | ✅ Done    | `loginService` — verify password, sign 15m JWT, set refresh cookie, AuthLog |
 | POST   | `/api/v1/public/auth/refresh`      | ✅ Done    | `refreshService` — validate + rotate refresh token, issue new 15m JWT       |
 | POST   | `/api/v1/authorized/auth/logout`   | ✅ Done    | `logoutService` — delete all user refresh tokens, clear cookie, AuthLog     |
+| GET    | `/api/v1/auth/admin/activity-log`  | ✅ Done    | `AuthAdminService.listActivityLog` — paginated AuthLog feed, user joined    |
+| GET    | `/api/v1/auth/admin/user-stats`    | ✅ Done    | `AuthAdminService.listUserStats` — paginated users + `logins7d` per user    |
 | GET    | `/api/v1/authorized/auth/me`       | ⬜ Phase 3 | `getProfile` — commented out                                                |
 | GET    | `/api/v1/authorized/workspace`     | ⬜ Phase 5 | list user workspaces                                                        |
 | POST   | `/api/v1/authorized/workspace`     | ⬜ Phase 5 | create workspace                                                            |
@@ -187,6 +232,15 @@ apps/client/
 │   │   │   └── components/          # form-card, login-header, social-login
 │   │   ├── register/page.tsx
 │   │   └── reset-password/page.tsx
+│   ├── admin/                       # ADMIN-only — layout enforces role gate
+│   │   ├── layout.tsx                # async server component — auth() + redirect non-ADMIN
+│   │   ├── page.tsx                  # Admin overview (workspaces, users, models stats)
+│   │   ├── components/               # Admin overview tables
+│   │   └── activity/                 # /admin/activity — AuthLog feed + user weekly login count
+│   │       ├── page.tsx
+│   │       ├── loading.tsx
+│   │       ├── error.tsx
+│   │       └── components/           # activity-page, activity-log-table, user-stats-table
 │   ├── (default)/                    # Default route group — passthrough layout (no extra providers)
 │   │   ├── layout.tsx                # Passthrough only — AppProviders already in root layout
 │   │   ├── page.tsx                  # / — LandingPage (redirect to /dashboard if has workspaces)
@@ -219,6 +273,10 @@ apps/client/
 │   ├── auth/
 │   │   ├── use-auth.ts
 │   │   └── use-register.ts
+│   ├── admin/
+│   │   └── use-activity.ts          # useActivityLog, useUserStats — paginated, keepPreviousData
+│   ├── user/
+│   ├── workspace/
 │   ├── use-mobile.ts
 │   └── use-toadst.ts
 ├── lib/
@@ -229,11 +287,13 @@ apps/client/
 │   ├── fetcher.ts                   # fetchClient() — central HTTP client
 │   └── utils.ts                     # cn() — clsx + tailwind-merge
 ├── services/
-│   └── auth.ts                      # authService.register, authService.logout
+│   ├── auth.ts                      # authService.register, authService.logout
+│   ├── workspace.ts                 # workspace CRUD wrappers
+│   └── activity.ts                  # activityService.getActivityLog, getUserStats
 ├── store/
 │   └── workspace.ts                 # Jotai atoms — workspacesAtom, createWorkspaceAtom, clearWorkspacesAtom
 ├── types/
-│   ├── index.ts                     # UserProfile, RegisterPayload, Workspace, CreateWorkspaceInput, …
+│   ├── index.ts                     # UserProfile, RegisterPayload, Workspace, CreateWorkspaceInput, ActivityLog, UserActivityStats, Paginated<T>, AuthAction, …
 │   └── next-auth.d.ts               # Extends NextAuth Session/User/JWT with id, role, accessToken, firstName, lastName
 └── proxy.ts
 ```
@@ -358,6 +418,92 @@ Each tab is an independent client component in `app/settings/components/`:
 | `appearance.tsx`       | Theme picker (light / dark / system)                              |
 | `account.tsx`          | Profile form with `isEditing` toggle; Change Password card        |
 | `workspace.tsx`        | Workspace selector grid + details editor (Jotai `workspacesAtom`) |
+
+### Admin Layout & Activity Log (`app/admin/`)
+
+`app/admin/layout.tsx` is an **async server component** that enforces role gating before mounting any admin page:
+
+```tsx
+import { redirect } from 'next/navigation'
+import { auth } from '@/lib/auth'
+import { AdminAppLayout } from '@/components/admin/app-layout'
+
+export default async function AdminLayout({
+  children,
+}: {
+  children: React.ReactNode
+}) {
+  const session = await auth()
+  if (!session?.user) redirect('/login')
+  if (session.user.role !== 'ADMIN') redirect('/')
+  return <AdminAppLayout>{children}</AdminAppLayout>
+}
+```
+
+Never add `'use client'` to this file — the gate must run server-side. `AdminAppLayout` stays the client wrapper for sidebar/navbar Jotai state.
+
+`/admin/activity` renders two paginated tables:
+
+| Section          | Hook             | Columns                                                 |
+| ---------------- | ---------------- | ------------------------------------------------------- |
+| Activity Log     | `useActivityLog` | User, Email, Action (LOGIN/LOGOUT badge), Timestamp     |
+| User Stats (7 d) | `useUserStats`   | User, Email, Role, Joined, Logins (7 d) — right aligned |
+
+Sidebar entry already exists in `components/admin/sidebar.tsx` (`id: 'activity'`, `href: '/admin/activity'`).
+
+### Paginated Hook Pattern (keepPreviousData)
+
+Paginated client hooks under `hooks/admin/` follow this shape so previous rows stay visible on Prev/Next while the next page is in flight — no skeleton flash mid-pagination:
+
+```ts
+export function useActivityLog({ page, limit, action, userId }: Options) {
+  const { status } = useSession()
+  const [data, setData] = useState<Paginated<ActivityLog> | null>(null)
+  const [isFetching, setIsFetching] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const fetchData = useCallback(async () => {
+    setIsFetching(true)
+    setError(null)
+    try {
+      const res = await activityService.getActivityLog({
+        page,
+        limit,
+        action,
+        userId,
+      })
+      setData(res.data)
+    } catch {
+      setError('Failed to load activity log')
+      toast.error('Failed to load activity log')
+    } finally {
+      setIsFetching(false)
+    }
+  }, [page, limit, action, userId]) // NOTE: do NOT add `data` here — refetch loop
+
+  useEffect(() => {
+    if (status !== 'authenticated') return
+    fetchData()
+  }, [fetchData, status])
+
+  return {
+    data,
+    loading: isFetching && data === null, // true only on initial load
+    isFetching, // true on every fetch (page change, refetch)
+    error,
+    refetch: fetchData,
+  }
+}
+```
+
+Consumers:
+
+- Render skeleton rows **only** on `loading` (no data yet at all).
+- Keep rendering `data?.items` while `isFetching === true` — page change does not unmount rows.
+- Disable Prev/Next via `isFetching || page === 1` (and analogous Next bound).
+- Dim the body: `<TableBody className={cn(isFetching && data !== null && 'opacity-60 transition-opacity')}>`.
+
+Canonical: `apps/client/hooks/admin/use-activity.ts` + `apps/client/app/admin/activity/components/activity-log-table.tsx`.
 
 ---
 
