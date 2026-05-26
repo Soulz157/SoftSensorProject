@@ -11,7 +11,7 @@ interface AdminAppLayoutProps {
 }
 
 export function AdminAppLayout({ children }: AdminAppLayoutProps) {
-  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [sidebarOpen, setSidebarOpen] = useState(true)
   const [sidebarCollapsed, setSidebarCollapsed] = useAtom(
     adminSidebarCollapsedAtom,
   )

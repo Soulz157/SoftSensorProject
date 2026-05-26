@@ -49,3 +49,32 @@ export interface UpdateWorkspacePayload {
   icon?: string
   color?: string
 }
+
+export type AuthAction = 'LOGIN' | 'LOGOUT'
+
+export interface ActivityLog {
+  id: string
+  userId: string
+  action: AuthAction
+  ipAddress: string | null
+  userAgent: string | null
+  createdAt: string
+  user: { id: string; firstName: string; lastName: string; email: string }
+}
+
+export interface UserActivityStats {
+  id: string
+  firstName: string
+  lastName: string
+  email: string
+  role: string
+  createdAt: string
+  logins7d: number
+}
+
+export interface Paginated<T> {
+  items: T[]
+  total: number
+  page: number
+  limit: number
+}

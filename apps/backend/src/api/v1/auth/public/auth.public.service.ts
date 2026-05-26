@@ -176,7 +176,6 @@ export class AuthPublicService {
       profile.mail ?? profile.userPrincipalName
     ).toLowerCase();
 
-    // 3. Anti-spoof check — body must match Graph's authoritative identity
     if (
       profile.id !== args.providerAccountId ||
       graphEmail !== args.email.toLowerCase()
@@ -184,9 +183,6 @@ export class AuthPublicService {
       throw new UnauthorizedException('OAuth identity mismatch');
     }
 
-    // 4. Resolve user via Account first, then by email, else auto-provision.
-    //    We do not persist Microsoft tokens (accessToken/refreshToken/expiresAt
-    //    remain null) until a downstream use-case requires them.
     const existingAccount = await this.prisma.account.findUnique({
       where: {
         provider_providerAccountId: {
