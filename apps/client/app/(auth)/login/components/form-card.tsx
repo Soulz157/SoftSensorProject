@@ -83,7 +83,11 @@ export function FormCard({ onSubmit, isLoading }: Readonly<FormCardProps>) {
           </div>
         </div>
 
-        <Button type="submit" className="w-full h-11 mt-2" disabled={isLoading}>
+        <Button
+          type="submit"
+          className="cursor-pointer w-full h-11 mt-2"
+          disabled={isLoading}
+        >
           {isLoading ? (
             <div className="flex items-center gap-2">
               <div className="h-4 w-4 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin" />

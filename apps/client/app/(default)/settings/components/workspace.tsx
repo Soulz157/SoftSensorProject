@@ -14,39 +14,35 @@ import {
 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
+import { useSession } from 'next-auth/react'
 import { useWorkspaces } from '@/hooks/workspace/use-workspaces'
 import { useUpdateWorkspace } from '@/hooks/workspace/use-update-workspace'
+import { useDeleteWorkspace } from '@/hooks/workspace/use-delete-workspace'
 import type { Workspace } from '@/types'
-import { usePathname } from 'next/navigation'
-
-const workspaceIcons = [
-  { id: 'building', label: 'Building', icon: Building2 },
-  { id: 'box', label: 'Box', icon: Box },
-  { id: 'cpu', label: 'CPU', icon: Cpu },
-  { id: 'gauge', label: 'Gauge', icon: Gauge },
-  { id: 'thermometer', label: 'Thermometer', icon: Thermometer },
-  { id: 'activity', label: 'Activity', icon: Activity },
-  { id: 'globe', label: 'Globe', icon: Globe },
-  { id: 'shield', label: 'Shield', icon: Shield },
-]
-
-const workspaceColors = [
-  { id: 'blue', bg: 'bg-blue-500' },
-  { id: 'violet', bg: 'bg-violet-500' },
-  { id: 'emerald', bg: 'bg-emerald-500' },
-  { id: 'amber', bg: 'bg-amber-500' },
-  { id: 'rose', bg: 'bg-rose-500' },
-  { id: 'cyan', bg: 'bg-cyan-500' },
-]
+import { WorkspaceMembers } from './workspace-members'
+import { workspaceIcons, workspaceColors } from '@/store/workspace'
 
 const inputClass =
   'h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring'
 
 export function WorkspaceTab() {
+  const { data: session } = useSession()
   const { workspaces, refetch } = useWorkspaces()
   const { updateWorkspace, isUpdating } = useUpdateWorkspace()
+  const { deleteWorkspace, isDeleting } = useDeleteWorkspace()
   const [preferredId, setPreferredId] = useState('')
   const [drafts, setDrafts] = useState<Record<string, Partial<Workspace>>>({})
 
@@ -68,6 +64,8 @@ export function WorkspaceTab() {
     }))
   }
 
+  const isOwner = session?.user?.id === selectedWorkspace?.ownerId
+
   const saveWorkspace = async () => {
     if (!selectedWorkspaceId) return
     const result = await updateWorkspace(selectedWorkspaceId, {
@@ -80,6 +78,17 @@ export function WorkspaceTab() {
       toast.success('Workspace updated')
     } else {
       toast.error(result.error ?? 'Failed to update workspace')
+    }
+  }
+
+  const handleDeleteWorkspace = async () => {
+    if (!selectedWorkspaceId) return
+    const result = await deleteWorkspace(selectedWorkspaceId)
+    if (result.success) {
+      setPreferredId('')
+      toast.success('Workspace deleted')
+    } else {
+      toast.error(result.error ?? 'Failed to delete workspace')
     }
   }
 
@@ -237,6 +246,56 @@ export function WorkspaceTab() {
             {isUpdating ? 'Saving...' : 'Save Changes'}
           </Button>
         </div>
+      )}
+
+      {selectedWorkspace && isOwner && (
+        <Card className="border-destructive/40">
+          <CardHeader>
+            <CardTitle className="text-sm font-medium text-destructive">
+              Danger Zone
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-foreground">
+                Delete this workspace
+              </p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Permanently remove this workspace and all its data.
+              </p>
+            </div>
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="destructive" size="sm" disabled={isDeleting}>
+                  {isDeleting ? 'Deleting...' : 'Delete Workspace'}
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete workspace?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This will permanently delete{' '}
+                    <strong>{selectedWorkspace.name}</strong> and all its data.
+                    This action cannot be undone.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={handleDeleteWorkspace}
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  >
+                    Delete
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </CardContent>
+        </Card>
+      )}
+
+      {selectedWorkspaceId && (
+        <WorkspaceMembers workspaceId={selectedWorkspaceId} />
       )}
     </>
   )

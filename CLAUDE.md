@@ -47,6 +47,13 @@ pnpm --filter client lint
 
 # Single backend test
 pnpm --filter backend test -- --testPathPatterns=<filename>   # Jest 30: plural
+
+# Client tests (Vitest)
+pnpm --filter client test          # run once
+pnpm --filter client test:ui       # interactive Vitest UI
+
+# All tests (root)
+pnpm test                          # runs via Turborepo + dotenvx
 ```
 
 ## Architecture
@@ -82,9 +89,11 @@ Strict layered architecture — Controllers → Services → Prisma. No business
 - **Auth:** `JwtAuthGuard` + `RolesGuard`. Refresh tokens in `HttpOnly` cookies only.
 - **Token issuance pattern:** 15m JWT via `jwtService.sign<Auth.UserPayload>` + 64-byte hex refresh token (`randomBytes(64).toString('hex')`) persisted to `RefreshToken` + `AuthLog` entry, all in a single `prisma.$transaction`. Canonical block: `auth.public.service.ts:100-127`. Reuse for every new auth path (OAuth, SSO, etc.) — do not invent a new token shape.
 - **Password reset URL:** Build as `${clientUrl}/reset-password/${token}?email=${encodeURIComponent(user.email)}` — token is a path segment matching frontend route `/reset-password/[token]`. Never use `/reset-password/confirm?token=` (route mismatch).
-- **Admin submodule pattern:** `<feature>/admin/` controllers use `@UseGuards(JwtAccessGuard, RolesGuard)` + `@Roles('ADMIN')`. Role enum: `USER | STAFF | ADMIN`. Canonical example: `auth/admin/auth.admin.controller.ts` (activity log + user stats) and `workspace/admin/workspace-admin.controller.ts`. Always register the new controller + service in the feature's `*.module.ts` — `AuthAdminController` + `AuthAdminService` live in `auth.module.ts`.
+- **Admin submodule pattern:** `<feature>/admin/` controllers use `@UseGuards(JwtAccessGuard, RolesGuard)` + `@Roles('ADMIN')`. Role enum: `USER | STAFF | ADMIN`. Canonical example: `auth/admin/auth.admin.controller.ts` (activity log + user stats) and `workspace/admin/workspace.admin.controller.ts`. Always register the new controller + service in the feature's `*.module.ts` — `AuthAdminController` + `AuthAdminService` live in `auth.module.ts`.
+- **Feature sub-modules:** Not every feature needs `public/`, `authorized/`, `admin/` — create only what's needed. Example: `plan/` has `authorized/` + `admin/` only.
 - **Pagination DTO convention:** Zod `PaginationQuerySchema = z.object({ page: z.coerce.number().int().positive().default(1), limit: z.coerce.number().int().min(1).max(100).default(20) })`. Extend with `.extend(...)` for filters. Service runs `prisma.$transaction([findMany({ skip: (page-1)*limit, take: limit, ... }), count({ where })])` and returns `{ items, total, page, limit }` inside the standard envelope. Canonical: `auth/admin/auth.admin.service.ts`.
 - **Swagger:** available at `/swagger`.
+- **Error throwing:** Always use `AppException` from `@softsensor/common` for ALL thrown errors — never use NestJS built-ins (`BadRequestException`, `NotFoundException`, `UnauthorizedException`, `ForbiddenException`, etc.). Shape: `throw new AppException({ statusCode: 400, message: 'Your message here', type: 'ERROR' })`. Import: `import { AppException } from '@softsensor/common'`.
 
 ### Database (`packages/prisma`)
 

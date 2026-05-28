@@ -1,4 +1,3 @@
-import { email } from 'zod'
 import { RegisterPayload } from '@/types'
 import { fetchClient } from '@/lib/fetcher'
 

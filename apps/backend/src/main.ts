@@ -98,7 +98,7 @@ async function bootstrap() {
   app.enableShutdownHooks();
 
   const port = configService.get<number>('SERVER_PORT', 8000);
-  const host = '0.0.0.0'; // bind ทุก interface สำหรับ container
+  const host = '0.0.0.0';
 
   await app.listen(port, host);
   logger.log(

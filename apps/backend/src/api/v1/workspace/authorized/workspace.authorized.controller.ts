@@ -1,18 +1,29 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   Param,
+  Patch,
+  Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { WorkspaceAuthorizedService } from './workspace.authorized.service';
+import {
+  GetLogsQueryDto,
+  InviteMemberDto,
+  UpdateMemberRoleDto,
+} from './dto/workspace.authorized.dto';
 import { JwtAccessGuard } from '@/guards/jwt-access.guard';
 import { Users } from '@/common/decorators/user.decorator';
 
-@Controller('authorized/workspace')
+@ApiBearerAuth()
 @ApiTags('Authorized Workspace')
+@Controller('authorized/workspace')
+@UseGuards(JwtAccessGuard)
 export class WorkspaceAuthorizedController {
   constructor(
     private readonly workspaceAuthorizedService: WorkspaceAuthorizedService,
@@ -20,18 +31,98 @@ export class WorkspaceAuthorizedController {
 
   @Get('/')
   @HttpCode(200)
-  @UseGuards(JwtAccessGuard)
+  @ApiOperation({ summary: 'List all workspaces for current user' })
   async getAllWorkspaces(@Users() user: Auth.UserPayload) {
     return this.workspaceAuthorizedService.getAllWorkspaces(user);
   }
 
   @Get('/:id')
   @HttpCode(200)
-  @UseGuards(JwtAccessGuard)
+  @ApiOperation({ summary: 'Get workspace by ID' })
   async getWorkspaceById(
     @Param('id') id: string,
     @Users() user: Auth.UserPayload,
   ) {
     return this.workspaceAuthorizedService.getWorkspaceById(id, user);
+  }
+
+  @Get('/:id/models')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'List models in a workspace' })
+  async getWorkspaceModels(
+    @Param('id') id: string,
+    @Users() user: Auth.UserPayload,
+  ) {
+    return this.workspaceAuthorizedService.getWorkspaceModels(id, user.id);
+  }
+
+  @Get('/:id/logs')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Get activity logs for a workspace' })
+  async getWorkspaceLogs(
+    @Param('id') id: string,
+    @Users() user: Auth.UserPayload,
+    @Query() query: GetLogsQueryDto,
+  ) {
+    return this.workspaceAuthorizedService.getWorkspaceLogs(id, user.id, query);
+  }
+
+  @Get('/:id/members')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'List members of a workspace' })
+  async listMembers(@Param('id') id: string, @Users() user: Auth.UserPayload) {
+    return this.workspaceAuthorizedService.listMembers(id, user.id);
+  }
+
+  @Post('/:id/members')
+  @HttpCode(201)
+  @ApiOperation({ summary: 'Invite a member to a workspace' })
+  async inviteMember(
+    @Param('id') id: string,
+    @Users() user: Auth.UserPayload,
+    @Body() body: InviteMemberDto,
+  ) {
+    return this.workspaceAuthorizedService.inviteMember(id, user.id, body);
+  }
+
+  @Patch('/:id/members/:mid')
+  @HttpCode(200)
+  @ApiOperation({ summary: "Update a member's role" })
+  async updateMemberRole(
+    @Param('id') id: string,
+    @Param('mid') mid: string,
+    @Users() user: Auth.UserPayload,
+    @Body() body: UpdateMemberRoleDto,
+  ) {
+    return this.workspaceAuthorizedService.updateMemberRole(
+      id,
+      mid,
+      user.id,
+      body,
+    );
+  }
+
+  @Delete('/delete')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Soft-delete a workspace (owner only)' })
+  async deleteWorkspace(
+    @Users() user: Auth.UserPayload,
+    @Body() body: { workspaceId: string },
+  ) {
+    return this.workspaceAuthorizedService.deleteWorkspace(
+      body.workspaceId,
+      user.id,
+    );
+  }
+
+  @Delete('/:id/members/:mid')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Remove a member from a workspace' })
+  async removeMember(
+    @Param('id') id: string,
+    @Param('mid') mid: string,
+    @Users() user: Auth.UserPayload,
+  ) {
+    return this.workspaceAuthorizedService.removeMember(id, mid, user.id);
   }
 }

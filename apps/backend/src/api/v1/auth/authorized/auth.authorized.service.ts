@@ -48,74 +48,49 @@ export class AuthAuthorizedService {
     return {
       statusCode: 200,
       message: 'ดึงข้อมูลผู้ใช้สำเร็จ',
-      type: 'SUCCESS',
+      type: 'SUCCESS' as const,
       data: user,
     };
   }
 
   async editMeService(userId: string, data: EditRequestDto) {
-    try {
-      const updatedUser = await this.prisma.user.update({
-        where: { id: userId },
-        data: {
-          firstName: data.firstName,
-          lastName: data.lastName,
-          company: data.company,
-        },
-        select: {
-          id: true,
-          email: true,
-          firstName: true,
-          lastName: true,
-          company: true,
-          role: true,
-        },
-      });
-
-      if (!updatedUser) {
-        throw new AppException({
-          statusCode: 404,
-          message: 'User not found',
-          type: 'ERROR',
-        });
-      }
-    } catch (error) {
-      throw new AppException({
-        statusCode: 500,
-        message: 'Failed to update user information',
-        data: error instanceof Error ? error.message : String(error),
-        type: 'ERROR',
-      });
-    }
+    const updatedUser = await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        firstName: data.firstName,
+        lastName: data.lastName,
+        company: data.company,
+      },
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        company: true,
+        role: true,
+      },
+    });
 
     return {
       statusCode: 200,
       message: 'อัปเดตข้อมูลผู้ใช้สำเร็จ',
       type: 'SUCCESS',
+      data: updatedUser,
     };
   }
 
   async logoutService(userId: string, meta?: LogoutMeta) {
-    try {
-      await this.prisma.$transaction([
-        this.prisma.refreshToken.deleteMany({ where: { userId } }),
-        this.prisma.authLog.create({
-          data: {
-            userId,
-            action: PrismaEnums.AuthAction.LOGOUT,
-            ipAddress: meta?.ipAddress,
-            userAgent: meta?.userAgent,
-          },
-        }),
-      ]);
-    } catch (error) {
-      throw new AppException({
-        statusCode: 500,
-        message: 'Logout failed',
-        data: error instanceof Error ? error.message : String(error),
-        type: 'ERROR',
-      });
-    }
+    await this.prisma.$transaction([
+      this.prisma.refreshToken.deleteMany({ where: { userId } }),
+      this.prisma.authLog.create({
+        data: {
+          userId,
+          action: PrismaEnums.AuthAction.LOGOUT,
+          ipAddress: meta?.ipAddress,
+          userAgent: meta?.userAgent,
+        },
+      }),
+    ]);
 
     return {
       statusCode: 200,

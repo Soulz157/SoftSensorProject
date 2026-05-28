@@ -208,7 +208,7 @@ export function RegisterForm() {
 
         <Button
           type="submit"
-          className="w-full h-11 bg-primary hover:bg-primary/90 text-primary-foreground font-medium transition-all mt-2"
+          className="cursor-pointer w-full h-11 bg-primary hover:bg-primary/90 text-primary-foreground font-medium transition-all mt-2"
           disabled={isLoading}
         >
           {isLoading ? (

@@ -2,6 +2,47 @@ import { z } from 'zod';
 import { createZodDto } from 'nestjs-zod';
 import { createStandardResponseSchema } from 'src/lib/dto';
 
+const PaginationQuerySchema = z.object({
+  page: z.coerce.number().int().positive().default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+export const AdminWorkspaceQuerySchema = PaginationQuerySchema.extend({
+  search: z.string().optional(),
+});
+
+export const AdminWorkspaceItemSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  color: z.string(),
+  icon: z.string(),
+  createdAt: z.date(),
+  owner: z.object({
+    id: z.string(),
+    firstName: z.string().nullable(),
+    lastName: z.string().nullable(),
+    email: z.string(),
+  }),
+  _count: z.object({ models: z.number().int() }),
+});
+
+export const AdminWorkspaceListResponseSchema = createStandardResponseSchema(
+  z.object({
+    items: z.array(AdminWorkspaceItemSchema),
+    total: z.number().int().nonnegative(),
+    page: z.number().int().positive(),
+    limit: z.number().int().positive(),
+  }),
+);
+
+export class AdminWorkspaceQueryDto extends createZodDto(
+  AdminWorkspaceQuerySchema,
+) {}
+
+export class AdminWorkspaceListResponseDto extends createZodDto(
+  AdminWorkspaceListResponseSchema,
+) {}
+
 export const CreateWorkspaceResponseSchema = createStandardResponseSchema(
   z.object({
     workspaceId: z.string(),

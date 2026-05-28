@@ -66,3 +66,43 @@ export class ActivityLogResponseDto extends createZodDto(
 export class UserStatsResponseDto extends createZodDto(
   UserStatsResponseSchema,
 ) {}
+
+// ─── Admin User Management ────────────────────────────────────────────────────
+
+export const AdminUserQuerySchema = PaginationQuerySchema.extend({
+  search: z.string().optional(),
+  role: z.enum(['USER', 'STAFF', 'ADMIN']).optional(),
+  status: z.enum(['active', 'blocked', 'deleted']).optional(),
+});
+
+export const UpdateUserRoleSchema = z.object({
+  role: z.enum(['USER', 'STAFF', 'ADMIN']),
+});
+
+export const AdminUserItemSchema = z.object({
+  id: z.string(),
+  email: z.string(),
+  firstName: z.string().nullable(),
+  lastName: z.string().nullable(),
+  company: z.string().nullable(),
+  role: z.enum(['USER', 'STAFF', 'ADMIN']),
+  createdAt: z.coerce.date(),
+  blockedAt: z.coerce.date().nullable(),
+  deletedAt: z.coerce.date().nullable(),
+  _count: z.object({ workspaces: z.number().int() }),
+});
+
+export const AdminUserListResponseSchema = createStandardResponseSchema(
+  z.object({
+    items: z.array(AdminUserItemSchema),
+    total: z.number().int().nonnegative(),
+    page: z.number().int().positive(),
+    limit: z.number().int().positive(),
+  }),
+);
+
+export class AdminUserQueryDto extends createZodDto(AdminUserQuerySchema) {}
+export class UpdateUserRoleDto extends createZodDto(UpdateUserRoleSchema) {}
+export class AdminUserListResponseDto extends createZodDto(
+  AdminUserListResponseSchema,
+) {}

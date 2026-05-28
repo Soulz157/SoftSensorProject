@@ -3,6 +3,7 @@
 export const dynamic = 'force-dynamic'
 
 import { useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import {
   SettingsSidebar,
   Tab,
@@ -12,8 +13,14 @@ import { AccountTab } from '@/app/(default)/settings/components/account'
 import { WorkspaceTab } from '@/app/(default)/settings/components/workspace'
 import PlansPage from './components/plans'
 
+const VALID_TABS: Tab[] = ['theme', 'account', 'workspace', 'plans']
+
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<Tab>('theme')
+  const searchParams = useSearchParams()
+  const rawTab = searchParams.get('tab') as Tab | null
+  const initialTab: Tab =
+    rawTab && VALID_TABS.includes(rawTab) ? rawTab : 'theme'
+  const [activeTab, setActiveTab] = useState<Tab>(initialTab)
 
   return (
     <div className="flex flex-1 overflow-hidden min-h-0">

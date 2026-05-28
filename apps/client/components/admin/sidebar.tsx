@@ -209,7 +209,10 @@ export function AdminSidebar({
         >
           {!isCollapsed ? (
             <div className="space-y-2">
-              <div className="flex items-center gap-3 px-3 py-2">
+              <Link
+                href="/settings?tab=account"
+                className="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-sidebar-accent transition-colors"
+              >
                 <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
                   {initials}
                 </div>
@@ -221,7 +224,7 @@ export function AdminSidebar({
                     {userEmail || 'Administrator'}
                   </p>
                 </div>
-              </div>
+              </Link>
               <button
                 onClick={() => signOut({ callbackUrl: '/login' })}
                 className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground transition-colors"
@@ -232,12 +235,13 @@ export function AdminSidebar({
             </div>
           ) : (
             <div className="flex flex-col items-center gap-2">
-              <div
-                className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground"
-                title={userName}
+              <Link
+                href="/settings?tab=account"
+                className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground hover:opacity-80 transition-opacity"
+                title="Account Settings"
               >
                 {initials}
-              </div>
+              </Link>
               <button
                 onClick={() => signOut({ callbackUrl: '/login' })}
                 title="Log Out"

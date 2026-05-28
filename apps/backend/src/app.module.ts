@@ -6,6 +6,7 @@ import { PrismaModule } from '@softsensor/prisma';
 import { AuthModule } from './api/v1/auth/auth.module';
 import { WorkspaceModule } from './api/v1/workspace/workspace.module';
 import { MailModule } from './api/v1/mail/mail.module';
+import { PlanModule } from './api/v1/plan/plan.module';
 import {
   ZodValidationPipe as AppZodValidationPipe,
   AllExceptionsFilter,
@@ -40,6 +41,7 @@ import { APP_PIPE, APP_FILTER } from '@nestjs/core';
     MailModule,
     AuthModule,
     WorkspaceModule,
+    PlanModule,
   ],
   providers: [
     {

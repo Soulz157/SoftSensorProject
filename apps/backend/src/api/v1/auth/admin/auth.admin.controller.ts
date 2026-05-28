@@ -1,4 +1,14 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  Param,
+  Patch,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -10,9 +20,13 @@ import { AuthAdminService } from './auth.admin.service';
 import {
   ActivityLogQueryDto,
   ActivityLogResponseDto,
+  AdminUserListResponseDto,
+  AdminUserQueryDto,
   PaginationQueryDto,
+  UpdateUserRoleDto,
   UserStatsResponseDto,
 } from './dto/auth.admin.dto';
+import { Users } from '@/common/decorators/user.decorator';
 import { ResponseFailedDto } from '@/lib/dto';
 import { JwtAccessGuard } from '@/guards/jwt-access.guard';
 import { RolesGuard } from '@/guards/roles.guard';
@@ -52,5 +66,48 @@ export class AuthAdminController {
   })
   async getUserStats(@Query() query: PaginationQueryDto) {
     return this.authAdminService.listUserStats(query);
+  }
+
+  @Get('users')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'List all users (ADMIN)' })
+  @ApiOkResponse({
+    type: AdminUserListResponseDto,
+    description: 'Users fetched successfully',
+  })
+  async listUsers(@Query() query: AdminUserQueryDto) {
+    return this.authAdminService.listUsers(query);
+  }
+
+  @Patch('users/:id/role')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Update user role (ADMIN)' })
+  async updateUserRole(
+    @Users() actor: Auth.UserPayload,
+    @Param('id') id: string,
+    @Body() body: UpdateUserRoleDto,
+  ) {
+    return this.authAdminService.updateUserRole(actor.id, id, body);
+  }
+
+  @Patch('users/:id/block')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Toggle block/unblock user (ADMIN)' })
+  async toggleBlockUser(
+    @Users() actor: Auth.UserPayload,
+    @Param('id') id: string,
+  ) {
+    return this.authAdminService.toggleBlockUser(actor.id, id);
+  }
+
+  @Delete('users/delete')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Soft-delete user (ADMIN)' })
+  async deleteUser(
+    @Users() actor: Auth.UserPayload,
+    @Body() args: { id: string },
+  ) {
+    const { id } = args;
+    return this.authAdminService.softDeleteUser(actor.id, id);
   }
 }

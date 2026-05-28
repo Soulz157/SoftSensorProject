@@ -39,6 +39,11 @@ enum SubscriptionStatus {
   TRIALING
 }
 
+enum WorkspaceRole {
+  OWNER
+  VIEWER
+}
+
 model User {
   id            String         @id @default(uuid())
   email         String         @unique
@@ -47,6 +52,8 @@ model User {
   password      String?
   company       String?
   role          Role           @default(USER)
+  blockedAt     DateTime?
+  deletedAt     DateTime?
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
   accounts      Account[]
@@ -55,8 +62,9 @@ model User {
   authLogs      AuthLog[]
   workspaceLogs WorkspaceLog[]
 
-  subscriptions      Subscription[]
-  passwordResetTokens PasswordResetToken[]
+  subscriptions        Subscription[]
+  passwordResetTokens  PasswordResetToken[]
+  workspaceMembers     WorkspaceMember[]
 }
 
 model Account {
@@ -86,8 +94,24 @@ model Workspace {
   deletedAt DateTime?
   models    Model[]
   logs      WorkspaceLog[]
+  members   WorkspaceMember[]
 
   @@index([ownerId])
+}
+
+model WorkspaceMember {
+  id          String        @id @default(uuid())
+  workspaceId String
+  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role        WorkspaceRole @default(VIEWER)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@unique([workspaceId, userId])
+  @@index([workspaceId])
+  @@index([userId])
 }
 
 model Model {

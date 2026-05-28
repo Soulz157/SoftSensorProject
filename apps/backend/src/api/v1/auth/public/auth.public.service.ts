@@ -1,8 +1,4 @@
-import {
-  BadRequestException,
-  Injectable,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as argon2 from 'argon2';
 import { randomBytes } from 'node:crypto';
@@ -73,6 +69,8 @@ export class AuthPublicService {
         type: 'ERROR',
       });
     }
+
+    await this.subscribeToFreePlan(user.id);
 
     return {
       statusCode: 201,
@@ -159,7 +157,11 @@ export class AuthPublicService {
   ): Promise<{ response: object; refreshToken: string }> {
     // 1. Provider guard — Google ships later
     if (args.provider !== 'microsoft') {
-      throw new BadRequestException('Provider not supported');
+      throw new AppException({
+        statusCode: 400,
+        message: 'Provider not supported',
+        type: 'ERROR',
+      });
     }
 
     // 2. Verify the Microsoft access token against Microsoft Graph
@@ -168,7 +170,11 @@ export class AuthPublicService {
     });
 
     if (!graphRes.ok) {
-      throw new UnauthorizedException('Invalid Microsoft access token');
+      throw new AppException({
+        statusCode: 401,
+        message: 'Invalid Microsoft access token',
+        type: 'ERROR',
+      });
     }
 
     const profile = (await graphRes.json()) as MicrosoftGraphProfile;
@@ -180,7 +186,11 @@ export class AuthPublicService {
       profile.id !== args.providerAccountId ||
       graphEmail !== args.email.toLowerCase()
     ) {
-      throw new UnauthorizedException('OAuth identity mismatch');
+      throw new AppException({
+        statusCode: 401,
+        message: 'OAuth identity mismatch',
+        type: 'ERROR',
+      });
     }
 
     const existingAccount = await this.prisma.account.findUnique({
@@ -231,6 +241,7 @@ export class AuthPublicService {
             },
           },
         });
+        await this.subscribeToFreePlan(user.id);
       }
     }
 
@@ -275,10 +286,29 @@ export class AuthPublicService {
       response: {
         statusCode: 200,
         message: 'OAuth login successful',
+        type: 'SUCCESS' as const,
         data: { accessToken },
       },
       refreshToken,
     };
+  }
+
+  private async subscribeToFreePlan(userId: string): Promise<void> {
+    const freePlan = await this.prisma.plan.findUnique({
+      where: { name: 'FREE' },
+    });
+    if (!freePlan) return;
+    const endDate = new Date();
+    endDate.setMonth(endDate.getMonth() + freePlan.durationMonths);
+    await this.prisma.subscription.create({
+      data: {
+        userId,
+        planId: freePlan.id,
+        status: 'ACTIVE',
+        startDate: new Date(),
+        endDate,
+      },
+    });
   }
 
   async forgotPasswordService(email: string) {

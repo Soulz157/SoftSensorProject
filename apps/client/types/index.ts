@@ -32,10 +32,16 @@ export interface UpdateProfilePayload {
 
 export interface Workspace {
   id: string
+  ownerId: string
   name: string
   icon?: string
   color?: string
   modelsCount: number
+}
+
+export interface WorkspaceIconProps {
+  iconId: string
+  colorId: string
 }
 
 export interface CreateWorkspaceInput {
@@ -48,6 +54,48 @@ export interface UpdateWorkspacePayload {
   name?: string
   icon?: string
   color?: string
+}
+
+export interface WorkspaceModel {
+  id: string
+  workspaceId: string
+  name: string
+  data: Record<string, unknown> | null
+  createdAt: string
+  updatedAt: string
+}
+
+export type WorkspaceAction =
+  | 'CREATED'
+  | 'UPDATED'
+  | 'DELETED'
+  | 'MODEL_ADDED'
+  | 'MODEL_REMOVED'
+  | 'MODEL_UPDATED'
+
+export interface WorkspaceLog {
+  id: string
+  workspaceId: string
+  userId: string
+  action: WorkspaceAction
+  details: unknown | null
+  createdAt: string
+  user: {
+    id: string
+    firstName: string | null
+    lastName: string | null
+    email: string
+  }
+}
+
+export interface WorkspaceDetail {
+  id: string
+  name: string
+  icon: string
+  color: string
+  createdAt: string
+  updatedAt: string
+  _count: { members: number; models: number }
 }
 
 export type AuthAction = 'LOGIN' | 'LOGOUT'
@@ -77,4 +125,68 @@ export interface Paginated<T> {
   total: number
   page: number
   limit: number
+}
+
+export type UserRole = 'USER' | 'STAFF' | 'ADMIN'
+
+export interface PlanInfo {
+  id: string
+  name: string
+  price: number | null
+  maxWorkspaces: number
+  durationMonths: number
+}
+
+export type SubscriptionStatus = 'ACTIVE' | 'EXPIRED' | 'CANCELED' | 'TRIALING'
+
+export interface SubscriptionInfo {
+  id: string
+  status: SubscriptionStatus
+  startDate: string
+  endDate: string
+  plan: PlanInfo
+}
+
+export interface AdminUser {
+  id: string
+  email: string
+  firstName: string | null
+  lastName: string | null
+  company: string | null
+  role: UserRole
+  createdAt: string
+  blockedAt: string | null
+  deletedAt: string | null
+  _count: { workspaces: number }
+  subscriptions: Array<{ plan: { id: string; name: string } }>
+}
+
+export type WorkspaceRole = 'OWNER' | 'VIEWER'
+
+export interface WorkspaceMember {
+  id: string
+  userId: string
+  role: WorkspaceRole
+  createdAt: string
+  user: {
+    id: string
+    firstName: string | null
+    lastName: string | null
+    email: string
+  }
+}
+
+export interface AdminWorkspace {
+  id: string
+  name: string
+  color: string
+  icon: string
+  createdAt: string
+  owner: {
+    id: string
+    firstName: string | null
+    lastName: string | null
+    email: string
+  }
+  _count: { models: number }
 }

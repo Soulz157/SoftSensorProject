@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { WorkspaceAdminService } from './workspace-admin.service';
+import { PlanAdminService } from './plan.admin.service';
 import { PrismaService } from '@softsensor/prisma';
 
 // ---------------------------------------------------------------------------
@@ -28,13 +28,13 @@ jest.mock('@softsensor/prisma', () => ({
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('WorkspaceAdminService', () => {
-  let service: WorkspaceAdminService;
+describe('PlanAdminService', () => {
+  let service: PlanAdminService;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
-        WorkspaceAdminService,
+        PlanAdminService,
         {
           provide: PrismaService,
           useValue: {
@@ -49,7 +49,7 @@ describe('WorkspaceAdminService', () => {
       ],
     }).compile();
 
-    service = module.get<WorkspaceAdminService>(WorkspaceAdminService);
+    service = module.get<PlanAdminService>(PlanAdminService);
   });
 
   it('should be defined', () => {

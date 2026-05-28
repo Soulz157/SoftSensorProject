@@ -13,12 +13,13 @@ import {
   X,
   PanelLeftClose,
   PanelLeft,
-  CreditCard,
-  Zap,
+  ShieldAlert,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useAtomValue } from 'jotai'
-import { workspacesAtom } from '@/store/workspace'
+import { useSession } from 'next-auth/react'
+import { useWorkspaces } from '@/hooks/workspace/use-workspaces'
+import { WorkspaceIconProps } from '@/types'
+import { workspaceIcons, workspaceColors } from '@/store/workspace'
 
 interface NavItem {
   id: string
@@ -50,8 +51,10 @@ export function Sidebar({
   onWorkspaceToggle,
 }: SidebarProps) {
   const pathname = usePathname()
-  const workspaces = useAtomValue(workspacesAtom)
+  const { workspaces } = useWorkspaces()
   const currentWorkspace = workspaces.find(w => w.id === activeWorkspace)
+  const { data: session } = useSession()
+  const isAdmin = session?.user?.role === 'ADMIN'
 
   const navItems: NavItem[] = [
     {
@@ -86,6 +89,25 @@ export function Sidebar({
     return pathname.startsWith(href)
   }
 
+  function WorkspaceIcon({ iconId, colorId }: WorkspaceIconProps) {
+    const selectedIcon = workspaceIcons.find(item => item.id === iconId)
+    const Icon = selectedIcon?.icon
+
+    const selectedColor = workspaceColors.find(item => item.id === colorId)
+    const bgClass = selectedColor?.bg || 'bg-slate-500'
+
+    return (
+      <span
+        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-white text-xs font-semibold ${bgClass}`}
+      >
+        {Icon ? (
+          <Icon className="h-4 w-4" />
+        ) : (
+          <span>{iconId?.charAt(0)?.toUpperCase() || '?'}</span>
+        )}
+      </span>
+    )
+  }
   return (
     <>
       {/* Mobile Overlay */}
@@ -218,7 +240,10 @@ export function Sidebar({
                         : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
                     )}
                   >
-                    <Building2 className="h-4 w-4 shrink-0" />
+                    <WorkspaceIcon
+                      colorId={workspace.color || 'slate'}
+                      iconId={workspace.icon || 'box'}
+                    />
                     {!isCollapsed && (
                       <>
                         <span className="flex-1 truncate text-left">
@@ -285,7 +310,7 @@ export function Sidebar({
         </nav>
 
         {/* Upgrade Widget */}
-        {currentWorkspace && !isCollapsed && (
+        {/* {currentWorkspace && !isCollapsed && (
           <div className="mx-3 mb-3 rounded-lg border border-sidebar-border bg-sidebar-accent/30 p-3 space-y-2">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-1.5">
@@ -315,7 +340,7 @@ export function Sidebar({
               </div>
             </div>
             <Link
-              href="/plans"
+              href="/settings/plans"
               onClick={onClose}
               className="flex w-full items-center justify-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary/90 transition-colors"
             >
@@ -323,7 +348,7 @@ export function Sidebar({
               Upgrade Plan
             </Link>
           </div>
-        )}
+        )} */}
 
         {/* Collapsed upgrade indicator */}
         {currentWorkspace && isCollapsed && (
@@ -347,6 +372,23 @@ export function Sidebar({
             isCollapsed ? 'px-2' : 'px-3',
           )}
         >
+          {isAdmin && (
+            <Link
+              href="/admin"
+              onClick={onClose}
+              title={isCollapsed ? 'Admin Panel' : undefined}
+              className={cn(
+                'flex w-full items-center rounded-md text-sm transition-colors mb-1',
+                isCollapsed ? 'justify-center p-2.5' : 'gap-3 px-3 py-2',
+                pathname.startsWith('/admin')
+                  ? 'bg-sidebar-primary text-sidebar-primary-foreground'
+                  : 'text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground',
+              )}
+            >
+              <ShieldAlert className="h-4 w-4" />
+              {!isCollapsed && <span>Admin Panel</span>}
+            </Link>
+          )}
           <Link
             href="/help"
             onClick={onClose}

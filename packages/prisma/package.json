@@ -23,6 +23,9 @@
     "migrate:deploy": "prisma migrate deploy",
     "migrate:reset": "prisma migrate reset"
   },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
   "keywords": [],
   "devDependencies": {
     "@types/node": "^25.0.3",

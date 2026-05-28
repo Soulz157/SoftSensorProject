@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { WorkspaceAdminController } from './workspace-admin.controller';
-import { WorkspaceAdminService } from './workspace-admin.service';
+import { WorkspaceAdminController } from './workspace.admin.controller';
+import { WorkspaceAdminService } from './workspace.admin.service';
 
 // ---------------------------------------------------------------------------
 // Module mocks — must be declared before any imports that reference them

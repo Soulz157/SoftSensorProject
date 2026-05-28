@@ -2,17 +2,21 @@ import {
   Body,
   Controller,
   Delete,
+  Get,
   HttpCode,
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
-import { WorkspaceAdminService } from './workspace-admin.service';
+import { WorkspaceAdminService } from './workspace.admin.service';
 import { Users } from '@/common/decorators/user.decorator';
 import { ApiBadRequestResponse, ApiOkResponse } from '@nestjs/swagger';
 import { ResponseFailedDto } from '@/lib/dto';
 import {
+  AdminWorkspaceListResponseDto,
+  AdminWorkspaceQueryDto,
   CreateWorkspaceRequestDto,
   CreateWorkspaceResponseDto,
   DeleteWorkspaceRequestDto,
@@ -28,6 +32,16 @@ import { Roles } from '@/common/decorators/roles.decorator';
 @Roles('USER', 'ADMIN')
 export class WorkspaceAdminController {
   constructor(private readonly workspaceAdminService: WorkspaceAdminService) {}
+
+  @Get('/')
+  @HttpCode(200)
+  @ApiOkResponse({
+    type: AdminWorkspaceListResponseDto,
+    description: 'List all workspaces',
+  })
+  async listWorkspaces(@Query() query: AdminWorkspaceQueryDto) {
+    return this.workspaceAdminService.listWorkspaces(query);
+  }
 
   @Post('/create')
   @HttpCode(201)
