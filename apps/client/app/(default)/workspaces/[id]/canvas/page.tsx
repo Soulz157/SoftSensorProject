@@ -2,7 +2,6 @@
 
 import { useState, use, useRef } from 'react'
 import Link from 'next/link'
-import { AppLayout } from '@/components/app-layout'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import {
@@ -33,6 +32,8 @@ import {
   DialogFooter,
   DialogDescription,
 } from '@/components/ui/dialog'
+import { useWorkspace } from '@/hooks/workspace/use-workspace'
+import { useWorkspaceModels } from '@/hooks/workspace/use-workspace-models'
 
 interface Node {
   id: string
@@ -49,214 +50,16 @@ interface Node {
   }[]
 }
 
-const workspaceData: Record<string, { name: string; nodes: Node[] }> = {
-  '1': {
-    name: 'Acme Corporation',
-    nodes: [
-      {
-        id: 'n1',
-        name: 'CNC Machine A1',
-        type: 'machine',
-        x: 15,
-        y: 20,
-        status: 'normal',
-        models: [
-          {
-            id: '1',
-            name: 'Temperature Predictor',
-            status: 'running',
-            accuracy: '94.2%',
-          },
-          {
-            id: '6',
-            name: 'Vibration Analyzer',
-            status: 'warning',
-            accuracy: '91.5%',
-          },
-        ],
-      },
-      {
-        id: 'n2',
-        name: 'Assembly Robot B2',
-        type: 'machine',
-        x: 45,
-        y: 25,
-        status: 'normal',
-        models: [
-          {
-            id: '4',
-            name: 'Quality Classifier',
-            status: 'running',
-            accuracy: '96.1%',
-          },
-        ],
-      },
-      {
-        id: 'n3',
-        name: 'Conveyor System C1',
-        type: 'machine',
-        x: 75,
-        y: 20,
-        status: 'warning',
-        models: [
-          {
-            id: 'm4',
-            name: 'Speed Optimizer',
-            status: 'error',
-            accuracy: '87.3%',
-          },
-          {
-            id: '5',
-            name: 'Energy Optimizer',
-            status: 'running',
-            accuracy: '89.8%',
-          },
-        ],
-      },
-      {
-        id: 'n4',
-        name: 'Temperature Sensor T1',
-        type: 'sensor',
-        x: 25,
-        y: 55,
-        status: 'normal',
-        models: [
-          {
-            id: '3',
-            name: 'Anomaly Detector',
-            status: 'running',
-            accuracy: '92.4%',
-          },
-        ],
-      },
-      {
-        id: 'n5',
-        name: 'Pressure Sensor P1',
-        type: 'sensor',
-        x: 55,
-        y: 60,
-        status: 'normal',
-        models: [],
-      },
-      {
-        id: 'n6',
-        name: 'Main Controller',
-        type: 'controller',
-        x: 45,
-        y: 80,
-        status: 'normal',
-        models: [
-          {
-            id: '5',
-            name: 'Energy Optimizer',
-            status: 'running',
-            accuracy: '93.7%',
-          },
-          {
-            id: '2',
-            name: 'Demand Forecaster',
-            status: 'running',
-            accuracy: '91.8%',
-          },
-          { id: '12', name: 'Maintenance Predictor', status: 'stopped' },
-        ],
-      },
-    ],
-  },
-  '2': {
-    name: 'TechFlow Inc',
-    nodes: [
-      {
-        id: 'n1',
-        name: 'Server Rack A',
-        type: 'machine',
-        x: 20,
-        y: 25,
-        status: 'normal',
-        models: [
-          {
-            id: '7',
-            name: 'Load Balancer AI',
-            status: 'running',
-            accuracy: '97.2%',
-          },
-        ],
-      },
-      {
-        id: 'n2',
-        name: 'Data Center B',
-        type: 'machine',
-        x: 60,
-        y: 30,
-        status: 'warning',
-        models: [
-          {
-            id: '8',
-            name: 'Cooling Optimizer',
-            status: 'running',
-            accuracy: '88.5%',
-          },
-        ],
-      },
-      {
-        id: 'n3',
-        name: 'Network Hub',
-        type: 'controller',
-        x: 40,
-        y: 70,
-        status: 'normal',
-        models: [
-          {
-            id: '9',
-            name: 'Traffic Analyzer',
-            status: 'running',
-            accuracy: '95.1%',
-          },
-        ],
-      },
-    ],
-  },
-  '3': {
-    name: 'DataSense Ltd',
-    nodes: [
-      {
-        id: 'n1',
-        name: 'Processing Unit 1',
-        type: 'machine',
-        x: 30,
-        y: 35,
-        status: 'offline',
-        models: [{ id: '10', name: 'Data Classifier', status: 'stopped' }],
-      },
-      {
-        id: 'n2',
-        name: 'Storage Array',
-        type: 'machine',
-        x: 70,
-        y: 40,
-        status: 'normal',
-        models: [
-          {
-            id: '11',
-            name: 'Compression AI',
-            status: 'running',
-            accuracy: '94.8%',
-          },
-        ],
-      },
-    ],
-  },
-}
-
 export default function WorkspacePage({
   params,
 }: {
   params: Promise<{ id: string }>
 }) {
   const { id } = use(params)
-  const workspaceBase = workspaceData[id] || workspaceData['1']
+  const { workspace, loading: workspaceLoading } = useWorkspace(id)
+  const { models: workspaceModels } = useWorkspaceModels(id)
 
-  const [nodes, setNodes] = useState<Node[]>(workspaceBase?.nodes || [])
+  const [nodes, setNodes] = useState<Node[]>([])
   const [selectedNode, setSelectedNode] = useState<Node | null>(null)
   const [zoom, setZoom] = useState(1)
   const [buildMode, setBuildMode] = useState(false)
@@ -326,7 +129,7 @@ export default function WorkspacePage({
   const [addModelDialog, setAddModelDialog] = useState(false)
   const [addModelForm, setAddModelForm] = useState({
     nodeId: '',
-    modelName: '',
+    modelId: '',
   })
 
   const openEditNode = (node: Node, e: React.MouseEvent) => {
@@ -376,42 +179,28 @@ export default function WorkspacePage({
   }
 
   const saveAddModel = () => {
-    if (!addModelForm.nodeId || !addModelForm.modelName.trim()) return
+    if (!addModelForm.nodeId || !addModelForm.modelId) return
+    const model = workspaceModels?.find(m => m.id === addModelForm.modelId)
+    if (!model) return
+    const newModel = {
+      id: model.id,
+      name: model.name,
+      status: 'stopped' as const,
+    }
     setNodes(
       nodes.map(n =>
         n.id === addModelForm.nodeId
-          ? {
-              ...n,
-              models: [
-                ...n.models,
-                {
-                  id: `m${Date.now()}`,
-                  name: addModelForm.modelName,
-                  status: 'stopped' as const,
-                },
-              ],
-            }
+          ? { ...n, models: [...n.models, newModel] }
           : n,
       ),
     )
     if (selectedNode?.id === addModelForm.nodeId) {
-      const target = nodes.find(n => n.id === addModelForm.nodeId)
-      if (target) {
-        setSelectedNode({
-          ...target,
-          models: [
-            ...target.models,
-            {
-              id: `m${Date.now()}`,
-              name: addModelForm.modelName,
-              status: 'stopped',
-            },
-          ],
-        })
-      }
+      setSelectedNode(prev =>
+        prev ? { ...prev, models: [...prev.models, newModel] } : prev,
+      )
     }
     setAddModelDialog(false)
-    setAddModelForm({ nodeId: '', modelName: '' })
+    setAddModelForm({ nodeId: '', modelId: '' })
     setShowModelActions(false)
   }
 
@@ -467,7 +256,7 @@ export default function WorkspacePage({
     'h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring'
 
   return (
-    <div className="flex flex-1 overflow-hidden">
+    <div className="flex h-full overflow-hidden">
       {/* Canvas Area */}
       <div className="flex-1 flex flex-col">
         {/* Toolbar */}
@@ -478,7 +267,11 @@ export default function WorkspacePage({
         >
           <div>
             <h1 className="text-lg font-semibold text-foreground">
-              {workspaceBase?.name}
+              {workspaceLoading ? (
+                <div className="h-5 w-40 animate-pulse rounded bg-muted" />
+              ) : (
+                (workspace?.name ?? 'Workspace')
+              )}
             </h1>
             <p className="text-xs text-muted-foreground">
               {nodes.length} nodes
@@ -685,7 +478,7 @@ export default function WorkspacePage({
                       className="h-6 w-6 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center shadow hover:bg-destructive/80 transition-colors"
                       title="Delete node"
                     >
-                      <Trash2 className="h-3 w-3" />
+                      <Trash2 className="h-3 w-3 text-white" />
                     </button>
                   </div>
                 )}
@@ -737,7 +530,7 @@ export default function WorkspacePage({
                     onClick={() => {
                       setAddModelForm({
                         nodeId: nodes[0]?.id ?? '',
-                        modelName: '',
+                        modelId: '',
                       })
                       setAddModelDialog(true)
                     }}
@@ -923,7 +716,7 @@ export default function WorkspacePage({
               className="w-full"
               size="sm"
               onClick={() => {
-                setAddModelForm({ nodeId: selectedNode.id, modelName: '' })
+                setAddModelForm({ nodeId: selectedNode.id, modelId: '' })
                 setAddModelDialog(true)
               }}
               variant="outline"
@@ -1126,19 +919,29 @@ export default function WorkspacePage({
             </div>
             <div className="space-y-1.5">
               <label className="text-sm font-medium text-foreground">
-                Model Name
+                Model
               </label>
-              <input
+              <select
                 className={inputClass}
-                value={addModelForm.modelName}
+                value={addModelForm.modelId}
                 onChange={e =>
-                  setAddModelForm({
-                    ...addModelForm,
-                    modelName: e.target.value,
-                  })
+                  setAddModelForm({ ...addModelForm, modelId: e.target.value })
                 }
-                placeholder="e.g. Predictive Maintenance v3"
-              />
+                disabled={!workspaceModels || workspaceModels.length === 0}
+              >
+                <option value="">
+                  {!workspaceModels
+                    ? 'Loading models…'
+                    : workspaceModels.length === 0
+                      ? 'No models available'
+                      : 'Select a model…'}
+                </option>
+                {(workspaceModels ?? []).map(m => (
+                  <option key={m.id} value={m.id}>
+                    {m.name}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
           <DialogFooter>
@@ -1147,7 +950,7 @@ export default function WorkspacePage({
             </Button>
             <Button
               onClick={saveAddModel}
-              disabled={!addModelForm.nodeId || !addModelForm.modelName.trim()}
+              disabled={!addModelForm.nodeId || !addModelForm.modelId}
             >
               Add Model
             </Button>

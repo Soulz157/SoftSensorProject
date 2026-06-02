@@ -107,6 +107,7 @@ Strict layered architecture — Controllers → Services → Prisma. No business
 
 - **Admin layout:** `app/admin/layout.tsx` is an async server component — calls `await auth()`, redirects unauthenticated → `/login`, non-`ADMIN` → `/`. Wraps children with `<AdminAppLayout>` (`components/admin/app-layout.tsx` → `sidebar.tsx` + `navbar.tsx`). Collapse state in `store/admin.ts` (`adminSidebarCollapsedAtom`). Never put `'use client'` here — the role gate must run server-side.
 - **Activity Log page:** `app/admin/activity/` — paginated tables for `AuthLog` feed + per-user weekly login count. Per-route components live under `app/admin/activity/components/` (not under `components/admin/activity/`).
+- **Admin workspace detail:** `app/admin/workspaces/[id]/settings/` — workspace settings management. Has `page.tsx`, `error.tsx`, `loading.tsx`.
 
 ### Frontend (`apps/client`)
 
@@ -130,6 +131,10 @@ Strict layered architecture — Controllers → Services → Prisma. No business
 - Toast feedback via Sonner (`components/ui/sonner`, imported in `app/layout.tsx`).
 - `ThemeProvider` at `components/providers/theme-provider.tsx`.
 - **Domain directories:** `hooks/user/`, `hooks/workspace/`, `hooks/admin/` — hooks per domain. `services/profile.ts`, `services/workspace.ts`, `services/activity.ts` — fetchClient wrappers. `configs/` — client config files.
+- **Domain types:** `types/dashboard.ts` — `Node`, `Workspace`, `Alert` interfaces for the dashboard/workspaces domain.
+- **Workspace routes:** `(default)/workspaces/` (list), `(default)/workspaces/[id]/` (detail), `(default)/workspaces/[id]/canvas/` (canvas view). Old `(default)/workspace/[id]/` route is deleted.
+- **Workspace settings hook:** `hooks/workspace/use-workspace-settings.ts` — loads workspace + members in parallel via `Promise.all`, initializes local state (`name`, `selectedIcon`, `selectedColor`). Returns `{ workspace, members, setMembers, loading, name, setName, selectedIcon, setSelectedIcon, selectedColor, setSelectedColor, refetch }`.
+- **Shared paginated hook:** `hooks/use-paginated-fetch.ts` exports `usePaginatedFetch<T>(fetcher, deps, errorMessage)`. Use this instead of per-hook implementations. Returns `{ data, loading, isFetching, error, refetch }`. Do NOT pass `data` in deps array.
 - **Paginated hook pattern (keepPreviousData):** Paginated client hooks (e.g. `hooks/admin/use-activity.ts`) return `{ data, loading, isFetching, error, refetch }`. Never `setData(null)` between refetches — previous items must stay visible during page changes. Derive `loading = isFetching && data === null` at return (true only on initial load); use `isFetching` to disable Prev/Next buttons + dim the table body (`cn(isFetching && 'opacity-60 transition-opacity')`). Skeleton rows render **only** on `loading`. Do NOT add `data` to the `useCallback` deps — compute the derived flag at return instead, otherwise you create a refetch loop.
 - **`searchParams.get()` returns `string | null`** — guard with `if (!value) { toast.error(...); return }` before passing to service functions typed as `string`.
 - **`useWatch` control:** Always destructure `control` from `useForm()` return value. Never reference `formSchema.control` — Zod schemas have no `.control` property.

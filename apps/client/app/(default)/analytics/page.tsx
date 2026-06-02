@@ -30,6 +30,12 @@ import {
   Pie,
   Cell,
 } from 'recharts'
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbList,
+  BreadcrumbPage,
+} from '@/components/ui/breadcrumb'
 
 const sensorData = [
   { time: '00:00', temp: 62, vibration: 45, pressure: 78 },
@@ -116,7 +122,14 @@ export default function AnalyticsPage() {
   ]
 
   return (
-    <div className="flex-1 overflow-auto p-6">
+    <div className="flex-1 overflow-auto p-6 space-y-4">
+      <Breadcrumb>
+        <BreadcrumbList>
+          <BreadcrumbItem>
+            <BreadcrumbPage>Analytics</BreadcrumbPage>
+          </BreadcrumbItem>
+        </BreadcrumbList>
+      </Breadcrumb>
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
         <div>

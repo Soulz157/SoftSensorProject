@@ -7,13 +7,13 @@ You are an expert Frontend React Developer for this project.
 
 ## Persona
 
-- Specialize in Next.js 15 App Router (Server + Client Components), Jotai state, and Tailwind v4.
+- Specialize in Next.js 16 App Router (Server + Client Components), Jotai state, and Tailwind v4.
 - Understand shadcn/ui (radix-nova style), NextAuth v5, and fetchClient HTTP pattern.
 - Output: Performant, accessible UI that consumes backend APIs via the service layer.
 
 ## Tech Stack
 
-- Next.js 15 App Router, React 19, TypeScript 5.9
+- Next.js 16 App Router, React 19, TypeScript 5.9
 - Tailwind CSS v4 (CSS-first, CSS variables only)
 - shadcn/ui — style: radix-nova (files in `components/ui/` are IMMUTABLE)
 - Jotai for client state (`atomWithStorage` for localStorage persistence)
@@ -25,23 +25,40 @@ You are an expert Frontend React Developer for this project.
 ```
 apps/client/
 ├── app/
-│   ├── (auth)/           # Auth route group: login, register, reset-password
-│   ├── dashboard/
-│   ├── settings/
+│   ├── (auth)/                        # Auth route group: login, register, reset-password
+│   ├── (default)/
+│   │   ├── dashboard/
+│   │   │   └── components/            # kpi-cards, stats, active-alert, workspace-list, dashboard-header
+│   │   ├── workspaces/                # Workspace list
+│   │   │   └── [id]/                  # Workspace detail
+│   │   │       ├── canvas/            # Canvas view
+│   │   │       └── components/        # workspace-settings-sheet
+│   │   ├── analytics/
+│   │   └── settings/
+│   ├── admin/
+│   │   ├── activity/
+│   │   ├── users/
+│   │   └── workspaces/
+│   │       └── [id]/settings/         # Admin workspace settings
 │   └── layout.tsx, page.tsx, error.tsx, loading.tsx
 ├── components/
 │   ├── ui/               # shadcn/ui — NEVER EDIT THESE FILES
 │   └── *.tsx             # Custom components
 ├── hooks/
-│   ├── user/             # User-related hooks
-│   └── workspace/        # Workspace-related hooks
+│   ├── use-paginated-fetch.ts  # Generic usePaginatedFetch<T> — use instead of per-hook impl
+│   ├── auth/
+│   ├── user/
+│   ├── workspace/        # use-workspace-settings.ts, use-workspaces.ts, etc.
+│   └── admin/
 ├── lib/
 │   ├── auth/index.ts     # NextAuth v5 config (handlers, signIn, signOut, auth)
 │   ├── fetcher.ts        # fetchClient() — always use this for API calls
 │   └── utils.ts          # cn() utility (clsx + tailwind-merge)
 ├── services/             # Thin API wrappers over fetchClient
 ├── store/                # Jotai atoms
-└── types/index.ts        # Shared TypeScript types
+└── types/
+    ├── index.ts          # Shared TypeScript types (WorkspaceDetail, WorkspaceMember, Paginated, etc.)
+    └── dashboard.ts      # Node, Workspace, Alert interfaces for dashboard domain
 ```
 
 ## Commands
@@ -123,6 +140,79 @@ const session = await auth()
 // Client Component
 import { useSession } from 'next-auth/react'
 const { data: session } = useSession()
+```
+
+### Shared Paginated Hook
+
+```typescript
+// hooks/use-paginated-fetch.ts — use this for ALL paginated data fetching
+import { usePaginatedFetch } from '@/hooks/use-paginated-fetch'
+
+const { data, loading, isFetching, error, refetch } = usePaginatedFetch(
+  () => someService.list({ page, limit }),
+  [page, limit] as const, // deps — do NOT include data
+  'Failed to load items', // shown as toast + stored in error
+)
+// loading = isFetching && data === null  (true only on initial fetch)
+// isFetching = true on every refetch — use to dim table, disable pagination buttons
+```
+
+### Workspace Settings Hook
+
+```typescript
+// hooks/workspace/use-workspace-settings.ts
+const {
+  workspace,
+  members,
+  setMembers,
+  loading,
+  name,
+  setName,
+  selectedIcon,
+  setSelectedIcon,
+  selectedColor,
+  setSelectedColor,
+  refetch,
+} = useWorkspaceSettings(workspaceId)
+// Loads workspace + members in parallel via Promise.all
+// Initializes form state (name, icon, color) from fetched data
+```
+
+### Viewport (Next.js 16)
+
+```typescript
+export const viewport: Viewport = { themeColor: '...' }
+export const metadata: Metadata = { title: '...' }
+// metadata.viewport is deprecated — causes runtime key warnings
+```
+
+### Tailwind v4 Display Conflict
+
+```tsx
+// WRONG: lg:flex + lg:hidden on same element — lg:flex always wins
+// CORRECT: conditional rendering
+{
+  condition && <div className="lg:flex">...</div>
+}
+```
+
+### searchParams Guard
+
+```typescript
+const value = searchParams.get('token')
+if (!value) {
+  toast.error('Missing token')
+  return
+}
+// value is now string — safe to pass to service functions
+```
+
+### useForm + useWatch
+
+```typescript
+const { control, handleSubmit } = useForm<z.infer<typeof formSchema>>()
+const watched = useWatch({ control, name: 'fieldName' })
+// NEVER reference formSchema.control — Zod schemas have no .control property
 ```
 
 ### Hook Pattern

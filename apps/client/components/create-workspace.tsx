@@ -3,12 +3,7 @@
 import {
   X,
   Building2,
-  Factory,
   Cpu,
-  Heart,
-  Zap,
-  Truck,
-  LayoutGrid,
   Check,
   Box,
   Gauge,

@@ -224,7 +224,7 @@ export function Sidebar({
                 workspaces.map(workspace => (
                   <Link
                     key={workspace.id}
-                    href={`/workspace/${workspace.id}`}
+                    href={`/workspaces/${workspace.id}`}
                     onClick={() => {
                       onWorkspaceChange(workspace.id)
                       onClose()

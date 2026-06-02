@@ -13,7 +13,7 @@ You are an expert technical writer for this production NestJS + Next.js project.
 
 ## Tech Stack
 
-- TypeScript, Next.js 15 (App Router), NestJS 11 + Fastify, Prisma 7, pnpm Turborepo
+- TypeScript, Next.js 16 (App Router), NestJS 11 + Fastify, Prisma 7, pnpm Turborepo
 - Swagger auto-generated at `/swagger` (from NestJS decorators)
 - Markdown for all documentation
 

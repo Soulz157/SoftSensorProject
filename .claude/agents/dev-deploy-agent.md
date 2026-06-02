@@ -23,7 +23,7 @@ You are a DevOps and Environment specialist for this project.
 ```
 SoftSensorProject/
 ├── apps/backend/     # NestJS 11 + Fastify (port 8000, SERVER_PORT env)
-├── apps/client/      # Next.js 15 (port 3000)
+├── apps/client/      # Next.js 16 (port 3000)
 └── packages/
     ├── prisma/       # Shared PrismaService, schema.prisma, generated client
     ├── eslint-config/

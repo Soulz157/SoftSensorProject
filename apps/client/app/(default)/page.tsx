@@ -11,7 +11,7 @@ import { useWorkspaces } from '@/hooks/workspace/use-workspaces'
 import { Spinner } from '@/components/ui/spinner'
 
 export default function LandingPage() {
-  const { data: session, status } = useSession()
+  const { status } = useSession()
 
   const { workspaces } = useWorkspaces({
     enabled: status === 'authenticated',
@@ -40,7 +40,7 @@ export default function LandingPage() {
   return (
     <div className="flex h-full font-sans">
       <div className="relative z-10 flex w-full items-center justify-center p-8 font-sans">
-        {session ? <CreateWorkspaceForm /> : <AuthPanel />}
+        {status === 'authenticated' ? <CreateWorkspaceForm /> : <AuthPanel />}
       </div>
     </div>
   )

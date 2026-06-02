@@ -1,10 +1,10 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 import { formatDistanceToNow } from 'date-fns'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
-import { WorkspaceSettingsDialog } from './workspace-settings-dialog'
 import { useAdminWorkspaces } from '@/hooks/admin/use-admin-workspaces'
 import { cn } from '@/lib/utils'
 import type { AdminWorkspace } from '@/types'
@@ -78,9 +78,8 @@ interface WorkspaceTableProps {
 
 export function WorkspaceTable({ search }: WorkspaceTableProps) {
   const [page, setPage] = useState(1)
-  const [selected, setSelected] = useState<AdminWorkspace | null>(null)
 
-  const { data, loading, isFetching, refetch } = useAdminWorkspaces({
+  const { data, loading, isFetching } = useAdminWorkspaces({
     page,
     limit: LIMIT,
     search: search || undefined,
@@ -151,15 +150,16 @@ export function WorkspaceTable({ search }: WorkspaceTableProps) {
                     })}
                   </TableCell>
                   <TableCell>
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      className="h-7 w-7"
-                      title="Workspace settings"
-                      onClick={() => setSelected(ws)}
-                    >
-                      <Settings className="h-3.5 w-3.5" />
-                    </Button>
+                    <Link href={`/admin/workspaces/${ws.id}/settings`}>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-7 w-7"
+                        title="Workspace settings"
+                      >
+                        <Settings className="h-3.5 w-3.5" />
+                      </Button>
+                    </Link>
                   </TableCell>
                 </TableRow>
               ))
@@ -194,20 +194,6 @@ export function WorkspaceTable({ search }: WorkspaceTableProps) {
           </div>
         </div>
       </div>
-
-      {selected && (
-        <WorkspaceSettingsDialog
-          workspace={selected}
-          open={selected !== null}
-          onOpenChange={open => {
-            if (!open) setSelected(null)
-          }}
-          onSuccess={() => {
-            refetch()
-            setSelected(null)
-          }}
-        />
-      )}
     </>
   )
 }
