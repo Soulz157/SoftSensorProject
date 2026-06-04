@@ -151,3 +151,16 @@ Project-specific subagent definitions: `api-agent`, `frontend-agent`, `test-agen
 - Never modify `schema.prisma` by hand and skip migrations — always `migrate dev`.
 - `components/ui/**` are immutable — never edit generated shadcn files.
 - **Env vars:** `NEXT_PUBLIC_API_URL` is the backend base URL — never use `NEXT_PUBLIC_BACKEND_URL`.
+
+## Security
+
+Full policy at [`docs/SECURITY.md`](docs/SECURITY.md). Enforced rules when writing code:
+
+- **Never commit `.env` files** — only `.env.example` in version control.
+- **No `dangerouslySetInnerHTML`** unless content is sanitized via `dompurify`.
+- **Raw Prisma queries** (`$queryRaw`) must use tagged template literals — never string concatenation.
+- **Sensitive env vars** must not use `NEXT_PUBLIC_` prefix — stays server-side only.
+- **Password reset / email tokens** — use `crypto.randomBytes`, short expiry (≤30 min), one-way hash before DB storage. Canonical pattern: `auth.public.service.ts`.
+- **CORS** — restrict to trusted origins via `CORS_ORIGINS` env; never `origin: '*'` in production.
+- **Rate limiting** — use `@nestjs/throttler` on auth and email endpoints (password reset, OTP).
+- **HTTP headers** — `helmet` must be registered in `main.ts` for all environments.

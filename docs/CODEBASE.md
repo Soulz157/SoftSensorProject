@@ -7,7 +7,7 @@
 | Layer    | Technology                                        |
 | -------- | ------------------------------------------------- |
 | Monorepo | Turborepo + pnpm workspaces                       |
-| Frontend | Next.js 15 (App Router), React 19, TypeScript 5.9 |
+| Frontend | Next.js 16 (App Router), React 19, TypeScript 5.9 |
 | Backend  | NestJS 11 + Fastify, TypeScript 5.7               |
 | Database | PostgreSQL via Prisma 7 (PrismaPg adapter)        |
 | Styling  | Tailwind CSS v4, shadcn/ui                        |
