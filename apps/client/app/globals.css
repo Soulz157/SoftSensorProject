@@ -124,3 +124,15 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* React Flow canvas: hide handles by default, show only in build mode */
+.react-flow__handle {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+
+.build-mode .react-flow__handle {
+  opacity: 1;
+  pointer-events: all;
+}
