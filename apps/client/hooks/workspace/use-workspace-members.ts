@@ -1,38 +1,56 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useReducer } from 'react'
 import { workspaceService } from '@/services/workspace'
 import type { WorkspaceMember } from '@/types'
+
+type State = {
+  members: WorkspaceMember[]
+  loading: boolean
+  isFetching: boolean
+}
+
+type Action =
+  | { type: 'FETCH_START' }
+  | { type: 'FETCH_SUCCESS'; members: WorkspaceMember[] }
+  | { type: 'FETCH_ERROR' }
+
+function reducer(state: State, action: Action): State {
+  switch (action.type) {
+    case 'FETCH_START':
+      return { members: [], loading: true, isFetching: true }
+    case 'FETCH_SUCCESS':
+      return { members: action.members, loading: false, isFetching: false }
+    case 'FETCH_ERROR':
+      return { ...state, loading: false, isFetching: false }
+  }
+}
+
+const initialState: State = { members: [], loading: true, isFetching: false }
 
 export function useWorkspaceMembers(
   workspaceId: string,
   currentUserId: string | undefined,
 ) {
-  const [members, setMembers] = useState<WorkspaceMember[]>([])
-  const [loading, setLoading] = useState(true)
-  const [isFetching, setIsFetching] = useState(false)
+  const [state, dispatch] = useReducer(reducer, initialState)
 
-  const isOwner = members.some(
+  const isOwner = state.members.some(
     m => m.userId === currentUserId && m.role === 'OWNER',
   )
 
   const fetchMembers = useCallback(async () => {
-    setIsFetching(true)
+    dispatch({ type: 'FETCH_START' })
     try {
       const res = await workspaceService.listMembers(workspaceId)
-      setMembers(res.data ?? [])
+      dispatch({ type: 'FETCH_SUCCESS', members: res.data ?? [] })
     } catch {
-    } finally {
-      setIsFetching(false)
-      setLoading(false)
+      dispatch({ type: 'FETCH_ERROR' })
     }
   }, [workspaceId])
 
   useEffect(() => {
-    setLoading(true)
-    setMembers([])
     fetchMembers()
   }, [fetchMembers])
 
-  return { members, loading, isFetching, isOwner, fetchMembers }
+  return { ...state, isOwner, fetchMembers }
 }

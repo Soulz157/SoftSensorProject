@@ -30,13 +30,11 @@ import {
   Trash2,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useWorkspace } from '@/hooks/workspace/use-workspace'
+import { useWorkspace } from '@/hooks/workspace/use-workspace-by'
 import { WorkspaceSettingsSheet } from './components/workspace-settings-sheet'
 import { useWorkspaceLogs } from '@/hooks/workspace/use-workspace-logs'
 import { useWorkspaceModels } from '@/hooks/workspace/use-workspace-models'
 import type { WorkspaceAction, WorkspaceLog, WorkspaceModel } from '@/types'
-
-// ─── static placeholder nodes (no Node model in DB yet) ──────────────────────
 
 const PLACEHOLDER_NODES = [
   {
@@ -192,7 +190,7 @@ export default function WorkspaceDetailPage({
 
   const { workspace, loading: wsLoading } = useWorkspace(id)
   const { models, loading: modelsLoading } = useWorkspaceModels(id)
-  const { logs, loading: logsLoading } = useWorkspaceLogs(id)
+  const { logs, isFetching: logsLoading } = useWorkspaceLogs(id)
 
   // Derive alert logs from workspace log feed
   const alertLogs = useMemo(

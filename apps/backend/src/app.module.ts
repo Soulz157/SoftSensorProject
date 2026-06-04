@@ -12,6 +12,7 @@ import {
   AllExceptionsFilter,
 } from '@softsensor/common';
 import { APP_PIPE, APP_FILTER } from '@nestjs/core';
+import { NodesModule } from './api/v1/nodes/nodes.module';
 
 @Module({
   imports: [
@@ -42,6 +43,7 @@ import { APP_PIPE, APP_FILTER } from '@nestjs/core';
     AuthModule,
     WorkspaceModule,
     PlanModule,
+    NodesModule,
   ],
   providers: [
     {

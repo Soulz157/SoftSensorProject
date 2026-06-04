@@ -49,7 +49,7 @@ export function useWorkspaces({ enabled = true }: UseWorkspacesOptions = {}) {
         fetchWorkspaces()
       }
     })
-  }, [fetchWorkspaces, clearWorkspaces, status])
+  }, [fetchWorkspaces, clearWorkspaces, status, enabled])
 
   return { workspaces, loading, error, refetch: fetchWorkspaces }
 }

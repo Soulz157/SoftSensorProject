@@ -2,51 +2,51 @@
 import { useCallback, useEffect, useReducer } from 'react'
 import { toast } from 'sonner'
 import { workspaceService } from '@/services/workspace'
-import type { WorkspaceModel } from '@/types'
+import type { WorkspaceDetail } from '@/types'
 
 type State = {
-  models: WorkspaceModel[] | null
+  workspace: WorkspaceDetail | null
   loading: boolean
   error: string | null
 }
 
 type Action =
   | { type: 'FETCH_START' }
-  | { type: 'FETCH_SUCCESS'; models: WorkspaceModel[] }
+  | { type: 'FETCH_SUCCESS'; workspace: WorkspaceDetail }
   | { type: 'FETCH_ERROR'; message: string }
 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'FETCH_START':
-      return { models: null, loading: true, error: null }
+      return { workspace: null, loading: true, error: null }
     case 'FETCH_SUCCESS':
-      return { models: action.models, loading: false, error: null }
+      return { workspace: action.workspace, loading: false, error: null }
     case 'FETCH_ERROR':
       return { ...state, loading: false, error: action.message }
   }
 }
 
-const initialState: State = { models: null, loading: true, error: null }
+const initialState: State = { workspace: null, loading: true, error: null }
 
-export function useWorkspaceModels(workspaceId: string) {
+export function useWorkspace(id: string) {
   const [state, dispatch] = useReducer(reducer, initialState)
 
-  const fetchModels = useCallback(async () => {
-    if (!workspaceId) return
+  const fetchWorkspace = useCallback(async () => {
+    if (!id) return
     dispatch({ type: 'FETCH_START' })
     try {
-      const res = await workspaceService.getWorkspaceModels(workspaceId)
-      dispatch({ type: 'FETCH_SUCCESS', models: res.data })
+      const res = await workspaceService.getWorkspaceById(id)
+      dispatch({ type: 'FETCH_SUCCESS', workspace: res.data })
     } catch {
-      const message = 'Failed to load models'
+      const message = 'Failed to load workspace'
       dispatch({ type: 'FETCH_ERROR', message })
       toast.error(message)
     }
-  }, [workspaceId])
+  }, [id])
 
   useEffect(() => {
-    fetchModels()
-  }, [fetchModels])
+    fetchWorkspace()
+  }, [fetchWorkspace])
 
-  return { ...state, refetch: fetchModels }
+  return { ...state, refetch: fetchWorkspace }
 }

@@ -32,7 +32,7 @@ import {
   DialogFooter,
   DialogDescription,
 } from '@/components/ui/dialog'
-import { useWorkspace } from '@/hooks/workspace/use-workspace'
+import { useWorkspace } from '@/hooks/workspace/use-workspace-by'
 import { useWorkspaceModels } from '@/hooks/workspace/use-workspace-models'
 
 interface Node {

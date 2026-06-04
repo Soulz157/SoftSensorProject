@@ -1,36 +1,68 @@
 'use client'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useReducer, useState } from 'react'
 import { toast } from 'sonner'
 import { workspaceService } from '@/services/workspace'
 import type { WorkspaceLog } from '@/types'
 
 const PAGE_LIMIT = 10
 
+type State = {
+  logs: WorkspaceLog[] | null
+  total: number
+  isFetching: boolean
+  error: string | null
+}
+
+type Action =
+  | { type: 'FETCH_START' }
+  | { type: 'FETCH_SUCCESS'; logs: WorkspaceLog[]; total: number }
+  | { type: 'FETCH_ERROR'; message: string }
+
+function reducer(state: State, action: Action): State {
+  switch (action.type) {
+    case 'FETCH_START':
+      return { ...state, isFetching: true, error: null }
+    case 'FETCH_SUCCESS':
+      return {
+        ...state,
+        isFetching: false,
+        logs: action.logs,
+        total: action.total,
+      }
+    case 'FETCH_ERROR':
+      return { ...state, isFetching: false, error: action.message }
+  }
+}
+
+const initialState: State = {
+  logs: null,
+  total: 0,
+  isFetching: false,
+  error: null,
+}
+
 export function useWorkspaceLogs(workspaceId: string) {
-  const [logs, setLogs] = useState<WorkspaceLog[] | null>(null)
-  const [total, setTotal] = useState(0)
+  const [state, dispatch] = useReducer(reducer, initialState)
   const [page, setPage] = useState(1)
-  const [isFetching, setIsFetching] = useState(false)
-  const [error, setError] = useState<string | null>(null)
 
   const fetchLogs = useCallback(
     async (p: number) => {
       if (!workspaceId) return
-      setIsFetching(true)
-      setError(null)
+      dispatch({ type: 'FETCH_START' })
       try {
         const res = await workspaceService.getWorkspaceLogs(workspaceId, {
           page: p,
           limit: PAGE_LIMIT,
         })
-        setLogs(res.data.items)
-        setTotal(res.data.total)
+        dispatch({
+          type: 'FETCH_SUCCESS',
+          logs: res.data.items,
+          total: res.data.total,
+        })
       } catch {
         const message = 'Failed to load activity logs'
-        setError(message)
+        dispatch({ type: 'FETCH_ERROR', message })
         toast.error(message)
-      } finally {
-        setIsFetching(false)
       }
     },
     [workspaceId],
@@ -40,18 +72,5 @@ export function useWorkspaceLogs(workspaceId: string) {
     fetchLogs(page)
   }, [fetchLogs, page])
 
-  const loading = isFetching && logs === null
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_LIMIT))
-
-  return {
-    logs,
-    total,
-    page,
-    totalPages,
-    loading,
-    isFetching,
-    error,
-    setPage,
-    refetch: () => fetchLogs(page),
-  }
+  return { ...state, page, setPage, refetch: () => fetchLogs(page) }
 }
