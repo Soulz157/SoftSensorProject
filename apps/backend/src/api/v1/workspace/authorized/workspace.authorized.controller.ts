@@ -7,6 +7,7 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   Query,
   UseGuards,
 } from '@nestjs/common';
@@ -15,6 +16,7 @@ import { WorkspaceAuthorizedService } from './workspace.authorized.service';
 import {
   GetLogsQueryDto,
   InviteMemberDto,
+  ReplaceEdgesDto,
   UpdateMemberRoleDto,
 } from './dto/workspace.authorized.dto';
 import { JwtAccessGuard } from '@/guards/jwt-access.guard';
@@ -54,6 +56,28 @@ export class WorkspaceAuthorizedController {
     @Users() user: Auth.UserPayload,
   ) {
     return this.workspaceAuthorizedService.getWorkspaceModels(id, user.id);
+  }
+
+  @Get('/:id/edges')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'List edges in a workspace' })
+  async listEdges(@Param('id') id: string, @Users() user: Auth.UserPayload) {
+    return this.workspaceAuthorizedService.listEdges(id, user.id);
+  }
+
+  @Put('/:id/edges')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Replace all edges in a workspace' })
+  async replaceEdges(
+    @Param('id') id: string,
+    @Users() user: Auth.UserPayload,
+    @Body() body: ReplaceEdgesDto,
+  ) {
+    return this.workspaceAuthorizedService.replaceEdges(
+      id,
+      user.id,
+      body.edges,
+    );
   }
 
   @Get('/:id/logs')

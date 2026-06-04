@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { AppException } from '@softsensor/common';
 import { PrismaService } from '@softsensor/prisma';
 import type {
+  EdgeItemDto,
   GetLogsQueryDto,
   InviteMemberDto,
   UpdateMemberRoleDto,
@@ -337,6 +338,49 @@ export class WorkspaceAuthorizedService {
       message: 'Member role updated',
       type: 'SUCCESS' as const,
       data: updated,
+    };
+  }
+
+  async listEdges(workspaceId: string, userId: string) {
+    await this.assertHasAccess(workspaceId, userId);
+
+    const edges = await this.prisma.edge.findMany({
+      where: { workspaceId },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return {
+      statusCode: 200,
+      message: 'Edges fetched successfully',
+      type: 'SUCCESS' as const,
+      data: edges,
+    };
+  }
+
+  async replaceEdges(
+    workspaceId: string,
+    userId: string,
+    edges: EdgeItemDto[],
+  ) {
+    await this.assertHasAccess(workspaceId, userId);
+
+    await this.prisma.$transaction([
+      this.prisma.edge.deleteMany({ where: { workspaceId } }),
+      this.prisma.edge.createMany({
+        data: edges.map((e) => ({ ...e, workspaceId })),
+      }),
+    ]);
+
+    const result = await this.prisma.edge.findMany({
+      where: { workspaceId },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return {
+      statusCode: 200,
+      message: 'Edges replaced successfully',
+      type: 'SUCCESS' as const,
+      data: result,
     };
   }
 
