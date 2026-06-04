@@ -37,6 +37,6 @@
     "types/**/*.d.ts",
     ".next/types/**/*.ts",
     "app/_global-error.tsx.bak"
-  ],
+, "hooks/canvas/use-canas-flow"  ],
   "exclude": ["node_modules"]
 }

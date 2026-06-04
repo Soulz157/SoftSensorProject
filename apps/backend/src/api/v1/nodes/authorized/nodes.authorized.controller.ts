@@ -18,6 +18,7 @@ import {
   CreateNodeDto,
   NodeQueryDto,
   UpdateNodeDto,
+  DeleteNodeDto,
 } from './dto/nodes.authorized.dto';
 
 @ApiBearerAuth()
@@ -45,8 +46,11 @@ export class NodesAuthorizedController {
   @Post('/')
   @HttpCode(201)
   @ApiOperation({ summary: 'Create a new node in a workspace' })
-  async create(@Body() dto: CreateNodeDto, @Users() user: Auth.UserPayload) {
-    return this.nodesAuthorizedService.create(
+  async createNodeController(
+    @Body() dto: CreateNodeDto,
+    @Users() user: Auth.UserPayload,
+  ) {
+    return this.nodesAuthorizedService.createNodeService(
       dto.workspaceId,
       user.id,
       dto.data,
@@ -56,21 +60,25 @@ export class NodesAuthorizedController {
   @Patch('/:nodeId')
   @HttpCode(200)
   @ApiOperation({ summary: 'Update a node by ID' })
-  async update(
+  async updateNodeController(
     @Param('nodeId') nodeId: string,
     @Body() dto: UpdateNodeDto,
     @Users() user: Auth.UserPayload,
   ) {
-    return this.nodesAuthorizedService.update(nodeId, user.id, dto.data);
+    return this.nodesAuthorizedService.updateNodeService(
+      nodeId,
+      user.id,
+      dto.data,
+    );
   }
 
-  @Delete('/:nodeId')
+  @Delete('/')
   @HttpCode(200)
   @ApiOperation({ summary: 'Delete a node by ID' })
-  async remove(
-    @Param('nodeId') nodeId: string,
+  async deleteNodeController(
     @Users() user: Auth.UserPayload,
+    @Body() args: DeleteNodeDto,
   ) {
-    return this.nodesAuthorizedService.remove(nodeId, user.id);
+    return this.nodesAuthorizedService.deleteNodeService(args.nodeId, user.id);
   }
 }

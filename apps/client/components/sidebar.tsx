@@ -351,7 +351,7 @@ export function Sidebar({
         )} */}
 
         {/* Collapsed upgrade indicator */}
-        {currentWorkspace && isCollapsed && (
+        {/* {currentWorkspace && isCollapsed && (
           <div className="mx-2 mb-3 flex flex-col items-center gap-1.5">
             <div
               className="h-1.5 w-8 rounded-full bg-sidebar-border overflow-hidden"
@@ -363,7 +363,7 @@ export function Sidebar({
               />
             </div>
           </div>
-        )}
+        )} */}
 
         {/* Footer */}
         <div

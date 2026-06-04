@@ -59,7 +59,7 @@ function toRFNode(node: CanvasNode): CanvasRFNode {
     data: {
       name: node.data.name,
       type: node.data.type,
-      status: node.data.status,
+      status: node.data.status ?? 'normal',
       icon: node.data.icon,
       models: node.models,
     },

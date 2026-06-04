@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { AppException } from '@softsensor/common';
-import { PrismaService, PrismaTypes } from '@softsensor/prisma';
+import { PrismaEnums, PrismaService } from '@softsensor/prisma';
 import { z } from 'zod';
 import { NodeDataSchema } from './dto/nodes.authorized.dto';
 
@@ -46,7 +46,7 @@ export class NodesAuthorizedService {
     };
   }
 
-  async create(
+  async createNodeService(
     workspaceId: string,
     userId: string,
     data: z.infer<typeof NodeDataSchema>,
@@ -66,7 +66,7 @@ export class NodesAuthorizedService {
     };
   }
 
-  async update(
+  async updateNodeService(
     nodeId: string,
     userId: string,
     data:
@@ -104,7 +104,7 @@ export class NodesAuthorizedService {
     };
   }
 
-  async remove(nodeId: string, userId: string) {
+  async deleteNodeService(nodeId: string, userId: string) {
     const existing = await this.prisma.nodes.findUnique({
       where: { id: nodeId },
     });
@@ -120,6 +120,14 @@ export class NodesAuthorizedService {
     await this.assertHasAccess(existing.workspaceId, userId);
 
     await this.prisma.nodes.delete({ where: { id: nodeId } });
+    await this.prisma.workspaceLog.create({
+      data: {
+        workspaceId: existing.workspaceId,
+        userId,
+        action: PrismaEnums.WorkspaceAction.DELETED,
+        details: { nodeId },
+      },
+    });
 
     return {
       statusCode: 200,

@@ -79,8 +79,9 @@ export async function updateNode(
 }
 
 export async function deleteNode(nodeId: string): Promise<void> {
-  await fetchClient(`/api/v1/authorized/nodes/${nodeId}`, {
+  await fetchClient(`/api/v1/authorized/nodes`, {
     method: 'DELETE',
+    body: JSON.stringify({ nodeId }),
   })
 }
 

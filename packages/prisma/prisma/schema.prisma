@@ -30,6 +30,9 @@ enum WorkspaceAction {
   MODEL_ADDED
   MODEL_REMOVED
   MODEL_UPDATED
+  NODE_ADDED
+  NODE_REMOVED
+  NODE_UPDATED
 }
 
 enum SubscriptionStatus {
@@ -83,21 +86,21 @@ model Account {
 }
 
 model Workspace {
-  id        String            @id @default(uuid())
-  ownerId   String
-  owner     User              @relation(fields: [ownerId], references: [id])
+  id          String            @id @default(uuid())
+  ownerId     String
+  owner       User              @relation(fields: [ownerId], references: [id])
   name        String
   icon        String
   color       String
   description String?
   createdAt   DateTime          @default(now())
-  updatedAt DateTime          @updatedAt
-  deletedAt DateTime?
-  logs      WorkspaceLog[]
-  members   WorkspaceMember[]
-  nodes     Nodes[]
-  models    Model[]
-  edges     Edge[]
+  updatedAt   DateTime          @updatedAt
+  deletedAt   DateTime?
+  logs        WorkspaceLog[]
+  members     WorkspaceMember[]
+  nodes       Nodes[]
+  models      Model[]
+  edges       Edge[]
 
   @@index([ownerId])
 }

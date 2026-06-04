@@ -26,6 +26,11 @@ export const NodeQuerySchema = z.object({
   workspaceId: z.string().uuid(),
 });
 
+export const DeleteNodeSchema = z.object({
+  nodeId: z.string().min(1),
+});
+
 export class CreateNodeDto extends createZodDto(CreateNodeSchema) {}
 export class UpdateNodeDto extends createZodDto(UpdateNodeSchema) {}
 export class NodeQueryDto extends createZodDto(NodeQuerySchema) {}
+export class DeleteNodeDto extends createZodDto(DeleteNodeSchema) {}

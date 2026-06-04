@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Before Every Task
 
-Read [`docs/CODEBASE.md`](docs/CODEBASE.md) before starting any task. It is the authoritative reference for project structure, component APIs, Prisma patterns, and coding style. Do not rely on assumptions — verify against that file first.
+Read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for system design, layer model, auth flow, and key architectural decisions. Read [`docs/CODEBASE.md`](docs/CODEBASE.md) for project structure, component APIs, Prisma patterns, and coding style. Do not rely on assumptions — verify against these files first.
 
 ## After Every Task
 
