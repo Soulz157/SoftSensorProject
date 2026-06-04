@@ -1,7 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { AppException } from '@softsensor/common';
-import { PrismaEnums, PrismaService } from '@softsensor/prisma';
+import { PrismaService } from '@softsensor/prisma';
 import {
+  AdminInviteMemberDto,
+  AdminUpdateMemberRoleDto,
   AdminWorkspaceQueryDto,
   CreateWorkspaceRequestDto,
   DeleteWorkspaceRequestDto,
@@ -45,6 +47,54 @@ export class WorkspaceAdminService {
     };
   }
 
+  async getWorkspaceById(id: string) {
+    const workspace = await this.prisma.workspace.findUnique({
+      where: { id, deletedAt: null },
+      select: {
+        id: true,
+        name: true,
+        icon: true,
+        color: true,
+        description: true,
+        createdAt: true,
+        updatedAt: true,
+        _count: { select: { members: true, models: true } },
+        members: {
+          select: {
+            id: true,
+            userId: true,
+            role: true,
+            createdAt: true,
+            user: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                email: true,
+              },
+            },
+          },
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+    });
+
+    if (!workspace) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Workspace not found',
+        type: 'ERROR',
+      });
+    }
+
+    return {
+      statusCode: 200,
+      message: 'Workspace fetched successfully',
+      type: 'SUCCESS' as const,
+      data: workspace,
+    };
+  }
+
   async createWorkspace(
     user: Auth.UserPayload,
     args: CreateWorkspaceRequestDto,
@@ -59,18 +109,10 @@ export class WorkspaceAdminService {
           icon,
           ownerId: user.id,
           members: {
-            create: {
-              userId: user.id,
-              role: 'OWNER',
-            },
+            create: { userId: user.id, role: 'OWNER' },
           },
         },
-        select: {
-          id: true,
-          name: true,
-          color: true,
-          icon: true,
-        },
+        select: { id: true, name: true, color: true, icon: true },
       }),
     ]);
 
@@ -82,17 +124,57 @@ export class WorkspaceAdminService {
     };
   }
 
+  async updateWorkspace(
+    id: string,
+    user: Auth.UserPayload,
+    args: UpdateWorkspaceRequestDto,
+  ) {
+    const workspace = await this.prisma.workspace.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+
+    if (!workspace) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Workspace not found',
+        type: 'ERROR',
+      });
+    }
+
+    const { name, color, icon, description } = args;
+
+    await this.prisma.$transaction([
+      this.prisma.workspace.update({
+        where: { id },
+        data: {
+          ...(name !== undefined && { name }),
+          ...(color !== undefined && { color }),
+          ...(icon !== undefined && { icon }),
+          ...(description !== undefined && { description }),
+        },
+      }),
+      this.prisma.workspaceLog.create({
+        data: {
+          workspaceId: id,
+          userId: user.id,
+          action: 'UPDATED',
+          details: `Workspace updated by ${user.firstName} ${user.lastName}`,
+        },
+      }),
+    ]);
+
+    return {
+      statusCode: 200,
+      message: 'Workspace updated successfully',
+      type: 'SUCCESS' as const,
+    };
+  }
+
   async deleteWorkspace(
     user: Auth.UserPayload,
     args: DeleteWorkspaceRequestDto,
   ) {
-    if (user.role !== PrismaEnums.Role.ADMIN) {
-      throw new AppException({
-        statusCode: 403,
-        message: 'Forbidden',
-        type: 'ERROR',
-      });
-    }
     const { workspaceId } = args;
 
     const workspace = await this.prisma.workspace.findUnique({
@@ -119,21 +201,11 @@ export class WorkspaceAdminService {
     };
   }
 
-  async updateWorkspace(
-    id: string,
-    user: Auth.UserPayload,
-    args: UpdateWorkspaceRequestDto,
-  ) {
+  async inviteMember(workspaceId: string, dto: AdminInviteMemberDto) {
     const workspace = await this.prisma.workspace.findUnique({
-      where: { id },
-      select: {
-        members: {
-          where: { userId: user.id },
-          select: { role: true },
-        },
-      },
+      where: { id: workspaceId, deletedAt: null },
+      select: { id: true },
     });
-
     if (!workspace) {
       throw new AppException({
         statusCode: 404,
@@ -142,37 +214,133 @@ export class WorkspaceAdminService {
       });
     }
 
-    const memberRole = workspace.members[0]?.role;
-
-    if (memberRole !== PrismaEnums.WorkspaceRole.OWNER) {
+    const target = await this.prisma.user.findUnique({
+      where: { email: dto.email },
+      select: { id: true },
+    });
+    if (!target) {
       throw new AppException({
-        statusCode: 403,
-        message: 'Forbidden: คุณไม่มีสิทธิ์ในการแก้ไข workspace นี้',
+        statusCode: 404,
+        message: 'User not found',
         type: 'ERROR',
       });
     }
 
-    const { name, color, icon } = args;
+    const existing = await this.prisma.workspaceMember.findUnique({
+      where: { workspaceId_userId: { workspaceId, userId: target.id } },
+    });
+    if (existing) {
+      throw new AppException({
+        statusCode: 409,
+        message: 'User is already a member',
+        type: 'ERROR',
+      });
+    }
 
-    await this.prisma.$transaction([
-      this.prisma.workspace.update({
-        where: { id },
-        data: { name, color, icon },
-      }),
-      this.prisma.workspaceLog.create({
-        data: {
-          workspaceId: id,
-          userId: user.id,
-          action: 'UPDATED',
-          details: `Workspace updated by ${user.firstName} ${user.lastName}`,
+    const member = await this.prisma.workspaceMember.create({
+      data: { workspaceId, userId: target.id, role: dto.role },
+      select: {
+        id: true,
+        userId: true,
+        role: true,
+        createdAt: true,
+        user: {
+          select: { id: true, firstName: true, lastName: true, email: true },
         },
-      }),
-    ]);
+      },
+    });
+
+    return {
+      statusCode: 201,
+      message: 'Member invited successfully',
+      type: 'SUCCESS' as const,
+      data: member,
+    };
+  }
+
+  async updateMemberRole(
+    workspaceId: string,
+    memberId: string,
+    dto: AdminUpdateMemberRoleDto,
+  ) {
+    const member = await this.prisma.workspaceMember.findFirst({
+      where: { id: memberId, workspaceId },
+    });
+    if (!member) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Member not found',
+        type: 'ERROR',
+      });
+    }
+
+    if (member.role === 'OWNER' && dto.role !== 'OWNER') {
+      const ownerCount = await this.prisma.workspaceMember.count({
+        where: { workspaceId, role: 'OWNER' },
+      });
+      if (ownerCount <= 1) {
+        throw new AppException({
+          statusCode: 400,
+          message: 'Cannot demote the last owner',
+          type: 'ERROR',
+        });
+      }
+    }
+
+    const updated = await this.prisma.workspaceMember.update({
+      where: { id: memberId },
+      data: { role: dto.role },
+      select: {
+        id: true,
+        userId: true,
+        role: true,
+        createdAt: true,
+        user: {
+          select: { id: true, firstName: true, lastName: true, email: true },
+        },
+      },
+    });
 
     return {
       statusCode: 200,
-      message: 'Workspace updated successfully',
+      message: 'Member role updated',
       type: 'SUCCESS' as const,
+      data: updated,
+    };
+  }
+
+  async removeMember(workspaceId: string, memberId: string) {
+    const member = await this.prisma.workspaceMember.findFirst({
+      where: { id: memberId, workspaceId },
+    });
+    if (!member) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Member not found',
+        type: 'ERROR',
+      });
+    }
+
+    if (member.role === 'OWNER') {
+      const ownerCount = await this.prisma.workspaceMember.count({
+        where: { workspaceId, role: 'OWNER' },
+      });
+      if (ownerCount <= 1) {
+        throw new AppException({
+          statusCode: 400,
+          message: 'Cannot remove the last owner',
+          type: 'ERROR',
+        });
+      }
+    }
+
+    await this.prisma.workspaceMember.delete({ where: { id: memberId } });
+
+    return {
+      statusCode: 200,
+      message: 'Member removed',
+      type: 'SUCCESS' as const,
+      data: null,
     };
   }
 }
