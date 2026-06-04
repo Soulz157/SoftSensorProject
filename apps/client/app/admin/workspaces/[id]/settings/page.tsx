@@ -46,7 +46,7 @@ import {
 } from '@/components/ui/alert-dialog'
 import { workspaceService } from '@/services/workspace'
 import { workspaceColors, workspaceIcons } from '@/store/workspace'
-import { useWorkspaceSettings } from '@/hooks/workspace/use-workspace-settings'
+import { useAdminWorkspaceSettings } from '@/hooks/admin/use-admin-workspace-settings'
 import type { WorkspaceRole } from '@/types'
 
 const inputClass =
@@ -62,11 +62,13 @@ export default function WorkspaceSettingsPage() {
     loading,
     name,
     setName,
+    description,
+    setDescription,
     selectedIcon,
     setSelectedIcon,
     selectedColor,
     setSelectedColor,
-  } = useWorkspaceSettings(workspaceId)
+  } = useAdminWorkspaceSettings(workspaceId)
 
   const [isSaving, setIsSaving] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
@@ -86,6 +88,7 @@ export default function WorkspaceSettingsPage() {
         name,
         icon: selectedIcon,
         color: selectedColor,
+        description: description || null,
       })
       toast.success('Workspace updated')
     } catch {
@@ -97,7 +100,7 @@ export default function WorkspaceSettingsPage() {
 
   async function handleRemoveMember(memberId: string) {
     try {
-      await workspaceService.removeMember(workspaceId, memberId)
+      await workspaceService.adminRemoveMember(workspaceId, memberId)
       setMembers(prev => prev.filter(m => m.id !== memberId))
       toast.success('Member removed')
     } catch {
@@ -107,7 +110,7 @@ export default function WorkspaceSettingsPage() {
 
   async function handleRoleChange(memberId: string, role: WorkspaceRole) {
     try {
-      const res = await workspaceService.updateMemberRole(
+      const res = await workspaceService.adminUpdateMemberRole(
         workspaceId,
         memberId,
         role,
@@ -125,7 +128,7 @@ export default function WorkspaceSettingsPage() {
     }
     setIsInviting(true)
     try {
-      const res = await workspaceService.inviteMember(
+      const res = await workspaceService.adminInviteMember(
         workspaceId,
         inviteEmail,
         inviteRole,
@@ -220,6 +223,21 @@ export default function WorkspaceSettingsPage() {
                       className={inputClass}
                       value={name}
                       onChange={e => setName(e.target.value)}
+                    />
+                  )}
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium">Description</label>
+                  {loading ? (
+                    <Skeleton className="h-20 w-full" />
+                  ) : (
+                    <textarea
+                      className={`${inputClass} min-h-20 resize-none py-2`}
+                      value={description}
+                      onChange={e => setDescription(e.target.value)}
+                      placeholder="Optional workspace description…"
+                      rows={3}
                     />
                   )}
                 </div>
