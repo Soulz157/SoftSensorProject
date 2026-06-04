@@ -1,12 +1,37 @@
 import { Injectable } from '@nestjs/common';
 import { AppException } from '@softsensor/common';
-import { PrismaService } from '@softsensor/prisma';
+import { PrismaService, PrismaTypes } from '@softsensor/prisma';
+import { z } from 'zod';
+import { NodeDataSchema } from './dto/nodes.authorized.dto';
 
 @Injectable()
 export class NodesAuthorizedService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async listByWorkspace(workspaceId: string) {
+  private async assertHasAccess(workspaceId: string, userId: string) {
+    const workspace = await this.prisma.workspace.findFirst({
+      where: { id: workspaceId, ownerId: userId },
+      select: { id: true },
+    });
+
+    if (workspace) return;
+
+    const member = await this.prisma.workspaceMember.findFirst({
+      where: { workspaceId, userId },
+    });
+
+    if (!member) {
+      throw new AppException({
+        statusCode: 403,
+        message: 'Forbidden',
+        type: 'ERROR',
+      });
+    }
+  }
+
+  async listByWorkspace(workspaceId: string, userId: string) {
+    await this.assertHasAccess(workspaceId, userId);
+
     const nodes = await this.prisma.nodes.findMany({
       where: { workspaceId },
       include: { models: true },
@@ -21,7 +46,13 @@ export class NodesAuthorizedService {
     };
   }
 
-  async create(workspaceId: string, data: object) {
+  async create(
+    workspaceId: string,
+    userId: string,
+    data: z.infer<typeof NodeDataSchema>,
+  ) {
+    await this.assertHasAccess(workspaceId, userId);
+
     const node = await this.prisma.nodes.create({
       data: { workspaceId, data },
       include: { models: true },
@@ -35,7 +66,13 @@ export class NodesAuthorizedService {
     };
   }
 
-  async update(nodeId: string, data: object) {
+  async update(
+    nodeId: string,
+    userId: string,
+    data:
+      | z.infer<typeof NodeDataSchema>
+      | Partial<z.infer<typeof NodeDataSchema>>,
+  ) {
     const existing = await this.prisma.nodes.findUnique({
       where: { id: nodeId },
     });
@@ -48,7 +85,10 @@ export class NodesAuthorizedService {
       });
     }
 
-    const merged = { ...(existing.data as object), ...data };
+    await this.assertHasAccess(existing.workspaceId, userId);
+
+    const existingData = (existing.data ?? {}) as Record<string, unknown>;
+    const merged = { ...existingData, ...data };
 
     const updated = await this.prisma.nodes.update({
       where: { id: nodeId },
@@ -64,7 +104,7 @@ export class NodesAuthorizedService {
     };
   }
 
-  async remove(nodeId: string) {
+  async remove(nodeId: string, userId: string) {
     const existing = await this.prisma.nodes.findUnique({
       where: { id: nodeId },
     });
@@ -76,6 +116,8 @@ export class NodesAuthorizedService {
         type: 'ERROR',
       });
     }
+
+    await this.assertHasAccess(existing.workspaceId, userId);
 
     await this.prisma.nodes.delete({ where: { id: nodeId } });
 
