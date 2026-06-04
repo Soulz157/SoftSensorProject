@@ -97,6 +97,7 @@ model Workspace {
   members   WorkspaceMember[]
   nodes     Nodes[]
   models    Model[]
+  edges     Edge[]
 
   @@index([ownerId])
 }
@@ -227,4 +228,17 @@ model PasswordResetToken {
 
   @@index([userId])
   @@index([token])
+}
+
+model Edge {
+  id           String    @id @default(uuid())
+  workspaceId  String
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  sourceId     String
+  targetId     String
+  sourceHandle String?
+  targetHandle String?
+  createdAt    DateTime  @default(now())
+
+  @@index([workspaceId])
 }
