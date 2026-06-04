@@ -1,6 +1,7 @@
 import { fetchClient } from '@/lib/fetcher'
 import type {
   AdminWorkspace,
+  AdminWorkspaceDetail,
   CreateWorkspaceInput,
   Paginated,
   UpdateWorkspacePayload,
@@ -113,4 +114,37 @@ export const workspaceService = {
       `/api/v1/authorized/workspace/${workspaceId}/members/${memberId}`,
       { method: 'DELETE' },
     ),
+
+  getAdminWorkspaceById: (
+    id: string,
+  ): Promise<{ data: AdminWorkspaceDetail }> =>
+    fetchClient(`/api/v1/admin/workspace/${id}`, { method: 'GET' }),
+
+  adminInviteMember: (
+    workspaceId: string,
+    email: string,
+    role: WorkspaceRole,
+  ): Promise<{ data: WorkspaceMember }> =>
+    fetchClient(`/api/v1/admin/workspace/${workspaceId}/members`, {
+      method: 'POST',
+      body: JSON.stringify({ email, role }),
+    }),
+
+  adminUpdateMemberRole: (
+    workspaceId: string,
+    memberId: string,
+    role: WorkspaceRole,
+  ): Promise<{ data: WorkspaceMember }> =>
+    fetchClient(`/api/v1/admin/workspace/${workspaceId}/members/${memberId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ role }),
+    }),
+
+  adminRemoveMember: (
+    workspaceId: string,
+    memberId: string,
+  ): Promise<unknown> =>
+    fetchClient(`/api/v1/admin/workspace/${workspaceId}/members/${memberId}`, {
+      method: 'DELETE',
+    }),
 }

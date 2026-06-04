@@ -54,6 +54,7 @@ export interface UpdateWorkspacePayload {
   name?: string
   icon?: string
   color?: string
+  description?: string | null
 }
 
 export interface WorkspaceModel {
@@ -93,9 +94,22 @@ export interface WorkspaceDetail {
   name: string
   icon: string
   color: string
+  description: string | null
   createdAt: string
   updatedAt: string
   _count: { members: number; models: number }
+}
+
+export interface AdminWorkspaceDetail {
+  id: string
+  name: string
+  icon: string
+  color: string
+  description: string | null
+  createdAt: string
+  updatedAt: string
+  _count: { members: number; models: number }
+  members: WorkspaceMember[]
 }
 
 export type AuthAction = 'LOGIN' | 'LOGOUT'
