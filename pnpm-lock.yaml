@@ -418,22 +418,25 @@ importers:
       '@fastify/error':
         specifier: ^4.2.0
         version: 4.2.0
-      fastify:
-        specifier: ^5.7.4
-        version: 5.8.5
-      rxjs:
-        specifier: ^7.8.2
-        version: 7.8.2
-      zod:
-        specifier: ^4.3.5
-        version: 4.4.3
-    devDependencies:
       '@nestjs/common':
         specifier: ^11.1.11
         version: 11.1.21(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.2.2)(rxjs@7.8.2)
       '@nestjs/core':
         specifier: ^11.1.11
         version: 11.1.21(@nestjs/common@11.1.21(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/platform-express@11.1.21)(reflect-metadata@0.2.2)(rxjs@7.8.2)
+      fastify:
+        specifier: ^5.7.4
+        version: 5.8.5
+      rxjs:
+        specifier: ^7.8.2
+        version: 7.8.2
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      zod:
+        specifier: ^4.3.5
+        version: 4.4.3
+    devDependencies:
       '@types/node':
         specifier: ^25.2.0
         version: 25.9.1
@@ -455,9 +458,6 @@ importers:
       prettier:
         specifier: ^3.8.1
         version: 3.8.3
-      typescript:
-        specifier: ^5.9.3
-        version: 5.9.3
 
   packages/eslint-config:
     devDependencies:
@@ -509,6 +509,12 @@ importers:
       pg:
         specifier: ^8.16.3
         version: 8.21.0
+      tsx:
+        specifier: ^4.21.0
+        version: 4.22.3
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -525,12 +531,6 @@ importers:
       prisma-zod-generator:
         specifier: ^2.1.4
         version: 2.1.4(magicast@0.5.3)(prisma@7.8.0(@types/react-dom@19.2.2(@types/react@19.2.2))(@types/react@19.2.2)(magicast@0.5.3)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(typescript@5.9.3))(typescript@5.9.3)(zod@4.4.3)
-      tsx:
-        specifier: ^4.21.0
-        version: 4.22.3
-      typescript:
-        specifier: ^5.9.3
-        version: 5.9.3
 
   packages/typescript-config: {}
 
