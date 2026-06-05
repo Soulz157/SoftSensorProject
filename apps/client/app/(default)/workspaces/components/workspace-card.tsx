@@ -21,7 +21,6 @@ import { workspaceIcons, workspaceColors } from '@/store/workspace'
 import { cn } from '@/lib/utils'
 import type { Workspace } from '@/types'
 import type { CanvasNode } from '@/services/canvas'
-import { cp } from 'fs'
 
 function WorkspaceIcon({
   iconId,
