@@ -129,6 +129,14 @@
   .workspace-accent {
     border-top: 3px solid var(--workspace-color, transparent);
   }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
 }
 
 /* React Flow canvas: hide handles by default, show only in build mode */
