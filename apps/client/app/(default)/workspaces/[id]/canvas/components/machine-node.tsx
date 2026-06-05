@@ -56,11 +56,13 @@ export function MachineNode({
 
   return (
     <div
-      className="relative w-45 py-3.5 px-4 rounded-xl bg-white/4"
+      className={cn(
+        'relative w-45 py-3.5 px-4 rounded-xl bg-card dark:bg-white/4',
+        selected
+          ? 'border border-[#3b82f6]'
+          : 'border border-border dark:border-white/10',
+      )}
       style={{
-        border: selected
-          ? '1px solid #3b82f6'
-          : '1px solid rgba(255,255,255,0.1)',
         boxShadow: selected
           ? '0 0 0 2px rgba(59,130,246,0.35), 0 8px 32px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.06)'
           : '0 8px 32px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.06)',
@@ -159,10 +161,10 @@ export function MachineNode({
 
         {/* Name + model count */}
         <div className="min-w-0 flex-1">
-          <p className="text-[#e2e5f0] text-[13px] font-semibold leading-[1.3] truncate">
+          <p className="text-foreground text-[13px] font-semibold leading-[1.3] truncate">
             {data.name}
           </p>
-          <p className="text-white/35 text-[11px] leading-[1.3] mt-px">
+          <p className="text-muted-foreground text-[11px] leading-[1.3] mt-px">
             {data.models.length} model{data.models.length !== 1 ? 's' : ''}
           </p>
         </div>
@@ -177,7 +179,7 @@ export function MachineNode({
               title={model.name}
               className={cn(
                 'w-2 h-2 rounded-full',
-                'bg-white/25 border border-white/15',
+                'bg-foreground/20 border border-foreground/15',
               )}
             />
           ))}

@@ -5,39 +5,33 @@ import {
   AlertTriangle,
   BrainCircuit,
   CheckCircle2,
-  Cpu,
-  Gauge,
   Layers,
   Server,
-  Thermometer,
   TrendingUp,
 } from 'lucide-react'
 
 interface KpiCardsProps {
   totalWorkspaces: number
   totalNodes: number
-  machineCount: number
-  sensorCount: number
-  controllerCount: number
-  runningModels: number
+  activeNodes: number
+  warningNodes: number
+  errorNodes: number
   totalModels: number
-  warningModels: number
   alertsCount: number
 }
 
 export function KpiCards({
   totalWorkspaces,
   totalNodes,
-  machineCount,
-  sensorCount,
-  controllerCount,
-  runningModels,
+  activeNodes,
+  warningNodes,
+  errorNodes,
   totalModels,
-  warningModels,
   alertsCount,
 }: KpiCardsProps) {
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
+      {/* Card 1: Total Workspaces */}
       <Card className="border-border bg-card">
         <CardContent className="p-6">
           <div className="flex items-start justify-between">
@@ -62,12 +56,13 @@ export function KpiCards({
         </CardContent>
       </Card>
 
+      {/* Card 2: System Nodes */}
       <Card className="border-border bg-card">
         <CardContent className="p-6">
           <div className="flex items-start justify-between">
             <div className="space-y-1">
               <p className="text-sm font-medium text-muted-foreground">
-                Total Nodes
+                System Nodes
               </p>
               <p className="text-3xl font-bold text-foreground">{totalNodes}</p>
             </div>
@@ -75,60 +70,56 @@ export function KpiCards({
               <Server className="h-5 w-5" />
             </div>
           </div>
-          <div className="mt-4 flex items-center gap-3 text-xs text-muted-foreground">
-            <span className="flex items-center gap-1">
-              <Cpu className="h-3 w-3" />
-              {machineCount}
+          <div className="mt-4 flex items-center gap-3 text-xs">
+            <span className="flex items-center gap-1 text-emerald-500">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+              Active: {activeNodes}
             </span>
-            <span className="flex items-center gap-1">
-              <Thermometer className="h-3 w-3" />
-              {sensorCount}
+            <span className="flex items-center gap-1 text-amber-500">
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+              Warning: {warningNodes}
             </span>
-            <span className="flex items-center gap-1">
-              <Gauge className="h-3 w-3" />
-              {controllerCount}
+            <span className="flex items-center gap-1 text-red-500">
+              <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
+              Alert: {errorNodes}
             </span>
           </div>
         </CardContent>
       </Card>
 
+      {/* Card 3: System AI Models */}
       <Card className="border-border bg-card">
         <CardContent className="p-6">
           <div className="flex items-start justify-between">
             <div className="space-y-1">
               <p className="text-sm font-medium text-muted-foreground">
-                AI Models
+                System AI Models
               </p>
               <p className="text-3xl font-bold text-foreground">
-                {runningModels}
-                <span className="text-lg font-normal text-muted-foreground">
-                  /{totalModels || '0'}
-                </span>
+                {totalModels ? totalModels : '0'}
               </p>
             </div>
             <div className="rounded-md bg-primary/10 p-2 text-primary">
               <BrainCircuit className="h-5 w-5" />
             </div>
           </div>
-          <div className="mt-4 flex items-center gap-3 text-xs">
+          <div className="mt-4 flex items-center gap-3 text-xs text-muted-foreground">
             <span className="flex items-center gap-1 text-emerald-500">
-              <CheckCircle2 className="h-3 w-3" /> {runningModels} running
+              Running: {totalModels ? totalModels : '0'}
             </span>
-            {warningModels > 0 && (
-              <span className="flex items-center gap-1 text-amber-500">
-                <AlertTriangle className="h-3 w-3" /> {warningModels} warning
-              </span>
-            )}
+            <span>In Progress: —</span>
+            <span>Issues: —</span>
           </div>
         </CardContent>
       </Card>
 
+      {/* Card 4: Overall System Health */}
       <Card className="border-border bg-card">
         <CardContent className="p-6">
           <div className="flex items-start justify-between">
             <div className="space-y-1">
               <p className="text-sm font-medium text-muted-foreground">
-                System Health
+                Overall System Health
               </p>
               <p
                 className={`text-3xl font-bold ${alertsCount > 0 ? 'text-amber-500' : 'text-emerald-500'}`}
@@ -147,7 +138,9 @@ export function KpiCards({
             </div>
           </div>
           <div className="mt-4 text-xs text-muted-foreground">
-            {alertsCount} alerts require attention
+            {alertsCount > 0
+              ? `${alertsCount} critical issues`
+              : 'All systems normal'}
           </div>
         </CardContent>
       </Card>

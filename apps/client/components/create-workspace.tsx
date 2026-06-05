@@ -89,7 +89,6 @@ export function CreateWorkspaceDialog({
     handleClose()
   }
 
-  // ── Derive preview values ─────────────────────────────────────────────────
   const watchedColor = form.watch('color')
   const watchedIcon = form.watch('icon')
 

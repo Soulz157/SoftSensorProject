@@ -34,9 +34,19 @@ export interface Workspace {
   id: string
   ownerId: string
   name: string
+  description?: string
   icon?: string
   color?: string
+  createdAt: string
+  updatedAt: string
+  _count: {
+    members: number
+    models: number
+  }
   modelsCount: number
+  nodeCount?: number
+  alarmCount?: number
+  status?: 'normal' | 'warning' | 'alarm' | 'offline'
 }
 
 export interface WorkspaceIconProps {

@@ -1,8 +1,11 @@
-import { Trash2 } from 'lucide-react'
+import Link from 'next/link'
+import { LayoutDashboard, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { Button } from '@/components/ui/button'
 
 interface CanvasToolbarProps {
   workspaceName: string
+  workspaceId: string
   nodeCount: number
   isBuildMode: boolean
   hasSelection: boolean
@@ -16,6 +19,7 @@ interface CanvasToolbarProps {
 
 export function CanvasToolbar({
   workspaceName,
+  workspaceId,
   nodeCount,
   isBuildMode,
   hasSelection,
@@ -27,76 +31,95 @@ export function CanvasToolbar({
   onConfirm,
 }: CanvasToolbarProps) {
   return (
-    <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between px-4 py-2.5 bg-[#111320] border-b border-[#1e2235]">
-      {/* Left: canvas title + node count */}
-      <div className="flex-1 items-center gap-2">
-        <span className="text-[#e2e5f0] text-md font-semibold">
+    <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between px-6 py-3 bg-card border-b border-border">
+      {/* Left: Canvas Title + Node Count (Fitts's Law & Visual Hierarchy: เรียงบน-ล่าง ให้อ่านง่าย) */}
+      <div className="flex flex-col items-start justify-center">
+        <span className="text-foreground text-base font-semibold leading-tight">
           {workspaceName}
         </span>
-        <div>
-          <span className="text-[#4b5563] text-xs">
-            {nodeCount} Node{nodeCount !== 1 ? 's' : ''} — Click a node to view
-            details
-          </span>
-        </div>
+        <span className="text-muted-foreground text-[11px] mt-0.5">
+          {nodeCount} Device{nodeCount !== 1 ? 's' : ''} — Click a node to view
+          details
+        </span>
       </div>
 
-      {/* Right: actions + mode toggle */}
-      <div className="flex items-center gap-2">
-        {isBuildMode && hasSelection && (
-          <button
-            onClick={onDeleteSelected}
-            className="flex items-center justify-center w-7.5 h-7.5 rounded-lg border border-red-500 bg-red-500/10 text-red-500 hover:bg-red-500/20 transition-colors cursor-pointer"
-          >
-            <Trash2 size={14} />
-          </button>
-        )}
-
+      {/* Right: Actions + Mode Toggle */}
+      <div className="flex items-center gap-4">
         {isBuildMode && (
-          <button
-            onClick={onAddNode}
-            className="px-3.5 py-1.25 text-[11px] font-semibold cursor-pointer border border-[#6366f1] bg-transparent text-[#6366f1] rounded-full hover:bg-[#6366f1]/10 transition-colors"
-          >
-            + Add Node
-          </button>
-        )}
-
-        {isBuildMode && hasPendingChanges && (
-          <>
-            <button
-              onClick={onCancel}
-              className="px-3.5 py-1.25 text-[11px] font-semibold cursor-pointer border border-[#374151] bg-transparent text-[#6b7280] rounded-full hover:bg-white/5 hover:text-[#9ca3af] transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={onConfirm}
-              className="px-3.5 py-1.25 text-[11px] font-semibold cursor-pointer border border-emerald-500/50 bg-emerald-500/10 text-emerald-400 rounded-full hover:bg-emerald-500/20 transition-colors"
-            >
-              ✓ Confirm
-            </button>
-          </>
-        )}
-
-        {/* VIEW/BUILD toggle */}
-        <div className="flex items-center bg-[#1a1d2e] rounded-full border border-[#2d3147] overflow-hidden">
-          {(['VIEW', 'BUILD'] as const).map(mode => {
-            const active = mode === 'BUILD' ? isBuildMode : !isBuildMode
-            return (
-              <button
-                key={mode}
-                onClick={() => onToggleMode(mode)}
-                className={cn(
-                  'px-3.5 py-1.25 text-[11px] font-semibold tracking-wider cursor-pointer border-none transition-all duration-150',
-                  active
-                    ? 'bg-[#6366f1] text-white rounded-full'
-                    : 'bg-transparent text-[#4b5563]',
-                )}
+          <div className="flex items-center gap-2">
+            {hasSelection && (
+              <Button
+                onClick={onDeleteSelected}
+                size="icon"
+                className="cursor-pointer w-8 h-8 rounded-md border border-red-500/50 bg-red-500/10 text-red-500 hover:bg-red-500/20 transition-colors"
+                title="Delete Selected"
               >
-                {mode}
-              </button>
-            )
-          })}
+                <Trash2 size={15} />
+              </Button>
+            )}
+
+            {!hasPendingChanges && (
+              <Button
+                onClick={onAddNode}
+                className="cursor-pointer h-8 px-4 text-xs font-semibold border border-primary bg-transparent text-primary rounded-full hover:bg-primary/10 transition-colors"
+              >
+                + Add Node
+              </Button>
+            )}
+
+            {hasPendingChanges && (
+              <>
+                <Button
+                  onClick={onCancel}
+                  variant="ghost"
+                  className="cursor-pointer h-8 px-4 text-xs font-medium text-muted-foreground rounded-full hover:bg-accent hover:text-foreground transition-colors"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={onConfirm}
+                  className="cursor-pointer h-8 px-4 text-xs font-semibold border border-emerald-500/50 bg-emerald-500/10 text-emerald-400 rounded-full hover:bg-emerald-500/20 transition-colors shadow-[0_0_10px_rgba(16,185,129,0.1)]"
+                >
+                  ✓ Confirm
+                </Button>
+              </>
+            )}
+          </div>
+        )}
+
+        {isBuildMode && <div className="w-px h-6 bg-border" />}
+
+        <div className="flex items-center gap-3">
+          <Link href={`/workspaces/${workspaceId}/details`}>
+            <Button
+              variant="ghost"
+              className="cursor-pointer h-8 px-3 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+            >
+              <LayoutDashboard size={15} className="mr-2" />
+              View Details
+            </Button>
+          </Link>
+
+          {/* VIEW/BUILD toggle */}
+          <div className="flex items-center bg-muted rounded-full border border-border p-0.5">
+            {(['VIEW', 'BUILD'] as const).map(mode => {
+              const active = mode === 'BUILD' ? isBuildMode : !isBuildMode
+              return (
+                <Button
+                  key={mode}
+                  onClick={() => onToggleMode(mode)}
+                  className={cn(
+                    'cursor-pointer h-7 px-4 text-[10px] font-bold tracking-wider rounded-full transition-all duration-200 shadow-none',
+                    active
+                      ? 'bg-primary text-primary-foreground'
+                      : 'bg-transparent text-muted-foreground hover:text-foreground',
+                  )}
+                >
+                  {mode}
+                </Button>
+              )
+            })}
+          </div>
         </div>
       </div>
     </div>

@@ -1,146 +1,74 @@
 'use client'
 
-import { useState } from 'react'
-import Link from 'next/link'
+import { useEffect, useState } from 'react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Skeleton } from '@/components/ui/skeleton'
 import {
   Breadcrumb,
   BreadcrumbItem,
   BreadcrumbList,
   BreadcrumbPage,
 } from '@/components/ui/breadcrumb'
-import { Activity, BrainCircuit, ChevronRight, Map, Plus } from 'lucide-react'
+import { Activity, BrainCircuit, Plus, Loader2 } from 'lucide-react'
 import { useWorkspaces } from '@/hooks/workspace/use-workspaces'
-import { workspaceIcons, workspaceColors } from '@/store/workspace'
-import type { Workspace } from '@/types'
+import { cn } from '@/lib/utils'
 import { CreateWorkspaceDialog } from '@/components/create-workspace'
-
-function WorkspaceIcon({
-  iconId,
-  colorId,
-}: {
-  iconId: string
-  colorId: string
-}) {
-  const selectedIcon = workspaceIcons.find(item => item.id === iconId)
-  const Icon = selectedIcon?.icon
-  const selectedColor = workspaceColors.find(item => item.id === colorId)
-  const bgClass = selectedColor?.bg || 'bg-slate-500'
-
-  return (
-    <span
-      className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-white text-sm font-semibold ${bgClass}`}
-    >
-      {Icon ? (
-        <Icon className="h-5 w-5" />
-      ) : (
-        <span>{iconId?.charAt(0)?.toUpperCase() || '?'}</span>
-      )}
-    </span>
-  )
-}
-
-function WorkspaceCard({ workspace }: { workspace: Workspace }) {
-  return (
-    <Card className="group border-border bg-card transition-all hover:border-primary/50 hover:shadow-lg hover:shadow-primary/5">
-      <CardContent className="p-0">
-        {/* Header */}
-        <div className="flex items-start gap-4 border-b border-border p-5">
-          <WorkspaceIcon
-            iconId={workspace.icon || 'box'}
-            colorId={workspace.color || 'slate'}
-          />
-          <div className="min-w-0 flex-1">
-            <h3 className="truncate text-lg font-semibold text-foreground">
-              {workspace.name}
-            </h3>
-            <p className="mt-0.5 text-sm text-muted-foreground">
-              {workspace.modelsCount} AI model
-              {workspace.modelsCount !== 1 ? 's' : ''} deployed
-            </p>
-          </div>
-        </div>
-
-        {/* Stats */}
-        <div className="grid grid-cols-2 divide-x divide-border border-b border-border">
-          <div className="p-4 text-center">
-            <p className="text-2xl font-bold text-foreground">
-              {workspace.modelsCount ? workspace.modelsCount : '0'}
-            </p>
-            <p className="text-xs text-muted-foreground">Models</p>
-          </div>
-          <div className="p-4 text-center">
-            <div className="flex items-center justify-center gap-1.5">
-              <span className="h-2 w-2 rounded-full bg-emerald-500" />
-              <p className="text-sm font-medium text-emerald-500">Online</p>
-            </div>
-            <p className="text-xs text-muted-foreground">Status</p>
-          </div>
-        </div>
-
-        {/* Footer */}
-        <div className="flex items-center justify-end gap-2 border-t border-border bg-muted/20 px-5 py-3">
-          <Link href={`/workspaces/${workspace.id}/canvas`}>
-            <Button variant="ghost" size="sm" className="h-8 gap-1.5 text-xs">
-              <Map className="h-3.5 w-3.5" />
-              Canvas
-            </Button>
-          </Link>
-          <Link href={`/workspaces/${workspace.id}`}>
-            <Button
-              size="sm"
-              className="h-8 gap-1 bg-primary text-xs text-primary-foreground hover:bg-primary/90"
-            >
-              View Details
-              <ChevronRight className="h-3.5 w-3.5" />
-            </Button>
-          </Link>
-        </div>
-      </CardContent>
-    </Card>
-  )
-}
-
-function WorkspaceCardSkeleton() {
-  return (
-    <Card className="border-border bg-card">
-      <CardContent className="p-0">
-        <div className="flex items-start gap-4 border-b border-border p-5">
-          <Skeleton className="h-10 w-10 rounded-lg" />
-          <div className="flex-1 space-y-2">
-            <Skeleton className="h-5 w-40" />
-            <Skeleton className="h-4 w-24" />
-          </div>
-        </div>
-        <div className="grid grid-cols-2 divide-x divide-border border-b border-border">
-          <div className="p-4">
-            <Skeleton className="mx-auto h-8 w-8" />
-          </div>
-          <div className="p-4">
-            <Skeleton className="mx-auto h-5 w-16" />
-          </div>
-        </div>
-        <div className="flex justify-end gap-2 px-5 py-3">
-          <Skeleton className="h-8 w-20" />
-          <Skeleton className="h-8 w-24" />
-        </div>
-      </CardContent>
-    </Card>
-  )
-}
+import { getNodes, type CanvasNode } from '@/services/canvas'
+import {
+  WorkspaceCard,
+  WorkspaceCardSkeleton,
+} from './components/workspace-card'
 
 export default function WorkspacesPage() {
-  const { workspaces, loading } = useWorkspaces()
+  const { workspaces, loading: workspacesLoading } = useWorkspaces()
   const [isOpen, setIsOpen] = useState(false)
+  const [nodesByWorkspace, setNodesByWorkspace] = useState<Record<
+    string,
+    CanvasNode[]
+  > | null>(null)
 
   const totalModels = workspaces.reduce((acc, w) => acc + w.modelsCount, 0)
+
+  useEffect(() => {
+    if (workspacesLoading || workspaces.length === 0) return
+
+    let cancelled = false
+
+    Promise.all(workspaces.map(w => getNodes(w.id)))
+      .then(results => {
+        if (cancelled) return
+        const map: Record<string, CanvasNode[]> = {}
+        workspaces.forEach((w, i) => {
+          map[w.id] = results[i] ?? []
+        })
+        setNodesByWorkspace(map)
+      })
+      .catch(() => {
+        if (!cancelled) setNodesByWorkspace({})
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [workspaces, workspacesLoading])
+
+  const nodesLoading =
+    !workspacesLoading && workspaces.length > 0 && nodesByWorkspace === null
+
+  if (workspacesLoading || nodesLoading) {
+    return (
+      <div className="flex min-h-[50vh] flex-1 flex-col items-center justify-center gap-4 text-muted-foreground">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        <p className="text-sm font-medium">
+          {workspacesLoading ? 'Loading workspaces...' : 'Loading node data...'}
+        </p>
+      </div>
+    )
+  }
 
   return (
     <div className="flex-1 overflow-auto bg-background p-6 md:p-8">
       <div className="mx-auto max-w-7xl space-y-8">
-        {/* Breadcrumb */}
         <Breadcrumb>
           <BreadcrumbList>
             <BreadcrumbItem>
@@ -149,7 +77,6 @@ export default function WorkspacesPage() {
           </BreadcrumbList>
         </Breadcrumb>
 
-        {/* Header */}
         <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
           <div>
             <h1 className="text-3xl font-bold tracking-tight text-foreground">
@@ -179,13 +106,9 @@ export default function WorkspacesPage() {
                   <Activity className="h-5 w-5" />
                 </div>
                 <div>
-                  {loading ? (
-                    <Skeleton className="h-8 w-12" />
-                  ) : (
-                    <p className="text-2xl font-bold text-foreground">
-                      {workspaces.length}
-                    </p>
-                  )}
+                  <p className="text-2xl font-bold text-foreground">
+                    {workspaces.length}
+                  </p>
                   <p className="text-sm text-muted-foreground">
                     Total Workspaces
                   </p>
@@ -201,13 +124,9 @@ export default function WorkspacesPage() {
                   <BrainCircuit className="h-5 w-5" />
                 </div>
                 <div>
-                  {loading ? (
-                    <Skeleton className="h-8 w-12" />
-                  ) : (
-                    <p className="text-2xl font-bold text-foreground">
-                      {totalModels ? totalModels : '0'}
-                    </p>
-                  )}
+                  <p className="text-2xl font-bold text-foreground">
+                    {totalModels || '0'}
+                  </p>
                   <p className="text-sm text-muted-foreground">Total Models</p>
                 </div>
               </div>
@@ -216,19 +135,23 @@ export default function WorkspacesPage() {
         </div>
 
         {/* Workspace Grid */}
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-          {loading
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+          {workspacesLoading
             ? Array.from({ length: 4 }).map((_, i) => (
                 <WorkspaceCardSkeleton key={i} />
               ))
             : workspaces.map(workspace => (
-                <WorkspaceCard key={workspace.id} workspace={workspace} />
+                <WorkspaceCard
+                  key={workspace.id}
+                  workspace={workspace}
+                  nodes={nodesByWorkspace?.[workspace.id] ?? []}
+                />
               ))}
         </div>
 
-        {!loading && workspaces.length === 0 && (
+        {workspaces.length === 0 && (
           <div className="flex flex-col items-center gap-3 py-16 text-center text-muted-foreground">
-            <Activity className="h-10 w-10 opacity-30" />
+            <Activity className={cn('h-10 w-10 opacity-30')} />
             <p className="text-base font-medium">No workspaces yet</p>
             <p className="text-sm">
               Create your first workspace to get started.

@@ -23,6 +23,7 @@ import { AddNodeDialog } from '@/app/(default)/workspaces/[id]/canvas/components
 import { NodeDetailPanel } from '@/app/(default)/workspaces/[id]/canvas/components/node-detail-sheet'
 import { LegendPanel } from '@/app/(default)/workspaces/[id]/canvas/components/legend-panel'
 import { CanvasToolbar } from '@/app/(default)/workspaces/[id]/canvas/components/canvas-tool-bar'
+import { useTheme } from 'next-themes'
 
 type CanvasRFNode = CanvasData['nodes'][number]
 
@@ -60,6 +61,9 @@ export default function CanvasPage({
     handleCancel,
   } = useCanvasEditor(workspaceId, remoteNodes, remoteEdges)
 
+  const { resolvedTheme } = useTheme()
+  const isDark = resolvedTheme === 'dark'
+
   const nodeTypes = useMemo(() => ({ machineNode: MachineNode }), [])
   const hasSelection =
     nodes.some(n => n.selected) || edges.some(e => e.selected)
@@ -74,10 +78,11 @@ export default function CanvasPage({
   const onPaneClick = useCallback(() => setSelectedNode(null), [])
 
   return (
-    <div className="flex w-full h-full overflow-hidden bg-[#0a0c12] relative">
+    <div className="flex w-full h-full overflow-hidden bg-background relative">
       <div className="relative flex-1 min-w-0 h-full flex flex-col">
         <CanvasToolbar
           workspaceName={workspace?.name ?? 'Loading...'}
+          workspaceId={workspaceId}
           nodeCount={nodes.length}
           isBuildMode={isBuildMode}
           hasSelection={hasSelection}
@@ -112,16 +117,16 @@ export default function CanvasPage({
             deleteKeyCode={isBuildMode ? ['Backspace', 'Delete'] : null}
             fitView
             fitViewOptions={{ padding: 0.2 }}
-            style={{ background: '#0a0c12' }}
+            colorMode={isDark ? 'dark' : 'light'}
             proOptions={{ hideAttribution: false }}
           >
             <Background
               variant={BackgroundVariant.Dots}
               gap={24}
-              color="#1e2235"
+              color={isDark ? '#1e2235' : '#cbd5e1'}
             />
             <LegendPanel />
-            <Controls className="bg-gray-800 fill-white border-gray-700" />
+            <Controls />
             <MiniMap
               nodeColor={node => {
                 const type = (node.data as Record<string, unknown>)
@@ -132,21 +137,23 @@ export default function CanvasPage({
                     ? '#f97316'
                     : '#22c55e'
               }}
-              maskColor="rgba(0,0,0,0.5)"
+              maskColor={isDark ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.5)'}
             />
           </ReactFlow>
         </div>
       </div>
 
       {loading && (
-        <div className="absolute inset-0 flex items-center justify-center bg-[#0a0c12]/80 z-20">
-          <span className="text-[#6b7280] text-sm">Loading canvas...</span>
+        <div className="absolute inset-0 flex items-center justify-center bg-background/80 z-20 backdrop-blur-sm">
+          <span className="text-muted-foreground text-sm font-medium">
+            Loading canvas...
+          </span>
         </div>
       )}
 
       {error && !loading && (
-        <div className="absolute inset-0 flex items-center justify-center bg-[#0a0c12]/80 z-20">
-          <span className="text-red-500 text-sm">{error}</span>
+        <div className="absolute inset-0 flex items-center justify-center bg-background/80 z-20 backdrop-blur-sm">
+          <span className="text-red-500 font-medium text-sm">{error}</span>
         </div>
       )}
 

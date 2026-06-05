@@ -5,7 +5,6 @@ import {
   useEdgesState,
   addEdge,
   type Connection,
-  type Node,
   type Edge,
 } from '@xyflow/react'
 
@@ -25,6 +24,9 @@ import type { CanvasData } from '@/hooks/canvas/use-canvas'
 type CanvasRFNode = CanvasData['nodes'][number]
 type NodeType = 'machine' | 'sensor' | 'controller'
 type NodeStatus = 'normal' | 'warning' | 'alarm' | 'offline'
+
+const generateTempId = () =>
+  `temp-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
 
 export function useCanvasEditor(
   workspaceId: string,
@@ -62,39 +64,83 @@ export function useCanvasEditor(
     nodesRef.current = nodes
   }, [nodes])
 
-  const handleConfirm = useCallback(() => {
+  const handleConfirm = useCallback(async () => {
     const snapshot = buildSnapshotRef.current
     if (!snapshot) return
 
-    for (const node of nodes) {
-      const orig = snapshot.nodes.find(s => s.id === node.id)
-      if (
-        orig &&
-        (Math.abs(node.position.x - orig.position.x) > 0.1 ||
-          Math.abs(node.position.y - orig.position.y) > 0.1)
-      ) {
-        updateNode(node.id, { x: node.position.x, y: node.position.y }).catch(
-          console.error,
-        )
-      }
-    }
+    try {
+      const currentNodes = nodes
+      const currentEdges = edges
+      const originalNodes = snapshot.nodes
 
-    replaceEdges(
-      workspaceId,
-      edges.map(e => ({
-        sourceId: e.source,
-        targetId: e.target,
+      const nodesToCreate = currentNodes.filter(n => n.id.startsWith('temp-'))
+      const nodesToDelete = originalNodes.filter(
+        orig => !currentNodes.find(n => n.id === orig.id),
+      )
+      const nodesToUpdate = currentNodes.filter(n => {
+        if (n.id.startsWith('temp-')) return false
+        const orig = originalNodes.find(o => o.id === n.id)
+        if (!orig) return false
+        return (
+          Math.abs(n.position.x - orig.position.x) > 0.1 ||
+          Math.abs(n.position.y - orig.position.y) > 0.1
+        )
+      })
+
+      await Promise.all(nodesToDelete.map(n => deleteNode(n.id)))
+
+      await Promise.all(
+        nodesToUpdate.map(n =>
+          updateNode(n.id, { x: n.position.x, y: n.position.y }),
+        ),
+      )
+
+      const idMap = new Map<string, string>()
+      await Promise.all(
+        nodesToCreate.map(async n => {
+          const created = await createNode(workspaceId, {
+            name: n.data.name as string,
+            type: n.data.type as NodeType,
+            status: n.data.status as NodeStatus,
+            x: n.position.x,
+            y: n.position.y,
+          })
+          idMap.set(n.id, created.id)
+        }),
+      )
+      const finalEdgesPayload = currentEdges.map(e => ({
+        sourceId: idMap.get(e.source) || e.source,
+        targetId: idMap.get(e.target) || e.target,
         sourceHandle: e.sourceHandle ?? undefined,
         targetHandle: e.targetHandle ?? undefined,
-      })),
-    ).catch(console.error)
+      }))
+      await replaceEdges(workspaceId, finalEdgesPayload)
 
-    buildSnapshotRef.current = {
-      nodes: nodes.map(n => ({ ...n, position: { ...n.position } })),
-      edges: [...edges],
+      const finalLocalNodes = currentNodes.map(n =>
+        idMap.has(n.id) ? { ...n, id: idMap.get(n.id)! } : n,
+      )
+      const finalLocalEdges = currentEdges.map(e => ({
+        ...e,
+        source: idMap.get(e.source) || e.source,
+        target: idMap.get(e.target) || e.target,
+      }))
+
+      setNodes(finalLocalNodes)
+      setEdges(finalLocalEdges)
+
+      buildSnapshotRef.current = {
+        nodes: finalLocalNodes.map(n => ({
+          ...n,
+          position: { ...n.position },
+        })),
+        edges: [...finalLocalEdges],
+      }
+
+      setHasPendingChanges(false)
+    } catch (error) {
+      console.error('Failed to save changes:', error)
     }
-    setHasPendingChanges(false)
-  }, [nodes, edges, workspaceId])
+  }, [nodes, edges, workspaceId, setNodes, setEdges])
 
   const handleToggleMode = useCallback(
     (targetMode: 'VIEW' | 'BUILD') => {
@@ -150,36 +196,26 @@ export function useCanvasEditor(
 
   const onNodeDragStop = useCallback(() => setHasPendingChanges(true), [])
   const onEdgesDelete = useCallback(() => setHasPendingChanges(true), [])
-  const onNodesDelete = useCallback((deleted: Node[]) => {
-    for (const node of deleted) deleteNode(node.id).catch(console.error)
+
+  const onNodesDelete = useCallback(() => {
+    setHasPendingChanges(true)
   }, [])
 
   const handleAddNode = useCallback(
-    async (name: string, type: NodeType, status: NodeStatus) => {
+    (name: string, type: NodeType, status: NodeStatus) => {
       const x = 200 + (nodes.length % 5) * 40
       const y = 200 + Math.floor(nodes.length / 5) * 60
-      const created = await createNode(workspaceId, {
-        name,
-        type,
-        status,
-        x,
-        y,
-      })
+
       const newNode: CanvasRFNode = {
-        id: created.id,
+        id: generateTempId(),
         type: 'machineNode',
         position: { x, y },
-        data: {
-          name: created.data.name,
-          type: created.data.type,
-          status: created.data.status,
-          icon: created.data.icon,
-          models: created.models,
-        },
+        data: { name, type, status, icon: '', models: [] },
       }
       setNodes(prev => [...prev, newNode])
+      setHasPendingChanges(true)
     },
-    [workspaceId, nodes.length, setNodes],
+    [nodes.length, setNodes],
   )
 
   const handleDeleteSelected = useCallback(() => {
@@ -195,30 +231,11 @@ export function useCanvasEditor(
         !selectedNodeIds.has(e.source) &&
         !selectedNodeIds.has(e.target),
     )
-    replaceEdges(
-      workspaceId,
-      remainingEdges.map(e => ({
-        sourceId: e.source,
-        targetId: e.target,
-        sourceHandle: e.sourceHandle ?? undefined,
-        targetHandle: e.targetHandle ?? undefined,
-      })),
-    ).catch(console.error)
-
-    for (const nodeId of selectedNodeIds)
-      deleteNode(nodeId).catch(console.error)
 
     setNodes(prev => prev.filter(n => !selectedNodeIds.has(n.id)))
     setEdges(remainingEdges)
-    if (buildSnapshotRef.current) {
-      buildSnapshotRef.current = {
-        nodes: buildSnapshotRef.current.nodes.filter(
-          n => !selectedNodeIds.has(n.id),
-        ),
-        edges: remainingEdges,
-      }
-    }
-  }, [nodes, edges, workspaceId, setNodes, setEdges])
+    setHasPendingChanges(true)
+  }, [nodes, edges, setNodes, setEdges])
 
   useEffect(() => {
     setCanvasActions({
@@ -231,6 +248,7 @@ export function useCanvasEditor(
         setNodes(prev => prev.filter(n => n.id !== nodeId))
         setEdges(remaining)
         setNodeToDeleteId(null)
+
         await Promise.all([
           deleteNode(nodeId),
           replaceEdges(
