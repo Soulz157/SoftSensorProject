@@ -19,8 +19,8 @@ interface ModelsFilterBarProps {
   setWorkspaceFilter: (val: string) => void
   runStatusFilter: string
   setRunStatusFilter: (val: string) => void
-  productionStatusFilter: string
-  setProductionStatusFilter: (val: string) => void
+  deploymentStatusFilter: string
+  setDeploymentStatusFilter: (val: string) => void
   allWorkspaces: Workspace[]
   onClearFilters: () => void
 }
@@ -34,8 +34,8 @@ export function ModelsFilterBar(props: ModelsFilterBarProps) {
     setWorkspaceFilter,
     runStatusFilter,
     setRunStatusFilter,
-    productionStatusFilter,
-    setProductionStatusFilter,
+    deploymentStatusFilter,
+    setDeploymentStatusFilter,
     allWorkspaces,
     onClearFilters,
   } = props
@@ -43,7 +43,7 @@ export function ModelsFilterBar(props: ModelsFilterBarProps) {
   const hasFilters =
     workspaceFilter !== 'all' ||
     runStatusFilter !== 'all' ||
-    productionStatusFilter !== 'all' ||
+    deploymentStatusFilter !== 'all' ||
     searchQuery
 
   return (
@@ -80,7 +80,7 @@ export function ModelsFilterBar(props: ModelsFilterBarProps) {
               </SelectContent>
             </Select>
 
-            {activeTab === 'run-status' ? (
+            {activeTab === 'deployment-state' ? (
               <Select
                 value={runStatusFilter}
                 onValueChange={setRunStatusFilter}
@@ -118,8 +118,8 @@ export function ModelsFilterBar(props: ModelsFilterBarProps) {
               </Select>
             ) : (
               <Select
-                value={productionStatusFilter}
-                onValueChange={setProductionStatusFilter}
+                value={deploymentStatusFilter}
+                onValueChange={setDeploymentStatusFilter}
               >
                 <SelectTrigger className="w-37.5">
                   <SelectValue placeholder="All Status" />

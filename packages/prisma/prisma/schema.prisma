@@ -30,6 +30,9 @@ enum WorkspaceAction {
   MODEL_ADDED
   MODEL_REMOVED
   MODEL_UPDATED
+  NODE_ADDED
+  NODE_REMOVED
+  NODE_UPDATED
 }
 
 enum SubscriptionStatus {
@@ -83,20 +86,21 @@ model Account {
 }
 
 model Workspace {
-  id        String            @id @default(uuid())
-  ownerId   String
-  owner     User              @relation(fields: [ownerId], references: [id])
+  id          String            @id @default(uuid())
+  ownerId     String
+  owner       User              @relation(fields: [ownerId], references: [id])
   name        String
   icon        String
   color       String
   description String?
   createdAt   DateTime          @default(now())
-  updatedAt DateTime          @updatedAt
-  deletedAt DateTime?
-  logs      WorkspaceLog[]
-  members   WorkspaceMember[]
-  nodes     Nodes[]
-  models    Model[]
+  updatedAt   DateTime          @updatedAt
+  deletedAt   DateTime?
+  logs        WorkspaceLog[]
+  members     WorkspaceMember[]
+  nodes       Nodes[]
+  models      Model[]
+  edges       Edge[]
 
   @@index([ownerId])
 }
@@ -227,4 +231,18 @@ model PasswordResetToken {
 
   @@index([userId])
   @@index([token])
+}
+
+model Edge {
+  id           String    @id @default(uuid())
+  workspaceId  String
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  sourceId     String
+  targetId     String
+  sourceHandle String?
+  targetHandle String?
+  createdAt    DateTime  @default(now())
+
+  @@unique([workspaceId, sourceId, targetId, sourceHandle, targetHandle])
+  @@index([workspaceId])
 }

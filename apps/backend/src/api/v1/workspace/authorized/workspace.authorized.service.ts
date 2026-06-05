@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { AppException } from '@softsensor/common';
 import { PrismaService } from '@softsensor/prisma';
 import type {
+  EdgeItemDto,
   GetLogsQueryDto,
   InviteMemberDto,
   UpdateMemberRoleDto,
@@ -70,6 +71,37 @@ export class WorkspaceAuthorizedService {
     }
   }
 
+  private deriveNodeSummary(nodes: { data: unknown }[]): {
+    nodeCount: number;
+    alarmCount: number;
+    status: 'normal' | 'warning' | 'alarm' | 'offline';
+  } {
+    const priority: Record<string, number> = {
+      alarm: 3,
+      offline: 2,
+      warning: 1,
+      normal: 0,
+    };
+    const statusMap: Record<
+      number,
+      'normal' | 'warning' | 'alarm' | 'offline'
+    > = { 0: 'normal', 1: 'warning', 2: 'offline', 3: 'alarm' };
+    let worst = 0;
+    let alarmCount = 0;
+    for (const node of nodes) {
+      const data = node.data as Record<string, unknown>;
+      const st = typeof data?.status === 'string' ? data.status : 'normal';
+      if (st !== 'normal') alarmCount++;
+      const p = priority[st] ?? 0;
+      if (p > worst) worst = p;
+    }
+    return {
+      nodeCount: nodes.length,
+      alarmCount,
+      status: statusMap[worst] ?? 'normal',
+    };
+  }
+
   async getAllWorkspaces(user: Auth.UserPayload) {
     const workspaces = await this.prisma.workspace.findMany({
       where: {
@@ -82,14 +114,22 @@ export class WorkspaceAuthorizedService {
         name: true,
         icon: true,
         ownerId: true,
+        updatedAt: true,
+        _count: { select: { members: true, models: true } },
+        nodes: { select: { data: true } },
       },
     });
+
+    const data = workspaces.map(({ nodes, ...ws }) => ({
+      ...ws,
+      ...this.deriveNodeSummary(nodes),
+    }));
 
     return {
       statusCode: 200,
       message: 'ดึงข้อมูล workspace สำเร็จ',
-      type: 'SUCCESS' as const,
-      data: workspaces,
+      type: 'SUCCESS',
+      data,
     };
   }
 
@@ -337,6 +377,49 @@ export class WorkspaceAuthorizedService {
       message: 'Member role updated',
       type: 'SUCCESS' as const,
       data: updated,
+    };
+  }
+
+  async listEdges(workspaceId: string, userId: string) {
+    await this.assertHasAccess(workspaceId, userId);
+
+    const edges = await this.prisma.edge.findMany({
+      where: { workspaceId },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return {
+      statusCode: 200,
+      message: 'Edges fetched successfully',
+      type: 'SUCCESS' as const,
+      data: edges,
+    };
+  }
+
+  async replaceEdges(
+    workspaceId: string,
+    userId: string,
+    edges: EdgeItemDto[],
+  ) {
+    await this.assertHasAccess(workspaceId, userId);
+
+    await this.prisma.$transaction([
+      this.prisma.edge.deleteMany({ where: { workspaceId } }),
+      this.prisma.edge.createMany({
+        data: edges.map((e) => ({ ...e, workspaceId })),
+      }),
+    ]);
+
+    const result = await this.prisma.edge.findMany({
+      where: { workspaceId },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return {
+      statusCode: 200,
+      message: 'Edges replaced successfully',
+      type: 'SUCCESS' as const,
+      data: result,
     };
   }
 

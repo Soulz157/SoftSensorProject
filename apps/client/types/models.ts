@@ -4,7 +4,7 @@ export interface Model {
   status: 'running' | 'warning' | 'error' | 'stopped'
   accuracy?: string
   runStatus: 'running' | 'error' | 'stopped' | 'initializing'
-  productionStatus: 'running' | 'warning' | 'alert' | 'offline'
+  deploymentStatus: 'running' | 'warning' | 'alert' | 'offline'
   errorMessage?: string
   anomalyCause?: string
   lastUpdated: string
@@ -69,7 +69,7 @@ const ANOMALY_CAUSES = [
 ]
 
 type RunStatus = Model['runStatus']
-type ProdStatus = Model['productionStatus']
+type ProdStatus = Model['deploymentStatus']
 type NodeStatus = Node['status']
 type NodeType = Node['type']
 
@@ -111,7 +111,7 @@ function generateMockModels(): Workspace[] {
     {
       id: '1',
       name: 'Acme Corporation',
-      description: 'Main production facility',
+      description: 'Main deployment facility',
     },
     {
       id: '2',
@@ -143,7 +143,7 @@ function generateMockModels(): Workspace[] {
 
       for (let j = 0; j < modelCount; j++) {
         const runStatus = pickCycle(RUN_STATUSES, modelIdx)
-        const productionStatus: ProdStatus =
+        const deploymentStatus: ProdStatus =
           runStatus === 'error'
             ? 'alert'
             : runStatus === 'stopped'
@@ -152,12 +152,12 @@ function generateMockModels(): Workspace[] {
 
         const hasError = runStatus === 'error'
         const hasAnomaly =
-          productionStatus === 'warning' || productionStatus === 'alert'
+          deploymentStatus === 'warning' || deploymentStatus === 'alert'
         const isRunning = runStatus === 'running'
 
         const status: Model['status'] =
           runStatus === 'running'
-            ? productionStatus === 'warning'
+            ? deploymentStatus === 'warning'
               ? 'warning'
               : 'running'
             : runStatus === 'error'
@@ -173,7 +173,7 @@ function generateMockModels(): Workspace[] {
               ? `${(85 + (modelIdx % 14)).toFixed(1)}%`
               : undefined,
           runStatus,
-          productionStatus,
+          deploymentStatus,
           errorMessage: hasError
             ? pickCycle(ERROR_MESSAGES, modelIdx)
             : undefined,

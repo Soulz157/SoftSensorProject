@@ -16,8 +16,10 @@ export interface Workspace {
   name: string
   description: string
   nodes: Node[]
-  lastUpdated: string
+  updatedAt: string
   modelsCount?: number
+  color?: string
+  icon?: string
 }
 
 export interface Alert {

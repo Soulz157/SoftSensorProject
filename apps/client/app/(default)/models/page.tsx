@@ -74,7 +74,7 @@ function runStatusBadge(status: FlatModel['runStatus']) {
   )
 }
 
-function prodStatusBadge(status: FlatModel['productionStatus']) {
+function prodStatusBadge(status: FlatModel['deploymentStatus']) {
   const config = {
     running: {
       color: 'bg-emerald-500/15 text-emerald-500',
@@ -106,10 +106,10 @@ function prodStatusBadge(status: FlatModel['productionStatus']) {
 }
 
 export default function ModelsPage() {
-  const [activeTab, setActiveTab] = useState('run-status')
+  const [activeTab, setActiveTab] = useState('current-status')
   const [workspaceFilter, setWorkspaceFilter] = useState('all')
   const [runStatusFilter, setRunStatusFilter] = useState('all')
-  const [productionStatusFilter, setProductionStatusFilter] = useState('all')
+  const [deploymentStatusFilter, setdeploymentStatusFilter] = useState('all')
   const [searchQuery, setSearchQuery] = useState('')
   const [currentPage, setCurrentPage] = useState(1)
 
@@ -117,11 +117,11 @@ export default function ModelsPage() {
     let filtered = [...allModels]
     if (workspaceFilter !== 'all')
       filtered = filtered.filter(m => m.workspaceId === workspaceFilter)
-    if (activeTab === 'run-status' && runStatusFilter !== 'all')
+    if (activeTab === 'deployment-state' && runStatusFilter !== 'all')
       filtered = filtered.filter(m => m.runStatus === runStatusFilter)
-    if (activeTab === 'production-state' && productionStatusFilter !== 'all')
+    if (activeTab === 'current-status' && deploymentStatusFilter !== 'all')
       filtered = filtered.filter(
-        m => m.productionStatus === productionStatusFilter,
+        m => m.deploymentStatus === deploymentStatusFilter,
       )
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase()
@@ -136,7 +136,7 @@ export default function ModelsPage() {
   }, [
     workspaceFilter,
     runStatusFilter,
-    productionStatusFilter,
+    deploymentStatusFilter,
     searchQuery,
     activeTab,
   ])
@@ -156,26 +156,23 @@ export default function ModelsPage() {
   const clearFilters = () => {
     setWorkspaceFilter('all')
     setRunStatusFilter('all')
-    setProductionStatusFilter('all')
+    setdeploymentStatusFilter('all')
     setSearchQuery('')
     setCurrentPage(1)
   }
 
   const runCounts = {
-    running: filteredModels.filter(m => m.runStatus === 'running').length,
-    error: filteredModels.filter(m => m.runStatus === 'error').length,
-    stopped: filteredModels.filter(m => m.runStatus === 'stopped').length,
-    total: filteredModels.length,
+    running: allModels.filter(m => m.runStatus === 'running').length,
+    error: allModels.filter(m => m.runStatus === 'error').length,
+    stopped: allModels.filter(m => m.runStatus === 'stopped').length,
+    total: allModels.length,
   }
 
   const prodCounts = {
-    running: filteredModels.filter(m => m.productionStatus === 'running')
-      .length,
-    warning: filteredModels.filter(m => m.productionStatus === 'warning')
-      .length,
-    alert: filteredModels.filter(m => m.productionStatus === 'alert').length,
-    offline: filteredModels.filter(m => m.productionStatus === 'offline')
-      .length,
+    running: allModels.filter(m => m.deploymentStatus === 'running').length,
+    warning: allModels.filter(m => m.deploymentStatus === 'warning').length,
+    alert: allModels.filter(m => m.deploymentStatus === 'alert').length,
+    offline: allModels.filter(m => m.deploymentStatus === 'offline').length,
   }
 
   const anomalies = filteredModels.filter(m => m.anomalyCause)
@@ -229,18 +226,18 @@ export default function ModelsPage() {
         >
           <TabsList className="inline-flex w-full max-w-md flex-row bg-secondary">
             <TabsTrigger
-              value="run-status"
-              className="gap-2 cursor-pointer data-active:bg-zinc-600 data-active:text-white"
+              value="current-status"
+              className="cursor-pointer gap-2 p-1.5 text-black dark:text-white data-[state=active]:bg-primary data-[state=active]:text-white data-[state=active]:shadow-sm"
             >
               <Play className="h-4 w-4" />
-              Run Status
+              Current Status
             </TabsTrigger>
             <TabsTrigger
-              value="production-state"
-              className="gap-2 cursor-pointer  data-active:bg-zinc-600 data-active:text-white"
+              value="deployment-state"
+              className="cursor-pointer gap-2 p-1.5 text-black dark:text-white data-[state=active]:bg-primary data-[state=active]:text-white data-[state=active]:shadow-sm"
             >
               <Activity className="h-4 w-4" />
-              Production State
+              Deployment State
             </TabsTrigger>
           </TabsList>
 
@@ -252,16 +249,16 @@ export default function ModelsPage() {
             setWorkspaceFilter={handleFilterChange(setWorkspaceFilter)}
             runStatusFilter={runStatusFilter}
             setRunStatusFilter={handleFilterChange(setRunStatusFilter)}
-            productionStatusFilter={productionStatusFilter}
-            setProductionStatusFilter={handleFilterChange(
-              setProductionStatusFilter,
+            deploymentStatusFilter={deploymentStatusFilter}
+            setDeploymentStatusFilter={handleFilterChange(
+              setdeploymentStatusFilter,
             )}
             allWorkspaces={allWorkspaces}
             onClearFilters={clearFilters}
           />
 
-          {/* Run Status Tab */}
-          <TabsContent value="run-status" className="space-y-6">
+          {/* Deployment State Tab */}
+          <TabsContent value="deployment-state" className="space-y-6">
             {/* Stat cards */}
             <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
               <Card
@@ -370,7 +367,7 @@ export default function ModelsPage() {
                           Workspace
                         </th>
                         <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                          Node
+                          Device
                         </th>
                         <th className="px-4 py-3 text-left font-medium text-muted-foreground">
                           Resources
@@ -433,7 +430,7 @@ export default function ModelsPage() {
                             {m.lastUpdated}
                           </td>
                           <td className="px-4 py-3">
-                            <Link href={`/workspaces/${m.workspaceId}`}>
+                            <Link href={`/workspaces/${m.workspaceId}/details`}>
                               <Button
                                 variant="ghost"
                                 size="sm"
@@ -469,15 +466,15 @@ export default function ModelsPage() {
             />
           </TabsContent>
 
-          {/* Production State Tab */}
-          <TabsContent value="production-state" className="space-y-6">
+          {/* Current Status Tab */}
+          <TabsContent value="current-status" className="space-y-6">
             {/* Stat cards */}
             <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
               <Card
-                className={`cursor-pointer border-border bg-card transition-all hover:border-emerald-500/50 ${productionStatusFilter === 'running' ? 'ring-2 ring-emerald-500' : ''}`}
+                className={`cursor-pointer border-border bg-card transition-all hover:border-emerald-500/50 ${deploymentStatusFilter === 'running' ? 'ring-2 ring-emerald-500' : ''}`}
                 onClick={() =>
-                  handleFilterChange(setProductionStatusFilter)(
-                    productionStatusFilter === 'running' ? 'all' : 'running',
+                  handleFilterChange(setdeploymentStatusFilter)(
+                    deploymentStatusFilter === 'running' ? 'all' : 'running',
                   )
                 }
               >
@@ -497,10 +494,10 @@ export default function ModelsPage() {
               </Card>
 
               <Card
-                className={`cursor-pointer border-border bg-card transition-all hover:border-amber-500/50 ${productionStatusFilter === 'warning' ? 'ring-2 ring-amber-500' : ''}`}
+                className={`cursor-pointer border-border bg-card transition-all hover:border-amber-500/50 ${deploymentStatusFilter === 'warning' ? 'ring-2 ring-amber-500' : ''}`}
                 onClick={() =>
-                  handleFilterChange(setProductionStatusFilter)(
-                    productionStatusFilter === 'warning' ? 'all' : 'warning',
+                  handleFilterChange(setdeploymentStatusFilter)(
+                    deploymentStatusFilter === 'warning' ? 'all' : 'warning',
                   )
                 }
               >
@@ -520,10 +517,10 @@ export default function ModelsPage() {
               </Card>
 
               <Card
-                className={`cursor-pointer border-border bg-card transition-all hover:border-red-500/50 ${productionStatusFilter === 'alert' ? 'ring-2 ring-red-500' : ''}`}
+                className={`cursor-pointer border-border bg-card transition-all hover:border-red-500/50 ${deploymentStatusFilter === 'alert' ? 'ring-2 ring-red-500' : ''}`}
                 onClick={() =>
-                  handleFilterChange(setProductionStatusFilter)(
-                    productionStatusFilter === 'alert' ? 'all' : 'alert',
+                  handleFilterChange(setdeploymentStatusFilter)(
+                    deploymentStatusFilter === 'alert' ? 'all' : 'alert',
                   )
                 }
               >
@@ -543,10 +540,10 @@ export default function ModelsPage() {
               </Card>
 
               <Card
-                className={`cursor-pointer border-border bg-card transition-all hover:border-zinc-500/50 ${productionStatusFilter === 'offline' ? 'ring-2 ring-zinc-500' : ''}`}
+                className={`cursor-pointer border-border bg-card transition-all hover:border-zinc-500/50 ${deploymentStatusFilter === 'offline' ? 'ring-2 ring-zinc-500' : ''}`}
                 onClick={() =>
-                  handleFilterChange(setProductionStatusFilter)(
-                    productionStatusFilter === 'offline' ? 'all' : 'offline',
+                  handleFilterChange(setdeploymentStatusFilter)(
+                    deploymentStatusFilter === 'offline' ? 'all' : 'offline',
                   )
                 }
               >
@@ -606,9 +603,7 @@ export default function ModelsPage() {
             {/* Table */}
             <Card className="border-border bg-card">
               <CardHeader className="pb-3">
-                <CardTitle className="text-base font-medium">
-                  Production Models
-                </CardTitle>
+                <CardTitle className="text-base font-medium">Models</CardTitle>
               </CardHeader>
               <CardContent className="p-0">
                 <div className="overflow-x-auto">
@@ -625,7 +620,7 @@ export default function ModelsPage() {
                           Workspace
                         </th>
                         <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                          Node
+                          Device
                         </th>
                         <th className="px-4 py-3 text-left font-medium text-muted-foreground">
                           Accuracy
@@ -658,7 +653,7 @@ export default function ModelsPage() {
                             </Link>
                           </td>
                           <td className="px-4 py-3">
-                            {prodStatusBadge(m.productionStatus)}
+                            {prodStatusBadge(m.deploymentStatus)}
                           </td>
                           <td className="px-4 py-3 text-muted-foreground">
                             {m.workspaceName}
@@ -674,7 +669,7 @@ export default function ModelsPage() {
                           </td>
                           <td className="px-4 py-3">
                             {m.anomalyCause ? (
-                              <p className="max-w-[200px] truncate text-xs text-amber-400">
+                              <p className="max-w-50 truncate text-xs text-amber-400">
                                 {m.anomalyCause}
                               </p>
                             ) : (
@@ -687,7 +682,7 @@ export default function ModelsPage() {
                             {m.lastUpdated}
                           </td>
                           <td className="px-4 py-3">
-                            <Link href={`/workspaces/${m.workspaceId}`}>
+                            <Link href={`/workspaces/${m.workspaceId}/details`}>
                               <Button
                                 variant="ghost"
                                 size="sm"

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Before Every Task
 
-Read [`docs/CODEBASE.md`](docs/CODEBASE.md) before starting any task. It is the authoritative reference for project structure, component APIs, Prisma patterns, and coding style. Do not rely on assumptions — verify against that file first.
+Read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for system design, layer model, auth flow, and key architectural decisions. Read [`docs/CODEBASE.md`](docs/CODEBASE.md) for project structure, component APIs, Prisma patterns, and coding style. For any frontend/UI work, read [`docs/DESIGN_SYSTEM.md`](docs/DESIGN_SYSTEM.md) for color tokens, status color conventions, component patterns, and design rules. Do not rely on assumptions — verify against these files first.
 
 ## After Every Task
 
@@ -94,6 +94,7 @@ Strict layered architecture — Controllers → Services → Prisma. No business
 - **Pagination DTO convention:** Zod `PaginationQuerySchema = z.object({ page: z.coerce.number().int().positive().default(1), limit: z.coerce.number().int().min(1).max(100).default(20) })`. Extend with `.extend(...)` for filters. Service runs `prisma.$transaction([findMany({ skip: (page-1)*limit, take: limit, ... }), count({ where })])` and returns `{ items, total, page, limit }` inside the standard envelope. Canonical: `auth/admin/auth.admin.service.ts`.
 - **Swagger:** available at `/swagger`.
 - **Error throwing:** Always use `AppException` from `@softsensor/common` for ALL thrown errors — never use NestJS built-ins (`BadRequestException`, `NotFoundException`, `UnauthorizedException`, `ForbiddenException`, etc.). Shape: `throw new AppException({ statusCode: 400, message: 'Your message here', type: 'ERROR' })`. Import: `import { AppException } from '@softsensor/common'`.
+- **`deriveNodeSummary()` helper:** Private method in `workspace.authorized.service.ts` — computes `{ nodeCount, alarmCount, status }` from `{ data: unknown }[]`. Reuse for any workspace endpoint needing aggregate node status. Priority: alarm(3) > offline(2) > warning(1) > normal(0).
 
 ### Database (`packages/prisma`)
 
@@ -138,6 +139,11 @@ Strict layered architecture — Controllers → Services → Prisma. No business
 - **Paginated hook pattern (keepPreviousData):** Paginated client hooks (e.g. `hooks/admin/use-activity.ts`) return `{ data, loading, isFetching, error, refetch }`. Never `setData(null)` between refetches — previous items must stay visible during page changes. Derive `loading = isFetching && data === null` at return (true only on initial load); use `isFetching` to disable Prev/Next buttons + dim the table body (`cn(isFetching && 'opacity-60 transition-opacity')`). Skeleton rows render **only** on `loading`. Do NOT add `data` to the `useCallback` deps — compute the derived flag at return instead, otherwise you create a refetch loop.
 - **`searchParams.get()` returns `string | null`** — guard with `if (!value) { toast.error(...); return }` before passing to service functions typed as `string`.
 - **`useWatch` control:** Always destructure `control` from `useForm()` return value. Never reference `formSchema.control` — Zod schemas have no `.control` property.
+- **Workspace status fields:** `getAllWorkspaces()` returns `nodeCount`, `alarmCount`, `status` per workspace — computed from `Nodes.data.status` JSON field. Workspace type in `types/index.ts` has `nodeCount?`, `alarmCount?`, `status?: 'normal' | 'warning' | 'alarm' | 'offline'`.
+- **`Nodes.data` JSON shape:** Matches `NodeData` from `services/canvas.ts` — `{ status, name, type, x, y }`. Cast as `Record<string, unknown>` when reading from Prisma. Same records returned by `getNodes()` canvas service endpoint.
+- **Alert count hook:** `hooks/workspace/use-alert-count.ts` → `useAlertCount()` — sums `alarmCount` from `workspacesAtom`. No extra API call. Badge count matches `/alerts` page row count.
+- **Alerts page:** `(default)/alerts/` — counts only nodes (not models) with non-normal status via `getNodes()` from `services/canvas`. Sidebar badge must match this count.
+- **Laws of UX:** For nav/sidebar/layout work, apply principles from `docs/DESIGN_SYSTEM.md` §12. Minimum: Von Restorff (errors visually distinct), Serial Position (Alerts near top of nav), Fitts's Law (1 click to common actions).
 
 ### Agents (`.claude/agents/`)
 

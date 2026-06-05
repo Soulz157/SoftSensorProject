@@ -14,12 +14,18 @@ import {
   PanelLeftClose,
   PanelLeft,
   ShieldAlert,
+  Layers,
+  TriangleAlert,
+  Network,
+  ChevronRight,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useSession } from 'next-auth/react'
 import { useWorkspaces } from '@/hooks/workspace/use-workspaces'
+import { useAlertCount } from '@/hooks/workspace/use-alert-count'
 import { WorkspaceIconProps } from '@/types'
 import { workspaceIcons, workspaceColors } from '@/store/workspace'
+import { Button } from './ui/button'
 
 interface NavItem {
   id: string
@@ -40,6 +46,38 @@ interface SidebarProps {
   onWorkspaceToggle: () => void
 }
 
+function workspaceStatusDot(status?: string): string {
+  switch (status) {
+    case 'alarm':
+      return 'bg-red-500'
+    case 'warning':
+      return 'bg-amber-500'
+    case 'offline':
+      return 'bg-zinc-500'
+    default:
+      return 'bg-emerald-500'
+  }
+}
+
+function WorkspaceIcon({ iconId, colorId }: WorkspaceIconProps) {
+  const selectedIcon = workspaceIcons.find(item => item.id === iconId)
+  const Icon = selectedIcon?.icon
+  const selectedColor = workspaceColors.find(item => item.id === colorId)
+  const bgClass = selectedColor?.bg || 'bg-slate-500'
+
+  return (
+    <span
+      className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-white text-xs font-semibold ${bgClass}`}
+    >
+      {Icon ? (
+        <Icon className="h-4 w-4" />
+      ) : (
+        <span>{iconId?.charAt(0)?.toUpperCase() || '?'}</span>
+      )}
+    </span>
+  )
+}
+
 export function Sidebar({
   isOpen,
   onClose,
@@ -55,6 +93,11 @@ export function Sidebar({
   const currentWorkspace = workspaces.find(w => w.id === activeWorkspace)
   const { data: session } = useSession()
   const isAdmin = session?.user?.role === 'ADMIN'
+  const alertCount = useAlertCount()
+
+  const onClearWorkspace = () => {
+    onWorkspaceChange('')
+  }
 
   const navItems: NavItem[] = [
     {
@@ -64,11 +107,22 @@ export function Sidebar({
       href: '/dashboard',
     },
     {
+      id: 'alerts',
+      name: 'Alerts',
+      // เพิ่ม animate-pulse ตรงนี้เพื่อให้ไอคอนใน Sidebar หลักกระพริบตอนมี Alert
+      icon: (
+        <TriangleAlert
+          className={cn('h-4 w-4', alertCount > 0 && 'animate-pulse')}
+        />
+      ),
+      href: '/alerts',
+      badge: alertCount > 0 ? alertCount : undefined,
+    },
+    {
       id: 'models',
       name: 'Models',
       icon: <Box className="h-4 w-4" />,
       href: '/models',
-      badge: currentWorkspace?.modelsCount,
     },
     {
       id: 'analytics',
@@ -89,25 +143,6 @@ export function Sidebar({
     return pathname.startsWith(href)
   }
 
-  function WorkspaceIcon({ iconId, colorId }: WorkspaceIconProps) {
-    const selectedIcon = workspaceIcons.find(item => item.id === iconId)
-    const Icon = selectedIcon?.icon
-
-    const selectedColor = workspaceColors.find(item => item.id === colorId)
-    const bgClass = selectedColor?.bg || 'bg-slate-500'
-
-    return (
-      <span
-        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-white text-xs font-semibold ${bgClass}`}
-      >
-        {Icon ? (
-          <Icon className="h-4 w-4" />
-        ) : (
-          <span>{iconId?.charAt(0)?.toUpperCase() || '?'}</span>
-        )}
-      </span>
-    )
-  }
   return (
     <>
       {/* Mobile Overlay */}
@@ -178,9 +213,9 @@ export function Sidebar({
           </button>
         </div>
 
-        {/* Collapsed state: expand button at top */}
+        {/* Collapsed state: expand button */}
         {isCollapsed && (
-          <div className=" hidden lg:flex justify-center py-3">
+          <div className="hidden lg:flex justify-center py-3">
             <button
               onClick={onToggleCollapse}
               className="cursor-pointer flex h-8 w-8 items-center justify-center rounded-md text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground transition-colors"
@@ -194,22 +229,31 @@ export function Sidebar({
         {/* Workspace Section */}
         <div className={cn('py-2', isCollapsed ? 'px-2' : 'px-3')}>
           {!isCollapsed && (
-            <button
-              onClick={onWorkspaceToggle}
-              className="flex w-full items-center justify-between rounded-md px-3 py-2 text-xs font-medium uppercase tracking-wider text-sidebar-foreground/60 hover:text-sidebar-foreground transition-colors"
-            >
-              Workspaces
-              <ChevronDown
-                className={cn(
-                  'h-4 w-4 transition-transform duration-200',
-                  workspaceOpen && 'rotate-180',
-                )}
-              />
-            </button>
+            <div className="flex items-center justify-between rounded-md px-3 py-2">
+              <Link
+                href="/workspaces"
+                onClick={onClose}
+                className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider text-sidebar-foreground/60 hover:text-sidebar-foreground transition-colors"
+              >
+                <Layers className="h-3.5 w-3.5" />
+                Workspaces
+              </Link>
+              <button
+                onClick={onWorkspaceToggle}
+                className="flex h-5 w-5 items-center justify-center text-sidebar-foreground/60 hover:text-sidebar-foreground transition-colors"
+              >
+                <ChevronDown
+                  className={cn(
+                    'h-4 w-4 transition-transform duration-200',
+                    workspaceOpen && 'rotate-180',
+                  )}
+                />
+              </button>
+            </div>
           )}
 
           {(workspaceOpen || isCollapsed) && (
-            <div className={cn('space-y-1', !isCollapsed && 'mt-2')}>
+            <div className={cn('space-y-1', !isCollapsed && 'mt-1')}>
               {workspaces.length === 0 ? (
                 <div
                   className={cn(
@@ -231,26 +275,42 @@ export function Sidebar({
                     }}
                     title={isCollapsed ? workspace.name : undefined}
                     className={cn(
-                      'group flex w-full items-center rounded-md text-sm transition-colors',
-                      isCollapsed
-                        ? 'justify-center p-2.5'
-                        : 'gap-3 px-3 py-2.5',
+                      'group w-full flex items-center rounded-md text-sm transition-colors',
+                      isCollapsed ? 'justify-center p-2.5' : 'gap-3 px-3 py-2',
                       activeWorkspace === workspace.id
                         ? 'bg-sidebar-accent text-sidebar-accent-foreground'
                         : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
                     )}
                   >
-                    <WorkspaceIcon
-                      colorId={workspace.color || 'slate'}
-                      iconId={workspace.icon || 'box'}
-                    />
+                    <div className="relative shrink-0">
+                      <WorkspaceIcon
+                        colorId={workspace.color || 'slate'}
+                        iconId={workspace.icon || 'box'}
+                      />
+                      {isCollapsed &&
+                        workspace.status &&
+                        workspace.status !== 'normal' && (
+                          <span
+                            className={cn(
+                              'absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full ring-1 ring-sidebar',
+                              workspaceStatusDot(workspace.status),
+                            )}
+                          />
+                        )}
+                    </div>
                     {!isCollapsed && (
                       <>
                         <span className="flex-1 truncate text-left">
                           {workspace.name}
                         </span>
-                        <span className="text-xs text-sidebar-foreground/50">
-                          {workspace.modelsCount}
+                        <span
+                          className={cn(
+                            'h-2 w-2 shrink-0 rounded-full',
+                            workspaceStatusDot(workspace.status),
+                          )}
+                        />
+                        <span className="text-xs text-sidebar-foreground/50 shrink-0 tabular-nums">
+                          {workspace.nodeCount ?? 0}
                         </span>
                       </>
                     )}
@@ -259,7 +319,97 @@ export function Sidebar({
               )}
             </div>
           )}
+
+          {!isCollapsed && (
+            <div className="px-2 pt-2">
+              <Link
+                href="/workspaces"
+                className="flex h-8 w-full items-center justify-center gap-1.5 rounded-md border border-dashed border-muted-foreground/30 text-xs text-muted-foreground transition-colors hover:border-primary hover:text-primary"
+              >
+                <span>View All Workspaces</span>
+                <ChevronRight className="h-3 w-3" />
+              </Link>
+            </div>
+          )}
         </div>
+
+        {/* Active Workspace Context Zone */}
+        {!isCollapsed && currentWorkspace && (
+          <div className="mx-3 mb-2">
+            <div className="rounded-lg border border-primary/20 bg-primary/5 p-2">
+              <div className="flex items-center justify-between mb-2 px-1">
+                <div className="flex items-center gap-2 min-w-0">
+                  <WorkspaceIcon
+                    colorId={currentWorkspace.color || 'slate'}
+                    iconId={currentWorkspace.icon || 'box'}
+                  />
+                  <span className="text-sm font-semibold text-sidebar-foreground truncate">
+                    {currentWorkspace.name}
+                  </span>
+                </div>
+
+                <Button
+                  variant={'outline'}
+                  onClick={onClearWorkspace}
+                  className="cursor-pointer flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground"
+                  aria-label="Clear active workspace"
+                  title="Close Workspace"
+                >
+                  <X className="h-4 w-4" />{' '}
+                </Button>
+              </div>
+
+              {/* Navigation Links */}
+              <div className="space-y-0.5 font-medium">
+                <Link
+                  href={`/workspaces/${currentWorkspace.id}/canvas`}
+                  onClick={onClose}
+                  className={cn(
+                    'flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors',
+                    isActiveNav(`/workspaces/${currentWorkspace.id}/canvas`)
+                      ? 'bg-sidebar-primary text-sidebar-primary-foreground'
+                      : 'text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground',
+                  )}
+                >
+                  <Network className="h-3.5 w-3.5 shrink-0" />
+                  Canvas
+                </Link>
+                <Link
+                  href={`/workspaces/${currentWorkspace.id}`}
+                  onClick={onClose}
+                  className={cn(
+                    'flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors',
+                    pathname === `/workspaces/${currentWorkspace.id}`
+                      ? 'bg-sidebar-primary text-sidebar-primary-foreground'
+                      : 'text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground',
+                  )}
+                >
+                  <Box className="h-3.5 w-3.5 shrink-0" />
+                  Models
+                </Link>
+                <Link
+                  href="/alerts"
+                  onClick={onClose}
+                  className={cn(
+                    ' flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors text-muted-foreground',
+                    isActiveNav('/alerts')
+                      ? 'bg-sidebar-primary text-sidebar-primary-foreground'
+                      : 'text-destructive/70 hover:bg-destructive/10 hover:text-destructive',
+                  )}
+                >
+                  <TriangleAlert className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate text">Alerts</span>
+                  {(currentWorkspace.alarmCount ?? 0) > 0 && (
+                    <span className="ml-auto flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-semibold transition-colors bg-red-100 text-red-600  dark:bg-red-500/15 dark:text-red-400 dark:border dark:border-red-500/20">
+                      <TriangleAlert className="h-3.5 w-3.5 animate-pulse" />
+                      <span>{currentWorkspace.alarmCount}</span>
+                    </span>
+                  )}
+                </Link>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Divider */}
         <div
@@ -269,101 +419,55 @@ export function Sidebar({
           )}
         />
 
-        {/* Navigation */}
         <nav className={cn('flex-1 py-4', isCollapsed ? 'px-2' : 'px-3')}>
           <div className="space-y-1">
-            {navItems.map(item => (
-              <Link
-                key={item.id}
-                href={item.href}
-                onClick={onClose}
-                title={isCollapsed ? item.name : undefined}
-                className={cn(
-                  'flex w-full items-center rounded-md text-sm font-medium transition-colors',
-                  isCollapsed ? 'justify-center p-2.5' : 'gap-3 px-3 py-2.5',
-                  isActiveNav(item.href)
-                    ? 'bg-sidebar-primary text-sidebar-primary-foreground'
-                    : 'text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground',
-                )}
-              >
-                {item.icon}
-                {!isCollapsed && (
-                  <>
-                    <span>{item.name}</span>
-                    {item.badge !== undefined && (
-                      <span
-                        className={cn(
-                          'ml-auto rounded-full px-2 py-0.5 text-xs',
-                          isActiveNav(item.href)
-                            ? 'bg-sidebar-primary-foreground/20 text-sidebar-primary-foreground'
-                            : 'bg-sidebar-accent text-sidebar-foreground/60',
-                        )}
-                      >
-                        {item.badge}
-                      </span>
-                    )}
-                  </>
-                )}
-              </Link>
-            ))}
+            {navItems.map(item => {
+              const isActive = isActiveNav(item.href)
+              const isAlerting = item.id === 'alerts' && (item.badge ?? 0) > 0
+
+              return (
+                <Link
+                  key={item.id}
+                  href={item.href}
+                  onClick={onClose}
+                  title={isCollapsed ? item.name : undefined}
+                  className={cn(
+                    'flex w-full items-center rounded-md text-sm font-medium transition-all',
+                    isCollapsed ? 'justify-center p-2.5' : 'gap-3 px-3 py-2.5',
+
+                    isAlerting && !isActive
+                      ? 'bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-500/10 dark:text-red-400 dark:hover:bg-red-500/20'
+                      : isActive
+                        ? 'bg-sidebar-primary text-sidebar-primary-foreground'
+                        : 'text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground',
+                  )}
+                >
+                  {item.icon}
+                  {!isCollapsed && (
+                    <>
+                      <span className="truncate">{item.name}</span>
+                      {item.badge !== undefined && (
+                        <span
+                          className={cn(
+                            'ml-auto flex items-center justify-center rounded-full px-2 py-0.5 gap-1.5 text-xs font-semibold',
+                            isAlerting
+                              ? 'bg-red-100 text-red-600 dark:bg-red-500/15 dark:text-red-400 dark:border dark:border-red-500/20'
+                              : isActive
+                                ? 'bg-sidebar-primary-foreground/20 text-sidebar-primary-foreground'
+                                : 'bg-primary/10 text-primary dark:bg-primary/20',
+                          )}
+                        >
+                          <TriangleAlert className="h-3.5 w-3.5 animate-pulse" />
+                          {item.badge}
+                        </span>
+                      )}
+                    </>
+                  )}
+                </Link>
+              )
+            })}
           </div>
         </nav>
-
-        {/* Upgrade Widget */}
-        {/* {currentWorkspace && !isCollapsed && (
-          <div className="mx-3 mb-3 rounded-lg border border-sidebar-border bg-sidebar-accent/30 p-3 space-y-2">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1.5">
-                <Zap className="h-3.5 w-3.5 text-amber-400" />
-                <span className="text-xs font-semibold text-sidebar-foreground">
-                  Starter Plan
-                </span>
-              </div>
-              <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-400">
-                FREE
-              </span>
-            </div>
-            <div>
-              <div className="flex justify-between mb-1">
-                <span className="text-[11px] text-sidebar-foreground/60">
-                  Active Models
-                </span>
-                <span className="text-[11px] font-medium text-sidebar-foreground">
-                  4 / 5
-                </span>
-              </div>
-              <div className="h-1.5 w-full rounded-full bg-sidebar-border">
-                <div
-                  className="h-full rounded-full bg-amber-400 transition-all"
-                  style={{ width: '80%' }}
-                />
-              </div>
-            </div>
-            <Link
-              href="/settings/plans"
-              onClick={onClose}
-              className="flex w-full items-center justify-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary/90 transition-colors"
-            >
-              <Zap className="h-3 w-3" />
-              Upgrade Plan
-            </Link>
-          </div>
-        )} */}
-
-        {/* Collapsed upgrade indicator */}
-        {currentWorkspace && isCollapsed && (
-          <div className="mx-2 mb-3 flex flex-col items-center gap-1.5">
-            <div
-              className="h-1.5 w-8 rounded-full bg-sidebar-border overflow-hidden"
-              title="4/5 Models — Starter Plan"
-            >
-              <div
-                className="h-full rounded-full bg-amber-400 transition-all"
-                style={{ width: '80%' }}
-              />
-            </div>
-          </div>
-        )}
 
         {/* Footer */}
         <div

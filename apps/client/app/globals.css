@@ -124,3 +124,87 @@
     @apply bg-background text-foreground;
   }
 }
+
+@layer utilities {
+  .workspace-accent {
+    border-top: 3px solid var(--workspace-color, transparent);
+  }
+}
+
+/* React Flow canvas: hide handles by default, show only in build mode */
+.react-flow__handle {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+
+.build-mode .react-flow__handle {
+  opacity: 1;
+  pointer-events: all;
+}
+
+/* React Flow controls panel — light */
+.react-flow__controls {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+}
+
+.react-flow__controls-button {
+  background: transparent !important;
+  border-color: #e2e8f0 !important;
+  color: #6b7280;
+}
+
+.react-flow__controls-button:hover {
+  background: rgba(0, 0, 0, 0.04) !important;
+}
+
+.react-flow__controls-button svg {
+  fill: #6b7280;
+}
+
+.react-flow__controls-button:hover svg {
+  fill: #111827;
+}
+
+/* React Flow minimap panel — light */
+.react-flow__minimap {
+  background: #f8fafc !important;
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 8px !important;
+  overflow: hidden;
+}
+
+/* React Flow controls panel — dark */
+.dark .react-flow__controls {
+  background: #1a1d2e;
+  border: 1px solid #2d3147;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.dark .react-flow__controls-button {
+  background: transparent !important;
+  border-color: #2d3147 !important;
+  color: #9ca3af;
+}
+
+.dark .react-flow__controls-button:hover {
+  background: rgba(255, 255, 255, 0.06) !important;
+}
+
+.dark .react-flow__controls-button svg {
+  fill: #9ca3af;
+}
+
+.dark .react-flow__controls-button:hover svg {
+  fill: #e2e5f0;
+}
+
+/* React Flow minimap panel — dark */
+.dark .react-flow__minimap {
+  background: #1a1d2e !important;
+  border: 1px solid #2d3147 !important;
+}
