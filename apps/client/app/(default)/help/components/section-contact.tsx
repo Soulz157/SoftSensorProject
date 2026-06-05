@@ -8,9 +8,14 @@ const SUPPORT_EMAIL = 'support@softsensor.io'
 
 export function SectionContact() {
   const handleCopy = () => {
-    navigator.clipboard.writeText(SUPPORT_EMAIL).then(() => {
-      toast.success('Email address copied to clipboard')
-    })
+    navigator.clipboard.writeText(SUPPORT_EMAIL).then(
+      () => {
+        toast.success('Email address copied to clipboard')
+      },
+      () => {
+        toast.error('Failed to copy — please copy manually')
+      },
+    )
   }
 
   return (
@@ -52,12 +57,12 @@ export function SectionContact() {
           </Button>
         </div>
 
-        <a href={`mailto:${SUPPORT_EMAIL}`}>
-          <Button className="w-full gap-2">
+        <Button asChild className="w-full gap-2">
+          <a href={`mailto:${SUPPORT_EMAIL}`}>
             <ExternalLink size={14} />
             Open in Email Client
-          </Button>
-        </a>
+          </a>
+        </Button>
       </div>
 
       <p className="mt-4 text-xs text-muted-foreground">
