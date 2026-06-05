@@ -1,4 +1,4 @@
-# AGENT.md — Production-Grade Rules (Next.js 15 & NestJS 11)
+# AGENT.md — Production-Grade Rules (Next.js 16 & NestJS 11)
 
 This document outlines strict guidelines for any AI agent working in this repository.
 Production-Ready system. Quick hacks, hardcoded mock data, and bypassing type safety are strictly prohibited.
