@@ -28,17 +28,18 @@ interface IsometricMapProps {
 }
 
 function getZoneFloorPath(offsetX: number, offsetY: number): string {
-  const corners = [
+  const corners: [number, number][] = [
     [0, 0],
     [200, 0],
     [200, 100],
     [0, 100],
-  ].map(([x, y]) => {
+  ]
+  const pts = corners.map(([x, y]) => {
     const isoX = (x - y) * Math.cos(Math.PI / 6) + CX + offsetX * 0.7
     const isoY = (x + y) * Math.sin(Math.PI / 6) * 0.5 + CY + offsetY * 0.5
     return `${isoX},${isoY}`
   })
-  return `M ${corners[0]} L ${corners[1]} L ${corners[2]} L ${corners[3]} Z`
+  return `M ${pts[0]} L ${pts[1]} L ${pts[2]} L ${pts[3]} Z`
 }
 
 export function IsometricMap({
