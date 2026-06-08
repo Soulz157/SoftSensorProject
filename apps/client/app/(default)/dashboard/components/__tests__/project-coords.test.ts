@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { projectToIso, getZoneOffset, normalizeCoord } from '../project-coords'
+import {
+  projectToIso,
+  getZoneOffset,
+  normalizeCoord,
+} from '../../../../../store/project-coords'
 
 describe('normalizeCoord', () => {
   it('returns 0 when x equals minX', () => {

@@ -2,7 +2,7 @@
 import { cn } from '@/lib/utils'
 import { workspaceColors, workspaceIcons } from '@/store/workspace'
 import type { Workspace } from '@/types'
-import type { NodeStatus } from './machines/status-colors'
+import type { NodeStatus } from '../../../../store/status-colors'
 
 const STATUS_DOT: Record<NonNullable<Workspace['status']>, string> = {
   alarm: 'bg-red-500 shadow-[0_0_6px_#ef4444]',

@@ -1,7 +1,7 @@
 import Link from 'next/link'
 import { cn } from '@/lib/utils'
 import type { CanvasNode } from '@/services/canvas'
-import type { NodeStatus } from './machines/status-colors'
+import type { NodeStatus } from '../../../../store/status-colors'
 
 const STATUS_CHIP: Record<NodeStatus, string> = {
   normal: 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30',
@@ -18,7 +18,7 @@ interface NodeDetailPanelProps {
 export function NodeDetailPanel({ node, workspaceId }: NodeDetailPanelProps) {
   if (!node) {
     return (
-      <aside className="flex w-[200px] shrink-0 flex-col items-center justify-center border-l border-border bg-[#0a0d14] text-center">
+      <aside className="flex w-50 shrink-0 flex-col items-center justify-center border-l border-border bg-[#0a0d14] text-center">
         <p className="text-[11px] text-muted-foreground/40">
           Select a device on the map
         </p>
@@ -29,7 +29,7 @@ export function NodeDetailPanel({ node, workspaceId }: NodeDetailPanelProps) {
   const status = node.data.status as NodeStatus
 
   return (
-    <aside className="flex w-[200px] shrink-0 flex-col border-l border-border bg-[#0a0d14]">
+    <aside className="flex w-50 shrink-0 flex-col border-l border-border bg-[#0a0d14]">
       <div className="border-b border-border bg-[#0d1018] px-3.5 py-3">
         <div className="mb-0.5 text-[9px] text-muted-foreground/50">
           {node.data.type}

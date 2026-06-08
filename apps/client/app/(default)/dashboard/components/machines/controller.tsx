@@ -1,5 +1,8 @@
 import { cn } from '@/lib/utils'
-import { STATUS_COLORS, type MachineSvgProps } from './status-colors'
+import {
+  STATUS_COLORS,
+  type MachineSvgProps,
+} from '../../../../../store/status-colors'
 
 export function ControllerSvg({ status, selected = false }: MachineSvgProps) {
   const color = STATUS_COLORS[status]

@@ -19,7 +19,7 @@ export default function DashboardLoading() {
           ))}
         </div>
         <div className="flex-1 animate-pulse bg-[#080a0f]" />
-        <div className="w-[200px] shrink-0 border-l border-border bg-[#0a0d14]" />
+        <div className="w-50 shrink-0 border-l border-border bg-[#0a0d14]" />
       </div>
       ``
     </div>

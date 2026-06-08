@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { MachineNode } from './machine-node'
-import { projectToIso, getZoneOffset } from './project-coords'
+import { projectToIso, getZoneOffset } from '../../../../store/project-coords'
 import type { Workspace } from '@/types'
 import type { CanvasNode } from '@/services/canvas'
 

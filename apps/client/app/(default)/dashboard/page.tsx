@@ -6,7 +6,7 @@ import { IsometricMap } from './components/isometric-map'
 import { NodeDetailPanel } from './components/node-detail-panel'
 import { MachineLegend } from './components/machine-legend'
 import { useDashboardData } from '../../../hooks/use-dashboard-data'
-import type { NodeStatus } from './components/machines/status-colors'
+import type { NodeStatus } from '../../../store/status-colors'
 
 export default function DashboardPage() {
   const { workspaces, nodes, loading, error } = useDashboardData()
