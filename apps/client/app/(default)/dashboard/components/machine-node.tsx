@@ -3,7 +3,7 @@ import { RobotArmSvg } from './machines/robot-arm'
 import { SensorSvg } from './machines/sensor'
 import { ConveyorSvg } from './machines/conveyor'
 import { ControllerSvg } from './machines/controller'
-import { type NodeStatus } from './machines/status-colors'
+import { type NodeStatus } from '../../../../store/status-colors'
 
 interface MachineNodeProps {
   type: 'machine' | 'sensor' | 'controller'
