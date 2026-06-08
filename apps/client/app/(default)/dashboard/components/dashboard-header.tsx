@@ -1,57 +1,59 @@
 'use client'
+import { Search } from 'lucide-react'
+import { cn } from '@/lib/utils'
 
-import { useState } from 'react'
-import Link from 'next/link'
-import { Button } from '@/components/ui/button'
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbList,
-  BreadcrumbPage,
-} from '@/components/ui/breadcrumb'
-import { Layers, Plus } from 'lucide-react'
-import { CreateWorkspaceDialog } from '@/components/create-workspace'
+interface DashboardHeaderProps {
+  alarmCount: number
+  searchQuery: string
+  onSearch: (q: string) => void
+}
 
-export function DashboardHeader() {
-  const [isOpen, setIsOpen] = useState(false)
+export function DashboardHeader({
+  alarmCount,
+  searchQuery,
+  onSearch,
+}: DashboardHeaderProps) {
+  const isHealthy = alarmCount === 0
 
   return (
-    <div className="space-y-4">
-      <Breadcrumb>
-        <BreadcrumbList>
-          <BreadcrumbItem>
-            <BreadcrumbPage>Dashboard</BreadcrumbPage>
-          </BreadcrumbItem>
-        </BreadcrumbList>
-      </Breadcrumb>
+    <header className="flex items-center gap-3 border-b border-border bg-[#0a0d14] px-4 py-2">
+      <span className="text-[11px] font-extrabold uppercase tracking-widest text-primary">
+        SoftSensor
+      </span>
 
-      <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight text-foreground">
-            Dashboard
-          </h1>
-          <p className="mt-1 text-muted-foreground">
-            Overview of all workspaces, nodes, and AI models
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <Link href="/workspaces">
-            <Button variant="outline" className="gap-2">
-              <Layers className="h-4 w-4" />
-              View Workspaces
-            </Button>
-          </Link>
-          <Button
-            className="gap-2 bg-primary text-primary-foreground shadow-md hover:bg-primary/90"
-            onClick={() => setIsOpen(true)}
-          >
-            <Plus className="h-4 w-4" />
-            Create Workspace
-          </Button>
-        </div>
+      <div className="flex max-w-55 flex-1 items-center gap-2 rounded-md border border-border bg-muted/20 px-3 py-1.5 text-[9px] text-muted-foreground">
+        <Search className="h-3 w-3 shrink-0" />
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={e => onSearch(e.target.value)}
+          placeholder="Search devices, zones..."
+          className="flex-1 bg-transparent outline-none placeholder:text-muted-foreground/50"
+        />
       </div>
 
-      <CreateWorkspaceDialog open={isOpen} onClose={() => setIsOpen(false)} />
-    </div>
+      <div
+        className={cn(
+          'flex items-center gap-1.5 rounded-full border px-3 py-1 text-[9px] font-semibold',
+          isHealthy
+            ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
+            : 'border-red-500/30 bg-red-500/10 text-red-400',
+        )}
+      >
+        <span
+          className={cn(
+            'h-1.5 w-1.5 rounded-full',
+            isHealthy ? 'bg-emerald-500' : cn('bg-red-500', 'animate-pulse'),
+          )}
+        />
+        {isHealthy
+          ? 'All Systems Healthy'
+          : `${alarmCount} Active Alarm${alarmCount > 1 ? 's' : ''}`}
+      </div>
+
+      <div className="ml-auto flex h-7 w-7 items-center justify-center rounded-full bg-linear-to-br from-primary to-violet-600 text-[9px] font-bold text-white">
+        DT
+      </div>
+    </header>
   )
 }
