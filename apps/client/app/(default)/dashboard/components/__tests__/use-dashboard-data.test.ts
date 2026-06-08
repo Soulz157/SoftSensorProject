@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
-import { useDashboardData } from '../use-dashboard-data'
+import { useDashboardData } from '../../../../../hooks/use-dashboard-data'
 
 vi.mock('@/services/canvas', () => ({
   getNodes: vi.fn(),

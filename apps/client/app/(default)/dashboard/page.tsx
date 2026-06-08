@@ -5,7 +5,7 @@ import { WorkspaceSidebar } from './components/workspace-sidebar'
 import { IsometricMap } from './components/isometric-map'
 import { NodeDetailPanel } from './components/node-detail-panel'
 import { MachineLegend } from './components/machine-legend'
-import { useDashboardData } from './components/use-dashboard-data'
+import { useDashboardData } from '../../../hooks/use-dashboard-data'
 import type { NodeStatus } from './components/machines/status-colors'
 
 export default function DashboardPage() {
