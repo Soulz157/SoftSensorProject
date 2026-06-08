@@ -32,7 +32,7 @@ export const UserStatItemSchema = z.object({
   firstName: z.string().nullable(),
   lastName: z.string().nullable(),
   email: z.string(),
-  role: z.enum(['USER', 'STAFF', 'ADMIN']),
+  role: z.enum(['USER', 'ADMIN']),
   createdAt: z.coerce.date(),
   logins7d: z.number().int().nonnegative(),
 });
@@ -71,12 +71,12 @@ export class UserStatsResponseDto extends createZodDto(
 
 export const AdminUserQuerySchema = PaginationQuerySchema.extend({
   search: z.string().optional(),
-  role: z.enum(['USER', 'STAFF', 'ADMIN']).optional(),
+  role: z.enum(['USER', 'ADMIN']).optional(),
   status: z.enum(['active', 'blocked', 'deleted']).optional(),
 });
 
 export const UpdateUserRoleSchema = z.object({
-  role: z.enum(['USER', 'STAFF', 'ADMIN']),
+  role: z.enum(['USER', 'ADMIN']),
 });
 
 export const AdminUserItemSchema = z.object({
@@ -85,7 +85,7 @@ export const AdminUserItemSchema = z.object({
   firstName: z.string().nullable(),
   lastName: z.string().nullable(),
   company: z.string().nullable(),
-  role: z.enum(['USER', 'STAFF', 'ADMIN']),
+  role: z.enum(['USER', 'ADMIN']),
   createdAt: z.coerce.date(),
   blockedAt: z.coerce.date().nullable(),
   deletedAt: z.coerce.date().nullable(),

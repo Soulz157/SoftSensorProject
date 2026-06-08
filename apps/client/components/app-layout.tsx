@@ -18,8 +18,6 @@ export function AppLayout({ children }: AppLayoutProps) {
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useAtom(sidebarCollapsedAtom)
-  const [activeWorkspace, setActiveWorkspace] = useState('1')
-  const [workspaceOpen, setWorkspaceOpen] = useState(true)
 
   useEffect(() => {
     if (sessionStorage.getItem('came-from-404')) {
@@ -35,10 +33,6 @@ export function AppLayout({ children }: AppLayoutProps) {
         onClose={() => setSidebarOpen(false)}
         isCollapsed={sidebarCollapsed}
         onToggleCollapse={() => setSidebarCollapsed(prev => !prev)}
-        activeWorkspace={activeWorkspace}
-        onWorkspaceChange={setActiveWorkspace}
-        workspaceOpen={workspaceOpen}
-        onWorkspaceToggle={() => setWorkspaceOpen(prev => !prev)}
       />
       <div className="flex flex-1 flex-col overflow-hidden">
         <Navbar

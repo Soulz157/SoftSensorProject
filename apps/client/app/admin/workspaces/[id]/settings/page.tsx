@@ -24,7 +24,19 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import {
   Dialog,
   DialogContent,
@@ -49,8 +61,13 @@ import { workspaceColors, workspaceIcons } from '@/store/workspace'
 import { useAdminWorkspaceSettings } from '@/hooks/admin/use-admin-workspace-settings'
 import type { WorkspaceRole } from '@/types'
 
-const inputClass =
-  'h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm text-foreground shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring'
+function roleBadgeVariant(
+  role: WorkspaceRole,
+): 'default' | 'secondary' | 'outline' {
+  if (role === 'OWNER') return 'default'
+  if (role === 'STAFF') return 'secondary'
+  return 'outline'
+}
 
 export default function WorkspaceSettingsPage() {
   const { id: workspaceId } = useParams<{ id: string }>()
@@ -116,7 +133,8 @@ export default function WorkspaceSettingsPage() {
         role,
       )
       setMembers(prev => prev.map(m => (m.id === memberId ? res.data : m)))
-    } catch {
+    } catch (error) {
+      console.error(error)
       toast.error('Failed to update role')
     }
   }
@@ -214,13 +232,11 @@ export default function WorkspaceSettingsPage() {
               </CardHeader>
               <CardContent className="space-y-5">
                 <div className="space-y-1.5">
-                  <label className="text-sm font-medium">Workspace Name</label>
+                  <Label>Workspace Name</Label>
                   {loading ? (
                     <Skeleton className="h-9 w-full" />
                   ) : (
-                    <input
-                      type="text"
-                      className={inputClass}
+                    <Input
                       value={name}
                       onChange={e => setName(e.target.value)}
                     />
@@ -228,22 +244,22 @@ export default function WorkspaceSettingsPage() {
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="text-sm font-medium">Description</label>
+                  <Label>Description</Label>
                   {loading ? (
                     <Skeleton className="h-20 w-full" />
                   ) : (
-                    <textarea
-                      className={`${inputClass} min-h-20 resize-none py-2`}
+                    <Textarea
                       value={description}
                       onChange={e => setDescription(e.target.value)}
                       placeholder="Optional workspace description…"
                       rows={3}
+                      className="min-h-20 resize-none"
                     />
                   )}
                 </div>
 
                 <div className="space-y-3 pt-1">
-                  <label className="text-sm font-medium">Icon</label>
+                  <Label>Icon</Label>
                   {loading ? (
                     <div className="flex flex-wrap gap-2">
                       {Array.from({ length: 8 }).map((_, i) => (
@@ -275,10 +291,10 @@ export default function WorkspaceSettingsPage() {
                 </div>
 
                 <div className="space-y-3 pt-1">
-                  <label className="flex items-center gap-2 text-sm font-medium">
+                  <Label className="flex items-center gap-2">
                     <Palette className="h-4 w-4 text-muted-foreground" />
                     Color
-                  </label>
+                  </Label>
                   {loading ? (
                     <div className="flex gap-3">
                       {Array.from({ length: 6 }).map((_, i) => (
@@ -368,10 +384,9 @@ export default function WorkspaceSettingsPage() {
               <CardContent className="flex flex-1 flex-col">
                 <div className="relative mb-4">
                   <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                  <input
-                    type="text"
+                  <Input
                     placeholder="Search members…"
-                    className={`${inputClass} pl-9`}
+                    className="pl-9"
                     value={searchQuery}
                     onChange={e => setSearchQuery(e.target.value)}
                   />
@@ -416,15 +431,17 @@ export default function WorkspaceSettingsPage() {
                             className="flex items-center justify-between p-4 transition-colors hover:bg-muted/30"
                           >
                             <div className="flex items-center gap-3">
-                              <div
-                                className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-sm font-semibold text-white ${
-                                  member.role === 'OWNER'
-                                    ? 'bg-primary'
-                                    : 'bg-slate-500'
-                                }`}
-                              >
-                                {initials}
-                              </div>
+                              <Avatar size="lg">
+                                <AvatarFallback
+                                  className={
+                                    member.role === 'OWNER'
+                                      ? 'bg-primary text-primary-foreground'
+                                      : 'bg-slate-500 text-white'
+                                  }
+                                >
+                                  {initials}
+                                </AvatarFallback>
+                              </Avatar>
                               <div>
                                 <p className="text-sm font-medium text-foreground">
                                   {fullName}
@@ -435,20 +452,30 @@ export default function WorkspaceSettingsPage() {
                               </div>
                             </div>
 
-                            <div className="flex items-center gap-3">
-                              <select
-                                className="h-8 rounded-md border border-input bg-background px-2 text-xs focus:ring-1 focus:ring-ring"
+                            <div className="flex items-center gap-2">
+                              <Badge variant={roleBadgeVariant(member.role)}>
+                                {member.role.charAt(0) +
+                                  member.role.slice(1).toLowerCase()}
+                              </Badge>
+
+                              <Select
                                 value={member.role}
-                                onChange={e =>
+                                onValueChange={val =>
                                   handleRoleChange(
                                     member.id,
-                                    e.target.value as WorkspaceRole,
+                                    val as WorkspaceRole,
                                   )
                                 }
                               >
-                                <option value="OWNER">Owner</option>
-                                <option value="VIEWER">Viewer</option>
-                              </select>
+                                <SelectTrigger className="h-8 w-[100px] text-xs">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="OWNER">Owner</SelectItem>
+                                  <SelectItem value="STAFF">Staff</SelectItem>
+                                  <SelectItem value="VIEWER">Viewer</SelectItem>
+                                </SelectContent>
+                              </Select>
 
                               <AlertDialog>
                                 <AlertDialogTrigger asChild>
@@ -514,25 +541,29 @@ export default function WorkspaceSettingsPage() {
           </DialogHeader>
           <div className="space-y-3 py-2">
             <div className="space-y-1.5">
-              <label className="text-sm font-medium">Email</label>
-              <input
+              <Label>Email</Label>
+              <Input
                 type="email"
-                className={inputClass}
                 placeholder="user@example.com"
                 value={inviteEmail}
                 onChange={e => setInviteEmail(e.target.value)}
               />
             </div>
             <div className="space-y-1.5">
-              <label className="text-sm font-medium">Role</label>
-              <select
-                className={inputClass}
+              <Label>Role</Label>
+              <Select
                 value={inviteRole}
-                onChange={e => setInviteRole(e.target.value as WorkspaceRole)}
+                onValueChange={val => setInviteRole(val as WorkspaceRole)}
               >
-                <option value="VIEWER">Viewer</option>
-                <option value="OWNER">Owner</option>
-              </select>
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="VIEWER">Viewer</SelectItem>
+                  <SelectItem value="STAFF">Staff</SelectItem>
+                  <SelectItem value="OWNER">Owner</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </div>
           <DialogFooter>

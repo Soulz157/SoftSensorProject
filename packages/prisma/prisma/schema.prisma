@@ -14,7 +14,6 @@ datasource db {
 
 enum Role {
   USER
-  STAFF
   ADMIN
 }
 
@@ -44,6 +43,7 @@ enum SubscriptionStatus {
 
 enum WorkspaceRole {
   OWNER
+  STAFF
   VIEWER
 }
 

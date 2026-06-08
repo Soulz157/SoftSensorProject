@@ -30,7 +30,6 @@ function roleBadge(role: string) {
   const map: Record<string, string> = {
     ADMIN:
       'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300',
-    STAFF: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300',
     USER: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
   }
   return map[role] ?? map['USER']

@@ -25,7 +25,7 @@ jest.mock('@softsensor/prisma', () => ({
   PrismaService: jest.fn(),
   PrismaEnums: {
     AuthAction: { LOGIN: 'LOGIN', LOGOUT: 'LOGOUT' },
-    Role: { USER: 'USER', STAFF: 'STAFF', ADMIN: 'ADMIN' },
+    Role: { USER: 'USER', ADMIN: 'ADMIN' },
   },
 }));
 
