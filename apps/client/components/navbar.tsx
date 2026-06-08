@@ -32,6 +32,7 @@ import { Input } from './ui/input'
 import { cn } from '@/lib/utils'
 import { TooltipContent, TooltipTrigger, Tooltip } from './ui/tooltip'
 import { Badge } from './ui/badge'
+import { useWorkspaces } from '@/hooks/workspace/use-workspaces'
 
 interface NavbarProps {
   onCreateWorkspace?: () => void
@@ -141,6 +142,7 @@ const getNotificationIcon = (type: string) => {
 
 export function Navbar({ onCreateWorkspace, onMenuClick }: NavbarProps) {
   const { data: session } = useSession()
+  const { workspaces } = useWorkspaces()
   const { profile, loading, refetch } = useProfile()
   const pathname = usePathname()
 
@@ -150,6 +152,13 @@ export function Navbar({ onCreateWorkspace, onMenuClick }: NavbarProps) {
   const [showResults, setShowResults] = useState(false)
   const searchRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+
+  const alarmCount = workspaces.reduce(
+    (sum, ws) => sum + (ws.alarmCount ?? 0),
+    0,
+  )
+
+  const isHealthy = alarmCount === 0
 
   useEffect(() => {
     refetch?.()
@@ -359,6 +368,25 @@ export function Navbar({ onCreateWorkspace, onMenuClick }: NavbarProps) {
 
       {/* Right Actions */}
       <div className="flex items-center gap-2 sm:gap-3">
+        <div
+          className={cn(
+            'flex items-center gap-1.5 rounded-full border px-3 py-1 text-[10px] font-semibold',
+            isHealthy
+              ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
+              : 'border-red-500/30 bg-red-500/10 text-red-400',
+          )}
+        >
+          <span
+            className={cn(
+              'h-1.5 w-1.5 rounded-full',
+              isHealthy ? 'bg-emerald-500' : cn('bg-red-500', 'animate-pulse'),
+            )}
+          />
+          {isHealthy
+            ? 'All Systems Healthy'
+            : `${alarmCount} Active Alarm${alarmCount > 1 ? 's' : ''}`}
+        </div>
+
         <Button
           onClick={onCreateWorkspace}
           className="gap-2 cursor-pointer"

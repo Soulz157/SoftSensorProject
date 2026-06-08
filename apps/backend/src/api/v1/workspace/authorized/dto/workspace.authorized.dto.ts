@@ -3,11 +3,11 @@ import { z } from 'zod';
 
 export const InviteMemberSchema = z.object({
   email: z.string().email(),
-  role: z.enum(['OWNER', 'VIEWER']).default('VIEWER'),
+  role: z.enum(['OWNER', 'STAFF', 'VIEWER']).default('VIEWER'),
 });
 
 export const UpdateMemberRoleSchema = z.object({
-  role: z.enum(['OWNER', 'VIEWER']),
+  role: z.enum(['OWNER', 'STAFF', 'VIEWER']),
 });
 
 export const GetLogsQuerySchema = z.object({

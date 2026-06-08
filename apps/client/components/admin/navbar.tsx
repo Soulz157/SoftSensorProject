@@ -80,7 +80,7 @@ export function AdminNavbar({ onMenuClick }: AdminNavbarProps) {
                 <p className="text-xs text-muted-foreground">{userEmail}</p>
               </div>
               <DropdownMenuSeparator />
-              <DropdownMenuItem asChild>
+              <DropdownMenuItem>
                 <Settings className="mr-2 h-4 w-4" />
                 <Link href="/settings">Account Settings</Link>
               </DropdownMenuItem>

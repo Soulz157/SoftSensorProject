@@ -64,6 +64,7 @@ export interface UpdateWorkspacePayload {
   name?: string
   icon?: string
   color?: string
+  role?: WorkspaceRole
   description?: string | null
 }
 
@@ -151,7 +152,7 @@ export interface Paginated<T> {
   limit: number
 }
 
-export type UserRole = 'USER' | 'STAFF' | 'ADMIN'
+export type UserRole = 'USER' | 'ADMIN'
 
 export interface PlanInfo {
   id: string
@@ -185,7 +186,7 @@ export interface AdminUser {
   subscriptions: Array<{ plan: { id: string; name: string } }>
 }
 
-export type WorkspaceRole = 'OWNER' | 'VIEWER'
+export type WorkspaceRole = 'OWNER' | 'VIEWER' | 'STAFF'
 
 export interface WorkspaceMember {
   id: string

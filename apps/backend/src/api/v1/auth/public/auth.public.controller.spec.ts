@@ -21,7 +21,7 @@ jest.mock('@softsensor/common', () => ({
 
 jest.mock('@softsensor/prisma', () => ({
   PrismaService: class {},
-  PrismaEnums: { Role: { USER: 'USER', STAFF: 'STAFF', ADMIN: 'ADMIN' } },
+  PrismaEnums: { Role: { USER: 'USER', ADMIN: 'ADMIN' } },
 }));
 
 jest.mock('@/config/cookie.config', () => ({

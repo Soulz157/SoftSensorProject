@@ -29,6 +29,27 @@ export class NodesAuthorizedService {
     }
   }
 
+  private async assertCanEditCanvas(workspaceId: string, userId: string) {
+    const workspace = await this.prisma.workspace.findFirst({
+      where: { id: workspaceId, ownerId: userId },
+      select: { id: true },
+    });
+
+    if (workspace) return;
+
+    const member = await this.prisma.workspaceMember.findFirst({
+      where: { workspaceId, userId },
+    });
+
+    if (!member || member.role === 'VIEWER') {
+      throw new AppException({
+        statusCode: 403,
+        message: 'Forbidden: editor access required',
+        type: 'ERROR',
+      });
+    }
+  }
+
   async listByWorkspace(workspaceId: string, userId: string) {
     await this.assertHasAccess(workspaceId, userId);
 
@@ -51,7 +72,7 @@ export class NodesAuthorizedService {
     userId: string,
     data: z.infer<typeof NodeDataSchema>,
   ) {
-    await this.assertHasAccess(workspaceId, userId);
+    await this.assertCanEditCanvas(workspaceId, userId);
 
     const node = await this.prisma.nodes.create({
       data: { workspaceId, data },
@@ -85,7 +106,7 @@ export class NodesAuthorizedService {
       });
     }
 
-    await this.assertHasAccess(existing.workspaceId, userId);
+    await this.assertCanEditCanvas(existing.workspaceId, userId);
 
     const existingData = (existing.data ?? {}) as Record<string, unknown>;
     const merged = { ...existingData, ...data };
@@ -117,7 +138,7 @@ export class NodesAuthorizedService {
       });
     }
 
-    await this.assertHasAccess(existing.workspaceId, userId);
+    await this.assertCanEditCanvas(existing.workspaceId, userId);
 
     await this.prisma.nodes.delete({ where: { id: nodeId } });
     await this.prisma.workspaceLog.create({

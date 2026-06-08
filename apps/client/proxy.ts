@@ -31,8 +31,8 @@ export async function proxy(req: NextRequest) {
   }
 
   if (isLoggedIn && !hasError && isAuthPath) {
-    const home = role === 'ADMIN' ? '/admin' : '/dashboard'
-    return NextResponse.redirect(new URL(home, req.nextUrl))
+    // const home = role === 'ADMIN' ? '/admin' : '/dashboard'
+    return NextResponse.redirect(new URL('/dashboard', req.nextUrl))
   }
 
   if (
