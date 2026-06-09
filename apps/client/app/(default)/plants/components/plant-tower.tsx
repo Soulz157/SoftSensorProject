@@ -166,7 +166,7 @@ export function PlantTower({
       {/* Windows on left face */}
       {windows.map((w, i) => (
         <rect
-          key={i}
+          key={`w-${w.x}-${w.y}`}
           x={w.x}
           y={w.y}
           width={5}
