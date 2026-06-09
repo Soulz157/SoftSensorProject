@@ -62,17 +62,18 @@ const mockNodes = [
 describe('usePlantsData', () => {
   beforeEach(() => {
     vi.mocked(useAtomValue).mockReturnValue(mockWorkspaces)
-    vi.mocked(getNodes)
-      .mockResolvedValueOnce([mockNodes[0]])
-      .mockResolvedValueOnce([mockNodes[1]])
   })
 
   it('returns loading=true initially', () => {
+    vi.mocked(getNodes).mockResolvedValue([])
     const { result } = renderHook(() => usePlantsData())
     expect(result.current.loading).toBe(true)
   })
 
   it('returns all workspaces and nodes after fetch', async () => {
+    vi.mocked(getNodes)
+      .mockResolvedValueOnce([mockNodes[0]])
+      .mockResolvedValueOnce([mockNodes[1]])
     const { result } = renderHook(() => usePlantsData())
     await waitFor(() => expect(result.current.loading).toBe(false))
     expect(result.current.workspaces).toHaveLength(2)
@@ -85,5 +86,12 @@ describe('usePlantsData', () => {
     const { result } = renderHook(() => usePlantsData())
     await waitFor(() => expect(result.current.loading).toBe(false))
     expect(result.current.nodesByWorkspace).toEqual({})
+  })
+
+  it('sets error when fetch fails', async () => {
+    vi.mocked(getNodes).mockRejectedValue(new Error('network error'))
+    const { result } = renderHook(() => usePlantsData())
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.error).toBe('Failed to load equipment data')
   })
 })
