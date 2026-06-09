@@ -95,8 +95,15 @@ export function PlantsMap({
   const allNodes = Object.values(nodesByWorkspace).flat()
   const totalAlarms = allNodes.filter(n => n.data.status === 'alarm').length
   const totalWarnings = allNodes.filter(n => n.data.status === 'warning').length
+  const hasOffline = allNodes.some(n => n.data.status === 'offline')
   const overallStatus: NodeStatus =
-    totalAlarms > 0 ? 'alarm' : totalWarnings > 0 ? 'warning' : 'normal'
+    totalAlarms > 0
+      ? 'alarm'
+      : hasOffline
+        ? 'offline'
+        : totalWarnings > 0
+          ? 'warning'
+          : 'normal'
   const overallColor =
     overallStatus === 'alarm'
       ? '#ef4444'
