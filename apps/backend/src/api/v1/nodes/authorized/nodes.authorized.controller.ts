@@ -40,6 +40,7 @@ export class NodesAuthorizedController {
     return this.nodesAuthorizedService.listByWorkspace(
       query.workspaceId,
       user.id,
+      query.planId,
     );
   }
 
@@ -52,6 +53,7 @@ export class NodesAuthorizedController {
   ) {
     return this.nodesAuthorizedService.createNodeService(
       dto.workspaceId,
+      dto.planId,
       user.id,
       dto.data,
     );

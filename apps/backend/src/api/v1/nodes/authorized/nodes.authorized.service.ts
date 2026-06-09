@@ -50,11 +50,11 @@ export class NodesAuthorizedService {
     }
   }
 
-  async listByWorkspace(workspaceId: string, userId: string) {
+  async listByWorkspace(workspaceId: string, userId: string, planId?: string) {
     await this.assertHasAccess(workspaceId, userId);
 
     const nodes = await this.prisma.nodes.findMany({
-      where: { workspaceId },
+      where: { workspaceId, ...(planId ? { planId } : {}) },
       include: { models: true },
       orderBy: { createdAt: 'asc' },
     });
@@ -69,13 +69,14 @@ export class NodesAuthorizedService {
 
   async createNodeService(
     workspaceId: string,
+    planId: string,
     userId: string,
     data: z.infer<typeof NodeDataSchema>,
   ) {
     await this.assertCanEditCanvas(workspaceId, userId);
 
     const node = await this.prisma.nodes.create({
-      data: { workspaceId, data },
+      data: { workspaceId, planId, data },
       include: { models: true },
     });
 

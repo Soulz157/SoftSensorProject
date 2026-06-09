@@ -30,6 +30,20 @@ export interface UpdateProfilePayload {
   company?: string
 }
 
+export interface WorkspacePlan {
+  id: string
+  workspaceId: string
+  name: string
+  icon?: string
+  color?: string
+  description?: string
+  nodeCount?: number
+  alarmCount?: number
+  status?: 'normal' | 'warning' | 'alarm' | 'offline'
+  createdAt: string
+  updatedAt: string
+}
+
 export interface Workspace {
   id: string
   ownerId: string

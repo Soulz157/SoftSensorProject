@@ -19,6 +19,7 @@ export interface CanvasModel {
 export interface CanvasNode {
   id: string
   workspaceId: string
+  planId: string
   data: NodeData
   models: CanvasModel[]
   createdAt: string
@@ -42,9 +43,14 @@ export interface EdgeItem {
   targetHandle?: string
 }
 
-export async function getNodes(workspaceId: string): Promise<CanvasNode[]> {
+export async function getNodes(
+  workspaceId: string,
+  planId?: string,
+): Promise<CanvasNode[]> {
+  const params = new URLSearchParams({ workspaceId })
+  if (planId) params.set('planId', planId)
   const res: { data: CanvasNode[] } = await fetchClient(
-    `/api/v1/authorized/nodes?workspaceId=${encodeURIComponent(workspaceId)}`,
+    `/api/v1/authorized/nodes?${params.toString()}`,
     { method: 'GET' },
   )
   return res.data
@@ -52,13 +58,14 @@ export async function getNodes(workspaceId: string): Promise<CanvasNode[]> {
 
 export async function createNode(
   workspaceId: string,
+  planId: string,
   data: NodeData,
 ): Promise<CanvasNode> {
   const res: { data: CanvasNode } = await fetchClient(
     '/api/v1/authorized/nodes',
     {
       method: 'POST',
-      body: JSON.stringify({ workspaceId, data }),
+      body: JSON.stringify({ workspaceId, planId, data }),
     },
   )
   return res.data
