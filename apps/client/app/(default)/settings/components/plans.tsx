@@ -20,6 +20,7 @@ import {
   Check,
   X,
   Zap,
+  Star,
   Building2,
   Sparkles,
   CreditCard,
@@ -31,6 +32,7 @@ import type { PlanInfo, SubscriptionInfo } from '@/types'
 interface PlanFeature {
   label: string
   FREE: string | boolean
+  STANDARD: string | boolean
   PRO: string | boolean
   ENTERPRISE: string | boolean
 }
@@ -39,34 +41,62 @@ const FEATURES: PlanFeature[] = [
   {
     label: 'Active Models',
     FREE: 'Up to 5',
+    STANDARD: 'Up to 10',
     PRO: 'Up to 20',
     ENTERPRISE: 'Unlimited',
   },
   {
     label: 'Data History',
     FREE: '7 days',
+    STANDARD: '30 days',
     PRO: '90 days',
     ENTERPRISE: 'Unlimited',
   },
-  { label: 'Custom Import', FREE: false, PRO: true, ENTERPRISE: true },
-  { label: 'API Access', FREE: false, PRO: true, ENTERPRISE: true },
+  {
+    label: 'Custom Import',
+    FREE: false,
+    STANDARD: false,
+    PRO: true,
+    ENTERPRISE: true,
+  },
+  {
+    label: 'API Access',
+    FREE: false,
+    STANDARD: false,
+    PRO: true,
+    ENTERPRISE: true,
+  },
   {
     label: 'Team Members',
-    FREE: '1',
-    PRO: 'Up to 10',
+    FREE: 'Up to 5',
+    STANDARD: 'Up to 10',
+    PRO: 'Up to 20',
     ENTERPRISE: 'Unlimited',
   },
   {
     label: 'Priority Support',
     FREE: false,
+    STANDARD: 'Email',
     PRO: 'Email',
     ENTERPRISE: 'Dedicated',
   },
-  { label: 'Analytics Export', FREE: false, PRO: true, ENTERPRISE: true },
-  { label: 'SSO / SAML', FREE: false, PRO: false, ENTERPRISE: true },
+  {
+    label: 'Analytics Export',
+    FREE: false,
+    STANDARD: true,
+    PRO: true,
+    ENTERPRISE: true,
+  },
+  {
+    label: 'SSO / SAML',
+    FREE: false,
+    STANDARD: false,
+    PRO: false,
+    ENTERPRISE: true,
+  },
 ]
 
-type PlanKey = 'FREE' | 'PRO' | 'ENTERPRISE'
+type PlanKey = 'FREE' | 'STANDARD' | 'PRO' | 'ENTERPRISE'
 
 const PLAN_META: Record<
   PlanKey,
@@ -85,6 +115,13 @@ const PLAN_META: Record<
     highlighted: false,
     cta: 'Current Plan',
     ctaVariant: 'outline',
+  },
+  STANDARD: {
+    icon: <Star className="h-5 w-5 text-emerald-400" />,
+    description: 'For small teams managing multiple sensor pipelines',
+    highlighted: false,
+    cta: 'Upgrade to Standard',
+    ctaVariant: 'default',
   },
   PRO: {
     icon: <Sparkles className="h-5 w-5 text-blue-400" />,
@@ -127,7 +164,9 @@ function FeatureCell({
       ? 'text-blue-400'
       : planKey === 'ENTERPRISE'
         ? 'text-violet-400'
-        : 'text-muted-foreground'
+        : planKey === 'STANDARD'
+          ? 'text-emerald-400'
+          : 'text-muted-foreground'
 
   if (value === true)
     return (
@@ -143,7 +182,9 @@ function FeatureCell({
           ? 'text-blue-400'
           : planKey === 'ENTERPRISE'
             ? 'text-violet-400'
-            : 'text-muted-foreground',
+            : planKey === 'STANDARD'
+              ? 'text-emerald-400'
+              : 'text-muted-foreground',
       )}
     >
       {value}
@@ -160,8 +201,8 @@ function PlansSkeleton() {
         <Skeleton className="h-6 w-48" />
         <Skeleton className="h-4 w-64" />
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-        {[0, 1, 2].map(i => (
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+        {[0, 1, 2, 3].map(i => (
           <Skeleton key={i} className="h-52 rounded-xl" />
         ))}
       </div>
@@ -258,7 +299,7 @@ export default function PlansPage() {
       )}
 
       {/* Pricing cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-5 items-stretch">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 items-stretch">
         {plans.map(plan => {
           const meta = PLAN_META[plan.name as PlanKey]
           if (!meta) return null
@@ -324,7 +365,7 @@ export default function PlansPage() {
       {/* Feature comparison table */}
       {plans.length > 0 && (
         <div className="rounded-xl border border-border overflow-hidden">
-          <div className="grid grid-cols-4 bg-muted/40 border-b border-border">
+          <div className="grid grid-cols-5 bg-muted/40 border-b border-border">
             <div className="px-4 py-3 text-xs font-medium text-muted-foreground">
               Feature
             </div>
@@ -350,7 +391,7 @@ export default function PlansPage() {
             <div
               key={feature.label}
               className={cn(
-                'grid grid-cols-4 border-b border-border/50 last:border-0',
+                'grid grid-cols-5 border-b border-border/50 last:border-0',
                 i % 2 === 0 ? 'bg-background' : 'bg-muted/20',
               )}
             >
