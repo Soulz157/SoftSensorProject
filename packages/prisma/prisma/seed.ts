@@ -7,7 +7,8 @@ const prisma = new PrismaClient({ adapter });
 
 const PLANS = [
   { name: 'FREE', price: 0, maxWorkspaces: 1, durationMonths: 1 },
-  { name: 'PRO', price: 49, maxWorkspaces: 10, durationMonths: 1 },
+  { name: 'STANDARD', price: 8, maxWorkspaces: 3, durationMonths: 1 },
+  { name: 'PRO', price: 19, maxWorkspaces: 10, durationMonths: 1 },
   { name: 'ENTERPRISE', price: null, maxWorkspaces: 999, durationMonths: 1 },
 ];
 
