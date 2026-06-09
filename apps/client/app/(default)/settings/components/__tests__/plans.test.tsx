@@ -6,6 +6,7 @@ vi.mock('@/services/plan', () => ({
   planService: {
     listPlans: vi.fn(),
     mySubscription: vi.fn(),
+    downgrade: vi.fn(),
   },
 }))
 
@@ -37,10 +38,10 @@ describe('PlansPage', () => {
 
   it('renders all four plan names', async () => {
     render(<PlansPage />)
-    expect(await screen.findAllByText('FREE')).toBeTruthy()
-    expect(await screen.findAllByText('STANDARD')).toBeTruthy()
-    expect(await screen.findAllByText('PRO')).toBeTruthy()
-    expect(await screen.findAllByText('ENTERPRISE')).toBeTruthy()
+    expect((await screen.findAllByText('FREE')).length).toBeGreaterThan(0)
+    expect((await screen.findAllByText('STANDARD')).length).toBeGreaterThan(0)
+    expect((await screen.findAllByText('PRO')).length).toBeGreaterThan(0)
+    expect((await screen.findAllByText('ENTERPRISE')).length).toBeGreaterThan(0)
   })
 
   it('renders STANDARD price as $8', async () => {
