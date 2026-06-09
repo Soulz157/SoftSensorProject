@@ -152,10 +152,10 @@ export function Sidebar({
 
   const userNavItems: NavItem[] = [
     {
-      id: 'plants',
-      name: 'Plants',
+      id: 'overview',
+      name: 'Overview',
       icon: <Factory className="h-4 w-4" />,
-      href: '/plants',
+      href: '/overview',
     },
     {
       id: 'alerts',

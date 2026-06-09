@@ -21,6 +21,7 @@ import {
 } from './dto/workspace.authorized.dto';
 import { JwtAccessGuard } from '@/guards/jwt-access.guard';
 import { Users } from '@/common/decorators/user.decorator';
+import { UpdateWorkspaceRequestDto } from '../admin/dto/workspace.admin.dto';
 
 @ApiBearerAuth()
 @ApiTags('Authorized Workspace')
@@ -123,6 +124,20 @@ export class WorkspaceAuthorizedController {
       mid,
       user.id,
       body,
+    );
+  }
+
+  @Patch('/:id')
+  @HttpCode(200)
+  async updateWorkspaceController(
+    @Param('id') id: string,
+    @Users() user: Auth.UserPayload,
+    @Body() args: UpdateWorkspaceRequestDto,
+  ) {
+    return this.workspaceAuthorizedService.updateWorkspaceService(
+      id,
+      user,
+      args,
     );
   }
 

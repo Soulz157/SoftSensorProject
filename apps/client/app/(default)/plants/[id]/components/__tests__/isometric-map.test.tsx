@@ -1,31 +1,19 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render } from '@testing-library/react'
 import { IsometricMap } from '../isometric-map'
-import type { Workspace } from '@/types'
 import type { CanvasNode } from '@/services/canvas'
+import type { ZoneItem } from '@/lib/isomatric'
 
-const mockWorkspaces: Workspace[] = [
+const mockZones: ZoneItem[] = [
   {
     id: 'ws1',
-    ownerId: 'u1',
     name: 'Zone A',
     color: 'blue',
-    icon: 'building',
-    createdAt: '',
-    updatedAt: '',
-    _count: { members: 1, models: 0 },
-    modelsCount: 0,
   },
   {
     id: 'ws2',
-    ownerId: 'u1',
     name: 'Zone B',
     color: 'emerald',
-    icon: 'cpu',
-    createdAt: '',
-    updatedAt: '',
-    _count: { members: 1, models: 0 },
-    modelsCount: 0,
   },
 ]
 
@@ -33,6 +21,7 @@ const mockNodes: CanvasNode[] = [
   {
     id: 'n1',
     workspaceId: 'ws1',
+    planId: 'plan1',
     data: { name: 'CNC-001', type: 'machine', status: 'alarm', x: 100, y: 100 },
     models: [],
     createdAt: '',
@@ -41,6 +30,7 @@ const mockNodes: CanvasNode[] = [
   {
     id: 'n2',
     workspaceId: 'ws1',
+    planId: 'plan1',
     data: {
       name: 'SENSOR-01',
       type: 'sensor',
@@ -55,6 +45,7 @@ const mockNodes: CanvasNode[] = [
   {
     id: 'n3',
     workspaceId: 'ws2',
+    planId: 'plan2',
     data: {
       name: 'CTRL-01',
       type: 'controller',
@@ -72,9 +63,10 @@ describe('IsometricMap', () => {
   it('renders an SVG element', () => {
     const { container } = render(
       <IsometricMap
-        workspaces={mockWorkspaces}
+        zones={mockZones}
         nodes={mockNodes}
-        selectedWorkspaceId={null}
+        zoneNodeKey="workspaceId"
+        selectedZoneId={null}
         selectedNodeId={null}
         onNodeClick={vi.fn()}
       />,
@@ -85,9 +77,10 @@ describe('IsometricMap', () => {
   it('renders a zone label for each workspace', () => {
     const { getByText } = render(
       <IsometricMap
-        workspaces={mockWorkspaces}
+        zones={mockZones}
         nodes={mockNodes}
-        selectedWorkspaceId={null}
+        zoneNodeKey="workspaceId"
+        selectedZoneId={null}
         selectedNodeId={null}
         onNodeClick={vi.fn()}
       />,
@@ -99,9 +92,10 @@ describe('IsometricMap', () => {
   it('renders a MachineNode for each node', () => {
     const { getByText } = render(
       <IsometricMap
-        workspaces={mockWorkspaces}
+        zones={mockZones}
         nodes={mockNodes}
-        selectedWorkspaceId={null}
+        zoneNodeKey="workspaceId"
+        selectedZoneId={null}
         selectedNodeId={null}
         onNodeClick={vi.fn()}
       />,
@@ -115,9 +109,10 @@ describe('IsometricMap', () => {
     const onNodeClick = vi.fn()
     const { getByText } = render(
       <IsometricMap
-        workspaces={mockWorkspaces}
+        zones={mockZones}
         nodes={mockNodes}
-        selectedWorkspaceId={null}
+        zoneNodeKey="workspaceId"
+        selectedZoneId={null}
         selectedNodeId={null}
         onNodeClick={onNodeClick}
       />,

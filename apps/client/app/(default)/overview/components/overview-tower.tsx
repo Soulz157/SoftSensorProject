@@ -105,7 +105,7 @@ export function PlantTower({
 
   return (
     <g
-      className="cursor-pointer"
+      className="cursor-pointer transition-transform hover:-translate-y-1"
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
       onClick={onClick}
@@ -224,15 +224,6 @@ export function PlantTower({
             strokeWidth={1.5}
             opacity={0.5}
           />
-          <circle
-            cx={cx}
-            cy={antennaTop}
-            r={16}
-            fill="none"
-            stroke="#ef4444"
-            strokeWidth={1}
-            opacity={0.25}
-          />
         </>
       )}
       {status === 'warning' && (
@@ -258,35 +249,33 @@ export function PlantTower({
         />
       )}
 
-      {/* Name label */}
+      {/* ========================================
+        Name label (พร้อมตัว Status Circle)
+        ========================================
+      */}
       <rect
-        x={cx - 45}
+        x={cx - 50}
         y={cy + tw * 0.5 + 10}
-        width={90}
-        height={16}
-        rx={3}
+        width={100}
+        height={18}
+        rx={4}
         fill={isDark ? 'rgba(10,13,20,0.92)' : 'rgba(240,244,248,0.92)'}
         stroke={strokeColor}
         strokeWidth={0.6}
       />
+
+      <circle cx={cx - 38} cy={cy + tw * 0.5 + 19} r={3.5} fill={statusColor} />
+
       <text
-        x={cx}
+        x={cx - 28}
         y={cy + tw * 0.5 + 22}
-        textAnchor="middle"
+        textAnchor="start"
         fontSize={8}
         fontFamily="monospace"
         fontWeight={600}
-        fill={
-          isDark
-            ? status === 'alarm'
-              ? '#fca5a5'
-              : status === 'warning'
-                ? '#fcd34d'
-                : '#93c5fd'
-            : '#1e293b'
-        }
+        fill={isDark ? '#f8fafc' : '#1e293b'}
       >
-        {name.length > 14 ? `${name.slice(0, 14)}…` : name}
+        {name.length > 12 ? `${name.slice(0, 12)}…` : name}
       </text>
     </g>
   )

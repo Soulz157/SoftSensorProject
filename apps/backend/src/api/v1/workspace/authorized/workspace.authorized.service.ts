@@ -7,6 +7,7 @@ import type {
   InviteMemberDto,
   UpdateMemberRoleDto,
 } from './dto/workspace.authorized.dto';
+import { UpdateWorkspaceRequestDto } from '../admin/dto/workspace.admin.dto';
 
 @Injectable()
 export class WorkspaceAuthorizedService {
@@ -460,6 +461,65 @@ export class WorkspaceAuthorizedService {
       message: 'Member removed',
       type: 'SUCCESS' as const,
       data: null,
+    };
+  }
+
+  async updateWorkspaceService(
+    id: string,
+    user: Auth.UserPayload,
+    args: UpdateWorkspaceRequestDto,
+  ) {
+    const workspace = await this.prisma.workspace.findUnique({
+      where: { id },
+      select: { id: true, ownerId: true },
+    });
+
+    if (!workspace) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Workspace not found',
+        type: 'ERROR',
+      });
+    }
+    if (workspace.ownerId !== user.id) {
+      const member = await this.prisma.workspaceMember.findUnique({
+        where: { workspaceId_userId: { workspaceId: id, userId: user.id } },
+      });
+      if (!member || member.role === 'VIEWER') {
+        throw new AppException({
+          statusCode: 403,
+          message: 'Only workspace editors can update this workspace',
+          type: 'ERROR',
+        });
+      }
+    }
+
+    const { name, color, icon, description } = args;
+
+    await this.prisma.$transaction([
+      this.prisma.workspace.update({
+        where: { id },
+        data: {
+          ...(name !== undefined && { name }),
+          ...(color !== undefined && { color }),
+          ...(icon !== undefined && { icon }),
+          ...(description !== undefined && { description }),
+        },
+      }),
+      this.prisma.workspaceLog.create({
+        data: {
+          workspaceId: id,
+          userId: user.id,
+          action: 'UPDATED',
+          details: `Workspace updated by ${user.firstName} ${user.lastName}`,
+        },
+      }),
+    ]);
+
+    return {
+      statusCode: 200,
+      message: 'Workspace updated successfully',
+      type: 'SUCCESS' as const,
     };
   }
 }

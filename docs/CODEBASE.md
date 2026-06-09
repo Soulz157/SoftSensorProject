@@ -47,7 +47,7 @@ pnpm db:migrate:dev   # prisma migrate dev (loads .env via dotenvx)
 # Per-app
 pnpm --filter client dev
 pnpm --filter backend dev
-pnpm --filter backend test -- --testPathPattern=<filename>
+pnpm --filter backend test -- --testPathPatterns=<filename>
 ```
 
 ---
@@ -73,14 +73,30 @@ apps/backend/
     │   └── v1/
     │       ├── auth/
     │       │   ├── auth.module.ts
-    │       │   ├── public/          # POST /api/v1/public/auth/register, /login
-    │       │   ├── authorized/      # POST /api/v1/authorized/auth/logout (Phase 1)
+    │       │   ├── public/          # POST /api/v1/public/auth/register, /login, /refresh
+    │       │   ├── authorized/      # POST /api/v1/authorized/auth/logout, GET /me
     │       │   └── admin/           # GET  /api/v1/auth/admin/activity-log, /user-stats
-    │       └── workspace/
-    │           ├── workspace.module.ts
-    │           ├── public/          # (placeholder — no active endpoints)
-    │           ├── authorized/      # (placeholder — CRUD coming Phase 5)
-    │           └── admin/           # Admin workspace endpoints
+    │       ├── mail/
+    │       │   ├── authorized/      # User-facing email triggers (password reset, etc.)
+    │       │   │   └── template/    # Email templates
+    │       │   └── admin/           # Admin bulk mail
+    │       ├── nodes/
+    │       │   ├── nodes.module.ts
+    │       │   ├── authorized/      # GET/POST/PATCH/DELETE /api/v1/authorized/nodes
+    │       │   └── admin/           # Admin node management
+    │       ├── plan/
+    │       │   ├── plan.module.ts
+    │       │   ├── authorized/      # GET /api/v1/authorized/plan, /plan/subscription, POST /plan/downgrade
+    │       │   └── admin/           # GET /api/v1/admin/plan, PATCH /admin/plan/user/:userId
+    │       ├── workspace/
+    │       │   ├── workspace.module.ts
+    │       │   ├── authorized/      # Workspace CRUD + edges
+    │       │   └── admin/           # Admin workspace CRUD + member management
+    │       └── workspace-plan/
+    │           ├── workspace-plan.module.ts
+    │           ├── public/          # Public workspace-plan endpoints
+    │           ├── authorized/      # GET/POST/PATCH/DELETE /api/v1/authorized/workspace-plan
+    │           └── admin/           # Admin workspace-plan management
     ├── common/
     │   ├── filters/http-exception.filter.ts
     │   └── decorators/             # @CurrentUser(), @Roles()
@@ -116,7 +132,7 @@ Route groups per feature module:
 
 - `public/` — no auth guard
 - `authorized/` — `JwtAuthGuard` required
-- `admin/` — `JwtAccessGuard` + `RolesGuard` + `@Roles('ADMIN')` (Role enum: `USER | STAFF | ADMIN`)
+- `admin/` — `JwtAccessGuard` + `RolesGuard` + `@Roles('ADMIN')` (Role enum: `USER | ADMIN`)
 
 ### Pagination Convention
 
@@ -162,18 +178,39 @@ Canonical example: `apps/backend/src/api/v1/auth/admin/auth.admin.service.ts`.
 
 ### Active Endpoints
 
-| Method | Path                               | Status     | Service                                                                     |
-| ------ | ---------------------------------- | ---------- | --------------------------------------------------------------------------- |
-| POST   | `/api/v1/public/auth/register`     | ✅ Done    | `registerService` — argon2 hash, create User                                |
-| POST   | `/api/v1/public/auth/login`        | ✅ Done    | `loginService` — verify password, sign 15m JWT, set refresh cookie, AuthLog |
-| POST   | `/api/v1/public/auth/refresh`      | ✅ Done    | `refreshService` — validate + rotate refresh token, issue new 15m JWT       |
-| POST   | `/api/v1/authorized/auth/logout`   | ✅ Done    | `logoutService` — delete all user refresh tokens, clear cookie, AuthLog     |
-| GET    | `/api/v1/auth/admin/activity-log`  | ✅ Done    | `AuthAdminService.listActivityLog` — paginated AuthLog feed, user joined    |
-| GET    | `/api/v1/auth/admin/user-stats`    | ✅ Done    | `AuthAdminService.listUserStats` — paginated users + `logins7d` per user    |
-| GET    | `/api/v1/authorized/auth/me`       | ⬜ Phase 3 | `getProfile` — commented out                                                |
-| GET    | `/api/v1/authorized/workspace`     | ⬜ Phase 5 | list user workspaces                                                        |
-| POST   | `/api/v1/authorized/workspace`     | ⬜ Phase 5 | create workspace                                                            |
-| PATCH  | `/api/v1/authorized/workspace/:id` | ⬜ Phase 5 | update workspace                                                            |
+| Method | Path                                             | Notes                                                             |
+| ------ | ------------------------------------------------ | ----------------------------------------------------------------- |
+| POST   | `/api/v1/public/auth/register`                   | argon2 hash, create User                                          |
+| POST   | `/api/v1/public/auth/login`                      | verify password, 15m JWT, set refresh cookie, AuthLog             |
+| POST   | `/api/v1/public/auth/refresh`                    | validate + rotate refresh token, issue new 15m JWT                |
+| POST   | `/api/v1/authorized/auth/logout`                 | delete all user refresh tokens, clear cookie, AuthLog             |
+| GET    | `/api/v1/authorized/auth/me`                     | current user profile                                              |
+| GET    | `/api/v1/auth/admin/activity-log`                | paginated AuthLog feed (user joined)                              |
+| GET    | `/api/v1/auth/admin/user-stats`                  | paginated users + `logins7d` per user                             |
+| GET    | `/api/v1/authorized/workspace`                   | list user's workspaces (with `nodeCount`, `alarmCount`, `status`) |
+| POST   | `/api/v1/authorized/workspace`                   | create workspace                                                  |
+| PATCH  | `/api/v1/authorized/workspace/:id`               | update workspace                                                  |
+| DELETE | `/api/v1/authorized/workspace/:id`               | delete workspace                                                  |
+| GET    | `/api/v1/authorized/workspace/:id/edges`         | list canvas edges for workspace                                   |
+| PUT    | `/api/v1/authorized/workspace/:id/edges`         | replace all edges (full replace, not patch)                       |
+| GET    | `/api/v1/admin/workspace`                        | admin list workspaces (paginated)                                 |
+| GET    | `/api/v1/admin/workspace/:id`                    | admin get workspace by id                                         |
+| POST   | `/api/v1/admin/workspace/create`                 | admin create workspace                                            |
+| PATCH  | `/api/v1/admin/workspace/:id`                    | admin update workspace                                            |
+| DELETE | `/api/v1/admin/workspace/:id`                    | admin delete workspace                                            |
+| GET    | `/api/v1/authorized/nodes`                       | list nodes for workspace (`?workspaceId=&planId=`)                |
+| POST   | `/api/v1/authorized/nodes`                       | create node (`workspaceId`, `planId`, `data: NodeData` required)  |
+| PATCH  | `/api/v1/authorized/nodes/:nodeId`               | update node data                                                  |
+| DELETE | `/api/v1/authorized/nodes`                       | delete node by body `nodeId`                                      |
+| GET    | `/api/v1/authorized/workspace-plan`              | list workspace plans (`?workspaceId=`)                            |
+| POST   | `/api/v1/authorized/workspace-plan/:workspaceId` | create workspace plan                                             |
+| PATCH  | `/api/v1/authorized/workspace-plan/:planId`      | update workspace plan                                             |
+| DELETE | `/api/v1/authorized/workspace-plan`              | delete workspace plan by body                                     |
+| GET    | `/api/v1/authorized/plan`                        | list subscription plans                                           |
+| GET    | `/api/v1/authorized/plan/subscription`           | current user's active subscription                                |
+| POST   | `/api/v1/authorized/plan/downgrade`              | downgrade to free tier                                            |
+| GET    | `/api/v1/admin/plan`                             | admin list all subscription plans                                 |
+| PATCH  | `/api/v1/admin/plan/user/:userId`                | admin assign plan to user                                         |
 
 ### Login Response Shape
 
@@ -222,79 +259,99 @@ apps/client/
 ├── app/
 │   ├── layout.tsx                    # Root layout: fonts, AppProviders (Jotai + SessionProvider + ThemeProvider + Sonner)
 │   ├── globals.css
-│   ├── error.tsx                     # Segment error boundary — no <html>/<body>, just inner content
-│   ├── loading.tsx
-│   ├── not-found.tsx
-│   ├── global-error.tsx              # Root error boundary — must have <html>/<body>
+│   ├── error.tsx / loading.tsx / not-found.tsx / global-error.tsx
 │   ├── (auth)/                       # Auth route group — no layout nesting
 │   │   ├── login/
-│   │   │   ├── page.tsx
-│   │   │   └── components/          # form-card, login-header, social-login
-│   │   ├── register/page.tsx
-│   │   └── reset-password/page.tsx
-│   ├── admin/                       # ADMIN-only — layout enforces role gate
-│   │   ├── layout.tsx                # async server component — auth() + redirect non-ADMIN
-│   │   ├── page.tsx                  # Admin overview (workspaces, users, models stats)
-│   │   ├── components/               # Admin overview tables
-│   │   └── activity/                 # /admin/activity — AuthLog feed + user weekly login count
-│   │       ├── page.tsx
-│   │       ├── loading.tsx
-│   │       ├── error.tsx
-│   │       └── components/           # activity-page, activity-log-table, user-stats-table
-│   ├── (default)/                    # Default route group — passthrough layout (no extra providers)
-│   │   ├── layout.tsx                # Passthrough only — AppProviders already in root layout
-│   │   ├── page.tsx                  # / — LandingPage (redirect to /dashboard if has workspaces)
-│   │   ├── dashboard/page.tsx
-│   │   ├── plans/page.tsx
-│   │   └── settings/
-│   │       ├── page.tsx              # Thin shell — renders SettingsSidebar + tab components
+│   │   ├── register/
+│   │   ├── change-password/
+│   │   └── reset-password/
+│   │       ├── page.tsx              # Request reset form (enter email)
+│   │       ├── [token]/page.tsx      # Confirm reset — token is path segment
 │   │       └── components/
-│   │           ├── settings-sidebar.tsx  # Tab: Tab type + SettingsSidebar component
-│   │           ├── appearance.tsx        # AppearanceTab — theme picker
-│   │           ├── account.tsx           # AccountTab — profile form (edit mode), change password
-│   │           └── workspace.tsx         # WorkspaceTab — workspace list + detail editor
-│   └── api/auth/[...nextauth]/       # NextAuth route handler
+│   ├── admin/                        # ADMIN-only — layout enforces role gate (server-side)
+│   │   ├── layout.tsx                # async server component — auth() + redirect non-ADMIN
+│   │   ├── activity/                 # AuthLog feed + user weekly login count
+│   │   ├── dashboard/                # Admin overview (KPIs, workspace list, alerts)
+│   │   ├── users/                    # User management (block, role change)
+│   │   └── workspaces/
+│   │       └── [id]/settings/        # Admin workspace settings + member management
+│   ├── (default)/                    # Default route group — passthrough layout
+│   │   ├── page.tsx                  # / — LandingPage (redirect to /dashboard if authenticated)
+│   │   ├── alerts/                   # Node alerts — status != normal
+│   │   ├── analytics/
+│   │   ├── dashboard/                # 2.5D isometric digital twin command center
+│   │   │   └── components/
+│   │   │       ├── isometric-map.tsx
+│   │   │       ├── machine-node.tsx
+│   │   │       ├── machine-legend.tsx
+│   │   │       ├── node-detail-panel.tsx
+│   │   │       ├── plant-dialog.tsx
+│   │   │       └── machines/         # SVG machine components (cnc, controller, conveyor, robot-arm, sensor)
+│   │   ├── help/
+│   │   ├── models/
+│   │   │   └── [id]/
+│   │   ├── settings/
+│   │   │   └── components/           # settings-sidebar, appearance, account, plans, workspace
+│   │   └── workspaces/
+│   │       ├── [id]/
+│   │       │   ├── canvas/           # Canvas node editor (drag/drop, build mode)
+│   │       │   │   └── components/   # add-node-dialog, canvas-tool-bar, machine-node, node-detail-sheet
+│   │       │   ├── details/
+│   │       │   └── components/
+│   │       └── components/
+│   └── api/auth/[...nextauth]/
 ├── components/
-│   ├── navbar.tsx                   # Top bar — session-aware, skeleton on loading
-│   ├── sidebar.tsx                  # Left sidebar — workspace list, nav, collapse
-│   ├── app-layout.tsx               # Layout wrapper combining navbar + sidebar
-│   ├── dashboard-content.tsx
-│   ├── auth/
-│   │   ├── auth-panel.tsx           # Login/register panel for unauthenticated root page
-│   │   ├── create-workspace-form.tsx # Create first workspace → redirect /dashboard
-│   │   ├── login-form.tsx
-│   │   └── index.ts
-│   ├── providers/
-│   │   ├── session-provider.tsx     # JotaiProvider + next-auth SessionProvider
-│   │   ├── theme-provider.tsx       # next-themes wrapper
-│   │   └── index.ts
-│   └── ui/                          # shadcn/ui — DO NOT EDIT
+│   ├── navbar.tsx / sidebar.tsx / app-layout.tsx
+│   ├── admin/                        # AdminAppLayout, admin navbar/sidebar
+│   ├── auth/                         # auth-panel, login-form, create-workspace-form
+│   ├── providers/                    # session-provider, theme-provider
+│   └── ui/                           # shadcn/ui — DO NOT EDIT
 ├── hooks/
 │   ├── auth/
-│   │   ├── use-auth.ts
-│   │   └── use-register.ts
+│   │   ├── use-auth.ts / use-register.ts / use-reset-password.ts
+│   │   └── use-change-password.ts / use-oauth.ts
 │   ├── admin/
-│   │   └── use-activity.ts          # useActivityLog, useUserStats — paginated, keepPreviousData
+│   │   ├── use-activity.ts           # useActivityLog, useUserStats — paginated, keepPreviousData
+│   │   ├── use-admin-users.ts / use-admin-workspaces.ts / use-admin-workspace-settings.ts
+│   ├── canvas/
+│   │   ├── use-canvas.ts             # canvas state + node/edge fetch
+│   │   └── use-canas-edit.ts         # canvas build-mode edit actions (note: typo in filename)
 │   ├── user/
+│   │   └── use-profile.ts / use-update-profile.ts
 │   ├── workspace/
-│   ├── use-mobile.ts
-│   └── use-toadst.ts
+│   │   ├── use-workspaces.ts / use-workspace-by.ts / use-workspace-settings.ts
+│   │   ├── use-create-workspace.ts / use-update-workspace.ts / use-delete-workspace.ts
+│   │   ├── use-workspace-members.ts / use-workspace-logs.ts / use-workspace-models.ts
+│   │   ├── use-workspace-plans.ts    # WorkspacePlan CRUD (sub-plans within canvas)
+│   │   └── use-alert-count.ts        # sums alarmCount from workspacesAtom — no API call
+│   ├── use-dashboard-data.ts         # parallel fetch of all workspace nodes via Promise.all
+│   ├── use-paginated-fetch.ts        # shared paginated hook — usePaginatedFetch<T>()
+│   └── use-mobile.ts
 ├── lib/
-│   ├── auth/
-│   │   └── index.ts                 # NextAuth v5 config — handlers, signIn, signOut, auth
-│   ├── validations/
-│   │   └── auth.dto.ts
-│   ├── fetcher.ts                   # fetchClient() — central HTTP client
-│   └── utils.ts                     # cn() — clsx + tailwind-merge
+│   ├── auth/index.ts                 # NextAuth v5 config
+│   ├── fetcher.ts                    # fetchClient()
+│   ├── isomatric.ts                  # isometric coordinate utilities (ZoneItem, MappedNode, GRID_SPACING)
+│   ├── validations/auth.dto.ts
+│   └── utils.ts                      # cn()
 ├── services/
-│   ├── auth.ts                      # authService.register, authService.logout
-│   ├── workspace.ts                 # workspace CRUD wrappers
-│   └── activity.ts                  # activityService.getActivityLog, getUserStats
+│   ├── auth.ts                       # authService.register, logout
+│   ├── canvas.ts                     # getNodes(), createNode(), updateNode(), deleteNode(), getEdges(), replaceEdges()
+│   ├── plan.ts                       # planService.listPlans(), mySubscription(), downgrade()
+│   ├── profile.ts / user.ts
+│   ├── workspace.ts                  # getAllWorkspaces(), getWorkspaceById(), CRUD
+│   ├── workspace-plan.ts             # getWorkspacePlans(), createWorkspacePlan(), updateWorkspacePlan()
+│   └── activity.ts                   # activityService.getActivityLog(), getUserStats()
 ├── store/
-│   └── workspace.ts                 # Jotai atoms — workspacesAtom, createWorkspaceAtom, clearWorkspacesAtom
+│   ├── workspace.ts                  # workspacesAtom, createWorkspaceAtom, clearWorkspacesAtom
+│   ├── admin.ts                      # adminSidebarCollapsedAtom
+│   ├── canvas.ts                     # isBuildModeAtom, canvasActionsAtom, useCanvasContext()
+│   ├── project-coords.ts             # isometric projection state
+│   └── status-colors.ts              # status → color mapping
 ├── types/
-│   ├── index.ts                     # UserProfile, RegisterPayload, Workspace, CreateWorkspaceInput, ActivityLog, UserActivityStats, Paginated<T>, AuthAction, …
-│   └── next-auth.d.ts               # Extends NextAuth Session/User/JWT with id, role, accessToken, firstName, lastName
+│   ├── index.ts                      # UserProfile, Workspace (nodeCount/alarmCount/status), PlanInfo, SubscriptionInfo, WorkspacePlan, …
+│   ├── dashboard.ts                  # Node, Workspace, Alert interfaces for digital twin dashboard
+│   ├── models.ts                     # Model, FlatModel + mock data generators (placeholder until real API)
+│   └── next-auth.d.ts                # NextAuth Session/User/JWT augmentation
 └── proxy.ts
 ```
 
@@ -363,7 +420,7 @@ Auth guard for all non-static routes. Redirects to `/login` when unauthenticated
 </ThemeProvider>
 ```
 
-### Viewport (Next.js 15)
+### Viewport (Next.js 16)
 
 Export `viewport` **separately** from `metadata` in layouts/pages:
 
@@ -376,7 +433,7 @@ export const viewport: Viewport = {
 }
 ```
 
-Never put viewport settings inside `metadata` — `metadata.viewport` is deprecated in Next.js 15 and causes `<__next_viewport_boundary__>` React key warnings.
+Never put viewport settings inside `metadata` — `metadata.viewport` is deprecated in Next.js 16 and causes `<__next_viewport_boundary__>` React key warnings.
 
 ### State (`store/workspace.ts`)
 
@@ -407,10 +464,10 @@ authService.register(data) // POST /api/v1/public/auth/register
 authService.logout() // POST /api/v1/authorized/auth/logout
 ```
 
-### Settings Page (`app/settings/`)
+### Settings Page (`app/(default)/settings/`)
 
 `page.tsx` is a thin shell — manages `activeTab` state only.
-Each tab is an independent client component in `app/settings/components/`:
+Each tab is an independent client component in `app/(default)/settings/components/`:
 
 | Component              | Responsibility                                                    |
 | ---------------------- | ----------------------------------------------------------------- |
@@ -418,6 +475,7 @@ Each tab is an independent client component in `app/settings/components/`:
 | `appearance.tsx`       | Theme picker (light / dark / system)                              |
 | `account.tsx`          | Profile form with `isEditing` toggle; Change Password card        |
 | `workspace.tsx`        | Workspace selector grid + details editor (Jotai `workspacesAtom`) |
+| `plans.tsx`            | Subscription plan cards (FREE / STANDARD / PRO / ENTERPRISE)      |
 
 ### Admin Layout & Activity Log (`app/admin/`)
 
@@ -581,15 +639,22 @@ packages/prisma/
 
 ### Models
 
-| Model          | Purpose                                                                  |
-| -------------- | ------------------------------------------------------------------------ |
-| `User`         | Core user — email, password (argon2), firstName, lastName, company, role |
-| `Account`      | OAuth provider links (Google, Microsoft)                                 |
-| `Workspace`    | User workspaces — name, icon, color, owner                               |
-| `Model`        | ML models inside a workspace                                             |
-| `RefreshToken` | Active refresh tokens (Phase 1)                                          |
-| `AuthLog`      | Login/logout audit trail — action, IP, userAgent                         |
-| `WorkspaceLog` | Workspace CRUD audit trail                                               |
+| Model                | Purpose                                                                                                    |
+| -------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `User`               | Core user — email, password (argon2), firstName, lastName, company, role (`USER\|ADMIN`)                   |
+| `Account`            | OAuth provider links — `@@unique([provider, providerAccountId])`                                           |
+| `Workspace`          | User workspace — name, icon, color, owner. Has nodes, models, edges, plans, members                        |
+| `WorkspacePlan`      | Sub-floor/zone within a canvas workspace. Nodes belong to a plan. **Not** a subscription plan              |
+| `Nodes`              | Canvas node — `data: Json` (`NodeData` shape: `{name,type,status,icon?,x,y}`). Belongs to workspace + plan |
+| `WorkspaceMember`    | Workspace membership — role `OWNER\|STAFF\|VIEWER`. `@@unique([workspaceId, userId])`                      |
+| `Model`              | ML model attached to a workspace/node. `data: Json?`                                                       |
+| `Edge`               | Canvas edge between nodes. `@@unique([workspaceId, sourceId, targetId, sourceHandle, targetHandle])`       |
+| `Plan`               | Subscription tier — name, maxWorkspaces, price, durationMonths. **Not** a workspace plan                   |
+| `Subscription`       | User subscription — links User + Plan, status `ACTIVE\|EXPIRED\|CANCELED\|TRIALING`                        |
+| `PasswordResetToken` | One-time reset token — hashed, `expiresAt`, cascades on user delete                                        |
+| `RefreshToken`       | Auth refresh token — opaque hex, `revokedAt`, cascades on user delete                                      |
+| `AuthLog`            | Login/logout audit — action `LOGIN\|LOGOUT`, IP, userAgent                                                 |
+| `WorkspaceLog`       | Workspace CRUD audit — action enum covers CREATED/UPDATED/DELETED/MODEL*\*/NODE*\*                         |
 
 ### Workflow
 

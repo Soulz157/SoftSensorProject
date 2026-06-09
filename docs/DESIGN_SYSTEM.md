@@ -42,11 +42,27 @@ Design system reference for the SoftSensor client app (`apps/client`).
 
 ---
 
-## 2. Color Tokens
+## 2. Color Theory & Tokens
 
-All tokens defined in `app/globals.css` under `:root` (light) and `.dark`. Registered in `@theme inline` so Tailwind utility classes (`bg-primary`, `text-card-foreground`, etc.) work out of the box.
+Before diving into CSS variables, it is crucial to understand the design principles driving our palette. All tokens are defined in `app/globals.css` under `:root` (light) and `.dark`, and registered in `@theme inline` for native Tailwind support.
 
-### Semantic tokens
+### 2.1 The Purpose of Color
+
+Applying strict color theory within the SoftSensor app provides three main benefits:
+
+- **Impactful visual design:** Utilizing contrasting colors to grab the user’s attention, while striking a color balance for enduring visual appeal.
+- **Improved UX:** Leveraging color harmony to support user workflows, making it easier to scan content and intuitively navigate the product’s UI.
+- **Better brand expression:** Showcasing our brand personality, core messaging, and mood through a calculated, deliberate palette.
+
+### 2.2 The Color Wheel Foundations
+
+Our semantic system and status colors respect the fundamental relationships defined by the traditional color wheel:
+
+- **Primary colors (RYB):** Red, yellow, and blue. When combined, these serve as the base for all other colors in the UI.
+- **Secondary colors:** Orange, green, and violet. Formed by mixing two primary colors (e.g., red + yellow = orange).
+- **Tertiary colors:** Red-orange, yellow-orange, yellow-green, blue-green, blue-violet, and red-violet. The result of mixing a primary color with a secondary color.
+
+### 2.3 Semantic Tokens
 
 | Token                    | Light                      | Dark                | Usage                         |
 | ------------------------ | -------------------------- | ------------------- | ----------------------------- |
@@ -68,21 +84,21 @@ All tokens defined in `app/globals.css` under `:root` (light) and `.dark`. Regis
 | `--input`                | Light gray                 | Dark gray           | Input backgrounds             |
 | `--ring`                 | Matches primary            | Matches primary     | Focus rings                   |
 
-### Chart tokens
+### 2.4 Chart Tokens
 
 `--chart-1` through `--chart-5` — blue-to-purple spectrum. Used for data visualizations only.
 
-### Sidebar tokens
+### 2.5 Sidebar Tokens
 
-`--sidebar`, `--sidebar-foreground`, `--sidebar-primary`, `--sidebar-primary-foreground`, `--sidebar-accent`, `--sidebar-accent-foreground`, `--sidebar-border`, `--sidebar-ring` — mirrors semantic tokens but scoped to sidebar surface.
+`--sidebar`, `--sidebar-foreground`, `--sidebar-primary`, `--sidebar-primary-foreground`, `--sidebar-accent`, `--sidebar-accent-foreground`, `--sidebar-border`, `--sidebar-ring` — mirrors semantic tokens but scoped specifically to the sidebar surface to maintain visual hierarchy.
 
-### Usage in code
+### 2.6 Usage in Code
 
 ```tsx
-// Correct — CSS variable-backed class
+// Correct — CSS variable-backed class (maintains color harmony & dark mode)
 <div className="bg-card text-card-foreground border-border" />
 
-// Wrong — hardcoded color
+// Wrong — hardcoded color (breaks theory and theme support)
 <div className="bg-[#0f1115]" />
 ```
 

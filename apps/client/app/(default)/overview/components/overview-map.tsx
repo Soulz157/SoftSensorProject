@@ -4,7 +4,7 @@ import { Sun, Moon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { calculateIsometricLayout } from '@/lib/isomatric'
 import type { ZoneItem } from '@/lib/isomatric'
-import { PlantTower } from './plant-tower'
+import { PlantTower } from './overview-tower'
 import type { CanvasNode } from '@/services/canvas'
 import type { Workspace } from '@/types'
 
@@ -72,7 +72,6 @@ export function PlantsMap({
     [workspaces],
   )
 
-  // Pass empty node map — layout uses MIN_ZONE_SIZE when no nodes supplied
   const layoutData = useMemo(() => {
     const emptyMap = new Map<string, CanvasNode[]>()
     return calculateIsometricLayout(zones, emptyMap, CX, CY)
@@ -116,13 +115,13 @@ export function PlantsMap({
       {/* HUD overlay */}
       <div
         className={cn(
-          'absolute top-3 left-3 z-10 rounded-xl border px-3 py-2.5 backdrop-blur-sm',
+          'absolute top-17 left-3 z-10 rounded-xl border px-3 py-2.5 backdrop-blur-sm',
           isDark
             ? 'bg-black/40 border-white/10 text-white'
             : 'bg-white/80 border-black/10 text-gray-900',
         )}
       >
-        <div className="mb-2 text-[9px] font-bold uppercase tracking-widest opacity-60">
+        <div className="mb-2 text-[9px] px-2 font-bold uppercase tracking-widest opacity-60">
           System Status
         </div>
         <div className="space-y-1.5">
@@ -231,7 +230,6 @@ export function PlantsMap({
 
             return (
               <g key={ws.id}>
-                {/* Floor depth layers */}
                 {Array.from({ length: FLOOR_EDGE_LAYERS }).map((_, i) => (
                   <path
                     key={`edge-${i}`}
@@ -243,13 +241,20 @@ export function PlantsMap({
                   />
                 ))}
 
-                {/* Floor top face */}
+                {/* Floor top face (เพิ่ม Event ต่างๆ ตรงนี้) */}
                 <path
                   d={floorPath}
                   fill={topFill}
                   stroke={strokeColor}
                   strokeWidth={isSelected || isHovered ? 2 : 1.2}
                   strokeDasharray={isSelected ? undefined : '8,5'}
+                  className="cursor-pointer"
+                  onMouseEnter={() => !isDragging && setHoveredId(ws.id)}
+                  onMouseLeave={() => setHoveredId(null)}
+                  onClick={() => !isDragging && onWorkspaceClick(ws.id)}
+                  onDoubleClick={() =>
+                    !isDragging && onWorkspaceDoubleClick(ws.id)
+                  }
                 />
 
                 {/* Tower */}

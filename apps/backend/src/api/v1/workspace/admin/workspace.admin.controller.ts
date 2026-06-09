@@ -32,7 +32,7 @@ import { Roles } from '@/common/decorators/roles.decorator';
 
 @Controller('admin/workspace')
 @UseGuards(JwtAccessGuard, RolesGuard)
-@Roles('ADMIN')
+// @Roles('ADMIN')
 export class WorkspaceAdminController {
   constructor(private readonly workspaceAdminService: WorkspaceAdminService) {}
 

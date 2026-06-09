@@ -95,6 +95,10 @@ Strict layered architecture — Controllers → Services → Prisma. No business
 - **Swagger:** available at `/swagger`.
 - **Error throwing:** Always use `AppException` from `@softsensor/common` for ALL thrown errors — never use NestJS built-ins (`BadRequestException`, `NotFoundException`, `UnauthorizedException`, `ForbiddenException`, etc.). Shape: `throw new AppException({ statusCode: 400, message: 'Your message here', type: 'ERROR' })`. Import: `import { AppException } from '@softsensor/common'`.
 - **`deriveNodeSummary()` helper:** Private method in `workspace.authorized.service.ts` — computes `{ nodeCount, alarmCount, status }` from `{ data: unknown }[]`. Reuse for any workspace endpoint needing aggregate node status. Priority: alarm(3) > offline(2) > warning(1) > normal(0).
+- **Nodes module (`nodes/authorized/`):** CRUD for canvas nodes. `NodeData` JSON shape: `{ name, type, status, icon?, x, y }`. Every node requires a `planId` (nodes belong to a `WorkspacePlan`). Frontend canonical: `services/canvas.ts` — `getNodes(workspaceId, planId?)`, `createNode()`, `updateNode()`, `deleteNode()`.
+- **WorkspacePlan vs Plan — naming collision:** `WorkspacePlan` (`workspace-plan/`) = a sub-floor/zone within a workspace canvas (child of `Workspace`). `Plan` (`plan/`) = user subscription tier (FREE/STANDARD/PRO) that controls `maxWorkspaces`. Completely unrelated models. Never conflate.
+- **Edges:** `GET/PUT /api/v1/authorized/workspace/:id/edges` — replace-all semantics (full edge list per workspace). No per-edge CRUD. Frontend: `getEdges(workspaceId)`, `replaceEdges(workspaceId, edges)` in `services/canvas.ts`.
+- **Mail module (`mail/`):** Has `authorized/` (user-facing, e.g. password reset email triggers) and `admin/` (admin bulk mail). Template files under `mail/authorized/template/`.
 
 ### Database (`packages/prisma`)
 
@@ -144,6 +148,11 @@ Strict layered architecture — Controllers → Services → Prisma. No business
 - **Alert count hook:** `hooks/workspace/use-alert-count.ts` → `useAlertCount()` — sums `alarmCount` from `workspacesAtom`. No extra API call. Badge count matches `/alerts` page row count.
 - **Alerts page:** `(default)/alerts/` — counts only nodes (not models) with non-normal status via `getNodes()` from `services/canvas`. Sidebar badge must match this count.
 - **Laws of UX:** For nav/sidebar/layout work, apply principles from `docs/DESIGN_SYSTEM.md` §12. Minimum: Von Restorff (errors visually distinct), Serial Position (Alerts near top of nav), Fitts's Law (1 click to common actions).
+- **Canvas store:** `store/canvas.ts` — `isBuildModeAtom` (toggle build/view mode), `canvasActionsAtom` (delete callbacks), `useCanvasContext()` hook for canvas component tree. Import `useCanvasContext()` instead of reading atoms directly inside canvas components.
+- **Isometric lib:** `lib/isomatric.ts` — `ZoneItem`, `MappedNode`, `GRID_SPACING`. Used by dashboard `IsometricMap` for 2.5D coordinate projection. Import `CanvasNode` from `services/canvas.ts` as the node type.
+- **Dashboard (digital twin):** `(default)/dashboard/` — 2.5D isometric command-center view. Machine SVGs live under `components/machines/` (cnc-machine, controller, conveyor, robot-arm, sensor). `hooks/use-dashboard-data.ts` fetches all workspace nodes in parallel via `Promise.all`.
+- **`types/models.ts`:** Exports mock data generators (`allWorkspaces`, `allModels`, `generateMockModels()`) — placeholder only for `/models` page until real models API is built. Do not reference or extend this pattern; connect new endpoints to real Prisma.
+- **Subscription services:** `services/plan.ts` → `planService.listPlans()`, `mySubscription()`, `downgrade()`. `hooks/workspace/use-workspace-plans.ts` — CRUD for `WorkspacePlan` sub-plans within a canvas.
 
 ### Agents (`.claude/agents/`)
 

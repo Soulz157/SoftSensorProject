@@ -14,7 +14,15 @@ export function useUpdateWorkspace() {
     try {
       const updated = await workspaceService.updateWorkspace(id, data)
       setWorkspaces(prev =>
-        prev.map(w => (w.id === id ? { ...w, ...updated } : w)),
+        prev.map(w =>
+          w.id === id
+            ? {
+                ...w,
+                ...updated,
+                description: updated.description ?? undefined,
+              }
+            : w,
+        ),
       )
       return { success: true }
     } catch (error) {

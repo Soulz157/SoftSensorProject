@@ -3,7 +3,7 @@ import {
   projectToIso,
   getZoneOffset,
   normalizeCoord,
-} from '../../../../../store/project-coords'
+} from '../../../../../../store/project-coords'
 
 describe('normalizeCoord', () => {
   it('returns 0 when x equals minX', () => {

@@ -117,17 +117,17 @@ const PLAN_META: Record<
     ctaVariant: 'outline',
   },
   STANDARD: {
-    icon: <Star className="h-5 w-5 text-emerald-400" />,
+    icon: <Star className="h-5 w-5 text-blue-400" />,
     description: 'For small teams managing multiple sensor pipelines',
-    highlighted: false,
+    badge: 'Most Popular',
+    highlighted: true,
     cta: 'Upgrade to Standard',
     ctaVariant: 'default',
   },
   PRO: {
-    icon: <Sparkles className="h-5 w-5 text-blue-400" />,
+    icon: <Sparkles className="h-5 w-5 text-emerald-400" />,
     description: 'For teams running production sensor pipelines',
-    badge: 'Most Popular',
-    highlighted: true,
+    highlighted: false,
     cta: 'Upgrade to Pro',
     ctaVariant: 'default',
   },
@@ -273,7 +273,7 @@ export default function PlansPage() {
             Plans &amp; Billing
           </h1>
         </div>
-        <p className="text-sm text-muted-foreground">
+        <p className="text-sm text-muted-foreground ">
           {currentPlanName ? (
             <>
               You are on the{' '}
@@ -308,7 +308,7 @@ export default function PlansPage() {
             <div
               key={plan.id}
               className={cn(
-                'relative rounded-xl border p-6 flex flex-col gap-5 transition-all',
+                'relative rounded-xl border p-6 w-full flex flex-col gap-5 transition-all',
                 meta.highlighted
                   ? 'border-blue-500/30 shadow-[0_0_40px_-8px_rgba(59,130,246,0.3)] bg-blue-950/10'
                   : 'border-border bg-card/50',

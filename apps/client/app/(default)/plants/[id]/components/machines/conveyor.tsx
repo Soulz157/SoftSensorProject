@@ -2,7 +2,7 @@ import { cn } from '@/lib/utils'
 import {
   STATUS_COLORS,
   type MachineSvgProps,
-} from '../../../../../store/status-colors'
+} from '../../../../../../store/status-colors'
 
 export function ConveyorSvg({ status, selected = false }: MachineSvgProps) {
   const color = STATUS_COLORS[status]

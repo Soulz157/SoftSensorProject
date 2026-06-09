@@ -57,6 +57,17 @@ export const workspaceService = {
     id: string,
     data: UpdateWorkspacePayload,
   ): Promise<Omit<Workspace, 'modelsCount'>> => {
+    const res = await fetchClient(`/api/v1/authorized/workspace/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    })
+    return res.data
+  },
+
+  adminUpdateworkspace: async (
+    id: string,
+    data: UpdateWorkspacePayload,
+  ): Promise<Omit<AdminWorkspaceDetail, 'modelsCount'>> => {
     const res = await fetchClient(`/api/v1/admin/workspace/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(data),

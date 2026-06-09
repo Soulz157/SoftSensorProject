@@ -214,3 +214,63 @@ Phase 1 (RefreshToken)
             └─ Phase 4 (Testing — validates Phase 1-3)
                  └─ Phase 5 (Workspace — needs auth + user identity fully working)
 ```
+
+## 2. Color Theory & Tokens
+
+Before diving into CSS variables, it is crucial to understand the design principles driving our palette. All tokens are defined in `app/globals.css` under `:root` (light) and `.dark`, and registered in `@theme inline` for native Tailwind support.
+
+### 2.1 The Purpose of Color
+
+Applying strict color theory within the SoftSensor app provides three main benefits:
+
+- **Impactful visual design:** Utilizing contrasting colors to grab the user’s attention, while striking a color balance for enduring visual appeal.
+- **Improved UX:** Leveraging color harmony to support user workflows, making it easier to scan content and intuitively navigate the product’s UI.
+- **Better brand expression:** Showcasing our brand personality, core messaging, and mood through a calculated, deliberate palette.
+
+### 2.2 The Color Wheel Foundations
+
+Our semantic system and status colors respect the fundamental relationships defined by the traditional color wheel:
+
+- **Primary colors (RYB):** Red, yellow, and blue. When combined, these serve as the base for all other colors in the UI.
+- **Secondary colors:** Orange, green, and violet. Formed by mixing two primary colors (e.g., red + yellow = orange).
+- **Tertiary colors:** Red-orange, yellow-orange, yellow-green, blue-green, blue-violet, and red-violet. The result of mixing a primary color with a secondary color.
+
+### 2.3 Semantic Tokens
+
+| Token                    | Light                      | Dark                | Usage                         |
+| ------------------------ | -------------------------- | ------------------- | ----------------------------- |
+| `--background`           | Near-white                 | Very dark           | Page background               |
+| `--foreground`           | Dark                       | Near-white          | Body text                     |
+| `--card`                 | Pure white                 | Dark charcoal       | Card surfaces                 |
+| `--card-foreground`      | Dark                       | Near-white          | Text on cards                 |
+| `--popover`              | Pure white                 | Dark charcoal       | Popover/dropdown surfaces     |
+| `--primary`              | Blue (oklch 0.55 0.18 250) | Brighter blue (0.6) | CTAs, active states, links    |
+| `--primary-foreground`   | White                      | White               | Text on primary bg            |
+| `--secondary`            | Light gray                 | Dark gray           | Secondary buttons, chips      |
+| `--secondary-foreground` | Dark                       | Light               | Text on secondary             |
+| `--muted`                | Very light gray            | Dark gray           | Subtle backgrounds, disabled  |
+| `--muted-foreground`     | Medium gray                | Gray                | Placeholder, secondary labels |
+| `--accent`               | Subtle gray                | Dark                | Hover highlights              |
+| `--accent-foreground`    | Dark                       | Light               | Text on accent                |
+| `--destructive`          | Red-orange                 | Darker red          | Errors, delete actions        |
+| `--border`               | Light gray                 | Dark gray           | Borders, dividers             |
+| `--input`                | Light gray                 | Dark gray           | Input backgrounds             |
+| `--ring`                 | Matches primary            | Matches primary     | Focus rings                   |
+
+### 2.4 Chart Tokens
+
+`--chart-1` through `--chart-5` — blue-to-purple spectrum. Used for data visualizations only.
+
+### 2.5 Sidebar Tokens
+
+`--sidebar`, `--sidebar-foreground`, `--sidebar-primary`, `--sidebar-primary-foreground`, `--sidebar-accent`, `--sidebar-accent-foreground`, `--sidebar-border`, `--sidebar-ring` — mirrors semantic tokens but scoped specifically to the sidebar surface to maintain visual hierarchy.
+
+### 2.6 Usage in Code
+
+```tsx
+// Correct — CSS variable-backed class (maintains color harmony & dark mode)
+<div className="bg-card text-card-foreground border-border" />
+
+// Wrong — hardcoded color (breaks theory and theme support)
+<div className="bg-[#0f1115]" />
+```

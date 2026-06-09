@@ -9,7 +9,7 @@ import { workspaceIcons } from '@/store/workspace'
 import type { Workspace } from '@/types'
 import type { CanvasNode } from '@/services/canvas'
 
-interface PlantDetailPanelProps {
+interface OverviewDetailPanelProps {
   workspace: Workspace | null
   nodes: CanvasNode[]
   onClose: () => void
@@ -39,17 +39,17 @@ function StatCell({
   )
 }
 
-export function PlantDetailPanel({
+export function OverviewDetailPanel({
   workspace,
   nodes,
   onClose,
   onViewWorkspace,
   onOpenCanvas,
   onViewAlerts,
-}: PlantDetailPanelProps) {
+}: OverviewDetailPanelProps) {
   if (!workspace) {
     return (
-      <div className="flex h-full w-[300px] shrink-0 flex-col items-center justify-center gap-3 border-l border-border bg-card/90 p-6 text-center backdrop-blur-xl">
+      <div className="flex h-full w-75 shrink-0 flex-col items-center justify-center gap-3 border-l border-border bg-card/90 p-6 text-center backdrop-blur-xl">
         <Building2 className="h-10 w-10 text-muted-foreground/30" />
         <p className="text-sm font-medium text-muted-foreground">
           Select a plant to view details
@@ -93,7 +93,7 @@ export function PlantDetailPanel({
   }[worstStatus]
 
   return (
-    <div className="flex h-full w-[300px] shrink-0 flex-col border-l border-border bg-card/90 backdrop-blur-xl">
+    <div className="flex h-full w-75 shrink-0 flex-col border-l border-border bg-card/90 backdrop-blur-xl">
       {/* Header */}
       <div className="shrink-0 border-b border-border bg-muted/20 px-4 py-4">
         <div className="flex items-start justify-between gap-3">
@@ -281,7 +281,7 @@ export function PlantDetailPanel({
           className="w-full"
           onClick={() => onOpenCanvas(workspace.id)}
         >
-          Open Canvas
+          Open Pipeline Editor -&gt;
         </Button>
       </div>
     </div>
