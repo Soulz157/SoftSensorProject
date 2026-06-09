@@ -1,5 +1,6 @@
+import { atom } from 'jotai'
 import { atomWithStorage } from 'jotai/utils'
-import type { Workspace } from '@/types'
+import type { Workspace, WorkspacePlan } from '@/types'
 import {
   Activity,
   Box,
@@ -12,6 +13,12 @@ import {
 } from 'lucide-react'
 
 export const workspacesAtom = atomWithStorage<Workspace[]>('workspaces', [])
+
+export const workspacePlansAtom = atom<WorkspacePlan[]>([])
+
+export const clearWorkspacePlansAtom = atom(null, (_get, set) => {
+  set(workspacePlansAtom, [])
+})
 
 export const sidebarCollapsedAtom = atomWithStorage('sidebar-collapsed', false)
 

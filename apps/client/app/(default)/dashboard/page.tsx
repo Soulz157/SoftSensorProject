@@ -1,25 +1,29 @@
 'use client'
-import { useState, useMemo } from 'react'
-import { DashboardHeader } from './components/dashboard-header'
-import { WorkspaceSidebar } from './components/workspace-sidebar'
+import { useState, useMemo, useCallback } from 'react'
+import { ChevronLeft } from 'lucide-react'
 import { IsometricMap } from './components/isometric-map'
 import { NodeDetailPanel } from './components/node-detail-panel'
 import { MachineLegend } from './components/machine-legend'
 import { useDashboardData } from '../../../hooks/use-dashboard-data'
+import { useWorkspacePlans } from '../../../hooks/workspace/use-workspace-plans'
 import type { NodeStatus } from '../../../store/status-colors'
 
 export default function DashboardPage() {
   const { workspaces, nodes, loading, error } = useDashboardData()
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(
-    null,
-  )
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
-  const [searchQuery, setSearchQuery] = useState('')
-  const [statusFilter, setStatusFilter] = useState<NodeStatus | null>(null)
 
-  const alarmCount = workspaces.reduce(
-    (sum, ws) => sum + (ws.alarmCount ?? 0),
-    0,
+  const [viewMode, setViewMode] = useState<'plans' | 'equipment'>('plans')
+  const [selectedWorkspaceId] = useState<string | null>(
+    workspaces[0]?.id ?? null,
+  )
+  const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null)
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
+  const [statusFilter] = useState<NodeStatus | null>(null)
+
+  const { plans } = useWorkspacePlans(selectedWorkspaceId)
+
+  const selectedPlan = useMemo(
+    () => plans.find(p => p.id === selectedPlanId) ?? null,
+    [plans, selectedPlanId],
   )
 
   const selectedNode = useMemo(
@@ -27,22 +31,37 @@ export default function DashboardPage() {
     [nodes, selectedNodeId],
   )
 
-  const selectedNodeWorkspaceId = selectedNode?.workspaceId ?? null
-
   const filteredNodes = useMemo(() => {
     let result = nodes
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase()
-      result = result.filter(n => n.data.name.toLowerCase().includes(q))
-    }
-    if (statusFilter) {
+    if (statusFilter)
       result = result.filter(n => n.data.status === statusFilter)
-    }
-    if (selectedWorkspaceId) {
-      result = result.filter(n => n.workspaceId === selectedWorkspaceId)
+    if (viewMode === 'equipment' && selectedPlanId) {
+      result = result.filter(n => n.planId === selectedPlanId)
     }
     return result
-  }, [nodes, searchQuery, statusFilter, selectedWorkspaceId])
+  }, [nodes, statusFilter, viewMode, selectedPlanId])
+
+  const handleDrillDown = useCallback((planId: string) => {
+    setSelectedPlanId(planId)
+    setSelectedNodeId(null)
+    setViewMode('equipment')
+  }, [])
+
+  const handleBack = useCallback(() => {
+    setViewMode('plans')
+    setSelectedNodeId(null)
+  }, [])
+
+  const handleZoneSelect = useCallback(
+    (id: string) => {
+      if (viewMode === 'plans') {
+        setSelectedPlanId(prev => (prev === id ? null : id))
+      }
+    },
+    [viewMode],
+  )
+
+  const selectedWorkspace = workspaces.find(w => w.id === selectedWorkspaceId)
 
   if (loading) return null
 
@@ -56,39 +75,54 @@ export default function DashboardPage() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-background">
-      <DashboardHeader
-        alarmCount={alarmCount}
-        searchQuery={searchQuery}
-        onSearch={setSearchQuery}
-      />
+      {viewMode === 'equipment' && selectedPlan && (
+        <div className="flex items-center gap-2 border-b border-border bg-[#0d1018] px-4 py-2">
+          <button
+            onClick={handleBack}
+            className="flex items-center gap-1 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <ChevronLeft className="h-3 w-3" />
+            Back
+          </button>
+          <span className="text-[10px] text-muted-foreground/40">/</span>
+          {selectedWorkspace && (
+            <>
+              <span className="text-[10px] text-muted-foreground">
+                {selectedWorkspace.name}
+              </span>
+              <span className="text-[10px] text-muted-foreground/40">/</span>
+            </>
+          )}
+          <span className="text-[10px] font-semibold text-foreground">
+            {selectedPlan.name}
+          </span>
+        </div>
+      )}
+
       <div className="flex flex-1 overflow-hidden">
-        <WorkspaceSidebar
-          workspaces={workspaces}
-          selectedWorkspaceId={selectedWorkspaceId}
-          onSelectWorkspace={id =>
-            setSelectedWorkspaceId(prev => (prev === id ? null : id))
-          }
-          statusFilter={statusFilter}
-          onStatusFilter={setStatusFilter}
-        />
         <main className="flex-1 overflow-hidden">
           <IsometricMap
-            workspaces={
-              selectedWorkspaceId
-                ? workspaces.filter(w => w.id === selectedWorkspaceId)
-                : workspaces
+            zones={
+              viewMode === 'plans' ? plans : selectedPlan ? [selectedPlan] : []
             }
             nodes={filteredNodes}
-            selectedWorkspaceId={selectedWorkspaceId}
+            zoneNodeKey={viewMode === 'plans' ? 'planId' : 'planId'}
+            selectedZoneId={
+              viewMode === 'plans' ? selectedPlanId : selectedPlanId
+            }
             selectedNodeId={selectedNodeId}
+            onZoneSelect={handleZoneSelect}
             onNodeClick={id =>
               setSelectedNodeId(prev => (prev === id ? null : id))
             }
           />
         </main>
         <NodeDetailPanel
+          viewMode={viewMode}
           node={selectedNode}
-          workspaceId={selectedNodeWorkspaceId}
+          plan={selectedPlan}
+          workspaceId={selectedWorkspaceId}
+          onDrillDown={handleDrillDown}
         />
       </div>
       <MachineLegend />

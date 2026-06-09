@@ -15,7 +15,7 @@ We prioritize security updates for the currently active major versions. If a vul
 
 | Technology       | Support Status |
 | ---------------- | -------------- |
-| Next.js 15.x     | Supported ✅   |
+| Next.js 16 .x    | Supported ✅   |
 | NestJS 11.x      | Supported ✅   |
 | Prisma 5.x / 6.x | Supported ✅   |
 | PostgreSQL 15+   | Supported ✅   |

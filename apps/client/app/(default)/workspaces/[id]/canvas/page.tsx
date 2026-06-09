@@ -16,6 +16,7 @@ import { cn } from '@/lib/utils'
 import { useCanvas } from '@/hooks/canvas/use-canvas'
 import { useWorkspace } from '@/hooks/workspace/use-workspace-by'
 import { useCanvasEditor } from '@/hooks/canvas/use-canas-edit'
+import { useWorkspacePlans } from '@/hooks/workspace/use-workspace-plans'
 import type { CanvasData } from '@/hooks/canvas/use-canvas'
 
 import { MachineNode } from '@/app/(default)/workspaces/[id]/canvas/components/machine-node'
@@ -40,6 +41,10 @@ export default function CanvasPage({
     loading,
     error,
   } = useCanvas(workspaceId)
+  const { plans } = useWorkspacePlans(workspaceId)
+  const [activePlanId, setActivePlanId] = useState<string | null>(null)
+
+  const resolvedPlanId = activePlanId ?? plans[0]?.id ?? null
 
   const [showAddNode, setShowAddNode] = useState(false)
   const [selectedNode, setSelectedNode] = useState<CanvasRFNode | null>(null)
@@ -59,7 +64,7 @@ export default function CanvasPage({
     handleDeleteSelected,
     handleConfirm,
     handleCancel,
-  } = useCanvasEditor(workspaceId, remoteNodes, remoteEdges)
+  } = useCanvasEditor(workspaceId, remoteNodes, remoteEdges, resolvedPlanId)
 
   const { resolvedTheme } = useTheme()
   const isDark = resolvedTheme === 'dark'
@@ -93,6 +98,25 @@ export default function CanvasPage({
           onCancel={handleCancel}
           onConfirm={handleConfirm}
         />
+
+        {isBuildMode && plans.length > 0 && (
+          <div className="flex items-center gap-2 border-b border-border bg-[#0d1018] px-4 py-1.5">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">
+              Plan
+            </span>
+            <select
+              value={resolvedPlanId ?? ''}
+              onChange={e => setActivePlanId(e.target.value)}
+              className="rounded border border-border bg-background px-2 py-0.5 text-[11px] text-foreground"
+            >
+              {plans.map(p => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
         <div
           className={cn('w-full h-full relative', isBuildMode && 'build-mode')}
@@ -160,10 +184,12 @@ export default function CanvasPage({
       <AddNodeDialog
         open={showAddNode}
         onClose={() => setShowAddNode(false)}
-        onAdd={(name, type, status) => {
-          handleAddNode(name, type, status)
+        onAdd={(name, type, status, planId) => {
+          handleAddNode(name, type, status, planId)
           setShowAddNode(false)
         }}
+        plans={plans}
+        activePlanId={resolvedPlanId}
       />
       {selectedNode && (
         <NodeDetailPanel

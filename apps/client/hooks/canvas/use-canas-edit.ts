@@ -32,6 +32,7 @@ export function useCanvasEditor(
   workspaceId: string,
   remoteNodes: CanvasRFNode[],
   remoteEdges: Edge[],
+  activePlanId: string | null,
 ) {
   const [isBuildMode, setIsBuildMode] = useAtom(isBuildModeAtom)
   const [, setCanvasActions] = useAtom(canvasActionsAtom)
@@ -98,13 +99,17 @@ export function useCanvasEditor(
       const idMap = new Map<string, string>()
       await Promise.all(
         nodesToCreate.map(async n => {
-          const created = await createNode(workspaceId, {
-            name: n.data.name as string,
-            type: n.data.type as NodeType,
-            status: n.data.status as NodeStatus,
-            x: n.position.x,
-            y: n.position.y,
-          })
+          const created = await createNode(
+            workspaceId,
+            (n.data.planId as string) ?? activePlanId ?? '',
+            {
+              name: n.data.name as string,
+              type: n.data.type as NodeType,
+              status: n.data.status as NodeStatus,
+              x: n.position.x,
+              y: n.position.y,
+            },
+          )
           idMap.set(n.id, created.id)
         }),
       )
@@ -202,7 +207,7 @@ export function useCanvasEditor(
   }, [])
 
   const handleAddNode = useCallback(
-    (name: string, type: NodeType, status: NodeStatus) => {
+    (name: string, type: NodeType, status: NodeStatus, planId?: string) => {
       const x = 200 + (nodes.length % 5) * 40
       const y = 200 + Math.floor(nodes.length / 5) * 60
 
@@ -210,12 +215,19 @@ export function useCanvasEditor(
         id: generateTempId(),
         type: 'machineNode',
         position: { x, y },
-        data: { name, type, status, icon: '', models: [] },
+        data: {
+          name,
+          type,
+          status,
+          icon: '',
+          models: [],
+          planId: planId ?? activePlanId ?? '',
+        },
       }
       setNodes(prev => [...prev, newNode])
       setHasPendingChanges(true)
     },
-    [nodes.length, setNodes],
+    [nodes.length, setNodes, activePlanId],
   )
 
   const handleDeleteSelected = useCallback(() => {

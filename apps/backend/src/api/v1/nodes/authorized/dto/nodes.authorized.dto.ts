@@ -15,6 +15,7 @@ export const NodeDataSchema = z.object({
 
 export const CreateNodeSchema = z.object({
   workspaceId: z.string().uuid(),
+  planId: z.string().uuid(),
   data: NodeDataSchema,
 });
 
@@ -24,6 +25,7 @@ export const UpdateNodeSchema = z.object({
 
 export const NodeQuerySchema = z.object({
   workspaceId: z.string().uuid(),
+  planId: z.string().uuid().optional(),
 });
 
 export const DeleteNodeSchema = z.object({

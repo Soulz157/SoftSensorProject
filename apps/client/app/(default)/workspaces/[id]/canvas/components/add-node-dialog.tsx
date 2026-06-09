@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
+import type { WorkspacePlan } from '@/types'
 
 type NodeType = 'machine' | 'sensor' | 'controller'
 type NodeStatus = 'normal' | 'warning' | 'alarm' | 'offline'
@@ -17,7 +18,14 @@ type NodeStatus = 'normal' | 'warning' | 'alarm' | 'offline'
 interface AddNodeDialogProps {
   open: boolean
   onClose: () => void
-  onAdd: (name: string, type: NodeType, status: NodeStatus) => void
+  onAdd: (
+    name: string,
+    type: NodeType,
+    status: NodeStatus,
+    planId: string,
+  ) => void
+  plans: WorkspacePlan[]
+  activePlanId: string | null
 }
 
 const TYPE_OPTIONS: { value: NodeType; label: string; color: string }[] = [
@@ -33,16 +41,26 @@ const STATUS_OPTIONS: { value: NodeStatus; label: string; color: string }[] = [
   { value: 'offline', label: 'Offline', color: '#6b7280' },
 ]
 
-export function AddNodeDialog({ open, onClose, onAdd }: AddNodeDialogProps) {
+export function AddNodeDialog({
+  open,
+  onClose,
+  onAdd,
+  plans,
+  activePlanId,
+}: AddNodeDialogProps) {
   const [name, setName] = useState('')
   const [type, setType] = useState<NodeType>('machine')
   const [status, setStatus] = useState<NodeStatus>('normal')
+  const [planId, setPlanId] = useState<string>(
+    activePlanId ?? plans[0]?.id ?? '',
+  )
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   function reset() {
     setName('')
     setType('machine')
     setStatus('normal')
+    setPlanId(activePlanId ?? plans[0]?.id ?? '')
     setIsSubmitting(false)
   }
 
@@ -52,10 +70,10 @@ export function AddNodeDialog({ open, onClose, onAdd }: AddNodeDialogProps) {
   }
 
   async function handleSubmit() {
-    if (!name.trim() || isSubmitting) return
+    if (!name.trim() || !planId || isSubmitting) return
     setIsSubmitting(true)
     try {
-      await onAdd(name.trim(), type, status)
+      await onAdd(name.trim(), type, status, planId)
       reset()
     } catch {
       setIsSubmitting(false)
@@ -74,6 +92,44 @@ export function AddNodeDialog({ open, onClose, onAdd }: AddNodeDialogProps) {
         </DialogHeader>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {/* Plan */}
+          {plans.length > 0 && (
+            <div>
+              <label
+                style={{
+                  display: 'block',
+                  color: 'rgba(255,255,255,0.5)',
+                  fontSize: 11,
+                  fontWeight: 600,
+                  letterSpacing: '0.05em',
+                  textTransform: 'uppercase',
+                  marginBottom: 6,
+                }}
+              >
+                Plan
+              </label>
+              <select
+                value={planId}
+                onChange={e => setPlanId(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '8px 10px',
+                  background: '#0a0c12',
+                  border: '1px solid #2d3147',
+                  color: '#e2e5f0',
+                  borderRadius: 8,
+                  fontSize: 12,
+                }}
+              >
+                {plans.map(p => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
           {/* Name */}
           <div>
             <label
@@ -200,11 +256,11 @@ export function AddNodeDialog({ open, onClose, onAdd }: AddNodeDialogProps) {
           </Button>
           <Button
             onClick={handleSubmit}
-            disabled={!name.trim() || isSubmitting}
+            disabled={!name.trim() || !planId || isSubmitting}
             style={{
               background: '#6366f1',
               color: '#fff',
-              opacity: !name.trim() || isSubmitting ? 0.5 : 1,
+              opacity: !name.trim() || !planId || isSubmitting ? 0.5 : 1,
             }}
             className="cursor-pointer"
           >
