@@ -16,6 +16,7 @@ import {
   Database,
   Eye,
   HelpCircle,
+  Factory,
   Layers,
   LayoutDashboard,
   LogOut,
@@ -151,10 +152,10 @@ export function Sidebar({
 
   const userNavItems: NavItem[] = [
     {
-      id: 'dashboard',
-      name: 'Dashboard',
-      icon: <LayoutDashboard className="h-4 w-4" />,
-      href: '/dashboard',
+      id: 'plants',
+      name: 'Plants',
+      icon: <Factory className="h-4 w-4" />,
+      href: '/plants',
     },
     {
       id: 'alerts',
@@ -207,6 +208,12 @@ export function Sidebar({
   ]
 
   const adminNavItems: NavItem[] = [
+    {
+      id: 'admin-dashboard',
+      name: 'Admin Dashboard',
+      icon: <LayoutDashboard className="h-4 w-4" />,
+      href: '/admin/dashboard',
+    },
     {
       id: 'admin-users',
       name: 'User Manage',
