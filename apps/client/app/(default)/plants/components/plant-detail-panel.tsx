@@ -2,10 +2,8 @@
 
 import { Building2, X, AlertTriangle, AlertCircle } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Separator } from '@/components/ui/separator'
 import { cn } from '@/lib/utils'
 import { workspaceIcons } from '@/store/workspace'
 import type { Workspace } from '@/types'
@@ -71,10 +69,10 @@ export function PlantDetailPanel({
   const worstStatus: 'alarm' | 'warning' | 'offline' | 'normal' =
     alarmCount > 0
       ? 'alarm'
-      : warningCount > 0
-        ? 'warning'
-        : offlineCount > 0
-          ? 'offline'
+      : offlineCount > 0
+        ? 'offline'
+        : warningCount > 0
+          ? 'warning'
           : 'normal'
 
   const IconComponent =
