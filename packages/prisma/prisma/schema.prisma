@@ -101,20 +101,20 @@ model Workspace {
   nodes       Nodes[]
   models      Model[]
   edges       Edge[]
-  plans       WorkspacePlan[]
+  plans       WorkspacePlant[]
 
   @@index([ownerId])
 }
 
-model WorkspacePlan {
-  id          String    @id @default(uuid())
+model WorkspacePlant {
+  id          String   @id @default(uuid())
   workspaceId String
   name        String
   icon        String?
   color       String?
   description String?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   nodes     Nodes[]
@@ -123,14 +123,14 @@ model WorkspacePlan {
 }
 
 model Nodes {
-  id          String        @id @default(uuid())
+  id          String         @id @default(uuid())
   workspaceId String
-  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace   Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   planId      String
-  plan        WorkspacePlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  plan        WorkspacePlant @relation(fields: [planId], references: [id], onDelete: Cascade)
   data        Json
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
   models      Model[]
 
   @@index([workspaceId])

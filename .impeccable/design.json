@@ -1,0 +1,246 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-06-10T00:00:00.000Z",
+  "title": "Design System: SoftSensor",
+  "extensions": {
+    "colorMeta": {
+      "signal-blue": {
+        "role": "primary",
+        "displayName": "Signal Blue",
+        "canonical": "oklch(0.55 0.18 250)",
+        "tonalRamp": [
+          "oklch(0.15 0.12 250)",
+          "oklch(0.25 0.15 250)",
+          "oklch(0.35 0.17 250)",
+          "oklch(0.45 0.18 250)",
+          "oklch(0.55 0.18 250)",
+          "oklch(0.65 0.16 250)",
+          "oklch(0.75 0.13 250)",
+          "oklch(0.90 0.07 250)"
+        ]
+      },
+      "signal-blue-dark": {
+        "role": "primary",
+        "displayName": "Signal Blue (Dark Mode)",
+        "canonical": "oklch(0.6 0.18 250)",
+        "tonalRamp": [
+          "oklch(0.15 0.12 250)",
+          "oklch(0.25 0.15 250)",
+          "oklch(0.35 0.17 250)",
+          "oklch(0.48 0.18 250)",
+          "oklch(0.60 0.18 250)",
+          "oklch(0.70 0.15 250)",
+          "oklch(0.80 0.11 250)",
+          "oklch(0.92 0.06 250)"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Instrument Surface",
+        "canonical": "oklch(0.985 0.005 250)",
+        "tonalRamp": [
+          "oklch(0.10 0.015 250)",
+          "oklch(0.20 0.02 250)",
+          "oklch(0.35 0.02 250)",
+          "oklch(0.50 0.015 250)",
+          "oklch(0.65 0.012 250)",
+          "oklch(0.80 0.008 250)",
+          "oklch(0.92 0.006 250)",
+          "oklch(0.985 0.005 250)"
+        ]
+      },
+      "alarm-red": {
+        "role": "semantic",
+        "displayName": "Alarm Red",
+        "canonical": "oklch(0.577 0.245 27.325)",
+        "tonalRamp": [
+          "oklch(0.22 0.10 27)",
+          "oklch(0.32 0.16 27)",
+          "oklch(0.42 0.20 27)",
+          "oklch(0.50 0.23 27)",
+          "oklch(0.577 0.245 27)",
+          "oklch(0.65 0.22 27)",
+          "oklch(0.75 0.18 27)",
+          "oklch(0.88 0.09 27)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Page-level headings — workspace names, major section titles. At most once per view."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Card headings, panel labels, sidebar section names."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Default text across all data-dense surfaces, tables, lists. Max 72ch line length."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Form labels, metadata tags, column headers. Not uppercase."
+      },
+      "mono": {
+        "displayName": "Mono",
+        "purpose": "Sensor readings, node IDs, timestamps, numeric values, model parameters. Geist Mono exclusively."
+      }
+    },
+    "shadows": [
+      {
+        "name": "floating",
+        "value": "0 4px 24px rgba(0,0,0,0.08)",
+        "valueDark": "0 4px 24px rgba(0,0,0,0.32)",
+        "purpose": "Floating elements only: dropdowns, modals, tooltips, command palettes. Never on static cards."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-standard",
+        "value": "cubic-bezier(0.4, 0, 0.2, 1)",
+        "purpose": "Default easing for state transitions (hover, focus, color shifts)."
+      },
+      {
+        "name": "ease-out-fast",
+        "value": "cubic-bezier(0.0, 0.0, 0.2, 1)",
+        "purpose": "Element enter transitions — fast deceleration."
+      },
+      {
+        "name": "duration-fast",
+        "value": "150ms",
+        "purpose": "Interactive feedback: button hover, input focus border."
+      },
+      {
+        "name": "duration-standard",
+        "value": "200ms",
+        "purpose": "Panel transitions, sidebar collapse."
+      }
+    ],
+    "breakpoints": [
+      { "name": "sm", "value": "640px" },
+      { "name": "md", "value": "768px" },
+      { "name": "lg", "value": "1024px" },
+      { "name": "xl", "value": "1280px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Main action button. One per primary action zone. Signal Blue background.",
+      "html": "<button class=\"ds-btn-primary\">Create Workspace</button>",
+      "css": ".ds-btn-primary { display: inline-flex; align-items: center; justify-content: center; height: 2.25rem; padding: 0.5rem 1rem; background-color: oklch(0.55 0.18 250); color: oklch(0.99 0 0); font-family: Geist Sans, ui-sans-serif, system-ui, sans-serif; font-size: 0.875rem; font-weight: 500; border-radius: 0.5rem; border: 1px solid transparent; cursor: pointer; white-space: nowrap; transition: background-color 150ms cubic-bezier(0.4,0,0.2,1), transform 100ms; user-select: none; } .ds-btn-primary:hover { background-color: oklch(0.48 0.18 250); } .ds-btn-primary:active { transform: translateY(1px); } .ds-btn-primary:focus-visible { outline: none; border-color: oklch(0.55 0.18 250); box-shadow: 0 0 0 3px oklch(0.55 0.18 250 / 0.5); } .ds-btn-primary:disabled { opacity: 0.5; pointer-events: none; }"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Low-emphasis action. Used in toolbars, sidebar rows, icon-only controls.",
+      "html": "<button class=\"ds-btn-ghost\">Cancel</button>",
+      "css": ".ds-btn-ghost { display: inline-flex; align-items: center; justify-content: center; height: 2.25rem; padding: 0.5rem 1rem; background-color: transparent; color: oklch(0.15 0.02 250); font-family: Geist Sans, ui-sans-serif, system-ui, sans-serif; font-size: 0.875rem; font-weight: 500; border-radius: 0.5rem; border: 1px solid transparent; cursor: pointer; white-space: nowrap; transition: background-color 150ms cubic-bezier(0.4,0,0.2,1); } .ds-btn-ghost:hover { background-color: oklch(0.95 0.01 250); } .ds-btn-ghost:focus-visible { outline: none; border-color: oklch(0.55 0.18 250); box-shadow: 0 0 0 3px oklch(0.55 0.18 250 / 0.5); }"
+    },
+    {
+      "name": "Destructive Button",
+      "kind": "button",
+      "refersTo": "button-destructive",
+      "description": "Irreversible actions only. Alarm Red at low opacity. Always paired with a destructive icon.",
+      "html": "<button class=\"ds-btn-destructive\"><svg class=\"ds-btn-icon\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><polyline points=\"3 6 5 6 21 6\"/><path d=\"M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6\"/><path d=\"M10 11v6M14 11v6\"/></svg>Delete</button>",
+      "css": ".ds-btn-destructive { display: inline-flex; align-items: center; gap: 0.375rem; justify-content: center; height: 2.25rem; padding: 0.5rem 1rem; background-color: oklch(0.577 0.245 27.325 / 0.1); color: oklch(0.577 0.245 27.325); font-family: Geist Sans, ui-sans-serif, system-ui, sans-serif; font-size: 0.875rem; font-weight: 500; border-radius: 0.5rem; border: 1px solid transparent; cursor: pointer; transition: background-color 150ms; } .ds-btn-destructive:hover { background-color: oklch(0.577 0.245 27.325 / 0.18); } .ds-btn-destructive:focus-visible { outline: none; border-color: oklch(0.577 0.245 27.325 / 0.4); box-shadow: 0 0 0 3px oklch(0.577 0.245 27.325 / 0.2); } .ds-btn-icon { width: 1rem; height: 1rem; flex-shrink: 0; pointer-events: none; }"
+    },
+    {
+      "name": "Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Primary surface container. Hairline ring border, no shadow, one tonal step above page background.",
+      "html": "<div class=\"ds-card\"><div class=\"ds-card-header\"><div class=\"ds-card-title\">Workspace Alpha</div><div class=\"ds-card-desc\">3 nodes · 1 alarm active</div></div><div class=\"ds-card-body\">Content area</div></div>",
+      "css": ".ds-card { display: flex; flex-direction: column; gap: 1rem; overflow: hidden; border-radius: 0.75rem; background-color: oklch(1 0 0); padding: 1rem 0; color: oklch(0.15 0.02 250); font-family: Geist Sans, ui-sans-serif, system-ui, sans-serif; font-size: 0.875rem; box-shadow: 0 0 0 1px oklch(0.15 0.02 250 / 0.10); } .ds-card-header { padding: 0 1rem; display: grid; gap: 0.25rem; } .ds-card-title { font-weight: 500; font-size: 1rem; line-height: 1.4; } .ds-card-desc { font-size: 0.75rem; color: oklch(0.5 0.02 250); } .ds-card-body { padding: 0 1rem; }"
+    },
+    {
+      "name": "Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Default text field. Transparent background, border-input stroke, Signal Blue focus ring.",
+      "html": "<input class=\"ds-input\" type=\"text\" placeholder=\"Search workspaces...\" />",
+      "css": ".ds-input { height: 2rem; width: 100%; min-width: 0; padding: 0.25rem 0.625rem; background-color: transparent; color: oklch(0.15 0.02 250); font-family: Geist Sans, ui-sans-serif, system-ui, sans-serif; font-size: 0.875rem; border-radius: 0.5rem; border: 1px solid oklch(0.92 0.01 250); outline: none; transition: border-color 150ms, box-shadow 150ms; } .ds-input::placeholder { color: oklch(0.5 0.02 250); } .ds-input:focus-visible { border-color: oklch(0.55 0.18 250); box-shadow: 0 0 0 3px oklch(0.55 0.18 250 / 0.5); } .ds-input:disabled { opacity: 0.5; pointer-events: none; cursor: not-allowed; }"
+    },
+    {
+      "name": "Status Badge",
+      "kind": "custom",
+      "refersTo": "button-primary",
+      "description": "Signature component. Communicates alarm/warning/offline/normal with color AND label — never color alone.",
+      "html": "<div style=\"display:flex;gap:8px;align-items:center;flex-wrap:wrap\"><span class=\"ds-status-badge ds-status-alarm\"><span class=\"ds-status-dot\"></span>Alarm</span><span class=\"ds-status-badge ds-status-warning\"><span class=\"ds-status-dot\"></span>Warning</span><span class=\"ds-status-badge ds-status-offline\"><span class=\"ds-status-dot\"></span>Offline</span><span class=\"ds-status-badge ds-status-normal\"><span class=\"ds-status-dot\"></span>Normal</span></div>",
+      "css": ".ds-status-badge { display: inline-flex; align-items: center; gap: 0.375rem; height: 1.25rem; padding: 0.125rem 0.5rem; border-radius: 9999px; font-family: Geist Sans, ui-sans-serif, system-ui, sans-serif; font-size: 0.75rem; font-weight: 500; white-space: nowrap; } .ds-status-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; flex-shrink: 0; } .ds-status-alarm { background-color: rgba(239,68,68,0.10); color: #ef4444; } .ds-status-alarm .ds-status-dot { background-color: #ef4444; } .ds-status-warning { background-color: rgba(245,158,11,0.10); color: #f59e0b; } .ds-status-warning .ds-status-dot { background-color: #f59e0b; } .ds-status-offline { background-color: rgba(113,113,122,0.10); color: #71717a; } .ds-status-offline .ds-status-dot { background-color: #71717a; } .ds-status-normal { background-color: rgba(16,185,129,0.10); color: #059669; } .ds-status-normal .ds-status-dot { background-color: #10b981; }"
+    },
+    {
+      "name": "Nav Item",
+      "kind": "nav",
+      "refersTo": "button-ghost",
+      "description": "Sidebar navigation row. Active state uses Signal Blue text + accent tint background.",
+      "html": "<div style=\"display:flex;flex-direction:column;gap:2px;width:200px;padding:8px;background:oklch(0.97 0.005 250);border-radius:8px\"><a class=\"ds-nav-item ds-nav-item--active\" href=\"#\"><svg class=\"ds-nav-icon\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"3\" y=\"3\" width=\"7\" height=\"7\"/><rect x=\"14\" y=\"3\" width=\"7\" height=\"7\"/><rect x=\"3\" y=\"14\" width=\"7\" height=\"7\"/><rect x=\"14\" y=\"14\" width=\"7\" height=\"7\"/></svg><span>Overview</span></a><a class=\"ds-nav-item\" href=\"#\"><svg class=\"ds-nav-icon\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z\"/><line x1=\"12\" y1=\"9\" x2=\"12\" y2=\"13\"/><line x1=\"12\" y1=\"17\" x2=\"12.01\" y2=\"17\"/></svg><span>Alerts</span><span class=\"ds-nav-badge\">3</span></a><a class=\"ds-nav-item\" href=\"#\"><svg class=\"ds-nav-icon\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"2\" y=\"3\" width=\"20\" height=\"14\" rx=\"2\"/><line x1=\"8\" y1=\"21\" x2=\"16\" y2=\"21\"/><line x1=\"12\" y1=\"17\" x2=\"12\" y2=\"21\"/></svg><span>Workspaces</span></a></div>",
+      "css": ".ds-nav-item { display: flex; align-items: center; gap: 0.625rem; padding: 0.375rem 0.625rem; border-radius: 0.375rem; font-family: Geist Sans, ui-sans-serif, system-ui, sans-serif; font-size: 0.875rem; font-weight: 400; color: oklch(0.18 0.02 250); text-decoration: none; transition: background-color 100ms, color 100ms; cursor: pointer; } .ds-nav-item:hover { background-color: oklch(0.92 0.02 250); } .ds-nav-item--active { background-color: oklch(0.92 0.02 250); color: oklch(0.55 0.18 250); font-weight: 500; } .ds-nav-icon { width: 1rem; height: 1rem; flex-shrink: 0; } .ds-nav-badge { margin-left: auto; display: inline-flex; align-items: center; justify-content: center; min-width: 1.25rem; height: 1.25rem; padding: 0 0.25rem; border-radius: 9999px; background-color: #ef4444; color: #fff; font-size: 0.6875rem; font-weight: 600; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Precision Instrument",
+    "overview": "SoftSensor's visual system is calibrated, not decorated. Like a high-end oscilloscope or industrial measurement device, every visual element earns its place through function. The surface steps back; the data reads forward. Status indicators are unmistakable. Typography prioritizes legibility. Whitespace is rationed, not squandered.\n\nThis system refuses the aesthetic of legacy SCADA/DCS software — the heavy chrome, the neon-on-black widget grids, the cluttered operator panels that look frozen in 1998. It equally refuses the warm consumer-SaaS softness of Notion or Airtable, and the assembled-from-widgets look of Grafana or Tableau. SoftSensor is purpose-built for domain experts who don't need hand-holding and distrust anything that looks like a demo.\n\nThe result looks like it was made by someone who actually understands industrial monitoring: spare, confident, fast to scan, impossible to misread.",
+    "keyCharacteristics": [
+      "Signal Blue used only for active states and primary actions — never decoratively",
+      "Near-white / deep-navy dual-theme surfaces; zero warm-neutral tinting",
+      "Tonal layering over drop-shadows: depth via rings and background shifts",
+      "Geist Sans throughout; Geist Mono for data values, IDs, and sensor readings",
+      "Compact body at 0.875rem; data-density over breathing room",
+      "Status colors always paired with icon + label, never used decoratively"
+    ],
+    "rules": [
+      {
+        "name": "The Signal Rule",
+        "body": "Signal Blue is used on ≤15% of any given screen. Its rarity is how it communicates activity.",
+        "section": "colors"
+      },
+      {
+        "name": "The Status Contract",
+        "body": "Status colors (alarm/warning/offline/normal) are never used for decorative purposes. They communicate operating state that operators rely on.",
+        "section": "colors"
+      },
+      {
+        "name": "The Mono Contract",
+        "body": "Numeric sensor readings and identifiers are always rendered in Geist Mono.",
+        "section": "typography"
+      },
+      {
+        "name": "The Weight Ceiling Rule",
+        "body": "Maximum in-use font weight is 600 (semibold). Font-weight 700+ reads as alarmed.",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat-by-Default Rule",
+        "body": "A shadow on a static card is a question mark. If the element isn't floating (modal, dropdown, detached), the shadow doesn't belong.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do use ring-1 ring-foreground/10 for card edge definition — never border or box-shadow on resting surfaces.",
+      "Do pair every status color with both an icon and a text label.",
+      "Do render all numeric sensor readings, IDs, timestamps, and model parameters in Geist Mono.",
+      "Do hold Signal Blue to ≤15% surface coverage per screen.",
+      "Do test both themes against WCAG 2.1 AA: 4.5:1 body/placeholder, 3:1 large text.",
+      "Do provide prefers-reduced-motion fallbacks for every animation.",
+      "Do keep maximum font weight at 600 (semibold).",
+      "Do anchor depth in tonal lightness steps, not shadows."
+    ],
+    "donts": [
+      "Don't use legacy SCADA/DCS aesthetics: no heavy chrome, no neon-on-dark widgets, no Wonderware look.",
+      "Don't bring consumer-SaaS softness into the app: no pastel palette, no warm-tinted neutrals, no friendly blob empty states.",
+      "Don't produce an assembled-from-widgets dark-mode grid (Grafana/Tableau aesthetic).",
+      "Don't use gradient text (background-clip: text with a gradient).",
+      "Don't use border-left/right > 1px as a colored accent stripe on cards or list items.",
+      "Don't use glassmorphism or backdrop-filter: blur on resting surfaces.",
+      "Don't nest cards inside cards.",
+      "Don't apply drop-shadows to resting static cards.",
+      "Don't use status colors for anything other than operating state.",
+      "Don't use font-weight 700 or higher anywhere in the UI."
+    ]
+  }
+}

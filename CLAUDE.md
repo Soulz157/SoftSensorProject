@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for system design, layer model, auth flow, and key architectural decisions. Read [`docs/CODEBASE.md`](docs/CODEBASE.md) for project structure, component APIs, Prisma patterns, and coding style. For any frontend/UI work, read [`docs/DESIGN_SYSTEM.md`](docs/DESIGN_SYSTEM.md) for color tokens, status color conventions, component patterns, and design rules. Do not rely on assumptions — verify against these files first.
 
+For any UI/design/product work, also read [`PRODUCT.md`](PRODUCT.md) (register, users, brand personality, anti-references, design principles) and [`DESIGN.md`](DESIGN.md) (color tokens, typography scale, elevation rules, component specs, do's and don'ts). DESIGN.md wins on visual decisions; PRODUCT.md wins on strategic/voice decisions.
+
 ## After Every Task
 
 After completing any coding task, always run these two commands in order before reporting done:
