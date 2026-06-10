@@ -3,10 +3,10 @@
 import { useState, useEffect } from 'react'
 import { useAtom } from 'jotai'
 import { useRouter, usePathname } from 'next/navigation'
-import { Navbar } from '@/components/navbar'
-import { Sidebar } from '@/components/sidebar'
+import { Navbar } from '@/components/layout/navbar'
+import { Sidebar } from '@/components/layout/sidebar'
 import { sidebarCollapsedAtom } from '@/store/workspace'
-import { CreateWorkspaceDialog } from './create-workspace'
+import { CreateWorkspaceDialog } from '../create-workspace'
 
 interface AppLayoutProps {
   children?: React.ReactNode

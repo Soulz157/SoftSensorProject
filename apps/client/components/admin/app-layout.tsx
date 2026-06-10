@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useAtom } from 'jotai'
-import { Sidebar } from '@/components/sidebar'
+import { Sidebar } from '@/components/layout/sidebar'
 import { AdminNavbar } from '@/components/admin/navbar'
 import { adminSidebarCollapsedAtom } from '@/store/admin'
 

@@ -10,7 +10,7 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
-import type { WorkspacePlan } from '@/types'
+import type { WorkspacePlant } from '@/types'
 
 type NodeType = 'machine' | 'sensor' | 'controller'
 type NodeStatus = 'normal' | 'warning' | 'alarm' | 'offline'
@@ -22,10 +22,10 @@ interface AddNodeDialogProps {
     name: string,
     type: NodeType,
     status: NodeStatus,
-    planId: string,
+    plantId: string,
   ) => void
-  plans: WorkspacePlan[]
-  activePlanId: string | null
+  plants: WorkspacePlant[]
+  activePlantId: string | null
 }
 
 const TYPE_OPTIONS: { value: NodeType; label: string; color: string }[] = [
@@ -45,14 +45,14 @@ export function AddNodeDialog({
   open,
   onClose,
   onAdd,
-  plans,
-  activePlanId,
+  plants,
+  activePlantId,
 }: AddNodeDialogProps) {
   const [name, setName] = useState('')
   const [type, setType] = useState<NodeType>('machine')
   const [status, setStatus] = useState<NodeStatus>('normal')
-  const [planId, setPlanId] = useState<string>(
-    activePlanId ?? plans[0]?.id ?? '',
+  const [plantId, setPlantId] = useState<string>(
+    activePlantId ?? plants[0]?.id ?? '',
   )
   const [isSubmitting, setIsSubmitting] = useState(false)
 
@@ -60,7 +60,7 @@ export function AddNodeDialog({
     setName('')
     setType('machine')
     setStatus('normal')
-    setPlanId(activePlanId ?? plans[0]?.id ?? '')
+    setPlantId(activePlantId ?? plants[0]?.id ?? '')
     setIsSubmitting(false)
   }
 
@@ -70,10 +70,10 @@ export function AddNodeDialog({
   }
 
   async function handleSubmit() {
-    if (!name.trim() || !planId || isSubmitting) return
+    if (!name.trim() || !plantId || isSubmitting) return
     setIsSubmitting(true)
     try {
-      await onAdd(name.trim(), type, status, planId)
+      await onAdd(name.trim(), type, status, plantId)
       reset()
     } catch {
       setIsSubmitting(false)
@@ -92,8 +92,8 @@ export function AddNodeDialog({
         </DialogHeader>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {/* Plan */}
-          {plans.length > 0 && (
+          {/* Plant */}
+          {plants.length > 0 && (
             <div>
               <label
                 style={{
@@ -109,8 +109,8 @@ export function AddNodeDialog({
                 Plan
               </label>
               <select
-                value={planId}
-                onChange={e => setPlanId(e.target.value)}
+                value={plantId}
+                onChange={e => setPlantId(e.target.value)}
                 style={{
                   width: '100%',
                   padding: '8px 10px',
@@ -121,7 +121,7 @@ export function AddNodeDialog({
                   fontSize: 12,
                 }}
               >
-                {plans.map(p => (
+                {plants.map(p => (
                   <option key={p.id} value={p.id}>
                     {p.name}
                   </option>
@@ -256,11 +256,11 @@ export function AddNodeDialog({
           </Button>
           <Button
             onClick={handleSubmit}
-            disabled={!name.trim() || !planId || isSubmitting}
+            disabled={!name.trim() || !plantId || isSubmitting}
             style={{
               background: '#6366f1',
               color: '#fff',
-              opacity: !name.trim() || !planId || isSubmitting ? 0.5 : 1,
+              opacity: !name.trim() || !plantId || isSubmitting ? 0.5 : 1,
             }}
             className="cursor-pointer"
           >

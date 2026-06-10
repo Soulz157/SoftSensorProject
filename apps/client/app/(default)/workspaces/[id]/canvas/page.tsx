@@ -16,7 +16,7 @@ import { cn } from '@/lib/utils'
 import { useCanvas } from '@/hooks/canvas/use-canvas'
 import { useWorkspace } from '@/hooks/workspace/use-workspace-by'
 import { useCanvasEditor } from '@/hooks/canvas/use-canas-edit'
-import { useWorkspacePlans } from '@/hooks/workspace/use-workspace-plans'
+import { useWorkspacePlants } from '@/hooks/workspace/use-workspace-plants'
 import type { CanvasData } from '@/hooks/canvas/use-canvas'
 
 import { MachineNode } from '@/app/(default)/workspaces/[id]/canvas/components/machine-node'
@@ -41,10 +41,10 @@ export default function CanvasPage({
     loading,
     error,
   } = useCanvas(workspaceId)
-  const { plans } = useWorkspacePlans(workspaceId)
+  const { plants } = useWorkspacePlants(workspaceId)
   const [activePlanId, setActivePlanId] = useState<string | null>(null)
 
-  const resolvedPlanId = activePlanId ?? plans[0]?.id ?? null
+  const resolvedPlanId = activePlanId ?? plants[0]?.id ?? null
 
   const [showAddNode, setShowAddNode] = useState(false)
   const [selectedNode, setSelectedNode] = useState<CanvasRFNode | null>(null)
@@ -99,7 +99,7 @@ export default function CanvasPage({
           onConfirm={handleConfirm}
         />
 
-        {isBuildMode && plans.length > 0 && (
+        {isBuildMode && plants.length > 0 && (
           <div className="flex items-center gap-2 border-b border-border bg-[#0d1018] px-4 py-1.5">
             <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">
               Plan
@@ -109,7 +109,7 @@ export default function CanvasPage({
               onChange={e => setActivePlanId(e.target.value)}
               className="rounded border border-border bg-background px-2 py-0.5 text-[11px] text-foreground"
             >
-              {plans.map(p => (
+              {plants.map(p => (
                 <option key={p.id} value={p.id}>
                   {p.name}
                 </option>
@@ -184,12 +184,12 @@ export default function CanvasPage({
       <AddNodeDialog
         open={showAddNode}
         onClose={() => setShowAddNode(false)}
-        onAdd={(name, type, status, planId) => {
-          handleAddNode(name, type, status, planId)
+        onAdd={(name, type, status, plantId) => {
+          handleAddNode(name, type, status, plantId)
           setShowAddNode(false)
         }}
-        plans={plans}
-        activePlanId={resolvedPlanId}
+        plants={plants}
+        activePlantId={resolvedPlanId}
       />
       {selectedNode && (
         <NodeDetailPanel

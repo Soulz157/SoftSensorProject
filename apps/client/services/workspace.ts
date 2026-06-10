@@ -123,7 +123,7 @@ export const workspaceService = {
   removeMember: (workspaceId: string, memberId: string): Promise<unknown> =>
     fetchClient(
       `/api/v1/authorized/workspace/${workspaceId}/members/${memberId}`,
-      { method: 'DELETE' },
+      { method: 'DELETE', body: JSON.stringify({ memberId }) },
     ),
 
   getAdminWorkspaceById: (

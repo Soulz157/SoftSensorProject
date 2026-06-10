@@ -68,7 +68,6 @@ function PlansSkeleton() {
 }
 
 export default function PlansPage() {
-  // ดึง Logic และ State ทั้งหมดมาจาก Hook
   const {
     plans,
     loading,
@@ -123,7 +122,7 @@ export default function PlansPage() {
           if (!meta) return null
 
           const isCurrent = plan.name === currentPlanName
-          const IconComponent = meta.icon // Render icon dynamically
+          const IconComponent = meta.icon
 
           return (
             <div

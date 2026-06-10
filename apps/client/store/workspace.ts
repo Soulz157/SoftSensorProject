@@ -1,6 +1,6 @@
 import { atom } from 'jotai'
 import { atomWithStorage } from 'jotai/utils'
-import type { Workspace, WorkspacePlan } from '@/types'
+import type { Workspace, WorkspacePlant } from '@/types'
 import {
   Activity,
   Box,
@@ -14,10 +14,10 @@ import {
 
 export const workspacesAtom = atomWithStorage<Workspace[]>('workspaces', [])
 
-export const workspacePlansAtom = atom<WorkspacePlan[]>([])
+export const workspacePlantsAtom = atom<WorkspacePlant[]>([])
 
-export const clearWorkspacePlansAtom = atom(null, (_get, set) => {
-  set(workspacePlansAtom, [])
+export const clearWorkspacePlantsAtom = atom(null, (_get, set) => {
+  set(workspacePlantsAtom, [])
 })
 
 export const sidebarCollapsedAtom = atomWithStorage('sidebar-collapsed', false)

@@ -13,6 +13,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
+import { useTheme } from 'next-themes'
 
 const VIEWPORT_W = 700
 const VIEWPORT_H = 420
@@ -51,9 +52,10 @@ export function IsometricMap({
   onZoneDoubleClick,
   viewMode,
 }: IsometricMapProps) {
+  const { resolvedTheme } = useTheme()
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [isDragging, setIsDragging] = useState(false)
-  const [isDark, setIsDark] = useState(true)
+  const [isDark, setIsDark] = useState(resolvedTheme !== 'light')
   const dragStart = useRef({ x: 0, y: 0 })
   const [hoveredZoneId, setHoveredZoneId] = useState<string | null>(null)
 
@@ -266,7 +268,7 @@ export function IsometricMap({
                           onClick={() => !isDragging && onZoneSelect?.(zone.id)}
                           onDoubleClick={e => {
                             e.preventDefault()
-                            !isDragging && onZoneDoubleClick?.(zone.id)
+                            if (!isDragging) onZoneDoubleClick?.(zone.id)
                           }}
                         >
                           {(() => {

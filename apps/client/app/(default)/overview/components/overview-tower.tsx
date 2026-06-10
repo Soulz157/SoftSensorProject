@@ -1,5 +1,8 @@
 'use client'
 
+import { useState } from 'react'
+import { CheckCircle2, AlertTriangle, AlertCircle, WifiOff } from 'lucide-react'
+
 type NodeStatus = 'normal' | 'warning' | 'alarm' | 'offline'
 
 const STATUS_COLORS: Record<NodeStatus, string> = {
@@ -16,6 +19,14 @@ const COLOR_HEX: Record<string, string> = {
   amber: '#f59e0b',
   rose: '#f43f5e',
   cyan: '#06b6d4',
+}
+
+// Map สถานะเข้ากับ Icon ของ Lucide
+const STATUS_ICONS = {
+  normal: CheckCircle2,
+  warning: AlertTriangle,
+  alarm: AlertCircle,
+  offline: WifiOff,
 }
 
 interface PlantTowerProps {
@@ -49,11 +60,11 @@ export function PlantTower({
 }: PlantTowerProps) {
   const accentHex = COLOR_HEX[workspaceColor] ?? '#3b82f6'
   const statusColor = STATUS_COLORS[status]
+  const StatusIcon = STATUS_ICONS[status] // เรียกใช้ Icon ตามสถานะ
   const towerH = Math.max(40, Math.min(20 + nodeCount * 3, 100))
-  const tw = 22 // half-width of tower
+  const tw = 22
 
-  // Isometric tower faces — origin at (cx, cy)
-  // Top face (diamond) centered at (cx, cy - towerH)
+  // [ส่วนโค้ดการวาด Tower ตรงกลางละไว้เหมือนเดิมเพื่อความกระชับ...]
   const topFacePoints = [
     `${cx},${cy - towerH - tw * 0.5}`,
     `${cx + tw},${cy - towerH}`,
@@ -61,7 +72,6 @@ export function PlantTower({
     `${cx - tw},${cy - towerH}`,
   ].join(' ')
 
-  // Left face
   const leftFacePoints = [
     `${cx - tw},${cy - towerH}`,
     `${cx},${cy - towerH + tw * 0.5}`,
@@ -69,7 +79,6 @@ export function PlantTower({
     `${cx - tw},${cy}`,
   ].join(' ')
 
-  // Right face
   const rightFacePoints = [
     `${cx + tw},${cy - towerH}`,
     `${cx},${cy - towerH + tw * 0.5}`,
@@ -77,7 +86,6 @@ export function PlantTower({
     `${cx + tw},${cy}`,
   ].join(' ')
 
-  // Windows on left face — rows based on tower height
   const windowRows = Math.min(Math.floor(towerH / 18), 4)
   const windows: { x: number; y: number }[] = []
   for (let row = 0; row < windowRows; row++) {
@@ -86,7 +94,6 @@ export function PlantTower({
     windows.push({ x: cx - tw + 16, y: wy })
   }
 
-  // Antenna
   const antennaBase = cy - towerH - tw * 0.5
   const antennaTop = antennaBase - 16
 
@@ -103,9 +110,16 @@ export function PlantTower({
   const rightFaceBase = isDark ? 'rgba(8,15,30,0.95)' : 'rgba(180,200,220,0.9)'
   const strokeColor = selected ? accentHex : isDark ? '#1e2535' : '#94a3b8'
 
+  const [isFocused, setIsFocused] = useState(false)
+
   return (
     <g
-      className="cursor-pointer transition-transform hover:-translate-y-1"
+      className="cursor-pointer motion-safe:transition-transform motion-safe:hover:-translate-y-1"
+      tabIndex={0}
+      role="button"
+      aria-label={`${name} workspace — status: ${status}, ${nodeCount} nodes`}
+      onFocus={() => setIsFocused(true)}
+      onBlur={() => setIsFocused(false)}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
       onClick={onClick}
@@ -113,7 +127,27 @@ export function PlantTower({
         e.preventDefault()
         onDoubleClick()
       }}
+      onKeyDown={e => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onClick()
+        }
+      }}
     >
+      {/* Keyboard focus ring */}
+      {isFocused && (
+        <ellipse
+          cx={cx}
+          cy={cy + tw * 0.5}
+          rx={tw + 14}
+          ry={14}
+          fill="none"
+          stroke={accentHex}
+          strokeWidth={2}
+          opacity={0.9}
+        />
+      )}
+
       {/* Selection dashed ring */}
       {selected && (
         <ellipse
@@ -147,15 +181,13 @@ export function PlantTower({
         opacity={status === 'alarm' ? 0.4 : 0.2}
       />
 
-      {/* Tower body — right face */}
+      {/* Tower body */}
       <polygon
         points={rightFacePoints}
         fill={rightFaceBase}
         stroke={strokeColor}
         strokeWidth={0.6}
       />
-
-      {/* Tower body — left face */}
       <polygon
         points={leftFacePoints}
         fill={leftFaceBase}
@@ -163,7 +195,7 @@ export function PlantTower({
         strokeWidth={0.6}
       />
 
-      {/* Windows on left face */}
+      {/* Windows */}
       {windows.map((w, i) => (
         <rect
           key={`w-${w.x}-${w.y}`}
@@ -183,7 +215,7 @@ export function PlantTower({
         />
       ))}
 
-      {/* Tower top face */}
+      {/* Tower top */}
       <polygon
         points={topFacePoints}
         fill={topFaceColor}
@@ -211,7 +243,7 @@ export function PlantTower({
         strokeDasharray={status === 'offline' ? '2 2' : undefined}
       />
 
-      {/* Beacon on antenna tip */}
+      {/* Beacon */}
       {status === 'alarm' && (
         <>
           <circle cx={cx} cy={antennaTop} r={5} fill="#ef4444" opacity={0.9} />
@@ -250,7 +282,7 @@ export function PlantTower({
       )}
 
       {/* ========================================
-        Name label (พร้อมตัว Status Circle)
+        Name label & Lucide Icon
         ========================================
       */}
       <rect
@@ -264,19 +296,29 @@ export function PlantTower({
         strokeWidth={0.6}
       />
 
+      {/* Dot สถานะฝั่งซ้าย */}
       <circle cx={cx - 38} cy={cy + tw * 0.5 + 19} r={3.5} fill={statusColor} />
 
+      {/* ชื่อ Workspace */}
       <text
         x={cx - 28}
         y={cy + tw * 0.5 + 22}
         textAnchor="start"
         fontSize={8}
-        fontFamily="monospace"
+        fontFamily="Geist Sans, ui-sans-serif, system-ui, sans-serif"
         fontWeight={600}
         fill={isDark ? '#f8fafc' : '#1e293b'}
       >
-        {name.length > 12 ? `${name.slice(0, 12)}…` : name}
+        {name.length > 10 ? `${name.slice(0, 10)}…` : name}
       </text>
+
+      <StatusIcon
+        x={cx + 35}
+        y={cy + tw * 0.5 + 14}
+        width={10}
+        height={10}
+        color={statusColor}
+      />
     </g>
   )
 }

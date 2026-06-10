@@ -1,5 +1,5 @@
-import { useState, useMemo, useCallback, useEffect } from 'react'
-import { useWorkspacePlans } from '../workspace/use-workspace-plans'
+import { useState, useMemo } from 'react'
+import { useWorkspacePlants } from '../workspace/use-workspace-plants'
 import { NodeStatus } from '@/store/status-colors'
 import { useDashboardData } from '../use-dashboard-data'
 
@@ -11,9 +11,7 @@ export function usePlantsController(initialWorkspaceId: string) {
 
   const [viewMode, setViewMode] = useState<ViewMode>('plants')
   const [displayMode, setDisplayMode] = useState<DisplayMode>('map')
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(
-    initialWorkspaceId,
-  )
+  const [selectedWorkspaceId] = useState<string | null>(initialWorkspaceId)
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [statusFilter] = useState<NodeStatus | null>(null)
@@ -22,11 +20,11 @@ export function usePlantsController(initialWorkspaceId: string) {
 
   const activeWorkspaceId =
     selectedWorkspaceId ?? initialWorkspaceId ?? workspaces[0]?.id ?? null
-  const { plans, createPlan } = useWorkspacePlans(activeWorkspaceId)
+  const { plants, createPlan } = useWorkspacePlants(activeWorkspaceId)
 
   const selectedPlan = useMemo(
-    () => plans.find(p => p.id === selectedPlanId) ?? null,
-    [plans, selectedPlanId],
+    () => plants.find(p => p.id === selectedPlanId) ?? null,
+    [plants, selectedPlanId],
   )
   const selectedNode = useMemo(
     () => nodes.find(n => n.id === selectedNodeId) ?? null,
@@ -34,19 +32,13 @@ export function usePlantsController(initialWorkspaceId: string) {
   )
   const selectedWorkspace = workspaces.find(w => w.id === activeWorkspaceId)
   const selectedNodePlan = useMemo(
-    () => plans.find(p => p.id === selectedNode?.planId) ?? null,
-    [plans, selectedNode],
+    () => plants.find(p => p.id === selectedNode?.planId) ?? null,
+    [plants, selectedNode],
   )
 
   const breadcrumbPlant = selectedPlan ?? selectedNodePlan
   const inspectorMode: ViewMode = selectedNode ? 'equipment' : viewMode
 
-  // 4. Effects
-  useEffect(() => {
-    if (selectedNode || selectedPlan) setIsPanelOpen(true)
-  }, [selectedNode, selectedPlan])
-
-  // 5. Data Processing (Filtering)
   const filteredNodes = useMemo(() => {
     let result = nodes
     if (statusFilter)
@@ -77,51 +69,54 @@ export function usePlantsController(initialWorkspaceId: string) {
     )
   }, [visibleGridNodes])
 
-  // 6. Actions (Handlers)
-  const handlers = {
-    handleDrillDown: useCallback((planId: string) => {
-      setSelectedPlanId(planId)
-      setSelectedNodeId(null)
-      setViewMode('equipment')
-    }, []),
-    handleBack: useCallback(() => {
-      setViewMode('plants')
-      setSelectedNodeId(null)
-      setSelectedPlanId(null)
-    }, []),
-    handleZoneSelect: useCallback(
-      (planId: string) => {
+  const handlers = useMemo(
+    () => ({
+      handleDrillDown: (planId: string) => {
+        setSelectedPlanId(planId)
+        setSelectedNodeId(null)
+        setViewMode('equipment')
+        setIsPanelOpen(true)
+      },
+      handleBack: () => {
+        setViewMode('plants')
+        setSelectedNodeId(null)
+        setSelectedPlanId(null)
+        setIsPanelOpen(false)
+      },
+      handleZoneSelect: (planId: string) => {
         if (viewMode === 'plants') {
-          setSelectedPlanId(prev => (prev === planId ? null : planId))
+          const isDeselecting = selectedPlanId === planId
+          setSelectedPlanId(isDeselecting ? null : planId)
           setSelectedNodeId(null)
+          setIsPanelOpen(!isDeselecting)
         }
       },
-      [viewMode],
-    ),
-    handleNodeClick: useCallback((nodeId: string) => {
-      setSelectedNodeId(prev => (prev === nodeId ? null : nodeId))
-    }, []),
-    handleCreatePlan: useCallback(
-      async (name: string) => {
+      handleNodeClick: (nodeId: string) => {
+        const isDeselecting = selectedNodeId === nodeId
+        setSelectedNodeId(isDeselecting ? null : nodeId)
+        setIsPanelOpen(!isDeselecting)
+      },
+      handleCreatePlan: async (name: string) => {
         await createPlan({ name })
       },
-      [createPlan],
-    ),
-    handleResetToPlantsView: useCallback(() => {
-      setViewMode('plants')
-      setSelectedPlanId(null)
-      setSelectedNodeId(null)
-    }, []),
-    handleResetToEquipmentView: useCallback(() => {
-      setSelectedNodeId(null)
-      setViewMode('equipment')
-    }, []),
-    handleClosePanel: useCallback(() => setIsPanelOpen(false), []),
-    handleOpenAddPlan: useCallback(() => setIsAddPlanOpen(true), []),
-    handleCloseAddPlan: useCallback(() => setIsAddPlanOpen(false), []),
-  }
+      handleResetToPlantsView: () => {
+        setViewMode('plants')
+        setSelectedPlanId(null)
+        setSelectedNodeId(null)
+        setIsPanelOpen(false)
+      },
+      handleResetToEquipmentView: () => {
+        setSelectedNodeId(null)
+        setViewMode('equipment')
+        setIsPanelOpen(false)
+      },
+      handleClosePanel: () => setIsPanelOpen(false),
+      handleOpenAddPlan: () => setIsAddPlanOpen(true),
+      handleCloseAddPlan: () => setIsAddPlanOpen(false),
+    }),
+    [selectedPlanId, selectedNodeId, viewMode, createPlan],
+  )
 
-  // 7. Return Everything needed for UI
   return {
     state: {
       viewMode,
@@ -136,7 +131,7 @@ export function usePlantsController(initialWorkspaceId: string) {
     data: {
       loading,
       error,
-      plans,
+      plants,
       filteredNodes,
       visibleGridNodes,
       selectedPlan,

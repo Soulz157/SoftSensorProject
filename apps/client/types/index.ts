@@ -30,7 +30,7 @@ export interface UpdateProfilePayload {
   company?: string
 }
 
-export interface WorkspacePlan {
+export interface WorkspacePlant {
   id: string
   workspaceId: string
   name: string

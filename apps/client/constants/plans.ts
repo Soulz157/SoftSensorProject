@@ -104,7 +104,7 @@ export const FEATURES: PlanFeature[] = [
 export const PLAN_META: Record<
   PlanKey,
   {
-    icon: React.ElementType // เปลี่ยนเป็น ElementType เพื่อให้เรียกใช้เป็น Component ได้
+    icon: React.ElementType
     description: string
     badge?: string
     highlighted: boolean

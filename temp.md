@@ -1,4 +1,5 @@
 ---
+
 What was written:
 
 - PRODUCT.md — register: product. Three-persona users (engineers, data scientists, managers). Personality: Smart · Clean · Expert. Anti-refs: legacy SCADA/DCS, consumer SaaS softness, generic dashboard grids. Five design principles.

@@ -1,5 +1,6 @@
 'use client'
 import { useMemo, useState, useRef } from 'react'
+import { useTheme } from 'next-themes'
 import { Sun, Moon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { calculateIsometricLayout } from '@/lib/isomatric'
@@ -48,9 +49,10 @@ export function PlantsMap({
   onWorkspaceClick,
   onWorkspaceDoubleClick,
 }: PlantsMapProps) {
+  const { resolvedTheme } = useTheme()
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [isDragging, setIsDragging] = useState(false)
-  const [isDark, setIsDark] = useState(true)
+  const [isDark, setIsDark] = useState(resolvedTheme !== 'light')
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const dragStart = useRef({ x: 0, y: 0 })
 
@@ -66,6 +68,23 @@ export function PlantsMap({
     })
   }
   const handleMouseUp = () => setIsDragging(false)
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    const touch = e.touches[0]
+    if (!touch) return
+    setIsDragging(true)
+    dragStart.current = { x: touch.clientX - pan.x, y: touch.clientY - pan.y }
+  }
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (!isDragging) return
+    const touch = e.touches[0]
+    if (!touch) return
+    setPan({
+      x: touch.clientX - dragStart.current.x,
+      y: touch.clientY - dragStart.current.y,
+    })
+  }
+  const handleTouchEnd = () => setIsDragging(false)
 
   const zones: ZoneItem[] = useMemo(
     () => workspaces.map(ws => ({ id: ws.id, name: ws.name, color: ws.color })),
@@ -108,7 +127,9 @@ export function PlantsMap({
       ? '#ef4444'
       : overallStatus === 'warning'
         ? '#f59e0b'
-        : '#22c55e'
+        : overallStatus === 'offline'
+          ? '#71717a'
+          : '#22c55e'
 
   return (
     <div className="relative h-full w-full">
@@ -121,7 +142,7 @@ export function PlantsMap({
             : 'bg-white/80 border-black/10 text-gray-900',
         )}
       >
-        <div className="mb-2 text-[9px] px-2 font-bold uppercase tracking-widest opacity-60">
+        <div className="mb-2 px-2 text-[10px] font-medium opacity-60">
           System Status
         </div>
         <div className="space-y-1.5">
@@ -201,11 +222,14 @@ export function PlantsMap({
         height="100%"
         viewBox={`0 0 ${VIEWPORT_W} ${VIEWPORT_H}`}
         className={`h-full w-full ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
-        style={{ background: palette.bg }}
+        style={{ background: palette.bg, touchAction: 'none' }}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
       >
         <g transform={`translate(${pan.x},${pan.y})`}>
           {layoutData.map(({ zone, floorPath, labelX, labelY }) => {

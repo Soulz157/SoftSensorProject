@@ -49,7 +49,7 @@ export function OverviewDetailPanel({
 }: OverviewDetailPanelProps) {
   if (!workspace) {
     return (
-      <div className="flex h-full w-75 shrink-0 flex-col items-center justify-center gap-3 border-l border-border bg-card/90 p-6 text-center backdrop-blur-xl">
+      <div className="flex h-full w-full flex-col items-center justify-center gap-3 border-t border-border bg-card/90 p-6 text-center backdrop-blur-xl sm:w-75 sm:shrink-0 sm:border-l sm:border-t-0">
         <Building2 className="h-10 w-10 text-muted-foreground/30" />
         <p className="text-sm font-medium text-muted-foreground">
           Select a plant to view details
@@ -93,7 +93,9 @@ export function OverviewDetailPanel({
   }[worstStatus]
 
   return (
-    <div className="flex h-full w-75 shrink-0 flex-col border-l border-border bg-card/90 backdrop-blur-xl">
+    <div className="flex h-full w-full flex-col border-t border-border bg-card/90 backdrop-blur-xl sm:w-75 sm:shrink-0 sm:border-l sm:border-t-0">
+      {/* Mobile drag handle */}
+      <div className="mx-auto mb-1 mt-2.5 h-1 w-10 shrink-0 rounded-full bg-muted-foreground/25 sm:hidden" />
       {/* Header */}
       <div className="shrink-0 border-b border-border bg-muted/20 px-4 py-4">
         <div className="flex items-start justify-between gap-3">
@@ -105,9 +107,11 @@ export function OverviewDetailPanel({
               <p className="truncate text-sm font-bold text-foreground">
                 {workspace.name}
               </p>
-              <p className="text-xs text-muted-foreground">
-                Sub-company workspace
-              </p>
+              {workspace.description && (
+                <p className="truncate text-xs text-muted-foreground">
+                  {workspace.description}
+                </p>
+              )}
             </div>
           </div>
           <button
@@ -144,19 +148,19 @@ export function OverviewDetailPanel({
 
           {/* Stats grid 2×2 */}
           <div className="border-b border-border/50 px-4 py-4">
-            <div className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <div className="mb-3 text-xs font-medium text-muted-foreground">
               Summary
             </div>
             <div className="grid grid-cols-2 gap-2">
               <StatCell
                 label="Equipments"
                 value={nodeCount}
-                valueClass="text-blue-500"
+                valueClass="text-primary"
               />
               <StatCell
                 label="Models"
                 value={workspace.modelsCount}
-                valueClass="text-blue-500"
+                valueClass="text-primary"
               />
               <StatCell
                 label="Alarms"
@@ -178,7 +182,7 @@ export function OverviewDetailPanel({
           {/* Alarm list */}
           {alarmCount > 0 && (
             <div className="border-b border-border/50 px-4 py-4">
-              <div className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-destructive">
+              <div className="mb-3 text-xs font-medium text-destructive">
                 Alarms ({alarmCount})
               </div>
               <div className="space-y-2">
@@ -217,7 +221,7 @@ export function OverviewDetailPanel({
           {/* Warning list */}
           {warningCount > 0 && (
             <div className="border-b border-border/50 px-4 py-4">
-              <div className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-amber-500">
+              <div className="mb-3 text-xs font-medium text-amber-500">
                 Warnings ({warningCount})
               </div>
               <div className="space-y-2">
@@ -281,7 +285,7 @@ export function OverviewDetailPanel({
           className="w-full"
           onClick={() => onOpenCanvas(workspace.id)}
         >
-          Open Pipeline Editor -&gt;
+          Open Pipeline Editor →
         </Button>
       </div>
     </div>

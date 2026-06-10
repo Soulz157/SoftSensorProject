@@ -281,7 +281,7 @@ export default function PlantsPage({ params }: PlantsPageProps) {
             <IsometricMap
               zones={
                 state.viewMode === 'plants'
-                  ? data.plans
+                  ? data.plants
                   : data.selectedPlan
                     ? [data.selectedPlan]
                     : []

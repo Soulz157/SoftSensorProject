@@ -6,7 +6,7 @@ import { SensorSvg } from './machines/sensor'
 import { ConveyorSvg } from './machines/conveyor'
 import { ControllerSvg } from './machines/controller'
 import { type NodeStatus } from '../../../../../store/status-colors'
-import { cn } from '@/lib/utils' // ตรวจสอบ path ของ utils ให้ตรงกับโปรเจกต์คุณ
+import { cn } from '@/lib/utils'
 
 interface MachineNodeProps {
   type: 'machine' | 'sensor' | 'controller'
@@ -135,9 +135,9 @@ export function MachineNode({
       {/* 2. ห่อ Component เครื่องจักรเพื่อใส่ Hover Lift และ Drop Shadow */}
       <g
         className={cn(
-          'transition-all duration-300 group-hover:-translate-y-2', // ลอยขึ้นเมื่อ Hover
-          isAlarm && 'anim-alarm-node', // กระพริบเมื่อเป็น Alarm
-          selected && 'drop-shadow-[0_0_20px_rgba(59,130,246,0.8)]', // โกลว์สีฟ้าเมื่อถูกคลิก
+          'transition-all duration-300 group-hover:-translate-y-2',
+          isAlarm && 'anim-alarm-node',
+          selected && 'drop-shadow-[0_0_20px_rgba(59,130,246,0.8)]',
         )}
         style={
           !isAlarm && !selected

@@ -14,7 +14,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { CanvasNode } from '@/services/canvas'
-import type { WorkspacePlan } from '@/types'
+import type { WorkspacePlant } from '@/types'
 import type { NodeStatus } from '../../../../../store/status-colors'
 
 const STATUS_CHIP: Record<NodeStatus, string> = {
@@ -41,7 +41,7 @@ const STATUS_ICON = {
 interface NodeDetailPanelProps {
   viewMode: 'plants' | 'equipment'
   node: CanvasNode | null
-  plan: WorkspacePlan | null
+  plan: WorkspacePlant | null
   workspaceId: string | null
   onDrillDown?: (planId: string) => void
   onEditClick?: (node: CanvasNode) => void

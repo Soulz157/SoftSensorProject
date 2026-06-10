@@ -49,11 +49,18 @@ export function usePlans() {
     }
   }
 
-  // Logic สำหรับการเลือก Plan
   const handleSelectPlan = async (plan: PlanInfo) => {
     if (plan.name === 'ENTERPRISE') {
       toast.info('Contacting sales team...')
       // e.g. window.location.href = 'mailto:sales@example.com'
+      setSubscription(prev => ({
+        ...(prev as SubscriptionInfo),
+        status: 'ACTIVE',
+        plan: {
+          ...plan,
+          description: plan.name,
+        },
+      }))
       return
     }
 

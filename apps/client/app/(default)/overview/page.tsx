@@ -12,12 +12,27 @@ export default function PlantsPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const router = useRouter()
 
-  if (loading) return null
+  if (loading)
+    return (
+      <div className="flex h-full w-full motion-safe:animate-pulse items-center justify-center bg-muted/10">
+        <p className="text-sm text-muted-foreground">Loading workspaces…</p>
+      </div>
+    )
   if (error) throw new Error(error)
 
   const selectedWorkspace: Workspace | null =
     workspaces.find(w => w.id === selectedId) ?? null
   const selectedNodes = selectedId ? (nodesByWorkspace[selectedId] ?? []) : []
+
+  if (workspaces.length === 0)
+    return (
+      <div className="flex h-full w-full flex-col items-center justify-center gap-3">
+        <p className="text-sm font-medium text-foreground">No workspaces yet</p>
+        <p className="text-xs text-muted-foreground">
+          Create a workspace to start monitoring your plant.
+        </p>
+      </div>
+    )
 
   return (
     <div className="flex h-full w-full overflow-hidden">
@@ -42,18 +57,26 @@ export default function PlantsPage() {
         />
       </div>
 
-      {/* Detail panel — 300px, slides in when selected */}
+      {/* Detail panel — side panel on sm+, bottom sheet on mobile */}
       {selectedWorkspace && (
-        <div className="w-75 shrink-0 border-l border-border bg-background">
-          <OverviewDetailPanel
-            workspace={selectedWorkspace}
-            nodes={selectedNodes}
-            onClose={() => setSelectedId(null)}
-            onViewWorkspace={id => router.push(`/plants/${id}`)}
-            onOpenCanvas={id => router.push(`/workspaces/${id}/canvas`)}
-            onViewAlerts={() => router.push('/alerts')}
+        <>
+          {/* Mobile: tap-outside backdrop */}
+          <div
+            className="fixed inset-0 z-10 bg-black/30 sm:hidden"
+            onClick={() => setSelectedId(null)}
+            aria-hidden="true"
           />
-        </div>
+          <div className="fixed inset-x-0 bottom-0 z-20 h-[65svh] overflow-hidden rounded-t-2xl sm:relative sm:inset-auto sm:z-auto sm:h-auto sm:overflow-visible sm:rounded-none">
+            <OverviewDetailPanel
+              workspace={selectedWorkspace}
+              nodes={selectedNodes}
+              onClose={() => setSelectedId(null)}
+              onViewWorkspace={id => router.push(`/plants/${id}`)}
+              onOpenCanvas={id => router.push(`/workspaces/${id}/canvas`)}
+              onViewAlerts={() => router.push('/alerts')}
+            />
+          </div>
+        </>
       )}
     </div>
   )

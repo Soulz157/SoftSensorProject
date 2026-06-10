@@ -481,7 +481,9 @@ export class WorkspaceAuthorizedService {
         type: 'ERROR',
       });
     }
-    if (workspace.ownerId !== user.id) {
+
+    const isAdmin = user.role === 'ADMIN';
+    if (workspace.ownerId !== user.id && !isAdmin) {
       const member = await this.prisma.workspaceMember.findUnique({
         where: { workspaceId_userId: { workspaceId: id, userId: user.id } },
       });
