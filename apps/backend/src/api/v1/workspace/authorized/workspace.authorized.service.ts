@@ -43,7 +43,13 @@ export class WorkspaceAuthorizedService {
     }
   }
 
-  private async assertHasAccess(workspaceId: string, userId: string) {
+  private async assertHasAccess(
+    workspaceId: string,
+    userId: string,
+    userRole: string,
+  ) {
+    if (userRole === 'ADMIN') return;
+
     const workspace = await this.prisma.workspace.findUnique({
       where: { id: workspaceId, deletedAt: null },
       select: { ownerId: true },
@@ -104,11 +110,18 @@ export class WorkspaceAuthorizedService {
   }
 
   async getAllWorkspaces(user: Auth.UserPayload) {
+    const where =
+      user.role === 'ADMIN'
+        ? { deletedAt: null }
+        : {
+            deletedAt: null,
+            OR: [
+              { ownerId: user.id },
+              { members: { some: { userId: user.id } } },
+            ],
+          };
     const workspaces = await this.prisma.workspace.findMany({
-      where: {
-        deletedAt: null,
-        OR: [{ ownerId: user.id }, { members: { some: { userId: user.id } } }],
-      },
+      where,
       select: {
         id: true,
         color: true,
@@ -171,8 +184,8 @@ export class WorkspaceAuthorizedService {
     };
   }
 
-  async getWorkspaceModels(id: string, userId: string) {
-    await this.assertHasAccess(id, userId);
+  async getWorkspaceModels(id: string, userId: string, userRole: string) {
+    await this.assertHasAccess(id, userId, userRole);
 
     const models = await this.prisma.model.findMany({
       where: { workspaceId: id },
@@ -187,8 +200,13 @@ export class WorkspaceAuthorizedService {
     };
   }
 
-  async getWorkspaceLogs(id: string, userId: string, query: GetLogsQueryDto) {
-    await this.assertHasAccess(id, userId);
+  async getWorkspaceLogs(
+    id: string,
+    userId: string,
+    userRole: string,
+    query: GetLogsQueryDto,
+  ) {
+    await this.assertHasAccess(id, userId, userRole);
 
     const { page, limit } = query;
     const skip = (page - 1) * limit;
@@ -260,8 +278,8 @@ export class WorkspaceAuthorizedService {
     };
   }
 
-  async listMembers(workspaceId: string, userId: string) {
-    await this.assertHasAccess(workspaceId, userId);
+  async listMembers(workspaceId: string, userId: string, userRole: string) {
+    await this.assertHasAccess(workspaceId, userId, userRole);
 
     const members = await this.prisma.workspaceMember.findMany({
       where: { workspaceId },
@@ -381,8 +399,8 @@ export class WorkspaceAuthorizedService {
     };
   }
 
-  async listEdges(workspaceId: string, userId: string) {
-    await this.assertHasAccess(workspaceId, userId);
+  async listEdges(workspaceId: string, userId: string, userRole: string) {
+    await this.assertHasAccess(workspaceId, userId, userRole);
 
     const edges = await this.prisma.edge.findMany({
       where: { workspaceId },
@@ -400,9 +418,10 @@ export class WorkspaceAuthorizedService {
   async replaceEdges(
     workspaceId: string,
     userId: string,
+    userRole: string,
     edges: EdgeItemDto[],
   ) {
-    await this.assertHasAccess(workspaceId, userId);
+    await this.assertHasAccess(workspaceId, userId, userRole);
 
     await this.prisma.$transaction([
       this.prisma.edge.deleteMany({ where: { workspaceId } }),

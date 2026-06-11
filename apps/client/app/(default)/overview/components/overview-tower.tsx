@@ -21,7 +21,6 @@ const COLOR_HEX: Record<string, string> = {
   cyan: '#06b6d4',
 }
 
-// Map สถานะเข้ากับ Icon ของ Lucide
 const STATUS_ICONS = {
   normal: CheckCircle2,
   warning: AlertTriangle,
@@ -29,11 +28,22 @@ const STATUS_ICONS = {
   offline: WifiOff,
 }
 
+const STATUS_PRIORITY: Record<NodeStatus, number> = {
+  alarm: 0,
+  warning: 1,
+  offline: 2,
+  normal: 3,
+}
+
+const MAX_DOTS = 8
+const DOT_SPACING = 6
+
 interface PlantTowerProps {
   cx: number
   cy: number
   nodeCount: number
   status: NodeStatus
+  nodeStatuses?: NodeStatus[]
   workspaceColor: string
   name: string
   selected: boolean
@@ -49,6 +59,7 @@ export function PlantTower({
   cy,
   nodeCount,
   status,
+  nodeStatuses,
   workspaceColor,
   name,
   selected,
@@ -60,11 +71,25 @@ export function PlantTower({
 }: PlantTowerProps) {
   const accentHex = COLOR_HEX[workspaceColor] ?? '#3b82f6'
   const statusColor = STATUS_COLORS[status]
-  const StatusIcon = STATUS_ICONS[status] // เรียกใช้ Icon ตามสถานะ
+  const StatusIcon = STATUS_ICONS[status]
   const towerH = Math.max(40, Math.min(20 + nodeCount * 3, 100))
   const tw = 22
 
-  // [ส่วนโค้ดการวาด Tower ตรงกลางละไว้เหมือนเดิมเพื่อความกระชับ...]
+  const sortedStatuses = nodeStatuses
+    ? [...nodeStatuses]
+        .sort((a, b) => STATUS_PRIORITY[a] - STATUS_PRIORITY[b])
+        .slice(0, MAX_DOTS)
+    : []
+  const extraDots =
+    nodeStatuses && nodeStatuses.length > MAX_DOTS
+      ? nodeStatuses.length - MAX_DOTS
+      : 0
+  const totalDotsW =
+    sortedStatuses.length > 0
+      ? (sortedStatuses.length - 1) * DOT_SPACING + (extraDots > 0 ? 14 : 0)
+      : 0
+  const dotsStartX = cx - totalDotsW / 2
+
   const topFacePoints = [
     `${cx},${cy - towerH - tw * 0.5}`,
     `${cx + tw},${cy - towerH}`,
@@ -86,15 +111,17 @@ export function PlantTower({
     `${cx + tw},${cy}`,
   ].join(' ')
 
-  const windowRows = Math.min(Math.floor(towerH / 18), 4)
-  const windows: { x: number; y: number }[] = []
-  for (let row = 0; row < windowRows; row++) {
-    const wy = cy - towerH + tw * 0.5 + 10 + row * 18
-    windows.push({ x: cx - tw + 8, y: wy })
-    windows.push({ x: cx - tw + 16, y: wy })
-  }
+  const windowColor =
+    status === 'alarm'
+      ? '#fca5a5'
+      : status === 'warning'
+        ? '#fcd34d'
+        : status === 'offline'
+          ? '#71717a'
+          : '#10b981'
+  const windowOpacity = status === 'offline' ? 0.3 : 0.75
 
-  const antennaBase = cy - towerH - tw * 0.5
+  const antennaBase = cy - towerH - 12
   const antennaTop = antennaBase - 16
 
   const topFaceColor =
@@ -181,41 +208,119 @@ export function PlantTower({
         opacity={status === 'alarm' ? 0.4 : 0.2}
       />
 
-      {/* Tower body */}
+      {/* 1. Base Plinth / Shadow Platform */}
+      <polygon
+        points={`
+          ${cx},${cy + tw * 0.5 + 4}
+          ${cx + tw + 4},${cy + 2}
+          ${cx},${cy - tw * 0.5 + 4}
+          ${cx - tw - 4},${cy + 2}
+        `}
+        fill={isDark ? '#020617' : '#94a3b8'}
+        opacity={0.5}
+      />
+
+      {/* 2. Main Tower Body */}
       <polygon
         points={rightFacePoints}
         fill={rightFaceBase}
         stroke={strokeColor}
         strokeWidth={0.6}
+        strokeLinejoin="round"
       />
       <polygon
         points={leftFacePoints}
         fill={leftFaceBase}
         stroke={strokeColor}
         strokeWidth={0.6}
+        strokeLinejoin="round"
       />
 
-      {/* Windows */}
-      {windows.map((w, i) => (
-        <rect
-          key={`w-${w.x}-${w.y}`}
-          x={w.x}
-          y={w.y}
-          width={5}
-          height={7}
-          rx={1}
-          fill={
-            status === 'alarm'
-              ? '#fca5a5'
-              : status === 'warning'
-                ? '#fcd34d'
-                : '#93c5fd'
-          }
-          opacity={0.6 + (i % 2) * 0.2}
-        />
-      ))}
+      {/* 3. Structural Details (Vertical Corner & Center Beams) */}
+      <line
+        x1={cx}
+        y1={cy - towerH + tw * 0.5}
+        x2={cx}
+        y2={cy + tw * 0.5}
+        stroke={strokeColor}
+        strokeWidth={1}
+        opacity={0.5}
+      />
+      <line
+        x1={cx - tw + 2}
+        y1={cy - towerH + 1}
+        x2={cx - tw + 2}
+        y2={cy + 1}
+        stroke={strokeColor}
+        strokeWidth={0.5}
+        opacity={0.3}
+      />
+      <line
+        x1={cx + tw - 2}
+        y1={cy - towerH + 1}
+        x2={cx + tw - 2}
+        y2={cy + 1}
+        stroke={strokeColor}
+        strokeWidth={0.5}
+        opacity={0.3}
+      />
 
-      {/* Tower top */}
+      {/* 4. Glowing Vertical Core Line (Sci-fi / Server Plant Look) */}
+      {status !== 'offline' && (
+        <g>
+          <path
+            d={`M ${cx - 2} ${cy - towerH + tw * 0.5 + 3} L ${cx - 2} ${cy + tw * 0.5 - 3}`}
+            stroke={statusColor}
+            strokeWidth={1}
+            opacity={status === 'alarm' ? 0.8 : 0.5}
+            strokeLinecap="round"
+          />
+          <path
+            d={`M ${cx + 2} ${cy - towerH + tw * 0.5 + 3} L ${cx + 2} ${cy + tw * 0.5 - 3}`}
+            stroke={statusColor}
+            strokeWidth={1}
+            opacity={status === 'alarm' ? 0.8 : 0.5}
+            strokeLinecap="round"
+          />
+        </g>
+      )}
+
+      {/* 5. Isometric Glass Windows (Perfectly aligned with angles) */}
+      {Array.from({ length: Math.floor((towerH - 10) / 12) }).map((_, i) => {
+        const h = 10 + i * 12
+        const wH = 6
+
+        if (h + wH > towerH - 4) return null
+
+        return (
+          <g key={`win-${i}`}>
+            {/* Left face window */}
+            <polygon
+              points={`
+                ${cx - 18},${cy - towerH + 2 + h}
+                ${cx - 6},${cy - towerH + 8 + h}
+                ${cx - 6},${cy - towerH + 8 + h + wH}
+                ${cx - 18},${cy - towerH + 2 + h + wH}
+              `}
+              fill={windowColor}
+              opacity={windowOpacity}
+            />
+            {/* Right face window */}
+            <polygon
+              points={`
+                ${cx + 6},${cy - towerH + 8 + h}
+                ${cx + 18},${cy - towerH + 2 + h}
+                ${cx + 18},${cy - towerH + 2 + h + wH}
+                ${cx + 6},${cy - towerH + 8 + h + wH}
+              `}
+              fill={windowColor}
+              opacity={windowOpacity - 0.2}
+            />
+          </g>
+        )
+      })}
+
+      {/* 6. Tower top (Main Roof) */}
       <polygon
         points={topFacePoints}
         fill={topFaceColor}
@@ -229,10 +334,51 @@ export function PlantTower({
                 : '#d4d4d8'
         }
         strokeWidth={1.2}
+        strokeLinejoin="round"
         opacity={status === 'offline' ? 0.6 : 1}
       />
 
-      {/* Antenna */}
+      {/* 7. Roof Detail: Secondary Inner Box (Machinery / AC Unit) */}
+      <g opacity={status === 'offline' ? 0.6 : 0.95}>
+        <polygon
+          points={`
+            ${cx - 8},${cy - towerH - 4}
+            ${cx},${cy - towerH}
+            ${cx},${cy - towerH - 4}
+            ${cx - 8},${cy - towerH - 8}
+          `}
+          fill={leftFaceBase}
+          stroke={strokeColor}
+          strokeWidth={0.5}
+          strokeLinejoin="round"
+        />
+        <polygon
+          points={`
+            ${cx},${cy - towerH - 4}
+            ${cx + 8},${cy - towerH - 8}
+            ${cx + 8},${cy - towerH - 4}
+            ${cx},${cy - towerH}
+          `}
+          fill={rightFaceBase}
+          stroke={strokeColor}
+          strokeWidth={0.5}
+          strokeLinejoin="round"
+        />
+        <polygon
+          points={`
+            ${cx},${cy - towerH - 12}
+            ${cx + 8},${cy - towerH - 8}
+            ${cx},${cy - towerH - 4}
+            ${cx - 8},${cy - towerH - 8}
+          `}
+          fill={topFaceColor}
+          stroke={strokeColor}
+          strokeWidth={0.5}
+          strokeLinejoin="round"
+        />
+      </g>
+
+      {/* 8. Antenna */}
       <line
         x1={cx}
         y1={antennaBase}
@@ -240,10 +386,11 @@ export function PlantTower({
         y2={antennaTop}
         stroke={status === 'offline' ? '#71717a' : accentHex}
         strokeWidth={1.5}
+        strokeLinecap="round"
         strokeDasharray={status === 'offline' ? '2 2' : undefined}
       />
 
-      {/* Beacon */}
+      {/* 9. Beacon */}
       {status === 'alarm' && (
         <>
           <circle cx={cx} cy={antennaTop} r={5} fill="#ef4444" opacity={0.9} />
@@ -281,10 +428,7 @@ export function PlantTower({
         />
       )}
 
-      {/* ========================================
-        Name label & Lucide Icon
-        ========================================
-      */}
+      {/* Name Badge */}
       <rect
         x={cx - 50}
         y={cy + tw * 0.5 + 10}
@@ -296,10 +440,8 @@ export function PlantTower({
         strokeWidth={0.6}
       />
 
-      {/* Dot สถานะฝั่งซ้าย */}
       <circle cx={cx - 38} cy={cy + tw * 0.5 + 19} r={3.5} fill={statusColor} />
 
-      {/* ชื่อ Workspace */}
       <text
         x={cx - 28}
         y={cy + tw * 0.5 + 22}
@@ -319,6 +461,44 @@ export function PlantTower({
         height={10}
         color={statusColor}
       />
+
+      {/* Equipment status dots — below name badge */}
+      {sortedStatuses.length > 0 && (
+        <g>
+          <rect
+            x={dotsStartX - 4}
+            y={cy + tw * 0.5 + 30}
+            width={totalDotsW + 8}
+            height={10}
+            rx={5}
+            fill={isDark ? 'rgba(6,8,15,0.75)' : 'rgba(240,244,248,0.85)'}
+            stroke={isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)'}
+            strokeWidth={0.5}
+          />
+          {sortedStatuses.map((st, i) => (
+            <circle
+              key={`s-${i}`}
+              cx={dotsStartX + i * DOT_SPACING}
+              cy={cy + tw * 0.5 + 35}
+              r={2.5}
+              fill={STATUS_COLORS[st]}
+              opacity={0.95}
+            />
+          ))}
+          {extraDots > 0 && (
+            <text
+              x={dotsStartX + sortedStatuses.length * DOT_SPACING}
+              y={cy + tw * 0.5 + 38}
+              fontSize={5.5}
+              fontFamily="Geist Sans, ui-sans-serif, sans-serif"
+              fontWeight={700}
+              fill={isDark ? '#94a3b8' : '#475569'}
+            >
+              +{extraDots}
+            </text>
+          )}
+        </g>
+      )}
     </g>
   )
 }

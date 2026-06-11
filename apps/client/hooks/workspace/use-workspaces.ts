@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useSession } from 'next-auth/react'
 import { toast } from 'sonner'
 import { useAtom } from 'jotai'
-import { workspacesAtom } from '@/store/workspace'
+import { workspacesAtom, workspacesLoadingAtom } from '@/store/workspace'
 import { workspaceService } from '@/services/workspace'
 import type { Workspace } from '@/types'
 interface UseWorkspacesOptions {
@@ -13,13 +13,13 @@ interface UseWorkspacesOptions {
 export function useWorkspaces({ enabled = true }: UseWorkspacesOptions = {}) {
   const { status } = useSession()
   const [workspaces, setWorkspaces] = useAtom(workspacesAtom)
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useAtom(workspacesLoadingAtom)
   const [error, setError] = useState<string | null>(null)
 
   const clearWorkspaces = useCallback(() => {
     setLoading(false)
     setWorkspaces([])
-  }, [setWorkspaces])
+  }, [setWorkspaces, setLoading])
 
   const fetchWorkspaces = useCallback(async () => {
     setLoading(true)
@@ -36,7 +36,7 @@ export function useWorkspaces({ enabled = true }: UseWorkspacesOptions = {}) {
     } finally {
       setLoading(false)
     }
-  }, [setWorkspaces])
+  }, [setWorkspaces, setLoading])
 
   useEffect(() => {
     if (!enabled) return

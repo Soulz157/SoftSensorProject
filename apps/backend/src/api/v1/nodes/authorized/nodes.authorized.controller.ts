@@ -40,6 +40,7 @@ export class NodesAuthorizedController {
     return this.nodesAuthorizedService.listByWorkspace(
       query.workspaceId,
       user.id,
+      user.role,
       query.planId,
     );
   }

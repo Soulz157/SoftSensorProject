@@ -56,14 +56,18 @@ export class WorkspaceAuthorizedController {
     @Param('id') id: string,
     @Users() user: Auth.UserPayload,
   ) {
-    return this.workspaceAuthorizedService.getWorkspaceModels(id, user.id);
+    return this.workspaceAuthorizedService.getWorkspaceModels(
+      id,
+      user.id,
+      user.role,
+    );
   }
 
   @Get('/:id/edges')
   @HttpCode(200)
   @ApiOperation({ summary: 'List edges in a workspace' })
   async listEdges(@Param('id') id: string, @Users() user: Auth.UserPayload) {
-    return this.workspaceAuthorizedService.listEdges(id, user.id);
+    return this.workspaceAuthorizedService.listEdges(id, user.id, user.role);
   }
 
   @Put('/:id/edges')
@@ -77,6 +81,7 @@ export class WorkspaceAuthorizedController {
     return this.workspaceAuthorizedService.replaceEdges(
       id,
       user.id,
+      user.role,
       body.edges,
     );
   }
@@ -89,14 +94,19 @@ export class WorkspaceAuthorizedController {
     @Users() user: Auth.UserPayload,
     @Query() query: GetLogsQueryDto,
   ) {
-    return this.workspaceAuthorizedService.getWorkspaceLogs(id, user.id, query);
+    return this.workspaceAuthorizedService.getWorkspaceLogs(
+      id,
+      user.id,
+      user.role,
+      query,
+    );
   }
 
   @Get('/:id/members')
   @HttpCode(200)
   @ApiOperation({ summary: 'List members of a workspace' })
   async listMembers(@Param('id') id: string, @Users() user: Auth.UserPayload) {
-    return this.workspaceAuthorizedService.listMembers(id, user.id);
+    return this.workspaceAuthorizedService.listMembers(id, user.id, user.role);
   }
 
   @Post('/:id/members')

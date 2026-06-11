@@ -145,7 +145,7 @@ export function useCanvasEditor(
     } catch (error) {
       console.error('Failed to save changes:', error)
     }
-  }, [nodes, edges, workspaceId, setNodes, setEdges])
+  }, [nodes, edges, workspaceId, setNodes, setEdges, activePlanId])
 
   const handleToggleMode = useCallback(
     (targetMode: 'VIEW' | 'BUILD') => {

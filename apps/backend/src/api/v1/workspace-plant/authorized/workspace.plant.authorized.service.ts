@@ -12,7 +12,13 @@ import type {
 export class WorkspacePlantAuthorizedService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private async assertHasAccess(workspaceId: string, userId: string) {
+  private async assertHasAccess(
+    workspaceId: string,
+    userId: string,
+    userRole: string,
+  ) {
+    if (userRole === 'ADMIN') return;
+
     const workspace = await this.prisma.workspace.findUnique({
       where: { id: workspaceId, deletedAt: null },
       select: { ownerId: true },
@@ -132,8 +138,12 @@ export class WorkspacePlantAuthorizedService {
     };
   }
 
-  async getPlants(query: WorkspacePlantQueryDto, userId: string) {
-    await this.assertHasAccess(query.workspaceId, userId);
+  async getPlants(
+    query: WorkspacePlantQueryDto,
+    userId: string,
+    userRole: string,
+  ) {
+    await this.assertHasAccess(query.workspaceId, userId, userRole);
 
     const plants = await this.prisma.workspacePlant.findMany({
       where: { workspaceId: query.workspaceId },

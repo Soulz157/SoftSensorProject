@@ -1,20 +1,36 @@
 'use client'
 
-import { Building2, X, AlertTriangle, AlertCircle } from 'lucide-react'
-import { formatDistanceToNow } from 'date-fns'
+import Link from 'next/link'
+import {
+  ArrowRight,
+  Building2,
+  X,
+  AlertTriangle,
+  AlertCircle,
+} from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 import { workspaceIcons } from '@/store/workspace'
+import { useModels } from '@/hooks/workspace/use-models'
 import type { Workspace } from '@/types'
 import type { CanvasNode } from '@/services/canvas'
+import {
+  DEPLOY_DOT,
+  DEPLOY_PRIORITY,
+  NODE_BADGE,
+  NODE_DOT,
+  NODE_STATUS_PRIORITY,
+  PROD_BADGE,
+} from '@/constants/status'
 
 interface OverviewDetailPanelProps {
   workspace: Workspace | null
   nodes: CanvasNode[]
   onClose: () => void
   onViewWorkspace: (id: string) => void
-  onOpenCanvas: (id: string) => void
+  onOpenPipeEditor: (id: string) => void
   onViewAlerts: () => void
 }
 
@@ -29,42 +45,36 @@ function StatCell({
 }) {
   return (
     <div className="flex flex-col gap-1 rounded-md bg-muted/30 p-3">
-      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-        {label}
-      </p>
-      <p className={cn('text-xl font-bold', valueClass ?? 'text-foreground')}>
+      <p className="text-[10px] font-medium text-muted-foreground">{label}</p>
+      <p
+        className={cn('text-xl font-semibold', valueClass ?? 'text-foreground')}
+      >
         {value}
       </p>
     </div>
   )
 }
 
-export function OverviewDetailPanel({
+const MAX_PREVIEW = 5
+
+function PanelContent({
   workspace,
   nodes,
   onClose,
   onViewWorkspace,
-  onOpenCanvas,
+  onOpenPipeEditor,
   onViewAlerts,
-}: OverviewDetailPanelProps) {
-  if (!workspace) {
-    return (
-      <div className="flex h-full w-full flex-col items-center justify-center gap-3 border-t border-border bg-card/90 p-6 text-center backdrop-blur-xl sm:w-75 sm:shrink-0 sm:border-l sm:border-t-0">
-        <Building2 className="h-10 w-10 text-muted-foreground/30" />
-        <p className="text-sm font-medium text-muted-foreground">
-          Select a plant to view details
-        </p>
-      </div>
-    )
-  }
+}: OverviewDetailPanelProps & { workspace: Workspace }) {
+  const { data: modelsRaw, isFetching: modelsFetching } = useModels(
+    workspace.id,
+  )
+  const models = modelsRaw ?? []
+  const modelsLoading = modelsFetching && modelsRaw === null
 
   const nodeCount = nodes.length
   const alarmCount = nodes.filter(n => n.data.status === 'alarm').length
   const warningCount = nodes.filter(n => n.data.status === 'warning').length
   const offlineCount = nodes.filter(n => n.data.status === 'offline').length
-
-  const alarmNodes = nodes.filter(n => n.data.status === 'alarm')
-  const warningNodes = nodes.filter(n => n.data.status === 'warning')
 
   const worstStatus: 'alarm' | 'warning' | 'offline' | 'normal' =
     alarmCount > 0
@@ -92,10 +102,27 @@ export function OverviewDetailPanel({
     normal: 'All Systems Normal',
   }[worstStatus]
 
+  const sortedNodes = [...nodes].sort(
+    (a, b) =>
+      (NODE_STATUS_PRIORITY[a.data.status] ?? 3) -
+      (NODE_STATUS_PRIORITY[b.data.status] ?? 3),
+  )
+  const previewNodes = sortedNodes.slice(0, MAX_PREVIEW)
+  const hasMoreNodes = nodes.length > MAX_PREVIEW
+
+  const sortedModels = [...models].sort(
+    (a, b) =>
+      (DEPLOY_PRIORITY[a.data?.deployStatus ?? 'stopped'] ?? 4) -
+      (DEPLOY_PRIORITY[b.data?.deployStatus ?? 'stopped'] ?? 4),
+  )
+  const previewModels = sortedModels.slice(0, MAX_PREVIEW)
+  const hasMoreModels = models.length > MAX_PREVIEW
+
   return (
     <div className="flex h-full w-full flex-col border-t border-border bg-card/90 backdrop-blur-xl sm:w-75 sm:shrink-0 sm:border-l sm:border-t-0">
       {/* Mobile drag handle */}
       <div className="mx-auto mb-1 mt-2.5 h-1 w-10 shrink-0 rounded-full bg-muted-foreground/25 sm:hidden" />
+
       {/* Header */}
       <div className="shrink-0 border-b border-border bg-muted/20 px-4 py-4">
         <div className="flex items-start justify-between gap-3">
@@ -104,7 +131,7 @@ export function OverviewDetailPanel({
               <IconComponent className="h-4.5 w-4.5 text-foreground" />
             </div>
             <div className="min-w-0">
-              <p className="truncate text-sm font-bold text-foreground">
+              <p className="truncate text-sm font-semibold text-foreground">
                 {workspace.name}
               </p>
               {workspace.description && (
@@ -127,7 +154,7 @@ export function OverviewDetailPanel({
 
       {/* Scrollable content */}
       <ScrollArea className="flex-1">
-        <div className="space-y-0">
+        <div>
           {/* Status badge */}
           <div className="border-b border-border/50 px-4 py-3">
             <div
@@ -159,7 +186,7 @@ export function OverviewDetailPanel({
               />
               <StatCell
                 label="Models"
-                value={workspace.modelsCount}
+                value={workspace._count.models}
                 valueClass="text-primary"
               />
               <StatCell
@@ -179,83 +206,134 @@ export function OverviewDetailPanel({
             </div>
           </div>
 
-          {/* Alarm list */}
-          {alarmCount > 0 && (
+          {/* Equipment Overview */}
+          {nodeCount > 0 && (
             <div className="border-b border-border/50 px-4 py-4">
-              <div className="mb-3 text-xs font-medium text-destructive">
-                Alarms ({alarmCount})
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-xs font-medium text-muted-foreground">
+                  Equipment ({nodeCount})
+                </span>
               </div>
-              <div className="space-y-2">
-                {alarmNodes.map(node => (
-                  <div
-                    key={node.id}
-                    className="rounded-md border border-destructive/20 bg-destructive/5 px-3 py-2.5"
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex min-w-0 items-start gap-2">
-                        <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-destructive" />
-                        <div className="min-w-0">
-                          <p className="truncate text-xs font-semibold text-foreground">
-                            {node.data.name}
-                          </p>
-                          <p className="text-[10px] capitalize text-muted-foreground">
-                            {node.data.type}
-                          </p>
-                        </div>
+              <div className="space-y-0.5">
+                {previewNodes.map(node => {
+                  const st = node.data.status ?? 'normal'
+                  return (
+                    <Link
+                      key={node.id}
+                      href={`/workspaces/${workspace.id}/canvas`}
+                      className="group flex items-center gap-2.5 rounded-md px-2 py-2 transition-colors hover:bg-accent/50"
+                    >
+                      <span
+                        className={cn(
+                          'h-2 w-2 shrink-0 rounded-full',
+                          NODE_DOT[st] ?? 'bg-zinc-400',
+                          st === 'alarm' &&
+                            'ring-4 ring-destructive/20 motion-safe:animate-pulse',
+                        )}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-xs font-medium text-foreground">
+                          {node.data.name}
+                        </p>
+                        <p className="text-[10px] capitalize text-muted-foreground">
+                          {node.data.type}
+                        </p>
                       </div>
-                      <span className="shrink-0 text-[10px] font-semibold text-destructive">
-                        Status: alarm
+                      <span
+                        className={cn(
+                          'shrink-0 text-[10px] font-semibold capitalize',
+                          NODE_BADGE[st] ?? 'text-muted-foreground',
+                        )}
+                      >
+                        {st}
                       </span>
-                    </div>
-                    <p className="mt-1 pl-4 text-[10px] text-muted-foreground">
-                      {formatDistanceToNow(new Date(node.updatedAt), {
-                        addSuffix: true,
-                      })}
-                    </p>
-                  </div>
-                ))}
+                      <ArrowRight className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+                    </Link>
+                  )
+                })}
               </div>
+              {hasMoreNodes && (
+                <Link
+                  href={`/workspaces/${workspace.id}/canvas`}
+                  className="mt-2 flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  View all {nodeCount} equipment
+                  <ArrowRight className="h-3 w-3" />
+                </Link>
+              )}
             </div>
           )}
 
-          {/* Warning list */}
-          {warningCount > 0 && (
-            <div className="border-b border-border/50 px-4 py-4">
-              <div className="mb-3 text-xs font-medium text-amber-500">
-                Warnings ({warningCount})
-              </div>
+          {/* Models Overview */}
+          <div className="px-4 py-4">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-xs font-medium text-muted-foreground">
+                Models ({models.length})
+              </span>
+            </div>
+            {modelsLoading ? (
               <div className="space-y-2">
-                {warningNodes.map(node => (
-                  <div
-                    key={node.id}
-                    className="rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2.5"
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex min-w-0 items-start gap-2">
-                        <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-amber-500" />
-                        <div className="min-w-0">
-                          <p className="truncate text-xs font-semibold text-foreground">
-                            {node.data.name}
+                <Skeleton className="h-8 w-full" />
+                <Skeleton className="h-8 w-full" />
+                <Skeleton className="h-8 w-full" />
+              </div>
+            ) : models.length === 0 ? (
+              <p className="text-[11px] text-muted-foreground">
+                No models deployed
+              </p>
+            ) : (
+              <>
+                <div className="space-y-0.5">
+                  {previewModels.map(model => {
+                    const deploy = model.data?.deployStatus ?? 'stopped'
+                    const prod = model.data?.prodStatus ?? 'offline'
+                    return (
+                      <Link
+                        key={model.id}
+                        href={`/models/${model.id}`}
+                        className="group flex items-center gap-2.5 rounded-md px-2 py-2 transition-colors hover:bg-accent/50"
+                      >
+                        <span
+                          className={cn(
+                            'h-2 w-2 shrink-0 rounded-full',
+                            DEPLOY_DOT[deploy] ?? 'bg-zinc-400',
+                            deploy === 'failed' &&
+                              'ring-4 ring-red-500/20 motion-safe:animate-pulse',
+                          )}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-xs font-medium text-foreground">
+                            {model.name}
                           </p>
                           <p className="text-[10px] capitalize text-muted-foreground">
-                            {node.data.type}
+                            {deploy}
                           </p>
                         </div>
-                      </div>
-                      <span className="shrink-0 text-[10px] font-semibold text-amber-500">
-                        Status: warning
-                      </span>
-                    </div>
-                    <p className="mt-1 pl-4 text-[10px] text-muted-foreground">
-                      {formatDistanceToNow(new Date(node.updatedAt), {
-                        addSuffix: true,
-                      })}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+                        <span
+                          className={cn(
+                            'shrink-0 text-[10px] font-semibold capitalize',
+                            PROD_BADGE[prod] ?? 'text-muted-foreground',
+                          )}
+                        >
+                          {prod}
+                        </span>
+                        <ArrowRight className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+                      </Link>
+                    )
+                  })}
+                </div>
+                {hasMoreModels && (
+                  <Link
+                    href={`/models?workspaceId=${workspace.id}`}
+                    className="mt-2 flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    View all {models.length} models
+                    <ArrowRight className="h-3 w-3" />
+                  </Link>
+                )}
+              </>
+            )}
+          </div>
         </div>
       </ScrollArea>
 
@@ -265,29 +343,47 @@ export function OverviewDetailPanel({
           <Button
             variant="destructive"
             size="sm"
-            className="w-full"
+            className="w-full gap-2"
             onClick={onViewAlerts}
           >
-            View All Alerts →
+            View All Alerts
+            <ArrowRight className="h-3 w-3 shrink-0" />
           </Button>
         )}
         <Button
           variant="default"
           size="sm"
-          className="w-full"
+          className="w-full gap-2"
           onClick={() => onViewWorkspace(workspace.id)}
         >
-          View Workspace →
+          View Workspace
+          <ArrowRight className="h-3 w-3 shrink-0" />
         </Button>
         <Button
           variant="outline"
           size="sm"
-          className="w-full"
-          onClick={() => onOpenCanvas(workspace.id)}
+          className="w-full gap-2"
+          onClick={() => onOpenPipeEditor(workspace.id)}
         >
-          Open Pipeline Editor →
+          Open Pipeline Editor
+          <ArrowRight className="h-3 w-3 shrink-0" />
         </Button>
       </div>
     </div>
   )
+}
+
+export function OverviewDetailPanel(props: OverviewDetailPanelProps) {
+  if (!props.workspace) {
+    return (
+      <div className="flex h-full w-full flex-col items-center justify-center gap-3 border-t border-border bg-card/90 p-6 text-center backdrop-blur-xl sm:w-75 sm:shrink-0 sm:border-l sm:border-t-0">
+        <Building2 className="h-10 w-10 text-muted-foreground/30" />
+        <p className="text-sm font-medium text-muted-foreground">
+          Select a plant to view details
+        </p>
+      </div>
+    )
+  }
+
+  return <PanelContent {...props} workspace={props.workspace} />
 }

@@ -30,6 +30,32 @@ export interface UpdateProfilePayload {
   company?: string
 }
 
+export interface ModelLog {
+  level: 'info' | 'warn' | 'error'
+  message: string
+  timestamp: string
+}
+
+export interface AIModel {
+  id: string
+  workspaceId: string
+  name: string
+  data: {
+    deployStatus: 'stopped' | 'running' | 'failed' | 'initializing'
+    prodStatus: 'normal' | 'warning' | 'alert' | 'offline'
+    logs: ModelLog[]
+  } | null
+  nodesId: string | null
+  createdAt: string
+  updatedAt: string
+  nodes: {
+    id: string
+    data: Record<string, unknown>
+    planId: string
+    plan: { id: string; name: string } | null
+  } | null
+}
+
 export interface WorkspacePlant {
   id: string
   workspaceId: string

@@ -43,7 +43,7 @@ export const getUserNavItems = (alertCount: number): NavItem[] => [
         id: 'models-view',
         name: 'View Model',
         icon: <Eye className="h-4 w-4" />,
-        href: '/models',
+        href: '/models/views',
       },
       {
         id: 'models-deployed',

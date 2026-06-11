@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Workspace } from '@/types/models'
+import { Workspace } from '@/types'
 
 interface ModelsFilterBarProps {
   activeTab: string

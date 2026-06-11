@@ -8,7 +8,13 @@ import { NodeDataSchema } from './dto/nodes.authorized.dto';
 export class NodesAuthorizedService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private async assertHasAccess(workspaceId: string, userId: string) {
+  private async assertHasAccess(
+    workspaceId: string,
+    userId: string,
+    userRole: string,
+  ) {
+    if (userRole === 'ADMIN') return;
+
     const workspace = await this.prisma.workspace.findFirst({
       where: { id: workspaceId, ownerId: userId },
       select: { id: true },
@@ -50,8 +56,13 @@ export class NodesAuthorizedService {
     }
   }
 
-  async listByWorkspace(workspaceId: string, userId: string, planId?: string) {
-    await this.assertHasAccess(workspaceId, userId);
+  async listByWorkspace(
+    workspaceId: string,
+    userId: string,
+    userRole: string,
+    planId?: string,
+  ) {
+    await this.assertHasAccess(workspaceId, userId, userRole);
 
     const nodes = await this.prisma.nodes.findMany({
       where: { workspaceId, ...(planId ? { planId } : {}) },

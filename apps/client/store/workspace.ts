@@ -14,6 +14,8 @@ import {
 
 export const workspacesAtom = atomWithStorage<Workspace[]>('workspaces', [])
 
+export const workspacesLoadingAtom = atom(true)
+
 export const workspacePlantsAtom = atom<WorkspacePlant[]>([])
 
 export const clearWorkspacePlantsAtom = atom(null, (_get, set) => {

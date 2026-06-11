@@ -1,6 +1,8 @@
 'use client'
-import { useAtom } from 'jotai'
+
 import { useCallback, useEffect, useState } from 'react'
+import { useAtom } from 'jotai'
+import { toast } from 'sonner'
 import { workspacePlantsAtom } from '@/store/workspace'
 import {
   getWorkspacePlants,
@@ -9,30 +11,66 @@ import {
   deleteWorkspacePlant,
 } from '@/services/workspace-plant'
 import type { WorkspacePlant } from '@/types'
-import { toast } from 'sonner'
 
 export function useWorkspacePlants(workspaceId: string | null) {
   const [plants, setPlants] = useAtom(workspacePlantsAtom)
-  const [loading, setLoading] = useState(false)
+
+  const [isFetching, setIsFetching] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  const loading = isFetching && (plants === null || plants.length === 0)
+
   const refetch = useCallback(async () => {
-    if (!workspaceId) return
-    setLoading(true)
+    if (!workspaceId) {
+      setPlants([])
+      return
+    }
+
+    setIsFetching(true)
+    setError(null)
     try {
       const data = await getWorkspacePlants(workspaceId)
       setPlants(data)
-      setError(null)
     } catch {
       setError('Failed to load plants')
+      toast.error('Failed to reload plants')
     } finally {
-      setLoading(false)
+      setIsFetching(false)
     }
   }, [workspaceId, setPlants])
 
   useEffect(() => {
-    void refetch()
-  }, [refetch])
+    if (!workspaceId) {
+      setPlants([])
+      return
+    }
+
+    let ignore = false
+
+    const fetchPlants = async () => {
+      setIsFetching(true)
+      setError(null)
+
+      try {
+        const data = await getWorkspacePlants(workspaceId)
+        if (!ignore) {
+          setPlants(data)
+          setIsFetching(false)
+        }
+      } catch {
+        if (!ignore) {
+          setError('Failed to load plants')
+          setIsFetching(false)
+        }
+      }
+    }
+
+    void fetchPlants()
+
+    return () => {
+      ignore = true
+    }
+  }, [workspaceId, setPlants])
 
   const createPlan = useCallback(
     async (
@@ -40,9 +78,9 @@ export function useWorkspacePlants(workspaceId: string | null) {
     ) => {
       if (!workspaceId) return
       try {
-        const plan = await createWorkspacePlant(workspaceId, dto)
-        setPlants(prev => [...prev, plan])
-        return plan
+        const newPlan = await createWorkspacePlant(workspaceId, dto)
+        setPlants(prev => [...(prev || []), newPlan])
+        return newPlan
       } catch {
         toast.error('Failed to create plant')
       }
@@ -59,7 +97,9 @@ export function useWorkspacePlants(workspaceId: string | null) {
     ) => {
       try {
         const updated = await updateWorkspacePlant(planId, dto)
-        setPlants(prev => prev.map(p => (p.id === planId ? updated : p)))
+        setPlants(prev =>
+          (prev || []).map(p => (p.id === planId ? updated : p)),
+        )
         return updated
       } catch {
         toast.error('Failed to update plant')
@@ -72,13 +112,22 @@ export function useWorkspacePlants(workspaceId: string | null) {
     async (planId: string) => {
       try {
         await deleteWorkspacePlant(planId)
-        setPlants(prev => prev.filter(p => p.id !== planId))
+        setPlants(prev => (prev || []).filter(p => p.id !== planId))
       } catch {
-        toast.error('Failed to delete plan')
+        toast.error('Failed to delete plant')
       }
     },
     [setPlants],
   )
 
-  return { plants, loading, error, refetch, createPlan, updatePlan, deletePlan }
+  return {
+    plants,
+    loading,
+    isFetching,
+    error,
+    refetch,
+    createPlan,
+    updatePlan,
+    deletePlan,
+  }
 }

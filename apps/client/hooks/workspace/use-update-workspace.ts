@@ -18,8 +18,12 @@ export function useUpdateWorkspace() {
           w.id === id
             ? {
                 ...w,
-                ...updated,
-                description: updated.description ?? undefined,
+                ...(updated || data),
+                description:
+                  updated?.description ??
+                  data.description ??
+                  w.description ??
+                  '',
               }
             : w,
         ),
@@ -55,8 +59,12 @@ export function useAdminUpdateWorkspace() {
           w.id === id
             ? {
                 ...w,
-                ...updated,
-                description: updated.description ?? undefined,
+                ...(updated || data),
+                description:
+                  updated?.description ??
+                  data.description ??
+                  w.description ??
+                  '',
               }
             : w,
         ),

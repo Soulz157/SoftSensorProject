@@ -44,6 +44,8 @@ export const workspaceService = {
       method: 'GET',
     })
   },
+  getAdminAllWorkspaces: () =>
+    fetchClient('/api/v1/admin/workspace', { method: 'GET' }),
 
   createWorkspace: async (data: CreateWorkspaceInput): Promise<Workspace> => {
     const res = await fetchClient('/api/v1/admin/workspace/create', {

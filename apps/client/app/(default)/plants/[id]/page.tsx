@@ -309,6 +309,9 @@ export default function PlantsPage({ params }: PlantsPageProps) {
           viewMode={state.inspectorMode}
           node={data.selectedNode}
           plan={data.breadcrumbPlant}
+          planNodes={data.filteredNodes.filter(
+            n => n.planId === state.selectedPlanId,
+          )}
           workspaceId={state.activeWorkspaceId}
           onDrillDown={handlers.handleDrillDown}
           isOpen={state.isPanelOpen}

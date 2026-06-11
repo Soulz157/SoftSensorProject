@@ -71,6 +71,7 @@ export function WorkspaceSettingsSheet({
       name: effectiveName,
       icon: effectiveIcon,
       color: effectiveColor,
+      description: workspace?.description ?? '',
     })
     if (result.success) {
       setDraft({})

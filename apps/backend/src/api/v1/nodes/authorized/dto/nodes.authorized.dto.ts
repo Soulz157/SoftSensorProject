@@ -24,7 +24,7 @@ export const UpdateNodeSchema = z.object({
 });
 
 export const NodeQuerySchema = z.object({
-  workspaceId: z.string().uuid(),
+  workspaceId: z.string(),
   planId: z.string().uuid().optional(),
 });
 

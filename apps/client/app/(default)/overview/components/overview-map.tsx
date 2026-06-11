@@ -49,11 +49,13 @@ export function PlantsMap({
   onWorkspaceClick,
   onWorkspaceDoubleClick,
 }: PlantsMapProps) {
-  const { resolvedTheme } = useTheme()
+  const { resolvedTheme, setTheme } = useTheme()
+
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [isDragging, setIsDragging] = useState(false)
-  const [isDark, setIsDark] = useState(resolvedTheme !== 'light')
+  const isDark = resolvedTheme !== 'light'
   const [hoveredId, setHoveredId] = useState<string | null>(null)
+
   const dragStart = useRef({ x: 0, y: 0 })
 
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -139,7 +141,7 @@ export function PlantsMap({
           'absolute top-17 left-3 z-10 rounded-xl border px-3 py-2.5 backdrop-blur-sm',
           isDark
             ? 'bg-black/40 border-white/10 text-white'
-            : 'bg-white/80 border-black/10 text-gray-900',
+            : 'bg-white/80 border-black/10 text-foreground',
         )}
       >
         <div className="mb-2 px-2 text-[10px] font-medium opacity-60">
@@ -192,11 +194,18 @@ export function PlantsMap({
       </div>
 
       {/* Theme toggle */}
-      <div className="absolute top-3 right-3 z-10 flex items-center rounded-full bg-black/30 p-0.5 backdrop-blur-sm">
+      <div
+        role="group"
+        aria-label="Map theme"
+        className="absolute right-3 top-3 z-10 flex items-center rounded-full bg-black/30 p-0.5 backdrop-blur-sm"
+      >
         <button
-          onClick={() => setIsDark(false)}
+          type="button"
+          aria-label="Light map"
+          aria-pressed={!isDark}
+          onClick={() => setTheme('light')}
           className={cn(
-            'flex h-7 w-7 items-center justify-center rounded-full transition-all duration-200',
+            'flex h-10 w-10 items-center justify-center rounded-full transition-colors duration-200',
             !isDark
               ? 'bg-white/90 text-gray-900 shadow-sm'
               : 'text-white/60 hover:text-white/90',
@@ -205,9 +214,12 @@ export function PlantsMap({
           <Sun className="h-3.5 w-3.5" />
         </button>
         <button
-          onClick={() => setIsDark(true)}
+          type="button"
+          aria-label="Dark map"
+          aria-pressed={isDark}
+          onClick={() => setTheme('dark')}
           className={cn(
-            'flex h-7 w-7 items-center justify-center rounded-full transition-all duration-200',
+            'flex h-10 w-10 items-center justify-center rounded-full transition-colors duration-200',
             isDark
               ? 'bg-white/20 text-white shadow-sm'
               : 'text-white/60 hover:text-white/90',
@@ -265,7 +277,7 @@ export function PlantsMap({
                   />
                 ))}
 
-                {/* Floor top face (เพิ่ม Event ต่างๆ ตรงนี้) */}
+                {/* Floor top face */}
                 <path
                   d={floorPath}
                   fill={topFill}
@@ -287,6 +299,7 @@ export function PlantsMap({
                   cy={labelY - 30}
                   nodeCount={ws.nodeCount ?? nodes.length}
                   status={status}
+                  nodeStatuses={nodes.map(n => n.data.status as NodeStatus)}
                   workspaceColor={ws.color ?? 'blue'}
                   name={ws.name}
                   selected={isSelected}

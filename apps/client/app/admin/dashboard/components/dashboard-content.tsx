@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { useWorkspaces } from '@/hooks/workspace/use-workspaces'
 import type { Workspace as DashboardWorkspace, Alert } from '@/types/dashboard'
 import { getNodes } from '@/services/canvas'
 import type { CanvasNode } from '@/services/canvas'
@@ -10,9 +9,11 @@ import { KpiCards } from './kpi-cards'
 import { WorkspaceList } from './workspace-list'
 import { ActiveAlerts } from './active-alert'
 import { Loader2 } from 'lucide-react'
+import { useAdminAllWorkspaces } from '@/hooks/admin/use-admin-workspaces'
 
 export function DashboardContent() {
-  const { workspaces, loading: workspacesLoading } = useWorkspaces()
+  const { data: workspaces, loading: workspacesLoading } =
+    useAdminAllWorkspaces()
   const [nodesByWorkspace, setNodesByWorkspace] = useState<Record<
     string,
     CanvasNode[]
@@ -73,7 +74,10 @@ export function DashboardContent() {
     n => n.data.status === 'alarm' || n.data.status === 'offline',
   ).length
   const totalNodes = allNodes.length
-  const totalModels = workspaces.reduce((sum, w) => sum + w.modelsCount, 0)
+  const totalModels = workspaces.reduce(
+    (sum, w) => sum + (w._count?.models ?? 0),
+    0,
+  )
   const alertsCount = warningNodes + errorNodes
 
   const alerts: Alert[] = []
@@ -98,13 +102,8 @@ export function DashboardContent() {
     name: w.name,
     description: '',
     nodes: [],
-    updatedAt: w.updatedAt,
-    // updatedAt: new Date(w.updatedAt).toLocaleDateString('th-TH', {
-    //   year: 'numeric',
-    //   month: 'short',
-    //   day: 'numeric',
-    // }),
-    modelsCount: w.modelsCount,
+    updatedAt: w.createdAt,
+    modelsCount: w._count?.models ?? 0,
     color: w.color,
     icon: w.icon,
   }))

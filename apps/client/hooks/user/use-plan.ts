@@ -17,9 +17,7 @@ export function usePlans() {
     try {
       const subRes = await planService.mySubscription()
       setSubscription(subRes.data ?? null)
-    } catch {
-      // Handle error quietly as per original logic
-    }
+    } catch {}
   }, [])
 
   useEffect(() => {

@@ -37,7 +37,11 @@ export class WorkspacePlantAuthorizedController {
     @Query() query: WorkspacePlantQueryDto,
     @Users() user: Auth.UserPayload,
   ) {
-    return this.workspacePlantAuthorizedService.getPlants(query, user.id);
+    return this.workspacePlantAuthorizedService.getPlants(
+      query,
+      user.id,
+      user.role,
+    );
   }
 
   @Post('/:workspaceId')

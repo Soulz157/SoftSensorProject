@@ -38,9 +38,8 @@ export default function PlantsPage() {
     <div className="flex h-full w-full overflow-hidden">
       {/* Main canvas — flex-1 */}
       <div className="relative flex-1 overflow-hidden">
-        {/* Page header — gradient scrim ensures readability on both dark/light map themes */}
         <div className="pointer-events-none absolute left-0 right-0 top-0 z-10 bg-linear-to-b from-black/50 to-transparent px-4 pb-6 pt-3">
-          <h1 className="text-sm font-bold tracking-wide text-white drop-shadow">
+          <h1 className="text-sm font-semibold tracking-wide text-white drop-shadow">
             Workspaces Overview
           </h1>
           <p className="text-xs text-white/70 drop-shadow">
@@ -72,7 +71,7 @@ export default function PlantsPage() {
               nodes={selectedNodes}
               onClose={() => setSelectedId(null)}
               onViewWorkspace={id => router.push(`/plants/${id}`)}
-              onOpenCanvas={id => router.push(`/workspaces/${id}/canvas`)}
+              onOpenPipeEditor={id => router.push(`/workspaces/${id}/canvas`)}
               onViewAlerts={() => router.push('/alerts')}
             />
           </div>
