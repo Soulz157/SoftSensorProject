@@ -117,6 +117,19 @@ export function MachineNode({
 
       {/* CSS Keyframes for alarm pulse */}
       <style>{`
+       @keyframes short-bounce {
+          0%, 100% {
+            transform: translateY(-10px); /* ระยะเด้งขึ้น (ปรับเลขนี้เพื่อเพิ่ม/ลดความสูง) */
+            animation-timing-function: cubic-bezier(0.8, 0, 1, 1);
+          }
+          50% {
+            transform: translateY(0);
+            animation-timing-function: cubic-bezier(0, 0, 0.2, 1);
+          }
+        }
+        .anim-short-bounce {
+          animation: short-bounce 1s infinite;
+        }
         @keyframes pulse-node-${status} {
           0%, 100% { 
             filter: drop-shadow(0 0 15px rgba(239, 68, 68, 0.6)); 
@@ -151,9 +164,9 @@ export function MachineNode({
       {/* 3. Marker บอกว่าโดน Select อยู่ (ลูกศรเด้งๆ ชี้ลงบนหัวเครื่องจักร) */}
       {selected && (
         <path
-          d="M 50,-10 L 56,0 L 44,0 Z"
+          d="M 44,-12 L 56,-12 L 50,-2 Z"
           fill="#3b82f6"
-          className="animate-bounce drop-shadow-md"
+          className="anim-short-bounce drop-shadow-md"
         />
       )}
     </g>

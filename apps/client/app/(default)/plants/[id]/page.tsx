@@ -20,6 +20,7 @@ import type { NodeStatus } from '../../../../store/status-colors'
 import type { CanvasNode } from '@/services/canvas'
 import { Button } from '@/components/ui/button'
 import { AddPlanDialog } from './components/plant-dialog'
+import { AddEquipmentDialog } from './components/add-equipment-dialog'
 import { cn } from '@/lib/utils'
 import Link from 'next/link'
 import { usePlantsController } from '@/hooks/plants/use-plant-controller'
@@ -263,6 +264,16 @@ export default function PlantsPage({ params }: PlantsPageProps) {
               )
             })}
           </div>
+          {state.viewMode === 'equipment' && state.selectedPlanId && (
+            <Button
+              size="sm"
+              className="h-8 gap-1.5"
+              onClick={handlers.handleOpenAddEquipment}
+            >
+              <Plus className="h-4 w-4" />
+              Add Equipment
+            </Button>
+          )}
           <Button
             size="sm"
             variant="outline"
@@ -326,6 +337,13 @@ export default function PlantsPage({ params }: PlantsPageProps) {
         onClose={handlers.handleCloseAddPlan}
         workspaceName={data.selectedWorkspace?.name || 'Workspace'}
         onAddPlan={handlers.handleCreatePlan}
+      />
+
+      <AddEquipmentDialog
+        open={state.isAddEquipmentOpen}
+        plantName={data.selectedPlan?.name ?? ''}
+        onClose={handlers.handleCloseAddEquipment}
+        onAdd={handlers.handleAddEquipment}
       />
     </div>
   )

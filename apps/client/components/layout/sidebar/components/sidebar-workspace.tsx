@@ -10,6 +10,7 @@ import {
   SlidersHorizontal,
   TriangleAlert,
   X,
+  Users2,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -119,10 +120,18 @@ export function SidebarWorkspaces({
                   )}
                 >
                   <div className="relative shrink-0">
-                    <WorkspaceIcon
-                      colorId={ws.color || 'slate'}
-                      iconId={ws.icon || 'box'}
-                    />
+                    {ws.thumbnailUrl ? (
+                      <img
+                        src={`${process.env.NEXT_PUBLIC_API_URL}${ws.thumbnailUrl}`}
+                        alt={ws.name}
+                        className="h-7 w-7 rounded-lg object-cover"
+                      />
+                    ) : (
+                      <WorkspaceIcon
+                        colorId={ws.color || 'slate'}
+                        iconId={ws.icon || 'box'}
+                      />
+                    )}
                     {isCollapsed && ws.status && ws.status !== 'normal' && (
                       <span
                         className={cn(
@@ -202,13 +211,19 @@ export function SidebarWorkspaces({
                 {
                   href: `/workspaces/${currentWorkspace.id}`,
                   icon: <Database className="h-3.5 w-3.5 shrink-0" />,
-                  label: 'Data Manage',
+                  label: 'Data Management',
                   exact: true,
                 },
                 {
                   href: `/workspaces/${currentWorkspace.id}/details`,
                   icon: <SlidersHorizontal className="h-3.5 w-3.5 shrink-0" />,
-                  label: 'Setting',
+                  label: 'Workspace Settings',
+                  exact: false,
+                },
+                {
+                  href: `/workspaces/${currentWorkspace.id}/members`,
+                  icon: <Users2 className="h-3.5 w-3.5 shrink-0" />,
+                  label: 'Members / Team',
                   exact: false,
                 },
               ].map(link => {

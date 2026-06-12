@@ -160,4 +160,31 @@ export const workspaceService = {
     fetchClient(`/api/v1/admin/workspace/${workspaceId}/members/${memberId}`, {
       method: 'DELETE',
     }),
+
+  uploadWorkspaceThumbnail: async (
+    id: string,
+    file: File,
+  ): Promise<{ data: { thumbnailUrl: string } }> => {
+    const { getSession } = await import('next-auth/react')
+    const session = await getSession()
+    const formData = new FormData()
+    formData.append('file', file)
+    const res = await fetch(
+      `${process.env.NEXT_PUBLIC_API_URL}/api/v1/authorized/workspace/${id}/thumbnail`,
+      {
+        method: 'POST',
+        body: formData,
+        headers: session?.user?.accessToken
+          ? { Authorization: `Bearer ${session.user.accessToken}` }
+          : {},
+      },
+    )
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      throw new Error(
+        (err as { message?: string }).message ?? `Upload failed: ${res.status}`,
+      )
+    }
+    return res.json()
+  },
 }

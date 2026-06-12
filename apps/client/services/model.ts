@@ -30,7 +30,11 @@ export async function createModel(dto: {
 
 export async function updateModel(
   modelId: string,
-  dto: { name?: string; nodeId?: string | null; status?: string },
+  dto: {
+    name?: string
+    nodeId?: string | null
+    deployStatus?: 'stopped' | 'running' | 'error' | 'initializing'
+  },
 ): Promise<AIModel> {
   const res: { data: AIModel } = await fetchClient(
     `/api/v1/authorized/model/${modelId}`,

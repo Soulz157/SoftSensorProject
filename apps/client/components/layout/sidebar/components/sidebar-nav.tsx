@@ -129,7 +129,6 @@ export function SidebarNav({
     )
   }
 
-  // หากมี title (ใช้สำหรับเมนู Admin)
   if (title) {
     return (
       <>

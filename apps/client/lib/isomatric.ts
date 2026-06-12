@@ -50,12 +50,57 @@ export function getZoneFloorPath(
   return `M ${pts[0]} L ${pts[1]} L ${pts[2]} L ${pts[3]} Z`
 }
 
+/**
+ * Compute the SVG bounding box of an isometric layout, accounting for tower
+ * height above each zone's label center. Returns { x, y, w, h } as a viewBox.
+ */
+export function computeLayoutBoundingBox(
+  layout: ZoneLayoutData[],
+  towerHeadroom = 160,
+  padding = 60,
+): { x: number; y: number; w: number; h: number } {
+  if (layout.length === 0) {
+    return { x: 0, y: 0, w: 700, h: 420 }
+  }
+
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+
+  for (const { floorPath, labelY } of layout) {
+    for (const match of floorPath.matchAll(/([-\d.]+),([-\d.]+)/g)) {
+      const x = Number(match[1])
+      const y = Number(match[2])
+      if (x < minX) minX = x
+      if (x > maxX) maxX = x
+      if (y < minY) minY = y
+      if (y > maxY) maxY = y
+    }
+    // Tower + antenna + name badge extend above the floor label center
+    const towerTop = labelY - towerHeadroom
+    if (towerTop < minY) minY = towerTop
+  }
+
+  return {
+    x: minX - padding,
+    y: minY - padding,
+    w: maxX - minX + padding * 2,
+    h: maxY - minY + padding * 2,
+  }
+}
+
 export function calculateIsometricLayout(
   zones: ZoneItem[],
   nodesByZone: Map<string, CanvasNode[]>,
   CX: number,
   CY: number,
+  zonesPerRow?: number,
 ): ZoneLayoutData[] {
+  // Dynamic columns: ~square grid so all zones fit without vertical overflow
+  const _zonesPerRow =
+    zonesPerRow ?? Math.max(2, Math.ceil(Math.sqrt(zones.length)))
+
   let currentX = 0
   let currentY = 0
   let rowMaxHeight = 0
@@ -116,7 +161,7 @@ export function calculateIsometricLayout(
     rowMaxHeight = Math.max(rowMaxHeight, zoneHeight)
     currentX += zoneWidth + ZONE_MARGIN
 
-    if ((index + 1) % ZONES_PER_ROW === 0) {
+    if ((index + 1) % _zonesPerRow === 0) {
       currentX = 0
       currentY += rowMaxHeight + ZONE_MARGIN
       rowMaxHeight = 0

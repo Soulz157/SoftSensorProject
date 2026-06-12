@@ -1,6 +1,6 @@
 'use client'
 import { useAtomValue } from 'jotai'
-import { useEffect, useReducer } from 'react'
+import { useCallback, useEffect, useReducer, useState } from 'react'
 import { getNodes } from '@/services/canvas'
 import { workspacesAtom, workspacesLoadingAtom } from '@/store/workspace'
 import type { CanvasNode } from '@/services/canvas'
@@ -11,6 +11,7 @@ interface DashboardData {
   nodes: CanvasNode[]
   loading: boolean
   error: string | null
+  refetch: () => void
 }
 
 type State = {
@@ -41,6 +42,7 @@ function reducer(state: State, action: Action): State {
 export function useDashboardData(): DashboardData {
   const workspaces = useAtomValue(workspacesAtom)
   const workspacesLoading = useAtomValue(workspacesLoadingAtom)
+  const [fetchKey, setFetchKey] = useState(0)
   const [state, dispatch] = useReducer(reducer, {
     nodes: [],
     loading: true,
@@ -73,7 +75,9 @@ export function useDashboardData(): DashboardData {
     return () => {
       cancelled = true
     }
-  }, [workspaces, workspacesLoading])
+  }, [workspaces, workspacesLoading, fetchKey])
 
-  return { workspaces, ...state }
+  const refetch = useCallback(() => setFetchKey(k => k + 1), [])
+
+  return { workspaces, ...state, refetch }
 }

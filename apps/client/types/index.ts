@@ -41,7 +41,7 @@ export interface AIModel {
   workspaceId: string
   name: string
   data: {
-    deployStatus: 'stopped' | 'running' | 'failed' | 'initializing'
+    deployStatus: 'stopped' | 'running' | 'error' | 'initializing'
     prodStatus: 'normal' | 'warning' | 'alert' | 'offline'
     logs: ModelLog[]
   } | null
@@ -77,6 +77,7 @@ export interface Workspace {
   description?: string
   icon?: string
   color?: string
+  thumbnailUrl?: string
   createdAt: string
   updatedAt: string
   _count: {

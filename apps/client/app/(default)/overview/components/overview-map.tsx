@@ -1,38 +1,34 @@
 'use client'
-import { useMemo, useState, useRef } from 'react'
+import { useMemo } from 'react'
 import { useTheme } from 'next-themes'
-import { Sun, Moon } from 'lucide-react'
+import { Sun, Moon, ZoomIn, ZoomOut, RotateCcw, Building2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { calculateIsometricLayout } from '@/lib/isomatric'
+import {
+  calculateIsometricLayout,
+  computeLayoutBoundingBox,
+} from '@/lib/isomatric'
 import type { ZoneItem } from '@/lib/isomatric'
+import { Card, CardContent } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { Separator } from '@/components/ui/separator'
 import { PlantTower } from './overview-tower'
 import type { CanvasNode } from '@/services/canvas'
 import type { Workspace } from '@/types'
+import {
+  type NodeStatus,
+  STATUS_META,
+  deriveStatus,
+  countNodesByStatus,
+  deriveSystemStatus,
+} from '@/lib/overview-status'
+import { useMapViewport } from '@/hooks/canvas/use-map-viewport'
 
 const VIEWPORT_W = 700
 const VIEWPORT_H = 420
 const CX = VIEWPORT_W / 2
 const CY = VIEWPORT_H / 2 - 20
 
-type NodeStatus = 'normal' | 'warning' | 'alarm' | 'offline'
-
 const FLOOR_EDGE_LAYERS = 10
-
-const COLOR_HEX: Record<string, string> = {
-  blue: '#3b82f6',
-  violet: '#8b5cf6',
-  emerald: '#10b981',
-  amber: '#f59e0b',
-  rose: '#f43f5e',
-  cyan: '#06b6d4',
-}
-
-function deriveStatus(nodes: CanvasNode[]): NodeStatus {
-  if (nodes.some(n => n.data.status === 'alarm')) return 'alarm'
-  if (nodes.some(n => n.data.status === 'offline')) return 'offline'
-  if (nodes.some(n => n.data.status === 'warning')) return 'warning'
-  return 'normal'
-}
 
 interface PlantsMapProps {
   workspaces: Workspace[]
@@ -40,6 +36,7 @@ interface PlantsMapProps {
   selectedWorkspaceId: string | null
   onWorkspaceClick: (id: string) => void
   onWorkspaceDoubleClick: (id: string) => void
+  highlightedIds?: Set<string>
 }
 
 export function PlantsMap({
@@ -48,45 +45,10 @@ export function PlantsMap({
   selectedWorkspaceId,
   onWorkspaceClick,
   onWorkspaceDoubleClick,
+  highlightedIds,
 }: PlantsMapProps) {
   const { resolvedTheme, setTheme } = useTheme()
-
-  const [pan, setPan] = useState({ x: 0, y: 0 })
-  const [isDragging, setIsDragging] = useState(false)
   const isDark = resolvedTheme !== 'light'
-  const [hoveredId, setHoveredId] = useState<string | null>(null)
-
-  const dragStart = useRef({ x: 0, y: 0 })
-
-  const handleMouseDown = (e: React.MouseEvent) => {
-    setIsDragging(true)
-    dragStart.current = { x: e.clientX - pan.x, y: e.clientY - pan.y }
-  }
-  const handleMouseMove = (e: React.MouseEvent) => {
-    if (!isDragging) return
-    setPan({
-      x: e.clientX - dragStart.current.x,
-      y: e.clientY - dragStart.current.y,
-    })
-  }
-  const handleMouseUp = () => setIsDragging(false)
-
-  const handleTouchStart = (e: React.TouchEvent) => {
-    const touch = e.touches[0]
-    if (!touch) return
-    setIsDragging(true)
-    dragStart.current = { x: touch.clientX - pan.x, y: touch.clientY - pan.y }
-  }
-  const handleTouchMove = (e: React.TouchEvent) => {
-    if (!isDragging) return
-    const touch = e.touches[0]
-    if (!touch) return
-    setPan({
-      x: touch.clientX - dragStart.current.x,
-      y: touch.clientY - dragStart.current.y,
-    })
-  }
-  const handleTouchEnd = () => setIsDragging(false)
 
   const zones: ZoneItem[] = useMemo(
     () => workspaces.map(ws => ({ id: ws.id, name: ws.name, color: ws.color })),
@@ -98,44 +60,76 @@ export function PlantsMap({
     return calculateIsometricLayout(zones, emptyMap, CX, CY)
   }, [zones])
 
-  const palette = isDark
-    ? {
-        bg: 'radial-gradient(ellipse at 50% 40%, #0e1520 0%, #080a0f 80%)',
-        topFill: 'rgba(20,28,45,0.85)',
-        edgeFill: '#0f172a',
-        stroke: '#1e2230',
-      }
-    : {
-        bg: 'radial-gradient(ellipse at 50% 40%, #f0f4f8 0%, #dce8f0 80%)',
-        topFill: 'rgba(200,215,228,0.70)',
-        edgeFill: '#cbd5e1',
-        stroke: '#475569',
-      }
+  const vb = useMemo(
+    () => computeLayoutBoundingBox(layoutData, 160, 60),
+    [layoutData],
+  )
+  const vbCX = vb.x + vb.w / 2
+  const vbCY = vb.y + vb.h / 2
 
-  const allNodes = Object.values(nodesByWorkspace).flat()
-  const totalAlarms = allNodes.filter(n => n.data.status === 'alarm').length
-  const totalWarnings = allNodes.filter(n => n.data.status === 'warning').length
-  const hasOffline = allNodes.some(n => n.data.status === 'offline')
-  const overallStatus: NodeStatus =
-    totalAlarms > 0
-      ? 'alarm'
-      : hasOffline
-        ? 'offline'
-        : totalWarnings > 0
-          ? 'warning'
-          : 'normal'
-  const overallColor =
-    overallStatus === 'alarm'
-      ? '#ef4444'
-      : overallStatus === 'warning'
-        ? '#f59e0b'
-        : overallStatus === 'offline'
-          ? '#71717a'
-          : '#22c55e'
+  const {
+    isDragging,
+    hoveredId,
+    setHoveredId,
+    hoverPos,
+    containerRef,
+    svgRef,
+    groupTransform,
+    handleTowerLeave,
+    zoomIn,
+    zoomOut,
+    resetView,
+    svgHandlers,
+  } = useMapViewport(vbCX, vbCY)
+
+  const palette = isDark
+    ? { bg: 'radial-gradient(ellipse at 50% 40%, #0e1520 0%, #080a0f 80%)' }
+    : { bg: 'radial-gradient(ellipse at 50% 40%, #f0f4f8 0%, #dce8f0 80%)' }
+
+  const {
+    totalAlarms,
+    totalWarnings,
+    hasOffline,
+    overallStatus,
+    overallColor,
+  } = useMemo(() => deriveSystemStatus(nodesByWorkspace), [nodesByWorkspace])
+
+  // Hover tooltip data
+  const hoveredWs = hoveredId ? workspaces.find(w => w.id === hoveredId) : null
+  const hoveredNodes = hoveredId ? (nodesByWorkspace[hoveredId] ?? []) : []
+  const hoveredCounts = useMemo(
+    () => countNodesByStatus(hoveredNodes),
+    [hoveredNodes],
+  )
+
+  // Tooltip position — clamp to stay inside container
+  const TOOLTIP_W = 210
+  const TOOLTIP_H = 230
+  const tooltipStyle = useMemo(() => {
+    if (!hoverPos || !containerRef.current) return { display: 'none' as const }
+    const cw = containerRef.current.offsetWidth
+    const ch = containerRef.current.offsetHeight
+    const left =
+      hoverPos.x + 16 + TOOLTIP_W > cw
+        ? hoverPos.x - TOOLTIP_W - 8
+        : hoverPos.x + 16
+    const top =
+      hoverPos.y + 16 + TOOLTIP_H > ch
+        ? hoverPos.y - TOOLTIP_H - 8
+        : hoverPos.y + 16
+    return { left, top }
+  }, [hoverPos, containerRef])
+
+  const zoomBtnCls = cn(
+    'flex h-8 w-8 items-center justify-center rounded-lg text-sm transition-colors',
+    isDark
+      ? 'bg-black/40 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
+      : 'bg-white/80 border border-black/10 text-foreground hover:bg-white',
+  )
 
   return (
-    <div className="relative h-full w-full">
-      {/* HUD overlay */}
+    <div ref={containerRef} className="relative h-full w-full">
+      {/* System status HUD */}
       <div
         className={cn(
           'absolute top-17 left-3 z-10 rounded-xl border px-3 py-2.5 backdrop-blur-sm',
@@ -162,8 +156,8 @@ export function PlantsMap({
           </div>
           <div
             className={cn(
-              'text-[11px]',
-              isDark ? 'text-white/60' : 'text-gray-600',
+              'text-[13px]',
+              isDark ? 'text-green-400' : 'text-muted-foreground',
             )}
           >
             <span
@@ -176,8 +170,8 @@ export function PlantsMap({
           </div>
           <div
             className={cn(
-              'text-[11px]',
-              isDark ? 'text-white/60' : 'text-gray-600',
+              'text-[13px]',
+              isDark ? 'text-red-400' : 'text-muted-foreground',
             )}
           >
             <span
@@ -189,6 +183,38 @@ export function PlantsMap({
               {totalAlarms}
             </span>{' '}
             Critical Alerts
+          </div>
+          <div
+            className={cn(
+              'text-[13px]',
+              isDark ? 'text-amber-400' : 'text-muted-foreground',
+            )}
+          >
+            <span
+              className="font-semibold"
+              style={{
+                color: totalWarnings > 0 ? '#f59e0b' : isDark ? '#fff' : '#111',
+              }}
+            >
+              {totalWarnings}
+            </span>{' '}
+            Warnings
+          </div>
+          <div
+            className={cn(
+              'text-[13px]',
+              isDark ? 'text-white/60' : 'text-muted-foreground',
+            )}
+          >
+            <span
+              className="font-semibold"
+              style={{
+                color: hasOffline ? '#71717a' : isDark ? '#fff' : '#111',
+              }}
+            >
+              {hasOffline ? 'Yes' : 'No'}
+            </span>{' '}
+            Offline Plants
           </div>
         </div>
       </div>
@@ -229,49 +255,168 @@ export function PlantsMap({
         </button>
       </div>
 
+      {/* Zoom controls */}
+      <div className="absolute bottom-4 right-3 z-10 flex flex-col gap-1">
+        <button
+          type="button"
+          aria-label="Zoom in"
+          onClick={zoomIn}
+          className={zoomBtnCls}
+        >
+          <ZoomIn className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          aria-label="Reset zoom and pan"
+          onClick={resetView}
+          className={zoomBtnCls}
+        >
+          <RotateCcw className="h-3 w-3" />
+        </button>
+        <button
+          type="button"
+          aria-label="Zoom out"
+          onClick={zoomOut}
+          className={zoomBtnCls}
+        >
+          <ZoomOut className="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+      {/* Hover status tooltip */}
+      {hoveredWs && hoverPos && !isDragging && (
+        <div
+          className="pointer-events-none absolute z-20 shadow-xl backdrop-blur-md"
+          style={{ width: TOOLTIP_W, ...tooltipStyle }}
+        >
+          <Card
+            className={cn(
+              'overflow-hidden border',
+              isDark
+                ? 'bg-black/80 border-white/12 text-white'
+                : 'bg-white/95 border-black/10 text-foreground',
+            )}
+          >
+            <CardContent className="p-0">
+              {/* Thumbnail */}
+              {hoveredWs.thumbnailUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={`${process.env.NEXT_PUBLIC_API_URL}${hoveredWs.thumbnailUrl}`}
+                  alt={hoveredWs.name}
+                  className="h-24 w-full object-cover"
+                />
+              ) : (
+                <div
+                  className={cn(
+                    'flex h-16 w-full items-center justify-center',
+                    isDark ? 'bg-white/5' : 'bg-muted/40',
+                  )}
+                >
+                  <Building2 className="h-5 w-5 text-muted-foreground/40" />
+                </div>
+              )}
+
+              {/* Body */}
+              <div className="px-3 py-2.5">
+                <p className="mb-2.5 truncate text-[11px] font-semibold leading-tight">
+                  {hoveredWs.name}
+                </p>
+
+                {/* Status count rows */}
+                <div className="space-y-1.5">
+                  {(
+                    Object.entries(STATUS_META) as [
+                      NodeStatus,
+                      { label: string; color: string },
+                    ][]
+                  ).map(([key, meta]) => (
+                    <div key={key} className="flex items-center gap-2">
+                      <span
+                        className="h-1.5 w-1.5 shrink-0 rounded-full"
+                        style={{ backgroundColor: meta.color }}
+                      />
+                      <span
+                        className={cn(
+                          'flex-1 text-[10px]',
+                          isDark ? 'text-white/55' : 'text-muted-foreground',
+                        )}
+                      >
+                        {meta.label}
+                      </span>
+                      <Badge
+                        variant="outline"
+                        className="h-4 px-1.5 text-[9px] font-semibold tabular-nums"
+                        style={{
+                          borderColor: `${meta.color}50`,
+                          color: meta.color,
+                        }}
+                      >
+                        {hoveredCounts[key]}
+                      </Badge>
+                    </div>
+                  ))}
+                </div>
+
+                <Separator className="my-2 opacity-20" />
+                <p
+                  className={cn(
+                    'text-[10px]',
+                    isDark ? 'text-white/35' : 'text-muted-foreground',
+                  )}
+                >
+                  {hoveredNodes.length} node
+                  {hoveredNodes.length === 1 ? '' : 's'} · double-click to open
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
       <svg
+        ref={svgRef}
         width="100%"
         height="100%"
-        viewBox={`0 0 ${VIEWPORT_W} ${VIEWPORT_H}`}
+        viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
+        role="application"
+        aria-label={`Workspaces overview map — ${workspaces.length} plant${workspaces.length === 1 ? '' : 's'}`}
         className={`h-full w-full ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
         style={{ background: palette.bg, touchAction: 'none' }}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
-        onTouchStart={handleTouchStart}
-        onTouchMove={handleTouchMove}
-        onTouchEnd={handleTouchEnd}
+        {...svgHandlers}
       >
-        <g transform={`translate(${pan.x},${pan.y})`}>
+        <g transform={groupTransform}>
           {layoutData.map(({ zone, floorPath, labelX, labelY }) => {
             const ws = workspaces.find(w => w.id === zone.id)
             if (!ws) return null
             const nodes = nodesByWorkspace[ws.id] ?? []
             const status =
               (ws.status as NodeStatus | undefined) ?? deriveStatus(nodes)
-            const accentHex = COLOR_HEX[ws.color ?? 'blue'] ?? '#3b82f6'
             const isSelected = selectedWorkspaceId === ws.id
             const isHovered = hoveredId === ws.id
-
-            const edgeFill =
-              isSelected || isHovered ? `${accentHex}60` : palette.edgeFill
-            const topFill = isSelected
-              ? `${accentHex}35`
-              : isHovered
-                ? `${accentHex}20`
-                : palette.topFill
-            const strokeColor =
-              isSelected || isHovered ? accentHex : palette.stroke
+            const isFiltered =
+              highlightedIds !== undefined && !highlightedIds.has(ws.id)
 
             return (
-              <g key={ws.id}>
+              <g
+                key={ws.id}
+                style={{
+                  opacity: isFiltered ? 0.12 : 1,
+                  transition: 'opacity 0.25s ease',
+                  pointerEvents: isFiltered ? 'none' : 'auto',
+                }}
+              >
                 {Array.from({ length: FLOOR_EDGE_LAYERS }).map((_, i) => (
                   <path
                     key={`edge-${i}`}
                     d={floorPath}
-                    fill={edgeFill}
-                    stroke={edgeFill}
+                    className={cn(
+                      'transition-colors duration-200',
+                      'fill-zinc-200 stroke-zinc-300',
+                      'dark:fill-zinc-900 dark:stroke-zinc-700',
+                      (isSelected || isHovered) &&
+                        'fill-zinc-300 dark:fill-zinc-800',
+                    )}
                     strokeWidth={0.5}
                     transform={`translate(0,${i + 1})`}
                   />
@@ -280,13 +425,17 @@ export function PlantsMap({
                 {/* Floor top face */}
                 <path
                   d={floorPath}
-                  fill={topFill}
-                  stroke={strokeColor}
                   strokeWidth={isSelected || isHovered ? 2 : 1.2}
                   strokeDasharray={isSelected ? undefined : '8,5'}
-                  className="cursor-pointer"
+                  className={cn(
+                    'cursor-pointer transition-colors duration-200',
+                    'fill-zinc-100 stroke-zinc-300 hover:fill-zinc-200',
+                    'dark:fill-zinc-800 dark:stroke-zinc-600 dark:hover:fill-zinc-700',
+                    isSelected &&
+                      'fill-zinc-200 stroke-zinc-500 dark:fill-zinc-700 dark:stroke-zinc-400',
+                  )}
                   onMouseEnter={() => !isDragging && setHoveredId(ws.id)}
-                  onMouseLeave={() => setHoveredId(null)}
+                  onMouseLeave={handleTowerLeave}
                   onClick={() => !isDragging && onWorkspaceClick(ws.id)}
                   onDoubleClick={() =>
                     !isDragging && onWorkspaceDoubleClick(ws.id)
@@ -305,7 +454,7 @@ export function PlantsMap({
                   selected={isSelected}
                   isDark={isDark}
                   onMouseEnter={() => !isDragging && setHoveredId(ws.id)}
-                  onMouseLeave={() => setHoveredId(null)}
+                  onMouseLeave={handleTowerLeave}
                   onClick={() => !isDragging && onWorkspaceClick(ws.id)}
                   onDoubleClick={() =>
                     !isDragging && onWorkspaceDoubleClick(ws.id)

@@ -76,6 +76,7 @@ packages/typescript-config # shared tsconfig bases
 - After any Edit, if you need to Edit the same file again, re-Read first — the formatter may have changed indentation/spacing and old_string will no longer match.
 - PreToolUse blocks any write to `packages/prisma/src/generated/**` — edit `schema.prisma` instead.
 - Backend ESLint config is `eslint.config.mjs` (not `.js`) — NestJS is CommonJS; `.js` with ES imports triggers `MODULE_TYPELESS_PACKAGE_JSON` warning.
+- **GateGuard (PreToolUse on Write/Edit):** Before any file write/edit, present these four facts or the tool call is blocked: (1) all files that import this file (`grep`), (2) public functions/classes affected, (3) any data file fields/structure if applicable, (4) user's instruction verbatim. Present facts inline, then retry the same tool call.
 
 ### Backend (`apps/backend`)
 
@@ -155,6 +156,16 @@ Strict layered architecture — Controllers → Services → Prisma. No business
 - **Dashboard (digital twin):** `(default)/dashboard/` — 2.5D isometric command-center view. Machine SVGs live under `components/machines/` (cnc-machine, controller, conveyor, robot-arm, sensor). `hooks/use-dashboard-data.ts` fetches all workspace nodes in parallel via `Promise.all`.
 - **`types/models.ts`:** Exports mock data generators (`allWorkspaces`, `allModels`, `generateMockModels()`) — placeholder only for `/models` page until real models API is built. Do not reference or extend this pattern; connect new endpoints to real Prisma.
 - **Subscription services:** `services/plan.ts` → `planService.listPlans()`, `mySubscription()`, `downgrade()`. `hooks/workspace/use-workspace-plans.ts` — CRUD for `WorkspacePlan` sub-plans within a canvas.
+- **Business logic split rule (enforced):** Page components must be thin composition shells only. Data fetching → `hooks/`. Pure derivations → `lib/`. UI sections → route `components/` folder. Never put fetch logic or derive counts/verdicts inside a page component. Pattern: `hooks/use-all-models.ts` + `lib/model-status.ts` + `models/deployed/components/` + `models/deployed/page.tsx`.
+- **`AIModel.data.deployStatus` enum:** `'stopped' | 'running' | 'error' | 'initializing'`. Wire value is `'error'` — UI label is "Failed". Never use `'failed'` in code; that string does not exist in the backend Zod enum.
+- **`lib/model-status.ts`:** Single source of truth for model status derivations. Exports: `effectiveProdStatus(m)` (stopped/error deploy forces `'offline'`), `deployCounts(models)`, `deployVerdict(models)` (severity: error > initializing > stopped > all-running > empty). Extend this file for new model status logic — do not duplicate in page or component files.
+- **`hooks/use-all-models.ts`:** `useAllModels()` — cross-workspace fan-out via `Promise.all(workspaces.map(ws => getModels(ws.id)))`. Returns `ModelWithWorkspace[]` (AIModel + `workspaceName`). Use for any page needing models from all workspaces.
+- **Deploy/Monitoring state dependency:** Stopped or error deploy forces monitoring to `'offline'`. Always use `effectiveProdStatus(m)` from `lib/model-status.ts` — never read `m.data?.prodStatus` directly in UI.
+- **Workspace members route:** `(default)/workspaces/[id]/members/` — `WorkspaceMembers` component lives at `workspaces/[id]/components/workspace-members.tsx` (workspace domain), not under `settings/components/`.
+- **`NodeStatus` canonical type:** Defined once in `store/status-colors.ts` — `'normal' | 'warning' | 'alarm' | 'offline'`. Re-exported from `lib/overview-status.ts` for backward compat. Always import from `@/store/status-colors` in new code. Never redefine locally.
+- **`lib/overview-status.ts`:** Pure status derivation for the overview map. Exports: `NodeStatus` (re-export), `STATUS_META`, `deriveStatus(nodes)`, `countNodesByStatus(nodes)`, `deriveSystemStatus(nodesByWorkspace)`. Extend here for new overview status logic — do not duplicate.
+- **`hooks/canvas/use-map-viewport.ts`:** SVG pan/zoom/drag mechanics hook. Signature: `useMapViewport(vbCX: number, vbCY: number)`. Returns `{ pan, zoom, isDragging, hoveredId, setHoveredId, hoverPos, containerRef, svgRef, groupTransform, handleTowerLeave, zoomIn, zoomOut, resetView, svgHandlers }`. Used exclusively by `overview-map.tsx` — do not duplicate pan/zoom state in new SVG map components, use this hook instead.
+- **`hooks/model/use-model-hierarchy.ts`:** Fan-out hook fetching plants + nodes for every workspace in parallel. Returns `{ plantsByWorkspaceId, nodesByWorkspaceId, loading, isFetching, error, refetch }`. Used by `models/views/page.tsx` to drive the Workspace → Plant → Equipment accordion.
 
 ### Agents (`.claude/agents/`)
 

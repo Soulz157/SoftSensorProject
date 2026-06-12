@@ -2,12 +2,13 @@ import { useState, useMemo } from 'react'
 import { useWorkspacePlants } from '../workspace/use-workspace-plants'
 import { NodeStatus } from '@/store/status-colors'
 import { useDashboardData } from '../use-dashboard-data'
+import { createNode } from '@/services/canvas'
 
 type ViewMode = 'plants' | 'equipment'
 type DisplayMode = 'map' | 'grid'
 
 export function usePlantsController(initialWorkspaceId: string) {
-  const { workspaces, nodes, loading, error } = useDashboardData()
+  const { workspaces, nodes, loading, error, refetch } = useDashboardData()
 
   const [viewMode, setViewMode] = useState<ViewMode>('plants')
   const [displayMode, setDisplayMode] = useState<DisplayMode>('map')
@@ -16,6 +17,7 @@ export function usePlantsController(initialWorkspaceId: string) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [statusFilter] = useState<NodeStatus | null>(null)
   const [isAddPlanOpen, setIsAddPlanOpen] = useState(false)
+  const [isAddEquipmentOpen, setIsAddEquipmentOpen] = useState(false)
   const [isPanelOpen, setIsPanelOpen] = useState(false)
 
   const activeWorkspaceId =
@@ -99,6 +101,20 @@ export function usePlantsController(initialWorkspaceId: string) {
       handleCreatePlan: async (name: string) => {
         await createPlan({ name })
       },
+      handleAddEquipment: async (
+        name: string,
+        type: 'machine' | 'sensor' | 'controller',
+      ) => {
+        if (!activeWorkspaceId || !selectedPlanId) return
+        await createNode(activeWorkspaceId, selectedPlanId, {
+          name,
+          type,
+          status: 'normal',
+          x: 0,
+          y: 0,
+        })
+        refetch()
+      },
       handleResetToPlantsView: () => {
         setViewMode('plants')
         setSelectedPlanId(null)
@@ -113,8 +129,17 @@ export function usePlantsController(initialWorkspaceId: string) {
       handleClosePanel: () => setIsPanelOpen(false),
       handleOpenAddPlan: () => setIsAddPlanOpen(true),
       handleCloseAddPlan: () => setIsAddPlanOpen(false),
+      handleOpenAddEquipment: () => setIsAddEquipmentOpen(true),
+      handleCloseAddEquipment: () => setIsAddEquipmentOpen(false),
     }),
-    [selectedPlanId, selectedNodeId, viewMode, createPlan],
+    [
+      selectedPlanId,
+      selectedNodeId,
+      viewMode,
+      createPlan,
+      activeWorkspaceId,
+      refetch,
+    ],
   )
 
   return {
@@ -122,6 +147,7 @@ export function usePlantsController(initialWorkspaceId: string) {
       viewMode,
       displayMode,
       isAddPlanOpen,
+      isAddEquipmentOpen,
       isPanelOpen,
       selectedPlanId,
       selectedNodeId,

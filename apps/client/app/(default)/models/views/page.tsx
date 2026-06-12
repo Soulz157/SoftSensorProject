@@ -1,10 +1,13 @@
 'use client'
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import {
   Activity,
   AlertCircle,
   AlertTriangle,
+  Check,
+  ChevronDown,
   Cpu,
+  Layers,
   Plus,
   Power,
   RefreshCw,
@@ -15,10 +18,32 @@ import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command'
 import { workspacesAtom } from '@/store/workspace'
-import { useModels } from '@/hooks/workspace/use-models'
+import { useAllModels, type ModelWithWorkspace } from '@/hooks/use-all-models'
+import { useWorkspacePlants } from '@/hooks/workspace/use-workspace-plants'
+import { useModelHierarchy } from '@/hooks/model/use-model-hierarchy'
 import { AIModel } from '@/types'
-import { deleteModel } from '@/services/model'
+import { deleteModel, updateModel } from '@/services/model'
+import { effectiveProdStatus } from '@/lib/model-status'
 import { ModelTable } from './components/model-table'
 import { ModelUpsertDialog } from './components/model-upsert-dialog'
 import { ModelLogSheet } from './components/model-log-sheet'
@@ -26,20 +51,34 @@ import { ModelPreviewSheet } from './components/model-preview-sheet'
 
 export default function ModelsPage() {
   const workspaces = useAtomValue(workspacesAtom)
+
+  // '' = All Workspaces
   const [workspaceId, setWorkspaceId] = useState<string>('')
-  const hasInitialized = useRef(false)
-  useEffect(() => {
-    if (!hasInitialized.current && workspaces[0]?.id) {
-      hasInitialized.current = true
-      setWorkspaceId(workspaces[0].id)
-    }
-  }, [workspaces])
+  const [plantFilter, setPlantFilter] = useState<string[]>([])
+
+  const { models: allModels, loading, isFetching, refetch } = useAllModels()
+  const { plants } = useWorkspacePlants(workspaceId || null)
   const {
-    data: models,
-    loading,
-    isFetching,
-    refetch,
-  } = useModels(workspaceId || null)
+    plantsByWorkspaceId,
+    nodesByWorkspaceId,
+    loading: hierarchyLoading,
+  } = useModelHierarchy()
+
+  const displayWorkspaces = workspaceId
+    ? workspaces.filter(ws => ws.id === workspaceId)
+    : workspaces
+
+  const displayPlantsByWorkspaceId = Object.fromEntries(
+    displayWorkspaces.map(ws => {
+      const wsPlants = plantsByWorkspaceId[ws.id] ?? []
+      const filtered =
+        plantFilter.length > 0
+          ? wsPlants.filter(p => plantFilter.includes(p.id))
+          : wsPlants
+      return [ws.id, filtered]
+    }),
+  )
+
   const [search, setSearch] = useState('')
   const [deployFilter, setDeployFilter] = useState<string | null>(null)
   const [prodFilter, setProdFilter] = useState<string | null>(null)
@@ -47,27 +86,36 @@ export default function ModelsPage() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<AIModel | null>(null)
   const [logTarget, setLogTarget] = useState<AIModel | null>(null)
-  const [previewTarget, setPreviewTarget] = useState<AIModel | null>(null)
+  const [previewTarget, setPreviewTarget] = useState<ModelWithWorkspace | null>(
+    null,
+  )
 
-  const all = models ?? []
-  const deployCounts = {
-    running: all.filter(m => m.data?.deployStatus === 'running').length,
-    initializing: all.filter(m => m.data?.deployStatus === 'initializing')
-      .length,
-    stopped: all.filter(m => m.data?.deployStatus === 'stopped').length,
-    failed: all.filter(m => m.data?.deployStatus === 'failed').length,
-  }
-  const prodCounts = {
-    normal: all.filter(m => m.data?.prodStatus === 'normal').length,
-    warning: all.filter(m => m.data?.prodStatus === 'warning').length,
-    alert: all.filter(m => m.data?.prodStatus === 'alert').length,
-    offline: all.filter(m => m.data?.prodStatus === 'offline').length,
-  }
+  const all = allModels ?? []
 
-  const filtered = all
+  const filtered: ModelWithWorkspace[] = all
+    .filter(m => !workspaceId || m.workspaceId === workspaceId)
+    .filter(m => {
+      if (plantFilter.length === 0) return true
+      const planId = m.nodes?.plan?.id
+      return planId !== undefined && plantFilter.includes(planId)
+    })
     .filter(m => m.name.toLowerCase().includes(search.toLowerCase()))
     .filter(m => !deployFilter || m.data?.deployStatus === deployFilter)
-    .filter(m => !prodFilter || m.data?.prodStatus === prodFilter)
+    .filter(m => !prodFilter || effectiveProdStatus(m) === prodFilter)
+
+  const deployCounts = {
+    running: filtered.filter(m => m.data?.deployStatus === 'running').length,
+    initializing: filtered.filter(m => m.data?.deployStatus === 'initializing')
+      .length,
+    stopped: filtered.filter(m => m.data?.deployStatus === 'stopped').length,
+    failed: filtered.filter(m => m.data?.deployStatus === 'error').length,
+  }
+  const prodCounts = {
+    normal: filtered.filter(m => effectiveProdStatus(m) === 'normal').length,
+    warning: filtered.filter(m => effectiveProdStatus(m) === 'warning').length,
+    alert: filtered.filter(m => effectiveProdStatus(m) === 'alert').length,
+    offline: filtered.filter(m => effectiveProdStatus(m) === 'offline').length,
+  }
 
   async function handleDelete(model: AIModel) {
     try {
@@ -77,6 +125,27 @@ export default function ModelsPage() {
     } catch {
       toast.error('Failed to delete model')
     }
+  }
+
+  async function handleToggleDeploy(
+    model: AIModel,
+    next: 'running' | 'stopped',
+  ) {
+    try {
+      await updateModel(model.id, { deployStatus: next })
+      toast.success(
+        next === 'running' ? `${model.name} starting` : `${model.name} stopped`,
+      )
+      await refetch()
+    } catch {
+      toast.error('Failed to update deploy status')
+    }
+  }
+
+  function togglePlant(id: string) {
+    setPlantFilter(prev =>
+      prev.includes(id) ? prev.filter(p => p !== id) : [...prev, id],
+    )
   }
 
   return (
@@ -121,17 +190,84 @@ export default function ModelsPage() {
               onChange={e => setSearch(e.target.value)}
               className="h-9 w-56 rounded-md border border-border bg-input px-3 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
             />
-            <select
-              value={workspaceId}
-              onChange={e => setWorkspaceId(e.target.value)}
-              className="h-9 rounded-md border border-border bg-input px-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+
+            {/* Workspace selector */}
+            <Select
+              value={workspaceId || '__all__'}
+              onValueChange={val => {
+                setWorkspaceId(val === '__all__' ? '' : val)
+                setPlantFilter([])
+              }}
             >
-              {workspaces.map(ws => (
-                <option key={ws.id} value={ws.id}>
-                  {ws.name}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger className="h-9 w-48">
+                <SelectValue placeholder="All Workspaces" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all__">All Workspaces</SelectItem>
+                {workspaces.map(ws => (
+                  <SelectItem key={ws.id} value={ws.id}>
+                    {ws.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            {/* Plant multi-select — only when a workspace is selected */}
+            {workspaceId && (
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-9 gap-1.5 text-sm"
+                  >
+                    <Layers className="h-3.5 w-3.5" />
+                    {plantFilter.length > 0
+                      ? `${plantFilter.length} plant${plantFilter.length > 1 ? 's' : ''}`
+                      : 'All Plants'}
+                    <ChevronDown className="h-3 w-3 opacity-60" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-56 p-0" align="start">
+                  <Command>
+                    <CommandList>
+                      <CommandEmpty>No plants found.</CommandEmpty>
+                      <CommandGroup heading="Plants">
+                        {(plants ?? []).map(p => (
+                          <CommandItem
+                            key={p.id}
+                            value={p.name}
+                            onSelect={() => togglePlant(p.id)}
+                          >
+                            <Check
+                              className={cn(
+                                'mr-2 h-4 w-4 shrink-0',
+                                plantFilter.includes(p.id)
+                                  ? 'opacity-100'
+                                  : 'opacity-0',
+                              )}
+                            />
+                            <span className="truncate">{p.name}</span>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    </CommandList>
+                    {plantFilter.length > 0 && (
+                      <div className="border-t p-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="w-full text-xs text-muted-foreground"
+                          onClick={() => setPlantFilter([])}
+                        >
+                          × Clear plants
+                        </Button>
+                      </div>
+                    )}
+                  </Command>
+                </PopoverContent>
+              </Popover>
+            )}
           </div>
         </div>
 
@@ -180,7 +316,7 @@ export default function ModelsPage() {
                       count: deployCounts.stopped,
                     },
                     {
-                      key: 'failed',
+                      key: 'error',
                       label: 'Failed',
                       icon: AlertCircle,
                       cls: 'bg-red-500/10 text-red-500',
@@ -295,15 +431,22 @@ export default function ModelsPage() {
         {/* Table */}
         <ModelTable
           models={filtered}
-          loading={loading}
+          loading={loading || hierarchyLoading}
           isFetching={isFetching}
-          onPreview={m => setPreviewTarget(m)}
+          masterWorkspaces={displayWorkspaces}
+          masterPlantsByWorkspaceId={displayPlantsByWorkspaceId}
+          masterNodesByWorkspaceId={nodesByWorkspaceId}
+          onCreateModel={() => {
+            setEditTarget(null)
+            setDialogOpen(true)
+          }}
           onEdit={m => {
             setEditTarget(m)
             setDialogOpen(true)
           }}
           onLog={m => setLogTarget(m)}
           onDelete={handleDelete}
+          onToggleDeploy={handleToggleDeploy}
         />
       </div>
 

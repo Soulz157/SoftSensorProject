@@ -101,7 +101,7 @@ export function ModelDetailDialog({ model, open, onClose }: Props) {
     : '—'
   const plantName = model.nodes?.plan?.name ?? '—'
   const hasError =
-    model.data?.deployStatus === 'failed' || model.data?.prodStatus === 'alert'
+    model.data?.deployStatus === 'error' || model.data?.prodStatus === 'alert'
 
   return (
     <Dialog open={open} onOpenChange={o => !o && onClose()}>

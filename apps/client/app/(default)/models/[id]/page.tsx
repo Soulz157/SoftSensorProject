@@ -33,8 +33,10 @@ import {
   XCircle,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { toast } from 'sonner'
 import { workspacesAtom } from '@/store/workspace'
-import { getModels } from '@/services/model'
+import { getModels, updateModel } from '@/services/model'
+import { effectiveProdStatus } from '@/lib/model-status'
 import type { AIModel } from '@/types'
 
 const DEPLOY_CONFIG = {
@@ -51,7 +53,7 @@ const DEPLOY_CONFIG = {
   error: {
     icon: XCircle,
     cls: 'bg-red-500/10 text-red-500 border-red-500/20',
-    label: 'Error',
+    label: 'Failed',
   },
   initializing: {
     icon: RefreshCw,
@@ -181,6 +183,27 @@ export default function ModelDetailPage({
   const workspaces = useAtomValue(workspacesAtom)
   const [model, setModel] = useState<AIModel | null>(null)
   const [loading, setLoading] = useState(true)
+  const [isToggling, setIsToggling] = useState(false)
+
+  async function handleToggleDeploy(next: 'running' | 'stopped') {
+    if (!model) return
+    setIsToggling(true)
+    try {
+      await updateModel(model.id, { deployStatus: next })
+      setModel(prev =>
+        prev?.data
+          ? { ...prev, data: { ...prev.data, deployStatus: next } }
+          : prev,
+      )
+      toast.success(
+        next === 'running' ? `${model.name} starting` : `${model.name} stopped`,
+      )
+    } catch {
+      toast.error('Failed to update deploy status')
+    } finally {
+      setIsToggling(false)
+    }
+  }
 
   useEffect(() => {
     if (workspaces.length === 0) return
@@ -256,10 +279,12 @@ export default function ModelDetailPage({
 
   const deployKey = (model.data?.deployStatus ??
     'stopped') as keyof typeof DEPLOY_CONFIG
-  const prodKey = (model.data?.prodStatus ??
-    'normal') as keyof typeof PROD_CONFIG
+  // Monitoring is forced offline when the model isn't deployed —
+  // a stopped/failed model can never show a live monitoring state.
+  const prodKey = effectiveProdStatus(model)
+  const monitoringDisabled = deployKey === 'stopped' || deployKey === 'error'
   const deploy = DEPLOY_CONFIG[deployKey] ?? DEPLOY_CONFIG.stopped
-  const prod = PROD_CONFIG[prodKey] ?? PROD_CONFIG.normal
+  const prod = PROD_CONFIG[prodKey]
   const DeployIcon = deploy.icon
   const ProdIcon = prod.icon
 
@@ -307,6 +332,7 @@ export default function ModelDetailPage({
                   className={cn(
                     'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium',
                     prod.cls,
+                    monitoringDisabled && 'opacity-50',
                   )}
                 >
                   <ProdIcon className="h-3 w-3" />
@@ -320,13 +346,24 @@ export default function ModelDetailPage({
           </div>
 
           <div className="flex items-center gap-2">
-            {deployKey === 'running' ? (
-              <Button variant="outline" size="sm" className="gap-1.5">
+            {deployKey === 'running' || deployKey === 'initializing' ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5"
+                disabled={isToggling || deployKey === 'initializing'}
+                onClick={() => void handleToggleDeploy('stopped')}
+              >
                 <StopCircle className="h-4 w-4" />
                 Stop
               </Button>
             ) : (
-              <Button size="sm" className="gap-1.5">
+              <Button
+                size="sm"
+                className="gap-1.5"
+                disabled={isToggling}
+                onClick={() => void handleToggleDeploy('running')}
+              >
                 <Play className="h-4 w-4" />
                 Start
               </Button>
@@ -369,6 +406,7 @@ export default function ModelDetailPage({
                 className={cn(
                   'mt-2 inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm font-semibold',
                   prod.cls,
+                  monitoringDisabled && 'opacity-50',
                 )}
               >
                 <ProdIcon className="h-3.5 w-3.5" />
@@ -558,9 +596,7 @@ export default function ModelDetailPage({
                   {readings.map((row, i) => (
                     <TableRow
                       key={i}
-                      className={
-                        row.anomaly ? 'bg-amber-500/[0.03]' : undefined
-                      }
+                      className={row.anomaly ? 'bg-amber-500/0.03' : undefined}
                     >
                       <TableCell>
                         <span

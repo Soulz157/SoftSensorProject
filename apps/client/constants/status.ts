@@ -18,7 +18,7 @@ export const NODE_BADGE: Record<string, string> = {
 }
 
 export const DEPLOY_PRIORITY: Record<string, number> = {
-  failed: 0,
+  error: 0,
   alert: 1,
   warning: 2,
   running: 3,
@@ -29,7 +29,7 @@ export const DEPLOY_DOT: Record<string, string> = {
   running: 'bg-green-500',
   initializing: 'bg-blue-400',
   stopped: 'bg-zinc-400',
-  failed: 'bg-red-500',
+  error: 'bg-red-500',
 }
 export const PROD_BADGE: Record<string, string> = {
   normal: 'text-green-500',

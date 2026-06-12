@@ -67,7 +67,7 @@ export const getUserNavItems = (alertCount: number): NavItem[] => [
   },
   {
     id: 'settings',
-    name: 'Settings',
+    name: 'App Settings',
     icon: <Settings className="h-4 w-4" />,
     href: '/settings',
   },
@@ -82,7 +82,7 @@ export const adminNavItems: NavItem[] = [
   },
   {
     id: 'admin-users',
-    name: 'User Manage',
+    name: 'User Management',
     icon: <Users className="h-4 w-4" />,
     href: '/admin/users',
   },
@@ -94,13 +94,13 @@ export const adminNavItems: NavItem[] = [
   },
   {
     id: 'admin-workspaces',
-    name: 'Workspace Manage',
+    name: 'Workspace Management',
     icon: <Building2 className="h-4 w-4" />,
     href: '/admin/workspaces',
   },
   {
     id: 'admin-settings',
-    name: 'System Setting',
+    name: 'System Settings',
     icon: <Cog className="h-4 w-4" />,
     href: '/admin/settings',
   },

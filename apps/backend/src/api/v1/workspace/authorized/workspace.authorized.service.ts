@@ -1,6 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { AppException } from '@softsensor/common';
 import { PrismaService } from '@softsensor/prisma';
+import { writeFile, mkdir } from 'fs/promises';
+import { extname, join } from 'path';
+import type { FastifyRequest } from 'fastify';
 import type {
   EdgeItemDto,
   GetLogsQueryDto,
@@ -127,6 +130,7 @@ export class WorkspaceAuthorizedService {
         color: true,
         name: true,
         icon: true,
+        thumbnailUrl: true,
         ownerId: true,
         updatedAt: true,
         _count: { select: { members: true, models: true } },
@@ -162,6 +166,7 @@ export class WorkspaceAuthorizedService {
         color: true,
         name: true,
         icon: true,
+        thumbnailUrl: true,
         createdAt: true,
         updatedAt: true,
         _count: { select: { members: true, models: true } },
@@ -541,6 +546,53 @@ export class WorkspaceAuthorizedService {
       statusCode: 200,
       message: 'Workspace updated successfully',
       type: 'SUCCESS' as const,
+    };
+  }
+
+  async uploadThumbnail(
+    workspaceId: string,
+    userId: string,
+    userRole: string,
+    req: FastifyRequest,
+  ) {
+    await this.assertHasAccess(workspaceId, userId, userRole);
+
+    const data = await req.file();
+    if (!data) {
+      throw new AppException({
+        statusCode: 400,
+        message: 'No file uploaded',
+        type: 'ERROR',
+      });
+    }
+
+    const allowed = ['image/jpeg', 'image/png', 'image/webp'];
+    if (!allowed.includes(data.mimetype)) {
+      throw new AppException({
+        statusCode: 400,
+        message: 'Only JPEG, PNG, and WebP images are allowed',
+        type: 'ERROR',
+      });
+    }
+
+    const ext = extname(data.filename) || '.jpg';
+    const uploadDir = join(process.cwd(), 'uploads', 'workspaces');
+    await mkdir(uploadDir, { recursive: true });
+
+    const filename = `${workspaceId}${ext}`;
+    await writeFile(join(uploadDir, filename), await data.toBuffer());
+
+    const thumbnailUrl = `/uploads/workspaces/${filename}`;
+    await this.prisma.workspace.update({
+      where: { id: workspaceId },
+      data: { thumbnailUrl },
+    });
+
+    return {
+      statusCode: 200,
+      message: 'Thumbnail uploaded successfully',
+      type: 'SUCCESS' as const,
+      data: { thumbnailUrl },
     };
   }
 }

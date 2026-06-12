@@ -124,14 +124,8 @@ export function PlantTower({
   const antennaBase = cy - towerH - 12
   const antennaTop = antennaBase - 16
 
-  const topFaceColor =
-    status === 'alarm'
-      ? '#ef4444'
-      : status === 'warning'
-        ? '#f59e0b'
-        : status === 'offline'
-          ? '#52525b'
-          : accentHex
+  const factoryTopFace = isDark ? '#1a2535' : '#64748b'
+  const factoryTopStroke = isDark ? '#2e3f55' : '#94a3b8'
 
   const leftFaceBase = isDark ? 'rgba(15,25,45,0.95)' : 'rgba(200,215,228,0.9)'
   const rightFaceBase = isDark ? 'rgba(8,15,30,0.95)' : 'rgba(180,200,220,0.9)'
@@ -190,24 +184,6 @@ export function PlantTower({
         />
       )}
 
-      {/* Status glow at base */}
-      <ellipse
-        cx={cx}
-        cy={cy + tw * 0.5}
-        rx={tw + 4}
-        ry={8}
-        fill={statusColor}
-        opacity={status === 'alarm' ? 0.3 : 0.15}
-      />
-      <ellipse
-        cx={cx}
-        cy={cy + tw * 0.5}
-        rx={tw - 4}
-        ry={5}
-        fill={statusColor}
-        opacity={status === 'alarm' ? 0.4 : 0.2}
-      />
-
       {/* 1. Base Plinth / Shadow Platform */}
       <polygon
         points={`
@@ -216,7 +192,7 @@ export function PlantTower({
           ${cx},${cy - tw * 0.5 + 4}
           ${cx - tw - 4},${cy + 2}
         `}
-        fill={isDark ? '#020617' : '#94a3b8'}
+        fill={isDark ? '#0f1827' : '#94a3b8'}
         opacity={0.5}
       />
 
@@ -236,7 +212,7 @@ export function PlantTower({
         strokeLinejoin="round"
       />
 
-      {/* 3. Structural Details (Vertical Corner & Center Beams) */}
+      {/* 3. Structural Details */}
       <line
         x1={cx}
         y1={cy - towerH + tw * 0.5}
@@ -265,7 +241,7 @@ export function PlantTower({
         opacity={0.3}
       />
 
-      {/* 4. Glowing Vertical Core Line (Sci-fi / Server Plant Look) */}
+      {/* 4. Glowing Vertical Core Line */}
       {status !== 'offline' && (
         <g>
           <path
@@ -285,7 +261,7 @@ export function PlantTower({
         </g>
       )}
 
-      {/* 5. Isometric Glass Windows (Perfectly aligned with angles) */}
+      {/* 5. Isometric Glass Windows */}
       {Array.from({ length: Math.floor((towerH - 10) / 12) }).map((_, i) => {
         const h = 10 + i * 12
         const wH = 6
@@ -294,7 +270,6 @@ export function PlantTower({
 
         return (
           <g key={`win-${i}`}>
-            {/* Left face window */}
             <polygon
               points={`
                 ${cx - 18},${cy - towerH + 2 + h}
@@ -305,7 +280,6 @@ export function PlantTower({
               fill={windowColor}
               opacity={windowOpacity}
             />
-            {/* Right face window */}
             <polygon
               points={`
                 ${cx + 6},${cy - towerH + 8 + h}
@@ -323,22 +297,13 @@ export function PlantTower({
       {/* 6. Tower top (Main Roof) */}
       <polygon
         points={topFacePoints}
-        fill={topFaceColor}
-        stroke={
-          status === 'normal'
-            ? '#a5f3fc'
-            : status === 'alarm'
-              ? '#fca5a5'
-              : status === 'warning'
-                ? '#fde68a'
-                : '#d4d4d8'
-        }
+        fill={factoryTopFace}
+        stroke={factoryTopStroke}
         strokeWidth={1.2}
         strokeLinejoin="round"
-        opacity={status === 'offline' ? 0.6 : 1}
       />
 
-      {/* 7. Roof Detail: Secondary Inner Box (Machinery / AC Unit) */}
+      {/* 7. Roof Detail */}
       <g opacity={status === 'offline' ? 0.6 : 0.95}>
         <polygon
           points={`
@@ -371,8 +336,8 @@ export function PlantTower({
             ${cx},${cy - towerH - 4}
             ${cx - 8},${cy - towerH - 8}
           `}
-          fill={topFaceColor}
-          stroke={strokeColor}
+          fill={factoryTopFace}
+          stroke={factoryTopStroke}
           strokeWidth={0.5}
           strokeLinejoin="round"
         />
@@ -384,49 +349,18 @@ export function PlantTower({
         y1={antennaBase}
         x2={cx}
         y2={antennaTop}
-        stroke={status === 'offline' ? '#71717a' : accentHex}
+        stroke={strokeColor}
         strokeWidth={1.5}
         strokeLinecap="round"
-        strokeDasharray={status === 'offline' ? '2 2' : undefined}
       />
-
-      {/* 9. Beacon */}
-      {status === 'alarm' && (
-        <>
-          <circle cx={cx} cy={antennaTop} r={5} fill="#ef4444" opacity={0.9} />
-          <circle
-            cx={cx}
-            cy={antennaTop}
-            r={10}
-            fill="none"
-            stroke="#ef4444"
-            strokeWidth={1.5}
-            opacity={0.5}
-          />
-        </>
-      )}
-      {status === 'warning' && (
-        <>
-          <circle cx={cx} cy={antennaTop} r={4} fill="#f59e0b" opacity={0.85} />
-          <circle
-            cx={cx}
-            cy={antennaTop}
-            r={8}
-            fill="none"
-            stroke="#f59e0b"
-            strokeWidth={1}
-            opacity={0.4}
-          />
-        </>
-      )}
-      {(status === 'normal' || status === 'offline') && (
-        <circle
-          cx={cx}
-          cy={antennaTop}
-          r={2.5}
-          fill={status === 'offline' ? '#52525b' : accentHex}
-        />
-      )}
+      <circle
+        cx={cx}
+        cy={antennaTop}
+        r={2.5}
+        fill={isDark ? '#1e2535' : '#94a3b8'}
+        stroke={strokeColor}
+        strokeWidth={0.5}
+      />
 
       {/* Name Badge */}
       <rect
@@ -462,9 +396,9 @@ export function PlantTower({
         color={statusColor}
       />
 
-      {/* Equipment status dots — below name badge */}
+      {/* Equipment status dots */}
       {sortedStatuses.length > 0 && (
-        <g>
+        <g aria-hidden="true">
           <rect
             x={dotsStartX - 4}
             y={cy + tw * 0.5 + 30}

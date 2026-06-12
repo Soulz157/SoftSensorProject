@@ -120,9 +120,6 @@ function PanelContent({
 
   return (
     <div className="flex h-full w-full flex-col border-t border-border bg-card/90 backdrop-blur-xl sm:w-75 sm:shrink-0 sm:border-l sm:border-t-0">
-      {/* Mobile drag handle */}
-      <div className="mx-auto mb-1 mt-2.5 h-1 w-10 shrink-0 rounded-full bg-muted-foreground/25 sm:hidden" />
-
       {/* Header */}
       <div className="shrink-0 border-b border-border bg-muted/20 px-4 py-4">
         <div className="flex items-start justify-between gap-3">
@@ -147,7 +144,7 @@ function PanelContent({
             className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             aria-label="Close panel"
           >
-            <X className="h-4 w-4" />
+            <X aria-hidden="true" className="h-4 w-4" />
           </button>
         </div>
       </div>
@@ -164,10 +161,16 @@ function PanelContent({
               )}
             >
               {worstStatus === 'alarm' && (
-                <AlertCircle className="mr-1.5 h-3.5 w-3.5" />
+                <AlertCircle
+                  aria-hidden="true"
+                  className="mr-1.5 h-3.5 w-3.5"
+                />
               )}
               {worstStatus === 'warning' && (
-                <AlertTriangle className="mr-1.5 h-3.5 w-3.5" />
+                <AlertTriangle
+                  aria-hidden="true"
+                  className="mr-1.5 h-3.5 w-3.5"
+                />
               )}
               {statusBadgeText}
             </div>
@@ -247,7 +250,10 @@ function PanelContent({
                       >
                         {st}
                       </span>
-                      <ArrowRight className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+                      <ArrowRight
+                        aria-hidden="true"
+                        className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
+                      />
                     </Link>
                   )
                 })}
@@ -258,7 +264,7 @@ function PanelContent({
                   className="mt-2 flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
                 >
                   View all {nodeCount} equipment
-                  <ArrowRight className="h-3 w-3" />
+                  <ArrowRight aria-hidden="true" className="h-3 w-3" />
                 </Link>
               )}
             </div>
@@ -297,7 +303,7 @@ function PanelContent({
                           className={cn(
                             'h-2 w-2 shrink-0 rounded-full',
                             DEPLOY_DOT[deploy] ?? 'bg-zinc-400',
-                            deploy === 'failed' &&
+                            deploy === 'error' &&
                               'ring-4 ring-red-500/20 motion-safe:animate-pulse',
                           )}
                         />
@@ -317,7 +323,10 @@ function PanelContent({
                         >
                           {prod}
                         </span>
-                        <ArrowRight className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+                        <ArrowRight
+                          aria-hidden="true"
+                          className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
+                        />
                       </Link>
                     )
                   })}
@@ -328,7 +337,7 @@ function PanelContent({
                     className="mt-2 flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
                   >
                     View all {models.length} models
-                    <ArrowRight className="h-3 w-3" />
+                    <ArrowRight aria-hidden="true" className="h-3 w-3" />
                   </Link>
                 )}
               </>
@@ -347,7 +356,7 @@ function PanelContent({
             onClick={onViewAlerts}
           >
             View All Alerts
-            <ArrowRight className="h-3 w-3 shrink-0" />
+            <ArrowRight aria-hidden="true" className="h-3 w-3 shrink-0" />
           </Button>
         )}
         <Button
@@ -357,7 +366,7 @@ function PanelContent({
           onClick={() => onViewWorkspace(workspace.id)}
         >
           View Workspace
-          <ArrowRight className="h-3 w-3 shrink-0" />
+          <ArrowRight aria-hidden="true" className="h-3 w-3 shrink-0" />
         </Button>
         <Button
           variant="outline"

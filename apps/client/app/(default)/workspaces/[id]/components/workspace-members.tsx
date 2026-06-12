@@ -155,7 +155,6 @@ export function WorkspaceMembers({ workspaceId }: WorkspaceMembersProps) {
 
   return (
     <div className="space-y-3">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Users className="h-4 w-4 text-muted-foreground" />
@@ -179,7 +178,6 @@ export function WorkspaceMembers({ workspaceId }: WorkspaceMembersProps) {
         )}
       </div>
 
-      {/* Table */}
       <div className="rounded-md border border-border overflow-hidden">
         <Table>
           <TableHeader>
@@ -217,7 +215,6 @@ export function WorkspaceMembers({ workspaceId }: WorkspaceMembersProps) {
 
                 return (
                   <TableRow key={member.id}>
-                    {/* Member info */}
                     <TableCell>
                       <div className="flex items-center gap-2.5">
                         <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
@@ -243,7 +240,6 @@ export function WorkspaceMembers({ workspaceId }: WorkspaceMembersProps) {
                       </div>
                     </TableCell>
 
-                    {/* Role badge */}
                     <TableCell>
                       <span
                         className={cn(
@@ -255,7 +251,6 @@ export function WorkspaceMembers({ workspaceId }: WorkspaceMembersProps) {
                       </span>
                     </TableCell>
 
-                    {/* Actions */}
                     <TableCell>
                       {isOwner && (
                         <DropdownMenu>
@@ -310,7 +305,6 @@ export function WorkspaceMembers({ workspaceId }: WorkspaceMembersProps) {
         </Table>
       </div>
 
-      {/* Invite dialog */}
       <Dialog open={inviteOpen} onOpenChange={setInviteOpen}>
         <DialogContent className="max-w-sm">
           <DialogHeader>

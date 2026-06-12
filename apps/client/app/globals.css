@@ -126,6 +126,13 @@
 }
 
 @layer utilities {
+  [data-slot='accordion-content'][data-state='open'] {
+    animation: accordion-down 0.2s ease-out;
+  }
+  [data-slot='accordion-content'][data-state='closed'] {
+    animation: accordion-up 0.2s ease-out;
+  }
+
   .workspace-accent {
     border-top: 3px solid var(--workspace-color, transparent);
   }
@@ -136,6 +143,28 @@
   .no-scrollbar {
     -ms-overflow-style: none;
     scrollbar-width: none;
+  }
+}
+
+@keyframes accordion-down {
+  from {
+    height: 0;
+    overflow: hidden;
+  }
+  to {
+    height: var(--radix-accordion-content-height);
+    overflow: hidden;
+  }
+}
+
+@keyframes accordion-up {
+  from {
+    height: var(--radix-accordion-content-height);
+    overflow: hidden;
+  }
+  to {
+    height: 0;
+    overflow: hidden;
   }
 }
 

@@ -9,8 +9,10 @@ import {
   Post,
   Put,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
+import type { FastifyRequest } from 'fastify';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { WorkspaceAuthorizedService } from './workspace.authorized.service';
 import {
@@ -148,6 +150,22 @@ export class WorkspaceAuthorizedController {
       id,
       user,
       args,
+    );
+  }
+
+  @Post('/:id/thumbnail')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Upload workspace thumbnail image' })
+  async uploadThumbnail(
+    @Param('id') id: string,
+    @Users() user: Auth.UserPayload,
+    @Req() req: FastifyRequest,
+  ) {
+    return this.workspaceAuthorizedService.uploadThumbnail(
+      id,
+      user.id,
+      user.role,
+      req,
     );
   }
 
