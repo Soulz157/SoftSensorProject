@@ -15,7 +15,6 @@ import {
 } from 'lucide-react'
 import { IsometricMap } from './components/isometric-map'
 import { NodeDetailPanel } from './components/node-detail-panel'
-import { MachineLegend } from './components/machine-legend'
 import type { NodeStatus } from '../../../../store/status-colors'
 import type { CanvasNode } from '@/services/canvas'
 import { Button } from '@/components/ui/button'
@@ -154,12 +153,19 @@ interface PlantsPageProps {
   params: Promise<{
     id: string
   }>
+  searchParams: Promise<{
+    nodeId?: string
+  }>
 }
 
-export default function PlantsPage({ params }: PlantsPageProps) {
+export default function PlantsPage({ params, searchParams }: PlantsPageProps) {
   const { id } = use(params)
+  const { nodeId } = use(searchParams)
 
-  const { state, data, setters, handlers } = usePlantsController(id)
+  const { state, data, setters, handlers } = usePlantsController(
+    id,
+    nodeId ?? null,
+  )
 
   if (data.loading) return null
 
@@ -329,8 +335,6 @@ export default function PlantsPage({ params }: PlantsPageProps) {
           onClose={handlers.handleClosePanel}
         />
       </div>
-
-      <MachineLegend />
 
       <AddPlanDialog
         open={state.isAddPlanOpen}

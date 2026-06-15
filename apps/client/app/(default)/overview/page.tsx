@@ -131,7 +131,7 @@ export default function PlantsPage() {
             aria-modal="true"
             aria-label={`${selectedWorkspace.name} — workspace details`}
             tabIndex={-1}
-            className="fixed inset-x-0 bottom-0 z-20 h-[65svh] overflow-hidden rounded-t-2xl outline-none sm:relative sm:inset-auto sm:z-auto sm:h-auto sm:overflow-visible sm:rounded-none"
+            className="fixed inset-x-0 bottom-0 z-20 h-[65svh] overflow-hidden rounded-t-2xl outline-none sm:relative sm:inset-auto sm:z-auto sm:h-full sm:rounded-none"
           >
             <OverviewDetailPanel
               workspace={selectedWorkspace}

@@ -1,11 +1,12 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import { toast } from 'sonner'
 import {
   Activity,
+  ArrowRightLeft,
   BrainCircuit,
   Loader2,
   Palette,
@@ -59,7 +60,7 @@ import {
 import { workspaceService } from '@/services/workspace'
 import { workspaceColors, workspaceIcons } from '@/store/workspace'
 import { useAdminWorkspaceSettings } from '@/hooks/admin/use-admin-workspace-settings'
-import type { WorkspaceRole } from '@/types'
+import type { AdminWorkspace, WorkspaceMember, WorkspaceRole } from '@/types'
 
 function roleBadgeVariant(
   role: WorkspaceRole,
@@ -93,6 +94,25 @@ export default function WorkspaceSettingsPage() {
   const [inviteEmail, setInviteEmail] = useState('')
   const [inviteRole, setInviteRole] = useState<WorkspaceRole>('VIEWER')
   const [isInviting, setIsInviting] = useState(false)
+  const [movingMember, setMovingMember] = useState<WorkspaceMember | null>(null)
+  const [moveTarget, setMoveTarget] = useState('')
+  const [isMoving, setIsMoving] = useState(false)
+  const [otherWorkspaces, setOtherWorkspaces] = useState<AdminWorkspace[]>([])
+
+  useEffect(() => {
+    let active = true
+    workspaceService
+      .getAdminWorkspaces({ limit: 100 })
+      .then(res => {
+        if (active) setOtherWorkspaces(res.data.items)
+      })
+      .catch(() => {
+        if (active) setOtherWorkspaces([])
+      })
+    return () => {
+      active = false
+    }
+  }, [])
 
   async function handleSave() {
     if (!name.trim()) {
@@ -161,6 +181,30 @@ export default function WorkspaceSettingsPage() {
       setIsInviting(false)
     }
   }
+
+  async function handleMoveMember() {
+    if (!movingMember || !moveTarget) return
+    setIsMoving(true)
+    try {
+      await workspaceService.adminMoveMember(
+        workspaceId,
+        movingMember.id,
+        moveTarget,
+      )
+      setMembers(prev => prev.filter(m => m.id !== movingMember.id))
+      toast.success('Member moved')
+      setMovingMember(null)
+      setMoveTarget('')
+    } catch (error) {
+      console.error(error)
+      toast.error('Failed to move member')
+    } finally {
+      setIsMoving(false)
+    }
+  }
+
+  const moveOptions = otherWorkspaces.filter(w => w.id !== workspaceId)
+  const ownerCount = members.filter(m => m.role === 'OWNER').length
 
   const filteredMembers = members.filter(m => {
     const q = searchQuery.toLowerCase()
@@ -477,6 +521,26 @@ export default function WorkspaceSettingsPage() {
                                 </SelectContent>
                               </Select>
 
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-muted-foreground hover:text-primary"
+                                title={
+                                  member.role === 'OWNER' && ownerCount <= 1
+                                    ? 'Cannot move the last owner'
+                                    : 'Move to another workspace'
+                                }
+                                disabled={
+                                  member.role === 'OWNER' && ownerCount <= 1
+                                }
+                                onClick={() => {
+                                  setMovingMember(member)
+                                  setMoveTarget('')
+                                }}
+                              >
+                                <ArrowRightLeft className="h-4 w-4" />
+                              </Button>
+
                               <AlertDialog>
                                 <AlertDialogTrigger asChild>
                                   <Button
@@ -579,6 +643,77 @@ export default function WorkspaceSettingsPage() {
                 <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
               )}
               Invite
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Move Member Dialog */}
+      <Dialog
+        open={!!movingMember}
+        onOpenChange={open => {
+          if (!open) {
+            setMovingMember(null)
+            setMoveTarget('')
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Move Member</DialogTitle>
+            <DialogDescription>
+              Move{' '}
+              <span className="font-semibold text-foreground">
+                {movingMember
+                  ? [movingMember.user.firstName, movingMember.user.lastName]
+                      .filter(Boolean)
+                      .join(' ') || movingMember.user.email
+                  : ''}
+              </span>{' '}
+              to another workspace. Their role is kept and they lose access to
+              this workspace.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div className="space-y-1.5">
+              <Label>Target workspace</Label>
+              <Select value={moveTarget} onValueChange={setMoveTarget}>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Select a workspace…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {moveOptions.length === 0 ? (
+                    <div className="px-2 py-1.5 text-sm text-muted-foreground">
+                      No other workspaces
+                    </div>
+                  ) : (
+                    moveOptions.map(w => (
+                      <SelectItem key={w.id} value={w.id}>
+                        {w.name}
+                      </SelectItem>
+                    ))
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setMovingMember(null)
+                setMoveTarget('')
+              }}
+              disabled={isMoving}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleMoveMember}
+              disabled={isMoving || !moveTarget}
+            >
+              {isMoving && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
+              Move
             </Button>
           </DialogFooter>
         </DialogContent>

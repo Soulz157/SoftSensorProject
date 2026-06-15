@@ -342,6 +342,7 @@ export function WorkspaceMembers({ workspaceId }: WorkspaceMembersProps) {
                 disabled={isInviting}
               >
                 <option value="VIEWER">VIEWER — Read-only access</option>
+                <option value="STAFF">STAFF — Edit access</option>
                 <option value="OWNER">OWNER — Full access</option>
               </select>
             </div>

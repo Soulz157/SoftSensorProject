@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { useWorkspacePlants } from '../workspace/use-workspace-plants'
 import { NodeStatus } from '@/store/status-colors'
 import { useDashboardData } from '../use-dashboard-data'
@@ -7,7 +7,10 @@ import { createNode } from '@/services/canvas'
 type ViewMode = 'plants' | 'equipment'
 type DisplayMode = 'map' | 'grid'
 
-export function usePlantsController(initialWorkspaceId: string) {
+export function usePlantsController(
+  initialWorkspaceId: string,
+  initialNodeId?: string | null,
+) {
   const { workspaces, nodes, loading, error, refetch } = useDashboardData()
 
   const [viewMode, setViewMode] = useState<ViewMode>('plants')
@@ -37,6 +40,20 @@ export function usePlantsController(initialWorkspaceId: string) {
     () => plants.find(p => p.id === selectedNode?.planId) ?? null,
     [plants, selectedNode],
   )
+
+  const deepLinkApplied = useRef(false)
+  useEffect(() => {
+    if (deepLinkApplied.current || !initialNodeId || nodes.length === 0) return
+    const node = nodes.find(n => n.id === initialNodeId)
+    if (!node) return
+    deepLinkApplied.current = true
+    setSelectedNodeId(node.id)
+    if (node.planId) {
+      setSelectedPlanId(node.planId)
+      setViewMode('equipment')
+    }
+    setIsPanelOpen(true)
+  }, [initialNodeId, nodes])
 
   const breadcrumbPlant = selectedPlan ?? selectedNodePlan
   const inspectorMode: ViewMode = selectedNode ? 'equipment' : viewMode

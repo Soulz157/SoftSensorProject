@@ -104,6 +104,10 @@ export const AdminUpdateMemberRoleSchema = z.object({
   role: z.enum(['OWNER', 'STAFF', 'VIEWER']),
 });
 
+export const AdminMoveMemberSchema = z.object({
+  targetWorkspaceId: z.string().min(1, 'targetWorkspaceId ต้องไม่ว่างเปล่า'),
+});
+
 export class AdminWorkspaceQueryDto extends createZodDto(
   AdminWorkspaceQuerySchema,
 ) {}
@@ -134,3 +138,4 @@ export class AdminInviteMemberDto extends createZodDto(
 export class AdminUpdateMemberRoleDto extends createZodDto(
   AdminUpdateMemberRoleSchema,
 ) {}
+export class AdminMoveMemberDto extends createZodDto(AdminMoveMemberSchema) {}

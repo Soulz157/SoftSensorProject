@@ -41,3 +41,9 @@ apps/backend/uploads/
 
 generated
 .superpowers
+
+.venv
+__pycache__/
+*.pyc
+*.pyo
+*.pyd

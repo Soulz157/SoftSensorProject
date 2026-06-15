@@ -161,6 +161,16 @@ export const workspaceService = {
       method: 'DELETE',
     }),
 
+  adminMoveMember: (
+    sourceWorkspaceId: string,
+    memberId: string,
+    targetWorkspaceId: string,
+  ): Promise<{ data: WorkspaceMember }> =>
+    fetchClient(
+      `/api/v1/admin/workspace/${sourceWorkspaceId}/members/${memberId}/move`,
+      { method: 'PATCH', body: JSON.stringify({ targetWorkspaceId }) },
+    ),
+
   uploadWorkspaceThumbnail: async (
     id: string,
     file: File,

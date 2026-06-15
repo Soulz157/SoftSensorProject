@@ -1,5 +1,5 @@
 'use client'
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useTheme } from 'next-themes'
 import { Sun, Moon, ZoomIn, ZoomOut, RotateCcw, Building2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -89,26 +89,41 @@ export function PlantsMap({
   const {
     totalAlarms,
     totalWarnings,
-    hasOffline,
+    // hasOffline,
     overallStatus,
     overallColor,
   } = useMemo(() => deriveSystemStatus(nodesByWorkspace), [nodesByWorkspace])
 
   // Hover tooltip data
   const hoveredWs = hoveredId ? workspaces.find(w => w.id === hoveredId) : null
-  const hoveredNodes = hoveredId ? (nodesByWorkspace[hoveredId] ?? []) : []
+  const hoveredNodes = useMemo(
+    () => (hoveredId ? (nodesByWorkspace[hoveredId] ?? []) : []),
+    [hoveredId, nodesByWorkspace],
+  )
   const hoveredCounts = useMemo(
     () => countNodesByStatus(hoveredNodes),
     [hoveredNodes],
   )
 
+  // Track container size in state — refs must not be read during render
+  const [containerSize, setContainerSize] = useState({ w: 0, h: 0 })
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const update = () =>
+      setContainerSize({ w: el.offsetWidth, h: el.offsetHeight })
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [containerRef])
+
   // Tooltip position — clamp to stay inside container
   const TOOLTIP_W = 210
   const TOOLTIP_H = 230
   const tooltipStyle = useMemo(() => {
-    if (!hoverPos || !containerRef.current) return { display: 'none' as const }
-    const cw = containerRef.current.offsetWidth
-    const ch = containerRef.current.offsetHeight
+    if (!hoverPos || !containerSize.w) return { display: 'none' as const }
+    const { w: cw, h: ch } = containerSize
     const left =
       hoverPos.x + 16 + TOOLTIP_W > cw
         ? hoverPos.x - TOOLTIP_W - 8
@@ -118,7 +133,7 @@ export function PlantsMap({
         ? hoverPos.y - TOOLTIP_H - 8
         : hoverPos.y + 16
     return { left, top }
-  }, [hoverPos, containerRef])
+  }, [hoverPos, containerSize])
 
   const zoomBtnCls = cn(
     'flex h-8 w-8 items-center justify-center rounded-lg text-sm transition-colors',
@@ -200,7 +215,7 @@ export function PlantsMap({
             </span>{' '}
             Warnings
           </div>
-          <div
+          {/* <div
             className={cn(
               'text-[13px]',
               isDark ? 'text-white/60' : 'text-muted-foreground',
@@ -215,7 +230,7 @@ export function PlantsMap({
               {hasOffline ? 'Yes' : 'No'}
             </span>{' '}
             Offline Plants
-          </div>
+          </div> */}
         </div>
       </div>
 

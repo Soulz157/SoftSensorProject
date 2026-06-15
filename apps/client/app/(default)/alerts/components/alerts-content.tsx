@@ -243,7 +243,9 @@ export function AlertsContent() {
                         {alert.workspaceName}
                       </TableCell>
                       <TableCell>
-                        <Link href={`/workspaces/${alert.workspaceId}`}>
+                        <Link
+                          href={`/plants/${alert.workspaceId}?nodeId=${alert.nodeId}`}
+                        >
                           <Button
                             variant="ghost"
                             size="icon"

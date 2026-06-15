@@ -150,7 +150,7 @@ function PanelContent({
       </div>
 
       {/* Scrollable content */}
-      <ScrollArea className="flex-1">
+      <ScrollArea className="min-h-0 flex-1">
         <div>
           {/* Status badge */}
           <div className="border-b border-border/50 px-4 py-3">
