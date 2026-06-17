@@ -116,7 +116,7 @@ export const PLAN_META: Record<
     icon: Zap,
     description: 'For individuals exploring soft sensor modeling',
     highlighted: false,
-    cta: 'Current Plan',
+    cta: 'Select Plan',
     ctaVariant: 'outline',
   },
   STANDARD: {

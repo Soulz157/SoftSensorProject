@@ -12,6 +12,7 @@ import {
   Power,
   Settings2,
   Siren,
+  X,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { CanvasNode } from '@/services/canvas'
@@ -70,7 +71,6 @@ interface NodeDetailPanelProps {
   workspaceId: string | null
   onDrillDown?: (planId: string) => void
   onEditClick?: (node: CanvasNode) => void
-  isOpen: boolean
   onClose: () => void
 }
 
@@ -104,63 +104,25 @@ function PrimaryPanelButton({
   )
 }
 
-function CloseButton({ onClick }: { onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="absolute top-3 right-3 flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors lg:hidden"
-      aria-label="Close panel"
-    >
-      <svg viewBox="0 0 14 14" className="h-3.5 w-3.5 fill-current">
-        <path
-          d="M1 1l12 12M13 1L1 13"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          fill="none"
-        />
-      </svg>
-    </button>
-  )
-}
-
-function EmptyInspector({
+function PanelHeader({
   title,
-  description,
-  isOpen,
   onClose,
 }: {
-  title: string
-  description: string
-  isOpen: boolean
+  title: ReactNode
   onClose: () => void
 }) {
   return (
-    <>
-      {isOpen && (
-        <div
-          className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm lg:hidden"
-          onClick={onClose}
-        />
-      )}
-      <aside
-        className={cn(
-          'flex flex-col border-l border-border bg-card/90 backdrop-blur-xl',
-          'fixed inset-y-0 right-0 z-50 w-80 shadow-2xl transition-transform duration-300',
-          'lg:relative lg:inset-auto lg:z-auto lg:w-72 lg:shadow-none lg:shrink-0 lg:translate-x-0',
-          isOpen ? 'translate-x-0' : 'translate-x-full lg:translate-x-0',
-          'items-center justify-center p-6 text-center',
-        )}
+    <div className="flex items-start justify-between gap-3">
+      <div className="min-w-0 flex-1">{title}</div>
+      <button
+        type="button"
+        onClick={onClose}
+        className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        aria-label="Close panel"
       >
-        <CloseButton onClick={onClose} />
-        <Cpu className="mb-3 h-8 w-8 text-muted-foreground/30" />
-        <p className="text-sm font-medium text-foreground">{title}</p>
-        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-          {description}
-        </p>
-      </aside>
-    </>
+        <X aria-hidden="true" className="h-4 w-4" />
+      </button>
+    </div>
   )
 }
 
@@ -172,63 +134,43 @@ export function NodeDetailPanel({
   workspaceId,
   onDrillDown,
   onEditClick,
-  isOpen,
   onClose,
 }: NodeDetailPanelProps) {
   if (viewMode === 'plants') {
-    if (!plan) {
-      return (
-        <EmptyInspector
-          title="Select a plant or equipment"
-          description="Choose a plant zone for summary data or select equipment to open its Canvas."
-          isOpen={isOpen}
-          onClose={onClose}
-        />
-      )
-    }
+    if (!plan) return null
 
     const planStatus = (plan.status ?? 'normal') as NodeStatus
 
     return (
-      <>
-        {isOpen && (
-          <div
-            className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm lg:hidden"
-            onClick={onClose}
+      <div className="flex h-full w-full flex-col border-t border-border bg-card/90 backdrop-blur-xl sm:w-75 sm:shrink-0 sm:border-l sm:border-t-0">
+        <div className="shrink-0 border-b border-border bg-muted/20 px-4 py-4">
+          <PanelHeader
+            onClose={onClose}
+            title={
+              <>
+                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Plant Inspector
+                </div>
+                <div className="truncate text-base font-bold text-foreground">
+                  {plan.name}
+                </div>
+              </>
+            }
           />
-        )}
-        <aside
-          className={cn(
-            'flex flex-col border-l border-border bg-card/90 backdrop-blur-xl',
-            'fixed inset-y-0 right-0 z-50 w-80 shadow-2xl transition-transform duration-300 overflow-y-auto',
-            'lg:relative lg:inset-auto lg:z-auto lg:w-72 lg:shadow-none lg:shrink-0 lg:translate-x-0 lg:overflow-y-visible',
-            isOpen ? 'translate-x-0' : 'translate-x-full lg:translate-x-0',
-          )}
-        >
-          <CloseButton onClick={onClose} />
-          <div className="border-b border-border bg-muted/20 px-4 py-4">
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Plant Inspector
-            </div>
-            <div className="mb-3 text-base font-bold text-foreground">
-              {plan.name}
-            </div>
+          <span
+            className={cn(
+              'mt-3 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold',
+              STATUS_CHIP[planStatus],
+            )}
+          >
             <span
-              className={cn(
-                'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold',
-                STATUS_CHIP[planStatus],
-              )}
-            >
-              <span
-                className={cn(
-                  'h-1.5 w-1.5 rounded-full',
-                  STATUS_DOT[planStatus],
-                )}
-              />
-              {formatStatus(planStatus)}
-            </span>
-          </div>
+              className={cn('h-1.5 w-1.5 rounded-full', STATUS_DOT[planStatus])}
+            />
+            {formatStatus(planStatus)}
+          </span>
+        </div>
 
+        <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="border-b border-border/50 px-4 py-4">
             <div className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
               Equipment Summary
@@ -323,60 +265,38 @@ export function NodeDetailPanel({
               </p>
             </div>
           )}
+        </div>
 
-          <div className="mt-auto space-y-2 px-4 py-4">
-            <PrimaryPanelButton onClick={() => onDrillDown?.(plan.id)}>
-              View Equipment
-            </PrimaryPanelButton>
-            {workspaceId && (
-              <Link
-                href={`/workspaces/${workspaceId}/canvas`}
-                className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-muted/20 px-3 py-2 text-center text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-              >
-                View Pipeline
-                <ExternalLink className="h-3.5 w-3.5" />
-              </Link>
-            )}
-          </div>
-        </aside>
-      </>
+        <div className="shrink-0 space-y-2 border-t border-border bg-card/80 px-4 py-4">
+          <PrimaryPanelButton onClick={() => onDrillDown?.(plan.id)}>
+            View Equipment
+          </PrimaryPanelButton>
+          {workspaceId && (
+            <Link
+              href={`/workspaces/${workspaceId}/canvas`}
+              className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-muted/20 px-3 py-2 text-center text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+            >
+              View Pipeline
+              <ExternalLink className="h-3.5 w-3.5" />
+            </Link>
+          )}
+        </div>
+      </div>
     )
   }
 
-  if (!node) {
-    return (
-      <EmptyInspector
-        title="Select a device"
-        description="Click an equipment node on the map or grid to inspect its status."
-        isOpen={isOpen}
-        onClose={onClose}
-      />
-    )
-  }
+  if (!node) return null
 
   const status = node.data.status as NodeStatus
   const StatusIcon = STATUS_ICON[status]
 
   return (
-    <>
-      {isOpen && (
-        <div
-          className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm lg:hidden"
-          onClick={onClose}
-        />
-      )}
-      <aside
-        className={cn(
-          'flex flex-col border-l border-border bg-card/90 backdrop-blur-xl',
-          'fixed inset-y-0 right-0 z-50 w-80 shadow-2xl transition-transform duration-300 overflow-y-auto',
-          'lg:relative lg:inset-auto lg:z-auto lg:w-72 lg:shadow-none lg:shrink-0 lg:translate-x-0 lg:overflow-y-visible',
-          isOpen ? 'translate-x-0' : 'translate-x-full lg:translate-x-0',
-        )}
-      >
-        <CloseButton onClick={onClose} />
-        <div className="border-b border-border bg-muted/20 px-4 py-4">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
+    <div className="flex h-full w-full flex-col border-t border-border bg-card/90 backdrop-blur-xl sm:w-75 sm:shrink-0 sm:border-l sm:border-t-0">
+      <div className="relative shrink-0 border-b border-border bg-muted/20 px-4 py-4">
+        <PanelHeader
+          onClose={onClose}
+          title={
+            <>
               <div className="mb-1 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                 <Cpu className="h-3.5 w-3.5 text-primary" />
                 Equipment Inspector
@@ -387,47 +307,49 @@ export function NodeDetailPanel({
               <div className="text-xs capitalize text-muted-foreground">
                 {node.data.type} Node
               </div>
-            </div>
-            {onEditClick && (
-              <button
-                type="button"
-                onClick={() => onEditClick(node)}
-                className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                title="Edit Device Settings"
-              >
-                <Settings2 className="h-4 w-4" />
-              </button>
-            )}
-          </div>
+            </>
+          }
+        />
+        {onEditClick && (
+          <button
+            type="button"
+            onClick={() => onEditClick(node)}
+            className="absolute top-3 right-10 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            title="Edit Device Settings"
+          >
+            <Settings2 className="h-4 w-4" />
+          </button>
+        )}
 
-          <div className="mt-4 rounded-lg border border-border bg-background/50 p-3">
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <span className="text-xs text-muted-foreground">
-                Real-time status
-              </span>
-              <span
-                className={cn(
-                  'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold',
-                  STATUS_CHIP[status],
-                )}
-              >
-                <StatusIcon className="h-3.5 w-3.5" />
-                {formatStatus(status)}
-              </span>
-            </div>
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <span
-                className={cn(
-                  'h-2 w-2 rounded-full',
-                  STATUS_DOT[status],
-                  status === 'alarm' && 'animate-pulse',
-                )}
-              />
-              Semantic status from live node data
-            </div>
+        <div className="mt-4 rounded-lg border border-border bg-background/50 p-3">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <span className="text-xs text-muted-foreground">
+              Real-time status
+            </span>
+            <span
+              className={cn(
+                'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold',
+                STATUS_CHIP[status],
+              )}
+            >
+              <StatusIcon className="h-3.5 w-3.5" />
+              {formatStatus(status)}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span
+              className={cn(
+                'h-2 w-2 rounded-full',
+                STATUS_DOT[status],
+                status === 'alarm' && 'animate-pulse',
+              )}
+            />
+            Semantic status from live node data
           </div>
         </div>
+      </div>
 
+      <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="border-b border-border/50 px-4 py-4">
           <div className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
             Metrics
@@ -497,7 +419,7 @@ export function NodeDetailPanel({
           )}
         </div>
 
-        <div className="border-b border-border/50 px-4 py-4">
+        <div className="px-4 py-4">
           <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
             Last Updated
           </div>
@@ -505,26 +427,26 @@ export function NodeDetailPanel({
             {formatDate(node.updatedAt)}
           </div>
         </div>
+      </div>
 
-        <div className="mt-auto space-y-2 px-4 py-4">
-          {workspaceId && (
-            <Link
-              href={`/workspaces/${workspaceId}/canvas?nodeId=${node.id}`}
-              className="flex w-full items-center justify-center gap-2 rounded-md bg-primary px-3 py-2.5 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90"
-            >
-              View Pipeline
-              <ExternalLink className="h-4 w-4" />
-            </Link>
-          )}
-          <button
-            type="button"
-            className="block w-full rounded-md border border-border bg-muted/20 px-3 py-2 text-center text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={status === 'normal' || status === 'offline'}
+      <div className="shrink-0 space-y-2 border-t border-border bg-card/80 px-4 py-4">
+        {workspaceId && (
+          <Link
+            href={`/workspaces/${workspaceId}/canvas?nodeId=${node.id}`}
+            className="flex w-full items-center justify-center gap-2 rounded-md bg-primary px-3 py-2.5 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90"
           >
-            Acknowledge Alarm
-          </button>
-        </div>
-      </aside>
-    </>
+            View Pipeline
+            <ExternalLink className="h-4 w-4" />
+          </Link>
+        )}
+        <button
+          type="button"
+          className="block w-full rounded-md border border-border bg-muted/20 px-3 py-2 text-center text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={status === 'normal' || status === 'offline'}
+        >
+          Acknowledge Alarm
+        </button>
+      </div>
+    </div>
   )
 }

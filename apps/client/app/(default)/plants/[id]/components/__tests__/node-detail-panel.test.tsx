@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { render } from '@testing-library/react'
 import { NodeDetailPanel } from '../node-detail-panel'
 import type { CanvasNode } from '@/services/canvas'
-import type { WorkspacePlan } from '@/types'
+import type { WorkspacePlant } from '@/types'
 
 const mockNode: CanvasNode = {
   id: 'n1',
@@ -17,7 +17,7 @@ const mockNode: CanvasNode = {
   updatedAt: '2026-06-08T00:00:00Z',
 }
 
-const mockPlant: WorkspacePlan = {
+const mockPlant: WorkspacePlant = {
   id: 'plant1',
   workspaceId: 'ws1',
   name: 'Plant Alpha',
@@ -29,28 +29,26 @@ const mockPlant: WorkspacePlan = {
 }
 
 describe('NodeDetailPanel', () => {
-  it('shows empty state when no node selected', () => {
-    const { getByText } = render(
+  it('renders nothing when no node and no plan selected', () => {
+    const { container } = render(
       <NodeDetailPanel
         viewMode="equipment"
         node={null}
         plan={mockPlant}
         workspaceId={null}
-        isOpen={false}
         onClose={() => {}}
       />,
     )
-    expect(getByText(/select a device/i)).not.toBeNull()
+    expect(container.firstChild).toBeNull()
   })
 
   it('shows plant details in plant mode', () => {
     const { getByText } = render(
       <NodeDetailPanel
-        viewMode="plans"
+        viewMode="plants"
         node={null}
         plan={mockPlant}
         workspaceId="ws1"
-        isOpen={false}
         onClose={() => {}}
       />,
     )
@@ -65,7 +63,6 @@ describe('NodeDetailPanel', () => {
         node={mockNode}
         plan={mockPlant}
         workspaceId="ws1"
-        isOpen={false}
         onClose={() => {}}
       />,
     )
@@ -79,7 +76,6 @@ describe('NodeDetailPanel', () => {
         node={mockNode}
         plan={mockPlant}
         workspaceId="ws1"
-        isOpen={false}
         onClose={() => {}}
       />,
     )
@@ -94,7 +90,6 @@ describe('NodeDetailPanel', () => {
         node={mockNode}
         plan={mockPlant}
         workspaceId="ws1"
-        isOpen={false}
         onClose={() => {}}
       />,
     )
@@ -108,7 +103,6 @@ describe('NodeDetailPanel', () => {
         node={mockNode}
         plan={mockPlant}
         workspaceId="ws1"
-        isOpen={false}
         onClose={() => {}}
       />,
     )

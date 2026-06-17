@@ -1,8 +1,77 @@
+import type { ReactNode } from 'react'
 import Link from 'next/link'
 import { ChevronDown, TriangleAlert, ShieldAlert } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+} from '@/components/ui/dropdown-menu'
 import { SidebarLogic } from '@/hooks/layout/use-sidebar'
 import { NavItem } from '../types'
+
+function CollapsedNavDropdown({
+  icon,
+  name,
+  items,
+  isActiveNav,
+  onClose,
+  active,
+}: {
+  icon: ReactNode
+  name: string
+  items: NavItem[]
+  isActiveNav: (href: string) => boolean
+  onClose: () => void
+  active: boolean
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          title={name}
+          className={cn(
+            'flex w-full items-center justify-center rounded-md p-2.5 text-sm font-medium transition-all',
+            active
+              ? 'bg-sidebar-primary text-sidebar-primary-foreground'
+              : 'text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground',
+          )}
+        >
+          {icon}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        side="right"
+        align="start"
+        sideOffset={8}
+        className="min-w-44"
+      >
+        <DropdownMenuLabel>{name}</DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        {items.map(child => (
+          <DropdownMenuItem key={child.id} asChild>
+            <Link
+              href={child.href!}
+              onClick={onClose}
+              className={cn(
+                'flex cursor-pointer items-center gap-2.5',
+                child.href &&
+                  isActiveNav(child.href) &&
+                  'bg-sidebar-accent text-sidebar-accent-foreground',
+              )}
+            >
+              {child.icon}
+              <span className="truncate">{child.name}</span>
+            </Link>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
 
 interface SidebarNavProps {
   items: NavItem[]
@@ -29,6 +98,21 @@ export function SidebarNav({
 
     if (isDropdown) {
       const childActive = isAnyChildActive(item.children!)
+
+      if (isCollapsed) {
+        return (
+          <CollapsedNavDropdown
+            key={item.id}
+            icon={item.icon}
+            name={item.name}
+            items={item.children!}
+            isActiveNav={isActiveNav}
+            onClose={onClose}
+            active={childActive}
+          />
+        )
+      }
+
       const highlighted = childActive || menuOpen
 
       return (
@@ -130,6 +214,24 @@ export function SidebarNav({
   }
 
   if (title) {
+    if (isCollapsed) {
+      return (
+        <>
+          <div className="mx-2 border-t border-sidebar-border" />
+          <div className="px-2 py-3">
+            <CollapsedNavDropdown
+              icon={<ShieldAlert className="h-4 w-4 shrink-0" />}
+              name={title}
+              items={items}
+              isActiveNav={isActiveNav}
+              onClose={onClose}
+              active={pathname.startsWith('/admin')}
+            />
+          </div>
+        </>
+      )
+    }
+
     return (
       <>
         <div

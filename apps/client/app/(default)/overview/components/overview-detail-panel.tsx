@@ -90,9 +90,11 @@ function PanelContent({
 
   const statusBadgeClass = {
     alarm: 'border-destructive/40 bg-destructive/10 text-destructive',
-    warning: 'border-amber-500/40 bg-amber-500/10 text-amber-500',
+    warning:
+      'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400',
     offline: 'border-border bg-muted text-muted-foreground',
-    normal: 'border-green-500/40 bg-green-500/10 text-green-500',
+    normal:
+      'border-green-500/40 bg-green-500/10 text-green-700 dark:text-green-400',
   }[worstStatus]
 
   const statusBadgeText = {
@@ -119,7 +121,7 @@ function PanelContent({
   const hasMoreModels = models.length > MAX_PREVIEW
 
   return (
-    <div className="flex h-full w-full flex-col border-t border-border bg-card/90 backdrop-blur-xl sm:w-75 sm:shrink-0 sm:border-l sm:border-t-0">
+    <div className="flex h-full w-full flex-col border-t border-border bg-card sm:w-75 sm:shrink-0 sm:border-l sm:border-t-0">
       {/* Header */}
       <div className="shrink-0 border-b border-border bg-muted/20 px-4 py-4">
         <div className="flex items-start justify-between gap-3">
@@ -196,14 +198,18 @@ function PanelContent({
                 label="Alarms"
                 value={alarmCount}
                 valueClass={
-                  alarmCount > 0 ? 'text-destructive' : 'text-green-500'
+                  alarmCount > 0
+                    ? 'text-destructive'
+                    : 'text-green-700 dark:text-green-400'
                 }
               />
               <StatCell
                 label="Warnings"
                 value={warningCount}
                 valueClass={
-                  warningCount > 0 ? 'text-amber-500' : 'text-muted-foreground'
+                  warningCount > 0
+                    ? 'text-amber-700 dark:text-amber-400'
+                    : 'text-muted-foreground'
                 }
               />
             </div>
@@ -223,7 +229,7 @@ function PanelContent({
                   return (
                     <Link
                       key={node.id}
-                      href={`/workspaces/${workspace.id}/canvas`}
+                      href={`/plants/${workspace.id}?nodeId=${node.id}`}
                       className="group flex items-center gap-2.5 rounded-md px-2 py-2 transition-colors hover:bg-accent/50"
                     >
                       <span
@@ -260,7 +266,7 @@ function PanelContent({
               </div>
               {hasMoreNodes && (
                 <Link
-                  href={`/workspaces/${workspace.id}/canvas`}
+                  href={`/plants/${workspace.id}`}
                   className="mt-2 flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
                 >
                   View all {nodeCount} equipment
@@ -385,7 +391,7 @@ function PanelContent({
 export function OverviewDetailPanel(props: OverviewDetailPanelProps) {
   if (!props.workspace) {
     return (
-      <div className="flex h-full w-full flex-col items-center justify-center gap-3 border-t border-border bg-card/90 p-6 text-center backdrop-blur-xl sm:w-75 sm:shrink-0 sm:border-l sm:border-t-0">
+      <div className="flex h-full w-full flex-col items-center justify-center gap-3 border-t border-border bg-card p-6 text-center sm:w-75 sm:shrink-0 sm:border-l sm:border-t-0">
         <Building2 className="h-10 w-10 text-muted-foreground/30" />
         <p className="text-sm font-medium text-muted-foreground">
           Select a plant to view details

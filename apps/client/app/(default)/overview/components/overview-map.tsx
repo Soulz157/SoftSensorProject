@@ -94,6 +94,20 @@ export function PlantsMap({
     overallColor,
   } = useMemo(() => deriveSystemStatus(nodesByWorkspace), [nodesByWorkspace])
 
+  // Status hues are vivid for dots but fail WCAG AA as text on the light HUD.
+  // Use darker variants for label text in light mode; vivid in dark.
+  const STATUS_TEXT_LIGHT: Record<NodeStatus, string> = {
+    alarm: '#dc2626',
+    warning: '#b45309',
+    offline: '#52525b',
+    normal: '#15803d',
+  }
+  const overallTextColor = isDark
+    ? overallColor
+    : STATUS_TEXT_LIGHT[overallStatus]
+  const alarmText = isDark ? '#f87171' : '#dc2626'
+  const warningText = isDark ? '#fbbf24' : '#b45309'
+
   // Hover tooltip data
   const hoveredWs = hoveredId ? workspaces.find(w => w.id === hoveredId) : null
   const hoveredNodes = useMemo(
@@ -147,10 +161,10 @@ export function PlantsMap({
       {/* System status HUD */}
       <div
         className={cn(
-          'absolute top-17 left-3 z-10 rounded-xl border px-3 py-2.5 backdrop-blur-sm',
+          'absolute top-17 left-3 z-10 rounded-xl border px-3 py-2.5',
           isDark
-            ? 'bg-black/40 border-white/10 text-white'
-            : 'bg-white/80 border-black/10 text-foreground',
+            ? 'bg-zinc-900 border-white/10 text-white'
+            : 'bg-white border-black/10 text-foreground',
         )}
       >
         <div className="mb-2 px-2 text-[10px] font-medium opacity-60">
@@ -164,7 +178,7 @@ export function PlantsMap({
             />
             <span
               className="text-[11px] font-semibold"
-              style={{ color: overallColor }}
+              style={{ color: overallTextColor }}
             >
               {overallStatus.toUpperCase()}
             </span>
@@ -192,7 +206,7 @@ export function PlantsMap({
             <span
               className="font-semibold"
               style={{
-                color: totalAlarms > 0 ? '#ef4444' : isDark ? '#fff' : '#111',
+                color: totalAlarms > 0 ? alarmText : isDark ? '#fff' : '#111',
               }}
             >
               {totalAlarms}
@@ -208,7 +222,8 @@ export function PlantsMap({
             <span
               className="font-semibold"
               style={{
-                color: totalWarnings > 0 ? '#f59e0b' : isDark ? '#fff' : '#111',
+                color:
+                  totalWarnings > 0 ? warningText : isDark ? '#fff' : '#111',
               }}
             >
               {totalWarnings}
@@ -238,7 +253,7 @@ export function PlantsMap({
       <div
         role="group"
         aria-label="Map theme"
-        className="absolute right-3 top-3 z-10 flex items-center rounded-full bg-black/30 p-0.5 backdrop-blur-sm"
+        className="absolute right-3 top-3 z-10 flex items-center rounded-full bg-black/55 p-0.5"
       >
         <button
           type="button"

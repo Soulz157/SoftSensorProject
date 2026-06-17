@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState, useRef } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Sun, Moon } from 'lucide-react'
 import { MachineNode } from './machine-node'
 import { calculateIsometricLayout } from '@/lib/isomatric'
@@ -14,11 +14,13 @@ import {
 } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { useTheme } from 'next-themes'
+import { countNodesByStatus, deriveStatus } from '@/lib/overview-status'
 
 const VIEWPORT_W = 700
 const VIEWPORT_H = 420
 const CX = VIEWPORT_W / 2
 const CY = VIEWPORT_H / 2 - 20
+const FLOOR_EDGE_LAYERS = 10
 
 const COLOR_HEX: Record<string, string> = {
   blue: '#3b82f6',
@@ -32,6 +34,7 @@ const COLOR_HEX: Record<string, string> = {
 interface IsometricMapProps {
   zones: ZoneItem[]
   nodes: CanvasNode[]
+  workspaceNodes?: CanvasNode[]
   zoneNodeKey: 'planId' | 'workspaceId'
   selectedZoneId: string | null
   selectedNodeId: string | null
@@ -44,6 +47,7 @@ interface IsometricMapProps {
 export function IsometricMap({
   zones,
   nodes,
+  workspaceNodes,
   zoneNodeKey,
   selectedZoneId,
   selectedNodeId,
@@ -52,10 +56,10 @@ export function IsometricMap({
   onZoneDoubleClick,
   viewMode,
 }: IsometricMapProps) {
-  const { resolvedTheme } = useTheme()
+  const { resolvedTheme, setTheme } = useTheme()
+  const isDark = resolvedTheme !== 'light'
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [isDragging, setIsDragging] = useState(false)
-  const [isDark, setIsDark] = useState(resolvedTheme !== 'light')
   const dragStart = useRef({ x: 0, y: 0 })
   const [hoveredZoneId, setHoveredZoneId] = useState<string | null>(null)
 
@@ -85,46 +89,43 @@ export function IsometricMap({
     return calculateIsometricLayout(zones, map, CX, CY)
   }, [zones, nodes, zoneNodeKey])
 
-  const criticalAlerts = nodes.filter(n => n.data.status === 'alarm').length
-  const warnings = nodes.filter(n => n.data.status === 'warning').length
-  const activeZones = zones.length
+  const equipmentNodes = workspaceNodes ?? nodes
+  const totalEquipment = equipmentNodes.length
+  const statusCounts = countNodesByStatus(equipmentNodes)
+  const overallStatus = deriveStatus(equipmentNodes)
+  const criticalAlerts = statusCounts.alarm
+  const warnings = statusCounts.warning
   const overallHealth =
-    criticalAlerts > 0 ? 'ALARM' : warnings > 0 ? 'WARNING' : 'HEALTHY'
+    overallStatus === 'normal' ? 'HEALTHY' : overallStatus.toUpperCase()
   const healthColor =
-    criticalAlerts > 0
+    overallStatus === 'alarm'
       ? isDark
         ? '#ef4444'
         : '#dc2626'
-      : warnings > 0
+      : overallStatus === 'warning'
         ? isDark
           ? '#f59e0b'
           : '#d97706'
-        : isDark
-          ? '#10b981'
-          : '#059669'
+        : overallStatus === 'offline'
+          ? isDark
+            ? '#71717a'
+            : '#52525b'
+          : isDark
+            ? '#10b981'
+            : '#059669'
 
   const palette = isDark
     ? {
         bg: 'radial-gradient(ellipse at 50% 40%, #0e1520 0%, #080a0f 80%)',
-        topFillInactive: 'rgba(20, 28, 45, 0.85)',
-        edgeFillInactive: '#0f172a',
-        strokeInactive: '#1e2230',
         shadowFill: '#000000',
         labelFill: '#ffffff',
         labelStroke: '#0e1520',
-        hoverTopFill: (hex: string) => `${hex}50`,
-        hoverEdgeFill: (hex: string) => `${hex}90`,
       }
     : {
         bg: 'radial-gradient(ellipse at 50% 40%, #f0f4f8 0%, #dce8f0 80%)',
-        topFillInactive: 'rgba(200, 215, 228, 0.70)',
-        edgeFillInactive: '#cbd5e1',
-        strokeInactive: '#475569',
         shadowFill: '#64748b',
         labelFill: '#1e293b',
         labelStroke: '#f0f4f8',
-        hoverTopFill: (hex: string) => `${hex}40`,
-        hoverEdgeFill: (hex: string) => `${hex}80`,
       }
 
   return (
@@ -133,10 +134,10 @@ export function IsometricMap({
         {/* HUD Status Box */}
         <div
           className={cn(
-            'absolute top-3 left-3 z-10 rounded-xl border px-3 py-2.5 backdrop-blur-sm',
+            'absolute top-3 left-3 z-10 rounded-xl border px-3 py-2.5',
             isDark
-              ? 'bg-black/40 border-white/10 text-white'
-              : 'bg-white/80 border-black/10 text-gray-900',
+              ? 'bg-zinc-900 border-white/10 text-white'
+              : 'bg-white border-black/10 text-foreground',
           )}
         >
           <div className="mb-2 text-[9px] font-bold uppercase tracking-widest opacity-60">
@@ -165,9 +166,9 @@ export function IsometricMap({
                 className="font-semibold"
                 style={{ color: isDark ? '#fff' : '#111' }}
               >
-                {activeZones}
+                {totalEquipment}
               </span>{' '}
-              Active Zones
+              Equipment
             </div>
             <div
               className={cn(
@@ -186,16 +187,38 @@ export function IsometricMap({
               </span>{' '}
               Critical Alerts
             </div>
+            <div
+              className={cn(
+                'text-[11px]',
+                isDark ? 'text-white/60' : 'text-gray-600',
+              )}
+            >
+              <span
+                className="font-semibold"
+                style={{
+                  color: warnings > 0 ? '#f59e0b' : isDark ? '#fff' : '#111',
+                }}
+              >
+                {warnings}
+              </span>{' '}
+              Warnings
+            </div>
           </div>
         </div>
 
-        {/* Canva-style theme toggle */}
-        <div className="absolute top-3 right-3 z-10 flex items-center rounded-full bg-black/30 p-0.5 backdrop-blur-sm">
+        {/* Theme toggle */}
+        <div
+          role="group"
+          aria-label="Map theme"
+          className="absolute right-3 top-3 z-10 flex items-center rounded-full bg-black/55 p-0.5"
+        >
           <button
-            onClick={() => setIsDark(false)}
-            aria-label="Light mode"
+            type="button"
+            aria-label="Light map"
+            aria-pressed={!isDark}
+            onClick={() => setTheme('light')}
             className={cn(
-              'flex h-7 w-7 items-center justify-center rounded-full transition-all duration-200',
+              'flex h-10 w-10 items-center justify-center rounded-full transition-colors duration-200',
               !isDark
                 ? 'bg-white/90 text-gray-900 shadow-sm'
                 : 'text-white/60 hover:text-white/90',
@@ -204,10 +227,12 @@ export function IsometricMap({
             <Sun className="h-3.5 w-3.5" />
           </button>
           <button
-            onClick={() => setIsDark(true)}
-            aria-label="Dark mode"
+            type="button"
+            aria-label="Dark map"
+            aria-pressed={isDark}
+            onClick={() => setTheme('dark')}
             className={cn(
-              'flex h-7 w-7 items-center justify-center rounded-full transition-all duration-200',
+              'flex h-10 w-10 items-center justify-center rounded-full transition-colors duration-200',
               isDark
                 ? 'bg-white/20 text-white shadow-sm'
                 : 'text-white/60 hover:text-white/90',
@@ -234,8 +259,6 @@ export function IsometricMap({
                 const accentHex = COLOR_HEX[zone.color ?? 'blue'] ?? '#3b82f6'
                 const isSelected = selectedZoneId === zone.id
                 const isHovered = hoveredZoneId === zone.id
-                const strokeColor =
-                  isSelected || isHovered ? accentHex : palette.strokeInactive
 
                 const alarmCount = mappedNodes.filter(
                   m => m.node.data.status === 'alarm',
@@ -271,70 +294,54 @@ export function IsometricMap({
                             if (!isDragging) onZoneDoubleClick?.(zone.id)
                           }}
                         >
-                          {(() => {
-                            const topFill = isSelected
-                              ? `${accentHex}40`
-                              : isHovered
-                                ? palette.hoverTopFill(accentHex)
-                                : palette.topFillInactive
+                          <g
+                            style={{
+                              transform: `translateY(${isHovered ? -3 : 0}px)`,
+                              transition: 'transform 0.3s ease',
+                            }}
+                          >
+                            <path
+                              d={floorPath}
+                              fill={palette.shadowFill}
+                              style={{
+                                filter: isHovered ? 'blur(15px)' : 'blur(8px)',
+                                transform: `translateY(${FLOOR_EDGE_LAYERS + (isHovered ? 15 : 5)}px)`,
+                                opacity: isHovered ? 0.4 : 0.6,
+                                transition: 'all 0.5s ease-out',
+                              }}
+                            />
 
-                            const edgeFill = isSelected
-                              ? `${accentHex}80`
-                              : isHovered
-                                ? palette.hoverEdgeFill(accentHex)
-                                : palette.edgeFillInactive
-
-                            const floorThickness = 12
-
-                            return (
-                              <>
-                                <g
-                                  style={{
-                                    transform: `translateY(${isHovered ? -3 : 0}px)`,
-                                    transition: 'transform 0.3s ease',
-                                  }}
-                                >
-                                  <path
-                                    d={floorPath}
-                                    fill={palette.shadowFill}
-                                    style={{
-                                      filter: isHovered
-                                        ? 'blur(15px)'
-                                        : 'blur(8px)',
-                                      transform: `translateY(${floorThickness + (isHovered ? 15 : 5)}px)`,
-                                      opacity: isHovered ? 0.4 : 0.6,
-                                      transition: 'all 0.5s ease-out',
-                                    }}
-                                  />
-
-                                  {Array.from({ length: floorThickness }).map(
-                                    (_, i) => (
-                                      <path
-                                        key={`edge-${i}`}
-                                        d={floorPath}
-                                        fill={edgeFill}
-                                        stroke={edgeFill}
-                                        strokeWidth="0.5"
-                                        transform={`translate(0, ${i + 1})`}
-                                        className="transition-colors duration-300"
-                                      />
-                                    ),
+                            {Array.from({ length: FLOOR_EDGE_LAYERS }).map(
+                              (_, i) => (
+                                <path
+                                  key={`edge-${i}`}
+                                  d={floorPath}
+                                  strokeWidth={0.5}
+                                  transform={`translate(0,${i + 1})`}
+                                  className={cn(
+                                    'transition-colors duration-200',
+                                    'fill-zinc-200 stroke-zinc-300',
+                                    'dark:fill-zinc-900 dark:stroke-zinc-700',
+                                    (isSelected || isHovered) &&
+                                      'fill-zinc-300 dark:fill-zinc-800',
                                   )}
+                                />
+                              ),
+                            )}
 
-                                  <path
-                                    d={floorPath}
-                                    fill={topFill}
-                                    stroke={strokeColor}
-                                    strokeWidth={
-                                      isSelected || isHovered ? 2.5 : 1.5
-                                    }
-                                    strokeDasharray={isSelected ? '0' : '8,5'}
-                                    className="transition-colors duration-300"
-                                  />
-                                </g>
-                              </>
-                            )
-                          })()}
+                            <path
+                              d={floorPath}
+                              strokeWidth={isSelected || isHovered ? 2 : 1.2}
+                              strokeDasharray={isSelected ? undefined : '8,5'}
+                              className={cn(
+                                'cursor-pointer transition-colors duration-200',
+                                'fill-zinc-100 stroke-zinc-300 hover:fill-zinc-200',
+                                'dark:fill-zinc-800 dark:stroke-zinc-600 dark:hover:fill-zinc-700',
+                                isSelected &&
+                                  'fill-zinc-200 stroke-zinc-500 dark:fill-zinc-700 dark:stroke-zinc-400',
+                              )}
+                            />
+                          </g>
                         </g>
                       </TooltipTrigger>
                       <TooltipContent

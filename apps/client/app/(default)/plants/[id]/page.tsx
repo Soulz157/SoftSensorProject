@@ -1,6 +1,6 @@
 'use client'
 
-import React, { use, memo } from 'react'
+import React, { use, memo, useEffect, useRef } from 'react'
 import {
   ChevronLeft,
   ChevronRight,
@@ -167,6 +167,21 @@ export default function PlantsPage({ params, searchParams }: PlantsPageProps) {
     nodeId ?? null,
   )
 
+  const panelRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (state.isPanelOpen) panelRef.current?.focus()
+  }, [state.isPanelOpen])
+
+  useEffect(() => {
+    if (!state.isPanelOpen) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') handlers.handleClosePanel()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [state.isPanelOpen, handlers])
+
   if (data.loading) return null
 
   if (data.error) {
@@ -304,6 +319,7 @@ export default function PlantsPage({ params, searchParams }: PlantsPageProps) {
                     : []
               }
               nodes={data.filteredNodes}
+              workspaceNodes={data.workspaceNodes}
               zoneNodeKey="planId"
               selectedZoneId={state.selectedPlanId}
               selectedNodeId={state.selectedNodeId}
@@ -322,18 +338,39 @@ export default function PlantsPage({ params, searchParams }: PlantsPageProps) {
           )}
         </main>
 
-        <NodeDetailPanel
-          viewMode={state.inspectorMode}
-          node={data.selectedNode}
-          plan={data.breadcrumbPlant}
-          planNodes={data.filteredNodes.filter(
-            n => n.planId === state.selectedPlanId,
-          )}
-          workspaceId={state.activeWorkspaceId}
-          onDrillDown={handlers.handleDrillDown}
-          isOpen={state.isPanelOpen}
-          onClose={handlers.handleClosePanel}
-        />
+        {state.isPanelOpen && (data.selectedNode || data.breadcrumbPlant) && (
+          <>
+            <div
+              className="fixed inset-0 z-10 bg-black/30 sm:hidden"
+              onClick={handlers.handleClosePanel}
+              aria-hidden="true"
+            />
+            <div
+              ref={panelRef}
+              role="dialog"
+              aria-modal="true"
+              aria-label={
+                data.selectedNode
+                  ? `${data.selectedNode.data.name} — equipment details`
+                  : `${data.breadcrumbPlant?.name} — plant details`
+              }
+              tabIndex={-1}
+              className="fixed inset-x-0 bottom-0 z-20 h-[65svh] overflow-hidden rounded-t-2xl outline-none sm:relative sm:inset-auto sm:z-auto sm:h-full sm:rounded-none"
+            >
+              <NodeDetailPanel
+                viewMode={state.inspectorMode}
+                node={data.selectedNode}
+                plan={data.breadcrumbPlant}
+                planNodes={data.filteredNodes.filter(
+                  n => n.planId === state.selectedPlanId,
+                )}
+                workspaceId={state.activeWorkspaceId}
+                onDrillDown={handlers.handleDrillDown}
+                onClose={handlers.handleClosePanel}
+              />
+            </div>
+          </>
+        )}
       </div>
 
       <AddPlanDialog

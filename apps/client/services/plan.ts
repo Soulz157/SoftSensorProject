@@ -17,6 +17,12 @@ export const planService = {
       body: JSON.stringify({ planId }),
     }),
 
+  subscribeToPlan: (planName: string): Promise<unknown> =>
+    fetchClient('/api/v1/authorized/plan/subscribe', {
+      method: 'POST',
+      body: JSON.stringify({ planName }),
+    }),
+
   downgrade: (): Promise<unknown> =>
     fetchClient('/api/v1/authorized/plan/downgrade', { method: 'POST' }),
 }

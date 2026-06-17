@@ -47,6 +47,11 @@ pnpm --filter backend dev
 pnpm --filter backend lint
 pnpm --filter client lint
 
+# Python / PI connector (apps/python) — uses .venv
+cd apps/python && python -m venv .venv && .venv/bin/pip install -r requirements.txt   # first-time setup
+pnpm --filter python dev     # uvicorn --reload, port 8000
+pnpm --filter python start   # production uvicorn
+
 # Single backend test
 pnpm --filter backend test -- --testPathPatterns=<filename>   # Jest 30: plural
 
@@ -60,11 +65,12 @@ pnpm test                          # runs via Turborepo + dotenvx
 
 ## Architecture
 
-Turborepo + pnpm monorepo. Two apps, three packages:
+Turborepo + pnpm monorepo. Three apps, three packages:
 
 ```text
-apps/backend            # NestJS 11 + Fastify, port 8000 (SERVER_PORT env)
+apps/backend            # NestJS 11 + Fastify, port 4000 (SERVER_PORT env)
 apps/client             # Next.js 16 App Router, port 3000
+apps/python             # FastAPI PI connector, port 8000 (sensor ingestion)
 packages/prisma         # @softsensor/prisma — shared PrismaService/PrismaModule
 packages/eslint-config  # shared ESLint config
 packages/typescript-config # shared tsconfig bases
@@ -110,6 +116,7 @@ Strict layered architecture — Controllers → Services → Prisma. No business
 - After any schema change: `pnpm db:migrate:dev` (auto-generates client). Run `pnpm db:generate` only to regenerate without a new migration.
 - Use `prisma.$transaction([...])` for multi-step writes.
 - **OAuth identity:** `Account` model (`provider`, `providerAccountId` is `@@unique`) links OAuth identities to `User`. `User.password` is nullable for OAuth-only users. Resolution order in auth flows: `prisma.account.findUnique({ where: { provider_providerAccountId: ... } })` → fall back to `User.findUnique({ email })` → create both if neither exists.
+- **`SensorReading` model (planned, Phase 6):** time-series rows ingested by `apps/python` from PI. Written by FastAPI (DML only), read by NestJS. Indexed on `(nodeId, timestamp)`. Defined/migrated via Prisma only — never DDL from Python.
 
 ### Admin (`apps/client/app/admin/`)
 
@@ -166,6 +173,26 @@ Strict layered architecture — Controllers → Services → Prisma. No business
 - **`lib/overview-status.ts`:** Pure status derivation for the overview map. Exports: `NodeStatus` (re-export), `STATUS_META`, `deriveStatus(nodes)`, `countNodesByStatus(nodes)`, `deriveSystemStatus(nodesByWorkspace)`. Extend here for new overview status logic — do not duplicate.
 - **`hooks/canvas/use-map-viewport.ts`:** SVG pan/zoom/drag mechanics hook. Signature: `useMapViewport(vbCX: number, vbCY: number)`. Returns `{ pan, zoom, isDragging, hoveredId, setHoveredId, hoverPos, containerRef, svgRef, groupTransform, handleTowerLeave, zoomIn, zoomOut, resetView, svgHandlers }`. Used exclusively by `overview-map.tsx` — do not duplicate pan/zoom state in new SVG map components, use this hook instead.
 - **`hooks/model/use-model-hierarchy.ts`:** Fan-out hook fetching plants + nodes for every workspace in parallel. Returns `{ plantsByWorkspaceId, nodesByWorkspaceId, loading, isFetching, error, refetch }`. Used by `models/views/page.tsx` to drive the Workspace → Plant → Equipment accordion.
+- **`lib/mock-readings.ts` + `lib/preprocessing.ts`:** Approved mock-data exception (Phase 6 placeholder, same pattern as `types/models.ts`). `mock-readings.ts` generates deterministic `SensorReading[]` (shape mirrors the planned Prisma model) keyed by `(piTag, timestamp)` — no flicker on re-render/range switch. `preprocessing.ts` is pure (no React/IO): builds wide `Dataset` (rows × tag columns), runs Raw → Preprocessing → Model-Ready stages + OLS regression, and exports `FillStrategy` (`drop | forward | backward | mean | median | constant`) + `FillStrategyConfig` for per-tag fill rules (`drop` is row-level, the rest are cell-level; untagged tags keep the legacy drop-Bad/interpolate-Questionable fallback). Consumed by `hooks/use-sensor-readings.ts` (chart/KPI data) and the `data-visualize/` wizard steps (Raw/Processing/Export). Swap path: replace `generateReadings` calls in `use-sensor-readings.ts` with a `services/readings.ts` `fetchClient` call returning the same `SensorReading[]` — one-file change. Do not extend this mock pattern elsewhere; it exists only because Phase 6 ingestion isn't live yet.
+- **`lib/mock-pi-servers.ts`:** Second approved mock-data exception, same Phase 6 placeholder pattern as `mock-readings.ts`. Exports `PiServer { id, name, host, status: 'online' | 'offline' }`, `MOCK_PI_SERVERS` (single entry), `getDefaultPiServer()`. Backs wizard Step 2 only — a real PI server list/health-check API is out of scope until ingestion (`apps/python`) is live.
+- **`store/data-visualize.ts`:** Jotai atoms driving the `data-visualize/` wizard — `workspaceIdAtom`, `plantIdAtom`, `piServerIdAtom`, `selectedTagsAtom`, `timeRangeAtom`, `fetchStateAtom` (`{ status: 'idle'|'fetching'|'done'|'error', progress, error? }`), `rawDatasetAtom`, `fillStrategiesAtom` (`Record<tag, FillStrategyConfig>`), `currentStepAtom`, `highestUnlockedAtom`, `selectedModelIdAtom`. Also exports `TOTAL_WIZARD_STEPS = 7`. No derived atom stores the preprocessed/model-ready dataset — those are recomputed via `preprocess`/`toModelReady` from `lib/preprocessing.ts` inside the step components that need them.
+- **`hooks/use-wizard-navigation.ts`:** Owns wizard step gating + cascade invalidation. `canAdvance(step)` gates 1→7; `goTo`/`next`/`back` clamp to `[1, TOTAL_WIZARD_STEPS]` and `highestUnlocked`. Wrapped setters (`setWorkspaceId`, `setPlantId`, `setSelectedTags`, `setTimeRange`) cascade-reset downstream atoms on change — `setSelectedTags` prunes (not clears) `fillStrategiesAtom` to keys still selected; `setTimeRange` leaves `fillStrategiesAtom` untouched (tag set is unchanged, only the dataset/fetch status reset) so a tag's fill rule survives a range change. Use this hook's setters for any new wizard-state write; do not write `data-visualize.ts` atoms directly from step components.
+- **`hooks/use-dataset-fetch.ts`:** Simulates the Step 4 "fetching" stage — fake progress over a fixed step count/interval, then builds the dataset from `lib/mock-readings.ts` and writes `rawDatasetAtom` + `fetchStateAtom`. Replace the internal `setInterval` + mock build with a real fetch when ingestion ships; the `{ status, progress, start, retry }` return shape should stay the same so step components don't change.
+- **`(default)/data-visualize/`:** 7-step linear wizard (Workspace&Plant → PI Server → Tags&TimeRange → Fetching → Raw Data → Processing → Export) — `wizard-shell.tsx` switches on `currentStepAtom` to render `step-1..7-*.tsx`, with `wizard-step-indicator.tsx` + `sticky-action-bar.tsx` for nav. Strictly linear: steps 5-7 are not freely tab-switchable, only reachable via `highestUnlockedAtom`. Driven by `store/data-visualize.ts` + `use-wizard-navigation`/`use-dataset-fetch` (mock-backed per above). Steps 5 and 7 reuse `step-view.tsx` for dataset display; step 6 owns the per-tag `FillStrategy` controls with a ~300ms debounced live preview.
+- **`app/payment/`:** Standalone route (outside `(default)/`) for simulated checkout — `billing-form.tsx` + `checkout-summary.tsx`. `hooks/user/use-checkout.ts` calls real `planService.subscribeToPlan()` (no real charge/payment provider wired yet); on success redirects to `/settings?tab=plans`.
+
+### Python / PI Connector (`apps/python`)
+
+FastAPI microservice (port 8000) — ingests sensor data from a PI System (AVEVA/OSIsoft historian) into Postgres. Health-check stub today; ingestion is planned (see `docs/PLAN.md` Phase 6).
+
+- **App factory:** `main.py` → `create_app()` (CORS from `config/env.py` `settings`). Routers registered via `app.include_router(...)`.
+- **Config:** `config/env.py` — Pydantic `BaseSettings`, loads `.env`. All PI creds are `PI_*` env vars, server-side only (never `NEXT_PUBLIC_`).
+- **PI access:** PI Web API (REST/HTTPS) via async `httpx`. Client wrapper in `clients/pi_web_api.py`. Resolve `piTag → WebID` once and cache; batch-read with `/streamsets/{...}/value`.
+- **Ingestion:** APScheduler background job polls mapped PI tags every `PI_POLL_INTERVAL_SECONDS` and writes `SensorReading` rows. Started in the app lifespan, never on import.
+- **DB access:** async SQLAlchemy / `asyncpg` against the shared `DATABASE_URL`. DML only — never DDL. Schema is owned by Prisma; change it with `pnpm db:migrate:dev`, then mirror reads/writes in Python.
+- **Node ↔ PI mapping:** a node maps to a PI point via optional `piTag` in the `NodeData` JSON (`services/canvas.ts` shape). Unmapped nodes are skipped.
+- **Boundary:** FastAPI only ingests + exposes internal health/trigger endpoints. The Next.js client never calls FastAPI directly — it reads sensor history through NestJS authorized endpoints.
+- **Structure:** `clients/` (PI Web API), `services/` (ingest logic), `routers/` (health, internal ingest trigger), `schemas/` (Pydantic models), `db/` (engine + session). Mirror NestJS layering: router → service → db.
 
 ### Agents (`.claude/agents/`)
 

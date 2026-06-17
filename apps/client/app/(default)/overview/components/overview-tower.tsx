@@ -2,15 +2,7 @@
 
 import { useState } from 'react'
 import { CheckCircle2, AlertTriangle, AlertCircle, WifiOff } from 'lucide-react'
-
-type NodeStatus = 'normal' | 'warning' | 'alarm' | 'offline'
-
-const STATUS_COLORS: Record<NodeStatus, string> = {
-  normal: '#22c55e',
-  warning: '#f59e0b',
-  alarm: '#ef4444',
-  offline: '#71717a',
-}
+import { STATUS_COLORS, type NodeStatus } from '@/store/status-colors'
 
 const COLOR_HEX: Record<string, string> = {
   blue: '#3b82f6',
@@ -118,7 +110,7 @@ export function PlantTower({
         ? '#fcd34d'
         : status === 'offline'
           ? '#71717a'
-          : '#10b981'
+          : '#86efac'
   const windowOpacity = status === 'offline' ? 0.3 : 0.75
 
   const antennaBase = cy - towerH - 12
@@ -425,7 +417,7 @@ export function PlantTower({
               y={cy + tw * 0.5 + 38}
               fontSize={5.5}
               fontFamily="Geist Sans, ui-sans-serif, sans-serif"
-              fontWeight={700}
+              fontWeight={600}
               fill={isDark ? '#94a3b8' : '#475569'}
             >
               +{extraDots}

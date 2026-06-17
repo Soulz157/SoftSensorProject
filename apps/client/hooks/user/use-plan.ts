@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import { planService } from '@/services/plan'
 import type { PlanInfo, SubscriptionInfo } from '@/types'
@@ -10,6 +11,7 @@ export function usePlans() {
   )
   const [loading, setLoading] = useState(true)
   const [isDowngrading, setIsDowngrading] = useState(false)
+  const router = useRouter()
 
   const plans = STATIC_PLANS
 
@@ -47,24 +49,18 @@ export function usePlans() {
     }
   }
 
-  const handleSelectPlan = async (plan: PlanInfo) => {
+  const handleSelectPlan = (plan: PlanInfo) => {
     if (plan.name === 'ENTERPRISE') {
-      toast.info('Contacting sales team...')
-      // e.g. window.location.href = 'mailto:sales@example.com'
-      setSubscription(prev => ({
-        ...(prev as SubscriptionInfo),
-        status: 'ACTIVE',
-        plan: {
-          ...plan,
-          description: plan.name,
-        },
-      }))
+      toast.info('Contacting sales team…')
       return
     }
-
-    toast.info(`Selected ${plan.name} plan. Ready to map in backend.`)
-    // TODO: ส่ง Request ไปที่ Backend เพื่อบันทึก Plan
-    // await planService.subscribeToPlan(plan.id)
+    if (plan.name === 'FREE') {
+      // FREE has its own flow (cancel paid plan), not a $0 checkout.
+      void handleDowngrade()
+      return
+    }
+    // Paid plans go through the checkout page, which persists on submit.
+    router.push(`/payment?plan=${encodeURIComponent(plan.name)}`)
   }
 
   const currentPlanName = subscription?.plan?.name ?? null

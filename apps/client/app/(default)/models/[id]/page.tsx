@@ -23,6 +23,7 @@ import {
   CheckCircle2,
   Cpu,
   Database,
+  Gauge,
   Play,
   RefreshCw,
   Settings,
@@ -38,6 +39,7 @@ import { workspacesAtom } from '@/store/workspace'
 import { getModels, updateModel } from '@/services/model'
 import { effectiveProdStatus } from '@/lib/model-status'
 import type { AIModel } from '@/types'
+import { ModelEvaluation } from '../evaluation/components/model-evaluation'
 
 const DEPLOY_CONFIG = {
   running: {
@@ -473,6 +475,14 @@ export default function ModelDetailPage({
                   </span>
                 )}
               </TabsTrigger>
+
+              <TabsTrigger
+                value="evaluation"
+                className="flex items-center gap-2 px-4"
+              >
+                <Gauge className="h-4 w-4 shrink-0" />
+                <span>Evaluation</span>
+              </TabsTrigger>
             </TabsList>
           </div>
 
@@ -641,6 +651,11 @@ export default function ModelDetailPage({
                 </TableBody>
               </Table>
             </Card>
+          </TabsContent>
+
+          {/* ── Evaluation ── */}
+          <TabsContent value="evaluation" className="mt-4">
+            <ModelEvaluation model={model} />
           </TabsContent>
         </Tabs>
       </div>

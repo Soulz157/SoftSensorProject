@@ -70,6 +70,11 @@ export function usePlantsController(
     return result
   }, [nodes, statusFilter, viewMode, selectedPlanId, activeWorkspaceId])
 
+  const workspaceNodes = useMemo(() => {
+    if (!activeWorkspaceId) return nodes
+    return nodes.filter(n => n.workspaceId === activeWorkspaceId)
+  }, [nodes, activeWorkspaceId])
+
   const visibleGridNodes = useMemo(() => {
     if (viewMode === 'equipment' && selectedPlanId) return filteredNodes
     if (activeWorkspaceId)
@@ -176,6 +181,7 @@ export function usePlantsController(
       error,
       plants,
       filteredNodes,
+      workspaceNodes,
       visibleGridNodes,
       selectedPlan,
       selectedNode,

@@ -61,6 +61,7 @@ import { workspaceService } from '@/services/workspace'
 import { workspaceColors, workspaceIcons } from '@/store/workspace'
 import { useAdminWorkspaceSettings } from '@/hooks/admin/use-admin-workspace-settings'
 import type { AdminWorkspace, WorkspaceMember, WorkspaceRole } from '@/types'
+import { AdminPlanCard } from './components/admin-plan-card'
 
 function roleBadgeVariant(
   role: WorkspaceRole,
@@ -205,6 +206,7 @@ export default function WorkspaceSettingsPage() {
 
   const moveOptions = otherWorkspaces.filter(w => w.id !== workspaceId)
   const ownerCount = members.filter(m => m.role === 'OWNER').length
+  const owner = members.find(m => m.role === 'OWNER')
 
   const filteredMembers = members.filter(m => {
     const q = searchQuery.toLowerCase()
@@ -267,6 +269,7 @@ export default function WorkspaceSettingsPage() {
         <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
           {/* Left: General + Stats */}
           <div className="space-y-6 xl:col-span-1">
+            <AdminPlanCard ownerUserId={owner?.userId} />
             <Card>
               <CardHeader>
                 <CardTitle className="text-lg">General Settings</CardTitle>

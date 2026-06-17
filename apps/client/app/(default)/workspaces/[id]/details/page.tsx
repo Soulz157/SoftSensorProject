@@ -192,7 +192,6 @@ export default function WorkspaceDetailPage({
   const { models, loading: modelsLoading } = useWorkspaceModels(id)
   const { logs, isFetching: logsLoading } = useWorkspaceLogs(id)
 
-  // Derive alert logs from workspace log feed
   const alertLogs = useMemo(
     () =>
       (logs ?? []).filter(l => ALERT_ACTIONS.includes(l.action)).slice(0, 8),

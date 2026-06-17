@@ -34,6 +34,7 @@ import { workspaceIcons, workspaceColors } from '@/store/workspace'
 import { workspaceService } from '@/services/workspace'
 import { WorkspaceMembers } from './workspace-members'
 import type { Workspace } from '@/types'
+import Image from 'next/image'
 
 const inputClass =
   'h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring'
@@ -264,13 +265,16 @@ export function WorkspaceSettingsSheet({
             >
               {(thumbnailPreview ?? workspace?.thumbnailUrl) ? (
                 <>
-                  <img
+                  <Image
                     src={
                       thumbnailPreview ??
                       `${process.env.NEXT_PUBLIC_API_URL}${workspace?.thumbnailUrl}`
                     }
                     alt="Workspace thumbnail"
                     className="h-36 w-full object-cover"
+                    width={256}
+                    height={144}
+                    unoptimized={true}
                   />
                   <div className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors group-hover:bg-black/30">
                     <Badge

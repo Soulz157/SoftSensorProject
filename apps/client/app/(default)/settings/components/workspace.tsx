@@ -1,18 +1,6 @@
 'use client'
-
 import { useEffect, useRef, useState } from 'react'
-import {
-  Building2,
-  Box,
-  Cpu,
-  Gauge,
-  Thermometer,
-  Activity,
-  Globe,
-  Shield,
-  ImagePlus,
-  Loader2,
-} from 'lucide-react'
+import { Building2, ImagePlus, Loader2 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
@@ -38,6 +26,7 @@ import { useDeleteWorkspace } from '@/hooks/workspace/use-delete-workspace'
 import type { Workspace } from '@/types'
 import { WorkspaceMembers } from '@/app/(default)/workspaces/[id]/components/workspace-members'
 import { workspaceIcons, workspaceColors } from '@/store/workspace'
+import Image from 'next/image'
 
 const inputClass =
   'h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring'
@@ -58,13 +47,19 @@ export function WorkspaceTab() {
   const selectedWorkspaceId = workspaces.some(w => w.id === preferredId)
     ? preferredId
     : (workspaces[0]?.id ?? '')
-
   const selectedWorkspace = workspaces.find(w => w.id === selectedWorkspaceId)
   const draft = drafts[selectedWorkspaceId] ?? {}
-
   const effectiveName = draft.name ?? selectedWorkspace?.name ?? ''
   const effectiveIcon = draft.icon ?? selectedWorkspace?.icon
   const effectiveColor = draft.color ?? selectedWorkspace?.color
+
+  const handleSelectWorkspace = (id: string) => {
+    if (id === selectedWorkspaceId) return
+    setPreferredId(id)
+    setThumbnailPreview(null)
+    setPendingThumbnail(null)
+    setDragOver(false)
+  }
 
   const setField = (field: keyof Workspace, value: string) => {
     setDrafts(prev => ({
@@ -128,7 +123,6 @@ export function WorkspaceTab() {
     setPendingThumbnail(file)
     setThumbnailPreview(URL.createObjectURL(file))
   }
-
   const handleThumbnailUpload = async () => {
     if (!pendingThumbnail || !selectedWorkspaceId) return
     setIsUploadingThumbnail(true)
@@ -146,28 +140,19 @@ export function WorkspaceTab() {
     }
   }
 
-  const selectedColor =
-    workspaceColors.find(c => c.id === effectiveColor)?.bg ?? 'bg-primary'
-  const SelectedIcon =
-    workspaceIcons.find(i => i.id === effectiveIcon)?.icon ?? Building2
-
   useEffect(() => {
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        refetch?.()
-      }
+      if (document.visibilityState === 'visible') refetch?.()
     }
-
     document.addEventListener('visibilitychange', handleVisibilityChange)
     return () =>
       document.removeEventListener('visibilitychange', handleVisibilityChange)
   }, [refetch])
 
-  useEffect(() => {
-    setThumbnailPreview(null)
-    setPendingThumbnail(null)
-    setDragOver(false)
-  }, [selectedWorkspaceId])
+  const selectedColor =
+    workspaceColors.find(c => c.id === effectiveColor)?.bg ?? 'bg-primary'
+  const SelectedIcon =
+    workspaceIcons.find(i => i.id === effectiveIcon)?.icon ?? Building2
 
   return (
     <>
@@ -182,7 +167,7 @@ export function WorkspaceTab() {
         {workspaces.map(w => (
           <button
             key={w.id}
-            onClick={() => setPreferredId(w.id)}
+            onClick={() => handleSelectWorkspace(w.id)}
             className={cn(
               'rounded-lg border-2 p-3 text-left transition-all',
               selectedWorkspaceId === w.id
@@ -307,13 +292,16 @@ export function WorkspaceTab() {
               >
                 {(thumbnailPreview ?? selectedWorkspace?.thumbnailUrl) ? (
                   <>
-                    <img
+                    <Image
                       src={
                         thumbnailPreview ??
                         `${process.env.NEXT_PUBLIC_API_URL}${selectedWorkspace?.thumbnailUrl}`
                       }
                       alt="Workspace thumbnail"
+                      width={256}
+                      height={144}
                       className="h-36 w-full object-cover"
+                      unoptimized={true}
                     />
                     <div className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors group-hover:bg-black/30">
                       <Badge
