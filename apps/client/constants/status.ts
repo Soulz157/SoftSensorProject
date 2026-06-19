@@ -38,4 +38,14 @@ export const PROD_BADGE: Record<string, string> = {
   warning: 'text-amber-700 dark:text-amber-400',
   alert: 'text-destructive',
   offline: 'text-muted-foreground',
+  frozen: 'text-purple-600 dark:text-purple-400',
+}
+
+// Production status dot colors (parallels DEPLOY_DOT for monitoring state).
+export const PROD_DOT: Record<string, string> = {
+  normal: 'bg-green-500',
+  warning: 'bg-amber-500',
+  alert: 'bg-destructive',
+  offline: 'bg-zinc-400',
+  frozen: 'bg-purple-500',
 }

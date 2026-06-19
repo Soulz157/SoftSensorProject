@@ -1,6 +1,5 @@
 'use client'
 
-import Link from 'next/link'
 import {
   ArrowRight,
   Building2,
@@ -10,20 +9,13 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 import { workspaceIcons } from '@/store/workspace'
 import { useModels } from '@/hooks/workspace/use-models'
+import { useWorkspacePlants } from '@/hooks/workspace/use-workspace-plants'
+import { OverviewAssetTree } from './overview-asset-tree'
 import type { Workspace } from '@/types'
 import type { CanvasNode } from '@/services/canvas'
-import {
-  DEPLOY_DOT,
-  DEPLOY_PRIORITY,
-  NODE_BADGE,
-  NODE_DOT,
-  NODE_STATUS_PRIORITY,
-  PROD_BADGE,
-} from '@/constants/status'
 
 interface OverviewDetailPanelProps {
   workspace: Workspace | null
@@ -55,8 +47,6 @@ function StatCell({
   )
 }
 
-const MAX_PREVIEW = 5
-
 function PanelContent({
   workspace,
   nodes,
@@ -69,7 +59,9 @@ function PanelContent({
     workspace.id,
   )
   const models = modelsRaw ?? []
-  const modelsLoading = modelsFetching && modelsRaw === null
+  const { plants } = useWorkspacePlants(workspace.id)
+  const modelsLoading =
+    (modelsFetching && modelsRaw === null) || plants === null
 
   const nodeCount = nodes.length
   const alarmCount = nodes.filter(n => n.data.status === 'alarm').length
@@ -103,22 +95,6 @@ function PanelContent({
     offline: 'Offline',
     normal: 'All Systems Normal',
   }[worstStatus]
-
-  const sortedNodes = [...nodes].sort(
-    (a, b) =>
-      (NODE_STATUS_PRIORITY[a.data.status] ?? 3) -
-      (NODE_STATUS_PRIORITY[b.data.status] ?? 3),
-  )
-  const previewNodes = sortedNodes.slice(0, MAX_PREVIEW)
-  const hasMoreNodes = nodes.length > MAX_PREVIEW
-
-  const sortedModels = [...models].sort(
-    (a, b) =>
-      (DEPLOY_PRIORITY[a.data?.deployStatus ?? 'stopped'] ?? 4) -
-      (DEPLOY_PRIORITY[b.data?.deployStatus ?? 'stopped'] ?? 4),
-  )
-  const previewModels = sortedModels.slice(0, MAX_PREVIEW)
-  const hasMoreModels = models.length > MAX_PREVIEW
 
   return (
     <div className="flex h-full w-full flex-col border-t border-border bg-card sm:w-75 sm:shrink-0 sm:border-l sm:border-t-0">
@@ -215,140 +191,13 @@ function PanelContent({
             </div>
           </div>
 
-          {/* Equipment Overview */}
-          {nodeCount > 0 && (
-            <div className="border-b border-border/50 px-4 py-4">
-              <div className="mb-2 flex items-center justify-between">
-                <span className="text-xs font-medium text-muted-foreground">
-                  Equipment ({nodeCount})
-                </span>
-              </div>
-              <div className="space-y-0.5">
-                {previewNodes.map(node => {
-                  const st = node.data.status ?? 'normal'
-                  return (
-                    <Link
-                      key={node.id}
-                      href={`/plants/${workspace.id}?nodeId=${node.id}`}
-                      className="group flex items-center gap-2.5 rounded-md px-2 py-2 transition-colors hover:bg-accent/50"
-                    >
-                      <span
-                        className={cn(
-                          'h-2 w-2 shrink-0 rounded-full',
-                          NODE_DOT[st] ?? 'bg-zinc-400',
-                          st === 'alarm' &&
-                            'ring-4 ring-destructive/20 motion-safe:animate-pulse',
-                        )}
-                      />
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-xs font-medium text-foreground">
-                          {node.data.name}
-                        </p>
-                        <p className="text-[10px] capitalize text-muted-foreground">
-                          {node.data.type}
-                        </p>
-                      </div>
-                      <span
-                        className={cn(
-                          'shrink-0 text-[10px] font-semibold capitalize',
-                          NODE_BADGE[st] ?? 'text-muted-foreground',
-                        )}
-                      >
-                        {st}
-                      </span>
-                      <ArrowRight
-                        aria-hidden="true"
-                        className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
-                      />
-                    </Link>
-                  )
-                })}
-              </div>
-              {hasMoreNodes && (
-                <Link
-                  href={`/plants/${workspace.id}`}
-                  className="mt-2 flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
-                >
-                  View all {nodeCount} equipment
-                  <ArrowRight aria-hidden="true" className="h-3 w-3" />
-                </Link>
-              )}
-            </div>
-          )}
-
-          {/* Models Overview */}
-          <div className="px-4 py-4">
-            <div className="mb-2 flex items-center justify-between">
-              <span className="text-xs font-medium text-muted-foreground">
-                Models ({models.length})
-              </span>
-            </div>
-            {modelsLoading ? (
-              <div className="space-y-2">
-                <Skeleton className="h-8 w-full" />
-                <Skeleton className="h-8 w-full" />
-                <Skeleton className="h-8 w-full" />
-              </div>
-            ) : models.length === 0 ? (
-              <p className="text-[11px] text-muted-foreground">
-                No models deployed
-              </p>
-            ) : (
-              <>
-                <div className="space-y-0.5">
-                  {previewModels.map(model => {
-                    const deploy = model.data?.deployStatus ?? 'stopped'
-                    const prod = model.data?.prodStatus ?? 'offline'
-                    return (
-                      <Link
-                        key={model.id}
-                        href={`/models/${model.id}`}
-                        className="group flex items-center gap-2.5 rounded-md px-2 py-2 transition-colors hover:bg-accent/50"
-                      >
-                        <span
-                          className={cn(
-                            'h-2 w-2 shrink-0 rounded-full',
-                            DEPLOY_DOT[deploy] ?? 'bg-zinc-400',
-                            deploy === 'error' &&
-                              'ring-4 ring-red-500/20 motion-safe:animate-pulse',
-                          )}
-                        />
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-xs font-medium text-foreground">
-                            {model.name}
-                          </p>
-                          <p className="text-[10px] capitalize text-muted-foreground">
-                            {deploy}
-                          </p>
-                        </div>
-                        <span
-                          className={cn(
-                            'shrink-0 text-[10px] font-semibold capitalize',
-                            PROD_BADGE[prod] ?? 'text-muted-foreground',
-                          )}
-                        >
-                          {prod}
-                        </span>
-                        <ArrowRight
-                          aria-hidden="true"
-                          className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
-                        />
-                      </Link>
-                    )
-                  })}
-                </div>
-                {hasMoreModels && (
-                  <Link
-                    href={`/models?workspaceId=${workspace.id}`}
-                    className="mt-2 flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
-                  >
-                    View all {models.length} models
-                    <ArrowRight aria-hidden="true" className="h-3 w-3" />
-                  </Link>
-                )}
-              </>
-            )}
-          </div>
+          {/* Unified asset work-tree: Plant → Equipment → Model */}
+          <OverviewAssetTree
+            plants={plants ?? []}
+            nodes={nodes}
+            models={models}
+            loading={modelsLoading}
+          />
         </div>
       </ScrollArea>
 
@@ -381,7 +230,7 @@ function PanelContent({
           onClick={() => onOpenPipeEditor(workspace.id)}
         >
           Open Pipeline Editor
-          <ArrowRight className="h-3 w-3 shrink-0" />
+          <ArrowRight aria-hidden="true" className="h-3 w-3 shrink-0" />
         </Button>
       </div>
     </div>

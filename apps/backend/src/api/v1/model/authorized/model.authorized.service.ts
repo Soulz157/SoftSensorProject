@@ -10,7 +10,12 @@ import {
 
 type ModelData = {
   deployStatus: 'stopped' | 'running' | 'error' | 'initializing';
-  prodStatus: 'normal' | 'warning' | 'alert' | 'offline';
+  prodStatus: 'normal' | 'warning' | 'alert' | 'offline' | 'frozen';
+  // Brief reason shown alongside a 'frozen' (data frozen / missing data) status.
+  statusDetail?: string;
+  // Who/when last started the deployment (captured server-side on start).
+  deployedBy?: string;
+  deployedAt?: string;
   logs: Array<{
     level: 'info' | 'warn' | 'error';
     message: string;
@@ -25,6 +30,9 @@ function normalizeData(raw: unknown): ModelData {
       r.status ??
       'stopped') as ModelData['deployStatus'],
     prodStatus: (r.prodStatus ?? 'normal') as ModelData['prodStatus'],
+    ...(typeof r.statusDetail === 'string' && { statusDetail: r.statusDetail }),
+    ...(typeof r.deployedBy === 'string' && { deployedBy: r.deployedBy }),
+    ...(typeof r.deployedAt === 'string' && { deployedAt: r.deployedAt }),
     logs: Array.isArray(r.logs) ? (r.logs as ModelData['logs']) : [],
   };
 }
@@ -159,10 +167,32 @@ export class ModelAuthorizedService {
     await this.assertCanEdit(existing.workspaceId, userId);
 
     const current = normalizeData(existing.data);
+
+    // Capture who/when started the deployment, server-side, on a → running edit.
+    let deployFields: Partial<ModelData> = {};
+    if (dto.deployStatus === 'running') {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { firstName: true, lastName: true },
+      });
+      const name = [user?.firstName, user?.lastName]
+        .filter(Boolean)
+        .join(' ')
+        .trim();
+      deployFields = {
+        deployedAt: new Date().toISOString(),
+        ...(name && { deployedBy: name }),
+      };
+    }
+
     const newData: ModelData = {
       ...current,
       ...(dto.deployStatus && { deployStatus: dto.deployStatus }),
       ...(dto.prodStatus && { prodStatus: dto.prodStatus }),
+      ...(dto.statusDetail !== undefined && {
+        statusDetail: dto.statusDetail ?? undefined,
+      }),
+      ...deployFields,
     };
 
     const updated = await this.prisma.model.update({

@@ -42,7 +42,10 @@ export interface AIModel {
   name: string
   data: {
     deployStatus: 'stopped' | 'running' | 'error' | 'initializing'
-    prodStatus: 'normal' | 'warning' | 'alert' | 'offline'
+    prodStatus: 'normal' | 'warning' | 'alert' | 'offline' | 'frozen'
+    statusDetail?: string
+    deployedBy?: string
+    deployedAt?: string
     logs: ModelLog[]
   } | null
   nodesId: string | null

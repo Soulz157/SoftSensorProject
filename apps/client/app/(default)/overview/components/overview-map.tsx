@@ -86,13 +86,10 @@ export function PlantsMap({
     ? { bg: 'radial-gradient(ellipse at 50% 40%, #0e1520 0%, #080a0f 80%)' }
     : { bg: 'radial-gradient(ellipse at 50% 40%, #f0f4f8 0%, #dce8f0 80%)' }
 
-  const {
-    totalAlarms,
-    totalWarnings,
-    // hasOffline,
-    overallStatus,
-    overallColor,
-  } = useMemo(() => deriveSystemStatus(nodesByWorkspace), [nodesByWorkspace])
+  const { totalAlarms, totalWarnings, overallStatus, overallColor } = useMemo(
+    () => deriveSystemStatus(nodesByWorkspace),
+    [nodesByWorkspace],
+  )
 
   // Status hues are vivid for dots but fail WCAG AA as text on the light HUD.
   // Use darker variants for label text in light mode; vivid in dark.
@@ -230,22 +227,6 @@ export function PlantsMap({
             </span>{' '}
             Warnings
           </div>
-          {/* <div
-            className={cn(
-              'text-[13px]',
-              isDark ? 'text-white/60' : 'text-muted-foreground',
-            )}
-          >
-            <span
-              className="font-semibold"
-              style={{
-                color: hasOffline ? '#71717a' : isDark ? '#fff' : '#111',
-              }}
-            >
-              {hasOffline ? 'Yes' : 'No'}
-            </span>{' '}
-            Offline Plants
-          </div> */}
         </div>
       </div>
 

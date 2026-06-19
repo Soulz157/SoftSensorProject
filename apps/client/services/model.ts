@@ -34,6 +34,8 @@ export async function updateModel(
     name?: string
     nodeId?: string | null
     deployStatus?: 'stopped' | 'running' | 'error' | 'initializing'
+    prodStatus?: 'normal' | 'warning' | 'alert' | 'offline' | 'frozen'
+    statusDetail?: string | null
   },
 ): Promise<AIModel> {
   const res: { data: AIModel } = await fetchClient(

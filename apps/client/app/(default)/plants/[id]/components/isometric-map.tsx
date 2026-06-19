@@ -3,6 +3,7 @@
 import { useMemo, useRef, useState } from 'react'
 import { Sun, Moon } from 'lucide-react'
 import { MachineNode } from './machine-node'
+import { ZoneHoverCard } from './zone-hover-card'
 import { calculateIsometricLayout } from '@/lib/isomatric'
 import type { ZoneItem } from '@/lib/isomatric'
 import type { CanvasNode } from '@/services/canvas'
@@ -266,6 +267,9 @@ export function IsometricMap({
                 const warningCount = mappedNodes.filter(
                   m => m.node.data.status === 'warning',
                 ).length
+                const zoneCounts = countNodesByStatus(
+                  mappedNodes.map(m => m.node),
+                )
 
                 let zoneStatusText = 'NORMAL'
                 let zoneStatusColor = '#10b981'
@@ -346,21 +350,13 @@ export function IsometricMap({
                       </TooltipTrigger>
                       <TooltipContent
                         side="top"
-                        className="border-border bg-card text-foreground"
+                        className="border-border bg-card p-3 text-foreground"
                       >
-                        <div className="flex flex-col gap-1 text-sm">
-                          <span className="font-semibold text-primary">
-                            {zone.name} Zone
-                          </span>
-                          <span className="text-xs text-muted-foreground">
-                            {mappedNodes.length} Devices
-                          </span>
-                          {alarmCount > 0 && (
-                            <span className="text-xs font-medium text-red-500">
-                              {alarmCount} Devices in Alarm
-                            </span>
-                          )}
-                        </div>
+                        <ZoneHoverCard
+                          name={zone.name}
+                          counts={zoneCounts}
+                          deviceCount={mappedNodes.length}
+                        />
                       </TooltipContent>
                     </Tooltip>
 

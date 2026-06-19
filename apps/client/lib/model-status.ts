@@ -1,9 +1,15 @@
 import type { AIModel } from '@/types'
 
-export type EffectiveProdStatus = 'normal' | 'warning' | 'alert' | 'offline'
+export type EffectiveProdStatus =
+  | 'normal'
+  | 'warning'
+  | 'alert'
+  | 'offline'
+  | 'frozen'
 
 // Monitoring state is meaningless when the model isn't running on infra —
-// a stopped or failed deployment always reads as offline.
+// a stopped or failed deployment always reads as offline. A running model whose
+// data has frozen (sensor offline / missing data) reports 'frozen'.
 export function effectiveProdStatus(m: AIModel): EffectiveProdStatus {
   const deploy = m.data?.deployStatus ?? 'stopped'
   if (deploy === 'stopped' || deploy === 'error') return 'offline'

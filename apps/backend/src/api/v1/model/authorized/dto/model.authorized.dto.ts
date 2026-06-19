@@ -7,7 +7,13 @@ export const DeployStatusEnum = z.enum([
   'error',
   'initializing',
 ]);
-export const ProdStatusEnum = z.enum(['normal', 'warning', 'alert', 'offline']);
+export const ProdStatusEnum = z.enum([
+  'normal',
+  'warning',
+  'alert',
+  'offline',
+  'frozen',
+]);
 
 export const CreateModelSchema = z.object({
   workspaceId: z.string().uuid(),
@@ -20,6 +26,7 @@ export const UpdateModelSchema = z.object({
   nodeId: z.string().uuid().nullable().optional(),
   deployStatus: DeployStatusEnum.optional(),
   prodStatus: ProdStatusEnum.optional(),
+  statusDetail: z.string().max(500).nullable().optional(),
 });
 
 export const AppendLogSchema = z.object({

@@ -24,12 +24,15 @@ import {
   Cpu,
   Database,
   Gauge,
+  Pencil,
   Play,
   RefreshCw,
   Settings,
+  Snowflake,
   Sparkles,
   StopCircle,
   Terminal,
+  User,
   WifiOff,
   XCircle,
 } from 'lucide-react'
@@ -40,6 +43,10 @@ import { getModels, updateModel } from '@/services/model'
 import { effectiveProdStatus } from '@/lib/model-status'
 import type { AIModel } from '@/types'
 import { ModelEvaluation } from '../evaluation/components/model-evaluation'
+import { ModelUpsertDialog } from '../views/components/model-upsert-dialog'
+import { ModelRetrainDialog } from './components/model-retrain-dialog'
+import { RetrainProgress } from './components/retrain-progress'
+import { useModelRetrain } from '@/hooks/model/use-model-retrain'
 
 const DEPLOY_CONFIG = {
   running: {
@@ -84,6 +91,11 @@ const PROD_CONFIG = {
     icon: WifiOff,
     cls: 'bg-zinc-500/10 text-zinc-400 border-zinc-500/20',
     label: 'Offline',
+  },
+  frozen: {
+    icon: Snowflake,
+    cls: 'bg-purple-500/10 text-purple-600 border-purple-500/20 dark:text-purple-400',
+    label: 'Data Frozen',
   },
 } as const
 
@@ -186,6 +198,11 @@ export default function ModelDetailPage({
   const [model, setModel] = useState<AIModel | null>(null)
   const [loading, setLoading] = useState(true)
   const [isToggling, setIsToggling] = useState(false)
+  const [editOpen, setEditOpen] = useState(false)
+  const [retrainOpen, setRetrainOpen] = useState(false)
+  const [version, setVersion] = useState(0)
+  const refresh = () => setVersion(v => v + 1)
+  const retrain = useModelRetrain({ model, onUpdated: refresh })
 
   async function handleToggleDeploy(next: 'running' | 'stopped') {
     if (!model) return
@@ -238,7 +255,7 @@ export default function ModelDetailPage({
     return () => {
       ignore = true
     }
-  }, [id, workspaces])
+  }, [id, workspaces, version])
 
   const readings = useMemo(
     () => (model ? generateReadings(model.id, model.updatedAt) : []),
@@ -370,15 +387,48 @@ export default function ModelDetailPage({
                 Start
               </Button>
             )}
-            <Button variant="outline" size="sm" className="gap-1.5">
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5"
+              onClick={() => setEditOpen(true)}
+            >
+              <Pencil className="h-4 w-4" />
+              Edit
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5"
+              onClick={() => setRetrainOpen(true)}
+            >
               <RefreshCw className="h-4 w-4" />
               Retrain
             </Button>
-            <Button variant="ghost" size="icon" className="h-9 w-9">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-9 w-9"
+              onClick={() => setEditOpen(true)}
+            >
               <Settings className="h-4 w-4" />
             </Button>
           </div>
         </div>
+
+        {/* Frozen / missing-data reason */}
+        {prodKey === 'frozen' && model.data?.statusDetail && (
+          <div className="flex items-center gap-2 rounded-lg border border-purple-500/30 bg-purple-500/10 px-4 py-3 text-sm text-purple-700 dark:text-purple-300">
+            <Snowflake className="h-4 w-4 shrink-0" />
+            <span>
+              <span className="font-semibold">Data frozen — </span>
+              {model.data.statusDetail}
+            </span>
+          </div>
+        )}
+
+        {/* Retrain progress (stage boxes + eval metrics) */}
+        <RetrainProgress phase={retrain.phase} metrics={retrain.metrics} />
 
         {/* Stat cards */}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -433,13 +483,35 @@ export default function ModelDetailPage({
                   {plantName}
                 </p>
               )}
+              {(model.data?.deployedBy || model.data?.deployedAt) && (
+                <div className="mt-2 space-y-0.5 border-t border-border/50 pt-2">
+                  {model.data?.deployedBy && (
+                    <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <User className="h-3 w-3 shrink-0" />
+                      {model.data.deployedBy}
+                    </p>
+                  )}
+                  {model.data?.deployedAt && (
+                    <p className="text-xs tabular-nums text-muted-foreground">
+                      {new Date(model.data.deployedAt).toLocaleString(
+                        undefined,
+                        {
+                          month: 'short',
+                          day: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        },
+                      )}
+                    </p>
+                  )}
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>
 
         {/* Tabs */}
         <Tabs defaultValue="logs" className="flex w-full flex-col">
-          {/* หุ้มด้วย div เพื่อบังคับ Layout ไม่ให้โดนยืดและรองรับ Scroll บนมือถือ */}
           <div className="mb-4 flex w-full items-center overflow-x-auto pb-1">
             <TabsList className="inline-flex h-10 w-max items-center justify-start p-1">
               <TabsTrigger
@@ -659,6 +731,29 @@ export default function ModelDetailPage({
           </TabsContent>
         </Tabs>
       </div>
+
+      <ModelUpsertDialog
+        open={editOpen}
+        onClose={() => setEditOpen(false)}
+        onSuccess={refresh}
+        workspaces={workspaces}
+        model={model}
+      />
+      <ModelRetrainDialog
+        open={retrainOpen}
+        onClose={() => setRetrainOpen(false)}
+        model={model}
+        isRetraining={retrain.isRetraining}
+        mode={retrain.mode}
+        onAuto={() => {
+          retrain.autoFinetune()
+          setRetrainOpen(false)
+        }}
+        onCustom={config => {
+          retrain.customFinetune(config)
+          setRetrainOpen(false)
+        }}
+      />
     </div>
   )
 }
