@@ -47,8 +47,7 @@ export function ModelUpsertDialog({
   })
   const { name, workspaceId, plantId, nodeId, plants, nodes, isSubmitting } =
     state
-  const { piServerId, setPiServerId, tags, toggleTag, setTagRole } =
-    tagSelection
+  const { piServerId, setPiServerId, tags, toggleTag } = tagSelection
 
   return (
     <Dialog open={open} onOpenChange={o => !o && !isSubmitting && onClose()}>
@@ -174,7 +173,6 @@ export function ModelUpsertDialog({
                     tags={tags}
                     disabled={isSubmitting}
                     onToggle={toggleTag}
-                    onSetRole={setTagRole}
                   />
                 </div>
               ) : (

@@ -26,7 +26,7 @@ export function useCreateModel() {
   const [artifact, setArtifact] = useState<File | null>(null)
 
   // PI server + tag-role selection (shared with the edit flow).
-  const { piServerId, setPiServerId, tags, toggleTag, setTagRole, reset } =
+  const { piServerId, setPiServerId, tags, toggleTag, reset } =
     useModelTagSelection()
 
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -130,7 +130,6 @@ export function useCreateModel() {
     setPiServerId,
     tags,
     toggleTag,
-    setTagRole,
     isSubmitting,
     submit,
     cancel,

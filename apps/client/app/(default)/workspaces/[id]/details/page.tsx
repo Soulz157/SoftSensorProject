@@ -1,6 +1,6 @@
 'use client'
 
-import { use, useMemo, useState } from 'react'
+import { use, useState } from 'react'
 import Link from 'next/link'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -17,167 +17,38 @@ import {
 import {
   Activity,
   AlertTriangle,
-  ArrowRight,
   BrainCircuit,
   CheckCircle2,
   Clock,
-  Cpu,
-  Gauge,
   Map,
-  Pencil,
   Settings,
-  Thermometer,
-  Trash2,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useWorkspace } from '@/hooks/workspace/use-workspace-by'
-import { WorkspaceSettingsSheet } from '../components/workspace-settings-sheet'
 import { useWorkspaceLogs } from '@/hooks/workspace/use-workspace-logs'
 import { useWorkspaceModels } from '@/hooks/workspace/use-workspace-models'
-import type { WorkspaceAction, WorkspaceLog, WorkspaceModel } from '@/types'
-
-const PLACEHOLDER_NODES = [
-  {
-    id: 'n1',
-    name: 'CNC Machine A1',
-    type: 'machine' as const,
-    status: 'normal' as const,
-  },
-  {
-    id: 'n2',
-    name: 'Assembly Robot B2',
-    type: 'machine' as const,
-    status: 'normal' as const,
-  },
-  {
-    id: 'n3',
-    name: 'Conveyor System C1',
-    type: 'machine' as const,
-    status: 'warning' as const,
-  },
-  {
-    id: 'n4',
-    name: 'Temperature Sensor T1',
-    type: 'sensor' as const,
-    status: 'normal' as const,
-  },
-  {
-    id: 'n5',
-    name: 'Main Controller',
-    type: 'controller' as const,
-    status: 'normal' as const,
-  },
-]
-
-function formatRelativeTime(dateStr: string) {
-  const diff = Date.now() - new Date(dateStr).getTime()
-  const mins = Math.floor(diff / 60_000)
-  if (mins < 1) return 'just now'
-  if (mins < 60) return `${mins}m ago`
-  const hrs = Math.floor(mins / 60)
-  if (hrs < 24) return `${hrs}h ago`
-  const days = Math.floor(hrs / 24)
-  return `${days}d ago`
-}
-
-type NodeType = 'machine' | 'sensor' | 'controller'
-type NodeStatus = 'normal' | 'warning' | 'alarm' | 'offline'
-type ModelStatus = 'active' | 'warning' | 'error' | 'stopped'
-
-function getNodeIcon(type: NodeType) {
-  switch (type) {
-    case 'machine':
-      return <Cpu className="h-4 w-4" />
-    case 'sensor':
-      return <Thermometer className="h-4 w-4" />
-    case 'controller':
-      return <Gauge className="h-4 w-4" />
-  }
-}
-
-function statusColors(status: NodeStatus | ModelStatus) {
-  switch (status) {
-    case 'normal':
-    case 'active':
-      return {
-        text: 'text-emerald-500',
-        bg: 'bg-emerald-500/10',
-        dot: 'bg-emerald-500',
-      }
-    case 'warning':
-      return {
-        text: 'text-amber-500',
-        bg: 'bg-amber-500/10',
-        dot: 'bg-amber-500',
-      }
-    case 'alarm':
-    case 'error':
-      return { text: 'text-red-500', bg: 'bg-red-500/10', dot: 'bg-red-500' }
-    default:
-      return { text: 'text-zinc-400', bg: 'bg-zinc-500/10', dot: 'bg-zinc-400' }
-  }
-}
+import { useWorkspaceNodes } from '@/hooks/workspace/use-workspace-nodes'
+import {
+  deriveStatus,
+  equipmentAlerts,
+  STATUS_META,
+} from '@/lib/overview-status'
+import type { WorkspaceModel } from '@/types'
+import { WorkspaceSettingsSheet } from '../components/workspace-settings-sheet'
+import { EquipmentSection } from './components/equipment-section'
+import { StatusAlertsSection } from './components/status-alerts-section'
+import { ActivityLogSection } from './components/activity-log-section'
+import {
+  formatRelativeTime,
+  statusColors,
+  type ModelStatus,
+} from './components/helpers'
 
 function modelStatus(m: WorkspaceModel): ModelStatus {
   const raw = (m.data as { status?: string } | null)?.status
   if (raw === 'warning' || raw === 'error' || raw === 'stopped') return raw
   return 'active'
 }
-
-const ALERT_ACTIONS: WorkspaceAction[] = [
-  'DELETED',
-  'MODEL_REMOVED',
-  'MODEL_UPDATED',
-  'UPDATED',
-]
-const DANGER_ACTIONS: WorkspaceAction[] = ['DELETED', 'MODEL_REMOVED']
-
-function alertSeverity(action: WorkspaceAction): 'danger' | 'warning' {
-  return DANGER_ACTIONS.includes(action) ? 'danger' : 'warning'
-}
-
-function alertLabel(action: WorkspaceAction): string {
-  switch (action) {
-    case 'DELETED':
-      return 'Workspace deleted'
-    case 'MODEL_REMOVED':
-      return 'Model removed'
-    case 'MODEL_UPDATED':
-      return 'Model updated'
-    case 'UPDATED':
-      return 'Workspace updated'
-    default:
-      return action
-  }
-}
-
-function AlertIcon({ action }: { action: WorkspaceAction }) {
-  const severity = alertSeverity(action)
-  const cls =
-    severity === 'danger'
-      ? 'bg-red-500/10 text-red-500'
-      : 'bg-amber-500/10 text-amber-500'
-  const Icon =
-    action === 'DELETED'
-      ? Trash2
-      : action === 'MODEL_UPDATED'
-        ? Pencil
-        : AlertTriangle
-  return (
-    <div className={cn('rounded-md p-2', cls)}>
-      <Icon className="h-4 w-4" />
-    </div>
-  )
-}
-
-function actorName(log: WorkspaceLog): string {
-  const { firstName, lastName, email } = log.user
-  if (firstName || lastName)
-    return `${firstName ?? ''} ${lastName ?? ''}`.trim()
-  return email
-}
-
-// ─── component ───────────────────────────────────────────────────────────────
 
 export default function WorkspaceDetailPage({
   params,
@@ -191,14 +62,12 @@ export default function WorkspaceDetailPage({
   const { workspace, loading: wsLoading } = useWorkspace(id)
   const { models, loading: modelsLoading } = useWorkspaceModels(id)
   const { logs, isFetching: logsLoading } = useWorkspaceLogs(id)
+  const { nodes, loading: nodesLoading } = useWorkspaceNodes(id)
 
-  const alertLogs = useMemo(
-    () =>
-      (logs ?? []).filter(l => ALERT_ACTIONS.includes(l.action)).slice(0, 8),
-    [logs],
-  )
-
-  const hasAlerts = alertLogs.length > 0
+  const systemStatus = deriveStatus(nodes ?? [])
+  const alertCount = equipmentAlerts(nodes ?? []).length
+  const hasAlerts = systemStatus !== 'normal'
+  const statusSc = statusColors(systemStatus)
 
   const updatedAt = workspace?.updatedAt
     ? formatRelativeTime(workspace.updatedAt)
@@ -304,26 +173,16 @@ export default function WorkspaceDetailPage({
                     <p className="text-sm font-medium text-muted-foreground">
                       System Status
                     </p>
-                    {logsLoading ? (
+                    {nodesLoading ? (
                       <Skeleton className="h-9 w-24" />
                     ) : (
-                      <p
-                        className={cn(
-                          'text-3xl font-bold',
-                          hasAlerts ? 'text-amber-500' : 'text-emerald-500',
-                        )}
-                      >
-                        {hasAlerts ? 'Warning' : 'Normal'}
+                      <p className={cn('text-3xl font-bold', statusSc.text)}>
+                        {STATUS_META[systemStatus].label}
                       </p>
                     )}
                   </div>
                   <div
-                    className={cn(
-                      'rounded-md p-2',
-                      hasAlerts
-                        ? 'bg-amber-500/10 text-amber-500'
-                        : 'bg-emerald-500/10 text-emerald-500',
-                    )}
+                    className={cn('rounded-md p-2', statusSc.bg, statusSc.text)}
                   >
                     {hasAlerts ? (
                       <AlertTriangle className="h-5 w-5" />
@@ -334,7 +193,7 @@ export default function WorkspaceDetailPage({
                 </div>
                 <p className="text-xs text-muted-foreground">
                   {hasAlerts
-                    ? `${alertLogs.length} recent alerts`
+                    ? `${alertCount} equipment need attention`
                     : 'All systems operational'}
                 </p>
               </CardContent>
@@ -395,81 +254,14 @@ export default function WorkspaceDetailPage({
 
           {/* 3-column layout */}
           <div className="grid grid-cols-1 gap-8 lg:grid-cols-3">
-            {/* Col 1 — Nodes in Canvas (placeholder until Node model added) */}
-            <div className="space-y-4 lg:col-span-1">
-              <div className="flex items-center justify-between">
-                <h2 className="flex items-center gap-2 text-lg font-semibold text-foreground">
-                  <Cpu className="h-5 w-5 text-primary" />
-                  Nodes in Canvas
-                </h2>
-                <Link href={`/workspaces/${id}/canvas`}>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="cursor-pointer gap-1 text-xs text-primary"
-                  >
-                    View All
-                    <ArrowRight className="h-3 w-3" />
-                  </Button>
-                </Link>
-              </div>
-              <Card className="border-border bg-card">
-                <div className="divide-y divide-border">
-                  {PLACEHOLDER_NODES.map(node => {
-                    const sc = statusColors(node.status)
-                    return (
-                      <div
-                        key={node.id}
-                        className="flex items-center justify-between p-4 transition-colors hover:bg-muted/50"
-                      >
-                        <div className="flex items-center gap-3">
-                          <div className={cn('rounded-md p-2', sc.bg, sc.text)}>
-                            {getNodeIcon(node.type)}
-                          </div>
-                          <div>
-                            <p className="text-sm font-medium text-foreground">
-                              {node.name}
-                            </p>
-                            <div className="mt-0.5 flex items-center gap-2">
-                              <span className="text-xs capitalize text-muted-foreground">
-                                {node.type}
-                              </span>
-                              <span
-                                className={cn(
-                                  'h-1.5 w-1.5 rounded-full',
-                                  sc.dot,
-                                )}
-                              />
-                              <span
-                                className={cn(
-                                  'text-xs font-medium capitalize',
-                                  sc.text,
-                                )}
-                              >
-                                {node.status}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-                <div className="border-t border-border bg-muted/20 p-3">
-                  <Link href={`/workspaces/${id}/canvas`} className="block">
-                    <Button
-                      variant="ghost"
-                      className="cursor-pointer h-8 w-full gap-2 text-xs text-muted-foreground"
-                    >
-                      <Map className="h-4 w-4" />
-                      Open Canvas Map
-                    </Button>
-                  </Link>
-                </div>
-              </Card>
-            </div>
+            {/* Col 1 — Equipment in Workspace (real nodes from DB) */}
+            <EquipmentSection
+              nodes={nodes}
+              loading={nodesLoading}
+              workspaceId={id}
+            />
 
-            {/* Col 2 — Models & Status (real data) */}
+            {/* Col 2 — AI Models (real data) */}
             <div className="space-y-4 lg:col-span-1">
               <h2 className="flex items-center gap-2 text-lg font-semibold text-foreground">
                 <BrainCircuit className="h-5 w-5 text-primary" />
@@ -539,62 +331,12 @@ export default function WorkspaceDetailPage({
               </Card>
             </div>
 
-            {/* Col 3 — Status Alerts (from WorkspaceLog) */}
-            <div className="space-y-4 lg:col-span-1">
-              <h2 className="flex items-center gap-2 text-lg font-semibold text-foreground">
-                <AlertTriangle className="h-5 w-5 text-amber-500" />
-                Status Alerts
-              </h2>
-              <Card className="border-border bg-card">
-                {logsLoading ? (
-                  <div className="divide-y divide-border">
-                    {Array.from({ length: 4 }).map((_, i) => (
-                      <div key={i} className="flex items-center gap-3 p-4">
-                        <Skeleton className="h-8 w-8 rounded-md" />
-                        <div className="flex-1 space-y-1">
-                          <Skeleton className="h-4 w-36" />
-                          <Skeleton className="h-3 w-24" />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : alertLogs.length > 0 ? (
-                  <div className="divide-y divide-border">
-                    {alertLogs.map(log => (
-                      <div
-                        key={log.id}
-                        className="flex items-center gap-3 p-4 transition-colors hover:bg-muted/50"
-                      >
-                        <AlertIcon action={log.action} />
-                        <div className="min-w-0 flex-1">
-                          <p className="text-sm font-medium text-foreground">
-                            {alertLabel(log.action)}
-                          </p>
-                          <p className="truncate text-xs text-muted-foreground">
-                            {actorName(log)} ·{' '}
-                            {formatRelativeTime(log.createdAt)}
-                          </p>
-                        </div>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="shrink-0"
-                        >
-                          <ArrowRight className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center gap-2 p-10 text-center text-muted-foreground">
-                    <CheckCircle2 className="h-8 w-8 text-emerald-500" />
-                    <p className="text-sm">No alerts</p>
-                    <p className="text-xs">All systems operating normally.</p>
-                  </div>
-                )}
-              </Card>
-            </div>
+            {/* Col 3 — Status Alerts (equipment health) */}
+            <StatusAlertsSection nodes={nodes} loading={nodesLoading} />
           </div>
+
+          {/* Activity Log (all workspace events) */}
+          <ActivityLogSection logs={logs} loading={logsLoading} />
         </div>
       </div>
 

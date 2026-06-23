@@ -1,9 +1,5 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { useWorkspaces } from '@/hooks/workspace/use-workspaces'
-import { getNodes } from '@/services/canvas'
-import type { CanvasNode } from '@/services/canvas'
 import Link from 'next/link'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -33,18 +29,21 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { NODE_STATUS_PRIORITY } from '@/constants/status'
-import AlertsLoading from '../loading'
+import AlertsWorkspaceLoading from '../loading'
+import { useWorkspaceNodes } from '@/hooks/workspace/use-workspace-nodes'
+import { useWorkspace } from '@/hooks/workspace/use-workspace-by'
+
+type NodeType = 'machine' | 'sensor' | 'controller'
+type AlertStatus = 'warning' | 'alarm' | 'offline'
 
 interface AlertRow {
   nodeId: string
   nodeName: string
-  nodeType: 'machine' | 'sensor' | 'controller'
-  status: 'warning' | 'alarm' | 'offline'
-  workspaceName: string
-  workspaceId: string
+  nodeType: NodeType
+  status: AlertStatus
 }
 
-function getNodeTypeIcon(type: 'machine' | 'sensor' | 'controller') {
+function getNodeTypeIcon(type: NodeType) {
   switch (type) {
     case 'machine':
       return Cpu
@@ -57,91 +56,72 @@ function getNodeTypeIcon(type: 'machine' | 'sensor' | 'controller') {
   }
 }
 
-const STATUS_CLASS: Record<string, string> = {
+const STATUS_CLASS: Record<AlertStatus, string> = {
   alarm: 'bg-red-500/10 text-red-500',
   offline: 'bg-red-500/10 text-red-500',
   warning: 'bg-amber-500/10 text-amber-500',
 }
 
-export function AlertsContent() {
-  const { workspaces, loading: workspacesLoading } = useWorkspaces()
-  const [nodesByWorkspace, setNodesByWorkspace] = useState<
-    Record<string, CanvasNode[]>
-  >({})
+interface WorkspaceAlertsContentProps {
+  workspaceId: string
+}
 
-  useEffect(() => {
-    if (workspacesLoading) return
-    if (workspaces.length === 0) return
+export function WorkspaceAlertsContent({
+  workspaceId,
+}: WorkspaceAlertsContentProps) {
+  const { workspace, loading: workspaceLoading } = useWorkspace(workspaceId)
+  const { nodes, loading: nodeLoading } = useWorkspaceNodes(workspaceId)
 
-    let cancelled = false
-
-    Promise.all(workspaces.map(w => getNodes(w.id)))
-      .then(results => {
-        if (cancelled) return
-        const map: Record<string, CanvasNode[]> = {}
-        workspaces.forEach((w, i) => {
-          map[w.id] = results[i] ?? []
-        })
-        setNodesByWorkspace(map)
-      })
-      .catch(() => {
-        if (!cancelled) setNodesByWorkspace({})
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [workspaces, workspacesLoading])
-
-  const nodesLoading =
-    !workspacesLoading && workspaces.length > 0 && nodesByWorkspace === null
-
-  if (workspacesLoading || nodesLoading) {
-    return <AlertsLoading />
+  if (nodeLoading || workspaceLoading) {
+    return <AlertsWorkspaceLoading />
   }
 
-  const alerts: AlertRow[] = []
-  for (const workspace of workspaces) {
-    const nodes = nodesByWorkspace[workspace.id] ?? []
-    for (const node of nodes) {
-      if (
+  const alerts: AlertRow[] = (nodes ?? [])
+    .filter(
+      node =>
         node.data.status === 'alarm' ||
         node.data.status === 'offline' ||
-        node.data.status === 'warning'
-      ) {
-        alerts.push({
-          nodeId: node.id,
-          nodeName: node.data.name,
-          nodeType: node.data.type,
-          status: node.data.status,
-          workspaceName: workspace.name,
-          workspaceId: workspace.id,
-        })
-      }
-    }
-  }
-
-  alerts.sort(
-    (a, b) =>
-      (NODE_STATUS_PRIORITY[a.status] ?? 99) -
-      (NODE_STATUS_PRIORITY[b.status] ?? 99),
-  )
+        node.data.status === 'warning',
+    )
+    .map(node => ({
+      nodeId: node.id,
+      nodeName: node.data.name,
+      nodeType: node.data.type as NodeType,
+      status: node.data.status as AlertStatus,
+    }))
+    .sort(
+      (a, b) =>
+        (NODE_STATUS_PRIORITY[a.status] ?? 99) -
+        (NODE_STATUS_PRIORITY[b.status] ?? 99),
+    )
 
   const alarmCount = alerts.filter(a => a.status === 'alarm').length
   const warningCount = alerts.filter(a => a.status === 'warning').length
   const offlineCount = alerts.filter(a => a.status === 'offline').length
 
+  const workspaceName = workspace?.name || workspaceId
+
   return (
     <div className="flex-1 overflow-auto bg-background p-6 md:p-8">
       <div className="mx-auto max-w-7xl space-y-6">
+        {/* Breadcrumb */}
         <Breadcrumb>
           <BreadcrumbList>
             <BreadcrumbItem>
               <Link
-                href="/dashboard"
+                href="/overview"
                 className="text-muted-foreground hover:text-foreground"
               >
                 Dashboard
+              </Link>
+            </BreadcrumbItem>
+            <BreadcrumbSeparator />
+            <BreadcrumbItem>
+              <Link
+                href={`/plants/${workspaceId}`}
+                className="text-muted-foreground hover:text-foreground"
+              >
+                {workspaceName}
               </Link>
             </BreadcrumbItem>
             <BreadcrumbSeparator />
@@ -153,14 +133,13 @@ export function AlertsContent() {
 
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-semibold text-foreground">
-            System Alerts
+            {workspaceName} Alerts
           </h1>
           {alarmCount > 0 && (
             <Badge variant="secondary" className="bg-red-500/10 text-red-500">
               {alarmCount} alarm{alarmCount > 1 ? 's' : ''}
             </Badge>
           )}
-
           {warningCount > 0 && (
             <Badge
               variant="secondary"
@@ -169,7 +148,6 @@ export function AlertsContent() {
               {warningCount} warning{warningCount > 1 ? 's' : ''}
             </Badge>
           )}
-
           {offlineCount > 0 && (
             <Badge variant="secondary" className="bg-red-500/10 text-red-500">
               {offlineCount} offline
@@ -184,7 +162,7 @@ export function AlertsContent() {
               No active alerts
             </p>
             <p className="mt-1 text-sm text-muted-foreground">
-              All systems operating normally
+              All systems in this workspace are operating normally
             </p>
           </Card>
         ) : (
@@ -196,7 +174,6 @@ export function AlertsContent() {
                   <TableHead>Status</TableHead>
                   <TableHead>Node Name</TableHead>
                   <TableHead>Type</TableHead>
-                  <TableHead>Workspace</TableHead>
                   <TableHead className="w-12" />
                 </TableRow>
               </TableHeader>
@@ -208,6 +185,7 @@ export function AlertsContent() {
                       <TableCell className="text-muted-foreground">
                         {index + 1}
                       </TableCell>
+
                       <TableCell>
                         <span
                           className={cn(
@@ -219,21 +197,24 @@ export function AlertsContent() {
                           {alert.status}
                         </span>
                       </TableCell>
+
+                      {/* Node Name */}
                       <TableCell className="font-semibold text-foreground">
                         {alert.nodeName}
                       </TableCell>
+
+                      {/* Type */}
                       <TableCell>
                         <span className="flex items-center gap-1.5 text-muted-foreground">
                           <Icon className="h-3.5 w-3.5 shrink-0" />
                           <span className="capitalize">{alert.nodeType}</span>
                         </span>
                       </TableCell>
-                      <TableCell className="text-muted-foreground">
-                        {alert.workspaceName}
-                      </TableCell>
+
+                      {/* Navigate to node */}
                       <TableCell>
                         <Link
-                          href={`/plants/${alert.workspaceId}?nodeId=${alert.nodeId}`}
+                          href={`/plants/${workspaceId}?nodeId=${alert.nodeId}`}
                         >
                           <Button
                             variant="ghost"

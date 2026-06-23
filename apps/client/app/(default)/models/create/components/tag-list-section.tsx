@@ -9,19 +9,15 @@ interface Props {
   tags: ModelTag[]
   disabled: boolean
   onToggle: (piTag: string) => void
-  onSetRole: (piTag: string, role: ModelTag['role']) => void
 }
 
-const ROLES: ModelTag['role'][] = ['input', 'output']
-
-export function TagListSection({ tags, disabled, onToggle, onSetRole }: Props) {
-  const roleOf = (piTag: string) => tags.find(t => t.piTag === piTag)?.role
+export function TagListSection({ tags, disabled, onToggle }: Props) {
+  const isSelected = (piTag: string) => tags.some(t => t.piTag === piTag)
 
   return (
     <div className="space-y-2" role="group" aria-label="Model tags">
       {MOCK_PI_TAGS.map(tag => {
-        const role = roleOf(tag.piTag)
-        const isOn = role !== undefined
+        const isOn = isSelected(tag.piTag)
         return (
           <div
             key={tag.piTag}
@@ -53,33 +49,9 @@ export function TagListSection({ tags, disabled, onToggle, onSetRole }: Props) {
             </label>
 
             {isOn && (
-              <div
-                className="inline-flex shrink-0 overflow-hidden rounded-md border border-border"
-                role="radiogroup"
-                aria-label={`Role for ${tag.piTag}`}
-              >
-                <div className="px-3 py-1 text-xs font-medium capitalize bg-card text-muted-foreground">
-                  <div>{'input'}</div>
-                </div>
-                {/* {ROLES.map(r => (
-                  <button
-                    key={r}
-                    type="button"
-                    disabled={disabled}
-                    role="radio"
-                    aria-checked={role === r}
-                    onClick={() => onSetRole(tag.piTag, r)}
-                    className={cn(
-                      'px-3 py-1 text-xs font-medium capitalize transition-colors',
-                      role === r
-                        ? 'bg-primary text-primary-foreground'
-                        : 'bg-card text-muted-foreground hover:bg-accent',
-                    )}
-                  >
-                    {ROLE_LABELS[r]}
-                  </button>
-                ))} */}
-              </div>
+              <span className="shrink-0 rounded-md border border-border bg-card px-3 py-1 text-xs font-medium text-muted-foreground">
+                Input
+              </span>
             )}
           </div>
         )

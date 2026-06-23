@@ -41,7 +41,6 @@ export function CreateModelForm() {
     setPiServerId,
     tags,
     toggleTag,
-    setTagRole,
     isSubmitting,
     submit,
     cancel,
@@ -158,7 +157,6 @@ export function CreateModelForm() {
                     tags={tags}
                     disabled={isSubmitting}
                     onToggle={toggleTag}
-                    onSetRole={setTagRole}
                   />
                 ) : (
                   <p className="rounded-lg border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">

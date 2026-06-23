@@ -23,6 +23,7 @@ export function useModelTagSelection() {
     setTags([])
   }, [])
 
+  // Tags are selected as model inputs only (no input/output role toggle).
   const toggleTag = useCallback((piTag: string) => {
     setTags(prev =>
       prev.some(t => t.piTag === piTag)
@@ -31,15 +32,11 @@ export function useModelTagSelection() {
     )
   }, [])
 
-  const setTagRole = useCallback((piTag: string, role: ModelTag['role']) => {
-    setTags(prev => prev.map(t => (t.piTag === piTag ? { ...t, role } : t)))
-  }, [])
-
   // Clears server + tags — call when the parent workspace changes.
   const reset = useCallback(() => {
     setPiServerIdState('')
     setTags([])
   }, [])
 
-  return { piServerId, setPiServerId, tags, toggleTag, setTagRole, reset }
+  return { piServerId, setPiServerId, tags, toggleTag, reset }
 }

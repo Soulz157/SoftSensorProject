@@ -17,6 +17,23 @@ export function deriveStatus(nodes: CanvasNode[]): NodeStatus {
   return 'normal'
 }
 
+const SEVERITY_ORDER: Record<NodeStatus, number> = {
+  alarm: 3,
+  offline: 2,
+  warning: 1,
+  normal: 0,
+}
+
+export function equipmentAlerts(nodes: CanvasNode[]): CanvasNode[] {
+  return nodes
+    .filter(n => n.data.status !== 'normal')
+    .sort(
+      (a, b) =>
+        SEVERITY_ORDER[b.data.status as NodeStatus] -
+        SEVERITY_ORDER[a.data.status as NodeStatus],
+    )
+}
+
 export function countNodesByStatus(
   nodes: CanvasNode[],
 ): Record<NodeStatus, number> {

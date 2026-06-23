@@ -1,4 +1,3 @@
-// components/layout/sidebar/sidebar-workspaces.tsx
 import Link from 'next/link'
 import {
   Building2,
@@ -20,6 +19,7 @@ import {
   workspaceStatusDot,
   type SidebarLogic,
 } from '@/hooks/layout/use-sidebar'
+import Image from 'next/image'
 
 function WorkspaceIcon({ iconId, colorId }: WorkspaceIconProps) {
   const selectedIcon = workspaceIcons.find(item => item.id === iconId)
@@ -122,9 +122,12 @@ export function SidebarWorkspaces({
                   >
                     <div className="relative shrink-0">
                       {ws.thumbnailUrl ? (
-                        <img
+                        <Image
                           src={`${process.env.NEXT_PUBLIC_API_URL}${ws.thumbnailUrl}`}
                           alt={ws.name}
+                          width={28}
+                          height={28}
+                          unoptimized={true}
                           className="h-7 w-7 rounded-lg object-cover"
                         />
                       ) : (
@@ -252,11 +255,11 @@ export function SidebarWorkspaces({
 
               {(currentWorkspace.alarmCount ?? 0) > 0 && (
                 <Link
-                  href="/alerts"
+                  href={`/workspaces/${currentWorkspace.id}/alerts`}
                   onClick={onClose}
                   className={cn(
                     'flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors',
-                    isActiveNav('/alerts')
+                    isActiveNav(`/workspaces/${currentWorkspace.id}/alerts`)
                       ? 'bg-sidebar-primary text-sidebar-primary-foreground'
                       : 'text-destructive/70 hover:bg-destructive/10 hover:text-destructive',
                   )}
