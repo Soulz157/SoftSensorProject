@@ -1,3 +1,3 @@
-from .root import router as root_router
+from .data import router as data
 
-__all__ = ["root_router"]
+__all__ = ["router"]

@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from config import settings
-from routers import root_router
+from routers import data
 
 
 def create_app() -> FastAPI:
@@ -19,9 +19,14 @@ def create_app() -> FastAPI:
         allow_headers=settings.CORS_ALLOW_HEADERS,
     )
 
-    app.include_router(root_router)
+    app.include_router(data)
 
     return app
 
 
 app = create_app()
+
+
+@app.get("/health", tags=["Health"])
+async def health():
+    return {"status": "ok"}

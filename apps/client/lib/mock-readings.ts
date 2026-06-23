@@ -27,6 +27,8 @@ export interface SensorReading {
 export interface PiTagMeta {
   piTag: string
   label: string
+  /** Human-readable description of what the tag measures. */
+  description: string
   unit: string
   /** Maps to `--chart-{1..5}` for series color. */
   chartIndex: 1 | 2 | 3 | 4 | 5
@@ -46,6 +48,7 @@ export const MOCK_PI_TAGS: PiTagMeta[] = [
   {
     piTag: 'TI-101',
     label: 'Temperature',
+    description: 'Reactor inlet temperature',
     unit: '°C',
     chartIndex: 1,
     baseline: 72,
@@ -57,6 +60,7 @@ export const MOCK_PI_TAGS: PiTagMeta[] = [
   {
     piTag: 'VI-202',
     label: 'Vibration',
+    description: 'Pump bearing vibration',
     unit: 'mm/s',
     chartIndex: 2,
     baseline: 4.5,
@@ -68,6 +72,7 @@ export const MOCK_PI_TAGS: PiTagMeta[] = [
   {
     piTag: 'PI-303',
     label: 'Pressure',
+    description: 'Line discharge pressure',
     unit: 'bar',
     chartIndex: 3,
     baseline: 8.2,
@@ -79,6 +84,7 @@ export const MOCK_PI_TAGS: PiTagMeta[] = [
   {
     piTag: 'FI-404',
     label: 'Flow',
+    description: 'Process feed flow rate',
     unit: 'm³/h',
     chartIndex: 4,
     baseline: 120,

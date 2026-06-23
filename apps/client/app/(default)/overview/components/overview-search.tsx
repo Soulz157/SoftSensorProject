@@ -36,6 +36,13 @@ const STATUS_PILLS: {
   },
 ]
 
+const PILL_TEXT_LIGHT: Record<NodeStatus, string> = {
+  alarm: '#b91c1c',
+  warning: '#92400e',
+  offline: '#52525b',
+  normal: '#166534',
+}
+
 interface OverviewSearchProps {
   query: string
   onQueryChange: (q: string) => void
@@ -70,7 +77,6 @@ export function OverviewSearch({
           : 'bg-white border-black/10 text-foreground',
       )}
     >
-      {/* Search input */}
       <Search
         className={cn(
           'h-3.5 w-3.5 shrink-0',
@@ -81,8 +87,8 @@ export function OverviewSearch({
         type="search"
         value={query}
         onChange={e => onQueryChange(e.target.value)}
-        placeholder="Search workspaces…"
-        aria-label="Search workspaces by name"
+        placeholder="Search plants…"
+        aria-label="Search plants by name"
         className={cn(
           'min-w-0 flex-1 bg-transparent text-[12px] outline-none placeholder:opacity-50',
           isDark ? 'text-white' : 'text-foreground',
@@ -116,7 +122,7 @@ export function OverviewSearch({
                 active
                   ? {
                       backgroundColor: bg,
-                      color,
+                      color: isDark ? color : PILL_TEXT_LIGHT[key],
                       boxShadow: `0 0 0 1px ${color}40`,
                     }
                   : undefined

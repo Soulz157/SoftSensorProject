@@ -5,6 +5,7 @@ import { usePlantsData } from '@/hooks/use-plants-data'
 import { PlantsMap } from './components/overview-map'
 import { OverviewSearch } from './components/overview-search'
 import { OverviewDetailPanel } from './components/overview-detail-panel'
+import { OverviewSkeleton } from './components/overview-skeleton'
 import type { Workspace } from '@/types'
 import { type NodeStatus } from '@/lib/overview-status'
 
@@ -56,17 +57,7 @@ export default function PlantsPage() {
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [selectedId, handleDismiss])
 
-  if (loading)
-    return (
-      <div
-        role="status"
-        aria-busy="true"
-        aria-label="Loading workspaces"
-        className="flex h-full w-full motion-safe:animate-pulse items-center justify-center bg-muted/10"
-      >
-        <p className="text-sm text-muted-foreground">Loading workspaces…</p>
-      </div>
-    )
+  if (loading) return <OverviewSkeleton />
   if (error) throw new Error(error)
 
   const selectedWorkspace: Workspace | null =
@@ -76,9 +67,9 @@ export default function PlantsPage() {
   if (workspaces.length === 0)
     return (
       <div className="flex h-full w-full flex-col items-center justify-center gap-3">
-        <p className="text-sm font-medium text-foreground">No workspaces yet</p>
+        <p className="text-sm font-medium text-foreground">No plants yet</p>
         <p className="text-xs text-muted-foreground">
-          Create a workspace to start monitoring your plant.
+          Create a plant to start monitoring.
         </p>
       </div>
     )
@@ -89,7 +80,7 @@ export default function PlantsPage() {
       <div className="relative flex-1 overflow-hidden">
         <div className="pointer-events-none absolute left-0 right-0 top-0 z-10 bg-linear-to-b from-black/50 to-transparent px-4 pb-6 pt-3">
           <h1 className="text-sm font-semibold tracking-wide text-white drop-shadow">
-            Workspaces Overview
+            Plants Overview
           </h1>
           <p className="text-xs text-white/70 drop-shadow">
             {workspaces.length} plants monitored
@@ -129,7 +120,7 @@ export default function PlantsPage() {
             ref={panelRef}
             role="dialog"
             aria-modal="true"
-            aria-label={`${selectedWorkspace.name} — workspace details`}
+            aria-label={`${selectedWorkspace.name} — plant details`}
             tabIndex={-1}
             className="fixed inset-x-0 bottom-0 z-20 h-[65svh] overflow-hidden rounded-t-2xl outline-none sm:relative sm:inset-auto sm:z-auto sm:h-full sm:rounded-none"
           >

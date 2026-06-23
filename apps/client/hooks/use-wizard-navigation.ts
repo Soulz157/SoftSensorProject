@@ -9,6 +9,7 @@ import {
   workspaceIdAtom,
   plantIdAtom,
   piServerIdAtom,
+  tagListAtom,
   selectedTagsAtom,
   timeRangeAtom,
   fetchStateAtom,
@@ -41,6 +42,7 @@ export function useWizardNavigation(): UseWizardNavigationResult {
   const [plantId, setPlantIdAtom] = useAtom(plantIdAtom)
   const setPiServerIdAtom = useSetAtom(piServerIdAtom)
   const piServerId = useAtomValue(piServerIdAtom)
+  const setTagList = useSetAtom(tagListAtom)
   const [selectedTags, setSelectedTagsAtom] = useAtom(selectedTagsAtom)
   const setTimeRangeAtom = useSetAtom(timeRangeAtom)
   const fetchState = useAtomValue(fetchStateAtom)
@@ -107,6 +109,7 @@ export function useWizardNavigation(): UseWizardNavigationResult {
       setWorkspaceIdAtom(id)
       setPlantIdAtom('')
       setPiServerIdAtom('')
+      setTagList([])
       setSelectedTagsAtom([])
       setTimeRangeAtom(EMPTY_DEFAULT_RANGE)
       setFetchState({ status: 'idle', progress: 0 })
@@ -119,6 +122,7 @@ export function useWizardNavigation(): UseWizardNavigationResult {
       setWorkspaceIdAtom,
       setPlantIdAtom,
       setPiServerIdAtom,
+      setTagList,
       setSelectedTagsAtom,
       setTimeRangeAtom,
       setFetchState,
@@ -133,6 +137,7 @@ export function useWizardNavigation(): UseWizardNavigationResult {
     (id: string) => {
       setPlantIdAtom(id)
       setPiServerIdAtom('')
+      setTagList([])
       setSelectedTagsAtom([])
       setTimeRangeAtom(EMPTY_DEFAULT_RANGE)
       setFetchState({ status: 'idle', progress: 0 })
@@ -143,6 +148,7 @@ export function useWizardNavigation(): UseWizardNavigationResult {
     [
       setPlantIdAtom,
       setPiServerIdAtom,
+      setTagList,
       setSelectedTagsAtom,
       setTimeRangeAtom,
       setFetchState,

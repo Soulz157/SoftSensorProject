@@ -22,6 +22,7 @@ import {
   deriveSystemStatus,
 } from '@/lib/overview-status'
 import { useMapViewport } from '@/hooks/canvas/use-map-viewport'
+import Image from 'next/image'
 
 const VIEWPORT_W = 700
 const VIEWPORT_H = 420
@@ -91,8 +92,6 @@ export function PlantsMap({
     [nodesByWorkspace],
   )
 
-  // Status hues are vivid for dots but fail WCAG AA as text on the light HUD.
-  // Use darker variants for label text in light mode; vivid in dark.
   const STATUS_TEXT_LIGHT: Record<NodeStatus, string> = {
     alarm: '#dc2626',
     warning: '#b45309',
@@ -183,11 +182,11 @@ export function PlantsMap({
           <div
             className={cn(
               'text-[13px]',
-              isDark ? 'text-green-400' : 'text-muted-foreground',
+              isDark ? 'text-white/55' : 'text-muted-foreground',
             )}
           >
             <span
-              className="font-semibold"
+              className="font-semibold tabular-nums"
               style={{ color: isDark ? '#fff' : '#111' }}
             >
               {workspaces.length}
@@ -197,11 +196,11 @@ export function PlantsMap({
           <div
             className={cn(
               'text-[13px]',
-              isDark ? 'text-red-400' : 'text-muted-foreground',
+              isDark ? 'text-white/55' : 'text-muted-foreground',
             )}
           >
             <span
-              className="font-semibold"
+              className="font-semibold tabular-nums"
               style={{
                 color: totalAlarms > 0 ? alarmText : isDark ? '#fff' : '#111',
               }}
@@ -213,11 +212,11 @@ export function PlantsMap({
           <div
             className={cn(
               'text-[13px]',
-              isDark ? 'text-amber-400' : 'text-muted-foreground',
+              isDark ? 'text-white/55' : 'text-muted-foreground',
             )}
           >
             <span
-              className="font-semibold"
+              className="font-semibold tabular-nums"
               style={{
                 color:
                   totalWarnings > 0 ? warningText : isDark ? '#fff' : '#111',
@@ -311,11 +310,13 @@ export function PlantsMap({
             <CardContent className="p-0">
               {/* Thumbnail */}
               {hoveredWs.thumbnailUrl ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
+                <Image
                   src={`${process.env.NEXT_PUBLIC_API_URL}${hoveredWs.thumbnailUrl}`}
                   alt={hoveredWs.name}
+                  width={400}
+                  height={200}
                   className="h-24 w-full object-cover"
+                  unoptimized={true}
                 />
               ) : (
                 <div
@@ -391,7 +392,7 @@ export function PlantsMap({
         height="100%"
         viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
         role="application"
-        aria-label={`Workspaces overview map — ${workspaces.length} plant${workspaces.length === 1 ? '' : 's'}`}
+        aria-label={`Plants overview map — ${workspaces.length} plant${workspaces.length === 1 ? '' : 's'}`}
         className={`h-full w-full ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
         style={{ background: palette.bg, touchAction: 'none' }}
         {...svgHandlers}

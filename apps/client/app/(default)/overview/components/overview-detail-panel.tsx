@@ -37,9 +37,12 @@ function StatCell({
 }) {
   return (
     <div className="flex flex-col gap-1 rounded-md bg-muted/30 p-3">
-      <p className="text-[10px] font-medium text-muted-foreground">{label}</p>
+      <p className="text-xs font-medium text-muted-foreground">{label}</p>
       <p
-        className={cn('text-xl font-semibold', valueClass ?? 'text-foreground')}
+        className={cn(
+          'font-mono text-xl font-semibold tabular-nums',
+          valueClass ?? 'text-foreground',
+        )}
       >
         {value}
       </p>
@@ -90,8 +93,8 @@ function PanelContent({
   }[worstStatus]
 
   const statusBadgeText = {
-    alarm: `Alarm — ${alarmCount} equipment${alarmCount === 1 ? '' : 's'} critical`,
-    warning: `Warning — ${warningCount} equipment${warningCount === 1 ? '' : 's'} affected`,
+    alarm: `Alarm — ${alarmCount} critical`,
+    warning: `Warning — ${warningCount} affected`,
     offline: 'Offline',
     normal: 'All Systems Normal',
   }[worstStatus]
@@ -103,7 +106,7 @@ function PanelContent({
         <div className="flex items-start justify-between gap-3">
           <div className="flex min-w-0 items-center gap-3">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-muted">
-              <IconComponent className="h-4.5 w-4.5 text-foreground" />
+              <IconComponent className="h-5 w-5 text-foreground" />
             </div>
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold text-foreground">
@@ -160,15 +163,10 @@ function PanelContent({
               Summary
             </div>
             <div className="grid grid-cols-2 gap-2">
-              <StatCell
-                label="Equipments"
-                value={nodeCount}
-                valueClass="text-primary"
-              />
+              <StatCell label="Equipment" value={nodeCount} />
               <StatCell
                 label="Models"
-                value={workspace._count.models}
-                valueClass="text-primary"
+                value={workspace._count.models ? workspace._count.models : 0}
               />
               <StatCell
                 label="Alarms"
@@ -220,7 +218,7 @@ function PanelContent({
           className="w-full gap-2"
           onClick={() => onViewWorkspace(workspace.id)}
         >
-          View Workspace
+          View Plant
           <ArrowRight aria-hidden="true" className="h-3 w-3 shrink-0" />
         </Button>
         <Button

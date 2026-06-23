@@ -1,5 +1,6 @@
 'use client'
 import { useState } from 'react'
+import { useRouter } from 'next/navigation'
 import {
   Activity,
   AlertCircle,
@@ -59,6 +60,7 @@ function inScope(m: ModelWithWorkspace, scope: TreeScope | null): boolean {
 }
 
 export default function ModelsPage() {
+  const router = useRouter()
   const workspaces = useAtomValue(workspacesAtom)
 
   // '' = All Workspaces
@@ -162,10 +164,7 @@ export default function ModelsPage() {
             <Button
               size="sm"
               className="gap-1.5"
-              onClick={() => {
-                setEditTarget(null)
-                setDialogOpen(true)
-              }}
+              onClick={() => router.push('/models/create')}
             >
               <Plus className="h-4 w-4" />
               New Model
@@ -445,10 +444,7 @@ export default function ModelsPage() {
             models={filtered}
             loading={loading}
             isFetching={isFetching}
-            onCreateModel={() => {
-              setEditTarget(null)
-              setDialogOpen(true)
-            }}
+            onCreateModel={() => router.push('/models/create')}
             onEdit={m => {
               setEditTarget(m)
               setDialogOpen(true)

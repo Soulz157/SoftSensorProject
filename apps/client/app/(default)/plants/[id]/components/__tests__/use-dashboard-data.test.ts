@@ -57,6 +57,7 @@ describe('useDashboardData', () => {
           {
             id: 'n1',
             workspaceId: 'ws1',
+            planId: 'plant1',
             data: {
               name: 'CNC-001',
               type: 'machine' as const,
@@ -74,6 +75,6 @@ describe('useDashboardData', () => {
     const { result } = renderHook(() => useDashboardData())
     await waitFor(() => expect(result.current.loading).toBe(false))
     expect(result.current.nodes).toHaveLength(1)
-    expect(result.current.nodes[0].id).toBe('n1')
+    expect(result.current.nodes[0]?.id).toBe('n1')
   })
 })

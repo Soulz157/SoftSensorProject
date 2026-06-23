@@ -144,7 +144,7 @@ export function OverviewAssetTree({
         Asset Hierarchy
       </div>
       {tree.length === 0 ? (
-        <EmptyHint label="No assets in this workspace" />
+        <EmptyHint label="No assets in this plant" />
       ) : (
         tree.map(plant => (
           <div key={plant.id}>

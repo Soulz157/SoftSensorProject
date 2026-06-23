@@ -4,6 +4,7 @@ import { AIModel, WorkspacePlant } from '@/types'
 import { getWorkspacePlants } from '@/services/workspace-plant'
 import { getNodes, type CanvasNode } from '@/services/canvas'
 import { createModel, updateModel } from '@/services/model'
+import { useModelTagSelection } from '@/hooks/model/use-model-tag-selection'
 
 type State = {
   name: string
@@ -101,9 +102,17 @@ export function useModelForm({
 }: UseModelFormProps) {
   const [state, dispatch] = useReducer(reducer, initialState)
 
+  // PI server + tag-role selection (shared with the create flow). Tags are
+  // local-only — not loaded from or saved to the model yet (Phase-6 gap).
+  const tagSelection = useModelTagSelection()
+  const { reset: resetTags } = tagSelection
+
   useEffect(() => {
-    if (open) dispatch({ type: 'INIT', model })
-  }, [open, model])
+    if (open) {
+      dispatch({ type: 'INIT', model })
+      resetTags()
+    }
+  }, [open, model, resetTags])
 
   useEffect(() => {
     if (!state.workspaceId) return
@@ -170,10 +179,13 @@ export function useModelForm({
 
   return {
     state,
+    tagSelection,
     actions: {
       setName: (name: string) => dispatch({ type: 'SET_NAME', name }),
-      handleWorkspaceChange: (id: string) =>
-        dispatch({ type: 'CHANGE_WORKSPACE', workspaceId: id }),
+      handleWorkspaceChange: (id: string) => {
+        dispatch({ type: 'CHANGE_WORKSPACE', workspaceId: id })
+        resetTags() // workspace change clears the PI server + picked tags
+      },
       handlePlantChange: (id: string) =>
         dispatch({ type: 'CHANGE_PLANT', plantId: id === 'none' ? '' : id }),
       handleNodeChange: (id: string) =>

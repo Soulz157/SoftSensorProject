@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
 import { usePlantsData } from '../use-plants-data'
+import type { CanvasNode } from '@/services/canvas'
 
 vi.mock('@/services/canvas', () => ({
   getNodes: vi.fn(),
@@ -38,7 +39,7 @@ const mockWorkspaces = [
   },
 ]
 
-const mockNodes = [
+const mockNodes: CanvasNode[] = [
   {
     id: 'n-1',
     workspaceId: 'ws-1',
@@ -72,8 +73,8 @@ describe('usePlantsData', () => {
 
   it('returns all workspaces and nodes after fetch', async () => {
     vi.mocked(getNodes)
-      .mockResolvedValueOnce([mockNodes[0]])
-      .mockResolvedValueOnce([mockNodes[1]])
+      .mockResolvedValueOnce([mockNodes[0]!])
+      .mockResolvedValueOnce([mockNodes[1]!])
     const { result } = renderHook(() => usePlantsData())
     await waitFor(() => expect(result.current.loading).toBe(false))
     expect(result.current.workspaces).toHaveLength(2)

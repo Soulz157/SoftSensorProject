@@ -130,7 +130,7 @@ export function PlantTower({
       className="cursor-pointer motion-safe:transition-transform motion-safe:hover:-translate-y-1"
       tabIndex={0}
       role="button"
-      aria-label={`${name} workspace — status: ${status}, ${nodeCount} nodes`}
+      aria-label={`${name} plant — status: ${status}, ${nodeCount} nodes`}
       onFocus={() => setIsFocused(true)}
       onBlur={() => setIsFocused(false)}
       onMouseEnter={onMouseEnter}

@@ -17,6 +17,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { ServerCog, Tags } from 'lucide-react'
+import { MOCK_PI_SERVERS } from '@/lib/mock-pi-servers'
+import { PiServerSelect } from '@/app/(default)/models/create/components/pi-server-select'
+import { TagListSection } from '@/app/(default)/models/create/components/tag-list-section'
 import { useModelForm } from '@/hooks/model/use-model-form'
 import { AIModel, Workspace } from '@/types'
 
@@ -35,13 +39,20 @@ export function ModelUpsertDialog({
   workspaces,
   model,
 }: Props) {
-  const { state, actions } = useModelForm({ open, model, onSuccess, onClose })
+  const { state, tagSelection, actions } = useModelForm({
+    open,
+    model,
+    onSuccess,
+    onClose,
+  })
   const { name, workspaceId, plantId, nodeId, plants, nodes, isSubmitting } =
     state
+  const { piServerId, setPiServerId, tags, toggleTag, setTagRole } =
+    tagSelection
 
   return (
     <Dialog open={open} onOpenChange={o => !o && !isSubmitting && onClose()}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-h-[85vh] max-w-lg overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{model ? 'Edit Model' : 'New Model'}</DialogTitle>
         </DialogHeader>
@@ -134,6 +145,43 @@ export function ModelUpsertDialog({
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+          )}
+
+          {/* PI server + tag selection (mirrors the create flow) */}
+          {workspaceId && (
+            <div className="space-y-3 border-t border-border pt-4">
+              <div className="space-y-1.5">
+                <Label className="flex items-center gap-1.5">
+                  <ServerCog className="h-3.5 w-3.5 text-muted-foreground" />
+                  PI Server
+                </Label>
+                <PiServerSelect
+                  servers={MOCK_PI_SERVERS}
+                  value={piServerId}
+                  onChange={setPiServerId}
+                  disabled={isSubmitting}
+                />
+              </div>
+
+              {piServerId ? (
+                <div className="space-y-1.5">
+                  <Label className="flex items-center gap-1.5">
+                    <Tags className="h-3.5 w-3.5 text-muted-foreground" />
+                    Tag List
+                  </Label>
+                  <TagListSection
+                    tags={tags}
+                    disabled={isSubmitting}
+                    onToggle={toggleTag}
+                    onSetRole={setTagRole}
+                  />
+                </div>
+              ) : (
+                <p className="rounded-lg border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
+                  Select a PI server to list its tags.
+                </p>
+              )}
             </div>
           )}
         </div>

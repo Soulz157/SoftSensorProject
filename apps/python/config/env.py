@@ -18,6 +18,16 @@ class Settings(BaseSettings):
     CORS_ALLOW_METHODS: List[str] = ["*"]
     CORS_ALLOW_HEADERS: List[str] = ["*"]
 
+    INTERVAL_TIME: str = "1m"
+    RANGE_TIME: int = 1
+
+    SYS_USER: str
+    SYS_PASS: str
+
+    PI_NAME: str
+    CAL_TYPR: str = "Average"
+    CAL_BASIS: str = "TimeWeighted"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

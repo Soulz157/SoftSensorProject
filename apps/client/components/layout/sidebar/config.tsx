@@ -3,7 +3,7 @@ import {
   BarChart3,
   Box,
   Building2,
-  CheckCircle2,
+  // CheckCircle2,
   // ClipboardCheck,
   Cog,
   Database,
@@ -48,12 +48,12 @@ export const getUserNavItems = (alertCount: number): NavItem[] => [
         icon: <Eye className="h-4 w-4" />,
         href: '/models/views',
       },
-      {
-        id: 'models-deployed',
-        name: 'Check Deployed',
-        icon: <CheckCircle2 className="h-4 w-4" />,
-        href: '/models/deployed',
-      },
+      // {
+      //   id: 'models-deployed',
+      //   name: 'Check Deployed',
+      //   icon: <CheckCircle2 className="h-4 w-4" />,
+      //   href: '/models/deployed',
+      // },
       // {
       //   id: 'models-quality',
       //   name: 'Data Quality Check',

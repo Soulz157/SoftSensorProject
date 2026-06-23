@@ -86,23 +86,23 @@ model Account {
 }
 
 model Workspace {
-  id          String            @id @default(uuid())
-  ownerId     String
-  owner       User              @relation(fields: [ownerId], references: [id])
-  name        String
-  icon        String
-  color       String
+  id           String            @id @default(uuid())
+  ownerId      String
+  owner        User              @relation(fields: [ownerId], references: [id])
+  name         String
+  icon         String
+  color        String
   description  String?
   thumbnailUrl String?
   createdAt    DateTime          @default(now())
-  updatedAt   DateTime          @updatedAt
-  deletedAt   DateTime?
-  logs        WorkspaceLog[]
-  members     WorkspaceMember[]
-  nodes       Nodes[]
-  models      Model[]
-  edges       Edge[]
-  plans       WorkspacePlant[]
+  updatedAt    DateTime          @updatedAt
+  deletedAt    DateTime?
+  logs         WorkspaceLog[]
+  members      WorkspaceMember[]
+  nodes        Nodes[]
+  models       Model[]
+  edges        Edge[]
+  plans        WorkspacePlant[]
 
   @@index([ownerId])
 }
