@@ -1,5 +1,6 @@
 import { fetchClient } from '@/lib/fetcher'
 import { AIModel } from '@/types'
+import type { ModelConfig } from '@/lib/model-config'
 
 export async function getModels(workspaceId: string): Promise<AIModel[]> {
   const res: { data: AIModel[] } = await fetchClient(
@@ -20,6 +21,7 @@ export async function createModel(dto: {
   workspaceId: string
   name: string
   nodeId?: string
+  config?: ModelConfig
 }): Promise<AIModel> {
   const res: { data: AIModel } = await fetchClient('/api/v1/authorized/model', {
     method: 'POST',
@@ -36,6 +38,7 @@ export async function updateModel(
     deployStatus?: 'stopped' | 'running' | 'error' | 'initializing'
     prodStatus?: 'normal' | 'warning' | 'alert' | 'offline' | 'frozen'
     statusDetail?: string | null
+    config?: ModelConfig
   },
 ): Promise<AIModel> {
   const res: { data: AIModel } = await fetchClient(

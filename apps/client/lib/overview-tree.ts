@@ -2,12 +2,17 @@ import type { CanvasNode } from '@/services/canvas'
 import type { AIModel, WorkspacePlant } from '@/types'
 import type { NodeStatus } from '@/store/status-colors'
 import { NODE_STATUS_PRIORITY } from '@/constants/status'
-import { effectiveProdStatus } from '@/lib/model-status'
+import {
+  effectiveProdStatus,
+  failedDeploys,
+  isDeployFailed,
+} from '@/lib/model-status'
 
 export interface OverviewTreeModel {
   id: string
   name: string
   status: NodeStatus
+  deployFailed: boolean
 }
 
 export interface OverviewTreeNode {
@@ -28,9 +33,11 @@ export interface OverviewTreePlant {
 const UNASSIGNED_ID = '__unassigned__'
 
 // Map a model's effective production status onto the canonical NodeStatus scale
-// used by every tree row. effectiveProdStatus already folds the deploy state
-// (stopped/error → offline); we only need alert → alarm to align the vocabulary.
+// used by every tree row. A failed deploy is treated as 'warning' so it beats
+// 'normal' in worstStatus and the red trail bubbles up to Equipment and Plant.
+// (NODE_STATUS_PRIORITY: offline=3 > normal=2, so offline never beats normal.)
 export function normalizeModelStatus(m: AIModel): NodeStatus {
+  if (isDeployFailed(m)) return 'warning'
   const s = effectiveProdStatus(m)
   if (s === 'alert') return 'alarm'
   // The overview map has no purple state — a frozen model reads as offline
@@ -76,7 +83,12 @@ export function buildOverviewTree(
   const buildNode = (n: CanvasNode): OverviewTreeNode => {
     const treeModels: OverviewTreeModel[] = (
       modelsByNodeId.get(n.id) ?? []
-    ).map(m => ({ id: m.id, name: m.name, status: normalizeModelStatus(m) }))
+    ).map(m => ({
+      id: m.id,
+      name: m.name,
+      status: normalizeModelStatus(m),
+      deployFailed: isDeployFailed(m),
+    }))
     const ownStatus = (n.data.status ?? 'normal') as NodeStatus
     return {
       id: n.id,
@@ -103,6 +115,7 @@ export function buildOverviewTree(
     id: m.id,
     name: m.name,
     status: normalizeModelStatus(m),
+    deployFailed: isDeployFailed(m),
   }))
 
   if (orphanNodes.length > 0 || orphanModelRows.length > 0) {
@@ -126,4 +139,34 @@ export function buildOverviewTree(
   }
 
   return result
+}
+
+export interface FailedModelPath {
+  modelId: string
+  modelName: string
+  equipmentName: string | null
+  equipmentId: string | null
+  plantName: string | null
+  plantId: string | null
+}
+
+// Resolve each failed model to its full Plant → Equipment path for the
+// troubleshooting panel. Pure derivation — no I/O.
+export function failedModelPaths(
+  plants: WorkspacePlant[],
+  nodes: CanvasNode[],
+  models: AIModel[],
+): FailedModelPath[] {
+  return failedDeploys(models).map(m => {
+    const node = nodes.find(n => n.id === m.nodesId) ?? null
+    const plant = node ? (plants.find(p => p.id === node.planId) ?? null) : null
+    return {
+      modelId: m.id,
+      modelName: m.name,
+      equipmentId: node?.id ?? null,
+      equipmentName: node?.data.name ?? null,
+      plantId: plant?.id ?? null,
+      plantName: plant?.name ?? null,
+    }
+  })
 }

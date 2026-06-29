@@ -13,6 +13,7 @@ import type { ModelTag } from '@/lib/mock-model-create'
  * `lib/mock-model-create.ts`). The server -> tag-catalog link is cosmetic —
  * `MOCK_PI_TAGS` is static, not per-server.
  */
+
 export function useModelTagSelection() {
   const [piServerId, setPiServerIdState] = useState('')
   const [tags, setTags] = useState<ModelTag[]>([])

@@ -9,6 +9,7 @@ import {
   Pencil,
   Power,
   RefreshCw,
+  SlidersHorizontal,
   Snowflake,
   StopCircle,
   Terminal,
@@ -139,6 +140,10 @@ export function ModelTable({
 }: Props) {
   const [detailModel, setDetailModel] = useState<AIModel | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<AIModel | null>(null)
+  const [deployTarget, setDeployTarget] = useState<{
+    model: AIModel
+    next: 'running' | 'stopped'
+  } | null>(null)
   const [mutatingId, setMutatingId] = useState<string | null>(null)
   const [optimisticStates, setOptimisticStates] = useState<
     Record<string, string>
@@ -248,7 +253,10 @@ export function ModelTable({
                         checked={isOn}
                         disabled={deployKey === 'initializing' || isMutating}
                         onCheckedChange={checked =>
-                          void handleToggle(m, checked ? 'running' : 'stopped')
+                          setDeployTarget({
+                            model: m,
+                            next: checked ? 'running' : 'stopped',
+                          })
                         }
                         aria-label={isOn ? `Stop ${m.name}` : `Start ${m.name}`}
                         className={cn(
@@ -323,6 +331,14 @@ export function ModelTable({
                           <Pencil className="h-3.5 w-3.5" />
                           Edit
                         </DropdownMenuItem>
+                        <DropdownMenuItem asChild>
+                          <Link
+                            href={`/models/create?mode=edit&modelId=${m.id}&workspaceId=${m.workspaceId}`}
+                          >
+                            <SlidersHorizontal className="h-3.5 w-3.5" />
+                            Edit configuration
+                          </Link>
+                        </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => setDetailModel(m)}>
                           <Info className="h-3.5 w-3.5" />
                           Details
@@ -367,6 +383,38 @@ export function ModelTable({
               }}
             >
               Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={deployTarget !== null}
+        onOpenChange={open => !open && setDeployTarget(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {deployTarget?.next === 'running'
+                ? `Start "${deployTarget.model.name}"?`
+                : `Stop "${deployTarget?.model.name}"?`}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {deployTarget?.next === 'running'
+                ? 'This will begin inference. Running models consume resources.'
+                : 'This will halt inference immediately.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (deployTarget)
+                  void handleToggle(deployTarget.model, deployTarget.next)
+                setDeployTarget(null)
+              }}
+            >
+              {deployTarget?.next === 'running' ? 'Start' : 'Stop'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

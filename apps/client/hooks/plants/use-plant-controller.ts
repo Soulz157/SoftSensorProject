@@ -3,6 +3,8 @@ import { useWorkspacePlants } from '../workspace/use-workspace-plants'
 import { NodeStatus } from '@/store/status-colors'
 import { useDashboardData } from '../use-dashboard-data'
 import { createNode } from '@/services/canvas'
+import { useModels } from '../workspace/use-models'
+import { failedDeploys } from '@/lib/model-status'
 
 type ViewMode = 'plants' | 'equipment'
 type DisplayMode = 'map' | 'grid'
@@ -26,6 +28,18 @@ export function usePlantsController(
   const activeWorkspaceId =
     selectedWorkspaceId ?? initialWorkspaceId ?? workspaces[0]?.id ?? null
   const { plants, createPlan } = useWorkspacePlants(activeWorkspaceId)
+
+  const { data: modelsRaw } = useModels(activeWorkspaceId)
+
+  const failedNodeIds = useMemo(
+    () =>
+      new Set(
+        failedDeploys(modelsRaw ?? [])
+          .map(m => m.nodesId)
+          .filter((id): id is string => id !== null),
+      ),
+    [modelsRaw],
+  )
 
   const selectedPlan = useMemo(
     () => plants.find(p => p.id === selectedPlanId) ?? null,
@@ -82,16 +96,17 @@ export function usePlantsController(
     return nodes
   }, [filteredNodes, nodes, selectedPlanId, activeWorkspaceId, viewMode])
 
-  const { alarmCount, warningCount } = useMemo(() => {
+  const { alarmCount, warningCount, deployFailedCount } = useMemo(() => {
     return visibleGridNodes.reduce(
       (acc, node) => {
         if (node.data.status === 'alarm') acc.alarmCount++
         if (node.data.status === 'warning') acc.warningCount++
+        if (failedNodeIds.has(node.id)) acc.deployFailedCount++
         return acc
       },
-      { alarmCount: 0, warningCount: 0 },
+      { alarmCount: 0, warningCount: 0, deployFailedCount: 0 },
     )
-  }, [visibleGridNodes])
+  }, [visibleGridNodes, failedNodeIds])
 
   const handlers = useMemo(
     () => ({
@@ -189,6 +204,8 @@ export function usePlantsController(
       breadcrumbPlant,
       alarmCount,
       warningCount,
+      deployFailedCount,
+      failedNodeIds,
     },
     setters: {
       setDisplayMode,

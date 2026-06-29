@@ -16,9 +16,10 @@ import type { CanvasNode } from '@/services/canvas'
 import type { Workspace } from '@/types'
 import {
   type NodeStatus,
-  STATUS_META,
+  type BinaryStatus,
+  BINARY_STATUS_META,
   deriveStatus,
-  countNodesByStatus,
+  countBinary,
   deriveSystemStatus,
 } from '@/lib/overview-status'
 import { useMapViewport } from '@/hooks/canvas/use-map-viewport'
@@ -38,6 +39,8 @@ interface PlantsMapProps {
   onWorkspaceClick: (id: string) => void
   onWorkspaceDoubleClick: (id: string) => void
   highlightedIds?: Set<string>
+  failedDeploysByWorkspace?: Record<string, number>
+  failedByNodeId?: Record<string, number>
 }
 
 export function PlantsMap({
@@ -47,6 +50,8 @@ export function PlantsMap({
   onWorkspaceClick,
   onWorkspaceDoubleClick,
   highlightedIds,
+  failedDeploysByWorkspace,
+  failedByNodeId,
 }: PlantsMapProps) {
   const { resolvedTheme, setTheme } = useTheme()
   const isDark = resolvedTheme !== 'light'
@@ -87,35 +92,39 @@ export function PlantsMap({
     ? { bg: 'radial-gradient(ellipse at 50% 40%, #0e1520 0%, #080a0f 80%)' }
     : { bg: 'radial-gradient(ellipse at 50% 40%, #f0f4f8 0%, #dce8f0 80%)' }
 
-  const { totalAlarms, totalWarnings, overallStatus, overallColor } = useMemo(
-    () => deriveSystemStatus(nodesByWorkspace),
-    [nodesByWorkspace],
-  )
+  const {
+    totalAlarms,
+    totalWarnings: nodeWarnings,
+    hasOffline,
+  } = useMemo(() => deriveSystemStatus(nodesByWorkspace), [nodesByWorkspace])
 
-  const STATUS_TEXT_LIGHT: Record<NodeStatus, string> = {
-    alarm: '#dc2626',
-    warning: '#b45309',
-    offline: '#52525b',
-    normal: '#15803d',
-  }
+  // const totalFailedDeploys = useMemo(
+  //   () =>
+  //     Object.values(failedDeploysByWorkspace ?? {}).reduce((s, n) => s + n, 0),
+  //   [failedDeploysByWorkspace],
+  // )
+
+  const overallBinary: BinaryStatus =
+    totalAlarms > 0 || hasOffline || nodeWarnings > 0 ? 'abnormal' : 'normal'
+  const overallColor = BINARY_STATUS_META[overallBinary].color
   const overallTextColor = isDark
     ? overallColor
-    : STATUS_TEXT_LIGHT[overallStatus]
-  const alarmText = isDark ? '#f87171' : '#dc2626'
-  const warningText = isDark ? '#fbbf24' : '#b45309'
+    : overallBinary === 'abnormal'
+      ? '#dc2626'
+      : '#15803d'
+  const totalAbnormal = Object.values(nodesByWorkspace)
+    .flat()
+    .filter(n => (n.data.status as NodeStatus) !== 'normal').length
+  const abnormalText = isDark ? '#f87171' : '#dc2626'
+  // const failedText = isDark ? '#fbbf24' : '#b45309'
 
-  // Hover tooltip data
   const hoveredWs = hoveredId ? workspaces.find(w => w.id === hoveredId) : null
   const hoveredNodes = useMemo(
     () => (hoveredId ? (nodesByWorkspace[hoveredId] ?? []) : []),
     [hoveredId, nodesByWorkspace],
   )
-  const hoveredCounts = useMemo(
-    () => countNodesByStatus(hoveredNodes),
-    [hoveredNodes],
-  )
+  const hoveredCounts = useMemo(() => countBinary(hoveredNodes), [hoveredNodes])
 
-  // Track container size in state — refs must not be read during render
   const [containerSize, setContainerSize] = useState({ w: 0, h: 0 })
   useEffect(() => {
     const el = containerRef.current
@@ -128,7 +137,6 @@ export function PlantsMap({
     return () => ro.disconnect()
   }, [containerRef])
 
-  // Tooltip position — clamp to stay inside container
   const TOOLTIP_W = 210
   const TOOLTIP_H = 230
   const tooltipStyle = useMemo(() => {
@@ -176,7 +184,7 @@ export function PlantsMap({
               className="text-[11px] font-semibold"
               style={{ color: overallTextColor }}
             >
-              {overallStatus.toUpperCase()}
+              {BINARY_STATUS_META[overallBinary].label.toUpperCase()}
             </span>
           </div>
           <div
@@ -191,23 +199,7 @@ export function PlantsMap({
             >
               {workspaces.length}
             </span>{' '}
-            Plants Online
-          </div>
-          <div
-            className={cn(
-              'text-[13px]',
-              isDark ? 'text-white/55' : 'text-muted-foreground',
-            )}
-          >
-            <span
-              className="font-semibold tabular-nums"
-              style={{
-                color: totalAlarms > 0 ? alarmText : isDark ? '#fff' : '#111',
-              }}
-            >
-              {totalAlarms}
-            </span>{' '}
-            Critical Alerts
+            Online
           </div>
           <div
             className={cn(
@@ -219,13 +211,34 @@ export function PlantsMap({
               className="font-semibold tabular-nums"
               style={{
                 color:
-                  totalWarnings > 0 ? warningText : isDark ? '#fff' : '#111',
+                  totalAbnormal > 0 ? abnormalText : isDark ? '#fff' : '#111',
               }}
             >
-              {totalWarnings}
+              {totalAbnormal}
             </span>{' '}
-            Warnings
+            Abnormal
           </div>
+          {/* <div
+            className={cn(
+              'text-[13px]',
+              isDark ? 'text-white/55' : 'text-muted-foreground',
+            )}
+          >
+            <span
+              className="font-semibold tabular-nums"
+              style={{
+                color:
+                  totalFailedDeploys > 0
+                    ? failedText
+                    : isDark
+                      ? '#fff'
+                      : '#111',
+              }}
+            >
+              {totalFailedDeploys}
+            </span>{' '}
+            Model deploys failed
+          </div> */}
         </div>
       </div>
 
@@ -308,7 +321,6 @@ export function PlantsMap({
             )}
           >
             <CardContent className="p-0">
-              {/* Thumbnail */}
               {hoveredWs.thumbnailUrl ? (
                 <Image
                   src={`${process.env.NEXT_PUBLIC_API_URL}${hoveredWs.thumbnailUrl}`}
@@ -329,7 +341,6 @@ export function PlantsMap({
                 </div>
               )}
 
-              {/* Body */}
               <div className="px-3 py-2.5">
                 <p className="mb-2.5 truncate text-[11px] font-semibold leading-tight">
                   {hoveredWs.name}
@@ -338,8 +349,8 @@ export function PlantsMap({
                 {/* Status count rows */}
                 <div className="space-y-1.5">
                   {(
-                    Object.entries(STATUS_META) as [
-                      NodeStatus,
+                    Object.entries(BINARY_STATUS_META) as [
+                      BinaryStatus,
                       { label: string; color: string },
                     ][]
                   ).map(([key, meta]) => (
@@ -402,8 +413,15 @@ export function PlantsMap({
             const ws = workspaces.find(w => w.id === zone.id)
             if (!ws) return null
             const nodes = nodesByWorkspace[ws.id] ?? []
-            const status =
+            const nodeStatus =
               (ws.status as NodeStatus | undefined) ?? deriveStatus(nodes)
+            const failedCount = failedDeploysByWorkspace?.[ws.id] ?? 0
+            const status: NodeStatus =
+              failedCount > 0 &&
+              nodeStatus !== 'alarm' &&
+              nodeStatus !== 'offline'
+                ? 'warning'
+                : nodeStatus
             const isSelected = selectedWorkspaceId === ws.id
             const isHovered = hoveredId === ws.id
             const isFiltered =
@@ -460,7 +478,12 @@ export function PlantsMap({
                   cy={labelY - 30}
                   nodeCount={ws.nodeCount ?? nodes.length}
                   status={status}
-                  nodeStatuses={nodes.map(n => n.data.status as NodeStatus)}
+                  nodeStatuses={nodes.map(n => {
+                    const base = n.data.status as NodeStatus
+                    return (failedByNodeId?.[n.id] ?? 0) > 0 && base !== 'alarm'
+                      ? 'warning'
+                      : base
+                  })}
                   workspaceColor={ws.color ?? 'blue'}
                   name={ws.name}
                   selected={isSelected}

@@ -39,7 +39,6 @@ export interface DatasetStats {
   droppedRowsByTag: Record<string, number>
 }
 
-/** Per-tag fill rule for Step 6 (Data Processing). */
 export type FillStrategy =
   | 'drop'
   | 'forward'

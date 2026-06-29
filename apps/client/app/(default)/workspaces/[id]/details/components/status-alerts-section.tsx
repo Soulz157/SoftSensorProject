@@ -37,7 +37,8 @@ export function StatusAlertsSection({
         ) : alerts.length > 0 ? (
           <div className="max-h-96 divide-y divide-border overflow-y-auto">
             {alerts.map(node => {
-              const sc = statusColors(node.data.status)
+              // Alerts are always non-normal → render as binary Abnormal (red).
+              const sc = statusColors('alarm')
               return (
                 <div
                   key={node.id}
@@ -61,7 +62,7 @@ export function StatusAlertsSection({
                       sc.text,
                     )}
                   >
-                    {node.data.status}
+                    Abnormal
                   </span>
                 </div>
               )

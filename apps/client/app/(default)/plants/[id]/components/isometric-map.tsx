@@ -15,7 +15,7 @@ import {
 } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { useTheme } from 'next-themes'
-import { countNodesByStatus, deriveStatus } from '@/lib/overview-status'
+import { countBinary, deriveBinaryStatus } from '@/lib/overview-status'
 
 const VIEWPORT_W = 700
 const VIEWPORT_H = 420
@@ -92,28 +92,18 @@ export function IsometricMap({
 
   const equipmentNodes = workspaceNodes ?? nodes
   const totalEquipment = equipmentNodes.length
-  const statusCounts = countNodesByStatus(equipmentNodes)
-  const overallStatus = deriveStatus(equipmentNodes)
-  const criticalAlerts = statusCounts.alarm
-  const warnings = statusCounts.warning
-  const overallHealth =
-    overallStatus === 'normal' ? 'HEALTHY' : overallStatus.toUpperCase()
+  const statusCounts = countBinary(equipmentNodes)
+  const overallBinary = deriveBinaryStatus(equipmentNodes)
+  const abnormalCount = statusCounts.abnormal
+  const overallHealth = overallBinary === 'abnormal' ? 'ABNORMAL' : 'NORMAL'
   const healthColor =
-    overallStatus === 'alarm'
+    overallBinary === 'abnormal'
       ? isDark
         ? '#ef4444'
         : '#dc2626'
-      : overallStatus === 'warning'
-        ? isDark
-          ? '#f59e0b'
-          : '#d97706'
-        : overallStatus === 'offline'
-          ? isDark
-            ? '#71717a'
-            : '#52525b'
-          : isDark
-            ? '#10b981'
-            : '#059669'
+      : isDark
+        ? '#10b981'
+        : '#059669'
 
   const palette = isDark
     ? {
@@ -181,28 +171,12 @@ export function IsometricMap({
                 className="font-semibold"
                 style={{
                   color:
-                    criticalAlerts > 0 ? '#ef4444' : isDark ? '#fff' : '#111',
+                    abnormalCount > 0 ? '#ef4444' : isDark ? '#fff' : '#111',
                 }}
               >
-                {criticalAlerts}
+                {abnormalCount}
               </span>{' '}
-              Critical Alerts
-            </div>
-            <div
-              className={cn(
-                'text-[11px]',
-                isDark ? 'text-white/60' : 'text-gray-600',
-              )}
-            >
-              <span
-                className="font-semibold"
-                style={{
-                  color: warnings > 0 ? '#f59e0b' : isDark ? '#fff' : '#111',
-                }}
-              >
-                {warnings}
-              </span>{' '}
-              Warnings
+              Abnormal
             </div>
           </div>
         </div>
@@ -261,26 +235,12 @@ export function IsometricMap({
                 const isSelected = selectedZoneId === zone.id
                 const isHovered = hoveredZoneId === zone.id
 
-                const alarmCount = mappedNodes.filter(
-                  m => m.node.data.status === 'alarm',
-                ).length
-                const warningCount = mappedNodes.filter(
-                  m => m.node.data.status === 'warning',
-                ).length
-                const zoneCounts = countNodesByStatus(
-                  mappedNodes.map(m => m.node),
-                )
+                const zoneCounts = countBinary(mappedNodes.map(m => m.node))
+                const zoneAbnormal = zoneCounts.abnormal
 
-                let zoneStatusText = 'NORMAL'
-                let zoneStatusColor = '#10b981'
-
-                if (alarmCount > 0) {
-                  zoneStatusText = `${alarmCount} ALARM`
-                  zoneStatusColor = '#ef4444'
-                } else if (warningCount > 0) {
-                  zoneStatusText = `${warningCount} WARNING`
-                  zoneStatusColor = '#f59e0b'
-                }
+                const zoneStatusText =
+                  zoneAbnormal > 0 ? `${zoneAbnormal} ABNORMAL` : 'NORMAL'
+                const zoneStatusColor = zoneAbnormal > 0 ? '#ef4444' : '#10b981'
 
                 return (
                   <g key={zone.id}>
@@ -365,7 +325,11 @@ export function IsometricMap({
                         key={node.id}
                         type={node.data.type}
                         icon={node.data.icon}
-                        status={node.data.status}
+                        // Binary display: collapse any abnormal state to `alarm`
+                        // (red + pulse), normal stays green. SVGs unchanged.
+                        status={
+                          node.data.status === 'normal' ? 'normal' : 'alarm'
+                        }
                         label={node.data.name}
                         isoX={isoX}
                         isoY={isoY}

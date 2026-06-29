@@ -1,10 +1,10 @@
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
-import { STATUS_META, type NodeStatus } from '@/lib/overview-status'
+import { BINARY_STATUS_META, type BinaryStatus } from '@/lib/overview-status'
 
 interface ZoneHoverCardProps {
   name: string
-  counts: Record<NodeStatus, number>
+  counts: Record<BinaryStatus, number>
   deviceCount: number
 }
 
@@ -23,8 +23,8 @@ export function ZoneHoverCard({
 
       <div className="space-y-1.5">
         {(
-          Object.entries(STATUS_META) as [
-            NodeStatus,
+          Object.entries(BINARY_STATUS_META) as [
+            BinaryStatus,
             { label: string; color: string },
           ][]
         ).map(([key, meta]) => (

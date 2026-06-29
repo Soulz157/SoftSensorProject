@@ -6,7 +6,6 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import {
   CheckCircle,
-  AlertTriangle,
   Layers,
   ChevronRight,
   Clock,
@@ -58,15 +57,14 @@ export function WorkspaceList({
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-3 md:grid-cols-2">
           {workspaces.map(workspace => {
             const nodes = nodesByWorkspace[workspace.id] ?? []
-            const alarmCount = nodes.filter(
-              n => n.data.status === 'alarm',
-            ).length
-            const warnCount = nodes.filter(
-              n => n.data.status === 'warning',
-            ).length
+            // Equipment status is binary: Normal vs Abnormal (any non-normal).
             const activeCount = nodes.filter(
               n => n.data.status === 'normal',
             ).length
+            const abnormalCount = nodes.length - activeCount
+            const hasFailedDeploy = nodes.some(n =>
+              (n.models ?? []).some(m => m.data?.deployStatus === 'error'),
+            )
             const modelsCount = workspace.modelsCount ?? 0
             const modelIssuesCount = nodes.reduce((acc, node) => {
               const issuesInNode =
@@ -82,11 +80,9 @@ export function WorkspaceList({
               'bg-blue-500'
 
             const statusDot =
-              alarmCount > 0
+              abnormalCount > 0 || hasFailedDeploy
                 ? 'bg-red-500'
-                : warnCount > 0
-                  ? 'bg-amber-500'
-                  : 'bg-emerald-500'
+                : 'bg-green-500'
 
             return (
               <div key={workspace.id} className="flex flex-col gap-4">
@@ -115,24 +111,17 @@ export function WorkspaceList({
                         <div className="space-y-2 text-sm text-foreground">
                           <div className="flex items-center justify-between">
                             <span className="flex items-center gap-1.5">
-                              <CheckCircle className="h-3.5 w-3.5 text-emerald-500" />
-                              Active
+                              <CheckCircle className="h-3.5 w-3.5 text-green-500" />
+                              Normal
                             </span>
                             <span className="font-medium">{activeCount}</span>
                           </div>
                           <div className="flex items-center justify-between">
                             <span className="flex items-center gap-1.5">
-                              <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
-                              Warning
-                            </span>
-                            <span className="font-medium">{warnCount}</span>
-                          </div>
-                          <div className="flex items-center justify-between">
-                            <span className="flex items-center gap-1.5">
                               <Siren className="h-3.5 w-3.5 text-red-500" />
-                              Alert
+                              Abnormal
                             </span>
-                            <span className="font-medium">{alarmCount}</span>
+                            <span className="font-medium">{abnormalCount}</span>
                           </div>
                         </div>
                       </div>
@@ -187,8 +176,8 @@ export function WorkspaceList({
                     {/* Circle indicators */}
                     <div className="mb-4 flex items-center justify-around">
                       <div className="flex flex-col items-center gap-2">
-                        <div className="flex h-12 w-12 items-center justify-center rounded-full border-4 border-emerald-500/20 bg-emerald-500/10">
-                          <span className="text-lg font-bold text-emerald-500">
+                        <div className="flex h-12 w-12 items-center justify-center rounded-full border-4 border-green-500/20 bg-green-500/10">
+                          <span className="text-lg font-bold text-green-500">
                             {activeCount}
                           </span>
                         </div>
@@ -197,23 +186,13 @@ export function WorkspaceList({
                         </span>
                       </div>
                       <div className="flex flex-col items-center gap-2">
-                        <div className="flex h-12 w-12 items-center justify-center rounded-full border-4 border-amber-500/20 bg-amber-500/10">
-                          <span className="text-lg font-bold text-amber-500">
-                            {warnCount}
-                          </span>
-                        </div>
-                        <span className="text-xs text-muted-foreground">
-                          Warning
-                        </span>
-                      </div>
-                      <div className="flex flex-col items-center gap-2">
                         <div className="flex h-12 w-12 items-center justify-center rounded-full border-4 border-red-500/20 bg-red-500/10">
                           <span className="text-lg font-bold text-red-500">
-                            {alarmCount}
+                            {abnormalCount}
                           </span>
                         </div>
                         <span className="text-xs text-muted-foreground">
-                          Error
+                          Abnormal
                         </span>
                       </div>
                     </div>

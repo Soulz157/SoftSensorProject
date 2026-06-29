@@ -4,8 +4,10 @@ import { createStore, Provider } from 'jotai'
 import { useWizardNavigation } from '../use-wizard-navigation'
 import {
   plantIdAtom,
+  dataSourceAtom,
   piServerIdAtom,
   selectedTagsAtom,
+  selectedSavedSourceIdAtom,
   fetchStateAtom,
   rawDatasetAtom,
   fillStrategiesAtom,
@@ -39,7 +41,7 @@ describe('useWizardNavigation', () => {
 
     act(() => {
       store.set(plantIdAtom, 'plant-1')
-      store.set(piServerIdAtom, 'srv-1')
+      store.set(selectedSavedSourceIdAtom, 'ds-1')
       store.set(selectedTagsAtom, ['tag-1'])
       store.set(fetchStateAtom, { status: 'done', progress: 100 })
       store.set(rawDatasetAtom, {
@@ -113,6 +115,7 @@ describe('useWizardNavigation', () => {
 
   it('setWorkspaceId cascades a full reset to step 1', () => {
     store.set(plantIdAtom, 'plant-1')
+    store.set(dataSourceAtom, 'aveva')
     store.set(piServerIdAtom, 'srv-1')
     store.set(selectedTagsAtom, ['tag-1'])
     store.set(currentStepAtom, 5)
@@ -122,6 +125,7 @@ describe('useWizardNavigation', () => {
     act(() => result.current.setWorkspaceId('ws-2'))
 
     expect(store.get(plantIdAtom)).toBe('')
+    expect(store.get(dataSourceAtom)).toBe('')
     expect(store.get(piServerIdAtom)).toBe('')
     expect(store.get(selectedTagsAtom)).toEqual([])
     expect(result.current.currentStep).toBe(1)
@@ -129,6 +133,7 @@ describe('useWizardNavigation', () => {
   })
 
   it('setPlantId resets downstream state and clamps highestUnlocked to 2', () => {
+    store.set(dataSourceAtom, 'aveva')
     store.set(piServerIdAtom, 'srv-1')
     store.set(selectedTagsAtom, ['tag-1'])
     store.set(highestUnlockedAtom, 6)
@@ -136,6 +141,7 @@ describe('useWizardNavigation', () => {
 
     act(() => result.current.setPlantId('plant-2'))
 
+    expect(store.get(dataSourceAtom)).toBe('')
     expect(store.get(piServerIdAtom)).toBe('')
     expect(store.get(selectedTagsAtom)).toEqual([])
     expect(result.current.highestUnlocked).toBe(2)

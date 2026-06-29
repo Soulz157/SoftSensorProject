@@ -15,14 +15,14 @@ export default function DataVisualizePage() {
         <Breadcrumb>
           <BreadcrumbList>
             <BreadcrumbItem>
-              <BreadcrumbPage>Data Visualize</BreadcrumbPage>
+              <BreadcrumbPage>Data Visualization</BreadcrumbPage>
             </BreadcrumbItem>
           </BreadcrumbList>
         </Breadcrumb>
 
         <div>
           <h1 className="text-2xl font-semibold text-foreground">
-            Data Visualize
+            Data Visualization
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Workspace → PI server → tags → fetch → preprocess → export (mock

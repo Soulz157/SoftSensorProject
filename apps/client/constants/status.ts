@@ -1,8 +1,8 @@
 export const NODE_STATUS_PRIORITY: Record<string, number> = {
   alarm: 0,
   warning: 1,
-  offline: 2,
-  normal: 3,
+  normal: 2,
+  offline: 3,
 }
 export const NODE_DOT: Record<string, string> = {
   alarm: 'bg-destructive',
@@ -10,8 +10,7 @@ export const NODE_DOT: Record<string, string> = {
   offline: 'bg-zinc-400',
   normal: 'bg-green-500',
 }
-// Text roles use darker shades in light mode to pass WCAG AA 4.5:1 on light
-// surfaces; bright shades return in dark mode. Dots (NODE_DOT) stay bright.
+
 export const NODE_BADGE: Record<string, string> = {
   alarm: 'text-destructive',
   warning: 'text-amber-700 dark:text-amber-400',

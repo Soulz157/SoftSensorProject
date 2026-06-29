@@ -1,99 +1,87 @@
 'use client'
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
+import { useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { usePlantsData } from '@/hooks/use-plants-data'
+import { useAllModels } from '@/hooks/use-all-models'
+import { failedDeploys, failedCountByNodeId } from '@/lib/model-status'
+
+import { useWorkspaceFilter } from '@/hooks/workspace/use-workspace-filter'
+import { useWorkspaceSelection } from '@/hooks/workspace/use-workspace-selection'
+
 import { PlantsMap } from './components/overview-map'
 import { OverviewSearch } from './components/overview-search'
 import { OverviewDetailPanel } from './components/overview-detail-panel'
 import { OverviewSkeleton } from './components/overview-skeleton'
-import type { Workspace } from '@/types'
-import { type NodeStatus } from '@/lib/overview-status'
 
 export default function PlantsPage() {
-  const { workspaces, nodesByWorkspace, loading, error } = usePlantsData()
-
-  const [selectedId, setSelectedId] = useState<string | null>(null)
   const router = useRouter()
-  const panelRef = useRef<HTMLDivElement>(null)
+  const { workspaces, nodesByWorkspace, loading, error } = usePlantsData()
+  const { models } = useAllModels()
 
-  const handleDismiss = useCallback(() => setSelectedId(null), [])
+  const failedDeploysByWorkspace = useMemo(() => {
+    if (!models) return {}
+    const map: Record<string, number> = {}
+    for (const m of failedDeploys(models)) {
+      map[m.workspaceId] = (map[m.workspaceId] ?? 0) + 1
+    }
+    return map
+  }, [models])
 
-  const [filterQuery, setFilterQuery] = useState('')
-  const [filterStatuses, setFilterStatuses] = useState<NodeStatus[]>([])
-
-  const handleStatusToggle = useCallback(
-    (s: NodeStatus) =>
-      setFilterStatuses(prev =>
-        prev.includes(s) ? prev.filter(x => x !== s) : [...prev, s],
-      ),
-    [],
+  const failedByNodeId = useMemo(
+    () => (models ? failedCountByNodeId(models) : {}),
+    [models],
   )
 
-  const highlightedIds = useMemo(() => {
-    if (!filterQuery && filterStatuses.length === 0) return undefined
-    const q = filterQuery.toLowerCase()
-    return new Set(
-      workspaces
-        .filter(ws => {
-          const nameMatch = !q || ws.name.toLowerCase().includes(q)
-          if (!nameMatch) return false
-          if (filterStatuses.length === 0) return true
-          return filterStatuses.includes((ws.status ?? 'normal') as NodeStatus)
-        })
-        .map(ws => ws.id),
-    )
-  }, [filterQuery, filterStatuses, workspaces])
+  const {
+    filterQuery,
+    setFilterQuery,
+    filterStatuses,
+    handleStatusToggle,
+    handleClearAllStatuses,
+    highlightedIds,
+  } = useWorkspaceFilter(workspaces)
 
-  useEffect(() => {
-    if (selectedId) panelRef.current?.focus()
-  }, [selectedId])
-
-  useEffect(() => {
-    if (!selectedId) return
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') handleDismiss()
-    }
-    document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
-  }, [selectedId, handleDismiss])
+  const {
+    selectedId,
+    setSelectedId,
+    selectedWorkspace,
+    selectedNodes,
+    panelRef,
+    handleDismiss,
+  } = useWorkspaceSelection(workspaces, nodesByWorkspace)
 
   if (loading) return <OverviewSkeleton />
   if (error) throw new Error(error)
 
-  const selectedWorkspace: Workspace | null =
-    workspaces.find(w => w.id === selectedId) ?? null
-  const selectedNodes = selectedId ? (nodesByWorkspace[selectedId] ?? []) : []
-
   if (workspaces.length === 0)
     return (
       <div className="flex h-full w-full flex-col items-center justify-center gap-3">
-        <p className="text-sm font-medium text-foreground">No plants yet</p>
+        <p className="text-sm font-medium text-foreground">No workspaces yet</p>
         <p className="text-xs text-muted-foreground">
-          Create a plant to start monitoring.
+          Create a workspace to start monitoring.
         </p>
       </div>
     )
 
   return (
     <div className="flex h-full w-full overflow-hidden">
-      {/* Main canvas — flex-1 */}
       <div className="relative flex-1 overflow-hidden">
         <div className="pointer-events-none absolute left-0 right-0 top-0 z-10 bg-linear-to-b from-black/50 to-transparent px-4 pb-6 pt-3">
           <h1 className="text-sm font-semibold tracking-wide text-white drop-shadow">
-            Plants Overview
+            Workspaces Overview
           </h1>
           <p className="text-xs text-white/70 drop-shadow">
-            {workspaces.length} plants monitored
+            {workspaces.length} workspaces monitored
           </p>
         </div>
 
-        {/* Search + filter bar — centered below title, above map controls */}
         <div className="pointer-events-auto absolute left-1/2 top-14 z-20 w-full max-w-md -translate-x-1/2 px-4">
           <OverviewSearch
             query={filterQuery}
             onQueryChange={setFilterQuery}
             activeStatuses={filterStatuses}
             onStatusToggle={handleStatusToggle}
+            onClearAllStatuses={handleClearAllStatuses}
           />
         </div>
 
@@ -104,13 +92,13 @@ export default function PlantsPage() {
           onWorkspaceClick={id => setSelectedId(id === selectedId ? null : id)}
           onWorkspaceDoubleClick={id => router.push(`/plants/${id}`)}
           highlightedIds={highlightedIds}
+          failedDeploysByWorkspace={failedDeploysByWorkspace}
+          failedByNodeId={failedByNodeId}
         />
       </div>
 
-      {/* Detail panel — side panel on sm+, bottom sheet on mobile */}
       {selectedWorkspace && (
         <>
-          {/* Mobile: tap-outside backdrop */}
           <div
             className="fixed inset-0 z-10 bg-black/30 sm:hidden"
             onClick={handleDismiss}

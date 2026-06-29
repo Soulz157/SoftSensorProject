@@ -4,12 +4,10 @@ import Link from 'next/link'
 import type { ReactNode } from 'react'
 import {
   Activity,
-  AlertTriangle,
   ArrowRight,
   CheckCircle2,
   Cpu,
   ExternalLink,
-  Power,
   Settings2,
   Siren,
   X,
@@ -43,24 +41,25 @@ const DEPLOY_LABEL: Record<string, string> = {
 const MAX_PREVIEW = 5
 
 const STATUS_CHIP: Record<NodeStatus, string> = {
-  normal: 'border border-emerald-500/30 bg-emerald-500/15 text-emerald-500',
-  warning: 'border border-amber-500/30 bg-amber-500/15 text-amber-500',
+  normal:
+    'border border-green-500/30 bg-green-500/15 text-green-600 dark:text-green-400',
+  warning: 'border border-red-500/30 bg-red-500/15 text-red-500',
   alarm: 'border border-red-500/30 bg-red-500/15 text-red-500',
-  offline: 'border border-zinc-500/30 bg-zinc-500/15 text-zinc-400',
+  offline: 'border border-red-500/30 bg-red-500/15 text-red-500',
 }
 
 const STATUS_DOT: Record<NodeStatus, string> = {
-  normal: 'bg-emerald-500',
-  warning: 'bg-amber-500',
+  normal: 'bg-green-500',
+  warning: 'bg-red-500',
   alarm: 'bg-red-500',
-  offline: 'bg-zinc-500',
+  offline: 'bg-red-500',
 }
 
 const STATUS_ICON = {
   normal: CheckCircle2,
-  warning: AlertTriangle,
+  warning: Siren,
   alarm: Siren,
-  offline: Power,
+  offline: Siren,
 } satisfies Record<NodeStatus, typeof CheckCircle2>
 
 interface NodeDetailPanelProps {
@@ -75,9 +74,7 @@ interface NodeDetailPanelProps {
 }
 
 function formatStatus(status: NodeStatus) {
-  if (status === 'normal') return 'Healthy'
-  if (status === 'alarm') return 'Alert'
-  return status.charAt(0).toUpperCase() + status.slice(1)
+  return status === 'normal' ? 'Normal' : 'Abnormal'
 }
 
 function formatDate(value: string) {
@@ -341,7 +338,7 @@ export function NodeDetailPanel({
               className={cn(
                 'h-2 w-2 rounded-full',
                 STATUS_DOT[status],
-                status === 'alarm' && 'animate-pulse',
+                status !== 'normal' && 'animate-pulse',
               )}
             />
             Semantic status from live node data

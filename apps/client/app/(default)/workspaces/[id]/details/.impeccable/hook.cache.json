@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "sessions": {
+    "f9177fca-3100-40cf-aa9b-baaf38ac6742": {
+      "updatedAt": 1782388966914,
+      "files": {
+        "/Users/seolzzz/Developer/Repco/SoftSensorProject/apps/client/app/(default)/workspaces/[id]/details/components/equipment-section.tsx": {
+          "editCount": 2,
+          "findings": []
+        },
+        "/Users/seolzzz/Developer/Repco/SoftSensorProject/apps/client/app/(default)/workspaces/[id]/details/components/status-alerts-section.tsx": {
+          "editCount": 2,
+          "findings": []
+        },
+        "/Users/seolzzz/Developer/Repco/SoftSensorProject/apps/client/app/(default)/workspaces/[id]/details/page.tsx": {
+          "editCount": 3,
+          "findings": []
+        },
+        "/Users/seolzzz/Developer/Repco/SoftSensorProject/apps/client/app/(default)/alerts/components/alerts-content.tsx": {
+          "editCount": 1,
+          "findings": []
+        },
+        "/Users/seolzzz/Developer/Repco/SoftSensorProject/apps/client/app/(default)/workspaces/[id]/alerts/components/workspace-alerts-content.tsx": {
+          "editCount": 1,
+          "findings": []
+        }
+      }
+    }
+  }
+}

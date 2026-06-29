@@ -4,9 +4,8 @@ import { useEffect, useRef } from 'react'
 import { useAtomValue } from 'jotai'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { useTagListFetch } from '@/hooks/use-tag-list-fetch'
-import { selectedTagsAtom, timeRangeAtom } from '@/store/data-visualize'
+import { selectedTagsAtom } from '@/store/data-visualize'
 import { TagDiscoveryCardList } from './tag-discovery-card-list'
-import { TimeRangeToggle } from './time-range-toggle'
 import type { useWizardNavigation } from '@/hooks/use-wizard-navigation'
 
 interface Props {
@@ -15,17 +14,14 @@ interface Props {
 
 export function Step3TagRange({ nav }: Props) {
   const selectedTags = useAtomValue(selectedTagsAtom)
-  const range = useAtomValue(timeRangeAtom)
   const list = useTagListFetch()
   const started = useRef(false)
 
-  // Discover the PI tag catalog once on entry (skip if already discovered).
   useEffect(() => {
     if (started.current || list.tags.length > 0) return
     started.current = true
     list.start()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [started, list])
 
   const toggleTag = (piTag: string) =>
     nav.setSelectedTags(
@@ -43,7 +39,6 @@ export function Step3TagRange({ nav }: Props) {
             Select the tags you want to retrieve data for.
           </p>
         </div>
-        <TimeRangeToggle value={range} onChange={nav.setTimeRange} />
       </div>
 
       <TagDiscoveryCardList

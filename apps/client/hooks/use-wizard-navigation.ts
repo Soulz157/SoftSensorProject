@@ -8,6 +8,9 @@ import {
   highestUnlockedAtom,
   workspaceIdAtom,
   plantIdAtom,
+  dataSourceAtom,
+  dataSourceCredentialsAtom,
+  customDateRangeAtom,
   piServerIdAtom,
   tagListAtom,
   selectedTagsAtom,
@@ -16,6 +19,8 @@ import {
   rawDatasetAtom,
   fillStrategiesAtom,
   selectedModelIdAtom,
+  selectedSavedSourceIdAtom,
+  type CustomDateRange,
 } from '@/store/data-visualize'
 
 const EMPTY_DEFAULT_RANGE: TimeRange = '24h'
@@ -23,6 +28,8 @@ const EMPTY_DEFAULT_RANGE: TimeRange = '24h'
 export interface UseWizardNavigationResult {
   currentStep: number
   highestUnlocked: number
+  customDateRange: CustomDateRange | null
+  selectedSavedSourceId: string
   goTo: (step: number) => void
   next: () => void
   back: () => void
@@ -31,6 +38,8 @@ export interface UseWizardNavigationResult {
   setPlantId: (id: string) => void
   setSelectedTags: (tags: string[]) => void
   setTimeRange: (range: TimeRange) => void
+  setCustomRange: (from: string, to: string) => void
+  clearCustomRange: () => void
 }
 
 /** Owns wizard step gating + cascade invalidation on upstream selection changes. */
@@ -40,8 +49,13 @@ export function useWizardNavigation(): UseWizardNavigationResult {
 
   const setWorkspaceIdAtom = useSetAtom(workspaceIdAtom)
   const [plantId, setPlantIdAtom] = useAtom(plantIdAtom)
+  const setDataSourceAtom = useSetAtom(dataSourceAtom)
+  const setDataSourceCredentials = useSetAtom(dataSourceCredentialsAtom)
+  const [selectedSavedSourceId, setSelectedSavedSourceId] = useAtom(
+    selectedSavedSourceIdAtom,
+  )
+  const [customDateRange, setCustomDateRangeAtom] = useAtom(customDateRangeAtom)
   const setPiServerIdAtom = useSetAtom(piServerIdAtom)
-  const piServerId = useAtomValue(piServerIdAtom)
   const setTagList = useSetAtom(tagListAtom)
   const [selectedTags, setSelectedTagsAtom] = useAtom(selectedTagsAtom)
   const setTimeRangeAtom = useSetAtom(timeRangeAtom)
@@ -58,7 +72,7 @@ export function useWizardNavigation(): UseWizardNavigationResult {
         case 1:
           return plantId !== ''
         case 2:
-          return piServerId !== ''
+          return selectedSavedSourceId !== ''
         case 3:
           return selectedTags.length > 0
         case 4:
@@ -75,7 +89,7 @@ export function useWizardNavigation(): UseWizardNavigationResult {
     },
     [
       plantId,
-      piServerId,
+      selectedSavedSourceId,
       selectedTags,
       fetchState,
       rawDataset,
@@ -108,6 +122,10 @@ export function useWizardNavigation(): UseWizardNavigationResult {
     (id: string) => {
       setWorkspaceIdAtom(id)
       setPlantIdAtom('')
+      setDataSourceAtom('')
+      setDataSourceCredentials(null)
+      setCustomDateRangeAtom(null)
+      setSelectedSavedSourceId('')
       setPiServerIdAtom('')
       setTagList([])
       setSelectedTagsAtom([])
@@ -121,6 +139,10 @@ export function useWizardNavigation(): UseWizardNavigationResult {
     [
       setWorkspaceIdAtom,
       setPlantIdAtom,
+      setDataSourceAtom,
+      setDataSourceCredentials,
+      setCustomDateRangeAtom,
+      setSelectedSavedSourceId,
       setPiServerIdAtom,
       setTagList,
       setSelectedTagsAtom,
@@ -136,6 +158,10 @@ export function useWizardNavigation(): UseWizardNavigationResult {
   const setPlantId = useCallback(
     (id: string) => {
       setPlantIdAtom(id)
+      setDataSourceAtom('')
+      setDataSourceCredentials(null)
+      setCustomDateRangeAtom(null)
+      setSelectedSavedSourceId('')
       setPiServerIdAtom('')
       setTagList([])
       setSelectedTagsAtom([])
@@ -147,6 +173,10 @@ export function useWizardNavigation(): UseWizardNavigationResult {
     },
     [
       setPlantIdAtom,
+      setDataSourceAtom,
+      setDataSourceCredentials,
+      setCustomDateRangeAtom,
+      setSelectedSavedSourceId,
       setPiServerIdAtom,
       setTagList,
       setSelectedTagsAtom,
@@ -183,16 +213,42 @@ export function useWizardNavigation(): UseWizardNavigationResult {
   const setTimeRange = useCallback(
     (range: TimeRange) => {
       setTimeRangeAtom(range)
+      setCustomDateRangeAtom(null)
       setFetchState({ status: 'idle', progress: 0 })
       setRawDataset({ tags: [], rows: [] })
       setHighestUnlocked(prev => Math.min(prev, 3))
     },
-    [setTimeRangeAtom, setFetchState, setRawDataset, setHighestUnlocked],
+    [
+      setTimeRangeAtom,
+      setCustomDateRangeAtom,
+      setFetchState,
+      setRawDataset,
+      setHighestUnlocked,
+    ],
   )
+
+  const setCustomRange = useCallback(
+    (from: string, to: string) => {
+      setCustomDateRangeAtom({ from, to })
+      setFetchState({ status: 'idle', progress: 0 })
+      setRawDataset({ tags: [], rows: [] })
+      setHighestUnlocked(prev => Math.min(prev, 3))
+    },
+    [setCustomDateRangeAtom, setFetchState, setRawDataset, setHighestUnlocked],
+  )
+
+  const clearCustomRange = useCallback(() => {
+    setCustomDateRangeAtom(null)
+    setFetchState({ status: 'idle', progress: 0 })
+    setRawDataset({ tags: [], rows: [] })
+    setHighestUnlocked(prev => Math.min(prev, 3))
+  }, [setCustomDateRangeAtom, setFetchState, setRawDataset, setHighestUnlocked])
 
   return {
     currentStep,
     highestUnlocked,
+    customDateRange,
+    selectedSavedSourceId,
     goTo,
     next,
     back,
@@ -201,5 +257,7 @@ export function useWizardNavigation(): UseWizardNavigationResult {
     setPlantId,
     setSelectedTags,
     setTimeRange,
+    setCustomRange,
+    clearCustomRange,
   }
 }

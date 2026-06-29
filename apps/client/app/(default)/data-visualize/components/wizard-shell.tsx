@@ -4,7 +4,7 @@ import { useWizardNavigation } from '@/hooks/use-wizard-navigation'
 import { WizardStepIndicator } from './wizard-step-indicator'
 import { StickyActionBar } from './sticky-action-bar'
 import { Step1WorkspacePlant } from './step-1-workspace-plant'
-import { Step2PiServer } from './step-2-pi-server'
+import { Step2DataSource } from './step-2-data-source'
 import { Step3TagRange } from './step-3-tag-range'
 import { Step4Fetching } from './step-4-fetching'
 import { Step5RawData } from './step-5-raw-data'
@@ -30,7 +30,7 @@ export function WizardShell() {
       stepContent = <Step1WorkspacePlant nav={nav} />
       break
     case 2:
-      stepContent = <Step2PiServer />
+      stepContent = <Step2DataSource />
       break
     case 3:
       stepContent = <Step3TagRange nav={nav} />
@@ -41,12 +41,12 @@ export function WizardShell() {
     case 5:
       stepContent = <Step5RawData />
       break
-    case 6:
-      stepContent = <Step6Processing />
-      break
-    case 7:
-      stepContent = <Step7Export />
-      break
+    // case 6:
+    //   stepContent = <Step6Processing />
+    //   break
+    // case 7:
+    //   stepContent = <Step7Export />
+    //   break
     default:
       stepContent = null
   }
@@ -60,7 +60,9 @@ export function WizardShell() {
           onNext={nav.next}
           onBack={nav.back}
           backDisabled={nav.currentStep === 1}
-          nextDisabled={!nav.canAdvance(nav.currentStep)}
+          nextDisabled={
+            nav.currentStep === 4 || !nav.canAdvance(nav.currentStep)
+          }
           nextLabel={NEXT_LABEL[nav.currentStep] ?? 'Continue'}
         />
       )}

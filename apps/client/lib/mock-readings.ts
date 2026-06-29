@@ -101,12 +101,13 @@ export function tagMeta(piTag: string): PiTagMeta | undefined {
 
 /** CSS custom property for a tag's series color. */
 export function chartColorVar(chartIndex: PiTagMeta['chartIndex']): string {
-  return `var(--color-chart-${chartIndex})`
+  return `var(--chart-${chartIndex})`
 }
 
-export const TIME_RANGES = ['24h', '7d', '30d'] as const
+export const TIME_RANGES = ['24h', '7d', '1m', '1y'] as const
 export type TimeRange = (typeof TIME_RANGES)[number]
 
+const MINUTE_MS = 60 * 1000
 const HOUR_MS = 60 * 60 * 1000
 
 interface RangeConfig {
@@ -137,7 +138,7 @@ export function rangeConfig(range: TimeRange): RangeConfig {
         tickFormat: iso =>
           new Date(iso).toLocaleDateString([], { weekday: 'short' }),
       }
-    case '30d':
+    case '1m':
       return {
         points: 30,
         stepMs: 24 * HOUR_MS,
@@ -145,6 +146,55 @@ export function rangeConfig(range: TimeRange): RangeConfig {
           new Date(iso).toLocaleDateString([], {
             day: 'numeric',
             month: 'short',
+          }),
+      }
+    case '1y':
+      return {
+        points: 52,
+        stepMs: 7 * 24 * HOUR_MS,
+        tickFormat: iso =>
+          new Date(iso).toLocaleDateString([], {
+            month: 'short',
+            day: 'numeric',
+          }),
+      }
+  }
+}
+
+export const FETCH_PERIODS = ['1min', '1h', '1d'] as const
+// Note: Changed '1m' to '1min' to avoid collision with '1m' (1 month) from TimeRange
+export type FetchPeriod = (typeof FETCH_PERIODS)[number]
+
+export function fetchPeriodConfig(period: FetchPeriod): RangeConfig {
+  switch (period) {
+    case '1min':
+      return {
+        points: 60,
+        stepMs: 1000,
+        tickFormat: iso =>
+          new Date(iso).toLocaleTimeString([], {
+            minute: '2-digit',
+            second: '2-digit',
+          }),
+      }
+    case '1h':
+      return {
+        points: 60,
+        stepMs: MINUTE_MS,
+        tickFormat: iso =>
+          new Date(iso).toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit',
+          }),
+      }
+    case '1d':
+      return {
+        points: 48,
+        stepMs: 30 * MINUTE_MS,
+        tickFormat: iso =>
+          new Date(iso).toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit',
           }),
       }
   }

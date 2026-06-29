@@ -2,52 +2,39 @@
 import { useTheme } from 'next-themes'
 import { Search, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { STATUS_COLORS, type NodeStatus } from '@/store/status-colors'
+import { type BinaryStatus, BINARY_STATUS_META } from '@/lib/overview-status'
 
 const STATUS_PILLS: {
-  key: NodeStatus
+  key: BinaryStatus
   label: string
   color: string
   bg: string
 }[] = [
   {
-    key: 'alarm',
-    label: 'Alarm',
-    color: STATUS_COLORS.alarm,
+    key: 'abnormal',
+    label: 'Abnormal',
+    color: BINARY_STATUS_META.abnormal.color,
     bg: 'rgba(239,68,68,0.18)',
-  },
-  {
-    key: 'warning',
-    label: 'Warning',
-    color: STATUS_COLORS.warning,
-    bg: 'rgba(245,158,11,0.18)',
-  },
-  {
-    key: 'offline',
-    label: 'Offline',
-    color: STATUS_COLORS.offline,
-    bg: 'rgba(113,113,122,0.18)',
   },
   {
     key: 'normal',
     label: 'Normal',
-    color: STATUS_COLORS.normal,
+    color: BINARY_STATUS_META.normal.color,
     bg: 'rgba(34,197,94,0.18)',
   },
 ]
 
-const PILL_TEXT_LIGHT: Record<NodeStatus, string> = {
-  alarm: '#b91c1c',
-  warning: '#92400e',
-  offline: '#52525b',
+const PILL_TEXT_LIGHT: Record<BinaryStatus, string> = {
+  abnormal: '#b91c1c',
   normal: '#166534',
 }
 
 interface OverviewSearchProps {
   query: string
   onQueryChange: (q: string) => void
-  activeStatuses: NodeStatus[]
-  onStatusToggle: (s: NodeStatus) => void
+  activeStatuses: BinaryStatus[]
+  onStatusToggle: (s: BinaryStatus) => void
+  onClearAllStatuses: () => void
 }
 
 export function OverviewSearch({
@@ -55,6 +42,7 @@ export function OverviewSearch({
   onQueryChange,
   activeStatuses,
   onStatusToggle,
+  onClearAllStatuses,
 }: OverviewSearchProps) {
   const { resolvedTheme } = useTheme()
   const isDark = resolvedTheme !== 'light'
@@ -63,9 +51,7 @@ export function OverviewSearch({
 
   const clearAll = () => {
     onQueryChange('')
-    // snapshot so we don't toggle while iterating
-    const toRemove = [...activeStatuses]
-    toRemove.forEach(s => onStatusToggle(s))
+    onClearAllStatuses()
   }
 
   return (

@@ -11,9 +11,7 @@ import {
 type ModelData = {
   deployStatus: 'stopped' | 'running' | 'error' | 'initializing';
   prodStatus: 'normal' | 'warning' | 'alert' | 'offline' | 'frozen';
-  // Brief reason shown alongside a 'frozen' (data frozen / missing data) status.
   statusDetail?: string;
-  // Who/when last started the deployment (captured server-side on start).
   deployedBy?: string;
   deployedAt?: string;
   logs: Array<{
@@ -21,6 +19,8 @@ type ModelData = {
     message: string;
     timestamp: string;
   }>;
+  /** Wizard data-source/tags/processing config — stored round-trip only. */
+  config?: Record<string, unknown>;
 };
 
 function normalizeData(raw: unknown): ModelData {
@@ -34,6 +34,9 @@ function normalizeData(raw: unknown): ModelData {
     ...(typeof r.deployedBy === 'string' && { deployedBy: r.deployedBy }),
     ...(typeof r.deployedAt === 'string' && { deployedAt: r.deployedAt }),
     logs: Array.isArray(r.logs) ? (r.logs as ModelData['logs']) : [],
+    ...(r.config && typeof r.config === 'object'
+      ? { config: r.config as Record<string, unknown> }
+      : {}),
   };
 }
 
@@ -114,8 +117,12 @@ export class ModelAuthorizedService {
   async createModelService(
     dto: z.infer<typeof CreateModelSchema>,
     userId: string,
+    userRole: string,
   ) {
-    await this.assertCanEdit(dto.workspaceId, userId);
+    if (userRole !== 'ADMIN') {
+      await this.assertCanEdit(dto.workspaceId, userId);
+    }
+
     if (dto.nodeId) {
       const node = await this.prisma.nodes.findFirst({
         where: { id: dto.nodeId, workspaceId: dto.workspaceId },
@@ -131,6 +138,7 @@ export class ModelAuthorizedService {
       deployStatus: 'stopped',
       prodStatus: 'normal',
       logs: [],
+      ...(dto.config && { config: dto.config }),
     };
     const model = await this.prisma.model.create({
       data: {
@@ -154,6 +162,7 @@ export class ModelAuthorizedService {
     modelId: string,
     dto: z.infer<typeof UpdateModelSchema>,
     userId: string,
+    userRole: string,
   ) {
     const existing = await this.prisma.model.findUnique({
       where: { id: modelId },
@@ -164,11 +173,15 @@ export class ModelAuthorizedService {
         message: 'Model not found',
         type: 'ERROR',
       });
-    await this.assertCanEdit(existing.workspaceId, userId);
+
+    if (userRole !== 'ADMIN') {
+      await this.assertCanEdit(existing.workspaceId, userId);
+    } else {
+      await this.assertHasAccess(existing.workspaceId, userId, userRole);
+    }
 
     const current = normalizeData(existing.data);
 
-    // Capture who/when started the deployment, server-side, on a → running edit.
     let deployFields: Partial<ModelData> = {};
     if (dto.deployStatus === 'running') {
       const user = await this.prisma.user.findUnique({
@@ -192,6 +205,7 @@ export class ModelAuthorizedService {
       ...(dto.statusDetail !== undefined && {
         statusDetail: dto.statusDetail ?? undefined,
       }),
+      ...(dto.config !== undefined && { config: dto.config }),
       ...deployFields,
     };
 
@@ -252,7 +266,7 @@ export class ModelAuthorizedService {
     };
   }
 
-  async deleteModelService(modelId: string, userId: string) {
+  async deleteModelService(modelId: string, userId: string, userRole: string) {
     const existing = await this.prisma.model.findUnique({
       where: { id: modelId },
     });
@@ -262,7 +276,9 @@ export class ModelAuthorizedService {
         message: 'Model not found',
         type: 'ERROR',
       });
-    await this.assertCanEdit(existing.workspaceId, userId);
+    if (userRole !== 'ADMIN') {
+      await this.assertCanEdit(existing.workspaceId, userId);
+    }
     await this.prisma.model.delete({ where: { id: modelId } });
     return {
       statusCode: 200,

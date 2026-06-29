@@ -28,11 +28,7 @@ import { useWorkspace } from '@/hooks/workspace/use-workspace-by'
 import { useWorkspaceLogs } from '@/hooks/workspace/use-workspace-logs'
 import { useWorkspaceModels } from '@/hooks/workspace/use-workspace-models'
 import { useWorkspaceNodes } from '@/hooks/workspace/use-workspace-nodes'
-import {
-  deriveStatus,
-  equipmentAlerts,
-  STATUS_META,
-} from '@/lib/overview-status'
+import { deriveStatus, equipmentAlerts } from '@/lib/overview-status'
 import type { WorkspaceModel } from '@/types'
 import { WorkspaceSettingsSheet } from '../components/workspace-settings-sheet'
 import { EquipmentSection } from './components/equipment-section'
@@ -67,7 +63,7 @@ export default function WorkspaceDetailPage({
   const systemStatus = deriveStatus(nodes ?? [])
   const alertCount = equipmentAlerts(nodes ?? []).length
   const hasAlerts = systemStatus !== 'normal'
-  const statusSc = statusColors(systemStatus)
+  const statusSc = statusColors(hasAlerts ? 'alarm' : 'normal')
 
   const updatedAt = workspace?.updatedAt
     ? formatRelativeTime(workspace.updatedAt)
@@ -177,7 +173,7 @@ export default function WorkspaceDetailPage({
                       <Skeleton className="h-9 w-24" />
                     ) : (
                       <p className={cn('text-3xl font-bold', statusSc.text)}>
-                        {STATUS_META[systemStatus].label}
+                        {hasAlerts ? 'Abnormal' : 'Normal'}
                       </p>
                     )}
                   </div>

@@ -9,6 +9,7 @@ import { useWorkspacePlants } from '@/hooks/workspace/use-workspace-plants'
 import { workspaceIdAtom, plantIdAtom } from '@/store/data-visualize'
 import { CascadeSelectors } from './cascade-selectors'
 import type { useWizardNavigation } from '@/hooks/use-wizard-navigation'
+import Link from 'next/link'
 
 interface Props {
   nav: ReturnType<typeof useWizardNavigation>
@@ -31,7 +32,7 @@ export function Step1WorkspacePlant({ nav }: Props) {
           Create a workspace to start visualizing data.
         </AlertDescription>
         <Button asChild size="sm" className="mt-2 w-fit">
-          <a href="/workspaces">Go to workspaces</a>
+          <Link href="/workspaces">Go to workspaces</Link>
         </Button>
       </Alert>
     )

@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useAtomValue } from 'jotai'
 import {
   Building2,
@@ -21,9 +21,7 @@ import {
   workspaceIcons,
   workspacesAtom,
 } from '@/store/workspace'
-import { NODE_DOT } from '@/constants/status'
 
-// A selection scope: clicking any tree row scopes the main table to it.
 export type TreeScope = {
   level: 'workspace' | 'plant' | 'node' | 'model'
   id: string
@@ -48,6 +46,26 @@ type TreeWorkspace = {
   icon?: string
   color?: string
   plants: TreePlant[]
+}
+
+function findPathToOpen(
+  selectedScope: TreeScope | null,
+  tree: TreeWorkspace[],
+): string[] {
+  if (!selectedScope) return []
+  for (const ws of tree) {
+    for (const plant of ws.plants) {
+      for (const node of plant.nodes) {
+        const hit =
+          (selectedScope.level === 'plant' && selectedScope.id === plant.id) ||
+          (selectedScope.level === 'node' && selectedScope.id === node.id) ||
+          (selectedScope.level === 'model' &&
+            node.models.some(m => m.id === selectedScope.id))
+        if (hit) return [ws.id, plant.id, node.id]
+      }
+    }
+  }
+  return []
 }
 
 function CountBadge({ n }: { n: number }) {
@@ -139,13 +157,6 @@ export function WorkTreePanel({
     useModelHierarchy()
 
   const [openItems, setOpenItems] = useState<string[]>([])
-  const isOpen = (id: string) => openItems.includes(id)
-  const toggle = (id: string) =>
-    setOpenItems(prev =>
-      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id],
-    )
-  const isSel = (level: TreeScope['level'], id: string) =>
-    selectedScope?.level === level && selectedScope.id === id
 
   const tree = useMemo<TreeWorkspace[]>(
     () =>
@@ -170,6 +181,13 @@ export function WorkTreePanel({
     [workspaces, plantsByWorkspaceId, nodesByWorkspaceId],
   )
 
+  const pathToOpen = findPathToOpen(selectedScope, tree)
+
+  const effectiveOpenItems: string[] =
+    pathToOpen.length === 0
+      ? openItems
+      : [...new Set([...openItems, ...pathToOpen])]
+
   const allIds = useMemo(
     () => [
       ...tree.map(ws => ws.id),
@@ -183,31 +201,18 @@ export function WorkTreePanel({
     allIds.length > 0 && allIds.every(id => openItems.includes(id))
   const handleToggleAll = () => setOpenItems(allExpanded ? [] : allIds)
 
-  // Expand the path down to the selected scope so it stays visible.
-  useEffect(() => {
-    if (!selectedScope) return
-    for (const ws of tree)
-      for (const plant of ws.plants)
-        for (const node of plant.nodes) {
-          const hit =
-            (selectedScope.level === 'plant' &&
-              selectedScope.id === plant.id) ||
-            (selectedScope.level === 'node' && selectedScope.id === node.id) ||
-            (selectedScope.level === 'model' &&
-              node.models.some(m => m.id === selectedScope.id))
-          if (hit) {
-            setOpenItems(prev => [
-              ...new Set([...prev, ws.id, plant.id, node.id]),
-            ])
-            return
-          }
-        }
-  }, [selectedScope, tree])
+  const isOpen = (id: string) => effectiveOpenItems.includes(id)
+  const toggle = (id: string) =>
+    setOpenItems(prev =>
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id],
+    )
+  const isSel = (level: TreeScope['level'], id: string) =>
+    selectedScope?.level === level && selectedScope.id === id
 
   return (
     <nav
       aria-label="Asset hierarchy"
-      className="flex h-full w-60 shrink-0 flex-col border-r border-border bg-card"
+      className="flex h-full w-60 shrink-0 min-h-0 flex-col border-r border-border bg-card"
     >
       <div className="flex shrink-0 items-center justify-between border-b border-border/50 px-3 py-2.5">
         <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -228,7 +233,7 @@ export function WorkTreePanel({
         </Button>
       </div>
 
-      <ScrollArea className="flex-1">
+      <ScrollArea className="flex-1 min-h-0 overflow-hidden">
         {loading ? (
           <div className="space-y-2 px-3 py-4">
             {Array.from({ length: 3 }).map((_, i) => (
@@ -320,7 +325,9 @@ export function WorkTreePanel({
                                         <span
                                           className={cn(
                                             'h-1.5 w-1.5 shrink-0 rounded-full',
-                                            NODE_DOT[node.status] ?? 'bg-muted',
+                                            node.status === 'normal'
+                                              ? 'bg-green-500'
+                                              : 'bg-red-500',
                                           )}
                                         />
                                         <span

@@ -47,6 +47,8 @@ export interface AIModel {
     deployedBy?: string
     deployedAt?: string
     logs: ModelLog[]
+    /** Wizard data-source/tags/processing config (Model.data.config). */
+    config?: import('@/lib/model-config').ModelConfig
   } | null
   nodesId: string | null
   createdAt: string

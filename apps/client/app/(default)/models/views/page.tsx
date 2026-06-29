@@ -40,7 +40,11 @@ import {
   CommandList,
 } from '@/components/ui/command'
 import { workspacesAtom } from '@/store/workspace'
-import { useAllModels, type ModelWithWorkspace } from '@/hooks/use-all-models'
+import {
+  useAllModels,
+  useRefreshModels,
+  type ModelWithWorkspace,
+} from '@/hooks/use-all-models'
 import { useWorkspacePlants } from '@/hooks/workspace/use-workspace-plants'
 import { AIModel } from '@/types'
 import { deleteModel, updateModel } from '@/services/model'
@@ -49,6 +53,8 @@ import { ModelTable } from './components/model-table'
 import { WorkTreePanel, type TreeScope } from './components/work-tree-panel'
 import { ModelUpsertDialog } from './components/model-upsert-dialog'
 import { ModelLogSheet } from './components/model-log-sheet'
+import { LoadingModelsViewPage } from './loading'
+import { ErrorModelsViewPage } from './error'
 
 // Scope a model to the current sidebar selection (workspace/plant/node/model).
 function inScope(m: ModelWithWorkspace, scope: TreeScope | null): boolean {
@@ -69,6 +75,7 @@ export default function ModelsPage() {
   const [scope, setScope] = useState<TreeScope | null>(null)
 
   const { models: allModels, loading, isFetching, refetch } = useAllModels()
+  const refreshModels = useRefreshModels()
   const { plants } = useWorkspacePlants(workspaceId || null)
 
   const [search, setSearch] = useState('')
@@ -81,7 +88,8 @@ export default function ModelsPage() {
 
   const all = allModels ?? []
 
-  const filtered: ModelWithWorkspace[] = all
+  // Base: scope + workspace + plant + search — no status filters applied.
+  const preStatus: ModelWithWorkspace[] = all
     .filter(m => inScope(m, scope))
     .filter(m => !workspaceId || m.workspaceId === workspaceId)
     .filter(m => {
@@ -90,22 +98,38 @@ export default function ModelsPage() {
       return planId !== undefined && plantFilter.includes(planId)
     })
     .filter(m => m.name.toLowerCase().includes(search.toLowerCase()))
+
+  // Table rows: all active filters applied.
+  const filtered: ModelWithWorkspace[] = preStatus
     .filter(m => !deployFilter || m.data?.deployStatus === deployFilter)
     .filter(m => !prodFilter || effectiveProdStatus(m) === prodFilter)
 
+  // Deploy badge counts: respect prodFilter but NOT deployFilter so that
+  // selecting one deploy status doesn't zero out the others.
+  const deployBase = preStatus.filter(
+    m => !prodFilter || effectiveProdStatus(m) === prodFilter,
+  )
   const deployCounts = {
-    running: filtered.filter(m => m.data?.deployStatus === 'running').length,
-    initializing: filtered.filter(m => m.data?.deployStatus === 'initializing')
-      .length,
-    stopped: filtered.filter(m => m.data?.deployStatus === 'stopped').length,
-    failed: filtered.filter(m => m.data?.deployStatus === 'error').length,
+    running: deployBase.filter(m => m.data?.deployStatus === 'running').length,
+    initializing: deployBase.filter(
+      m => m.data?.deployStatus === 'initializing',
+    ).length,
+    stopped: deployBase.filter(
+      m => (m.data?.deployStatus ?? 'stopped') === 'stopped',
+    ).length,
+    failed: deployBase.filter(m => m.data?.deployStatus === 'error').length,
   }
+
+  // Prod badge counts: respect deployFilter but NOT prodFilter.
+  const prodBase = preStatus.filter(
+    m => !deployFilter || m.data?.deployStatus === deployFilter,
+  )
   const prodCounts = {
-    normal: filtered.filter(m => effectiveProdStatus(m) === 'normal').length,
-    warning: filtered.filter(m => effectiveProdStatus(m) === 'warning').length,
-    alert: filtered.filter(m => effectiveProdStatus(m) === 'alert').length,
-    offline: filtered.filter(m => effectiveProdStatus(m) === 'offline').length,
-    frozen: filtered.filter(m => effectiveProdStatus(m) === 'frozen').length,
+    normal: prodBase.filter(m => effectiveProdStatus(m) === 'normal').length,
+    warning: prodBase.filter(m => effectiveProdStatus(m) === 'warning').length,
+    alert: prodBase.filter(m => effectiveProdStatus(m) === 'alert').length,
+    offline: prodBase.filter(m => effectiveProdStatus(m) === 'offline').length,
+    frozen: prodBase.filter(m => effectiveProdStatus(m) === 'frozen').length,
   }
 
   async function handleDelete(model: AIModel) {
@@ -127,6 +151,7 @@ export default function ModelsPage() {
       toast.success(
         next === 'running' ? `${model.name} starting` : `${model.name} stopped`,
       )
+      refreshModels()
       await refetch()
     } catch {
       toast.error('Failed to update deploy status')
@@ -136,6 +161,14 @@ export default function ModelsPage() {
   function togglePlant(id: string) {
     setPlantFilter(prev =>
       prev.includes(id) ? prev.filter(p => p !== id) : [...prev, id],
+    )
+  }
+
+  if (loading && allModels === null) return <LoadingModelsViewPage />
+
+  if (workspaces.length === 0) {
+    return (
+      <ErrorModelsViewPage message="No workspaces found. Create a workspace to start using models." />
     )
   }
 

@@ -107,7 +107,7 @@ export function ModelMetadataSection({
             onValueChange={v => onNode(v === 'none' ? '' : v)}
             disabled={disabled}
           >
-            <SelectTrigger className="w-full sm:w-[28.75rem]">
+            <SelectTrigger className="w-full sm:w-115">
               <SelectValue placeholder="Select equipment" />
             </SelectTrigger>
             <SelectContent>

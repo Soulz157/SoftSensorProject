@@ -3,6 +3,7 @@ import {
   BarChart3,
   Box,
   Building2,
+  CirclePlus,
   // CheckCircle2,
   // ClipboardCheck,
   Cog,
@@ -43,6 +44,12 @@ export const getUserNavItems = (alertCount: number): NavItem[] => [
     icon: <Box className="h-4 w-4" />,
     children: [
       {
+        id: 'models-create',
+        name: 'Create Model',
+        icon: <CirclePlus className="h-4 w-4" />,
+        href: '/models/create',
+      },
+      {
         id: 'models-view',
         name: 'View Model',
         icon: <Eye className="h-4 w-4" />,
@@ -80,8 +87,8 @@ export const getUserNavItems = (alertCount: number): NavItem[] => [
         href: '/analytics',
       },
       {
-        id: 'data-visualize',
-        name: 'Data Visualize',
+        id: 'data-visualization',
+        name: 'Data Visualization',
         icon: <LineChart className="h-4 w-4" />,
         href: '/data-visualize',
       },

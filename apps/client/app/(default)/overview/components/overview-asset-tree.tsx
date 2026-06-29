@@ -1,8 +1,9 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import {
+  AlertTriangle,
   ArrowRight,
   ChevronRight,
   Factory,
@@ -22,13 +23,45 @@ interface OverviewAssetTreeProps {
   nodes: CanvasNode[]
   models: AIModel[]
   loading: boolean
+  highlightedModelId?: string | null
 }
 
 const childIndent = 'ml-4 border-l border-border/40 pl-2'
 
-// Right-aligned status pill (dot + label) shown on every tree row so an alarm
-// can be traced from plant down to the model it originates on.
-function StatusTag({ status }: { status: NodeStatus }) {
+// `binary` collapses structural (plant/equipment) rows to green Normal / red
+// Abnormal. Model leaf rows omit it and keep the full 4-state model rendering.
+function StatusTag({
+  status,
+  binary,
+}: {
+  status: NodeStatus
+  binary?: boolean
+}) {
+  if (binary) {
+    const isAbnormal = status !== 'normal'
+    return (
+      <span className="ml-auto flex shrink-0 items-center gap-1.5">
+        <span
+          className={cn(
+            'h-2 w-2 shrink-0 rounded-full',
+            isAbnormal ? 'bg-red-500' : 'bg-green-500',
+            isAbnormal &&
+              'ring-4 ring-destructive/20 motion-safe:animate-pulse',
+          )}
+        />
+        <span
+          className={cn(
+            'text-[10px] font-semibold',
+            isAbnormal
+              ? 'text-red-700 dark:text-red-400'
+              : 'text-green-700 dark:text-green-400',
+          )}
+        >
+          {isAbnormal ? 'Abnormal' : 'Normal'}
+        </span>
+      </span>
+    )
+  }
   return (
     <span className="ml-auto flex shrink-0 items-center gap-1.5">
       <span
@@ -86,7 +119,7 @@ function DisclosureRow({
       >
         {name}
       </span>
-      <StatusTag status={status} />
+      <StatusTag status={status} binary />
     </button>
   )
 }
@@ -102,11 +135,14 @@ export function OverviewAssetTree({
   nodes,
   models,
   loading,
+  highlightedModelId,
 }: OverviewAssetTreeProps) {
   const tree = useMemo(
     () => buildOverviewTree(plants, nodes, models),
     [plants, nodes, models],
   )
+
+  const modelRefs = useRef<Map<string, HTMLAnchorElement>>(new Map())
 
   const [openItems, setOpenItems] = useState<string[]>([])
   const isOpen = (id: string) => openItems.includes(id)
@@ -115,8 +151,6 @@ export function OverviewAssetTree({
       prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id],
     )
 
-  // Auto-expand every plant + equipment that carries a non-normal status so the
-  // critical paths are visible the moment the panel opens.
   useEffect(() => {
     const ids: string[] = []
     for (const plant of tree) {
@@ -127,6 +161,34 @@ export function OverviewAssetTree({
     }
     setOpenItems(ids)
   }, [tree])
+
+  useEffect(() => {
+    if (!highlightedModelId) return
+    const ancestors: string[] = []
+    for (const plant of tree) {
+      for (const node of plant.nodes) {
+        if (node.models.some(m => m.id === highlightedModelId)) {
+          ancestors.push(plant.id, node.id)
+        }
+      }
+    }
+    if (ancestors.length > 0) {
+      setOpenItems(prev => {
+        const next = [...prev]
+        for (const id of ancestors) {
+          if (!next.includes(id)) next.push(id)
+        }
+        return next
+      })
+    }
+    // Defer scroll until the DOM has rendered the now-open rows.
+    const frame = requestAnimationFrame(() => {
+      modelRefs.current
+        .get(highlightedModelId)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [highlightedModelId, tree])
 
   if (loading) {
     return (
@@ -187,11 +249,26 @@ export function OverviewAssetTree({
                                 key={model.id}
                                 href={`/models/${model.id}`}
                                 title={model.name}
-                                className="group flex w-full items-center gap-1.5 rounded py-1 pl-6 pr-2 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                                ref={el => {
+                                  if (el) modelRefs.current.set(model.id, el)
+                                  else modelRefs.current.delete(model.id)
+                                }}
+                                className={cn(
+                                  'group flex w-full items-center gap-1.5 rounded py-1 pl-6 pr-2 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground',
+                                  highlightedModelId === model.id &&
+                                    'bg-destructive/10 ring-1 ring-destructive/60',
+                                )}
                               >
                                 <Package className="h-3 w-3 shrink-0" />
                                 <span className="truncate">{model.name}</span>
-                                <StatusTag status={model.status} />
+                                {model.deployFailed ? (
+                                  <span className="ml-auto flex shrink-0 items-center gap-1 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600">
+                                    <AlertTriangle className="h-2.5 w-2.5" />
+                                    Deploy Failed
+                                  </span>
+                                ) : (
+                                  <StatusTag status={model.status} />
+                                )}
                                 <ArrowRight
                                   aria-hidden="true"
                                   className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"

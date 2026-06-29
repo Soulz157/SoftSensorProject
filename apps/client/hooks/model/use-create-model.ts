@@ -1,53 +1,71 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
-import { toast } from 'sonner'
+import { useAtom } from 'jotai'
 import { WorkspacePlant } from '@/types'
 import { getWorkspacePlants } from '@/services/workspace-plant'
 import { getNodes, type CanvasNode } from '@/services/canvas'
-import { createModel } from '@/services/model'
-import { MAX_ARTIFACT_BYTES } from '@/lib/mock-model-create'
-import { useModelTagSelection } from '@/hooks/model/use-model-tag-selection'
+import {
+  mpNameAtom,
+  mpDescriptionAtom,
+  mpWorkspaceIdAtom,
+  mpPlantIdAtom,
+  mpNodeIdAtom,
+} from '@/store/model-pipeline'
+import { useModelPipelineNav } from '@/hooks/model/use-model-pipeline-nav'
 
+/**
+ * Owns Phase-1 metadata (atom-backed so the nav hook can gate step 1) plus the
+ * workspace→plant→node cascade fetch. Model creation itself happens in
+ * `useModelTraining` when the user starts Phase 5 — this hook no longer submits.
+ */
 export function useCreateModel() {
   const router = useRouter()
 
-  const [name, setName] = useState('')
-  const [description, setDescription] = useState('')
-  const [workspaceId, setWorkspaceId] = useState('')
-  const [plantId, setPlantId] = useState('')
-  const [nodeId, setNodeId] = useState('')
+  const [name, setNameAtom] = useAtom(mpNameAtom)
+  const [description, setDescriptionAtom] = useAtom(mpDescriptionAtom)
+  const [workspaceId, setWorkspaceIdAtom] = useAtom(mpWorkspaceIdAtom)
+  const [plantId, setPlantIdAtom] = useAtom(mpPlantIdAtom)
+  const [nodeId, setNodeIdAtom] = useAtom(mpNodeIdAtom)
 
   const [plants, setPlants] = useState<WorkspacePlant[]>([])
   const [nodes, setNodes] = useState<CanvasNode[]>([])
   const [plantsLoading, setPlantsLoading] = useState(false)
 
-  const [artifact, setArtifact] = useState<File | null>(null)
+  const { resetPipeline } = useModelPipelineNav()
 
-  // PI server + tag-role selection (shared with the edit flow).
-  const { piServerId, setPiServerId, tags, toggleTag, reset } =
-    useModelTagSelection()
-
-  const [isSubmitting, setIsSubmitting] = useState(false)
+  const setName = useCallback((v: string) => setNameAtom(v), [setNameAtom])
+  const setDescription = useCallback(
+    (v: string) => setDescriptionAtom(v),
+    [setDescriptionAtom],
+  )
+  const setNodeId = useCallback(
+    (v: string) => setNodeIdAtom(v),
+    [setNodeIdAtom],
+  )
 
   const changeWorkspace = useCallback(
     (id: string) => {
-      setWorkspaceId(id)
-      setPlantId('')
-      setNodeId('')
+      setWorkspaceIdAtom(id)
+      setPlantIdAtom('')
+      setNodeIdAtom('')
       setPlants([])
       setNodes([])
-      reset() // workspace change clears the PI server + picked tags
+      resetPipeline()
     },
-    [reset],
+    [setWorkspaceIdAtom, setPlantIdAtom, setNodeIdAtom, resetPipeline],
   )
 
-  const changePlant = useCallback((id: string) => {
-    setPlantId(id)
-    setNodeId('')
-    setNodes([])
-  }, [])
+  const changePlant = useCallback(
+    (id: string) => {
+      setPlantIdAtom(id)
+      setNodeIdAtom('')
+      setNodes([])
+      resetPipeline()
+    },
+    [setPlantIdAtom, setNodeIdAtom, resetPipeline],
+  )
 
   useEffect(() => {
     if (!workspaceId) return
@@ -83,35 +101,6 @@ export function useCreateModel() {
     }
   }, [workspaceId, plantId])
 
-  // Mock artifact selection with client-side size validation only.
-  const selectArtifact = useCallback((file: File | null) => {
-    if (file && file.size > MAX_ARTIFACT_BYTES) {
-      toast.error('File exceeds the 200 MB limit')
-      return
-    }
-    setArtifact(file)
-  }, [])
-
-  const submit = useCallback(async () => {
-    if (!name.trim() || !workspaceId) {
-      toast.error('Name and workspace are required')
-      return
-    }
-    setIsSubmitting(true)
-    try {
-      await createModel({
-        workspaceId,
-        name: name.trim(),
-        nodeId: nodeId || undefined,
-      })
-      toast.success('Model created')
-      router.push('/models/views')
-    } catch {
-      toast.error('Failed to create model')
-      setIsSubmitting(false)
-    }
-  }, [name, workspaceId, nodeId, router])
-
   const cancel = useCallback(() => router.push('/models/views'), [router])
 
   return {
@@ -124,14 +113,6 @@ export function useCreateModel() {
     plants,
     nodes,
     plantsLoading,
-    artifact,
-    selectArtifact,
-    piServerId,
-    setPiServerId,
-    tags,
-    toggleTag,
-    isSubmitting,
-    submit,
     cancel,
   }
 }

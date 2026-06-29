@@ -19,8 +19,10 @@ import {
 import { formatDistanceToNow } from 'date-fns'
 import { workspaceIcons, workspaceColors } from '@/store/workspace'
 import { cn } from '@/lib/utils'
+import { toBinaryStatus, BINARY_STATUS_META } from '@/lib/overview-status'
 import type { Workspace } from '@/types'
 import type { CanvasNode } from '@/services/canvas'
+import type { NodeStatus } from '@/store/status-colors'
 
 function WorkspaceIcon({
   iconId,
@@ -82,6 +84,20 @@ function StatusBadge({ status, text }: { status: string; text?: string }) {
   }
 }
 
+// Binary device (equipment) badge — green Normal / red Abnormal. Distinct from
+// the model `StatusBadge` above, which keeps its full multi-state behavior.
+function DeviceStatusBadge({ status }: { status: string }) {
+  const binary = toBinaryStatus((status as NodeStatus) || 'normal')
+  const meta = BINARY_STATUS_META[binary]
+  const Icon = binary === 'abnormal' ? AlertCircle : CheckCircle2
+  return (
+    <div className={cn('flex items-center gap-1.5 text-xs', meta.text)}>
+      <Icon className="h-3.5 w-3.5" />
+      <span className="truncate">{meta.label}</span>
+    </div>
+  )
+}
+
 export function WorkspaceCard({
   workspace,
   nodes = [],
@@ -100,14 +116,15 @@ export function WorkspaceCard({
     status: n.data?.status || 'normal',
   }))
 
-  const alarmCount = devices.filter(d => d.status === 'alarm').length
-  const warnCount = devices.filter(d => d.status === 'warning').length
-  const statusDot =
-    alarmCount > 0
-      ? 'bg-red-500'
-      : warnCount > 0
-        ? 'bg-amber-500'
-        : 'bg-emerald-500'
+  // Abnormal if any device is non-normal OR any model deploy has failed.
+  const hasFailedDeploy = nodes.some(n =>
+    (n.models ?? []).some(m => m.data?.deployStatus === 'error'),
+  )
+  const wsBinary =
+    devices.some(d => d.status !== 'normal') || hasFailedDeploy
+      ? 'abnormal'
+      : 'normal'
+  const wsMeta = BINARY_STATUS_META[wsBinary]
 
   const allModels = nodes.flatMap(
     n =>
@@ -152,12 +169,15 @@ export function WorkspaceCard({
                 {workspace.name}
               </h3>
               <span className="flex h-6 items-center gap-1.5 rounded-full bg-background px-2.5 text-xs font-medium border border-border">
-                <span className={cn('h-2 w-2 rounded-full', statusDot)} />
-                {alarmCount > 0
-                  ? 'Critical'
-                  : warnCount > 0
-                    ? 'Warning'
-                    : 'Healthy'}
+                <span
+                  className={cn(
+                    'h-2 w-2 rounded-full',
+                    wsMeta.dot,
+                    wsBinary === 'abnormal' &&
+                      'ring-4 ring-red-500/20 motion-safe:animate-pulse',
+                  )}
+                />
+                {wsMeta.label}
               </span>
             </div>
             <p className="mt-1 text-sm text-muted-foreground">
@@ -184,7 +204,7 @@ export function WorkspaceCard({
                   <span className="truncate text-xs text-muted-foreground">
                     {device.name}
                   </span>
-                  <StatusBadge status={device.status} />
+                  <DeviceStatusBadge status={device.status} />
                 </div>
               ))}
               {devices.length === 0 && (

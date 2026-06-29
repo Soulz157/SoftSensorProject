@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { appendModelLog, updateModel } from '@/services/model'
+import { useRefreshModels } from '@/hooks/use-all-models'
 import {
   buildMockMetrics,
   buildRetrainLogs,
@@ -44,6 +45,7 @@ export function useModelRetrain({
   const [phase, setPhase] = useState<RetrainPhase>('idle')
   const [metrics, setMetrics] = useState<EvalMetrics | null>(null)
   const cancelled = useRef(false)
+  const refreshModels = useRefreshModels()
 
   useEffect(() => {
     cancelled.current = false
@@ -68,6 +70,7 @@ export function useModelRetrain({
       const wait = () => new Promise(resolve => setTimeout(resolve, STEP_MS))
       try {
         await updateModel(model.id, { deployStatus: 'initializing' })
+        refreshModels()
 
         // Split the simulated log stream across Training / Validating phases.
         const logs = buildRetrainLogs(m, config)
@@ -96,6 +99,7 @@ export function useModelRetrain({
         await wait()
         const evalMetrics = buildMockMetrics(model.id, config)
         await updateModel(model.id, { deployStatus: 'running' })
+        refreshModels()
         await appendModelLog(model.id, {
           level: 'info',
           message: `Eval — RMSE ${evalMetrics.rmse}, R² ${evalMetrics.r2}, MAE ${evalMetrics.mae}`,
@@ -113,6 +117,7 @@ export function useModelRetrain({
         if (!cancelled.current) setPhase('error')
         try {
           await updateModel(model.id, { deployStatus: 'error' })
+          refreshModels()
         } catch {
           // best-effort status reset
         }
@@ -125,7 +130,7 @@ export function useModelRetrain({
         }
       }
     },
-    [isRetraining, model?.id, model?.name, onUpdated],
+    [isRetraining, model?.id, model?.name, onUpdated, refreshModels],
   )
 
   const autoFinetune = useCallback(() => void run('auto'), [run])

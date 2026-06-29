@@ -12,18 +12,19 @@ const ACCENT_COLORS: Record<string, string> = {
   controller: '#22c55e',
 }
 
+// Binary equipment status: green Normal / red Abnormal (any non-normal state).
 const STATUS_COLORS: Record<string, string> = {
   normal: '#22c55e',
-  warning: '#f97316',
+  warning: '#ef4444',
   alarm: '#ef4444',
-  offline: '#6b7280',
+  offline: '#ef4444',
 }
 
 const STATUS_LABELS: Record<string, string> = {
   normal: 'Normal',
-  warning: 'Warning',
-  alarm: 'Alarm',
-  offline: 'Offline',
+  warning: 'Abnormal',
+  alarm: 'Abnormal',
+  offline: 'Abnormal',
 }
 
 const SECTION_CLASS =

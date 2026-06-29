@@ -13,6 +13,13 @@
 import { rangeConfig, type TimeRange } from '@/lib/mock-readings'
 import type { EvalPoint } from '@/lib/model-evaluation'
 
+/** One model prediction at a timestamp (no lab/actual counterpart). */
+export interface PredPoint {
+  /** ISO 8601 UTC. */
+  timestamp: string
+  predicted: number
+}
+
 const HOUR_MS = 60 * 60 * 1000
 
 /** Deterministic hash → [0, 1). Stable for a given string (FNV-1a). */
@@ -76,4 +83,24 @@ export function generateLabComparison(
     })
   }
   return points
+}
+
+/**
+ * Generate the model's prediction series alone for one model over the given
+ * range (ascending by timestamp). Shares the deterministic baseline of
+ * `generateLabComparison` but exposes only the predicted half — the lab/actual
+ * counterpart now comes from user-supplied ground truth, not this generator.
+ *
+ * Swap path: replace with a `services/` `fetchClient` call returning the same
+ * `PredPoint[]` once a NestJS prediction-history endpoint lands.
+ */
+export function generatePredictions(
+  modelId: string,
+  range: TimeRange,
+  now: number = Date.now(),
+): PredPoint[] {
+  return generateLabComparison(modelId, range, now).map(p => ({
+    timestamp: p.timestamp,
+    predicted: p.predicted,
+  }))
 }

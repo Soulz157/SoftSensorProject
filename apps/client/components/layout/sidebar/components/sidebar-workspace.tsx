@@ -15,10 +15,7 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { workspaceIcons, workspaceColors } from '@/store/workspace'
 import type { WorkspaceIconProps } from '@/types'
-import {
-  workspaceStatusDot,
-  type SidebarLogic,
-} from '@/hooks/layout/use-sidebar'
+import { type SidebarLogic } from '@/hooks/layout/use-sidebar'
 import Image from 'next/image'
 
 function WorkspaceIcon({ iconId, colorId }: WorkspaceIconProps) {
@@ -53,6 +50,7 @@ export function SidebarWorkspaces({
 }: SidebarWorkspacesProps) {
   const {
     workspaces,
+    failedByWorkspace,
     activeWorkspace,
     setActiveWorkspace,
     workspaceOpen,
@@ -136,14 +134,16 @@ export function SidebarWorkspaces({
                           iconId={ws.icon || 'box'}
                         />
                       )}
-                      {isCollapsed && ws.status && ws.status !== 'normal' && (
-                        <span
-                          className={cn(
-                            'absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full ring-1 ring-sidebar',
-                            workspaceStatusDot(ws.status),
-                          )}
-                        />
-                      )}
+                      {isCollapsed &&
+                        (ws.status !== 'normal' ||
+                          (failedByWorkspace[ws.id] ?? 0) > 0) && (
+                          <span
+                            className={cn(
+                              'absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full ring-1 ring-sidebar',
+                              'bg-red-500',
+                            )}
+                          />
+                        )}
                     </div>
                     {!isCollapsed && (
                       <>
@@ -153,7 +153,10 @@ export function SidebarWorkspaces({
                         <span
                           className={cn(
                             'h-2 w-2 shrink-0 rounded-full',
-                            workspaceStatusDot(ws.status),
+                            ws.status !== 'normal' ||
+                              (failedByWorkspace[ws.id] ?? 0) > 0
+                              ? 'bg-red-500'
+                              : 'bg-green-500',
                           )}
                         />
                         <span className="shrink-0 tabular-nums text-xs text-sidebar-foreground/50">
@@ -208,13 +211,19 @@ export function SidebarWorkspaces({
             <div className="space-y-0.5 font-medium">
               {[
                 {
+                  href: `/plants/${currentWorkspace.id}`,
+                  icon: <Layers className="h-3.5 w-3.5 shrink-0" />,
+                  label: 'Overview',
+                  exact: true,
+                },
+                {
                   href: `/workspaces/${currentWorkspace.id}/canvas`,
                   icon: <Network className="h-3.5 w-3.5 shrink-0" />,
                   label: 'Pipeline',
                   exact: false,
                 },
                 {
-                  href: `/workspaces/${currentWorkspace.id}`,
+                  href: `/analytics/${currentWorkspace.id}`,
                   icon: <Database className="h-3.5 w-3.5 shrink-0" />,
                   label: 'Data Management',
                   exact: true,

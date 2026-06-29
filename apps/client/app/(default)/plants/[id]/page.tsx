@@ -24,24 +24,23 @@ import { cn } from '@/lib/utils'
 import Link from 'next/link'
 import { usePlantsController } from '@/hooks/plants/use-plant-controller'
 
+// Binary equipment status: green Normal / red Abnormal (any non-normal state).
 const STATUS_DOT: Record<NodeStatus, string> = {
-  normal: 'bg-emerald-500',
-  warning: 'bg-amber-500',
+  normal: 'bg-green-500',
+  warning: 'bg-red-500',
   alarm: 'bg-red-500',
-  offline: 'bg-zinc-500',
+  offline: 'bg-red-500',
 }
 
 const STATUS_TEXT: Record<NodeStatus, string> = {
-  normal: 'text-emerald-500',
-  warning: 'text-amber-500',
-  alarm: 'text-red-500',
-  offline: 'text-zinc-400',
+  normal: 'text-green-700 dark:text-green-400',
+  warning: 'text-red-700 dark:text-red-400',
+  alarm: 'text-red-700 dark:text-red-400',
+  offline: 'text-red-700 dark:text-red-400',
 }
 
 function formatStatus(status: NodeStatus) {
-  if (status === 'normal') return 'Healthy'
-  if (status === 'alarm') return 'Alarm'
-  return status.charAt(0).toUpperCase() + status.slice(1)
+  return status === 'normal' ? 'Normal' : 'Abnormal'
 }
 
 const EquipmentGridView = memo(function EquipmentGridView({
@@ -49,11 +48,13 @@ const EquipmentGridView = memo(function EquipmentGridView({
   selectedNodeId,
   onNodeClick,
   workspaceId,
+  failedNodeIds,
 }: {
   nodes: CanvasNode[]
   selectedNodeId: string | null
   onNodeClick: (nodeId: string) => void
   workspaceId: string | null
+  failedNodeIds: Set<string>
 }) {
   if (nodes.length === 0) {
     return (
@@ -76,6 +77,7 @@ const EquipmentGridView = memo(function EquipmentGridView({
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
         {nodes.map(node => {
           const status = node.data.status as NodeStatus
+          const hasFailedModel = failedNodeIds.has(node.id)
           const selected = selectedNodeId === node.id
           return (
             <div
@@ -100,7 +102,7 @@ const EquipmentGridView = memo(function EquipmentGridView({
                     className={cn(
                       'mt-1 h-2.5 w-2.5 shrink-0 rounded-full shadow-sm',
                       STATUS_DOT[status],
-                      status === 'alarm' &&
+                      status !== 'normal' &&
                         'animate-pulse ring-2 ring-red-500/30',
                     )}
                   />
@@ -118,6 +120,12 @@ const EquipmentGridView = memo(function EquipmentGridView({
                       {node.models?.length || 0} Connected
                     </p>
                   </div>
+                  {hasFailedModel && (
+                    <div className="col-span-2 mt-1 flex items-center gap-1.5 rounded-md bg-amber-500/10 px-2.5 py-1.5 font-medium text-amber-600">
+                      <AlertTriangle className="h-3 w-3 shrink-0" />
+                      Model deploy failed
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -207,6 +215,12 @@ export default function PlantsPage({ params, searchParams }: PlantsPageProps) {
             {data.warningCount > 0 && (
               <span className="text-amber-500">
                 {data.warningCount} Warning
+              </span>
+            )}
+            {data.deployFailedCount > 0 && (
+              <span className="inline-flex items-center gap-1 text-amber-500">
+                <AlertTriangle className="h-3 w-3" />
+                {data.deployFailedCount} Model Failed
               </span>
             )}
           </div>
@@ -334,6 +348,7 @@ export default function PlantsPage({ params, searchParams }: PlantsPageProps) {
               selectedNodeId={state.selectedNodeId}
               onNodeClick={handlers.handleNodeClick}
               workspaceId={state.activeWorkspaceId}
+              failedNodeIds={data.failedNodeIds}
             />
           )}
         </main>

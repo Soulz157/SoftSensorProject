@@ -6,12 +6,12 @@ import type { useWizardNavigation } from '@/hooks/use-wizard-navigation'
 
 const STEPS = [
   'Workspace & plant',
-  'PI server',
-  'Tags & range',
-  'Fetching',
+  'Data Source',
+  'Tags List',
+  'Fetch Data',
   'Raw data',
-  'Processing',
-  'Export',
+  // 'Processing',
+  // 'Export',
 ]
 
 interface Props {

@@ -13,6 +13,7 @@ import { cn } from '@/lib/utils'
 import { workspaceIcons } from '@/store/workspace'
 import { useModels } from '@/hooks/workspace/use-models'
 import { useWorkspacePlants } from '@/hooks/workspace/use-workspace-plants'
+import { failedDeploys } from '@/lib/model-status'
 import { OverviewAssetTree } from './overview-asset-tree'
 import type { Workspace } from '@/types'
 import type { CanvasNode } from '@/services/canvas'
@@ -70,34 +71,28 @@ function PanelContent({
   const alarmCount = nodes.filter(n => n.data.status === 'alarm').length
   const warningCount = nodes.filter(n => n.data.status === 'warning').length
   const offlineCount = nodes.filter(n => n.data.status === 'offline').length
+  const failedCount = failedDeploys(models).length
 
   const worstStatus: 'alarm' | 'warning' | 'offline' | 'normal' =
     alarmCount > 0
       ? 'alarm'
       : offlineCount > 0
         ? 'offline'
-        : warningCount > 0
+        : warningCount > 0 || failedCount > 0
           ? 'warning'
           : 'normal'
 
   const IconComponent =
     workspaceIcons.find(i => i.id === workspace.icon)?.icon ?? Building2
 
-  const statusBadgeClass = {
-    alarm: 'border-destructive/40 bg-destructive/10 text-destructive',
-    warning:
-      'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400',
-    offline: 'border-border bg-muted text-muted-foreground',
-    normal:
-      'border-green-500/40 bg-green-500/10 text-green-700 dark:text-green-400',
-  }[worstStatus]
+  // Binary display: any non-normal worst status (incl. a failed deploy folded
+  // in above) reads as a single red "Abnormal" badge.
+  const isAbnormal = worstStatus !== 'normal'
+  const statusBadgeClass = isAbnormal
+    ? 'border-destructive/40 bg-destructive/10 text-destructive'
+    : 'border-green-500/40 bg-green-500/10 text-green-700 dark:text-green-400'
 
-  const statusBadgeText = {
-    alarm: `Alarm — ${alarmCount} critical`,
-    warning: `Warning — ${warningCount} affected`,
-    offline: 'Offline',
-    normal: 'All Systems Normal',
-  }[worstStatus]
+  const statusBadgeText = isAbnormal ? 'Abnormal' : 'All Systems Normal'
 
   return (
     <div className="flex h-full w-full flex-col border-t border-border bg-card sm:w-75 sm:shrink-0 sm:border-l sm:border-t-0">
@@ -141,20 +136,24 @@ function PanelContent({
                 statusBadgeClass,
               )}
             >
-              {worstStatus === 'alarm' && (
+              {isAbnormal && (
                 <AlertCircle
-                  aria-hidden="true"
-                  className="mr-1.5 h-3.5 w-3.5"
-                />
-              )}
-              {worstStatus === 'warning' && (
-                <AlertTriangle
                   aria-hidden="true"
                   className="mr-1.5 h-3.5 w-3.5"
                 />
               )}
               {statusBadgeText}
             </div>
+
+            {failedCount > 0 && (
+              <div className="mt-2 flex items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs font-medium text-amber-700 dark:text-amber-400">
+                <AlertTriangle
+                  aria-hidden="true"
+                  className="h-3.5 w-3.5 shrink-0"
+                />
+                {failedCount} model deploy{failedCount > 1 ? 's' : ''} failed
+              </div>
+            )}
           </div>
 
           {/* Stats grid 2×2 */}
@@ -169,27 +168,17 @@ function PanelContent({
                 value={workspace._count.models ? workspace._count.models : 0}
               />
               <StatCell
-                label="Alarms"
-                value={alarmCount}
+                label="Abnormal"
+                value={alarmCount + warningCount + offlineCount}
                 valueClass={
-                  alarmCount > 0
+                  alarmCount + warningCount + offlineCount > 0
                     ? 'text-destructive'
                     : 'text-green-700 dark:text-green-400'
-                }
-              />
-              <StatCell
-                label="Warnings"
-                value={warningCount}
-                valueClass={
-                  warningCount > 0
-                    ? 'text-amber-700 dark:text-amber-400'
-                    : 'text-muted-foreground'
                 }
               />
             </div>
           </div>
 
-          {/* Unified asset work-tree: Plant → Equipment → Model */}
           <OverviewAssetTree
             plants={plants ?? []}
             nodes={nodes}

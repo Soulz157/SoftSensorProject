@@ -1,8 +1,9 @@
 'use client'
 
 import { useState } from 'react'
-import { CheckCircle2, AlertTriangle, AlertCircle, WifiOff } from 'lucide-react'
-import { STATUS_COLORS, type NodeStatus } from '@/store/status-colors'
+import { CheckCircle2, AlertCircle } from 'lucide-react'
+import { type NodeStatus } from '@/store/status-colors'
+import { toBinaryStatus, BINARY_STATUS_META } from '@/lib/overview-status'
 
 const COLOR_HEX: Record<string, string> = {
   blue: '#3b82f6',
@@ -11,13 +12,6 @@ const COLOR_HEX: Record<string, string> = {
   amber: '#f59e0b',
   rose: '#f43f5e',
   cyan: '#06b6d4',
-}
-
-const STATUS_ICONS = {
-  normal: CheckCircle2,
-  warning: AlertTriangle,
-  alarm: AlertCircle,
-  offline: WifiOff,
 }
 
 const STATUS_PRIORITY: Record<NodeStatus, number> = {
@@ -62,8 +56,9 @@ export function PlantTower({
   onDoubleClick,
 }: PlantTowerProps) {
   const accentHex = COLOR_HEX[workspaceColor] ?? '#3b82f6'
-  const statusColor = STATUS_COLORS[status]
-  const StatusIcon = STATUS_ICONS[status]
+  const isAbnormal = toBinaryStatus(status) === 'abnormal'
+  const statusColor = BINARY_STATUS_META[toBinaryStatus(status)].color
+  const StatusIcon = isAbnormal ? AlertCircle : CheckCircle2
   const towerH = Math.max(40, Math.min(20 + nodeCount * 3, 100))
   const tw = 22
 
@@ -103,15 +98,8 @@ export function PlantTower({
     `${cx + tw},${cy}`,
   ].join(' ')
 
-  const windowColor =
-    status === 'alarm'
-      ? '#fca5a5'
-      : status === 'warning'
-        ? '#fcd34d'
-        : status === 'offline'
-          ? '#71717a'
-          : '#86efac'
-  const windowOpacity = status === 'offline' ? 0.3 : 0.75
+  const windowColor = isAbnormal ? '#fca5a5' : '#86efac'
+  const windowOpacity = 0.75
 
   const antennaBase = cy - towerH - 12
   const antennaTop = antennaBase - 16
@@ -356,35 +344,38 @@ export function PlantTower({
 
       {/* Name Badge */}
       <rect
-        x={cx - 50}
+        x={cx - 60}
         y={cy + tw * 0.5 + 10}
-        width={100}
-        height={18}
-        rx={4}
+        width={140}
+        height={28}
+        rx={6}
         fill={isDark ? 'rgba(10,13,20,0.92)' : 'rgba(240,244,248,0.92)'}
         stroke={strokeColor}
         strokeWidth={0.6}
       />
 
-      <circle cx={cx - 38} cy={cy + tw * 0.5 + 19} r={3.5} fill={statusColor} />
+      {/* Status Circle (ซ้าย) */}
+      <circle cx={cx - 46} cy={cy + tw * 0.5 + 24} r={5} fill={statusColor} />
 
+      {/* Name Text */}
       <text
-        x={cx - 28}
-        y={cy + tw * 0.5 + 22}
+        x={cx - 34}
+        y={cy + tw * 0.5 + 29}
         textAnchor="start"
-        fontSize={8}
+        fontSize={13}
         fontFamily="Geist Sans, ui-sans-serif, system-ui, sans-serif"
         fontWeight={600}
         fill={isDark ? '#f8fafc' : '#1e293b'}
       >
-        {name.length > 10 ? `${name.slice(0, 10)}…` : name}
+        {name.length > 10 ? `${name.slice(0, 8)}…` : name}
       </text>
 
+      {/* Status Icon (ขวา) */}
       <StatusIcon
-        x={cx + 35}
-        y={cy + tw * 0.5 + 14}
-        width={10}
-        height={10}
+        x={cx + 50}
+        y={cy + tw * 0.5 + 18}
+        width={12}
+        height={12}
         color={statusColor}
       />
 
@@ -393,7 +384,7 @@ export function PlantTower({
         <g aria-hidden="true">
           <rect
             x={dotsStartX - 4}
-            y={cy + tw * 0.5 + 30}
+            y={cy + tw * 0.5 + 40}
             width={totalDotsW + 8}
             height={10}
             rx={5}
@@ -405,16 +396,16 @@ export function PlantTower({
             <circle
               key={`s-${i}`}
               cx={dotsStartX + i * DOT_SPACING}
-              cy={cy + tw * 0.5 + 35}
+              cy={cy + tw * 0.5 + 45}
               r={2.5}
-              fill={STATUS_COLORS[st]}
+              fill={BINARY_STATUS_META[toBinaryStatus(st)].color}
               opacity={0.95}
             />
           ))}
           {extraDots > 0 && (
             <text
               x={dotsStartX + sortedStatuses.length * DOT_SPACING}
-              y={cy + tw * 0.5 + 38}
+              y={cy + tw * 0.5 + 48}
               fontSize={5.5}
               fontFamily="Geist Sans, ui-sans-serif, sans-serif"
               fontWeight={600}

@@ -50,7 +50,8 @@ export function EquipmentSection({
         ) : nodes && nodes.length > 0 ? (
           <div className="max-h-96 divide-y divide-border overflow-y-auto">
             {nodes.map(node => {
-              const sc = statusColors(node.data.status)
+              const isAbnormal = node.data.status !== 'normal'
+              const sc = statusColors(isAbnormal ? 'alarm' : 'normal')
               return (
                 <div
                   key={node.id}
@@ -77,7 +78,7 @@ export function EquipmentSection({
                             sc.text,
                           )}
                         >
-                          {node.data.status}
+                          {isAbnormal ? 'Abnormal' : 'Normal'}
                         </span>
                       </div>
                     </div>

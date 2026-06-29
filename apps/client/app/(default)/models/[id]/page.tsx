@@ -5,7 +5,16 @@ import Link from 'next/link'
 import { useAtomValue } from 'jotai'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Skeleton } from '@/components/ui/skeleton'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
@@ -28,6 +37,7 @@ import {
   Play,
   RefreshCw,
   Settings,
+  SlidersHorizontal,
   Snowflake,
   Sparkles,
   StopCircle,
@@ -40,6 +50,7 @@ import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import { workspacesAtom } from '@/store/workspace'
 import { getModels, updateModel } from '@/services/model'
+import { useRefreshModels } from '@/hooks/use-all-models'
 import { effectiveProdStatus } from '@/lib/model-status'
 import type { AIModel } from '@/types'
 import { ModelEvaluation } from '../evaluation/components/model-evaluation'
@@ -47,6 +58,8 @@ import { ModelUpsertDialog } from '../views/components/model-upsert-dialog'
 import { ModelRetrainDialog } from './components/model-retrain-dialog'
 import { RetrainProgress } from './components/retrain-progress'
 import { useModelRetrain } from '@/hooks/model/use-model-retrain'
+import LoadingModelPage from './loading'
+import ErrorModelPage from './error'
 
 const DEPLOY_CONFIG = {
   running: {
@@ -198,17 +211,22 @@ export default function ModelDetailPage({
   const [model, setModel] = useState<AIModel | null>(null)
   const [loading, setLoading] = useState(true)
   const [isToggling, setIsToggling] = useState(false)
+  const [confirmDeploy, setConfirmDeploy] = useState<
+    'running' | 'stopped' | null
+  >(null)
   const [editOpen, setEditOpen] = useState(false)
   const [retrainOpen, setRetrainOpen] = useState(false)
   const [version, setVersion] = useState(0)
   const refresh = () => setVersion(v => v + 1)
   const retrain = useModelRetrain({ model, onUpdated: refresh })
+  const refreshModels = useRefreshModels()
 
   async function handleToggleDeploy(next: 'running' | 'stopped') {
     if (!model) return
     setIsToggling(true)
     try {
       await updateModel(model.id, { deployStatus: next })
+      refreshModels()
       setModel(prev =>
         prev?.data
           ? { ...prev, data: { ...prev.data, deployStatus: next } }
@@ -263,43 +281,15 @@ export default function ModelDetailPage({
   )
 
   if (loading) {
-    return (
-      <div className="flex-1 overflow-auto p-6 md:p-8">
-        <Skeleton className="mb-6 h-5 w-28" />
-        <Skeleton className="mb-4 h-10 w-72" />
-        <div className="grid gap-4 sm:grid-cols-3">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <Skeleton key={i} className="h-24 rounded-lg" />
-          ))}
-        </div>
-        <Skeleton className="mt-6 h-10 w-64 rounded-lg" />
-        <Skeleton className="mt-3 h-64 rounded-lg" />
-      </div>
-    )
+    return <LoadingModelPage />
   }
 
   if (!model) {
-    return (
-      <div className="flex-1 overflow-auto p-6 md:p-8">
-        <Link
-          href="/models/views"
-          className="mb-6 inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          Back to Models
-        </Link>
-        <div className="flex flex-col items-center gap-3 py-20 text-center text-muted-foreground">
-          <Box className="h-10 w-10 opacity-30" />
-          <p className="text-base font-medium">Model not found</p>
-        </div>
-      </div>
-    )
+    return <ErrorModelPage />
   }
 
   const deployKey = (model.data?.deployStatus ??
     'stopped') as keyof typeof DEPLOY_CONFIG
-  // Monitoring is forced offline when the model isn't deployed —
-  // a stopped/failed model can never show a live monitoring state.
   const prodKey = effectiveProdStatus(model)
   const monitoringDisabled = deployKey === 'stopped' || deployKey === 'error'
   const deploy = DEPLOY_CONFIG[deployKey] ?? DEPLOY_CONFIG.stopped
@@ -371,7 +361,7 @@ export default function ModelDetailPage({
                 size="sm"
                 className="gap-1.5"
                 disabled={isToggling || deployKey === 'initializing'}
-                onClick={() => void handleToggleDeploy('stopped')}
+                onClick={() => setConfirmDeploy('stopped')}
               >
                 <StopCircle className="h-4 w-4" />
                 Stop
@@ -381,7 +371,7 @@ export default function ModelDetailPage({
                 size="sm"
                 className="gap-1.5"
                 disabled={isToggling}
-                onClick={() => void handleToggleDeploy('running')}
+                onClick={() => setConfirmDeploy('running')}
               >
                 <Play className="h-4 w-4" />
                 Start
@@ -396,6 +386,16 @@ export default function ModelDetailPage({
               <Pencil className="h-4 w-4" />
               Edit
             </Button>
+            {model && (
+              <Button asChild variant="outline" size="sm" className="gap-1.5">
+                <Link
+                  href={`/models/create?mode=edit&modelId=${model.id}&workspaceId=${model.workspaceId}`}
+                >
+                  <SlidersHorizontal className="h-4 w-4" />
+                  Edit configuration
+                </Link>
+              </Button>
+            )}
             <Button
               variant="outline"
               size="sm"
@@ -404,14 +404,6 @@ export default function ModelDetailPage({
             >
               <RefreshCw className="h-4 w-4" />
               Retrain
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-9 w-9"
-              onClick={() => setEditOpen(true)}
-            >
-              <Settings className="h-4 w-4" />
             </Button>
           </div>
         </div>
@@ -577,7 +569,7 @@ export default function ModelDetailPage({
                             'border-l-2 border-red-500/50 pl-3',
                         )}
                       >
-                        <span className="mt-0.5 min-w-[6rem] shrink-0 font-mono text-[11px] text-muted-foreground/60">
+                        <span className="mt-0.5 min-w-24 shrink-0 font-mono text-[11px] text-muted-foreground/60">
                           {new Date(entry.timestamp).toLocaleTimeString()}
                         </span>
                         <span
@@ -754,6 +746,36 @@ export default function ModelDetailPage({
           setRetrainOpen(false)
         }}
       />
+      <AlertDialog
+        open={confirmDeploy !== null}
+        onOpenChange={open => !open && setConfirmDeploy(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {confirmDeploy === 'running'
+                ? `Start "${model.name}"?`
+                : `Stop "${model.name}"?`}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirmDeploy === 'running'
+                ? 'This will begin inference. Running models consume resources.'
+                : 'This will halt inference immediately.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (confirmDeploy) void handleToggleDeploy(confirmDeploy)
+                setConfirmDeploy(null)
+              }}
+            >
+              {confirmDeploy === 'running' ? 'Start' : 'Stop'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

@@ -16,6 +16,52 @@ export function effectiveProdStatus(m: AIModel): EffectiveProdStatus {
   return m.data?.prodStatus ?? 'offline'
 }
 
+/**
+ * Single source of truth for failed-deploy detection (wire value: 'error').
+ * Use this predicate everywhere — never inline `m.data?.deployStatus === 'error'`.
+ */
+export function isDeployFailed(m: AIModel): boolean {
+  return m.data?.deployStatus === 'error'
+}
+
+/**
+ * Models whose deployment failed (`deployStatus === 'error'`, UI label "Failed").
+ * Single source of truth for failed-deploy detection — used by the Alerts page
+ * and the Overview detail panel. Do not inline the filter in components.
+ */
+export function failedDeploys<T extends AIModel>(models: T[]): T[] {
+  return models.filter(isDeployFailed)
+}
+
+/**
+ * Count of failed deploys per `workspaceId`. Lets workspace indicators (sidebar
+ * dot, cards, admin list) fold model failures into their status without each
+ * re-implementing the filter.
+ */
+export function failedCountByWorkspace(
+  models: AIModel[],
+): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const m of failedDeploys(models)) {
+    out[m.workspaceId] = (out[m.workspaceId] ?? 0) + 1
+  }
+  return out
+}
+
+/**
+ * Count of failed deploys per `nodesId`. Lets the tower equipment-dots fold
+ * model failures into the node's visual status without re-filtering models.
+ * Nodes with no failed models are absent from the result (treat as 0).
+ */
+export function failedCountByNodeId(models: AIModel[]): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const m of failedDeploys(models)) {
+    if (!m.nodesId) continue
+    out[m.nodesId] = (out[m.nodesId] ?? 0) + 1
+  }
+  return out
+}
+
 export type DeployStatus = 'running' | 'initializing' | 'stopped' | 'error'
 export type DeployCounts = Record<DeployStatus, number>
 

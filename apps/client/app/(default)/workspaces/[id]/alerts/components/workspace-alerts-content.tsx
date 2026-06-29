@@ -56,10 +56,11 @@ function getNodeTypeIcon(type: NodeType) {
   }
 }
 
+// Binary equipment alerts: all non-normal node states render red "Abnormal".
 const STATUS_CLASS: Record<AlertStatus, string> = {
   alarm: 'bg-red-500/10 text-red-500',
   offline: 'bg-red-500/10 text-red-500',
-  warning: 'bg-amber-500/10 text-amber-500',
+  warning: 'bg-red-500/10 text-red-500',
 }
 
 interface WorkspaceAlertsContentProps {
@@ -194,7 +195,7 @@ export function WorkspaceAlertsContent({
                               'bg-zinc-500/10 text-zinc-500',
                           )}
                         >
-                          {alert.status}
+                          Abnormal
                         </span>
                       </TableCell>
 

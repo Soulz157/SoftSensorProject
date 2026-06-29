@@ -38,7 +38,7 @@ export class ModelAuthorizedController {
     @Body() dto: CreateModelDto,
     @Users() user: Auth.UserPayload,
   ) {
-    return this.service.createModelService(dto, user.id);
+    return this.service.createModelService(dto, user.id, user.role);
   }
 
   @Patch('/:modelId')
@@ -47,7 +47,7 @@ export class ModelAuthorizedController {
     @Body() dto: UpdateModelDto,
     @Users() user: Auth.UserPayload,
   ) {
-    return this.service.updateModelService(modelId, dto, user.id);
+    return this.service.updateModelService(modelId, dto, user.id, user.role);
   }
 
   @Post('/:modelId/log')
@@ -64,6 +64,6 @@ export class ModelAuthorizedController {
     @Body() dto: DeleteModelDto,
     @Users() user: Auth.UserPayload,
   ) {
-    return this.service.deleteModelService(dto.modelId, user.id);
+    return this.service.deleteModelService(dto.modelId, user.id, user.role);
   }
 }

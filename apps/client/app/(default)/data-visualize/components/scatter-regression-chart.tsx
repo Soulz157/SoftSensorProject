@@ -83,8 +83,8 @@ export function ScatterRegressionChart({ dataset }: { dataset: Dataset }) {
   const yMeta = tagMeta(resolvedY)
 
   const config: ChartConfig = {
-    x: { label: xMeta?.label ?? resolvedX, color: 'var(--color-chart-2)' },
-    y: { label: yMeta?.label ?? resolvedY, color: 'var(--color-chart-2)' },
+    x: { label: xMeta?.label ?? resolvedX, color: 'var(--chart-2)' },
+    y: { label: yMeta?.label ?? resolvedY, color: 'var(--chart-2)' },
   }
 
   if (tags.length < 2) {
@@ -165,14 +165,14 @@ export function ScatterRegressionChart({ dataset }: { dataset: Dataset }) {
           <ChartTooltip cursor={false} content={<ChartTooltipContent />} />
           <Scatter
             data={points}
-            fill="var(--color-chart-2)"
+            fill="var(--chart-2)"
             isAnimationActive={!reduced}
           />
           {segment && (
             <ReferenceLine
               ifOverflow="extendDomain"
               segment={segment}
-              stroke="var(--color-chart-1)"
+              stroke="var(--chart-1)"
               strokeWidth={2}
               strokeDasharray="6 4"
             />

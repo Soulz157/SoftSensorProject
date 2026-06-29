@@ -1,8 +1,21 @@
 'use client'
-import { useAtomValue } from 'jotai'
+import { useAtomValue, useSetAtom } from 'jotai'
 import { useCallback, useEffect, useReducer } from 'react'
 import { getModels } from '@/services/model'
-import { workspacesAtom, workspacesLoadingAtom } from '@/store/workspace'
+import {
+  workspacesAtom,
+  workspacesLoadingAtom,
+  modelsRefreshAtom,
+} from '@/store/workspace'
+
+/**
+ * Returns a function that invalidates every `useAllModels` consumer (sidebar
+ * dot, Alerts badge, model pages). Call after any deploy-state mutation.
+ */
+export function useRefreshModels() {
+  const setRefresh = useSetAtom(modelsRefreshAtom)
+  return useCallback(() => setRefresh(c => c + 1), [setRefresh])
+}
 import type { AIModel } from '@/types'
 
 export type ModelWithWorkspace = AIModel & { workspaceName: string }
@@ -35,6 +48,7 @@ function reducer(state: State, action: Action): State {
 export function useAllModels() {
   const workspaces = useAtomValue(workspacesAtom)
   const workspacesLoading = useAtomValue(workspacesLoadingAtom)
+  const refresh = useAtomValue(modelsRefreshAtom)
   const [state, dispatch] = useReducer(reducer, {
     data: null,
     isFetching: true,
@@ -70,7 +84,7 @@ export function useAllModels() {
         })
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [workspaces, workspacesLoading],
+    [workspaces, workspacesLoading, refresh],
   )
 
   useEffect(() => {

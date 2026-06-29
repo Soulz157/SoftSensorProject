@@ -17,6 +17,54 @@ export function deriveStatus(nodes: CanvasNode[]): NodeStatus {
   return 'normal'
 }
 
+/**
+ * Binary status layer for physical/organizational entities (Workspace, Plant,
+ * Equipment/Node). Display-only collapse of the 4-state `NodeStatus`: anything
+ * that is not `normal` (warning/alarm/offline) reads as a single `abnormal`
+ * (red) state. Models are NOT covered by this — they keep their own status
+ * system (`lib/model-status.ts`).
+ */
+export type BinaryStatus = 'normal' | 'abnormal'
+
+export function toBinaryStatus(status: NodeStatus): BinaryStatus {
+  return status === 'normal' ? 'normal' : 'abnormal'
+}
+
+/**
+ * Visual tokens for the binary indicator. green-500 / red-500 keep adequate
+ * contrast on the deep-navy dark shell; `dot`/`text` are Tailwind classes and
+ * `color` is the raw hex for SVG fills/strokes (matches STATUS_COLORS).
+ */
+export const BINARY_STATUS_META: Record<
+  BinaryStatus,
+  { label: string; color: string; dot: string; text: string }
+> = {
+  normal: {
+    label: 'Normal',
+    color: '#22c55e',
+    dot: 'bg-green-500',
+    text: 'text-green-700 dark:text-green-400',
+  },
+  abnormal: {
+    label: 'Abnormal',
+    color: '#ef4444',
+    dot: 'bg-red-500',
+    text: 'text-red-700 dark:text-red-400',
+  },
+}
+
+export function deriveBinaryStatus(nodes: CanvasNode[]): BinaryStatus {
+  return toBinaryStatus(deriveStatus(nodes))
+}
+
+export function countBinary(nodes: CanvasNode[]): Record<BinaryStatus, number> {
+  let abnormal = 0
+  for (const n of nodes) {
+    if ((n.data.status as NodeStatus) !== 'normal') abnormal++
+  }
+  return { normal: nodes.length - abnormal, abnormal }
+}
+
 const SEVERITY_ORDER: Record<NodeStatus, number> = {
   alarm: 3,
   offline: 2,
