@@ -44,6 +44,8 @@ export const workspaceService = {
       method: 'GET',
     })
   },
+  getAdminAllWorkspaces: () =>
+    fetchClient('/api/v1/admin/workspace', { method: 'GET' }),
 
   createWorkspace: async (data: CreateWorkspaceInput): Promise<Workspace> => {
     const res = await fetchClient('/api/v1/admin/workspace/create', {
@@ -57,6 +59,17 @@ export const workspaceService = {
     id: string,
     data: UpdateWorkspacePayload,
   ): Promise<Omit<Workspace, 'modelsCount'>> => {
+    const res = await fetchClient(`/api/v1/authorized/workspace/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    })
+    return res.data
+  },
+
+  adminUpdateworkspace: async (
+    id: string,
+    data: UpdateWorkspacePayload,
+  ): Promise<Omit<AdminWorkspaceDetail, 'modelsCount'>> => {
     const res = await fetchClient(`/api/v1/admin/workspace/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(data),
@@ -112,7 +125,7 @@ export const workspaceService = {
   removeMember: (workspaceId: string, memberId: string): Promise<unknown> =>
     fetchClient(
       `/api/v1/authorized/workspace/${workspaceId}/members/${memberId}`,
-      { method: 'DELETE' },
+      { method: 'DELETE', body: JSON.stringify({ memberId }) },
     ),
 
   getAdminWorkspaceById: (
@@ -147,4 +160,41 @@ export const workspaceService = {
     fetchClient(`/api/v1/admin/workspace/${workspaceId}/members/${memberId}`, {
       method: 'DELETE',
     }),
+
+  adminMoveMember: (
+    sourceWorkspaceId: string,
+    memberId: string,
+    targetWorkspaceId: string,
+  ): Promise<{ data: WorkspaceMember }> =>
+    fetchClient(
+      `/api/v1/admin/workspace/${sourceWorkspaceId}/members/${memberId}/move`,
+      { method: 'PATCH', body: JSON.stringify({ targetWorkspaceId }) },
+    ),
+
+  uploadWorkspaceThumbnail: async (
+    id: string,
+    file: File,
+  ): Promise<{ data: { thumbnailUrl: string } }> => {
+    const { getSession } = await import('next-auth/react')
+    const session = await getSession()
+    const formData = new FormData()
+    formData.append('file', file)
+    const res = await fetch(
+      `${process.env.NEXT_PUBLIC_API_URL}/api/v1/authorized/workspace/${id}/thumbnail`,
+      {
+        method: 'POST',
+        body: formData,
+        headers: session?.user?.accessToken
+          ? { Authorization: `Bearer ${session.user.accessToken}` }
+          : {},
+      },
+    )
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      throw new Error(
+        (err as { message?: string }).message ?? `Upload failed: ${res.status}`,
+      )
+    }
+    return res.json()
+  },
 }

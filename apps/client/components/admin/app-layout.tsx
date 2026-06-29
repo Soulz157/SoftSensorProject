@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useAtom } from 'jotai'
-import { AdminSidebar } from '@/components/admin/sidebar'
+import { Sidebar } from '@/components/layout/sidebar'
 import { AdminNavbar } from '@/components/admin/navbar'
 import { adminSidebarCollapsedAtom } from '@/store/admin'
 
@@ -18,7 +18,7 @@ export function AdminAppLayout({ children }: AdminAppLayoutProps) {
 
   return (
     <div className="flex h-screen bg-background">
-      <AdminSidebar
+      <Sidebar
         isOpen={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         isCollapsed={sidebarCollapsed}

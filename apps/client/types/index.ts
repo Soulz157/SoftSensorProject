@@ -30,13 +30,69 @@ export interface UpdateProfilePayload {
   company?: string
 }
 
+export interface ModelLog {
+  level: 'info' | 'warn' | 'error'
+  message: string
+  timestamp: string
+}
+
+export interface AIModel {
+  id: string
+  workspaceId: string
+  name: string
+  data: {
+    deployStatus: 'stopped' | 'running' | 'error' | 'initializing'
+    prodStatus: 'normal' | 'warning' | 'alert' | 'offline' | 'frozen'
+    statusDetail?: string
+    deployedBy?: string
+    deployedAt?: string
+    logs: ModelLog[]
+    /** Wizard data-source/tags/processing config (Model.data.config). */
+    config?: import('@/lib/model-config').ModelConfig
+  } | null
+  nodesId: string | null
+  createdAt: string
+  updatedAt: string
+  nodes: {
+    id: string
+    data: Record<string, unknown>
+    planId: string
+    plan: { id: string; name: string } | null
+  } | null
+}
+
+export interface WorkspacePlant {
+  id: string
+  workspaceId: string
+  name: string
+  icon?: string
+  color?: string
+  description?: string
+  nodeCount?: number
+  alarmCount?: number
+  status?: 'normal' | 'warning' | 'alarm' | 'offline'
+  createdAt: string
+  updatedAt: string
+}
+
 export interface Workspace {
   id: string
   ownerId: string
   name: string
+  description?: string
   icon?: string
   color?: string
+  thumbnailUrl?: string
+  createdAt: string
+  updatedAt: string
+  _count: {
+    members: number
+    models: number
+  }
   modelsCount: number
+  nodeCount?: number
+  alarmCount?: number
+  status?: 'normal' | 'warning' | 'alarm' | 'offline'
 }
 
 export interface WorkspaceIconProps {
@@ -54,6 +110,7 @@ export interface UpdateWorkspacePayload {
   name?: string
   icon?: string
   color?: string
+  role?: WorkspaceRole
   description?: string | null
 }
 
@@ -141,7 +198,7 @@ export interface Paginated<T> {
   limit: number
 }
 
-export type UserRole = 'USER' | 'STAFF' | 'ADMIN'
+export type UserRole = 'USER' | 'ADMIN'
 
 export interface PlanInfo {
   id: string
@@ -175,7 +232,7 @@ export interface AdminUser {
   subscriptions: Array<{ plan: { id: string; name: string } }>
 }
 
-export type WorkspaceRole = 'OWNER' | 'VIEWER'
+export type WorkspaceRole = 'OWNER' | 'VIEWER' | 'STAFF'
 
 export interface WorkspaceMember {
   id: string

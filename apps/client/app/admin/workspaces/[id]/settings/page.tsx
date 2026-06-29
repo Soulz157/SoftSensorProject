@@ -1,11 +1,12 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import { toast } from 'sonner'
 import {
   Activity,
+  ArrowRightLeft,
   BrainCircuit,
   Loader2,
   Palette,
@@ -24,7 +25,19 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import {
   Dialog,
   DialogContent,
@@ -47,10 +60,16 @@ import {
 import { workspaceService } from '@/services/workspace'
 import { workspaceColors, workspaceIcons } from '@/store/workspace'
 import { useAdminWorkspaceSettings } from '@/hooks/admin/use-admin-workspace-settings'
-import type { WorkspaceRole } from '@/types'
+import type { AdminWorkspace, WorkspaceMember, WorkspaceRole } from '@/types'
+import { AdminPlanCard } from './components/admin-plan-card'
 
-const inputClass =
-  'h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm text-foreground shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring'
+function roleBadgeVariant(
+  role: WorkspaceRole,
+): 'default' | 'secondary' | 'outline' {
+  if (role === 'OWNER') return 'default'
+  if (role === 'STAFF') return 'secondary'
+  return 'outline'
+}
 
 export default function WorkspaceSettingsPage() {
   const { id: workspaceId } = useParams<{ id: string }>()
@@ -76,6 +95,25 @@ export default function WorkspaceSettingsPage() {
   const [inviteEmail, setInviteEmail] = useState('')
   const [inviteRole, setInviteRole] = useState<WorkspaceRole>('VIEWER')
   const [isInviting, setIsInviting] = useState(false)
+  const [movingMember, setMovingMember] = useState<WorkspaceMember | null>(null)
+  const [moveTarget, setMoveTarget] = useState('')
+  const [isMoving, setIsMoving] = useState(false)
+  const [otherWorkspaces, setOtherWorkspaces] = useState<AdminWorkspace[]>([])
+
+  useEffect(() => {
+    let active = true
+    workspaceService
+      .getAdminWorkspaces({ limit: 100 })
+      .then(res => {
+        if (active) setOtherWorkspaces(res.data.items)
+      })
+      .catch(() => {
+        if (active) setOtherWorkspaces([])
+      })
+    return () => {
+      active = false
+    }
+  }, [])
 
   async function handleSave() {
     if (!name.trim()) {
@@ -116,7 +154,8 @@ export default function WorkspaceSettingsPage() {
         role,
       )
       setMembers(prev => prev.map(m => (m.id === memberId ? res.data : m)))
-    } catch {
+    } catch (error) {
+      console.error(error)
       toast.error('Failed to update role')
     }
   }
@@ -143,6 +182,31 @@ export default function WorkspaceSettingsPage() {
       setIsInviting(false)
     }
   }
+
+  async function handleMoveMember() {
+    if (!movingMember || !moveTarget) return
+    setIsMoving(true)
+    try {
+      await workspaceService.adminMoveMember(
+        workspaceId,
+        movingMember.id,
+        moveTarget,
+      )
+      setMembers(prev => prev.filter(m => m.id !== movingMember.id))
+      toast.success('Member moved')
+      setMovingMember(null)
+      setMoveTarget('')
+    } catch (error) {
+      console.error(error)
+      toast.error('Failed to move member')
+    } finally {
+      setIsMoving(false)
+    }
+  }
+
+  const moveOptions = otherWorkspaces.filter(w => w.id !== workspaceId)
+  const ownerCount = members.filter(m => m.role === 'OWNER').length
+  const owner = members.find(m => m.role === 'OWNER')
 
   const filteredMembers = members.filter(m => {
     const q = searchQuery.toLowerCase()
@@ -205,6 +269,7 @@ export default function WorkspaceSettingsPage() {
         <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
           {/* Left: General + Stats */}
           <div className="space-y-6 xl:col-span-1">
+            <AdminPlanCard ownerUserId={owner?.userId} />
             <Card>
               <CardHeader>
                 <CardTitle className="text-lg">General Settings</CardTitle>
@@ -214,13 +279,11 @@ export default function WorkspaceSettingsPage() {
               </CardHeader>
               <CardContent className="space-y-5">
                 <div className="space-y-1.5">
-                  <label className="text-sm font-medium">Workspace Name</label>
+                  <Label>Workspace Name</Label>
                   {loading ? (
                     <Skeleton className="h-9 w-full" />
                   ) : (
-                    <input
-                      type="text"
-                      className={inputClass}
+                    <Input
                       value={name}
                       onChange={e => setName(e.target.value)}
                     />
@@ -228,22 +291,22 @@ export default function WorkspaceSettingsPage() {
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="text-sm font-medium">Description</label>
+                  <Label>Description</Label>
                   {loading ? (
                     <Skeleton className="h-20 w-full" />
                   ) : (
-                    <textarea
-                      className={`${inputClass} min-h-20 resize-none py-2`}
+                    <Textarea
                       value={description}
                       onChange={e => setDescription(e.target.value)}
                       placeholder="Optional workspace description…"
                       rows={3}
+                      className="min-h-20 resize-none"
                     />
                   )}
                 </div>
 
                 <div className="space-y-3 pt-1">
-                  <label className="text-sm font-medium">Icon</label>
+                  <Label>Icon</Label>
                   {loading ? (
                     <div className="flex flex-wrap gap-2">
                       {Array.from({ length: 8 }).map((_, i) => (
@@ -275,10 +338,10 @@ export default function WorkspaceSettingsPage() {
                 </div>
 
                 <div className="space-y-3 pt-1">
-                  <label className="flex items-center gap-2 text-sm font-medium">
+                  <Label className="flex items-center gap-2">
                     <Palette className="h-4 w-4 text-muted-foreground" />
                     Color
-                  </label>
+                  </Label>
                   {loading ? (
                     <div className="flex gap-3">
                       {Array.from({ length: 6 }).map((_, i) => (
@@ -368,10 +431,9 @@ export default function WorkspaceSettingsPage() {
               <CardContent className="flex flex-1 flex-col">
                 <div className="relative mb-4">
                   <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                  <input
-                    type="text"
+                  <Input
                     placeholder="Search members…"
-                    className={`${inputClass} pl-9`}
+                    className="pl-9"
                     value={searchQuery}
                     onChange={e => setSearchQuery(e.target.value)}
                   />
@@ -416,15 +478,17 @@ export default function WorkspaceSettingsPage() {
                             className="flex items-center justify-between p-4 transition-colors hover:bg-muted/30"
                           >
                             <div className="flex items-center gap-3">
-                              <div
-                                className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-sm font-semibold text-white ${
-                                  member.role === 'OWNER'
-                                    ? 'bg-primary'
-                                    : 'bg-slate-500'
-                                }`}
-                              >
-                                {initials}
-                              </div>
+                              <Avatar size="lg">
+                                <AvatarFallback
+                                  className={
+                                    member.role === 'OWNER'
+                                      ? 'bg-primary text-primary-foreground'
+                                      : 'bg-slate-500 text-white'
+                                  }
+                                >
+                                  {initials}
+                                </AvatarFallback>
+                              </Avatar>
                               <div>
                                 <p className="text-sm font-medium text-foreground">
                                   {fullName}
@@ -435,20 +499,50 @@ export default function WorkspaceSettingsPage() {
                               </div>
                             </div>
 
-                            <div className="flex items-center gap-3">
-                              <select
-                                className="h-8 rounded-md border border-input bg-background px-2 text-xs focus:ring-1 focus:ring-ring"
+                            <div className="flex items-center gap-2">
+                              <Badge variant={roleBadgeVariant(member.role)}>
+                                {member.role.charAt(0) +
+                                  member.role.slice(1).toLowerCase()}
+                              </Badge>
+
+                              <Select
                                 value={member.role}
-                                onChange={e =>
+                                onValueChange={val =>
                                   handleRoleChange(
                                     member.id,
-                                    e.target.value as WorkspaceRole,
+                                    val as WorkspaceRole,
                                   )
                                 }
                               >
-                                <option value="OWNER">Owner</option>
-                                <option value="VIEWER">Viewer</option>
-                              </select>
+                                <SelectTrigger className="h-8 w-[100px] text-xs">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="OWNER">Owner</SelectItem>
+                                  <SelectItem value="STAFF">Staff</SelectItem>
+                                  <SelectItem value="VIEWER">Viewer</SelectItem>
+                                </SelectContent>
+                              </Select>
+
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-muted-foreground hover:text-primary"
+                                title={
+                                  member.role === 'OWNER' && ownerCount <= 1
+                                    ? 'Cannot move the last owner'
+                                    : 'Move to another workspace'
+                                }
+                                disabled={
+                                  member.role === 'OWNER' && ownerCount <= 1
+                                }
+                                onClick={() => {
+                                  setMovingMember(member)
+                                  setMoveTarget('')
+                                }}
+                              >
+                                <ArrowRightLeft className="h-4 w-4" />
+                              </Button>
 
                               <AlertDialog>
                                 <AlertDialogTrigger asChild>
@@ -514,25 +608,29 @@ export default function WorkspaceSettingsPage() {
           </DialogHeader>
           <div className="space-y-3 py-2">
             <div className="space-y-1.5">
-              <label className="text-sm font-medium">Email</label>
-              <input
+              <Label>Email</Label>
+              <Input
                 type="email"
-                className={inputClass}
                 placeholder="user@example.com"
                 value={inviteEmail}
                 onChange={e => setInviteEmail(e.target.value)}
               />
             </div>
             <div className="space-y-1.5">
-              <label className="text-sm font-medium">Role</label>
-              <select
-                className={inputClass}
+              <Label>Role</Label>
+              <Select
                 value={inviteRole}
-                onChange={e => setInviteRole(e.target.value as WorkspaceRole)}
+                onValueChange={val => setInviteRole(val as WorkspaceRole)}
               >
-                <option value="VIEWER">Viewer</option>
-                <option value="OWNER">Owner</option>
-              </select>
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="VIEWER">Viewer</SelectItem>
+                  <SelectItem value="STAFF">Staff</SelectItem>
+                  <SelectItem value="OWNER">Owner</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </div>
           <DialogFooter>
@@ -548,6 +646,77 @@ export default function WorkspaceSettingsPage() {
                 <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
               )}
               Invite
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Move Member Dialog */}
+      <Dialog
+        open={!!movingMember}
+        onOpenChange={open => {
+          if (!open) {
+            setMovingMember(null)
+            setMoveTarget('')
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Move Member</DialogTitle>
+            <DialogDescription>
+              Move{' '}
+              <span className="font-semibold text-foreground">
+                {movingMember
+                  ? [movingMember.user.firstName, movingMember.user.lastName]
+                      .filter(Boolean)
+                      .join(' ') || movingMember.user.email
+                  : ''}
+              </span>{' '}
+              to another workspace. Their role is kept and they lose access to
+              this workspace.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div className="space-y-1.5">
+              <Label>Target workspace</Label>
+              <Select value={moveTarget} onValueChange={setMoveTarget}>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Select a workspace…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {moveOptions.length === 0 ? (
+                    <div className="px-2 py-1.5 text-sm text-muted-foreground">
+                      No other workspaces
+                    </div>
+                  ) : (
+                    moveOptions.map(w => (
+                      <SelectItem key={w.id} value={w.id}>
+                        {w.name}
+                      </SelectItem>
+                    ))
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setMovingMember(null)
+                setMoveTarget('')
+              }}
+              disabled={isMoving}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleMoveMember}
+              disabled={isMoving || !moveTarget}
+            >
+              {isMoving && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
+              Move
             </Button>
           </DialogFooter>
         </DialogContent>

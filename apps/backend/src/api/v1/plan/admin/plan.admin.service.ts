@@ -1,13 +1,41 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '@softsensor/prisma';
 import { AppException } from '@softsensor/common';
-import type { AssignPlanDto } from './dto/plan.admin.dto';
+import type { AssignPlanDto, CreatePlanDto } from './dto/plan.admin.dto';
 
 @Injectable()
 export class PlanAdminService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async listPlans() {
+  async createPlanService(args: CreatePlanDto) {
+    const existingPlan = await this.prisma.plan.findUnique({
+      where: { name: args.name },
+    });
+    if (existingPlan) {
+      throw new AppException({
+        statusCode: 400,
+        message: 'Plan with this name already exists',
+        type: 'ERROR',
+      });
+    }
+
+    const plan = await this.prisma.plan.create({
+      data: {
+        name: args.name,
+        price: args.price,
+        durationMonths: args.durationMonths,
+      },
+    });
+
+    return {
+      statusCode: 201,
+      message: 'Plan created successfully',
+      type: 'SUCCESS' as const,
+      data: plan,
+    };
+  }
+
+  async listPlansService() {
     const items = await this.prisma.plan.findMany({
       orderBy: { price: 'asc' },
     });
@@ -19,7 +47,7 @@ export class PlanAdminService {
     };
   }
 
-  async assignPlan(userId: string, args: AssignPlanDto) {
+  async assignPlanService(userId: string, args: AssignPlanDto) {
     const plan = await this.prisma.plan.findUnique({
       where: { id: args.planId },
     });

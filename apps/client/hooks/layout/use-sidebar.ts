@@ -1,0 +1,91 @@
+import { useState } from 'react'
+import { usePathname } from 'next/navigation'
+import { useSession } from 'next-auth/react'
+import { useWorkspaces } from '@/hooks/workspace/use-workspaces'
+import { useAlertCount } from '@/hooks/workspace/use-alert-count'
+import { useAllModels } from '@/hooks/use-all-models'
+import { failedCountByWorkspace } from '@/lib/model-status'
+import type { NavItem } from '@/components/layout/sidebar/types'
+
+export function getInitials(name: string): string {
+  return name
+    .split(' ')
+    .map(n => n[0])
+    .join('')
+    .toUpperCase()
+    .slice(0, 2)
+}
+
+// Binary workspace indicator: green when Normal, red for any abnormal state
+// (warning/alarm/offline all collapse to red). Models are unaffected.
+export function workspaceStatusDot(status?: string): string {
+  return status && status !== 'normal' ? 'bg-red-500' : 'bg-green-500'
+}
+
+export function useSidebar() {
+  const pathname = usePathname()
+  const { data: session } = useSession()
+  const { workspaces } = useWorkspaces()
+  const alertCount = useAlertCount()
+  const { models } = useAllModels()
+  const failedByWorkspace = failedCountByWorkspace(models ?? [])
+  const isAdmin = session?.user?.role === 'ADMIN'
+
+  const [openMenus, setOpenMenus] = useState<Record<string, boolean>>({
+    models: pathname.startsWith('/models'),
+    'data-management':
+      pathname.startsWith('/analytics') ||
+      pathname.startsWith('/data-visualize'),
+    admin: pathname.startsWith('/admin'),
+  })
+
+  const [activeWorkspace, setActiveWorkspace] = useState('')
+  const [workspaceOpen, setWorkspaceOpen] = useState(true)
+
+  const currentWorkspace = workspaces.find(w => w.id === activeWorkspace)
+
+  const rawFirstName =
+    (session?.user as { firstName?: string } | undefined)?.firstName ?? ''
+  const rawLastName =
+    (session?.user as { lastName?: string } | undefined)?.lastName ?? ''
+  const userName =
+    (session?.user?.name ?? `${rawFirstName} ${rawLastName}`.trim()) || 'User'
+  const userEmail = session?.user?.email ?? ''
+  const initials = getInitials(userName)
+
+  const toggleMenu = (id: string) => {
+    setOpenMenus(prev => ({ ...prev, [id]: !prev[id] }))
+  }
+
+  const isActiveNav = (href: string) => {
+    if (href === '/admin') return pathname === '/admin'
+    return pathname.startsWith(href)
+  }
+
+  const isAnyChildActive = (items: NavItem[]) =>
+    items.some(c => c.href && isActiveNav(c.href))
+
+  return {
+    pathname,
+    workspaces,
+    alertCount,
+    failedByWorkspace,
+    isAdmin,
+    currentWorkspace,
+    activeWorkspace,
+    setActiveWorkspace,
+    workspaceOpen,
+    setWorkspaceOpen,
+    openMenus,
+    toggleMenu,
+    isActiveNav,
+    isAnyChildActive,
+    user: {
+      name: userName,
+      email: userEmail,
+      initials,
+    },
+  }
+}
+
+export type SidebarLogic = ReturnType<typeof useSidebar>

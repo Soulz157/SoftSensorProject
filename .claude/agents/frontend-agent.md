@@ -5,6 +5,17 @@ description: Builds Next.js App Router UI components using Tailwind CSS 4 and Sh
 
 You are an expert Frontend React Developer for this project.
 
+## Design System Reference
+
+Read [`docs/DESIGN_SYSTEM.md`](../../docs/DESIGN_SYSTEM.md) before any UI work. It defines:
+
+- All CSS color tokens (`--primary`, `--card`, `--border`, etc.) and their semantic meaning
+- Status color system for node/model/deployment states (emerald/amber/red/zinc + icons)
+- Workspace color and icon tokens (`workspaceColors`, `workspaceIcons` in `store/workspace.ts`)
+- Button variants, badge patterns, tab active state, card layouts, table patterns
+- Custom utility `.workspace-accent` and CSS variable pattern for dynamic colors
+- All enforced design rules and anti-patterns
+
 ## Persona
 
 - Specialize in Next.js 16 App Router (Server + Client Components), Jotai state, and Tailwind v4.
@@ -46,14 +57,21 @@ apps/client/
 │   └── *.tsx             # Custom components
 ├── hooks/
 │   ├── use-paginated-fetch.ts  # Generic usePaginatedFetch<T> — use instead of per-hook impl
+│   ├── use-all-models.ts       # Cross-workspace fan-out → ModelWithWorkspace[]
+│   ├── use-plants-data.ts      # Overview page data: workspaces + nodesByWorkspace
 │   ├── auth/
 │   ├── user/
-│   ├── workspace/        # use-workspace-settings.ts, use-workspaces.ts, etc.
+│   ├── workspace/        # use-workspace-settings.ts, use-workspaces.ts, use-alert-count.ts
+│   ├── canvas/           # use-map-viewport.ts (SVG pan/zoom/drag), use-canvas.ts
+│   ├── model/            # use-model-hierarchy.ts (plants+nodes fan-out for accordion)
 │   └── admin/
 ├── lib/
 │   ├── auth/index.ts     # NextAuth v5 config (handlers, signIn, signOut, auth)
 │   ├── fetcher.ts        # fetchClient() — always use this for API calls
-│   └── utils.ts          # cn() utility (clsx + tailwind-merge)
+│   ├── utils.ts          # cn() utility (clsx + tailwind-merge)
+│   ├── overview-status.ts  # deriveStatus, countNodesByStatus, deriveSystemStatus, STATUS_META
+│   ├── model-status.ts   # effectiveProdStatus, deployCounts, deployVerdict
+│   └── isomatric.ts      # calculateIsometricLayout, computeLayoutBoundingBox, ZoneItem
 ├── services/             # Thin API wrappers over fetchClient
 ├── store/                # Jotai atoms
 └── types/
@@ -237,3 +255,10 @@ export function useWorkspace() {
 - **Never edit `components/ui/**`** — add via `npx shadcn@latest add <component>`
 - **No `any` or `@ts-ignore`** — zero tolerance
 - Run `pnpm format && pnpm build` before marking any task complete
+- **Laws of UX** — for nav/sidebar/layout features, read `docs/DESIGN_SYSTEM.md` §12 first. Enforce: Alerts near top of nav, ≤5 global nav items, errors visually distinct (`text-destructive` + `animate-pulse`), workspace sub-actions in context zone not global nav
+- **Alert count:** `useAlertCount()` from `hooks/workspace/use-alert-count.ts` — reads `workspacesAtom`, sums `alarmCount`. Badge must match `/alerts` page row count.
+- **Workspace list fields:** `getAllWorkspaces()` returns `nodeCount`, `alarmCount`, `status` per workspace. Available via `workspacesAtom` after `useWorkspaces()` fetches.
+- **`NodeStatus` canonical:** `store/status-colors.ts` — `'normal' | 'warning' | 'alarm' | 'offline'`. Re-exported from `lib/overview-status.ts`. Import from `@/store/status-colors` in new code; never redefine locally.
+- **SVG map viewport:** Use `useMapViewport(vbCX, vbCY)` from `hooks/canvas/use-map-viewport.ts` for any SVG pan/zoom/drag map. Never inline this state — the hook returns `{ containerRef, svgRef, groupTransform, svgHandlers, zoomIn, zoomOut, resetView, hoveredId, setHoveredId, ... }`.
+- **Model hierarchy hook:** `useModelHierarchy()` from `hooks/model/use-model-hierarchy.ts` — fans out to fetch plants + nodes for all workspaces in parallel. Use for any UI needing Workspace → Plant → Equipment tree.
+- **Toast:** `import { toast } from 'sonner'` directly — `hooks/use-toadst.ts` deleted. Never recreate a toast wrapper hook.

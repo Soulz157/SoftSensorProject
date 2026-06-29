@@ -1,19 +1,11 @@
 'use client'
-
-import { useEffect, useState } from 'react'
-import {
-  Building2,
-  Box,
-  Cpu,
-  Gauge,
-  Thermometer,
-  Activity,
-  Globe,
-  Shield,
-  Camera,
-} from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Building2, ImagePlus, Loader2 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { Progress } from '@/components/ui/progress'
 import { Button } from '@/components/ui/button'
+import { workspaceService } from '@/services/workspace'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -32,8 +24,9 @@ import { useWorkspaces } from '@/hooks/workspace/use-workspaces'
 import { useUpdateWorkspace } from '@/hooks/workspace/use-update-workspace'
 import { useDeleteWorkspace } from '@/hooks/workspace/use-delete-workspace'
 import type { Workspace } from '@/types'
-import { WorkspaceMembers } from './workspace-members'
+import { WorkspaceMembers } from '@/app/(default)/workspaces/[id]/components/workspace-members'
 import { workspaceIcons, workspaceColors } from '@/store/workspace'
+import Image from 'next/image'
 
 const inputClass =
   'h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring'
@@ -45,17 +38,28 @@ export function WorkspaceTab() {
   const { deleteWorkspace, isDeleting } = useDeleteWorkspace()
   const [preferredId, setPreferredId] = useState('')
   const [drafts, setDrafts] = useState<Record<string, Partial<Workspace>>>({})
+  const [thumbnailPreview, setThumbnailPreview] = useState<string | null>(null)
+  const [pendingThumbnail, setPendingThumbnail] = useState<File | null>(null)
+  const [isUploadingThumbnail, setIsUploadingThumbnail] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const selectedWorkspaceId = workspaces.some(w => w.id === preferredId)
     ? preferredId
     : (workspaces[0]?.id ?? '')
-
   const selectedWorkspace = workspaces.find(w => w.id === selectedWorkspaceId)
   const draft = drafts[selectedWorkspaceId] ?? {}
-
   const effectiveName = draft.name ?? selectedWorkspace?.name ?? ''
   const effectiveIcon = draft.icon ?? selectedWorkspace?.icon
   const effectiveColor = draft.color ?? selectedWorkspace?.color
+
+  const handleSelectWorkspace = (id: string) => {
+    if (id === selectedWorkspaceId) return
+    setPreferredId(id)
+    setThumbnailPreview(null)
+    setPendingThumbnail(null)
+    setDragOver(false)
+  }
 
   const setField = (field: keyof Workspace, value: string) => {
     setDrafts(prev => ({
@@ -92,22 +96,63 @@ export function WorkspaceTab() {
     }
   }
 
-  const selectedColor =
-    workspaceColors.find(c => c.id === effectiveColor)?.bg ?? 'bg-primary'
-  const SelectedIcon =
-    workspaceIcons.find(i => i.id === effectiveIcon)?.icon ?? Building2
+  const handleThumbnailSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error('Image must be under 5 MB')
+      return
+    }
+    setPendingThumbnail(file)
+    setThumbnailPreview(URL.createObjectURL(file))
+  }
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    setDragOver(false)
+    const file = e.dataTransfer.files?.[0]
+    if (!file) return
+    if (!file.type.startsWith('image/')) {
+      toast.error('Only image files are allowed')
+      return
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error('Image must be under 5 MB')
+      return
+    }
+    setPendingThumbnail(file)
+    setThumbnailPreview(URL.createObjectURL(file))
+  }
+  const handleThumbnailUpload = async () => {
+    if (!pendingThumbnail || !selectedWorkspaceId) return
+    setIsUploadingThumbnail(true)
+    try {
+      await workspaceService.uploadWorkspaceThumbnail(
+        selectedWorkspaceId,
+        pendingThumbnail,
+      )
+      setPendingThumbnail(null)
+      toast.success('Thumbnail uploaded')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Upload failed')
+    } finally {
+      setIsUploadingThumbnail(false)
+    }
+  }
 
   useEffect(() => {
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        refetch?.()
-      }
+      if (document.visibilityState === 'visible') refetch?.()
     }
-
     document.addEventListener('visibilitychange', handleVisibilityChange)
     return () =>
       document.removeEventListener('visibilitychange', handleVisibilityChange)
   }, [refetch])
+
+  const selectedColor =
+    workspaceColors.find(c => c.id === effectiveColor)?.bg ?? 'bg-primary'
+  const SelectedIcon =
+    workspaceIcons.find(i => i.id === effectiveIcon)?.icon ?? Building2
 
   return (
     <>
@@ -122,7 +167,7 @@ export function WorkspaceTab() {
         {workspaces.map(w => (
           <button
             key={w.id}
-            onClick={() => setPreferredId(w.id)}
+            onClick={() => handleSelectWorkspace(w.id)}
             className={cn(
               'rounded-lg border-2 p-3 text-left transition-all',
               selectedWorkspaceId === w.id
@@ -221,16 +266,96 @@ export function WorkspaceTab() {
 
             <div className="space-y-2">
               <label className="text-sm font-medium text-foreground">
-                Or Upload Custom Image
+                Thumbnail
               </label>
-              <label className="flex items-center gap-2 cursor-pointer w-fit rounded-md border border-dashed border-border px-4 py-2.5 text-sm text-muted-foreground hover:border-primary hover:text-foreground transition-colors">
-                <Camera className="h-4 w-4" />
-                Choose Image
-                <input type="file" accept="image/*" className="hidden" />
-              </label>
-              <p className="text-xs text-muted-foreground">
-                PNG, JPG up to 2 MB
-              </p>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                className="hidden"
+                onChange={handleThumbnailSelect}
+              />
+              <div
+                className={cn(
+                  'group relative cursor-pointer overflow-hidden rounded-xl border-2 border-dashed transition-colors',
+                  dragOver
+                    ? 'border-primary bg-primary/5'
+                    : 'border-border hover:border-primary/50',
+                )}
+                onClick={() => fileInputRef.current?.click()}
+                onDragOver={e => {
+                  e.preventDefault()
+                  setDragOver(true)
+                }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={handleDrop}
+              >
+                {(thumbnailPreview ?? selectedWorkspace?.thumbnailUrl) ? (
+                  <>
+                    <Image
+                      src={
+                        thumbnailPreview ??
+                        `${process.env.NEXT_PUBLIC_API_URL}${selectedWorkspace?.thumbnailUrl}`
+                      }
+                      alt="Workspace thumbnail"
+                      width={256}
+                      height={144}
+                      className="h-36 w-full object-cover"
+                      unoptimized={true}
+                    />
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors group-hover:bg-black/30">
+                      <Badge
+                        variant="secondary"
+                        className="opacity-0 transition-opacity group-hover:opacity-100"
+                      >
+                        Replace
+                      </Badge>
+                    </div>
+                    {isUploadingThumbnail && (
+                      <div className="absolute inset-0 flex flex-col justify-end bg-black/40">
+                        <Progress
+                          value={undefined}
+                          className="m-2 h-1.5 w-[calc(100%-16px)] bg-white/20"
+                        />
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="flex h-36 flex-col items-center justify-center gap-2">
+                    <ImagePlus
+                      className={cn(
+                        'h-7 w-7 transition-colors',
+                        dragOver ? 'text-primary' : 'text-muted-foreground',
+                      )}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      {dragOver ? 'Drop to upload' : 'Click or drag image here'}
+                    </p>
+                    <p className="text-[10px] text-muted-foreground/60">
+                      JPEG, PNG, WebP · max 5 MB
+                    </p>
+                  </div>
+                )}
+              </div>
+              {pendingThumbnail && (
+                <div className="flex items-center justify-between">
+                  <p className="truncate text-xs text-muted-foreground">
+                    {pendingThumbnail.name}
+                  </p>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={isUploadingThumbnail}
+                    onClick={handleThumbnailUpload}
+                    className="ml-2 gap-1.5"
+                  >
+                    {isUploadingThumbnail && (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    )}
+                    Upload
+                  </Button>
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>

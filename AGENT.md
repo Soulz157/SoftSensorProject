@@ -1,4 +1,4 @@
-# AGENT.md — Production-Grade Rules (Next.js 15 & NestJS 11)
+# AGENT.md — Production-Grade Rules (Next.js 16 & NestJS 11)
 
 This document outlines strict guidelines for any AI agent working in this repository.
 Production-Ready system. Quick hacks, hardcoded mock data, and bypassing type safety are strictly prohibited.
@@ -14,7 +14,7 @@ Focus: Scalability, Security, Maintainability, Performance.
 
 ---
 
-## 2. Frontend — Next.js 15 (App Router)
+## 2. Frontend — Next.js 16 (App Router)
 
 ### Architecture & Rendering
 
@@ -74,6 +74,11 @@ Backend uses **Fastify** (`NestFastifyApplication`), not Express.
 1. **Controllers:** HTTP routing and DTO validation only. No business logic.
 2. **Services:** Core business logic.
 3. **Prisma:** Direct database interactions. Services call PrismaService.
+
+### Naming Conventions
+
+- **Controllers:** Class name must end with `Controller` (e.g. `AuthAdminController`, `WorkspaceAuthorizedController`).
+- **Services:** Class name must end with `Service` (e.g. `AuthPublicService`, `NodesAuthorizedService`).
 
 ### Database & Prisma (PostgreSQL)
 

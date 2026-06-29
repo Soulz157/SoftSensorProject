@@ -18,6 +18,10 @@ export const SubscriptionItemSchema = z.object({
   plan: PlanItemSchema,
 });
 
+export const SubscribeSchema = z.object({
+  planName: z.string().min(1),
+});
+
 export const PlanListResponseSchema = createStandardResponseSchema(
   z.array(PlanItemSchema),
 );
@@ -26,6 +30,7 @@ export const SubscriptionResponseSchema = createStandardResponseSchema(
   SubscriptionItemSchema.nullable(),
 );
 
+export class SubscribeDto extends createZodDto(SubscribeSchema) {}
 export class PlanListResponseDto extends createZodDto(PlanListResponseSchema) {}
 export class SubscriptionResponseDto extends createZodDto(
   SubscriptionResponseSchema,

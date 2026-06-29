@@ -51,14 +51,10 @@ const createWorkspaceSchema = z.object({
 
 type CreateWorkspaceFormValues = z.infer<typeof createWorkspaceSchema>
 
-// ─── Props ───────────────────────────────────────────────────────────────────
-
 interface CreateWorkspaceDialogProps {
   open: boolean
   onClose: () => void
 }
-
-// ─── Component ───────────────────────────────────────────────────────────────
 
 export function CreateWorkspaceDialog({
   open,
@@ -89,7 +85,6 @@ export function CreateWorkspaceDialog({
     handleClose()
   }
 
-  // ── Derive preview values ─────────────────────────────────────────────────
   const watchedColor = form.watch('color')
   const watchedIcon = form.watch('icon')
 

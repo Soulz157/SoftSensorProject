@@ -12,7 +12,10 @@ import {
 } from '@nestjs/common';
 import fastifyCors from '@fastify/cors';
 import fastifyCookie from '@fastify/cookie';
+import fastifyMultipart from '@fastify/multipart';
+import fastifyStatic from '@fastify/static';
 import { cleanupOpenApiDoc } from 'nestjs-zod';
+import path from 'path';
 // import fastifyHelmet from '@fastify/helmet';
 // import fastifyCompress from '@fastify/compress';
 import { ConfigService } from '@nestjs/config';
@@ -37,6 +40,13 @@ async function bootstrap() {
   });
 
   await app.register(fastifyCookie);
+  await app.register(fastifyMultipart, {
+    limits: { fileSize: 5 * 1024 * 1024 },
+  });
+  await app.register(fastifyStatic, {
+    root: path.join(process.cwd(), 'uploads'),
+    prefix: '/uploads/',
+  });
 
   // app.useGlobalPipes(
   //   new ValidationPipe({

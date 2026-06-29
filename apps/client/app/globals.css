@@ -23,11 +23,12 @@
   --border: oklch(0.9 0.02 250);
   --input: oklch(0.92 0.01 250);
   --ring: oklch(0.55 0.18 250);
+  /* Distinct multi-hue series palette (blue/green/amber/teal/violet) */
   --chart-1: oklch(0.55 0.18 250);
-  --chart-2: oklch(0.65 0.15 220);
-  --chart-3: oklch(0.45 0.12 260);
-  --chart-4: oklch(0.7 0.1 200);
-  --chart-5: oklch(0.6 0.14 240);
+  --chart-2: oklch(0.6 0.18 150);
+  --chart-3: oklch(0.66 0.22 75);
+  --chart-4: oklch(0.58 0.2 195);
+  --chart-5: oklch(0.55 0.2 300);
   --radius: 0.5rem;
   --sidebar: oklch(0.97 0.005 250);
   --sidebar-foreground: oklch(0.18 0.02 250);
@@ -59,11 +60,12 @@
   --border: oklch(0.22 0.02 250);
   --input: oklch(0.2 0.02 250);
   --ring: oklch(0.6 0.18 250);
-  --chart-1: oklch(0.6 0.18 250);
-  --chart-2: oklch(0.7 0.14 220);
-  --chart-3: oklch(0.5 0.12 260);
-  --chart-4: oklch(0.75 0.1 200);
-  --chart-5: oklch(0.65 0.14 240);
+  /* Distinct multi-hue series palette (blue/green/amber/teal/violet) */
+  --chart-1: oklch(0.62 0.18 250);
+  --chart-2: oklch(0.68 0.18 150);
+  --chart-3: oklch(0.76 0.22 75);
+  --chart-4: oklch(0.66 0.2 195);
+  --chart-5: oklch(0.65 0.2 300);
   --sidebar: oklch(0.08 0.015 250);
   --sidebar-foreground: oklch(0.9 0.01 250);
   --sidebar-primary: oklch(0.6 0.18 250);
@@ -123,4 +125,125 @@
   body {
     @apply bg-background text-foreground;
   }
+}
+
+@layer utilities {
+  [data-slot='accordion-content'][data-state='open'] {
+    animation: accordion-down 0.2s ease-out;
+  }
+  [data-slot='accordion-content'][data-state='closed'] {
+    animation: accordion-up 0.2s ease-out;
+  }
+
+  .workspace-accent {
+    border-top: 3px solid var(--workspace-color, transparent);
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
+
+@keyframes accordion-down {
+  from {
+    height: 0;
+    overflow: hidden;
+  }
+  to {
+    height: var(--radix-accordion-content-height);
+    overflow: hidden;
+  }
+}
+
+@keyframes accordion-up {
+  from {
+    height: var(--radix-accordion-content-height);
+    overflow: hidden;
+  }
+  to {
+    height: 0;
+    overflow: hidden;
+  }
+}
+
+/* React Flow canvas: hide handles by default, show only in build mode */
+.react-flow__handle {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+
+.build-mode .react-flow__handle {
+  opacity: 1;
+  pointer-events: all;
+}
+
+/* React Flow controls panel — light */
+.react-flow__controls {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+}
+
+.react-flow__controls-button {
+  background: transparent !important;
+  border-color: #e2e8f0 !important;
+  color: #6b7280;
+}
+
+.react-flow__controls-button:hover {
+  background: rgba(0, 0, 0, 0.04) !important;
+}
+
+.react-flow__controls-button svg {
+  fill: #6b7280;
+}
+
+.react-flow__controls-button:hover svg {
+  fill: #111827;
+}
+
+/* React Flow minimap panel — light */
+.react-flow__minimap {
+  background: #f8fafc !important;
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 8px !important;
+  overflow: hidden;
+}
+
+/* React Flow controls panel — dark */
+.dark .react-flow__controls {
+  background: #1a1d2e;
+  border: 1px solid #2d3147;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.dark .react-flow__controls-button {
+  background: transparent !important;
+  border-color: #2d3147 !important;
+  color: #9ca3af;
+}
+
+.dark .react-flow__controls-button:hover {
+  background: rgba(255, 255, 255, 0.06) !important;
+}
+
+.dark .react-flow__controls-button svg {
+  fill: #9ca3af;
+}
+
+.dark .react-flow__controls-button:hover svg {
+  fill: #e2e5f0;
+}
+
+/* React Flow minimap panel — dark */
+.dark .react-flow__minimap {
+  background: #1a1d2e !important;
+  border: 1px solid #2d3147 !important;
 }

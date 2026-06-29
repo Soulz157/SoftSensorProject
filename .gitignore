@@ -36,4 +36,17 @@ yarn-error.log*
 .DS_Store
 *.pem
 
+# Uploaded files
+apps/backend/uploads/
+
 generated
+.superpowers
+
+.venv
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+
+pi_output_history.csv

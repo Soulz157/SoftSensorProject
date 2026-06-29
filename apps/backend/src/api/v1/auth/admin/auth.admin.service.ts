@@ -237,7 +237,6 @@ export class AuthAdminService {
       select: { id: true, email: true, deletedAt: true },
     });
 
-    //action log deleted user
     //TODO
 
     return {

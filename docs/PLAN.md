@@ -15,6 +15,9 @@
 | `Workspace` DB model                  | ✅ Schema exists, authorized service empty                                       |
 | `getProfile`                          | ⬜ Commented out                                                                 |
 | Workspace API                         | ⬜ Not implemented                                                               |
+| `apps/python` FastAPI service         | ✅ Scaffolded — health check only                                                |
+| PI System ingestion                   | ⬜ Planned — Phase 6                                                             |
+| `SensorReading` time-series model     | ⬜ Not implemented                                                               |
 
 ---
 
@@ -205,6 +208,84 @@ apps/client/components/auth/create-workspace-form.tsx                           
 
 ---
 
+## Phase 6 — PI System Integration (FastAPI Sensor Ingestion)
+
+**Goal:** Ingest live sensor data from a PI System (AVEVA/OSIsoft historian) into Postgres via the `apps/python` FastAPI service, surfaced to the client through NestJS.
+
+**Architecture:** PI Web API (REST/HTTPS) → FastAPI poller (APScheduler) → `SensorReading` table (Postgres) → NestJS read endpoints → Next.js. FastAPI owns ingestion (DML only); NestJS owns serving; Prisma owns schema. The client never calls FastAPI directly.
+
+**Planned Prisma model:**
+
+```prisma
+model SensorReading {
+  id        String   @id @default(uuid())
+  nodeId    String
+  node      Nodes    @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  piTag     String
+  value     Float
+  status    String   // PI value quality: Good | Bad | Questionable
+  timestamp DateTime // PI source timestamp (UTC)
+  createdAt DateTime @default(now())
+
+  @@index([nodeId, timestamp])
+  @@index([piTag, timestamp])
+}
+```
+
+(plus `readings SensorReading[]` back-relation on `Nodes`, and optional `piTag` added to `NodeDataSchema`.)
+
+### 6.1 Schema (`packages/prisma`)
+
+- Add `SensorReading` model + `Nodes.readings` back-relation.
+- Add optional `piTag` to `NodeDataSchema` (backend Zod) so a node maps to a PI point.
+- Run `pnpm db:migrate:dev`.
+
+### 6.2 FastAPI — PI Web API client (`apps/python`)
+
+- `clients/pi_web_api.py`: async `httpx` client. Methods: `resolve_webid(tag)`, `get_values(webids)` (batch via `/streamsets/.../value`).
+- `config/env.py`: add `PI_WEB_API_BASE_URL`, `PI_WEB_API_USERNAME`, `PI_WEB_API_PASSWORD`, `PI_WEB_API_VERIFY_SSL`, `PI_POLL_INTERVAL_SECONDS`, `DATABASE_URL`.
+- Root `.env.example`: add the `PI_*` vars (no secrets).
+
+### 6.3 FastAPI — DB + ingest service
+
+- `db/`: async SQLAlchemy engine/session on shared `DATABASE_URL` (DML only).
+- `services/ingest_service.py`: load mapped nodes (`piTag` present) → resolve + cache WebIDs → batch-read → insert `SensorReading` rows.
+- `scheduler.py`: APScheduler job every `PI_POLL_INTERVAL_SECONDS`, started in app lifespan.
+- `routers/ingest.py`: internal `POST /ingest/run` to trigger a poll manually (guarded by shared secret).
+- `requirements.txt`: add `httpx`, `apscheduler`, `sqlalchemy[asyncio]`, `asyncpg`.
+
+### 6.4 Backend — serving endpoints (`apps/backend`)
+
+- `GET /api/v1/authorized/nodes/:nodeId/readings?from&to&limit` — paginated history (reuse pagination convention).
+- `GET /api/v1/authorized/nodes/:nodeId/readings/latest` — latest value per node.
+- Controller → service → Prisma; errors via `AppException`.
+
+### 6.5 Frontend — wire readings
+
+- `services/readings.ts`: wrappers for the two endpoints.
+- Node detail / overview panel: show latest value + sparkline from readings.
+- Derive node `status` from latest reading quality where applicable.
+
+### 6.6 Verification
+
+- FastAPI: `pnpm --filter python dev`, hit `POST /ingest/run`, confirm `SensorReading` rows in Postgres.
+- Backend: `GET .../readings/latest` returns ingested values.
+- Frontend: node panel renders live value.
+
+### Files
+
+```
+packages/prisma/prisma/schema.prisma                              — SensorReading model
+apps/python/clients/pi_web_api.py                                 — PI Web API client
+apps/python/services/ingest_service.py, scheduler.py, db/         — ingest + polling
+apps/python/routers/ingest.py, config/env.py                      — trigger + config
+apps/backend/src/api/v1/nodes/authorized/{controller,service,dto} — readings endpoints
+apps/client/services/readings.ts                                  — service wrappers
+.env.example                                                      — PI_* vars
+```
+
+---
+
 ## Dependency Order
 
 ```
@@ -213,4 +294,65 @@ Phase 1 (RefreshToken)
        └─ Phase 3 (Auth Module — needs stable token lifecycle)
             └─ Phase 4 (Testing — validates Phase 1-3)
                  └─ Phase 5 (Workspace — needs auth + user identity fully working)
+                      └─ Phase 6 (PI Integration — needs Workspace/Node CRUD from Phase 5)
+```
+
+## 2. Color Theory & Tokens
+
+Before diving into CSS variables, it is crucial to understand the design principles driving our palette. All tokens are defined in `app/globals.css` under `:root` (light) and `.dark`, and registered in `@theme inline` for native Tailwind support.
+
+### 2.1 The Purpose of Color
+
+Applying strict color theory within the SoftSensor app provides three main benefits:
+
+- **Impactful visual design:** Utilizing contrasting colors to grab the user’s attention, while striking a color balance for enduring visual appeal.
+- **Improved UX:** Leveraging color harmony to support user workflows, making it easier to scan content and intuitively navigate the product’s UI.
+- **Better brand expression:** Showcasing our brand personality, core messaging, and mood through a calculated, deliberate palette.
+
+### 2.2 The Color Wheel Foundations
+
+Our semantic system and status colors respect the fundamental relationships defined by the traditional color wheel:
+
+- **Primary colors (RYB):** Red, yellow, and blue. When combined, these serve as the base for all other colors in the UI.
+- **Secondary colors:** Orange, green, and violet. Formed by mixing two primary colors (e.g., red + yellow = orange).
+- **Tertiary colors:** Red-orange, yellow-orange, yellow-green, blue-green, blue-violet, and red-violet. The result of mixing a primary color with a secondary color.
+
+### 2.3 Semantic Tokens
+
+| Token                    | Light                      | Dark                | Usage                         |
+| ------------------------ | -------------------------- | ------------------- | ----------------------------- |
+| `--background`           | Near-white                 | Very dark           | Page background               |
+| `--foreground`           | Dark                       | Near-white          | Body text                     |
+| `--card`                 | Pure white                 | Dark charcoal       | Card surfaces                 |
+| `--card-foreground`      | Dark                       | Near-white          | Text on cards                 |
+| `--popover`              | Pure white                 | Dark charcoal       | Popover/dropdown surfaces     |
+| `--primary`              | Blue (oklch 0.55 0.18 250) | Brighter blue (0.6) | CTAs, active states, links    |
+| `--primary-foreground`   | White                      | White               | Text on primary bg            |
+| `--secondary`            | Light gray                 | Dark gray           | Secondary buttons, chips      |
+| `--secondary-foreground` | Dark                       | Light               | Text on secondary             |
+| `--muted`                | Very light gray            | Dark gray           | Subtle backgrounds, disabled  |
+| `--muted-foreground`     | Medium gray                | Gray                | Placeholder, secondary labels |
+| `--accent`               | Subtle gray                | Dark                | Hover highlights              |
+| `--accent-foreground`    | Dark                       | Light               | Text on accent                |
+| `--destructive`          | Red-orange                 | Darker red          | Errors, delete actions        |
+| `--border`               | Light gray                 | Dark gray           | Borders, dividers             |
+| `--input`                | Light gray                 | Dark gray           | Input backgrounds             |
+| `--ring`                 | Matches primary            | Matches primary     | Focus rings                   |
+
+### 2.4 Chart Tokens
+
+`--chart-1` through `--chart-5` — blue-to-purple spectrum. Used for data visualizations only.
+
+### 2.5 Sidebar Tokens
+
+`--sidebar`, `--sidebar-foreground`, `--sidebar-primary`, `--sidebar-primary-foreground`, `--sidebar-accent`, `--sidebar-accent-foreground`, `--sidebar-border`, `--sidebar-ring` — mirrors semantic tokens but scoped specifically to the sidebar surface to maintain visual hierarchy.
+
+### 2.6 Usage in Code
+
+```tsx
+// Correct — CSS variable-backed class (maintains color harmony & dark mode)
+<div className="bg-card text-card-foreground border-border" />
+
+// Wrong — hardcoded color (breaks theory and theme support)
+<div className="bg-[#0f1115]" />
 ```

@@ -1,8 +1,8 @@
 'use client'
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Building2 } from 'lucide-react'
+import { Building2, ImagePlus, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useSession } from 'next-auth/react'
 import {
@@ -12,6 +12,8 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { Progress } from '@/components/ui/progress'
 import { Button } from '@/components/ui/button'
 import {
   AlertDialog,
@@ -29,8 +31,10 @@ import { useWorkspaces } from '@/hooks/workspace/use-workspaces'
 import { useUpdateWorkspace } from '@/hooks/workspace/use-update-workspace'
 import { useDeleteWorkspace } from '@/hooks/workspace/use-delete-workspace'
 import { workspaceIcons, workspaceColors } from '@/store/workspace'
-import { WorkspaceMembers } from '@/app/(default)/settings/components/workspace-members'
+import { workspaceService } from '@/services/workspace'
+import { WorkspaceMembers } from './workspace-members'
 import type { Workspace } from '@/types'
+import Image from 'next/image'
 
 const inputClass =
   'h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring'
@@ -54,6 +58,11 @@ export function WorkspaceSettingsSheet({
 
   const workspace = workspaces.find(w => w.id === workspaceId)
   const [draft, setDraft] = useState<Partial<Workspace>>({})
+  const [thumbnailPreview, setThumbnailPreview] = useState<string | null>(null)
+  const [pendingThumbnail, setPendingThumbnail] = useState<File | null>(null)
+  const [isUploadingThumbnail, setIsUploadingThumbnail] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const effectiveName = draft.name ?? workspace?.name ?? ''
   const effectiveIcon = draft.icon ?? workspace?.icon
@@ -71,12 +80,58 @@ export function WorkspaceSettingsSheet({
       name: effectiveName,
       icon: effectiveIcon,
       color: effectiveColor,
+      description: workspace?.description ?? '',
     })
     if (result.success) {
       setDraft({})
       toast.success('Workspace updated')
     } else {
       toast.error(result.error ?? 'Failed to update workspace')
+    }
+  }
+
+  const handleThumbnailSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error('Image must be under 5 MB')
+      return
+    }
+    setPendingThumbnail(file)
+    setThumbnailPreview(URL.createObjectURL(file))
+  }
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    setDragOver(false)
+    const file = e.dataTransfer.files?.[0]
+    if (!file) return
+    if (!file.type.startsWith('image/')) {
+      toast.error('Only image files are allowed')
+      return
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error('Image must be under 5 MB')
+      return
+    }
+    setPendingThumbnail(file)
+    setThumbnailPreview(URL.createObjectURL(file))
+  }
+
+  const handleThumbnailUpload = async () => {
+    if (!pendingThumbnail || !workspaceId) return
+    setIsUploadingThumbnail(true)
+    try {
+      await workspaceService.uploadWorkspaceThumbnail(
+        workspaceId,
+        pendingThumbnail,
+      )
+      setPendingThumbnail(null)
+      toast.success('Thumbnail uploaded')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Upload failed')
+    } finally {
+      setIsUploadingThumbnail(false)
     }
   }
 
@@ -179,6 +234,101 @@ export function WorkspaceSettingsSheet({
                 />
               ))}
             </div>
+          </div>
+
+          {/* Thumbnail */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-foreground">
+              Thumbnail
+            </label>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              className="hidden"
+              onChange={handleThumbnailSelect}
+            />
+            <div
+              className={cn(
+                'group relative cursor-pointer overflow-hidden rounded-xl border-2 border-dashed transition-colors',
+                dragOver
+                  ? 'border-primary bg-primary/5'
+                  : 'border-border hover:border-primary/50',
+              )}
+              onClick={() => fileInputRef.current?.click()}
+              onDragOver={e => {
+                e.preventDefault()
+                setDragOver(true)
+              }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={handleDrop}
+            >
+              {(thumbnailPreview ?? workspace?.thumbnailUrl) ? (
+                <>
+                  <Image
+                    src={
+                      thumbnailPreview ??
+                      `${process.env.NEXT_PUBLIC_API_URL}${workspace?.thumbnailUrl}`
+                    }
+                    alt="Workspace thumbnail"
+                    className="h-36 w-full object-cover"
+                    width={256}
+                    height={144}
+                    unoptimized={true}
+                  />
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors group-hover:bg-black/30">
+                    <Badge
+                      variant="secondary"
+                      className="opacity-0 transition-opacity group-hover:opacity-100"
+                    >
+                      Replace
+                    </Badge>
+                  </div>
+                  {isUploadingThumbnail && (
+                    <div className="absolute inset-0 flex flex-col justify-end bg-black/40">
+                      <Progress
+                        value={undefined}
+                        className="m-2 h-1.5 w-[calc(100%-16px)] bg-white/20"
+                      />
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="flex h-36 flex-col items-center justify-center gap-2">
+                  <ImagePlus
+                    className={cn(
+                      'h-7 w-7 transition-colors',
+                      dragOver ? 'text-primary' : 'text-muted-foreground',
+                    )}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {dragOver ? 'Drop to upload' : 'Click or drag image here'}
+                  </p>
+                  <p className="text-[10px] text-muted-foreground/60">
+                    JPEG, PNG, WebP · max 5 MB
+                  </p>
+                </div>
+              )}
+            </div>
+            {pendingThumbnail && (
+              <div className="flex items-center justify-between">
+                <p className="truncate text-xs text-muted-foreground">
+                  {pendingThumbnail.name}
+                </p>
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={isUploadingThumbnail}
+                  onClick={handleThumbnailUpload}
+                  className="ml-2 gap-1.5"
+                >
+                  {isUploadingThumbnail && (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  )}
+                  Upload
+                </Button>
+              </div>
+            )}
           </div>
 
           {/* Save */}

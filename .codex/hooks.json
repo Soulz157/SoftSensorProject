@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/Users/seolzzz/Developer/Repco/SoftSensorProject/.codex/hooks/pre-write.sh'"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/Users/seolzzz/Developer/Repco/SoftSensorProject/.codex/hooks/post-write.sh'"
+          }
+        ]
+      }
+    ]
+  }
+}

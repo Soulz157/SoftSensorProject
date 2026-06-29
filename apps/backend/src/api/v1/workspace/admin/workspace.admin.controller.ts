@@ -17,6 +17,7 @@ import { ResponseFailedDto } from '@/lib/dto';
 import {
   AdminGetWorkspaceByIdResponseDto,
   AdminInviteMemberDto,
+  AdminMoveMemberDto,
   AdminUpdateMemberRoleDto,
   AdminWorkspaceListResponseDto,
   AdminWorkspaceQueryDto,
@@ -88,6 +89,16 @@ export class WorkspaceAdminController {
     @Body() body: AdminUpdateMemberRoleDto,
   ) {
     return this.workspaceAdminService.updateMemberRole(id, mid, body);
+  }
+
+  @Patch('/:id/members/:mid/move')
+  @HttpCode(200)
+  async moveMember(
+    @Param('id') id: string,
+    @Param('mid') mid: string,
+    @Body() body: AdminMoveMemberDto,
+  ) {
+    return this.workspaceAdminService.moveMember(id, mid, body);
   }
 
   @Delete('/:id/members/:mid')

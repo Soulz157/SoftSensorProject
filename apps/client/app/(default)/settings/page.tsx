@@ -27,12 +27,15 @@ export default function SettingsPage() {
       <SettingsSidebar activeTab={activeTab} setActiveTab={setActiveTab} />
 
       <div className="flex-1 overflow-auto">
-        <div className="max-w-2xl mx-auto px-6 py-8 space-y-6">
-          {activeTab === 'theme' && <AppearanceTab />}
-          {activeTab === 'account' && <AccountTab />}
-          {activeTab === 'workspace' && <WorkspaceTab />}
-          {activeTab === 'plans' && <PlansPage />}
-        </div>
+        {activeTab === 'plans' ? (
+          <PlansPage />
+        ) : (
+          <div className="max-w-2xl mx-auto px-6 py-8 space-y-6">
+            {activeTab === 'theme' && <AppearanceTab />}
+            {activeTab === 'account' && <AccountTab />}
+            {activeTab === 'workspace' && <WorkspaceTab />}
+          </div>
+        )}
       </div>
     </div>
   )

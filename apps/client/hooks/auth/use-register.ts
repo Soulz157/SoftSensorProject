@@ -35,7 +35,7 @@ export const useRegister = () => {
         router.push('/login')
       } else {
         toast.success('เข้าสู่ระบบสำเร็จ')
-        router.push('/dashboard')
+        router.push('/')
       }
     } catch (error) {
       if (error instanceof Error) {

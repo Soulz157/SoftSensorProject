@@ -7,18 +7,23 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
+import type { FastifyRequest } from 'fastify';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { WorkspaceAuthorizedService } from './workspace.authorized.service';
 import {
   GetLogsQueryDto,
   InviteMemberDto,
+  ReplaceEdgesDto,
   UpdateMemberRoleDto,
 } from './dto/workspace.authorized.dto';
 import { JwtAccessGuard } from '@/guards/jwt-access.guard';
 import { Users } from '@/common/decorators/user.decorator';
+import { UpdateWorkspaceRequestDto } from '../admin/dto/workspace.admin.dto';
 
 @ApiBearerAuth()
 @ApiTags('Authorized Workspace')
@@ -53,7 +58,34 @@ export class WorkspaceAuthorizedController {
     @Param('id') id: string,
     @Users() user: Auth.UserPayload,
   ) {
-    return this.workspaceAuthorizedService.getWorkspaceModels(id, user.id);
+    return this.workspaceAuthorizedService.getWorkspaceModels(
+      id,
+      user.id,
+      user.role,
+    );
+  }
+
+  @Get('/:id/edges')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'List edges in a workspace' })
+  async listEdges(@Param('id') id: string, @Users() user: Auth.UserPayload) {
+    return this.workspaceAuthorizedService.listEdges(id, user.id, user.role);
+  }
+
+  @Put('/:id/edges')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Replace all edges in a workspace' })
+  async replaceEdges(
+    @Param('id') id: string,
+    @Users() user: Auth.UserPayload,
+    @Body() body: ReplaceEdgesDto,
+  ) {
+    return this.workspaceAuthorizedService.replaceEdges(
+      id,
+      user.id,
+      user.role,
+      body.edges,
+    );
   }
 
   @Get('/:id/logs')
@@ -64,14 +96,19 @@ export class WorkspaceAuthorizedController {
     @Users() user: Auth.UserPayload,
     @Query() query: GetLogsQueryDto,
   ) {
-    return this.workspaceAuthorizedService.getWorkspaceLogs(id, user.id, query);
+    return this.workspaceAuthorizedService.getWorkspaceLogs(
+      id,
+      user.id,
+      user.role,
+      query,
+    );
   }
 
   @Get('/:id/members')
   @HttpCode(200)
   @ApiOperation({ summary: 'List members of a workspace' })
   async listMembers(@Param('id') id: string, @Users() user: Auth.UserPayload) {
-    return this.workspaceAuthorizedService.listMembers(id, user.id);
+    return this.workspaceAuthorizedService.listMembers(id, user.id, user.role);
   }
 
   @Post('/:id/members')
@@ -99,6 +136,36 @@ export class WorkspaceAuthorizedController {
       mid,
       user.id,
       body,
+    );
+  }
+
+  @Patch('/:id')
+  @HttpCode(200)
+  async updateWorkspaceController(
+    @Param('id') id: string,
+    @Users() user: Auth.UserPayload,
+    @Body() args: UpdateWorkspaceRequestDto,
+  ) {
+    return this.workspaceAuthorizedService.updateWorkspaceService(
+      id,
+      user,
+      args,
+    );
+  }
+
+  @Post('/:id/thumbnail')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Upload workspace thumbnail image' })
+  async uploadThumbnail(
+    @Param('id') id: string,
+    @Users() user: Auth.UserPayload,
+    @Req() req: FastifyRequest,
+  ) {
+    return this.workspaceAuthorizedService.uploadThumbnail(
+      id,
+      user.id,
+      user.role,
+      req,
     );
   }
 

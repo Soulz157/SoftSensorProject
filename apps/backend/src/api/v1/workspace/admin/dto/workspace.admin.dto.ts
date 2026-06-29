@@ -38,7 +38,7 @@ export const AdminWorkspaceListResponseSchema = createStandardResponseSchema(
 export const AdminWorkspaceMemberSchema = z.object({
   id: z.string(),
   userId: z.string(),
-  role: z.enum(['OWNER', 'VIEWER']),
+  role: z.enum(['OWNER', 'STAFF', 'VIEWER']),
   createdAt: z.date(),
   user: z.object({
     id: z.string(),
@@ -97,11 +97,15 @@ export const DeleteWorkspaceResponseSchema = createStandardResponseSchema(
 
 export const AdminInviteMemberSchema = z.object({
   email: z.email(),
-  role: z.enum(['OWNER', 'VIEWER']),
+  role: z.enum(['OWNER', 'STAFF', 'VIEWER']),
 });
 
 export const AdminUpdateMemberRoleSchema = z.object({
-  role: z.enum(['OWNER', 'VIEWER']),
+  role: z.enum(['OWNER', 'STAFF', 'VIEWER']),
+});
+
+export const AdminMoveMemberSchema = z.object({
+  targetWorkspaceId: z.string().min(1, 'targetWorkspaceId ต้องไม่ว่างเปล่า'),
 });
 
 export class AdminWorkspaceQueryDto extends createZodDto(
@@ -134,3 +138,4 @@ export class AdminInviteMemberDto extends createZodDto(
 export class AdminUpdateMemberRoleDto extends createZodDto(
   AdminUpdateMemberRoleSchema,
 ) {}
+export class AdminMoveMemberDto extends createZodDto(AdminMoveMemberSchema) {}

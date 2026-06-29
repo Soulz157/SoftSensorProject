@@ -1,10 +1,8 @@
 'use client'
 
-import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
-import { toast } from 'sonner'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -16,104 +14,16 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
+import { Check, X, CreditCard, AlertTriangle } from 'lucide-react'
+
+import { usePlans } from '@/hooks/user/use-plan'
 import {
-  Check,
-  X,
-  Zap,
-  Building2,
-  Sparkles,
-  CreditCard,
-  AlertTriangle,
-} from 'lucide-react'
-import { planService } from '@/services/plan'
-import type { PlanInfo, SubscriptionInfo } from '@/types'
-
-interface PlanFeature {
-  label: string
-  FREE: string | boolean
-  PRO: string | boolean
-  ENTERPRISE: string | boolean
-}
-
-const FEATURES: PlanFeature[] = [
-  {
-    label: 'Active Models',
-    FREE: 'Up to 5',
-    PRO: 'Up to 20',
-    ENTERPRISE: 'Unlimited',
-  },
-  {
-    label: 'Data History',
-    FREE: '7 days',
-    PRO: '90 days',
-    ENTERPRISE: 'Unlimited',
-  },
-  { label: 'Custom Import', FREE: false, PRO: true, ENTERPRISE: true },
-  { label: 'API Access', FREE: false, PRO: true, ENTERPRISE: true },
-  {
-    label: 'Team Members',
-    FREE: '1',
-    PRO: 'Up to 10',
-    ENTERPRISE: 'Unlimited',
-  },
-  {
-    label: 'Priority Support',
-    FREE: false,
-    PRO: 'Email',
-    ENTERPRISE: 'Dedicated',
-  },
-  { label: 'Analytics Export', FREE: false, PRO: true, ENTERPRISE: true },
-  { label: 'SSO / SAML', FREE: false, PRO: false, ENTERPRISE: true },
-]
-
-type PlanKey = 'FREE' | 'PRO' | 'ENTERPRISE'
-
-const PLAN_META: Record<
-  PlanKey,
-  {
-    icon: React.ReactNode
-    description: string
-    badge?: string
-    highlighted: boolean
-    cta: string
-    ctaVariant: 'outline' | 'default' | 'secondary'
-  }
-> = {
-  FREE: {
-    icon: <Zap className="h-5 w-5 text-amber-400" />,
-    description: 'For individuals exploring soft sensor modeling',
-    highlighted: false,
-    cta: 'Current Plan',
-    ctaVariant: 'outline',
-  },
-  PRO: {
-    icon: <Sparkles className="h-5 w-5 text-blue-400" />,
-    description: 'For teams running production sensor pipelines',
-    badge: 'Most Popular',
-    highlighted: true,
-    cta: 'Upgrade to Pro',
-    ctaVariant: 'default',
-  },
-  ENTERPRISE: {
-    icon: <Building2 className="h-5 w-5 text-violet-400" />,
-    description: 'Unlimited scale with dedicated support',
-    highlighted: false,
-    cta: 'Contact Sales',
-    ctaVariant: 'secondary',
-  },
-}
-
-function formatPrice(plan: PlanInfo) {
-  if (plan.price === null) return 'Custom'
-  if (plan.price === 0) return '$0'
-  return `$${plan.price}`
-}
-
-function formatPeriod(plan: PlanInfo) {
-  if (plan.price === null) return 'contact us'
-  if (plan.price === 0) return 'per month'
-  return 'per month'
-}
+  FEATURES,
+  PLAN_META,
+  formatPrice,
+  formatPeriod,
+  type PlanKey,
+} from '@/constants/plans'
 
 function FeatureCell({
   value,
@@ -127,7 +37,9 @@ function FeatureCell({
       ? 'text-blue-400'
       : planKey === 'ENTERPRISE'
         ? 'text-violet-400'
-        : 'text-muted-foreground'
+        : planKey === 'STANDARD'
+          ? 'text-emerald-400'
+          : 'text-muted-foreground'
 
   if (value === true)
     return (
@@ -135,23 +47,9 @@ function FeatureCell({
     )
   if (value === false)
     return <X className="h-4 w-4 mx-auto dark:text-white/30" />
-  return (
-    <span
-      className={cn(
-        'text-xs font-medium',
-        planKey === 'PRO'
-          ? 'text-blue-400'
-          : planKey === 'ENTERPRISE'
-            ? 'text-violet-400'
-            : 'text-muted-foreground',
-      )}
-    >
-      {value}
-    </span>
-  )
-}
 
-// ─── Skeleton ─────────────────────────────────────────────────────────────────
+  return <span className={cn('text-xs font-medium', checkColor)}>{value}</span>
+}
 
 function PlansSkeleton() {
   return (
@@ -160,8 +58,8 @@ function PlansSkeleton() {
         <Skeleton className="h-6 w-48" />
         <Skeleton className="h-4 w-64" />
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-        {[0, 1, 2].map(i => (
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+        {[0, 1, 2, 3].map(i => (
           <Skeleton key={i} className="h-52 rounded-xl" />
         ))}
       </div>
@@ -169,58 +67,18 @@ function PlansSkeleton() {
   )
 }
 
-// ─── Main component ───────────────────────────────────────────────────────────
-
 export default function PlansPage() {
-  const [plans, setPlans] = useState<PlanInfo[]>([])
-  const [subscription, setSubscription] = useState<SubscriptionInfo | null>(
-    null,
-  )
-  const [loading, setLoading] = useState(true)
-  const [isDowngrading, setIsDowngrading] = useState(false)
-
-  useEffect(() => {
-    let mounted = true
-    async function load() {
-      try {
-        const [plansRes, subRes] = await Promise.all([
-          planService.listPlans(),
-          planService.mySubscription(),
-        ])
-        if (!mounted) return
-        setPlans(plansRes.data ?? [])
-        setSubscription(subRes.data ?? null)
-      } catch {
-        // silent — plan data is best-effort
-      } finally {
-        if (mounted) setLoading(false)
-      }
-    }
-    load()
-    return () => {
-      mounted = false
-    }
-  }, [])
-
-  async function handleDowngrade() {
-    setIsDowngrading(true)
-    try {
-      await planService.downgrade()
-      toast.success('Downgraded to FREE plan')
-      // Refetch subscription
-      const subRes = await planService.mySubscription()
-      setSubscription(subRes.data ?? null)
-    } catch {
-      toast.error('Failed to downgrade plan')
-    } finally {
-      setIsDowngrading(false)
-    }
-  }
+  const {
+    plans,
+    loading,
+    isDowngrading,
+    currentPlanName,
+    isExpired,
+    handleDowngrade,
+    handleSelectPlan,
+  } = usePlans()
 
   if (loading) return <PlansSkeleton />
-
-  const currentPlanName = subscription?.plan?.name ?? null
-  const isExpired = subscription?.status === 'EXPIRED'
 
   return (
     <div className="flex flex-col gap-8 p-6 max-w-5xl mx-auto w-full">
@@ -232,7 +90,7 @@ export default function PlansPage() {
             Plans &amp; Billing
           </h1>
         </div>
-        <p className="text-sm text-muted-foreground">
+        <p className="text-sm text-muted-foreground ">
           {currentPlanName ? (
             <>
               You are on the{' '}
@@ -258,16 +116,19 @@ export default function PlansPage() {
       )}
 
       {/* Pricing cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-5 items-stretch">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 items-stretch">
         {plans.map(plan => {
           const meta = PLAN_META[plan.name as PlanKey]
           if (!meta) return null
+
           const isCurrent = plan.name === currentPlanName
+          const IconComponent = meta.icon
+
           return (
             <div
               key={plan.id}
               className={cn(
-                'relative rounded-xl border p-6 flex flex-col gap-5 transition-all',
+                'relative rounded-xl border p-6 w-full flex flex-col gap-5 transition-all',
                 meta.highlighted
                   ? 'border-blue-500/30 shadow-[0_0_40px_-8px_rgba(59,130,246,0.3)] bg-blue-950/10'
                   : 'border-border bg-card/50',
@@ -279,10 +140,17 @@ export default function PlansPage() {
                 </div>
               )}
 
-              {/* Plan header */}
               <div className="space-y-1">
                 <div className="flex items-center gap-2 mb-2">
-                  {meta.icon}
+                  <IconComponent
+                    className={cn(
+                      'h-5 w-5',
+                      plan.name === 'FREE' && 'text-amber-400',
+                      plan.name === 'STANDARD' && 'text-blue-400',
+                      plan.name === 'PRO' && 'text-emerald-400',
+                      plan.name === 'ENTERPRISE' && 'text-violet-400',
+                    )}
+                  />
                   <span className="font-semibold text-sm">{plan.name}</span>
                   {isCurrent && (
                     <span className="ml-auto rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground font-medium">
@@ -303,10 +171,10 @@ export default function PlansPage() {
                 </p>
               </div>
 
-              {/* CTA */}
               <Button
                 variant={isCurrent ? 'outline' : meta.ctaVariant}
                 disabled={isCurrent}
+                onClick={() => handleSelectPlan(plan)}
                 className={cn(
                   'w-full text-sm',
                   meta.highlighted &&
@@ -322,11 +190,39 @@ export default function PlansPage() {
       </div>
 
       {/* Feature comparison table */}
-      {plans.length > 0 && (
-        <div className="rounded-xl border border-border overflow-hidden">
-          <div className="grid grid-cols-4 bg-muted/40 border-b border-border">
-            <div className="px-4 py-3 text-xs font-medium text-muted-foreground">
-              Feature
+      <div className="rounded-xl border border-border overflow-hidden">
+        <div className="grid grid-cols-5 bg-muted/40 border-b border-border">
+          <div className="px-4 py-3 text-xs font-medium text-muted-foreground">
+            Feature
+          </div>
+          {plans.map(plan => {
+            const meta = PLAN_META[plan.name as PlanKey]
+            return (
+              <div
+                key={plan.id}
+                className={cn(
+                  'px-4 py-3 text-center text-xs font-semibold',
+                  meta?.highlighted
+                    ? 'text-blue-400 bg-blue-950/20'
+                    : 'text-foreground',
+                )}
+              >
+                {plan.name}
+              </div>
+            )
+          })}
+        </div>
+
+        {FEATURES.map((feature, i) => (
+          <div
+            key={feature.label}
+            className={cn(
+              'grid grid-cols-5 border-b border-border/50 last:border-0',
+              i % 2 === 0 ? 'bg-background' : 'bg-muted/20',
+            )}
+          >
+            <div className="px-4 py-3 text-xs text-muted-foreground flex items-center">
+              {feature.label}
             </div>
             {plans.map(plan => {
               const meta = PLAN_META[plan.name as PlanKey]
@@ -334,52 +230,22 @@ export default function PlansPage() {
                 <div
                   key={plan.id}
                   className={cn(
-                    'px-4 py-3 text-center text-xs font-semibold',
-                    meta?.highlighted
-                      ? 'text-blue-400 bg-blue-950/20'
-                      : 'text-foreground',
+                    'px-4 py-3 flex items-center justify-center',
+                    meta?.highlighted && 'bg-blue-950/10',
                   )}
                 >
-                  {plan.name}
+                  <FeatureCell
+                    value={feature[plan.name as PlanKey]}
+                    planKey={plan.name as PlanKey}
+                  />
                 </div>
               )
             })}
           </div>
+        ))}
+      </div>
 
-          {FEATURES.map((feature, i) => (
-            <div
-              key={feature.label}
-              className={cn(
-                'grid grid-cols-4 border-b border-border/50 last:border-0',
-                i % 2 === 0 ? 'bg-background' : 'bg-muted/20',
-              )}
-            >
-              <div className="px-4 py-3 text-xs text-muted-foreground flex items-center">
-                {feature.label}
-              </div>
-              {plans.map(plan => {
-                const meta = PLAN_META[plan.name as PlanKey]
-                return (
-                  <div
-                    key={plan.id}
-                    className={cn(
-                      'px-4 py-3 flex items-center justify-center',
-                      meta?.highlighted && 'bg-blue-950/10',
-                    )}
-                  >
-                    <FeatureCell
-                      value={feature[plan.name as PlanKey]}
-                      planKey={plan.name as PlanKey}
-                    />
-                  </div>
-                )
-              })}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Downgrade link — only shown when on a paid plan and not expired */}
+      {/* Downgrade link */}
       {currentPlanName && currentPlanName !== 'FREE' && !isExpired && (
         <div className="text-center">
           <AlertDialog>
@@ -399,9 +265,7 @@ export default function PlansPage() {
                   <span className="font-medium text-foreground">
                     {currentPlanName}
                   </span>{' '}
-                  features. Your account will switch to the FREE plan (1
-                  workspace, limited models). This action cannot be undone
-                  without re-subscribing.
+                  features.
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>

@@ -17,9 +17,9 @@ services:
       timeout: 5s
       retries: 5
 
-  # api:
+  # backend:
   #   build:
-  #     context: ./apps/api
+  #     context: ./apps/backend
   #     dockerfile: Dockerfile
   #   restart: unless-stopped
   #   env_file: .env
@@ -41,11 +41,11 @@ services:
   #   restart: unless-stopped
   #   env_file: .env
   #   environment:
-  #     NEXT_PUBLIC_API_URL: http://api:3001
+  #     NEXT_PUBLIC_API_URL: http://backend:3001
   #   ports:
   #     - "3000:3000"
   #   depends_on:
-  #     - api
+  #     - backend
 
 volumes:
   postgres_data:

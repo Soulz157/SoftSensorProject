@@ -13,6 +13,8 @@ import {
 } from '@softsensor/common';
 import { APP_PIPE, APP_FILTER } from '@nestjs/core';
 import { NodesModule } from './api/v1/nodes/nodes.module';
+import { WorkspacePlantModule } from './api/v1/workspace-plant/workspace.plant.module';
+import { ModelModule } from './api/v1/model/model.module';
 
 @Module({
   imports: [
@@ -44,6 +46,8 @@ import { NodesModule } from './api/v1/nodes/nodes.module';
     WorkspaceModule,
     PlanModule,
     NodesModule,
+    WorkspacePlantModule,
+    ModelModule,
   ],
   providers: [
     {

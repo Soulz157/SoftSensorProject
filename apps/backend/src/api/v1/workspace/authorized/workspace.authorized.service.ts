@@ -1,11 +1,16 @@
 import { Injectable } from '@nestjs/common';
 import { AppException } from '@softsensor/common';
 import { PrismaService } from '@softsensor/prisma';
+import { writeFile, mkdir } from 'fs/promises';
+import { extname, join } from 'path';
+import type { FastifyRequest } from 'fastify';
 import type {
+  EdgeItemDto,
   GetLogsQueryDto,
   InviteMemberDto,
   UpdateMemberRoleDto,
 } from './dto/workspace.authorized.dto';
+import { UpdateWorkspaceRequestDto } from '../admin/dto/workspace.admin.dto';
 
 @Injectable()
 export class WorkspaceAuthorizedService {
@@ -41,7 +46,13 @@ export class WorkspaceAuthorizedService {
     }
   }
 
-  private async assertHasAccess(workspaceId: string, userId: string) {
+  private async assertHasAccess(
+    workspaceId: string,
+    userId: string,
+    userRole: string,
+  ) {
+    if (userRole === 'ADMIN') return;
+
     const workspace = await this.prisma.workspace.findUnique({
       where: { id: workspaceId, deletedAt: null },
       select: { ownerId: true },
@@ -70,26 +81,73 @@ export class WorkspaceAuthorizedService {
     }
   }
 
+  private deriveNodeSummary(nodes: { data: unknown }[]): {
+    nodeCount: number;
+    alarmCount: number;
+    status: 'normal' | 'warning' | 'alarm' | 'offline';
+  } {
+    const priority: Record<string, number> = {
+      alarm: 3,
+      offline: 2,
+      warning: 1,
+      normal: 0,
+    };
+    const statusMap: Record<
+      number,
+      'normal' | 'warning' | 'alarm' | 'offline'
+    > = { 0: 'normal', 1: 'warning', 2: 'offline', 3: 'alarm' };
+    let worst = 0;
+    let alarmCount = 0;
+    for (const node of nodes) {
+      const data = node.data as Record<string, unknown>;
+      const st = typeof data?.status === 'string' ? data.status : 'normal';
+      if (st !== 'normal') alarmCount++;
+      const p = priority[st] ?? 0;
+      if (p > worst) worst = p;
+    }
+    return {
+      nodeCount: nodes.length,
+      alarmCount,
+      status: statusMap[worst] ?? 'normal',
+    };
+  }
+
   async getAllWorkspaces(user: Auth.UserPayload) {
+    const where =
+      user.role === 'ADMIN'
+        ? { deletedAt: null }
+        : {
+            deletedAt: null,
+            OR: [
+              { ownerId: user.id },
+              { members: { some: { userId: user.id } } },
+            ],
+          };
     const workspaces = await this.prisma.workspace.findMany({
-      where: {
-        deletedAt: null,
-        OR: [{ ownerId: user.id }, { members: { some: { userId: user.id } } }],
-      },
+      where,
       select: {
         id: true,
         color: true,
         name: true,
         icon: true,
+        thumbnailUrl: true,
         ownerId: true,
+        updatedAt: true,
+        _count: { select: { members: true, models: true } },
+        nodes: { select: { data: true } },
       },
     });
+
+    const data = workspaces.map(({ nodes, ...ws }) => ({
+      ...ws,
+      ...this.deriveNodeSummary(nodes),
+    }));
 
     return {
       statusCode: 200,
       message: 'ดึงข้อมูล workspace สำเร็จ',
-      type: 'SUCCESS' as const,
-      data: workspaces,
+      type: 'SUCCESS',
+      data,
     };
   }
 
@@ -108,6 +166,7 @@ export class WorkspaceAuthorizedService {
         color: true,
         name: true,
         icon: true,
+        thumbnailUrl: true,
         createdAt: true,
         updatedAt: true,
         _count: { select: { members: true, models: true } },
@@ -130,8 +189,8 @@ export class WorkspaceAuthorizedService {
     };
   }
 
-  async getWorkspaceModels(id: string, userId: string) {
-    await this.assertHasAccess(id, userId);
+  async getWorkspaceModels(id: string, userId: string, userRole: string) {
+    await this.assertHasAccess(id, userId, userRole);
 
     const models = await this.prisma.model.findMany({
       where: { workspaceId: id },
@@ -146,8 +205,13 @@ export class WorkspaceAuthorizedService {
     };
   }
 
-  async getWorkspaceLogs(id: string, userId: string, query: GetLogsQueryDto) {
-    await this.assertHasAccess(id, userId);
+  async getWorkspaceLogs(
+    id: string,
+    userId: string,
+    userRole: string,
+    query: GetLogsQueryDto,
+  ) {
+    await this.assertHasAccess(id, userId, userRole);
 
     const { page, limit } = query;
     const skip = (page - 1) * limit;
@@ -219,8 +283,8 @@ export class WorkspaceAuthorizedService {
     };
   }
 
-  async listMembers(workspaceId: string, userId: string) {
-    await this.assertHasAccess(workspaceId, userId);
+  async listMembers(workspaceId: string, userId: string, userRole: string) {
+    await this.assertHasAccess(workspaceId, userId, userRole);
 
     const members = await this.prisma.workspaceMember.findMany({
       where: { workspaceId },
@@ -340,6 +404,50 @@ export class WorkspaceAuthorizedService {
     };
   }
 
+  async listEdges(workspaceId: string, userId: string, userRole: string) {
+    await this.assertHasAccess(workspaceId, userId, userRole);
+
+    const edges = await this.prisma.edge.findMany({
+      where: { workspaceId },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return {
+      statusCode: 200,
+      message: 'Edges fetched successfully',
+      type: 'SUCCESS' as const,
+      data: edges,
+    };
+  }
+
+  async replaceEdges(
+    workspaceId: string,
+    userId: string,
+    userRole: string,
+    edges: EdgeItemDto[],
+  ) {
+    await this.assertHasAccess(workspaceId, userId, userRole);
+
+    await this.prisma.$transaction([
+      this.prisma.edge.deleteMany({ where: { workspaceId } }),
+      this.prisma.edge.createMany({
+        data: edges.map((e) => ({ ...e, workspaceId })),
+      }),
+    ]);
+
+    const result = await this.prisma.edge.findMany({
+      where: { workspaceId },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return {
+      statusCode: 200,
+      message: 'Edges replaced successfully',
+      type: 'SUCCESS' as const,
+      data: result,
+    };
+  }
+
   async removeMember(workspaceId: string, memberId: string, actorId: string) {
     const member = await this.prisma.workspaceMember.findFirst({
       where: { id: memberId, workspaceId },
@@ -377,6 +485,114 @@ export class WorkspaceAuthorizedService {
       message: 'Member removed',
       type: 'SUCCESS' as const,
       data: null,
+    };
+  }
+
+  async updateWorkspaceService(
+    id: string,
+    user: Auth.UserPayload,
+    args: UpdateWorkspaceRequestDto,
+  ) {
+    const workspace = await this.prisma.workspace.findUnique({
+      where: { id },
+      select: { id: true, ownerId: true },
+    });
+
+    if (!workspace) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Workspace not found',
+        type: 'ERROR',
+      });
+    }
+
+    const isAdmin = user.role === 'ADMIN';
+    if (workspace.ownerId !== user.id && !isAdmin) {
+      const member = await this.prisma.workspaceMember.findUnique({
+        where: { workspaceId_userId: { workspaceId: id, userId: user.id } },
+      });
+      if (!member || member.role === 'VIEWER') {
+        throw new AppException({
+          statusCode: 403,
+          message: 'Only workspace editors can update this workspace',
+          type: 'ERROR',
+        });
+      }
+    }
+
+    const { name, color, icon, description } = args;
+
+    await this.prisma.$transaction([
+      this.prisma.workspace.update({
+        where: { id },
+        data: {
+          ...(name !== undefined && { name }),
+          ...(color !== undefined && { color }),
+          ...(icon !== undefined && { icon }),
+          ...(description !== undefined && { description }),
+        },
+      }),
+      this.prisma.workspaceLog.create({
+        data: {
+          workspaceId: id,
+          userId: user.id,
+          action: 'UPDATED',
+          details: `Workspace updated by ${user.firstName} ${user.lastName}`,
+        },
+      }),
+    ]);
+
+    return {
+      statusCode: 200,
+      message: 'Workspace updated successfully',
+      type: 'SUCCESS' as const,
+    };
+  }
+
+  async uploadThumbnail(
+    workspaceId: string,
+    userId: string,
+    userRole: string,
+    req: FastifyRequest,
+  ) {
+    await this.assertHasAccess(workspaceId, userId, userRole);
+
+    const data = await req.file();
+    if (!data) {
+      throw new AppException({
+        statusCode: 400,
+        message: 'No file uploaded',
+        type: 'ERROR',
+      });
+    }
+
+    const allowed = ['image/jpeg', 'image/png', 'image/webp'];
+    if (!allowed.includes(data.mimetype)) {
+      throw new AppException({
+        statusCode: 400,
+        message: 'Only JPEG, PNG, and WebP images are allowed',
+        type: 'ERROR',
+      });
+    }
+
+    const ext = extname(data.filename) || '.jpg';
+    const uploadDir = join(process.cwd(), 'uploads', 'workspaces');
+    await mkdir(uploadDir, { recursive: true });
+
+    const filename = `${workspaceId}${ext}`;
+    await writeFile(join(uploadDir, filename), await data.toBuffer());
+
+    const thumbnailUrl = `/uploads/workspaces/${filename}`;
+    await this.prisma.workspace.update({
+      where: { id: workspaceId },
+      data: { thumbnailUrl },
+    });
+
+    return {
+      statusCode: 200,
+      message: 'Thumbnail uploaded successfully',
+      type: 'SUCCESS' as const,
+      data: { thumbnailUrl },
     };
   }
 }

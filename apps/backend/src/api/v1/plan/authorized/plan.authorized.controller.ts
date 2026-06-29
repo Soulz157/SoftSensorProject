@@ -1,4 +1,11 @@
-import { Controller, Get, HttpCode, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiOkResponse,
@@ -8,6 +15,7 @@ import {
 import { PlanAuthorizedService } from './plan.authorized.service';
 import {
   PlanListResponseDto,
+  SubscribeDto,
   SubscriptionResponseDto,
 } from './dto/plan.authorized.dto';
 import { JwtAccessGuard } from '@/guards/jwt-access.guard';
@@ -34,6 +42,13 @@ export class PlanAuthorizedController {
   @ApiOkResponse({ type: SubscriptionResponseDto })
   async mySubscription(@Users() user: Auth.UserPayload) {
     return this.planService.mySubscription(user.id);
+  }
+
+  @Post('/subscribe')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Subscribe the current user to a plan by name' })
+  async subscribe(@Users() user: Auth.UserPayload, @Body() body: SubscribeDto) {
+    return this.planService.subscribe(user.id, body.planName);
   }
 
   @Post('/downgrade')

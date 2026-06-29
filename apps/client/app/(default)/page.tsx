@@ -29,7 +29,7 @@ export default function LandingPage() {
 
   useEffect(() => {
     if (status === 'authenticated' && workspaces.length > 0) {
-      router.replace('/dashboard')
+      router.replace('/overview')
     }
   }, [status, workspaces.length, router])
 

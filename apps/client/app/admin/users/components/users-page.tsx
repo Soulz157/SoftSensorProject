@@ -14,7 +14,6 @@ import { UserTable } from './user-table'
 const ROLE_OPTIONS = [
   { value: '', label: 'All Roles' },
   { value: 'USER', label: 'User' },
-  { value: 'STAFF', label: 'Staff' },
   { value: 'ADMIN', label: 'Admin' },
 ]
 

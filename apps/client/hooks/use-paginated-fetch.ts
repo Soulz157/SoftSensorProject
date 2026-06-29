@@ -16,10 +16,11 @@ export function usePaginatedFetch<T>(
   const [error, setError] = useState<string | null>(null)
 
   const fetcherRef = useRef(fetcher)
-  fetcherRef.current = fetcher
+  useEffect(() => {
+    fetcherRef.current = fetcher
+  }, [fetcher])
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const fetchData = useCallback(async () => {
+  const refetch = useCallback(async () => {
     setIsFetching(true)
     setError(null)
     try {
@@ -31,21 +32,48 @@ export function usePaginatedFetch<T>(
     } finally {
       setIsFetching(false)
     }
-  }, deps)
+  }, [errorMessage])
 
   useEffect(() => {
-    if (status === 'loading') return
-    queueMicrotask(() => {
-      if (status !== 'authenticated') return
-      fetchData()
-    })
-  }, [fetchData, status])
+    if (status !== 'authenticated') return
+
+    let ignore = false
+
+    const loadData = async () => {
+      setIsFetching(true)
+      setError(null)
+
+      try {
+        const res = await fetcherRef.current()
+        if (!ignore) {
+          setData(res.data)
+          setIsFetching(false)
+        }
+      } catch {
+        if (!ignore) {
+          setError(errorMessage)
+          toast.error(errorMessage)
+          setIsFetching(false)
+        }
+      }
+    }
+
+    void loadData()
+
+    return () => {
+      ignore = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, errorMessage, ...deps])
+  // ไฮไลท์: เอา ...deps มากางใส่ Array นี้ เพื่อบังคับให้ Effect ดึงข้อมูลใหม่เวลา Page/Search เปลี่ยนแปลง
+
+  const loading = isFetching && data === null
 
   return {
     data,
-    loading: isFetching && data === null,
+    loading,
     isFetching,
     error,
-    refetch: fetchData,
+    refetch,
   }
 }

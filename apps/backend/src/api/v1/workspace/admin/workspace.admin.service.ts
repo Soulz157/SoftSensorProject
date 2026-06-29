@@ -3,6 +3,7 @@ import { AppException } from '@softsensor/common';
 import { PrismaService } from '@softsensor/prisma';
 import {
   AdminInviteMemberDto,
+  AdminMoveMemberDto,
   AdminUpdateMemberRoleDto,
   AdminWorkspaceQueryDto,
   CreateWorkspaceRequestDto,
@@ -341,6 +342,95 @@ export class WorkspaceAdminService {
       message: 'Member removed',
       type: 'SUCCESS' as const,
       data: null,
+    };
+  }
+
+  async moveMember(
+    sourceWorkspaceId: string,
+    memberId: string,
+    dto: AdminMoveMemberDto,
+  ) {
+    const { targetWorkspaceId } = dto;
+
+    const member = await this.prisma.workspaceMember.findFirst({
+      where: { id: memberId, workspaceId: sourceWorkspaceId },
+    });
+    if (!member) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Member not found',
+        type: 'ERROR',
+      });
+    }
+
+    if (targetWorkspaceId === sourceWorkspaceId) {
+      throw new AppException({
+        statusCode: 400,
+        message: 'Member is already in this workspace',
+        type: 'ERROR',
+      });
+    }
+
+    const targetWorkspace = await this.prisma.workspace.findUnique({
+      where: { id: targetWorkspaceId, deletedAt: null },
+      select: { id: true },
+    });
+    if (!targetWorkspace) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Target workspace not found',
+        type: 'ERROR',
+      });
+    }
+
+    const existing = await this.prisma.workspaceMember.findUnique({
+      where: {
+        workspaceId_userId: {
+          workspaceId: targetWorkspaceId,
+          userId: member.userId,
+        },
+      },
+    });
+    if (existing) {
+      throw new AppException({
+        statusCode: 409,
+        message: 'User is already a member of the target workspace',
+        type: 'ERROR',
+      });
+    }
+
+    if (member.role === 'OWNER') {
+      const ownerCount = await this.prisma.workspaceMember.count({
+        where: { workspaceId: sourceWorkspaceId, role: 'OWNER' },
+      });
+      if (ownerCount <= 1) {
+        throw new AppException({
+          statusCode: 400,
+          message: 'Cannot move the last owner',
+          type: 'ERROR',
+        });
+      }
+    }
+
+    const moved = await this.prisma.workspaceMember.update({
+      where: { id: memberId },
+      data: { workspaceId: targetWorkspaceId },
+      select: {
+        id: true,
+        userId: true,
+        role: true,
+        createdAt: true,
+        user: {
+          select: { id: true, firstName: true, lastName: true, email: true },
+        },
+      },
+    });
+
+    return {
+      statusCode: 200,
+      message: 'Member moved',
+      type: 'SUCCESS' as const,
+      data: moved,
     };
   }
 }
