@@ -32,7 +32,6 @@ import {
   type TagInputMethod,
 } from '@/store/model-pipeline'
 import type { CustomDateRange } from '@/store/data-visualize'
-import { se } from 'date-fns/locale'
 
 const DEFAULT_RANGE: FetchPeriod = '1min'
 
@@ -223,8 +222,6 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     ],
   )
 
-  // Used by manual path step-3 to set the validation/target source.
-  // Does NOT clamp highestUnlocked below 3 — the source selection is the step-3 action.
   const setValidationSource = useCallback(
     (source: SavedDataSource) => {
       setSelectedSavedSourceId(source.id)

@@ -28,8 +28,32 @@ interface OverviewAssetTreeProps {
 
 const childIndent = 'ml-4 border-l border-border/40 pl-2'
 
-// `binary` collapses structural (plant/equipment) rows to green Normal / red
-// Abnormal. Model leaf rows omit it and keep the full 4-state model rendering.
+function getAbnormalIds(tree: ReturnType<typeof buildOverviewTree>): string[] {
+  const ids: string[] = []
+  for (const plant of tree) {
+    if (plant.status !== 'normal') ids.push(plant.id)
+    for (const node of plant.nodes) {
+      if (node.status !== 'normal') ids.push(node.id)
+    }
+  }
+  return ids
+}
+
+function getHighlightAncestors(
+  tree: ReturnType<typeof buildOverviewTree>,
+  highlightedModelId: string | null | undefined,
+): string[] {
+  if (!highlightedModelId) return []
+  for (const plant of tree) {
+    for (const node of plant.nodes) {
+      if (node.models.some(m => m.id === highlightedModelId)) {
+        return [plant.id, node.id]
+      }
+    }
+  }
+  return []
+}
+
 function StatusTag({
   status,
   binary,
@@ -145,50 +169,30 @@ export function OverviewAssetTree({
   const modelRefs = useRef<Map<string, HTMLAnchorElement>>(new Map())
 
   const [openItems, setOpenItems] = useState<string[]>([])
-  const isOpen = (id: string) => openItems.includes(id)
   const toggle = (id: string) =>
     setOpenItems(prev =>
       prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id],
     )
 
-  useEffect(() => {
-    const ids: string[] = []
-    for (const plant of tree) {
-      if (plant.status !== 'normal') ids.push(plant.id)
-      for (const node of plant.nodes) {
-        if (node.status !== 'normal') ids.push(node.id)
-      }
-    }
-    setOpenItems(ids)
-  }, [tree])
+  const abnormalIds = getAbnormalIds(tree)
+
+  const highlightAncestors = getHighlightAncestors(tree, highlightedModelId)
+
+  const effectiveOpenItems: string[] = [
+    ...new Set([...openItems, ...abnormalIds, ...highlightAncestors]),
+  ]
+
+  const isOpen = (id: string) => effectiveOpenItems.includes(id)
 
   useEffect(() => {
     if (!highlightedModelId) return
-    const ancestors: string[] = []
-    for (const plant of tree) {
-      for (const node of plant.nodes) {
-        if (node.models.some(m => m.id === highlightedModelId)) {
-          ancestors.push(plant.id, node.id)
-        }
-      }
-    }
-    if (ancestors.length > 0) {
-      setOpenItems(prev => {
-        const next = [...prev]
-        for (const id of ancestors) {
-          if (!next.includes(id)) next.push(id)
-        }
-        return next
-      })
-    }
-    // Defer scroll until the DOM has rendered the now-open rows.
     const frame = requestAnimationFrame(() => {
       modelRefs.current
         .get(highlightedModelId)
         ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     })
     return () => cancelAnimationFrame(frame)
-  }, [highlightedModelId, tree])
+  }, [highlightedModelId])
 
   if (loading) {
     return (
