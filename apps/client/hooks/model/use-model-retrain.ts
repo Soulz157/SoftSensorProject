@@ -15,7 +15,6 @@ import type { AIModel } from '@/types'
 
 type Mode = 'auto' | 'custom'
 
-/** Delay between simulated training log lines. */
 const STEP_MS = 700
 
 export interface UseModelRetrain {
@@ -28,11 +27,6 @@ export interface UseModelRetrain {
   reset: () => void
 }
 
-/**
- * Drives a simulated retrain: flips `deployStatus` to `initializing`, streams
- * training log lines via the real `appendModelLog` endpoint, then sets `running`.
- * No real training happens — swap the loop body for a real job trigger later.
- */
 export function useModelRetrain({
   model,
   onUpdated,
@@ -130,7 +124,7 @@ export function useModelRetrain({
         }
       }
     },
-    [isRetraining, model?.id, model?.name, onUpdated, refreshModels],
+    [isRetraining, onUpdated, refreshModels, model],
   )
 
   const autoFinetune = useCallback(() => void run('auto'), [run])

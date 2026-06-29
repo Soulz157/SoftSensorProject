@@ -1,5 +1,4 @@
 'use client'
-
 import { useEffect, useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAtom } from 'jotai'
@@ -15,11 +14,19 @@ import {
 } from '@/store/model-pipeline'
 import { useModelPipelineNav } from '@/hooks/model/use-model-pipeline-nav'
 
-/**
- * Owns Phase-1 metadata (atom-backed so the nav hook can gate step 1) plus the
- * workspace→plant→node cascade fetch. Model creation itself happens in
- * `useModelTraining` when the user starts Phase 5 — this hook no longer submits.
- */
+type PlantsState = {
+  loading: boolean
+  data: WorkspacePlant[]
+}
+
+type NodesState = {
+  data: CanvasNode[]
+}
+
+const PLANTS_IDLE: PlantsState = { loading: false, data: [] }
+const PLANTS_LOADING: PlantsState = { loading: true, data: [] }
+const NODES_IDLE: NodesState = { data: [] }
+
 export function useCreateModel() {
   const router = useRouter()
 
@@ -29,9 +36,8 @@ export function useCreateModel() {
   const [plantId, setPlantIdAtom] = useAtom(mpPlantIdAtom)
   const [nodeId, setNodeIdAtom] = useAtom(mpNodeIdAtom)
 
-  const [plants, setPlants] = useState<WorkspacePlant[]>([])
-  const [nodes, setNodes] = useState<CanvasNode[]>([])
-  const [plantsLoading, setPlantsLoading] = useState(false)
+  const [plants, setPlants] = useState<PlantsState>(PLANTS_IDLE)
+  const [nodes, setNodes] = useState<NodesState>(NODES_IDLE)
 
   const { resetPipeline } = useModelPipelineNav()
 
@@ -50,8 +56,8 @@ export function useCreateModel() {
       setWorkspaceIdAtom(id)
       setPlantIdAtom('')
       setNodeIdAtom('')
-      setPlants([])
-      setNodes([])
+      setPlants(PLANTS_IDLE)
+      setNodes(NODES_IDLE)
       resetPipeline()
     },
     [setWorkspaceIdAtom, setPlantIdAtom, setNodeIdAtom, resetPipeline],
@@ -61,7 +67,7 @@ export function useCreateModel() {
     (id: string) => {
       setPlantIdAtom(id)
       setNodeIdAtom('')
-      setNodes([])
+      setNodes(NODES_IDLE)
       resetPipeline()
     },
     [setPlantIdAtom, setNodeIdAtom, resetPipeline],
@@ -69,18 +75,19 @@ export function useCreateModel() {
 
   useEffect(() => {
     if (!workspaceId) return
+
     let ignore = false
-    setPlantsLoading(true)
-    getWorkspacePlants(workspaceId)
-      .then(data => {
-        if (!ignore) setPlants(data)
-      })
-      .catch(() => {
-        if (!ignore) setPlants([])
-      })
-      .finally(() => {
-        if (!ignore) setPlantsLoading(false)
-      })
+
+    void (async () => {
+      if (!ignore) setPlants(PLANTS_LOADING)
+      try {
+        const data = await getWorkspacePlants(workspaceId)
+        if (!ignore) setPlants({ loading: false, data })
+      } catch {
+        if (!ignore) setPlants(PLANTS_IDLE)
+      }
+    })()
+
     return () => {
       ignore = true
     }
@@ -88,14 +95,18 @@ export function useCreateModel() {
 
   useEffect(() => {
     if (!workspaceId) return
+
     let ignore = false
-    getNodes(workspaceId, plantId || undefined)
-      .then(data => {
-        if (!ignore) setNodes(data)
-      })
-      .catch(() => {
-        if (!ignore) setNodes([])
-      })
+
+    void (async () => {
+      try {
+        const data = await getNodes(workspaceId, plantId || undefined)
+        if (!ignore) setNodes({ data })
+      } catch {
+        if (!ignore) setNodes(NODES_IDLE)
+      }
+    })()
+
     return () => {
       ignore = true
     }
@@ -110,9 +121,9 @@ export function useCreateModel() {
     changeWorkspace,
     changePlant,
     setNodeId,
-    plants,
-    nodes,
-    plantsLoading,
+    plants: plants.data,
+    nodes: nodes.data,
+    plantsLoading: plants.loading,
     cancel,
   }
 }
