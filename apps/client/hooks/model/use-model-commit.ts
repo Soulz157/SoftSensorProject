@@ -14,6 +14,7 @@ import {
   mpSavedDataSourcesAtom,
   mpSelectedSavedSourceIdAtom,
   mpSelectedTagsAtom,
+  mpRawDatasetAtom,
   mpTimeRangeAtom,
   mpCustomDateRangeAtom,
   mpFillStrategiesAtom,
@@ -41,17 +42,22 @@ export function useModelCommit(): () => Promise<string | null> {
   const savedSources = useAtomValue(mpSavedDataSourcesAtom)
   const savedSourceId = useAtomValue(mpSelectedSavedSourceIdAtom)
   const selectedTags = useAtomValue(mpSelectedTagsAtom)
+  const rawDataset = useAtomValue(mpRawDatasetAtom)
   const timeRange = useAtomValue(mpTimeRangeAtom)
   const customDateRange = useAtomValue(mpCustomDateRangeAtom)
   const fillStrategies = useAtomValue(mpFillStrategiesAtom)
   const selectedMetrics = useAtomValue(mpSelectedMetricsAtom)
 
   return useCallback(async (): Promise<string | null> => {
+    // Persist the tags actually fetched/trained (Step-4 subset). Fall back to
+    // the confirmed list when no dataset exists yet (e.g. edit-mode hydration).
+    const committedTags =
+      rawDataset.tags.length > 0 ? rawDataset.tags : selectedTags
     const config = buildModelConfig({
       description,
       savedSources,
       savedSourceId,
-      selectedTags,
+      selectedTags: committedTags,
       timeRange,
       customDateRange,
       fillStrategies,
@@ -95,6 +101,7 @@ export function useModelCommit(): () => Promise<string | null> {
     savedSources,
     savedSourceId,
     selectedTags,
+    rawDataset,
     timeRange,
     customDateRange,
     fillStrategies,

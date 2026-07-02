@@ -77,13 +77,14 @@ export function ModelMetadataSection({
           value={description}
           onChange={e => onDescription(e.target.value)}
           disabled={disabled}
-          rows={3}
+          rows={4}
         />
       </div>
 
       <div className="space-y-1.5">
         <Label>
-          Workspace <span className="text-destructive">*</span> &amp; Plant
+          Workspace <span className="text-destructive">*</span> &amp; Plant{' '}
+          <span className="text-destructive">*</span>
         </Label>
         <CascadeSelectors
           workspaces={workspaces}
@@ -96,18 +97,17 @@ export function ModelMetadataSection({
         />
       </div>
 
-      {workspaceId && (
+      {workspaceId && plantId && (
         <div className="space-y-1.5">
           <Label>
-            Equipment / Node{' '}
-            <span className="text-xs text-muted-foreground">(optional)</span>
+            Equipment<span className="text-destructive">*</span>
           </Label>
           <Select
             value={nodeId || 'none'}
             onValueChange={v => onNode(v === 'none' ? '' : v)}
             disabled={disabled}
           >
-            <SelectTrigger className="w-full sm:w-115">
+            <SelectTrigger className="w-full">
               <SelectValue placeholder="Select equipment" />
             </SelectTrigger>
             <SelectContent>
@@ -119,6 +119,11 @@ export function ModelMetadataSection({
               ))}
             </SelectContent>
           </Select>
+          {nodes.length === 0 && (
+            <p className="text-xs text-muted-foreground">
+              No equipment found in this plant. Add nodes to the canvas first.
+            </p>
+          )}
         </div>
       )}
     </div>

@@ -9,18 +9,19 @@ import { WizardStepIndicator } from './wizard-step-indicator'
 import { Phase1Details } from './pipeline/phase-1-details'
 import { Phase2DataSource } from './pipeline/phase-2-data-source'
 import { Phase3TagSelection } from './pipeline/phase-3-tag-selection'
-import { Phase3RawData } from './pipeline/phase-3-raw-data'
-import { Phase4Processing } from './pipeline/phase-4-processing'
-import { Phase5Training } from './pipeline/phase-5-training'
-import { Phase6Results } from './pipeline/phase-6-results'
+import { Phase4RawData } from './pipeline/phase-4-raw-data'
+import { Phase5Processing } from './pipeline/phase-5-processing'
+import { Phase6Training } from './pipeline/phase-6-training'
+import { Phase7Results } from './pipeline/phase-7-results'
 
 const NEXT_LABELS: Record<number, string> = {
   1: 'Continue',
   2: 'Continue',
   3: 'Confirm Tags',
-  4: 'Fetch Data',
-  5: 'Next: Process Data',
+  4: 'Next',
+  5: 'Next',
   6: 'Start Training Model',
+  7: 'View Results',
 }
 
 export function CreateModelForm() {
@@ -54,6 +55,8 @@ export function CreateModelForm() {
 
   // Training (6) auto-advances; Results (7) is terminal with its own actions.
   const hideFooterNext = nav.currentStep === 6 || nav.currentStep === 7
+  // Processing (5) is a two-sub-step flow that owns its own Back/Next footer.
+  const hideFooter = nav.currentStep === 5
   const nextLabel =
     isEdit && nav.currentStep === 6
       ? 'Save & Train'
@@ -88,16 +91,16 @@ export function CreateModelForm() {
       body = <Phase3TagSelection nav={nav} />
       break
     case 4:
-      body = <Phase3RawData nav={nav} />
+      body = <Phase4RawData nav={nav} />
       break
     case 5:
-      body = <Phase4Processing nav={nav} />
+      body = <Phase5Processing nav={nav} />
       break
     case 6:
-      body = <Phase5Training nav={nav} />
+      body = <Phase6Training nav={nav} />
       break
     case 7:
-      body = <Phase6Results nav={nav} />
+      body = <Phase7Results nav={nav} />
       break
     default:
       body = null
@@ -105,7 +108,7 @@ export function CreateModelForm() {
 
   return (
     <div className="flex-1 overflow-auto bg-background p-6 md:p-8">
-      <div className="mx-auto max-w-3xl space-y-6">
+      <div className="mx-auto max-w-7xl space-y-6">
         {/* Header */}
         <div className="space-y-1">
           <Button
@@ -141,7 +144,7 @@ export function CreateModelForm() {
 
         {/* Wizard */}
         <div className="flex flex-col overflow-hidden rounded-xl ring-1 ring-foreground/10">
-          <div className="flex items-center justify-center border-b border-border/60 bg-muted/30 px-4 py-3">
+          <div className="flex items-center border-b border-border/60 bg-muted/30 px-6 py-3">
             <WizardStepIndicator
               labels={STEP_LABELS}
               currentStep={nav.currentStep}
@@ -150,34 +153,36 @@ export function CreateModelForm() {
             />
           </div>
 
-          <div className="min-h-72 flex-1 bg-background p-5">{body}</div>
+          <div className="min-h-72 flex-1 bg-background p-6 lg:p-8">{body}</div>
 
-          <div className="flex items-center justify-between border-t border-border/60 bg-muted/30 px-4 py-3">
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={nav.back}
-              disabled={nav.currentStep === 1}
-              className="gap-1"
-            >
-              <ChevronLeft className="h-4 w-4" />
-              Back
-            </Button>
-
-            {!hideFooterNext && (
+          {!hideFooter && (
+            <div className="flex items-center justify-between border-t border-border/60 bg-muted/30 px-4 py-3">
               <Button
                 type="button"
+                variant="ghost"
                 size="sm"
-                onClick={nav.next}
-                disabled={!nav.canAdvance(nav.currentStep)}
+                onClick={nav.back}
+                disabled={nav.currentStep === 1}
                 className="gap-1"
               >
-                {nextLabel}
-                <ChevronRight className="h-4 w-4" />
+                <ChevronLeft className="h-4 w-4" />
+                Back
               </Button>
-            )}
-          </div>
+
+              {!hideFooterNext && (
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={nav.next}
+                  disabled={!nav.canAdvance(nav.currentStep)}
+                  className="gap-1"
+                >
+                  {nextLabel}
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>

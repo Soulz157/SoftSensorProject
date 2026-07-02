@@ -12,7 +12,7 @@ import {
 } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { DateTimePicker, toDateTimeLocal } from '@/components/ui/Datetime'
 import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -40,12 +40,10 @@ export function Step4Fetching({ nav }: Props) {
   const fetch = useDatasetFetch()
 
   const [useCustom, setUseCustom] = useState(false)
-  const today = new Date().toISOString().split('T')[0] ?? ''
-  const [customFrom, setCustomFrom] = useState(() => {
-    const defaultFrom = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
-    return defaultFrom.toISOString().split('T')[0] ?? ''
-  })
-  const [customTo, setCustomTo] = useState(today)
+  const [customFrom, setCustomFrom] = useState(() =>
+    toDateTimeLocal(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)),
+  )
+  const [customTo, setCustomTo] = useState(() => toDateTimeLocal(new Date()))
 
   const isFetching = fetch.status === 'fetching'
   const isDone = fetch.status === 'done'
@@ -168,27 +166,23 @@ export function Step4Fetching({ nav }: Props) {
               <Label htmlFor="fetch-from" className="text-xs">
                 From
               </Label>
-              <Input
+              <DateTimePicker
                 id="fetch-from"
-                type="date"
                 value={customFrom}
                 max={customTo}
-                onChange={e => handleCustomFromChange(e.target.value)}
-                className="h-8 text-xs"
+                onChange={handleCustomFromChange}
               />
             </div>
             <div className="grid gap-1.5">
               <Label htmlFor="fetch-to" className="text-xs">
                 To
               </Label>
-              <Input
+              <DateTimePicker
                 id="fetch-to"
-                type="date"
                 value={customTo}
                 min={customFrom}
-                max={today}
-                onChange={e => handleCustomToChange(e.target.value)}
-                className="h-8 text-xs"
+                max={toDateTimeLocal(new Date())}
+                onChange={handleCustomToChange}
               />
             </div>
           </div>

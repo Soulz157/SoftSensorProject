@@ -141,6 +141,27 @@ export function buildOverviewTree(
   return result
 }
 
+/**
+ * Flattened, severity-sorted abnormal equipment for a single workspace — each
+ * node's status is rolled up over its models (a failed/abnormal model bubbles up
+ * via `buildOverviewTree`). Plant grouping is intentionally dropped (pass
+ * `plants = []`) so every node is collected; orphan failed models surface as the
+ * synthetic "Unassigned models" row. Drives the overview map hover card.
+ */
+export function abnormalEquipment(
+  nodes: CanvasNode[],
+  models: AIModel[],
+): OverviewTreeNode[] {
+  return buildOverviewTree([], nodes, models)
+    .flatMap(p => p.nodes)
+    .filter(n => n.status !== 'normal')
+    .sort(
+      (a, b) =>
+        (NODE_STATUS_PRIORITY[a.status] ?? 3) -
+        (NODE_STATUS_PRIORITY[b.status] ?? 3),
+    )
+}
+
 export interface FailedModelPath {
   modelId: string
   modelName: string

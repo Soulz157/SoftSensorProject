@@ -9,7 +9,7 @@ import {
 /** One merged-by-timestamp row: `{ timestamp, [piTag]: value }`. */
 export interface SensorChartRow {
   timestamp: string
-  [piTag: string]: string | number
+  [piTag: string]: string | number | null
 }
 
 export interface UseSensorReadingsResult {

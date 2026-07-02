@@ -7,7 +7,6 @@ import { toast } from 'sonner'
 import { getModelById } from '@/services/model'
 import { readModelConfig } from '@/lib/model-config'
 import { buildRawDataset } from '@/lib/preprocessing'
-import { MOCK_DATA_SOURCES } from '@/lib/mock-data-sources'
 import { METRIC_KEYS, type MetricKey } from '@/lib/model-metrics'
 import type { AIModel } from '@/types'
 import {
@@ -106,11 +105,7 @@ export function useModelWizardMode(): UseModelWizardModeResult {
       if (config) {
         setDescription(config.description ?? '')
 
-        const merged =
-          config.dataSource &&
-          !MOCK_DATA_SOURCES.some(s => s.id === config.dataSource?.id)
-            ? [...MOCK_DATA_SOURCES, config.dataSource]
-            : MOCK_DATA_SOURCES
+        const merged = config.dataSource ? [config.dataSource] : []
         setSavedSources(merged)
         setSavedSourceId(config.savedSourceId)
         setSelectedTags(config.selectedTags)

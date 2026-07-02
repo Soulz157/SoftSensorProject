@@ -26,7 +26,7 @@ export const clearWorkspacePlantsAtom = atom(null, (_get, set) => {
   set(workspacePlantsAtom, [])
 })
 
-export const sidebarCollapsedAtom = atomWithStorage('sidebar-collapsed', false)
+export const sidebarCollapsedAtom = atomWithStorage('sidebar-collapsed', true)
 
 export const workspaceIcons = [
   { id: 'building', label: 'Building', icon: Building2 },

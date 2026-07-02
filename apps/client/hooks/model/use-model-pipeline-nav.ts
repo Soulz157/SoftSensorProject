@@ -1,6 +1,12 @@
 import { useCallback } from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import { preprocess, type FillStrategyConfig } from '@/lib/preprocessing'
+import {
+  precleanse,
+  type ConditionalRule,
+  type CropRange,
+  type StatisticalRule,
+} from '@/lib/precleanse'
 import { METRIC_KEYS } from '@/lib/model-metrics'
 import {
   MP_TOTAL_STEPS,
@@ -15,18 +21,27 @@ import {
   mpCustomDateRangeAtom,
   mpFetchStateAtom,
   mpRawDatasetAtom,
+  mpProcessingSubStepAtom,
+  mpCropRangeAtom,
+  mpConditionalRulesAtom,
+  mpStatisticalRulesAtom,
   mpFillStrategiesAtom,
+  mpTagConstantsAtom,
   mpNameAtom,
   mpWorkspaceIdAtom,
+  mpPlantIdAtom,
+  mpNodeIdAtom,
   mpTrainStateAtom,
   mpCreatedModelIdAtom,
   mpSelectedMetricsAtom,
   mpTagInputMethodAtom,
-  mpManualTagsRawAtom,
+  mpSelectedSavedSourceIdsAtom,
+  mpCsvUploadTagsAtom,
   mpEditedTagsAtom,
   mpRemovedTagsAtom,
   mpHasInvalidTagsAtom,
   mpInsertedTagsAtom,
+  mpFetchTagsAtom,
   type SavedDataSource,
   type FetchPeriod,
   type TagInputMethod,
@@ -40,6 +55,7 @@ export interface UsePipelineNavResult {
   highestUnlocked: number
   customDateRange: CustomDateRange | null
   selectedSavedSourceId: string
+  selectedSavedSourceIds: string[]
   tagInputMethod: TagInputMethod
   editedTags: Record<string, string>
   removedTags: string[]
@@ -59,9 +75,23 @@ export interface UsePipelineNavResult {
   setTimeRange: (range: FetchPeriod) => void
   setCustomRange: (from: string, to: string) => void
   clearCustomRange: () => void
+  resetFetch: () => void
+  fetchTagOverride: string[] | null
+  setFetchTagOverride: (tags: string[] | null) => void
+  // Phase 5.1 — Data Preprocessing (crop + outlier removal).
+  processingSubStep: 1 | 2
+  cropRange: CropRange
+  conditionalRules: ConditionalRule[]
+  statisticalRules: StatisticalRule[]
+  setProcessingSubStep: (step: 1 | 2) => void
+  setCropRange: (range: CropRange) => void
+  setConditionalRules: (update: React.SetStateAction<ConditionalRule[]>) => void
+  setStatisticalRules: (update: React.SetStateAction<StatisticalRule[]>) => void
   setFillStrategies: (
     update: React.SetStateAction<Record<string, FillStrategyConfig>>,
   ) => void
+  tagConstants: Record<string, number>
+  setTagConstant: (tagName: string, value: number | null) => void
   resetPipeline: () => void
   insertedTags: string[]
   insertTag: (tag: string) => void
@@ -79,14 +109,17 @@ export function useModelPipelineNav(): UsePipelineNavResult {
 
   const name = useAtomValue(mpNameAtom)
   const workspaceId = useAtomValue(mpWorkspaceIdAtom)
+  const plantId = useAtomValue(mpPlantIdAtom)
+  const nodeId = useAtomValue(mpNodeIdAtom)
   const [tagInputMethod, setTagInputMethodAtom] = useAtom(mpTagInputMethodAtom)
-  const manualTagsRaw = useAtomValue(mpManualTagsRawAtom)
+  const csvUploadTags = useAtomValue(mpCsvUploadTagsAtom)
 
   const setDataSource = useSetAtom(mpDataSourceAtom)
   const setCredentials = useSetAtom(mpDataSourceCredentialsAtom)
   const [selectedSavedSourceId, setSelectedSavedSourceId] = useAtom(
     mpSelectedSavedSourceIdAtom,
   )
+  const selectedSavedSourceIds = useAtomValue(mpSelectedSavedSourceIdsAtom)
   const setTagList = useSetAtom(mpTagListAtom)
   const [selectedTags, setSelectedTagsAtom] = useAtom(mpSelectedTagsAtom)
   const setTimeRangeAtom = useSetAtom(mpTimeRangeAtom)
@@ -95,7 +128,18 @@ export function useModelPipelineNav(): UsePipelineNavResult {
   const setFetchState = useSetAtom(mpFetchStateAtom)
   const rawDataset = useAtomValue(mpRawDatasetAtom)
   const setRawDataset = useSetAtom(mpRawDatasetAtom)
+  const [processingSubStep, setProcessingSubStepAtom] = useAtom(
+    mpProcessingSubStepAtom,
+  )
+  const [cropRange, setCropRangeAtom] = useAtom(mpCropRangeAtom)
+  const [conditionalRules, setConditionalRulesAtom] = useAtom(
+    mpConditionalRulesAtom,
+  )
+  const [statisticalRules, setStatisticalRulesAtom] = useAtom(
+    mpStatisticalRulesAtom,
+  )
   const [fillStrategies, setFillStrategiesAtom] = useAtom(mpFillStrategiesAtom)
+  const [tagConstants, setTagConstantsAtom] = useAtom(mpTagConstantsAtom)
   const trainState = useAtomValue(mpTrainStateAtom)
   const setTrainState = useSetAtom(mpTrainStateAtom)
   const setCreatedModelId = useSetAtom(mpCreatedModelIdAtom)
@@ -105,6 +149,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
   const [hasInvalidTags, setHasInvalidTagsAtom] = useAtom(mpHasInvalidTagsAtom)
 
   const [insertedTags, setInsertedTagsAtom] = useAtom(mpInsertedTagsAtom)
+  const [fetchTagOverride, setFetchTagOverrideAtom] = useAtom(mpFetchTagsAtom)
 
   const insertTag = useCallback(
     (tag: string) => {
@@ -124,28 +169,67 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     setTrainState({ status: 'idle', progress: 0 })
   }, [setTrainState])
 
+  // Discards a completed fetch + downstream Training/Results and relocks past
+  // step 4. Call when the Step-4 fetch tag subset changes.
+  const resetFetch = useCallback(() => {
+    setFetchTagOverrideAtom(null)
+    setFetchState({ status: 'idle', progress: 0 })
+    setRawDataset({ tags: [], rows: [] })
+    resetTraining()
+    setHighestUnlocked(prev => Math.min(prev, 4))
+  }, [
+    setFetchTagOverrideAtom,
+    setFetchState,
+    setRawDataset,
+    resetTraining,
+    setHighestUnlocked,
+  ])
+
+  const setFetchTagOverride = useCallback(
+    (tags: string[] | null) => {
+      setFetchTagOverrideAtom(tags)
+      setFetchState({ status: 'idle', progress: 0 })
+      setRawDataset({ tags: [], rows: [] })
+      resetTraining()
+      setHighestUnlocked(prev => Math.min(prev, 4))
+    },
+    [
+      setFetchTagOverrideAtom,
+      setFetchState,
+      setRawDataset,
+      resetTraining,
+      setHighestUnlocked,
+    ],
+  )
+
   const canAdvance = useCallback(
     (step: number): boolean => {
       switch (step) {
         case 1:
-          return name.trim() !== '' && workspaceId !== ''
-        case 2: {
-          if (tagInputMethod === '') return false
-          if (tagInputMethod === 'direct') return selectedSavedSourceId !== ''
-          return manualTagsRaw.trim() !== ''
-        }
-        case 3: {
-          if (tagInputMethod === 'direct') return selectedTags.length > 0
           return (
-            selectedSavedSourceId !== '' &&
-            !hasInvalidTags &&
-            selectedTags.length > 0
+            name.trim() !== '' &&
+            workspaceId !== '' &&
+            plantId !== '' &&
+            nodeId !== ''
           )
-        }
+        case 2:
+          return selectedSavedSourceIds.length > 0 || csvUploadTags.length > 0
+        case 3:
+          return selectedTags.length > 0 && !hasInvalidTags
         case 4:
           return fetchState.status === 'done' && rawDataset.rows.length > 0
         case 5:
-          return preprocess(rawDataset, fillStrategies).rows.length > 0
+          // Full Phase-5 chain: raw → precleanse (5.1) → preprocess/fill (5.2).
+          return (
+            preprocess(
+              precleanse(rawDataset, {
+                crop: cropRange,
+                conditional: conditionalRules,
+                statistical: statisticalRules,
+              }),
+              fillStrategies,
+            ).rows.length > 0
+          )
         case 6:
           return trainState.status === 'done'
         case 7:
@@ -157,13 +241,17 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     [
       name,
       workspaceId,
-      tagInputMethod,
-      manualTagsRaw,
-      selectedSavedSourceId,
+      plantId,
+      nodeId,
+      csvUploadTags,
+      selectedSavedSourceIds,
       hasInvalidTags,
       selectedTags,
       fetchState,
       rawDataset,
+      cropRange,
+      conditionalRules,
+      statisticalRules,
       fillStrategies,
       trainState,
     ],
@@ -181,9 +269,17 @@ export function useModelPipelineNav(): UsePipelineNavResult {
   const next = useCallback(() => {
     if (!canAdvance(currentStep)) return
     const target = Math.min(currentStep + 1, MP_TOTAL_STEPS)
+    // Entering Phase 5 always starts on sub-step 5.1 (Preprocessing).
+    if (target === 5) setProcessingSubStepAtom(1)
     setCurrentStep(target)
     setHighestUnlocked(prev => Math.max(prev, target))
-  }, [canAdvance, currentStep, setCurrentStep, setHighestUnlocked])
+  }, [
+    canAdvance,
+    currentStep,
+    setCurrentStep,
+    setHighestUnlocked,
+    setProcessingSubStepAtom,
+  ])
 
   const back = useCallback(() => {
     setCurrentStep(prev => Math.max(1, prev - 1))
@@ -229,7 +325,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
       setCredentials({
         host: source.host,
         username: source.username,
-        password: source.password,
+        password: source.password ?? '',
         dbName: source.dbName,
       })
       setEditedTagsAtom({})
@@ -290,7 +386,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
       setCredentials({
         host: source.host,
         username: source.username,
-        password: source.password,
+        password: source.password ?? '',
         dbName: source.dbName,
       })
       setTagList([])
@@ -393,6 +489,40 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     setHighestUnlocked,
   ])
 
+  const setProcessingSubStep = useCallback(
+    (step: 1 | 2) => setProcessingSubStepAtom(step),
+    [setProcessingSubStepAtom],
+  )
+
+  // Crop + outlier rules (5.1) change the cleansed dataset feeding fill/train,
+  // so each relocks Training/Results (past step 4) and discards the prior run.
+  const setCropRange = useCallback(
+    (range: CropRange) => {
+      setCropRangeAtom(range)
+      resetTraining()
+      setHighestUnlocked(prev => Math.min(prev, 4))
+    },
+    [setCropRangeAtom, resetTraining, setHighestUnlocked],
+  )
+
+  const setConditionalRules = useCallback(
+    (update: React.SetStateAction<ConditionalRule[]>) => {
+      setConditionalRulesAtom(update)
+      resetTraining()
+      setHighestUnlocked(prev => Math.min(prev, 4))
+    },
+    [setConditionalRulesAtom, resetTraining, setHighestUnlocked],
+  )
+
+  const setStatisticalRules = useCallback(
+    (update: React.SetStateAction<StatisticalRule[]>) => {
+      setStatisticalRulesAtom(update)
+      resetTraining()
+      setHighestUnlocked(prev => Math.min(prev, 4))
+    },
+    [setStatisticalRulesAtom, resetTraining, setHighestUnlocked],
+  )
+
   // Changing a fill rule relocks Training/Results and discards the prior run so
   // metrics never reflect a stale dataset. Does NOT clear the created model id.
   const setFillStrategies = useCallback(
@@ -404,8 +534,30 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     [setFillStrategiesAtom, resetTraining, setHighestUnlocked],
   )
 
-  // Full reset for a new model context (workspace/plant change). Leaves the
-  // metadata atoms (owned by useCreateModel) untouched.
+  // Setting/clearing a tag's constant changes the fetched dataset, so discard
+  // the prior fetch + Training/Results and relock past Step 3 (re-fetch needed).
+  const setTagConstant = useCallback(
+    (tagName: string, value: number | null) => {
+      setTagConstantsAtom(prev => {
+        const next = { ...prev }
+        if (value === null) delete next[tagName]
+        else next[tagName] = value
+        return next
+      })
+      setFetchState({ status: 'idle', progress: 0 })
+      setRawDataset({ tags: [], rows: [] })
+      resetTraining()
+      setHighestUnlocked(prev => Math.min(prev, 3))
+    },
+    [
+      setTagConstantsAtom,
+      setFetchState,
+      setRawDataset,
+      resetTraining,
+      setHighestUnlocked,
+    ],
+  )
+
   const resetPipeline = useCallback(() => {
     setTagInputMethodAtom('')
     setDataSource('')
@@ -420,7 +572,12 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     setCustomDateRange(null)
     setFetchState({ status: 'idle', progress: 0 })
     setRawDataset({ tags: [], rows: [] })
+    setProcessingSubStepAtom(1)
+    setCropRangeAtom(null)
+    setConditionalRulesAtom([])
+    setStatisticalRulesAtom([])
     setFillStrategiesAtom({})
+    setTagConstantsAtom({})
     setTrainState({ status: 'idle', progress: 0 })
     setCreatedModelId('')
     setSelectedMetrics([...METRIC_KEYS])
@@ -440,7 +597,12 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     setCustomDateRange,
     setFetchState,
     setRawDataset,
+    setProcessingSubStepAtom,
+    setCropRangeAtom,
+    setConditionalRulesAtom,
+    setStatisticalRulesAtom,
     setFillStrategiesAtom,
+    setTagConstantsAtom,
     setTrainState,
     setCreatedModelId,
     setSelectedMetrics,
@@ -453,6 +615,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     highestUnlocked,
     customDateRange,
     selectedSavedSourceId,
+    selectedSavedSourceIds,
     tagInputMethod,
     editedTags,
     removedTags,
@@ -472,7 +635,20 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     setTimeRange,
     setCustomRange,
     clearCustomRange,
+    resetFetch,
+    fetchTagOverride,
+    setFetchTagOverride,
+    processingSubStep,
+    cropRange,
+    conditionalRules,
+    statisticalRules,
+    setProcessingSubStep,
+    setCropRange,
+    setConditionalRules,
+    setStatisticalRules,
     setFillStrategies,
+    tagConstants,
+    setTagConstant,
     resetPipeline,
     insertedTags,
     insertTag,

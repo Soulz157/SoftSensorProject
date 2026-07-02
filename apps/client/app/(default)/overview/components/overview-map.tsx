@@ -1,17 +1,15 @@
 'use client'
 import { useEffect, useMemo, useState } from 'react'
 import { useTheme } from 'next-themes'
-import { Sun, Moon, ZoomIn, ZoomOut, RotateCcw, Building2 } from 'lucide-react'
+import { Sun, Moon, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
   calculateIsometricLayout,
   computeLayoutBoundingBox,
 } from '@/lib/isomatric'
 import type { ZoneItem } from '@/lib/isomatric'
-import { Card, CardContent } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
-import { Separator } from '@/components/ui/separator'
 import { PlantTower } from './overview-tower'
+import { OverviewHoverCard } from './overview-hover-card'
 import type { CanvasNode } from '@/services/canvas'
 import type { Workspace } from '@/types'
 import {
@@ -19,11 +17,11 @@ import {
   type BinaryStatus,
   BINARY_STATUS_META,
   deriveStatus,
-  countBinary,
   deriveSystemStatus,
 } from '@/lib/overview-status'
 import { useMapViewport } from '@/hooks/canvas/use-map-viewport'
-import Image from 'next/image'
+import { failedDeploys } from '@/lib/model-status'
+import { useModels } from '@/hooks/workspace/use-models'
 
 const VIEWPORT_W = 700
 const VIEWPORT_H = 420
@@ -98,6 +96,9 @@ export function PlantsMap({
     hasOffline,
   } = useMemo(() => deriveSystemStatus(nodesByWorkspace), [nodesByWorkspace])
 
+  const { data: hoveredModelsRaw } = useModels(hoveredId ?? '')
+  const hoveredFailedCount = failedDeploys(hoveredModelsRaw ?? []).length
+
   // const totalFailedDeploys = useMemo(
   //   () =>
   //     Object.values(failedDeploysByWorkspace ?? {}).reduce((s, n) => s + n, 0),
@@ -123,7 +124,6 @@ export function PlantsMap({
     () => (hoveredId ? (nodesByWorkspace[hoveredId] ?? []) : []),
     [hoveredId, nodesByWorkspace],
   )
-  const hoveredCounts = useMemo(() => countBinary(hoveredNodes), [hoveredNodes])
 
   const [containerSize, setContainerSize] = useState({ w: 0, h: 0 })
   useEffect(() => {
@@ -138,7 +138,7 @@ export function PlantsMap({
   }, [containerRef])
 
   const TOOLTIP_W = 210
-  const TOOLTIP_H = 230
+  const TOOLTIP_H = 380
   const tooltipStyle = useMemo(() => {
     if (!hoverPos || !containerSize.w) return { display: 'none' as const }
     const { w: cw, h: ch } = containerSize
@@ -306,95 +306,17 @@ export function PlantsMap({
         </button>
       </div>
 
-      {/* Hover status tooltip */}
+      {/* Hover status card */}
       {hoveredWs && hoverPos && !isDragging && (
-        <div
-          className="pointer-events-none absolute z-20 shadow-xl backdrop-blur-md"
-          style={{ width: TOOLTIP_W, ...tooltipStyle }}
-        >
-          <Card
-            className={cn(
-              'overflow-hidden border',
-              isDark
-                ? 'bg-black/80 border-white/12 text-white'
-                : 'bg-white/95 border-black/10 text-foreground',
-            )}
-          >
-            <CardContent className="p-0">
-              {hoveredWs.thumbnailUrl ? (
-                <Image
-                  src={`${process.env.NEXT_PUBLIC_API_URL}${hoveredWs.thumbnailUrl}`}
-                  alt={hoveredWs.name}
-                  width={400}
-                  height={200}
-                  className="h-24 w-full object-cover"
-                  unoptimized={true}
-                />
-              ) : (
-                <div
-                  className={cn(
-                    'flex h-16 w-full items-center justify-center',
-                    isDark ? 'bg-white/5' : 'bg-muted/40',
-                  )}
-                >
-                  <Building2 className="h-5 w-5 text-muted-foreground/40" />
-                </div>
-              )}
-
-              <div className="px-3 py-2.5">
-                <p className="mb-2.5 truncate text-[11px] font-semibold leading-tight">
-                  {hoveredWs.name}
-                </p>
-
-                {/* Status count rows */}
-                <div className="space-y-1.5">
-                  {(
-                    Object.entries(BINARY_STATUS_META) as [
-                      BinaryStatus,
-                      { label: string; color: string },
-                    ][]
-                  ).map(([key, meta]) => (
-                    <div key={key} className="flex items-center gap-2">
-                      <span
-                        className="h-1.5 w-1.5 shrink-0 rounded-full"
-                        style={{ backgroundColor: meta.color }}
-                      />
-                      <span
-                        className={cn(
-                          'flex-1 text-[10px]',
-                          isDark ? 'text-white/55' : 'text-muted-foreground',
-                        )}
-                      >
-                        {meta.label}
-                      </span>
-                      <Badge
-                        variant="outline"
-                        className="h-4 px-1.5 text-[9px] font-semibold tabular-nums"
-                        style={{
-                          borderColor: `${meta.color}50`,
-                          color: meta.color,
-                        }}
-                      >
-                        {hoveredCounts[key]}
-                      </Badge>
-                    </div>
-                  ))}
-                </div>
-
-                <Separator className="my-2 opacity-20" />
-                <p
-                  className={cn(
-                    'text-[10px]',
-                    isDark ? 'text-white/35' : 'text-muted-foreground',
-                  )}
-                >
-                  {hoveredNodes.length} node
-                  {hoveredNodes.length === 1 ? '' : 's'} · double-click to open
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+        <OverviewHoverCard
+          workspace={hoveredWs}
+          nodes={hoveredNodes}
+          models={hoveredModelsRaw ?? []}
+          failedCount={hoveredFailedCount}
+          isDark={isDark}
+          width={TOOLTIP_W}
+          style={tooltipStyle}
+        />
       )}
 
       <svg

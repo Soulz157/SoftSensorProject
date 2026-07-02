@@ -17,6 +17,7 @@ import { workspaceIcons, workspaceColors } from '@/store/workspace'
 import type { WorkspaceIconProps } from '@/types'
 import { type SidebarLogic } from '@/hooks/layout/use-sidebar'
 import Image from 'next/image'
+import { ScrollArea } from '@/components/ui/scroll-area'
 
 function WorkspaceIcon({ iconId, colorId }: WorkspaceIconProps) {
   const selectedIcon = workspaceIcons.find(item => item.id === iconId)
@@ -43,6 +44,9 @@ interface SidebarWorkspacesProps {
   onClose: () => void
 }
 
+const ITEM_HEIGHT = 40
+const MAX_VISIBLE = 5
+
 export function SidebarWorkspaces({
   isCollapsed,
   logic,
@@ -59,6 +63,8 @@ export function SidebarWorkspaces({
     pathname,
     isActiveNav,
   } = logic
+
+  const listHeight = Math.min(workspaces.length, MAX_VISIBLE) * ITEM_HEIGHT
 
   return (
     <>
@@ -100,73 +106,77 @@ export function SidebarWorkspaces({
                 {!isCollapsed && <span>No workspaces</span>}
               </div>
             ) : (
-              <div className="max-h-60 space-y-1 overflow-y-auto pr-1">
-                {workspaces.map(ws => (
-                  <Link
-                    key={ws.id}
-                    href={`/workspaces/${ws.id}`}
-                    onClick={() => {
-                      setActiveWorkspace(ws.id)
-                      onClose()
-                    }}
-                    title={isCollapsed ? ws.name : undefined}
-                    className={cn(
-                      'group flex w-full items-center rounded-md text-sm transition-colors',
-                      isCollapsed ? 'justify-center p-2.5' : 'gap-3 px-3 py-2',
-                      activeWorkspace === ws.id
-                        ? 'bg-sidebar-accent text-sidebar-accent-foreground'
-                        : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
-                    )}
-                  >
-                    <div className="relative shrink-0">
-                      {ws.thumbnailUrl ? (
-                        <Image
-                          src={`${process.env.NEXT_PUBLIC_API_URL}${ws.thumbnailUrl}`}
-                          alt={ws.name}
-                          width={28}
-                          height={28}
-                          unoptimized={true}
-                          className="h-7 w-7 rounded-lg object-cover"
-                        />
-                      ) : (
-                        <WorkspaceIcon
-                          colorId={ws.color || 'slate'}
-                          iconId={ws.icon || 'box'}
-                        />
+              <ScrollArea className="pr-1" style={{ height: listHeight }}>
+                <div className="space-y-1">
+                  {workspaces.map(ws => (
+                    <Link
+                      key={ws.id}
+                      href={`/workspaces/${ws.id}`}
+                      onClick={() => {
+                        setActiveWorkspace(ws.id)
+                        onClose()
+                      }}
+                      title={isCollapsed ? ws.name : undefined}
+                      className={cn(
+                        'group flex w-full items-center rounded-md text-sm transition-colors',
+                        isCollapsed
+                          ? 'justify-center p-2.5'
+                          : 'gap-3 px-3 py-2',
+                        activeWorkspace === ws.id
+                          ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                          : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
                       )}
-                      {isCollapsed &&
-                        (ws.status !== 'normal' ||
-                          (failedByWorkspace[ws.id] ?? 0) > 0) && (
-                          <span
-                            className={cn(
-                              'absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full ring-1 ring-sidebar',
-                              'bg-red-500',
-                            )}
+                    >
+                      <div className="relative shrink-0">
+                        {ws.thumbnailUrl ? (
+                          <Image
+                            src={`${process.env.NEXT_PUBLIC_API_URL}${ws.thumbnailUrl}`}
+                            alt={ws.name}
+                            width={28}
+                            height={28}
+                            unoptimized={true}
+                            className="h-7 w-7 rounded-lg object-cover"
+                          />
+                        ) : (
+                          <WorkspaceIcon
+                            colorId={ws.color || 'slate'}
+                            iconId={ws.icon || 'box'}
                           />
                         )}
-                    </div>
-                    {!isCollapsed && (
-                      <>
-                        <span className="flex-1 truncate text-left">
-                          {ws.name}
-                        </span>
-                        <span
-                          className={cn(
-                            'h-2 w-2 shrink-0 rounded-full',
-                            ws.status !== 'normal' ||
-                              (failedByWorkspace[ws.id] ?? 0) > 0
-                              ? 'bg-red-500'
-                              : 'bg-green-500',
+                        {isCollapsed &&
+                          (ws.status !== 'normal' ||
+                            (failedByWorkspace[ws.id] ?? 0) > 0) && (
+                            <span
+                              className={cn(
+                                'absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full ring-1 ring-sidebar',
+                                'bg-red-500',
+                              )}
+                            />
                           )}
-                        />
-                        <span className="shrink-0 tabular-nums text-xs text-sidebar-foreground/50">
-                          {ws.nodeCount ?? 0}
-                        </span>
-                      </>
-                    )}
-                  </Link>
-                ))}
-              </div>
+                      </div>
+                      {!isCollapsed && (
+                        <>
+                          <span className="flex-1 truncate text-left">
+                            {ws.name}
+                          </span>
+                          <span
+                            className={cn(
+                              'h-2 w-2 shrink-0 rounded-full',
+                              ws.status !== 'normal' ||
+                                (failedByWorkspace[ws.id] ?? 0) > 0
+                                ? 'bg-red-500'
+                                : 'bg-green-500',
+                            )}
+                          />
+                          <span className="shrink-0 tabular-nums text-xs text-sidebar-foreground/50">
+                            {ws.nodeCount ?? 0}
+                          </span>
+                        </>
+                      )}
+                    </Link>
+                  ))}
+                </div>
+              </ScrollArea>
             )}
           </div>
         )}
