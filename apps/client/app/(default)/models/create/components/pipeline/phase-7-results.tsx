@@ -48,7 +48,7 @@ interface Props {
   nav: UsePipelineNavResult
 }
 
-export function Phase6Results({ nav }: Props) {
+export function Phase7Results({ nav }: Props) {
   const router = useRouter()
   const raw = useAtomValue(mpRawDatasetAtom)
   const fillStrategies = useAtomValue(mpFillStrategiesAtom)

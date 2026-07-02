@@ -2,7 +2,8 @@
 
 import { useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { CalendarClock, FileUp, Plus, Trash2, X } from 'lucide-react'
+import { FileUp, Plus, Trash2, X } from 'lucide-react'
+import { DateTimePicker } from '@/components/ui/Datetime'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -122,16 +123,12 @@ export function LabDataIngestion({
             >
               Timestamp
             </Label>
-            <div className="relative">
-              <CalendarClock className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                id="lab-ts"
-                type="datetime-local"
-                value={ts}
-                onChange={e => setTs(e.target.value)}
-                className="h-9 pl-9"
-              />
-            </div>
+            <DateTimePicker
+              id="lab-ts"
+              value={ts}
+              onChange={val => setTs(val)}
+              className="h-9"
+            />
           </div>
           <div className="flex-1 space-y-1.5">
             <Label

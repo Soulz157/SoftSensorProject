@@ -99,6 +99,36 @@ export function tagMeta(piTag: string): PiTagMeta | undefined {
   return MOCK_PI_TAGS.find(t => t.piTag === piTag)
 }
 
+/**
+ * Deterministic synthetic profile for a tag that isn't one of the four static
+ * `MOCK_PI_TAGS`. The Phase 3 tag catalog (`use-unified-tag-table.ts`) surfaces
+ * many more names than the reading generator hardcodes; without this, those
+ * tags produce no series and the fetched dataset is empty. Derived from
+ * `hash01(piTag)` so a given tag always renders the same curve/colour.
+ */
+export function syntheticTagMeta(piTag: string): PiTagMeta {
+  const h = hash01(`meta:${piTag}`)
+  const hInt = Math.floor(hash01(`idx:${piTag}`) * 1000)
+  const chartIndex = ((hInt % 5) + 1) as PiTagMeta['chartIndex']
+  return {
+    piTag,
+    label: piTag,
+    description: 'Synthetic sensor series',
+    unit: '',
+    chartIndex,
+    baseline: 20 + h * 180, // 20 … 200
+    amplitude: 5 + h * 35, // 5 … 40
+    periodHours: 8 + Math.floor(h * 40), // 8 … 48
+    noise: 0.5 + h * 4, // 0.5 … 4.5
+    precision: 2,
+  }
+}
+
+/** Real static meta if known, otherwise a deterministic synthetic one. */
+export function resolveTagMeta(piTag: string): PiTagMeta {
+  return tagMeta(piTag) ?? syntheticTagMeta(piTag)
+}
+
 /** CSS custom property for a tag's series color. */
 export function chartColorVar(chartIndex: PiTagMeta['chartIndex']): string {
   return `var(--chart-${chartIndex})`
@@ -229,8 +259,7 @@ export function generateReadings(
   range: TimeRange,
   now: number = Date.now(),
 ): SensorReading[] {
-  const meta = tagMeta(piTag)
-  if (!meta) return []
+  const meta = resolveTagMeta(piTag)
 
   const { points, stepMs } = rangeConfig(range)
   const phase = hash01(`p:${piTag}`) * Math.PI * 2
@@ -252,6 +281,23 @@ export function generateReadings(
     })
   }
   return readings
+}
+
+/**
+ * The bare ISO timestamp grid for a range (ascending), matching the exact
+ * instants `generateReadings` emits. Used to give tags with no synthetic series
+ * (e.g. Manual / CSV constant tags) an aligned time axis.
+ */
+export function rangeTimestamps(
+  range: TimeRange,
+  now: number = Date.now(),
+): string[] {
+  const { points, stepMs } = rangeConfig(range)
+  const out: string[] = []
+  for (let i = points - 1; i >= 0; i--) {
+    out.push(new Date(now - i * stepMs).toISOString())
+  }
+  return out
 }
 
 /** Most recent reading (input is ascending). */

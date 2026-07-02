@@ -12,7 +12,7 @@ interface Props {
   nav: UsePipelineNavResult
 }
 
-export function Phase5Training({ nav }: Props) {
+export function Phase6Training({ nav }: Props) {
   const training = useModelTraining()
   const { status, progress, start } = training
   const { next } = nav

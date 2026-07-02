@@ -68,6 +68,7 @@ model User {
   subscriptions       Subscription[]
   passwordResetTokens PasswordResetToken[]
   workspaceMembers    WorkspaceMember[]
+  dataSources         DataSource[]
 }
 
 model Account {
@@ -252,6 +253,23 @@ model PasswordResetToken {
 
   @@index([userId])
   @@index([token])
+}
+
+model DataSource {
+  id          String   @id @default(uuid())
+  name        String
+  type        String
+  host        String   @default("")
+  username    String   @default("")
+  password    String   @default("")
+  dbName      String   @default("")
+  status      String   @default("connected")
+  createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([createdById])
 }
 
 model Edge {

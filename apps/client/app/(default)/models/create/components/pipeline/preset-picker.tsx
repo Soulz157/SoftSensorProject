@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
 import { cn } from '@/lib/utils'
+import { readModelConfig } from '@/lib/model-config'
 import { useModelPreset } from '@/hooks/model/use-model-preset'
 
 interface Props {
@@ -20,7 +21,11 @@ export function PresetPicker({ workspaceId }: Props) {
 
   const q = query.trim().toLowerCase()
   const filtered = q
-    ? models.filter(m => m.name.toLowerCase().includes(q))
+    ? models.filter(
+        m =>
+          m.name.toLowerCase().includes(q) ||
+          (readModelConfig(m)?.description ?? '').toLowerCase().includes(q),
+      )
     : models
 
   const handleSelect = (id: string) => {
@@ -116,6 +121,7 @@ export function PresetPicker({ workspaceId }: Props) {
           <div className="grid grid-cols-2 gap-2">
             {filtered.map(m => {
               const isSelected = selectedId === m.id
+              const desc = readModelConfig(m)?.description?.trim()
               return (
                 <button
                   key={m.id}
@@ -152,9 +158,18 @@ export function PresetPicker({ workspaceId }: Props) {
                   >
                     {m.name}
                   </p>
-                  <p className="text-[10px] leading-relaxed text-muted-foreground">
-                    Duplicated
-                  </p>
+                  {desc ? (
+                    <p
+                      className="line-clamp-2 text-[10px] leading-relaxed text-muted-foreground"
+                      title={desc}
+                    >
+                      {desc}
+                    </p>
+                  ) : (
+                    <p className="text-[10px] italic leading-relaxed text-muted-foreground/60">
+                      No description
+                    </p>
+                  )}
                 </button>
               )
             })}

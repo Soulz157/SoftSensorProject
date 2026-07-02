@@ -17,7 +17,7 @@ export function WizardStepIndicator({
   onGoTo,
 }: Props) {
   return (
-    <div className="flex items-center overflow-x-auto">
+    <div className="flex w-full items-center">
       {labels.map((label, idx) => {
         const step = idx + 1
         const isActive = step === currentStep
@@ -25,7 +25,13 @@ export function WizardStepIndicator({
         const isClickable = step <= highestUnlocked && step !== currentStep
 
         return (
-          <div key={label} className="flex items-center">
+          <div
+            key={label}
+            className={cn(
+              'flex items-center',
+              idx < labels.length - 1 ? 'flex-1' : 'flex-none',
+            )}
+          >
             <button
               type="button"
               disabled={!isClickable}
@@ -66,7 +72,7 @@ export function WizardStepIndicator({
             {idx < labels.length - 1 && (
               <div
                 className={cn(
-                  'mx-0.5 h-px w-5 shrink-0 transition-colors',
+                  'mx-1 h-px min-w-6 flex-1 transition-colors',
                   step < currentStep ? 'bg-emerald-500' : 'bg-border',
                 )}
               />

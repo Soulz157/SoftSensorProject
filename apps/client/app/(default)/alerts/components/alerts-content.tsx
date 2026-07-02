@@ -42,10 +42,14 @@ import {
 import { cn } from '@/lib/utils'
 import AlertsLoading from '../loading'
 import { Badge } from '@/components/ui/badge'
-
-type AlertStatus = 'warning' | 'alarm' | 'offline' | 'failed'
-type AlertNodeType = 'machine' | 'sensor' | 'controller' | 'model'
-
+import { equipmentAlerts } from '@/lib/overview-status'
+import {
+  ALERT_STATUS_LABEL,
+  ALERT_STATUS_PRIORITY,
+  AlertClass,
+  AlertNodeType,
+  AlertStatus,
+} from '@/lib/alerts'
 interface AlertRow {
   id: string
   name: string
@@ -75,28 +79,6 @@ function getTypeIcon(type: AlertNodeType) {
     default:
       return Activity
   }
-}
-
-// Status Contract — color always paired with icon + label
-const STATUS_CLASS: Record<AlertStatus, string> = {
-  alarm: 'bg-red-500/10 text-red-500',
-  offline: 'bg-zinc-500/10 text-zinc-500',
-  warning: 'bg-amber-500/10 text-amber-500',
-  failed: 'bg-red-500/10 text-red-600',
-}
-
-const STATUS_LABEL: Record<AlertStatus, string> = {
-  alarm: 'Alarm',
-  offline: 'Offline',
-  warning: 'Warning',
-  failed: 'Deploy Failed',
-}
-
-const ALERT_PRIORITY: Record<AlertStatus, number> = {
-  failed: 0,
-  alarm: 1,
-  offline: 2,
-  warning: 3,
 }
 
 function formatTimestamp(ts: string): string {
@@ -194,7 +176,8 @@ export function AlertsContent() {
 
   alerts.sort(
     (a, b) =>
-      (ALERT_PRIORITY[a.status] ?? 99) - (ALERT_PRIORITY[b.status] ?? 99),
+      (ALERT_STATUS_PRIORITY[a.status] ?? 99) -
+      (ALERT_STATUS_PRIORITY[b.status] ?? 99),
   )
 
   const modelAlerts = alerts.filter(a => a.kind === 'model')
@@ -205,7 +188,12 @@ export function AlertsContent() {
   const offlineCount = alerts.filter(a => a.status === 'offline').length
   const failedCount = modelAlerts.length
 
-  const defaultTab = modelAlerts.length > 0 ? 'model-errors' : 'all'
+  const defaultTab =
+    equipmentAlerts.length > 0
+      ? 'equipment'
+      : modelAlerts.length > 0
+        ? 'model-errors'
+        : 'all'
 
   const nodeAlertsByWorkspace = nodeAlerts.reduce<Record<string, AlertRow[]>>(
     (acc, alert) => {
@@ -361,19 +349,6 @@ export function AlertsContent() {
           >
             <TabsList className="flex h-auto w-full flex-row flex-wrap justify-start gap-2 bg-transparent p-0">
               <TabsTrigger
-                value="model-errors"
-                className="cursor-pointer gap-2 rounded-lg bg-muted/50 px-4 py-2 text-sm font-medium data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm transition-none"
-              >
-                <Box className="h-4 w-4" />
-                Model Errors
-                {modelAlerts.length > 0 && (
-                  <span className="ml-1 flex h-5 w-5 items-center justify-center rounded-full bg-foreground/10 text-xs font-semibold">
-                    {modelAlerts.length}
-                  </span>
-                )}
-              </TabsTrigger>
-
-              <TabsTrigger
                 value="equipment"
                 className="cursor-pointer gap-2 rounded-lg bg-muted/50 px-4 py-2 text-sm font-medium data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm transition-none"
               >
@@ -385,7 +360,18 @@ export function AlertsContent() {
                   </span>
                 )}
               </TabsTrigger>
-
+              <TabsTrigger
+                value="model-errors"
+                className="cursor-pointer gap-2 rounded-lg bg-muted/50 px-4 py-2 text-sm font-medium data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm transition-none"
+              >
+                <Box className="h-4 w-4" />
+                Model Errors
+                {modelAlerts.length > 0 && (
+                  <span className="ml-1 flex h-5 w-5 items-center justify-center rounded-full bg-foreground/10 text-xs font-semibold">
+                    {modelAlerts.length}
+                  </span>
+                )}
+              </TabsTrigger>
               <TabsTrigger
                 value="all"
                 className="cursor-pointer gap-2 rounded-lg bg-muted/50 px-4 py-2 text-sm font-medium data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm transition-none"
@@ -428,7 +414,7 @@ export function AlertsContent() {
                                 {modelAlert.name}
                               </CardTitle>
                               <p className="text-sm text-muted-foreground mt-0.5">
-                                {STATUS_LABEL[modelAlert.status]} ·{' '}
+                                {ALERT_STATUS_LABEL[modelAlert.status]} ·{' '}
                                 <strong className="font-semibold text-foreground">
                                   {modelAlert.workspaceName}
                                 </strong>
@@ -530,10 +516,10 @@ export function AlertsContent() {
                                     <span
                                       className={cn(
                                         'flex items-center h-5 px-2 text-[10px] font-medium rounded-full',
-                                        STATUS_CLASS[node.status],
+                                        AlertClass[node.status],
                                       )}
                                     >
-                                      {STATUS_LABEL[node.status]}
+                                      {ALERT_STATUS_LABEL[node.status]}
                                     </span>
                                   </div>
                                 </Link>
@@ -567,10 +553,10 @@ export function AlertsContent() {
                         <Table>
                           <TableHeader>
                             <TableRow className="border-b border-foreground/10 hover:bg-transparent">
-                              <TableHead>Node Name</TableHead>
+                              <TableHead>Name</TableHead>
                               <TableHead>Type</TableHead>
                               <TableHead>Status</TableHead>
-                              <TableHead className="w-12" />
+                              <TableHead className="w-12">Details</TableHead>
                             </TableRow>
                           </TableHeader>
                           <TableBody>
@@ -596,14 +582,31 @@ export function AlertsContent() {
                                     <span
                                       className={cn(
                                         'inline-flex items-center rounded-full h-5 px-2 text-xs font-medium',
-                                        STATUS_CLASS[alert.status],
+                                        AlertClass[alert.status],
                                       )}
                                     >
                                       {alert.status === 'alarm' && (
                                         <span className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-red-500 ring-2 ring-red-500/40 animate-pulse" />
                                       )}
-                                      {STATUS_LABEL[alert.status]}
+                                      {ALERT_STATUS_LABEL[alert.status]}
                                     </span>
+                                  </TableCell>
+                                  <TableCell className="text-muted-foreground">
+                                    {alert.status === 'alarm' && (
+                                      <span className="text-sm">
+                                        Immediate attention required
+                                      </span>
+                                    )}
+                                    {alert.status === 'offline' && (
+                                      <span className="text-sm">
+                                        Equipment is offline
+                                      </span>
+                                    )}
+                                    {alert.status === 'warning' && (
+                                      <span className="text-sm">
+                                        Check equipment status
+                                      </span>
+                                    )}
                                   </TableCell>
                                   <TableCell>
                                     <Link href={alert.href}>
@@ -656,13 +659,13 @@ export function AlertsContent() {
                             <span
                               className={cn(
                                 'inline-flex items-center rounded-full h-5 px-2 text-xs font-medium',
-                                STATUS_CLASS[alert.status],
+                                AlertClass[alert.status],
                               )}
                             >
                               {alert.status === 'alarm' && (
                                 <span className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-red-500 ring-2 ring-red-500/40 animate-pulse" />
                               )}
-                              {STATUS_LABEL[alert.status]}
+                              {ALERT_STATUS_LABEL[alert.status]}
                             </span>
                           </TableCell>
                           <TableCell className="font-semibold text-foreground">

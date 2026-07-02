@@ -15,9 +15,11 @@ import {
 } from '@/components/ui/select'
 import {
   preprocess,
+  toChartRows,
   type FillStrategy,
   type FillStrategyConfig,
 } from '@/lib/preprocessing'
+import { precleanse } from '@/lib/precleanse'
 import { tagMeta } from '@/lib/mock-readings'
 import {
   mpRawDatasetAtom,
@@ -26,8 +28,9 @@ import {
   PERIOD_TO_RANGE,
 } from '@/store/model-pipeline'
 import { SegmentedToggle } from '@/app/(default)/data-visualize/components/segmented-toggle'
-import { StepView } from '@/app/(default)/data-visualize/components/step-view'
 import type { UsePipelineNavResult } from '@/hooks/model/use-model-pipeline-nav'
+import { RawTrendChart } from '../../chart/raw-data-chart'
+import { ProcessingActionFooter } from './processing-action-footer'
 
 const STRATEGY_OPTIONS: { value: FillStrategy; label: string }[] = [
   { value: 'drop', label: 'Drop row' },
@@ -46,17 +49,34 @@ interface Props {
   nav: UsePipelineNavResult
 }
 
-export function Phase4Processing({ nav }: Props) {
+/**
+ * Sub-step 5.2 — Data Imputation. Per-tag fill strategy for the Bad/Questionable
+ * readings left after 5.1 pre-cleansing. Operates on the pre-cleansed dataset
+ * (`precleanse(raw, cfg)`), so crop + outlier removal from 5.1 flow through.
+ * Next (Start Training) advances Phase 5 → 6 once ≥1 row survives.
+ */
+export function Step52Imputation({ nav }: Props) {
   const raw = useAtomValue(mpRawDatasetAtom)
-  const range = useAtomValue(mpTimeRangeAtom)
+  const period = useAtomValue(mpTimeRangeAtom)
   const strategies = useAtomValue(mpFillStrategiesAtom)
+  const { cropRange, conditionalRules, statisticalRules } = nav
+
+  // Pre-cleansed dataset (5.1 output) is the source for imputation.
+  const base = useMemo(
+    () =>
+      precleanse(raw, {
+        crop: cropRange,
+        conditional: conditionalRules,
+        statistical: statisticalRules,
+      }),
+    [raw, cropRange, conditionalRules, statisticalRules],
+  )
+
   const [draft, setDraft] =
     useState<Record<string, FillStrategyConfig>>(strategies)
   const [preview, setPreview] = useState<Preview>('cleaned')
 
   // Commit drafts through the nav setter so Training/Results relock on change.
-  // Depend on the stable callback — `nav` is a fresh object every render, so
-  // listing it here would re-commit (and reset training) every 300ms.
   const { setFillStrategies } = nav
   useEffect(() => {
     const timer = setTimeout(() => setFillStrategies(draft), DEBOUNCE_MS)
@@ -64,10 +84,10 @@ export function Phase4Processing({ nav }: Props) {
   }, [draft, setFillStrategies])
 
   const preprocessed = useMemo(
-    () => preprocess(raw, strategies),
-    [raw, strategies],
+    () => preprocess(base, strategies),
+    [base, strategies],
   )
-  const allDropped = raw.rows.length > 0 && preprocessed.rows.length === 0
+  const allDropped = base.rows.length > 0 && preprocessed.rows.length === 0
 
   const setTagStrategy = (tag: string, strategy: FillStrategy) => {
     setDraft(prev => ({
@@ -87,7 +107,7 @@ export function Phase4Processing({ nav }: Props) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">
-          Choose how to handle Bad/Questionable readings per tag.
+          Choose how to fill Bad/Questionable readings per tag.
         </p>
         <Button size="sm" variant="ghost" onClick={reset}>
           <RotateCcw className="h-3.5 w-3.5" />
@@ -96,7 +116,7 @@ export function Phase4Processing({ nav }: Props) {
       </div>
 
       <div className="space-y-2">
-        {raw.tags.map(tag => {
+        {base.tags.map(tag => {
           const config = draft[tag]
           const label = tagMeta(tag)?.label ?? tag
           return (
@@ -160,21 +180,24 @@ export function Phase4Processing({ nav }: Props) {
           value={preview}
           onChange={setPreview}
           options={[
-            { value: 'raw', label: 'Raw' },
-            { value: 'cleaned', label: 'Cleaned' },
+            { value: 'raw', label: 'Pre-cleansed' },
+            { value: 'cleaned', label: 'Imputed' },
           ]}
         />
       </div>
 
-      <StepView
-        dataset={preview === 'raw' ? raw : preprocessed}
-        range={PERIOD_TO_RANGE[range]}
-        showQuality={preview === 'raw'}
-        summary={
-          preview === 'raw'
-            ? `${raw.rows.length} raw rows`
-            : `${preprocessed.rows.length} rows kept of ${raw.rows.length}`
-        }
+      <RawTrendChart
+        rows={toChartRows(preview === 'raw' ? base : preprocessed)}
+        tags={(preview === 'raw' ? base : preprocessed).tags}
+        range={PERIOD_TO_RANGE[period]}
+      />
+
+      <ProcessingActionFooter
+        backLabel="Back to Preprocessing"
+        nextLabel="Start Training"
+        onBack={() => nav.setProcessingSubStep(1)}
+        onNext={nav.next}
+        nextDisabled={preprocessed.rows.length === 0}
       />
     </div>
   )

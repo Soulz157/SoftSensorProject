@@ -2,19 +2,20 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { MailerModule } from '@nestjs-modules/mailer';
 import { JwtModule } from '@nestjs/jwt';
-import { PrismaModule } from '@softsensor/prisma';
-import { AuthModule } from './api/v1/auth/auth.module';
-import { WorkspaceModule } from './api/v1/workspace/workspace.module';
-import { MailModule } from './api/v1/mail/mail.module';
-import { PlanModule } from './api/v1/plan/plan.module';
 import {
   ZodValidationPipe as AppZodValidationPipe,
   AllExceptionsFilter,
 } from '@softsensor/common';
 import { APP_PIPE, APP_FILTER } from '@nestjs/core';
+import { PrismaModule } from '@softsensor/prisma';
+import { AuthModule } from './api/v1/auth/auth.module';
+import { WorkspaceModule } from './api/v1/workspace/workspace.module';
+import { MailModule } from './api/v1/mail/mail.module';
+import { PlanModule } from './api/v1/plan/plan.module';
 import { NodesModule } from './api/v1/nodes/nodes.module';
 import { WorkspacePlantModule } from './api/v1/workspace-plant/workspace.plant.module';
 import { ModelModule } from './api/v1/model/model.module';
+import { DataSourceModule } from './api/v1/data-source/data-source.module';
 
 @Module({
   imports: [
@@ -48,6 +49,7 @@ import { ModelModule } from './api/v1/model/model.module';
     NodesModule,
     WorkspacePlantModule,
     ModelModule,
+    DataSourceModule,
   ],
   providers: [
     {

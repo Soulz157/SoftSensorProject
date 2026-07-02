@@ -1,10 +1,7 @@
 import { atom } from 'jotai'
 import type { PiTagMeta, TimeRange } from '@/lib/mock-readings'
 import type { Dataset, FillStrategyConfig } from '@/lib/preprocessing'
-import {
-  MOCK_DATA_SOURCES,
-  type SavedDataSource,
-} from '@/lib/mock-data-sources'
+import type { SavedDataSource } from '@/lib/mock-data-sources'
 
 export type { SavedDataSource }
 
@@ -65,5 +62,5 @@ export const fillStrategiesAtom = atom<Record<string, FillStrategyConfig>>({})
 export const currentStepAtom = atom<number>(1)
 export const highestUnlockedAtom = atom<number>(1)
 export const selectedModelIdAtom = atom<string>('')
-export const savedDataSourcesAtom = atom<SavedDataSource[]>(MOCK_DATA_SOURCES)
+export const savedDataSourcesAtom = atom<SavedDataSource[]>([])
 export const selectedSavedSourceIdAtom = atom<string>('')

@@ -137,6 +137,40 @@ describe('preprocess — FillStrategy', () => {
   })
 })
 
+describe('buildRawDataset — constant override', () => {
+  it('fills a constant tag with a flat Good series across every row', () => {
+    const raw = buildRawDataset(['x'], '24h', FIXED_NOW, { x: 42 })
+    expect(raw.rows.length).toBeGreaterThan(0)
+    for (const row of raw.rows) {
+      expect(row.cells.x?.value).toBe(42)
+      expect(row.cells.x?.status).toBe('Good')
+    }
+  })
+
+  it('ignores constants for tags not in the fetch set', () => {
+    const raw = buildRawDataset(['x'], '24h', FIXED_NOW, { y: 99 })
+    expect(raw.tags).toEqual(['x'])
+    for (const row of raw.rows) {
+      expect(row.cells.y).toBeUndefined()
+    }
+  })
+
+  it('leaves non-constant tags untouched (default empty constants)', () => {
+    const withConst = buildRawDataset(PAIR, '24h', FIXED_NOW, {
+      [CORRELATED_PAIR.anchor]: 5,
+    })
+    // Derived tag keeps its correlated (non-constant) values.
+    const derivedValues = withConst.rows.map(
+      r => r.cells[CORRELATED_PAIR.derived]?.value,
+    )
+    expect(new Set(derivedValues).size).toBeGreaterThan(1)
+    // Anchor is pinned to the constant.
+    for (const row of withConst.rows) {
+      expect(row.cells[CORRELATED_PAIR.anchor]?.value).toBe(5)
+    }
+  })
+})
+
 describe('datasetStats — droppedRowsByTag', () => {
   it('attributes each dropped row to the Bad tag that caused it', () => {
     const raw = fixture()

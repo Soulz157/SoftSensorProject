@@ -192,7 +192,7 @@ export function Step2DataSource() {
     setCredentials({
       host: source.host,
       username: source.username,
-      password: source.password,
+      password: source.password ?? '',
       dbName: source.dbName,
     })
   }

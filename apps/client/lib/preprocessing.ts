@@ -8,6 +8,7 @@
  */
 import {
   generateReadings,
+  rangeTimestamps,
   tagMeta,
   type SensorQuality,
   type TimeRange,
@@ -53,11 +54,6 @@ export interface FillStrategyConfig {
   constantValue?: number
 }
 
-/**
- * One channel is a near-linear function of another so the scatter view has a
- * genuine correlation to fit (otherwise independent sines → R² ≈ 0).
- * Pressure (PI-303) ≈ intercept + slope · Temperature (TI-101) + ε.
- */
 export const CORRELATED_PAIR = {
   anchor: 'TI-101',
   derived: 'PI-303',
@@ -68,7 +64,6 @@ export const CORRELATED_PAIR = {
 
 const SMOOTH_WINDOW = 3
 
-/** Deterministic noise in [-0.5, 0.5) for a seed. */
 function noise01(seed: string): number {
   let h = 2166136261
   for (let i = 0; i < seed.length; i++) {
@@ -92,11 +87,11 @@ function roundTo(value: number, precision: number): number {
   return Math.round(value * factor) / factor
 }
 
-/** Stage 1 — raw dataset merged by a shared `now`, with the correlated pair. */
 export function buildRawDataset(
   tags: string[],
   range: TimeRange,
   now: number = Date.now(),
+  constants: Record<string, number> = {},
 ): Dataset {
   const perTag = tags.map(tag => ({
     tag,
@@ -111,11 +106,20 @@ export function buildRawDataset(
       byTs.set(r.timestamp, row)
     }
   }
+
+  const constantEntries = Object.entries(constants).filter(([tag]) =>
+    tags.includes(tag),
+  )
+  if (constantEntries.length > 0) {
+    for (const ts of rangeTimestamps(range, now)) {
+      if (!byTs.has(ts)) byTs.set(ts, { timestamp: ts, cells: {} })
+    }
+  }
+
   const rows = Array.from(byTs.values()).sort((a, b) =>
     a.timestamp < b.timestamp ? -1 : 1,
   )
 
-  // Correlated-pair override: derived := intercept + slope·anchor + ε.
   const { anchor, derived, slope, intercept, noise } = CORRELATED_PAIR
   if (tags.includes(anchor) && tags.includes(derived)) {
     const precision = tagMeta(derived)?.precision ?? 2
@@ -125,6 +129,16 @@ export function buildRawDataset(
       if (a && d) {
         const eps = noise01(`c:${derived}:${row.timestamp}`) * 2 * noise
         d.value = roundTo(intercept + slope * a.value + eps, precision)
+      }
+    }
+  }
+
+  // Constant-value override (runs last so constants always win): every grid row
+  // reads as a flat Good series of the user-supplied constant.
+  if (constantEntries.length > 0) {
+    for (const row of rows) {
+      for (const [tag, value] of constantEntries) {
+        row.cells[tag] = { value, status: 'Good' }
       }
     }
   }

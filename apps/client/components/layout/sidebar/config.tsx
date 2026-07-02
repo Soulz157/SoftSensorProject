@@ -14,6 +14,7 @@ import {
   LayoutDashboard,
   LineChart,
   Settings,
+  TextSearch,
   TriangleAlert,
   Users,
 } from 'lucide-react'
@@ -73,13 +74,25 @@ export const getUserNavItems = (alertCount: number): NavItem[] => [
         icon: <Gauge className="h-4 w-4" />,
         href: '/models/evaluation',
       },
+      {
+        id: 'models-monitoring',
+        name: 'Model Monitoring',
+        icon: <BarChart3 className="h-4 w-4" />,
+        href: '/models/monitoring',
+      },
     ],
   },
   {
-    id: 'data-management',
-    name: 'Data Management',
+    id: 'data',
+    name: 'Data',
     icon: <Database className="h-4 w-4" />,
     children: [
+      {
+        id: 'data-studio',
+        name: 'Data Studio',
+        icon: <TextSearch className="h-4 w-4" />,
+        href: '/data-studio',
+      },
       {
         id: 'analytics',
         name: 'Analytics',

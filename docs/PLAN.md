@@ -2,22 +2,23 @@
 
 ## Current State
 
-| Area                                  | Status                                                                           |
-| ------------------------------------- | -------------------------------------------------------------------------------- |
-| `POST /api/v1/public/auth/register`   | ✅ Done                                                                          |
-| `POST /api/v1/public/auth/login`      | ✅ Done — 15m JWT, sets `refresh_token` HttpOnly cookie, logs `AuthLog(LOGIN)`   |
-| `POST /api/v1/public/auth/refresh`    | ✅ Done — rotates refresh token, issues new 15m JWT                              |
-| `POST /api/v1/authorized/auth/logout` | ✅ Done — deletes all user refresh tokens, clears cookie, logs `AuthLog(LOGOUT)` |
-| NextAuth v5 session (Credentials)     | ✅ Done — silent refresh in `jwt` callback, 7-day session                        |
-| `RefreshToken` schema + service       | ✅ Done — opaque 64-byte token, 7-day TTL, rotated on each use                   |
-| `AuthLog` schema + service            | ✅ Done — LOGIN/LOGOUT logged with IP + userAgent                                |
-| Jotai workspace store (localStorage)  | ✅ Done                                                                          |
-| `Workspace` DB model                  | ✅ Schema exists, authorized service empty                                       |
-| `getProfile`                          | ⬜ Commented out                                                                 |
-| Workspace API                         | ⬜ Not implemented                                                               |
-| `apps/python` FastAPI service         | ✅ Scaffolded — health check only                                                |
-| PI System ingestion                   | ⬜ Planned — Phase 6                                                             |
-| `SensorReading` time-series model     | ⬜ Not implemented                                                               |
+| Area                                                            | Status                                                                            |
+| --------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `POST /api/v1/public/auth/register`                             | ✅ Done                                                                           |
+| `POST /api/v1/public/auth/login`                                | ✅ Done — 15m JWT, sets `refresh_token` HttpOnly cookie, logs `AuthLog(LOGIN)`    |
+| `POST /api/v1/public/auth/refresh`                              | ✅ Done — rotates refresh token, issues new 15m JWT                               |
+| `POST /api/v1/authorized/auth/logout`                           | ✅ Done — deletes all user refresh tokens, clears cookie, logs `AuthLog(LOGOUT)`  |
+| NextAuth v5 session (Credentials)                               | ✅ Done — silent refresh in `jwt` callback, 7-day session                         |
+| `RefreshToken` schema + service                                 | ✅ Done — opaque 64-byte token, 7-day TTL, rotated on each use                    |
+| `AuthLog` schema + service                                      | ✅ Done — LOGIN/LOGOUT logged with IP + userAgent                                 |
+| Jotai workspace store (localStorage)                            | ✅ Done                                                                           |
+| `Workspace` DB model                                            | ✅ Schema exists, authorized service empty                                        |
+| `getProfile`                                                    | ⬜ Commented out                                                                  |
+| Workspace API                                                   | ⬜ Not implemented                                                                |
+| `apps/python` FastAPI service                                   | ✅ Scaffolded — health check only                                                 |
+| PI System ingestion                                             | ⬜ Planned — Phase 6                                                              |
+| `SensorReading` time-series model                               | ⬜ Not implemented                                                                |
+| Data Processing pipeline (fill/cut/clean/features/split/export) | 🟡 Partial — fill+clean+heatmap done; cut/features/split/export planned (Phase 7) |
 
 ---
 
@@ -286,6 +287,64 @@ apps/client/services/readings.ts                                  — service wr
 
 ---
 
+## Phase 7 — Data Processing Pipeline (Create-Model wizard)
+
+**Goal:** Take the fetched Raw Data (Phase 4) through a full prepare-for-training pipeline — fill, cut, clean, inspect correlation, engineer features, split, and persist/export — before Training. Extends `models/create/` Phase 5 (Processing). All transforms are pure functions over `Dataset` in `lib/` (mirrors `lib/preprocessing.ts` / `lib/data-quality.ts`); UI in route `components/`; state in `store/model-pipeline.ts`. No new deps, no `any`.
+
+**Already done (reuse, don't rebuild):**
+
+- Fill data — per-tag `FillStrategy` (drop/forward/backward/mean/median/constant) + interpolate + smooth: `lib/preprocessing.ts` `preprocess()`, wired in `phase-5-processing.tsx`.
+- Clean data / normalize — `preprocess()` (drop Bad, interpolate Questionable) + `toModelReady()` (min-max).
+- Correlation heatmap — `lib/data-quality.ts` `pearsonMatrix`/`topCorrelations` + `components/correlation-matrix.tsx`.
+- Quality metrics — `qualityByTag`/`datasetQuality`.
+
+### 7.1 Cut / trim data (new — `lib/dataset-transform.ts`)
+
+- `cutByTimeRange(ds, from, to)` — keep rows in an inclusive timestamp window.
+- `cutByRowRange(ds, startIdx, endIdx)` — index slice.
+- `dropOutliers(ds, tag, method)` — z-score / IQR per tag (mark or remove).
+- `resample(ds, intervalMs, agg)` — downsample by mean/last per bucket.
+
+### 7.2 Feature engineering (new — `lib/feature-engineering.ts`)
+
+- `addLag(ds, tag, k)`, `addRolling(ds, tag, window, 'mean'|'std'|'min'|'max')`, `addRatio(ds, a, b)`, `addDelta(ds, tag)`. Each returns a new `Dataset` with added tag columns; column naming e.g. `TI-101__lag3`, `TI-101__roll5_mean`.
+- Pure; reuse `Cell`/`DataRow` shapes from `lib/preprocessing.ts`.
+
+### 7.3 Train / test split (new — `lib/dataset-split.ts`)
+
+- `splitDataset(ds, { ratio, method: 'sequential'|'random', seed })` → `{ train, test }` (time-series default = sequential, no shuffle). Optional validation third split.
+- `splitStats(split)` — row counts + date spans per partition.
+
+### 7.4 UI — extend the wizard
+
+- Add sub-sections to Phase 5 Processing — Fill (exists) · Cut · Features · Correlation · Split — with a live before/after preview reusing `StepView` (`data-visualize/components/step-view.tsx`) and the debounced-draft pattern already in `phase-5-processing.tsx`.
+- New atoms in `store/model-pipeline.ts`: `mpCutConfigAtom`, `mpFeatureConfigsAtom`, `mpSplitConfigAtom`; cascade-relock via `use-model-pipeline-nav.ts` (same `setHighestUnlocked(min, …)` + `resetTraining()` pattern as `setFillStrategies`).
+
+### 7.5 Save in project / export
+
+- **Save in project:** persist the processed, split dataset with the model. Options: (i) a `ProcessedDataset` Prisma model (`modelId`, `stage`, JSON columns/rows or a blob ref) written via a NestJS `authorized/` endpoint; or (ii) store a processing _recipe_ (fill/cut/feature/split configs) on `AIModel.data` JSON so it re-derives deterministically. Recipe-only is lighter and matches the current mock-derivation approach.
+- **Export:** client-side CSV/JSON download of `train`/`test` (pure serializer `lib/dataset-export.ts` — `toCsv(ds)` / `toJson(ds)`); optional server export endpoint later.
+
+### 7.6 Verification
+
+- Unit-test the pure libs (Vitest) with a small `Dataset` fixture: cut window row count, lag/rolling column values, split ratios + no leakage (sequential), CSV round-trip.
+- Wizard clickthrough: Phase 4 fetch → Phase 5 Cut/Features/Split preview updates live → Export downloads a CSV → advancing to Training uses the split `train` set.
+
+### Files
+
+```
+apps/client/lib/dataset-transform.ts       — cut / outliers / resample
+apps/client/lib/feature-engineering.ts     — lag / rolling / ratio / delta
+apps/client/lib/dataset-split.ts           — train/test/val split + stats
+apps/client/lib/dataset-export.ts          — toCsv / toJson serializers
+apps/client/app/(default)/models/create/components/pipeline/phase-5-processing.tsx — sub-sections + preview
+apps/client/store/model-pipeline.ts        — cut/feature/split config atoms
+apps/client/hooks/model/use-model-pipeline-nav.ts — cascade relock on config change
+(optional) packages/prisma/prisma/schema.prisma + apps/backend — persist processed dataset/recipe
+```
+
+---
+
 ## Dependency Order
 
 ```
@@ -295,6 +354,7 @@ Phase 1 (RefreshToken)
             └─ Phase 4 (Testing — validates Phase 1-3)
                  └─ Phase 5 (Workspace — needs auth + user identity fully working)
                       └─ Phase 6 (PI Integration — needs Workspace/Node CRUD from Phase 5)
+                           └─ Phase 7 (Data Processing — needs real readings from Phase 6; UI usable now on mock)
 ```
 
 ## 2. Color Theory & Tokens
