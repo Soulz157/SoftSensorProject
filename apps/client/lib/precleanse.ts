@@ -10,7 +10,9 @@
  * order is: raw → precleanse → preprocess(fill) → toModelReady.
  *
  * Outlier removal marks matched cells `Bad` (null-equivalent — a downstream
- * fill strategy can then impute them) or, per-rule, drops the whole row.
+ * fill strategy can then impute them) or, per-rule, drops just that tag's
+ * cell at the matched row — every other tag's reading at that same
+ * timestamp is left untouched, and the row itself is never removed.
  */
 import type { CutoffOp } from '@/types/cutoff'
 import type { Cell, DataRow, Dataset } from '@/lib/preprocessing'
@@ -156,9 +158,14 @@ export function precleanse(raw: Dataset, cfg: PrecleanseConfig): Dataset {
     rows = rows.filter(r => r.timestamp >= from && r.timestamp <= to)
   }
 
-  const rowsToDrop = new Set<string>()
   const markCell = (cell: Cell | undefined) => {
     if (cell) cell.status = 'Bad'
+  }
+  // "drop" only ever removes the matched tag's own cell — never the row —
+  // so an outlier rule on one tag can't erase every other tag's reading at
+  // the same timestamp.
+  const dropCell = (row: DataRow, tag: string) => {
+    delete row.cells[tag]
   }
 
   // 2. Statistical rules — flag values beyond `threshold` std-devs from the mean.
@@ -172,7 +179,7 @@ export function precleanse(raw: Dataset, cfg: PrecleanseConfig): Dataset {
         if (!cell || cell.status !== 'Good') continue
         if (!isStatisticalOutlier(cell.value, mean, std, rule.threshold))
           continue
-        if (rule.action === 'drop') rowsToDrop.add(row.timestamp)
+        if (rule.action === 'drop') dropCell(row, tag)
         else markCell(cell)
       }
     }
@@ -186,13 +193,9 @@ export function precleanse(raw: Dataset, cfg: PrecleanseConfig): Dataset {
       const cell = row.cells[rule.tag]
       if (!cell) continue
       if (!matchesConditional(cell.value, rule.op, target)) continue
-      if (rule.action === 'drop') rowsToDrop.add(row.timestamp)
+      if (rule.action === 'drop') dropCell(row, rule.tag)
       else markCell(cell)
     }
-  }
-
-  if (rowsToDrop.size > 0) {
-    rows = rows.filter(r => !rowsToDrop.has(r.timestamp))
   }
 
   return { tags: raw.tags, rows }

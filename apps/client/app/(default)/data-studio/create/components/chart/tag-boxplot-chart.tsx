@@ -1,0 +1,387 @@
+'use client'
+
+import { useMemo } from 'react'
+import { BoxSelect } from 'lucide-react'
+import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from 'recharts'
+import {
+  ChartContainer,
+  ChartTooltip,
+  type ChartConfig,
+} from '@/components/ui/chart'
+import { tagBoxplotStats, type BoxplotStats } from '@/lib/data-quality'
+import { chartColorVar, resolveTagMeta } from '@/lib/mock-readings'
+import type { Dataset } from '@/lib/preprocessing'
+
+interface Props {
+  dataset: Dataset
+  tags: string[]
+}
+
+const ROW_HEIGHT = 100
+const CHART_PAD = 48
+const Y_TICK_COUNT = 6
+
+function fmt(n: number): string {
+  return n.toLocaleString(undefined, { maximumFractionDigits: 2 })
+}
+
+function hasData(stats: BoxplotStats): boolean {
+  return stats.min !== stats.max || stats.median !== 0
+}
+
+function niceTicks(min: number, max: number, count: number): number[] {
+  if (min === max) return [min]
+  const range = max - min
+  const rawStep = range / Math.max(1, count - 1)
+  const magnitude = Math.pow(10, Math.floor(Math.log10(rawStep)))
+  const residual = rawStep / magnitude
+  let step: number
+  if (residual >= 7.5) step = 10 * magnitude
+  else if (residual >= 3.5) step = 5 * magnitude
+  else if (residual >= 1.5) step = 2 * magnitude
+  else step = magnitude
+
+  const niceMin = Math.floor(min / step) * step
+  const niceMax = Math.ceil(max / step) * step
+  const ticks: number[] = []
+  for (let v = niceMin; v <= niceMax + step * 0.5; v += step) {
+    ticks.push(Math.round(v / step) * step)
+  }
+  return ticks
+}
+
+interface BoxRow {
+  tag: string
+  color: string
+  stats: BoxplotStats
+  iqr: [number, number]
+}
+
+type BoxShapeProps = {
+  x?: number
+  y?: number
+  width?: number
+  height?: number
+  payload?: BoxRow
+}
+
+/**
+ * Custom shape for one horizontal box-and-whisker row.
+ *
+ * Recharts hands us the exact pixel rect (x, y, width, height) that
+ * corresponds to the [q1, q3] domain span passed as this Bar's dataKey
+ * value. Since the value axis is linear, every other statistic — whiskers,
+ * min/max, median, mean, outliers — can be placed by linearly extrapolating
+ * from that same pixel-per-unit ratio, without reaching into Recharts'
+ * internal scale objects.
+ */
+function BoxWhiskerShape(props: BoxShapeProps) {
+  const { x = 0, y = 0, width = 0, height = 0, payload } = props
+  if (!payload) return <g />
+  const { stats, color } = payload
+  const { q1, q3, median, mean, whiskerLow, whiskerHigh, outliers } = stats
+
+  const span = q3 - q1
+  const pxPerUnit = span !== 0 ? width / span : 0
+  const toX = (v: number) => x + (v - q1) * pxPerUnit
+
+  const cy = y + height / 2
+  const capTop = y + height * 0.18
+  const capBottom = y + height - height * 0.18
+
+  const q1X = x
+  const q3X = x + width
+  const wLowX = toX(whiskerLow)
+  const wHighX = toX(whiskerHigh)
+  const medianX = toX(median)
+  const meanX = toX(mean)
+  const meanFinite = Number.isFinite(meanX)
+
+  return (
+    <g>
+      {/* whisker line (behind the box) */}
+      <line
+        x1={wLowX}
+        x2={wHighX}
+        y1={cy}
+        y2={cy}
+        stroke="var(--muted-foreground)"
+        strokeWidth={1.5}
+      />
+      {/* whisker caps */}
+      <line
+        x1={wLowX}
+        x2={wLowX}
+        y1={capTop}
+        y2={capBottom}
+        stroke="var(--muted-foreground)"
+        strokeWidth={1.5}
+      />
+      <line
+        x1={wHighX}
+        x2={wHighX}
+        y1={capTop}
+        y2={capBottom}
+        stroke="var(--muted-foreground)"
+        strokeWidth={1.5}
+      />
+
+      <rect
+        x={Math.min(x, x + width)}
+        y={y}
+        width={Math.abs(width)}
+        height={height}
+        fill={color}
+        fillOpacity={0.25}
+        stroke={color}
+        strokeWidth={1.5}
+        rx={3}
+      />
+
+      <line
+        x1={medianX}
+        x2={medianX}
+        y1={y}
+        y2={y + height}
+        stroke={color}
+        strokeWidth={2.5}
+      />
+
+      {meanFinite && (
+        <>
+          <line
+            x1={meanX}
+            x2={meanX}
+            y1={y}
+            y2={y + height}
+            stroke={color}
+            strokeWidth={1.5}
+            strokeDasharray="3 2"
+            opacity={0.9}
+          />
+          <path
+            d={`M ${meanX} ${y - 5} L ${meanX + 4} ${y} L ${meanX} ${y + 5} L ${meanX - 4} ${y} Z`}
+            fill="var(--card)"
+            stroke={color}
+            strokeWidth={1.5}
+          />
+        </>
+      )}
+
+      {/* outliers — hollow rings so they read as "outside" the distribution */}
+      {outliers.map((v, i) => (
+        <circle
+          key={`${v}-${i}`}
+          cx={toX(v)}
+          cy={cy}
+          r={4}
+          fill="var(--card)"
+          stroke={color}
+          strokeWidth={1.5}
+        >
+          <title>{`outlier: ${fmt(v)}`}</title>
+        </circle>
+      ))}
+
+      {/* Inline value labels — Q1 (top-left), Q3 (top-right), Mean (bottom) */}
+      <text
+        x={q1X - 10}
+        y={y - 6}
+        textAnchor="middle"
+        className="font-mono text-[12px] font-medium"
+        fill="var(--muted-foreground)"
+      >
+        {`Q1 ${fmt(q1)}`}
+      </text>
+      <text
+        x={q3X + 10}
+        y={y - 6}
+        textAnchor="middle"
+        className="font-mono text-[12px] font-medium"
+        fill="var(--muted-foreground)"
+      >
+        {`Q3 ${fmt(q3)}`}
+      </text>
+      {meanFinite && (
+        <text
+          x={meanX}
+          y={y + height + 13}
+          textAnchor="middle"
+          className="font-mono text-[12px] font-semibold"
+          fill={color}
+        >
+          {`Mean ${fmt(mean)}`}
+        </text>
+      )}
+    </g>
+  )
+}
+
+export function TagBoxplotChart({ dataset, tags }: Props) {
+  const statsByTag = useMemo(() => {
+    const map = new Map<string, BoxplotStats>()
+    for (const tag of tags) map.set(tag, tagBoxplotStats(dataset, tag))
+    return map
+  }, [dataset, tags])
+
+  const qualifyingTags = tags.filter(t => hasData(statsByTag.get(t)!))
+  const insufficientTags = tags.filter(t => !qualifyingTags.includes(t))
+
+  if (qualifyingTags.length === 0) {
+    return (
+      <div className="flex h-80 flex-col items-center justify-center gap-2 text-center">
+        <BoxSelect className="h-8 w-8 text-muted-foreground/40" />
+        <p className="text-sm text-muted-foreground">
+          Not enough values to build a box plot for{' '}
+          <span className="font-mono">{tags.join(', ')}</span>
+        </p>
+      </div>
+    )
+  }
+
+  const rows: BoxRow[] = qualifyingTags.map(tag => {
+    const stats = statsByTag.get(tag)!
+    return {
+      tag,
+      color: chartColorVar(resolveTagMeta(tag).chartIndex),
+      stats,
+      iqr: [stats.q1, stats.q3],
+    }
+  })
+
+  const rawMin = Math.min(
+    ...rows.map(r => Math.min(r.stats.min, ...r.stats.outliers)),
+  )
+  const rawMax = Math.max(
+    ...rows.map(r => Math.max(r.stats.max, ...r.stats.outliers)),
+  )
+  const ticks = niceTicks(rawMin, rawMax, Y_TICK_COUNT)
+  const domain: [number, number] = [ticks[0]!, ticks[ticks.length - 1]!]
+
+  const yAxisWidth = Math.max(
+    80,
+    Math.min(160, Math.max(...rows.map(r => r.tag.length)) * 7 + 24),
+  )
+
+  const chartConfig = rows.reduce((acc, r) => {
+    acc[r.tag] = { label: r.tag, color: r.color }
+    return acc
+  }, {} as ChartConfig)
+
+  const height = CHART_PAD + rows.length * ROW_HEIGHT
+
+  return (
+    <div className="space-y-2">
+      <ChartContainer
+        config={chartConfig}
+        style={{ height }}
+        className="w-full"
+      >
+        <BarChart
+          data={rows}
+          layout="vertical"
+          margin={{ top: 8, right: 24, bottom: 8, left: 8 }}
+          barCategoryGap="35%"
+        >
+          <CartesianGrid horizontal={false} strokeDasharray="3 3" />
+          <XAxis
+            type="number"
+            domain={domain}
+            ticks={ticks}
+            tickFormatter={fmt}
+            tick={{ fontSize: 10, fontFamily: 'var(--font-mono)' }}
+          />
+          <YAxis
+            type="category"
+            dataKey="tag"
+            width={yAxisWidth}
+            tick={{
+              fontSize: 11,
+              fontFamily: 'var(--font-mono)',
+              fontWeight: 600,
+            }}
+            tickLine={false}
+            axisLine={false}
+          />
+          <ChartTooltip
+            cursor={false}
+            content={({ active, payload }) => {
+              if (!active || !payload?.length) return null
+              const row = payload[0]?.payload as BoxRow | undefined
+              if (!row) return null
+              return (
+                <div className="rounded-lg border bg-card px-3 py-2 text-xs shadow-md">
+                  <p
+                    className="mb-1 font-mono font-semibold"
+                    style={{ color: row.color }}
+                  >
+                    {row.tag}
+                  </p>
+                  <dl className="grid grid-cols-2 gap-x-3 gap-y-0.5 font-mono text-[11px] text-muted-foreground">
+                    <dt>Min</dt>
+                    <dd className="text-right text-foreground">
+                      {fmt(row.stats.min)}
+                    </dd>
+                    <dt>Q1</dt>
+                    <dd className="text-right text-foreground">
+                      {fmt(row.stats.q1)}
+                    </dd>
+                    <dt>Median</dt>
+                    <dd className="text-right text-foreground">
+                      {fmt(row.stats.median)}
+                    </dd>
+                    <dt>Mean</dt>
+                    <dd className="text-right text-foreground">
+                      {fmt(row.stats.mean)}
+                    </dd>
+                    <dt>Q3</dt>
+                    <dd className="text-right text-foreground">
+                      {fmt(row.stats.q3)}
+                    </dd>
+                    <dt>Max</dt>
+                    <dd className="text-right text-foreground">
+                      {fmt(row.stats.max)}
+                    </dd>
+                    {row.stats.outliers.length > 0 && (
+                      <>
+                        <dt>Outliers</dt>
+                        <dd className="text-right text-foreground">
+                          {row.stats.outliers.length}
+                        </dd>
+                      </>
+                    )}
+                  </dl>
+                </div>
+              )
+            }}
+          />
+          <Bar
+            dataKey="iqr"
+            shape={BoxWhiskerShape}
+            isAnimationActive={false}
+          />
+        </BarChart>
+      </ChartContainer>
+
+      <div className="flex items-center justify-center gap-4 text-[10px] text-muted-foreground">
+        <span className="flex items-center gap-1.5">
+          <span className="h-0.5 w-4 bg-foreground/70" /> Median
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="h-0.5 w-4 border-t-2 border-dashed border-foreground/70" />{' '}
+          Mean
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="h-2 w-2 rounded-full ring-1 ring-foreground/70" />{' '}
+          Outlier
+        </span>
+      </div>
+
+      {insufficientTags.length > 0 && (
+        <p className="text-center font-mono text-[10px] text-muted-foreground">
+          Not enough values for {insufficientTags.join(', ')}
+        </p>
+      )}
+    </div>
+  )
+}

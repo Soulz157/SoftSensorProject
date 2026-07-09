@@ -11,5 +11,6 @@ export interface SidebarProps {
   isOpen: boolean
   onClose: () => void
   isCollapsed: boolean
+  onCreateWorkspace: () => void
   onToggleCollapse: () => void
 }

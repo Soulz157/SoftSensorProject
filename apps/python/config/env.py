@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     CAL_TYPR: str = "Average"
     CAL_BASIS: str = "TimeWeighted"
 
+    PI_VERIFY_SSL: bool = True
+    PI_CA_BUNDLE: str | None = None   # path to corporate CA .pem; used when verify is on
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

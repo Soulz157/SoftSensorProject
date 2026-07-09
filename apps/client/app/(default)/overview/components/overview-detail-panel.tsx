@@ -6,6 +6,7 @@ import {
   X,
   AlertTriangle,
   AlertCircle,
+  Settings,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -25,6 +26,7 @@ interface OverviewDetailPanelProps {
   onViewWorkspace: (id: string) => void
   onOpenPipeEditor: (id: string) => void
   onViewAlerts: () => void
+  onOpenSettings: (id: string) => void
 }
 
 function StatCell({
@@ -58,6 +60,7 @@ function PanelContent({
   onViewWorkspace,
   onOpenPipeEditor,
   onViewAlerts,
+  onOpenSettings,
 }: OverviewDetailPanelProps & { workspace: Workspace }) {
   const { data: modelsRaw, isFetching: modelsFetching } = useModels(
     workspace.id,
@@ -85,8 +88,6 @@ function PanelContent({
   const IconComponent =
     workspaceIcons.find(i => i.id === workspace.icon)?.icon ?? Building2
 
-  // Binary display: any non-normal worst status (incl. a failed deploy folded
-  // in above) reads as a single red "Abnormal" badge.
   const isAbnormal = worstStatus !== 'normal'
   const statusBadgeClass = isAbnormal
     ? 'border-destructive/40 bg-destructive/10 text-destructive'
@@ -117,7 +118,7 @@ function PanelContent({
           <button
             type="button"
             onClick={onClose}
-            className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            className="shrink-0 rounded-md p-1 text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
             aria-label="Close panel"
           >
             <X aria-hidden="true" className="h-4 w-4" />
@@ -218,6 +219,15 @@ function PanelContent({
         >
           Open Pipeline Editor
           <ArrowRight aria-hidden="true" className="h-3 w-3 shrink-0" />
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full gap-2"
+          onClick={() => onOpenSettings(workspace.id)}
+        >
+          <Settings aria-hidden="true" className="h-3 w-3 shrink-0" />
+          Settings
         </Button>
       </div>
     </div>

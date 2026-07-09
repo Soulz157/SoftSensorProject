@@ -5,12 +5,11 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { useSetAtom } from 'jotai'
 import { toast } from 'sonner'
 import { getModelById } from '@/services/model'
+import { datasetService } from '@/services/dataset'
 import { readModelConfig } from '@/lib/model-config'
-import { buildRawDataset } from '@/lib/preprocessing'
 import { METRIC_KEYS, type MetricKey } from '@/lib/model-metrics'
 import type { AIModel } from '@/types'
 import {
-  PERIOD_TO_RANGE,
   resetWizardAtom,
   mpModeAtom,
   mpEditModelIdAtom,
@@ -19,20 +18,15 @@ import {
   mpWorkspaceIdAtom,
   mpPlantIdAtom,
   mpNodeIdAtom,
-  mpSavedDataSourcesAtom,
-  mpSelectedSavedSourceIdAtom,
-  mpSelectedTagsAtom,
-  mpTimeRangeAtom,
-  mpCustomDateRangeAtom,
-  mpFillStrategiesAtom,
+  mpSelectedDatasetAtom,
+  mpAlgorithmAtom,
+  mpTargetVariableAtom,
+  mpHyperparamsAtom,
   mpSelectedMetricsAtom,
-  mpRawDatasetAtom,
-  mpFetchStateAtom,
   mpTrainStateAtom,
   mpCurrentStepAtom,
   mpHighestUnlockedAtom,
   MP_TOTAL_STEPS,
-  type FetchPeriod,
   type WizardMode,
 } from '@/store/model-pipeline'
 
@@ -61,15 +55,11 @@ export function useModelWizardMode(): UseModelWizardModeResult {
   const setWorkspaceId = useSetAtom(mpWorkspaceIdAtom)
   const setPlantId = useSetAtom(mpPlantIdAtom)
   const setNodeId = useSetAtom(mpNodeIdAtom)
-  const setSavedSources = useSetAtom(mpSavedDataSourcesAtom)
-  const setSavedSourceId = useSetAtom(mpSelectedSavedSourceIdAtom)
-  const setSelectedTags = useSetAtom(mpSelectedTagsAtom)
-  const setTimeRange = useSetAtom(mpTimeRangeAtom)
-  const setCustomRange = useSetAtom(mpCustomDateRangeAtom)
-  const setFillStrategies = useSetAtom(mpFillStrategiesAtom)
+  const setSelectedDataset = useSetAtom(mpSelectedDatasetAtom)
+  const setAlgorithm = useSetAtom(mpAlgorithmAtom)
+  const setTargetVariable = useSetAtom(mpTargetVariableAtom)
+  const setHyperparams = useSetAtom(mpHyperparamsAtom)
   const setSelectedMetrics = useSetAtom(mpSelectedMetricsAtom)
-  const setRawDataset = useSetAtom(mpRawDatasetAtom)
-  const setFetchState = useSetAtom(mpFetchStateAtom)
   const setTrainState = useSetAtom(mpTrainStateAtom)
   const setCurrentStep = useSetAtom(mpCurrentStepAtom)
   const setHighestUnlocked = useSetAtom(mpHighestUnlockedAtom)
@@ -104,27 +94,23 @@ export function useModelWizardMode(): UseModelWizardModeResult {
       const config = readModelConfig(model)
       if (config) {
         setDescription(config.description ?? '')
-
-        const merged = config.dataSource ? [config.dataSource] : []
-        setSavedSources(merged)
-        setSavedSourceId(config.savedSourceId)
-        setSelectedTags(config.selectedTags)
-        setTimeRange(config.timeRange)
-        setCustomRange(config.customDateRange)
-        setFillStrategies(config.fillStrategies)
+        setAlgorithm(config.algorithm)
+        setTargetVariable(config.targetVariable)
+        setHyperparams(config.hyperparameters)
         setSelectedMetrics(
           config.selectedMetrics ?? ([...METRIC_KEYS] as MetricKey[]),
         )
 
-        // Rebuild the deterministic dataset so Phases 3/5/6 render immediately.
-        // Only then unlock every step for free review/jump; without a full
-        // config the model is edited as a normal forward pass from step 1.
-        if (config.selectedTags.length > 0) {
-          const range = PERIOD_TO_RANGE[config.timeRange as FetchPeriod]
-          setRawDataset(buildRawDataset(config.selectedTags, range))
-          setFetchState({ status: 'done', progress: 100 })
-          setTrainState({ status: 'done', progress: 100 })
-          setHighestUnlocked(MP_TOTAL_STEPS)
+        const datasetId = config.datasetId || model.datasetId
+        if (datasetId) {
+          datasetService
+            .get(datasetId)
+            .then(res => {
+              setSelectedDataset(res.data)
+              setTrainState({ status: 'done', progress: 100 })
+              setHighestUnlocked(MP_TOTAL_STEPS)
+            })
+            .catch(() => setSelectedDataset(null))
         }
       }
 

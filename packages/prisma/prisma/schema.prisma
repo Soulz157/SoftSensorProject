@@ -69,6 +69,7 @@ model User {
   passwordResetTokens PasswordResetToken[]
   workspaceMembers    WorkspaceMember[]
   dataSources         DataSource[]
+  datasets            Dataset[]
 }
 
 model Account {
@@ -104,6 +105,7 @@ model Workspace {
   models       Model[]
   edges        Edge[]
   plans        WorkspacePlant[]
+  datasets     Dataset[]
 
   @@index([ownerId])
 }
@@ -164,8 +166,12 @@ model Model {
   updatedAt   DateTime  @updatedAt
   nodes       Nodes?    @relation(fields: [nodesId], references: [id])
   nodesId     String?
+  dataset     Dataset?  @relation(fields: [datasetId], references: [id])
+  datasetId   String?
 
+  @@unique([workspaceId, name])
   @@index([workspaceId])
+  @@index([datasetId])
 }
 
 model Plan {
@@ -269,6 +275,29 @@ model DataSource {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  @@index([createdById])
+}
+
+model Dataset {
+  id             String    @id @default(uuid())
+  name           String
+  description    String?
+  workspaceId    String
+  workspace      Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  sourceIds      String[]
+  tags           String[]
+  pipelineConfig Json
+  fileUrl        String?
+  rowCount       Int       @default(0)
+  missingPct     Float     @default(0)
+  createdBy      User      @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  createdById    String
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  models         Model[]
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId])
   @@index([createdById])
 }
 

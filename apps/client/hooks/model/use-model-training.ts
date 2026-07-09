@@ -15,6 +15,7 @@ const STEP_COUNT = 6
 export interface UseModelTrainingResult extends TrainState {
   start: () => void
   retry: () => void
+  reset: () => void
 }
 
 /**
@@ -53,15 +54,16 @@ export function useModelTraining(): UseModelTrainingResult {
 
     try {
       await commit()
-    } catch {
+    } catch (err) {
       runningRef.current = false
+      const fallback =
+        mode === 'edit'
+          ? 'Failed to save changes. Retry.'
+          : 'Failed to create model. Check details and retry.'
       setTrainState({
         status: 'error',
         progress: 0,
-        error:
-          mode === 'edit'
-            ? 'Failed to save changes. Retry.'
-            : 'Failed to create model. Check details and retry.',
+        error: err instanceof Error && err.message ? err.message : fallback,
       })
       return
     }
@@ -70,5 +72,9 @@ export function useModelTraining(): UseModelTrainingResult {
     runRamp()
   }, [trainState.status, mode, commit, setTrainState, runRamp])
 
-  return { ...trainState, start: run, retry: run }
+  const reset = useCallback(() => {
+    setTrainState({ status: 'idle', progress: 0 })
+  }, [setTrainState])
+
+  return { ...trainState, start: run, retry: run, reset }
 }

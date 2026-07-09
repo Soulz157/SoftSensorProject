@@ -21,6 +21,7 @@ const MODEL: AIModel = {
   name: 'Pump A',
   data: { deployStatus: 'running', prodStatus: 'normal', logs: [] },
   nodesId: null,
+  datasetId: null,
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
   nodes: null,

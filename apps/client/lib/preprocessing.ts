@@ -350,6 +350,39 @@ export function toChartRows(ds: Dataset): SensorChartRow[] {
   })
 }
 
+export interface TagFillPreviewRow {
+  timestamp: string
+  /** Good-only value from `base`; null marks a raw Bad/Questionable gap. */
+  before: number | null
+  /** Value from `filled` at the same timestamp; null if the row was dropped. */
+  after: number | null
+}
+
+/**
+ * Join `base` (pre-fill) and `filled` (post-`preprocess`) by timestamp for a
+ * single tag, for before/after preview charts. Joins by timestamp rather than
+ * index since `filled` may have fewer rows (a drop-semantics tag can remove
+ * rows that `base` still has).
+ */
+export function tagFillPreview(
+  base: Dataset,
+  filled: Dataset,
+  tag: string,
+): TagFillPreviewRow[] {
+  const afterByTs = new Map<string, number | null>(
+    filled.rows.map(r => [r.timestamp, r.cells[tag]?.value ?? null]),
+  )
+
+  return base.rows.map(r => {
+    const cell = r.cells[tag]
+    return {
+      timestamp: r.timestamp,
+      before: cell && cell.status === 'Good' ? cell.value : null,
+      after: afterByTs.get(r.timestamp) ?? null,
+    }
+  })
+}
+
 export interface ScatterPoint {
   x: number
   y: number

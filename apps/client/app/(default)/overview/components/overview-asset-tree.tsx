@@ -128,7 +128,7 @@ function DisclosureRow({
       type="button"
       aria-expanded={isOpen(id)}
       onClick={() => toggle(id)}
-      className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left hover:bg-accent"
+      className="flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left outline-none hover:bg-accent focus-visible:ring-3 focus-visible:ring-ring/50"
     >
       <ChevronRight
         className={cn(

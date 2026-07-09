@@ -6,6 +6,7 @@ import type {
   CropRange,
   StatisticalRule,
 } from '@/lib/precleanse'
+import type { SavedDataset } from '@/store/datasets'
 import { nanoid } from 'nanoid'
 
 export type FetchPeriod = '1min' | '5min' | '10min' | '1h' | '1d'
@@ -40,7 +41,24 @@ export interface TrainState {
   error?: string
 }
 
-export const MP_TOTAL_STEPS = 7
+export const MP_TOTAL_STEPS = 3
+
+// Lean wizard — Step 1: Select Dataset (+ model metadata), Step 2: Training
+// Configuration, Step 3: Results. Dataset ETL now lives entirely in Data Studio
+// (`store/dataset-studio.ts`); the model wizard only references a saved
+// `Dataset` by id + its cached snapshot (avoids a refetch on every render).
+export const mpSelectedDatasetAtom = atom<SavedDataset | null>(null)
+
+export type Algorithm = 'ols' | 'ridge' | 'random_forest'
+export const ALGORITHMS: Algorithm[] = ['ols', 'ridge', 'random_forest']
+export const ALGORITHM_LABELS: Record<Algorithm, string> = {
+  ols: 'Linear Regression (OLS)',
+  ridge: 'Ridge Regression',
+  random_forest: 'Random Forest',
+}
+export const mpAlgorithmAtom = atom<Algorithm>('ols')
+export const mpTargetVariableAtom = atom<string>('')
+export const mpHyperparamsAtom = atom<Record<string, number>>({})
 
 /** How the user chose to supply tags: direct connector, csv upload, or manual text. */
 export type TagInputMethod = '' | 'direct' | 'csv' | 'text'
@@ -80,6 +98,10 @@ export const mpFetchStateAtom = atom<FetchState>({
   progress: 0,
 })
 export const mpRawDatasetAtom = atom<Dataset>(EMPTY_DATASET)
+
+export const mpSelectedDatasetIdAtom = atom<string | null>(null)
+
+export const mpSelectedDatasetIdsAtom = atom<string[]>([])
 
 // Phase 5.1 — Data Preprocessing (crop + outlier removal). Applied via
 // `precleanse()` before the Phase 5.2 fill step. See `lib/precleanse.ts`.
@@ -164,6 +186,10 @@ export const resetWizardAtom = atom(null, (_get, set) => {
   set(mpWorkspaceIdAtom, '')
   set(mpPlantIdAtom, '')
   set(mpNodeIdAtom, '')
+  set(mpSelectedDatasetAtom, null)
+  set(mpAlgorithmAtom, 'ols')
+  set(mpTargetVariableAtom, '')
+  set(mpHyperparamsAtom, {})
   set(mpTrainStateAtom, { status: 'idle', progress: 0 })
   set(mpCreatedModelIdAtom, '')
   set(mpSelectedMetricsAtom, [...METRIC_KEYS])
@@ -180,11 +206,13 @@ export type SourceType = 'pi' | 'influxdb' | 'sql' | 'rest_api' | 'csv'
 
 export interface PIConfig {
   type: 'pi'
-  endpoint: string
+  piName?: string
   piServerUrl: string
   calcType: 'Average' | 'Interpolated' | 'Recorded'
   calcBasis: 'TimeWeighted' | 'EventWeighted'
   intervalTime: string
+  userName?: string
+  password?: string
 }
 
 export interface InfluxConfig {
@@ -253,7 +281,7 @@ export const parseQualifiedTag = (qualified: string) => {
 
 export const DEFAULT_PI_CONFIG: PIConfig = {
   type: 'pi',
-  endpoint: '',
+  piName: '',
   piServerUrl: '',
   calcType: 'Average',
   calcBasis: 'TimeWeighted',

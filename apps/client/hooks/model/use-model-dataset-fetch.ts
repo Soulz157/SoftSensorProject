@@ -1,6 +1,5 @@
 import { useCallback, useRef } from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
-import { type TimeRange } from '@/lib/mock-readings'
 import { buildRawDataset } from '@/lib/preprocessing'
 import {
   mpFetchStateAtom,

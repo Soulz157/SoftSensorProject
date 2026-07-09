@@ -14,6 +14,7 @@ export function Sidebar({
   onClose,
   isCollapsed,
   onToggleCollapse,
+  onCreateWorkspace,
 }: SidebarProps) {
   const logic = useSidebar()
   const userNavItems = getUserNavItems(logic.alertCount)
@@ -45,6 +46,7 @@ export function Sidebar({
 
         <SidebarWorkspaces
           isCollapsed={isCollapsed}
+          onCreateWorkspace={onCreateWorkspace}
           logic={logic}
           onClose={onClose}
         />

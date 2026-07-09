@@ -1,7 +1,8 @@
 'use client'
 
-import { useAtom } from 'jotai'
+import { useAtom, useSetAtom } from 'jotai'
 import { useMemo, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import {
   Check,
   Database,
@@ -29,6 +30,13 @@ import {
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuLabel,
@@ -42,18 +50,18 @@ import {
   dsTypeFilterAtom,
   dsStatusFilterAtom,
 } from '@/store/data-sources'
-import { SourceCard } from '@/app/(default)/models/create/components/data-source-picker'
+import { SourceCard } from './create/components/data-source-picker'
 import {
   AddConnectionDialog,
   KIND_META,
-} from '@/app/(default)/models/create/components/add-connection-dialog'
+} from '@/app/(default)/data-studio/create/components/add-connection-dialog'
 import { useDataSources } from '@/hooks/use-data-sources'
 import type { DataSourceKind } from '@/lib/mock-data-sources'
 import { cn } from '@/lib/utils'
+import { initDatasetWizardAtom } from '@/store/dataset-studio'
+import { useWorkspaces } from '@/hooks/workspace/use-workspaces'
+import { useDatasets } from '@/hooks/dataset/use-datasets'
 
-// ---------------------------------------------------------------------------
-// StatCard
-// ---------------------------------------------------------------------------
 function StatCard({
   label,
   value,
@@ -83,9 +91,6 @@ function StatCard({
   )
 }
 
-// ---------------------------------------------------------------------------
-// SelectableSourceCard — wraps SourceCard with a checkbox overlay
-// ---------------------------------------------------------------------------
 function SelectableSourceCard({
   source,
   selected,
@@ -100,40 +105,14 @@ function SelectableSourceCard({
   onDelete: () => void
 }) {
   return (
-    <div className="relative">
-      {/* Checkbox hit area — top-left corner */}
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-label={selected ? 'Deselect source' : 'Select source'}
-        className={cn(
-          'absolute left-2.5 top-2.5 z-10 flex h-5 w-5 items-center justify-center',
-          'rounded-md border-2 transition-all',
-          selected
-            ? 'border-primary bg-primary text-primary-foreground'
-            : 'border-muted-foreground/40 bg-background hover:border-primary',
-        )}
-      >
-        {selected && <Check className="h-3 w-3" strokeWidth={3} />}
-      </button>
-
-      {/* Ring highlight when selected */}
-      <div
-        className={cn(
-          'rounded-xl transition-shadow duration-150',
-          selected && 'ring-2 ring-primary ring-offset-1',
-        )}
-      >
-        <SourceCard
-          source={source}
-          selected={false}
-          onSelect={onToggle}
-          onEdit={onEdit}
-          onDelete={onDelete}
-          multiple={false}
-        />
-      </div>
-    </div>
+    <SourceCard
+      source={source}
+      selected={selected}
+      onSelect={onToggle}
+      onEdit={onEdit}
+      onDelete={onDelete}
+      multiple={true}
+    />
   )
 }
 
@@ -149,21 +128,19 @@ function CreateDatasetDialog({
   open: boolean
   onOpenChange: (v: boolean) => void
   selectedSources: ReturnType<typeof useDataSources>['sources']
-  onConfirm: (name: string, description: string) => void
+  onConfirm: (name: string, description: string, workspaceId: string) => void
 }) {
+  const { workspaces } = useWorkspaces()
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
-  const [saving, setSaving] = useState(false)
+  const [workspaceId, setWorkspaceId] = useState('')
 
-  const handleConfirm = async () => {
-    if (!name.trim()) return
-    setSaving(true)
-    // simulate async save — replace with real API call
-    await new Promise(r => setTimeout(r, 800))
-    setSaving(false)
-    onConfirm(name.trim(), description.trim())
+  const handleConfirm = () => {
+    if (!name.trim() || !workspaceId) return
+    onConfirm(name.trim(), description.trim(), workspaceId)
     setName('')
     setDescription('')
+    setWorkspaceId('')
   }
 
   return (
@@ -213,8 +190,27 @@ function CreateDatasetDialog({
               placeholder="What data does this dataset contain?"
               value={description}
               onChange={e => setDescription(e.target.value)}
-              className="min-h-[72px] resize-none text-sm"
+              className="min-h-18 resize-none text-sm"
             />
+          </div>
+
+          {/* Target workspace */}
+          <div className="space-y-1.5">
+            <Label className="text-xs font-medium">
+              Workspace <span className="text-destructive">*</span>
+            </Label>
+            <Select value={workspaceId} onValueChange={setWorkspaceId}>
+              <SelectTrigger className="h-9 text-sm">
+                <SelectValue placeholder="Select a workspace" />
+              </SelectTrigger>
+              <SelectContent>
+                {workspaces.map(w => (
+                  <SelectItem key={w.id} value={w.id}>
+                    {w.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           {/* Selected sources summary */}
@@ -255,22 +251,17 @@ function CreateDatasetDialog({
             variant="outline"
             size="sm"
             onClick={() => onOpenChange(false)}
-            disabled={saving}
           >
             Cancel
           </Button>
           <Button
             size="sm"
-            disabled={!name.trim() || saving}
+            disabled={!name.trim() || !workspaceId}
             onClick={handleConfirm}
             className="gap-1.5"
           >
-            {saving ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <FolderPlus className="h-3.5 w-3.5" />
-            )}
-            {saving ? 'Creating…' : 'Create Dataset'}
+            <FolderPlus className="h-3.5 w-3.5" />
+            Continue
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -282,6 +273,7 @@ function CreateDatasetDialog({
 // DataSourcesPage
 // ---------------------------------------------------------------------------
 export default function DataSourcesPage() {
+  const router = useRouter()
   const {
     sources: allSources,
     loading,
@@ -291,8 +283,9 @@ export default function DataSourcesPage() {
   const [search, setSearch] = useAtom(dsSearchAtom)
   const [typeFilter, setTypeFilter] = useAtom(dsTypeFilterAtom)
   const [statusFilter, setStatusFilter] = useAtom(dsStatusFilterAtom)
+  const initDatasetWizard = useSetAtom(initDatasetWizardAtom)
+  const { datasets } = useDatasets()
 
-  // Connection dialog state
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingSource, setEditingSource] = useState<
     (typeof allSources)[0] | null
@@ -325,11 +318,20 @@ export default function DataSourcesPage() {
     setSelectedIds(new Set())
   }
 
-  const handleDatasetCreated = (name: string, _description: string) => {
-    // TODO: persist to backend
-    console.log('Dataset created:', name, 'from sources:', [...selectedIds])
+  const handleDatasetCreated = (
+    name: string,
+    description: string,
+    workspaceId: string,
+  ) => {
+    initDatasetWizard({
+      name,
+      description,
+      workspaceId,
+      sources: selectedSources,
+    })
     setDatasetDialogOpen(false)
     exitSelectMode()
+    router.push('/data-studio/create')
   }
 
   // ── Filtering ─────────────────────────────────────────────────────────────
@@ -479,6 +481,63 @@ export default function DataSourcesPage() {
             sub="of 4 supported"
             accent="blue"
           />
+        </div>
+
+        {/* ── Datasets ── */}
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <Layers className="h-4 w-4 text-primary" />
+            <h2 className="text-sm font-semibold text-foreground">Datasets</h2>
+            {datasets.length > 0 && (
+              <Badge variant="secondary" className="text-[10px]">
+                {datasets.length}
+              </Badge>
+            )}
+          </div>
+          {datasets.length === 0 ? (
+            <div className="flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-border py-10 text-center">
+              <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-muted text-muted-foreground">
+                <Layers className="h-5 w-5" />
+              </span>
+              <p className="text-sm font-semibold">No datasets yet</p>
+              <p className="mx-auto max-w-72 text-xs text-muted-foreground">
+                Select data sources above and click “Create Dataset” to build
+                one.
+              </p>
+            </div>
+          ) : (
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {datasets.map(d => (
+                <div
+                  key={d.id}
+                  className="space-y-2 rounded-xl bg-card p-4 ring-1 ring-foreground/10"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="truncate text-sm font-medium text-foreground">
+                      {d.name}
+                    </p>
+                    <span className="shrink-0 text-[11px] text-muted-foreground">
+                      {new Date(d.createdAt).toLocaleDateString()}
+                    </span>
+                  </div>
+                  {d.description && (
+                    <p className="line-clamp-2 text-xs text-muted-foreground">
+                      {d.description}
+                    </p>
+                  )}
+                  <p className="truncate text-xs text-muted-foreground">
+                    {d.sourceIds.length} source
+                    {d.sourceIds.length !== 1 ? 's' : ''}
+                  </p>
+                  <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
+                    <span>{d.tags.length} tags</span>
+                    <span>{d.rowCount.toLocaleString()} rows</span>
+                    <span>{d.missingPct.toFixed(1)}% missing</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* ── Search + Filter bar ── */}

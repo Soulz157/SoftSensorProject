@@ -101,9 +101,18 @@ export function PresetPicker({ workspaceId }: Props) {
         </div>
 
         {loading ? (
-          <div className="grid grid-cols-2 gap-2">
+          <div
+            className="grid grid-cols-1 gap-2 sm:grid-cols-2"
+            role="status"
+            aria-live="polite"
+          >
+            <span className="sr-only">Loading models to clone…</span>
             {Array.from({ length: 4 }).map((_, i) => (
-              <div key={i} className="h-20 animate-pulse rounded-lg bg-muted" />
+              <div
+                key={i}
+                className="h-20 animate-pulse rounded-lg bg-muted"
+                aria-hidden="true"
+              />
             ))}
           </div>
         ) : models.length === 0 ? (
@@ -118,7 +127,7 @@ export function PresetPicker({ workspaceId }: Props) {
             No models match &quot;{query}&quot;
           </div>
         ) : (
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             {filtered.map(m => {
               const isSelected = selectedId === m.id
               const desc = readModelConfig(m)?.description?.trim()
@@ -128,7 +137,7 @@ export function PresetPicker({ workspaceId }: Props) {
                   type="button"
                   onClick={() => handleSelect(m.id)}
                   className={cn(
-                    'group relative flex flex-col gap-1.5 rounded-lg border p-3 text-left transition-all',
+                    'group relative flex gap-3 rounded-lg border p-3 text-left transition-all items-center',
                     isSelected
                       ? 'border-primary bg-primary/5 ring-1 ring-primary/30'
                       : 'border-border bg-card hover:border-primary/40 hover:bg-accent',

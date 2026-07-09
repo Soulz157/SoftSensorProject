@@ -33,7 +33,7 @@ export function SocialLogin() {
         variant="outline"
         className="h-11 bg-secondary/30 border-border hover:bg-secondary/50 transition-colors"
         onClick={() =>
-          signIn('microsoft-entra-id', { callbackUrl: '/dashboard' })
+          signIn('microsoft-entra-id', { callbackUrl: '/overview' })
         }
       >
         <svg className="h-4 w-4 mr-2" viewBox="0 0 24 24" fill="currentColor">

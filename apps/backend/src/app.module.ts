@@ -16,6 +16,7 @@ import { NodesModule } from './api/v1/nodes/nodes.module';
 import { WorkspacePlantModule } from './api/v1/workspace-plant/workspace.plant.module';
 import { ModelModule } from './api/v1/model/model.module';
 import { DataSourceModule } from './api/v1/data-source/data-source.module';
+import { DatasetModule } from './api/v1/dataset/dataset.module';
 
 @Module({
   imports: [
@@ -50,6 +51,7 @@ import { DataSourceModule } from './api/v1/data-source/data-source.module';
     WorkspacePlantModule,
     ModelModule,
     DataSourceModule,
+    DatasetModule,
   ],
   providers: [
     {

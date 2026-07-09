@@ -37,6 +37,7 @@ function model(
       logs: [],
     },
     nodesId: opts.nodesId ?? null,
+    datasetId: null,
     createdAt: '2026-06-29T00:00:00Z',
     updatedAt: '2026-06-29T00:00:00Z',
     nodes: null,

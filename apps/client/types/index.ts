@@ -51,6 +51,7 @@ export interface AIModel {
     config?: import('@/lib/model-config').ModelConfig
   } | null
   nodesId: string | null
+  datasetId: string | null
   createdAt: string
   updatedAt: string
   nodes: {

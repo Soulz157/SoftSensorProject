@@ -47,7 +47,7 @@ pnpm --filter backend dev
 pnpm --filter backend lint
 pnpm --filter client lint
 
-# Python / PI connector (apps/python) — uses .venv
+# Python / Data Processing + Data Source connector (apps/python) — uses .venv
 cd apps/python && python -m venv .venv && .venv/bin/pip install -r requirements.txt   # first-time setup
 pnpm --filter python dev     # uvicorn --reload, port 8000
 pnpm --filter python start   # production uvicorn
@@ -70,7 +70,7 @@ Turborepo + pnpm monorepo. Three apps, three packages:
 ```text
 apps/backend            # NestJS 11 + Fastify, port 4000 (SERVER_PORT env)
 apps/client             # Next.js 16 App Router, port 3000
-apps/python             # FastAPI PI connector, port 8000 (sensor ingestion)
+apps/python             # FastAPI, port 8000 — Data Processing + Data Source (PI Web API) connector
 packages/prisma         # @softsensor/prisma — shared PrismaService/PrismaModule
 packages/eslint-config  # shared ESLint config
 packages/typescript-config # shared tsconfig bases
@@ -188,18 +188,19 @@ Strict layered architecture — Controllers → Services → Prisma. No business
 - **`lib/data-quality.ts`:** pure pre-cleansing metrics over a `Dataset` — `qualityByTag`/`datasetQuality` (Missing = `Bad`, Suspect = `Questionable`) + `pearsonMatrix`/`topCorrelations(threshold=0.8)`. Single source for the Phase-4 Data-Quality panel + correlation matrix; extend here, don't inline.
 - **`app/payment/`:** Standalone route (outside `(default)/`) for simulated checkout — `billing-form.tsx` + `checkout-summary.tsx`. `hooks/user/use-checkout.ts` calls real `planService.subscribeToPlan()` (no real charge/payment provider wired yet); on success redirects to `/settings?tab=plans`.
 
-### Python / PI Connector (`apps/python`)
+### Python / Data Processing + Data Source connector (`apps/python`)
 
-FastAPI microservice (port 8000) — ingests sensor data from a PI System (AVEVA/OSIsoft historian) into Postgres. Health-check stub today; ingestion is planned (see `docs/PLAN.md` Phase 6).
+FastAPI microservice (port 8000) — the **Data Source** connector + **Data Processing** service. Connects to a PI System (AVEVA/OSIsoft historian) via the PI Web API and serves **on-demand** tag search + batched, summarized time-series reads. No background ingestion and no database: it fetches and shapes data per request; it does not write `SensorReading` rows or own any schema.
 
-- **App factory:** `main.py` → `create_app()` (CORS from `config/env.py` `settings`). Routers registered via `app.include_router(...)`.
-- **Config:** `config/env.py` — Pydantic `BaseSettings`, loads `.env`. All PI creds are `PI_*` env vars, server-side only (never `NEXT_PUBLIC_`).
-- **PI access:** PI Web API (REST/HTTPS) via async `httpx`. Client wrapper in `clients/pi_web_api.py`. Resolve `piTag → WebID` once and cache; batch-read with `/streamsets/{...}/value`.
-- **Ingestion:** APScheduler background job polls mapped PI tags every `PI_POLL_INTERVAL_SECONDS` and writes `SensorReading` rows. Started in the app lifespan, never on import.
-- **DB access:** async SQLAlchemy / `asyncpg` against the shared `DATABASE_URL`. DML only — never DDL. Schema is owned by Prisma; change it with `pnpm db:migrate:dev`, then mirror reads/writes in Python.
-- **Node ↔ PI mapping:** a node maps to a PI point via optional `piTag` in the `NodeData` JSON (`services/canvas.ts` shape). Unmapped nodes are skipped.
-- **Boundary:** FastAPI only ingests + exposes internal health/trigger endpoints. The Next.js client never calls FastAPI directly — it reads sensor history through NestJS authorized endpoints.
-- **Structure:** `clients/` (PI Web API), `services/` (ingest logic), `routers/` (health, internal ingest trigger), `schemas/` (Pydantic models), `db/` (engine + session). Mirror NestJS layering: router → service → db.
+- **App factory:** `main.py` → `create_app()` (title/version/CORS from `config/env.py` `settings`). Routers registered via `app.include_router(...)`; `GET /health` liveness stub.
+- **Endpoints (live, called on demand — Data Processing surface):**
+  - `GET /tags?q=&max_count=` (`routers/tags.py`) — search PI points by name filter; returns `{ tag_name, description, unit, plant }[]`.
+  - `POST /data/fetch` (`routers/data.py`) — batch-fetch tag values over `[start_time, end_time]` with `cal_basis` / `summary_type` / `summary_duration`. Returns per-tag `{ data, status: 'ok' | 'partial' | 'failed', error }` plus succeeded/failed counts.
+- **PI access (Data Source):** the official **PI Web API SDK** (`osisoft.pidevclub.piwebapi.PIWebApiClient`) — not raw `httpx`. Wrapper `PIWebAPI` in `services/pi_client.py`: resolves `piTag → WebID`, calls `streamSet.get_summaries_ad_hoc`, shapes results with **pandas**. `fetch_in_batches` chunks tags (`batch_size`, default 300) with retry + per-tag fallback so one bad tag doesn't fail the whole request. `write_data` (write values back to PI) exists but is not yet exposed by a router.
+- **Client wiring:** `dependencies.get_pi_client` builds a `@lru_cache` singleton `PIWebAPI` from `config` creds and is injected via FastAPI `Depends`.
+- **Config:** `config/env.py` — Pydantic `Settings` (`BaseSettings`, loads `.env`, `case_sensitive`). PI creds `SYS_USER` / `SYS_PASS` / `PI_NAME` + `CAL_TYPR` / `CAL_BASIS` defaults + CORS. Server-side only — never `NEXT_PUBLIC_`.
+- **Schemas:** `schemas/data.py` — Pydantic request/response models (`DataFetchRequest`, `DataFetchResponse`, `TagDataResult`, `TagListResponse`, `TagItem`).
+- **Structure / layering:** `routers/` (`data`, `tags`) → `dependencies` (`get_pi_client`) → `services/pi_client.py` (`PIWebAPI` → PI Web API SDK), with `schemas/` for I/O and `config/` for settings. Mirror NestJS layering: router → service → external source.
 
 ### Agents (`.claude/agents/`)
 

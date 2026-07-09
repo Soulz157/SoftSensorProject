@@ -2,7 +2,7 @@
 'use client'
 
 import Link from 'next/link'
-import { Menu, Plus, Search } from 'lucide-react'
+import { Menu, Search } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 
@@ -12,9 +12,13 @@ import { useNavbar } from '@/hooks/layout/use-navbar'
 import { NavbarSearch } from './components/navbar-search'
 import { NavbarNotifications } from './components/navbar-notification'
 import { NavbarUserMenu } from './components/user-menu'
+import { useAlerts } from '@/hooks/alerts/use-alerts'
 
-export function Navbar({ onCreateWorkspace, onMenuClick }: NavbarProps) {
-  const { session, profile, loading, alarmCount, isHealthy } = useNavbar()
+export function Navbar({ onMenuClick }: NavbarProps) {
+  const { session, profile, loading } = useNavbar()
+  // Alerts fan out ~3N requests; keep them OFF the navbar's render gate so the
+  // chrome paints immediately. The status pill carries its own loading state.
+  const { alerts, loading: alertsLoading } = useAlerts()
 
   if (loading) return <NavbarSkeleton />
 
@@ -32,40 +36,36 @@ export function Navbar({ onCreateWorkspace, onMenuClick }: NavbarProps) {
         </button>
       </div>
 
-      {/* 2. Center (Desktop Search) */}
       <NavbarSearch />
 
-      {/* 3. Right side (Actions & Profile) */}
       <div className="flex items-center gap-2 sm:gap-3">
-        {/* Health Badge */}
-        <div
-          className={cn(
-            'flex items-center gap-1.5 rounded-full border px-3 py-1 text-[10px] font-semibold',
-            isHealthy
-              ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
-              : 'border-red-500/30 bg-red-500/10 text-red-400',
-          )}
-        >
-          <span
+        {alertsLoading ? (
+          <div className="flex items-center gap-1.5 rounded-full border border-border bg-muted/40 px-3 py-1 text-[10px] font-semibold text-muted-foreground">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted-foreground/50" />
+            Checking…
+          </div>
+        ) : (
+          <div
             className={cn(
-              'h-1.5 w-1.5 rounded-full',
-              isHealthy ? 'bg-emerald-500' : 'bg-red-500 animate-pulse',
+              'flex items-center gap-1.5 rounded-full border px-3 py-1 text-[10px] font-semibold',
+              alerts.length === 0
+                ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
+                : 'border-red-500/30 bg-red-500/10 text-red-400',
             )}
-          />
-          {isHealthy
-            ? 'All Systems Healthy'
-            : `${alarmCount} Active Alarm${alarmCount > 1 ? 's' : ''}`}
-        </div>
-
-        {/* Create Workspace Button */}
-        <Button
-          onClick={onCreateWorkspace}
-          className="gap-2 cursor-pointer"
-          size="sm"
-        >
-          <Plus className="h-4 w-4" />
-          <span className="hidden sm:inline">Create Workspace</span>
-        </Button>
+          >
+            <span
+              className={cn(
+                'h-1.5 w-1.5 rounded-full',
+                alerts.length === 0
+                  ? 'bg-emerald-500'
+                  : 'bg-red-500 animate-pulse',
+              )}
+            />
+            {alerts.length === 0
+              ? 'All Systems Healthy'
+              : `${alerts.length} Active Alert${alerts.length > 1 ? 's' : ''}`}
+          </div>
+        )}
 
         {/* User Actions */}
         {session?.user ? (

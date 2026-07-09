@@ -67,7 +67,7 @@ export default function WorkspaceMembersPage({
               </p>
             </div>
           </div>
-          <Link href={`/workspaces/${id}/details`}>
+          <Link href={`/workspaces/${id}/settings`}>
             <Button variant="ghost" size="sm" className="gap-1.5 text-xs">
               <ArrowLeft className="h-3.5 w-3.5" />
               Back to Settings

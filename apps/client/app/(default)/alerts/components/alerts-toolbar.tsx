@@ -16,6 +16,7 @@ import {
   type AlertFilters,
   type AlertStatus,
 } from '@/lib/alerts'
+import { AlertDateRangeFilter } from './alert-date-range-filter'
 
 const STATUS_FILTER_ORDER: AlertStatus[] = [
   'failed',
@@ -27,22 +28,18 @@ const STATUS_FILTER_ORDER: AlertStatus[] = [
 export function AlertsToolbar({
   filters,
   onChange,
-  locations,
-  types,
 }: {
   filters: AlertFilters
   onChange: (next: AlertFilters) => void
-  locations: string[]
-  types: string[]
 }) {
   const set = (patch: Partial<AlertFilters>) =>
     onChange({ ...filters, ...patch })
 
   const isFiltered =
     filters.status !== 'all' ||
-    filters.location !== 'all' ||
-    filters.type !== 'all' ||
-    filters.search.trim() !== ''
+    filters.search.trim() !== '' ||
+    filters.dateFrom !== null ||
+    filters.dateTo !== null
 
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -60,11 +57,11 @@ export function AlertsToolbar({
         value={filters.status}
         onValueChange={v => set({ status: v as AlertFilters['status'] })}
       >
-        <SelectTrigger className="h-9 w-37.5">
-          <SelectValue placeholder="Status" />
+        <SelectTrigger className="h-9 w-45" aria-label="Filter by severity">
+          <SelectValue placeholder="Filter by Severity" />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="all">All statuses</SelectItem>
+          <SelectItem value="all">All severities</SelectItem>
           {STATUS_FILTER_ORDER.map(s => (
             <SelectItem key={s} value={s}>
               {ALERT_STATUS_LABEL[s]}
@@ -73,36 +70,11 @@ export function AlertsToolbar({
         </SelectContent>
       </Select>
 
-      <Select
-        value={filters.location}
-        onValueChange={v => set({ location: v })}
-      >
-        <SelectTrigger className="h-9 w-47.5">
-          <SelectValue placeholder="Location" />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="all">All locations</SelectItem>
-          {locations.map(l => (
-            <SelectItem key={l} value={l}>
-              {l}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-
-      <Select value={filters.type} onValueChange={v => set({ type: v })}>
-        <SelectTrigger className="h-9 w-42.5">
-          <SelectValue placeholder="Type" />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="all">All types</SelectItem>
-          {types.map(t => (
-            <SelectItem key={t} value={t}>
-              {t}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      <AlertDateRangeFilter
+        dateFrom={filters.dateFrom}
+        dateTo={filters.dateTo}
+        onChange={(dateFrom, dateTo) => set({ dateFrom, dateTo })}
+      />
 
       {isFiltered && (
         <Button

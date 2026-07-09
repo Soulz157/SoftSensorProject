@@ -1,10 +1,14 @@
+import urllib3
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from config import settings
-from routers import data
+from routers import data, tags
 
 
 def create_app() -> FastAPI:
+
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
     app = FastAPI(
         title=settings.APP_NAME,
         version=settings.APP_VERSION,
@@ -20,6 +24,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(data)
+    app.include_router(tags)
 
     return app
 

@@ -134,6 +134,21 @@ export class ModelAuthorizedService {
           type: 'ERROR',
         });
     }
+
+    const existingName = await this.prisma.model.findFirst({
+      where: {
+        workspaceId: dto.workspaceId,
+        name: { equals: dto.name, mode: 'insensitive' },
+      },
+      select: { id: true },
+    });
+    if (existingName)
+      throw new AppException({
+        statusCode: 400,
+        message: 'A model with this name already exists in this location.',
+        type: 'ERROR',
+      });
+
     const initData: ModelData = {
       deployStatus: 'stopped',
       prodStatus: 'normal',
@@ -145,6 +160,7 @@ export class ModelAuthorizedService {
         workspaceId: dto.workspaceId,
         name: dto.name,
         nodesId: dto.nodeId ?? null,
+        datasetId: dto.datasetId ?? null,
         // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         data: JSON.parse(JSON.stringify(initData)),
       },
@@ -178,6 +194,23 @@ export class ModelAuthorizedService {
       await this.assertCanEdit(existing.workspaceId, userId);
     } else {
       await this.assertHasAccess(existing.workspaceId, userId, userRole);
+    }
+
+    if (dto.name !== undefined) {
+      const clash = await this.prisma.model.findFirst({
+        where: {
+          workspaceId: existing.workspaceId,
+          name: { equals: dto.name, mode: 'insensitive' },
+          id: { not: modelId },
+        },
+        select: { id: true },
+      });
+      if (clash)
+        throw new AppException({
+          statusCode: 400,
+          message: 'A model with this name already exists in this location.',
+          type: 'ERROR',
+        });
     }
 
     const current = normalizeData(existing.data);
@@ -214,6 +247,7 @@ export class ModelAuthorizedService {
       data: {
         ...(dto.name !== undefined && { name: dto.name }),
         ...('nodeId' in dto && { nodesId: dto.nodeId ?? null }),
+        ...('datasetId' in dto && { datasetId: dto.datasetId ?? null }),
         // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         data: JSON.parse(JSON.stringify(newData)),
       },
