@@ -1,5 +1,5 @@
 import traceback
-from fastapi import APIRouter, Query, Depends, HTTPException
+from fastapi import APIRouter, Query, Depends, HTTPException, Response
 from schemas import TagListResponse, TagItem
 from dependencies import get_pi_client
 from intergrations import PIWebAPI
@@ -8,7 +8,7 @@ router = APIRouter(prefix="/v1/tags", tags=["Tags"])
 
 
 @router.get(
-    "/",
+    "",
     # response_model=TagListResponse,
     summary="ดึงรายชื่อ PI Tag ทั้งหมด (หรือค้นหา)",
 )
@@ -23,7 +23,7 @@ async def list_tags(
         raw = webapi.search_tags(max_count=10, batch_size=100)
         # items = [TagItem(**t) for t in raw]
         # return TagListResponse(total=len(items), tags=items)
-        return raw
+        return Response(content=raw.to_json(orient="records"), media_type="application/json")
     except Exception as e:
         print("====== ERROR DETAILS ======")
         traceback.print_exc()

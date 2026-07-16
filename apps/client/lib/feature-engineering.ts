@@ -13,7 +13,13 @@
  */
 import type { Cell, DataRow, Dataset } from '@/lib/preprocessing'
 
-export type RollingAgg = 'mean' | 'std' | 'min' | 'max'
+export type RollingAgg = 'mean' | 'std' | 'min' | 'max' | 'ROC'
+
+/** Elementwise math op combining two source tags (Divide is `ratio`, not here). */
+export type ArithOp = 'add' | 'sub' | 'mul'
+
+/** Calendar component extracted from a row's timestamp. */
+export type DatetimePart = 'hour' | 'dayOfWeek' | 'month'
 
 export type FeatureConfig =
   | { id: string; kind: 'lag'; tag: string; k: number }
@@ -24,8 +30,11 @@ export type FeatureConfig =
       window: number
       agg: RollingAgg
     }
-  | { id: string; kind: 'ratio'; a: string; b: string }
   | { id: string; kind: 'delta'; tag: string }
+  | { id: string; kind: 'arith'; op: ArithOp; tags: string[] }
+  | { id: string; kind: 'ratio'; tags: string[] }
+  | { id: string; kind: 'log'; tag: string }
+  | { id: string; kind: 'datetime'; part: DatetimePart }
 
 /** Deterministic column name for a feature. */
 export function featureColumnName(cfg: FeatureConfig): string {
@@ -35,9 +44,15 @@ export function featureColumnName(cfg: FeatureConfig): string {
     case 'rolling':
       return `${cfg.tag}__roll${cfg.window}_${cfg.agg}`
     case 'ratio':
-      return `${cfg.a}__over__${cfg.b}`
+      return cfg.tags.join('__over__')
     case 'delta':
       return `${cfg.tag}__delta`
+    case 'arith':
+      return cfg.tags.join(`__${cfg.op}__`)
+    case 'log':
+      return `${cfg.tag}__log`
+    case 'datetime':
+      return `__dt_${cfg.part}`
   }
 }
 
@@ -65,6 +80,12 @@ function aggregate(values: number[], agg: RollingAgg): number {
         values.reduce((a, b) => a + (b - mean) * (b - mean), 0) / (n - 1)
       return Math.sqrt(variance)
     }
+    case 'ROC': {
+      if (n < 2) return 0
+      const first = values[0]!
+      const last = values[n - 1]!
+      return first === 0 ? 0 : (last - first) / first
+    }
   }
 }
 
@@ -87,11 +108,12 @@ function computeColumn(rows: DataRow[], cfg: FeatureConfig): Cell[] {
           : { value: cur - prev, status: GOOD }
       }
       case 'ratio': {
-        const a = goodValue(row.cells[cfg.a])
-        const b = goodValue(row.cells[cfg.b])
-        return a === null || b === null || b === 0
-          ? { value: 0, status: BAD }
-          : { value: a / b, status: GOOD }
+        const vals = cfg.tags.map(t => goodValue(row.cells[t]))
+        if (vals.some(v => v === null)) return { value: 0, status: BAD }
+        const nums = vals as number[]
+        if (nums.slice(1).some(v => v === 0)) return { value: 0, status: BAD }
+        const value = nums.reduce((acc, v) => acc / v)
+        return { value, status: GOOD }
       }
       case 'rolling': {
         const start = Math.max(0, i - cfg.window + 1)
@@ -108,8 +130,48 @@ function computeColumn(rows: DataRow[], cfg: FeatureConfig): Cell[] {
         }
         return { value: aggregate(values, cfg.agg), status: GOOD }
       }
+      case 'arith': {
+        const vals = cfg.tags.map(t => goodValue(row.cells[t]))
+        if (vals.some(v => v === null)) return { value: 0, status: BAD }
+        const nums = vals as number[]
+        const value =
+          cfg.op === 'add'
+            ? nums.reduce((a, b) => a + b, 0)
+            : cfg.op === 'mul'
+              ? nums.reduce((a, b) => a * b, 1)
+              : nums.reduce((a, b) => a - b)
+        return { value, status: GOOD }
+      }
+      case 'log': {
+        const v = goodValue(row.cells[cfg.tag])
+        // Natural log is undefined for non-positive inputs → Bad.
+        return v === null || v <= 0
+          ? { value: 0, status: BAD }
+          : { value: Math.log(v), status: GOOD }
+      }
+      case 'datetime': {
+        // Derived from the row's own timestamp — always defined (Good).
+        return { value: datetimePart(row.timestamp, cfg.part), status: GOOD }
+      }
     }
   })
+}
+
+/**
+ * Extract a calendar component from an ISO timestamp. Uses UTC getters so a
+ * saved recipe re-derives identical feature values regardless of the viewer's
+ * timezone (the pipeline determinism invariant).
+ */
+function datetimePart(timestamp: string, part: DatetimePart): number {
+  const d = new Date(timestamp)
+  switch (part) {
+    case 'hour':
+      return d.getUTCHours()
+    case 'dayOfWeek':
+      return d.getUTCDay()
+    case 'month':
+      return d.getUTCMonth() + 1
+  }
 }
 
 /**
@@ -139,5 +201,23 @@ export function applyFeatures(ds: Dataset, configs: FeatureConfig[]): Dataset {
     tags.push(col)
   }
 
+  return { tags, rows }
+}
+
+/**
+ * Feature selection — keep only the chosen columns (original + engineered).
+ * `kept === null` keeps every column (default). Immutable: returns a new
+ * `Dataset` whose `tags` and per-row `cells` are pruned to `kept`.
+ */
+export function selectColumns(ds: Dataset, kept: string[] | null): Dataset {
+  if (kept === null) return ds
+  const keep = new Set(kept)
+  const tags = ds.tags.filter(t => keep.has(t))
+  const rows: DataRow[] = ds.rows.map(r => ({
+    timestamp: r.timestamp,
+    cells: Object.fromEntries(
+      Object.entries(r.cells).filter(([k]) => keep.has(k)),
+    ),
+  }))
   return { tags, rows }
 }

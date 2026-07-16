@@ -150,6 +150,9 @@ export interface TagDistribution {
   median: number
   mode: number
   std: number
+  min: number
+  max: number
+  range: number
 }
 
 /**
@@ -167,7 +170,8 @@ export function tagDistribution(ds: Dataset, tag: string): TagDistribution {
     if (cell && cell.status === 'Good') values.push(cell.value)
   }
   const n = values.length
-  if (n === 0) return { mean: 0, median: 0, mode: 0, std: 0 }
+  if (n === 0)
+    return { mean: 0, median: 0, mode: 0, std: 0, min: 0, max: 0, range: 0 }
 
   const mean = values.reduce((a, b) => a + b, 0) / n
 
@@ -204,7 +208,10 @@ export function tagDistribution(ds: Dataset, tag: string): TagDistribution {
           values.reduce((a, b) => a + (b - mean) * (b - mean), 0) / (n - 1),
         )
 
-  return { mean, median, mode, std }
+  const min = sorted[0] ?? 0
+  const max = sorted[n - 1] ?? 0
+
+  return { mean, median, mode, std, min, max, range: max - min }
 }
 
 export interface CorrelationMatrix {

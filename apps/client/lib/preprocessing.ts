@@ -30,6 +30,20 @@ export interface Dataset {
   rows: DataRow[]
 }
 
+/**
+ * Split a dataset's columns into numeric vs categorical groups. There is no
+ * categorical dtype in the data model yet (`Cell.value` is always `number`),
+ * so every tag is numeric today — the single place to add a real data-driven
+ * classifier later. Consumers should render a Categorical group only when it
+ * is non-empty.
+ */
+export function classifyColumns(dataset: Dataset): {
+  numeric: string[]
+  categorical: string[]
+} {
+  return { numeric: dataset.tags, categorical: [] }
+}
+
 export interface DatasetStats {
   rawRows: number
   badRows: number
@@ -53,6 +67,11 @@ export interface FillStrategyConfig {
   /** Required when `strategy === 'constant'`. */
   constantValue?: number
 }
+
+/** Per-column scaling applied at the model-ready stage. */
+export type ScalerMethod = 'minmax' | 'standard' | 'robust' | 'none'
+
+export const DEFAULT_SCALER: ScalerMethod = 'minmax'
 
 export const CORRELATED_PAIR = {
   anchor: 'TI-101',
@@ -225,7 +244,7 @@ export function preprocess(
 
   // 2. Drop rows where any drop-semantics tag is Bad (preserves old global rule).
   const kept = rows.filter(
-    row => !dropTags.some(t => row.cells[t]?.status === 'Bad'),
+    row => !fillTags.some(t => row.cells[t]?.status === 'Bad'),
   )
 
   // 3. Linear-interpolate Questionable cells for drop-semantics tags.
@@ -273,20 +292,283 @@ export function preprocess(
   return { tags, rows: kept }
 }
 
-/** Stage 3 — min-max normalize each column to [0, 1]. */
-export function toModelReady(clean: Dataset): Dataset {
+// ─────────────────────────────────────────────────────────────────────────────
+// Multi-step cleaning pipeline (Step 3.2 bulk cleaning)
+//
+// A per-tag ORDERED list of steps applied in sequence over the wide dataset.
+// Additive engine that shares the same primitives as `preprocess`
+// (`applyFillStrategy`, `median`, `roundTo`); the legacy `preprocess(strategies)`
+// above stays intact for the data-visualize wizard.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type CleaningCategory = 'missing' | 'outliers' | 'smoothing'
+
+export type CleaningMethod =
+  // missing
+  | 'drop'
+  | 'mean'
+  | 'median'
+  | 'constant'
+  | 'forward'
+  | 'backward'
+  | 'interpolate'
+  // outliers
+  | 'zscore'
+  | 'clip'
+  | 'outlier_median'
+  // smoothing
+  | 'moving_avg'
+  | 'exponential'
+
+export interface CleaningStep {
+  uid: string
+  category: CleaningCategory
+  method: CleaningMethod
+  /** window (moving_avg) · alpha (exponential) · z-threshold · constant · clip high */
+  param?: number
+  /** clip low bound only */
+  paramLow?: number
+}
+
+export type TagPipeline = CleaningStep[]
+
+/** The missing-fill methods that map onto the shared `FillStrategyConfig`. */
+const FILL_METHODS: Partial<Record<CleaningMethod, FillStrategy>> = {
+  mean: 'mean',
+  median: 'median',
+  constant: 'constant',
+  forward: 'forward',
+  backward: 'backward',
+}
+
+/** Linear-interpolate every non-Good cell for a tag; flips them to Good. */
+function interpolateTag(rows: DataRow[], tag: string): void {
+  for (let i = 0; i < rows.length; i++) {
+    const cell = rows[i]?.cells[tag]
+    if (!cell || cell.status === 'Good') continue
+
+    let p = i - 1
+    while (p >= 0 && rows[p]?.cells[tag]?.status !== 'Good') p--
+    let n = i + 1
+    while (n < rows.length && rows[n]?.cells[tag]?.status !== 'Good') n++
+
+    const prev = p >= 0 ? rows[p]?.cells[tag] : undefined
+    const next = n < rows.length ? rows[n]?.cells[tag] : undefined
+    if (prev && next) {
+      const ratio = (i - p) / (n - p)
+      cell.value = prev.value + (next.value - prev.value) * ratio
+    } else if (prev) {
+      cell.value = prev.value
+    } else if (next) {
+      cell.value = next.value
+    }
+    cell.status = 'Good'
+  }
+}
+
+function goodValuesOf(rows: DataRow[], tag: string): number[] {
+  return rows
+    .map(r => r.cells[tag])
+    .filter((c): c is Cell => !!c && c.status === 'Good')
+    .map(c => c.value)
+}
+
+/** Apply one cleaning step to a single tag in place; `drop` steps mark rows. */
+function applyCleaningStep(
+  rows: DataRow[],
+  tag: string,
+  step: CleaningStep,
+  dropRows: Set<number>,
+  precision: number,
+): void {
+  const { method } = step
+
+  // ── missing ──
+  if (method === 'drop') {
+    for (let i = 0; i < rows.length; i++) {
+      const cell = rows[i]?.cells[tag]
+      if (cell && cell.status !== 'Good') dropRows.add(i)
+    }
+    return
+  }
+  if (method === 'interpolate') {
+    interpolateTag(rows, tag)
+    return
+  }
+  const fill = FILL_METHODS[method]
+  if (fill) {
+    applyFillStrategy(rows, tag, { strategy: fill, constantValue: step.param })
+    return
+  }
+
+  // ── outliers ──
+  if (method === 'zscore') {
+    const threshold = step.param ?? 3
+    const vals = goodValuesOf(rows, tag)
+    const mean = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0
+    const variance = vals.length
+      ? vals.reduce((a, b) => a + (b - mean) * (b - mean), 0) / vals.length
+      : 0
+    const std = Math.sqrt(variance)
+    if (std === 0) return
+    for (const row of rows) {
+      const cell = row.cells[tag]
+      if (!cell) continue
+      if (Math.abs((cell.value - mean) / std) > threshold) {
+        cell.value = roundTo(mean, precision)
+        cell.status = 'Good'
+      }
+    }
+    return
+  }
+  if (method === 'clip') {
+    const low = step.paramLow
+    const high = step.param
+    for (const row of rows) {
+      const cell = row.cells[tag]
+      if (!cell) continue
+      if (low !== undefined && cell.value < low) cell.value = low
+      if (high !== undefined && cell.value > high) cell.value = high
+    }
+    return
+  }
+  if (method === 'outlier_median') {
+    const vals = rows
+      .map(r => r.cells[tag])
+      .filter((c): c is Cell => !!c)
+      .map(c => c.value)
+    if (vals.length === 0) return
+    const sorted = [...vals].sort((a, b) => a - b)
+    const q1 = sorted[Math.floor(sorted.length * 0.25)] ?? 0
+    const q3 = sorted[Math.floor(sorted.length * 0.75)] ?? 0
+    const iqr = q3 - q1
+    const med = median(sorted)
+    const lo = q1 - 1.5 * iqr
+    const hi = q3 + 1.5 * iqr
+    for (const row of rows) {
+      const cell = row.cells[tag]
+      if (!cell) continue
+      if (cell.value < lo || cell.value > hi) {
+        cell.value = roundTo(med, precision)
+      }
+    }
+    return
+  }
+
+  // ── smoothing ──
+  if (method === 'moving_avg') {
+    const window = Math.max(1, Math.round(step.param ?? SMOOTH_WINDOW))
+    const half = Math.floor(window / 2)
+    const values = rows.map(r => r.cells[tag]?.value ?? 0)
+    rows.forEach((row, i) => {
+      const cell = row.cells[tag]
+      if (!cell) return
+      const lo = Math.max(0, i - half)
+      const hi = Math.min(values.length - 1, i + half)
+      let sum = 0
+      for (let k = lo; k <= hi; k++) sum += values[k] ?? 0
+      cell.value = roundTo(sum / (hi - lo + 1), precision)
+    })
+    return
+  }
+  if (method === 'exponential') {
+    const alpha = Math.min(1, Math.max(0, step.param ?? 0.3))
+    let ema: number | undefined
+    for (const row of rows) {
+      const cell = row.cells[tag]
+      if (!cell) continue
+      ema =
+        ema === undefined ? cell.value : alpha * cell.value + (1 - alpha) * ema
+      cell.value = roundTo(ema, precision)
+    }
+    return
+  }
+}
+
+/**
+ * Stage 2 (bulk) — run an ordered multi-step cleaning pipeline per tag over the
+ * wide dataset. Steps run in listed order (missing → outliers → smoothing is
+ * the natural authoring order, but any order is honored). `drop` steps mark
+ * rows whose cell is Bad/Questionable; the union across all tags is removed
+ * once at the end. Tags with no pipeline pass through untouched.
+ */
+export function preprocessPipelines(
+  raw: Dataset,
+  pipelines: Record<string, TagPipeline>,
+): Dataset {
+  const { tags } = raw
+  const rows = cloneRows(raw.rows)
+  const dropRows = new Set<number>()
+
+  for (const tag of tags) {
+    const steps = pipelines[tag]
+    if (!steps || steps.length === 0) continue
+    const precision = tagMeta(tag)?.precision ?? 2
+    for (const step of steps) {
+      applyCleaningStep(rows, tag, step, dropRows, precision)
+    }
+  }
+
+  const kept =
+    dropRows.size === 0 ? rows : rows.filter((_, i) => !dropRows.has(i))
+  return { tags, rows: kept }
+}
+
+function median(sorted: number[]): number {
+  const n = sorted.length
+  if (n === 0) return 0
+  const mid = Math.floor(n / 2)
+  const hi = sorted[mid] ?? 0
+  return n % 2 === 0 ? ((sorted[mid - 1] ?? 0) + hi) / 2 : hi
+}
+
+/** Scale one column's values by the chosen method (guards zero spread → 0). */
+function scaleColumn(values: number[], method: ScalerMethod): number[] {
+  if (method === 'none') return values.map(v => roundTo(v, 3))
+
+  if (method === 'minmax') {
+    const min = Math.min(...values)
+    const span = Math.max(...values) - min
+    return values.map(v => (span === 0 ? 0 : roundTo((v - min) / span, 3)))
+  }
+
+  if (method === 'standard') {
+    const mean = values.reduce((a, b) => a + b, 0) / (values.length || 1)
+    const variance =
+      values.reduce((a, b) => a + (b - mean) * (b - mean), 0) /
+      (values.length || 1)
+    const std = Math.sqrt(variance)
+    return values.map(v => (std === 0 ? 0 : roundTo((v - mean) / std, 3)))
+  }
+
+  // robust — center on median, scale by IQR (Q3 − Q1).
+  const sorted = [...values].sort((a, b) => a - b)
+  const med = median(sorted)
+  const lower = sorted.slice(0, Math.floor(sorted.length / 2))
+  const upper = sorted.slice(Math.ceil(sorted.length / 2))
+  const iqr = median(upper) - median(lower)
+  return values.map(v => (iqr === 0 ? 0 : roundTo((v - med) / iqr, 3)))
+}
+
+/**
+ * Stage 3 — model-ready scaling. Each column is scaled independently by
+ * `scalers[tag]`, defaulting to `minmax` (the historical behavior) when a tag
+ * has no entry, so callers passing no `scalers` get min-max normalization.
+ */
+export function toModelReady(
+  clean: Dataset,
+  scalers: Record<string, ScalerMethod> = {},
+): Dataset {
   const { tags } = clean
   const rows = cloneRows(clean.rows)
 
   for (const t of tags) {
     const values = rows.map(r => r.cells[t]?.value ?? 0)
-    const min = Math.min(...values)
-    const max = Math.max(...values)
-    const span = max - min
-    rows.forEach(row => {
+    const scaled = scaleColumn(values, scalers[t] ?? DEFAULT_SCALER)
+    rows.forEach((row, i) => {
       const cell = row.cells[t]
       if (!cell) return
-      cell.value = span === 0 ? 0 : roundTo((cell.value - min) / span, 3)
+      cell.value = scaled[i] ?? 0
       cell.status = 'Good'
     })
   }
@@ -352,9 +634,7 @@ export function toChartRows(ds: Dataset): SensorChartRow[] {
 
 export interface TagFillPreviewRow {
   timestamp: string
-  /** Good-only value from `base`; null marks a raw Bad/Questionable gap. */
   before: number | null
-  /** Value from `filled` at the same timestamp; null if the row was dropped. */
   after: number | null
 }
 

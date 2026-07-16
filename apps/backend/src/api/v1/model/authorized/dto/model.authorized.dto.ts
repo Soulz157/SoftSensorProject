@@ -25,7 +25,12 @@ export const ModelConfigSchema = z
     datasetId: z.string().optional(),
     algorithm: z.string().optional(),
     targetVariable: z.string().optional(),
-    hyperparameters: z.record(z.string(), z.number()).optional(),
+    hyperparameters: z
+      .record(
+        z.string(),
+        z.union([z.string(), z.number(), z.boolean(), z.null()]),
+      )
+      .optional(),
     selectedMetrics: z.array(z.string()).optional(),
   })
   .passthrough();

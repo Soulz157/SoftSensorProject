@@ -9,7 +9,7 @@
  * mappings, keeping the wizard hooks/components thin.
  */
 import type { MetricKey } from '@/lib/model-metrics'
-import type { Algorithm } from '@/store/model-pipeline'
+import type { Algorithm, HyperparamValue } from '@/store/model-pipeline'
 import type { AIModel } from '@/types'
 
 export interface ModelConfig {
@@ -18,7 +18,11 @@ export interface ModelConfig {
   datasetId: string
   algorithm: Algorithm
   targetVariable: string
-  hyperparameters: Record<string, number>
+  hyperparameters: Record<string, HyperparamValue>
+  /** Loss / evaluation metric optimized during training (e.g. `mse`). */
+  lossFunction?: string
+  /** Train split percentage; test = 100 − this. */
+  trainTestSplit?: number
   selectedMetrics?: MetricKey[]
 }
 
@@ -27,7 +31,9 @@ export interface BuildModelConfigInput {
   datasetId: string
   algorithm: Algorithm
   targetVariable: string
-  hyperparameters: Record<string, number>
+  hyperparameters: Record<string, HyperparamValue>
+  lossFunction?: string
+  trainTestSplit?: number
   selectedMetrics?: MetricKey[]
 }
 
@@ -41,6 +47,10 @@ export function buildModelConfig(input: BuildModelConfigInput): ModelConfig {
     algorithm: input.algorithm,
     targetVariable: input.targetVariable,
     hyperparameters: input.hyperparameters,
+    ...(input.lossFunction ? { lossFunction: input.lossFunction } : {}),
+    ...(input.trainTestSplit !== undefined
+      ? { trainTestSplit: input.trainTestSplit }
+      : {}),
     ...(input.selectedMetrics
       ? { selectedMetrics: input.selectedMetrics }
       : {}),

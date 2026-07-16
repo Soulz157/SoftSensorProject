@@ -1,0 +1,383 @@
+'use client'
+
+import { useEffect, useMemo, useState } from 'react'
+import { useAtom, useAtomValue, useSetAtom } from 'jotai'
+import {
+  AlertCircle,
+  Eye,
+  EyeOff,
+  Info,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Search,
+  Tags,
+} from 'lucide-react'
+import { Input } from '@/components/ui/input'
+import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
+import { ScrollArea } from '@/components/ui/scroll-area'
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from '@/components/ui/accordion'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover'
+import { cn } from '@/lib/utils'
+import type { Dataset } from '@/lib/preprocessing'
+import {
+  dwCsvUploadTagsAtom,
+  dwRawDatasetAtom,
+  dwSelectedSourcesAtom,
+  dwSelectedTagsAtom,
+  dwTagSidebarCollapsedAtom,
+  dwCurrentStepAtom,
+  dwProcessingSubStepAtom,
+  dwCleaningTagsAtom,
+  dwHighestUnlockedAtom,
+} from '@/store/dataset-studio'
+import { useDatasetTagSelection } from '@/hooks/dataset/use-dataset-tag-selection'
+import { BadDataBreakdown } from './bad-data-breakdown'
+import { Badge } from '@/components/ui/badge'
+
+interface TagGroup {
+  id: string
+  label: string
+  tags: string[]
+}
+
+export function DatasetTagSidebar() {
+  const raw = useAtomValue(dwRawDatasetAtom)
+  const selectedTags = useAtomValue(dwSelectedTagsAtom)
+  const csvTags = useAtomValue(dwCsvUploadTagsAtom)
+  const sources = useAtomValue(dwSelectedSourcesAtom)
+
+  // Before a fetch completes the raw dataset is empty — fall back to the
+  // Step-1 tag selection so the sidebar still lists tags on steps 1/2.
+  const dataset: Dataset = useMemo(
+    () => (raw.tags.length > 0 ? raw : { tags: selectedTags, rows: [] }),
+    [raw, selectedTags],
+  )
+  const hasData = raw.rows.length > 0
+
+  const {
+    tags,
+    activeTags,
+    hidden,
+    focusedTag,
+    badByTag,
+    badDetailByTag,
+    colorForTag,
+    toggleVisible,
+    setFocused,
+    selectAll,
+    clearAll,
+    refresh,
+  } = useDatasetTagSelection(dataset)
+
+  const [query, setQuery] = useState('')
+  const [collapsed, setCollapsed] = useAtom(dwTagSidebarCollapsedAtom)
+  // On Step 3.2 the row checkboxes pick cleaning targets rather than toggling
+  // chart visibility (the Eye button keeps that role). Other steps are unchanged.
+  const currentStep = useAtomValue(dwCurrentStepAtom)
+  const subStep = useAtomValue(dwProcessingSubStepAtom)
+  const [cleaningTags, setCleaningTags] = useAtom(dwCleaningTagsAtom)
+  const setHighestUnlocked = useSetAtom(dwHighestUnlockedAtom)
+  const isCleaning = currentStep === 3 && subStep === 2
+  const cleaningSet = useMemo(() => new Set(cleaningTags), [cleaningTags])
+
+  // A cleaning-target change alters the produced dataset — relock downstream.
+  const relock = () => setHighestUnlocked(prev => Math.min(prev, 4))
+  const toggleCleaning = (tag: string) => {
+    setCleaningTags(prev =>
+      prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag],
+    )
+    relock()
+  }
+  const selectAllCleaning = () => {
+    setCleaningTags([...tags])
+    relock()
+  }
+  const clearCleaning = () => {
+    setCleaningTags([])
+    relock()
+  }
+
+  const groups = useMemo<TagGroup[]>(() => {
+    const csv = new Set(csvTags)
+    const csvInDataset = tags.filter(t => csv.has(t))
+    const others = tags.filter(t => !csv.has(t))
+    if (csvInDataset.length > 0 && others.length > 0) {
+      const sourceLabel =
+        sources.length === 1 ? sources[0]!.name : 'Source Data'
+      return [
+        { id: 'source', label: sourceLabel, tags: others },
+        { id: 'csv', label: 'CSV Data', tags: csvInDataset },
+      ]
+    }
+    return [{ id: 'all', label: 'Dataset Tags', tags }]
+  }, [tags, csvTags, sources])
+
+  const q = query.trim().toLowerCase()
+  const matches = (tag: string) => tag.toLowerCase().includes(q)
+
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+
+  // ── Collapsed: narrow strip with an expand button ──
+  if (collapsed) {
+    return (
+      <aside className="flex h-full w-12 shrink-0 flex-col items-center gap-3 border-r border-sidebar-border bg-sidebar py-3">
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="cursor-pointer"
+          onClick={() => setCollapsed(false)}
+          aria-label="Expand tag sidebar"
+          title="Expand tag sidebar"
+        >
+          <PanelLeftOpen className="h-4 w-4" />
+        </Button>
+        <div className="flex flex-col items-center gap-1 text-muted-foreground">
+          <Tags className="h-4 w-4" />
+          <span className="text-[10px] font-medium">{tags.length}</span>
+        </div>
+      </aside>
+    )
+  }
+
+  return (
+    <aside className="flex h-full w-72 shrink-0 flex-col border-r border-sidebar-border bg-sidebar lg:w-80">
+      {/* Header */}
+      <div className="flex h-14 items-center gap-2 border-b border-sidebar-border px-4">
+        <Tags className="h-4 w-4 text-muted-foreground" />
+        <h2 className="text-sm font-semibold text-sidebar-foreground">
+          Dataset Tags
+        </h2>
+        <span className="ml-auto rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+          {activeTags.length} / {tags.length}
+        </span>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          onClick={() => setCollapsed(true)}
+          aria-label="Collapse tag sidebar"
+          title="Collapse tag sidebar"
+          className="cursor-pointer"
+        >
+          <PanelLeftClose className="h-4 w-4" />
+        </Button>
+      </div>
+
+      {/* Search + global actions */}
+      <div className="space-y-3 border-b border-sidebar-border p-3">
+        <div className="relative">
+          <Search className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            type="search"
+            placeholder="Search tags..."
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            className="h-8 pl-8 text-xs"
+          />
+        </div>
+        <div className="flex items-center justify-between">
+          <Button
+            size="sm"
+            variant="ghost"
+            className="cursor-pointer h-7 px-2 text-xs"
+            onClick={isCleaning ? selectAllCleaning : selectAll}
+            disabled={tags.length === 0}
+          >
+            Select All
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="cursor-pointer h-7 px-2 text-xs text-muted-foreground hover:text-destructive"
+            onClick={isCleaning ? clearCleaning : clearAll}
+            disabled={tags.length === 0}
+          >
+            Clear
+          </Button>
+        </div>
+      </div>
+
+      {/* Tag list */}
+      <div className="relative min-h-0 flex-1">
+        <ScrollArea className="h-full w-full">
+          {tags.length === 0 ? (
+            <p className="px-4 py-6 text-center text-xs text-muted-foreground">
+              Select tags in Step 1 to populate this list.
+            </p>
+          ) : (
+            <Accordion
+              key={`${groups.map(g => g.id).join('|')}-${tags.length}`}
+              type="multiple"
+              defaultValue={groups.map(g => g.id)}
+              className="px-1 py-2"
+            >
+              {groups.map(group => {
+                const groupTags = group.tags.filter(matches)
+                return (
+                  <AccordionItem
+                    key={group.id}
+                    value={group.id}
+                    className="border-none"
+                  >
+                    <AccordionTrigger className="px-3 py-1.5 text-[11px] font-semibold tracking-wider text-muted-foreground uppercase hover:no-underline">
+                      {group.label}
+                      <Badge className="ml-2 h-4 items-center bg-muted font-medium text-muted-foreground">
+                        {group.tags.length}
+                      </Badge>
+                    </AccordionTrigger>
+                    <AccordionContent className="pb-2">
+                      {groupTags.length === 0 ? (
+                        <p className="px-4 py-1.5 text-xs text-muted-foreground">
+                          No matches
+                        </p>
+                      ) : (
+                        <ul className="pr-1">
+                          {groupTags.map(tag => {
+                            const isHidden = hidden.has(tag)
+                            const isFocused = tag === focusedTag[0]
+                            const badCount = badByTag[tag] ?? 0
+                            return (
+                              <li key={tag}>
+                                <div
+                                  role="button"
+                                  tabIndex={0}
+                                  onClick={() => {
+                                    setFocused([tag])
+                                    toggleCleaning(tag)
+                                  }}
+                                  onKeyDown={e => {
+                                    if (e.key === 'Enter' || e.key === ' ') {
+                                      e.preventDefault()
+                                      setFocused([tag])
+                                    }
+                                  }}
+                                  className={cn(
+                                    'flex cursor-pointer items-center gap-2 border-l-2 px-1 py-2 transition-colors',
+                                    isFocused
+                                      ? 'border-primary bg-primary/10'
+                                      : 'border-transparent hover:bg-sidebar-accent',
+                                    isHidden && !isFocused && 'opacity-60',
+                                  )}
+                                >
+                                  <Checkbox
+                                    checked={
+                                      isCleaning
+                                        ? cleaningSet.has(tag)
+                                        : !isHidden
+                                    }
+                                    onClick={e => e.stopPropagation()}
+                                    onCheckedChange={() =>
+                                      isCleaning
+                                        ? toggleCleaning(tag)
+                                        : toggleVisible(tag)
+                                    }
+                                    aria-label={
+                                      isCleaning
+                                        ? `Toggle ${tag} cleaning`
+                                        : `Toggle ${tag} visibility`
+                                    }
+                                    className="shrink-0"
+                                  />
+                                  <span
+                                    className={cn(
+                                      'h-2.5 w-2.5 shrink-0 rounded-full transition-opacity',
+                                      isHidden && 'opacity-30',
+                                    )}
+                                    style={{
+                                      backgroundColor: colorForTag(tag),
+                                    }}
+                                  />
+                                  <span
+                                    className={cn(
+                                      'truncate font-mono text-xs',
+                                      isFocused
+                                        ? 'font-medium text-foreground'
+                                        : isHidden
+                                          ? 'text-muted-foreground/70'
+                                          : 'text-sidebar-foreground',
+                                    )}
+                                    title={tag}
+                                  >
+                                    {tag}
+                                  </span>
+
+                                  <div className="ml-auto flex shrink-0 items-center gap-1.5">
+                                    {badCount > 0 && (
+                                      <Popover>
+                                        <PopoverTrigger asChild>
+                                          <button
+                                            type="button"
+                                            onClick={e => e.stopPropagation()}
+                                            aria-label={`Bad data detail for ${tag}`}
+                                            className="flex items-center gap-1 rounded-full bg-purple-100 px-1.5 py-0.5 text-[10px] font-medium text-purple-700 dark:bg-purple-500/20 dark:text-purple-400"
+                                            title={`${badCount} Bad/Questionable rows`}
+                                          >
+                                            {badCount}
+                                            <Info className="h-3 w-3 opacity-70" />
+                                          </button>
+                                        </PopoverTrigger>
+                                        <PopoverContent
+                                          align="end"
+                                          className="w-64 p-3"
+                                          onClick={e => e.stopPropagation()}
+                                        >
+                                          <BadDataBreakdown
+                                            tag={tag}
+                                            badCount={badCount}
+                                            detail={badDetailByTag[tag]}
+                                          />
+                                        </PopoverContent>
+                                      </Popover>
+                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={e => {
+                                        e.stopPropagation()
+                                        toggleVisible(tag)
+                                      }}
+                                      aria-label={
+                                        isHidden ? `Show ${tag}` : `Hide ${tag}`
+                                      }
+                                      className="cursor-pointer text-muted-foreground transition-colors hover:text-foreground"
+                                    >
+                                      {isHidden ? (
+                                        <EyeOff className="h-3.5 w-3.5" />
+                                      ) : (
+                                        <Eye className="h-3.5 w-3.5" />
+                                      )}
+                                    </button>
+                                  </div>
+                                </div>
+                              </li>
+                            )
+                          })}
+                        </ul>
+                      )}
+                    </AccordionContent>
+                  </AccordionItem>
+                )
+              })}
+            </Accordion>
+          )}
+        </ScrollArea>
+      </div>
+
+      {!hasData && tags.length > 0 && (
+        <div className="border-t border-sidebar-border px-4 py-2.5 text-[11px] text-muted-foreground">
+          Fetch data to enable analysis &amp; quality checks.
+        </div>
+      )}
+    </aside>
+  )
+}

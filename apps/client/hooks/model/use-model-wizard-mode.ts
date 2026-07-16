@@ -22,6 +22,8 @@ import {
   mpAlgorithmAtom,
   mpTargetVariableAtom,
   mpHyperparamsAtom,
+  mpLossFunctionAtom,
+  mpTrainTestSplitAtom,
   mpSelectedMetricsAtom,
   mpTrainStateAtom,
   mpCurrentStepAtom,
@@ -59,6 +61,8 @@ export function useModelWizardMode(): UseModelWizardModeResult {
   const setAlgorithm = useSetAtom(mpAlgorithmAtom)
   const setTargetVariable = useSetAtom(mpTargetVariableAtom)
   const setHyperparams = useSetAtom(mpHyperparamsAtom)
+  const setLossFunction = useSetAtom(mpLossFunctionAtom)
+  const setTrainTestSplit = useSetAtom(mpTrainTestSplitAtom)
   const setSelectedMetrics = useSetAtom(mpSelectedMetricsAtom)
   const setTrainState = useSetAtom(mpTrainStateAtom)
   const setCurrentStep = useSetAtom(mpCurrentStepAtom)
@@ -97,6 +101,8 @@ export function useModelWizardMode(): UseModelWizardModeResult {
         setAlgorithm(config.algorithm)
         setTargetVariable(config.targetVariable)
         setHyperparams(config.hyperparameters)
+        setLossFunction(config.lossFunction ?? 'mse')
+        setTrainTestSplit(config.trainTestSplit ?? 80)
         setSelectedMetrics(
           config.selectedMetrics ?? ([...METRIC_KEYS] as MetricKey[]),
         )

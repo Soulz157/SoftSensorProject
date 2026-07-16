@@ -83,7 +83,7 @@ export function SidebarWorkspaces({
             </Link>
             <button
               onClick={() => setWorkspaceOpen(!workspaceOpen)}
-              className="flex h-5 w-5 items-center justify-center text-sidebar-foreground/60 hover:text-sidebar-foreground transition-colors"
+              className="cursor-pointer flex h-5 w-5 items-center justify-center text-sidebar-foreground/60 hover:text-sidebar-foreground transition-colors"
             >
               <ChevronDown
                 className={cn(

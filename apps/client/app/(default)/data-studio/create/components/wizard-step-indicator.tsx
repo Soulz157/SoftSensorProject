@@ -48,7 +48,7 @@ export function WizardStepIndicator({
                   'flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold transition-colors',
                   isActive &&
                     'bg-primary text-primary-foreground ring-2 ring-primary ring-offset-2 ring-offset-background',
-                  isDone && 'bg-emerald-500 text-white',
+                  isDone && 'bg-primary text-primary-foreground',
                   !isActive &&
                     !isDone &&
                     step <= highestUnlocked &&
@@ -73,7 +73,7 @@ export function WizardStepIndicator({
               <div
                 className={cn(
                   'mx-1 h-px min-w-6 flex-1 transition-colors',
-                  step < currentStep ? 'bg-emerald-500' : 'bg-border',
+                  step < currentStep ? 'bg-primary' : 'bg-border',
                 )}
               />
             )}

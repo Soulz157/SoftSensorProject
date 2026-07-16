@@ -13,8 +13,8 @@ export const PlanItemSchema = z.object({
 export const SubscriptionItemSchema = z.object({
   id: z.string(),
   status: z.enum(['ACTIVE', 'EXPIRED', 'CANCELED', 'TRIALING']),
-  startDate: z.coerce.date(),
-  endDate: z.coerce.date(),
+  startDate: z.iso.datetime(),
+  endDate: z.iso.datetime(),
   plan: PlanItemSchema,
 });
 

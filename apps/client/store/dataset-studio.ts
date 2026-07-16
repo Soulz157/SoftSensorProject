@@ -1,11 +1,12 @@
 import { atom } from 'jotai'
 import type { SavedDataSource } from '@/lib/mock-data-sources'
-import type { Dataset, FillStrategyConfig } from '@/lib/preprocessing'
+import type { Dataset, ScalerMethod, TagPipeline } from '@/lib/preprocessing'
 import type { FeatureConfig } from '@/lib/feature-engineering'
 import type {
   ConditionalRule,
   CropRange,
   StatisticalRule,
+  ValueCrop,
 } from '@/lib/precleanse'
 import type {
   FetchPeriod,
@@ -47,14 +48,35 @@ export const dwRawDatasetAtom = atom<Dataset>(EMPTY_DATASET)
 
 export const dwFeatureConfigsAtom = atom<FeatureConfig[]>([])
 export const dwCropRangeAtom = atom<CropRange>(null)
+export const dwValueCropAtom = atom<ValueCrop>({})
 export const dwConditionalRulesAtom = atom<ConditionalRule[]>([])
 export const dwStatisticalRulesAtom = atom<StatisticalRule[]>([])
 
-// Step 4 — Fill Null (imputation)
-export const dwFillStrategiesAtom = atom<Record<string, FillStrategyConfig>>({})
+// Step 3.2 — Data Cleaning (bulk multi-step pipeline)
+// Per-tag ordered cleaning pipeline (missing → outliers → smoothing steps).
+export const dwCleaningPipelinesAtom = atom<Record<string, TagPipeline>>({})
+// Tags the shared cleaning pipeline is currently applied to (Step 3.2 scope).
+export const dwCleaningTagsAtom = atom<string[]>([])
+
+// Step 4 — Feature Engineering
+// Selected columns to keep (original + engineered); null = keep all.
+export const dwSelectedColumnsAtom = atom<string[] | null>(null)
+// Per-column model-ready scaler; missing key defaults to min-max.
+export const dwScalerConfigsAtom = atom<Record<string, ScalerMethod>>({})
 
 // Step 3 — Processing sub-step (3.1 preprocessing / 3.2 imputation)
 export const dwProcessingSubStepAtom = atom<1 | 2>(1)
+
+// Shared analysis tag-selection (persistent Tag Sidebar ↔ Data Analysis card).
+// Visibility only — NEVER the dataset-membership set (dwSelectedTagsAtom).
+// `dwHiddenTagsAtom` = tags hidden from charts; activeTags = dataset.tags − hidden.
+// `dwFocusedTagAtom` = the emphasized tag driven by a sidebar row click.
+export const dwHiddenTagsAtom = atom<string[]>([])
+export const dwFocusedTagAtom = atom<string>('')
+
+// Collapse state for the persistent Dataset Tags sidebar in the wizard.
+// Read by both the sidebar and the wizard content so collapse persists across steps.
+export const dwTagSidebarCollapsedAtom = atom<boolean>(false)
 
 // Wizard nav
 export const dwCurrentStepAtom = atom<number>(1)
@@ -95,10 +117,17 @@ export const initDatasetWizardAtom = atom(
     set(dwRawDatasetAtom, EMPTY_DATASET)
     set(dwFeatureConfigsAtom, [])
     set(dwCropRangeAtom, null)
+    set(dwValueCropAtom, {})
     set(dwConditionalRulesAtom, [])
     set(dwStatisticalRulesAtom, [])
-    set(dwFillStrategiesAtom, {})
+    set(dwCleaningPipelinesAtom, {})
+    set(dwCleaningTagsAtom, [])
+    set(dwSelectedColumnsAtom, null)
+    set(dwScalerConfigsAtom, {})
     set(dwProcessingSubStepAtom, 1)
+    set(dwHiddenTagsAtom, [])
+    set(dwFocusedTagAtom, '')
+    set(dwTagSidebarCollapsedAtom, false)
     set(dwCurrentStepAtom, 1)
     set(dwHighestUnlockedAtom, 1)
   },
@@ -128,8 +157,14 @@ export const resetDatasetWizardAtom = atom(null, (_get, set) => {
   set(dwCropRangeAtom, null)
   set(dwConditionalRulesAtom, [])
   set(dwStatisticalRulesAtom, [])
-  set(dwFillStrategiesAtom, {})
+  set(dwCleaningPipelinesAtom, {})
+  set(dwCleaningTagsAtom, [])
+  set(dwSelectedColumnsAtom, null)
+  set(dwScalerConfigsAtom, {})
   set(dwProcessingSubStepAtom, 1)
+  set(dwHiddenTagsAtom, [])
+  set(dwFocusedTagAtom, '')
+  set(dwTagSidebarCollapsedAtom, false)
   set(dwCurrentStepAtom, 1)
   set(dwHighestUnlockedAtom, 1)
 })

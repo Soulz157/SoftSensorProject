@@ -17,6 +17,8 @@ import {
   mpAlgorithmAtom,
   mpTargetVariableAtom,
   mpHyperparamsAtom,
+  mpLossFunctionAtom,
+  mpTrainTestSplitAtom,
   mpSelectedMetricsAtom,
 } from '@/store/model-pipeline'
 
@@ -38,6 +40,8 @@ export function useModelPreset(workspaceId: string): UseModelPresetResult {
   const setAlgorithm = useSetAtom(mpAlgorithmAtom)
   const setTargetVariable = useSetAtom(mpTargetVariableAtom)
   const setHyperparams = useSetAtom(mpHyperparamsAtom)
+  const setLossFunction = useSetAtom(mpLossFunctionAtom)
+  const setTrainTestSplit = useSetAtom(mpTrainTestSplitAtom)
   const setSelectedMetrics = useSetAtom(mpSelectedMetricsAtom)
 
   useEffect(() => {
@@ -80,6 +84,8 @@ export function useModelPreset(workspaceId: string): UseModelPresetResult {
       setAlgorithm(config.algorithm)
       setTargetVariable(config.targetVariable)
       setHyperparams(config.hyperparameters)
+      setLossFunction(config.lossFunction ?? 'mse')
+      setTrainTestSplit(config.trainTestSplit ?? 80)
       setSelectedMetrics(
         config.selectedMetrics ?? ([...METRIC_KEYS] as MetricKey[]),
       )
@@ -105,6 +111,8 @@ export function useModelPreset(workspaceId: string): UseModelPresetResult {
       setAlgorithm,
       setTargetVariable,
       setHyperparams,
+      setLossFunction,
+      setTrainTestSplit,
       setSelectedMetrics,
     ],
   )

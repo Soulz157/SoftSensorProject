@@ -1,15 +1,14 @@
 'use client'
 
-import { UnifiedTagTable } from '../../../../data-studio/create/components/unified-tag-table'
-import type { UsePipelineNavResult } from '@/hooks/model/use-model-pipeline-nav'
-
-interface Props {
-  nav: UsePipelineNavResult
-}
-
-export function Phase3TagSelection({ nav }: Props) {
+/**
+ * Model-wizard Phase 3 — "Verified Tags". Placeholder for now: the data-studio
+ * `UnifiedTagTable` is coupled to the dataset pipeline nav (`dw*` atoms) and
+ * cannot consume the model wizard's `UsePipelineNavResult`. A model-specific
+ * tag table over `hooks/model/use-model-tag-selection` is the proper follow-up.
+ */
+export function Phase3TagSelection() {
   return (
-    <div className="space-y-4 max-w-xl">
+    <div className="max-w-xl space-y-4">
       <div>
         <h2 className="text-sm font-medium text-foreground">Verified Tags</h2>
         <p className="text-xs text-muted-foreground">
@@ -17,7 +16,9 @@ export function Phase3TagSelection({ nav }: Props) {
           before continuing.
         </p>
       </div>
-      <UnifiedTagTable nav={nav} />
+      <div className="rounded-xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+        Tag verification for the model pipeline is not wired up yet.
+      </div>
     </div>
   )
 }

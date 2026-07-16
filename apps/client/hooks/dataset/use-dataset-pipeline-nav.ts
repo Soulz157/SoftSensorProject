@@ -1,11 +1,21 @@
 import { useCallback } from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
-import { preprocess, type FillStrategyConfig } from '@/lib/preprocessing'
+import {
+  preprocessPipelines,
+  type ScalerMethod,
+  type TagPipeline,
+} from '@/lib/preprocessing'
+import {
+  applyFeatures,
+  selectColumns,
+  type FeatureConfig,
+} from '@/lib/feature-engineering'
 import {
   precleanse,
   type ConditionalRule,
   type CropRange,
   type StatisticalRule,
+  type ValueCrop,
 } from '@/lib/precleanse'
 import {
   DW_TOTAL_STEPS,
@@ -26,9 +36,16 @@ import {
   dwRawDatasetAtom,
   dwProcessingSubStepAtom,
   dwCropRangeAtom,
+  dwValueCropAtom,
   dwConditionalRulesAtom,
   dwStatisticalRulesAtom,
-  dwFillStrategiesAtom,
+  dwCleaningPipelinesAtom,
+  dwCleaningTagsAtom,
+  dwFeatureConfigsAtom,
+  dwSelectedColumnsAtom,
+  dwScalerConfigsAtom,
+  dwHiddenTagsAtom,
+  dwFocusedTagAtom,
 } from '@/store/dataset-studio'
 import {
   mpSelectedSavedSourceIdAtom,
@@ -40,7 +57,7 @@ import {
   type FetchPeriod,
   type TagInputMethod,
 } from '@/store/model-pipeline'
-import type { CustomDateRange, SavedDataSource } from '@/store/data-visualize'
+import type { CustomDateRange } from '@/store/data-visualize'
 
 export interface UseDatasetPipelineNavResult {
   currentStep: number
@@ -54,6 +71,7 @@ export interface UseDatasetPipelineNavResult {
   customInterval: CustomInterval | null
   sourceFetchConfigs: Record<string, DataSourceConfig>
   cropRange: CropRange
+  valueCrop: ValueCrop
   conditionalRules: ConditionalRule[]
   statisticalRules: StatisticalRule[]
   selectedSavedSourceId: string
@@ -87,13 +105,25 @@ export interface UseDatasetPipelineNavResult {
   setFetchTag: (tags: string[] | null) => void
   resetFetch: () => void
   setCropRange: (range: CropRange) => void
+  setValueCrop: (crop: ValueCrop) => void
   processingSubStep: 1 | 2
   setProcessingSubStep: (step: 1 | 2) => void
   setConditionalRules: (update: React.SetStateAction<ConditionalRule[]>) => void
   setStatisticalRules: (update: React.SetStateAction<StatisticalRule[]>) => void
-  setFillStrategies: (
-    update: React.SetStateAction<Record<string, FillStrategyConfig>>,
+  // Step 3.2 — bulk cleaning
+  cleaningTags: string[]
+  setCleaningTags: (tags: string[]) => void
+  cleaningPipelines: Record<string, TagPipeline>
+  setCleaningPipelines: (
+    update: React.SetStateAction<Record<string, TagPipeline>>,
   ) => void
+  // Step 4 — Feature Engineering
+  featureConfigs: FeatureConfig[]
+  setFeatureConfigs: (update: React.SetStateAction<FeatureConfig[]>) => void
+  selectedColumns: string[] | null
+  setSelectedColumns: (columns: string[] | null) => void
+  scalerConfigs: Record<string, ScalerMethod>
+  setScalerConfig: (column: string, method: ScalerMethod) => void
 }
 
 export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
@@ -133,13 +163,24 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
   )
 
   const [cropRange, setCropRangeAtom] = useAtom(dwCropRangeAtom)
+  const [valueCrop, setValueCropAtom] = useAtom(dwValueCropAtom)
   const [conditionalRules, setConditionalRulesAtom] = useAtom(
     dwConditionalRulesAtom,
   )
   const [statisticalRules, setStatisticalRulesAtom] = useAtom(
     dwStatisticalRulesAtom,
   )
-  const [fillStrategies, setFillStrategiesAtom] = useAtom(dwFillStrategiesAtom)
+  const [cleaningPipelines, setCleaningPipelinesAtom] = useAtom(
+    dwCleaningPipelinesAtom,
+  )
+  const [cleaningTags, setCleaningTagsAtom] = useAtom(dwCleaningTagsAtom)
+  const setHiddenTagsAtom = useSetAtom(dwHiddenTagsAtom)
+  const setFocusedTagAtom = useSetAtom(dwFocusedTagAtom)
+  const [featureConfigs, setFeatureConfigsAtom] = useAtom(dwFeatureConfigsAtom)
+  const [selectedColumns, setSelectedColumnsAtom] = useAtom(
+    dwSelectedColumnsAtom,
+  )
+  const [scalerConfigs, setScalerConfigsAtom] = useAtom(dwScalerConfigsAtom)
 
   const canAdvance = useCallback(
     (step: number): boolean => {
@@ -156,22 +197,27 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
           return (
             precleanse(rawDataset, {
               crop: cropRange,
+              valueCrop,
               conditional: conditionalRules,
               statistical: statisticalRules,
             }).rows.length > 0
           )
-        // Step 4 — Data Cleaning: imputed dataset keeps at least one row.
-        case 4:
-          return (
-            preprocess(
-              precleanse(rawDataset, {
-                crop: cropRange,
-                conditional: conditionalRules,
-                statistical: statisticalRules,
-              }),
-              fillStrategies,
-            ).rows.length > 0
+        // Step 4 — Feature Engineering: the fully-materialized dataset
+        // (features → precleanse → fill → select) keeps at least one row/column.
+        case 4: {
+          const featured = applyFeatures(rawDataset, featureConfigs)
+          const filled = preprocessPipelines(
+            precleanse(featured, {
+              crop: cropRange,
+              valueCrop,
+              conditional: conditionalRules,
+              statistical: statisticalRules,
+            }),
+            cleaningPipelines,
           )
+          const selected = selectColumns(filled, selectedColumns)
+          return selected.rows.length > 0 && selected.tags.length > 0
+        }
         // Step 5 — Review & Save: final step, no further Next.
         case 5:
           return false
@@ -185,9 +231,12 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
       fetchState,
       rawDataset,
       cropRange,
+      valueCrop,
       conditionalRules,
       statisticalRules,
-      fillStrategies,
+      cleaningPipelines,
+      featureConfigs,
+      selectedColumns,
     ],
   )
 
@@ -252,7 +301,8 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
       setInsertedTagsAtom([])
       setHasInvalidTagsAtom(false)
       resetFetch()
-      setFillStrategiesAtom({})
+      setCleaningPipelinesAtom({})
+      setCleaningTagsAtom([])
       setHighestUnlocked(prev => Math.min(prev, 1))
     },
     [
@@ -265,7 +315,8 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
       setInsertedTagsAtom,
       setHasInvalidTagsAtom,
       resetFetch,
-      setFillStrategiesAtom,
+      setCleaningPipelinesAtom,
+      setCleaningTagsAtom,
       setHighestUnlocked,
     ],
   )
@@ -274,18 +325,25 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
     (tags: string[]) => {
       setSelectedTagsAtom(tags)
       resetFetch()
-      setFillStrategiesAtom(
-        prev =>
-          Object.fromEntries(
-            Object.entries(prev).filter(([tag]) => tags.includes(tag)),
-          ) as Record<string, FillStrategyConfig>,
+      // Prune the cleaning pipelines + cleaning-target set to surviving tags.
+      setCleaningPipelinesAtom(prev =>
+        Object.fromEntries(
+          Object.entries(prev).filter(([tag]) => tags.includes(tag)),
+        ),
       )
+      setCleaningTagsAtom(prev => prev.filter(t => tags.includes(t)))
+      // Prune shared analysis selection to the new tag set (visibility state).
+      setHiddenTagsAtom(prev => prev.filter(t => tags.includes(t)))
+      setFocusedTagAtom(prev => (tags.includes(prev) ? prev : ''))
       setHighestUnlocked(prev => Math.min(prev, 1))
     },
     [
       setSelectedTagsAtom,
       resetFetch,
-      setFillStrategiesAtom,
+      setCleaningPipelinesAtom,
+      setCleaningTagsAtom,
+      setHiddenTagsAtom,
+      setFocusedTagAtom,
       setHighestUnlocked,
     ],
   )
@@ -390,6 +448,14 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
     [setCropRangeAtom, setHighestUnlocked],
   )
 
+  const setValueCrop = useCallback(
+    (crop: ValueCrop) => {
+      setValueCropAtom(crop)
+      setHighestUnlocked(prev => Math.min(prev, 3))
+    },
+    [setValueCropAtom, setHighestUnlocked],
+  )
+
   const setProcessingSubStep = useCallback(
     (step: 1 | 2) => setProcessingSubStepAtom(step),
     [setProcessingSubStepAtom],
@@ -411,12 +477,44 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
     [setStatisticalRulesAtom, setHighestUnlocked],
   )
 
-  const setFillStrategies = useCallback(
-    (update: React.SetStateAction<Record<string, FillStrategyConfig>>) => {
-      setFillStrategiesAtom(update)
+  const setCleaningPipelines = useCallback(
+    (update: React.SetStateAction<Record<string, TagPipeline>>) => {
+      setCleaningPipelinesAtom(update)
       setHighestUnlocked(prev => Math.min(prev, 4))
     },
-    [setFillStrategiesAtom, setHighestUnlocked],
+    [setCleaningPipelinesAtom, setHighestUnlocked],
+  )
+
+  const setCleaningTags = useCallback(
+    (tags: string[]) => {
+      setCleaningTagsAtom(tags)
+      setHighestUnlocked(prev => Math.min(prev, 4))
+    },
+    [setCleaningTagsAtom, setHighestUnlocked],
+  )
+
+  const setFeatureConfigs = useCallback(
+    (update: React.SetStateAction<FeatureConfig[]>) => {
+      setFeatureConfigsAtom(update)
+      setHighestUnlocked(prev => Math.min(prev, 4))
+    },
+    [setFeatureConfigsAtom, setHighestUnlocked],
+  )
+
+  const setSelectedColumns = useCallback(
+    (columns: string[] | null) => {
+      setSelectedColumnsAtom(columns)
+      setHighestUnlocked(prev => Math.min(prev, 4))
+    },
+    [setSelectedColumnsAtom, setHighestUnlocked],
+  )
+
+  const setScalerConfig = useCallback(
+    (column: string, method: ScalerMethod) => {
+      setScalerConfigsAtom(prev => ({ ...prev, [column]: method }))
+      setHighestUnlocked(prev => Math.min(prev, 4))
+    },
+    [setScalerConfigsAtom, setHighestUnlocked],
   )
 
   return {
@@ -431,6 +529,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
     customInterval,
     sourceFetchConfigs,
     cropRange,
+    valueCrop,
     conditionalRules,
     statisticalRules,
     selectedSavedSourceId,
@@ -459,9 +558,19 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
     setCustomInterval,
     setSourceFetchConfigs,
     setCropRange,
+    setValueCrop,
     setConditionalRules,
     setStatisticalRules,
-    setFillStrategies,
+    cleaningTags,
+    setCleaningTags,
+    cleaningPipelines,
+    setCleaningPipelines,
+    featureConfigs,
+    setFeatureConfigs,
+    selectedColumns,
+    setSelectedColumns,
+    scalerConfigs,
+    setScalerConfig,
     processingSubStep,
     setProcessingSubStep,
   }

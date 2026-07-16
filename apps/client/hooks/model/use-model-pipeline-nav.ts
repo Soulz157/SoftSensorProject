@@ -18,8 +18,12 @@ import {
   mpTrainStateAtom,
   mpCreatedModelIdAtom,
   mpSelectedMetricsAtom,
+  mpLossFunctionAtom,
+  mpTrainTestSplitAtom,
   type Algorithm,
+  type HyperparamValue,
 } from '@/store/model-pipeline'
+import { defaultHyperparams } from '@/lib/training-config'
 
 export interface UsePipelineNavResult {
   currentStep: number
@@ -28,7 +32,9 @@ export interface UsePipelineNavResult {
   selectedDataset: SavedDataset | null
   algorithm: Algorithm
   targetVariable: string
-  hyperparameters: Record<string, number>
+  hyperparameters: Record<string, HyperparamValue>
+  lossFunction: string
+  trainTestSplit: number
   goTo: (step: number) => void
   next: () => void
   back: () => void
@@ -36,7 +42,9 @@ export interface UsePipelineNavResult {
   setSelectedDataset: (dataset: SavedDataset | null) => void
   setAlgorithm: (algorithm: Algorithm) => void
   setTargetVariable: (tag: string) => void
-  setHyperparameter: (key: string, value: number) => void
+  setHyperparameter: (key: string, value: HyperparamValue) => void
+  setLossFunction: (loss: string) => void
+  setTrainTestSplit: (split: number) => void
   setFetchTagOverride: (tag: string) => void
   resetPipeline: () => void
 }
@@ -72,6 +80,8 @@ export function useModelPipelineNav(): UsePipelineNavResult {
   const [algorithm, setAlgorithmAtom] = useAtom(mpAlgorithmAtom)
   const [targetVariable, setTargetVariableAtom] = useAtom(mpTargetVariableAtom)
   const [hyperparameters, setHyperparametersAtom] = useAtom(mpHyperparamsAtom)
+  const [lossFunction, setLossFunctionAtom] = useAtom(mpLossFunctionAtom)
+  const [trainTestSplit, setTrainTestSplitAtom] = useAtom(mpTrainTestSplitAtom)
   const trainState = useAtomValue(mpTrainStateAtom)
   const setTrainState = useSetAtom(mpTrainStateAtom)
   const setCreatedModelId = useSetAtom(mpCreatedModelIdAtom)
@@ -148,13 +158,21 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     ],
   )
 
+  // Switching algorithm resets hyperparameters to that algorithm's clean
+  // defaults so the persisted record never accumulates keys from prior picks.
   const setAlgorithm = useCallback(
     (value: Algorithm) => {
       setAlgorithmAtom(value)
+      setHyperparametersAtom(defaultHyperparams(value))
       resetTraining()
       setHighestUnlocked(prev => Math.min(prev, 2))
     },
-    [setAlgorithmAtom, resetTraining, setHighestUnlocked],
+    [
+      setAlgorithmAtom,
+      setHyperparametersAtom,
+      resetTraining,
+      setHighestUnlocked,
+    ],
   )
 
   const setFetchTagOverride = useCallback(
@@ -176,7 +194,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
   )
 
   const setHyperparameter = useCallback(
-    (key: string, value: number) => {
+    (key: string, value: HyperparamValue) => {
       setHyperparametersAtom(prev => ({ ...prev, [key]: value }))
       resetTraining()
       setHighestUnlocked(prev => Math.min(prev, 2))
@@ -184,11 +202,31 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     [setHyperparametersAtom, resetTraining, setHighestUnlocked],
   )
 
+  const setLossFunction = useCallback(
+    (loss: string) => {
+      setLossFunctionAtom(loss)
+      resetTraining()
+      setHighestUnlocked(prev => Math.min(prev, 2))
+    },
+    [setLossFunctionAtom, resetTraining, setHighestUnlocked],
+  )
+
+  const setTrainTestSplit = useCallback(
+    (split: number) => {
+      setTrainTestSplitAtom(split)
+      resetTraining()
+      setHighestUnlocked(prev => Math.min(prev, 2))
+    },
+    [setTrainTestSplitAtom, resetTraining, setHighestUnlocked],
+  )
+
   const resetPipeline = useCallback(() => {
     setSelectedDatasetAtom(null)
     setAlgorithmAtom('ols')
     setTargetVariableAtom('')
-    setHyperparametersAtom({})
+    setHyperparametersAtom(defaultHyperparams('ols'))
+    setLossFunctionAtom('mse')
+    setTrainTestSplitAtom(80)
     setTrainState({ status: 'idle', progress: 0 })
     setCreatedModelId('')
     setSelectedMetrics(['r2', 'rmse', 'sd'])
@@ -199,6 +237,8 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     setAlgorithmAtom,
     setTargetVariableAtom,
     setHyperparametersAtom,
+    setLossFunctionAtom,
+    setTrainTestSplitAtom,
     setTrainState,
     setCreatedModelId,
     setSelectedMetrics,
@@ -214,6 +254,8 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     algorithm,
     targetVariable,
     hyperparameters,
+    lossFunction,
+    trainTestSplit,
     goTo,
     next,
     back,
@@ -222,6 +264,8 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     setAlgorithm,
     setTargetVariable,
     setHyperparameter,
+    setLossFunction,
+    setTrainTestSplit,
     setFetchTagOverride,
     resetPipeline,
   }

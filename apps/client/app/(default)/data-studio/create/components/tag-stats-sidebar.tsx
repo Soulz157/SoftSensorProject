@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { ListFilter, Plus, Sigma } from 'lucide-react'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
-import type { TagStatRow } from '@/hooks/use-tag-stats'
+import { MAX_COMPARISON_TAGS, type TagStatRow } from '@/hooks/use-tag-stats'
 import { StatTile } from './stat-tile'
 import { Button } from '@/components/ui/button'
 
@@ -120,7 +120,9 @@ export function TagStatsSidebar({
               ? selectedTags.includes(stat.tag)
               : stat.tag === selectedTag
             const atCap =
-              isMultiActive && !isSelected && selectedTags.length >= 3
+              isMultiActive &&
+              !isSelected &&
+              selectedTags.length >= MAX_COMPARISON_TAGS
 
             return (
               <button

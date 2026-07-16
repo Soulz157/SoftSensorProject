@@ -1,12 +1,16 @@
 'use client'
 import { useAtomValue, useSetAtom } from 'jotai'
-import { useCallback, useEffect, useReducer } from 'react'
+import { useCallback, useEffect } from 'react'
 import { getModels } from '@/services/model'
 import {
   workspacesAtom,
   workspacesLoadingAtom,
   modelsRefreshAtom,
+  allModelsAtom,
+  allModelsFetchingAtom,
+  allModelsErrorAtom,
 } from '@/store/workspace'
+import type { AIModel, Workspace } from '@/types'
 
 /**
  * Returns a function that invalidates every `useAllModels` consumer (sidebar
@@ -16,90 +20,87 @@ export function useRefreshModels() {
   const setRefresh = useSetAtom(modelsRefreshAtom)
   return useCallback(() => setRefresh(c => c + 1), [setRefresh])
 }
-import type { AIModel } from '@/types'
 
 export type ModelWithWorkspace = AIModel & { workspaceName: string }
 
-type State = {
-  data: ModelWithWorkspace[] | null
-  isFetching: boolean
-  error: string | null
+type Setters = {
+  setModels: (m: ModelWithWorkspace[] | null) => void
+  setFetching: (b: boolean) => void
+  setError: (e: string | null) => void
 }
 
-type Action =
-  | { type: 'EMPTY' }
-  | { type: 'FETCH_START' }
-  | { type: 'FETCH_SUCCESS'; models: ModelWithWorkspace[] }
-  | { type: 'FETCH_ERROR'; message: string }
+// Module-level dedup: the 3 overview mounts of `useAllModels` all call the
+// loader in the same tick; only the first triggers the per-workspace fan-out.
+// The result is written to shared atoms, so every consumer observes one fetch.
+// `currentKey` also acts as a cache — re-mounting with the same workspaces +
+// refresh counter skips the fetch and keeps the cached models.
+let currentKey: string | null = null
 
-function reducer(state: State, action: Action): State {
-  switch (action.type) {
-    case 'EMPTY':
-      return { data: [], isFetching: false, error: null }
-    case 'FETCH_START':
-      return { ...state, isFetching: true, error: null }
-    case 'FETCH_SUCCESS':
-      return { data: action.models, isFetching: false, error: null }
-    case 'FETCH_ERROR':
-      return { ...state, isFetching: false, error: action.message }
-  }
+function loadAllModels(workspaces: Workspace[], key: string, s: Setters): void {
+  if (key === currentKey) return
+  currentKey = key
+  s.setFetching(true)
+  s.setError(null)
+
+  Promise.all(workspaces.map(ws => getModels(ws.id)))
+    .then(results => {
+      if (key !== currentKey) return // superseded by a newer key
+      const models: ModelWithWorkspace[] = []
+      workspaces.forEach((ws, i) => {
+        ;(results[i] ?? []).forEach(m =>
+          models.push({ ...m, workspaceName: ws.name }),
+        )
+      })
+      s.setModels(models)
+      s.setFetching(false)
+    })
+    .catch(() => {
+      if (key !== currentKey) return
+      s.setError('Failed to load models')
+      s.setFetching(false)
+      currentKey = null // allow a retry on the next mount/effect
+    })
 }
 
 export function useAllModels() {
   const workspaces = useAtomValue(workspacesAtom)
   const workspacesLoading = useAtomValue(workspacesLoadingAtom)
   const refresh = useAtomValue(modelsRefreshAtom)
-  const [state, dispatch] = useReducer(reducer, {
-    data: null,
-    isFetching: true,
-    error: null,
-  })
 
-  const fetch = useCallback(
-    (signal?: AbortSignal) => {
-      if (workspacesLoading) return
-      if (workspaces.length === 0) {
-        dispatch({ type: 'EMPTY' })
-        return
-      }
+  const data = useAtomValue(allModelsAtom)
+  const isFetching = useAtomValue(allModelsFetchingAtom)
+  const error = useAtomValue(allModelsErrorAtom)
 
-      dispatch({ type: 'FETCH_START' })
-
-      Promise.all(workspaces.map(ws => getModels(ws.id)))
-        .then(results => {
-          if (signal?.aborted) return
-          const models: ModelWithWorkspace[] = []
-          workspaces.forEach((ws, i) => {
-            const wsModels = results[i] ?? []
-            wsModels.forEach(m => models.push({ ...m, workspaceName: ws.name }))
-          })
-          dispatch({ type: 'FETCH_SUCCESS', models })
-        })
-        .catch(() => {
-          if (!signal?.aborted)
-            dispatch({
-              type: 'FETCH_ERROR',
-              message: 'Failed to load models',
-            })
-        })
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [workspaces, workspacesLoading, refresh],
-  )
+  const setModels = useSetAtom(allModelsAtom)
+  const setFetching = useSetAtom(allModelsFetchingAtom)
+  const setError = useSetAtom(allModelsErrorAtom)
+  const setRefresh = useSetAtom(modelsRefreshAtom)
 
   useEffect(() => {
-    const controller = new AbortController()
-    fetch(controller.signal)
-    return () => controller.abort()
-  }, [fetch])
+    if (workspacesLoading) return
+    const key = `${refresh}:${workspaces.map(w => w.id).join(',')}`
 
-  const refetch = useCallback(() => fetch(), [fetch])
+    if (workspaces.length === 0) {
+      if (currentKey !== key) {
+        currentKey = key
+        setModels([])
+        setFetching(false)
+        setError(null)
+      }
+      return
+    }
+
+    loadAllModels(workspaces, key, { setModels, setFetching, setError })
+  }, [workspaces, workspacesLoading, refresh, setModels, setFetching, setError])
+
+  // refetch bumps the shared refresh counter so every consumer reloads once.
+  const refetch = useCallback(() => setRefresh(c => c + 1), [setRefresh])
 
   return {
-    models: state.data,
-    loading: state.isFetching && state.data === null,
-    isFetching: state.isFetching,
-    error: state.error,
+    models: data,
+    loading: isFetching && data === null,
+    isFetching,
+    error,
     refetch,
   }
 }

@@ -19,6 +19,14 @@ import type { Cell, DataRow, Dataset } from '@/lib/preprocessing'
 
 export type CropRange = { from: string; to: string } | null
 
+/**
+ * Per-tag value (Y-axis) crop bounds. A row is dropped when the keyed tag's
+ * reading falls outside `[min, max]` — the row-level counterpart of a time
+ * crop, so a drag-box on the chart trims both axes. Keyed by tag (mirrors the
+ * `fillStrategies` shape) so a tag's crop survives switching the selected tag.
+ */
+export type ValueCrop = Record<string, { min: number; max: number }>
+
 /** `mark` → set the matched cell's status to `Bad`; `drop` → remove the row. */
 export type OutlierAction = 'mark' | 'drop'
 
@@ -45,14 +53,42 @@ export interface StatisticalRule {
 
 export interface PrecleanseConfig {
   crop: CropRange
+  /** Per-tag Y-axis crop bounds. Optional — omitting it is a no-op. */
+  valueCrop?: ValueCrop
   conditional: ConditionalRule[]
   statistical: StatisticalRule[]
 }
 
 export const EMPTY_PRECLEANSE_CONFIG: PrecleanseConfig = {
   crop: null,
+  valueCrop: {},
   conditional: [],
   statistical: [],
+}
+
+/**
+ * Index of the row whose timestamp is closest to `targetMs` (epoch ms).
+ * `timestamps` are ascending ISO strings. Linear min-abs-diff scan — datasets
+ * are small enough that a bisect isn't worth it. Returns `0` for empty input.
+ *
+ * Used to snap a typed datetime (from the crop time inputs) onto a real row
+ * index, since the time-crop slider is index-based over actual row timestamps.
+ */
+export function nearestTimestampIndex(
+  timestamps: string[],
+  targetMs: number,
+): number {
+  if (timestamps.length === 0) return 0
+  let best = 0
+  let bestDiff = Infinity
+  for (let i = 0; i < timestamps.length; i++) {
+    const diff = Math.abs(new Date(timestamps[i]!).getTime() - targetMs)
+    if (diff < bestDiff) {
+      bestDiff = diff
+      best = i
+    }
+  }
+  return best
 }
 
 function cloneRows(rows: DataRow[]): DataRow[] {
@@ -145,9 +181,9 @@ export function statisticalMatchCount(
 }
 
 /**
- * Apply crop + outlier rules. Order: (1) crop rows to the inclusive time window,
- * (2) statistical rules, (3) conditional rules. Immutable — returns a new
- * dataset. Disabled or incomplete rules are skipped.
+ * Apply crop + outlier rules. Order: (1) time crop, (1b) value crop (both
+ * row-level), (2) statistical rules, (3) conditional rules (both cell-level).
+ * Immutable — returns a new dataset. Disabled or incomplete rules are skipped.
  */
 export function precleanse(raw: Dataset, cfg: PrecleanseConfig): Dataset {
   let rows = cloneRows(raw.rows)
@@ -156,6 +192,19 @@ export function precleanse(raw: Dataset, cfg: PrecleanseConfig): Dataset {
   if (cfg.crop) {
     const { from, to } = cfg.crop
     rows = rows.filter(r => r.timestamp >= from && r.timestamp <= to)
+  }
+
+  // 1b. Value crop — row-level, per tag. Drop rows whose reading for a cropped
+  // tag falls outside [min, max]. Rows missing that tag's cell are kept (no
+  // point to judge), so other tags' readings at that timestamp survive.
+  if (cfg.valueCrop) {
+    for (const [tag, bound] of Object.entries(cfg.valueCrop)) {
+      rows = rows.filter(r => {
+        const cell = r.cells[tag]
+        if (!cell) return true
+        return cell.value >= bound.min && cell.value <= bound.max
+      })
+    }
   }
 
   const markCell = (cell: Cell | undefined) => {
@@ -199,4 +248,95 @@ export function precleanse(raw: Dataset, cfg: PrecleanseConfig): Dataset {
   }
 
   return { tags: raw.tags, rows }
+}
+
+/**
+ * Per-stage removal counts. Crop stages remove whole **rows**; outlier rules
+ * only touch **cells** (mark `Bad` or drop that tag's cell — never the row),
+ * so those are counted as affected **points**. Units differ on purpose — the
+ * summary labels them accordingly.
+ */
+export interface PrecleanseRemoved {
+  /** Rows dropped by the time crop. */
+  timeCrop: number
+  /** Rows dropped by the value (Y-axis) crop. */
+  valueCrop: number
+  /** Cells flagged/dropped by conditional rules. */
+  conditional: number
+  /** Cells flagged/dropped by statistical rules. */
+  statistical: number
+}
+
+export interface PrecleanseBreakdown {
+  /** Fully pre-cleansed dataset (same result as `precleanse(raw, cfg)`). */
+  dataset: Dataset
+  removed: PrecleanseRemoved
+  /** Rows remaining after all stages. */
+  keptRows: number
+  /** Rows in the raw dataset before any stage. */
+  totalRows: number
+}
+
+/**
+ * Count cells that were `Good` in `a` but are no longer `Good` (marked `Bad`
+ * or dropped) in `b`. `a` and `b` must share the same rows — true for the
+ * cell-level (statistical/conditional) stages, which never remove rows.
+ */
+function goodCellsLost(a: Dataset, b: Dataset): number {
+  const bByTs = new Map(b.rows.map(r => [r.timestamp, r]))
+  let lost = 0
+  for (const row of a.rows) {
+    const bRow = bByTs.get(row.timestamp)
+    for (const tag of a.tags) {
+      const ac = row.cells[tag]
+      if (!ac || ac.status !== 'Good') continue
+      const bc = bRow?.cells[tag]
+      if (!bc || bc.status !== 'Good') lost++
+    }
+  }
+  return lost
+}
+
+/**
+ * Run `precleanse` while attributing what each stage removed — powers the
+ * Cut-off Summary. Applies the same stage order as `precleanse` (time crop →
+ * value crop → statistical → conditional) so the attribution matches the real
+ * result. `dataset` equals `precleanse(raw, cfg)`.
+ */
+export function precleanseBreakdown(
+  raw: Dataset,
+  cfg: PrecleanseConfig,
+): PrecleanseBreakdown {
+  const totalRows = raw.rows.length
+
+  const afterCrop = precleanse(raw, {
+    crop: cfg.crop,
+    conditional: [],
+    statistical: [],
+  })
+  const afterValue = precleanse(raw, {
+    crop: cfg.crop,
+    valueCrop: cfg.valueCrop,
+    conditional: [],
+    statistical: [],
+  })
+  const afterStat = precleanse(raw, {
+    crop: cfg.crop,
+    valueCrop: cfg.valueCrop,
+    conditional: [],
+    statistical: cfg.statistical,
+  })
+  const full = precleanse(raw, cfg)
+
+  return {
+    dataset: full,
+    removed: {
+      timeCrop: totalRows - afterCrop.rows.length,
+      valueCrop: afterCrop.rows.length - afterValue.rows.length,
+      statistical: goodCellsLost(afterValue, afterStat),
+      conditional: goodCellsLost(afterStat, full),
+    },
+    keptRows: full.rows.length,
+    totalRows,
+  }
 }

@@ -10,8 +10,8 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { precleanse } from '@/lib/precleanse'
-import { preprocess } from '@/lib/preprocessing'
-import { applyFeatures } from '@/lib/feature-engineering'
+import { preprocessPipelines, toModelReady } from '@/lib/preprocessing'
+import { applyFeatures, selectColumns } from '@/lib/feature-engineering'
 import { datasetQuality } from '@/lib/data-quality'
 import type { PipelineConfig } from '@/lib/pipeline-config'
 import { datasetService } from '@/services/dataset'
@@ -22,7 +22,7 @@ import {
   dwSelectedSourcesAtom,
   dwRawDatasetAtom,
   dwFeatureConfigsAtom,
-  dwFillStrategiesAtom,
+  dwCleaningPipelinesAtom,
   dwTimeRangeAtom,
   dwCustomDateRangeAtom,
   dwCustomIntervalAtom,
@@ -43,7 +43,7 @@ export function Step5ReviewSave({ nav }: Props) {
   const sources = useAtomValue(dwSelectedSourcesAtom)
   const raw = useAtomValue(dwRawDatasetAtom)
   const features = useAtomValue(dwFeatureConfigsAtom)
-  const fillStrategies = useAtomValue(dwFillStrategiesAtom)
+  const cleaningPipelines = useAtomValue(dwCleaningPipelinesAtom)
   const timeRange = useAtomValue(dwTimeRangeAtom)
   const customDateRange = useAtomValue(dwCustomDateRangeAtom)
   const customInterval = useAtomValue(dwCustomIntervalAtom)
@@ -52,9 +52,16 @@ export function Step5ReviewSave({ nav }: Props) {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
 
-  const { cropRange, conditionalRules, statisticalRules } = nav
+  const {
+    cropRange,
+    conditionalRules,
+    statisticalRules,
+    selectedColumns,
+    scalerConfigs,
+  } = nav
 
-  // Same pipeline as `materializeDataset`: raw → features → precleanse → fill.
+  // Same pipeline as `materializeDataset`:
+  // raw → features → precleanse → fill → select → scale.
   const { cleansed, finalDataset } = useMemo(() => {
     const featured = applyFeatures(raw, features)
     const cleaned = precleanse(featured, {
@@ -62,9 +69,11 @@ export function Step5ReviewSave({ nav }: Props) {
       conditional: conditionalRules,
       statistical: statisticalRules,
     })
+    const filled = preprocessPipelines(cleaned, cleaningPipelines)
+    const selected = selectColumns(filled, selectedColumns)
     return {
       cleansed: cleaned,
-      finalDataset: preprocess(cleaned, fillStrategies),
+      finalDataset: toModelReady(selected, scalerConfigs),
     }
   }, [
     raw,
@@ -72,7 +81,9 @@ export function Step5ReviewSave({ nav }: Props) {
     cropRange,
     conditionalRules,
     statisticalRules,
-    fillStrategies,
+    cleaningPipelines,
+    selectedColumns,
+    scalerConfigs,
   ])
 
   const handleSave = async () => {
@@ -88,7 +99,9 @@ export function Step5ReviewSave({ nav }: Props) {
       cropRange,
       conditionalRules,
       statisticalRules,
-      fillStrategies,
+      cleaningPipelines,
+      selectedColumns,
+      scalers: scalerConfigs,
     }
 
     try {
@@ -108,8 +121,8 @@ export function Step5ReviewSave({ nav }: Props) {
       toast.success(`Dataset "${res.data.name}" created`)
       resetWizard()
       router.push('/data-studio')
-    } catch {
-      toast.error('Failed to save dataset')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save dataset')
     } finally {
       setSaving(false)
     }
@@ -157,25 +170,25 @@ export function Step5ReviewSave({ nav }: Props) {
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <div className="rounded-xl bg-card p-4 ring-1 ring-foreground/10">
           <p className="text-xs text-muted-foreground">Sources</p>
-          <p className="mt-1 text-2xl font-bold tabular-nums">
+          <p className="mt-1 text-2xl font-semibold tabular-nums">
             {sources.length}
           </p>
         </div>
         <div className="rounded-xl bg-card p-4 ring-1 ring-foreground/10">
           <p className="text-xs text-muted-foreground">Tags</p>
-          <p className="mt-1 text-2xl font-bold tabular-nums">
+          <p className="mt-1 text-2xl font-semibold tabular-nums">
             {finalDataset.tags.length}
           </p>
         </div>
         <div className="rounded-xl bg-card p-4 ring-1 ring-foreground/10">
           <p className="text-xs text-muted-foreground">Rows</p>
-          <p className="mt-1 text-2xl font-bold tabular-nums">
+          <p className="mt-1 text-2xl font-semibold tabular-nums">
             {finalDataset.rows.length.toLocaleString()}
           </p>
         </div>
         <div className="rounded-xl bg-card p-4 ring-1 ring-foreground/10">
           <p className="text-xs text-muted-foreground">Raw rows</p>
-          <p className="mt-1 text-2xl font-bold tabular-nums">
+          <p className="mt-1 text-2xl font-semibold tabular-nums">
             {raw.rows.length.toLocaleString()}
           </p>
         </div>

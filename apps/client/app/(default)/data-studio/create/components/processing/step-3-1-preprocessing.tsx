@@ -6,8 +6,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { precleanse } from '@/lib/precleanse'
 import { PERIOD_TO_RANGE } from '@/store/model-pipeline'
 import { dwRawDatasetAtom, dwTimeRangeAtom } from '@/store/dataset-studio'
-import { RawTrendSection } from '../raw-trend-section'
-import { StatisticalAnalysisSection } from '../statistical-analysis-section'
+import { DataAnalysisCard } from './data-analysis-card'
 import { ProcessingActionFooter } from './processing-action-footer'
 import { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipeline-nav'
 
@@ -42,9 +41,7 @@ export function Step31Preprocessing({ nav }: Props) {
         imputing missing values.
       </p>
 
-      <RawTrendSection dataset={precleansed} range={range} />
-
-      <StatisticalAnalysisSection dataset={precleansed} />
+      <DataAnalysisCard dataset={precleansed} range={range} />
 
       {emptied && (
         <Alert variant="destructive">

@@ -15,6 +15,8 @@ import {
   mpAlgorithmAtom,
   mpTargetVariableAtom,
   mpHyperparamsAtom,
+  mpLossFunctionAtom,
+  mpTrainTestSplitAtom,
   mpSelectedMetricsAtom,
   mpCreatedModelIdAtom,
 } from '@/store/model-pipeline'
@@ -40,6 +42,8 @@ export function useModelCommit(): () => Promise<string | null> {
   const algorithm = useAtomValue(mpAlgorithmAtom)
   const targetVariable = useAtomValue(mpTargetVariableAtom)
   const hyperparameters = useAtomValue(mpHyperparamsAtom)
+  const lossFunction = useAtomValue(mpLossFunctionAtom)
+  const trainTestSplit = useAtomValue(mpTrainTestSplitAtom)
   const selectedMetrics = useAtomValue(mpSelectedMetricsAtom)
 
   return useCallback(async (): Promise<string | null> => {
@@ -49,6 +53,8 @@ export function useModelCommit(): () => Promise<string | null> {
       algorithm,
       targetVariable,
       hyperparameters,
+      lossFunction,
+      trainTestSplit,
       selectedMetrics,
     })
 
@@ -93,6 +99,8 @@ export function useModelCommit(): () => Promise<string | null> {
     algorithm,
     targetVariable,
     hyperparameters,
+    lossFunction,
+    trainTestSplit,
     selectedMetrics,
     setCreatedModelId,
   ])

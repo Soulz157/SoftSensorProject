@@ -24,7 +24,25 @@ interface Props {
   tags: string[]
   range: TimeRange
   hideTagSelector?: boolean
-  hoveredTag?: string | null
+  /** Emphasized tag(s) from the sidebar — non-focused lines dim when set. */
+  focusedTag?: string[]
+  /** Master override: when true, every line renders at full opacity. */
+  isViewAll?: boolean
+}
+
+/**
+ * Per-line stroke opacity. "View all" forces full opacity, overriding focus;
+ * otherwise a non-empty focus set dims everything but the focused tag(s).
+ */
+function getLineOpacity(
+  tagId: string,
+  focusedTag: string[] | undefined,
+  isViewAll: boolean,
+): number {
+  if (isViewAll) return 1
+  if (focusedTag && focusedTag.length > 0)
+    return focusedTag.includes(tagId) ? 1 : 0.2
+  return 1
 }
 
 function usePrefersReducedMotion(): boolean {
@@ -62,7 +80,8 @@ export function RawTrendChart({
   tags,
   range,
   hideTagSelector = false,
-  hoveredTag = null,
+  focusedTag,
+  isViewAll = false,
 }: Props) {
   const reducedMotion = usePrefersReducedMotion()
   const { tickFormat } = rangeConfig(range)
@@ -172,7 +191,8 @@ export function RawTrendChart({
           />
 
           {visibleTags.map(piTag => {
-            const isDimmed = hoveredTag != null && piTag !== hoveredTag
+            const opacity = getLineOpacity(piTag, focusedTag, isViewAll)
+            const isFocused = !isViewAll && !!focusedTag?.includes(piTag)
             return (
               <Line
                 key={piTag}
@@ -180,10 +200,10 @@ export function RawTrendChart({
                 name={piTag}
                 type="natural"
                 stroke={colorByTag[piTag]}
-                strokeOpacity={isDimmed ? 0.3 : 1}
-                strokeWidth={hoveredTag === piTag ? 3 : 2}
+                strokeOpacity={opacity}
+                strokeWidth={isFocused ? 3 : 2}
                 fill={colorByTag[piTag]}
-                fillOpacity={isDimmed ? 0 : 0.12}
+                fillOpacity={opacity < 1 ? 0 : 0.12}
                 dot={{ r: 3, fill: colorByTag[piTag] }}
                 activeDot={{ r: 6 }}
                 connectNulls

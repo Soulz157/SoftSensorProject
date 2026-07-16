@@ -1,12 +1,22 @@
-import { buildRawDataset, preprocess } from '@/lib/preprocessing'
-import type { Dataset, FillStrategyConfig } from '@/lib/preprocessing'
+import {
+  buildRawDataset,
+  preprocess,
+  preprocessPipelines,
+  toModelReady,
+} from '@/lib/preprocessing'
+import type {
+  Dataset,
+  FillStrategyConfig,
+  ScalerMethod,
+  TagPipeline,
+} from '@/lib/preprocessing'
 import { precleanse } from '@/lib/precleanse'
 import type {
   ConditionalRule,
   CropRange,
   StatisticalRule,
 } from '@/lib/precleanse'
-import { applyFeatures } from '@/lib/feature-engineering'
+import { applyFeatures, selectColumns } from '@/lib/feature-engineering'
 import type { FeatureConfig } from '@/lib/feature-engineering'
 import { PERIOD_TO_RANGE } from '@/store/model-pipeline'
 import type {
@@ -25,7 +35,14 @@ export interface PipelineConfig {
   cropRange: CropRange
   conditionalRules: ConditionalRule[]
   statisticalRules: StatisticalRule[]
-  fillStrategies: Record<string, FillStrategyConfig>
+  /** Step 3.2 bulk cleaning — per-tag ordered pipeline. */
+  cleaningPipelines: Record<string, TagPipeline>
+  /** Legacy single-strategy fill map — kept for materializing old saved recipes. */
+  fillStrategies?: Record<string, FillStrategyConfig>
+  /** Columns (original + engineered) to keep; null = keep all. */
+  selectedColumns: string[] | null
+  /** Per-column model-ready scaler; missing key = min-max. */
+  scalers: Record<string, ScalerMethod>
 }
 
 /** Fixed clock so a saved recipe re-derives identical rows on every call. */
@@ -40,7 +57,9 @@ export const EMPTY_PIPELINE_CONFIG: PipelineConfig = {
   cropRange: null,
   conditionalRules: [],
   statisticalRules: [],
-  fillStrategies: {},
+  cleaningPipelines: {},
+  selectedColumns: null,
+  scalers: {},
 }
 
 /**
@@ -62,5 +81,12 @@ export function materializeDataset(
     conditional: config.conditionalRules,
     statistical: config.statisticalRules,
   })
-  return preprocess(cleansed, config.fillStrategies)
+  // Prefer the bulk cleaning pipeline; fall back to legacy single-strategy fill
+  // so recipes saved before this field still materialize identically.
+  const filled = config.cleaningPipelines
+    ? preprocessPipelines(cleansed, config.cleaningPipelines)
+    : preprocess(cleansed, config.fillStrategies ?? {})
+  // Legacy saved recipes predate these fields — tolerate their absence.
+  const selected = selectColumns(filled, config.selectedColumns ?? null)
+  return toModelReady(selected, config.scalers ?? {})
 }

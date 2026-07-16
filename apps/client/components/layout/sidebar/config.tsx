@@ -14,6 +14,7 @@ import {
   LayoutDashboard,
   LineChart,
   Settings,
+  Table,
   TextSearch,
   TriangleAlert,
   Users,
@@ -83,15 +84,21 @@ export const getUserNavItems = (alertCount: number): NavItem[] => [
     ],
   },
   {
-    id: 'data',
-    name: 'Data',
+    id: 'data-studio',
+    name: 'Data Studio',
     icon: <Database className="h-4 w-4" />,
     children: [
       {
-        id: 'data-studio',
-        name: 'Data Studio',
+        id: 'data-sources',
+        name: 'Data Sources',
         icon: <TextSearch className="h-4 w-4" />,
-        href: '/data-studio',
+        href: '/data-sources',
+      },
+      {
+        id: 'datasets',
+        name: 'Datasets',
+        icon: <Table className="h-4 w-4" />,
+        href: '/datasets',
       },
       {
         id: 'analytics',

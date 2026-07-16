@@ -6,6 +6,21 @@ import { cn } from '@/lib/utils'
 import { pearsonMatrix, topCorrelations } from '@/lib/data-quality'
 import type { Dataset } from '@/lib/preprocessing'
 
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
+import {
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
+import { ScrollArea } from '@/components/ui/scroll-area'
+
 interface Props {
   dataset: Dataset
   /** |r| threshold for the "strong" highlight. Defaults to 0.8. */
@@ -27,19 +42,6 @@ const COLOR_STOPS: Array<[number, [number, number, number]]> = [
   [0.9, [33, 102, 172]], // #2166AC (Correlation +0.8)
   [1.0, [5, 48, 97]], // #053061 (Correlation +1.0)
 ]
-// const COLOR_STOPS: Array<[number, [number, number, number]]> = [
-//   [0.0, [51, 17, 255]], // สีน้ำเงินเข้ม (ค่าต่ำสุดประมาณ -2)
-//   [0.1, [92, 70, 255]], // น้ำเงินสว่างขึ้น
-//   [0.2, [133, 122, 255]], // น้ำเงินอมม่วงอ่อน
-//   [0.3, [173, 173, 255]], // ฟ้า/ม่วงพาสเทล
-//   [0.4, [214, 214, 255]], // ฟ้าอ่อนมากๆ ใกล้ขาว
-//   [0.5, [255, 255, 255]], // สีขาว (จุดกึ่งกลาง ค่าประมาณ 0)
-//   [0.6, [255, 214, 204]], // ชมพู/ส้มอ่อนมาก
-//   [0.7, [255, 163, 143]], // ส้มพาสเทล
-//   [0.8, [255, 112, 82]], // ส้มแดง
-//   [0.9, [255, 61, 22]], // แดงสว่าง
-//   [1.0, [220, 10, 0]], // สีแดงเข้ม (ค่าสูงสุดประมาณ 2)
-// ]
 
 function infernoRGB(t: number): [number, number, number] {
   const clamped = Math.min(1, Math.max(0, t))
@@ -128,31 +130,42 @@ export function CorrelationMatrix({ dataset, threshold = 0.8 }: Props) {
         </div>
       </div>
 
+      <div className="flex items-center justify-between pt-1">
+        <h3 className="text-xs font-semibold text-foreground">
+          Top Relationships
+        </h3>
+        <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-semibold text-foreground">
+          {top.length} pair{top.length !== 1 ? 's' : ''}
+        </span>
+      </div>
+
       {/* Top relationships (always visible) */}
       {top.length > 0 ? (
-        <div className="space-y-1.5">
-          {top.map(pair => {
-            const { bg, fg } = correlationColors(pair.r)
-            return (
-              <div
-                key={`${pair.a}-${pair.b}`}
-                className="flex items-center justify-between gap-3 rounded-lg bg-primary/5 px-3 py-2 ring-1 ring-primary/20"
-              >
-                <div className="flex min-w-0 items-center gap-2 font-mono text-xs">
-                  <span className="truncate text-foreground">{pair.a}</span>
-                  <span className="text-muted-foreground">↔</span>
-                  <span className="truncate text-foreground">{pair.b}</span>
-                </div>
-                <span
-                  className="shrink-0 rounded-md px-2 py-1 font-mono text-sm font-semibold tabular-nums"
-                  style={{ backgroundColor: bg, color: fg }}
+        <ScrollArea className="h-90 w-full rounded-md pr-4">
+          <div className="space-y-1.5 p-2">
+            {top.map(pair => {
+              const { bg, fg } = correlationColors(pair.r)
+              return (
+                <div
+                  key={`${pair.a}-${pair.b}`}
+                  className="flex items-center justify-between gap-3 rounded-lg bg-primary/5 px-3 py-2 ring-1 ring-primary/20"
                 >
-                  {fmt(pair.r)}
-                </span>
-              </div>
-            )
-          })}
-        </div>
+                  <div className="flex min-w-0 items-center gap-2 font-mono text-xs">
+                    <span className="truncate text-foreground">{pair.a}</span>
+                    <span className="text-muted-foreground">↔</span>
+                    <span className="truncate text-foreground">{pair.b}</span>
+                  </div>
+                  <span
+                    className="shrink-0 rounded-md px-2 py-1 font-mono text-sm font-semibold tabular-nums"
+                    style={{ backgroundColor: bg, color: fg }}
+                  >
+                    {fmt(pair.r)}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        </ScrollArea>
       ) : (
         <p className="text-xs text-muted-foreground">
           No tag pair reaches ±{threshold.toFixed(2)} correlation.
@@ -177,53 +190,92 @@ export function CorrelationMatrix({ dataset, threshold = 0.8 }: Props) {
       </button>
 
       {open && (
-        <div className="overflow-x-auto">
-          <table className="w-full border-separate border-spacing-1 text-[11px]">
-            <thead>
-              <tr>
-                <th className="sticky left-0 bg-card" />
-                {matrix.tags.map(t => (
-                  <th
-                    key={t}
-                    className="px-1 pb-1 text-center font-mono font-normal text-muted-foreground"
+        <TooltipProvider delayDuration={100}>
+          <div className="relative isolate max-h-96 overflow-auto rounded-md border border-border">
+            <table className="w-max border-separate border-spacing-0 text-[11px] [&_tr]:border-none">
+              <TableHeader>
+                <TableRow className="hover:bg-transparent">
+                  {/* corner: pinned ทั้งสองแกน */}
+                  <TableHead
+                    style={{ position: 'sticky', left: 0, top: 0, zIndex: 30 }}
+                    className="bg-card p-1"
+                  />
+                  {matrix.tags.map(t => (
+                    <TableHead
+                      key={t}
+                      style={{ position: 'sticky', top: 0, zIndex: 20 }}
+                      className="bg-card p-1"
+                    >
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="mx-auto block w-16 cursor-help truncate text-center font-mono text-[10px] font-normal text-muted-foreground">
+                            {t}
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent
+                          side="top"
+                          className="font-mono text-xs"
+                        >
+                          {t}
+                        </TooltipContent>
+                      </Tooltip>
+                    </TableHead>
+                  ))}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {matrix.tags.map((rowTag, i) => (
+                  <TableRow
+                    key={rowTag}
+                    className="border-none hover:bg-transparent"
                   >
-                    {t}
-                  </th>
+                    {/* row header: pinned left */}
+                    <TableHead
+                      style={{ position: 'sticky', left: 0, zIndex: 10 }}
+                      className="bg-card p-1 pr-2 text-right shadow-[1px_0_0_0_hsl(var(--border))]"
+                    >
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="ml-auto block w-28 cursor-help truncate text-right font-mono text-[11px] font-normal text-muted-foreground">
+                            {rowTag}
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent
+                          side="right"
+                          className="font-mono text-xs"
+                        >
+                          {rowTag}
+                        </TooltipContent>
+                      </Tooltip>
+                    </TableHead>
+                    {matrix.tags.map((colTag, j) => {
+                      const r = matrix.matrix[i]?.[j] ?? 0
+                      const displayValue = i === j ? 1.0 : r
+                      const strong = i !== j && Math.abs(r) >= threshold
+                      return (
+                        <TableCell
+                          key={colTag}
+                          className={cn(
+                            'h-12 min-w-11 p-0.2 text-center font-mono tabular-nums',
+                            strong && 'font-semibold',
+                          )}
+                          title={`${rowTag} ↔ ${colTag}: ${fmt(r)}`}
+                        >
+                          <div
+                            className="flex h-full w-full items-center justify-center "
+                            style={cellStyle(displayValue)}
+                          >
+                            {fmt(displayValue)}
+                          </div>
+                        </TableCell>
+                      )
+                    })}
+                  </TableRow>
                 ))}
-              </tr>
-            </thead>
-            <tbody>
-              {matrix.tags.map((rowTag, i) => (
-                <tr key={rowTag}>
-                  <th className="sticky left-0 bg-card pr-2 text-right font-mono font-normal text-muted-foreground">
-                    {rowTag}
-                  </th>
-                  {matrix.tags.map((colTag, j) => {
-                    const r = matrix.matrix[i]?.[j] ?? 0
-                    const strong = i !== j && Math.abs(r) >= threshold
-                    return (
-                      <td
-                        key={colTag}
-                        className={cn(
-                          'h-16 min-w-11 text-center font-mono tabular-nums',
-                          strong && 'font-semibold ',
-                        )}
-                        style={i === j ? undefined : cellStyle(r)}
-                        title={`${rowTag} ↔ ${colTag}: ${fmt(r)}`}
-                      >
-                        {i === j ? (
-                          <span className="text-muted-foreground/40">—</span>
-                        ) : (
-                          fmt(r)
-                        )}
-                      </td>
-                    )
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </TableBody>
+            </table>
+          </div>
+        </TooltipProvider>
       )}
     </div>
   )

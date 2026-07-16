@@ -16,8 +16,8 @@ interface Props {
   tags: string[]
 }
 
-const W = 900
-const H = 320
+const W = 750
+const H = 350
 const PAD_LEFT = 44
 const PAD_RIGHT = 12
 const PAD_TOP = 32
@@ -26,7 +26,7 @@ const PLOT_W = W - PAD_LEFT - PAD_RIGHT
 const PLOT_H = H - PAD_TOP - PAD_BOTTOM
 const BIN_COUNT = 12
 const KDE_SAMPLES = 100
-const MAX_TAGS_FOR_INLINE_LABELS = 3
+const MAX_TAGS_FOR_INLINE_LABELS = 5
 const ZOOM_MIN = 1
 const ZOOM_MAX = 8
 const ZOOM_STEP = 1.4
@@ -299,7 +299,7 @@ export function TagHistogramChart({ dataset, tags }: Props) {
         </div>
         <svg
           viewBox={`0 0 ${W} ${H}`}
-          className="h-80 w-full"
+          className="w-full max-h-50"
           role="img"
           aria-label={`KDE distribution of ${layers.map(l => l.tag).join(', ')}`}
         >
@@ -431,8 +431,6 @@ export function TagHistogramChart({ dataset, tags }: Props) {
             })}
           </g>
 
-          {/* Dynamic X ticks reflect the live (zoom/pan) window, so the axis
-            stays numerically correct at any zoom. */}
           {[
             { v: xMin, x: PAD_LEFT, anchor: 'start' as const },
             {

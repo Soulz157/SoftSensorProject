@@ -18,7 +18,7 @@ export const ActivityLogItemSchema = z.object({
   action: z.enum(['LOGIN', 'LOGOUT']),
   ipAddress: z.string().nullable(),
   userAgent: z.string().nullable(),
-  createdAt: z.coerce.date(),
+  createdAt: z.iso.datetime(),
   user: z.object({
     id: z.string(),
     firstName: z.string().nullable(),
@@ -33,7 +33,7 @@ export const UserStatItemSchema = z.object({
   lastName: z.string().nullable(),
   email: z.string(),
   role: z.enum(['USER', 'ADMIN']),
-  createdAt: z.coerce.date(),
+  createdAt: z.iso.datetime(),
   logins7d: z.number().int().nonnegative(),
 });
 
@@ -86,9 +86,9 @@ export const AdminUserItemSchema = z.object({
   lastName: z.string().nullable(),
   company: z.string().nullable(),
   role: z.enum(['USER', 'ADMIN']),
-  createdAt: z.coerce.date(),
-  blockedAt: z.coerce.date().nullable(),
-  deletedAt: z.coerce.date().nullable(),
+  createdAt: z.iso.datetime(),
+  blockedAt: z.iso.datetime().nullable(),
+  deletedAt: z.iso.datetime().nullable(),
   _count: z.object({ workspaces: z.number().int() }),
 });
 

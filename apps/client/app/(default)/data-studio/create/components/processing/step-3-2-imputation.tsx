@@ -1,26 +1,29 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
-import { useAtomValue } from 'jotai'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useAtomValue, useSetAtom } from 'jotai'
 import { RotateCcw } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
-  preprocess,
+  preprocessPipelines,
   tagFillPreview,
-  type FillStrategy,
-  type FillStrategyConfig,
+  type CleaningStep,
+  type TagPipeline,
 } from '@/lib/preprocessing'
-import { precleanse } from '@/lib/precleanse'
+import { precleanse, precleanseBreakdown } from '@/lib/precleanse'
 import { PERIOD_TO_RANGE } from '@/store/model-pipeline'
 import {
   dwRawDatasetAtom,
   dwTimeRangeAtom,
-  dwFillStrategiesAtom,
+  dwCleaningTagsAtom,
+  dwCleaningPipelinesAtom,
+  dwHighestUnlockedAtom,
 } from '@/store/dataset-studio'
 import { useImputationTagList } from '@/hooks/dataset/use-imputation-tag-list'
-import { ImputationTagList } from './imputation/imputation-tag-list'
+import { useDatasetTagSelection } from '@/hooks/dataset/use-dataset-tag-selection'
 import { ImputationDetailPanel } from './imputation/imputation-detail-panel'
+import { CleaningTagBadges } from './imputation/cleaning-tag-badges'
 import { ProcessingActionFooter } from './processing-action-footer'
 import { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipeline-nav'
 import { CutOffSection } from '../cutoff-section'
@@ -34,151 +37,207 @@ interface Props {
 export function Step32Imputation({ nav }: Props) {
   const raw = useAtomValue(dwRawDatasetAtom)
   const period = useAtomValue(dwTimeRangeAtom)
-  const strategies = useAtomValue(dwFillStrategiesAtom)
   const range = PERIOD_TO_RANGE[period]
 
-  const { cropRange, conditionalRules, statisticalRules } = nav
+  const {
+    cropRange,
+    valueCrop,
+    conditionalRules,
+    statisticalRules,
+    cleaningTags,
+    setCleaningTags,
+    cleaningPipelines,
+  } = nav
 
-  const base = useMemo(
+  const breakdown = useMemo(
     () =>
-      precleanse(raw, {
+      precleanseBreakdown(raw, {
         crop: cropRange,
+        valueCrop,
         conditional: conditionalRules,
         statistical: statisticalRules,
       }),
-    [raw, cropRange, conditionalRules, statisticalRules],
+    [raw, cropRange, valueCrop, conditionalRules, statisticalRules],
   )
-
-  const [draft, setDraft] =
-    useState<Record<string, FillStrategyConfig>>(strategies)
-  const [isTagListOpen, setIsTagListOpen] = useState(true)
-
-  const { setFillStrategies } = nav
-  useEffect(() => {
-    const timer = setTimeout(() => setFillStrategies(draft), DEBOUNCE_MS)
-    return () => clearTimeout(timer)
-  }, [draft, setFillStrategies])
+  const base = breakdown.dataset
 
   const cropped = useMemo(
     () =>
       precleanse(raw, {
         crop: cropRange,
+        valueCrop,
         conditional: [],
         statistical: [],
       }),
-    [raw, cropRange],
+    [raw, cropRange, valueCrop],
   )
 
-  const precleansed = useMemo(
+  const { activeTags } = useDatasetTagSelection(base)
+
+  // Default the cleaning-target set to every active tag on first entry. Written
+  // straight to the atom (not via nav.setCleaningTags) so the auto-seed doesn't
+  // relock later wizard steps — only genuine user edits should do that.
+  const seedCleaningTags = useSetAtom(dwCleaningTagsAtom)
+  // Raw pipeline setter + relock. The debounced fan-out below syncs the draft
+  // to the atom WITHOUT relocking (so revisiting the step doesn't bump the user
+  // back); genuine draft edits relock via `updateDraft`.
+  const setCleaningPipelinesRaw = useSetAtom(dwCleaningPipelinesAtom)
+  const setHighestUnlocked = useSetAtom(dwHighestUnlockedAtom)
+  const relock = () => setHighestUnlocked(prev => Math.min(prev, 4))
+  const seededRef = useRef(false)
+  useEffect(() => {
+    if (
+      !seededRef.current &&
+      cleaningTags.length === 0 &&
+      activeTags.length > 0
+    ) {
+      seededRef.current = true
+      seedCleaningTags(activeTags)
+    }
+  }, [cleaningTags.length, activeTags, seedCleaningTags])
+
+  // One shared pipeline applies to every selected tag. Seed the editable draft
+  // from the first selected tag's persisted pipeline.
+  const persisted = cleaningTags.length
+    ? (cleaningPipelines[cleaningTags[0] ?? ''] ?? [])
+    : []
+  const [draft, setDraft] = useState<CleaningStep[]>(persisted)
+  const [previewIndex, setPreviewIndex] = useState(0)
+  const [rawIsolated, setRawIsolated] = useState('')
+
+  const isolatedTag = cleaningTags.includes(rawIsolated)
+    ? rawIsolated
+    : (cleaningTags[0] ?? '')
+
+  // Debounced fan-out: the persisted pipelines mirror the selection exactly —
+  // one shared draft for every selected tag, nothing for deselected tags (so a
+  // removed tag is truly no longer cleaned). No relock here; see `relock` above.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const next: Record<string, TagPipeline> = {}
+      for (const tag of cleaningTags) next[tag] = draft
+      setCleaningPipelinesRaw(next)
+    }, DEBOUNCE_MS)
+    return () => clearTimeout(timer)
+  }, [draft, cleaningTags, setCleaningPipelinesRaw])
+
+  const draftMap = useMemo(() => {
+    const map: Record<string, TagPipeline> = {}
+    for (const tag of cleaningTags) map[tag] = draft
+    return map
+  }, [cleaningTags, draft])
+  const { rows } = useImputationTagList(base, draftMap)
+  const isolatedQuality = rows.find(r => r.tag === isolatedTag)?.quality
+
+  const truncated = useMemo(
+    () => draft.slice(0, previewIndex),
+    [draft, previewIndex],
+  )
+  const previewProcessed = useMemo(
     () =>
-      precleanse(raw, {
-        crop: cropRange,
-        conditional: conditionalRules,
-        statistical: statisticalRules,
-      }),
-    [raw, cropRange, conditionalRules, statisticalRules],
+      preprocessPipelines(
+        base,
+        isolatedTag ? { [isolatedTag]: truncated } : {},
+      ),
+    [base, isolatedTag, truncated],
+  )
+  const previewRows = useMemo(
+    () => tagFillPreview(base, previewProcessed, isolatedTag),
+    [base, previewProcessed, isolatedTag],
   )
 
+  // Committed result (from the persisted atom) drives the drop warning + gate.
+  // Kept on the committed pipelines (not the live draft) so the gate doesn't
+  // flicker on every keystroke in the Strategy Toolkit.
   const preprocessed = useMemo(
-    () => preprocess(base, strategies),
-    [base, strategies],
+    () => preprocessPipelines(base, cleaningPipelines),
+    [base, cleaningPipelines],
   )
-  const previewed = useMemo(() => preprocess(base, draft), [base, draft])
   const allDropped = base.rows.length > 0 && preprocessed.rows.length === 0
 
-  const {
-    rows,
-    filteredRows,
-    query,
-    setQuery,
-    selectedTag,
-    setSelectedTag,
-    isLastTag,
-    selectNext,
-  } = useImputationTagList(base, draft)
-
-  const previewRows = useMemo(
-    () => tagFillPreview(base, previewed, selectedTag ?? ''),
-    [base, previewed, selectedTag],
+  // Live, full-draft imputed dataset (all selected tags) — the single source of
+  // truth the Cut Off section displays, so cropping always operates on the
+  // filled data. Uses the live `draftMap` for instant propagation as the user
+  // edits the Strategy Stack; memoized so the charts don't re-render needlessly.
+  const processedDataset = useMemo(
+    () => preprocessPipelines(base, draftMap),
+    [base, draftMap],
   )
 
-  const setTagStrategy = (tag: string, strategy: FillStrategy) => {
-    setDraft(prev => ({
-      ...prev,
-      [tag]: { strategy, constantValue: prev[tag]?.constantValue },
-    }))
+  const removeCleaningTag = (tag: string) =>
+    setCleaningTags(cleaningTags.filter(t => t !== tag))
+  // Editing the pipeline changes the produced dataset — relock downstream.
+  const updateDraft = (next: CleaningStep[]) => {
+    setDraft(next)
+    relock()
   }
-  const setTagConstant = (tag: string, value: number) => {
-    setDraft(prev => ({
-      ...prev,
-      [tag]: { strategy: 'constant', constantValue: value },
-    }))
-  }
-  const reset = () => setDraft({})
-
-  const selectedQuality = rows.find(r => r.tag === selectedTag)?.quality
+  const reset = () => updateDraft([])
 
   return (
     <div className="space-y-4">
       <h3>Step 3.2: Data Cleaning</h3>
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3">
         <p className="text-sm text-muted-foreground">
-          Choose how to fill Bad/Questionable readings per tag.
+          Build a cleaning pipeline and apply it to every selected tag at once.
         </p>
         <Button size="sm" variant="ghost" onClick={reset}>
           <RotateCcw className="h-3.5 w-3.5" />
-          Reset to defaults
+          Reset pipeline
         </Button>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[320px_1fr] lg:items-start">
-        <ImputationTagList
-          rows={filteredRows}
-          selectedTag={selectedTag}
-          query={query}
-          onQueryChange={setQuery}
-          onSelectTag={setSelectedTag}
-          isOpen={isTagListOpen}
-          onOpen={() => setIsTagListOpen(true)}
-          onClose={() => setIsTagListOpen(false)}
-        />
-        {selectedQuality && selectedTag && (
-          <ImputationDetailPanel
-            tag={selectedTag}
-            quality={selectedQuality}
-            config={draft[selectedTag]}
-            previewRows={previewRows}
-            range={PERIOD_TO_RANGE[period]}
-            onStrategyChange={strategy => setTagStrategy(selectedTag, strategy)}
-            onConstantChange={value => setTagConstant(selectedTag, value)}
-            onSaveNext={selectNext}
-            isLastTag={isLastTag}
-          />
-        )}
+      <CleaningTagBadges tags={cleaningTags} onRemove={removeCleaningTag} />
+
+      <div className="relative">
+        <div className="min-w-0 space-y-4">
+          {cleaningTags.length > 0 ? (
+            <div className="space-y-4">
+              <ImputationDetailPanel
+                pipeline={draft}
+                onPipelineChange={updateDraft}
+                previewIndex={previewIndex}
+                onPreviewIndexChange={setPreviewIndex}
+                previewRows={previewRows}
+                range={range}
+                cleaningTags={cleaningTags}
+                isolatedTag={isolatedTag}
+                onIsolate={setRawIsolated}
+                quality={isolatedQuality}
+              />
+
+              <CutOffSection
+                raw={raw}
+                precleansed={processedDataset}
+                range={range}
+                cropRange={cropRange}
+                onCropChange={nav.setCropRange}
+                valueCrop={valueCrop}
+                onValueCropChange={nav.setValueCrop}
+                scopeTag={isolatedTag}
+                breakdown={breakdown}
+                croppedDataset={cropped}
+                conditionalRules={conditionalRules}
+                statisticalRules={statisticalRules}
+                onConditionalChange={nav.setConditionalRules}
+                onStatisticalChange={nav.setStatisticalRules}
+              />
+            </div>
+          ) : (
+            <div className="flex h-64 items-center justify-center rounded-xl border border-dashed border-border text-sm text-muted-foreground">
+              Select one or more tags in the sidebar to start cleaning.
+            </div>
+          )}
+        </div>
       </div>
 
       {allDropped && (
         <Alert variant="destructive">
-          <AlertTitle>This rule removed every row</AlertTitle>
+          <AlertTitle>This pipeline removed every row</AlertTitle>
           <AlertDescription>
-            Try a fill strategy instead of Drop.
+            Try a fill strategy instead of Drop Missing Rows.
           </AlertDescription>
         </Alert>
       )}
-
-      <CutOffSection
-        raw={raw}
-        precleansed={precleansed}
-        cropped={cropped}
-        range={range}
-        cropRange={cropRange}
-        onCropChange={nav.setCropRange}
-        tags={raw.tags}
-        conditionalRules={conditionalRules}
-        statisticalRules={statisticalRules}
-        onConditionalChange={nav.setConditionalRules}
-        onStatisticalChange={nav.setStatisticalRules}
-      />
 
       <ProcessingActionFooter
         backLabel="Back to Preprocessing"

@@ -6,16 +6,16 @@ import { Button } from '@/components/ui/button'
 import { Step1Tags } from './step-1-tags'
 import { Step2RawData } from './step-2-raw-data'
 import { Step3Processing } from './step-3-processing'
-import { Step4FillNull } from './step-4-fill-null'
 import { Step5ReviewSave } from './step-5-review-save'
 import { useDatasetPipelineNav } from '@/hooks/dataset/use-dataset-pipeline-nav'
 import { WizardStepIndicator } from './wizard-step-indicator'
+import { Step4FeatureEngineering } from './step-4-feature-engineering'
 
 const STEP_LABELS = [
   'Verified Tags',
   'Fetch Data',
-  'Preprocessing',
-  'Fea',
+  'Data Processing',
+  'Feature Engineering',
   'Review & Save',
 ]
 
@@ -23,7 +23,7 @@ const NEXT_LABELS: Record<number, string> = {
   1: 'Continue',
   2: 'Continue',
   3: 'Data Cleaning',
-  4: 'Feature Engineering',
+  4: 'Continue',
 }
 
 export function WizardShell() {
@@ -44,7 +44,7 @@ export function WizardShell() {
       body = <Step3Processing nav={nav} />
       break
     case 4:
-      body = <Step4FillNull nav={nav} />
+      body = <Step4FeatureEngineering nav={nav} />
       break
     case 5:
       body = <Step5ReviewSave nav={nav} />
@@ -62,10 +62,10 @@ export function WizardShell() {
             variant="ghost"
             size="sm"
             className="-ml-2 gap-1.5 text-muted-foreground"
-            onClick={() => router.push('/data-studio')}
+            onClick={() => router.push('/datasets')}
           >
             <ArrowLeft className="h-4 w-4" />
-            Back to Data Studio
+            Back to Datasets
           </Button>
           <div className="flex flex-wrap items-center gap-2">
             <Layers className="h-6 w-6 text-primary" />

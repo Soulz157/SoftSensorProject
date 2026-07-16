@@ -36,7 +36,7 @@ export interface UseTagStatsReturn {
   toggleTag: (tag: string) => void
 }
 
-export const MAX_COMPARISON_TAGS = 3
+export const MAX_COMPARISON_TAGS = 5
 
 export function useTagStats(dataset: Dataset): UseTagStatsReturn {
   const allStats = useMemo<TagStatRow[]>(

@@ -34,6 +34,7 @@ export function AlertsGroupHeader({
           <span className="text-sm font-semibold text-foreground">
             Workspace: {workspaceName}
             <span className="text-red-500 font-semibold">
+              {' '}
               ({count} Alert{count === 1 ? '' : 's'})
             </span>
           </span>

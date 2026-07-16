@@ -23,13 +23,13 @@ async def fetch_tag_data(
         summary_types_str = [st.value for st in body.summary_type]
 
         tag_results_dict = await asyncio.to_thread(
-            webapi.fetch_in_batches,
+            webapi.fetch_tags_in_batches,
             tag_list=body.tag_list,
             start_time=body.start_time,
             end_time=body.end_time,
             cal_basis=cal_basis_str,
-            summary_type=summary_types_str,
-            summary_duration=body.summary_duration,
+            # summary_type=summary_types_str,
+            # summary_duration=body.summary_duration,
             batch_size=body.batch_size
         )
 

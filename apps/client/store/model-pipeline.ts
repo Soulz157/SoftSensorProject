@@ -49,16 +49,32 @@ export const MP_TOTAL_STEPS = 3
 // `Dataset` by id + its cached snapshot (avoids a refetch on every render).
 export const mpSelectedDatasetAtom = atom<SavedDataset | null>(null)
 
-export type Algorithm = 'ols' | 'ridge' | 'random_forest'
-export const ALGORITHMS: Algorithm[] = ['ols', 'ridge', 'random_forest']
+export type Algorithm = 'ols' | 'random_forest' | 'lightgbm' | 'lstm' | 'gru'
+export const ALGORITHMS: Algorithm[] = [
+  'ols',
+  'random_forest',
+  'lightgbm',
+  'lstm',
+  'gru',
+]
 export const ALGORITHM_LABELS: Record<Algorithm, string> = {
-  ols: 'Linear Regression (OLS)',
-  ridge: 'Ridge Regression',
+  ols: 'Linear Regression',
   random_forest: 'Random Forest',
+  lightgbm: 'LightGBM',
+  lstm: 'LSTM',
+  gru: 'GRU',
 }
+
+/** A single hyperparameter value — numeric, categorical, boolean, or "none" (e.g. unlimited depth). */
+export type HyperparamValue = number | string | boolean | null
+
 export const mpAlgorithmAtom = atom<Algorithm>('ols')
 export const mpTargetVariableAtom = atom<string>('')
-export const mpHyperparamsAtom = atom<Record<string, number>>({})
+export const mpHyperparamsAtom = atom<Record<string, HyperparamValue>>({})
+/** Evaluation metric optimized during training. See `LOSS_OPTIONS` in `lib/training-config`. */
+export const mpLossFunctionAtom = atom<string>('mse')
+/** Train split percentage (test = 100 − this). Default 80/20. */
+export const mpTrainTestSplitAtom = atom<number>(80)
 
 /** How the user chose to supply tags: direct connector, csv upload, or manual text. */
 export type TagInputMethod = '' | 'direct' | 'csv' | 'text'
@@ -189,7 +205,11 @@ export const resetWizardAtom = atom(null, (_get, set) => {
   set(mpSelectedDatasetAtom, null)
   set(mpAlgorithmAtom, 'ols')
   set(mpTargetVariableAtom, '')
-  set(mpHyperparamsAtom, {})
+  // Default algorithm is `ols` — seed its clean hyperparameters (mirrors
+  // `defaultHyperparams('ols')`; inlined to avoid a store → training-config cycle).
+  set(mpHyperparamsAtom, { fit_intercept: true })
+  set(mpLossFunctionAtom, 'mse')
+  set(mpTrainTestSplitAtom, 80)
   set(mpTrainStateAtom, { status: 'idle', progress: 0 })
   set(mpCreatedModelIdAtom, '')
   set(mpSelectedMetricsAtom, [...METRIC_KEYS])

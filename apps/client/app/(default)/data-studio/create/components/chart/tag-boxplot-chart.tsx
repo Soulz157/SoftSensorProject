@@ -17,8 +17,7 @@ interface Props {
   tags: string[]
 }
 
-const ROW_HEIGHT = 100
-const CHART_PAD = 48
+const CHART_HEIGHT = 500
 const Y_TICK_COUNT = 6
 
 function fmt(n: number): string {
@@ -55,6 +54,7 @@ interface BoxRow {
   color: string
   stats: BoxplotStats
   iqr: [number, number]
+  showLabels: boolean
 }
 
 type BoxShapeProps = {
@@ -65,72 +65,59 @@ type BoxShapeProps = {
   payload?: BoxRow
 }
 
-/**
- * Custom shape for one horizontal box-and-whisker row.
- *
- * Recharts hands us the exact pixel rect (x, y, width, height) that
- * corresponds to the [q1, q3] domain span passed as this Bar's dataKey
- * value. Since the value axis is linear, every other statistic — whiskers,
- * min/max, median, mean, outliers — can be placed by linearly extrapolating
- * from that same pixel-per-unit ratio, without reaching into Recharts'
- * internal scale objects.
- */
 function BoxWhiskerShape(props: BoxShapeProps) {
   const { x = 0, y = 0, width = 0, height = 0, payload } = props
   if (!payload) return <g />
-  const { stats, color } = payload
+  const { stats, color, showLabels } = payload
   const { q1, q3, median, mean, whiskerLow, whiskerHigh, outliers } = stats
 
   const span = q3 - q1
-  const pxPerUnit = span !== 0 ? width / span : 0
-  const toX = (v: number) => x + (v - q1) * pxPerUnit
+  const pxPerUnit = span !== 0 ? height / span : 0
+  const toY = (v: number) => y + (q3 - v) * pxPerUnit
 
-  const cy = y + height / 2
-  const capTop = y + height * 0.18
-  const capBottom = y + height - height * 0.18
+  const cx = x + width / 2
+  const capHalf = Math.min(width * 0.32, 14)
 
-  const q1X = x
-  const q3X = x + width
-  const wLowX = toX(whiskerLow)
-  const wHighX = toX(whiskerHigh)
-  const medianX = toX(median)
-  const meanX = toX(mean)
-  const meanFinite = Number.isFinite(meanX)
+  const wLowY = toY(whiskerLow)
+  const wHighY = toY(whiskerHigh)
+  const medianY = toY(median)
+  const meanY = toY(mean)
+  const meanFinite = Number.isFinite(meanY)
 
   return (
     <g>
       {/* whisker line (behind the box) */}
       <line
-        x1={wLowX}
-        x2={wHighX}
-        y1={cy}
-        y2={cy}
+        x1={cx}
+        x2={cx}
+        y1={wLowY}
+        y2={wHighY}
         stroke="var(--muted-foreground)"
         strokeWidth={1.5}
       />
       {/* whisker caps */}
       <line
-        x1={wLowX}
-        x2={wLowX}
-        y1={capTop}
-        y2={capBottom}
+        x1={cx - capHalf}
+        x2={cx + capHalf}
+        y1={wHighY}
+        y2={wHighY}
         stroke="var(--muted-foreground)"
         strokeWidth={1.5}
       />
       <line
-        x1={wHighX}
-        x2={wHighX}
-        y1={capTop}
-        y2={capBottom}
+        x1={cx - capHalf}
+        x2={cx + capHalf}
+        y1={wLowY}
+        y2={wLowY}
         stroke="var(--muted-foreground)"
         strokeWidth={1.5}
       />
 
       <rect
-        x={Math.min(x, x + width)}
-        y={y}
-        width={Math.abs(width)}
-        height={height}
+        x={x}
+        y={Math.min(y, y + height)}
+        width={width}
+        height={Math.abs(height)}
         fill={color}
         fillOpacity={0.25}
         stroke={color}
@@ -138,11 +125,12 @@ function BoxWhiskerShape(props: BoxShapeProps) {
         rx={3}
       />
 
+      {/* median — solid horizontal line across the box */}
       <line
-        x1={medianX}
-        x2={medianX}
-        y1={y}
-        y2={y + height}
+        x1={x}
+        x2={x + width}
+        y1={medianY}
+        y2={medianY}
         stroke={color}
         strokeWidth={2.5}
       />
@@ -150,17 +138,17 @@ function BoxWhiskerShape(props: BoxShapeProps) {
       {meanFinite && (
         <>
           <line
-            x1={meanX}
-            x2={meanX}
-            y1={y}
-            y2={y + height}
+            x1={x}
+            x2={x + width}
+            y1={meanY}
+            y2={meanY}
             stroke={color}
             strokeWidth={1.5}
             strokeDasharray="3 2"
             opacity={0.9}
           />
           <path
-            d={`M ${meanX} ${y - 5} L ${meanX + 4} ${y} L ${meanX} ${y + 5} L ${meanX - 4} ${y} Z`}
+            d={`M ${x - 5} ${meanY} L ${x} ${meanY - 4} L ${x + 5} ${meanY} L ${x} ${meanY + 4} Z`}
             fill="var(--card)"
             stroke={color}
             strokeWidth={1.5}
@@ -172,8 +160,8 @@ function BoxWhiskerShape(props: BoxShapeProps) {
       {outliers.map((v, i) => (
         <circle
           key={`${v}-${i}`}
-          cx={toX(v)}
-          cy={cy}
+          cx={cx}
+          cy={toY(v)}
           r={4}
           fill="var(--card)"
           stroke={color}
@@ -183,35 +171,42 @@ function BoxWhiskerShape(props: BoxShapeProps) {
         </circle>
       ))}
 
-      {/* Inline value labels — Q1 (top-left), Q3 (top-right), Mean (bottom) */}
-      <text
-        x={q1X - 10}
-        y={y - 6}
-        textAnchor="middle"
-        className="font-mono text-[12px] font-medium"
-        fill="var(--muted-foreground)"
-      >
-        {`Q1 ${fmt(q1)}`}
-      </text>
-      <text
-        x={q3X + 10}
-        y={y - 6}
-        textAnchor="middle"
-        className="font-mono text-[12px] font-medium"
-        fill="var(--muted-foreground)"
-      >
-        {`Q3 ${fmt(q3)}`}
-      </text>
-      {meanFinite && (
-        <text
-          x={meanX}
-          y={y + height + 13}
-          textAnchor="middle"
-          className="font-mono text-[12px] font-semibold"
-          fill={color}
-        >
-          {`Mean ${fmt(mean)}`}
-        </text>
+      {/* Inline value labels — Q3 (top-right), Q1 (bottom-right), Mean (left) */}
+      {showLabels && (
+        <>
+          <text
+            x={x + width + 6}
+            y={toY(q3)}
+            dy={-2}
+            textAnchor="start"
+            className="font-mono text-[12px] font-medium"
+            fill="var(--muted-foreground)"
+          >
+            {`Q3 ${fmt(q3)}`}
+          </text>
+          <text
+            x={x + width + 6}
+            y={toY(q1)}
+            dy={10}
+            textAnchor="start"
+            className="font-mono text-[12px] font-medium"
+            fill="var(--muted-foreground)"
+          >
+            {`Q1 ${fmt(q1)}`}
+          </text>
+          {meanFinite && (
+            <text
+              x={x - 6}
+              y={meanY}
+              dy={4}
+              textAnchor="end"
+              className="font-mono text-[12px] font-semibold"
+              fill={color}
+            >
+              {`Mean ${fmt(mean)}`}
+            </text>
+          )}
+        </>
       )}
     </g>
   )
@@ -239,6 +234,8 @@ export function TagBoxplotChart({ dataset, tags }: Props) {
     )
   }
 
+  const showLabels = qualifyingTags.length <= 5
+
   const rows: BoxRow[] = qualifyingTags.map(tag => {
     const stats = statsByTag.get(tag)!
     return {
@@ -246,6 +243,7 @@ export function TagBoxplotChart({ dataset, tags }: Props) {
       color: chartColorVar(resolveTagMeta(tag).chartIndex),
       stats,
       iqr: [stats.q1, stats.q3],
+      showLabels,
     }
   })
 
@@ -258,43 +256,27 @@ export function TagBoxplotChart({ dataset, tags }: Props) {
   const ticks = niceTicks(rawMin, rawMax, Y_TICK_COUNT)
   const domain: [number, number] = [ticks[0]!, ticks[ticks.length - 1]!]
 
-  const yAxisWidth = Math.max(
-    80,
-    Math.min(160, Math.max(...rows.map(r => r.tag.length)) * 7 + 24),
-  )
-
   const chartConfig = rows.reduce((acc, r) => {
     acc[r.tag] = { label: r.tag, color: r.color }
     return acc
   }, {} as ChartConfig)
 
-  const height = CHART_PAD + rows.length * ROW_HEIGHT
-
   return (
     <div className="space-y-2">
       <ChartContainer
         config={chartConfig}
-        style={{ height }}
+        style={{ height: CHART_HEIGHT }}
         className="w-full"
       >
         <BarChart
           data={rows}
-          layout="vertical"
-          margin={{ top: 8, right: 24, bottom: 8, left: 8 }}
-          barCategoryGap="35%"
+          margin={{ top: 16, right: 60, bottom: 8, left: 8 }}
+          barCategoryGap="20%"
         >
-          <CartesianGrid horizontal={false} strokeDasharray="3 3" />
+          <CartesianGrid horizontal vertical={false} strokeDasharray="3 3" />
           <XAxis
-            type="number"
-            domain={domain}
-            ticks={ticks}
-            tickFormatter={fmt}
-            tick={{ fontSize: 10, fontFamily: 'var(--font-mono)' }}
-          />
-          <YAxis
             type="category"
             dataKey="tag"
-            width={yAxisWidth}
             tick={{
               fontSize: 11,
               fontFamily: 'var(--font-mono)',
@@ -302,6 +284,14 @@ export function TagBoxplotChart({ dataset, tags }: Props) {
             }}
             tickLine={false}
             axisLine={false}
+          />
+          <YAxis
+            type="number"
+            domain={domain}
+            ticks={ticks}
+            tickFormatter={fmt}
+            width={56}
+            tick={{ fontSize: 10, fontFamily: 'var(--font-mono)' }}
           />
           <ChartTooltip
             cursor={false}
@@ -359,6 +349,7 @@ export function TagBoxplotChart({ dataset, tags }: Props) {
             dataKey="iqr"
             shape={BoxWhiskerShape}
             isAnimationActive={false}
+            maxBarSize={40}
           />
         </BarChart>
       </ChartContainer>

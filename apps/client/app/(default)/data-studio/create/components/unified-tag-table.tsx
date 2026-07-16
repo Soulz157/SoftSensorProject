@@ -342,8 +342,17 @@ export function UnifiedTagTable({ nav }: Props) {
           type="button"
           variant="outline"
           size="sm"
+          onClick={toggleAllFiltered}
+          className="cursor-pointer gap-1.5"
+        >
+          Select All
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
           onClick={handleAddRow}
-          className="gap-1.5"
+          className="cursor-pointer gap-1.5"
         >
           <Plus className="h-3.5 w-3.5" />
           Add New Tag
@@ -353,7 +362,7 @@ export function UnifiedTagTable({ nav }: Props) {
           ref={compareFileRef}
           type="file"
           accept=".csv,text/csv"
-          className="hidden"
+          className="cursor-pointer hidden"
           onChange={e => {
             const file = e.target.files?.[0]
             if (file) {
@@ -367,7 +376,7 @@ export function UnifiedTagTable({ nav }: Props) {
           variant="outline"
           size="sm"
           onClick={() => compareFileRef.current?.click()}
-          className="gap-1.5"
+          className="cursor-pointer gap-1.5"
         >
           <Upload className="h-3.5 w-3.5" />
           Upload CSV

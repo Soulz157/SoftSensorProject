@@ -8,7 +8,7 @@ export const CreateDatasetSchema = z.object({
   sourceIds: z.array(z.string()).default([]),
   tags: z.array(z.string()).default([]),
   pipelineConfig: z.record(z.string(), z.unknown()).default({}),
-  fileUrl: z.string().optional(),
+  fileUrl: z.string().nullish(),
   rowCount: z.number().int().nonnegative().default(0),
   missingPct: z.number().min(0).default(0),
 });

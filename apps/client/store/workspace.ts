@@ -1,6 +1,6 @@
 import { atom } from 'jotai'
 import { atomWithStorage } from 'jotai/utils'
-import type { Workspace, WorkspacePlant } from '@/types'
+import type { AIModel, Workspace, WorkspacePlant } from '@/types'
 import {
   Activity,
   Box,
@@ -19,6 +19,15 @@ export const workspacesLoadingAtom = atom(true)
 // Bumped by deploy-state mutations to invalidate cross-workspace model fetches
 // (`useAllModels`) so the sidebar dot + Alerts badge auto-update live.
 export const modelsRefreshAtom = atom(0)
+
+// Shared cross-workspace models cache. Backs `useAllModels` so its multiple
+// mounts (page + sidebar + alert-count) read one fetched result instead of each
+// firing its own per-workspace fan-out.
+export const allModelsAtom = atom<
+  (AIModel & { workspaceName: string })[] | null
+>(null)
+export const allModelsFetchingAtom = atom(true)
+export const allModelsErrorAtom = atom<string | null>(null)
 
 export const workspacePlantsAtom = atom<WorkspacePlant[]>([])
 

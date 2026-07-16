@@ -35,5 +35,20 @@ export function useDatasets(workspaceId?: string) {
     await refetch()
   }
 
-  return { datasets, loading, refetch, createDataset, deleteDataset }
+  const updateDataset = async (
+    id: string,
+    patch: Partial<CreateDatasetInput>,
+  ): Promise<void> => {
+    await datasetService.update(id, patch)
+    await refetch()
+  }
+
+  return {
+    datasets,
+    loading,
+    refetch,
+    createDataset,
+    deleteDataset,
+    updateDataset,
+  }
 }
