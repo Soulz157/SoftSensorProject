@@ -34,6 +34,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { RawReadingsTable } from './raw-readings-table'
+import { EditLockBanner } from './step-1-tags'
 import {
   SourceFetchConfigCard,
   configFromSource,
@@ -100,8 +101,12 @@ export function Step2RawData({ nav }: Props) {
   )
   const [customTo, setCustomTo] = useState(() => toDateTimeLocal(now))
 
+  const locked = nav.isEditLocked
   const isFetching = fetch.status === 'fetching'
   const isDone = fetch.status === 'done'
+  // Edit mode freezes the raw query — disable every fetch control (but keep the
+  // hydrated raw table visible, unlike an in-flight fetch).
+  const controlsDisabled = isFetching || locked
 
   useEffect(() => {
     if (customInitialized.current) return
@@ -142,6 +147,13 @@ export function Step2RawData({ nav }: Props) {
 
   return (
     <div className="space-y-5">
+      {locked && (
+        <EditLockBanner>
+          Time range and fetch settings are locked while editing preprocessing.
+          The raw readings below are the originally saved query.
+        </EditLockBanner>
+      )}
+
       {/* ── Per-source fetch configuration ─────────────────────────────────── */}
       {selectedSources.length > 0 && (
         <div className="space-y-3">
@@ -158,7 +170,7 @@ export function Step2RawData({ nav }: Props) {
               onChange={cfg =>
                 setSourceConfigs(prev => ({ ...prev, [source.id]: cfg }))
               }
-              disabled={isFetching}
+              disabled={controlsDisabled}
             />
           ))}
         </div>
@@ -168,7 +180,7 @@ export function Step2RawData({ nav }: Props) {
       <div
         className={cn(
           'space-y-3 rounded-xl bg-card p-4 ring-1 ring-foreground/10',
-          isFetching && 'pointer-events-none opacity-50',
+          controlsDisabled && 'pointer-events-none opacity-50',
         )}
       >
         <div className="flex items-center gap-2">

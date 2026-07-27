@@ -170,9 +170,9 @@ function PanelContent({
               />
               <StatCell
                 label="Abnormal"
-                value={alarmCount + warningCount + offlineCount}
+                value={alarmCount + warningCount + offlineCount + failedCount}
                 valueClass={
-                  alarmCount + warningCount + offlineCount > 0
+                  alarmCount + warningCount + offlineCount + failedCount > 0
                     ? 'text-destructive'
                     : 'text-green-700 dark:text-green-400'
                 }

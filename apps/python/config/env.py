@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     SYS_PASS: str
 
     PI_NAME: str
+    PI_API_SERVER: str = "https://scgc-piwebapi.scg.com/piwebapi/"
     CAL_TYPR: str = "Average"
     CAL_BASIS: str = "TimeWeighted"
 
@@ -32,9 +33,16 @@ class Settings(BaseSettings):
     PI_CA_BUNDLE: str | None = None   # path to corporate CA .pem; used when verify is on
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        # root .env มาก่อน แล้ว apps/python/.env override ได้
+        # `pnpm dev` ยิงผ่าน dotenvx (env มาทาง process อยู่แล้ว) แต่
+        # `pnpm --filter python dev` รัน uvicorn ตรง ๆ โดย cwd = apps/python
+        # ถ้าชี้แค่ ".env" เส้นทางหลังจะหา SYS_USER ไม่เจอ → Settings() พังตอน import
+        env_file=("../../.env", ".env"),
         env_file_encoding="utf-8",
         case_sensitive=True,
+        # root .env มี key ของ client/backend ปนอยู่ (JWT_*, SMTP_*, DATABASE_URL)
+        # ต้อง ignore ไม่งั้น pydantic-settings raise extra_forbidden ตอน import
+        extra="ignore",
     )
 
 

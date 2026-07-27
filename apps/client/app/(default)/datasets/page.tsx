@@ -69,9 +69,12 @@ export default function DatasetsPage() {
         filteredDatasets={s.filteredDatasets}
         getWorkspaceName={s.getWorkspaceName}
         getSourceName={s.getSourceName}
+        getSourceMeta={s.getSourceMeta}
         onCreateDataset={() => s.setDatasetDialogOpen(true)}
         onDeleteDataset={s.deleteDataset}
         onRenameDataset={s.updateDataset}
+        onEditDataset={s.handleDatasetEdit}
+        onDuplicateDataset={s.handleDatasetDuplicate}
       />
 
       {/* ── Dialog ── */}

@@ -29,11 +29,11 @@ import {
 } from './dto/workspace.admin.dto';
 import { JwtAccessGuard } from '@/guards/jwt-access.guard';
 import { RolesGuard } from '@/guards/roles.guard';
-import { Roles } from '@/common/decorators/roles.decorator';
+// import { Roles } from '@/common/decorators/roles.decorator';
 
 @Controller('admin/workspace')
 @UseGuards(JwtAccessGuard, RolesGuard)
-@Roles('ADMIN')
+// @Roles('ADMIN')
 export class WorkspaceAdminController {
   constructor(private readonly workspaceAdminService: WorkspaceAdminService) {}
 

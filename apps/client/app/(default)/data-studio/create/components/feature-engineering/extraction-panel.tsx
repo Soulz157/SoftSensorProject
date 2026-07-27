@@ -19,6 +19,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { cn } from '@/lib/utils'
 import {
   featureColumnName,
   type DatetimePart,
@@ -50,25 +51,47 @@ export function ExtractionPanel({
   onRemove,
 }: Props) {
   const [method, setMethod] = useState<Method>('lag')
-  const [tag, setTag] = useState('')
+  const [tags, setTags] = useState<string[]>([])
   const [k, setK] = useState(1)
   const [window, setWindow] = useState(3)
   const [agg, setAgg] = useState<RollingAgg>('mean')
   const [part, setPart] = useState<DatetimePart>('hour')
 
   const needsTag = method !== 'datetime'
-  const canAdd = !needsTag || (tag !== '' && sourceColumns.includes(tag))
+  const canAdd = !needsTag || tags.length > 0
 
-  const build = (): FeatureConfig => {
+  const toggleTag = (t: string) =>
+    setTags(prev =>
+      prev.includes(t) ? prev.filter(x => x !== t) : [...prev, t],
+    )
+  const selectAll = () => setTags([...sourceColumns])
+  const clearTags = () => setTags([])
+
+  // Build one config for a given tag (datetime ignores the tag).
+  const build = (t: string): FeatureConfig => {
     const id = crypto.randomUUID()
-    if (method === 'lag') return { id, kind: 'lag', tag, k }
-    if (method === 'rolling') return { id, kind: 'rolling', tag, window, agg }
+    if (method === 'lag') return { id, kind: 'lag', tag: t, k }
+    if (method === 'rolling')
+      return { id, kind: 'rolling', tag: t, window, agg }
     return { id, kind: 'datetime', part }
   }
 
-  const preview = canAdd
-    ? featureColumnName({ ...build(), id: 'preview' })
-    : '—'
+  const previewTag = needsTag ? (tags[0] ?? '') : ''
+  const previewName =
+    canAdd && (!needsTag || previewTag)
+      ? featureColumnName({ ...build(previewTag), id: 'preview' })
+      : '—'
+  const previewCount = needsTag ? tags.length : 1
+
+  const handleAdd = () => {
+    if (!canAdd) return
+    if (needsTag) {
+      for (const t of tags) onAdd(build(t))
+      setTags([])
+    } else {
+      onAdd(build(''))
+    }
+  }
 
   const extracted = features.filter(
     f => f.kind === 'lag' || f.kind === 'rolling' || f.kind === 'datetime',
@@ -97,24 +120,6 @@ export function ExtractionPanel({
               </SelectContent>
             </Select>
           </div>
-
-          {needsTag && (
-            <div className="space-y-1.5">
-              <Label className="text-xs">Source column</Label>
-              <Select value={tag} onValueChange={setTag}>
-                <SelectTrigger className="h-9">
-                  <SelectValue placeholder="Select column" />
-                </SelectTrigger>
-                <SelectContent>
-                  {sourceColumns.map(c => (
-                    <SelectItem key={c} value={c}>
-                      {c}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          )}
 
           {method === 'lag' && (
             <div className="space-y-1.5">
@@ -186,14 +191,76 @@ export function ExtractionPanel({
           )}
         </div>
 
+        {/* Multi-tag select — the method applies to every chosen column at once. */}
+        {needsTag && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label className="text-xs">
+                Source columns{' '}
+                <span className="text-muted-foreground">
+                  ({tags.length} selected)
+                </span>
+              </Label>
+              <div className="flex items-center gap-1">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 px-2 text-xs"
+                  onClick={selectAll}
+                  disabled={sourceColumns.length === 0}
+                >
+                  Select all
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 px-2 text-xs text-muted-foreground hover:text-destructive"
+                  onClick={clearTags}
+                  disabled={tags.length === 0}
+                >
+                  Clear
+                </Button>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {sourceColumns.map(c => {
+                const active = tags.includes(c)
+                return (
+                  <button
+                    key={c}
+                    type="button"
+                    onClick={() => toggleTag(c)}
+                    aria-pressed={active}
+                    className={cn(
+                      'rounded-full border px-2.5 py-0.5 font-mono text-[11px] transition-colors',
+                      active
+                        ? 'border-primary bg-primary/10 text-primary'
+                        : 'border-border text-muted-foreground hover:bg-muted',
+                    )}
+                  >
+                    {c}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3">
           <p className="text-xs text-muted-foreground">
-            New column:{' '}
-            <span className="font-mono text-foreground">{preview}</span>
+            {previewCount > 0 ? (
+              <>
+                {previewCount} new column{previewCount === 1 ? '' : 's'} ·{' '}
+                <span className="font-mono text-foreground">{previewName}</span>
+                {previewCount > 1 && ' …'}
+              </>
+            ) : (
+              'Select one or more columns'
+            )}
           </p>
-          <Button size="sm" disabled={!canAdd} onClick={() => onAdd(build())}>
+          <Button size="sm" disabled={!canAdd} onClick={handleAdd}>
             <Plus className="h-3.5 w-3.5" />
-            Add feature
+            Add feature{needsTag && tags.length > 1 ? 's' : ''}
           </Button>
         </div>
 

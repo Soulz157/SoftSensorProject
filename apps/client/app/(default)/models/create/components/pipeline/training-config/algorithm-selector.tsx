@@ -1,41 +1,114 @@
 'use client'
 
+import { Plus, X } from 'lucide-react'
 import { Label } from '@/components/ui/label'
+import { Button } from '@/components/ui/button'
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import {
   ALGORITHMS,
   ALGORITHM_LABELS,
   type Algorithm,
 } from '@/store/model-pipeline'
 
+const MAX = 3
+
 interface Props {
-  algorithm: Algorithm
-  onChange: (algorithm: Algorithm) => void
+  algorithms: Algorithm[]
+  onChange: (algorithms: Algorithm[]) => void
 }
 
-/** Model algorithm dropdown. Changing it swaps the dynamic hyperparameter grid. */
-export function AlgorithmSelector({ algorithm, onChange }: Props) {
+/**
+ * Multi-select algorithm picker (up to 3). The first selected is the primary
+ * (drives the manual hyperparameter grid). At least one must stay selected.
+ */
+export function AlgorithmSelector({ algorithms, onChange }: Props) {
+  const atCap = algorithms.length >= MAX
+
+  const toggle = (a: Algorithm, on: boolean) => {
+    if (on) {
+      if (atCap || algorithms.includes(a)) return
+      onChange([...algorithms, a])
+    } else {
+      if (algorithms.length <= 1) return // keep at least one
+      onChange(algorithms.filter(x => x !== a))
+    }
+  }
+
   return (
     <div className="space-y-1.5">
-      <Label className="text-xs font-medium">Algorithm</Label>
-      <Select value={algorithm} onValueChange={v => onChange(v as Algorithm)}>
-        <SelectTrigger className="h-9 text-sm">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {ALGORITHMS.map(a => (
-            <SelectItem key={a} value={a}>
-              {ALGORITHM_LABELS[a]}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      <Label className="text-xs font-medium">
+        Algorithms{' '}
+        <span className="text-muted-foreground">
+          ({algorithms.length}/{MAX})
+        </span>
+      </Label>
+
+      <div className="flex flex-wrap items-center gap-1.5">
+        {algorithms.map((a, i) => (
+          <span
+            key={a}
+            className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary"
+          >
+            {i === 0 && (
+              <span className="text-[10px] font-semibold uppercase opacity-70">
+                primary
+              </span>
+            )}
+            {ALGORITHM_LABELS[a]}
+            <button
+              type="button"
+              onClick={() => toggle(a, false)}
+              disabled={algorithms.length <= 1}
+              aria-label={`Remove ${ALGORITHM_LABELS[a]}`}
+              className="rounded-full p-0.5 transition-colors hover:bg-primary/20 disabled:opacity-40"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </span>
+        ))}
+
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1 text-xs"
+              disabled={atCap}
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Add algorithm
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-full">
+            <DropdownMenuLabel>Select up to {MAX}</DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            {ALGORITHMS.map(a => {
+              const checked = algorithms.includes(a)
+              return (
+                <DropdownMenuCheckboxItem
+                  key={a}
+                  checked={checked}
+                  disabled={
+                    (!checked && atCap) || (checked && algorithms.length <= 1)
+                  }
+                  onCheckedChange={on => toggle(a, on)}
+                  className="cursor-pointer"
+                >
+                  {ALGORITHM_LABELS[a]}
+                </DropdownMenuCheckboxItem>
+              )
+            })}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
     </div>
   )
 }

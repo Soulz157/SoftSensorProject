@@ -13,6 +13,9 @@ import {
   mpEditModelIdAtom,
   mpSelectedDatasetAtom,
   mpAlgorithmAtom,
+  mpAlgorithmsAtom,
+  mpFindBestModelAtom,
+  mpFindBestParamsAtom,
   mpTargetVariableAtom,
   mpHyperparamsAtom,
   mpTrainStateAtom,
@@ -20,6 +23,11 @@ import {
   mpSelectedMetricsAtom,
   mpLossFunctionAtom,
   mpTrainTestSplitAtom,
+  mpAutoRetrainAtom,
+  mpRetrainWarnSdAtom,
+  mpRetrainCriticalSdAtom,
+  mpDriftMonitorAtom,
+  mpDriftThresholdPctAtom,
   type Algorithm,
   type HyperparamValue,
 } from '@/store/model-pipeline'
@@ -31,20 +39,36 @@ export interface UsePipelineNavResult {
   nameConflict: boolean
   selectedDataset: SavedDataset | null
   algorithm: Algorithm
-  targetVariable: string
+  algorithms: Algorithm[]
+  findBestModel: boolean
+  findBestParams: boolean
+  targetVariables: string[]
   hyperparameters: Record<string, HyperparamValue>
   lossFunction: string
   trainTestSplit: number
+  autoRetrain: boolean
+  warnSd: number
+  criticalSd: number
+  driftMonitor: boolean
+  driftThresholdPct: number
   goTo: (step: number) => void
   next: () => void
   back: () => void
   canAdvance: (step: number) => boolean
   setSelectedDataset: (dataset: SavedDataset | null) => void
   setAlgorithm: (algorithm: Algorithm) => void
-  setTargetVariable: (tag: string) => void
+  setAlgorithms: (algorithms: Algorithm[]) => void
+  setFindBestModel: (on: boolean) => void
+  setFindBestParams: (on: boolean) => void
+  setTargetVariable: (tag: string[]) => void
   setHyperparameter: (key: string, value: HyperparamValue) => void
   setLossFunction: (loss: string) => void
   setTrainTestSplit: (split: number) => void
+  setAutoRetrain: (on: boolean) => void
+  setWarnSd: (sd: number) => void
+  setCriticalSd: (sd: number) => void
+  setDriftMonitor: (on: boolean) => void
+  setDriftThresholdPct: (pct: number) => void
   setFetchTagOverride: (tag: string) => void
   resetPipeline: () => void
 }
@@ -78,10 +102,20 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     mpSelectedDatasetAtom,
   )
   const [algorithm, setAlgorithmAtom] = useAtom(mpAlgorithmAtom)
-  const [targetVariable, setTargetVariableAtom] = useAtom(mpTargetVariableAtom)
+  const [algorithms, setAlgorithmsAtom] = useAtom(mpAlgorithmsAtom)
+  const [findBestModel, setFindBestModelAtom] = useAtom(mpFindBestModelAtom)
+  const [findBestParams, setFindBestParamsAtom] = useAtom(mpFindBestParamsAtom)
+  const [targetVariables, setTargetVariableAtom] = useAtom(mpTargetVariableAtom)
   const [hyperparameters, setHyperparametersAtom] = useAtom(mpHyperparamsAtom)
   const [lossFunction, setLossFunctionAtom] = useAtom(mpLossFunctionAtom)
   const [trainTestSplit, setTrainTestSplitAtom] = useAtom(mpTrainTestSplitAtom)
+  const [autoRetrain, setAutoRetrainAtom] = useAtom(mpAutoRetrainAtom)
+  const [warnSd, setWarnSdAtom] = useAtom(mpRetrainWarnSdAtom)
+  const [criticalSd, setCriticalSdAtom] = useAtom(mpRetrainCriticalSdAtom)
+  const [driftMonitor, setDriftMonitorAtom] = useAtom(mpDriftMonitorAtom)
+  const [driftThresholdPct, setDriftThresholdPctAtom] = useAtom(
+    mpDriftThresholdPctAtom,
+  )
   const trainState = useAtomValue(mpTrainStateAtom)
   const setTrainState = useSetAtom(mpTrainStateAtom)
   const setCreatedModelId = useSetAtom(mpCreatedModelIdAtom)
@@ -106,6 +140,9 @@ export function useModelPipelineNav(): UsePipelineNavResult {
         case 2:
           return trainState.status === 'done'
         case 3:
+          // Results reached ⇒ may proceed to the Deploy step.
+          return true
+        case 4:
           return false
         default:
           return false
@@ -146,7 +183,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
   const setSelectedDataset = useCallback(
     (dataset: SavedDataset | null) => {
       setSelectedDatasetAtom(dataset)
-      setTargetVariableAtom('')
+      setTargetVariableAtom([])
       resetTraining()
       setHighestUnlocked(prev => Math.min(prev, 1))
     },
@@ -175,9 +212,55 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     ],
   )
 
+  // Multi-algorithm select (max 3). Keep the primary (index 0) + its clean
+  // hyperparameters in sync so the manual grid always reflects algorithms[0].
+  const setAlgorithms = useCallback(
+    (next: Algorithm[]) => {
+      const capped = next.slice(0, 3)
+      setAlgorithmsAtom(capped)
+      const primary = capped[0] ?? 'ols'
+      setAlgorithmAtom(primary)
+      setHyperparametersAtom(defaultHyperparams(primary))
+      resetTraining()
+      setHighestUnlocked(prev => Math.min(prev, 2))
+    },
+    [
+      setAlgorithmsAtom,
+      setAlgorithmAtom,
+      setHyperparametersAtom,
+      resetTraining,
+      setHighestUnlocked,
+    ],
+  )
+
+  const setFindBestModel = useCallback(
+    (on: boolean) => {
+      setFindBestModelAtom(on)
+      // Step B requires Step A — turning A off cascades B off.
+      if (!on) setFindBestParamsAtom(false)
+      resetTraining()
+      setHighestUnlocked(prev => Math.min(prev, 2))
+    },
+    [
+      setFindBestModelAtom,
+      setFindBestParamsAtom,
+      resetTraining,
+      setHighestUnlocked,
+    ],
+  )
+
+  const setFindBestParams = useCallback(
+    (on: boolean) => {
+      setFindBestParamsAtom(on)
+      resetTraining()
+      setHighestUnlocked(prev => Math.min(prev, 2))
+    },
+    [setFindBestParamsAtom, resetTraining, setHighestUnlocked],
+  )
+
   const setFetchTagOverride = useCallback(
     (tag: string) => {
-      setTargetVariableAtom(tag)
+      setTargetVariableAtom([tag])
       resetTraining()
       setHighestUnlocked(prev => Math.min(prev, 2))
     },
@@ -185,8 +268,8 @@ export function useModelPipelineNav(): UsePipelineNavResult {
   )
 
   const setTargetVariable = useCallback(
-    (tag: string) => {
-      setTargetVariableAtom(tag)
+    (tags: string[]) => {
+      setTargetVariableAtom(tags)
       resetTraining()
       setHighestUnlocked(prev => Math.min(prev, 2))
     },
@@ -220,21 +303,58 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     [setTrainTestSplitAtom, resetTraining, setHighestUnlocked],
   )
 
+  // Deploy step (Step 4) — last step, so no `highestUnlocked` relock.
+  const setAutoRetrain = useCallback(
+    (on: boolean) => setAutoRetrainAtom(on),
+    [setAutoRetrainAtom],
+  )
+  // Enforce the 2-layer invariant: Layer 1 (warn) stays ≥0.5 SD below Layer 2.
+  const setWarnSd = useCallback(
+    (sd: number) => setWarnSdAtom(Math.min(sd, criticalSd - 0.5)),
+    [setWarnSdAtom, criticalSd],
+  )
+  const setCriticalSd = useCallback(
+    (sd: number) => setCriticalSdAtom(Math.max(sd, warnSd + 0.5)),
+    [setCriticalSdAtom, warnSd],
+  )
+  const setDriftMonitor = useCallback(
+    (on: boolean) => setDriftMonitorAtom(on),
+    [setDriftMonitorAtom],
+  )
+  const setDriftThresholdPct = useCallback(
+    (pct: number) =>
+      setDriftThresholdPctAtom(
+        Number.isNaN(pct) ? 0 : Math.min(100, Math.max(0, pct)),
+      ),
+    [setDriftThresholdPctAtom],
+  )
+
   const resetPipeline = useCallback(() => {
     setSelectedDatasetAtom(null)
     setAlgorithmAtom('ols')
-    setTargetVariableAtom('')
+    setAlgorithmsAtom(['ols'])
+    setFindBestModelAtom(false)
+    setFindBestParamsAtom(false)
+    setTargetVariableAtom([])
     setHyperparametersAtom(defaultHyperparams('ols'))
-    setLossFunctionAtom('mse')
+    setLossFunctionAtom('rmse')
     setTrainTestSplitAtom(80)
     setTrainState({ status: 'idle', progress: 0 })
     setCreatedModelId('')
     setSelectedMetrics(['r2', 'rmse', 'sd'])
+    setAutoRetrainAtom(false)
+    setWarnSdAtom(1.5)
+    setCriticalSdAtom(3.0)
+    setDriftMonitorAtom(false)
+    setDriftThresholdPctAtom(10)
     setHighestUnlocked(1)
     setCurrentStep(1)
   }, [
     setSelectedDatasetAtom,
     setAlgorithmAtom,
+    setAlgorithmsAtom,
+    setFindBestModelAtom,
+    setFindBestParamsAtom,
     setTargetVariableAtom,
     setHyperparametersAtom,
     setLossFunctionAtom,
@@ -242,6 +362,11 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     setTrainState,
     setCreatedModelId,
     setSelectedMetrics,
+    setAutoRetrainAtom,
+    setWarnSdAtom,
+    setCriticalSdAtom,
+    setDriftMonitorAtom,
+    setDriftThresholdPctAtom,
     setHighestUnlocked,
     setCurrentStep,
   ])
@@ -252,20 +377,36 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     nameConflict,
     selectedDataset,
     algorithm,
-    targetVariable,
+    algorithms,
+    findBestModel,
+    findBestParams,
+    targetVariables,
     hyperparameters,
     lossFunction,
     trainTestSplit,
+    autoRetrain,
+    warnSd,
+    criticalSd,
+    driftMonitor,
+    driftThresholdPct,
     goTo,
     next,
     back,
     canAdvance,
     setSelectedDataset,
     setAlgorithm,
+    setAlgorithms,
+    setFindBestModel,
+    setFindBestParams,
     setTargetVariable,
     setHyperparameter,
     setLossFunction,
     setTrainTestSplit,
+    setAutoRetrain,
+    setWarnSd,
+    setCriticalSd,
+    setDriftMonitor,
+    setDriftThresholdPct,
     setFetchTagOverride,
     resetPipeline,
   }

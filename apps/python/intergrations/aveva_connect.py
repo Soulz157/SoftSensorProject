@@ -20,17 +20,11 @@ def chunked(lst: list, size: int) -> Generator[list, None, None]:
 class PIWebAPI:
 
     def __init__(self, api_server: str, user: str, pwd: str, pi_server: str):
-        print(api_server, user, pwd, pi_server)
+        # SECURITY: never log credentials. Do not print user/pwd here.
         self.client = PIWebApiClient(
             api_server, False, user, pwd, False, True)
+        self.api_server = api_server
         self.pi_server = pi_server
-
-        # self.data_server = self._resolve_data_server()
-        # self.data_server_web_id = self.data_server.web_id
-        # print(
-        #     "PI Web API connected: %s (Data Server '%s', WebID=%s)",
-        #     api_server, self.pi_server, self.data_server_web_id,
-        # )
 
     def _resolve_data_server(self):
 

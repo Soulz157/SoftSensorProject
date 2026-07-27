@@ -49,6 +49,7 @@ interface Props {
   onPipelineChange: (next: CleaningStep[]) => void
   previewIndex: number
   onPreviewIndexChange: (index: number) => void
+  /** Before/After rows for `isolatedTag`, truncated to `previewIndex` steps. */
   previewRows: TagFillPreviewRow[]
   range: TimeRange
   cleaningTags: string[]
@@ -141,6 +142,11 @@ const ITEM_BY_METHOD: Record<string, ToolkitItem> = Object.fromEntries(
   ]),
 )
 
+/**
+ * Cleaning Toolkit + Strategy Stack + a single-tag, step-by-step Before/After
+ * preview (scrub Raw → Step 1 → … to see each strategy's effect on the
+ * isolated tag). The multi-tag overlay preview lives in the CutOffSection below.
+ */
 export function ImputationDetailPanel({
   pipeline,
   onPipelineChange,
@@ -213,8 +219,8 @@ export function ImputationDetailPanel({
             selected
           </h2>
           <p className="text-xs text-muted-foreground">
-            Preview shown for <span className="font-mono">{isolatedTag}</span> ·{' '}
-            {label}
+            Step preview shown for{' '}
+            <span className="font-mono">{isolatedTag}</span> · {label}
           </p>
         </div>
 
@@ -391,7 +397,7 @@ export function ImputationDetailPanel({
           </div>
         </div>
 
-        {/* Charts */}
+        {/* Step-by-step preview (single isolated tag) */}
         <div className="flex flex-col gap-4 xl:col-span-8">
           <div className="flex flex-wrap items-center rounded-xl border border-border bg-card p-3">
             <span className="mr-2 text-xs font-semibold text-muted-foreground">

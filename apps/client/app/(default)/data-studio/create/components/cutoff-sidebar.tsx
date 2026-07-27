@@ -77,7 +77,7 @@ export function CutoffSidebar({
       <div className="flex items-center gap-2">
         <SlidersHorizontal className="h-4 w-4 text-muted-foreground" />
         <h3 className="text-sm font-semibold text-foreground">
-          Cutting &amp; Outlier Removal
+          Outlier Removal
         </h3>
         <Button
           variant="ghost"

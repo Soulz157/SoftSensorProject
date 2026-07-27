@@ -1,10 +1,19 @@
 import { atom } from 'jotai'
 import type { SavedDataSource } from '@/lib/mock-data-sources'
-import type { Dataset, ScalerMethod, TagPipeline } from '@/lib/preprocessing'
-import type { FeatureConfig } from '@/lib/feature-engineering'
+import {
+  buildRawDataset,
+  type Dataset,
+  type ScalerMethod,
+  type TagPipeline,
+} from '@/lib/preprocessing'
+import { applyFeatures, type FeatureConfig } from '@/lib/feature-engineering'
+import { EMPTY_PIPELINE_CONFIG, MATERIALIZE_EPOCH } from '@/lib/pipeline-config'
+import { PERIOD_TO_RANGE } from '@/store/model-pipeline'
+import type { SavedDataset } from '@/store/datasets'
 import type {
   ConditionalRule,
   CropRange,
+  RangeExclusion,
   StatisticalRule,
   ValueCrop,
 } from '@/lib/precleanse'
@@ -47,8 +56,17 @@ export const dwFetchStateAtom = atom<FetchState>({
 export const dwRawDatasetAtom = atom<Dataset>(EMPTY_DATASET)
 
 export const dwFeatureConfigsAtom = atom<FeatureConfig[]>([])
+
+// Raw dataset + engineered feature columns, recomputed live from the recipe.
+// Read-only derived — never writes back to dwRawDatasetAtom (fetch seam).
+// `applyFeatures` returns the raw dataset unchanged when there are no configs.
+export const dwFeaturedDatasetAtom = atom<Dataset>(get =>
+  applyFeatures(get(dwRawDatasetAtom), get(dwFeatureConfigsAtom)),
+)
 export const dwCropRangeAtom = atom<CropRange>(null)
 export const dwValueCropAtom = atom<ValueCrop>({})
+// Dragged exclusion bands (Drag-to-Crop "Exclude" mode) — remove-inside spans.
+export const dwExclusionsAtom = atom<RangeExclusion[]>([])
 export const dwConditionalRulesAtom = atom<ConditionalRule[]>([])
 export const dwStatisticalRulesAtom = atom<StatisticalRule[]>([])
 
@@ -57,6 +75,10 @@ export const dwStatisticalRulesAtom = atom<StatisticalRule[]>([])
 export const dwCleaningPipelinesAtom = atom<Record<string, TagPipeline>>({})
 // Tags the shared cleaning pipeline is currently applied to (Step 3.2 scope).
 export const dwCleaningTagsAtom = atom<string[]>([])
+// Tags whose cleaning pipeline has been explicitly SAVED (the "Cleaned" status
+// set). Distinct from a tag merely having steps — Save is the commit point that
+// moves a batch from Pending → Cleaned. Sidebar renders the green check off this.
+export const dwCleanedTagsAtom = atom<string[]>([])
 
 // Step 4 — Feature Engineering
 // Selected columns to keep (original + engineered); null = keep all.
@@ -81,6 +103,13 @@ export const dwTagSidebarCollapsedAtom = atom<boolean>(false)
 // Wizard nav
 export const dwCurrentStepAtom = atom<number>(1)
 export const dwHighestUnlockedAtom = atom<number>(1)
+
+// Wizard mode — 'create' builds a new dataset; 'edit' re-opens a saved recipe
+// to change ONLY the preprocessing pipeline (raw query stays locked).
+export type DwWizardMode = 'create' | 'edit'
+export const dwModeAtom = atom<DwWizardMode>('create')
+/** Dataset id being edited (mode === 'edit'); Save routes to update, not create. */
+export const dwEditingDatasetIdAtom = atom<string>('')
 
 export interface InitDatasetWizardSeed {
   name: string
@@ -117,11 +146,13 @@ export const initDatasetWizardAtom = atom(
     set(dwRawDatasetAtom, EMPTY_DATASET)
     set(dwFeatureConfigsAtom, [])
     set(dwCropRangeAtom, null)
+    set(dwExclusionsAtom, [])
     set(dwValueCropAtom, {})
     set(dwConditionalRulesAtom, [])
     set(dwStatisticalRulesAtom, [])
     set(dwCleaningPipelinesAtom, {})
     set(dwCleaningTagsAtom, [])
+    set(dwCleanedTagsAtom, [])
     set(dwSelectedColumnsAtom, null)
     set(dwScalerConfigsAtom, {})
     set(dwProcessingSubStepAtom, 1)
@@ -130,6 +161,8 @@ export const initDatasetWizardAtom = atom(
     set(dwTagSidebarCollapsedAtom, false)
     set(dwCurrentStepAtom, 1)
     set(dwHighestUnlockedAtom, 1)
+    set(dwModeAtom, 'create')
+    set(dwEditingDatasetIdAtom, '')
   },
 )
 
@@ -167,4 +200,95 @@ export const resetDatasetWizardAtom = atom(null, (_get, set) => {
   set(dwTagSidebarCollapsedAtom, false)
   set(dwCurrentStepAtom, 1)
   set(dwHighestUnlockedAtom, 1)
+  set(dwModeAtom, 'create')
+  set(dwEditingDatasetIdAtom, '')
 })
+
+/**
+ * Enter the wizard in EDIT mode: hydrate every `dw*` atom from a saved dataset's
+ * recipe, rebuild the raw dataset deterministically (so charts/preview render
+ * without a fetch), and land on Step 3 (Data Processing) with all steps
+ * unlocked. Steps 1/2/4 are rendered read-only by the wizard — only the
+ * preprocessing pipeline may change, so downstream model schemas stay intact.
+ *
+ * Base tags fall back to the dataset's final `tags` for legacy recipes saved
+ * before `pipelineConfig.baseTags` existed (imperfect but non-crashing).
+ */
+export interface InitDatasetWizardEditSeed {
+  dataset: SavedDataset
+  sources: SavedDataSource[]
+}
+
+export const initDatasetWizardForEditAtom = atom(
+  null,
+  (_get, set, seed: InitDatasetWizardEditSeed) => {
+    const { dataset, sources } = seed
+    // Coalesce every field against EMPTY_PIPELINE_CONFIG — recipes saved before
+    // a given field existed store it as `undefined`, and the pipeline helpers
+    // index these maps by tag (`pipelines[tag]`), which throws on undefined.
+    const config = { ...EMPTY_PIPELINE_CONFIG, ...dataset.pipelineConfig }
+    const baseTags = config.baseTags ?? dataset.tags
+    const tagConstants = config.tagConstants ?? {}
+
+    set(dwModeAtom, 'edit')
+    set(dwEditingDatasetIdAtom, dataset.id)
+
+    set(dwNameAtom, dataset.name)
+    set(dwDescriptionAtom, dataset.description ?? '')
+    set(dwWorkspaceIdAtom, dataset.workspaceId)
+    set(dwSelectedSourcesAtom, sources)
+
+    // Step 1 — Tags (locked in edit mode, but hydrated for display).
+    set(dwSelectedTagsAtom, baseTags)
+    set(dwRemovedTagsAtom, [])
+    set(dwEditedTagsAtom, {})
+    set(dwHasInvalidTagsAtom, false)
+    set(dwInsertedTagsAtom, [])
+    set(dwCsvUploadTagsAtom, [])
+    set(dwTagConstantsAtom, tagConstants)
+
+    // Step 2 — Fetch (locked). Rebuild the raw dataset in place of a live fetch.
+    set(dwFetchTagsAtom, baseTags)
+    set(dwTimeRangeAtom, config.timeRange)
+    set(dwCustomDateRangeAtom, config.customDateRange)
+    set(dwCustomIntervalAtom, config.customInterval)
+    set(dwSourceFetchConfigsAtom, config.sourceFetchConfigs)
+    set(
+      dwRawDatasetAtom,
+      buildRawDataset(
+        baseTags,
+        PERIOD_TO_RANGE[config.timeRange],
+        MATERIALIZE_EPOCH,
+        tagConstants,
+      ),
+    )
+    set(dwFetchStateAtom, { status: 'done', progress: 100 })
+
+    // Step 3 — Preprocessing (EDITABLE surface).
+    set(dwCropRangeAtom, config.cropRange)
+    set(dwValueCropAtom, {})
+    set(dwExclusionsAtom, config.exclusions ?? [])
+    set(dwConditionalRulesAtom, config.conditionalRules)
+    set(dwStatisticalRulesAtom, config.statisticalRules)
+    set(dwCleaningPipelinesAtom, config.cleaningPipelines)
+    // Committed "Cleaned" status reflects the saved per-tag pipelines. The
+    // active editing batch (dwCleaningTagsAtom) opens empty so the user starts
+    // from a clean selection instead of a merged draft across mixed pipelines.
+    set(dwCleaningTagsAtom, [])
+    set(dwCleanedTagsAtom, Object.keys(config.cleaningPipelines ?? {}))
+
+    // Step 4 — Feature Engineering (locked, hydrated for display).
+    set(dwFeatureConfigsAtom, config.features)
+    set(dwSelectedColumnsAtom, config.selectedColumns)
+    set(dwScalerConfigsAtom, config.scalers)
+
+    set(dwProcessingSubStepAtom, 1)
+    set(dwHiddenTagsAtom, [])
+    set(dwFocusedTagAtom, '')
+    set(dwTagSidebarCollapsedAtom, false)
+
+    // Land on Data Processing with every step unlocked for review.
+    set(dwCurrentStepAtom, 3)
+    set(dwHighestUnlockedAtom, DW_TOTAL_STEPS)
+  },
+)

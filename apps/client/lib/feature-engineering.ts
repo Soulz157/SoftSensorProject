@@ -12,6 +12,7 @@
  * `TI-101__delta`. Double-underscore keeps names free of `.` (recharts-safe).
  */
 import type { Cell, DataRow, Dataset } from '@/lib/preprocessing'
+import { compileFormula } from './formula'
 
 export type RollingAgg = 'mean' | 'std' | 'min' | 'max' | 'ROC'
 
@@ -20,6 +21,18 @@ export type ArithOp = 'add' | 'sub' | 'mul'
 
 /** Calendar component extracted from a row's timestamp. */
 export type DatetimePart = 'hour' | 'dayOfWeek' | 'month'
+
+export interface FormulaFeature {
+  id: string
+  kind: 'formula'
+  name?: string
+  /** Machine expression using aliases (`c0 + c1`) — what the evaluator runs. */
+  expr: string
+  /** alias → column name. */
+  vars: Record<string, string>
+  /** Human-readable expression with real column names, e.g. `(TI-101 + TI-102) - PI-303`. */
+  display?: string
+}
 
 export type FeatureConfig =
   | { id: string; kind: 'lag'; tag: string; k: number }
@@ -35,6 +48,7 @@ export type FeatureConfig =
   | { id: string; kind: 'ratio'; tags: string[] }
   | { id: string; kind: 'log'; tag: string }
   | { id: string; kind: 'datetime'; part: DatetimePart }
+  | FormulaFeature
 
 /** Deterministic column name for a feature. */
 export function featureColumnName(cfg: FeatureConfig): string {
@@ -53,6 +67,8 @@ export function featureColumnName(cfg: FeatureConfig): string {
       return `${cfg.tag}__log`
     case 'datetime':
       return `__dt_${cfg.part}`
+    case 'formula':
+      return cfg.name?.trim() || cfg.expr
   }
 }
 
@@ -91,6 +107,15 @@ function aggregate(values: number[], agg: RollingAgg): number {
 
 /** Compute one feature's cell for every row; returns a column keyed by row index. */
 function computeColumn(rows: DataRow[], cfg: FeatureConfig): Cell[] {
+  let compiled: ReturnType<typeof compileFormula> | null = null
+
+  if (cfg.kind === 'formula') {
+    try {
+      compiled = compileFormula(cfg.expr)
+    } catch {
+      return rows.map(() => ({ value: 0, status: BAD }))
+    }
+  }
   return rows.map((row, i): Cell => {
     switch (cfg.kind) {
       case 'lag': {
@@ -152,6 +177,24 @@ function computeColumn(rows: DataRow[], cfg: FeatureConfig): Cell[] {
       case 'datetime': {
         // Derived from the row's own timestamp — always defined (Good).
         return { value: datetimePart(row.timestamp, cfg.part), status: GOOD }
+      }
+      case 'formula': {
+        if (!compiled) return { value: 0, status: BAD }
+        // scope จากเฉพาะ source cell ที่ Good (กติกาเดียวกับ goodValue)
+        const scope: Record<string, number> = {}
+        for (const alias in cfg.vars) {
+          const v = goodValue(row.cells[cfg.vars[alias]!])
+          if (v === null) return { value: 0, status: BAD } // input ตัวไหน Bad -> ผล Bad
+          scope[alias] = v
+        }
+        try {
+          const out = compiled.evaluate(scope)
+          return typeof out === 'number' && Number.isFinite(out)
+            ? { value: out, status: GOOD }
+            : { value: 0, status: BAD }
+        } catch {
+          return { value: 0, status: BAD }
+        }
       }
     }
   })

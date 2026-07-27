@@ -6,7 +6,7 @@ import { useSetAtom } from 'jotai'
 import { toast } from 'sonner'
 import { getModelById } from '@/services/model'
 import { datasetService } from '@/services/dataset'
-import { readModelConfig } from '@/lib/model-config'
+import { readModelConfig, configTargets } from '@/lib/model-config'
 import { METRIC_KEYS, type MetricKey } from '@/lib/model-metrics'
 import type { AIModel } from '@/types'
 import {
@@ -20,6 +20,9 @@ import {
   mpNodeIdAtom,
   mpSelectedDatasetAtom,
   mpAlgorithmAtom,
+  mpAlgorithmsAtom,
+  mpFindBestModelAtom,
+  mpFindBestParamsAtom,
   mpTargetVariableAtom,
   mpHyperparamsAtom,
   mpLossFunctionAtom,
@@ -28,6 +31,11 @@ import {
   mpTrainStateAtom,
   mpCurrentStepAtom,
   mpHighestUnlockedAtom,
+  mpAutoRetrainAtom,
+  mpRetrainWarnSdAtom,
+  mpRetrainCriticalSdAtom,
+  mpDriftMonitorAtom,
+  mpDriftThresholdPctAtom,
   MP_TOTAL_STEPS,
   type WizardMode,
 } from '@/store/model-pipeline'
@@ -59,6 +67,9 @@ export function useModelWizardMode(): UseModelWizardModeResult {
   const setNodeId = useSetAtom(mpNodeIdAtom)
   const setSelectedDataset = useSetAtom(mpSelectedDatasetAtom)
   const setAlgorithm = useSetAtom(mpAlgorithmAtom)
+  const setAlgorithms = useSetAtom(mpAlgorithmsAtom)
+  const setFindBestModel = useSetAtom(mpFindBestModelAtom)
+  const setFindBestParams = useSetAtom(mpFindBestParamsAtom)
   const setTargetVariable = useSetAtom(mpTargetVariableAtom)
   const setHyperparams = useSetAtom(mpHyperparamsAtom)
   const setLossFunction = useSetAtom(mpLossFunctionAtom)
@@ -67,6 +78,11 @@ export function useModelWizardMode(): UseModelWizardModeResult {
   const setTrainState = useSetAtom(mpTrainStateAtom)
   const setCurrentStep = useSetAtom(mpCurrentStepAtom)
   const setHighestUnlocked = useSetAtom(mpHighestUnlockedAtom)
+  const setAutoRetrain = useSetAtom(mpAutoRetrainAtom)
+  const setWarnSd = useSetAtom(mpRetrainWarnSdAtom)
+  const setCriticalSd = useSetAtom(mpRetrainCriticalSdAtom)
+  const setDriftMonitor = useSetAtom(mpDriftMonitorAtom)
+  const setDriftThresholdPct = useSetAtom(mpDriftThresholdPctAtom)
 
   const [mode, setModeState] = useState<WizardMode>('create')
   const [modelName, setModelName] = useState('')
@@ -99,13 +115,24 @@ export function useModelWizardMode(): UseModelWizardModeResult {
       if (config) {
         setDescription(config.description ?? '')
         setAlgorithm(config.algorithm)
-        setTargetVariable(config.targetVariable)
+        setAlgorithms(config.algorithms ?? [config.algorithm])
+        setFindBestModel(config.findBestModel ?? false)
+        setFindBestParams(config.findBestParams ?? false)
+        setTargetVariable(configTargets(config))
         setHyperparams(config.hyperparameters)
         setLossFunction(config.lossFunction ?? 'mse')
         setTrainTestSplit(config.trainTestSplit ?? 80)
         setSelectedMetrics(
           config.selectedMetrics ?? ([...METRIC_KEYS] as MetricKey[]),
         )
+
+        // Deploy step (Step 4) — fall back to defaults for legacy configs.
+        const deploy = config.deployment
+        setAutoRetrain(deploy?.autoRetrain ?? false)
+        setWarnSd(deploy?.warnSd ?? 1.5)
+        setCriticalSd(deploy?.criticalSd ?? 3.0)
+        setDriftMonitor(deploy?.driftMonitor ?? false)
+        setDriftThresholdPct(deploy?.driftThresholdPct ?? 10)
 
         const datasetId = config.datasetId || model.datasetId
         if (datasetId) {

@@ -148,13 +148,11 @@ export function DataAnalysisCard({ dataset, range }: Props) {
               variant={isViewAll ? 'default' : 'outline'}
               size="sm"
               aria-pressed={isViewAll}
-              onClick={() =>
-                setIsViewAll(v => {
-                  const next = !v
-                  if (next) selectAll()
-                  return next
-                })
-              }
+              onClick={() => {
+                const next = !isViewAll
+                setIsViewAll(next)
+                if (next) selectAll()
+              }}
               className={cn(
                 isViewAll &&
                   'cursor-pointer bg-primary text-primary-foreground',

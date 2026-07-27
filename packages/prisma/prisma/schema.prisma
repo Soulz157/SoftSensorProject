@@ -262,14 +262,21 @@ model PasswordResetToken {
 }
 
 model DataSource {
-  id          String   @id @default(uuid())
-  name        String
-  type        String
-  host        String   @default("")
-  username    String   @default("")
-  password    String   @default("")
-  dbName      String   @default("")
-  status      String   @default("connected")
+  id       String @id @default(uuid())
+  name     String
+  type     String
+  host     String @default("")
+  username String @default("")
+  // AES-256-GCM ciphertext of the connection secret (password / API key /
+  // bearer token). Never plaintext, never returned by the API. See
+  // apps/backend/src/lib/crypto.ts.
+  secretCiphertext String @default("")
+  dbName           String @default("")
+  status           String @default("connected")
+  // Non-secret, type-specific connection fields:
+  //   sql  → { port, driver }
+  //   rest → { baseUrl, endpoint, method, authType, apiKeyName, headers }
+  config      Json?
   createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
   createdById String
   createdAt   DateTime @default(now())

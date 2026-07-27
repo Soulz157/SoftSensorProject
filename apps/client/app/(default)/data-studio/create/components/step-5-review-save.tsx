@@ -27,6 +27,10 @@ import {
   dwCustomDateRangeAtom,
   dwCustomIntervalAtom,
   dwSourceFetchConfigsAtom,
+  dwSelectedTagsAtom,
+  dwTagConstantsAtom,
+  dwModeAtom,
+  dwEditingDatasetIdAtom,
   resetDatasetWizardAtom,
 } from '@/store/dataset-studio'
 import type { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipeline-nav'
@@ -48,12 +52,17 @@ export function Step5ReviewSave({ nav }: Props) {
   const customDateRange = useAtomValue(dwCustomDateRangeAtom)
   const customInterval = useAtomValue(dwCustomIntervalAtom)
   const sourceFetchConfigs = useAtomValue(dwSourceFetchConfigsAtom)
+  const baseTags = useAtomValue(dwSelectedTagsAtom)
+  const tagConstants = useAtomValue(dwTagConstantsAtom)
+  const mode = useAtomValue(dwModeAtom)
+  const editingDatasetId = useAtomValue(dwEditingDatasetIdAtom)
   const resetWizard = useSetAtom(resetDatasetWizardAtom)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
 
   const {
     cropRange,
+    exclusions,
     conditionalRules,
     statisticalRules,
     selectedColumns,
@@ -66,6 +75,7 @@ export function Step5ReviewSave({ nav }: Props) {
     const featured = applyFeatures(raw, features)
     const cleaned = precleanse(featured, {
       crop: cropRange,
+      exclusions,
       conditional: conditionalRules,
       statistical: statisticalRules,
     })
@@ -79,6 +89,7 @@ export function Step5ReviewSave({ nav }: Props) {
     raw,
     features,
     cropRange,
+    exclusions,
     conditionalRules,
     statisticalRules,
     cleaningPipelines,
@@ -97,28 +108,42 @@ export function Step5ReviewSave({ nav }: Props) {
       sourceFetchConfigs,
       features,
       cropRange,
+      exclusions,
       conditionalRules,
       statisticalRules,
       cleaningPipelines,
       selectedColumns,
       scalers: scalerConfigs,
+      // Step-1 base tags + Manual/CSV constants — let edit mode rebuild the raw
+      // dataset deterministically without re-running Step 1/2.
+      baseTags,
+      tagConstants,
+    }
+
+    const body = {
+      name: name.trim(),
+      description: description.trim() || undefined,
+      workspaceId,
+      sourceIds: sources.map(s => s.id),
+      tags: finalDataset.tags,
+      pipelineConfig,
+      fileUrl: null,
+      rowCount: finalDataset.rows.length,
+      // Missing-values status is measured pre-fill (how much needed imputation).
+      missingPct: datasetQuality(cleansed).missingPct,
     }
 
     try {
-      const res = await datasetService.create({
-        name: name.trim(),
-        description: description.trim() || undefined,
-        workspaceId,
-        sourceIds: sources.map(s => s.id),
-        tags: finalDataset.tags,
-        pipelineConfig,
-        fileUrl: null,
-        rowCount: finalDataset.rows.length,
-        // Missing-values status is measured pre-fill (how much needed imputation).
-        missingPct: datasetQuality(cleansed).missingPct,
-      })
+      const res =
+        mode === 'edit'
+          ? await datasetService.update(editingDatasetId, body)
+          : await datasetService.create(body)
       setSaved(true)
-      toast.success(`Dataset "${res.data.name}" created`)
+      toast.success(
+        mode === 'edit'
+          ? `Dataset "${res.data.name}" updated`
+          : `Dataset "${res.data.name}" created`,
+      )
       resetWizard()
       router.push('/data-studio')
     } catch (err) {
@@ -222,7 +247,11 @@ export function Step5ReviewSave({ nav }: Props) {
         ) : (
           <>
             <Save className="h-4 w-4" />
-            {saving ? 'Saving…' : 'Save Dataset'}
+            {saving
+              ? 'Saving…'
+              : mode === 'edit'
+                ? 'Save Changes'
+                : 'Save Dataset'}
           </>
         )}
       </Button>

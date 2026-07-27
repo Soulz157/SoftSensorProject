@@ -6,11 +6,14 @@ import { Binary, CheckSquare, Wrench } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
 import {
-  applyFeatures,
   featureColumnName,
   type FeatureConfig,
 } from '@/lib/feature-engineering'
-import { dwRawDatasetAtom, dwTimeRangeAtom } from '@/store/dataset-studio'
+import {
+  dwFeaturedDatasetAtom,
+  dwRawDatasetAtom,
+  dwTimeRangeAtom,
+} from '@/store/dataset-studio'
 import type { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipeline-nav'
 import { ExtractionPanel } from './feature-engineering/extraction-panel'
 import { CreationPanel } from './feature-engineering/creation-panel'
@@ -18,6 +21,8 @@ import { SelectionPanel } from './feature-engineering/selection-panel'
 import { DataAnalysisCard } from './processing/data-analysis-card'
 import { useDatasetTagSelection } from '@/hooks/dataset/use-dataset-tag-selection'
 import { PERIOD_TO_RANGE } from '@/store/model-pipeline'
+import { cn } from '@/lib/utils'
+import { EditLockBanner } from './step-1-tags'
 
 interface Props {
   nav: UseDatasetPipelineNavResult
@@ -42,10 +47,9 @@ export function Step4FeatureEngineering({ nav }: Props) {
   const range = PERIOD_TO_RANGE[period]
 
   const originalColumns = raw.tags
-  const featured = useMemo(
-    () => applyFeatures(raw, featureConfigs),
-    [raw, featureConfigs],
-  )
+  // Live raw + engineered dataset (recomputed from the recipe by the derived
+  // atom) — single source for the sidebar, selection panel, and analysis card.
+  const featured = useAtomValue(dwFeaturedDatasetAtom)
   const engineeredColumns = useMemo(
     () => featured.tags.filter(t => !originalColumns.includes(t)),
     [featured.tags, originalColumns],
@@ -73,6 +77,7 @@ export function Step4FeatureEngineering({ nav }: Props) {
 
   const selectedCount =
     selectedColumns === null ? allColumns.length : selectedColumns.length
+  const locked = nav.isEditLocked
 
   return (
     <div className="space-y-4">
@@ -90,7 +95,20 @@ export function Step4FeatureEngineering({ nav }: Props) {
         </Badge>
       </div>
 
-      <Tabs defaultValue="extraction" className="flex flex-col space-y-4">
+      {locked && (
+        <EditLockBanner>
+          Features and column selection are locked while editing preprocessing —
+          they define the schema downstream models depend on.
+        </EditLockBanner>
+      )}
+
+      <Tabs
+        defaultValue="extraction"
+        className={cn(
+          'flex flex-col space-y-4',
+          locked && 'pointer-events-none opacity-60',
+        )}
+      >
         <TabsList className="flex h-11 items-center justify-start rounded-lg bg-muted/50 p-1 w-full max-w-2xl">
           <TabsTrigger
             value="extraction"
@@ -156,7 +174,7 @@ export function Step4FeatureEngineering({ nav }: Props) {
           </TabsContent>
         </div>
 
-        <DataAnalysisCard dataset={raw} range={range} />
+        <DataAnalysisCard dataset={featured} range={range} />
       </Tabs>
     </div>
   )

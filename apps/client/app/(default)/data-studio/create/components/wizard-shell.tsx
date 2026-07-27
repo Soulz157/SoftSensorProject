@@ -5,7 +5,7 @@ import { ArrowLeft, ChevronLeft, ChevronRight, Layers } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Step1Tags } from './step-1-tags'
 import { Step2RawData } from './step-2-raw-data'
-import { Step3Processing } from './step-3-processing'
+import { Step3Processing } from './step-3-eda'
 import { Step5ReviewSave } from './step-5-review-save'
 import { useDatasetPipelineNav } from '@/hooks/dataset/use-dataset-pipeline-nav'
 import { WizardStepIndicator } from './wizard-step-indicator'
@@ -70,12 +70,13 @@ export function WizardShell() {
           <div className="flex flex-wrap items-center gap-2">
             <Layers className="h-6 w-6 text-primary" />
             <h1 className="text-2xl font-semibold text-foreground">
-              Create Dataset
+              {nav.isEditLocked ? 'Edit Preprocessing' : 'Create Dataset'}
             </h1>
           </div>
           <p className="pl-8 text-sm text-muted-foreground">
-            Select tags, fetch, clean, and fill missing values from your
-            selected data sources.
+            {nav.isEditLocked
+              ? 'Raw query is locked — adjust only the preprocessing pipeline (cropping, cleaning, imputation). Tags, time range, and features cannot change.'
+              : 'Select tags, fetch, clean, and fill missing values from your selected data sources.'}
           </p>
         </div>
 

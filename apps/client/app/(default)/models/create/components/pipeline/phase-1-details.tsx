@@ -47,7 +47,7 @@ export function Phase1Details({
         </p>
       </div>
       {mode === 'create' && <PresetPicker workspaceId={props.workspaceId} />}
-      <ModelMetadataSection {...props} disabled={false} />
+      <ModelMetadataSection {...props} disabled={false} /> 
 
       <div className="space-y-2">
         <h2 className="text-sm font-medium text-foreground">

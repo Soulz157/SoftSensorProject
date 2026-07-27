@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
-import { RotateCcw } from 'lucide-react'
+import { RotateCcw, Save } from 'lucide-react'
+import { toast } from 'sonner'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -16,8 +17,6 @@ import { PERIOD_TO_RANGE } from '@/store/model-pipeline'
 import {
   dwRawDatasetAtom,
   dwTimeRangeAtom,
-  dwCleaningTagsAtom,
-  dwCleaningPipelinesAtom,
   dwHighestUnlockedAtom,
 } from '@/store/dataset-studio'
 import { useImputationTagList } from '@/hooks/dataset/use-imputation-tag-list'
@@ -28,10 +27,13 @@ import { ProcessingActionFooter } from './processing-action-footer'
 import { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipeline-nav'
 import { CutOffSection } from '../cutoff-section'
 
-const DEBOUNCE_MS = 300
-
 interface Props {
   nav: UseDatasetPipelineNavResult
+}
+
+/** Deep-ish equality for two pipelines (stable JSON of their steps). */
+function pipelineEq(a: TagPipeline, b: TagPipeline): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
 }
 
 export function Step32Imputation({ nav }: Props) {
@@ -42,11 +44,14 @@ export function Step32Imputation({ nav }: Props) {
   const {
     cropRange,
     valueCrop,
+    exclusions,
     conditionalRules,
     statisticalRules,
     cleaningTags,
     setCleaningTags,
     cleaningPipelines,
+    cleanedTags,
+    saveCleanedTags,
   } = nav
 
   const breakdown = useMemo(
@@ -54,10 +59,11 @@ export function Step32Imputation({ nav }: Props) {
       precleanseBreakdown(raw, {
         crop: cropRange,
         valueCrop,
+        exclusions,
         conditional: conditionalRules,
         statistical: statisticalRules,
       }),
-    [raw, cropRange, valueCrop, conditionalRules, statisticalRules],
+    [raw, cropRange, valueCrop, exclusions, conditionalRules, statisticalRules],
   )
   const base = breakdown.dataset
 
@@ -66,99 +72,103 @@ export function Step32Imputation({ nav }: Props) {
       precleanse(raw, {
         crop: cropRange,
         valueCrop,
+        exclusions,
         conditional: [],
         statistical: [],
       }),
-    [raw, cropRange, valueCrop],
+    [raw, cropRange, valueCrop, exclusions],
   )
 
-  const { activeTags } = useDatasetTagSelection(base)
+  // Ensure the sidebar visibility selection is initialized (side-effect only).
+  useDatasetTagSelection(base)
 
-  // Default the cleaning-target set to every active tag on first entry. Written
-  // straight to the atom (not via nav.setCleaningTags) so the auto-seed doesn't
-  // relock later wizard steps — only genuine user edits should do that.
-  const seedCleaningTags = useSetAtom(dwCleaningTagsAtom)
-  // Raw pipeline setter + relock. The debounced fan-out below syncs the draft
-  // to the atom WITHOUT relocking (so revisiting the step doesn't bump the user
-  // back); genuine draft edits relock via `updateDraft`.
-  const setCleaningPipelinesRaw = useSetAtom(dwCleaningPipelinesAtom)
   const setHighestUnlocked = useSetAtom(dwHighestUnlockedAtom)
+  // Editing the pipeline or saving changes the produced dataset — relock the
+  // downstream (materialized) steps so they recompute.
   const relock = () => setHighestUnlocked(prev => Math.min(prev, 4))
-  const seededRef = useRef(false)
-  useEffect(() => {
-    if (
-      !seededRef.current &&
-      cleaningTags.length === 0 &&
-      activeTags.length > 0
-    ) {
-      seededRef.current = true
-      seedCleaningTags(activeTags)
-    }
-  }, [cleaningTags.length, activeTags, seedCleaningTags])
 
-  // One shared pipeline applies to every selected tag. Seed the editable draft
-  // from the first selected tag's persisted pipeline.
-  const persisted = cleaningTags.length
-    ? (cleaningPipelines[cleaningTags[0] ?? ''] ?? [])
-    : []
-  const [draft, setDraft] = useState<CleaningStep[]>(persisted)
+  // Local editable draft. NOT auto-committed — Save is the sole commit point,
+  // so unsaved edits never leak into the persisted pipelines or Step 5.
+  const [draft, setDraft] = useState<CleaningStep[]>([])
+  const [previewTags, setPreviewTags] = useState<string[]>([])
+  // Step-by-step preview scrubber index + the isolated tag it previews.
   const [previewIndex, setPreviewIndex] = useState(0)
   const [rawIsolated, setRawIsolated] = useState('')
 
+  // Re-seed the draft from the batch's saved pipeline only when a FRESH batch
+  // starts (0 → N selected). Growing/shrinking an in-progress batch keeps the
+  // draft so the user doesn't lose work mid-edit.
+  const prevCountRef = useRef(0)
+  useEffect(() => {
+    const prev = prevCountRef.current
+    prevCountRef.current = cleaningTags.length
+    if (cleaningTags.length === 0) {
+      setDraft([])
+      return
+    }
+    if (prev === 0) {
+      setDraft(cleaningPipelines[cleaningTags[0] ?? ''] ?? [])
+    }
+  }, [cleaningTags, cleaningPipelines])
+
+  // Single-tag scope for the step preview + crop + quality pill. Honors the
+  // isolate pick, falling back to the first selected tag.
   const isolatedTag = cleaningTags.includes(rawIsolated)
     ? rawIsolated
     : (cleaningTags[0] ?? '')
-
-  // Debounced fan-out: the persisted pipelines mirror the selection exactly —
-  // one shared draft for every selected tag, nothing for deselected tags (so a
-  // removed tag is truly no longer cleaned). No relock here; see `relock` above.
+  // Keep the preview within the current batch. Default to ALL selected tags so
+  // the chart mirrors the sidebar selection on entry; prune to still-selected
+  // on change, and re-seed to the full set when the pruned result is empty.
   useEffect(() => {
-    const timer = setTimeout(() => {
-      const next: Record<string, TagPipeline> = {}
-      for (const tag of cleaningTags) next[tag] = draft
-      setCleaningPipelinesRaw(next)
-    }, DEBOUNCE_MS)
-    return () => clearTimeout(timer)
-  }, [draft, cleaningTags, setCleaningPipelinesRaw])
+    setPreviewTags(prev => {
+      const pruned = prev.filter(t => cleaningTags.includes(t))
+      return pruned.length > 0 ? pruned : [...cleaningTags]
+    })
+  }, [cleaningTags])
 
   const draftMap = useMemo(() => {
     const map: Record<string, TagPipeline> = {}
     for (const tag of cleaningTags) map[tag] = draft
     return map
   }, [cleaningTags, draft])
+
   const { rows } = useImputationTagList(base, draftMap)
   const isolatedQuality = rows.find(r => r.tag === isolatedTag)?.quality
 
-  const truncated = useMemo(
-    () => draft.slice(0, previewIndex),
-    [draft, previewIndex],
+  const dirty = cleaningTags.some(
+    t => !pipelineEq(cleaningPipelines[t] ?? [], draft),
   )
-  const previewProcessed = useMemo(
-    () =>
-      preprocessPipelines(
-        base,
-        isolatedTag ? { [isolatedTag]: truncated } : {},
-      ),
-    [base, isolatedTag, truncated],
-  )
-  const previewRows = useMemo(
-    () => tagFillPreview(base, previewProcessed, isolatedTag),
-    [base, previewProcessed, isolatedTag],
-  )
+  const cleanedSet = useMemo(() => new Set(cleanedTags), [cleanedTags])
+  const allCleaned =
+    cleaningTags.length > 0 && cleaningTags.every(t => cleanedSet.has(t))
+  const canSave = cleaningTags.length > 0 && (dirty || !allCleaned)
 
-  // Committed result (from the persisted atom) drives the drop warning + gate.
-  // Kept on the committed pipelines (not the live draft) so the gate doesn't
-  // flicker on every keystroke in the Strategy Toolkit.
+  const handleSave = () => {
+    if (cleaningTags.length === 0) return
+    saveCleanedTags(cleaningTags, draft)
+    toast.success(
+      `Cleaned ${cleaningTags.length} tag${cleaningTags.length === 1 ? '' : 's'}`,
+    )
+  }
   const preprocessed = useMemo(
     () => preprocessPipelines(base, cleaningPipelines),
     [base, cleaningPipelines],
   )
   const allDropped = base.rows.length > 0 && preprocessed.rows.length === 0
 
-  // Live, full-draft imputed dataset (all selected tags) — the single source of
-  // truth the Cut Off section displays, so cropping always operates on the
-  // filled data. Uses the live `draftMap` for instant propagation as the user
-  // edits the Strategy Stack; memoized so the charts don't re-render needlessly.
+  // Step-by-step preview for the isolated tag: apply only the first
+  // `previewIndex` draft steps so the scrubber shows each stage's effect live.
+  const previewRows = useMemo(() => {
+    const truncated = draft.slice(0, previewIndex)
+    const processed = preprocessPipelines(
+      base,
+      isolatedTag ? { [isolatedTag]: truncated } : {},
+    )
+    return tagFillPreview(base, processed, isolatedTag)
+  }, [base, draft, previewIndex, isolatedTag])
+
+  // Live full-draft dataset (all selected tags) for the Cut Off section, so
+  // cropping always operates on the filled data.
   const processedDataset = useMemo(
     () => preprocessPipelines(base, draftMap),
     [base, draftMap],
@@ -166,7 +176,6 @@ export function Step32Imputation({ nav }: Props) {
 
   const removeCleaningTag = (tag: string) =>
     setCleaningTags(cleaningTags.filter(t => t !== tag))
-  // Editing the pipeline changes the produced dataset — relock downstream.
   const updateDraft = (next: CleaningStep[]) => {
     setDraft(next)
     relock()
@@ -176,14 +185,26 @@ export function Step32Imputation({ nav }: Props) {
   return (
     <div className="space-y-4">
       <h3>Step 3.2: Data Cleaning</h3>
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-muted-foreground">
-          Build a cleaning pipeline and apply it to every selected tag at once.
+          Select tags in the sidebar, build a cleaning pipeline, then save the
+          batch. Saved tags are marked Cleaned.
         </p>
-        <Button size="sm" variant="ghost" onClick={reset}>
-          <RotateCcw className="h-3.5 w-3.5" />
-          Reset pipeline
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={reset}
+            disabled={draft.length === 0}
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            Reset pipeline
+          </Button>
+          <Button size="sm" onClick={handleSave} disabled={!canSave}>
+            <Save className="h-3.5 w-3.5" />
+            Save Cleaned Tags
+          </Button>
+        </div>
       </div>
 
       <CleaningTagBadges tags={cleaningTags} onRemove={removeCleaningTag} />
@@ -192,6 +213,14 @@ export function Step32Imputation({ nav }: Props) {
         <div className="min-w-0 space-y-4">
           {cleaningTags.length > 0 ? (
             <div className="space-y-4">
+              {dirty && (
+                <p className="text-xs text-amber-600 dark:text-amber-400">
+                  Unsaved changes — click Save Cleaned Tags to apply this
+                  pipeline to the {cleaningTags.length} selected tag
+                  {cleaningTags.length === 1 ? '' : 's'}.
+                </p>
+              )}
+
               <ImputationDetailPanel
                 pipeline={draft}
                 onPipelineChange={updateDraft}
@@ -212,7 +241,14 @@ export function Step32Imputation({ nav }: Props) {
                 cropRange={cropRange}
                 onCropChange={nav.setCropRange}
                 valueCrop={valueCrop}
+                previewTags={previewTags}
+                onPreviewTagsChange={setPreviewTags}
                 onValueCropChange={nav.setValueCrop}
+                exclusions={exclusions}
+                onExcludeRange={excl =>
+                  nav.setExclusions([...exclusions, excl])
+                }
+                onClearExclusions={() => nav.setExclusions([])}
                 scopeTag={isolatedTag}
                 breakdown={breakdown}
                 croppedDataset={cropped}

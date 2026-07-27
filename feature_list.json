@@ -1,0 +1,120 @@
+{
+  "project": "Data Source Real-Data Integration (PI / SQL / REST)",
+  "version": "1.0.0",
+  "plan": "~/.claude/plans/eventual-pondering-lagoon.md",
+  "progress": {
+    "completed": 4,
+    "total": 8
+  },
+  "features": [
+    {
+      "id": "F1",
+      "title": "Credential encryption + schema migration",
+      "description": "AES-256-GCM encrypt/decrypt util in backend keyed by DATASOURCE_ENCRYPTION_KEY. Replace plaintext DataSource.password with secretCiphertext, add config Json for type-specific non-secret fields. Encrypt on create/update; never return the secret.",
+      "dependencies": [],
+      "status": "completed",
+      "tasks": [
+        {
+          "id": "F1-T1",
+          "title": "Backend AES-256-GCM crypto util",
+          "status": "completed"
+        },
+        {
+          "id": "F1-T2",
+          "title": "Add DATASOURCE_ENCRYPTION_KEY + PYTHON_API_URL to env.config + .env.example",
+          "status": "completed"
+        },
+        {
+          "id": "F1-T3",
+          "title": "Schema: secretCiphertext + config Json; migration",
+          "status": "completed"
+        },
+        {
+          "id": "F1-T4",
+          "title": "Service+DTO: encrypt on write, extend fields, keep secret out of responses",
+          "status": "completed"
+        }
+      ],
+      "acceptance": [
+        "DataSource secrets stored encrypted (AES-256-GCM), never plaintext",
+        "No API response or log contains the secret",
+        "config JSON holds SQL (port/driver) and REST (baseUrl/endpoint/method/authType/apiKey|token/headers) non-secret fields",
+        "Migration applied via pnpm db:migrate:dev"
+      ],
+      "verification": [
+        "pnpm --filter backend check-types passed (exit 0)",
+        "Migration 20260727000000_datasource_encrypt_config applied via migrate deploy",
+        "crypto round-trip + tamper-rejection test: ALL PASS (empty/colon/unicode)"
+      ],
+      "notes": "Migration was destructive (dropped password column with 4 existing rows) — applied with explicit user approval; those sources must have credentials re-entered. Runtime create->read secret-omission check deferred to F6 (needs live app)."
+    },
+    {
+      "id": "F2",
+      "title": "Backend -> Python HTTP client",
+      "description": "Typed POST helper in backend reading PYTHON_API_URL, timeout + AppException error mapping, never logs creds.",
+      "dependencies": [],
+      "status": "completed",
+      "verification": [
+        "src/lib/python-client.ts: postToPython<T> + PYTHON_TIMEOUT; global fetch + AbortSignal.timeout",
+        "pnpm --filter backend check-types passed (exit 0)",
+        "Errors mapped to AppException (504 timeout / 502 unreachable / 400 upstream 4xx); no body/headers/creds logged"
+      ],
+      "notes": "Runtime exercise deferred to F3/F6 (no Python data-source endpoint exists yet)."
+    },
+    {
+      "id": "F3",
+      "title": "Python: per-source PI dependency + data-source router",
+      "description": "get_pi_client_from_creds builds PIWebAPI from request creds (no lru_cache). New /v1/data-sources router. PI test-connection op (fix /v1/pi/health vs /health mismatch).",
+      "dependencies": ["F2"],
+      "status": "completed",
+      "verification": [
+        "app imports clean; OpenAPI resolves /v1/data-sources/pi/{test,tags,fetch} + /v1/pi/health",
+        "build_pi_client(creds) reuses PIWebAPI + TagService/DataService (no duplicate PI integration)",
+        "SECURITY: removed password print() in PIWebAPI.__init__; PICredentials.password repr=False; stored self.api_server (fixes latent AttributeError)"
+      ],
+      "notes": "Live PI auth/fetch deferred to F6/F7 (needs real creds + running FastAPI). PI creds contract: {api_server, pi_server, user, password}."
+    },
+    {
+      "id": "F4",
+      "title": "Python: SQL connector",
+      "description": "SQLAlchemy per driver: test_connection/list_tables/get_columns/query. Parameterized + safe identifier quoting, enforced LIMIT, read-only intent.",
+      "dependencies": ["F3"],
+      "status": "completed",
+      "verification": [
+        "Installed SQLAlchemy 2.0.51 + psycopg 3.3.4 + PyMySQL 1.2.0 (pinned in requirements.txt)",
+        "LIVE against local Postgres soft_sensor_db: test_connection ok, 17 tables, get_columns, query(3 rows)",
+        "Injection guards: unknown table/column/time_column rejected; identifiers validated via reflection, values bound, LIMIT capped at 50000",
+        "OpenAPI resolves /v1/data-sources/sql/{test,tables,columns,query}"
+      ],
+      "notes": "postgres+mysql wired; mysql/mariadb (pymysql) not live-tested (no MySQL instance). mssql/sqlserver BLOCKED — needs system ODBC driver (pyodbc)."
+    },
+    {
+      "id": "F5",
+      "title": "Python: REST connector",
+      "description": "httpx test_connection/fetch with auth (basic/bearer/api-key/header), method allow-list, timeout, bounded retry, JSON extraction. SSRF guard on base URL.",
+      "dependencies": ["F3"],
+      "status": "pending"
+    },
+    {
+      "id": "F6",
+      "title": "NestJS data-source data endpoints",
+      "description": "Authorized routes test-connection/metadata/fetch that load+decrypt a saved source (or accept ad-hoc creds) and call Python. Strip upstream secret/detail leakage.",
+      "dependencies": ["F1", "F2", "F3", "F4", "F5"],
+      "status": "pending"
+    },
+    {
+      "id": "F7",
+      "title": "Frontend: connection dialog test-connection + type fields",
+      "description": "SQL/REST type-specific fields + Test Connection states in add-connection-dialog. Extend SavedDataSource/DataSourceConfig types + service methods.",
+      "dependencies": ["F6"],
+      "status": "pending"
+    },
+    {
+      "id": "F8",
+      "title": "Rewire wizard raw-data fetch to real data",
+      "description": "Replace mock in use-dataset-studio-fetch: per selected source call NestJS fetch endpoint, merge multi-source on timestamp, build real raw dataset. Preserve wizard UI/flow.",
+      "dependencies": ["F6"],
+      "status": "pending"
+    }
+  ]
+}

@@ -191,8 +191,8 @@ export function CorrelationMatrix({ dataset, threshold = 0.8 }: Props) {
 
       {open && (
         <TooltipProvider delayDuration={100}>
-          <div className="relative isolate max-h-96 overflow-auto rounded-md border border-border">
-            <table className="w-max border-separate border-spacing-0 text-[11px] [&_tr]:border-none">
+          <div className="relative  isolate max-h-96 overflow-auto rounded-md border border-border">
+            <table className="w-max border-separate border-spacing-0 text-[11px] [&_tr]:border-none ">
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
                   {/* corner: pinned ทั้งสองแกน */}

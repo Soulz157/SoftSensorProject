@@ -135,7 +135,6 @@ function TimeCropInputs({
     <div className="space-y-2 rounded-md bg-muted/40 px-2.5 py-2.5">
       <div className="flex items-center gap-2">
         <span className="text-xs font-medium text-foreground">Time Crop</span>
-        <span className="text-[11px] text-muted-foreground">keep range</span>
         {cropRange && (
           <Button
             variant="ghost"

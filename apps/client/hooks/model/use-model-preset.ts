@@ -5,7 +5,7 @@ import { useSetAtom } from 'jotai'
 import { toast } from 'sonner'
 import { getModels } from '@/services/model'
 import { datasetService } from '@/services/dataset'
-import { readModelConfig } from '@/lib/model-config'
+import { readModelConfig, configTargets } from '@/lib/model-config'
 import { METRIC_KEYS, type MetricKey } from '@/lib/model-metrics'
 import type { AIModel } from '@/types'
 import {
@@ -82,7 +82,7 @@ export function useModelPreset(workspaceId: string): UseModelPresetResult {
       setNodeId('')
       setDescription(config.description ?? '')
       setAlgorithm(config.algorithm)
-      setTargetVariable(config.targetVariable)
+      setTargetVariable(configTargets(config))
       setHyperparams(config.hyperparameters)
       setLossFunction(config.lossFunction ?? 'mse')
       setTrainTestSplit(config.trainTestSplit ?? 80)

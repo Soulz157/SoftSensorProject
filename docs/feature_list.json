@@ -1,0 +1,813 @@
+{
+  "project": "Model Creation Flow Refactor",
+  "version": "1.0.0",
+  "description": "Refactor the existing Model Creation Flow to keep the current four-step user experience while separating model training, evaluation, fine-tuning, and final model persistence. Training and fine-tuning must not commit the model to the database. The model is persisted only when the user explicitly clicks Save Model in Step 4.",
+  "status": "in_progress",
+  "progress": 25,
+
+  "existing_flow": {
+    "preserve": true,
+    "steps": [
+      {
+        "step": 1,
+        "name": "Model Setup",
+        "actions": ["Set model name", "Select model location", "Select dataset"]
+      },
+      {
+        "step": 2,
+        "name": "Training Configuration",
+        "actions": [
+          "Select algorithm",
+          "Select target",
+          "Configure train/test split",
+          "Start training"
+        ]
+      },
+      {
+        "step": 3,
+        "name": "Evaluation",
+        "actions": [
+          "Display evaluation metrics",
+          "Display actual vs predicted chart",
+          "Display residual chart"
+        ]
+      },
+      {
+        "step": 4,
+        "name": "Save Model",
+        "actions": ["Review model result", "Save model"]
+      }
+    ]
+  },
+
+  "refactor_goals": [
+    "Keep the existing four-step Model Creation Flow unchanged from the user's perspective.",
+    "Training must not commit the model to the database.",
+    "Evaluation must use the training result from the temporary Model Workspace.",
+    "Fine-tuning must run as a background process.",
+    "Fine-tuning must not commit the model to the database.",
+    "Model configuration must be preserved independently from the final database commit.",
+    "Model artifacts must be stored outside the relational database when appropriate.",
+    "The Save Model action in Step 4 is the only operation that commits the final model to the database."
+  ],
+
+  "architecture": {
+    "user_flow": [
+      "MODEL_SETUP",
+      "TRAINING_CONFIGURATION",
+      "TRAINING",
+      "EVALUATION",
+      "SAVE_MODEL"
+    ],
+
+    "runtime_flow": [
+      "MODEL_DRAFT",
+      "TRAINING_JOB",
+      "TRAINED_ARTIFACT",
+      "EVALUATION_RESULT",
+      "FINE_TUNING_JOB",
+      "FINE_TUNED_ARTIFACT",
+      "READY_TO_SAVE",
+      "MODEL_COMMIT"
+    ],
+
+    "persistence_boundary": {
+      "database_commit_allowed": ["SAVE_MODEL"],
+      "database_commit_not_allowed": [
+        "MODEL_SETUP",
+        "TRAINING",
+        "EVALUATION",
+        "FINE_TUNING"
+      ]
+    }
+  },
+
+  "features": [
+    {
+      "id": "MODEL-FLOW-001",
+      "title": "Audit Current Model Creation and Training Persistence Flow",
+      "priority": 1,
+      "status": "completed",
+      "progress": 100,
+      "dependencies": [],
+      "audit_document": "docs/MODEL_FLOW_AUDIT.md",
+
+      "description": "Audit the existing Model Creation Flow and identify all database commit operations that occur during Step 1, Step 2 training, Step 3 evaluation, and Step 4 Save Model.",
+
+      "tasks": [
+        {
+          "id": "MODEL-FLOW-001-T01",
+          "title": "Audit Step 1 Model Setup flow",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "MODEL-FLOW-001-T02",
+          "title": "Audit Step 2 Training Configuration flow",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "MODEL-FLOW-001-T03",
+          "title": "Audit training API and service implementation",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "MODEL-FLOW-001-T04",
+          "title": "Identify database commits triggered by training",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "MODEL-FLOW-001-T05",
+          "title": "Audit Step 3 evaluation data flow",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "MODEL-FLOW-001-T06",
+          "title": "Audit Step 4 Save Model implementation",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "MODEL-FLOW-001-T07",
+          "title": "Document current model persistence behavior",
+          "status": "completed",
+          "progress": 100
+        }
+      ],
+
+      "acceptance_criteria": [
+        "The existing four-step user flow is fully documented.",
+        "All database write operations during training are identified.",
+        "All database write operations during evaluation are identified.",
+        "The current Save Model database commit flow is identified.",
+        "The exact persistence boundary that needs to be moved to Step 4 is documented."
+      ],
+
+      "verification": [
+        {
+          "id": "MODEL-FLOW-001-V01",
+          "description": "Verify that the existing four-step Model Creation Flow is documented.",
+          "status": "completed"
+        },
+        {
+          "id": "MODEL-FLOW-001-V02",
+          "description": "Verify that all training-related database writes are identified.",
+          "status": "completed"
+        }
+      ]
+    },
+
+    {
+      "id": "MODEL-FLOW-002",
+      "title": "Introduce Model Draft Workspace Without Changing the Existing User Flow",
+      "priority": 2,
+      "status": "completed",
+      "progress": 100,
+      "dependencies": ["MODEL-FLOW-001"],
+      "implementation": "Client-only jotai draft in apps/client/store/model-pipeline.ts: DraftState + mpDraftIdAtom/mpDraftStateAtom/mpTrainingResultAtom/mpEvaluationResultAtom/mpArtifactRefAtom, wired into resetWizardAtom. No DB entity (scope decision).",
+
+      "description": "Introduce a temporary Model Draft Workspace that stores the current model configuration, training result, evaluation result, and artifacts before the user clicks Save Model.",
+
+      "tasks": [
+        {
+          "id": "MODEL-FLOW-002-T01",
+          "title": "Define Model Draft identifier",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "MODEL-FLOW-002-T02",
+          "title": "Define Model Draft data structure",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "MODEL-FLOW-002-T03",
+          "title": "Store Step 1 model setup configuration in Model Draft",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "MODEL-FLOW-002-T04",
+          "title": "Store Step 2 training configuration in Model Draft",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "MODEL-FLOW-002-T05",
+          "title": "Store training and evaluation references in Model Draft",
+          "status": "completed",
+          "progress": 100
+        }
+      ],
+
+      "draft_data": [
+        "model_name",
+        "model_location",
+        "dataset_reference",
+        "algorithm",
+        "target",
+        "train_test_split",
+        "training_configuration",
+        "training_result",
+        "evaluation_result",
+        "model_artifact_reference",
+        "fine_tuning_status",
+        "fine_tuning_result",
+        "model_config_reference"
+      ],
+
+      "acceptance_criteria": [
+        "The existing four-step UI remains unchanged.",
+        "Model setup information is associated with a Model Draft.",
+        "Training configuration is associated with a Model Draft.",
+        "The Model Draft can exist without creating a persistent Model database record.",
+        "The Model Draft can be used throughout Steps 2, 3, and 4."
+      ],
+
+      "verification": [
+        {
+          "id": "MODEL-FLOW-002-V01",
+          "description": "Create a Model Draft and verify that no persistent Model database record is created.",
+          "status": "completed"
+        },
+        {
+          "id": "MODEL-FLOW-002-V02",
+          "description": "Verify that Step 1 and Step 2 configuration can be retrieved from the Model Draft.",
+          "status": "completed"
+        }
+      ]
+    },
+
+    {
+      "id": "MODEL-FLOW-003",
+      "title": "Refactor Training to Run Without Database Commit",
+      "priority": 3,
+      "status": "pending",
+      "progress": 0,
+      "dependencies": ["MODEL-FLOW-002"],
+
+      "description": "Keep the existing Step 2 Training experience but change the backend behavior so that clicking Training runs the model training process without committing the final model to the database.",
+
+      "tasks": [
+        {
+          "id": "MODEL-FLOW-003-T01",
+          "title": "Keep existing Training button behavior",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-003-T02",
+          "title": "Update training API to receive Model Draft context",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-003-T03",
+          "title": "Remove persistent Model database commit from training",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-003-T04",
+          "title": "Run training against the Model Draft",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-003-T05",
+          "title": "Persist training result to temporary workspace",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-003-T06",
+          "title": "Persist trained model artifact reference",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-003-T07",
+          "title": "Update Model Draft state to TRAINED",
+          "status": "pending",
+          "progress": 0
+        }
+      ],
+
+      "acceptance_criteria": [
+        "The Step 2 user interface remains unchanged.",
+        "Clicking Training starts the model training process.",
+        "Training does not create a persistent Model database record.",
+        "Training result is stored in the Model Draft Workspace.",
+        "Training metrics are available to Step 3 Evaluation.",
+        "The trained model artifact is associated with the Model Draft.",
+        "Training completion changes the Model Draft state to TRAINED."
+      ],
+
+      "verification": [
+        {
+          "id": "MODEL-FLOW-003-V01",
+          "description": "Run training from Step 2 and verify that no Model record is created in the database.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-003-V02",
+          "description": "Verify that the training result is available for Step 3 Evaluation.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-003-V03",
+          "description": "Verify that the trained artifact is associated with the Model Draft.",
+          "status": "pending"
+        }
+      ]
+    },
+
+    {
+      "id": "MODEL-FLOW-004",
+      "title": "Preserve Evaluation Flow Using Model Draft Results",
+      "priority": 4,
+      "status": "pending",
+      "progress": 0,
+      "dependencies": ["MODEL-FLOW-003"],
+
+      "description": "Keep the existing Step 3 Evaluation UI and ensure that evaluation metrics and charts use the temporary training results from the Model Draft instead of requiring a persisted Model database record.",
+
+      "tasks": [
+        {
+          "id": "MODEL-FLOW-004-T01",
+          "title": "Keep existing evaluation metrics UI",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-004-T02",
+          "title": "Keep Actual vs Predict chart",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-004-T03",
+          "title": "Keep Residual chart",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-004-T04",
+          "title": "Update evaluation API to use Model Draft",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-004-T05",
+          "title": "Store evaluation result in Model Draft",
+          "status": "pending",
+          "progress": 0
+        }
+      ],
+
+      "acceptance_criteria": [
+        "The existing Step 3 Evaluation UI remains unchanged.",
+        "Evaluation metrics are generated from the current training result.",
+        "Actual vs Predict chart continues to work.",
+        "Residual chart continues to work.",
+        "Evaluation does not require a persistent Model database record.",
+        "Evaluation results are associated with the Model Draft."
+      ],
+
+      "verification": [
+        {
+          "id": "MODEL-FLOW-004-V01",
+          "description": "Complete training and verify that Step 3 displays evaluation metrics without a persistent Model record.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-004-V02",
+          "description": "Verify Actual vs Predict chart displays correct data.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-004-V03",
+          "description": "Verify Residual chart displays correct data.",
+          "status": "pending"
+        }
+      ]
+    },
+
+    {
+      "id": "MODEL-FLOW-005",
+      "title": "Implement Background Fine-Tuning Process",
+      "priority": 5,
+      "status": "pending",
+      "progress": 0,
+      "dependencies": ["MODEL-FLOW-003", "MODEL-FLOW-004"],
+
+      "description": "Add an asynchronous background fine-tuning process that operates on the trained Model Draft and does not commit the model to the database.",
+
+      "tasks": [
+        {
+          "id": "MODEL-FLOW-005-T01",
+          "title": "Define Fine-Tuning Job data structure",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-005-T02",
+          "title": "Create Fine-Tuning Job queue",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-005-T03",
+          "title": "Implement Fine-Tuning background worker",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-005-T04",
+          "title": "Run Fine-Tuning using the Model Draft artifact",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-005-T05",
+          "title": "Store Fine-Tuning result and artifact reference",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-005-T06",
+          "title": "Update Fine-Tuning job status",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-005-T07",
+          "title": "Support Fine-Tuning failure handling",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-005-T08",
+          "title": "Support Fine-Tuning retry",
+          "status": "pending",
+          "progress": 0
+        }
+      ],
+
+      "job_states": ["QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED"],
+
+      "acceptance_criteria": [
+        "Fine-Tuning runs as a background process.",
+        "The API does not block while Fine-Tuning is running.",
+        "Fine-Tuning uses the trained Model Draft artifact.",
+        "Fine-Tuning does not create a persistent Model database record.",
+        "Fine-Tuning progress can be tracked.",
+        "Fine-Tuning result is stored against the Model Draft.",
+        "Fine-Tuning failure is captured.",
+        "Fine-Tuning can be retried.",
+        "A successful Fine-Tuning run produces a new model artifact that can be used by Save Model."
+      ],
+
+      "verification": [
+        {
+          "id": "MODEL-FLOW-005-V01",
+          "description": "Start Fine-Tuning and verify that the API returns immediately with a Job ID.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-005-V02",
+          "description": "Verify that Fine-Tuning runs in the background worker.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-005-V03",
+          "description": "Verify that Fine-Tuning does not create a persistent Model database record.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-005-V04",
+          "description": "Verify that Fine-Tuning status can be queried.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-005-V05",
+          "description": "Verify that the completed Fine-Tuning artifact is available for final Save Model.",
+          "status": "pending"
+        }
+      ]
+    },
+
+    {
+      "id": "MODEL-FLOW-006",
+      "title": "Persist Model Configuration and Artifacts Before Final Save",
+      "priority": 6,
+      "status": "pending",
+      "progress": 0,
+      "dependencies": ["MODEL-FLOW-003", "MODEL-FLOW-005"],
+
+      "description": "Store model configuration, training configuration, evaluation results, and model artifacts in temporary or external storage while keeping the final Model database record uncommitted.",
+
+      "tasks": [
+        {
+          "id": "MODEL-FLOW-006-T01",
+          "title": "Define Model Configuration structure",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-006-T02",
+          "title": "Persist training configuration",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-006-T03",
+          "title": "Persist Fine-Tuning configuration",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-006-T04",
+          "title": "Persist evaluation metrics",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-006-T05",
+          "title": "Persist model artifact references",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-006-T06",
+          "title": "Track the latest valid model artifact",
+          "status": "pending",
+          "progress": 0
+        }
+      ],
+
+      "recommended_storage": {
+        "model_metadata": "Database after Save Model",
+        "model_config": "Object Storage or File Storage",
+        "training_config": "Model Draft Workspace or Object Storage",
+        "fine_tuning_config": "Model Draft Workspace or Object Storage",
+        "evaluation_result": "Model Draft Workspace or Object Storage",
+        "model_artifact": "Object Storage"
+      },
+
+      "acceptance_criteria": [
+        "Training configuration is preserved.",
+        "Fine-Tuning configuration is preserved.",
+        "Evaluation results are preserved.",
+        "Model artifacts are stored outside the relational database when appropriate.",
+        "The latest valid artifact can be identified.",
+        "No persistent Model database record is created before Save Model."
+      ],
+
+      "verification": [
+        {
+          "id": "MODEL-FLOW-006-V01",
+          "description": "Verify that configuration can be retrieved before Save Model.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-006-V02",
+          "description": "Verify that the latest valid model artifact can be identified.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-006-V03",
+          "description": "Verify that no persistent Model record exists before Save Model.",
+          "status": "pending"
+        }
+      ]
+    },
+
+    {
+      "id": "MODEL-FLOW-007",
+      "title": "Commit Model Only on Step 4 Save Model",
+      "priority": 7,
+      "status": "pending",
+      "progress": 0,
+      "dependencies": ["MODEL-FLOW-006"],
+
+      "description": "Keep the existing Step 4 Save Model UI but make it the only persistence boundary where the Model Draft becomes a persistent Model record.",
+
+      "tasks": [
+        {
+          "id": "MODEL-FLOW-007-T01",
+          "title": "Keep existing Step 4 Save Model button",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-007-T02",
+          "title": "Validate Model Draft before commit",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-007-T03",
+          "title": "Validate final model artifact",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-007-T04",
+          "title": "Create persistent Model database record",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-007-T05",
+          "title": "Persist model configuration reference",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-007-T06",
+          "title": "Persist final model artifact reference",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-007-T07",
+          "title": "Persist evaluation metrics and metadata",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-007-T08",
+          "title": "Complete final database transaction",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-007-T09",
+          "title": "Mark Model Draft as SAVED after successful commit",
+          "status": "pending",
+          "progress": 0
+        }
+      ],
+
+      "acceptance_criteria": [
+        "The Step 4 UI remains unchanged.",
+        "No persistent Model database record exists before Save Model.",
+        "Clicking Save Model creates the persistent Model record.",
+        "The correct Model configuration is associated with the saved Model.",
+        "The correct final model artifact is associated with the saved Model.",
+        "Evaluation metrics are associated with the saved Model.",
+        "The database commit is performed only by the Save Model operation.",
+        "A failed Save Model operation does not leave a partially persisted Model record.",
+        "A successful Save Model operation changes the Model Draft state to SAVED."
+      ],
+
+      "verification": [
+        {
+          "id": "MODEL-FLOW-007-V01",
+          "description": "Complete Steps 1 to 3 and verify that the Model does not exist in the persistent database.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-007-V02",
+          "description": "Click Save Model and verify that the Model is created in the database.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-007-V03",
+          "description": "Verify that the saved Model references the correct configuration.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-007-V04",
+          "description": "Verify that the saved Model references the correct final artifact.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-007-V05",
+          "description": "Simulate Save Model failure and verify that no partial Model record remains.",
+          "status": "pending"
+        }
+      ]
+    },
+
+    {
+      "id": "MODEL-FLOW-008",
+      "title": "Verify Complete Model Creation Lifecycle",
+      "priority": 8,
+      "status": "pending",
+      "progress": 0,
+      "dependencies": ["MODEL-FLOW-007"],
+
+      "description": "Perform end-to-end verification while preserving the existing four-step Model Creation Flow.",
+
+      "tasks": [
+        {
+          "id": "MODEL-FLOW-008-T01",
+          "title": "Verify Step 1 Model Setup",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-008-T02",
+          "title": "Verify Step 2 Training",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-008-T03",
+          "title": "Verify Step 3 Evaluation",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-008-T04",
+          "title": "Verify Background Fine-Tuning",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-008-T05",
+          "title": "Verify Step 4 Save Model",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-008-T06",
+          "title": "Verify database persistence boundary",
+          "status": "pending",
+          "progress": 0
+        }
+      ],
+
+      "acceptance_criteria": [
+        "The existing four-step user flow remains unchanged.",
+        "Step 1 creates or updates a Model Draft only.",
+        "Step 2 training does not commit a Model to the database.",
+        "Step 3 evaluation works without a persisted Model record.",
+        "Fine-Tuning runs as a background process.",
+        "Fine-Tuning does not commit a Model to the database.",
+        "Step 4 Save Model creates the persistent Model record.",
+        "The final Model references the correct configuration and artifact.",
+        "No database commit occurs before Save Model.",
+        "The complete flow works from Model Setup to Save Model."
+      ],
+
+      "verification": [
+        {
+          "id": "MODEL-FLOW-008-V01",
+          "description": "Run the complete existing four-step Model Creation Flow.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-008-V02",
+          "description": "Verify that training does not create a persistent Model record.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-008-V03",
+          "description": "Verify that evaluation works using Model Draft data.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-008-V04",
+          "description": "Verify that Fine-Tuning runs asynchronously.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-008-V05",
+          "description": "Verify that Fine-Tuning does not create a persistent Model record.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-008-V06",
+          "description": "Verify that Save Model is the only operation that creates the persistent Model record.",
+          "status": "pending"
+        }
+      ]
+    }
+  ],
+
+  "global_definition_of_done": [
+    "The existing four-step Model Creation Flow is preserved.",
+    "Step 1 Model Setup behavior remains unchanged.",
+    "Step 2 Training Configuration behavior remains unchanged.",
+    "Step 3 Evaluation behavior remains unchanged.",
+    "Step 4 Save Model behavior remains unchanged from the user's perspective.",
+    "Training runs without committing the Model to the database.",
+    "Evaluation works without a persistent Model database record.",
+    "Fine-Tuning runs as a background process.",
+    "Fine-Tuning does not commit the Model to the database.",
+    "Model configuration is preserved before final Save Model.",
+    "Model artifacts are stored and referenced correctly.",
+    "Save Model is the only persistence boundary for the final Model.",
+    "Failed Save Model operations do not leave partial Model records.",
+    "End-to-end verification passes.",
+    "No unrelated functionality is changed or broken."
+  ]
+}

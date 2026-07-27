@@ -20,7 +20,10 @@ export async function fetchClient(endpoint: string, options: RequestInit = {}) {
   const session = await sharedSession()
 
   const headers = new Headers(options.headers)
-  if (!headers.has('Content-Type')) {
+  // Only advertise a JSON body when one is actually sent. Fastify rejects a
+  // bodyless request (e.g. DELETE) that carries `Content-Type: application/json`
+  // with "Body cannot be empty when content-type is set to 'application/json'".
+  if (options.body != null && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
   }
 

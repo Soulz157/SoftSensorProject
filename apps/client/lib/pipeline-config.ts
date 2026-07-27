@@ -14,6 +14,7 @@ import { precleanse } from '@/lib/precleanse'
 import type {
   ConditionalRule,
   CropRange,
+  RangeExclusion,
   StatisticalRule,
 } from '@/lib/precleanse'
 import { applyFeatures, selectColumns } from '@/lib/feature-engineering'
@@ -33,6 +34,8 @@ export interface PipelineConfig {
   sourceFetchConfigs: Record<string, DataSourceConfig>
   features: FeatureConfig[]
   cropRange: CropRange
+  /** Drag-to-Crop "Exclude" bands (remove-inside spans). Optional for old recipes. */
+  exclusions?: RangeExclusion[]
   conditionalRules: ConditionalRule[]
   statisticalRules: StatisticalRule[]
   /** Step 3.2 bulk cleaning — per-tag ordered pipeline. */
@@ -43,10 +46,19 @@ export interface PipelineConfig {
   selectedColumns: string[] | null
   /** Per-column model-ready scaler; missing key = min-max. */
   scalers: Record<string, ScalerMethod>
+  /**
+   * Step-1 selected source tags (pre feature-engineering). Distinct from the
+   * saved dataset's final `tags` (post feature + column-select). Required to
+   * rebuild the raw dataset when re-opening the recipe in edit mode. Optional
+   * for legacy recipes saved before edit support existed.
+   */
+  baseTags?: string[]
+  /** Per-tag constant for Manual/CSV tags — needed to reconstruct their series. */
+  tagConstants?: Record<string, number>
 }
 
 /** Fixed clock so a saved recipe re-derives identical rows on every call. */
-const MATERIALIZE_EPOCH = Date.UTC(2026, 0, 1)
+export const MATERIALIZE_EPOCH = Date.UTC(2026, 0, 1)
 
 export const EMPTY_PIPELINE_CONFIG: PipelineConfig = {
   timeRange: '1min',
@@ -55,6 +67,7 @@ export const EMPTY_PIPELINE_CONFIG: PipelineConfig = {
   sourceFetchConfigs: {},
   features: [],
   cropRange: null,
+  exclusions: [],
   conditionalRules: [],
   statisticalRules: [],
   cleaningPipelines: {},
@@ -78,6 +91,7 @@ export function materializeDataset(
   const featured = applyFeatures(raw, config.features)
   const cleansed = precleanse(featured, {
     crop: config.cropRange,
+    exclusions: config.exclusions,
     conditional: config.conditionalRules,
     statistical: config.statisticalRules,
   })

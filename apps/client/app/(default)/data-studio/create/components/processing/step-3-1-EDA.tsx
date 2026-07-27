@@ -14,7 +14,7 @@ interface Props {
   nav: UseDatasetPipelineNavResult
 }
 
-export function Step31Preprocessing({ nav }: Props) {
+export function Step31EDA({ nav }: Props) {
   const raw = useAtomValue(dwRawDatasetAtom)
   const period = useAtomValue(dwTimeRangeAtom)
   const range = PERIOD_TO_RANGE[period]
@@ -35,7 +35,7 @@ export function Step31Preprocessing({ nav }: Props) {
 
   return (
     <div className="space-y-4">
-      <h3>Step 3.1: Data Preprocessing</h3>
+      <h3>Step 3.1: Exploratory Data Analysis (EDA)</h3>
       <p className="text-sm text-muted-foreground">
         Inspect data quality, crop the time range, and remove outliers before
         imputing missing values.

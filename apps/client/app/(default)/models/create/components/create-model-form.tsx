@@ -8,13 +8,20 @@ import { useModelWizardMode } from '@/hooks/model/use-model-wizard-mode'
 import { WizardStepIndicator } from './wizard-step-indicator'
 import { Phase1Details } from './pipeline/phase-1-details'
 import { Phase2TrainingConfig } from './pipeline/phase-2-training-config'
-import { Phase3Results } from './pipeline/phase-3-results'
+import { Phase3Evaluation } from './pipeline/phase-3-evaluation'
+import { Phase4Deploy } from './pipeline/phase-4-deploy'
 
-const STEP_LABELS = ['Select Dataset', 'Training Config', 'Results']
+const STEP_LABELS = [
+  'Select Dataset',
+  'Training Config',
+  'Evaluation',
+  'Save Model',
+]
 
 const NEXT_LABELS: Record<number, string> = {
   1: 'Continue',
   2: 'View Results',
+  3: 'Save Model',
 }
 
 export function CreateModelForm() {
@@ -34,8 +41,8 @@ export function CreateModelForm() {
   const { mode, modelName } = useModelWizardMode()
   const isEdit = mode === 'edit'
 
-  // Results (3) is terminal with its own actions.
-  const hideFooterNext = nav.currentStep === 3
+  // Deploy (4) is terminal with its own Save & Finish action.
+  const hideFooterNext = nav.currentStep === 4
   const nextLabel = NEXT_LABELS[nav.currentStep] ?? 'Next'
 
   let body
@@ -67,7 +74,10 @@ export function CreateModelForm() {
       body = <Phase2TrainingConfig nav={nav} />
       break
     case 3:
-      body = <Phase3Results nav={nav} />
+      body = <Phase3Evaluation nav={nav} />
+      break
+    case 4:
+      body = <Phase4Deploy nav={nav} />
       break
     default:
       body = null

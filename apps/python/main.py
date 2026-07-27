@@ -2,7 +2,7 @@ import urllib3
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from config import settings
-from routers import data, tags
+from routers import data, tags, data_source
 
 
 DESCRIPTION = """
@@ -68,6 +68,7 @@ def create_app() -> FastAPI:
 
     app.include_router(data)
     app.include_router(tags)
+    app.include_router(data_source)
 
     return app
 
@@ -82,4 +83,14 @@ app = create_app()
     description="Returns `{'status': 'ok'}`. ใช้สำหรับ liveness/readiness probe.",
 )
 async def health():
+    return {"status": "ok"}
+
+
+@app.get(
+    "/v1/pi/health",
+    tags=["Health"],
+    summary="PI service health check",
+    description="Alias of /health. Matches the client BFF path in lib/pi/server.ts.",
+)
+async def pi_health():
     return {"status": "ok"}

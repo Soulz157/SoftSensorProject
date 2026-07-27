@@ -27,6 +27,16 @@ export type CropRange = { from: string; to: string } | null
  */
 export type ValueCrop = Record<string, { min: number; max: number }>
 
+/**
+ * A user-dragged exclusion (the inverse of `crop`). `time` removes whole rows
+ * whose timestamp is INSIDE `[from, to]`; `value` drops the keyed tag's cell
+ * where its reading is INSIDE `[min, max]`. Either half may be null.
+ */
+export interface RangeExclusion {
+  time: { from: string; to: string } | null
+  value: { tag: string; min: number; max: number } | null
+}
+
 /** `mark` → set the matched cell's status to `Bad`; `drop` → remove the row. */
 export type OutlierAction = 'mark' | 'drop'
 
@@ -55,6 +65,8 @@ export interface PrecleanseConfig {
   crop: CropRange
   /** Per-tag Y-axis crop bounds. Optional — omitting it is a no-op. */
   valueCrop?: ValueCrop
+  /** Dragged exclusion bands (remove-inside). Optional — omitting it is a no-op. */
+  exclusions?: RangeExclusion[]
   conditional: ConditionalRule[]
   statistical: StatisticalRule[]
 }
@@ -62,6 +74,7 @@ export interface PrecleanseConfig {
 export const EMPTY_PRECLEANSE_CONFIG: PrecleanseConfig = {
   crop: null,
   valueCrop: {},
+  exclusions: [],
   conditional: [],
   statistical: [],
 }
@@ -207,6 +220,26 @@ export function precleanse(raw: Dataset, cfg: PrecleanseConfig): Dataset {
     }
   }
 
+  // 1c. Exclusions — the inverse of crop. `time` removes whole rows inside the
+  // band; `value` drops only the keyed tag's cell inside the band (other tags at
+  // that timestamp survive, mirroring the outlier drop-cell semantics below).
+  if (cfg.exclusions) {
+    for (const ex of cfg.exclusions) {
+      if (ex.time) {
+        const { from, to } = ex.time
+        rows = rows.filter(r => !(r.timestamp >= from && r.timestamp <= to))
+      }
+      if (ex.value) {
+        const { tag, min, max } = ex.value
+        for (const r of rows) {
+          const cell = r.cells[tag]
+          if (cell && cell.value >= min && cell.value <= max)
+            delete r.cells[tag]
+        }
+      }
+    }
+  }
+
   const markCell = (cell: Cell | undefined) => {
     if (cell) cell.status = 'Bad'
   }
@@ -261,6 +294,8 @@ export interface PrecleanseRemoved {
   timeCrop: number
   /** Rows dropped by the value (Y-axis) crop. */
   valueCrop: number
+  /** Rows dropped by dragged time-exclusion bands. */
+  exclude: number
   /** Cells flagged/dropped by conditional rules. */
   conditional: number
   /** Cells flagged/dropped by statistical rules. */
@@ -320,9 +355,17 @@ export function precleanseBreakdown(
     conditional: [],
     statistical: [],
   })
+  const afterExclude = precleanse(raw, {
+    crop: cfg.crop,
+    valueCrop: cfg.valueCrop,
+    exclusions: cfg.exclusions,
+    conditional: [],
+    statistical: [],
+  })
   const afterStat = precleanse(raw, {
     crop: cfg.crop,
     valueCrop: cfg.valueCrop,
+    exclusions: cfg.exclusions,
     conditional: [],
     statistical: cfg.statistical,
   })
@@ -333,7 +376,8 @@ export function precleanseBreakdown(
     removed: {
       timeCrop: totalRows - afterCrop.rows.length,
       valueCrop: afterCrop.rows.length - afterValue.rows.length,
-      statistical: goodCellsLost(afterValue, afterStat),
+      exclude: afterValue.rows.length - afterExclude.rows.length,
+      statistical: goodCellsLost(afterExclude, afterStat),
       conditional: goodCellsLost(afterStat, full),
     },
     keptRows: full.rows.length,

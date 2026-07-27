@@ -14,6 +14,7 @@ import { useModelTraining } from '@/hooks/model/use-model-training'
 import type { UsePipelineNavResult } from '@/hooks/model/use-model-pipeline-nav'
 import { CoreConfig } from './training-config/core-config'
 import { AlgorithmSelector } from './training-config/algorithm-selector'
+import { AutoMlToggles } from './training-config/automl-toggles'
 import { DynamicHyperparameters } from './training-config/dynamic-hyperparameters'
 
 interface Props {
@@ -23,14 +24,21 @@ interface Props {
 export function Phase2TrainingConfig({ nav }: Props) {
   const {
     selectedDataset,
-    algorithm,
-    targetVariable,
+    algorithms,
+    findBestModel,
+    findBestParams,
+    targetVariables,
     hyperparameters,
     lossFunction,
     trainTestSplit,
   } = nav
   const training = useModelTraining()
   const tags = selectedDataset?.tags ?? []
+
+  // Primary algorithm drives the manual hyperparameter grid, which is only
+  // relevant for a single algorithm with AutoML tuning off.
+  const primaryAlgorithm = algorithms[0] ?? 'ols'
+  const showHyperparams = algorithms.length === 1 && !findBestParams
 
   const learningRate = hyperparameters?.learning_rate
     ? Number(hyperparameters.learning_rate)
@@ -41,7 +49,9 @@ export function Phase2TrainingConfig({ nav }: Props) {
   const complexityScore = Math.min((numLeaves / 100) * 100, 100)
 
   const canTrain =
-    targetVariable !== '' && training.status !== 'training' && tags.length > 0
+    targetVariables.length > 0 &&
+    training.status !== 'training' &&
+    tags.length > 0
 
   return (
     <div className="space-y-6">
@@ -87,7 +97,7 @@ export function Phase2TrainingConfig({ nav }: Props) {
             </h3>
             <CoreConfig
               tags={tags}
-              targetVariable={targetVariable}
+              targetVariables={targetVariables}
               onTargetChange={nav.setTargetVariable}
               lossFunction={lossFunction}
               onLossChange={nav.setLossFunction}
@@ -101,14 +111,28 @@ export function Phase2TrainingConfig({ nav }: Props) {
               Algorithm &amp; hyperparameters
             </h3>
             <AlgorithmSelector
-              algorithm={algorithm}
-              onChange={nav.setAlgorithm}
+              algorithms={algorithms}
+              onChange={nav.setAlgorithms}
             />
-            <DynamicHyperparameters
-              algorithm={algorithm}
-              hyperparameters={hyperparameters}
-              onChange={nav.setHyperparameter}
+            <AutoMlToggles
+              findBestModel={findBestModel}
+              onFindBestModel={nav.setFindBestModel}
+              findBestParams={findBestParams}
+              onFindBestParams={nav.setFindBestParams}
             />
+            {showHyperparams ? (
+              <DynamicHyperparameters
+                algorithm={primaryAlgorithm}
+                hyperparameters={hyperparameters}
+                onChange={nav.setHyperparameter}
+              />
+            ) : (
+              <p className="rounded-lg bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                Manual hyperparameters are managed automatically — turn off
+                “Find Best Parameters” and select a single algorithm to tune
+                them by hand.
+              </p>
+            )}
           </section>
 
           {/* Training Actions */}

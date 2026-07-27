@@ -21,8 +21,10 @@ class SummaryType(str, Enum):
 class TagItem(BaseModel):
     tag_name: str
     description: Optional[str] = None
+    value: Optional[float | str | dict] = None
     unit: Optional[str] = None
-    plant: Optional[str] = None
+    isGood: Optional[bool] = None
+    questionable: Optional[bool] = None
 
 
 class TagListResponse(BaseModel):

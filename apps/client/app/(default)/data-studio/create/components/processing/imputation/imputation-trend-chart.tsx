@@ -26,11 +26,11 @@ interface Props {
   range: TimeRange
 }
 
-type View = 'original' | 'imputed' | 'overlay'
+type View = 'original' | 'cleaned' | 'overlay'
 
 const VIEW_OPTIONS: { value: View; label: string }[] = [
   { value: 'original', label: 'Original' },
-  { value: 'imputed', label: 'Imputed' },
+  { value: 'cleaned', label: 'Cleaned' },
   { value: 'overlay', label: 'Overlay Both' },
 ]
 
@@ -46,11 +46,6 @@ function usePrefersReducedMotion(): boolean {
   return reduced
 }
 
-/**
- * Before/after preview line chart. The cleaning pipeline applies to every
- * selected tag, but only one tag's before/after is drawn at a time (chosen via
- * the isolate chips) to keep the chart readable.
- */
 export function ImputationTrendChart({
   rows,
   tags,
@@ -66,11 +61,11 @@ export function ImputationTrendChart({
 
   const config: ChartConfig = {
     before: { label: 'Original', color: 'var(--muted-foreground)' },
-    after: { label: 'Imputed', color: afterColor },
+    after: { label: 'Cleaned', color: afterColor },
   }
 
   const showBefore = view === 'original' || view === 'overlay'
-  const showAfter = view === 'imputed' || view === 'overlay'
+  const showAfter = view === 'cleaned' || view === 'overlay'
 
   return (
     <div className="space-y-3">

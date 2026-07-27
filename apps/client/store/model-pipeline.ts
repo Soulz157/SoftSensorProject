@@ -41,7 +41,7 @@ export interface TrainState {
   error?: string
 }
 
-export const MP_TOTAL_STEPS = 3
+export const MP_TOTAL_STEPS = 4
 
 // Lean wizard — Step 1: Select Dataset (+ model metadata), Step 2: Training
 // Configuration, Step 3: Results. Dataset ETL now lives entirely in Data Studio
@@ -49,17 +49,37 @@ export const MP_TOTAL_STEPS = 3
 // `Dataset` by id + its cached snapshot (avoids a refetch on every render).
 export const mpSelectedDatasetAtom = atom<SavedDataset | null>(null)
 
-export type Algorithm = 'ols' | 'random_forest' | 'lightgbm' | 'lstm' | 'gru'
+export type Algorithm =
+  | 'ols'
+  | 'svm'
+  | 'mlp'
+  | 'grp'
+  | 'pls'
+  | 'random_forest'
+  | 'lightgbm'
+  | 'xgboost'
+  | 'lstm'
+  | 'gru'
 export const ALGORITHMS: Algorithm[] = [
   'ols',
+  'svm',
+  'mlp',
+  'grp',
+  'pls',
   'random_forest',
   'lightgbm',
+  'xgboost',
   'lstm',
   'gru',
 ]
 export const ALGORITHM_LABELS: Record<Algorithm, string> = {
   ols: 'Linear Regression',
+  svm: 'Support Vector Machine',
+  grp: 'Gaussian Process Regression',
+  mlp: 'MLP (Neural Network)',
+  pls: 'PLS Regression',
   random_forest: 'Random Forest',
+  xgboost: 'XGBoost',
   lightgbm: 'LightGBM',
   lstm: 'LSTM',
   gru: 'GRU',
@@ -69,7 +89,13 @@ export const ALGORITHM_LABELS: Record<Algorithm, string> = {
 export type HyperparamValue = number | string | boolean | null
 
 export const mpAlgorithmAtom = atom<Algorithm>('ols')
-export const mpTargetVariableAtom = atom<string>('')
+/** Up to 3 candidate algorithms. `mpAlgorithmAtom` mirrors the primary (index 0). */
+export const mpAlgorithmsAtom = atom<Algorithm[]>(['ols'])
+/** AutoML Step A — evaluate the selected algorithms and auto-pick the best. */
+export const mpFindBestModelAtom = atom<boolean>(false)
+/** AutoML Step B — hyperparameter-tune the best model (requires Step A). */
+export const mpFindBestParamsAtom = atom<boolean>(false)
+export const mpTargetVariableAtom = atom<string[]>([])
 export const mpHyperparamsAtom = atom<Record<string, HyperparamValue>>({})
 /** Evaluation metric optimized during training. See `LOSS_OPTIONS` in `lib/training-config`. */
 export const mpLossFunctionAtom = atom<string>('mse')
@@ -146,6 +172,56 @@ export const mpTrainStateAtom = atom<TrainState>({
 export const mpCreatedModelIdAtom = atom<string>('')
 export const mpSelectedMetricsAtom = atom<MetricKey[]>([...METRIC_KEYS])
 
+// --- Model Draft workspace (client-only; MODEL-FLOW-002) -------------------
+// The wizard's "Model Draft" is the in-memory collection of `mp*` atoms — it has
+// NO backend record. Per the refactor invariant, the persistent `Model` row is
+// created ONLY by Save Model (Step 4); training and evaluation operate on this
+// draft. Draft state lives entirely here so no DB write happens before Save.
+export type DraftState = 'draft' | 'trained' | 'saved'
+
+/** Ephemeral client id for the current draft session (regenerated on wizard reset). */
+export const mpDraftIdAtom = atom<string>('')
+/** Draft lifecycle: 'draft' → 'trained' (Step 2 done) → 'saved' (Step 4 commit). */
+export const mpDraftStateAtom = atom<DraftState>('draft')
+
+/** Mock training summary produced in Step 2 (client-only — no real artifact file). */
+export interface DraftTrainingResult {
+  algorithm: Algorithm
+  trainedAt: string
+}
+export const mpTrainingResultAtom = atom<DraftTrainingResult | null>(null)
+
+/** Mock evaluation summary produced in Step 3 (client-computed metrics). */
+export interface DraftEvaluationResult {
+  metrics: Partial<Record<MetricKey, number>>
+  evaluatedAt: string
+}
+export const mpEvaluationResultAtom = atom<DraftEvaluationResult | null>(null)
+
+/**
+ * Reference to the trained model artifact. Mock — training is client-side, so
+ * this holds a synthetic id only, letting Save Model record an artifact ref.
+ * TODO(MODEL-FLOW-006): point at a real object-storage artifact once training is real.
+ */
+export const mpArtifactRefAtom = atom<string | null>(null)
+
+// TODO(MODEL-FLOW-005): Fine-tuning is skipped by scope decision (client-only
+// draft, no background worker/queue). Reintroduce mpFineTuningStatus/Result
+// atoms here if a real fine-tuning stage is added later.
+
+// Step 4 — Deploy (advanced MLOps guardrails). Captured config only; persisted
+// to `Model.data.config.deployment`. No runtime retrain/drift engine yet.
+/** Master toggle for the auto-retrain policy. */
+export const mpAutoRetrainAtom = atom<boolean>(false)
+/** Layer 1 (Warning, amber) — tighter ±SD band. Invariant: warn < critical. */
+export const mpRetrainWarnSdAtom = atom<number>(1.5)
+/** Layer 2 (Critical, red) — wider ±SD band; reaching it triggers auto-retrain. */
+export const mpRetrainCriticalSdAtom = atom<number>(3.0)
+/** Master toggle for input-sensor drift monitoring. */
+export const mpDriftMonitorAtom = atom<boolean>(false)
+/** Max allowed live-input deviation (%) from the training baseline before a Drift Alarm. */
+export const mpDriftThresholdPctAtom = atom<number>(10)
+
 export const mpCurrentStepAtom = atom<number>(1)
 export const mpHighestUnlockedAtom = atom<number>(1)
 export const mpCustomIntervalAtom = atom<CustomInterval | null>(null)
@@ -204,7 +280,10 @@ export const resetWizardAtom = atom(null, (_get, set) => {
   set(mpNodeIdAtom, '')
   set(mpSelectedDatasetAtom, null)
   set(mpAlgorithmAtom, 'ols')
-  set(mpTargetVariableAtom, '')
+  set(mpAlgorithmsAtom, ['ols'])
+  set(mpFindBestModelAtom, false)
+  set(mpFindBestParamsAtom, false)
+  set(mpTargetVariableAtom, [])
   // Default algorithm is `ols` — seed its clean hyperparameters (mirrors
   // `defaultHyperparams('ols')`; inlined to avoid a store → training-config cycle).
   set(mpHyperparamsAtom, { fit_intercept: true })
@@ -213,6 +292,17 @@ export const resetWizardAtom = atom(null, (_get, set) => {
   set(mpTrainStateAtom, { status: 'idle', progress: 0 })
   set(mpCreatedModelIdAtom, '')
   set(mpSelectedMetricsAtom, [...METRIC_KEYS])
+  // Fresh Model Draft workspace (client-only) — new id, clean lifecycle/results.
+  set(mpDraftIdAtom, nanoid())
+  set(mpDraftStateAtom, 'draft')
+  set(mpTrainingResultAtom, null)
+  set(mpEvaluationResultAtom, null)
+  set(mpArtifactRefAtom, null)
+  set(mpAutoRetrainAtom, false)
+  set(mpRetrainWarnSdAtom, 1.5)
+  set(mpRetrainCriticalSdAtom, 3.0)
+  set(mpDriftMonitorAtom, false)
+  set(mpDriftThresholdPctAtom, 10)
   set(mpModeAtom, 'create')
   set(mpEditModelIdAtom, '')
   set(mpCurrentStepAtom, 1)

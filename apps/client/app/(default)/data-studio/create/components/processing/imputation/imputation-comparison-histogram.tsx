@@ -45,22 +45,18 @@ function medianOf(values: number[]): number {
 }
 
 interface Layer {
-  name: 'Original' | 'Imputed'
+  name: 'Before' | 'After'
   color: string
   mean: number
   median: number
   kdeCounts: { x: number; y: number }[]
 }
 
-/**
- * Before/after distribution overlay for a single tag in Step 5.2 — forked
- * from `chart/tag-histogram-chart.tsx`'s KDE/SVG machinery, hardcoded to
- * exactly 2 named layers (Original vs Imputed) instead of iterating N tags.
- */
 export function ImputationComparisonHistogram({ before, after, tag }: Props) {
   const afterColor = chartColorVar(resolveTagMeta(tag).chartIndex)
 
-  const domain = useMemo(() => {
+  // 1. คำนวณช่วงข้อมูลเดิม (Raw Domain)
+  const rawDomain = useMemo(() => {
     const qualifying = [
       ...(before.length >= 2 ? before : []),
       ...(after.length >= 2 ? after : []),
@@ -69,22 +65,42 @@ export function ImputationComparisonHistogram({ before, after, tag }: Props) {
     return { min: Math.min(...qualifying), max: Math.max(...qualifying) }
   }, [before, after])
 
-  const binWidth = domain ? (domain.max - domain.min) / BIN_COUNT : 0
+  const { paddedDomain, binWidth } = useMemo(() => {
+    if (!rawDomain) return { paddedDomain: null, binWidth: 0 }
+    const dataRange = rawDomain.max - rawDomain.min
+    const pad = dataRange === 0 ? 1 : dataRange * 0.4
+
+    return {
+      paddedDomain: {
+        min: rawDomain.min - pad,
+        max: rawDomain.max + pad,
+      },
+      binWidth: dataRange / BIN_COUNT,
+    }
+  }, [rawDomain])
 
   const layers = useMemo<Layer[]>(() => {
-    if (!domain || binWidth <= 0) return []
+    if (!paddedDomain || binWidth <= 0) return []
     const out: Layer[] = []
+
     const build = (
       name: Layer['name'],
       values: number[],
       color: string,
     ): Layer | null => {
       if (values.length < 2) return null
-      const kde = kdeEstimate(values, domain, KDE_SAMPLES)
-      const kdeCounts = kde.map(p => ({
-        x: p.x,
-        y: densityToCount(p.y, values.length, binWidth),
-      }))
+
+      const kde = kdeEstimate(values, paddedDomain, KDE_SAMPLES)
+
+      const kdeCounts = [
+        { x: paddedDomain.min, y: 0 },
+        ...kde.map(p => ({
+          x: p.x,
+          y: densityToCount(p.y, values.length, binWidth),
+        })),
+        { x: paddedDomain.max, y: 0 },
+      ]
+
       return {
         name,
         color,
@@ -93,14 +109,17 @@ export function ImputationComparisonHistogram({ before, after, tag }: Props) {
         kdeCounts,
       }
     }
-    const originalLayer = build('Original', before, 'var(--muted-foreground)')
-    const imputedLayer = build('Imputed', after, afterColor)
+
+    const originalLayer = build('Before', before, 'var(--muted-foreground)')
+    const imputedLayer = build('After', after, afterColor)
+
     if (originalLayer) out.push(originalLayer)
     if (imputedLayer) out.push(imputedLayer)
-    return out
-  }, [domain, binWidth, before, after, afterColor])
 
-  if (!domain || layers.length === 0) {
+    return out
+  }, [paddedDomain, binWidth, before, after, afterColor])
+
+  if (!paddedDomain || layers.length === 0) {
     return (
       <div className="flex h-80 flex-col items-center justify-center gap-2 text-center">
         <BarChart3 className="h-8 w-8 text-muted-foreground/40" />
@@ -112,8 +131,9 @@ export function ImputationComparisonHistogram({ before, after, tag }: Props) {
     )
   }
 
-  const xMin = domain.min
-  const xMax = domain.max
+  const xMin = paddedDomain.min
+  const xMax = paddedDomain.max
+
   const maxKdeCount = Math.max(
     0,
     ...layers.flatMap(l => l.kdeCounts.map(p => p.y)),
@@ -173,8 +193,8 @@ export function ImputationComparisonHistogram({ before, after, tag }: Props) {
         role="img"
         aria-label={`Before/after distribution of ${tag}`}
       >
-        {yTicks.map(t => (
-          <g key={t}>
+        {yTicks.map((t, index) => (
+          <g key={`tick-${t}-${index}`}>
             <line
               x1={PAD_LEFT}
               x2={W - PAD_RIGHT}

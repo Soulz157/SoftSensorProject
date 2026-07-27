@@ -1,7 +1,14 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { Scissors, RotateCcw, MousePointerSquareDashed } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  Scissors,
+  RotateCcw,
+  MousePointerSquareDashed,
+  CalendarClock,
+  Eraser,
+  Crop,
+} from 'lucide-react'
 import {
   CartesianGrid,
   Line,
@@ -11,8 +18,6 @@ import {
   YAxis,
 } from 'recharts'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import * as SliderPrimitive from '@radix-ui/react-slider'
 import {
   ChartContainer,
   ChartTooltip,
@@ -24,17 +29,17 @@ import {
   nearestTimestampIndex,
   type CropRange,
   type ValueCrop,
+  type RangeExclusion,
 } from '@/lib/precleanse'
 import { DateTimePicker, toDateTimeLocal } from '@/components/ui/Datetime'
 import {
   AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
+  AlertDialogCancel,
 } from '@/components/ui/alert-dialog'
 import { chartColorVar, resolveTagMeta } from '@/lib/mock-readings'
 import type { SensorChartRow } from '@/hooks/use-sensor-readings'
@@ -47,13 +52,15 @@ interface Props {
   onCropChange: (range: CropRange) => void
   valueCrop: ValueCrop
   onValueCropChange: (crop: ValueCrop) => void
-  /** Tag the Y-axis crop is keyed to. When absent (multi-tag), Y crop is off. */
   scopeTag?: string
+  onExcludeRange?: (exclusion: RangeExclusion) => void
+  /** Committed exclusion bands to render on the chart. */
+  exclusions?: RangeExclusion[]
+  onClearExclusions?: () => void
 }
 
 const COMMIT_MS = 300
-/** Chart plot height in px — fixed so the drag-box pixel→value math is stable. */
-const CHART_H = 288
+const CHART_H = 480
 
 function fmtTs(iso: string): string {
   return new Date(iso).toLocaleString('en-GB', {
@@ -68,103 +75,7 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v))
 }
 
-function SliderWithTooltip({
-  min,
-  max,
-  step,
-  value,
-  onValueChange,
-  disabled,
-  tooltipLabels,
-}: {
-  min: number
-  max: number
-  step: number
-  value: [number, number]
-  onValueChange: (v: [number, number]) => void
-  disabled?: boolean
-  tooltipLabels: [string, string]
-}) {
-  const [activeThumb, setActiveThumb] = useState<number | null>(null)
-  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  const showTooltip = (idx: number) => {
-    if (hideTimer.current) clearTimeout(hideTimer.current)
-    setActiveThumb(idx)
-  }
-
-  const hideTooltip = () => {
-    hideTimer.current = setTimeout(() => setActiveThumb(null), 120)
-  }
-
-  const pct = (v: number) => (max === min ? 0 : ((v - min) / (max - min)) * 100)
-
-  return (
-    <div className="relative w-full px-1 pt-6">
-      {([0, 1] as const).map(idx => {
-        const show = activeThumb === idx
-        const p = pct(value[idx])
-        return (
-          <div
-            key={idx}
-            style={{ left: `clamp(24px, ${p}%, calc(100% - 24px))` }}
-            className={cn(
-              'pointer-events-none absolute -top-1 -translate-x-1/2 transition-all duration-100',
-              show ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-1',
-            )}
-          >
-            <span className="whitespace-nowrap rounded-md bg-foreground px-2 py-1 text-[11px] font-medium text-background shadow-md">
-              {tooltipLabels[idx]}
-            </span>
-            <span className="absolute left-1/2 top-full -translate-x-1/2 border-4 border-transparent border-t-foreground" />
-          </div>
-        )
-      })}
-
-      {/* Radix Slider — custom thumbs to hook pointer events */}
-      <SliderPrimitive.Root
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onValueChange={v => onValueChange([v[0] ?? min, v[1] ?? max])}
-        disabled={disabled}
-        className="relative flex w-full touch-none select-none items-center"
-      >
-        <SliderPrimitive.Track className="relative h-1.5 w-full grow overflow-hidden rounded-full bg-muted">
-          <SliderPrimitive.Range className="absolute h-full bg-primary" />
-        </SliderPrimitive.Track>
-
-        {([0, 1] as const).map(idx => (
-          <SliderPrimitive.Thumb
-            key={idx}
-            onPointerDown={() => showTooltip(idx)}
-            onPointerUp={hideTooltip}
-            onPointerLeave={hideTooltip}
-            onFocus={() => showTooltip(idx)}
-            onBlur={hideTooltip}
-            className={cn(
-              'block h-4 w-4 rounded-full border-2 border-primary bg-background',
-              'shadow-md ring-offset-background transition-colors',
-              'focus-visible:outline-none focus-visible:ring-2',
-              'focus-visible:ring-ring focus-visible:ring-offset-2',
-              'disabled:pointer-events-none disabled:opacity-50',
-              'cursor-grab active:cursor-grabbing',
-            )}
-          />
-        ))}
-      </SliderPrimitive.Root>
-    </div>
-  )
-}
-
-/**
- * Start / End datetime inputs, 2-way bound to the index-based crop slider.
- * `startIdx`/`endIdx` come from the shared `range01` state; editing a field
- * snaps the typed time onto the nearest row index and commits via `onCommit`
- * (= `setRange01`), so slider and inputs stay in sync through one source of
- * truth. Dragging the slider flows back here via the `committed*` effect.
- */
+// ── Component สำหรับช่อง Input Start/End Date ──
 function CropTimeInputs({
   timestamps,
   startIdx,
@@ -193,9 +104,6 @@ function CropTimeInputs({
     ? toDateTimeLocal(new Date(timestamps[lastIdx]!))
     : undefined
 
-  // Local drafts keep the typed value visible (with the error border) when a
-  // commit is blocked; they re-sync whenever the committed indices change
-  // (slider drag, external reset, or a successful snap).
   const [startDraft, setStartDraft] = useState(committedStart)
   const [endDraft, setEndDraft] = useState(committedEnd)
   const [invalid, setInvalid] = useState(false)
@@ -240,7 +148,7 @@ function CropTimeInputs({
     <div className="mt-3 grid grid-cols-2 gap-2 border-t border-border/60 pt-3">
       <label className="space-y-1">
         <span className="text-[11px] font-medium text-muted-foreground">
-          Start
+          Start Time
         </span>
         <DateTimePicker
           value={startDraft}
@@ -253,7 +161,7 @@ function CropTimeInputs({
       </label>
       <label className="space-y-1">
         <span className="text-[11px] font-medium text-muted-foreground">
-          End
+          End Time
         </span>
         <DateTimePicker
           value={endDraft}
@@ -281,6 +189,9 @@ export function DataCroppingChart({
   valueCrop,
   onValueCropChange,
   scopeTag,
+  onExcludeRange,
+  exclusions = [],
+  onClearExclusions,
 }: Props) {
   const timestamps = useMemo(
     () => rawDataset.rows.map(r => r.timestamp),
@@ -288,14 +199,10 @@ export function DataCroppingChart({
   )
   const lastIdx = Math.max(0, timestamps.length - 1)
 
-  // Single tag the Y crop keys to (scoped view = one series).
   const tag =
     scopeTag ??
     (chartDataset.tags.length === 1 ? chartDataset.tags[0] : undefined)
-  const yCropEnabled = Boolean(tag)
 
-  // Stable Y domain from the raw (uncropped) series so the axis doesn't jump
-  // as the crop changes. 5% padding; ±1 fallback for a flat series.
   const yDomain = useMemo<[number, number]>(() => {
     if (!tag) return [0, 1]
     const vals: number[] = []
@@ -318,7 +225,6 @@ export function DataCroppingChart({
   }, [rawDataset, tag])
   const [yMin, yMax] = yDomain
 
-  // ── X (time) crop via slider — index range committed to cropRange ──
   const committed = useMemo<[number, number]>(() => {
     if (!cropRange) return [0, lastIdx]
     const from = timestamps.indexOf(cropRange.from)
@@ -329,16 +235,21 @@ export function DataCroppingChart({
   const [range01, setRange01] = useState<[number, number]>(committed)
   useEffect(() => setRange01(committed), [committed])
 
-  // Crop commits are confirmed first: staging a change opens the confirm dialog,
-  // and the dialog's Apply runs the real onCropChange / onValueCropChange.
   const [pendingCrop, setPendingCrop] = useState<{
     range?: CropRange | null
     valueCrop?: ValueCrop
+    mode?: 'crop' | 'exclude'
     summary: string
+    selection?: {
+      startIdx: number
+      endIdx: number
+      valueMin: number
+      valueMax: number
+      movedX: boolean
+      movedY: boolean
+    }
   } | null>(null)
 
-  // Slider / time-input path: once the range settles off the committed window,
-  // stage it for confirmation. Never re-stage while a dialog is already open.
   useEffect(() => {
     const [s, e] = range01
     if ((s === committed[0] && e === committed[1]) || pendingCrop) return
@@ -364,17 +275,10 @@ export function DataCroppingChart({
 
   const activeValueCrop = tag ? valueCrop[tag] : undefined
 
-  const tooltipLabels = useMemo<[string, string]>(
-    () => [
-      timestamps[startIdx] ? fmtTs(timestamps[startIdx]!) : '—',
-      timestamps[endIdx] ? fmtTs(timestamps[endIdx]!) : '—',
-    ],
-    [timestamps, startIdx, endIdx],
-  )
-
-  // ── Drag-to-crop box (both axes) inside the chart ──
+  // ── Drag-to-crop logic ──
   const containerRef = useRef<HTMLDivElement | null>(null)
   const gridRectRef = useRef<DOMRect | null>(null)
+  const [isInside, setIsInside] = useState(false)
   const [drag, setDrag] = useState<{
     startIdx: number
     startVal: number
@@ -390,21 +294,35 @@ export function DataCroppingChart({
     [tag, color],
   )
 
-  const readGridRect = () => {
+  const readGridRect = useCallback(() => {
     const el = containerRef.current?.querySelector('.recharts-cartesian-grid')
-    gridRectRef.current = el ? el.getBoundingClientRect() : null
-  }
+    if (el) {
+      gridRectRef.current = el.getBoundingClientRect()
+    }
+  }, [])
 
-  // Convert the cursor's viewport Y (event.clientY) into a data value using the
-  // measured plot rect + the fixed Y domain. Uses the true cursor position (not
-  // recharts' activeCoordinate, which snaps to the line) so the box drags freely
-  // on the Y axis.
-  const valueFromClientY = (clientY: number): number => {
-    const rect = gridRectRef.current
-    if (!rect || rect.height === 0) return yMax
-    const t = clamp((clientY - rect.top) / rect.height, 0, 1) // 0 at top (=yMax), 1 at bottom (=yMin)
-    return clamp(yMax - t * (yMax - yMin), yMin, yMax)
-  }
+  // คำนวณแกน X จาก Pixel หน้าจอตรงๆ แก้อาการ 20px offset เลื่อน
+  const indexFromClientX = useCallback(
+    (clientX: number): number => {
+      const rect = gridRectRef.current
+      if (!rect || rect.width === 0) return 0
+      const t = clamp((clientX - rect.left) / rect.width, 0, 1)
+      const maxIdx = timestamps.length - 1
+      return clamp(Math.round(t * maxIdx), 0, maxIdx)
+    },
+    [timestamps.length],
+  )
+
+  // คำนวณแกน Y
+  const valueFromClientY = useCallback(
+    (clientY: number): number => {
+      const rect = gridRectRef.current
+      if (!rect || rect.height === 0) return yMax
+      const t = clamp((clientY - rect.top) / rect.height, 0, 1)
+      return clamp(yMax - t * (yMax - yMin), yMin, yMax)
+    },
+    [yMax, yMin],
+  )
 
   const commitDrag = () => {
     if (!drag) return
@@ -417,37 +335,73 @@ export function DataCroppingChart({
     setDrag(null)
     if (!movedX && !movedY) return
 
-    // Stage the drag result — the confirm dialog applies it. X crop only when a
-    // real time span was dragged; Y crop only when a real value span was dragged.
-    const next: {
-      range?: CropRange | null
-      valueCrop?: ValueCrop
-      summary: string
-    } = {
-      summary: movedX
-        ? `Keeping ${i2 - i1 + 1} of ${timestamps.length} rows`
-        : 'Applying value crop to the selected range',
-    }
-    if (movedX) {
-      next.range =
-        i1 <= 0 && i2 >= lastIdx
-          ? null
-          : timestamps[i1] && timestamps[i2]
-            ? { from: timestamps[i1]!, to: timestamps[i2]! }
-            : null
-    }
-    if (movedY && tag) {
-      next.valueCrop = { ...valueCrop, [tag]: { min: v1, max: v2 } }
-    }
-    setPendingCrop(next)
+    const parts: string[] = []
+    if (movedX) parts.push(`${i2 - i1 + 1} of ${timestamps.length} rows`)
+
+    setPendingCrop({
+      mode: cropMode,
+      summary: parts.length
+        ? `Selected ${parts.join(' · ')}`
+        : 'Selected range',
+      selection: {
+        startIdx: i1,
+        endIdx: i2,
+        valueMin: v1,
+        valueMax: v2,
+        movedX,
+        movedY,
+      },
+    })
   }
 
-  // Dialog actions: Apply commits the staged crop; Cancel drops it and reverts
-  // the live slider preview back to the last committed window.
-  const applyCrop = () => {
+  const applyKeep = () => {
     if (!pendingCrop) return
-    if (pendingCrop.range !== undefined) onCropChange(pendingCrop.range)
-    if (pendingCrop.valueCrop) onValueCropChange(pendingCrop.valueCrop)
+
+    let range = pendingCrop.range
+    let nextValueCrop = pendingCrop.valueCrop
+
+    const sel = pendingCrop.selection
+    if (sel) {
+      if (sel.movedX) {
+        range =
+          sel.startIdx <= 0 && sel.endIdx >= lastIdx
+            ? null
+            : timestamps[sel.startIdx] && timestamps[sel.endIdx]
+              ? { from: timestamps[sel.startIdx]!, to: timestamps[sel.endIdx]! }
+              : null
+      }
+      if (sel.movedY && tag) {
+        nextValueCrop = {
+          ...valueCrop,
+          [tag]: { min: sel.valueMin, max: sel.valueMax },
+        }
+      }
+    }
+
+    if (range !== undefined) {
+      onCropChange(range)
+      const sIdx = range ? timestamps.indexOf(range.from) : 0
+      const eIdx = range ? timestamps.indexOf(range.to) : lastIdx
+      setRange01([sIdx > -1 ? sIdx : 0, eIdx > -1 ? eIdx : lastIdx])
+    }
+    if (nextValueCrop) onValueCropChange(nextValueCrop)
+    setPendingCrop(null)
+  }
+
+  const applyExclude = () => {
+    const sel = pendingCrop?.selection
+    if (!sel) {
+      setPendingCrop(null)
+      return
+    }
+    const time =
+      sel.movedX && timestamps[sel.startIdx] && timestamps[sel.endIdx]
+        ? { from: timestamps[sel.startIdx]!, to: timestamps[sel.endIdx]! }
+        : null
+    const value =
+      sel.movedY && tag ? { tag, min: sel.valueMin, max: sel.valueMax } : null
+
+    onExcludeRange?.({ time, value })
     setPendingCrop(null)
   }
 
@@ -463,23 +417,25 @@ export function DataCroppingChart({
     onValueCropChange(next)
   }
 
-  // Reset clears the crop immediately — no confirm. Commit directly (and sync
-  // range01) so the staging effect sees range01 === committed and never opens
-  // the dialog.
   const resetAll = () => {
     setPendingCrop(null)
     onCropChange(null)
     setRange01([0, lastIdx])
     clearValueCrop()
+    onClearExclusions?.()
   }
 
+  const [cropMode, setCropMode] = useState<'crop' | 'exclude'>('crop')
+  const canExclude = !!onExcludeRange
+  const pendingMode = pendingCrop?.mode ?? 'crop'
+  const isExclude = pendingMode === 'exclude'
   return (
     <div className="space-y-4 rounded-xl bg-card p-4 ring-1 ring-foreground/10">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <Scissors className="h-4 w-4 text-muted-foreground" />
           <h2 className="text-sm font-medium text-foreground">
-            Drag to Crop — Time &amp; Value
+            Trim Data Range
           </h2>
         </div>
         <div className="flex items-center gap-3 text-xs">
@@ -493,7 +449,10 @@ export function DataCroppingChart({
             variant="ghost"
             className="h-7 text-xs"
             onClick={resetAll}
-            disabled={disabled || (!cropped && !activeValueCrop)}
+            disabled={
+              disabled ||
+              (!cropped && !activeValueCrop && exclusions.length === 0)
+            }
           >
             <RotateCcw className="h-3.5 w-3.5" />
             Reset
@@ -501,44 +460,91 @@ export function DataCroppingChart({
         </div>
       </div>
 
-      <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-        <MousePointerSquareDashed className="h-3.5 w-3.5" />
-        Drag a box on the chart to crop both axes, or use the controls below.
+      {/* ── Method 1: Drag to Crop (visual head/tail trim) ── */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <MousePointerSquareDashed className="h-3.5 w-3.5 text-primary" />
+          <h3 className="text-xs font-semibold text-foreground">
+            Drag to Select
+          </h3>
+          <span className="hidden text-[11px] text-muted-foreground sm:inline">
+            {cropMode === 'exclude'
+              ? 'Drag a box to cut that span out of the data.'
+              : 'Drag a box to keep only the head/tail (and value range).'}
+          </span>
+        </div>
+
+        {canExclude && (
+          <div className="inline-flex items-center rounded-lg border border-border bg-background p-0.5">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              aria-pressed={cropMode === 'crop'}
+              onClick={() => setCropMode('crop')}
+              className={cn(
+                'h-7 gap-1.5 rounded-md px-2.5 text-xs font-medium',
+                cropMode === 'crop'
+                  ? 'bg-primary/10 text-primary hover:bg-primary/10 hover:text-primary'
+                  : 'text-foreground hover:bg-primary/10 hover:text-primary',
+              )}
+            >
+              <Crop className="h-3.5 w-3.5" />
+              Crop
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              aria-pressed={cropMode === 'exclude'}
+              onClick={() => setCropMode('exclude')}
+              className={cn(
+                'h-7 gap-1.5 rounded-md px-2.5 text-xs font-medium',
+                cropMode === 'exclude'
+                  ? 'bg-destructive/10 text-destructive hover:bg-destructive/10 hover:text-destructive'
+                  : 'text-foreground hover:bg-destructive/10 hover:text-destructive',
+              )}
+            >
+              <Eraser className="h-3.5 w-3.5" />
+              Exclude
+            </Button>
+          </div>
+        )}
       </div>
 
-      {/* ── Interactive chart with drag-box selection ── */}
-      <div ref={containerRef}>
+      <div ref={containerRef} className="pt-2">
         <ChartContainer
           config={config}
           style={{ height: CHART_H }}
-          className="w-full select-none"
+          className="w-full select-none cursor-crosshair"
         >
           <LineChart
             data={chartRows}
             margin={{ left: 12, right: 12, top: 8, bottom: 0 }}
+            onMouseEnter={() => {
+              setIsInside(true)
+              readGridRect()
+            }}
             onMouseDown={(state, e: React.MouseEvent) => {
               if (disabled) return
-              const idx = state?.activeTooltipIndex
-              if (typeof idx !== 'number') return
               readGridRect()
+              // ใช้ฟังก์ชัน indexFromClientX แทน Recharts's activeTooltipIndex
+              const idx = indexFromClientX(e.clientX)
               const v = valueFromClientY(e.clientY)
               setDrag({ startIdx: idx, startVal: v, curIdx: idx, curVal: v })
             }}
             onMouseMove={(state, e: React.MouseEvent) => {
-              if (!drag) return
-              const idx = state?.activeTooltipIndex
-              setDrag(d =>
-                d
-                  ? {
-                      ...d,
-                      curIdx: typeof idx === 'number' ? idx : d.curIdx,
-                      curVal: valueFromClientY(e.clientY),
-                    }
-                  : d,
-              )
+              if (!drag || !isInside) return
+              const idx = indexFromClientX(e.clientX)
+              const v = valueFromClientY(e.clientY)
+              setDrag(d => (d ? { ...d, curIdx: idx, curVal: v } : d))
             }}
             onMouseUp={commitDrag}
-            onMouseLeave={() => setDrag(null)}
+            onMouseLeave={() => {
+              setIsInside(false)
+              if (drag) commitDrag()
+              else setDrag(null)
+            }}
           >
             <CartesianGrid vertical={false} />
             <XAxis
@@ -558,11 +564,16 @@ export function DataCroppingChart({
             <YAxis
               tickLine={false}
               axisLine={false}
-              width={44}
+              width={75}
               domain={yDomain}
-              allowDataOverflow
+              tickFormatter={value =>
+                Number(value).toLocaleString(undefined, {
+                  maximumFractionDigits: 4,
+                })
+              }
             />
             <ChartTooltip
+              wrapperStyle={{ pointerEvents: 'none' }}
               content={
                 <ChartTooltipContent
                   labelFormatter={value =>
@@ -585,7 +596,6 @@ export function DataCroppingChart({
               />
             )}
 
-            {/* Committed crop window (kept region) */}
             {(cropped || activeValueCrop) && (
               <ReferenceArea
                 x1={timestamps[startIdx]}
@@ -600,16 +610,41 @@ export function DataCroppingChart({
               />
             )}
 
-            {/* Live drag selection */}
+            {/* Committed exclusion bands (remove-inside spans). */}
+            {exclusions.map((ex, i) =>
+              ex.time ? (
+                <ReferenceArea
+                  key={`ex-${i}-${ex.time.from}`}
+                  x1={ex.time.from}
+                  x2={ex.time.to}
+                  y1={ex.value ? ex.value.min : undefined}
+                  y2={ex.value ? ex.value.max : undefined}
+                  fill="var(--destructive)"
+                  fillOpacity={0.1}
+                  stroke="var(--destructive)"
+                  strokeOpacity={0.4}
+                  strokeDasharray="4 4"
+                />
+              ) : null,
+            )}
+
             {drag && (
               <ReferenceArea
                 x1={timestamps[Math.min(drag.startIdx, drag.curIdx)]}
                 x2={timestamps[Math.max(drag.startIdx, drag.curIdx)]}
                 y1={Math.min(drag.startVal, drag.curVal)}
                 y2={Math.max(drag.startVal, drag.curVal)}
-                fill="var(--foreground)"
+                fill={
+                  cropMode === 'exclude'
+                    ? 'var(--destructive)'
+                    : 'var(--foreground)'
+                }
                 fillOpacity={0.1}
-                stroke="var(--foreground)"
+                stroke={
+                  cropMode === 'exclude'
+                    ? 'var(--destructive)'
+                    : 'var(--foreground)'
+                }
                 strokeOpacity={0.5}
               />
             )}
@@ -617,24 +652,15 @@ export function DataCroppingChart({
         </ChartContainer>
       </div>
 
-      {/* ── Precise X (time) control ── */}
-      <div className="px-1">
-        <SliderWithTooltip
-          min={0}
-          max={lastIdx}
-          step={1}
-          value={range01}
-          onValueChange={setRange01}
-          disabled={disabled}
-          tooltipLabels={tooltipLabels}
-        />
-        <div className="mt-1.5 flex justify-between text-[11px] text-muted-foreground">
-          <span>
-            {endIdx - startIdx + 1} of {timestamps.length} rows
+      {/* ── Method 2: Time Crop (absolute timestamp range) ── */}
+      <div className="border-t border-border/60 px-1 pt-3">
+        <div className="mb-1 flex flex-wrap items-center gap-2">
+          <CalendarClock className="h-3.5 w-3.5 text-primary" />
+          <h3 className="text-xs font-semibold text-foreground">Time Crop</h3>
+          <span className="text-[11px] text-muted-foreground">
+            Crop strictly by an absolute start / end timestamp.
           </span>
-          {cropped && <span className="text-primary">time cropped</span>}
         </div>
-
         <CropTimeInputs
           timestamps={timestamps}
           startIdx={startIdx}
@@ -644,63 +670,6 @@ export function DataCroppingChart({
         />
       </div>
 
-      {/* ── Precise Y (value) control ── */}
-      {yCropEnabled && (
-        <div className="space-y-1.5 border-t border-border/60 pt-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[11px] font-medium text-muted-foreground">
-              Value crop (Y)
-            </span>
-            <Input
-              type="number"
-              inputMode="decimal"
-              placeholder={`min ${yMin.toFixed(1)}`}
-              value={activeValueCrop ? String(activeValueCrop.min) : ''}
-              onChange={e => {
-                if (!tag) return
-                const min = parseFloat(e.target.value)
-                const max = activeValueCrop?.max ?? yMax
-                if (Number.isFinite(min))
-                  onValueCropChange({ ...valueCrop, [tag]: { min, max } })
-              }}
-              className="h-8 w-24 text-xs"
-            />
-            <span className="text-muted-foreground">–</span>
-            <Input
-              type="number"
-              inputMode="decimal"
-              placeholder={`max ${yMax.toFixed(1)}`}
-              value={activeValueCrop ? String(activeValueCrop.max) : ''}
-              onChange={e => {
-                if (!tag) return
-                const max = parseFloat(e.target.value)
-                const min = activeValueCrop?.min ?? yMin
-                if (Number.isFinite(max))
-                  onValueCropChange({ ...valueCrop, [tag]: { min, max } })
-              }}
-              className="h-8 w-24 text-xs"
-            />
-            {activeValueCrop && (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-7 text-xs"
-                onClick={clearValueCrop}
-              >
-                Clear
-              </Button>
-            )}
-          </div>
-          {scopeTag && (
-            <p className="text-[11px] text-muted-foreground">
-              Value crop drops rows where{' '}
-              <span className="font-mono">{scopeTag}</span> falls outside the
-              range (row-level, keyed to this tag).
-            </p>
-          )}
-        </div>
-      )}
-
       <AlertDialog
         open={pendingCrop !== null}
         onOpenChange={open => {
@@ -709,17 +678,32 @@ export function DataCroppingChart({
       >
         <AlertDialogContent size="sm">
           <AlertDialogHeader>
-            <AlertDialogTitle>Apply this crop?</AlertDialogTitle>
-            <AlertDialogDescription>
-              {pendingCrop?.summary}. Rows outside the selection are removed for
-              every downstream step.
+            <AlertDialogTitle>
+              {isExclude ? 'Remove this selection?' : 'Apply this crop?'}
+            </AlertDialogTitle>
+            <AlertDialogDescription className="leading-relaxed">
+              {pendingCrop?.summary}.{' '}
+              {isExclude
+                ? 'These rows are dropped from the data; everything outside stays. This can be undone.'
+                : 'Rows outside the selection are removed for every downstream step.'}
             </AlertDialogDescription>
           </AlertDialogHeader>
+
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={applyCrop}>
-              Apply crop
-            </AlertDialogAction>
+            <Button
+              variant="outline"
+              onClick={cancelCrop}
+              className="sm:mr-auto"
+            >
+              Cancel
+            </Button>
+            {isExclude ? (
+              <Button variant="destructive" onClick={applyExclude}>
+                Remove Selection
+              </Button>
+            ) : (
+              <Button onClick={applyKeep}>Apply crop</Button>
+            )}
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

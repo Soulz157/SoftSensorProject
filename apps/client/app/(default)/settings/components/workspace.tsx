@@ -279,7 +279,7 @@ export function WorkspaceTab() {
               />
               <div
                 className={cn(
-                  'group relative cursor-pointer overflow-hidden rounded-xl border-2 border-dashed transition-all max-w-md',
+                  'group relative cursor-pointer overflow-hidden rounded-xl border-2 border-dashed transition-all max-w-xl',
                   dragOver
                     ? 'border-primary bg-primary/5'
                     : 'border-input hover:border-primary/50 hover:bg-accent/50',
@@ -313,14 +313,14 @@ export function WorkspaceTab() {
                     {isUploadingThumbnail && (
                       <div className="absolute inset-0 flex flex-col justify-end bg-black/50 p-3">
                         <Progress
-                          value={undefined} // กำหนดเป็น indeterminate state
+                          value={undefined}
                           className="h-2 w-full bg-white/20"
                         />
                       </div>
                     )}
                   </>
                 ) : (
-                  <div className="flex h-40 flex-col items-center justify-center gap-3">
+                  <div className="flex h-40 flex-col items-center justify-center gap-3 p-4">
                     <div className="rounded-full bg-primary/10 p-3">
                       <ImagePlus
                         className={cn(

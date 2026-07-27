@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useRef } from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import {
   preprocessPipelines,
@@ -14,6 +14,7 @@ import {
   precleanse,
   type ConditionalRule,
   type CropRange,
+  type RangeExclusion,
   type StatisticalRule,
   type ValueCrop,
 } from '@/lib/precleanse'
@@ -37,15 +38,18 @@ import {
   dwProcessingSubStepAtom,
   dwCropRangeAtom,
   dwValueCropAtom,
+  dwExclusionsAtom,
   dwConditionalRulesAtom,
   dwStatisticalRulesAtom,
   dwCleaningPipelinesAtom,
   dwCleaningTagsAtom,
+  dwCleanedTagsAtom,
   dwFeatureConfigsAtom,
   dwSelectedColumnsAtom,
   dwScalerConfigsAtom,
   dwHiddenTagsAtom,
   dwFocusedTagAtom,
+  dwModeAtom,
 } from '@/store/dataset-studio'
 import {
   mpSelectedSavedSourceIdAtom,
@@ -60,6 +64,9 @@ import {
 import type { CustomDateRange } from '@/store/data-visualize'
 
 export interface UseDatasetPipelineNavResult {
+  /** True in edit mode — the raw query (tags/time range/features) is locked;
+      only the Step-3 preprocessing pipeline may change. */
+  isEditLocked: boolean
   currentStep: number
   highestUnlocked: number
   selectedTags: string[]
@@ -72,6 +79,7 @@ export interface UseDatasetPipelineNavResult {
   sourceFetchConfigs: Record<string, DataSourceConfig>
   cropRange: CropRange
   valueCrop: ValueCrop
+  exclusions: RangeExclusion[]
   conditionalRules: ConditionalRule[]
   statisticalRules: StatisticalRule[]
   selectedSavedSourceId: string
@@ -106,6 +114,7 @@ export interface UseDatasetPipelineNavResult {
   resetFetch: () => void
   setCropRange: (range: CropRange) => void
   setValueCrop: (crop: ValueCrop) => void
+  setExclusions: (exclusions: RangeExclusion[]) => void
   processingSubStep: 1 | 2
   setProcessingSubStep: (step: 1 | 2) => void
   setConditionalRules: (update: React.SetStateAction<ConditionalRule[]>) => void
@@ -117,6 +126,11 @@ export interface UseDatasetPipelineNavResult {
   setCleaningPipelines: (
     update: React.SetStateAction<Record<string, TagPipeline>>,
   ) => void
+  // Tags whose pipeline has been saved (Cleaned). Additive commit point.
+  cleanedTags: string[]
+  // Commit one pipeline to a whole batch of tags and mark them Cleaned. Merges
+  // into the per-tag pipelines map (never wipes tags outside the batch).
+  saveCleanedTags: (tags: string[], pipeline: TagPipeline) => void
   // Step 4 — Feature Engineering
   featureConfigs: FeatureConfig[]
   setFeatureConfigs: (update: React.SetStateAction<FeatureConfig[]>) => void
@@ -127,6 +141,13 @@ export interface UseDatasetPipelineNavResult {
 }
 
 export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
+  const mode = useAtomValue(dwModeAtom)
+  const isEditLocked = mode === 'edit'
+  // Stable ref so the schema-lock guard can live inside memoized setters
+  // without adding `isEditLocked` to every dependency array.
+  const lockedRef = useRef(isEditLocked)
+  lockedRef.current = isEditLocked
+
   const [currentStep, setCurrentStep] = useAtom(dwCurrentStepAtom)
   const [highestUnlocked, setHighestUnlocked] = useAtom(dwHighestUnlockedAtom)
 
@@ -164,6 +185,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
 
   const [cropRange, setCropRangeAtom] = useAtom(dwCropRangeAtom)
   const [valueCrop, setValueCropAtom] = useAtom(dwValueCropAtom)
+  const [exclusions, setExclusionsAtom] = useAtom(dwExclusionsAtom)
   const [conditionalRules, setConditionalRulesAtom] = useAtom(
     dwConditionalRulesAtom,
   )
@@ -174,6 +196,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
     dwCleaningPipelinesAtom,
   )
   const [cleaningTags, setCleaningTagsAtom] = useAtom(dwCleaningTagsAtom)
+  const [cleanedTags, setCleanedTagsAtom] = useAtom(dwCleanedTagsAtom)
   const setHiddenTagsAtom = useSetAtom(dwHiddenTagsAtom)
   const setFocusedTagAtom = useSetAtom(dwFocusedTagAtom)
   const [featureConfigs, setFeatureConfigsAtom] = useAtom(dwFeatureConfigsAtom)
@@ -198,6 +221,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
             precleanse(rawDataset, {
               crop: cropRange,
               valueCrop,
+              exclusions,
               conditional: conditionalRules,
               statistical: statisticalRules,
             }).rows.length > 0
@@ -210,6 +234,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
             precleanse(featured, {
               crop: cropRange,
               valueCrop,
+              exclusions,
               conditional: conditionalRules,
               statistical: statisticalRules,
             }),
@@ -232,6 +257,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
       rawDataset,
       cropRange,
       valueCrop,
+      exclusions,
       conditionalRules,
       statisticalRules,
       cleaningPipelines,
@@ -292,6 +318,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
   // selection is the earliest step here).
   const setTagInputMethod = useCallback(
     (method: TagInputMethod) => {
+      if (lockedRef.current) return
       setTagInputMethodAtom(method)
       setSelectedSavedSourceId('')
       setTagListAtom([])
@@ -303,6 +330,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
       resetFetch()
       setCleaningPipelinesAtom({})
       setCleaningTagsAtom([])
+      setCleanedTagsAtom([])
       setHighestUnlocked(prev => Math.min(prev, 1))
     },
     [
@@ -317,12 +345,14 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
       resetFetch,
       setCleaningPipelinesAtom,
       setCleaningTagsAtom,
+      setCleanedTagsAtom,
       setHighestUnlocked,
     ],
   )
 
   const setSelectedTags = useCallback(
     (tags: string[]) => {
+      if (lockedRef.current) return
       setSelectedTagsAtom(tags)
       resetFetch()
       // Prune the cleaning pipelines + cleaning-target set to surviving tags.
@@ -332,6 +362,8 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
         ),
       )
       setCleaningTagsAtom(prev => prev.filter(t => tags.includes(t)))
+      // A tag dropped from the dataset can no longer be Cleaned.
+      setCleanedTagsAtom(prev => prev.filter(t => tags.includes(t)))
       // Prune shared analysis selection to the new tag set (visibility state).
       setHiddenTagsAtom(prev => prev.filter(t => tags.includes(t)))
       setFocusedTagAtom(prev => (tags.includes(prev) ? prev : ''))
@@ -342,6 +374,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
       resetFetch,
       setCleaningPipelinesAtom,
       setCleaningTagsAtom,
+      setCleanedTagsAtom,
       setHiddenTagsAtom,
       setFocusedTagAtom,
       setHighestUnlocked,
@@ -383,6 +416,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
 
   const setTagConstant = useCallback(
     (tagName: string, value: number | null) => {
+      if (lockedRef.current) return
       setTagConstantsAtom(prev => {
         const next = { ...prev }
         if (value === null) delete next[tagName]
@@ -397,6 +431,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
 
   const setTimeRange = useCallback(
     (range: FetchPeriod) => {
+      if (lockedRef.current) return
       setTimeRangeAtom(range)
       setCustomDateRangeAtom(null)
       resetFetch()
@@ -407,6 +442,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
 
   const setCustomRange = useCallback(
     (from: string, to: string) => {
+      if (lockedRef.current) return
       setCustomDateRangeAtom({ from, to })
       resetFetch()
       setHighestUnlocked(prev => Math.min(prev, 2))
@@ -417,6 +453,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
   // Re-added — mirrors setCustomRange but clears the range instead of setting
   // one. Same downstream reset + relock target (step 2).
   const clearCustomRange = useCallback(() => {
+    if (lockedRef.current) return
     setCustomDateRangeAtom(null)
     resetFetch()
     setHighestUnlocked(prev => Math.min(prev, 2))
@@ -424,6 +461,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
 
   const setCustomInterval = useCallback(
     (interval: CustomInterval | null) => {
+      if (lockedRef.current) return
       setCustomIntervalAtom(interval)
       resetFetch()
       setHighestUnlocked(prev => Math.min(prev, 2))
@@ -433,6 +471,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
 
   const setSourceFetchConfigs = useCallback(
     (update: React.SetStateAction<Record<string, DataSourceConfig>>) => {
+      if (lockedRef.current) return
       setSourceFetchConfigsAtom(update)
       resetFetch()
       setHighestUnlocked(prev => Math.min(prev, 2))
@@ -454,6 +493,14 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
       setHighestUnlocked(prev => Math.min(prev, 3))
     },
     [setValueCropAtom, setHighestUnlocked],
+  )
+
+  const setExclusions = useCallback(
+    (next: RangeExclusion[]) => {
+      setExclusionsAtom(next)
+      setHighestUnlocked(prev => Math.min(prev, 3))
+    },
+    [setExclusionsAtom, setHighestUnlocked],
   )
 
   const setProcessingSubStep = useCallback(
@@ -493,8 +540,25 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
     [setCleaningTagsAtom, setHighestUnlocked],
   )
 
+  // Save = the commit point. Write one shared pipeline to every tag in the
+  // batch (merge — never rebuild the map, so other tags' saved pipelines
+  // survive) and union the batch into the Cleaned set.
+  const saveCleanedTags = useCallback(
+    (tags: string[], pipeline: TagPipeline) => {
+      setCleaningPipelinesAtom(prev => {
+        const next = { ...prev }
+        for (const tag of tags) next[tag] = pipeline
+        return next
+      })
+      setCleanedTagsAtom(prev => Array.from(new Set([...prev, ...tags])))
+      setHighestUnlocked(prev => Math.min(prev, 4))
+    },
+    [setCleaningPipelinesAtom, setCleanedTagsAtom, setHighestUnlocked],
+  )
+
   const setFeatureConfigs = useCallback(
     (update: React.SetStateAction<FeatureConfig[]>) => {
+      if (lockedRef.current) return
       setFeatureConfigsAtom(update)
       setHighestUnlocked(prev => Math.min(prev, 4))
     },
@@ -503,6 +567,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
 
   const setSelectedColumns = useCallback(
     (columns: string[] | null) => {
+      if (lockedRef.current) return
       setSelectedColumnsAtom(columns)
       setHighestUnlocked(prev => Math.min(prev, 4))
     },
@@ -511,6 +576,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
 
   const setScalerConfig = useCallback(
     (column: string, method: ScalerMethod) => {
+      if (lockedRef.current) return
       setScalerConfigsAtom(prev => ({ ...prev, [column]: method }))
       setHighestUnlocked(prev => Math.min(prev, 4))
     },
@@ -518,6 +584,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
   )
 
   return {
+    isEditLocked,
     currentStep,
     highestUnlocked,
     selectedTags,
@@ -530,6 +597,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
     sourceFetchConfigs,
     cropRange,
     valueCrop,
+    exclusions,
     conditionalRules,
     statisticalRules,
     selectedSavedSourceId,
@@ -559,12 +627,15 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
     setSourceFetchConfigs,
     setCropRange,
     setValueCrop,
+    setExclusions,
     setConditionalRules,
     setStatisticalRules,
     cleaningTags,
     setCleaningTags,
     cleaningPipelines,
     setCleaningPipelines,
+    cleanedTags,
+    saveCleanedTags,
     featureConfigs,
     setFeatureConfigs,
     selectedColumns,
