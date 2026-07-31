@@ -2,6 +2,7 @@ import urllib3
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from config import settings
+from intergrations.pi_http import install_pi_timeouts
 from routers import data, tags, data_source
 
 
@@ -33,6 +34,9 @@ tags_metadata = [
 def create_app() -> FastAPI:
 
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    # The PI SDK issues every request without a timeout; unbounded, one silent
+    # PI host parks a worker forever. Must run before any request is served.
+    install_pi_timeouts()
 
     app = FastAPI(
         title=settings.APP_NAME,

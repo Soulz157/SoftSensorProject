@@ -10,6 +10,12 @@ Credentials are never logged. Upstream PI error text may include the API server
 URL / HTTP status (not the password) and is truncated before it leaves here.
 """
 from intergrations import PIWebAPI
+from intergrations.pi_http import (
+    FETCH_TIMEOUT,
+    METADATA_TIMEOUT,
+    TEST_TIMEOUT,
+    pi_timeout,
+)
 from intergrations.sql_connect import SQLDataSource
 from schemas.data import DataFetchRequest, DataFetchResponse, TagListResponse
 from schemas.data_source import (
@@ -22,6 +28,7 @@ from schemas.data_source import (
     SQLQueryRequest,
     SQLQueryResponse,
     SQLTablesResponse,
+    TagCurrentResponse,
 )
 from services.data_service import DataService
 from services.tag_service import TagService
@@ -46,8 +53,13 @@ class PIDataSourceService:
     def test_connection(self, creds: PICredentials) -> ConnectionTestResponse:
         client = build_pi_client(creds)
         try:
-            server = client.client.dataServer.get_by_name(name=creds.pi_server)
-        except Exception as exc:  # noqa: BLE001 — surface as a failed test, not a 500
+            # Bounded so an unresponsive PI host fails inside the caller's 15s
+            # budget with a real reason, instead of hanging the worker.
+            with pi_timeout(TEST_TIMEOUT):
+                server = client.client.dataServer.get_by_name(
+                    name=creds.pi_server
+                )
+        except Exception as exc:
             return ConnectionTestResponse(ok=False, message=_safe_message(exc))
         if server is None:
             return ConnectionTestResponse(
@@ -65,9 +77,19 @@ class PIDataSourceService:
         self, creds: PICredentials, name_filter: str, max_count: int
     ) -> TagListResponse:
         client = build_pi_client(creds)
-        return TagService(client).list_tags(
-            name_filter=name_filter, max_count=max_count
-        )
+        with pi_timeout(METADATA_TIMEOUT):
+            return TagService(client).list_tags(
+                name_filter=name_filter, max_count=max_count
+            )
+
+    def current_values(
+        self, creds: PICredentials, tag_list: list[str], batch_size: int
+    ) -> TagCurrentResponse:
+        client = build_pi_client(creds)
+        with pi_timeout(METADATA_TIMEOUT):
+            return TagService(client).current_values(
+                tag_list, batch_size=batch_size
+            )
 
     async def fetch(
         self, body: PIFetchRequest, interval: str
@@ -82,7 +104,10 @@ class PIDataSourceService:
             summary_duration=body.summary_duration,
             batch_size=body.batch_size,
         )
-        return await DataService(client).fetch(data_body, interval=interval)
+        # DataService offloads each PI call via asyncio.to_thread, which copies
+        # this context — so the budget reaches the worker threads.
+        with pi_timeout(FETCH_TIMEOUT):
+            return await DataService(client).fetch(data_body, interval=interval)
 
 
 def _build_sql(creds: SQLCredentials) -> SQLDataSource:

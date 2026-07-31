@@ -15,6 +15,7 @@ from config import settings
 from intergrations.sql_connect import SQLConnectionError
 from schemas.data_source import (
     ConnectionTestResponse,
+    PICurrentRequest,
     PIFetchRequest,
     PITagsRequest,
     PITestRequest,
@@ -26,7 +27,7 @@ from schemas.data_source import (
     SQLTablesResponse,
     SQLTestRequest,
 )
-from schemas.data import DataFetchResponse, TagListResponse
+from schemas.data import DataFetchResponse, TagListResponse, TagCurrentResponse
 from services.data_source_service import PIDataSourceService, SQLDataSourceService
 
 router = APIRouter(prefix="/v1/data-sources", tags=["DataSources"])
@@ -42,8 +43,10 @@ _sql = SQLDataSourceService()
     response_model=ConnectionTestResponse,
     summary="Test a PI Web API connection with the supplied credentials",
 )
-async def pi_test(body: PITestRequest) -> ConnectionTestResponse:
-    # A failed connection is a normal ok=false result (HTTP 200), not a 5xx.
+def pi_test(body: PITestRequest) -> ConnectionTestResponse:
+    # Sync handler on purpose: FastAPI runs plain `def` in its threadpool, so a
+    # slow PI host can no longer stall the event loop and every other request.
+    print('asdasd')
     return _pi.test_connection(body.credentials)
 
 
@@ -52,12 +55,27 @@ async def pi_test(body: PITestRequest) -> ConnectionTestResponse:
     response_model=TagListResponse,
     summary="Search the PI tag catalog using the supplied credentials",
 )
-async def pi_tags(body: PITagsRequest) -> TagListResponse:
+def pi_tags(body: PITagsRequest) -> TagListResponse:
     try:
         return _pi.list_tags(
             body.credentials,
             name_filter=body.name_filter,
             max_count=body.max_count,
+        )
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(status_code=502, detail=f"PI Web API error: {exc}")
+
+
+@router.post(
+    "/pi/current",
+    response_model=TagCurrentResponse,
+    summary="Current (snapshot) values + quality for selected tags",
+)
+def pi_current(body: PICurrentRequest) -> TagCurrentResponse:
+    try:
+        return _pi.current_values(
+            body.credentials, body.tag_list, batch_size=body.batch_size
         )
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
@@ -77,7 +95,7 @@ async def pi_fetch(body: PIFetchRequest) -> DataFetchResponse:
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         traceback.print_exc()
         raise HTTPException(status_code=502, detail=f"PI Web API error: {exc}")
 
@@ -89,7 +107,7 @@ async def pi_fetch(body: PIFetchRequest) -> DataFetchResponse:
     response_model=ConnectionTestResponse,
     summary="Test a SQL database connection with the supplied credentials",
 )
-async def sql_test(body: SQLTestRequest) -> ConnectionTestResponse:
+def sql_test(body: SQLTestRequest) -> ConnectionTestResponse:
     # Config errors (bad driver) are still a failed-test result, not a 5xx.
     try:
         return _sql.test_connection(body.credentials)
@@ -102,7 +120,7 @@ async def sql_test(body: SQLTestRequest) -> ConnectionTestResponse:
     response_model=SQLTablesResponse,
     summary="List tables in the SQL database",
 )
-async def sql_tables(body: SQLTablesRequest) -> SQLTablesResponse:
+def sql_tables(body: SQLTablesRequest) -> SQLTablesResponse:
     try:
         return _sql.list_tables(body.credentials)
     except SQLConnectionError as exc:
@@ -117,7 +135,7 @@ async def sql_tables(body: SQLTablesRequest) -> SQLTablesResponse:
     response_model=SQLColumnsResponse,
     summary="List columns for a table in the SQL database",
 )
-async def sql_columns(body: SQLColumnsRequest) -> SQLColumnsResponse:
+def sql_columns(body: SQLColumnsRequest) -> SQLColumnsResponse:
     try:
         return _sql.get_columns(body.credentials, body.table)
     except SQLConnectionError as exc:
@@ -132,7 +150,7 @@ async def sql_columns(body: SQLColumnsRequest) -> SQLColumnsResponse:
     response_model=SQLQueryResponse,
     summary="Run a bounded, filtered SELECT for Dataset creation",
 )
-async def sql_query(body: SQLQueryRequest) -> SQLQueryResponse:
+def sql_query(body: SQLQueryRequest) -> SQLQueryResponse:
     try:
         return _sql.query(body)
     except SQLConnectionError as exc:

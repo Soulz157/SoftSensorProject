@@ -155,6 +155,7 @@ export function SourceFetchConfigCard({
             host: source.host,
             username: source.username,
             dbName: source.dbName,
+            config: source.config,
           }}
           onSave={onSourceUpdate}
         />

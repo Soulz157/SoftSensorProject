@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import {
+  AlertCircle,
   Loader2,
   Pencil,
   Plus,
@@ -38,8 +39,67 @@ import {
   useDatasetTagTable,
   type DatasetTagRow,
 } from '@/hooks/dataset/use-dataset-tag-table'
+import {
+  useDatasetTagMetadata,
+  type TagQuality,
+} from '@/hooks/dataset/use-dataset-tag-metadata'
 import { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipeline-nav'
 import { SourcePickerSheet } from './source-configs/source-picker-sheet'
+
+const QUALITY_META: Record<
+  TagQuality,
+  { label: string; dot: string; text: string }
+> = {
+  good: {
+    label: 'Good',
+    dot: 'bg-emerald-500',
+    text: 'text-emerald-600 dark:text-emerald-400',
+  },
+  questionable: {
+    label: 'Questionable',
+    dot: 'bg-amber-500',
+    text: 'text-amber-600 dark:text-amber-400',
+  },
+  bad: {
+    label: 'Bad',
+    dot: 'bg-rose-500',
+    text: 'text-rose-600 dark:text-rose-400',
+  },
+  unknown: {
+    label: '—',
+    dot: 'bg-muted-foreground/40',
+    text: 'text-muted-foreground',
+  },
+}
+
+function QualityBadge({ quality }: { quality: TagQuality }) {
+  const q = QUALITY_META[quality]
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-1.5 text-[11px] font-medium',
+        q.text,
+      )}
+    >
+      <span className={cn('h-2 w-2 rounded-full', q.dot)} />
+      {q.label}
+    </span>
+  )
+}
+
+function BoolCell({ value }: { value: boolean | null | undefined }) {
+  if (value === null || value === undefined)
+    return <span className="text-muted-foreground">—</span>
+  return (
+    <span
+      className={
+        value ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground'
+      }
+    >
+      {value ? 'Yes' : 'No'}
+    </span>
+  )
+}
 
 type StatusFilter = 'all' | 'good' | 'error'
 
@@ -140,6 +200,17 @@ function ConstantValueInput({
 }
 
 export function UnifiedTagTable({ nav }: Props) {
+  // Real PI tag metadata (value / unit / point-type / quality), keyed by tag
+  // name — metadata only, no archive read. Fills the columns when it resolves.
+  // Declared first: the row builder needs its tag names so `originalName`
+  // matches these keys.
+  const {
+    metaByTag,
+    tagsBySource,
+    loading: metaLoading,
+    error: metaError,
+  } = useDatasetTagMetadata()
+
   const {
     rows,
     deleteRow,
@@ -149,7 +220,7 @@ export function UnifiedTagTable({ nav }: Props) {
     isConstantEditable,
     getConstant,
     setConstant,
-  } = useDatasetTagTable(nav)
+  } = useDatasetTagTable(nav, tagsBySource)
 
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editValue, setEditValue] = useState('')
@@ -393,14 +464,20 @@ export function UnifiedTagTable({ nav }: Props) {
           Data Sources
         </Button>
 
-        {rows.length > 0 && (
-          <div className="ml-auto flex items-center gap-1.5 text-xs text-muted-foreground">
-            {errorCount > 0 && (
-              <span className="font-medium text-destructive">
-                {errorCount} error{errorCount !== 1 ? 's' : ''}
-              </span>
-            )}
-          </div>
+        {metaLoading && (
+          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            Loading tag metadata…
+          </span>
+        )}
+
+        {/* Without this the only symptom of a failed or timed-out metadata
+            call was a spinner that quietly stopped. */}
+        {!metaLoading && metaError && (
+          <span className="flex items-center gap-1.5 text-xs font-medium text-destructive">
+            <AlertCircle className="h-3.5 w-3.5" />
+            {metaError}
+          </span>
         )}
 
         {rows.length > 0 && errorCount > 0 && (
@@ -466,121 +543,152 @@ export function UnifiedTagTable({ nav }: Props) {
                   />
                 </TableHead>
                 <TableHead className="pl-2">Tag Name</TableHead>
+                <TableHead>Description</TableHead>
                 <TableHead>Data Source</TableHead>
-                <TableHead className="w-32">Value</TableHead>
-                <TableHead className="w-28">Status</TableHead>
+                <TableHead className="w-16">Unit</TableHead>
+                <TableHead className="w-16 text-center">Quest.</TableHead>
+                <TableHead className="w-16 text-center">Subst.</TableHead>
+                <TableHead className="w-24">Status</TableHead>
                 <TableHead className="w-20 pr-4 text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filteredRows.map(row => (
-                <TableRow key={row.id}>
-                  {/* Row selection */}
-                  <TableCell className="pl-4 text-center">
-                    <input
-                      type="checkbox"
-                      checked={selectedIds.has(row.id)}
-                      onChange={() => toggleRow(row.id)}
-                      aria-label={`Select ${row.tagName}`}
-                      className="h-3.5 w-3.5 cursor-pointer accent-primary"
-                    />
-                  </TableCell>
-
-                  {/* Tag Name — inline editable */}
-                  <TableCell className="pl-2 font-mono text-xs">
-                    {editingId === row.id ? (
+              {filteredRows.map(row => {
+                const meta = metaByTag.get(row.originalName)
+                return (
+                  <TableRow key={row.id}>
+                    {/* Row selection */}
+                    <TableCell className="pl-4 text-center">
                       <input
-                        ref={editInputRef}
-                        value={editValue}
-                        onChange={e => setEditValue(e.target.value)}
-                        onKeyDown={e => {
-                          if (e.key === 'Enter') commitEdit(row)
-                          if (e.key === 'Escape') cancelEdit()
-                        }}
-                        onBlur={() => commitEdit(row)}
-                        className="w-full rounded border border-primary bg-transparent px-2 py-0.5 font-mono text-xs text-foreground outline-none focus:ring-1 focus:ring-primary"
+                        type="checkbox"
+                        checked={selectedIds.has(row.id)}
+                        onChange={() => toggleRow(row.id)}
+                        aria-label={`Select ${row.tagName}`}
+                        className="h-3.5 w-3.5 cursor-pointer accent-primary"
                       />
-                    ) : (
-                      <span
-                        className={cn(
-                          'block truncate',
-                          row.status === 'error' && 'text-destructive',
-                        )}
-                        title={row.tagName}
-                      >
-                        {row.tagName}
-                      </span>
-                    )}
-                  </TableCell>
+                    </TableCell>
 
-                  {/* Data Source */}
-                  <TableCell className="text-xs text-muted-foreground">
-                    {row.dataSource}
-                  </TableCell>
-
-                  {/* Constant value — Manual / CSV tags only */}
-                  <TableCell>
-                    {isConstantEditable(row) ? (
-                      <ConstantValueInput
-                        value={getConstant(row)}
-                        onCommit={v => setConstant(row, v)}
-                      />
-                    ) : (
-                      <span
-                        title="Value comes from the connected source"
-                        className="text-xs text-muted-foreground"
-                      >
-                        —
-                      </span>
-                    )}
-                  </TableCell>
-
-                  {/* Status badge */}
-                  <TableCell>
-                    <span
-                      title={row.errorReason}
-                      className={cn(
-                        'inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium',
-                        row.status === 'good'
-                          ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
-                          : 'bg-rose-500/10 text-rose-600 dark:text-rose-400',
+                    {/* Tag Name — inline editable */}
+                    <TableCell className="pl-2 font-mono text-xs">
+                      {editingId === row.id ? (
+                        <input
+                          ref={editInputRef}
+                          value={editValue}
+                          onChange={e => setEditValue(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') commitEdit(row)
+                            if (e.key === 'Escape') cancelEdit()
+                          }}
+                          onBlur={() => commitEdit(row)}
+                          className="w-full rounded border border-primary bg-transparent px-2 py-0.5 font-mono text-xs text-foreground outline-none focus:ring-1 focus:ring-primary"
+                        />
+                      ) : (
+                        <span
+                          className={cn(
+                            'block truncate',
+                            row.status === 'error' && 'text-destructive',
+                          )}
+                          title={row.tagName}
+                        >
+                          {row.tagName}
+                        </span>
                       )}
-                    >
-                      <span
-                        className={cn(
-                          'h-1.5 w-1.5 rounded-full',
-                          row.status === 'good'
-                            ? 'bg-emerald-500'
-                            : 'bg-rose-500',
-                        )}
-                      />
-                      {row.status === 'good' ? 'Good' : 'Error'}
-                    </span>
-                  </TableCell>
+                      {/* Manual/CSV tags carry a user-set constant instead of a
+                          live reading. The Value column is gone, so the editor
+                          lives here — dropping it would break tag constants. */}
+                      {isConstantEditable(row) && editingId !== row.id && (
+                        <div className="mt-1 flex items-center gap-1.5">
+                          <span className="text-[10px] text-muted-foreground">
+                            Constant
+                          </span>
+                          <ConstantValueInput
+                            value={getConstant(row)}
+                            onCommit={v => setConstant(row, v)}
+                          />
+                        </div>
+                      )}
+                    </TableCell>
 
-                  {/* Actions */}
-                  <TableCell className="pr-4">
-                    <div className="flex items-center justify-end gap-1">
-                      <button
-                        type="button"
-                        title="Rename tag"
-                        onClick={() => startEdit(row)}
-                        className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                      >
-                        <Pencil className="h-3 w-3" />
-                      </button>
-                      <button
-                        type="button"
-                        title="Remove tag"
-                        onClick={() => deleteRow(row)}
-                        className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
+                    {/* Description (PI metadata) */}
+                    <TableCell className="max-w-40 truncate text-xs text-muted-foreground">
+                      <span title={meta?.description ?? undefined}>
+                        {meta?.description ?? '—'}
+                      </span>
+                    </TableCell>
+
+                    {/* Data Source */}
+                    <TableCell className="text-xs text-muted-foreground">
+                      {row.dataSource}
+                    </TableCell>
+
+                    {/* Unit */}
+                    <TableCell className="text-xs text-muted-foreground">
+                      {meta?.unit ?? '—'}
+                    </TableCell>
+
+                    {/* Questionable */}
+                    <TableCell className="text-center text-xs">
+                      <BoolCell value={meta?.questionable} />
+                    </TableCell>
+
+                    {/* Substituted */}
+                    <TableCell className="text-center text-xs">
+                      <BoolCell value={meta?.substituted} />
+                    </TableCell>
+
+                    {/* Status — real PI snapshot quality when the tag resolved.
+                        A tag with no metadata keeps its own error state, so
+                        "not found in historian" is never masked as unknown. */}
+                    <TableCell>
+                      {meta ? (
+                        <QualityBadge quality={meta.quality} />
+                      ) : (
+                        <span
+                          title={row.errorReason}
+                          className={cn(
+                            'inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium',
+                            row.status === 'good'
+                              ? 'bg-muted text-muted-foreground'
+                              : 'bg-rose-500/10 text-rose-600 dark:text-rose-400',
+                          )}
+                        >
+                          <span
+                            className={cn(
+                              'h-1.5 w-1.5 rounded-full',
+                              row.status === 'good'
+                                ? 'bg-muted-foreground/40'
+                                : 'bg-rose-500',
+                            )}
+                          />
+                          {row.status === 'good' ? 'No data' : 'Error'}
+                        </span>
+                      )}
+                    </TableCell>
+
+                    {/* Actions */}
+                    <TableCell className="pr-4">
+                      <div className="flex items-center justify-end gap-1">
+                        <button
+                          type="button"
+                          title="Rename tag"
+                          onClick={() => startEdit(row)}
+                          className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                        >
+                          <Pencil className="h-3 w-3" />
+                        </button>
+                        <button
+                          type="button"
+                          title="Remove tag"
+                          onClick={() => deleteRow(row)}
+                          className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                )
+              })}
             </TableBody>
           </Table>
         </div>

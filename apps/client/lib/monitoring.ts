@@ -18,7 +18,11 @@ export interface MonitoringRow {
   residual: number
   /** residual as a percentage of actual. */
   percentageError: number
-  /** ±k·SD band as [min, max] so recharts `Area` draws a filled band. */
+  /**
+   * ±k·SD band as [min, max] so recharts `Area` draws a filled band. Centered
+   * on `actual` — the envelope wraps ground truth, so the prediction line sits
+   * inside it exactly when the model is within k·SD of the real reading.
+   */
   sd1: [number, number]
   sd2: [number, number]
   sd3: [number, number]
@@ -46,7 +50,9 @@ const DAY = 24 * HOUR
 
 /**
  * Build chart rows from aligned actual/predicted points. `sd` is the residual
- * standard deviation the ±1/±2/±3 bands are drawn around the prediction line.
+ * standard deviation the ±1/±2/±3 bands are drawn around the ACTUAL line, so
+ * the shaded area strictly wraps the actual data points and the prediction is
+ * read against it.
  */
 export function buildMonitoringRows(
   points: EvalPoint[],
@@ -63,9 +69,9 @@ export function buildMonitoringRows(
       predict: p.predicted,
       residual: round(residual),
       percentageError: round(percentageError),
-      sd1: [round(p.predicted - sd), round(p.predicted + sd)],
-      sd2: [round(p.predicted - 2 * sd), round(p.predicted + 2 * sd)],
-      sd3: [round(p.predicted - 3 * sd), round(p.predicted + 3 * sd)],
+      sd1: [round(p.actual - sd), round(p.actual + sd)],
+      sd2: [round(p.actual - 2 * sd), round(p.actual + 2 * sd)],
+      sd3: [round(p.actual - 3 * sd), round(p.actual + 3 * sd)],
     }
   })
 }

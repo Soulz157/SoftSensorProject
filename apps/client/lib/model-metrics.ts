@@ -202,7 +202,7 @@ export interface FitRow extends MonitoringRow {
 
 /**
  * Build evaluation chart rows from a fit. `sd` is the residual standard
- * deviation the SD bands are drawn around the prediction — the true SD, so the
+ * deviation the SD bands are drawn around the actual line — the true SD, so the
  * "±1 SD" band on the Actual-vs-Predicted chart and the ±1/±2/±3 layers on the
  * Residual chart mean the same thing.
  */

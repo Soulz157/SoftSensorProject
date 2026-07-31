@@ -72,7 +72,7 @@ export function CreateDatasetDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-md w-full space-y-4 rounded-lg p-6 sm:max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Layers className="h-4 w-4 text-primary" />
@@ -148,7 +148,7 @@ export function CreateDatasetDialog({
               variant="outline"
               size="sm"
               onClick={() => setShowSources(o => !o)}
-              className="h-9 w-full justify-between gap-1.5 text-sm font-normal"
+              className="h-9  justify-between gap-1.5 text-sm font-normal"
             >
               <span className="flex items-center gap-2">
                 <Database className="h-3.5 w-3.5 text-muted-foreground" />
@@ -170,7 +170,7 @@ export function CreateDatasetDialog({
             </Button>
 
             {showSources && (
-              <div className="max-h-44 space-y-1 overflow-y-auto rounded-lg border bg-muted/40 p-2">
+              <div className="max-h-44 space-y-1 overflow-x-hidden overflow-y-auto rounded-lg border bg-muted/40 p-2">
                 {sources.length === 0 ? (
                   <p className="px-2 py-3 text-center text-xs text-muted-foreground">
                     No data sources yet. Add one from the Data Sources page.
@@ -183,7 +183,7 @@ export function CreateDatasetDialog({
                     return (
                       <label
                         key={s.id}
-                        className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-background"
+                        className="flex w-full min-w-0 cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-background"
                       >
                         <Checkbox
                           checked={checked}
@@ -191,14 +191,19 @@ export function CreateDatasetDialog({
                           className="shrink-0"
                         />
                         <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                        <span className="truncate font-medium">{s.name}</span>
-                        <span className="truncate text-muted-foreground">
-                          · {s.host}
-                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate font-medium">{s.name}</div>
+                          <div
+                            className="truncate text-muted-foreground"
+                            title={s.host}
+                          >
+                            {s.host}
+                          </div>
+                        </div>
                         <Badge
                           variant="outline"
                           className={cn(
-                            'ml-auto shrink-0 px-1.5 py-0 text-[10px]',
+                            'shrink-0 px-1.5 py-0 text-[10px]',
                             s.status === 'connected'
                               ? 'border-emerald-500/30 text-emerald-600 dark:text-emerald-400'
                               : 'border-amber-500/30 text-amber-600 dark:text-amber-400',

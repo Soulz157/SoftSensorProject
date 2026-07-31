@@ -35,9 +35,12 @@ import { pickTimeFormat, type BrushWindow } from '@/lib/monitoring'
 import { mpSelectedMetricsAtom } from '@/store/model-pipeline'
 import { useAllModels } from '@/hooks/use-all-models'
 import { ChartZoomControls } from '@/components/charts/chart-zoom-controls'
+import { residualHistogram, qqPoints } from '@/lib/model-evaluation'
 import { StatTile } from '../stat-tile'
 import { ActualVsPredictedChart } from './evaluation/actual-vs-predicted-chart'
 import { ResidualChart } from './evaluation/residual-chart'
+import { ResidualHistogramChart } from './evaluation/residual-histogram-chart'
+import { QQPlotChart } from './evaluation/qq-plot-chart'
 import type { UsePipelineNavResult } from '@/hooks/model/use-model-pipeline-nav'
 
 interface Props {
@@ -138,6 +141,15 @@ export function Phase3Evaluation({ nav }: Props) {
     () => (fit ? buildFitRows(fit.points, fit.sd, comparePoints) : []),
     [fit, comparePoints],
   )
+
+  // Residual diagnostics (histogram + Q-Q) — computed over the full fit, not the
+  // zoom window, so the distribution reflects every validation sample.
+  const residuals = useMemo(
+    () => (fit ? fit.points.map(p => p.residual) : []),
+    [fit],
+  )
+  const histogramBins = useMemo(() => residualHistogram(residuals), [residuals])
+  const qq = useMemo(() => qqPoints(residuals), [residuals])
 
   // Shared zoom window — applied by slicing rows, so both charts move together.
   const [zoom, setZoom] = useState<BrushWindow>({})
@@ -351,6 +363,34 @@ export function Phase3Evaluation({ nav }: Props) {
               tickFormatter={tickFormatter}
               compareName={compareModel?.name}
             />
+          </section>
+
+          {/* Validation residual diagnostics — distribution + normality */}
+          <section className="space-y-3 rounded-xl border border-border/60 p-4">
+            <div className="space-y-1">
+              <h3 className="text-sm font-medium text-foreground">
+                Validation residual diagnostics
+              </h3>
+              <p className="text-xs text-muted-foreground">
+                Residuals should be centred on 0 and roughly normal — a
+                symmetric histogram and points hugging the Q-Q diagonal indicate
+                an unbiased, well-behaved fit.
+              </p>
+            </div>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div className="space-y-2 rounded-lg border border-border/60 bg-card p-3">
+                <p className="text-xs font-medium text-foreground">
+                  Residual Distribution
+                </p>
+                <ResidualHistogramChart bins={histogramBins} />
+              </div>
+              <div className="space-y-2 rounded-lg border border-border/60 bg-card p-3">
+                <p className="text-xs font-medium text-foreground">
+                  Q-Q Plot (Normal)
+                </p>
+                <QQPlotChart points={qq.points} domain={qq.domain} />
+              </div>
+            </div>
           </section>
         </div>
       )}

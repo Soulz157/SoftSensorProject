@@ -23,6 +23,10 @@ import type {
   DataSourceConfig,
 } from '@/store/model-pipeline'
 import type { CustomDateRange, FetchState } from '@/store/data-visualize'
+import {
+  DEFAULT_FETCH_CONFIG,
+  type HistoricalFetchConfig,
+} from '@/lib/fetch-config'
 
 export const DW_TOTAL_STEPS = 5
 
@@ -40,6 +44,15 @@ export const dwEditedTagsAtom = atom<Record<string, string>>({})
 export const dwHasInvalidTagsAtom = atom<boolean>(false)
 export const dwInsertedTagsAtom = atom<string[]>([])
 export const dwCsvUploadTagsAtom = atom<string[]>([])
+/**
+ * Full dataset parsed from the Step-1 CSV upload. A CSV file already IS the
+ * readings, so this stands in for a fetch response: Step 2 narrows it to the
+ * selected tags and writes `dwRawDatasetAtom` instead of calling the API.
+ * Empty until a file is uploaded.
+ */
+export const dwCsvDatasetAtom = atom<Dataset>(EMPTY_DATASET)
+/** Name of the uploaded CSV — display only (the "CSV Dataset Ready" card). */
+export const dwCsvFileNameAtom = atom<string>('')
 export const dwTagConstantsAtom = atom<Record<string, number>>({})
 
 export const dwFetchTagsAtom = atom<string[] | null>(null)
@@ -49,11 +62,59 @@ export const dwCustomIntervalAtom = atom<CustomInterval | null>(null)
 export const dwSourceFetchConfigsAtom = atom<Record<string, DataSourceConfig>>(
   {},
 )
+// Step 2 — PI historical-fetch summary params (cal basis / aggregate / bucket /
+// batch). Distinct from per-source connection config above. See lib/fetch-config.
+export const dwFetchConfigAtom = atom<HistoricalFetchConfig>({
+  ...DEFAULT_FETCH_CONFIG,
+})
 export const dwFetchStateAtom = atom<FetchState>({
   status: 'idle',
   progress: 0,
 })
+
+/**
+ * Whether Step 2 must run a live fetch before the wizard can advance.
+ *
+ * CSV sources carry their readings in the uploaded file, so they need no fetch;
+ * PI / SQL / REST do. An empty selection reads as "not required" — the
+ * source-less CSV Upload path also skips fetching, and an empty dataset still
+ * fails the `rows.length > 0` half of the Step-2 gate, so nothing unlocks early.
+ */
+export const dwFetchRequiredAtom = atom<boolean>(get =>
+  get(dwSelectedSourcesAtom).some(s => s.type !== 'csv'),
+)
 export const dwRawDatasetAtom = atom<Dataset>(EMPTY_DATASET)
+
+/**
+ * Rich per-batch progress for the client-orchestrated historical fetch (P6).
+ * Kept SEPARATE from `dwFetchStateAtom` (which stays the {status,progress,error}
+ * source driving the step chain + auto-advance) so the extra detail never
+ * changes the shared `FetchState` shape. `failedBatches` holds the tag lists of
+ * batches that errored, so "Retry N failed batches" can re-run only those.
+ */
+export interface FetchProgress {
+  totalBatches: number
+  completedBatches: number
+  currentBatchTags: string[]
+  totalTags: number
+  completedTags: number
+  etaMs: number | null
+  failedBatches: string[][]
+}
+
+export const EMPTY_FETCH_PROGRESS: FetchProgress = {
+  totalBatches: 0,
+  completedBatches: 0,
+  currentBatchTags: [],
+  totalTags: 0,
+  completedTags: 0,
+  etaMs: null,
+  failedBatches: [],
+}
+
+export const dwFetchProgressAtom = atom<FetchProgress>({
+  ...EMPTY_FETCH_PROGRESS,
+})
 
 export const dwFeatureConfigsAtom = atom<FeatureConfig[]>([])
 
@@ -136,13 +197,17 @@ export const initDatasetWizardAtom = atom(
     set(dwHasInvalidTagsAtom, false)
     set(dwInsertedTagsAtom, [])
     set(dwCsvUploadTagsAtom, [])
+    set(dwCsvDatasetAtom, EMPTY_DATASET)
+    set(dwCsvFileNameAtom, '')
     set(dwTagConstantsAtom, {})
     set(dwFetchTagsAtom, null)
     set(dwTimeRangeAtom, '1min')
     set(dwCustomDateRangeAtom, null)
     set(dwCustomIntervalAtom, null)
     set(dwSourceFetchConfigsAtom, {})
+    set(dwFetchConfigAtom, { ...DEFAULT_FETCH_CONFIG })
     set(dwFetchStateAtom, { status: 'idle', progress: 0 })
+    set(dwFetchProgressAtom, { ...EMPTY_FETCH_PROGRESS })
     set(dwRawDatasetAtom, EMPTY_DATASET)
     set(dwFeatureConfigsAtom, [])
     set(dwCropRangeAtom, null)
@@ -178,13 +243,17 @@ export const resetDatasetWizardAtom = atom(null, (_get, set) => {
   set(dwHasInvalidTagsAtom, false)
   set(dwInsertedTagsAtom, [])
   set(dwCsvUploadTagsAtom, [])
+  set(dwCsvDatasetAtom, EMPTY_DATASET)
+  set(dwCsvFileNameAtom, '')
   set(dwTagConstantsAtom, {})
   set(dwFetchTagsAtom, null)
   set(dwTimeRangeAtom, '1min')
   set(dwCustomDateRangeAtom, null)
   set(dwCustomIntervalAtom, null)
   set(dwSourceFetchConfigsAtom, {})
+  set(dwFetchConfigAtom, { ...DEFAULT_FETCH_CONFIG })
   set(dwFetchStateAtom, { status: 'idle', progress: 0 })
+  set(dwFetchProgressAtom, { ...EMPTY_FETCH_PROGRESS })
   set(dwRawDatasetAtom, EMPTY_DATASET)
   set(dwFeatureConfigsAtom, [])
   set(dwCropRangeAtom, null)
@@ -245,6 +314,9 @@ export const initDatasetWizardForEditAtom = atom(
     set(dwHasInvalidTagsAtom, false)
     set(dwInsertedTagsAtom, [])
     set(dwCsvUploadTagsAtom, [])
+    // Edit mode rebuilds the raw grid from the saved recipe, never from a file.
+    set(dwCsvDatasetAtom, EMPTY_DATASET)
+    set(dwCsvFileNameAtom, '')
     set(dwTagConstantsAtom, tagConstants)
 
     // Step 2 — Fetch (locked). Rebuild the raw dataset in place of a live fetch.
@@ -253,6 +325,10 @@ export const initDatasetWizardForEditAtom = atom(
     set(dwCustomDateRangeAtom, config.customDateRange)
     set(dwCustomIntervalAtom, config.customInterval)
     set(dwSourceFetchConfigsAtom, config.sourceFetchConfigs)
+    // Fetch is locked in edit mode (raw query is rebuilt deterministically, not
+    // re-fetched), so summary params are not persisted in the recipe — reset to
+    // defaults rather than reading a field that older recipes never stored.
+    set(dwFetchConfigAtom, { ...DEFAULT_FETCH_CONFIG })
     set(
       dwRawDatasetAtom,
       buildRawDataset(

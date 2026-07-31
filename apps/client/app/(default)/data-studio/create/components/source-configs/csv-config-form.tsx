@@ -5,27 +5,13 @@ import { Upload, FileCheck2, FileX } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { cn } from '@/lib/utils'
+import { parseCsvText } from '@/lib/csv'
 import type { CSVConfig } from '@/store/model-pipeline'
 
 interface Props {
   config: CSVConfig
   onChange: (config: CSVConfig) => void
   disabled?: boolean
-}
-
-function parseCSV(text: string): {
-  columns: string[]
-  rows: Record<string, string>[]
-} {
-  const lines = text.trim().split('\n')
-  if (lines.length < 2) return { columns: [], rows: [] }
-  const columns =
-    lines[0]?.split(',').map(c => c.trim().replace(/^"|"$/g, '')) || []
-  const rows = lines.slice(1).map(line => {
-    const vals = line.split(',').map(v => v.trim().replace(/^"|"$/g, ''))
-    return Object.fromEntries(columns.map((c, i) => [c, vals[i] ?? '']))
-  })
-  return { columns, rows }
 }
 
 export function CSVConfigForm({ config, onChange, disabled }: Props) {
@@ -35,7 +21,7 @@ export function CSVConfigForm({ config, onChange, disabled }: Props) {
     const reader = new FileReader()
     reader.onload = e => {
       const text = e.target?.result as string
-      const { columns, rows } = parseCSV(text)
+      const { columns, rows } = parseCsvText(text)
       onChange({ ...config, fileName: file.name, columns, rows })
     }
     reader.readAsText(file)

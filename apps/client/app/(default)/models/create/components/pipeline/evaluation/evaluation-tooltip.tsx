@@ -66,7 +66,6 @@ export function EvaluationTooltip({
   }
 
   const fmt = (n: number | undefined) => (n === undefined ? '—' : n.toFixed(2))
-  const band = payload[0]?.payload?.sd1
   const comparePredict = scalar(payload, 'comparePredict')
   const compareResidual = scalar(payload, 'compareResidual')
   const pct = scalar(payload, 'percentageError')
@@ -89,13 +88,13 @@ export function EvaluationTooltip({
               label="Predicted"
               value={fmt(scalar(payload, 'predict'))}
             />
-            {Array.isArray(band) && (
+            {/* {Array.isArray(band) && (
               <Row
                 color="var(--chart-2)"
                 label="±1 SD"
                 value={`${fmt(band[0])} – ${fmt(band[1])}`}
               />
-            )}
+            )} */}
             {compareName && comparePredict !== undefined && (
               <Row
                 color="var(--chart-4)"

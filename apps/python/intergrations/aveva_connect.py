@@ -20,14 +20,12 @@ def chunked(lst: list, size: int) -> Generator[list, None, None]:
 class PIWebAPI:
 
     def __init__(self, api_server: str, user: str, pwd: str, pi_server: str):
-        # SECURITY: never log credentials. Do not print user/pwd here.
         self.client = PIWebApiClient(
             api_server, False, user, pwd, False, True)
         self.api_server = api_server
         self.pi_server = pi_server
 
     def _resolve_data_server(self):
-
         try:
             data_server = self.client.dataServer.get_by_name(
                 name=self.pi_server)
@@ -52,35 +50,33 @@ class PIWebAPI:
         try:
             paths = ["pi:\\\\" + self.pi_server +
                      "\\" + x for i, x in enumerate(path)]
-            print(f"Converting paths to Web IDs: {paths}")
+            # print(f"Converting paths to Web IDs: {paths}")
             webIds = self.client.data.convert_paths_to_web_ids(paths)
-            print(f"Converted Web IDs: {webIds}")
+            # print(f"Converted Web IDs: {webIds}")
             return webIds
         except Exception as e:
             print(f"Error converting paths to Web IDs: {e}")
             return []
 
     def convertAverageDicttoDataFrame(self, data, tag_list: list):
-        tag_list.insert(0, "timestamp")
-        i = 0
-        lst_main = list()
+        columns = ["timestamp"] + list(tag_list)
+        n_tags = len(tag_list)
+        row_count = len(data.items[0].items)
 
-        while i < len(data.items[0].items):
-            lst_sub = list()
-            j = 0
-            while j < len(tag_list):
-                if j == 0:
-                    lst_sub.append(data.items[0].items[i].value.timestamp)
-                else:
-                    lst_sub.append(data.items[j - 1].items[i].value.value)
-                j = j + 1
-            lst_main.append(lst_sub)
-            i = i + 1
+        lst_main = []
+        for i in range(row_count):
+            # timestamp อ้างจาก tag แรก (ทุก tag แชร์ grid เวลาเดียวกัน)
+            row = [data.items[0].items[i].value.timestamp]
+            for t in range(n_tags):
+                row.append(data.items[t].items[i].value.value)
+            lst_main.append(row)
 
-        df = pd.DataFrame(lst_main, columns=tag_list)
-        df["timestamp"] = pd.to_datetime(
-            df["timestamp"], format="%Y-%m-%dT%H:%M:%S.%fZ"
-        ) + pd.to_timedelta("07:00:00")
+        df = pd.DataFrame(lst_main, columns=columns)
+        df["timestamp"] = (
+            pd.to_datetime(df["timestamp"], format="ISO8601", utc=True)
+            .dt.tz_convert("Asia/Bangkok")
+            .dt.tz_localize(None)
+        )
         return df
 
     def getAverageValue(
@@ -113,7 +109,7 @@ class PIWebAPI:
         return data
 
     def convertSnapshotDicttoDataFrame(self, data, tag_list: list):
-        tag_list.insert(0, "timestamp")
+        columns = ["timestamp"] + list(tag_list)
         lst_main = list()
         lst_sub = list()
         j = 0
@@ -125,7 +121,7 @@ class PIWebAPI:
             j = j + 1
         lst_main.append(lst_sub)
 
-        df = pd.DataFrame(lst_main, columns=tag_list)
+        df = pd.DataFrame(lst_main, columns=columns)
         df["timestamp"] = pd.to_datetime(
             df["timestamp"], format="%Y-%m-%dT%H:%M:%S.%fZ"
         ) + pd.to_timedelta("07:00:00")
@@ -158,11 +154,10 @@ class PIWebAPI:
     def search_tags(
         self,
         name_filter: str = "*",
-        max_count: int = 1000,
+        max_count: int = 10,
         batch_size: int = 100,
     ) -> pd.DataFrame:
-
-        data_server = self.client.dataServer.get_by_name(name=self.pi_server)
+        data_server = self._resolve_data_server()
 
         points = self.client.dataServer.get_points(
             web_id=data_server.web_id,
@@ -172,11 +167,13 @@ class PIWebAPI:
                 "items.name;"
                 "items.descriptor;"
                 "items.engineeringUnits;"
-                "items.pointType"
+                "items.pointType;"
+                "items.webId"
             ),
         )
 
         rows = []
+        webid_by_tag: dict[str, str] = {}
         for item in points.items:
             rows.append({
                 "tag_name": item.name,
@@ -184,18 +181,33 @@ class PIWebAPI:
                 "unit": item.engineering_units,
                 "point_type": item.point_type,
             })
+            webid_by_tag[item.name] = item.web_id
 
         df_tags = pd.DataFrame(rows)
 
         tag_names = df_tags["tag_name"].tolist()
+
+        # If this PI Web API version ignores `items.webId`, every snapshot call
+        # below would fail and the per-chunk except would fill quality with
+        # nulls — description/unit would still render, so the table would look
+        # fine while Status/Quest./Subst. were silently empty. Fail loudly.
+        if tag_names and not any(webid_by_tag.get(t) for t in tag_names):
+            raise RuntimeError(
+                "PI returned no webId for any point — cannot read snapshot "
+                "quality. Check that this PI Web API version honours the "
+                "'items.webId' selected field."
+            )
 
         # ── Step 2 : ดึง Is Good จาก Snapshot (batch) ─────────
         status_map: dict[str, bool] = {}
 
         for chunk in chunked(tag_names, batch_size):
             try:
-                paths = [f"pi:\\\\{self.pi_server}\\{tag}" for tag in chunk]
-                webids = self.client.data.convert_paths_to_web_ids(paths)
+                # Reuse the webIds from get_points. convert_paths_to_web_ids
+                # issued one HTTP GET per tag (SDK data_api.py:42), making this
+                # N+1: ~1012 requests for 1000 tags (~30s, past the caller's
+                # timeout). Now the whole call is 2 + ceil(N/batch_size).
+                webids = [webid_by_tag[tag] for tag in chunk]
 
                 snapshot = self.client.streamSet.get_values_ad_hoc(
                     web_id=webids,

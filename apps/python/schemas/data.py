@@ -23,13 +23,36 @@ class TagItem(BaseModel):
     description: Optional[str] = None
     value: Optional[float | str | dict] = None
     unit: Optional[str] = None
+    point_type: Optional[str] = None
     isGood: Optional[bool] = None
     questionable: Optional[bool] = None
+    substituted: Optional[bool] = None
+    # Snapshot (current-value) timestamp — NOT an archive read.
+    timestamp: Optional[str] = None
 
 
 class TagListResponse(BaseModel):
     total: int
     tags: list[TagItem]
+
+
+class TagCurrent(BaseModel):
+    """Current (snapshot) value + quality for one tag. Snapshot read, not archive."""
+    tag_name: str
+    value: Optional[float | str | dict] = None
+    timestamp: Optional[str] = None
+    isGood: Optional[bool] = None
+    questionable: Optional[bool] = None
+    substituted: Optional[bool] = None
+
+
+class TagCurrentRequest(BaseModel):
+    tag_list: list[str] = Field(..., min_length=1)
+    batch_size: int = Field(100, ge=1, le=1000, description="Tags per snapshot batch")
+
+
+class TagCurrentResponse(BaseModel):
+    tags: list[TagCurrent]
 
 
 class DataFetchRequest(BaseModel):

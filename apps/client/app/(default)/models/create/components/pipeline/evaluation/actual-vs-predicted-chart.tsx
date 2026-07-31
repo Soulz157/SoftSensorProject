@@ -73,7 +73,7 @@ export function ActualVsPredictedChart({
           }
         />
 
-        {/* ±1 SD band around the prediction — true residual SD. */}
+        {/* ±1 SD band wrapping the ACTUAL line — [actual − SD, actual + SD]. */}
         <Area
           connectNulls
           dataKey="sd1"

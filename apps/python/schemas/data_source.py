@@ -9,7 +9,13 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
-from schemas.data import CalBasis, SummaryType, DataFetchResponse, TagListResponse
+from schemas.data import (
+    CalBasis,
+    SummaryType,
+    DataFetchResponse,
+    TagListResponse,
+    TagCurrentResponse,
+)
 
 
 # ── PI (AVEVA / OSIsoft) ─────────────────────────────────────────────────────
@@ -29,6 +35,12 @@ class PITagsRequest(BaseModel):
     credentials: PICredentials
     name_filter: str = Field("*", description="Wildcard filter, e.g. D1-* or *MEAS*")
     max_count: int = Field(40, ge=1, le=10000)
+
+
+class PICurrentRequest(BaseModel):
+    credentials: PICredentials
+    tag_list: list[str] = Field(..., min_length=1)
+    batch_size: int = Field(100, ge=1, le=1000)
 
 
 class PIFetchRequest(BaseModel):
@@ -127,4 +139,6 @@ __all__ = [
     "ConnectionTestResponse",
     "DataFetchResponse",
     "TagListResponse",
+    "TagCurrentResponse",
+    "PICurrentRequest",
 ]

@@ -5,7 +5,11 @@ import {
   type TagQuality,
   type TagSeverity,
 } from '@/lib/data-quality'
-import type { Dataset, FillStrategyConfig } from '@/lib/preprocessing'
+import type {
+  Dataset,
+  // FillStrategyConfig,
+  TagPipeline,
+} from '@/lib/preprocessing'
 
 /** One row in the Step 5.2 imputation master list — a tag plus its quality. */
 export interface ImputationTagRow {
@@ -23,7 +27,8 @@ export interface ImputationTagRow {
  */
 export function useImputationTagList(
   base: Dataset,
-  draft: Record<string, FillStrategyConfig>,
+
+  draft: Record<string, TagPipeline>,
 ) {
   const quality = useMemo(() => qualityByTag(base), [base])
 
@@ -42,7 +47,7 @@ export function useImputationTagList(
           tag,
           quality: q,
           severity: tagSeverity(q),
-          completed: draft[tag] != null,
+          completed: (draft[tag]?.length ?? 0) > 0,
         }
       }),
     [base.tags, quality, draft],

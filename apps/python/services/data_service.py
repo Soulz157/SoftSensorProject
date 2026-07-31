@@ -16,12 +16,15 @@ budget_per_tag = max_points_per_request / tags_in_batch
   แต่ 1m over 1 ปี = 525,600 จุด/tag → split อัตโนมัติ
 """
 import asyncio
+from curses import window
 import math
 import re
 from datetime import datetime, timedelta
 from typing import Optional
 
 import pandas as pd
+import traceback
+
 
 from intergrations import PIWebAPI
 from intergrations.aveva_connect import chunked
@@ -123,7 +126,8 @@ class DataService:
             raise ValueError("end_time must be after start_time.")
 
         points_per_tag = math.ceil((end - start) / interval)
-        budget_per_tag = max(1, self.max_points_per_request // max(1, tags_in_batch))
+        budget_per_tag = max(
+            1, self.max_points_per_request // max(1, tags_in_batch))
         if points_per_tag <= budget_per_tag:
             return [(start, end)]
 
@@ -164,7 +168,8 @@ class DataService:
             if pd.isna(value):
                 continue
             points.append(
-                TagDataPoint(timestamp=str(row["timestamp"]), value=_native(value))
+                TagDataPoint(timestamp=str(
+                    row["timestamp"]), value=_native(value))
             )
         return points
 
@@ -216,8 +221,13 @@ class DataService:
                 df = await asyncio.to_thread(
                     self._call_pi, chunk, window, cal_basis, summary_type, interval
                 )
-            except Exception as exc:  # noqa: BLE001 — เก็บไว้รายงานต่อ tag
+                print(f"[DEBUG] batch OK window={window}", flush=True)
+                print(df.to_string(), flush=True)
+            except Exception as exc:
                 chunk_error = str(exc) or repr(exc)
+                print(
+                    f"[DEBUG] BATCH FAILED window={window}: {chunk_error}", flush=True)
+                traceback.print_exc()
 
         # tag ที่ยังไม่ได้ข้อมูล: batch พัง หรือ column หายจาก frame ที่สำเร็จ
         # (converter map column แบบ positional — tag เสียตัวเดียวทำทั้ง chunk เพี้ยนได้)
@@ -233,18 +243,27 @@ class DataService:
             pending = list(chunk)
 
         # fallback ยิงทีละ tag ก่อนตัดสินว่า failed
+
+        single = None
         for tag in pending:
             async with sem:
                 try:
                     single = await asyncio.to_thread(
-                        self._call_pi, [tag], window, cal_basis, summary_type, interval
+                        self._call_pi, [
+                            tag], window, cal_basis, summary_type, interval
                     )
-                except Exception as exc:  # noqa: BLE001
+                    # print(
+                    #     f"[DEBUG] single {tag} rows={0 if single is None else len(single)}", flush=True)
+                    # if single is not None:
+                    # print(single.to_string(), flush=True)
+                except Exception as exc:
+                    # print(f"[DEBUG] single {tag} FAILED: {exc}", flush=True)
                     out[tag] = ([], str(exc) or repr(exc) or chunk_error)
                     continue
             records = self._records(single, tag)
             if records is None:
-                out[tag] = ([], f"Tag {tag!r} was not returned by PI for this window.")
+                out[tag] = (
+                    [], f"Tag {tag!r} was not returned by PI for this window.")
             else:
                 out[tag] = (records, None)
 
@@ -256,6 +275,7 @@ class DataService:
         interval_td = parse_interval(interval)
         start = parse_timestamp(body.start_time, "start_time")
         end = parse_timestamp(body.end_time, "end_time")
+        # print(f"fetch:  {start} → {end}, interval={interval_td}")
         if end <= start:
             raise ValueError("end_time must be after start_time.")
 
@@ -268,13 +288,19 @@ class DataService:
 
         sem = asyncio.Semaphore(self.max_concurrency)
         jobs = []
+
         for chunk in self._chunk(body.tag_list, body.batch_size):
             for window in self._time_windows(start, end, interval_td, len(chunk)):
                 jobs.append(
-                    self._run_job(sem, chunk, window, cal_basis, summary_type, interval)
+                    self._run_job(sem, chunk, window, cal_basis,
+                                  summary_type, interval)
                 )
 
         job_results = await asyncio.gather(*jobs, return_exceptions=True)
+        # print(
+        #     f"fetch: {len(job_results)} jobs completed for {len(body.tag_list)} tags")
+        # print(
+        #     f"{job_results}")
 
         points: dict[str, list[TagDataPoint]] = {t: [] for t in body.tag_list}
         errors: dict[str, list[str]] = {t: [] for t in body.tag_list}
@@ -326,9 +352,11 @@ class DataService:
             results.append(
                 TagDataResult(
                     tag_name=tag,
-                    data=self._dedupe(sorted(points[tag], key=lambda p: p.timestamp)),
+                    data=self._dedupe(
+                        sorted(points[tag], key=lambda p: p.timestamp)),
                     status=status,
-                    error=tag_errors[0] if (status != "ok" and tag_errors) else None,
+                    error=tag_errors[0] if (
+                        status != "ok" and tag_errors) else None,
                 )
             )
 

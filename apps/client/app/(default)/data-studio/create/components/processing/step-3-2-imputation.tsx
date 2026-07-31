@@ -111,8 +111,6 @@ export function Step32Imputation({ nav }: Props) {
     }
   }, [cleaningTags, cleaningPipelines])
 
-  // Single-tag scope for the step preview + crop + quality pill. Honors the
-  // isolate pick, falling back to the first selected tag.
   const isolatedTag = cleaningTags.includes(rawIsolated)
     ? rawIsolated
     : (cleaningTags[0] ?? '')
