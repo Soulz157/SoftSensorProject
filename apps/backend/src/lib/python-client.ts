@@ -19,6 +19,12 @@ export const PYTHON_TIMEOUT = {
   test: 15_000,
   metadata: 30_000,
   fetch: 120_000,
+  /**
+   * Preprocessing writes whole artifacts, so it is the slowest hop by an order
+   * of magnitude. The job runner makes one call per OPERATION rather than one
+   * per pipeline precisely so no single call approaches this ceiling.
+   */
+  preprocess: 300_000,
 } as const;
 
 interface FastApiError {
@@ -43,11 +49,18 @@ function baseUrl(): string {
  * @param path      absolute service path, e.g. '/v1/data-sources/sql/test'
  * @param body      request payload (may contain decrypted credentials)
  * @param timeoutMs abort threshold; pick from PYTHON_TIMEOUT
+ * @param signal    optional caller-owned cancellation, combined with the
+ *                  timeout. The preprocessing job runner passes its per-job
+ *                  token here so a cancel takes effect DURING an operation
+ *                  rather than only at the next boundary between operations —
+ *                  with `preprocess` at 300s, "cancel" would otherwise mean
+ *                  "cancel in up to five minutes", which reads as broken.
  */
 export async function postToPython<TRes>(
   path: string,
   body: unknown,
   timeoutMs: number = PYTHON_TIMEOUT.fetch,
+  signal?: AbortSignal,
 ): Promise<TRes> {
   let res: Response;
   try {
@@ -55,12 +68,23 @@ export async function postToPython<TRes>(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+        : AbortSignal.timeout(timeoutMs),
     });
   } catch (err) {
     // Do NOT include `err` details verbatim — they can echo the request.
     if (err instanceof AppException) throw err;
     const timedOut = err instanceof Error && err.name === 'TimeoutError';
+    // A caller-triggered abort is not a connector fault. Distinguishing it
+    // lets the runner record CANCELED instead of FAILED.
+    if (!timedOut && signal?.aborted) {
+      throw new AppException({
+        statusCode: 499,
+        message: 'Data connector request was canceled by the caller.',
+        type: 'ERROR',
+      });
+    }
     throw new AppException({
       statusCode: timedOut ? 504 : 502,
       message: timedOut

@@ -62,6 +62,7 @@ export function Step5ReviewSave({ nav }: Props) {
 
   const {
     cropRange,
+    valueCrop,
     exclusions,
     conditionalRules,
     statisticalRules,
@@ -75,6 +76,7 @@ export function Step5ReviewSave({ nav }: Props) {
     const featured = applyFeatures(raw, features)
     const cleaned = precleanse(featured, {
       crop: cropRange,
+      valueCrop,
       exclusions,
       conditional: conditionalRules,
       statistical: statisticalRules,
@@ -89,6 +91,7 @@ export function Step5ReviewSave({ nav }: Props) {
     raw,
     features,
     cropRange,
+    valueCrop,
     exclusions,
     conditionalRules,
     statisticalRules,
@@ -108,6 +111,7 @@ export function Step5ReviewSave({ nav }: Props) {
       sourceFetchConfigs,
       features,
       cropRange,
+      valueCrop,
       exclusions,
       conditionalRules,
       statisticalRules,

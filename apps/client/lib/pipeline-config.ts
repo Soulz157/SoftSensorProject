@@ -16,6 +16,7 @@ import type {
   CropRange,
   RangeExclusion,
   StatisticalRule,
+  ValueCrop,
 } from '@/lib/precleanse'
 import { applyFeatures, selectColumns } from '@/lib/feature-engineering'
 import type { FeatureConfig } from '@/lib/feature-engineering'
@@ -34,6 +35,12 @@ export interface PipelineConfig {
   sourceFetchConfigs: Record<string, DataSourceConfig>
   features: FeatureConfig[]
   cropRange: CropRange
+  /**
+   * Per-tag Y-axis crop from Drag-to-Crop. Authored in step 3 and load-bearing
+   * for `canAdvance`, but historically dropped at save — recipes saved before
+   * this field existed re-materialize without it. Optional for those.
+   */
+  valueCrop?: ValueCrop
   /** Drag-to-Crop "Exclude" bands (remove-inside spans). Optional for old recipes. */
   exclusions?: RangeExclusion[]
   conditionalRules: ConditionalRule[]
@@ -67,6 +74,7 @@ export const EMPTY_PIPELINE_CONFIG: PipelineConfig = {
   sourceFetchConfigs: {},
   features: [],
   cropRange: null,
+  valueCrop: {},
   exclusions: [],
   conditionalRules: [],
   statisticalRules: [],
@@ -91,6 +99,7 @@ export function materializeDataset(
   const featured = applyFeatures(raw, config.features)
   const cleansed = precleanse(featured, {
     crop: config.cropRange,
+    valueCrop: config.valueCrop,
     exclusions: config.exclusions,
     conditional: config.conditionalRules,
     statistical: config.statisticalRules,

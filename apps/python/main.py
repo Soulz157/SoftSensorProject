@@ -1,9 +1,11 @@
 import urllib3
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from config import settings
 from intergrations.pi_http import install_pi_timeouts
-from routers import data, tags, data_source
+from routers import data, tags, data_source, preprocess
 
 
 DESCRIPTION = """
@@ -25,10 +27,52 @@ tags_metadata = [
         "description": "Time-series data — ดึงค่าตาม tag และช่วงเวลาที่ระบุ",
     },
     {
+        "name": "Preprocess",
+        "description": (
+            "Data cleaning over stored dataset artifacts — preview before "
+            "apply. Preview never writes."
+        ),
+    },
+    {
         "name": "Health",
         "description": "Service status สำหรับ liveness/readiness probe",
     },
 ]
+
+
+async def redacted_validation_handler(
+    _request: Request, exc: Exception
+) -> JSONResponse:
+    """422 bodies WITHOUT the offending input echoed back.
+
+    FastAPI's default handler returns `exc.errors()` verbatim, and every
+    pydantic v2 error carries an `input` key holding the value that failed.
+    Every credential-bearing endpoint in this service — `/v1/data-sources/*`
+    and `/v1/preprocess/materialize` — takes a body containing a DECRYPTED
+    password, so one malformed request round-trips that password back to the
+    caller. Verified before this handler existed: a `/materialize` call missing
+    `tag_list` answered 422 with `"password":"<plaintext>"` in the body, and
+    `python-client.ts` relays an upstream 4xx `detail` onward as the message of
+    an AppException.
+
+    `loc`, `type` and `msg` are kept — they say WHICH field is wrong and why,
+    which is everything a caller needs to fix the request. `input` and `ctx`
+    are dropped because both can carry submitted values.
+    """
+    errors = exc.errors() if isinstance(exc, RequestValidationError) else []
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": [
+                {
+                    "type": error.get("type"),
+                    "loc": list(error.get("loc", ())),
+                    "msg": error.get("msg"),
+                }
+                for error in errors
+            ]
+        },
+    )
 
 
 def create_app() -> FastAPI:
@@ -73,6 +117,9 @@ def create_app() -> FastAPI:
     app.include_router(data)
     app.include_router(tags)
     app.include_router(data_source)
+    app.include_router(preprocess)
+
+    app.add_exception_handler(RequestValidationError, redacted_validation_handler)
 
     return app
 

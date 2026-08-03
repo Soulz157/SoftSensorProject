@@ -342,7 +342,8 @@ export const initDatasetWizardForEditAtom = atom(
 
     // Step 3 — Preprocessing (EDITABLE surface).
     set(dwCropRangeAtom, config.cropRange)
-    set(dwValueCropAtom, {})
+    // Legacy recipes predate valueCrop being persisted — those hydrate empty.
+    set(dwValueCropAtom, config.valueCrop ?? {})
     set(dwExclusionsAtom, config.exclusions ?? [])
     set(dwConditionalRulesAtom, config.conditionalRules)
     set(dwStatisticalRulesAtom, config.statisticalRules)

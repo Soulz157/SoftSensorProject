@@ -33,3 +33,19 @@ def get_tag_service(webapi: PIWebAPI = Depends(get_pi_client)) -> TagService:
 
 def get_data_service(webapi: PIWebAPI = Depends(get_pi_client)) -> DataService:
     return DataService(webapi)
+
+
+@lru_cache(maxsize=1)
+def get_object_store():
+    """One MinIO client per process, mirroring `get_pi_client`.
+
+    Imported lazily on purpose: this module is pulled in by every router, and a
+    top-level `minio`/`pyarrow` import would make object storage a hard
+    requirement for the PI routes that never touch it.
+
+    Credentials come from `config.settings` (S3_*) only — never hardcoded here,
+    this file is in version control.
+    """
+    from intergrations.object_store import ObjectStore
+
+    return ObjectStore()

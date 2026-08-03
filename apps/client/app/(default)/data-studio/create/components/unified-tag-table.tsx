@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
+import { format } from 'date-fns'
 import {
   AlertCircle,
   Loader2,
@@ -85,6 +86,17 @@ function QualityBadge({ quality }: { quality: TagQuality }) {
       {q.label}
     </span>
   )
+}
+
+/**
+ * PI snapshot time → compact local `yyyy-MM-dd HH:mm`. The raw ISO string stays
+ * in the cell's `title`. Unparseable values render as `—` rather than
+ * "Invalid Date".
+ */
+function formatSnapshotTime(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? '—' : format(d, 'yyyy-MM-dd HH:mm')
 }
 
 function BoolCell({ value }: { value: boolean | null | undefined }) {
@@ -548,6 +560,7 @@ export function UnifiedTagTable({ nav }: Props) {
                 <TableHead className="w-16">Unit</TableHead>
                 <TableHead className="w-16 text-center">Quest.</TableHead>
                 <TableHead className="w-16 text-center">Subst.</TableHead>
+                <TableHead className="w-36">Timestamp</TableHead>
                 <TableHead className="w-24">Status</TableHead>
                 <TableHead className="w-20 pr-4 text-right">Actions</TableHead>
               </TableRow>
@@ -634,6 +647,13 @@ export function UnifiedTagTable({ nav }: Props) {
                     {/* Substituted */}
                     <TableCell className="text-center text-xs">
                       <BoolCell value={meta?.substituted} />
+                    </TableCell>
+
+                    {/* Timestamp — when this snapshot value was read from PI */}
+                    <TableCell className="font-mono text-xs tabular-nums text-muted-foreground">
+                      <span title={meta?.timestamp ?? undefined}>
+                        {formatSnapshotTime(meta?.timestamp)}
+                      </span>
                     </TableCell>
 
                     {/* Status — real PI snapshot quality when the tag resolved.

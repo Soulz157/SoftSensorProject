@@ -177,7 +177,7 @@ export function CorrelationMatrix({ dataset, threshold = 0.8 }: Props) {
         type="button"
         onClick={() => setOpen(o => !o)}
         aria-expanded={open}
-        className="flex w-full items-center gap-2 rounded-md px-1 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+        className="cursor-pointer flex w-full items-center gap-2 rounded-md px-1 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
       >
         <Grid3x3 className="h-3.5 w-3.5" />
         {open ? 'Hide' : 'Show'} full heatmap

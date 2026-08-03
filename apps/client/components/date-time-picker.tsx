@@ -1,7 +1,5 @@
 'use client'
 
-import { useMemo } from 'react'
-
 import { Label } from '@/components/ui/label'
 import {
   Select,
@@ -55,14 +53,27 @@ interface Parts {
 function splitValue(v: string): Parts | null {
   if (!v) return null
   const [datePart, timePart = '00:00'] = v.split('T')
-  const [y, m, d] = datePart!.split('-').map(Number)
+  if (!datePart) return null
+  const [y, m, d] = datePart.split('-').map(Number)
   const [hh, mm] = timePart.split(':').map(Number)
-  if ([y, m, d].some(Number.isNaN)) return null
+  // Explicit checks rather than `[y, m, d].some(Number.isNaN)`: a short string
+  // yields `undefined`, which that test misses and which the index signature
+  // surfaces as `number | undefined`.
+  if (y === undefined || m === undefined || d === undefined) return null
+  if (Number.isNaN(y) || Number.isNaN(m) || Number.isNaN(d)) return null
+  // `|| 0` (not `??`) is deliberate — it also maps a NaN time part to 0.
   return { year: y, month: m, day: d, hour: hh || 0, minute: mm || 0 }
 }
 
 const daysInMonth = (year: number, month: number) =>
   new Date(year, month, 0).getDate()
+
+/** Inclusive [lo, hi] year list for the Year select. */
+function yearRange(lo: number, hi: number): number[] {
+  const out: number[] = []
+  for (let y = lo; y <= hi; y++) out.push(y)
+  return out
+}
 
 const toDate = (p: Parts) =>
   new Date(p.year, p.month - 1, p.day, p.hour, p.minute, 0, 0)
@@ -92,7 +103,7 @@ function Segment({
 }) {
   return (
     <div className="flex flex-col gap-1">
-      <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+      <Label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
         {label}
       </Label>
       {children}
@@ -137,13 +148,14 @@ export function DateTimePicker({
     onChange(toDateTimeLocal(d))
   }
 
-  const years = useMemo(() => {
-    const lo = minP ? minP.year : now.getFullYear() - yearSpan
-    const hi = maxP ? maxP.year : now.getFullYear() + yearSpan
-    const out: number[] = []
-    for (let y = lo; y <= hi; y++) out.push(y)
-    return out
-  }, [minP?.year, maxP?.year, yearSpan, now])
+  // Not memoized on purpose: this is a ≤ (2 * yearSpan + 1) loop and the React
+  // Compiler handles memoization. A manual useMemo here trips
+  // react-hooks/preserve-manual-memoization, because `minP`/`maxP`/`now` are
+  // rebuilt every render and the compiler cannot prove them stable.
+  const years = yearRange(
+    minP?.year ?? now.getFullYear() - yearSpan,
+    maxP?.year ?? now.getFullYear() + yearSpan,
+  )
 
   // Per-field disabling against the min/max boundaries.
   const below = (probe: Parts, f: Field) => minP && cmp(probe, minP, f) < 0
@@ -179,7 +191,7 @@ export function DateTimePicker({
           onValueChange={v => commit({ ...current, day: Number(v) })}
           disabled={disabled}
         >
-          <SelectTrigger id={id} className={cn(triggerCls, 'w-[64px]')}>
+          <SelectTrigger id={id} className={cn(triggerCls, 'w-16')}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -203,7 +215,7 @@ export function DateTimePicker({
           onValueChange={v => commit({ ...current, month: Number(v) })}
           disabled={disabled}
         >
-          <SelectTrigger className={cn(triggerCls, 'w-[128px]')}>
+          <SelectTrigger className={cn(triggerCls, 'w-32')}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -227,7 +239,7 @@ export function DateTimePicker({
           onValueChange={v => commit({ ...current, year: Number(v) })}
           disabled={disabled}
         >
-          <SelectTrigger className={cn(triggerCls, 'w-[84px]')}>
+          <SelectTrigger className={cn(triggerCls, 'w-20')}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -247,7 +259,7 @@ export function DateTimePicker({
             onValueChange={v => commit({ ...current, hour: Number(v) })}
             disabled={disabled}
           >
-            <SelectTrigger className={cn(triggerCls, 'w-[60px]')}>
+            <SelectTrigger className={cn(triggerCls, 'w-16')}>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -271,7 +283,7 @@ export function DateTimePicker({
             onValueChange={v => commit({ ...current, minute: Number(v) })}
             disabled={disabled}
           >
-            <SelectTrigger className={cn(triggerCls, 'w-[60px]')}>
+            <SelectTrigger className={cn(triggerCls, 'w-16')}>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

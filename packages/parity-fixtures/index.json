@@ -1,0 +1,110 @@
+{
+  "generatedBy": "apps/client/lib/__tests__/parity-fixtures.test.ts",
+  "rowCount": 40,
+  "tags": [
+    "TI-101",
+    "VI-202",
+    "FI-404",
+    "XX-999"
+  ],
+  "precision": {
+    "TI-101": 1,
+    "VI-202": 2,
+    "FI-404": 0,
+    "XX-999": 2
+  },
+  "cases": [
+    {
+      "name": "drop_missing",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "fill_missing_ffill",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "fill_missing_bfill",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "fill_missing_mean",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "fill_missing_median",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "fill_missing_constant",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "fill_missing_constant_default",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "fill_missing_linear",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "remove_outlier_zscore_default",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "remove_outlier_zscore_t2",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "remove_outlier_iqr",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "clip_both_bounds",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "clip_high_only",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "smooth_moving_avg_default",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "smooth_moving_avg_w5",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "smooth_exponential_default",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "smooth_exponential_a07",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "chain_fill_outlier_smooth",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "drop_single_tag_removes_whole_rows",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "no_ops_is_identity",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "precleanse_statistical_zscore",
+      "engine": "precleanse"
+    },
+    {
+      "name": "precleanse_conditional_drop",
+      "engine": "precleanse"
+    },
+    {
+      "name": "precleanse_time_crop",
+      "engine": "precleanse"
+    }
+  ]
+}

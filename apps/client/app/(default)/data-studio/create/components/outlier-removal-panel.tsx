@@ -14,7 +14,7 @@ import {
 } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { DateTimePicker, toDateTimeLocal } from '@/components/ui/Datetime'
+import { DateTimePicker, toDateTimeLocal } from '@/components/date-time-picker'
 import { cn } from '@/lib/utils'
 import type { CutoffOp } from '@/types/cutoff'
 import type { Dataset } from '@/lib/preprocessing'

@@ -1,0 +1,318 @@
+{
+  "project": "Data Cleaning & Feature Engineering Service Pipeline — Slice 1",
+  "version": "1.0.0",
+  "plan": "~/.claude/plans/claude-md-feature-data-magical-quiche.md",
+  "note": "Own file per CLAUDE.md §19. feature_list.json tracks the COMPLETED 'PI Data Source Verification & Historical Fetch Workflow' (9/9) and docs/feature_list.json tracks 'Model Creation Flow Refactor'; neither is overwritten.",
+  "decisions": {
+    "storage": "MinIO/S3 — already running as container 'minio-local' (9000/9001, health 200). No new service is introduced; what was missing is env wiring, the datasets bucket, and uncommenting the compose block so the running container is reproducible.",
+    "jobs": "In-process runner + PreprocessingJob Postgres row. No BullMQ/Redis/Celery (CLAUDE.md §11 — no existing queue infra to reuse; REDIS_URL sits in .env.example but is absent from .env with nothing running).",
+    "parity": "Python matches the client bug-for-bug in slice 1, driven by golden fixtures. Normalising the quirks is a separate, visible change — doing it during the port would make every numeric diff ambiguous.",
+    "scope": "Cleaning only. Feature engineering (sklearn, scalers, PCA, rolling, lag) and history/compare/restore UI are DEFERRED.",
+    "persistenceBoundary": "These commits create DatasetVersion rows, not Model rows. Save Model remains the only final Model DB commit (CLAUDE.md §8)."
+  },
+  "progress": {
+    "completed": 5,
+    "total": 7
+  },
+  "features": [
+    {
+      "id": "F0",
+      "title": "Parity fixtures + pytest harness (gate)",
+      "description": "Freeze current client cleaning behaviour into golden JSON so the Python port can be proven equal before any save path moves to the backend. Gate: nothing downstream merges until green.",
+      "dependencies": [],
+      "status": "completed",
+      "acceptance": [
+        "A vitest generator writes golden fixtures covering every op in the F2 set",
+        "A pytest harness consumes them and fails loudly on drift",
+        "The client's documented quirks are captured, not corrected",
+        "Fixture generation is deterministic (no Math.random, no wall clock)"
+      ],
+      "verificationResults": [
+        "apps/client/lib/__tests__/parity-fixtures.test.ts — seeded LCG (seed 20260801), 40 rows x 4 tags chosen to span every precision path: TI-101=1, VI-202=2, FI-404=0, XX-999 -> the ?? 2 default. Writes 23 cases + index.json to packages/parity-fixtures/. 6/6 vitest tests PASS.",
+        "Quirks frozen: floor-index quartiles (no interpolation); zscore uses POPULATION std and REPLACES outliers with the mean; precleanse.tagStats uses SAMPLE std (both conventions preserved side by side); centred moving_avg that shrinks at the edges; EMA seeded with the first value; per-tag precision travelling in the payload because Python has no tagMeta; forward/backward fill flipping status to Good even with no donor cell.",
+        "apps/python/tests/{conftest.py,test_parity.py} — 95 passed, 46 skipped. Layer 1 (integrity) always runs; layer 2 (parity) is skipped via a FUNCTION-level pytest.importorskip until F2 lands services/cleaning_service.py.",
+        "Discriminating check — a module-level importorskip was tried first and silently skipped the integrity layer too (1 skipped, 0 passed): F0 would have reported green while proving nothing. Moved into _cleaning_service() so integrity always executes.",
+        "Gate proven to bite, not just report green: deleting remove_outlier_iqr.json -> test_index_lists_every_case FAILS; nulling one expected value -> test_fixture_is_well_formed[drop_missing] FAILS. Regenerating restored both, which also re-proves determinism.",
+        "Row-count deltas confirm real semantics: drop_missing 40->31, drop_single_tag 40->32, precleanse_time_crop 40->21, and precleanse_conditional_drop stays 40 because that action deletes the CELL not the row — the quirk Python must not 'fix'.",
+        "pytest==9.1.1 added to apps/python/requirements.txt (test-only; no runtime import touched).",
+        "REVIEW FIX 1 — ragged missingness. The first cut marked non-Good rows by index alone (i%11, i%13), so ALL tags shared one mask and FI-404 was a strict subset of the others. drop_missing could not then distinguish a correct union-across-tags from an implementation reusing one tag's mask for every column. Status offsets are now per-tag (tagIndex*3); all three tag pairs differ in BOTH directions, and drop_missing went 40->31 to 40->19 (21 rows = the true union). A new test asserts raggedness so it cannot silently regress.",
+        "REVIEW FIX 2 — float comparison. The parity assertion compared floats with exact ==, against JSON numbers the browser produced via Math.round(v*10**p)/10**p. Python's 72.1+0.1+0.2 = 72.39999999999999 != 72.4 and 119.99999999999999 != 120, so F2 would have shown false parity failures. frame_to_wide now rounds to the fixture's per-tag precision, matching preprocessing.ts:506. test_round_trip_survives_float_noise proves it WITHOUT the F2 service, so the guarantee holds today rather than being discovered later.",
+        "Checked and NOT an issue: `from conftest import` also resolves when pytest runs from the repo root (pytest inserts the test dir into sys.path) — 95 passed from both cwds."
+      ]
+    },
+    {
+      "id": "F0b",
+      "title": "Persist valueCrop in PipelineConfig",
+      "description": "valueCrop is authored in step 3, gates canAdvance, and drives step 3.2 — but was silently dropped at save and reset to {} on edit hydration. Fixed while the config contract is being formalised.",
+      "dependencies": [],
+      "status": "completed",
+      "acceptance": [
+        "valueCrop survives save -> reload -> edit",
+        "Legacy recipes without the field still materialise",
+        "No migration required"
+      ],
+      "verificationResults": [
+        "lib/pipeline-config.ts: added `valueCrop?: ValueCrop` (optional, so existing rows stay valid and the opaque z.record backend DTO needs no migration), seeded valueCrop:{} in EMPTY_PIPELINE_CONFIG, and forwarded it into materializeDataset's precleanse call — which already accepted the key at precleanse.ts:67 but was never passed it.",
+        "step-5-review-save.tsx: valueCrop destructured from nav, added to the pipelineConfig payload, AND added to the save-time precleanse call + useMemo deps. That second half fixes a real data bug: rowCount and missingPct were computed WITHOUT the value crop while step 3.2 previewed WITH it, so the saved stats disagreed with what the user was shown.",
+        "store/dataset-studio.ts: initDatasetWizardForEditAtom now hydrates `config.valueCrop ?? {}` instead of hardcoding {} — edit mode previously discarded it on every reopen.",
+        "pnpm check-types (tsc --noEmit) CLEAN, exit 0.",
+        "vitest precleanse + parity-fixtures + csv: 23/23 PASS.",
+        "Pre-existing failures confirmed NOT caused by this change: git stash of all changes reproduces the identical 3 failures in lib/__tests__/preprocessing.test.ts, all in the LEGACY `preprocess` path (default-strategies drop, explicit per-tag drop, droppedRowsByTag) — not preprocessPipelines, which is what this slice ports."
+      ]
+    },
+    {
+      "id": "F1",
+      "title": "Storage seam + DatasetVersion / PreprocessingJob models",
+      "description": "MinIO wiring (env vars, datasets bucket, uncomment the compose block), the canonical value+status Parquet artifact, and the two Prisma models with lineage + job state.",
+      "dependencies": [
+        "F0"
+      ],
+      "status": "completed",
+      "verificationResults": [
+        "MinIO wiring: S3_* added to .env (gitignored, verified with git check-ignore) and .env.example (placeholders only). config/env.py Settings gained 5 fields WITH DEFAULTS — unlike SYS_USER/PI_NAME they do not raise at import, so a machine without object storage still serves the PI endpoints.",
+        "docker-compose.yml: minio block uncommented to document the already-running minio-local container (net new services: zero). SECURITY FIX during this work — the first version used `env_file: .env`, which `docker compose config` showed injecting NEXTAUTH_SECRET / JWT_* / DATABASE_URL into the storage container. Replaced with ${S3_ACCESS_KEY}/${S3_SECRET_KEY} interpolation; leak check now reports 0 app secrets in the minio environment.",
+        "intergrations/object_store.py: Parquet over MinIO. Verified against the LIVE container — round-trip equality, int8 status preserved, columnCount reports 2 LOGICAL tags for a 5-physical-column frame, bucket auto-created, test objects cleaned up.",
+        "BUG FOUND AND FIXED during verification: assert_tags_are_storable was called with tag_columns(df), which already strips anything ending in __status — so the guard could never fire, and a tag literally named FOO__status was silently RECLASSIFIED as a sidecar and dropped from the dataset with no error. Replaced with assert_frame_shape, which validates the built frame: duplicate columns, orphan status columns, tags missing a sidecar, and a missing timestamp column are all rejected. 7/7 guard cases pass, including the one that previously failed.",
+        "services/frame_service.py: converges the two incompatible wire shapes. PI is tag-major with no shared time axis, so the frame is built on the UNION of every tag's stamps; SQL is row-major and maps straight across. Holes become {value: 0.0, status: Bad} — never NaN, never a dropped row — matching the browser's piResponseToDataset so the cleaning ops still have Bad cells to act on. Digital-state strings, None, NaN/inf and booleans all become Bad; a failed tag keeps its column entirely Bad rather than vanishing.",
+        "Prisma: DatasetVersion + PreprocessingJob + DatasetVersionStage + PreprocessingJobStatus; Dataset gained versions/jobs/currentVersionId. Migration 20260801163509_dataset_versions_and_jobs APPLIED to the dev DB. Verified in Postgres directly: both tables exist, both enums carry the right labels, all 8 FKs present, and the unique index on (datasetId, versionNumber) exists.",
+        "Constraints proven to ENFORCE, not merely exist: duplicate versionNumber -> rejected; stage 'BOGUS' -> rejected by the enum; orphan parentVersionId -> rejected by the lineage FK; valid insert and valid lineage child both succeed. Table returned to 0 rows afterwards.",
+        "Existing data preserved: the 1 pre-existing Dataset row survived with currentVersionId = NULL and 0 versions — which is exactly the backfill gap F5 must handle, now confirmed against real data rather than assumed.",
+        "REGRESSION CAUGHT AND REVERTED: re-exporting object_store from intergrations/__init__.py made the 5 existing `from intergrations import PIWebAPI` call sites eagerly import minio + pyarrow (proven via sys.modules), coupling the PI endpoints to storage deps they never use. Reverted with a comment; the repo convention is direct submodule imports anyway (nothing imports the package-level names).",
+        "apps/python: 128 passed, 46 skipped (was 96 before F1). All 11 pre-existing OpenAPI paths still register. pnpm db:generate clean. Backend check-types shows only 3 PRE-EXISTING errors in auth *.spec.ts, confirmed identical with the schema stashed and containing zero references to the new models.",
+        "pyarrow==25.0.0 + minio==7.2.20 added to requirements.txt.",
+        "CWD REGRESSION CAUGHT IN FINAL VERIFICATION: the new tests import top-level packages (intergrations, services), but pytest only puts the TEST directory on sys.path — so the suite passed from apps/python and failed from the repo root. conftest.py now inserts the service root explicitly.",
+        "SECOND ROOT CAUSE behind the same symptom: config/env.py used RELATIVE env_file=('../../.env', '.env'), resolved against the cwd. From any other directory both paths missed, SYS_USER/SYS_PASS/PI_NAME went missing and Settings() raised at import — a pre-existing fragility the file's own comment already described. Anchored both paths to the file location; same two files, same precedence. Suite now passes from 5 different cwds (repo root, apps/python, packages, apps/client, /tmp) and settings still resolve real values.",
+        "Post-change smoke: FastAPI app boots, all 11 OpenAPI paths register, CORS config intact, main:app still resolvable for uvicorn.",
+        "REVIEW FIX — mark_questionable marked the WRONG cells for an int mask. `.loc[[1,0,0]]` is read by pandas as row LABELS, not a boolean mask, so a caller meaning 'row 0 only' silently produced [2,2,0] instead of [2,0,0]. The length check could not catch it because the length was correct. Selection now resolves through frame.index[...] so it is positional, and works on a non-contiguous index left by an upstream row drop. Two regression tests added (int mask, index [1,2]).",
+        "Env precedence claim VERIFIED rather than asserted: dropped a temporary apps/python/.env with S3_BUCKET='override-test' — service-local wins over root; removing it returns 'datasets'. Confirms the comment written into config/env.py. Temp file cleaned up.",
+        "Final: 130 passed, 46 skipped from both repo root and apps/python."
+      ],
+      "tasks": [
+        "Add S3_ENDPOINT / S3_ACCESS_KEY / S3_SECRET_KEY / S3_BUCKET / S3_REGION to .env + .env.example (server-only, no NEXT_PUBLIC_ prefix per CLAUDE.md §3)",
+        "Uncomment docker-compose.yml:20-34 so the already-running minio-local container is reproducible",
+        "Create the datasets bucket",
+        "apps/python/intergrations/object_store.py (keep the existing misspelling — do NOT create a parallel integrations/)",
+        "apps/python/services/frame_service.py — normalise tag-major PI and row-major SQL into one canonical frame",
+        "Prisma: DatasetVersion + PreprocessingJob + DatasetVersionStage + PreprocessingJobStatus; add versions/jobs/currentVersionId to Dataset",
+        "Migration: pnpm db:migrate:dev --name dataset_versions_and_jobs",
+        "Add pyarrow + minio to requirements.txt"
+      ],
+      "acceptance": [
+        "Python writes a Parquet artifact to MinIO and returns row/column/size stats",
+        "NestJS records a DatasetVersion row pointing at the objectKey",
+        "Committed artifacts are immutable — no path overwrites an existing objectKey",
+        "columnCount counts LOGICAL tags only, excluding timestamp and every __status column",
+        "A tag ending in the reserved __status suffix is rejected at write time with an actionable AppException"
+      ],
+      "verification": [
+        "Verify against real PI tag data that no tag already ends in __status before relying on the reserved suffix",
+        "Round-trip a frame through put_frame/get_frame with mixed Good/Bad/Questionable and assert status survives as int8",
+        "Confirm only Python holds S3 credentials — NestJS gets no S3 SDK"
+      ]
+    },
+    {
+      "id": "F2",
+      "title": "Cleaning operations (parity-gated)",
+      "description": "The op registry restricted to what the client already implements, so every op is parity-testable against F0 fixtures.",
+      "dependencies": [
+        "F0",
+        "F1"
+      ],
+      "status": "completed",
+      "note": "Scoped to the OPERATIONS ENGINE plus the HTTP surface that F3 needed. cleaning_service.py (registry + apply_operations), schemas/preprocess.py and routers/preprocess.py all exist and are parity-green. The /materialize, /clean and /rows endpoints moved to F4, where the job runner is the thing that actually calls them — the plan always said they 'land with F4', and leaving F2 open for them made F3 a completed feature hanging off an incomplete dependency.",
+      "verificationResults": [
+        "services/cleaning_service.py: CLEANING_OPS registry keyed by the browser's own CleaningMethod names, so a saved recipe replays without translation, plus OPERATION_ALIASES mapping the public request shape (drop_missing / fill_missing{ffill,bfill,mean,median,constant,linear} / remove_outlier{zscore,iqr} / clip / smooth{moving_avg,exponential}) onto them.",
+        "ALL 20 preprocessPipelines parity fixtures pass as REAL assertions (verified per-fixture with -v, not silent skips). The 3 precleanse fixtures skip by design: its 'drop' DELETES a single tag's cell, which a rectangular frame cannot express without a fourth 'absent' status — deferred rather than faked.",
+        "HARNESS BUG, NOT A PORT BUG: fill_missing_mean and fill_missing_linear failed at first because the F0 review fix rounded ALL comparison output to per-tag precision. The client's FILLS DO NOT ROUND — only the outlier/smoothing ops do — so the fixture legitimately expects 81.05937499999999 and the harness forced it to 81.1. frame_to_wide no longer rounds; comparison moved to assert_grids_match with rel_tol=1e-9 / abs_tol=1e-12. Three tests assert the tolerance still fails on a value change, a status flip, and a row-count change.",
+        "CRITICAL FINDING — the golden fixtures alone do NOT discriminate the quirks. A sabotage probe injecting four deliberate regressions caught only 1 of 4: banker's rounding, numpy.quantile quartiles, and sample-vs-population std all slipped through the 40-row fixtures, because on that data the alternatives classify the same cells. The suite was giving false confidence; anyone later 'tidying' the port into idiomatic numpy would have seen no failure.",
+        "FIX: tests/test_cleaning_quirks.py pins each quirk directly on inputs where the alternatives PROVABLY differ — the IQR test uses [1..7, 12] because 12 sits inside the floor-index fence (13.0) but outside numpy's (11.5); a far-out value like 100 is flagged by both and proves nothing. Each pin also asserts the substitute really differs so it cannot rot into a tautology. Re-running the sabotage probe now catches 4 of 4.",
+        "Quirks ported and pinned: JS Math.round half-up (Python's round is banker's — 2.5 -> 3, not 2); population std in zscore vs sample std in precleanse; floor-index quartiles; zscore REPLACES with the mean rather than removing; fills do not round while outlier/smoothing ops do; forward/backward fill flips status to Good even with no donor; drop marks rows across every tag and removes the union once at the end.",
+        "remove_duplicates has no browser counterpart and so no fixture: defined here as whole-frame keep-first on timestamp, explicitly NOT data_service._dedupe (which dedupes on the timestamp STRING at batch-window boundaries).",
+        "REVIEW FIX — apply_operations (the request-shaped entry point F4 will call) had ZERO coverage: every parity guarantee ran through preprocess_pipelines, so the endpoint could have shipped on an unverified path. Added tests proving the two routes produce identical frames, that unknown tags are rejected on every operation INCLUDING remove_duplicates (which is frame-wide and previously accepted a typo'd tag silently), that unsupported/typeless operations raise, and that operations chain in order.",
+        "REVIEW FIX — param aliasing precedence was decided by dict iteration order, so a caller sending both `window` and `threshold` got an invisible rule. Extracted to _PARAM_ALIASES, ordered highest-precedence first and documented; a test pins that explicit `param` beats the friendly aliases and that clip accepts both min/max and paramLow/param spellings.",
+        "EMERGENT BEHAVIOUR DOCUMENTED AND PINNED: zscore derives mean/std from Good cells but tests EVERY cell (faithful to the client). Combined with frame_service storing holes as 0.0/Bad, a hole among readings near 72 scores as a huge outlier, so zscore replaces it with the mean and marks it Good — it imputes. The browser never produced this because its Bad cells hold plausible values, not zeros. Verified live and pinned by test_zscore_imputes_a_bad_hole so it stays a decision rather than a surprise.",
+        "Final sabotage re-run on the strengthened suite: JS-vs-banker's rounding CAUGHT, population-vs-sample std CAUGHT, floor-index-vs-numpy quartiles CAUGHT. Honest caveat: swapping only q1 while leaving q3 floor-indexed is NOT caught — a mixed-definition fence that no realistic refactor produces, noted rather than over-engineered.",
+        "174 passed, 26 skipped from both repo root and apps/python. App still boots with all 11 pre-existing OpenAPI paths. Client check-types CLEAN, client suites 24/24, prisma schema valid."
+      ],
+      "tasks": [
+        "DONE: services/cleaning_service.py — CLEANING_OPS registry + apply_fixture_case() for the parity harness",
+        "DONE: schemas/preprocess.py — CleaningOperation + preview contracts",
+        "DONE: routers/preprocess.py registered in routers/__init__.py + main.py tags_metadata (preview only; the other three endpoints are F4 tasks)"
+      ],
+      "acceptance": [
+        "Ops: drop_missing, fill_missing{ffill,bfill,mean,median,constant,linear}, remove_duplicates, remove_outlier{zscore,iqr}, clip, smooth{moving_avg,exponential} — DONE",
+        "20 of 23 parity fixtures pass as real assertions. The 3 precleanse fixtures are a DOCUMENTED DEFERRAL, not a pass: its 'drop' deletes a single tag's cell, which a rectangular frame cannot express without a fourth 'absent' status. Deferred rather than faked — the original 'all 23' wording is amended here rather than quietly reported as met.",
+        "Unknown op type -> ValueError -> HTTPException(422) — VERIFIED by test_unknown_operation_is_422_not_502 (F3), and sabotage-probed by removing both 422 clauses from the router.",
+        "Every pandas call wrapped in asyncio.to_thread — DONE for /preview, the only route that exists. F4 must uphold this for materialize/clean/rows."
+      ],
+      "verification": [
+        "apps/python/.venv/bin/python -m pytest tests -q  ->  0 skipped in the parity layer",
+        "remove_duplicates has NO client counterpart and therefore no fixture: defined as keep-first on duplicate timestamp across the whole frame. NOT the same as data_service.py:143 _dedupe, which dedupes on timestamp STRING at batch-window boundaries. Cover it with a plain unit test."
+      ]
+    },
+    {
+      "id": "F3",
+      "title": "Preview before apply",
+      "description": "Capped-sample preview returning before/after, missing summary, row-count delta and column stats. Writes nothing.",
+      "dependencies": [
+        "F2"
+      ],
+      "status": "completed",
+      "acceptance": [
+        "Returns sample rows before + after, per-column missing summary, row-count and column-count deltas — VERIFIED end-to-end against live MinIO",
+        "Stays inside PYTHON_TIMEOUT.metadata (30s) — MEASURED 0.60s on a 10M-row / 4-tag / 396 MB artifact, ~50x headroom",
+        "Creates no object and no DatasetVersion row — asserted by a fake store whose every mutating attribute raises"
+      ],
+      "verification": [
+        "test_preview_writes_nothing + test_route_writes_nothing use NoWriteStore, which raises via __getattr__ on any non-read attribute. Always runs — deliberately NOT gated on live MinIO, because a guarantee that skips proves nothing (same failure shape as the F0 importorskip).",
+        "test_the_guard_is_actually_armed asserts the fake itself still raises, so it cannot rot into a mock that absorbs put_frame.",
+        "Sabotage-probed 4 regressions, all caught: source_row_count reverted to the window height (4 failures), drop_missing dropped from SAMPLE_SENSITIVE (1), column_stats counting Bad cells (3), both 422 clauses removed from the router (2).",
+        "Live end-to-end: 6-row artifact with a Bad hole, fill_missing/linear filled 0.0/Bad -> 72.0/Good, missing 1->0; bucket listing unchanged before/after and the source frame byte-identical afterwards.",
+        "Scale: 1M rows 0.12s, 10M rows 0.60s; source_row_count reported the true 10,000,000 while sampled_rows stayed at the 5,000 cap.",
+        "Full suite 192 passed / 26 skipped, identical from apps/python and from the repo root."
+      ],
+      "tasks": [
+        {
+          "id": "F3.1",
+          "status": "completed",
+          "title": "schemas/preprocess.py — PreviewRequest/PreviewResponse contracts with sample+preview row caps"
+        },
+        {
+          "id": "F3.2",
+          "status": "completed",
+          "title": "services/preview_service.py — build_preview, column_stats over GOOD cells only, sampling warnings"
+        },
+        {
+          "id": "F3.3",
+          "status": "completed",
+          "title": "routers/preprocess.py — POST /v1/preprocess/preview, 422 for caller-fixable errors, 502 otherwise"
+        },
+        {
+          "id": "F3.4",
+          "status": "completed",
+          "title": "dependencies.get_object_store with a lazy minio/pyarrow import so PI routes stay free of storage deps"
+        },
+        {
+          "id": "F3.5",
+          "status": "completed",
+          "title": "ObjectStore.get_frame_head — head window plus the artifact's TRUE row count"
+        },
+        {
+          "id": "F3.6",
+          "status": "completed",
+          "title": "asyncio.to_thread offload so the sync pandas work never runs on the event loop"
+        },
+        {
+          "id": "F3.7",
+          "status": "completed",
+          "title": "tests/test_preview_service.py — 18 tests incl. the no-writes guarantee"
+        }
+      ],
+      "notes": "Three defects were fixed before the tests were written rather than pinned as-is. (1) source_row_count and sampled_rows were the same expression, so `sampled: true` was unfalsifiable — the client was told it held a sample and handed a total equal to that sample. Fixed now specifically because no consumer exists yet; F4 will zod-parse this shape and F5 will render it. (2) build_preview ran sync on the event loop, so one preview stalled every PI fetch. (3) SAMPLE_SENSITIVE matched on (type, method) with string methods only, so drop_missing and remove_duplicates — the two ops that move delta.row_count, the headline number — never matched and got no 'may differ' warning."
+    },
+    {
+      "id": "F4",
+      "title": "Job runner + status / cancel / retry",
+      "description": "NestJS orchestration: 202 + jobId, one postToPython call per operation chaining objectKeys through tmp/{jobId}/, with real per-op progress and honest restart semantics.",
+      "dependencies": [
+        "F1",
+        "F2"
+      ],
+      "status": "in_progress",
+      "tasks": [
+        "DONE Python: POST /v1/preprocess/materialize — fetches from PI/SQL directly and writes V1 (moved from F2)",
+        "DONE Python: POST /v1/preprocess/clean — read sourceKey, apply ops, write targetKey (moved from F2)",
+        "DONE Python: POST /v1/preprocess/rows — paginated read for client hydration (moved from F2)",
+        "DONE Python: POST /v1/preprocess/cleanup — ADDED, not in the original list. F4's acceptance requires tmp deleted on success AND on cancel, but NestJS deliberately holds no S3 credentials, so the capability cannot exist without a Python endpoint. Refuses any prefix outside tmp/.",
+        "DONE Python: all handlers offload via asyncio.to_thread through a shared _run helper",
+        "DONE SECURITY: app-wide RequestValidationError handler strips `input`/`ctx` from 422 bodies",
+        "DONE dataset-version.authorized.{controller,service}.ts + preprocessing-job.service.ts + dto/, registered in dataset.module.ts",
+        "DONE Add PYTHON_TIMEOUT.preprocess = 300_000 to lib/python-client.ts",
+        "DONE Zod-parse every Python response (postToPython currently returns an UNVALIDATED cast at python-client.ts:90)",
+        "DONE postToPython accepts an optional AbortSignal (AbortSignal.any with the timeout) so a cancel interrupts the in-flight call rather than waiting up to 5 minutes for the next operation boundary",
+        "DONE preprocessing-job.service.spec.ts — 16 tests, sabotage-probed",
+        "REMAINING: live NestJS end-to-end — 202 + poll, restart sweep, retry attempts. Needs a running backend with a seeded workspace/dataset/JWT; NOT yet performed.",
+        "DONE distinguish shutdown-abort from user-cancel so the restart verification item can actually pass"
+      ],
+      "acceptance": [
+        "POST clean returns 202 {jobId, status}; GET jobs/:id reports progress + currentStep",
+        "Version creation and job completion commit together in one prisma.$transaction (CLAUDE.md §5)",
+        "tmp/{jobId}/ intermediates are deleted on success",
+        "Cancel mid-run -> CANCELED, no version row, tmp cleaned",
+        "OnApplicationShutdown aborts in-flight jobs; OnModuleInit sweeps stale RUNNING rows to FAILED",
+        "Version/job endpoints use assertWorkspaceAccess (owner-or-member), NOT the createdById filter used by dataset CRUD — versions are workspace artifacts"
+      ],
+      "verification": [
+        "Kill the backend mid-job and restart: the job must read FAILED with an explicit reason, never stuck RUNNING",
+        "Retry a failed job -> new row with attempts incremented"
+      ],
+      "risks": [
+        "SINGLE REPLICA ONLY. The in-process runner plus boot sweep assumes one backend instance; with two, the boot sweep would kill the other replica's live jobs. Escape hatch if that changes: SELECT ... FOR UPDATE SKIP LOCKED, still no Redis.",
+        "Progress is per-operation, not per-row — one op over millions of rows shows no movement until it completes."
+      ],
+      "securityFinding": "CONFIRMED AND FIXED, found while building /materialize. FastAPI's default RequestValidationError handler returns exc.errors() verbatim, and every pydantic v2 error carries the failing value under `input`. A malformed /v1/preprocess/materialize body answered 422 with the DECRYPTED password in plaintext; python-client.ts relays an upstream 4xx `detail` onward as an AppException message, so it reaches the browser. Verified by request before and after. The same leak existed on the pre-existing /v1/data-sources/* routes, which take the same credential blocks — the handler is app-wide and tests/test_error_redaction.py asserts all four endpoints. Also made the preprocess 502 branch generic: an unexpected PI/SQL driver exception can embed a connection string, and that branch used to interpolate the exception text.",
+      "pythonVerification": [
+        "tests/test_artifact_service.py — 16 tests over a RecordingStore that reproduces the real store's immutability refusal, since the runner depends on that behaviour when it writes its final step to the committed version key.",
+        "Pinned refusals: clean will not overwrite a committed version, may rewrite its own tmp step on retry, rejects target==source, surfaces a missing source instead of writing an empty target, and FAILS a pipeline that drops every row (an empty frame is legal Parquet, so without the guard the job would succeed and commit rowCount 0).",
+        "cleanup refuses any prefix outside tmp/ and any prefix without a trailing slash — 'ds-1/tmp/job-1' would otherwise also match 'ds-1/tmp/job-10/'.",
+        "materialize pins the routing decision (exactly one of pi/sql) because both 'neither' and 'both' have plausible wrong answers: write an empty artifact, or silently prefer one source.",
+        "214 passed / 26 skipped, identical from apps/python and the repo root. 18 OpenAPI paths (13 pre-existing untouched + 5 preprocess)."
+      ],
+      "designNotes": "materialize takes CREDENTIALS + fetch params, not rows: NestJS fetching and forwarding millions of rows as JSON would move the browser's memory ceiling onto the API server instead of removing it. Reuses the credential contract /v1/data-sources/* already uses. Commit path: the last operation writes straight to the committed version key with overwrite=false, then the $transaction. No promote/copy endpoint — it would double the I/O for a window that cannot be closed anyway. Two consequences: a retry MUST mint a new versionId (the old key may exist and is immutable), and a crash between the write and the transaction leaves an orphan object.",
+      "nestVerification": [
+        "16/16 runner tests pass. Sabotage-probed 5 regressions, all caught: final step never writing the committed key (1 fail), commit omitting dataset.currentVersionId (1), failed job deleting its tmp evidence (4), abort signal not forwarded to postToPython (2), raw driver error persisted verbatim (1).",
+        "The first probe attempt caught NOTHING because the sed never matched after prettier rewrapped the ternary — re-probed by forcing `isLast = false`, which then failed as expected. A probe that does not modify the code proves nothing.",
+        "Test-mock bug found and fixed mid-write: a blanket post.mockResolvedValue(ARTIFACT) made every cleanup call fail PythonCleanupSchema.parse, swallowed by the best-effort catch. Green but hollow — replaced with a per-path mock.",
+        "eslint clean on every touched backend file. check-types: only the 4 PRE-EXISTING auth spec errors remain (files untouched, confirmed by git status).",
+        "Full backend jest: 8 suites fail, all PRE-EXISTING Nest CLI scaffolds (nodes/workspace/workspace-plant/plan/auth) that never provided PrismaService in their TestingModule — a test-wiring omission, unrelated to the Prisma rebuild.",
+        "Live MinIO end-to-end of the chain the runner drives: two operations chained v1 -> tmp/job-7/1 -> v2, RAW artifact byte-identical afterwards, re-writing the committed key refused with 422 'immutable', /rows paged 3 of 10 with status preserved, cleanup deleted exactly the tmp object and left both committed versions, and a cleanup of 'f4-demo/' (outside tmp/) was refused 422.",
+        "BUG FOUND AND FIXED before the live E2E: a shutdown aborts the SAME AbortController a user cancel does, and recordFailure ran AFTER onApplicationShutdown's sweep — so a job killed by a restart ended up reading CANCELED / 'Canceled by the user.' TC-13 passed anyway because it asserted the sweep's own updateMany, not the final row. Added a `shuttingDown` flag, TC-13b asserting the FINAL row, and skipped the cleanup call during shutdown (the process is going away and the intermediates show how far it got). Sabotage-probed: reverting the fix fails TC-13b."
+      ],
+      "blockedOn": "Three F4 verification items need a running backend with a seeded workspace, dataset and JWT, and have NOT been run: (1) POST clean returns 202 then GET jobs/:id shows progress advancing; (2) kill the backend mid-job and restart — the row must read FAILED with an explicit reason, never stuck RUNNING; (3) retry a failed job -> new row with attempts incremented. The boot sweep and shutdown abort are unit-tested (TC-12, TC-13) but that is not the same as observing a real kill. F4 stays in_progress rather than completed for this reason (CLAUDE.md §16).",
+      "infraNote": "packages/prisma ships from dist/ (package.json main/types -> ./dist/src/index.js), and dist/ was stale from Jul 27 — it predated the F1 migration entirely, so the backend type-checked against a client with no DatasetVersion/PreprocessingJob and no Dataset.currentVersionId. `pnpm db:generate` alone does NOT fix this; it regenerates src/generated/client but not dist. The fix is `pnpm --filter @softsensor/prisma build`. Worth knowing before anyone else debugs 21 phantom 'Property does not exist on PrismaService' errors."
+    },
+    {
+      "id": "F5",
+      "title": "Client reads stored rows (retire synthetic data)",
+      "description": "Hydrate dwRawDatasetAtom from a stored version instead of buildRawDataset -> generateReadings. The client transform libs STAY as the interactive preview layer until parity is proven across the board.",
+      "dependencies": [
+        "F4"
+      ],
+      "status": "pending",
+      "tasks": [
+        "services/dataset-version.ts + hooks/dataset/use-dataset-version-rows.ts",
+        "store/dataset-studio.ts: drop the buildRawDataset call in initDatasetWizardForEditAtom",
+        "lib/pipeline-config.ts: add materializeFromVersion alongside the legacy sync materializeDataset",
+        "models/create/.../phase-3-evaluation.tsx: read stored rows"
+      ],
+      "acceptance": [
+        "Opening a saved dataset in Edit loads REAL stored rows, not generateReadings output",
+        "The Model Creation four-step UI is unchanged — only the data source moves (CLAUDE.md §7)",
+        "Client transform libs are NOT deleted this slice"
+      ],
+      "verification": [
+        "BACKFILL IS LOAD-BEARING: every existing Dataset row has currentVersionId = null and zero DatasetVersion rows. Shipping 'read the current version' alone yields NO rows for existing datasets — strictly worse than the synthetic rows it replaces.",
+        "Required behaviour: currentVersionId != null -> hydrate from the version; == null -> materialise V1 on demand from the saved sourceFetchConfigs + baseTags with the job-progress UI; materialisation impossible (legacy recipes are known to lack baseTags — use-data-studio.ts:120-124 already warns) -> fall back to buildRawDataset AND show a visible banner that the preview is synthetic. Silent fallback to fake numbers is the failure mode to avoid.",
+        "Keep buildRawDataset/generateReadings in the tree for that last branch; they can only be deleted once every dataset has a version.",
+        "Browser end-to-end: Edit a saved dataset, confirm values match the MinIO artifact"
+      ]
+    }
+  ],
+  "followUps": [
+    "docs/ARCHITECTURE.md and docs/CODEBASE.md never mention apps/python and state the repo is TypeScript-only. Stale — they are authoritative for the NestJS/Next/Prisma layers only (CLAUDE.md §1 conflict surfaced, not absorbed).",
+    "Normalise the population-vs-sample std split and the floor-index quartiles once parity is proven, as a deliberate visible change with fixtures regenerated in the same commit.",
+    "materializeDataset ignores config.tagConstants while edit-mode rehydration passes them — the same recipe currently derives two different raw grids.",
+    "use-dataset-pipeline-nav.ts canAdvance runs the FULL pipeline just to test rows.length > 0, and wizard-shell.tsx:84 calls it inline in the render body, so on step 4 the whole chain re-executes every render. Memoise the result, not the function identity."
+  ],
+  "deferred": [
+    "Parquet row-group pushdown in ObjectStore.get_frame_slice/get_frame_head: both read the whole object then slice, so the preview's sample cap bounds COMPUTE, not I/O. Measured fine today (0.60s at 10M rows on local MinIO) — the binding constraint is resident memory and link speed to storage, not the 30s timeout. Revisit when artifacts outgrow memory or storage moves off the local network.",
+    "Concurrent preview memory: asyncio.to_thread introduced real concurrency where the event loop previously serialised previews. The measured 0.60s/10M-row figure is SINGLE-REQUEST; resident cost is ~800MB per in-flight preview against one lru_cached ObjectStore, so N concurrent large previews multiply it. A semaphore is the fix when it matters; concurrent footprint has not been measured.",
+    "ColumnStats.count is TOTAL rows and `missing` is separate, so good = count - missing. The other plausible reading (count = non-null observations, total = count + missing) yields a wrong '% good'. Self-consistent today because missing_pct == missing/count*100, but F4 zod-parses this shape and F5 renders it — pin it with a field description before either lands.",
+    "routers/data_source.py interpolates the exception into its 502 detail (f'PI Web API error: {exc}'), the pattern hardened in routers/preprocess.py. Probed /sql/test with a bad port: it returns 200 with a failed-test result and does NOT leak the password, so this is a latent risk rather than a confirmed leak. Left unchanged to keep the security fix scoped to the confirmed one.",
+    "8 pre-existing backend jest suites fail because Nest CLI scaffold specs (nodes, workspace, workspace-plant, plan, auth controllers) call Test.createTestingModule({providers:[X]}) without providing PrismaService. Plus 4 pre-existing tsc errors in auth spec files. Neither is caused by this slice; both were confirmed present on untouched files."
+  ],
+  "findings": [
+    "PreprocessingJob progress fields (progress/currentStep/totalSteps/completedSteps/estimatedRemainingMs) do NOT match the client's FetchProgress (totalBatches/completedBatches/currentBatchTags/totalTags/completedTags/etaMs/failedBatches). The plan claimed they were the same fields; they are not — FetchProgress is tag-batch-shaped for PI fetching, job progress is operation-shaped. F5 needs a thin adapter. Reusing the progress UI COMPONENT does not require identical field names, so the DB model was left alone rather than contorted.",
+    "SQL materialize is bounded at 50,000 rows by SQLQueryRequest.limit (le=50000), which is the pre-existing /sql/query cap, not something this slice introduced. PI materialize has no such cap. Raise it deliberately if SQL sources need to exceed that."
+  ]
+}

@@ -63,3 +63,6 @@ SQLAlchemy==2.0.51
 psycopg==3.3.4
 psycopg-binary==3.3.4
 PyMySQL==1.2.0
+pytest==9.1.1
+pyarrow==25.0.0
+minio==7.2.20

@@ -70,6 +70,8 @@ model User {
   workspaceMembers    WorkspaceMember[]
   dataSources         DataSource[]
   datasets            Dataset[]
+  datasetVersions     DatasetVersion[]
+  preprocessingJobs   PreprocessingJob[]
 }
 
 model Account {
@@ -303,9 +305,118 @@ model Dataset {
   updatedAt      DateTime  @updatedAt
   models         Model[]
 
+  /// Immutable materialised row artifacts (raw -> clean -> feature).
+  versions         DatasetVersion[]
+  jobs             PreprocessingJob[]
+  /// Version the wizard hydrates from. Null for every pre-existing dataset,
+  /// which is why the client must keep a fallback until they are backfilled.
+  currentVersionId String?
+
   @@unique([workspaceId, name])
   @@index([workspaceId])
   @@index([createdById])
+}
+
+/// Which stage of the pipeline produced a version.
+enum DatasetVersionStage {
+  RAW
+  CLEAN
+  FEATURE
+}
+
+enum PreprocessingJobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELED
+}
+
+/// An immutable snapshot of materialised rows, stored as Parquet in object
+/// storage. Postgres holds metadata and a pointer only — never the rows.
+///
+/// Creating one of these is NOT a Model commit: CLAUDE.md §8 reserves that for
+/// Save Model, and nothing here touches the Model table.
+model DatasetVersion {
+  id              String              @id @default(uuid())
+  datasetId       String
+  dataset         Dataset             @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  /// Lineage: V1 (raw) -> V2 (clean) -> V3 (feature). Null for a root version.
+  parentVersionId String?
+  parent          DatasetVersion?     @relation("VersionLineage", fields: [parentVersionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  children        DatasetVersion[]    @relation("VersionLineage")
+  versionNumber   Int
+  stage           DatasetVersionStage
+
+  /// Object-storage key, e.g. "{datasetId}/{versionId}.parquet".
+  objectKey   String
+  format      String  @default("parquet")
+  /// LOGICAL tag count — excludes `timestamp` and every `__status` sidecar.
+  columnCount Int     @default(0)
+  rowCount    Int     @default(0)
+  missingPct  Float   @default(0)
+  sizeBytes   Int     @default(0)
+
+  /// Operations that produced THIS version from its parent.
+  operations  Json
+  /// Per-column min/max/mean/nullCount captured at write time.
+  columnStats Json?
+  durationMs  Int?
+
+  createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  createdById String
+  createdAt   DateTime @default(now())
+
+  jobsAsSource PreprocessingJob[] @relation("JobSource")
+  jobsAsResult PreprocessingJob[] @relation("JobResult")
+
+  @@unique([datasetId, versionNumber])
+  @@index([datasetId])
+  @@index([parentVersionId])
+}
+
+/// Tracks one background preprocessing run.
+///
+/// Executed by an in-process runner (CLAUDE.md §11 — no queue infrastructure
+/// exists to reuse, and none is introduced). That means jobs do not survive a
+/// backend restart: startup sweeps any row left RUNNING into FAILED, which is
+/// only correct while a single replica is deployed.
+model PreprocessingJob {
+  id        String  @id @default(uuid())
+  datasetId String
+  dataset   Dataset @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+
+  sourceVersionId String?
+  sourceVersion   DatasetVersion? @relation("JobSource", fields: [sourceVersionId], references: [id], onDelete: SetNull)
+  /// Set only once the run succeeds and the version is committed.
+  resultVersionId String?
+  resultVersion   DatasetVersion? @relation("JobResult", fields: [resultVersionId], references: [id], onDelete: SetNull)
+
+  status PreprocessingJobStatus @default(QUEUED)
+  stage  DatasetVersionStage
+
+  /// Progress is per-OPERATION, not per-row: a single op over millions of rows
+  /// shows no movement until it finishes.
+  progress             Int     @default(0)
+  currentStep          String?
+  totalSteps           Int     @default(0)
+  completedSteps       Int     @default(0)
+  estimatedRemainingMs Int?
+
+  operations Json
+  error      String?
+  attempts   Int     @default(0)
+
+  startedAt  DateTime?
+  finishedAt DateTime?
+
+  createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([datasetId])
+  @@index([status])
 }
 
 model Edge {

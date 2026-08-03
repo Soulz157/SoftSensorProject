@@ -34,7 +34,7 @@ function CollapsedNavDropdown({
         <button
           title={name}
           className={cn(
-            'flex w-full items-center justify-center rounded-md p-2.5 text-sm font-medium transition-all',
+            'cursor-pointer flex w-full items-center justify-center rounded-md p-2.5 text-sm font-medium transition-all',
             active
               ? 'bg-sidebar-primary text-sidebar-primary-foreground'
               : 'text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground',

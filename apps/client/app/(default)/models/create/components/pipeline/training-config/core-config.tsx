@@ -214,14 +214,14 @@ function TrainTestSplit({
           <ToggleGroupItem
             key={p}
             value={String(p)}
-            className="cursor-pointer h-8 rounded-md border border-border px-3 font-mono text-xs data-[state=on]:border-primary data-[state=on]:bg-primary/10 data-[state=on]:text-primary"
+            className="cursor-pointer h-8 rounded-md border border-border px-3 font-medium text-xs data-[state=on]:border-primary data-[state=on]:bg-primary/10 data-[state=on]:text-primary"
           >
             {p}:{100 - p}
           </ToggleGroupItem>
         ))}
         <ToggleGroupItem
           value="custom"
-          className="cursor-pointer h-8 rounded-md border border-border px-3 text-xs data-[state=on]:border-primary data-[state=on]:bg-primary/10 data-[state=on]:text-primary"
+          className="cursor-pointer h-8 rounded-md border border-border px-3 font-medium text-xs data-[state=on]:border-primary data-[state=on]:bg-primary/10 data-[state=on]:text-primary"
         >
           Custom
         </ToggleGroupItem>
