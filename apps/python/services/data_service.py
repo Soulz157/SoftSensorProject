@@ -221,13 +221,13 @@ class DataService:
                 df = await asyncio.to_thread(
                     self._call_pi, chunk, window, cal_basis, summary_type, interval
                 )
-                print(f"[DEBUG] batch OK window={window}", flush=True)
-                print(df.to_string(), flush=True)
+                # print(f"[DEBUG] batch OK window={window}", flush=True)
+                # print(df.to_string(), flush=True)
             except Exception as exc:
                 chunk_error = str(exc) or repr(exc)
-                print(
-                    f"[DEBUG] BATCH FAILED window={window}: {chunk_error}", flush=True)
-                traceback.print_exc()
+                # print(
+                #     f"[DEBUG] BATCH FAILED window={window}: {chunk_error}", flush=True)
+                # traceback.print_exc()
 
         # tag ที่ยังไม่ได้ข้อมูล: batch พัง หรือ column หายจาก frame ที่สำเร็จ
         # (converter map column แบบ positional — tag เสียตัวเดียวทำทั้ง chunk เพี้ยนได้)

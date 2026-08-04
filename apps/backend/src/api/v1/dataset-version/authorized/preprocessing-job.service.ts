@@ -56,6 +56,12 @@ import {
  * `SELECT ... FOR UPDATE SKIP LOCKED` plus an owner column — still no Redis.
  */
 
+/**
+ * How long to wait before re-clearing a cancelled job's tmp prefix. Sized to
+ * outlast one connector step on a large artifact, not to be a guarantee.
+ */
+const STRAGGLER_SWEEP_MS = 30_000;
+
 /** Progress for a step about to start, not one that finished. */
 interface StepProgress {
   completedSteps: number;
@@ -334,6 +340,10 @@ export class PreprocessingJobService
     if (canceled) {
       // Nothing was committed, so the intermediates are pure waste.
       await this.clearTmp(tmpPrefix);
+      // Aborting the HTTP call does NOT stop the connector: it already has the
+      // request and finishes that step server-side, writing its output AFTER
+      // the sweep above. Observed live — a cancel left one straggler behind.
+      this.scheduleStragglerSweep(tmpPrefix);
     } else if (interrupted) {
       // No cleanup call during shutdown: the process is going away, the
       // request would likely fail anyway, and the intermediates are useful for
@@ -393,6 +403,23 @@ export class PreprocessingJobService
         estimatedRemainingMs: perStep ? Math.round(perStep * remaining) : null,
       },
     });
+  }
+
+  /**
+   * Re-clear a cancelled job's tmp prefix once, after the connector has had
+   * time to finish the step that was in flight when the abort landed.
+   *
+   * Deliberately fire-and-forget and `unref`ed: it must not hold the process
+   * open at shutdown, and a straggler that outlives the window is an
+   * unreferenced object under `tmp/` — wasted storage, never wrong data. The
+   * alternative, blocking the cancel until the connector responds, would make
+   * "cancel" wait on the very work the user asked to stop.
+   */
+  private scheduleStragglerSweep(prefix: string): void {
+    const timer = setTimeout(() => {
+      void this.clearTmp(prefix);
+    }, STRAGGLER_SWEEP_MS);
+    timer.unref();
   }
 
   private async clearTmp(prefix: string): Promise<void> {

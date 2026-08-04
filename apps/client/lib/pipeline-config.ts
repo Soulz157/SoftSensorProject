@@ -84,18 +84,15 @@ export const EMPTY_PIPELINE_CONFIG: PipelineConfig = {
 }
 
 /**
- * Rebuild the processed `Dataset` from a saved recipe. Deterministic: same
- * `tags` + `config` always yield the same rows.
+ * Run a saved recipe over an ALREADY-BUILT raw dataset.
+ *
+ * Extracted so the recipe applies identically whether the raw rows came from
+ * `buildRawDataset` (synthetic) or from a committed artifact in object storage
+ * (real). Two copies of this chain would be two places for the transform order
+ * to drift, and drift here surfaces only as numbers that quietly disagree
+ * between the two paths.
  */
-export function materializeDataset(
-  tags: string[],
-  config: PipelineConfig,
-): Dataset {
-  const raw = buildRawDataset(
-    tags,
-    PERIOD_TO_RANGE[config.timeRange],
-    MATERIALIZE_EPOCH,
-  )
+export function applyRecipeTo(raw: Dataset, config: PipelineConfig): Dataset {
   const featured = applyFeatures(raw, config.features)
   const cleansed = precleanse(featured, {
     crop: config.cropRange,
@@ -112,4 +109,38 @@ export function materializeDataset(
   // Legacy saved recipes predate these fields — tolerate their absence.
   const selected = selectColumns(filled, config.selectedColumns ?? null)
   return toModelReady(selected, config.scalers ?? {})
+}
+
+/**
+ * Rebuild the processed `Dataset` from a saved recipe using SYNTHETIC raw rows.
+ *
+ * Deterministic — same `tags` + `config` always yield the same rows — but the
+ * rows are generated from a seed, not read from the source. This is the legacy
+ * path, kept for datasets that have no committed artifact and no replayable
+ * recipe. Prefer `materializeFromVersion` wherever stored rows are available,
+ * and never present this output without saying it is synthetic.
+ */
+export function materializeDataset(
+  tags: string[],
+  config: PipelineConfig,
+): Dataset {
+  return applyRecipeTo(
+    buildRawDataset(tags, PERIOD_TO_RANGE[config.timeRange], MATERIALIZE_EPOCH),
+    config,
+  )
+}
+
+/**
+ * Apply a saved recipe to REAL rows read from a committed dataset version.
+ *
+ * Same transform chain as `materializeDataset`; only the source of the raw rows
+ * differs. Kept as a separate named export rather than an optional argument so
+ * call sites read unambiguously as one or the other — which of the two produced
+ * a number on screen is exactly what a reader needs to know.
+ */
+export function materializeFromVersion(
+  raw: Dataset,
+  config: PipelineConfig,
+): Dataset {
+  return applyRecipeTo(raw, config)
 }

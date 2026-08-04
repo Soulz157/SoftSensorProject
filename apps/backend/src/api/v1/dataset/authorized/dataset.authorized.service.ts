@@ -1,24 +1,40 @@
 import { Injectable } from '@nestjs/common';
-import {
-  PrismaService,
-  PrismaTypes,
-  type PrismaModels,
-} from '@softsensor/prisma';
+import { PrismaService, PrismaTypes } from '@softsensor/prisma';
 import { AppException } from '@softsensor/common';
 import type {
   CreateDatasetDto,
   UpdateDatasetDto,
 } from './dto/dataset.authorized.dto';
+import { Prisma } from 'node_modules/@softsensor/prisma/dist/src/generated/client/client';
 
-type DatasetWithUser = PrismaModels.DatasetModel & {
-  createdBy: Pick<PrismaModels.UserModel, 'firstName' | 'lastName'>;
-};
+const datasetSelect = {
+  id: true,
+  name: true,
+  description: true,
+  workspaceId: true,
+  sourceIds: true,
+  tags: true,
+  pipelineConfig: true,
+  fileUrl: true,
+  rowCount: true,
+  missingPct: true,
+  currentVersionId: true,
+  createdAt: true,
+  updatedAt: true,
+  createdBy: {
+    select: { firstName: true, lastName: true },
+  },
+} satisfies Prisma.DatasetSelect;
+
+type DatasetResponsePayload = Prisma.DatasetGetPayload<{
+  select: typeof datasetSelect;
+}>;
 
 @Injectable()
 export class DatasetAuthorizedService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private mapToResponse(item: DatasetWithUser) {
+  private mapToResponse(item: DatasetResponsePayload) {
     return {
       id: item.id,
       name: item.name,
@@ -30,6 +46,13 @@ export class DatasetAuthorizedService {
       fileUrl: item.fileUrl,
       rowCount: item.rowCount,
       missingPct: item.missingPct,
+      // Null on every dataset created before the versioning slice, and on any
+      // whose raw artifact has not been materialised yet. The client branches
+      // on exactly this: hydrate from the version, or take the backfill path.
+      // Sending the pointer here saves a /versions round trip per card, and
+      // `currentVersionId` is the authoritative one — "the newest version" is
+      // not the same thing.
+      currentVersionId: item.currentVersionId,
       createdAt: item.createdAt.toISOString(),
       updatedAt: item.updatedAt.toISOString(),
       createdBy:
@@ -39,15 +62,23 @@ export class DatasetAuthorizedService {
     };
   }
 
-  private async assertWorkspaceAccess(workspaceId: string, userId: string) {
+  private async assertWorkspaceAccess(
+    workspaceId: string,
+    userId: string,
+    role?: string,
+  ) {
+    const isAdmin = role === 'ADMIN';
     const workspace = await this.prisma.workspace.findFirst({
       where: {
         id: workspaceId,
         deletedAt: null,
-        OR: [{ ownerId: userId }, { members: { some: { userId } } }],
+        ...(isAdmin
+          ? {}
+          : { OR: [{ ownerId: userId }, { members: { some: { userId } } }] }),
       },
       select: { id: true },
     });
+
     if (!workspace) {
       throw new AppException({
         statusCode: 404,
@@ -76,10 +107,11 @@ export class DatasetAuthorizedService {
 
   async getDatasetService(userId: string, id: string) {
     const item = await this.prisma.dataset.findUnique({
-      where: { id },
-      include: { createdBy: { select: { firstName: true, lastName: true } } },
+      where: { id, createdById: userId },
+      select: datasetSelect,
     });
-    if (!item || item.createdById !== userId) {
+
+    if (!item) {
       throw new AppException({
         statusCode: 404,
         message: 'Dataset not found',
@@ -94,8 +126,8 @@ export class DatasetAuthorizedService {
     };
   }
 
-  async createDatasetService(userId: string, dto: CreateDatasetDto) {
-    await this.assertWorkspaceAccess(dto.workspaceId, userId);
+  async createDatasetService(user: Auth.UserPayload, dto: CreateDatasetDto) {
+    await this.assertWorkspaceAccess(dto.workspaceId, user.id, user.role);
     const item = await this.prisma.dataset.create({
       data: {
         name: dto.name,
@@ -107,9 +139,9 @@ export class DatasetAuthorizedService {
         fileUrl: dto.fileUrl ?? null,
         rowCount: dto.rowCount,
         missingPct: dto.missingPct,
-        createdById: userId,
+        createdById: user.id,
       },
-      include: { createdBy: { select: { firstName: true, lastName: true } } },
+      select: datasetSelect,
     });
     return {
       statusCode: 201,
@@ -120,12 +152,16 @@ export class DatasetAuthorizedService {
   }
 
   async updateDatasetService(
-    userId: string,
+    user: Auth.UserPayload,
     id: string,
     dto: UpdateDatasetDto,
   ) {
-    const existing = await this.prisma.dataset.findUnique({ where: { id } });
-    if (!existing || existing.createdById !== userId) {
+    const existing = await this.prisma.dataset.findFirst({
+      where: { id, createdById: user.id },
+      select: { id: true },
+    });
+
+    if (!existing) {
       throw new AppException({
         statusCode: 404,
         message: 'Dataset not found',
@@ -146,7 +182,7 @@ export class DatasetAuthorizedService {
         ...(dto.rowCount !== undefined && { rowCount: dto.rowCount }),
         ...(dto.missingPct !== undefined && { missingPct: dto.missingPct }),
       },
-      include: { createdBy: { select: { firstName: true, lastName: true } } },
+      select: datasetSelect,
     });
     return {
       statusCode: 200,
@@ -156,9 +192,12 @@ export class DatasetAuthorizedService {
     };
   }
 
-  async deleteDatasetService(userId: string, id: string) {
-    const existing = await this.prisma.dataset.findUnique({ where: { id } });
-    if (!existing || existing.createdById !== userId) {
+  async deleteDatasetService(user: Auth.UserPayload, id: string) {
+    const existing = await this.prisma.dataset.findUnique({
+      where: { id, createdById: user.id },
+      select: { id: true },
+    });
+    if (!existing) {
       throw new AppException({
         statusCode: 404,
         message: 'Dataset not found',

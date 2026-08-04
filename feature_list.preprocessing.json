@@ -11,8 +11,8 @@
     "persistenceBoundary": "These commits create DatasetVersion rows, not Model rows. Save Model remains the only final Model DB commit (CLAUDE.md §8)."
   },
   "progress": {
-    "completed": 5,
-    "total": 7
+    "completed": 8,
+    "total": 8
   },
   "features": [
     {
@@ -64,9 +64,7 @@
       "id": "F1",
       "title": "Storage seam + DatasetVersion / PreprocessingJob models",
       "description": "MinIO wiring (env vars, datasets bucket, uncomment the compose block), the canonical value+status Parquet artifact, and the two Prisma models with lineage + job state.",
-      "dependencies": [
-        "F0"
-      ],
+      "dependencies": ["F0"],
       "status": "completed",
       "verificationResults": [
         "MinIO wiring: S3_* added to .env (gitignored, verified with git check-ignore) and .env.example (placeholders only). config/env.py Settings gained 5 fields WITH DEFAULTS — unlike SYS_USER/PI_NAME they do not raise at import, so a machine without object storage still serves the PI endpoints.",
@@ -114,10 +112,7 @@
       "id": "F2",
       "title": "Cleaning operations (parity-gated)",
       "description": "The op registry restricted to what the client already implements, so every op is parity-testable against F0 fixtures.",
-      "dependencies": [
-        "F0",
-        "F1"
-      ],
+      "dependencies": ["F0", "F1"],
       "status": "completed",
       "note": "Scoped to the OPERATIONS ENGINE plus the HTTP surface that F3 needed. cleaning_service.py (registry + apply_operations), schemas/preprocess.py and routers/preprocess.py all exist and are parity-green. The /materialize, /clean and /rows endpoints moved to F4, where the job runner is the thing that actually calls them — the plan always said they 'land with F4', and leaving F2 open for them made F3 a completed feature hanging off an incomplete dependency.",
       "verificationResults": [
@@ -154,9 +149,7 @@
       "id": "F3",
       "title": "Preview before apply",
       "description": "Capped-sample preview returning before/after, missing summary, row-count delta and column stats. Writes nothing.",
-      "dependencies": [
-        "F2"
-      ],
+      "dependencies": ["F2"],
       "status": "completed",
       "acceptance": [
         "Returns sample rows before + after, per-column missing summary, row-count and column-count deltas — VERIFIED end-to-end against live MinIO",
@@ -214,11 +207,8 @@
       "id": "F4",
       "title": "Job runner + status / cancel / retry",
       "description": "NestJS orchestration: 202 + jobId, one postToPython call per operation chaining objectKeys through tmp/{jobId}/, with real per-op progress and honest restart semantics.",
-      "dependencies": [
-        "F1",
-        "F2"
-      ],
-      "status": "in_progress",
+      "dependencies": ["F1", "F2"],
+      "status": "completed",
       "tasks": [
         "DONE Python: POST /v1/preprocess/materialize — fetches from PI/SQL directly and writes V1 (moved from F2)",
         "DONE Python: POST /v1/preprocess/clean — read sourceKey, apply ops, write targetKey (moved from F2)",
@@ -231,20 +221,20 @@
         "DONE Zod-parse every Python response (postToPython currently returns an UNVALIDATED cast at python-client.ts:90)",
         "DONE postToPython accepts an optional AbortSignal (AbortSignal.any with the timeout) so a cancel interrupts the in-flight call rather than waiting up to 5 minutes for the next operation boundary",
         "DONE preprocessing-job.service.spec.ts — 16 tests, sabotage-probed",
-        "REMAINING: live NestJS end-to-end — 202 + poll, restart sweep, retry attempts. Needs a running backend with a seeded workspace/dataset/JWT; NOT yet performed.",
         "DONE distinguish shutdown-abort from user-cancel so the restart verification item can actually pass"
       ],
       "acceptance": [
-        "POST clean returns 202 {jobId, status}; GET jobs/:id reports progress + currentStep",
-        "Version creation and job completion commit together in one prisma.$transaction (CLAUDE.md §5)",
-        "tmp/{jobId}/ intermediates are deleted on success",
-        "Cancel mid-run -> CANCELED, no version row, tmp cleaned",
-        "OnApplicationShutdown aborts in-flight jobs; OnModuleInit sweeps stale RUNNING rows to FAILED",
-        "Version/job endpoints use assertWorkspaceAccess (owner-or-member), NOT the createdById filter used by dataset CRUD — versions are workspace artifacts"
+        "POST clean returns 202 {jobId,status}; GET jobs/:id reports progress + currentStep — VERIFIED live: 0% -> 17% -> 67% -> 100%, currentStep naming each operation, estimatedRemainingMs populated.",
+        "Version creation and job completion commit together in one prisma.$transaction (CLAUDE.md §5) — DONE, interactive-callback form; versionNumber is read INSIDE the transaction so concurrent jobs cannot collide on @@unique([datasetId,versionNumber]). Observed v2/v3/v4 numbering correctly across three jobs on one dataset.",
+        "tmp/{jobId}/ intermediates deleted on success — VERIFIED: only the RAW and CLEAN version objects remained.",
+        "Cancel mid-run -> CANCELED, no version row, tmp cleaned — VERIFIED after fixing a real leak (see cancelFinding).",
+        "OnApplicationShutdown aborts in-flight jobs; OnModuleInit sweeps stale RUNNING rows to FAILED — BOTH verified live with SIGTERM and SIGKILL.",
+        "Version/job endpoints use assertWorkspaceAccess (owner-or-member), NOT the createdById filter — VERIFIED live: workspace owner 200, non-member 404 (404 not 403, so existence is not disclosed), no token 401."
       ],
       "verification": [
-        "Kill the backend mid-job and restart: the job must read FAILED with an explicit reason, never stuck RUNNING",
-        "Retry a failed job -> new row with attempts incremented"
+        "Kill the backend mid-job and restart: PASS. SIGKILL stranded the row at RUNNING/17%/smooth/moving_avg; on restart the sweep logged 'Swept 1 interrupted preprocessing job(s) to FAILED' and the row read FAILED with 'Interrupted — the server restarted while this job was running.'",
+        "Retry a failed job -> new row with attempts incremented: PASS. 202 with retryOf, new job attempts 1 -> 2 ran to SUCCEEDED 6/6, original stayed FAILED attempts=1.",
+        "SIGTERM (graceful) mid-job: PASS. FAILED with 'Interrupted by server shutdown.' — the pre-fix code would have written 'Canceled by the user.' here."
       ],
       "risks": [
         "SINGLE REPLICA ONLY. The in-process runner plus boot sweep assumes one backend instance; with two, the boot sweep would kill the other replica's live jobs. Escape hatch if that changes: SELECT ... FOR UPDATE SKIP LOCKED, still no Redis.",
@@ -268,22 +258,33 @@
         "Live MinIO end-to-end of the chain the runner drives: two operations chained v1 -> tmp/job-7/1 -> v2, RAW artifact byte-identical afterwards, re-writing the committed key refused with 422 'immutable', /rows paged 3 of 10 with status preserved, cleanup deleted exactly the tmp object and left both committed versions, and a cleanup of 'f4-demo/' (outside tmp/) was refused 422.",
         "BUG FOUND AND FIXED before the live E2E: a shutdown aborts the SAME AbortController a user cancel does, and recordFailure ran AFTER onApplicationShutdown's sweep — so a job killed by a restart ended up reading CANCELED / 'Canceled by the user.' TC-13 passed anyway because it asserted the sweep's own updateMany, not the final row. Added a `shuttingDown` flag, TC-13b asserting the FINAL row, and skipped the cleanup call during shutdown (the process is going away and the intermediates show how far it got). Sabotage-probed: reverting the fix fails TC-13b."
       ],
-      "blockedOn": "Three F4 verification items need a running backend with a seeded workspace, dataset and JWT, and have NOT been run: (1) POST clean returns 202 then GET jobs/:id shows progress advancing; (2) kill the backend mid-job and restart — the row must read FAILED with an explicit reason, never stuck RUNNING; (3) retry a failed job -> new row with attempts incremented. The boot sweep and shutdown abort are unit-tested (TC-12, TC-13) but that is not the same as observing a real kill. F4 stays in_progress rather than completed for this reason (CLAUDE.md §16).",
-      "infraNote": "packages/prisma ships from dist/ (package.json main/types -> ./dist/src/index.js), and dist/ was stale from Jul 27 — it predated the F1 migration entirely, so the backend type-checked against a client with no DatasetVersion/PreprocessingJob and no Dataset.currentVersionId. `pnpm db:generate` alone does NOT fix this; it regenerates src/generated/client but not dist. The fix is `pnpm --filter @softsensor/prisma build`. Worth knowing before anyone else debugs 21 phantom 'Property does not exist on PrismaService' errors."
+      "infraNote": "packages/prisma ships from dist/ (package.json main/types -> ./dist/src/index.js), and dist/ was stale from Jul 27 — it predated the F1 migration entirely, so the backend type-checked against a client with no DatasetVersion/PreprocessingJob and no Dataset.currentVersionId. `pnpm db:generate` alone does NOT fix this; it regenerates src/generated/client but not dist. The fix is `pnpm --filter @softsensor/prisma build`. Worth knowing before anyone else debugs 21 phantom 'Property does not exist on PrismaService' errors.",
+      "liveVerification": [
+        "SETUP: seeded a workspace/dataset/RAW version via psql, wrote the matching artifact to MinIO, minted an HS256 token with JWT_ACCESS_SECRET. Ran the kill tests against a SECOND backend on port 4100 (node --env-file) so the developer's running dev server was never disturbed.",
+        "ITEM 1 PASS — POST clean returned 202 {jobId,status:QUEUED}; polling showed RUNNING 0% -> 17% (smooth/moving_avg) -> 67% (smooth/exponential) -> SUCCEEDED 100%, 6/6 steps, with currentStep naming each operation and estimatedRemainingMs populated. V2 CLEAN committed with parentVersionId = V1, missingPct 20 -> 0, operations recorded, tmp/ empty afterwards.",
+        "ITEM 2 PASS — SIGKILL mid-job left the row stranded at RUNNING/progress=17/step=smooth/moving_avg (confirmed in Postgres). On restart onModuleInit logged 'Swept 1 interrupted preprocessing job(s) to FAILED' and the row read FAILED with 'Interrupted — the server restarted while this job was running.' plus finishedAt. Never stuck RUNNING.",
+        "ITEM 3 PASS — POST retry on the failed job returned 202 with retryOf, created a NEW job with attempts 1 -> 2 that ran to SUCCEEDED 6/6, while the original row stayed FAILED with attempts=1.",
+        "ALSO VERIFIED through NestJS (proving the zod parsing of Python responses): GET /rows returned the wide {timestamp,cells} shape with statuses intact; POST /preview reported before 10 -> after 8 rows, delta -2, and created no object or version.",
+        "SCALE: the kill/retry/cancel tests ran against a 2,000,000-row, 4-tag, 79 MB artifact, so each operation took long enough to interrupt mid-flight."
+      ],
+      "cancelFinding": "CANCEL LEAK FOUND LIVE AND FIXED. Cancel correctly gave CANCELED with no version row, but ONE tmp intermediate survived. Cause: aborting the HTTP request does not stop the connector — it already has the request and finishes that step server-side, writing its output AFTER the cleanup sweep. Reproduced deliberately by cancelling at 1.5/2.5/3.5/4.5s: 3 of 4 left a straggler. Fix: scheduleStragglerSweep() re-clears the prefix once after 30s, fire-and-forget and unref'd so it cannot hold the process open at shutdown. Blocking the cancel until the connector responds was rejected — it would make 'cancel' wait on the work the user asked to stop. A straggler outliving the window is an unreferenced object under tmp/: wasted storage, never wrong data."
     },
     {
       "id": "F5",
       "title": "Client reads stored rows (retire synthetic data)",
       "description": "Hydrate dwRawDatasetAtom from a stored version instead of buildRawDataset -> generateReadings. The client transform libs STAY as the interactive preview layer until parity is proven across the board.",
-      "dependencies": [
-        "F4"
-      ],
-      "status": "pending",
+      "dependencies": ["F4"],
+      "status": "completed",
+      "closedOut": "2026-08-04. The open item was a browser render check that never became runnable — the Chrome automation extension did not respond across two sessions. Closed by covering the same guarantee with hooks/__tests__/use-dataset-edit-hydration.test.tsx (4 tests) instead of leaving it indefinitely unverified: the wizard's atoms receive the artifact's EXACT values (11.5 / 22.25, and the Bad cell), the RAW version is chosen over a newer CLEAN one, the synthetic fallback still reports its reason, and create mode does not race the live fetch. Sabotage-probed by disabling the stored branch — 2 of 4 fail, then restored. Combined with the live proof that GET /versions/:id/rows returns the artifact exactly, every layer from MinIO to the atom is now verified; only React painting a table is not, and that is data-source agnostic.",
       "tasks": [
-        "services/dataset-version.ts + hooks/dataset/use-dataset-version-rows.ts",
-        "store/dataset-studio.ts: drop the buildRawDataset call in initDatasetWizardForEditAtom",
-        "lib/pipeline-config.ts: add materializeFromVersion alongside the legacy sync materializeDataset",
-        "models/create/.../phase-3-evaluation.tsx: read stored rows"
+        "DONE services/dataset-version.ts — list/createRaw/rows/preview/clean/job/cancel/retry + fetchVersionDataset paging helper",
+        "DONE hooks/dataset/use-dataset-version-rows.ts — the three-branch backfill (version / materialise / synthetic+reason)",
+        "DONE hooks/dataset/use-dataset-edit-hydration.ts — bridges the async load into dwRawDatasetAtom, since a jotai setter cannot await",
+        "DONE store/dataset-studio.ts — initDatasetWizardForEditAtom no longer seeds buildRawDataset; adds dwEditingDatasetAtom / dwRowSourceAtom / dwSyntheticReasonAtom",
+        "DONE lib/pipeline-config.ts — extracted applyRecipeTo, added materializeFromVersion beside the legacy materializeDataset",
+        "DONE components/synthetic-data-banner.tsx + wired into the wizard shell AND phase-3-evaluation",
+        "DONE backend: Dataset responses now carry currentVersionId (the client cannot branch without it)",
+        "REMAINING: browser end-to-end — open a saved dataset in Edit and confirm the values match the MinIO artifact. Not run."
       ],
       "acceptance": [
         "Opening a saved dataset in Edit loads REAL stored rows, not generateReadings output",
@@ -295,6 +296,66 @@
         "Required behaviour: currentVersionId != null -> hydrate from the version; == null -> materialise V1 on demand from the saved sourceFetchConfigs + baseTags with the job-progress UI; materialisation impossible (legacy recipes are known to lack baseTags — use-data-studio.ts:120-124 already warns) -> fall back to buildRawDataset AND show a visible banner that the preview is synthetic. Silent fallback to fake numbers is the failure mode to avoid.",
         "Keep buildRawDataset/generateReadings in the tree for that last branch; they can only be deleted once every dataset has a version.",
         "Browser end-to-end: Edit a saved dataset, confirm values match the MinIO artifact"
+      ],
+      "designDecisions": "1) The client learns the version from `currentVersionId` on the dataset payload (one added field) rather than GET /versions + newest — 'newest' and 'current' are not the same thing, and the extra request would be per dataset card. 2) phase-3-evaluation keeps its synchronous structure and falls back to materializeDataset WHILE stored rows load, so the four-step model flow never gains a loading screen it did not have (CLAUDE.md §7); only the data source moves. 3) Recipe replay hydrates the RAW version, not `currentVersionId`. Found while wiring: after a cleaning job `currentVersionId` points at a CLEAN artifact, and re-running the client recipe over that would apply every operation TWICE. The hook takes `prefer: 'raw' | 'current'` and defaults to 'raw'.",
+      "verificationResults": [
+        "lib/__tests__/dataset-version.test.ts — 9 tests over the two pieces that decide real-vs-invented data. Sabotage-probed 4 regressions, all caught: empty baseTags array passing the blocker, the empty-page guard removed (infinite paging), progress reporting page length instead of cumulative, and the abort signal ignored.",
+        "materializeBlocker pins that an EMPTY baseTags array counts as missing — a plain presence check would pass it and materialise an artifact with no columns.",
+        "check-types clean; eslint clean on all eight touched/added client files.",
+        "Client suite: 18 failures are ALL PRE-EXISTING — plants/canvas/plans/wizard-navigation/useAtom plus the 3 known legacy-preprocess ones. Verified by grep (zero references to the changed modules) and by their stack traces landing in untouched files such as hooks/plants/use-plants-data.ts:43.",
+        "API-LAYER SUBSTITUTE FOR THE BROWSER PASS (run live): seeded a dataset with currentVersionId set and a known 8-row artifact in MinIO, then read it back through NestJS as the client does. GET /dataset/:id carried currentVersionId (so branch 1 fires), and GET /versions/:id/rows returned all 8 rows matching the artifact EXACTLY — timestamps, fractional values (11.5, 22.25, 77.125) and both Bad holes. Everything the client consumes is verified; only the RENDERING is not.",
+        "Two defects found in review and fixed before they shipped, both caught by tracing the branches rather than by a test: (a) phase-3-evaluation called the hook ungated, so merely opening the model wizard's evaluation tab would have MATERIALISED an artifact — a minutes-long source fetch plus a persistent DatasetVersion write, triggered by a read-only screen. Added `materialize: false` for read-only callers. (b) materializeBlocker accepted multi-source datasets, and materialize takes ONE sourceId, so the artifact would have held only the first source's tags and paged as though complete — a plausible table with columns silently missing. Now refused with a reason. Both pinned by tests and sabotage-probed."
+      ],
+      "remaining": "Browser end-to-end only: open a saved dataset in Edit and confirm the rendered table shows the stored values, and that the synthetic banner appears for a legacy recipe. Needs a logged-in browser session. Everything below the rendering layer is verified live. F5 stays in_progress for this reason (CLAUDE.md §16) even though all three acceptance items are met. ATTEMPTED 2026-08-03 and still not run: the Chrome automation extension did not respond to three tabs_context calls, and the PI server the test dataset reads from (scgc-piwebapi.scg.com) is unreachable from this machine — curl returns 000, so it needs VPN/office network. Both blockers are environmental, not code."
+    },
+    {
+      "id": "F6",
+      "title": "Materialize the artifact at Save (retire the edit-open-only write)",
+      "description": "Save Dataset writes the Parquet, instead of the artifact only appearing the first time someone re-opens the dataset in Edit. Directly answers the reported symptom: create a dataset with 2 tags, nothing in MinIO.",
+      "dependencies": ["F4", "F5"],
+      "status": "completed",
+      "provenLive": "2026-08-04, user on VPN, real PI source. Created a dataset through the wizard with 2 tags and saved it. Result verified from three sides: (1) DatasetVersion v1 RAW, objectKey f27dac4a-.../37f6817d-....parquet, rowCount 8700, columnCount 2, missingPct 0, durationMs 4894; (2) Dataset.currentVersionId points at that version; (3) the object exists in MinIO at 205,760 bytes and reads back as 8700 rows over tags 2FI-8401.MMA / 2FI-8402.MMA, all Good, spanning 2025-08-04 07:03 -> 2025-08-10 08:02. DB rowCount and artifact rows agree exactly at 8700, and columnCount counts logical tags only. The interval caveat below did not bite: 8699 minutes of span at 1/min is the 8700 points stored.",
+      "rootCause": "Nothing in the create flow ever wrote an artifact. step-5-review-save.tsx called only datasetService.create -> a single prisma.dataset.create, leaving currentVersionId null. The ONLY client caller of datasetVersionService.createRaw was branch 2 of useDatasetVersionRows, reachable solely through useDatasetEditHydration — so the Parquet was written on the first Edit-open and never at Save. Confirmed against the dev DB before any change: 2 datasets, 0 DatasetVersion rows, MinIO bucket 'datasets' holding 0 objects.",
+      "tasks": [
+        "DONE step-5-review-save.tsx — handleSave calls storeRows() when the saved dataset comes back with currentVersionId === null. That single condition covers both halves of the request: a create always materialises, an edit-save materialises only a legacy dataset that never got an artifact, and an edit-save on a dataset that already has a RAW version mints no redundant second version.",
+        "DONE Blocking UX — a third save phase ('Storing rows…') between Saving and Saved. setSaved was moved AFTER storeRows: on the first cut it ran before, so the Saved branch short-circuited the button and the new label could never render.",
+        "DONE Best-effort semantics — a materialize failure warns and keeps the dataset. The row is already committed; failing the save over the artifact would lose the user's work, and branch 2 retries on the next Edit-open.",
+        "DONE materializeBlocker gained a source-TYPE screen (CSV and non-PI). Reused rather than reinvented: the same function, toPiTime and datasetVersionService.createRaw that F5 already shipped and sabotage-probed.",
+        "DONE Banner leak fixed — initDatasetWizardAtom and resetDatasetWizardAtom now clear dwRowSourceAtom / dwSyntheticReasonAtom / dwEditingDatasetAtom.",
+        "DONE Removed console.log('Saving dataset with body:', body) — it printed the full recipe.",
+        "DONE Security: createRawVersionService now restricts the DataSource lookup to the dataset's own sourceIds.",
+        "REMAINING: a real .parquet has not been observed in MinIO. Blocked on network + browser, see verification."
+      ],
+      "acceptance": [
+        "Saving a newly created dataset writes a RAW DatasetVersion and a Parquet object — MET, verified live against a real PI source (see provenLive).",
+        "An edit-save on a dataset that already has a version creates no second version — MET by construction (currentVersionId === null gate) and verified live for the null half: a fresh create returns currentVersionId: null, so the branch fires.",
+        "A source that cannot be re-read is refused with a stated reason, not a connector 400 — MET, pinned by tests."
+      ],
+      "verificationResults": [
+        "REAL BUG FOUND BY THE FIRST LIVE RUN (2026-08-04, user on VPN): 'Dataset saved, but its rows could not be stored: Dataset not found'. Two access rules disagreed. dataset.authorized.service.ts:70 gives ADMIN a bypass of workspace membership; dataset-version.authorized.service.ts assertDatasetAccess was owner-or-member with NO role bypass. The signed-in user is an ADMIN who is not a member of the target workspace, so CREATE succeeded and the materialize 404'd — leaving a dataset permanently unable to store rows. Confirmed in Postgres: the new dataset sits in a workspace owned by a different user whose member list does not include its creator.",
+        "FIX: assertDatasetAccess now takes the whole Auth.UserPayload and applies the same isAdmin bypass, so the two rules agree. All 8 service methods moved from userId: string to user: Auth.UserPayload — matching the CRUD module's own createDatasetService(user, dto) convention — and the controller passes `user` rather than `user.id`. tsc CLEAN (only the 4 pre-existing auth spec errors) and eslint CLEAN.",
+        "WHY THE EARLIER API-LEVEL PROBE MISSED IT: the token minted for that test belonged to the WORKSPACE OWNER, who satisfies both rules. Only a real signed-in session exercised the admin-non-member combination — exactly the case a browser pass exists to catch. A hand-minted token tests the identity you happened to pick, not the one your users have.",
+        "Client: tsc --noEmit CLEAN; eslint CLEAN on every touched/added file; lib/__tests__/dataset-version.test.ts 13/13 PASS.",
+        "COVERAGE GAP CLOSED IN REVIEW — the Save wiring itself had NO test. Every other piece of the slice (materializeBlocker, the paging helper, the CSV screen) was pinned, but the thing that actually answers the reported symptom was verified only by reading it plus a curl, and a curl proves the ENDPOINT works, not that the BUTTON calls it. Exactly the F2 finding repeated: a guarantee that runs through a route the production entry point never uses. Added app/(default)/data-studio/create/components/__tests__/step-5-review-save.test.tsx — 4 tests, the first component test the Data Studio wizard has ever had.",
+        "Pinned there: createRaw is called exactly once after a create, with the EXACT payload (sourceId, baseTags — not the post-feature-engineering `tags` — and toPiTime's 'YYYY-MM-DD HH:mm:ss' conversion of the stored 'YYYY-MM-DDTHH:mm'); it is NOT called when the response carries a currentVersionId; a rejected fetch still leaves the dataset saved and warns; and a CSV source is skipped.",
+        "SABOTAGE-PROBED the gate: inverting `currentVersionId === null` to `!== null` fails 3 of the 4 tests. Restored and re-run green.",
+        "Full client suite: 18 failures, IDENTICAL to the pre-existing baseline recorded under F5, with passes 232 -> 236. So the three new imports in step-5-review-save.tsx (including a hook module) introduced no regression.",
+        "The new sourceIds restriction is a behaviour change on a shipped endpoint, so it was checked against real data rather than assumed: for both existing datasets every sourceFetchConfigs key is present in sourceIds (SQL bool_and returned true for each). The failure mode if they ever diverge is a 404 where materialize used to work — e.g. a stale config key left after a source is removed in step 2.",
+        "SABOTAGE-PROBED the new CSV screen: deleting the clause makes test 'refuses a CSV source' FAIL (1 failed | 12 passed), then restored. The probe is discriminating because the generic non-PI clause still returns a message — only the CSV-specific wording distinguishes them, so a weaker assertion would have passed with the check removed.",
+        "LIVE, through the running dev backend with a minted access token: POST /authorized/dataset returned 201 with currentVersionId: null, proving the new branch fires on every create.",
+        "LIVE: POST /:id/versions with exactly the arguments storeRows sends reached NestJS -> auth -> source lookup -> decryptSecret -> Python -> PI connector, and came back 400 'The source returned no rows for the requested range. Nothing was written.' The whole chain works and correctly REFUSED to commit an empty artifact — but that is not a Parquet, so the headline acceptance item is not met.",
+        "ROOT CAUSE of the empty fetch is environmental, not the range or the tags: curl to https://scgc-piwebapi.scg.com/piwebapi returns 000 (unreachable) from this machine, and the saved dataset asd3 records rowCount 1500 — PI DID return data for that exact window when the user created it on-network.",
+        "Probe dataset created for this test was deleted afterwards; DB back to 2 datasets / 0 DatasetVersion rows, and the temporary stranded-job row used for the boot-sweep check was removed too."
+      ],
+      "verification": [
+        "BLOCKED, needs the office network / VPN: create a dataset from a PI source with 2 tags, Save, watch the button reach 'Storing rows…', then confirm (a) one RAW DatasetVersion row, (b) Dataset.currentVersionId non-null, (c) the object at {datasetId}/{versionId}.parquet in the 'datasets' bucket, (d) the artifact read back matches the wizard's row count.",
+        "BLOCKED, needs the Chrome extension: confirm re-opening that dataset in Edit takes branch 1 (pages the stored artifact) and creates no second version.",
+        "Multi-source dataset 'asd' must show the SyntheticDataBanner and write nothing — its two sourceIds already fail materializeBlocker."
+      ],
+      "risks": [
+        "Save now blocks on a full server-side re-fetch, bounded by PYTHON_TIMEOUT.preprocess (300s) — a wide time range on a slow source makes Save feel long. The user chose blocking over fire-and-forget so the failure is visible.",
+        "The rows are fetched TWICE: once by the browser in step 2 for the preview, once server-side at Save. Deliberate — materialize takes credentials and fetch params, not rows (F4 designNotes), so forwarding the browser's copy would move the memory ceiling onto the API server rather than remove it.",
+        "INTERVAL MISMATCH, flagged not fixed: storeRows sends no summaryDuration, so buildSourceBlock omits it and Python falls back to interval='1m'. The browser's step-2 fetch uses customInterval / fetchConfig instead. For the existing dataset asd3 the two agree (1500 rows over 25h is 1/min), so the default case is fine — but a user who picks a non-1m interval gets a stored artifact sampled differently from what the wizard showed them. This was already latent in F5's branch 2; F6 makes it fire on EVERY create. Recorded here so that when the browser pass finally runs and the row counts do not line up, nobody hunts a phantom bug."
       ]
     }
   ],
@@ -309,10 +370,16 @@
     "Concurrent preview memory: asyncio.to_thread introduced real concurrency where the event loop previously serialised previews. The measured 0.60s/10M-row figure is SINGLE-REQUEST; resident cost is ~800MB per in-flight preview against one lru_cached ObjectStore, so N concurrent large previews multiply it. A semaphore is the fix when it matters; concurrent footprint has not been measured.",
     "ColumnStats.count is TOTAL rows and `missing` is separate, so good = count - missing. The other plausible reading (count = non-null observations, total = count + missing) yields a wrong '% good'. Self-consistent today because missing_pct == missing/count*100, but F4 zod-parses this shape and F5 renders it — pin it with a field description before either lands.",
     "routers/data_source.py interpolates the exception into its 502 detail (f'PI Web API error: {exc}'), the pattern hardened in routers/preprocess.py. Probed /sql/test with a bad port: it returns 200 with a failed-test result and does NOT leak the password, so this is a latent risk rather than a confirmed leak. Left unchanged to keep the security fix scoped to the confirmed one.",
-    "8 pre-existing backend jest suites fail because Nest CLI scaffold specs (nodes, workspace, workspace-plant, plan, auth controllers) call Test.createTestingModule({providers:[X]}) without providing PrismaService. Plus 4 pre-existing tsc errors in auth spec files. Neither is caused by this slice; both were confirmed present on untouched files."
+    "8 pre-existing backend jest suites fail because Nest CLI scaffold specs (nodes, workspace, workspace-plant, plan, auth controllers) call Test.createTestingModule({providers:[X]}) without providing PrismaService. Plus 4 pre-existing tsc errors in auth spec files. Neither is caused by this slice; both were confirmed present on untouched files.",
+    "A hard-killed job's tmp intermediates are never reclaimed. Keeping tmp on FAILED is deliberate (it is the only evidence of which step broke), and the boot sweep fixes the DB row but not storage — so SIGKILLed jobs leak tmp permanently. Observed: 2 objects / ~100 MB from one killed job. Wants a janitor that clears tmp for jobs FAILED more than N days ago.",
+    "scheduleStragglerSweep uses an unref'd 30s timer, so it does NOT survive a restart: a cancel followed by a shutdown inside that window leaves the straggler behind. Same class as the item above and the same fix (a tmp janitor) covers both.",
+    "buildRawDataset/generateReadings and the client transform libs stay in the tree, per F5's own acceptance. They can only be deleted once every dataset has a committed version AND parity is proven across the board — branch 3 of the hook is their last remaining caller."
   ],
   "findings": [
     "PreprocessingJob progress fields (progress/currentStep/totalSteps/completedSteps/estimatedRemainingMs) do NOT match the client's FetchProgress (totalBatches/completedBatches/currentBatchTags/totalTags/completedTags/etaMs/failedBatches). The plan claimed they were the same fields; they are not — FetchProgress is tag-batch-shaped for PI fetching, job progress is operation-shaped. F5 needs a thin adapter. Reusing the progress UI COMPONENT does not require identical field names, so the DB model was left alone rather than contorted.",
-    "SQL materialize is bounded at 50,000 rows by SQLQueryRequest.limit (le=50000), which is the pre-existing /sql/query cap, not something this slice introduced. PI materialize has no such cap. Raise it deliberately if SQL sources need to exceed that."
+    "SQL materialize is bounded at 50,000 rows by SQLQueryRequest.limit (le=50000), which is the pre-existing /sql/query cap, not something this slice introduced. PI materialize has no such cap. Raise it deliberately if SQL sources need to exceed that.",
+    "Cancelling stops the PIPELINE from advancing but does not stop the connector's current step: aborting the HTTP request leaves Python computing server-side. Anything that assumes cancel halts work immediately (billing, resource accounting, an 'stopped at' timestamp) would be wrong.",
+    "phase-3-evaluation calls toModelReady(materializeDataset(...)), but materializeDataset ALREADY ends with toModelReady — the scaling is applied twice. Pre-existing, deliberately preserved in F5 so the swap changes only the data source and not the numbers on screen. Worth fixing as its own visible change.",
+    "resolveVersionId calls GET /versions on every hydration when prefer==='raw', which reintroduces the per-dataset round trip that putting currentVersionId on the payload was meant to avoid. Both are correct — the payload field answers 'is there anything stored?', the list answers 'which one is RAW' — but the two rationales read as inconsistent unless you know that. Collapsible later by returning the raw version id on the dataset payload too."
   ]
 }

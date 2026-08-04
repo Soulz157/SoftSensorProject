@@ -46,7 +46,6 @@ _sql = SQLDataSourceService()
 def pi_test(body: PITestRequest) -> ConnectionTestResponse:
     # Sync handler on purpose: FastAPI runs plain `def` in its threadpool, so a
     # slow PI host can no longer stall the event loop and every other request.
-    print('asdasd')
     return _pi.test_connection(body.credentials)
 
 

@@ -21,6 +21,15 @@ export interface SavedDataset {
   fileUrl: string | null
   rowCount: number
   missingPct: number
+  /**
+   * Committed artifact to hydrate real rows from, or `null`.
+   *
+   * Null for every dataset saved before the versioning slice — which is all of
+   * them at the time of writing. Anything reading stored rows must handle the
+   * null branch (materialise on demand, else fall back to synthetic rows with
+   * a visible banner); treating it as always-present shows an empty dataset.
+   */
+  currentVersionId: string | null
   /** ISO 8601 */
   createdAt: string
   updatedAt: string

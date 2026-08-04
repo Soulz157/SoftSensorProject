@@ -21,7 +21,12 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { cn } from '@/lib/utils'
 import { toModelReady } from '@/lib/preprocessing'
-import { materializeDataset } from '@/lib/pipeline-config'
+import {
+  materializeDataset,
+  materializeFromVersion,
+} from '@/lib/pipeline-config'
+import { useDatasetVersionRows } from '@/hooks/dataset/use-dataset-version-rows'
+import { SyntheticDataBanner } from '@/components/synthetic-data-banner'
 import type { PipelineConfig } from '@/lib/pipeline-config'
 import {
   buildFitRows,
@@ -76,15 +81,25 @@ export function Phase3Evaluation({ nav }: Props) {
   const [compareId, setCompareId] = useState<string | null>(null)
   const models = useAllModels().models ?? []
 
+  // Real rows from the dataset's committed RAW artifact when one exists; falls
+  // back to synthetic rows for legacy recipes, with `rowSource` saying which.
+  const { dataset: storedRaw, source: rowSource } =
+    useDatasetVersionRows(selectedDataset, { materialize: false })
+
   const modelReady = useMemo(() => {
     if (!selectedDataset) return { tags: [], rows: [] }
+    const config = selectedDataset.pipelineConfig as PipelineConfig
+    // Same recipe either way — only the raw rows it runs over differ. While the
+    // stored rows load, `storedRaw` is null and this falls through to the
+    // synthetic path, so the step renders immediately and swaps to real data
+    // when it arrives. That keeps the four-step flow free of a loading screen
+    // it never had (CLAUDE.md §7).
     return toModelReady(
-      materializeDataset(
-        selectedDataset.tags,
-        selectedDataset.pipelineConfig as PipelineConfig,
-      ),
+      storedRaw
+        ? materializeFromVersion(storedRaw, config)
+        : materializeDataset(selectedDataset.tags, config),
     )
-  }, [selectedDataset])
+  }, [selectedDataset, storedRaw])
 
   const pair = useMemo(() => {
     const target = targetVariables[0]
@@ -188,6 +203,13 @@ export function Phase3Evaluation({ nav }: Props) {
 
   return (
     <div className="space-y-5">
+      {/* Ahead of the metrics, deliberately: this is the screen where believing
+          simulated numbers is most costly — someone could judge a model on
+          them. */}
+      {rowSource === 'synthetic' && (
+        <SyntheticDataBanner reason="This dataset has no stored rows to evaluate against." />
+      )}
+
       {/* Success banner */}
       <div className="flex items-center gap-3 rounded-xl bg-emerald-500/10 px-4 py-3 ring-1 ring-emerald-500/20">
         <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-500" />

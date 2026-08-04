@@ -55,7 +55,7 @@ export class DatasetAuthorizedController {
     @Users() user: Auth.UserPayload,
     @Body() body: CreateDatasetDto,
   ) {
-    return this.service.createDatasetService(user.id, body);
+    return this.service.createDatasetService(user, body);
   }
 
   @Patch('/:id')
@@ -66,7 +66,7 @@ export class DatasetAuthorizedController {
     @Param('id') id: string,
     @Body() body: UpdateDatasetDto,
   ) {
-    return this.service.updateDatasetService(user.id, id, body);
+    return this.service.updateDatasetService(user, id, body);
   }
 
   @Delete('/:id')
@@ -76,6 +76,6 @@ export class DatasetAuthorizedController {
     @Users() user: Auth.UserPayload,
     @Param('id') id: string,
   ) {
-    return this.service.deleteDatasetService(user.id, id);
+    return this.service.deleteDatasetService(user, id);
   }
 }

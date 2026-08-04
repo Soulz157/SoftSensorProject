@@ -9,7 +9,13 @@ import { Step2RawData } from './step-2-raw-data'
 import { Step3Processing } from './step-3-eda'
 import { Step5ReviewSave } from './step-5-review-save'
 import { useDatasetPipelineNav } from '@/hooks/dataset/use-dataset-pipeline-nav'
-import { dwFetchRequiredAtom } from '@/store/dataset-studio'
+import { useDatasetEditHydration } from '@/hooks/dataset/use-dataset-edit-hydration'
+import {
+  dwFetchRequiredAtom,
+  dwRowSourceAtom,
+  dwSyntheticReasonAtom,
+} from '@/store/dataset-studio'
+import { SyntheticDataBanner } from '@/components/synthetic-data-banner'
 import { WizardStepIndicator } from './wizard-step-indicator'
 import { Step4FeatureEngineering } from './step-4-feature-engineering'
 
@@ -34,6 +40,13 @@ export function WizardShell() {
   const router = useRouter()
   const nav = useDatasetPipelineNav()
   const fetchRequired = useAtomValue(dwFetchRequiredAtom)
+
+  // Edit mode opens with no rows; this loads them from the committed artifact
+  // (or materialises one). No-op in create mode, where the live fetch owns the
+  // same atom.
+  useDatasetEditHydration()
+  const rowSource = useAtomValue(dwRowSourceAtom)
+  const syntheticReason = useAtomValue(dwSyntheticReasonAtom)
 
   const hideFooterNext = nav.currentStep === 5
   // ตรวจสอบว่าเป็น Step 1 หรือ 2 เพื่อจัด Layout ปุ่มไว้ด้านบน
@@ -135,7 +148,15 @@ export function WizardShell() {
             </div>
           </div>
 
-          <div className="min-h-72 flex-1 bg-background p-6 lg:p-8">{body}</div>
+          <div className="min-h-72 flex-1 space-y-4 bg-background p-6 lg:p-8">
+            {/* Above the step content, on EVERY step: the rows feed the charts,
+                statistics and cleaning previews throughout, so the disclosure
+                cannot live on one screen the user might skip past. */}
+            {rowSource === 'synthetic' && syntheticReason && (
+              <SyntheticDataBanner reason={syntheticReason} />
+            )}
+            {body}
+          </div>
 
           {!hideFooter && (
             <div className="flex items-center justify-between border-t border-border/60 bg-muted/30 px-6 py-3">

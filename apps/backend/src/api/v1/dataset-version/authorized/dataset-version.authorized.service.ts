@@ -25,6 +25,10 @@ import {
  * cleaned data invisible inside a workspace they belong to. The asymmetry on
  * the CRUD routes is a separate pre-existing issue and is not propagated here.
  *
+ * The ADMIN bypass IS shared with the CRUD routes, though — see
+ * assertDatasetAccess. That one has to match, or an admin can create a dataset
+ * somewhere they cannot then read it.
+ *
  * Rows never pass through this service. It sends keys and parameters to the
  * connector and stores what comes back; frames go straight from the source into
  * object storage without a detour through the API server.
@@ -42,13 +46,28 @@ export class DatasetVersionAuthorizedService {
    * Owner-or-member on the dataset's workspace. 404 rather than 403 throughout:
    * confirming to an unauthorised caller that a dataset exists is itself a leak.
    */
-  private async assertDatasetAccess(datasetId: string, userId: string) {
+  private async assertDatasetAccess(datasetId: string, user: Auth.UserPayload) {
+    // ADMIN bypasses membership, exactly as dataset.authorized.service.ts:70
+    // does for the CRUD routes. The two rules MUST agree: they did not until
+    // now, so an ADMIN who is not a member of a workspace could create a
+    // dataset there (allowed by the CRUD rule) and then never store its rows
+    // (404 by this one) — a dataset permanently stuck without an artifact,
+    // seen as "Dataset saved, but its rows could not be stored: Dataset not
+    // found".
+    const isAdmin = user.role === 'ADMIN';
     const dataset = await this.prisma.dataset.findFirst({
       where: {
         id: datasetId,
         workspace: {
           deletedAt: null,
-          OR: [{ ownerId: userId }, { members: { some: { userId } } }],
+          ...(isAdmin
+            ? {}
+            : {
+                OR: [
+                  { ownerId: user.id },
+                  { members: { some: { userId: user.id } } },
+                ],
+              }),
         },
       },
     });
@@ -78,8 +97,8 @@ export class DatasetVersionAuthorizedService {
 
   // ── versions ─────────────────────────────────────────────────────────────
 
-  async listVersionsService(userId: string, datasetId: string) {
-    await this.assertDatasetAccess(datasetId, userId);
+  async listVersionsService(user: Auth.UserPayload, datasetId: string) {
+    await this.assertDatasetAccess(datasetId, user);
     const items = await this.prisma.datasetVersion.findMany({
       where: { datasetId },
       orderBy: { versionNumber: 'asc' },
@@ -119,15 +138,22 @@ export class DatasetVersionAuthorizedService {
    * without adding information. Bounded by `PYTHON_TIMEOUT.preprocess`.
    */
   async createRawVersionService(
-    userId: string,
+    user: Auth.UserPayload,
     datasetId: string,
     dto: CreateRawVersionDto,
   ) {
-    await this.assertDatasetAccess(datasetId, userId);
+    const dataset = await this.assertDatasetAccess(datasetId, user);
 
-    const source = await this.prisma.dataSource.findFirst({
-      where: { id: dto.sourceId },
-    });
+    // Restricted to the dataset's OWN sources. Access is asserted on the
+    // dataset, but the secret decrypted in buildSourceBlock belongs to the
+    // DataSource — so an unconstrained lookup would let any caller holding one
+    // dataset name an arbitrary source id and have the server connect with that
+    // source's credentials. DataSource carries no workspaceId, so the recipe's
+    // own source list is both the tightest scope available and the correct one:
+    // materialising replays that recipe, nothing else.
+    const source = dataset.sourceIds.includes(dto.sourceId)
+      ? await this.prisma.dataSource.findFirst({ where: { id: dto.sourceId } })
+      : null;
     if (!source) {
       throw new AppException({
         statusCode: 404,
@@ -172,7 +198,7 @@ export class DatasetVersionAuthorizedService {
           // A raw version is produced by a FETCH, not by operations.
           operations: [],
           durationMs: Date.now() - startedAt,
-          createdById: userId,
+          createdById: user.id,
         },
       });
       await tx.dataset.update({
@@ -284,12 +310,12 @@ export class DatasetVersionAuthorizedService {
   // ── rows + preview ───────────────────────────────────────────────────────
 
   async listRowsService(
-    userId: string,
+    user: Auth.UserPayload,
     datasetId: string,
     versionId: string,
     query: ListRowsDto,
   ) {
-    await this.assertDatasetAccess(datasetId, userId);
+    await this.assertDatasetAccess(datasetId, user);
     const version = await this.findVersion(datasetId, versionId);
 
     const page = PythonRowsSchema.parse(
@@ -319,12 +345,12 @@ export class DatasetVersionAuthorizedService {
 
   /** Preview writes nothing — no job, no version row, no object. */
   async previewService(
-    userId: string,
+    user: Auth.UserPayload,
     datasetId: string,
     versionId: string,
     dto: PreviewVersionDto,
   ) {
-    await this.assertDatasetAccess(datasetId, userId);
+    await this.assertDatasetAccess(datasetId, user);
     const version = await this.findVersion(datasetId, versionId);
 
     const preview = PythonPreviewSchema.parse(
@@ -357,12 +383,12 @@ export class DatasetVersionAuthorizedService {
    * polls the job for progress.
    */
   async startCleanJobService(
-    userId: string,
+    user: Auth.UserPayload,
     datasetId: string,
     versionId: string,
     dto: StartCleanJobDto,
   ) {
-    await this.assertDatasetAccess(datasetId, userId);
+    await this.assertDatasetAccess(datasetId, user);
     await this.findVersion(datasetId, versionId);
 
     const job = await this.prisma.preprocessingJob.create({
@@ -378,7 +404,7 @@ export class DatasetVersionAuthorizedService {
           operations: dto.operations,
           precision: dto.precision,
         },
-        createdById: userId,
+        createdById: user.id,
       },
     });
 
@@ -392,8 +418,12 @@ export class DatasetVersionAuthorizedService {
     };
   }
 
-  async getJobService(userId: string, datasetId: string, jobId: string) {
-    await this.assertDatasetAccess(datasetId, userId);
+  async getJobService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    jobId: string,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
     const job = await this.prisma.preprocessingJob.findFirst({
       where: { id: jobId, datasetId },
     });
@@ -428,8 +458,12 @@ export class DatasetVersionAuthorizedService {
     };
   }
 
-  async cancelJobService(userId: string, datasetId: string, jobId: string) {
-    await this.assertDatasetAccess(datasetId, userId);
+  async cancelJobService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    jobId: string,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
     const job = await this.prisma.preprocessingJob.findFirst({
       where: { id: jobId, datasetId },
     });
@@ -477,8 +511,12 @@ export class DatasetVersionAuthorizedService {
    * the new run mints a fresh versionId. Reusing the old one risks colliding
    * with an orphan artifact the failed run already wrote to that immutable key.
    */
-  async retryJobService(userId: string, datasetId: string, jobId: string) {
-    await this.assertDatasetAccess(datasetId, userId);
+  async retryJobService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    jobId: string,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
     const previous = await this.prisma.preprocessingJob.findFirst({
       where: { id: jobId, datasetId },
     });
@@ -508,7 +546,7 @@ export class DatasetVersionAuthorizedService {
         // The runner increments on start, so the new row carries the previous
         // count forward rather than restarting at zero.
         attempts: previous.attempts,
-        createdById: userId,
+        createdById: user.id,
       },
     });
 

@@ -1,14 +1,12 @@
 import { atom } from 'jotai'
 import type { SavedDataSource } from '@/lib/mock-data-sources'
 import {
-  buildRawDataset,
   type Dataset,
   type ScalerMethod,
   type TagPipeline,
 } from '@/lib/preprocessing'
 import { applyFeatures, type FeatureConfig } from '@/lib/feature-engineering'
-import { EMPTY_PIPELINE_CONFIG, MATERIALIZE_EPOCH } from '@/lib/pipeline-config'
-import { PERIOD_TO_RANGE } from '@/store/model-pipeline'
+import { EMPTY_PIPELINE_CONFIG } from '@/lib/pipeline-config'
 import type { SavedDataset } from '@/store/datasets'
 import type {
   ConditionalRule,
@@ -172,6 +170,27 @@ export const dwModeAtom = atom<DwWizardMode>('create')
 /** Dataset id being edited (mode === 'edit'); Save routes to update, not create. */
 export const dwEditingDatasetIdAtom = atom<string>('')
 
+/**
+ * The saved dataset being edited, in full.
+ *
+ * The id alone is not enough: hydrating real rows needs `currentVersionId` and
+ * `pipelineConfig` to choose between reading the committed artifact,
+ * materialising one, and falling back to synthetic rows.
+ */
+export const dwEditingDatasetAtom = atom<SavedDataset | null>(null)
+
+/**
+ * Where the rows in `dwRawDatasetAtom` actually came from.
+ *
+ * `'synthetic'` means GENERATED, not read from the source. The UI is required
+ * to say so: invented numbers look entirely plausible in a table, and that
+ * indistinguishability is the failure mode this slice exists to remove.
+ */
+export const dwRowSourceAtom = atom<'stored' | 'synthetic' | null>(null)
+
+/** Why synthetic rows were used, for the banner. Null unless synthetic. */
+export const dwSyntheticReasonAtom = atom<string | null>(null)
+
 export interface InitDatasetWizardSeed {
   name: string
   description: string
@@ -228,6 +247,12 @@ export const initDatasetWizardAtom = atom(
     set(dwHighestUnlockedAtom, 1)
     set(dwModeAtom, 'create')
     set(dwEditingDatasetIdAtom, '')
+    // Row provenance is per-wizard-run. Left behind, a previous EDIT session's
+    // 'synthetic' verdict makes the banner accuse a fresh create — whose rows
+    // come from a live fetch — of showing invented numbers.
+    set(dwEditingDatasetAtom, null)
+    set(dwRowSourceAtom, null)
+    set(dwSyntheticReasonAtom, null)
   },
 )
 
@@ -271,6 +296,11 @@ export const resetDatasetWizardAtom = atom(null, (_get, set) => {
   set(dwHighestUnlockedAtom, 1)
   set(dwModeAtom, 'create')
   set(dwEditingDatasetIdAtom, '')
+  // Same reason as initDatasetWizardAtom: this runs right after Save, and the
+  // next wizard run must not inherit this one's provenance verdict.
+  set(dwEditingDatasetAtom, null)
+  set(dwRowSourceAtom, null)
+  set(dwSyntheticReasonAtom, null)
 })
 
 /**
@@ -329,16 +359,19 @@ export const initDatasetWizardForEditAtom = atom(
     // re-fetched), so summary params are not persisted in the recipe — reset to
     // defaults rather than reading a field that older recipes never stored.
     set(dwFetchConfigAtom, { ...DEFAULT_FETCH_CONFIG })
-    set(
-      dwRawDatasetAtom,
-      buildRawDataset(
-        baseTags,
-        PERIOD_TO_RANGE[config.timeRange],
-        MATERIALIZE_EPOCH,
-        tagConstants,
-      ),
-    )
-    set(dwFetchStateAtom, { status: 'done', progress: 100 })
+    // Rows are NOT seeded here any more. This used to call `buildRawDataset`,
+    // which regenerates synthetic readings from a seed — so editing a dataset
+    // showed invented numbers that merely resembled the saved one.
+    //
+    // `useDatasetEditHydration` fills these from the committed artifact (or
+    // materialises one), and falls back to synthetic rows only when the recipe
+    // cannot be replayed — with a banner saying so. Left `loading` rather than
+    // `done` so the wizard shows progress instead of an empty table.
+    set(dwRawDatasetAtom, EMPTY_DATASET)
+    set(dwFetchStateAtom, { status: 'fetching', progress: 0 })
+    set(dwEditingDatasetAtom, dataset)
+    set(dwRowSourceAtom, null)
+    set(dwSyntheticReasonAtom, null)
 
     // Step 3 — Preprocessing (EDITABLE surface).
     set(dwCropRangeAtom, config.cropRange)

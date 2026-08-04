@@ -17,6 +17,7 @@ import { WorkspacePlantModule } from './api/v1/workspace-plant/workspace.plant.m
 import { ModelModule } from './api/v1/model/model.module';
 import { DataSourceModule } from './api/v1/data-source/data-source.module';
 import { DatasetModule } from './api/v1/dataset/dataset.module';
+import { DatasetVersionModule } from './api/v1/dataset-version/dataset-version.module';
 
 @Module({
   imports: [
@@ -52,6 +53,7 @@ import { DatasetModule } from './api/v1/dataset/dataset.module';
     ModelModule,
     DataSourceModule,
     DatasetModule,
+    DatasetVersionModule,
   ],
   providers: [
     {

@@ -25,8 +25,10 @@ import {
  * A separate controller from `DatasetAuthorizedController` rather than more
  * routes on it: these paths use owner-or-member workspace access, while the
  * CRUD routes filter by creator. Keeping them apart makes that difference
- * visible instead of hiding two access rules behind one class. Both share the
- * `authorized/dataset` prefix; the segments below are all new.
+ * visible instead of hiding two access rules behind one class. It now also
+ * lives in its own module (DatasetVersionModule) — the two halves share no
+ * code, only this prefix. Both keep the `authorized/dataset` prefix, so the
+ * split changed no URL; the segments below are all new.
  *
  * Thin by design (CLAUDE.md §5) — every method delegates.
  */
@@ -44,7 +46,7 @@ export class DatasetVersionAuthorizedController {
     @Users() user: Auth.UserPayload,
     @Param('id') id: string,
   ) {
-    return this.service.listVersionsService(user.id, id);
+    return this.service.listVersionsService(user, id);
   }
 
   @Post('/:id/versions')
@@ -60,7 +62,7 @@ export class DatasetVersionAuthorizedController {
     @Param('id') id: string,
     @Body() body: CreateRawVersionDto,
   ) {
-    return this.service.createRawVersionService(user.id, id, body);
+    return this.service.createRawVersionService(user, id, body);
   }
 
   @Get('/:id/versions/:versionId/rows')
@@ -72,7 +74,7 @@ export class DatasetVersionAuthorizedController {
     @Param('versionId') versionId: string,
     @Query() query: ListRowsDto,
   ) {
-    return this.service.listRowsService(user.id, id, versionId, query);
+    return this.service.listRowsService(user, id, versionId, query);
   }
 
   @Post('/:id/versions/:versionId/preview')
@@ -89,7 +91,7 @@ export class DatasetVersionAuthorizedController {
     @Param('versionId') versionId: string,
     @Body() body: PreviewVersionDto,
   ) {
-    return this.service.previewService(user.id, id, versionId, body);
+    return this.service.previewService(user, id, versionId, body);
   }
 
   @Post('/:id/versions/:versionId/clean')
@@ -106,7 +108,7 @@ export class DatasetVersionAuthorizedController {
     @Param('versionId') versionId: string,
     @Body() body: StartCleanJobDto,
   ) {
-    return this.service.startCleanJobService(user.id, id, versionId, body);
+    return this.service.startCleanJobService(user, id, versionId, body);
   }
 
   @Get('/:id/jobs/:jobId')
@@ -117,7 +119,7 @@ export class DatasetVersionAuthorizedController {
     @Param('id') id: string,
     @Param('jobId') jobId: string,
   ) {
-    return this.service.getJobService(user.id, id, jobId);
+    return this.service.getJobService(user, id, jobId);
   }
 
   @Post('/:id/jobs/:jobId/cancel')
@@ -128,7 +130,7 @@ export class DatasetVersionAuthorizedController {
     @Param('id') id: string,
     @Param('jobId') jobId: string,
   ) {
-    return this.service.cancelJobService(user.id, id, jobId);
+    return this.service.cancelJobService(user, id, jobId);
   }
 
   @Post('/:id/jobs/:jobId/retry')
@@ -144,6 +146,6 @@ export class DatasetVersionAuthorizedController {
     @Param('id') id: string,
     @Param('jobId') jobId: string,
   ) {
-    return this.service.retryJobService(user.id, id, jobId);
+    return this.service.retryJobService(user, id, jobId);
   }
 }

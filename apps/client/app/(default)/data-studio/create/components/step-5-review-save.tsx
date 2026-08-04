@@ -15,6 +15,9 @@ import { applyFeatures, selectColumns } from '@/lib/feature-engineering'
 import { datasetQuality } from '@/lib/data-quality'
 import type { PipelineConfig } from '@/lib/pipeline-config'
 import { datasetService } from '@/services/dataset'
+import { datasetVersionService } from '@/services/dataset-version'
+import { materializeBlocker } from '@/hooks/dataset/use-dataset-version-rows'
+import { toPiTime } from '@/lib/dataset-fetch'
 import {
   dwNameAtom,
   dwDescriptionAtom,
@@ -59,6 +62,10 @@ export function Step5ReviewSave({ nav }: Props) {
   const resetWizard = useSetAtom(resetDatasetWizardAtom)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  // Save has two server phases: the dataset row, then the stored artifact.
+  // Tracked separately so the button can name the slow one — materialising
+  // re-fetches the whole window from the source and can run for minutes.
+  const [storing, setStoring] = useState(false)
 
   const {
     cropRange,
@@ -142,18 +149,59 @@ export function Step5ReviewSave({ nav }: Props) {
         mode === 'edit'
           ? await datasetService.update(editingDatasetId, body)
           : await datasetService.create(body)
-      setSaved(true)
       toast.success(
         mode === 'edit'
           ? `Dataset "${res.data.name}" updated`
           : `Dataset "${res.data.name}" created`,
       )
+
+      // Store the rows as a Parquet artifact so every later reader — Edit, the
+      // model wizard — gets the user's REAL data instead of a regenerated
+      // stand-in. Gated on `currentVersionId` being null so an edit-save never
+      // mints a redundant second RAW version: the recipe may have changed, the
+      // source window did not.
+      if (res.data.currentVersionId === null) {
+        await storeRows(res.data.id, pipelineConfig)
+      }
+
+      setSaved(true)
       resetWizard()
       router.push('/data-studio')
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to save dataset')
     } finally {
       setSaving(false)
+      setStoring(false)
+    }
+  }
+
+  /**
+   * Materialise V1 from the saved recipe. Best-effort by design: the dataset
+   * row is already committed, so a fetch that fails must not fail the save —
+   * it is reported, and `useDatasetVersionRows` retries on the next Edit-open.
+   */
+  const storeRows = async (datasetId: string, config: PipelineConfig) => {
+    const blocker = materializeBlocker(config)
+    if (blocker) {
+      toast.info(`Rows not stored: ${blocker}`)
+      return
+    }
+
+    setStoring(true)
+    try {
+      await datasetVersionService.createRaw(datasetId, {
+        sourceId: Object.keys(config.sourceFetchConfigs)[0]!,
+        tags: config.baseTags!,
+        startTime: toPiTime(config.customDateRange!.from),
+        endTime: toPiTime(config.customDateRange!.to),
+      })
+      toast.success('Rows stored')
+    } catch (err) {
+      toast.warning(
+        `Dataset saved, but its rows could not be stored: ${
+          err instanceof Error ? err.message : 'the source could not be read'
+        }`,
+      )
     }
   }
 
@@ -251,11 +299,13 @@ export function Step5ReviewSave({ nav }: Props) {
         ) : (
           <>
             <Save className="h-4 w-4" />
-            {saving
-              ? 'Saving…'
-              : mode === 'edit'
-                ? 'Save Changes'
-                : 'Save Dataset'}
+            {storing
+              ? 'Storing rows…'
+              : saving
+                ? 'Saving…'
+                : mode === 'edit'
+                  ? 'Save Changes'
+                  : 'Save Dataset'}
           </>
         )}
       </Button>
