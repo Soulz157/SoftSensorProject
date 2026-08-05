@@ -168,19 +168,26 @@ Model Wizard additionally reads
 
 Primary Goal
 
-Implement DS-LAKE-003
+Implement DS-LAKE-006
 
-Expected Deliverables
+Feature Preset Runtime
 
-- Draft Artifact API
-- Bronze Artifact Writer
-- MinIO Integration
-- Progress Tracking
+- Upload Excel Template
+- Parse Workbook
+- Generate Runtime JSON
+- Store Runtime JSON in MinIO
+- Register Metadata
+- Compare Dataset Tags
+- Auto Mapping
+- Queue Feature Engineering
 
 Do NOT
 
-- Create DatasetVersion
-- Save Dataset
-- Commit Model
+- Commit Dataset.
+- Create DatasetVersion.
+- Commit Model.
+- Modify original uploaded files.
+- Store runtime preset in the database.
+- Duplicate artifact data between Database and MinIO.
 
-until Save Dataset is executed.
+Only metadata belongs in the database.

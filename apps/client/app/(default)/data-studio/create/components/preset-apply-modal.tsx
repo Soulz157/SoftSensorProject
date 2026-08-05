@@ -307,7 +307,8 @@ export function PresetApplyManager({
 
       <SheetContent
         side="right"
-        className="flex w-[82vw]! max-w-2xl flex-col sm:max-w-5xl"
+        className="flex flex-col w-[90vw] sm:max-w-3xl"
+        style={{ maxWidth: '768px', width: '100%' }}
       >
         <SheetHeader>
           <SheetTitle className="flex items-center gap-2">
