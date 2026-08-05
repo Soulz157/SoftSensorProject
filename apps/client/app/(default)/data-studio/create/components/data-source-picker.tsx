@@ -70,14 +70,15 @@ export function SourceCard({
           >
             <Icon className="h-4.5 w-4.5" />
           </span>
-          <div className="min-w-0">
+          <div className="min-w-0 ">
             <p className="truncate text-sm font-semibold text-foreground">
               {source.name}
             </p>
-            <p className="text-[11px] font-medium text-muted-foreground">
-              {label}
-            </p>
           </div>
+
+          <p className="text-[11px] font-medium text-muted-foreground">
+            {label}
+          </p>
         </div>
         <div className="flex items-center gap-1.5">
           {onEdit && (
@@ -119,8 +120,8 @@ export function SourceCard({
           </span>
         </div>
       </div>
-      <div className="space-y-0.5">
-        <p className="truncate font-mono text-xs text-foreground">
+      <div className="space-y-0.5 ">
+        <p className="break-all truncate font-mono text-xs text-foreground">
           {source.host}
           {source.dbName ? `/${source.dbName}` : ''}
         </p>

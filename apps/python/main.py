@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from config import settings
 from intergrations.pi_http import install_pi_timeouts
-from routers import data, tags, data_source, preprocess
+from routers import data, tags, data_source, preprocess, presets
 
 
 DESCRIPTION = """
@@ -31,6 +31,13 @@ tags_metadata = [
         "description": (
             "Data cleaning over stored dataset artifacts — preview before "
             "apply. Preview never writes."
+        ),
+    },
+    {
+        "name": "Presets",
+        "description": (
+            "Soft-sensor feature presets — import an engineering workbook and "
+            "store one JSON document per unit/config."
         ),
     },
     {
@@ -118,6 +125,7 @@ def create_app() -> FastAPI:
     app.include_router(tags)
     app.include_router(data_source)
     app.include_router(preprocess)
+    app.include_router(presets)
 
     app.add_exception_handler(RequestValidationError, redacted_validation_handler)
 

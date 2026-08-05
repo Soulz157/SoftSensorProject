@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
-import { CheckCircle2, Layers, Save } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Layers, Save } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -34,6 +34,8 @@ import {
   dwTagConstantsAtom,
   dwModeAtom,
   dwEditingDatasetIdAtom,
+  dwFeaturePresetAtom,
+  dwTargetTagAtom,
   resetDatasetWizardAtom,
 } from '@/store/dataset-studio'
 import type { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipeline-nav'
@@ -59,6 +61,8 @@ export function Step5ReviewSave({ nav }: Props) {
   const tagConstants = useAtomValue(dwTagConstantsAtom)
   const mode = useAtomValue(dwModeAtom)
   const editingDatasetId = useAtomValue(dwEditingDatasetIdAtom)
+  const featurePreset = useAtomValue(dwFeaturePresetAtom)
+  const targetTag = useAtomValue(dwTargetTagAtom)
   const resetWizard = useSetAtom(resetDatasetWizardAtom)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -107,6 +111,15 @@ export function Step5ReviewSave({ nav }: Props) {
     scalerConfigs,
   ])
 
+  // Loud, non-blocking: a soft-sensor dataset with every X and no Y is exactly
+  // the failure this feature exists to prevent, but the wizard legitimately
+  // supports assembling X now and joining lab Y later — hard-blocking Save
+  // would make that workflow impossible. Every workbook target is a `.lab`
+  // tag absent from PI by construction, so this is expected, not exceptional.
+  const targetMissing = Boolean(
+    targetTag && !finalDataset.tags.includes(targetTag),
+  )
+
   const handleSave = async () => {
     if (!name.trim() || !workspaceId) return
     setSaving(true)
@@ -129,6 +142,10 @@ export function Step5ReviewSave({ nav }: Props) {
       // dataset deterministically without re-running Step 1/2.
       baseTags,
       tagConstants,
+      // Preset provenance, so re-opening this recipe in edit mode shows where
+      // the equations came from. Both undefined when no preset was applied.
+      featurePreset: featurePreset ?? undefined,
+      targetTag: targetTag ?? undefined,
     }
 
     const body = {
@@ -157,10 +174,14 @@ export function Step5ReviewSave({ nav }: Props) {
 
       // Store the rows as a Parquet artifact so every later reader — Edit, the
       // model wizard — gets the user's REAL data instead of a regenerated
-      // stand-in. Gated on `currentVersionId` being null so an edit-save never
-      // mints a redundant second RAW version: the recipe may have changed, the
-      // source window did not.
-      if (res.data.currentVersionId === null) {
+      // stand-in. Gated on `currentArtifactId` being null so an edit-save never
+      // mints a redundant second BRONZE artifact: the recipe may have changed,
+      // the source window did not.
+      //
+      // DS-LAKE-004 moved this off `currentVersionId`. That pointer now stays
+      // null until Save Dataset creates a version, so testing it here would
+      // have re-fetched the whole source window on EVERY edit-save.
+      if (!res.data.currentArtifactId) {
         await storeRows(res.data.id, pipelineConfig)
       }
 
@@ -270,6 +291,35 @@ export function Step5ReviewSave({ nav }: Props) {
           </p>
         </div>
       </div>
+
+      {featurePreset && (
+        <p className="text-xs text-muted-foreground">
+          Built from preset:{' '}
+          <span className="font-mono text-foreground">
+            {featurePreset.name}
+          </span>
+        </p>
+      )}
+
+      {targetMissing && (
+        // Loud through placement + icon, not colour: amber/red are reserved
+        // for plant operating state (DESIGN.md §2), and an unjoined lab target
+        // is a data-workflow state, not one. Deliberately NOT disabling Save —
+        // assembling X now and joining lab Y later is a legitimate workflow.
+        <div className="flex items-start gap-2.5 rounded-xl border border-border bg-muted/40 p-3">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+          <div className="space-y-0.5 text-xs">
+            <p className="font-medium text-foreground">
+              Target <span className="font-mono">{targetTag}</span> is not in
+              this dataset
+            </p>
+            <p className="text-muted-foreground">
+              This dataset can be saved, but it cannot train a model until the
+              target is supplied — typically by CSV upload or lab ingestion.
+            </p>
+          </div>
+        </div>
+      )}
 
       <div className="space-y-1.5">
         <p className="text-xs font-medium">Included sources</p>

@@ -71,7 +71,10 @@ model User {
   dataSources         DataSource[]
   datasets            Dataset[]
   datasetVersions     DatasetVersion[]
+  datasetArtifacts    DatasetArtifact[]
+  datasetDrafts       DatasetDraft[]
   preprocessingJobs   PreprocessingJob[]
+  presetImports       FeaturePresetImport[]
 }
 
 model Account {
@@ -108,6 +111,8 @@ model Workspace {
   edges        Edge[]
   plans        WorkspacePlant[]
   datasets     Dataset[]
+  datasetDrafts DatasetDraft[]
+  presetImports FeaturePresetImport[]
 
   @@index([ownerId])
 }
@@ -269,15 +274,9 @@ model DataSource {
   type     String
   host     String @default("")
   username String @default("")
-  // AES-256-GCM ciphertext of the connection secret (password / API key /
-  // bearer token). Never plaintext, never returned by the API. See
-  // apps/backend/src/lib/crypto.ts.
   secretCiphertext String @default("")
   dbName           String @default("")
   status           String @default("connected")
-  // Non-secret, type-specific connection fields:
-  //   sql  → { port, driver }
-  //   rest → { baseUrl, endpoint, method, authType, apiKeyName, headers }
   config      Json?
   createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
   createdById String
@@ -305,23 +304,105 @@ model Dataset {
   updatedAt      DateTime  @updatedAt
   models         Model[]
 
-  /// Immutable materialised row artifacts (raw -> clean -> feature).
-  versions         DatasetVersion[]
-  jobs             PreprocessingJob[]
+  versions  DatasetVersion[]
+  jobs      PreprocessingJob[]
+  artifacts DatasetArtifact[]
+
   /// Version the wizard hydrates from. Null for every pre-existing dataset,
   /// which is why the client must keep a fallback until they are backfilled.
+  ///
+  /// The FK was MISSING until DS-LAKE-002: migration 20260801163509 added this
+  /// column with a bare ADD COLUMN and no AddForeignKey, so it was a dangling
+  /// pointer. NoAction (not Cascade/SetNull) matches the DatasetVersion.parent
+  /// convention and avoids a cascade cycle — deleting a Dataset cascades to its
+  /// versions, and this constraint is checked at end-of-statement by which time
+  /// the referencing Dataset row is gone too.
   currentVersionId String?
+  currentVersion   DatasetVersion? @relation("DatasetCurrentVersion", fields: [currentVersionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  /// Artifact the wizard hydrates rows from. Replaces currentVersionId as the
+  /// hydration pointer once DS-LAKE-004 lands; both coexist during migration.
+  currentArtifactId String?
+  currentArtifact   DatasetArtifact? @relation("DatasetCurrentArtifact", fields: [currentArtifactId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([workspaceId, name])
   @@index([workspaceId])
   @@index([createdById])
 }
 
-/// Which stage of the pipeline produced a version.
 enum DatasetVersionStage {
   RAW
   CLEAN
   FEATURE
+}
+
+enum DatasetDraftStatus {
+  ACTIVE
+  SAVED
+  ABANDONED
+}
+
+/// A dataset being built in the wizard, before it is worth persisting.
+///
+/// Exists so the four processing stages can run as real async jobs — with
+/// progress, cancellation and retry — WITHOUT creating a Dataset row that would
+/// be orphaned the moment the user closes the tab. Artifacts and jobs hang off
+/// a draft; Save Dataset promotes the draft by ADOPTING those artifacts rather
+/// than regenerating them.
+model DatasetDraft {
+  id          String    @id @default(uuid())
+  name        String?
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  /// Sources the wizard may read. This is the draft's answer to
+  /// `Dataset.sourceIds`, and it is the guard that stops a caller naming an
+  /// arbitrary DataSource id and having the server connect with that source's
+  /// decrypted credentials.
+  sourceIds String[]
+
+  status DatasetDraftStatus @default(ACTIVE)
+
+  /// Latest artifact in the chain, for wizard hydration.
+  currentArtifactId String?
+
+  /// Set when the draft is promoted, so a saved dataset is traceable back to
+  /// the run that produced it.
+  savedDatasetId String?
+
+  createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  artifacts DatasetArtifact[]
+  jobs      PreprocessingJob[]
+
+  @@index([workspaceId])
+  @@index([createdById])
+  @@index([status])
+}
+
+/// Which Lakehouse layer produced an artifact.
+///
+/// This is the ARTIFACT axis. DatasetVersion.versionNumber is the VERSION axis.
+/// The two were conflated on DatasetVersion.stage, which is exactly why every
+/// intermediate stage used to create a Dataset Version.
+enum DatasetArtifactType {
+  BRONZE
+  SILVER
+  GOLD
+  FINAL
+}
+
+/// Registry lifecycle of a saved dataset version. Promotion moves a row through
+/// these states and changes NOTHING else — no artifact is copied or rewritten.
+enum DatasetStatus {
+  DRAFT
+  VALIDATED
+  ACTIVE
+  DEPRECATED
+  ARCHIVED
 }
 
 enum PreprocessingJobStatus {
@@ -370,9 +451,91 @@ model DatasetVersion {
   jobsAsSource PreprocessingJob[] @relation("JobSource")
   jobsAsResult PreprocessingJob[] @relation("JobResult")
 
+  /// Back-relation for Dataset.currentVersionId, which finally has a real FK.
+  currentOf Dataset[] @relation("DatasetCurrentVersion")
+
   @@unique([datasetId, versionNumber])
   @@index([datasetId])
   @@index([parentVersionId])
+}
+
+/// One immutable Lakehouse stage output, stored as Parquet in object storage.
+/// Postgres holds metadata and a pointer only — never the rows.
+///
+/// Created freely, once per stage per run. Creating one of these is NOT a
+/// Dataset Version: DS-LAKE-009 reserves that for Save Dataset. It is also not
+/// a Model commit — CLAUDE.md §8 reserves that for Save Model.
+model DatasetArtifact {
+  id String @id @default(uuid())
+
+  /// EXACTLY ONE of datasetId / draftId is set — enforced by a CHECK
+  /// constraint in the migration, because Prisma cannot express it. Both
+  /// columns are nullable at the column level so that a draft artifact can
+  /// exist before any Dataset does; the CHECK is what makes "never neither"
+  /// true. An artifact starts owned by a draft and is ADOPTED (datasetId set,
+  /// draftId kept for traceability) at Save — never copied, never rewritten.
+  datasetId String?
+  dataset   Dataset? @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  draftId   String?
+  draft     DatasetDraft? @relation(fields: [draftId], references: [id], onDelete: Cascade)
+
+  /// Groups one wizard run's BRONZE -> SILVER -> GOLD -> FINAL chain, so a
+  /// re-run is a new chain rather than a mutation of the previous one.
+  runId String
+
+  /// Lineage. Null for a BRONZE root. NoAction matches DatasetVersion.parent.
+  parentArtifactId String?
+  parent           DatasetArtifact?  @relation("ArtifactLineage", fields: [parentArtifactId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  children         DatasetArtifact[] @relation("ArtifactLineage")
+
+  type DatasetArtifactType
+
+  /// e.g. "{datasetId}/artifacts/{artifactId}/data.parquet". Legacy rows
+  /// backfilled from DatasetVersion keep the old "{datasetId}/{versionId}.parquet".
+  objectKey String
+  format    String @default("parquet")
+
+  /// sha256 of the stored object, captured at write time by DS-LAKE-003.
+  /// Empty ONLY for rows backfilled from the pre-checksum DatasetVersion table.
+  checksum      String @default("")
+  schemaVersion Int    @default(1)
+
+  /// LOGICAL tag count — excludes `timestamp` and every `__status` sidecar.
+  columnCount  Int   @default(0)
+  featureCount Int   @default(0)
+  rowCount     Int   @default(0)
+  missingPct   Float @default(0)
+
+  /// 64-bit on purpose: DatasetVersion.sizeBytes is a 32-bit Int, and a 396 MB
+  /// artifact is already documented (preview_service.py), so the old column
+  /// tops out around 2.1 GB.
+  sizeBytes BigInt @default(0)
+
+  /// Operations that produced THIS artifact from its parent.
+  operations  Json
+  /// Per-column min/max/mean/nullCount captured at write time.
+  columnStats Json?
+
+  /// Sidecar object keys written beside the data. featureSpecKey is set on GOLD
+  /// (DS-LAKE-006), validationKey on FINAL (DS-LAKE-007).
+  featureSpecKey String?
+  validationKey  String?
+  durationMs     Int?
+
+  createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  createdById String
+  createdAt   DateTime @default(now())
+
+  /// Back-relation for Dataset.currentArtifactId.
+  currentOf Dataset[] @relation("DatasetCurrentArtifact")
+
+  jobsAsSource PreprocessingJob[] @relation("JobSourceArtifact")
+  jobsAsResult PreprocessingJob[] @relation("JobResultArtifact")
+
+  @@index([datasetId])
+  @@index([runId])
+  @@index([parentArtifactId])
+  @@index([datasetId, type])
 }
 
 /// Tracks one background preprocessing run.
@@ -382,15 +545,34 @@ model DatasetVersion {
 /// backend restart: startup sweeps any row left RUNNING into FAILED, which is
 /// only correct while a single replica is deployed.
 model PreprocessingJob {
-  id        String  @id @default(uuid())
-  datasetId String
-  dataset   Dataset @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  id String @id @default(uuid())
 
+  /// EXACTLY ONE of datasetId / draftId is set — enforced by a CHECK
+  /// constraint in the migration. Draft-time Bronze/Silver/Gold/Validation runs
+  /// reference a draft; post-save reprocessing references a dataset. Nullable
+  /// at the column level is what lets a job exist before any Dataset does; the
+  /// CHECK is what forbids a job owned by neither.
+  datasetId String?
+  dataset   Dataset? @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  draftId   String?
+  draft     DatasetDraft? @relation(fields: [draftId], references: [id], onDelete: Cascade)
+
+  /// LEGACY version pointers. Superseded by the artifact pointers below; kept
+  /// until DS-LAKE-009 reshapes DatasetVersion, so existing job rows stay
+  /// readable and the build stays green (same discipline as DS-LAKE-002).
   sourceVersionId String?
   sourceVersion   DatasetVersion? @relation("JobSource", fields: [sourceVersionId], references: [id], onDelete: SetNull)
   /// Set only once the run succeeds and the version is committed.
   resultVersionId String?
   resultVersion   DatasetVersion? @relation("JobResult", fields: [resultVersionId], references: [id], onDelete: SetNull)
+
+  /// The artifact this job reads (DS-LAKE-005). For a cleaning run that is the
+  /// BRONZE artifact, and it becomes the SILVER result's parentArtifactId.
+  sourceArtifactId String?
+  sourceArtifact   DatasetArtifact? @relation("JobSourceArtifact", fields: [sourceArtifactId], references: [id], onDelete: SetNull)
+  /// Set only once the run succeeds and the artifact is committed.
+  resultArtifactId String?
+  resultArtifact   DatasetArtifact? @relation("JobResultArtifact", fields: [resultArtifactId], references: [id], onDelete: SetNull)
 
   status PreprocessingJobStatus @default(QUEUED)
   stage  DatasetVersionStage
@@ -417,6 +599,91 @@ model PreprocessingJob {
 
   @@index([datasetId])
   @@index([status])
+}
+
+/// One soft-sensor workbook upload.
+///
+/// Groups the presets it produced, which is what makes a re-upload a NEW import
+/// rather than a mutation of the previous one — the same reason DatasetArtifact
+/// carries a runId. Without it, re-importing a corrected workbook would either
+/// collide with the old rows or silently duplicate them in the picker.
+///
+/// The documents themselves live in object storage under `objectPrefix`;
+/// Postgres holds metadata and a pointer only, like DatasetArtifact.
+model FeaturePresetImport {
+  id          String    @id @default(uuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  fileName String
+  /// Object prefix every document in this import lives under, e.g.
+  /// "feature-presets/{workspaceId}/{importId}/". Built by NestJS — the Python
+  /// service only ever appends a filename to it. Mirrored in
+  /// apps/backend/src/lib/artifact-keys.ts.
+  objectPrefix String
+
+  /// Sheets in the workbook, including the ones that produced nothing.
+  sheetCount Int @default(0)
+  /// Presets written for this import.
+  presetCount Int @default(0)
+  /// Sheets with no `No | Y | X` header. An SD&TA sheet is NOT listed here —
+  /// it is recognised and parsed into sdtaKey, not skipped.
+  skippedSheets String[]
+
+  /// Object key of the shutdown/turnaround cut config, when the workbook had one.
+  sdtaKey String?
+
+  createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  createdById String
+  createdAt   DateTime @default(now())
+
+  presets FeaturePreset[]
+
+  @@index([workspaceId])
+  @@index([createdById])
+}
+
+/// Metadata index over one preset document in object storage.
+///
+/// Exists so the client can list and filter presets without scanning the
+/// bucket. The equations are deliberately NOT copied here: duplicating them
+/// into Postgres would create a second source of truth that can drift from the
+/// object, and the object is the one the wizard actually applies.
+model FeaturePreset {
+  id       String              @id @default(uuid())
+  importId String
+  import   FeaturePresetImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+  /// Denormalised from the import so a workspace-scoped list needs no join.
+  workspaceId String
+
+  /// Slug of sheet + config, e.g. "s-204-no1". Unique per IMPORT, not per
+  /// workspace — the same unit and config legitimately reappear in every
+  /// re-upload, and each upload's copy points at its own object.
+  presetId String
+  /// Process unit. One sheet per unit in the source workbook.
+  unit          String
+  configNo      Int
+  name          String
+  samplingPoint String?
+  /// The lab measurement this preset predicts. Always a `.lab` tag, which is
+  /// why it cannot be required to exist in a PI tag list.
+  targetY String
+
+  objectKey     String
+  equationCount Int    @default(0)
+  rawTagCount   Int    @default(0)
+  /// Deduped union across every feature. Held here so the picker can show
+  /// readiness against a dataset without fetching the document.
+  requiredBaseTags String[]
+  /// True when the sheet declared a target but listed no X rows. Four of the
+  /// nine presets in the reference workbook are like this, so the UI has to be
+  /// able to show them as unusable rather than pretend they do not exist.
+  incomplete Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  @@unique([importId, presetId])
+  @@index([workspaceId])
+  @@index([importId])
 }
 
 model Edge {

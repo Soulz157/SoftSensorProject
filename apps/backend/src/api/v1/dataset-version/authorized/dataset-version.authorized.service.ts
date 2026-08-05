@@ -2,8 +2,9 @@ import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { PrismaService, PrismaTypes } from '@softsensor/prisma';
 import { AppException } from '@softsensor/common';
-import { decryptSecret } from '@/lib/crypto';
 import { postToPython, PYTHON_TIMEOUT } from '@/lib/python-client';
+import { artifactKey } from '@/lib/artifact-keys';
+import { buildSourceBlock } from '@/lib/source-block';
 import { PreprocessingJobService } from './preprocessing-job.service';
 import {
   ArtifactStatsSchema,
@@ -95,6 +96,75 @@ export class DatasetVersionAuthorizedService {
     return version;
   }
 
+  /**
+   * Resolve an id that may be EITHER a DatasetVersion or a DatasetArtifact.
+   *
+   * `GET /:id/versions/:versionId/rows` is kept as a shim so datasets created
+   * before DS-LAKE-004 keep working and `models/create` needs no edits — the
+   * refactor's own checklist requires "Model Training still works without
+   * modification".
+   *
+   * The lookup order is versions first, then artifacts. That is not arbitrary:
+   * DS-LAKE-002's backfill REUSED each version's uuid as its artifact id, so
+   * for a legacy row both tables answer and they point at the same objectKey.
+   * Versions first keeps the legacy path byte-identical to its old behaviour.
+   */
+  /**
+   * Decide which pointer a job row should carry for a given source id.
+   *
+   * Artifacts are checked FIRST here, unlike `findArtifactSource`, and the
+   * difference is deliberate. That helper answers "where are the bytes", where
+   * a legacy row must keep its historical answer. This one answers "what should
+   * this job read", and a new job should prefer the artifact ledger — the
+   * backfill gave legacy rows an artifact twin, so preferring it means the
+   * SILVER result gets a real `parentArtifactId` instead of a null one.
+   */
+  private async resolveJobSource(
+    datasetId: string,
+    id: string,
+  ): Promise<{ artifactId: string | null; versionId: string | null }> {
+    const artifact = await this.prisma.datasetArtifact.findFirst({
+      where: { id, datasetId },
+      select: { id: true },
+    });
+    if (artifact) return { artifactId: artifact.id, versionId: null };
+
+    const version = await this.prisma.datasetVersion.findFirst({
+      where: { id, datasetId },
+      select: { id: true },
+    });
+    if (version) return { artifactId: null, versionId: version.id };
+
+    throw new AppException({
+      statusCode: 404,
+      message: 'Dataset version not found',
+      type: 'ERROR',
+    });
+  }
+
+  private async findArtifactSource(
+    datasetId: string,
+    id: string,
+  ): Promise<{ objectKey: string }> {
+    const version = await this.prisma.datasetVersion.findFirst({
+      where: { id, datasetId },
+      select: { objectKey: true },
+    });
+    if (version) return version;
+
+    const artifact = await this.prisma.datasetArtifact.findFirst({
+      where: { id, datasetId },
+      select: { objectKey: true },
+    });
+    if (artifact) return artifact;
+
+    throw new AppException({
+      statusCode: 404,
+      message: 'Dataset version not found',
+      type: 'ERROR',
+    });
+  }
+
   // ── versions ─────────────────────────────────────────────────────────────
 
   async listVersionsService(user: Auth.UserPayload, datasetId: string) {
@@ -162,40 +232,48 @@ export class DatasetVersionAuthorizedService {
       });
     }
 
-    const versionId = randomUUID();
+    const artifactId = randomUUID();
+    // One run groups the whole BRONZE -> SILVER -> GOLD -> FINAL chain. A fetch
+    // starts a new chain, so it mints one unless the caller is continuing an
+    // existing run.
+    const runId = dto.runId ?? randomUUID();
     const startedAt = Date.now();
 
     const stats = ArtifactStatsSchema.parse(
       await postToPython(
         '/v1/preprocess/materialize',
         {
-          target_key: `${datasetId}/${versionId}.parquet`,
-          ...this.buildSourceBlock(source, dto),
+          target_key: artifactKey(datasetId, artifactId),
+          ...buildSourceBlock(source, dto),
         },
         PYTHON_TIMEOUT.preprocess,
       ),
     );
 
-    // Version row and the dataset's pointer to it, together: a committed
+    // Artifact row and the dataset's pointer to it, together: a committed
     // artifact the dataset does not point at is invisible to every read path.
-    const version = await this.prisma.$transaction(async (tx) => {
-      const previous = await tx.datasetVersion.findFirst({
-        where: { datasetId },
-        orderBy: { versionNumber: 'desc' },
-        select: { versionNumber: true },
-      });
-      const created = await tx.datasetVersion.create({
+    //
+    // NO DatasetVersion is created here, and `currentVersionId` is not touched.
+    // That is the whole point of DS-LAKE-004: fetching raw data is a pipeline
+    // stage, not a save. A Dataset Version is created only by Save Dataset
+    // (DS-LAKE-009).
+    const artifact = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.datasetArtifact.create({
         data: {
-          id: versionId,
+          id: artifactId,
           datasetId,
-          versionNumber: (previous?.versionNumber ?? 0) + 1,
-          stage: 'RAW',
+          runId,
+          // A bronze artifact is a lineage ROOT — it comes from the source
+          // system, not from another artifact.
+          parentArtifactId: null,
+          type: 'BRONZE',
           objectKey: stats.object_key,
+          checksum: stats.checksum,
           rowCount: stats.row_count,
           columnCount: stats.column_count,
           missingPct: stats.missing_pct,
-          sizeBytes: stats.size_bytes,
-          // A raw version is produced by a FETCH, not by operations.
+          sizeBytes: BigInt(stats.size_bytes),
+          // A bronze artifact is produced by a FETCH, not by operations.
           operations: [],
           durationMs: Date.now() - startedAt,
           createdById: user.id,
@@ -203,108 +281,25 @@ export class DatasetVersionAuthorizedService {
       });
       await tx.dataset.update({
         where: { id: datasetId },
-        data: { currentVersionId: created.id },
+        data: { currentArtifactId: created.id },
       });
       return created;
     });
 
     return {
       statusCode: 201,
-      message: 'Raw dataset version created successfully',
+      message: 'Raw dataset artifact created successfully',
       type: 'SUCCESS' as const,
       data: {
-        id: version.id,
-        versionNumber: version.versionNumber,
-        stage: version.stage,
-        rowCount: version.rowCount,
-        columnCount: version.columnCount,
-        missingPct: version.missingPct,
+        id: artifact.id,
+        runId: artifact.runId,
+        type: artifact.type,
+        checksum: artifact.checksum,
+        rowCount: artifact.rowCount,
+        columnCount: artifact.columnCount,
+        missingPct: artifact.missingPct,
       },
     };
-  }
-
-  /**
-   * Map a stored DataSource onto the connector's credential contract.
-   *
-   * The secret is decrypted here and lives only for the duration of the call —
-   * the same handling as `data-source.connect.service.ts`. It is never returned
-   * to the browser and never logged. Note that the browser cannot supply
-   * credentials on this route at all: `CreateRawVersionSchema` has no field for
-   * them, deliberately.
-   */
-  private buildSourceBlock(
-    source: {
-      type: string;
-      host: string;
-      username: string;
-      dbName: string;
-      secretCiphertext: string;
-      config: PrismaTypes.JsonValue;
-    },
-    dto: CreateRawVersionDto,
-  ) {
-    const secret = decryptSecret(source.secretCiphertext);
-
-    if (source.type === 'aveva') {
-      return {
-        pi: {
-          credentials: {
-            api_server: source.host,
-            pi_server: source.dbName,
-            user: source.username,
-            password: secret,
-          },
-          tag_list: dto.tags,
-          start_time: dto.startTime,
-          end_time: dto.endTime,
-          ...(dto.summaryDuration && { summary_duration: dto.summaryDuration }),
-        },
-      };
-    }
-
-    if (source.type === 'sql') {
-      if (!dto.timestampColumn || !dto.table) {
-        throw new AppException({
-          statusCode: 400,
-          message:
-            'A SQL source needs `table` and `timestampColumn` — the canonical ' +
-            'frame is built around a declared time axis.',
-          type: 'ERROR',
-        });
-      }
-      // Per schema.prisma, `config` holds the non-secret {port, driver} for
-      // SQL sources.
-      const config = (source.config ?? {}) as {
-        port?: number;
-        driver?: string;
-      };
-      return {
-        sql: {
-          query: {
-            credentials: {
-              driver: config.driver ?? 'postgres',
-              host: source.host,
-              port: config.port ?? 5432,
-              database: source.dbName,
-              user: source.username,
-              password: secret,
-            },
-            table: dto.table,
-            time_column: dto.timestampColumn,
-            start_time: dto.startTime,
-            end_time: dto.endTime,
-          },
-          timestamp_column: dto.timestampColumn,
-          tags: dto.tags,
-        },
-      };
-    }
-
-    throw new AppException({
-      statusCode: 400,
-      message: `Source type '${source.type}' cannot be materialized yet.`,
-      type: 'ERROR',
-    });
   }
 
   // ── rows + preview ───────────────────────────────────────────────────────
@@ -316,13 +311,14 @@ export class DatasetVersionAuthorizedService {
     query: ListRowsDto,
   ) {
     await this.assertDatasetAccess(datasetId, user);
-    const version = await this.findVersion(datasetId, versionId);
+    // Accepts a version id (legacy) or an artifact id (DS-LAKE-004 onwards).
+    const source = await this.findArtifactSource(datasetId, versionId);
 
     const page = PythonRowsSchema.parse(
       await postToPython(
         '/v1/preprocess/rows',
         {
-          source_key: version.objectKey,
+          source_key: source.objectKey,
           offset: query.offset,
           limit: query.limit,
         },
@@ -389,12 +385,16 @@ export class DatasetVersionAuthorizedService {
     dto: StartCleanJobDto,
   ) {
     await this.assertDatasetAccess(datasetId, user);
-    await this.findVersion(datasetId, versionId);
+    // DS-LAKE-005: the source may be an artifact (normal) or a legacy version.
+    // Resolving which one it is decides which pointer the job row carries —
+    // setting the wrong one strands the job with "no source artifact".
+    const source = await this.resolveJobSource(datasetId, versionId);
 
     const job = await this.prisma.preprocessingJob.create({
       data: {
         datasetId,
-        sourceVersionId: versionId,
+        sourceArtifactId: source.artifactId,
+        sourceVersionId: source.versionId,
         status: 'QUEUED',
         stage: 'CLEAN',
         totalSteps: dto.operations.length,
@@ -538,6 +538,13 @@ export class DatasetVersionAuthorizedService {
     const job = await this.prisma.preprocessingJob.create({
       data: {
         datasetId,
+        // Both pointers are carried forward, not just `sourceVersionId`: a
+        // DS-LAKE-005 job normally resolves its source through the artifact
+        // ledger, and dropping `sourceArtifactId` here left the retried job
+        // with neither pointer set — `PreprocessingJobService.run()` refuses
+        // to run one, so retry silently produced a job that could never
+        // succeed.
+        sourceArtifactId: previous.sourceArtifactId,
         sourceVersionId: previous.sourceVersionId,
         status: 'QUEUED',
         stage: previous.stage,

@@ -20,6 +20,7 @@ import type {
 } from '@/lib/precleanse'
 import { applyFeatures, selectColumns } from '@/lib/feature-engineering'
 import type { FeatureConfig } from '@/lib/feature-engineering'
+import type { PresetSummary } from '@/lib/feature-preset'
 import { PERIOD_TO_RANGE } from '@/store/model-pipeline'
 import type {
   FetchPeriod,
@@ -62,6 +63,20 @@ export interface PipelineConfig {
   baseTags?: string[]
   /** Per-tag constant for Manual/CSV tags — needed to reconstruct their series. */
   tagConstants?: Record<string, number>
+  /**
+   * Provenance of an applied soft-sensor preset, so re-opening the recipe in
+   * edit mode shows where the equations came from. Optional — most recipes
+   * were never built from a preset.
+   */
+  featurePreset?: PresetSummary
+  /**
+   * The preset's target (Y), independent of `baseTags`/dataset `tags`: it may
+   * legitimately be absent from both when the lab measurement has not been
+   * joined yet. Null and undefined both mean "no preset target" — kept
+   * nullable rather than defaulted to '' so the wizard atom and the persisted
+   * recipe agree on what "absent" looks like.
+   */
+  targetTag?: string | null
 }
 
 /** Fixed clock so a saved recipe re-derives identical rows on every call. */

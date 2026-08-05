@@ -43,6 +43,31 @@ export interface UseDatasetStudioFetchResult extends FetchState {
 
 const EMPTY_DATASET: Dataset = { tags: [], rows: [] }
 
+async function runPool<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+  signal: AbortSignal,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+
+  let cursor = 0
+
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (!signal.aborted) {
+        const index = cursor++
+
+        if (index >= items.length) return
+
+        results[index] = await fn(items[index]!)
+      }
+    }),
+  )
+
+  return results
+}
+
 /** Base fetch body (everything except the batch's `tagList`) + resolved source
  * + full tag list, captured on `start` so `retryFailed` can reissue identical
  * requests without re-reading the wizard controls. */
@@ -101,6 +126,7 @@ export function useDatasetStudioFetch(): UseDatasetStudioFetchResult {
       const ctx = contextRef.current
       if (!ctx) return
 
+      controllerRef.current?.abort()
       const controller = new AbortController()
       controllerRef.current = controller
 
@@ -111,80 +137,110 @@ export function useDatasetStudioFetch(): UseDatasetStudioFetchResult {
       const runStartedAt = Date.now()
       let batchesDoneThisRun = 0
 
-      // Seed the bar from work already done (retryFailed after 4/6 succeeded
-      // must not flash back to 0%).
       setFetchState({
         status: 'fetching',
         progress: Math.round((completedBatches / seed.totalBatches) * 100),
       })
 
-      for (const batch of batches) {
-        if (controller.signal.aborted) break
-        setProgress(prev => ({ ...prev, currentBatchTags: batch }))
+      let mergeQueue = Promise.resolve()
 
-        try {
-          const res = await dataSourceService.fetchData<PiDataFetchResponse>(
-            ctx.sourceId,
-            { ...ctx.bodyBase, tagList: batch },
-            controller.signal,
-          )
-          // Fresh object every write — jotai bails on Object.is-equal values,
-          // and the overlay is applied to the MERGED dataset (not per batch) so
-          // constant tags cover rows added by later batches too.
-          acc = mergeDataset(acc, piResponseToDataset(res.data, batch))
-          const next = applyConstantOverlay(
-            { tags: [...acc.tags], rows: acc.rows.map(r => ({ ...r })) },
-            tagConstants,
-            ctx.allTags,
-          )
-          setRawDataset(next)
+      await runPool(
+        batches,
+        4,
+        async batch => {
+          if (controller.signal.aborted) return
 
-          completedBatches += 1
-          completedTags += batch.length
-          batchesDoneThisRun += 1
-          const elapsed = Date.now() - runStartedAt
-          const remaining = batches.length - batchesDoneThisRun
-          const etaMs =
-            batchesDoneThisRun > 0 && remaining > 0
-              ? Math.round((elapsed / batchesDoneThisRun) * remaining)
-              : 0
+          const batchSet = new Set(batch)
           setProgress(prev => ({
             ...prev,
-            completedBatches,
-            completedTags,
-            currentBatchTags: [],
-            etaMs,
+            currentBatchTags: prev.currentBatchTags.filter(
+              tag => !batchSet.has(tag),
+            ),
           }))
-          setFetchState({
-            status: 'fetching',
-            progress: Math.round((completedBatches / seed.totalBatches) * 100),
-          })
-        } catch (err: unknown) {
-          if (
-            controller.signal.aborted ||
-            (err instanceof DOMException && err.name === 'AbortError')
-          ) {
-            break
+
+          let res: PiDataFetchResponse
+          try {
+            const response =
+              await dataSourceService.fetchData<PiDataFetchResponse>(
+                ctx.sourceId,
+                { ...ctx.bodyBase, tagList: batch },
+                controller.signal,
+              )
+            res = response.data
+          } catch (err: unknown) {
+            if (
+              controller.signal.aborted ||
+              (err instanceof DOMException && err.name === 'AbortError')
+            ) {
+              return
+            }
+            failedThisRun.push(batch)
+            setProgress(prev => ({
+              ...prev,
+              currentBatchTags: [],
+              failedBatches: [...prev.failedBatches, batch],
+            }))
+            return
           }
-          // Non-abort failure: record the batch and keep going so one bad batch
-          // never loses the tags that would have succeeded after it.
-          failedThisRun.push(batch)
-          setProgress(prev => ({
-            ...prev,
-            currentBatchTags: [],
-            failedBatches: [...prev.failedBatches, batch],
-          }))
-        }
-      }
 
-      controllerRef.current = null
+          // --- PHASE 2: ส่งเข้า Queue เพื่อ Merge ทีละตัว (Sequential) ---
+          // Worker จะเอา Task มาต่อคิวกันที่นี่ ทำให้ไม่มีทางเกิด Race Condition กับตัวแปร acc
+          mergeQueue = mergeQueue
+            .then(async () => {
+              if (controller.signal.aborted) return
+
+              // 1. อัปเดต Dataset (ปลอดภัย เพราะทำทีละคิว)
+              acc = mergeDataset(acc, piResponseToDataset(res, batch))
+              setRawDataset(
+                applyConstantOverlay({ ...acc }, tagConstants, ctx.allTags),
+              )
+
+              completedBatches += 1
+              completedTags += batch.length
+              batchesDoneThisRun += 1
+
+              const elapsed = Date.now() - runStartedAt
+              const remaining = batches.length - batchesDoneThisRun
+              const etaMs =
+                batchesDoneThisRun > 0 && remaining > 0
+                  ? Math.round((elapsed / batchesDoneThisRun) * remaining)
+                  : 0
+
+              setProgress(prev => ({
+                ...prev,
+                completedBatches,
+                completedTags,
+                currentBatchTags: [],
+                etaMs,
+              }))
+
+              setFetchState({
+                status: 'fetching',
+                progress: Math.round(
+                  (completedBatches / seed.totalBatches) * 100,
+                ),
+              })
+            })
+            .catch(err => {
+              console.error('Error merging batch:', err)
+              failedThisRun.push(batch)
+
+              setProgress(prev => ({
+                ...prev,
+                currentBatchTags: [],
+                failedBatches: [...prev.failedBatches, batch],
+              }))
+              controller.abort()
+            })
+        },
+        controller.signal,
+      )
+
+      await mergeQueue
+
+      if (controllerRef.current === controller) controllerRef.current = null
 
       if (controller.signal.aborted) {
-        // Cancel = discard. Settle to idle (NOT error, so the destructive alert
-        // never fires) and clear the partial dataset — the idle branch renders
-        // the "Ready to fetch" card, not the table, and step-2 advance is gated
-        // on status==='done', so a truncated dataset must not linger in the atom
-        // where a later goTo could carry it into preprocessing/save.
         setProgress({ ...EMPTY_FETCH_PROGRESS })
         setRawDataset(EMPTY_DATASET)
         setFetchState({ status: 'idle', progress: 0 })
@@ -192,6 +248,7 @@ export function useDatasetStudioFetch(): UseDatasetStudioFetchResult {
       }
 
       setProgress(prev => ({ ...prev, currentBatchTags: [], etaMs: null }))
+
       if (failedThisRun.length > 0) {
         setFetchState({
           status: 'error',

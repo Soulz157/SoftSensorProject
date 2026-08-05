@@ -93,7 +93,7 @@ export function RawReadingsTable({
   }
 
   return (
-    <div className="relative max-h-90 overflow-auto rounded-lg border border-border">
+    <div className="relative max-h-96 overflow-auto rounded-lg border border-border">
       <Table className="min-w-max table-fixed caption-bottom border-separate border-spacing-0 text-sm">
         <TableHeader>
           <TableRow className="hover:bg-transparent">

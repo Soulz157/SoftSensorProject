@@ -18,6 +18,10 @@ import type { CutoffOp } from '@/types/cutoff'
 import type { Cell, DataRow, Dataset } from '@/lib/preprocessing'
 
 export type CropRange = { from: string; to: string } | null
+export interface ClipBound {
+  min: number
+  max: number
+}
 
 /**
  * Per-tag value (Y-axis) crop bounds. A row is dropped when the keyed tag's
@@ -27,6 +31,8 @@ export type CropRange = { from: string; to: string } | null
  */
 export type ValueCrop = Record<string, { min: number; max: number }>
 
+export type ValueClip = Record<string, ClipBound>
+
 /**
  * A user-dragged exclusion (the inverse of `crop`). `time` removes whole rows
  * whose timestamp is INSIDE `[from, to]`; `value` drops the keyed tag's cell
@@ -35,6 +41,16 @@ export type ValueCrop = Record<string, { min: number; max: number }>
 export interface RangeExclusion {
   time: { from: string; to: string } | null
   value: { tag: string; min: number; max: number } | null
+}
+
+export interface ClipImpact {
+  /** จำนวนจุดที่ต่ำกว่า min */
+  below: number
+  /** จำนวนจุดที่สูงกว่า max */
+  above: number
+  total: number
+  /** จำนวนจุดที่มีค่า (ไม่นับ null/NaN) ใช้เป็นตัวหาร */
+  points: number
 }
 
 /** `mark` → set the matched cell's status to `Bad`; `drop` → remove the row. */
@@ -65,6 +81,7 @@ export interface PrecleanseConfig {
   crop: CropRange
   /** Per-tag Y-axis crop bounds. Optional — omitting it is a no-op. */
   valueCrop?: ValueCrop
+  valueClip?: ValueClip
   /** Dragged exclusion bands (remove-inside). Optional — omitting it is a no-op. */
   exclusions?: RangeExclusion[]
   conditional: ConditionalRule[]
@@ -74,11 +91,87 @@ export interface PrecleanseConfig {
 export const EMPTY_PRECLEANSE_CONFIG: PrecleanseConfig = {
   crop: null,
   valueCrop: {},
+  valueClip: {},
   exclusions: [],
   conditional: [],
   statistical: [],
 }
 
+export function clipImpact(
+  dataset: Dataset,
+  tag: string,
+  min: number,
+  max: number,
+): ClipImpact {
+  let below = 0
+  let above = 0
+  let points = 0
+  for (const row of dataset.rows) {
+    const cell = row.cells[tag]
+    if (!cell || cell.status !== 'Good' || !Number.isFinite(cell.value))
+      continue
+    points++
+    if (cell.value < min) below++
+    else if (cell.value > max) above++
+  }
+  return { below, above, total: below + above, points }
+}
+
+export function applyValueClip(dataset: Dataset, clip: ValueClip): Dataset {
+  const tags = Object.keys(clip).filter(t => dataset.tags.includes(t))
+  if (tags.length === 0) return dataset
+
+  let touched = false
+  const rows = dataset.rows.map(row => {
+    let nextCells: (typeof row)['cells'] | null = null
+
+    for (const tag of tags) {
+      const cell = row.cells[tag]
+      if (!cell || !Number.isFinite(cell.value)) continue
+
+      const { min, max } = clip[tag]!
+      const clamped =
+        cell.value < min ? min : cell.value > max ? max : cell.value
+      if (clamped === cell.value) continue
+
+      nextCells ??= { ...row.cells }
+      // เพิ่ม marker ไว้ที่นี่ถ้า cell type รองรับ (ดูหมายเหตุ)
+      nextCells[tag] = { ...cell, value: clamped }
+      touched = true
+    }
+
+    return nextCells ? { ...row, cells: nextCells } : row
+  })
+
+  return touched ? { ...dataset, rows } : dataset
+}
+
+export function percentileBounds(
+  dataset: Dataset,
+  tag: string,
+  loPct: number,
+  hiPct: number,
+): ClipBound | null {
+  const vals: number[] = []
+  for (const row of dataset.rows) {
+    const cell = row.cells[tag]
+    if (cell && cell.status === 'Good' && Number.isFinite(cell.value)) {
+      vals.push(cell.value)
+    }
+  }
+  if (vals.length === 0) return null
+  vals.sort((a, b) => a - b)
+
+  const at = (p: number): number => {
+    const idx = ((vals.length - 1) * p) / 100
+    const lo = Math.floor(idx)
+    const hi = Math.ceil(idx)
+    return lo === hi
+      ? vals[lo]!
+      : vals[lo]! + (vals[hi]! - vals[lo]!) * (idx - lo)
+  }
+  return { min: at(loPct), max: at(hiPct) }
+}
 /**
  * Index of the row whose timestamp is closest to `targetMs` (epoch ms).
  * `timestamps` are ascending ISO strings. Linear min-abs-diff scan — datasets
@@ -279,6 +372,21 @@ export function precleanse(raw: Dataset, cfg: PrecleanseConfig): Dataset {
       else markCell(cell)
     }
   }
+  if (cfg.valueClip) {
+    for (const [tag, bound] of Object.entries(cfg.valueClip)) {
+      for (const row of rows) {
+        const cell = row.cells[tag]
+        if (!cell || cell.status !== 'Good') continue
+        if (cell.value < bound.min) {
+          cell.value = bound.min
+          cell.clipped = true
+        } else if (cell.value > bound.max) {
+          cell.value = bound.max
+          cell.clipped = true
+        }
+      }
+    }
+  }
 
   return { tags: raw.tags, rows }
 }
@@ -300,6 +408,7 @@ export interface PrecleanseRemoved {
   conditional: number
   /** Cells flagged/dropped by statistical rules. */
   statistical: number
+  clipped: number
 }
 
 export interface PrecleanseBreakdown {
@@ -330,6 +439,14 @@ function goodCellsLost(a: Dataset, b: Dataset): number {
     }
   }
   return lost
+}
+
+function clippedCells(ds: Dataset): number {
+  let n = 0
+  for (const row of ds.rows) {
+    for (const tag of ds.tags) if (row.cells[tag]?.clipped) n++
+  }
+  return n
 }
 
 /**
@@ -379,6 +496,7 @@ export function precleanseBreakdown(
       exclude: afterValue.rows.length - afterExclude.rows.length,
       statistical: goodCellsLost(afterExclude, afterStat),
       conditional: goodCellsLost(afterStat, full),
+      clipped: clippedCells(full),
     },
     keptRows: full.rows.length,
     totalRows,

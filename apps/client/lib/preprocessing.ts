@@ -18,6 +18,7 @@ import type { SensorChartRow } from '@/hooks/use-sensor-readings'
 export interface Cell {
   value: number
   status: SensorQuality
+  clipped?: boolean
 }
 
 export interface DataRow {

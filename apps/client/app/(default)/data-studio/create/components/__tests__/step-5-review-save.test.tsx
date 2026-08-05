@@ -12,8 +12,11 @@ import {
   dwCustomDateRangeAtom,
   dwRawDatasetAtom,
   dwModeAtom,
+  dwFeaturePresetAtom,
+  dwTargetTagAtom,
 } from '@/store/dataset-studio'
 import type { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipeline-nav'
+import type { PresetSummary } from '@/lib/feature-preset'
 
 /**
  * The Save path is what actually answers "no .parquet appears in MinIO", and
@@ -65,8 +68,19 @@ const nav = {
   scalerConfigs: {},
 } as unknown as UseDatasetPipelineNavResult
 
-const saved = (currentVersionId: string | null) => ({
-  data: { id: 'ds-1', name: 'Boiler', currentVersionId },
+/**
+ * DS-LAKE-004 moved the re-materialise gate from `currentVersionId` to
+ * `currentArtifactId`. `currentVersionId` stays null until Save Dataset creates
+ * a version, so gating on it would re-fetch the whole source window on every
+ * edit-save. Both pointers are set so the fixture matches a real response.
+ */
+const saved = (currentArtifactId: string | null) => ({
+  data: {
+    id: 'ds-1',
+    name: 'Boiler',
+    currentVersionId: null,
+    currentArtifactId,
+  },
 })
 
 let store: ReturnType<typeof createStore>
@@ -115,10 +129,10 @@ describe('Step5ReviewSave — storing rows on save', () => {
     })
   })
 
-  it('does NOT re-materialise a dataset that already has a version', async () => {
-    // The edit-save case. Re-running it would mint a redundant second RAW
-    // version: the recipe may have changed, the source window did not.
-    createDataset.mockResolvedValue(saved('ver-existing'))
+  it('does NOT re-materialise a dataset that already has an artifact', async () => {
+    // The edit-save case. Re-running it would mint a redundant second BRONZE
+    // artifact: the recipe may have changed, the source window did not.
+    createDataset.mockResolvedValue(saved('artifact-existing'))
 
     await clickSave()
 
@@ -147,5 +161,109 @@ describe('Step5ReviewSave — storing rows on save', () => {
 
     await waitFor(() => expect(createDataset).toHaveBeenCalledTimes(1))
     expect(createRaw).not.toHaveBeenCalled()
+  })
+})
+
+const SUMMARY: PresetSummary = {
+  id: 'row-1',
+  presetId: 'u-101-no1',
+  unit: 'U-101',
+  configNo: 1,
+  name: 'U-101 No.1 — U101FBP.lab',
+  samplingPoint: 'RU-101 Overhead',
+  targetY: 'U101FBP.lab',
+  objectKey: 'feature-presets/ws-1/imp-1/u-101-no1.json',
+  equationCount: 1,
+  rawTagCount: 0,
+  requiredBaseTags: ['GG001.PV'],
+  incomplete: false,
+}
+
+describe('Step5ReviewSave — feature preset provenance', () => {
+  it('shows which preset the dataset was built from', () => {
+    store.set(dwFeaturePresetAtom, SUMMARY)
+
+    render(
+      <Provider store={store}>
+        <Step5ReviewSave nav={nav} />
+      </Provider>,
+    )
+
+    expect(screen.getByText(/built from preset/i)).toBeVisible()
+    expect(screen.getByText(SUMMARY.name)).toBeVisible()
+  })
+
+  it('renders nothing about a preset when none was applied', () => {
+    render(
+      <Provider store={store}>
+        <Step5ReviewSave nav={nav} />
+      </Provider>,
+    )
+
+    expect(screen.queryByText(/built from preset/i)).not.toBeInTheDocument()
+  })
+
+  it('warns loudly, but leaves Save enabled, when the target is not in the dataset', () => {
+    // The one invariant this whole feature exists to protect: a preset with
+    // every X and no Y must not be silently saveable AS IF complete, but the
+    // wizard legitimately supports joining lab Y later — so Save must not be
+    // blocked either.
+    store.set(dwTargetTagAtom, 'U101FBP.lab')
+    store.set(dwRawDatasetAtom, { tags: ['GG001.PV'], rows: [] })
+
+    render(
+      <Provider store={store}>
+        <Step5ReviewSave nav={nav} />
+      </Provider>,
+    )
+
+    expect(screen.getByText(/is not in this dataset/i)).toBeVisible()
+    expect(screen.getByRole('button', { name: /save dataset/i })).toBeEnabled()
+  })
+
+  it('does not warn when the target is already in the dataset', () => {
+    store.set(dwTargetTagAtom, 'U101FBP.lab')
+    store.set(dwRawDatasetAtom, {
+      tags: ['GG001.PV', 'U101FBP.lab'],
+      rows: [],
+    })
+
+    render(
+      <Provider store={store}>
+        <Step5ReviewSave nav={nav} />
+      </Provider>,
+    )
+
+    expect(
+      screen.queryByText(/is not in this dataset/i),
+    ).not.toBeInTheDocument()
+  })
+
+  it('persists preset provenance and target into the saved recipe', async () => {
+    createDataset.mockResolvedValue(saved(null))
+    store.set(dwFeaturePresetAtom, SUMMARY)
+    store.set(dwTargetTagAtom, 'U101FBP.lab')
+
+    await clickSave()
+
+    await waitFor(() => expect(createDataset).toHaveBeenCalledTimes(1))
+    const body = createDataset.mock.calls[0]![0] as {
+      pipelineConfig: { featurePreset?: PresetSummary; targetTag?: string }
+    }
+    expect(body.pipelineConfig.featurePreset).toEqual(SUMMARY)
+    expect(body.pipelineConfig.targetTag).toBe('U101FBP.lab')
+  })
+
+  it('omits both fields from the recipe when no preset was applied', async () => {
+    createDataset.mockResolvedValue(saved(null))
+
+    await clickSave()
+
+    await waitFor(() => expect(createDataset).toHaveBeenCalledTimes(1))
+    const body = createDataset.mock.calls[0]![0] as {
+      pipelineConfig: { featurePreset?: PresetSummary; targetTag?: string }
+    }
+    expect(body.pipelineConfig.featurePreset).toBeUndefined()
+    expect(body.pipelineConfig.targetTag).toBeUndefined()
   })
 })

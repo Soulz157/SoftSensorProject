@@ -6,8 +6,17 @@ spelled package would be worse than one consistent typo.
 
 Artifact layout
 ---------------
-    datasets/{datasetId}/{versionId}.parquet        committed, IMMUTABLE
-    datasets/{datasetId}/tmp/{jobId}/{n}.parquet    per-op intermediates
+    datasets/{datasetId}/artifacts/{artifactId}/data.parquet       committed, IMMUTABLE
+    datasets/{datasetId}/artifacts/{artifactId}/manifest.json      sidecar
+    datasets/{datasetId}/artifacts/{artifactId}/feature_spec.json  GOLD only
+    datasets/{datasetId}/artifacts/{artifactId}/validation_report.json  FINAL only
+    datasets/{datasetId}/tmp/{jobId}/{n}.parquet                   per-op intermediates
+
+    datasets/{datasetId}/{versionId}.parquet                       LEGACY, still read
+
+`version_key` builds the legacy layout and is kept because artifacts written
+before DS-LAKE-003 live there and are immutable — they cannot be moved. Nothing
+writes that shape any more.
 
 Frame layout (the canonical value+status shape)
 -----------------------------------------------
@@ -22,8 +31,11 @@ Good cells only. A plain value frame would lose that and silently change results
 
 from __future__ import annotations
 
+import hashlib
 import io
+import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 import pandas as pd
@@ -45,6 +57,22 @@ STATUS_GOOD = 0
 STATUS_BAD = 1
 STATUS_QUESTIONABLE = 2
 
+#: Bumped when the physical frame layout changes in a way a reader must know
+#: about. Recorded on every artifact so an old object stays interpretable.
+SCHEMA_VERSION = 1
+
+MANIFEST_FILENAME = "manifest.json"
+FEATURE_SPEC_FILENAME = "feature_spec.json"
+VALIDATION_REPORT_FILENAME = "validation_report.json"
+DATA_FILENAME = "data.parquet"
+
+#: Root prefix for imported soft-sensor feature presets. A prefix inside the
+#: existing bucket rather than a bucket of its own: `ensure_bucket()` has no
+#: runtime caller in this service, so a second bucket would need new bootstrap
+#: while a prefix needs none.
+PRESET_ROOT = "feature-presets/"
+SDTA_FILENAME = "sdta.json"
+
 
 class ObjectStoreError(RuntimeError):
     """Storage failure with a message safe to surface to the caller."""
@@ -52,7 +80,7 @@ class ObjectStoreError(RuntimeError):
 
 @dataclass(frozen=True)
 class ArtifactStats:
-    """What NestJS records on the DatasetVersion row after a write.
+    """What NestJS records on the artifact row after a write.
 
     Snake_case here and on the wire (`schemas.preprocess.ArtifactStatsResponse`),
     like every other endpoint in this service; NestJS maps to its camelCase
@@ -66,12 +94,16 @@ class ArtifactStats:
     column_count: int
     size_bytes: int
     missing_pct: float
+    #: sha256 of the Parquet bytes exactly as stored. This is what makes
+    #: immutability checkable rather than merely promised: the write refusal
+    #: stops an overwrite, and this proves the bytes never changed anyway.
+    checksum: str
 
 
 def tag_columns(df: pd.DataFrame) -> list[str]:
     """Logical tags only — excludes `timestamp` and every status sidecar.
 
-    `columnCount` on DatasetVersion and the preview's "feature count" must both
+    `columnCount` on the artifact row and the preview's "feature count" must both
     use this definition or they disagree on screen: the frame carries 2N+1
     physical columns for N logical tags.
     """
@@ -163,6 +195,17 @@ def missing_pct(df: pd.DataFrame) -> float:
     return round(non_good / total * 100, 4)
 
 
+def sha256_hex(payload: bytes) -> str:
+    """Checksum of the stored bytes.
+
+    Deliberately hashes the SERIALISED Parquet, not the DataFrame: that is what
+    actually lands in storage, so re-reading the object and re-hashing it
+    reproduces this value. Hashing the frame instead would make the checksum
+    depend on pandas internals and stop being verifiable against the object.
+    """
+    return hashlib.sha256(payload).hexdigest()
+
+
 class ObjectStore:
     """Thin Parquet-over-MinIO wrapper.
 
@@ -248,7 +291,32 @@ class ObjectStore:
             column_count=len(tag_columns(df)),
             size_bytes=len(payload),
             missing_pct=missing_pct(df),
+            checksum=sha256_hex(payload),
         )
+
+    def put_json(self, key: str, document: Any, *, overwrite: bool = True) -> int:
+        """Write a JSON sidecar (manifest, feature spec, validation report).
+
+        Overwrites by default, unlike `put_frame`. Sidecars describe the data
+        object rather than being it: a validation report may legitimately be
+        rewritten for an artifact whose bytes never change. The DATA is what is
+        immutable.
+        """
+        if not overwrite and self.exists(key):
+            raise ObjectStoreError(f"Refusing to overwrite sidecar '{key}'.")
+
+        payload = json.dumps(document, indent=2, sort_keys=True, default=str).encode()
+        try:
+            self._client.put_object(
+                self.bucket,
+                key,
+                io.BytesIO(payload),
+                length=len(payload),
+                content_type="application/json",
+            )
+        except S3Error as err:
+            raise ObjectStoreError(f"Could not write '{key}': {err.code}") from err
+        return len(payload)
 
     # ── read ─────────────────────────────────────────────────────────────
 
@@ -258,6 +326,36 @@ class ObjectStore:
             response = self._client.get_object(self.bucket, key)
             table = pq.read_table(io.BytesIO(response.read()), columns=columns)
             return table.to_pandas()
+        except S3Error as err:
+            raise ObjectStoreError(f"Could not read '{key}': {err.code}") from err
+        finally:
+            if response is not None:
+                response.close()
+                response.release_conn()
+
+    def get_json(self, key: str) -> Any:
+        response = None
+        try:
+            response = self._client.get_object(self.bucket, key)
+            return json.loads(response.read())
+        except S3Error as err:
+            raise ObjectStoreError(f"Could not read '{key}': {err.code}") from err
+        finally:
+            if response is not None:
+                response.close()
+                response.release_conn()
+
+    def checksum_of(self, key: str) -> str:
+        """Re-hash a stored object.
+
+        Lets a caller verify an artifact against its recorded checksum, and lets
+        DS-LAKE-002's backfilled rows — which carry an empty checksum because
+        they predate this field — acquire a real one without inventing anything.
+        """
+        response = None
+        try:
+            response = self._client.get_object(self.bucket, key)
+            return sha256_hex(response.read())
         except S3Error as err:
             raise ObjectStoreError(f"Could not read '{key}': {err.code}") from err
         finally:
@@ -309,9 +407,68 @@ class ObjectStore:
 
 
 # ── key helpers ──────────────────────────────────────────────────────────
+#
+# These are mirrored in TypeScript at apps/backend/src/lib/artifact-keys.ts.
+# Before DS-LAKE-003 the backend rebuilt the same strings inline in three
+# places, so a layout change had four independent chances to be missed. Change
+# both files together.
+
+
+def artifact_prefix(dataset_id: str, artifact_id: str) -> str:
+    return f"{dataset_id}/artifacts/{artifact_id}/"
+
+
+def artifact_key(dataset_id: str, artifact_id: str) -> str:
+    return f"{artifact_prefix(dataset_id, artifact_id)}{DATA_FILENAME}"
+
+
+def manifest_key(dataset_id: str, artifact_id: str) -> str:
+    return f"{artifact_prefix(dataset_id, artifact_id)}{MANIFEST_FILENAME}"
+
+
+def feature_spec_key(dataset_id: str, artifact_id: str) -> str:
+    return f"{artifact_prefix(dataset_id, artifact_id)}{FEATURE_SPEC_FILENAME}"
+
+
+def validation_key(dataset_id: str, artifact_id: str) -> str:
+    return f"{artifact_prefix(dataset_id, artifact_id)}{VALIDATION_REPORT_FILENAME}"
+
+
+def sidecar_key(data_key: str, filename: str) -> str:
+    """Sidecar beside an arbitrary data key.
+
+    Needed because the writer is handed a `target_key` and does not always know
+    the dataset/artifact ids that produced it. Falls back to appending a suffix
+    when the key is not in the artifact layout, so a legacy or tmp key still
+    gets a manifest instead of silently getting none.
+    """
+    if data_key.endswith(f"/{DATA_FILENAME}"):
+        return data_key[: -len(DATA_FILENAME)] + filename
+    return f"{data_key}.{filename}"
+
+
+def preset_import_prefix(workspace_id: str, import_id: str) -> str:
+    """Where one workbook import's documents live.
+
+    Presets are workspace-scoped rather than dataset-scoped: a preset is imported
+    before any dataset exists and is reused across many of them, so it cannot
+    hang off a dataset id like every key above it. The import id groups one
+    upload, which is what makes a re-upload a NEW set of documents rather than a
+    mutation of the previous one.
+    """
+    return f"{PRESET_ROOT}{workspace_id}/{import_id}/"
+
+
+def preset_key(prefix: str, preset_id: str) -> str:
+    return f"{prefix}{preset_id}.json"
+
+
+def sdta_key(prefix: str) -> str:
+    return f"{prefix}{SDTA_FILENAME}"
 
 
 def version_key(dataset_id: str, version_id: str) -> str:
+    """LEGACY layout. Read-only — artifacts written before DS-LAKE-003."""
     return f"{dataset_id}/{version_id}.parquet"
 
 
@@ -321,3 +478,42 @@ def tmp_key(dataset_id: str, job_id: str, step: int) -> str:
 
 def tmp_prefix(dataset_id: str, job_id: str) -> str:
     return f"{dataset_id}/tmp/{job_id}/"
+
+
+# ── manifest ─────────────────────────────────────────────────────────────
+
+
+def build_manifest(
+    stats: ArtifactStats,
+    *,
+    artifact_type: str | None = None,
+    parent_key: str | None = None,
+    operations: Any = None,
+    duration_ms: int | None = None,
+) -> dict[str, Any]:
+    """The self-describing record written beside every data object.
+
+    Exists so an artifact is interpretable from object storage ALONE. Postgres
+    holds the same facts, but the refactor's own success criterion is that a
+    dataset is reproducible from MinIO without it.
+
+    `artifact_type` and `parent_key` are optional because the writer does not
+    learn them until DS-LAKE-004 threads them through the request. Null here
+    means "not recorded", which is honest; inventing BRONZE for every write
+    would be worse than an absent field.
+    """
+    return {
+        "object_key": stats.object_key,
+        "checksum": stats.checksum,
+        "format": "parquet",
+        "schema_version": SCHEMA_VERSION,
+        "row_count": stats.row_count,
+        "column_count": stats.column_count,
+        "missing_pct": stats.missing_pct,
+        "size_bytes": stats.size_bytes,
+        "artifact_type": artifact_type,
+        "parent_key": parent_key,
+        "operations": operations if operations is not None else [],
+        "duration_ms": duration_ms,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }

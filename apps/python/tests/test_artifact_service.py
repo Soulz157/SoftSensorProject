@@ -68,6 +68,9 @@ class RecordingStore:
         self.objects: dict[str, pd.DataFrame] = dict(objects or {})
         self.writes: list[str] = []
         self.deleted_prefixes: list[str] = []
+        #: Sidecars land here rather than in `objects`, so a test asserting on
+        #: data writes is never confused by a manifest.
+        self.documents: dict[str, object] = {}
 
     def get_frame(self, key: str) -> pd.DataFrame:
         if key not in self.objects:
@@ -90,7 +93,19 @@ class RecordingStore:
             column_count=len(tag_columns(df)),
             size_bytes=1024,
             missing_pct=missing_pct(df),
+            checksum="0" * 64,
         )
+
+    def put_json(self, key: str, document: object, *, overwrite: bool = True) -> int:
+        """Sidecar write. Mirrors the real store: overwrite ALLOWED by default.
+
+        The refusal rule exists for data objects; a manifest may legitimately be
+        rewritten for an artifact whose bytes never change.
+        """
+        if not overwrite and key in self.documents:
+            raise ObjectStoreError(f"Refusing to overwrite sidecar '{key}'.")
+        self.documents[key] = document
+        return 1
 
     def delete_prefix(self, prefix: str) -> int:
         hits = [k for k in self.objects if k.startswith(prefix)]
@@ -309,3 +324,76 @@ def test_usable_guard_rejects_a_frame_with_no_tags() -> None:
 
 def test_usable_guard_accepts_a_normal_frame() -> None:
     artifact_service.assert_frame_is_usable(frame())
+
+
+# ── manifest sidecar (DS-LAKE-003) ───────────────────────────────────────
+
+
+def _clean_once(store: RecordingStore) -> dict[str, object]:
+    return artifact_service.clean(
+        store,
+        CleanRequest(
+            source_key="ds-1/v1.parquet",
+            target_key="ds-1/artifacts/a2/data.parquet",
+            operations=[CleaningOperation(type="drop_missing")],
+        ),
+    )
+
+
+def test_clean_writes_a_manifest_beside_the_data() -> None:
+    store = RecordingStore({"ds-1/v1.parquet": frame()})
+    _clean_once(store)
+
+    assert "ds-1/artifacts/a2/manifest.json" in store.documents
+    # The manifest must not be mistaken for a data object.
+    assert "ds-1/artifacts/a2/manifest.json" not in store.objects
+
+
+def test_manifest_checksum_matches_the_artifact_it_describes() -> None:
+    store = RecordingStore({"ds-1/v1.parquet": frame()})
+    payload = _clean_once(store)
+
+    manifest = store.documents["ds-1/artifacts/a2/manifest.json"]
+    assert isinstance(manifest, dict)
+    # A manifest whose checksum disagreed with the response would be worse than
+    # no manifest: it would look authoritative while pointing at other bytes.
+    assert manifest["checksum"] == payload["checksum"]
+    assert manifest["object_key"] == payload["object_key"]
+    assert manifest["row_count"] == payload["row_count"]
+
+
+def test_manifest_records_lineage_and_operations() -> None:
+    store = RecordingStore({"ds-1/v1.parquet": frame()})
+    _clean_once(store)
+
+    manifest = store.documents["ds-1/artifacts/a2/manifest.json"]
+    assert isinstance(manifest, dict)
+    # Lineage is the point of the sidecar: an artifact must name its parent so
+    # the chain is reconstructible from object storage alone.
+    assert manifest["parent_key"] == "ds-1/v1.parquet"
+    assert manifest["operations"] == [{"type": "drop_missing"}]
+    assert manifest["schema_version"] == 1
+    assert manifest["format"] == "parquet"
+
+
+def test_materialized_artifact_has_no_parent() -> None:
+    """A materialised artifact is a lineage ROOT, not a child.
+
+    Recording a parent here would invent a relationship: the frame came from PI
+    or SQL, not from another artifact.
+    """
+    store = RecordingStore()
+    stats = ArtifactStats(
+        object_key="ds-1/artifacts/a1/data.parquet",
+        row_count=6,
+        column_count=2,
+        size_bytes=1024,
+        missing_pct=0.0,
+        checksum="b" * 64,
+    )
+    artifact_service._commit(store, stats, 0.0)
+
+    manifest = store.documents["ds-1/artifacts/a1/manifest.json"]
+    assert isinstance(manifest, dict)
+    assert manifest["parent_key"] is None
+    assert manifest["operations"] == []

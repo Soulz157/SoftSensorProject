@@ -9,6 +9,11 @@ import { PrismaService, PrismaTypes } from '@softsensor/prisma';
 import { AppException } from '@softsensor/common';
 import { postToPython, PYTHON_TIMEOUT } from '@/lib/python-client';
 import {
+  tmpKey,
+  tmpPrefix as tmpPrefixFor,
+  artifactKey,
+} from '@/lib/artifact-keys';
+import {
   ArtifactStatsSchema,
   PythonCleanupSchema,
   type ArtifactStats,
@@ -62,7 +67,6 @@ import {
  */
 const STRAGGLER_SWEEP_MS = 30_000;
 
-/** Progress for a step about to start, not one that finished. */
 interface StepProgress {
   completedSteps: number;
   totalSteps: number;
@@ -76,29 +80,14 @@ export class PreprocessingJobService
 {
   private readonly logger = new Logger(PreprocessingJobService.name);
 
-  /** Live cancellation tokens, keyed by job id. Necessarily empty at boot. */
   private readonly running = new Map<string, AbortController>();
 
-  /**
-   * Set once shutdown begins.
-   *
-   * Without it, a shutdown is indistinguishable from a user cancel: both abort
-   * the same token, so `recordFailure` would see `signal.aborted` and write
-   * "Canceled by the user" — and because it runs AFTER
-   * `onApplicationShutdown`'s sweep, that wrong message wins. A restarted
-   * server would then blame a user who never clicked anything.
-   */
   private shuttingDown = false;
 
   constructor(private readonly prisma: PrismaService) {}
 
   // ── lifecycle ────────────────────────────────────────────────────────────
 
-  /**
-   * Any RUNNING row at boot is a lie: this process just started, so nothing can
-   * be running. Left alone, the job sits at RUNNING forever and the UI polls
-   * something that will never move.
-   */
   async onModuleInit() {
     const { count } = await this.prisma.preprocessingJob.updateMany({
       where: { status: 'RUNNING' },
@@ -115,10 +104,6 @@ export class PreprocessingJobService
     }
   }
 
-  /**
-   * Graceful shutdown: abort in-flight work and say so, keeping a job killed by
-   * a deploy distinguishable from one that failed on its own.
-   */
   async onApplicationShutdown() {
     this.shuttingDown = true;
     const ids = [...this.running.keys()];
@@ -138,23 +123,12 @@ export class PreprocessingJobService
 
   // ── control ──────────────────────────────────────────────────────────────
 
-  /**
-   * Fire and forget. The caller has already returned 202, so a rejection here
-   * has nowhere to propagate — it must be caught or it becomes an unhandled
-   * rejection and the job row is left stuck at RUNNING.
-   */
   start(jobId: string): void {
     void this.run(jobId).catch((err: unknown) => {
       this.logger.error(`Job ${jobId} failed outside its own handler`, err);
     });
   }
 
-  /**
-   * Cancellation is cooperative. The token is checked between operations AND
-   * handed to `postToPython`, so an abort interrupts the in-flight HTTP call
-   * instead of waiting up to `PYTHON_TIMEOUT.preprocess` (5 min) for it to
-   * finish. Without that, "cancel" would mean "cancel eventually".
-   */
   cancel(jobId: string): boolean {
     const controller = this.running.get(jobId);
     if (!controller) return false;
@@ -172,10 +146,34 @@ export class PreprocessingJobService
   private async run(jobId: string): Promise<void> {
     const job = await this.prisma.preprocessingJob.findUnique({
       where: { id: jobId },
-      include: { sourceVersion: true },
+      include: { sourceVersion: true, sourceArtifact: true },
     });
-    if (!job?.sourceVersion) {
-      this.logger.error(`Job ${jobId} has no source version; refusing to run.`);
+    // DS-LAKE-005: jobs now read an ARTIFACT. `sourceVersion` is still accepted
+    // so a job row queued before this change still runs rather than being
+    // stranded by a deploy.
+    const sourceObject = job?.sourceArtifact ?? job?.sourceVersion ?? null;
+    if (!job || !sourceObject) {
+      this.logger.error(
+        `Job ${jobId} has no source artifact; refusing to run.`,
+      );
+      return;
+    }
+
+    // Draft-first: a job belongs to a DRAFT while the wizard is open, or to a
+    // DATASET once one exists. That owner also names the object-key namespace,
+    // so draft output lands under drafts/{draftId}/ and cannot collide with a
+    // saved dataset's keys.
+    //
+    // The CHECK constraint guarantees one of the two is set. TypeScript cannot
+    // see a database constraint, and a non-null assertion here would quietly
+    // become a lie if that constraint were ever dropped — so this is a real
+    // runtime guard that refuses the job instead.
+    const scope =
+      job.datasetId ?? (job.draftId ? `drafts/${job.draftId}` : null);
+    if (!scope) {
+      this.logger.error(
+        `Job ${jobId} is owned by neither a dataset nor a draft; refusing to run.`,
+      );
       return;
     }
 
@@ -186,9 +184,13 @@ export class PreprocessingJobService
 
     const startedAt = Date.now();
     // Minted up front so the final step can write directly to its key.
-    const versionId = randomUUID();
-    const versionKey = `${job.datasetId}/${versionId}.parquet`;
-    const tmpPrefix = `${job.datasetId}/tmp/${jobId}/`;
+    const artifactId = randomUUID();
+    // DS-LAKE-005 writes the committed SILVER output into the artifact layout.
+    //
+    // Renamed off `versionKey`/`tmpPrefix` because those are now imported
+    // helpers, and `tmpPrefix` is also a parameter name in `recordFailure`.
+    const committedKey = artifactKey(scope, artifactId);
+    const jobTmpPrefix = tmpPrefixFor(scope, jobId);
 
     await this.prisma.preprocessingJob.update({
       where: { id: jobId },
@@ -203,7 +205,7 @@ export class PreprocessingJobService
     });
 
     try {
-      let sourceKey = job.sourceVersion.objectKey;
+      let sourceKey = sourceObject.objectKey;
       let stats: ArtifactStats | null = null;
 
       for (const [index, operation] of operations.entries()) {
@@ -213,8 +215,8 @@ export class PreprocessingJobService
         // Only the final step writes the committed key; earlier ones go to tmp
         // so a failure leaves each stage intact and inspectable.
         const targetKey = isLast
-          ? versionKey
-          : `${tmpPrefix}${index + 1}.parquet`;
+          ? committedKey
+          : tmpKey(scope, jobId, index + 1);
 
         await this.reportStep(jobId, {
           completedSteps: index,
@@ -251,10 +253,20 @@ export class PreprocessingJobService
         });
       }
 
-      await this.commit(job, versionId, stats, operations, startedAt);
-      await this.clearTmp(tmpPrefix);
+      // The SILVER output joins its BRONZE parent's run, so the whole chain
+      // shares one runId. A legacy version-sourced job has no run to join, so
+      // it starts one rather than inventing a shared id.
+      await this.commit(
+        job,
+        artifactId,
+        stats,
+        operations,
+        startedAt,
+        job.sourceArtifact?.runId ?? randomUUID(),
+      );
+      await this.clearTmp(jobTmpPrefix);
     } catch (err) {
-      await this.recordFailure(jobId, tmpPrefix, controller, err);
+      await this.recordFailure(jobId, jobTmpPrefix, controller, err);
     } finally {
       this.running.delete(jobId);
     }
@@ -268,37 +280,39 @@ export class PreprocessingJobService
   private async commit(
     job: {
       id: string;
-      datasetId: string;
+      datasetId: string | null;
+      draftId: string | null;
       createdById: string;
-      sourceVersionId: string | null;
+      sourceArtifactId: string | null;
     },
-    versionId: string,
+    artifactId: string,
     stats: ArtifactStats,
     operations: CleaningOperation[],
     startedAt: number,
+    runId: string,
   ): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
-      // Numbered INSIDE the transaction so two concurrent jobs on one dataset
-      // cannot read the same max and collide on
-      // @@unique([datasetId, versionNumber]).
-      const previous = await tx.datasetVersion.findFirst({
-        where: { datasetId: job.datasetId },
-        orderBy: { versionNumber: 'desc' },
-        select: { versionNumber: true },
-      });
-
-      const version = await tx.datasetVersion.create({
+      // DS-LAKE-005: this commits a SILVER ARTIFACT, not a DatasetVersion.
+      // A cleaning run is a pipeline stage; only Save Dataset creates a version
+      // (DS-LAKE-009). `currentVersionId` is deliberately not touched.
+      //
+      // The version-number read that used to live here is gone with it: the
+      // artifact table has no per-dataset sequence to collide on, so two
+      // concurrent jobs no longer contend for the same number.
+      const artifact = await tx.datasetArtifact.create({
         data: {
-          id: versionId,
+          id: artifactId,
           datasetId: job.datasetId,
-          parentVersionId: job.sourceVersionId,
-          versionNumber: (previous?.versionNumber ?? 0) + 1,
-          stage: 'CLEAN',
+          draftId: job.draftId,
+          runId,
+          parentArtifactId: job.sourceArtifactId,
+          type: 'SILVER',
           objectKey: stats.object_key,
+          checksum: stats.checksum,
           rowCount: stats.row_count,
           columnCount: stats.column_count,
           missingPct: stats.missing_pct,
-          sizeBytes: stats.size_bytes,
+          sizeBytes: BigInt(stats.size_bytes),
           operations,
           durationMs: Date.now() - startedAt,
           createdById: job.createdById,
@@ -313,15 +327,24 @@ export class PreprocessingJobService
           completedSteps: operations.length,
           currentStep: null,
           estimatedRemainingMs: 0,
-          resultVersionId: version.id,
+          resultArtifactId: artifact.id,
           finishedAt: new Date(),
         },
       });
 
-      await tx.dataset.update({
-        where: { id: job.datasetId },
-        data: { currentVersionId: version.id },
-      });
+      // The pointer follows the owner. A draft-time run advances the DRAFT so
+      // the wizard hydrates from it; only a post-save run touches the Dataset.
+      if (job.datasetId) {
+        await tx.dataset.update({
+          where: { id: job.datasetId },
+          data: { currentArtifactId: artifact.id },
+        });
+      } else if (job.draftId) {
+        await tx.datasetDraft.update({
+          where: { id: job.draftId },
+          data: { currentArtifactId: artifact.id },
+        });
+      }
     });
   }
 

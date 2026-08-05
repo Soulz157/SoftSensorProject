@@ -88,6 +88,10 @@ class ArtifactStatsResponse(BaseModel):
     column_count: int
     size_bytes: int
     missing_pct: float
+    #: sha256 of the stored Parquet bytes. Re-reading the object and re-hashing
+    #: it reproduces this value, which is what makes immutability checkable
+    #: rather than merely promised.
+    checksum: str
     duration_ms: int
 
 

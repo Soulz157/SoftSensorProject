@@ -19,6 +19,14 @@ const datasetSelect = {
   rowCount: true,
   missingPct: true,
   currentVersionId: true,
+  /**
+   * The BRONZE artifact the wizard hydrates rows from (DS-LAKE-004).
+   *
+   * Both pointers ship during the transition: `currentVersionId` is the only
+   * one legacy datasets have, and the client cannot choose a branch without
+   * seeing both.
+   */
+  currentArtifactId: true,
   createdAt: true,
   updatedAt: true,
   createdBy: {

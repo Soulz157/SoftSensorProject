@@ -30,6 +30,14 @@ export interface SavedDataset {
    * a visible banner); treating it as always-present shows an empty dataset.
    */
   currentVersionId: string | null
+  /**
+   * BRONZE artifact to hydrate rows from (DS-LAKE-004).
+   *
+   * Optional because a response cached from before the field existed will not
+   * carry it. Both pointers are read: legacy datasets only ever have
+   * `currentVersionId`, new ones only ever get `currentArtifactId`.
+   */
+  currentArtifactId?: string | null
   /** ISO 8601 */
   createdAt: string
   updatedAt: string

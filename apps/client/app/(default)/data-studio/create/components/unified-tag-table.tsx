@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useSetAtom } from 'jotai'
 import { toast } from 'sonner'
 import { format } from 'date-fns'
 import {
@@ -45,7 +46,13 @@ import {
   type TagQuality,
 } from '@/hooks/dataset/use-dataset-tag-metadata'
 import { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipeline-nav'
+import { dwFeaturePresetAtom, dwTargetTagAtom } from '@/store/dataset-studio'
+import {
+  planPresetApplication,
+  planSdtaApplication,
+} from '@/lib/feature-preset'
 import { SourcePickerSheet } from './source-configs/source-picker-sheet'
+import { PresetApplyManager } from './preset-apply-modal'
 
 const QUALITY_META: Record<
   TagQuality,
@@ -233,6 +240,9 @@ export function UnifiedTagTable({ nav }: Props) {
     getConstant,
     setConstant,
   } = useDatasetTagTable(nav, tagsBySource)
+
+  const setFeaturePreset = useSetAtom(dwFeaturePresetAtom)
+  const setTargetTag = useSetAtom(dwTargetTagAtom)
 
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editValue, setEditValue] = useState('')
@@ -464,6 +474,61 @@ export function UnifiedTagTable({ nav }: Props) {
           <Upload className="h-3.5 w-3.5" />
           Upload CSV
         </Button>
+
+        {/* Rows, not tag names: the preset gate needs each row's status, and a
+            `string[]` cannot tell a healthy tag from one in error. */}
+        <PresetApplyManager
+          rows={rows}
+          onApplyPreset={applied => {
+            const { document, summary, featureConfigs, requiredTags } = applied
+
+            // Queue equations for Step 4. Appended, not replaced: Apply Preset
+            // lives in Step 1, well before Step 4 is normally visited, but a
+            // preset should augment manually authored features, not silently
+            // discard them. Nothing evaluates yet — dwFeaturedDatasetAtom
+            // derives from dwRawDatasetAtom, which is still empty here.
+            nav.setFeatureConfigs(prev => [...prev, ...featureConfigs])
+
+            // Union required base tags (+ target, when it resolves to a
+            // healthy row) into the confirmed selection so Step 2 fetches
+            // exactly what the preset needs.
+            const plan = planPresetApplication(
+              document,
+              requiredTags,
+              nav.selectedTags,
+              rows,
+            )
+            nav.setSelectedTags(plan.selectedTags)
+            setTargetTag(plan.targetTag)
+            setFeaturePreset(summary)
+
+            toast.success(
+              `Applied ${document.name}. ${featureConfigs.length} equation(s) queued for Step 4.`,
+            )
+          }}
+          onApplySdta={sdta => {
+            const plan = planSdtaApplication(sdta, rows)
+
+            // Time exclusions have no functional updater on nav — read then
+            // write. Conditional rules do, so use it rather than duplicating
+            // the read-then-write pattern for no reason.
+            nav.setExclusions([...nav.exclusions, ...plan.exclusions])
+            nav.setConditionalRules(prev => [...prev, ...plan.conditionalRules])
+
+            if (plan.droppedConditions.length > 0) {
+              toast.warning(
+                `Applied cut config, but ${plan.droppedConditions.length} condition(s) were skipped: ` +
+                  plan.droppedConditions
+                    .map(d => `${d.tag} (${d.reason})`)
+                    .join(', '),
+              )
+            } else {
+              toast.success(
+                `Applied ${plan.exclusions.length} exclusion window(s) and ${plan.conditionalRules.length} condition(s) at Step 3.`,
+              )
+            }
+          }}
+        />
 
         <Button
           type="button"

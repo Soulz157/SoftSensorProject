@@ -13,6 +13,7 @@ import type {
   CropRange,
   RangeExclusion,
   StatisticalRule,
+  ValueClip,
   ValueCrop,
 } from '@/lib/precleanse'
 import type {
@@ -25,6 +26,7 @@ import {
   DEFAULT_FETCH_CONFIG,
   type HistoricalFetchConfig,
 } from '@/lib/fetch-config'
+import type { PresetSummary, SdtaConfig } from '@/lib/feature-preset'
 
 export const DW_TOTAL_STEPS = 5
 
@@ -116,6 +118,22 @@ export const dwFetchProgressAtom = atom<FetchProgress>({
 
 export const dwFeatureConfigsAtom = atom<FeatureConfig[]>([])
 
+// Feature Preset — provenance of an applied soft-sensor template (F6/F7).
+// Equations it queued live in dwFeatureConfigsAtom like any other feature; this
+// is display-only ("Applied from preset: …" in Step 4/5) plus the persisted
+// pointer that lets edit mode know a saved dataset came from one.
+export const dwFeaturePresetAtom = atom<PresetSummary | null>(null)
+// The preset's target (Y). Deliberately separate from dwSelectedTagsAtom: every
+// workbook Y is a `.lab` tag absent from a PI-only catalogue, so gating Apply on
+// it would block every preset — see canApply() in lib/feature-preset.ts. Its
+// absence is instead surfaced as a loud, non-blocking warning at Step 5.
+export const dwTargetTagAtom = atom<string | null>(null)
+// SD&TA (shutdown/turnaround) cut config from the same workbook, if it had one.
+// Parsed and available for the opt-in "Apply SD/TA cut config" card; consuming
+// it into dwExclusionsAtom / dwConditionalRulesAtom is FP-8. Not persisted in
+// pipelineConfig — it is import-time state, not part of the saved recipe.
+export const dwSdtaConfigAtom = atom<SdtaConfig | null>(null)
+
 // Raw dataset + engineered feature columns, recomputed live from the recipe.
 // Read-only derived — never writes back to dwRawDatasetAtom (fetch seam).
 // `applyFeatures` returns the raw dataset unchanged when there are no configs.
@@ -124,6 +142,7 @@ export const dwFeaturedDatasetAtom = atom<Dataset>(get =>
 )
 export const dwCropRangeAtom = atom<CropRange>(null)
 export const dwValueCropAtom = atom<ValueCrop>({})
+export const dwValueClipAtom = atom<ValueClip>({})
 // Dragged exclusion bands (Drag-to-Crop "Exclude" mode) — remove-inside spans.
 export const dwExclusionsAtom = atom<RangeExclusion[]>([])
 export const dwConditionalRulesAtom = atom<ConditionalRule[]>([])
@@ -147,6 +166,18 @@ export const dwScalerConfigsAtom = atom<Record<string, ScalerMethod>>({})
 
 // Step 3 — Processing sub-step (3.1 preprocessing / 3.2 imputation)
 export const dwProcessingSubStepAtom = atom<1 | 2>(1)
+
+// Draft-first architecture (DS-LAKE-005/DS-LAKE-004B) — the wizard's
+// server-side owner while no Dataset row exists yet. `dwDraftArtifactIdAtom`
+// is the BRONZE (or latest SILVER) artifact a clean job reads from; both stay
+// null until the first "Save Cleaned Tags" triggers the server sync.
+export const dwDraftIdAtom = atom<string | null>(null)
+export const dwDraftArtifactIdAtom = atom<string | null>(null)
+export interface DraftSyncState {
+  status: 'idle' | 'syncing' | 'synced' | 'error'
+  error?: string
+}
+export const dwDraftSyncStateAtom = atom<DraftSyncState>({ status: 'idle' })
 
 // Shared analysis tag-selection (persistent Tag Sidebar ↔ Data Analysis card).
 // Visibility only — NEVER the dataset-membership set (dwSelectedTagsAtom).
@@ -229,6 +260,9 @@ export const initDatasetWizardAtom = atom(
     set(dwFetchProgressAtom, { ...EMPTY_FETCH_PROGRESS })
     set(dwRawDatasetAtom, EMPTY_DATASET)
     set(dwFeatureConfigsAtom, [])
+    set(dwFeaturePresetAtom, null)
+    set(dwTargetTagAtom, null)
+    set(dwSdtaConfigAtom, null)
     set(dwCropRangeAtom, null)
     set(dwExclusionsAtom, [])
     set(dwValueCropAtom, {})
@@ -281,6 +315,9 @@ export const resetDatasetWizardAtom = atom(null, (_get, set) => {
   set(dwFetchProgressAtom, { ...EMPTY_FETCH_PROGRESS })
   set(dwRawDatasetAtom, EMPTY_DATASET)
   set(dwFeatureConfigsAtom, [])
+  set(dwFeaturePresetAtom, null)
+  set(dwTargetTagAtom, null)
+  set(dwSdtaConfigAtom, null)
   set(dwCropRangeAtom, null)
   set(dwConditionalRulesAtom, [])
   set(dwStatisticalRulesAtom, [])
@@ -391,6 +428,12 @@ export const initDatasetWizardForEditAtom = atom(
     set(dwFeatureConfigsAtom, config.features)
     set(dwSelectedColumnsAtom, config.selectedColumns)
     set(dwScalerConfigsAtom, config.scalers)
+    // Preset provenance + target, if this recipe was built from one. Legacy
+    // recipes predate both fields and hydrate to null, same as baseTags above.
+    set(dwFeaturePresetAtom, config.featurePreset ?? null)
+    set(dwTargetTagAtom, config.targetTag ?? null)
+    // Not persisted (see the atom's own comment) — nothing to hydrate.
+    set(dwSdtaConfigAtom, null)
 
     set(dwProcessingSubStepAtom, 1)
     set(dwHiddenTagsAtom, [])

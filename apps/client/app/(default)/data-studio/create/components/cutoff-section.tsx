@@ -9,6 +9,7 @@ import type {
   PrecleanseRemoved,
   RangeExclusion,
   StatisticalRule,
+  ValueClip,
   ValueCrop,
 } from '@/lib/precleanse'
 import {
@@ -35,6 +36,8 @@ interface Props {
   onCropChange: (range: CropRange) => void
   valueCrop: ValueCrop
   onValueCropChange: (crop: ValueCrop) => void
+  valueClip: ValueClip
+  onValueClipChange?: (clip: ValueClip) => void
   exclusions?: RangeExclusion[]
   onExcludeRange?: (exclusion: RangeExclusion) => void
   onClearExclusions?: () => void
@@ -83,6 +86,8 @@ export function CutOffSection({
   onCropChange,
   valueCrop,
   onValueCropChange,
+  valueClip,
+  onValueClipChange,
   exclusions = [],
   onExcludeRange,
   onClearExclusions,
@@ -155,6 +160,8 @@ export function CutOffSection({
             exclusions={exclusions}
             onExcludeRange={onExcludeRange}
             onClearExclusions={onClearExclusions}
+            valueClip={valueClip}
+            onValueClipChange={onValueClipChange}
             scopeTag={scopeTag}
           />
 

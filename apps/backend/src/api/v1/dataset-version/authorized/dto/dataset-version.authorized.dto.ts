@@ -63,6 +63,13 @@ export const CreateRawVersionSchema = z.object({
   /** SQL sources only — the canonical frame is built around a declared axis. */
   timestampColumn: z.string().optional(),
   table: z.string().optional(),
+  /**
+   * Groups this artifact into an existing BRONZE -> SILVER -> GOLD -> FINAL
+   * chain. Optional: a fetch normally STARTS a run, so the server mints one
+   * when the caller does not supply it. Present so a re-fetch inside a wizard
+   * session can stay in the same run rather than orphaning the lineage.
+   */
+  runId: z.string().uuid().optional(),
 });
 
 export const StartCleanJobSchema = z.object({
@@ -98,6 +105,14 @@ export const ArtifactStatsSchema = z.object({
   column_count: z.number().int().nonnegative(),
   size_bytes: z.number().int().nonnegative(),
   missing_pct: z.number(),
+  /**
+   * sha256 of the stored Parquet bytes, captured at write time.
+   *
+   * Required, not optional: Python sets it on every ArtifactStats return, and
+   * an optional field here would let a future path that forgets it slip past
+   * the parser and persist an artifact whose immutability cannot be checked.
+   */
+  checksum: z.string().length(64),
   duration_ms: z.number().int().nonnegative(),
 });
 

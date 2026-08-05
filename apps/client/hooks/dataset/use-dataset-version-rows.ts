@@ -117,10 +117,18 @@ export function useDatasetVersionRows(
 ): VersionRowsState & { reload: () => void } {
   const enabled = options.enabled ?? true
   // Whether branch 2 may CREATE an artifact. Read-only screens must pass false:
-  // materialising runs a full source fetch, writes a Parquet object, creates a
-  // DatasetVersion row and moves `Dataset.currentVersionId` — minutes of work
-  // and a persistent mutation, which is not something merely opening a tab
-  // should do. With false, branch 2 falls through to synthetic-with-a-reason.
+  // materialising runs a full source fetch and writes a Parquet object —
+  // minutes of work, which is not something merely opening a tab should do.
+  // With false, branch 2 falls through to synthetic-with-a-reason.
+  //
+  // Since DS-LAKE-004 this creates a BRONZE DatasetArtifact, not a
+  // DatasetVersion, and moves `currentArtifactId` rather than
+  // `currentVersionId`. That is what makes materialising on Edit-open
+  // legitimate again: the invariant is "no Dataset VERSION outside Save", and
+  // an artifact is a pipeline stage, not a save. Forcing `materialize: false`
+  // here instead would have been the wrong fix — every legacy dataset has
+  // `currentVersionId = null`, so they would all have fallen through to
+  // synthetic rows, trading an invariant breach for a data-fidelity one.
   const materialize = options.materialize ?? true
   // Which artifact to hydrate from. `'raw'` for anything that REPLAYS the saved
   // recipe — `currentVersionId` points at the newest version, which after a
@@ -193,6 +201,12 @@ export function useDatasetVersionRows(
      * not the newest one — see the `prefer` note above.
      */
     const resolveVersionId = async (): Promise<string | null> => {
+      // DS-LAKE-004: new datasets carry `currentArtifactId` and get no
+      // `currentVersionId` until Save Dataset. The bronze artifact IS the raw
+      // one, so there is no lineage to walk and no version list to fetch —
+      // which also removes the extra round trip the `prefer: 'raw'` path costs.
+      if (dataset.currentArtifactId) return dataset.currentArtifactId
+
       if (!dataset.currentVersionId) return null
       if (prefer === 'current') return dataset.currentVersionId
 
@@ -208,7 +222,7 @@ export function useDatasetVersionRows(
 
     const run = async () => {
       // ── 1. a committed artifact exists ──────────────────────────────────
-      if (dataset.currentVersionId) {
+      if (dataset.currentArtifactId || dataset.currentVersionId) {
         setState({ ...IDLE, status: 'loading' })
         const versionId = await resolveVersionId()
         if (signal.aborted || !versionId) return

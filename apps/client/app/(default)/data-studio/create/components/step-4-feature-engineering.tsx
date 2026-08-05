@@ -11,6 +11,7 @@ import {
 } from '@/lib/feature-engineering'
 import {
   dwFeaturedDatasetAtom,
+  dwFeaturePresetAtom,
   dwRawDatasetAtom,
   dwTimeRangeAtom,
 } from '@/store/dataset-studio'
@@ -35,6 +36,7 @@ interface Props {
  */
 export function Step4FeatureEngineering({ nav }: Props) {
   const raw = useAtomValue(dwRawDatasetAtom)
+  const featurePreset = useAtomValue(dwFeaturePresetAtom)
   const {
     featureConfigs,
     setFeatureConfigs,
@@ -88,6 +90,14 @@ export function Step4FeatureEngineering({ nav }: Props) {
           <p className="text-xs text-muted-foreground">
             Extract, create, scale, and select the columns for your dataset.
           </p>
+          {featurePreset && (
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Applied from preset:{' '}
+              <span className="font-mono text-foreground">
+                {featurePreset.name}
+              </span>
+            </p>
+          )}
         </div>
         <Badge variant="secondary" className="tabular-nums">
           {selectedCount} / {allColumns.length} features

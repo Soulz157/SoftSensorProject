@@ -19,5 +19,10 @@ import { PreprocessingJobService } from './authorized/preprocessing-job.service'
     // RUNNING by a hard kill depends on it being a provider, not a helper.
     PreprocessingJobService,
   ],
+  // Exported so DatasetDraftModule can inject the SAME instance rather than
+  // registering its own copy. Two instances would each run their own boot
+  // sweep and hold a disjoint `running` map — harmless for the sweep, but
+  // architecturally the wrong shape for what is one job runner, not two.
+  exports: [PreprocessingJobService],
 })
 export class DatasetVersionModule {}

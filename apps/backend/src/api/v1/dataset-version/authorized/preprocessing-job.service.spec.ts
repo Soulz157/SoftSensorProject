@@ -29,27 +29,43 @@ const ARTIFACT = {
   column_count: 3,
   size_bytes: 4096,
   missing_pct: 1.5,
+  // Required by ArtifactStatsSchema since DS-LAKE-003. Omitting it made the
+  // zod parse throw on the FIRST clean call, so the runner aborted after one
+  // step and six tests failed on downstream symptoms (wrong call counts, no
+  // committed version) rather than on the actual cause. 64 chars because the
+  // schema pins the length — a shorter string fails for a different reason.
+  checksum: 'a'.repeat(64),
   duration_ms: 120,
 };
 
 interface TxMock {
+  /**
+   * Kept so a test can still assert the runner does NOT touch it. DS-LAKE-005
+   * commits a SILVER artifact; a cleaning run must create no DatasetVersion.
+   */
   datasetVersion: { findFirst: jest.Mock; create: jest.Mock };
+  datasetArtifact: { create: jest.Mock };
   preprocessingJob: { update: jest.Mock };
   dataset: { update: jest.Mock };
+  datasetDraft: { update: jest.Mock };
 }
 
 function buildTx(): TxMock {
+  const echo = () =>
+    jest
+      .fn()
+      .mockImplementation(({ data }: { data: { id: string } }) =>
+        Promise.resolve({ ...data }),
+      );
   return {
     datasetVersion: {
       findFirst: jest.fn().mockResolvedValue({ versionNumber: 1 }),
-      create: jest
-        .fn()
-        .mockImplementation(({ data }: { data: { id: string } }) =>
-          Promise.resolve({ ...data }),
-        ),
+      create: echo(),
     },
+    datasetArtifact: { create: echo() },
     preprocessingJob: { update: jest.fn() },
     dataset: { update: jest.fn() },
+    datasetDraft: { update: jest.fn() },
   };
 }
 
@@ -69,7 +85,8 @@ function buildJob(overrides: Record<string, unknown> = {}) {
     id: 'job-1',
     datasetId: 'ds-1',
     createdById: 'user-1',
-    sourceVersionId: 'v-1',
+    sourceArtifactId: 'a-1',
+    sourceVersionId: null,
     stage: 'CLEAN',
     attempts: 0,
     operations: {
@@ -79,7 +96,11 @@ function buildJob(overrides: Record<string, unknown> = {}) {
       ],
       precision: { 'TI-101': 1 },
     },
-    sourceVersion: { objectKey: 'ds-1/v-1.parquet' },
+    sourceVersion: null,
+    sourceArtifact: {
+      objectKey: 'ds-1/artifacts/a-1/data.parquet',
+      runId: 'run-1',
+    },
     ...overrides,
   };
 }
@@ -156,7 +177,7 @@ describe('PreprocessingJobService — chaining and commit', () => {
     const first = cleans[0][1] as Record<string, unknown>;
     const second = cleans[1][1] as Record<string, unknown>;
 
-    expect(first.source_key).toBe('ds-1/v-1.parquet');
+    expect(first.source_key).toBe('ds-1/artifacts/a-1/data.parquet');
     expect(first.target_key).toBe('ds-1/tmp/job-1/1.parquet');
     // The second step reads what the first WROTE, not the original source.
     expect(second.source_key).toBe('ds-1/tmp/job-1/1.parquet');
@@ -173,7 +194,9 @@ describe('PreprocessingJobService — chaining and commit', () => {
     // tmp may be rewritten by a retry; a committed version key may not.
     expect(first.overwrite).toBe(true);
     expect(last.overwrite).toBe(false);
-    expect(String(last.target_key)).toMatch(/^ds-1\/[0-9a-f-]{36}\.parquet$/);
+    expect(String(last.target_key)).toMatch(
+      /^ds-1\/artifacts\/[0-9a-f-]{36}\/data\.parquet$/,
+    );
     expect(String(last.target_key)).not.toContain('/tmp/');
   });
 
@@ -196,12 +219,19 @@ describe('PreprocessingJobService — chaining and commit', () => {
 
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
 
-    const version = firstWrite(tx.datasetVersion.create);
-    expect(version.stage).toBe('CLEAN');
-    expect(version.parentVersionId).toBe('v-1');
-    expect(version.versionNumber).toBe(2); // previous max was 1
-    expect(version.rowCount).toBe(ARTIFACT.row_count);
-    expect(version.columnCount).toBe(ARTIFACT.column_count);
+    // DS-LAKE-005: a cleaning run commits a SILVER ARTIFACT and NO version.
+    // The negative assertion is the load-bearing one — it is what stops the
+    // persistence boundary from silently regressing.
+    expect(tx.datasetVersion.create).not.toHaveBeenCalled();
+
+    const artifact = firstWrite(tx.datasetArtifact.create);
+    expect(artifact.type).toBe('SILVER');
+    expect(artifact.parentArtifactId).toBe('a-1');
+    // The silver output joins its bronze parent's run rather than starting one.
+    expect(artifact.runId).toBe('run-1');
+    expect(artifact.checksum).toBe(ARTIFACT.checksum);
+    expect(artifact.rowCount).toBe(ARTIFACT.row_count);
+    expect(artifact.columnCount).toBe(ARTIFACT.column_count);
 
     expect(firstWrite(tx.preprocessingJob.update)).toMatchObject({
       status: 'SUCCEEDED',
@@ -233,7 +263,7 @@ describe('PreprocessingJobService — chaining and commit', () => {
 
     // The version was committed; orphaned intermediates cost storage, not
     // correctness.
-    expect(tx.datasetVersion.create).toHaveBeenCalled();
+    expect(tx.datasetArtifact.create).toHaveBeenCalled();
     const statuses = writeArgs(prisma.preprocessingJob.update).map(
       (arg) => arg.data.status,
     );
@@ -305,7 +335,15 @@ describe('PreprocessingJobService — failure and cancellation', () => {
 
   it('TC-11: a job with no source version refuses to run rather than guessing', async () => {
     const { service, prisma } = makeService(
-      buildJob({ sourceVersion: null, sourceVersionId: null }),
+      // BOTH pointers must be null. The runner falls back to sourceVersion for
+      // jobs queued before DS-LAKE-005, so nulling only one still gives it a
+      // source and the refusal never fires.
+      buildJob({
+        sourceVersion: null,
+        sourceVersionId: null,
+        sourceArtifact: null,
+        sourceArtifactId: null,
+      }),
     );
     await (service as unknown as Runnable).run('job-1');
 
@@ -413,5 +451,46 @@ describe('PreprocessingJobService — stored recipe shape', () => {
     expect(cleans).toHaveLength(1);
     // No precision envelope means no rounding overrides, not a crash.
     expect((cleans[0][1] as Record<string, unknown>).precision).toEqual({});
+  });
+});
+
+describe('PreprocessingJobService — draft-owned runs (DS-LAKE-005)', () => {
+  it('TC-18: a draft job writes under drafts/{draftId}/ and never under a dataset key', async () => {
+    const { service } = makeService(
+      buildJob({ datasetId: null, draftId: 'draft-1' }),
+    );
+    await (service as unknown as Runnable).run('job-1');
+
+    const keys = post.mock.calls
+      .filter(([path]) => path === '/v1/preprocess/clean')
+      .map(([, body]) => String((body as { target_key: string }).target_key));
+
+    expect(keys.length).toBeGreaterThan(0);
+    for (const key of keys) expect(key).toMatch(/^drafts\/draft-1\//);
+    // The discriminating half: without the draft scope these would have been
+    // built from `job.datasetId` and landed at the bare dataset namespace.
+    expect(keys.some((k) => k.startsWith('ds-1/'))).toBe(false);
+  });
+
+  it('TC-19: a draft job advances the DRAFT pointer, not the dataset', async () => {
+    const { service, tx } = makeService(
+      buildJob({ datasetId: null, draftId: 'draft-1' }),
+    );
+    await (service as unknown as Runnable).run('job-1');
+
+    expect(tx.datasetDraft.update).toHaveBeenCalled();
+    // Touching Dataset here would create exactly the orphan-record problem the
+    // draft-first decision exists to prevent.
+    expect(tx.dataset.update).not.toHaveBeenCalled();
+    expect(tx.datasetVersion.create).not.toHaveBeenCalled();
+  });
+
+  it('TC-20: a job owned by neither a dataset nor a draft refuses to run', async () => {
+    const { service } = makeService(
+      buildJob({ datasetId: null, draftId: null }),
+    );
+    await (service as unknown as Runnable).run('job-1');
+
+    expect(post).not.toHaveBeenCalled();
   });
 });

@@ -65,9 +65,45 @@ export class DatasetVersionAuthorizedController {
     return this.service.createRawVersionService(user, id, body);
   }
 
+  @Post('/:id/artifacts')
+  @HttpCode(201)
+  @ApiOperation({
+    summary: 'Materialize the BRONZE artifact from a saved data source',
+    description:
+      'Canonical route since DS-LAKE-004. Fetches from the source and writes ' +
+      'the bronze artifact. Creates NO DatasetVersion — a version is created ' +
+      'only by Save Dataset. Runs inline: a fetch has no intermediate steps ' +
+      'to report, so it needs no job row.',
+  })
+  async createBronzeArtifactController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Body() body: CreateRawVersionDto,
+  ) {
+    return this.service.createRawVersionService(user, id, body);
+  }
+
+  @Get('/:id/artifacts/:artifactId/rows')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Read a page of rows from a committed artifact' })
+  async listArtifactRowsController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Query() query: ListRowsDto,
+  ) {
+    return this.service.listRowsService(user, id, artifactId, query);
+  }
+
   @Get('/:id/versions/:versionId/rows')
   @HttpCode(200)
-  @ApiOperation({ summary: 'Read a page of rows from a committed version' })
+  @ApiOperation({
+    summary: 'Read a page of rows from a committed version',
+    description:
+      'Compatibility shim. Resolves a DatasetVersion id OR a DatasetArtifact ' +
+      'id, so datasets created before DS-LAKE-004 keep working and the model ' +
+      'wizard needs no changes.',
+  })
   async listRowsController(
     @Users() user: Auth.UserPayload,
     @Param('id') id: string,

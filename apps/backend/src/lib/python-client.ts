@@ -62,12 +62,58 @@ export async function postToPython<TRes>(
   timeoutMs: number = PYTHON_TIMEOUT.fetch,
   signal?: AbortSignal,
 ): Promise<TRes> {
-  let res: Response;
-  try {
-    res = await fetch(`${baseUrl()}${path}`, {
+  return send<TRes>(
+    path,
+    {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+    },
+    timeoutMs,
+    signal,
+  );
+}
+
+/**
+ * POST a multipart body to the FastAPI connector.
+ *
+ * Exists because `postToPython` hardcodes `Content-Type: application/json` and
+ * `JSON.stringify`, neither of which survives a file upload. Both funnel
+ * through `send` so the timeout shape and the 504/502/499/400 mapping cannot
+ * drift apart — a second copy of that except-chain would eventually answer 502
+ * where its sibling answers 400, and callers would have to special-case it.
+ *
+ * The `Content-Type` header is deliberately NOT set: undici derives it from the
+ * FormData and appends the boundary. Setting it by hand drops the boundary and
+ * the upstream parser sees a body with no parts.
+ *
+ * Buffered, not streamed. `@fastify/multipart` already caps the upload well
+ * below anything worth streaming, and piping a Fastify part through undici
+ * would be new plumbing for no gain at that size.
+ */
+export async function postMultipartToPython<TRes>(
+  path: string,
+  form: FormData,
+  timeoutMs: number = PYTHON_TIMEOUT.metadata,
+  signal?: AbortSignal,
+): Promise<TRes> {
+  return send<TRes>(path, { method: 'POST', body: form }, timeoutMs, signal);
+}
+
+/**
+ * Shared transport for every call in this module: one timeout shape, one error
+ * mapping. Callers differ only in how they encode the body.
+ */
+async function send<TRes>(
+  path: string,
+  init: RequestInit,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<TRes> {
+  let res: Response;
+  try {
+    res = await fetch(`${baseUrl()}${path}`, {
+      ...init,
       signal: signal
         ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
         : AbortSignal.timeout(timeoutMs),

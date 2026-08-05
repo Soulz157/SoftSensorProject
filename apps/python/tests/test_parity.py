@@ -336,3 +336,57 @@ def test_matches_client_output(fixture: dict[str, Any]) -> None:
 
     actual = frame_to_wide(result, fixture["expected"]["tags"])
     assert_grids_match(actual, fixture["expected"], fixture["name"])
+
+
+def _to_operations(pipeline: list[dict[str, Any]], tags: list[str]) -> list[dict[str, Any]]:
+    """Mirror `apps/client/lib/cleaning-op-mapper.ts::toCleaningOperations`
+    EXACTLY — same field, same inclusion rule, same order. If that TS function
+    ever drifts from this, this test is what catches it."""
+    ops = []
+    for step in pipeline:
+        op: dict[str, Any] = {"type": step["method"], "tags": tags}
+        if "param" in step:
+            op["param"] = step["param"]
+        if "paramLow" in step:
+            op["paramLow"] = step["paramLow"]
+        ops.append(op)
+    return ops
+
+
+def test_apply_operations_matches_client_output(fixture: dict[str, Any]) -> None:
+    """DS-LAKE-005-V03 — proves the ACTUAL runtime path, not just the engine
+    underneath it.
+
+    `test_matches_client_output` above proves `preprocess_pipelines` matches
+    the browser. That is necessary but not sufficient: `PreprocessingJobService`
+    never calls `preprocess_pipelines` directly — it calls `/v1/preprocess/clean`,
+    which routes to `apply_operations` with the request-shaped operations
+    `toCleaningOperations` (client) builds. This test drives THAT exact
+    function, with THAT exact request shape, and checks it against the same
+    golden fixture the browser produced.
+
+    Fixtures where every tag's pipeline differs are skipped: Step 3.2 always
+    applies ONE shared pipeline across the whole `cleaningTags` batch
+    (`draftMap` in step-3-2-imputation.tsx), which is what `toCleaningOperations`
+    assumes — a per-tag-divergent pipeline is not a shape the wizard produces
+    and `apply_operations`'s `tags` scoping cannot express in one operation.
+    """
+    cleaning_service = _cleaning_service()
+
+    if fixture["engine"] != "preprocessPipelines":
+        pytest.skip("apply_operations parity only applies to preprocessPipelines fixtures")
+
+    pipelines = fixture["config"]["pipelines"]
+    tags = fixture["input"]["tags"]
+    shared = pipelines.get(tags[0], [])
+    if any(pipelines.get(tag, []) != shared for tag in tags):
+        pytest.skip("fixture pipeline differs per tag — not the wizard's shape")
+
+    frame = wide_to_frame(fixture["input"])
+    operations = _to_operations(shared, tags)
+    result = cleaning_service.apply_operations(
+        frame, operations, fixture["config"].get("precision")
+    )
+
+    actual = frame_to_wide(result, fixture["expected"]["tags"])
+    assert_grids_match(actual, fixture["expected"], fixture["name"])

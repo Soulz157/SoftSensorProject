@@ -1,385 +1,1166 @@
 {
-  "project": "Data Cleaning & Feature Engineering Service Pipeline — Slice 1",
-  "version": "1.0.0",
-  "plan": "~/.claude/plans/claude-md-feature-data-magical-quiche.md",
-  "note": "Own file per CLAUDE.md §19. feature_list.json tracks the COMPLETED 'PI Data Source Verification & Historical Fetch Workflow' (9/9) and docs/feature_list.json tracks 'Model Creation Flow Refactor'; neither is overwritten.",
+  "project": "Dataset Creation Flow — Lakehouse Refactor",
+  "version": "2.0.0",
+  "plan": "~/.claude/plans/claude-md-rewrite-in-feature-list-prepr-starry-pike.md",
+  "audit_document": "docs/DATASET_FLOW_AUDIT.md",
+  "description": "Refactor the Dataset Creation Flow onto a Bronze/Silver/Gold/Final Lakehouse pipeline while keeping the existing five-step wizard UX intact. Every processing stage produces an immutable MinIO artifact with lineage and checksum. A Dataset Version is created ONLY at Save. TimescaleDB is a future serving layer reached through a Loader seam, never the source of truth.",
+  "status": "in_progress",
+  "progress": 46,
+  "supersedes": {
+    "project": "Data Cleaning & Feature Engineering Service Pipeline — Slice 1",
+    "version": "1.0.0",
+    "result": "8 of 8 features completed (F0, F0b, F1..F6).",
+    "recovery": "This file was replaced by explicit user decision. The full Slice 1 ledger — including its found-bug records (the assert_tags_are_storable guard that could never fire, the float-comparison parity fix, the eager-import regression, the cancel straggler leak, the admin-non-member 404) — is recoverable with: git show 96080a4:feature_list.preprocessing.json",
+    "plan": "~/.claude/plans/claude-md-feature-data-magical-quiche.md"
+  },
+  "note": "Own file per CLAUDE.md §19. feature_list.json tracks the completed 'PI Data Source Verification & Historical Fetch Workflow'; docs/feature_list.json tracks 'Model Creation Flow Refactor'. Neither is touched by this slice.",
+  "existing_flow": {
+    "preserve": true,
+    "correction": "The refactor request described six steps. The implemented wizard has FIVE — DW_TOTAL_STEPS = 5 (apps/client/store/dataset-studio.ts:29), five labels in wizard-shell.tsx:22-30, and Save is Step 5. 'Connect Data Source' happens in create-dataset-dialog.tsx BEFORE the wizard mounts; Step 1 is tag verification. There is no Validation step today. Validation is therefore added as a GATE on Step 5, not as a sixth step.",
+    "steps": [
+      {
+        "step": 1,
+        "name": "Verified Tags",
+        "component": "app/(default)/data-studio/create/components/step-1-tags.tsx",
+        "actions": [
+          "Select tags",
+          "Edit/remove/insert tags",
+          "Upload CSV",
+          "Set tag constants"
+        ]
+      },
+      {
+        "step": 2,
+        "name": "Fetch Raw Data",
+        "component": "app/(default)/data-studio/create/components/step-2-raw-data.tsx",
+        "actions": [
+          "Configure time range and interval",
+          "Fetch from the source in tag batches",
+          "Retry failed batches"
+        ]
+      },
+      {
+        "step": 3,
+        "name": "Data Cleaning",
+        "component": "processing/step-3-1-EDA.tsx + processing/step-3-2-imputation.tsx",
+        "actions": [
+          "Review EDA",
+          "Crop by time and value",
+          "Author exclusions and conditional/statistical rules",
+          "Choose imputation pipelines"
+        ]
+      },
+      {
+        "step": 4,
+        "name": "Feature Engineering",
+        "component": "app/(default)/data-studio/create/components/step-4-feature-engineering.tsx",
+        "actions": [
+          "Add/remove derived features",
+          "Select columns",
+          "Configure scalers"
+        ]
+      },
+      {
+        "step": 5,
+        "name": "Review & Save",
+        "component": "app/(default)/data-studio/create/components/step-5-review-save.tsx",
+        "actions": [
+          "Name and describe the dataset",
+          "Review the validation report (NEW — added by DS-LAKE-008)",
+          "Save Dataset"
+        ]
+      }
+    ]
+  },
+  "architecture": {
+    "layers": [
+      "BRONZE — fetched raw rows, immutable, MinIO only, no serving-layer write",
+      "SILVER — cleaned rows, immutable, MinIO only, no serving-layer write",
+      "GOLD — engineered features + feature_spec.json, immutable, MinIO only, no serving-layer write",
+      "VALIDATION — quality gate producing validation_report.json and a quality score; PASS is required to save",
+      "FINAL — the official dataset artifact, written only after validation passes",
+      "REGISTRY — DatasetVersion metadata rows, created only at Save",
+      "LOADER — asynchronous, retried independently, never blocks or fails Save",
+      "SERVING — TimescaleDB (DEFERRED; does not exist in this repo today)"
+    ],
+    "storage_authority": "MinIO is the single source of truth for rows. Postgres holds metadata and pointers only. Verified: not one of the 18 Prisma models stores timeseries rows.",
+    "artifact_axis": "DatasetArtifact.type ∈ {BRONZE, SILVER, GOLD, FINAL}",
+    "version_axis": "DatasetVersion.versionNumber + semanticVersion — the save-time registry only",
+    "key_decision": "Today DatasetVersion.stage IS the artifact-type axis and versionNumber is the version axis, conflated on one table. That conflation is precisely why intermediate stages create versions. The refactor splits them: DatasetArtifact is the freely-created stage ledger, DatasetVersion is the save-time registry pointing at one FINAL artifact.",
+    "persistence_boundary": {
+      "dataset_version_commit_allowed": [
+        "SAVE_DATASET"
+      ],
+      "dataset_version_commit_not_allowed": [
+        "FETCH_RAW",
+        "CLEANING",
+        "FEATURE_ENGINEERING",
+        "VALIDATION",
+        "EDIT_OPEN",
+        "PREVIEW",
+        "LOADER"
+      ],
+      "model_commit": "Unchanged and out of scope. Saving a Dataset must never create a Model. Save Model remains the only final Model DB commit (CLAUDE.md §8)."
+    },
+    "minio_layout": {
+      "committed": "datasets/{datasetId}/artifacts/{artifactId}/data.parquet",
+      "manifest": "datasets/{datasetId}/artifacts/{artifactId}/manifest.json",
+      "feature_spec": "datasets/{datasetId}/artifacts/{artifactId}/feature_spec.json (GOLD only)",
+      "validation_report": "datasets/{datasetId}/artifacts/{artifactId}/validation_report.json (FINAL only)",
+      "intermediates": "datasets/{datasetId}/tmp/{jobId}/{n}.parquet (unchanged)",
+      "legacy": "datasets/{datasetId}/{versionId}.parquet — still readable, never written again"
+    }
+  },
   "decisions": {
-    "storage": "MinIO/S3 — already running as container 'minio-local' (9000/9001, health 200). No new service is introduced; what was missing is env wiring, the datasets bucket, and uncommenting the compose block so the running container is reproducible.",
-    "jobs": "In-process runner + PreprocessingJob Postgres row. No BullMQ/Redis/Celery (CLAUDE.md §11 — no existing queue infra to reuse; REDIS_URL sits in .env.example but is absent from .env with nothing running).",
-    "parity": "Python matches the client bug-for-bug in slice 1, driven by golden fixtures. Normalising the quirks is a separate, visible change — doing it during the port would make every numeric diff ambiguous.",
-    "scope": "Cleaning only. Feature engineering (sklearn, scalers, PCA, rolling, lag) and history/compare/restore UI are DEFERRED.",
-    "persistenceBoundary": "These commits create DatasetVersion rows, not Model rows. Save Model remains the only final Model DB commit (CLAUDE.md §8)."
+    "validation_placement": "A gate on the existing Step 5, not a sixth step. User-confirmed. Satisfies 'Validation is mandatory' and 'FAIL must not be committed' with zero change to DW_TOTAL_STEPS, wizard-shell labels, nav gating or the edit-mode landing step.",
+    "timescaledb": "TimescaleDB does not exist in this repository — postgres:16-alpine (docker-compose.yml:3), zero create_hypertable, zero CREATE EXTENSION across all 17 migrations, no compose service, no image. Dashboards read lib/mock-readings and services/readings.ts does not exist. User-confirmed scope: the Loader ships as an enqueue seam, a job row, and a pluggable sink interface. The Timescale sink and the dashboard rewiring are DEFERRED, not silently absorbed (CLAUDE.md §3 — no new infrastructure without justification).",
+    "storage": "MinIO/S3 already running as container 'minio-local' (9000/9001). No new service. Bucket 'datasets', Parquet via pyarrow. apps/python holds the only S3 credentials; NestJS has none and gains none.",
+    "jobs": "The existing in-process runner (PreprocessingJobService) is reused for every stage, not just cleaning. No BullMQ/Redis/Celery (CLAUDE.md §11 — no queue infrastructure exists to reuse). Single-replica assumption is inherited and re-stated as a risk, not fixed here.",
+    "parity": "Every port of a browser transform is gated by golden fixtures first, following the proven Slice 1 pattern (packages/parity-fixtures + apps/python/tests/test_parity.py). The port must match the client bug-for-bug; normalising a quirk is a separate visible change.",
+    "compatibility": "GET /:id/versions/:versionId/rows is preserved as a resolving shim so apps/client/app/(default)/models/create/** needs no edits. The refactor's own checklist requires 'Model Training still works without modification'.",
+    "ui": "No step is added, removed or reordered. Step 3 and Step 4 keep their controls; only the compute moves from the browser to the server.",
+    "artifact_first": "USER DECISION (supersedes the DS-LAKE-005 blocker). Hybrid artifact-first: every wizard stage (Bronze, Silver, Gold, Validation) writes an immutable artifact to MinIO ONLY. No Dataset row, no DatasetArtifact row, no DatasetVersion row exists until the user clicks Save Dataset. Save then creates the Dataset registry entry, the artifact rows, the Dataset Version, commits metadata, and enqueues the Loader job. This removes orphan Dataset records, keeps the wizard fully interactive, and keeps MinIO the single source of truth.",
+    "draft_first": "USER DECISION, supersedes the earlier artifact-first note. A dedicated DatasetDraft entity owns wizard-time artifacts and jobs. Bronze, Silver, Feature and Validation all remain ASYNCHRONOUS jobs with progress, cancellation and retry — the draft is what makes that possible without an orphan Dataset row. Dataset, DatasetVersion and the Loader enqueue happen only at Save Dataset, which ADOPTS the draft artifacts rather than regenerating them."
   },
-  "progress": {
-    "completed": 8,
-    "total": 8
-  },
+  "findings_driving_this_slice": [
+    "THE SILVER PIPELINE IS ALREADY BUILT AND COMPLETELY DEAD. cleaning_service.py (512 lines, parity-tested), PreprocessingJobService (~480 lines), and the /clean, /jobs/:id, /cancel, /retry endpoints have ZERO client callers — verified by grep across apps/client. The wizard cleans in-browser at step-5-review-save.tsx:82-108 instead. Wiring this up, not writing it, is the core of the refactor.",
+    "'VERSION ONLY AT SAVE' IS ALREADY VIOLATED. Opening a dataset in Edit mints a DatasetVersion with no save at all: use-dataset-edit-hydration.ts:43 passes only { enabled }, so materialize keeps its true default (use-dataset-version-rows.ts:124) and branch 2 (:219-242) issues createRaw on mount. The only caller that opts out is phase-3-evaluation.tsx:87.",
+    "Dataset.currentVersionId HAS NO FOREIGN KEY. Migration 20260801163509_dataset_versions_and_jobs/migration.sql:8 is a bare ADD COLUMN ... TEXT with no matching AddForeignKey, unlike every other relation in that same file. A dangling pointer today; a genuine integrity hazard once promotion exists.",
+    "DatasetVersionStage.FEATURE exists in the enum (schema.prisma:324) and NO write path ever produces it. Only RAW and CLEAN are written.",
+    "The MinIO key helpers are re-implemented as TypeScript template literals in three places — dataset-version.authorized.service.ts:172, preprocessing-job.service.ts:190-191 and :215-217 — duplicating object_store.py:311-323. Adding artifact types multiplies that drift, so the shared contract lands before the new types do.",
+    "DatasetVersion.sizeBytes is a 32-bit Int (schema.prisma:358) while preview_service.py:24 documents a real 396 MB artifact. Fine today, wrong at ~2.1 GB.",
+    "Save is two non-atomic phases by design (step-5-review-save.tsx:178-182): the dataset row commits, then the artifact is best-effort. The refactor keeps the failure visible but moves the artifact work in front of the commit.",
+    "docs/ARCHITECTURE.md and docs/CODEBASE.md contain ZERO mentions of apps/python, MinIO, S3, Parquet, Dataset, DatasetVersion, PreprocessingJob or background jobs. They are authoritative for the NestJS/Next/Prisma layers only. Surfaced per CLAUDE.md §1 rather than absorbed; DS-LAKE-001 records it in the audit doc."
+  ],
   "features": [
     {
-      "id": "F0",
-      "title": "Parity fixtures + pytest harness (gate)",
-      "description": "Freeze current client cleaning behaviour into golden JSON so the Python port can be proven equal before any save path moves to the backend. Gate: nothing downstream merges until green.",
+      "id": "DS-LAKE-001",
+      "title": "Write the feature ledger and the flow audit document",
+      "priority": 1,
+      "status": "completed",
+      "progress": 100,
       "dependencies": [],
-      "status": "completed",
-      "acceptance": [
-        "A vitest generator writes golden fixtures covering every op in the F2 set",
-        "A pytest harness consumes them and fails loudly on drift",
-        "The client's documented quirks are captured, not corrected",
-        "Fixture generation is deterministic (no Math.random, no wall clock)"
-      ],
-      "verificationResults": [
-        "apps/client/lib/__tests__/parity-fixtures.test.ts — seeded LCG (seed 20260801), 40 rows x 4 tags chosen to span every precision path: TI-101=1, VI-202=2, FI-404=0, XX-999 -> the ?? 2 default. Writes 23 cases + index.json to packages/parity-fixtures/. 6/6 vitest tests PASS.",
-        "Quirks frozen: floor-index quartiles (no interpolation); zscore uses POPULATION std and REPLACES outliers with the mean; precleanse.tagStats uses SAMPLE std (both conventions preserved side by side); centred moving_avg that shrinks at the edges; EMA seeded with the first value; per-tag precision travelling in the payload because Python has no tagMeta; forward/backward fill flipping status to Good even with no donor cell.",
-        "apps/python/tests/{conftest.py,test_parity.py} — 95 passed, 46 skipped. Layer 1 (integrity) always runs; layer 2 (parity) is skipped via a FUNCTION-level pytest.importorskip until F2 lands services/cleaning_service.py.",
-        "Discriminating check — a module-level importorskip was tried first and silently skipped the integrity layer too (1 skipped, 0 passed): F0 would have reported green while proving nothing. Moved into _cleaning_service() so integrity always executes.",
-        "Gate proven to bite, not just report green: deleting remove_outlier_iqr.json -> test_index_lists_every_case FAILS; nulling one expected value -> test_fixture_is_well_formed[drop_missing] FAILS. Regenerating restored both, which also re-proves determinism.",
-        "Row-count deltas confirm real semantics: drop_missing 40->31, drop_single_tag 40->32, precleanse_time_crop 40->21, and precleanse_conditional_drop stays 40 because that action deletes the CELL not the row — the quirk Python must not 'fix'.",
-        "pytest==9.1.1 added to apps/python/requirements.txt (test-only; no runtime import touched).",
-        "REVIEW FIX 1 — ragged missingness. The first cut marked non-Good rows by index alone (i%11, i%13), so ALL tags shared one mask and FI-404 was a strict subset of the others. drop_missing could not then distinguish a correct union-across-tags from an implementation reusing one tag's mask for every column. Status offsets are now per-tag (tagIndex*3); all three tag pairs differ in BOTH directions, and drop_missing went 40->31 to 40->19 (21 rows = the true union). A new test asserts raggedness so it cannot silently regress.",
-        "REVIEW FIX 2 — float comparison. The parity assertion compared floats with exact ==, against JSON numbers the browser produced via Math.round(v*10**p)/10**p. Python's 72.1+0.1+0.2 = 72.39999999999999 != 72.4 and 119.99999999999999 != 120, so F2 would have shown false parity failures. frame_to_wide now rounds to the fixture's per-tag precision, matching preprocessing.ts:506. test_round_trip_survives_float_noise proves it WITHOUT the F2 service, so the guarantee holds today rather than being discovered later.",
-        "Checked and NOT an issue: `from conftest import` also resolves when pytest runs from the repo root (pytest inserts the test dir into sys.path) — 95 passed from both cwds."
-      ]
-    },
-    {
-      "id": "F0b",
-      "title": "Persist valueCrop in PipelineConfig",
-      "description": "valueCrop is authored in step 3, gates canAdvance, and drives step 3.2 — but was silently dropped at save and reset to {} on edit hydration. Fixed while the config contract is being formalised.",
-      "dependencies": [],
-      "status": "completed",
-      "acceptance": [
-        "valueCrop survives save -> reload -> edit",
-        "Legacy recipes without the field still materialise",
-        "No migration required"
-      ],
-      "verificationResults": [
-        "lib/pipeline-config.ts: added `valueCrop?: ValueCrop` (optional, so existing rows stay valid and the opaque z.record backend DTO needs no migration), seeded valueCrop:{} in EMPTY_PIPELINE_CONFIG, and forwarded it into materializeDataset's precleanse call — which already accepted the key at precleanse.ts:67 but was never passed it.",
-        "step-5-review-save.tsx: valueCrop destructured from nav, added to the pipelineConfig payload, AND added to the save-time precleanse call + useMemo deps. That second half fixes a real data bug: rowCount and missingPct were computed WITHOUT the value crop while step 3.2 previewed WITH it, so the saved stats disagreed with what the user was shown.",
-        "store/dataset-studio.ts: initDatasetWizardForEditAtom now hydrates `config.valueCrop ?? {}` instead of hardcoding {} — edit mode previously discarded it on every reopen.",
-        "pnpm check-types (tsc --noEmit) CLEAN, exit 0.",
-        "vitest precleanse + parity-fixtures + csv: 23/23 PASS.",
-        "Pre-existing failures confirmed NOT caused by this change: git stash of all changes reproduces the identical 3 failures in lib/__tests__/preprocessing.test.ts, all in the LEGACY `preprocess` path (default-strategies drop, explicit per-tag drop, droppedRowsByTag) — not preprocessPipelines, which is what this slice ports."
-      ]
-    },
-    {
-      "id": "F1",
-      "title": "Storage seam + DatasetVersion / PreprocessingJob models",
-      "description": "MinIO wiring (env vars, datasets bucket, uncomment the compose block), the canonical value+status Parquet artifact, and the two Prisma models with lineage + job state.",
-      "dependencies": ["F0"],
-      "status": "completed",
-      "verificationResults": [
-        "MinIO wiring: S3_* added to .env (gitignored, verified with git check-ignore) and .env.example (placeholders only). config/env.py Settings gained 5 fields WITH DEFAULTS — unlike SYS_USER/PI_NAME they do not raise at import, so a machine without object storage still serves the PI endpoints.",
-        "docker-compose.yml: minio block uncommented to document the already-running minio-local container (net new services: zero). SECURITY FIX during this work — the first version used `env_file: .env`, which `docker compose config` showed injecting NEXTAUTH_SECRET / JWT_* / DATABASE_URL into the storage container. Replaced with ${S3_ACCESS_KEY}/${S3_SECRET_KEY} interpolation; leak check now reports 0 app secrets in the minio environment.",
-        "intergrations/object_store.py: Parquet over MinIO. Verified against the LIVE container — round-trip equality, int8 status preserved, columnCount reports 2 LOGICAL tags for a 5-physical-column frame, bucket auto-created, test objects cleaned up.",
-        "BUG FOUND AND FIXED during verification: assert_tags_are_storable was called with tag_columns(df), which already strips anything ending in __status — so the guard could never fire, and a tag literally named FOO__status was silently RECLASSIFIED as a sidecar and dropped from the dataset with no error. Replaced with assert_frame_shape, which validates the built frame: duplicate columns, orphan status columns, tags missing a sidecar, and a missing timestamp column are all rejected. 7/7 guard cases pass, including the one that previously failed.",
-        "services/frame_service.py: converges the two incompatible wire shapes. PI is tag-major with no shared time axis, so the frame is built on the UNION of every tag's stamps; SQL is row-major and maps straight across. Holes become {value: 0.0, status: Bad} — never NaN, never a dropped row — matching the browser's piResponseToDataset so the cleaning ops still have Bad cells to act on. Digital-state strings, None, NaN/inf and booleans all become Bad; a failed tag keeps its column entirely Bad rather than vanishing.",
-        "Prisma: DatasetVersion + PreprocessingJob + DatasetVersionStage + PreprocessingJobStatus; Dataset gained versions/jobs/currentVersionId. Migration 20260801163509_dataset_versions_and_jobs APPLIED to the dev DB. Verified in Postgres directly: both tables exist, both enums carry the right labels, all 8 FKs present, and the unique index on (datasetId, versionNumber) exists.",
-        "Constraints proven to ENFORCE, not merely exist: duplicate versionNumber -> rejected; stage 'BOGUS' -> rejected by the enum; orphan parentVersionId -> rejected by the lineage FK; valid insert and valid lineage child both succeed. Table returned to 0 rows afterwards.",
-        "Existing data preserved: the 1 pre-existing Dataset row survived with currentVersionId = NULL and 0 versions — which is exactly the backfill gap F5 must handle, now confirmed against real data rather than assumed.",
-        "REGRESSION CAUGHT AND REVERTED: re-exporting object_store from intergrations/__init__.py made the 5 existing `from intergrations import PIWebAPI` call sites eagerly import minio + pyarrow (proven via sys.modules), coupling the PI endpoints to storage deps they never use. Reverted with a comment; the repo convention is direct submodule imports anyway (nothing imports the package-level names).",
-        "apps/python: 128 passed, 46 skipped (was 96 before F1). All 11 pre-existing OpenAPI paths still register. pnpm db:generate clean. Backend check-types shows only 3 PRE-EXISTING errors in auth *.spec.ts, confirmed identical with the schema stashed and containing zero references to the new models.",
-        "pyarrow==25.0.0 + minio==7.2.20 added to requirements.txt.",
-        "CWD REGRESSION CAUGHT IN FINAL VERIFICATION: the new tests import top-level packages (intergrations, services), but pytest only puts the TEST directory on sys.path — so the suite passed from apps/python and failed from the repo root. conftest.py now inserts the service root explicitly.",
-        "SECOND ROOT CAUSE behind the same symptom: config/env.py used RELATIVE env_file=('../../.env', '.env'), resolved against the cwd. From any other directory both paths missed, SYS_USER/SYS_PASS/PI_NAME went missing and Settings() raised at import — a pre-existing fragility the file's own comment already described. Anchored both paths to the file location; same two files, same precedence. Suite now passes from 5 different cwds (repo root, apps/python, packages, apps/client, /tmp) and settings still resolve real values.",
-        "Post-change smoke: FastAPI app boots, all 11 OpenAPI paths register, CORS config intact, main:app still resolvable for uvicorn.",
-        "REVIEW FIX — mark_questionable marked the WRONG cells for an int mask. `.loc[[1,0,0]]` is read by pandas as row LABELS, not a boolean mask, so a caller meaning 'row 0 only' silently produced [2,2,0] instead of [2,0,0]. The length check could not catch it because the length was correct. Selection now resolves through frame.index[...] so it is positional, and works on a non-contiguous index left by an upstream row drop. Two regression tests added (int mask, index [1,2]).",
-        "Env precedence claim VERIFIED rather than asserted: dropped a temporary apps/python/.env with S3_BUCKET='override-test' — service-local wins over root; removing it returns 'datasets'. Confirms the comment written into config/env.py. Temp file cleaned up.",
-        "Final: 130 passed, 46 skipped from both repo root and apps/python."
-      ],
-      "tasks": [
-        "Add S3_ENDPOINT / S3_ACCESS_KEY / S3_SECRET_KEY / S3_BUCKET / S3_REGION to .env + .env.example (server-only, no NEXT_PUBLIC_ prefix per CLAUDE.md §3)",
-        "Uncomment docker-compose.yml:20-34 so the already-running minio-local container is reproducible",
-        "Create the datasets bucket",
-        "apps/python/intergrations/object_store.py (keep the existing misspelling — do NOT create a parallel integrations/)",
-        "apps/python/services/frame_service.py — normalise tag-major PI and row-major SQL into one canonical frame",
-        "Prisma: DatasetVersion + PreprocessingJob + DatasetVersionStage + PreprocessingJobStatus; add versions/jobs/currentVersionId to Dataset",
-        "Migration: pnpm db:migrate:dev --name dataset_versions_and_jobs",
-        "Add pyarrow + minio to requirements.txt"
-      ],
-      "acceptance": [
-        "Python writes a Parquet artifact to MinIO and returns row/column/size stats",
-        "NestJS records a DatasetVersion row pointing at the objectKey",
-        "Committed artifacts are immutable — no path overwrites an existing objectKey",
-        "columnCount counts LOGICAL tags only, excluding timestamp and every __status column",
-        "A tag ending in the reserved __status suffix is rejected at write time with an actionable AppException"
-      ],
-      "verification": [
-        "Verify against real PI tag data that no tag already ends in __status before relying on the reserved suffix",
-        "Round-trip a frame through put_frame/get_frame with mixed Good/Bad/Questionable and assert status survives as int8",
-        "Confirm only Python holds S3 credentials — NestJS gets no S3 SDK"
-      ]
-    },
-    {
-      "id": "F2",
-      "title": "Cleaning operations (parity-gated)",
-      "description": "The op registry restricted to what the client already implements, so every op is parity-testable against F0 fixtures.",
-      "dependencies": ["F0", "F1"],
-      "status": "completed",
-      "note": "Scoped to the OPERATIONS ENGINE plus the HTTP surface that F3 needed. cleaning_service.py (registry + apply_operations), schemas/preprocess.py and routers/preprocess.py all exist and are parity-green. The /materialize, /clean and /rows endpoints moved to F4, where the job runner is the thing that actually calls them — the plan always said they 'land with F4', and leaving F2 open for them made F3 a completed feature hanging off an incomplete dependency.",
-      "verificationResults": [
-        "services/cleaning_service.py: CLEANING_OPS registry keyed by the browser's own CleaningMethod names, so a saved recipe replays without translation, plus OPERATION_ALIASES mapping the public request shape (drop_missing / fill_missing{ffill,bfill,mean,median,constant,linear} / remove_outlier{zscore,iqr} / clip / smooth{moving_avg,exponential}) onto them.",
-        "ALL 20 preprocessPipelines parity fixtures pass as REAL assertions (verified per-fixture with -v, not silent skips). The 3 precleanse fixtures skip by design: its 'drop' DELETES a single tag's cell, which a rectangular frame cannot express without a fourth 'absent' status — deferred rather than faked.",
-        "HARNESS BUG, NOT A PORT BUG: fill_missing_mean and fill_missing_linear failed at first because the F0 review fix rounded ALL comparison output to per-tag precision. The client's FILLS DO NOT ROUND — only the outlier/smoothing ops do — so the fixture legitimately expects 81.05937499999999 and the harness forced it to 81.1. frame_to_wide no longer rounds; comparison moved to assert_grids_match with rel_tol=1e-9 / abs_tol=1e-12. Three tests assert the tolerance still fails on a value change, a status flip, and a row-count change.",
-        "CRITICAL FINDING — the golden fixtures alone do NOT discriminate the quirks. A sabotage probe injecting four deliberate regressions caught only 1 of 4: banker's rounding, numpy.quantile quartiles, and sample-vs-population std all slipped through the 40-row fixtures, because on that data the alternatives classify the same cells. The suite was giving false confidence; anyone later 'tidying' the port into idiomatic numpy would have seen no failure.",
-        "FIX: tests/test_cleaning_quirks.py pins each quirk directly on inputs where the alternatives PROVABLY differ — the IQR test uses [1..7, 12] because 12 sits inside the floor-index fence (13.0) but outside numpy's (11.5); a far-out value like 100 is flagged by both and proves nothing. Each pin also asserts the substitute really differs so it cannot rot into a tautology. Re-running the sabotage probe now catches 4 of 4.",
-        "Quirks ported and pinned: JS Math.round half-up (Python's round is banker's — 2.5 -> 3, not 2); population std in zscore vs sample std in precleanse; floor-index quartiles; zscore REPLACES with the mean rather than removing; fills do not round while outlier/smoothing ops do; forward/backward fill flips status to Good even with no donor; drop marks rows across every tag and removes the union once at the end.",
-        "remove_duplicates has no browser counterpart and so no fixture: defined here as whole-frame keep-first on timestamp, explicitly NOT data_service._dedupe (which dedupes on the timestamp STRING at batch-window boundaries).",
-        "REVIEW FIX — apply_operations (the request-shaped entry point F4 will call) had ZERO coverage: every parity guarantee ran through preprocess_pipelines, so the endpoint could have shipped on an unverified path. Added tests proving the two routes produce identical frames, that unknown tags are rejected on every operation INCLUDING remove_duplicates (which is frame-wide and previously accepted a typo'd tag silently), that unsupported/typeless operations raise, and that operations chain in order.",
-        "REVIEW FIX — param aliasing precedence was decided by dict iteration order, so a caller sending both `window` and `threshold` got an invisible rule. Extracted to _PARAM_ALIASES, ordered highest-precedence first and documented; a test pins that explicit `param` beats the friendly aliases and that clip accepts both min/max and paramLow/param spellings.",
-        "EMERGENT BEHAVIOUR DOCUMENTED AND PINNED: zscore derives mean/std from Good cells but tests EVERY cell (faithful to the client). Combined with frame_service storing holes as 0.0/Bad, a hole among readings near 72 scores as a huge outlier, so zscore replaces it with the mean and marks it Good — it imputes. The browser never produced this because its Bad cells hold plausible values, not zeros. Verified live and pinned by test_zscore_imputes_a_bad_hole so it stays a decision rather than a surprise.",
-        "Final sabotage re-run on the strengthened suite: JS-vs-banker's rounding CAUGHT, population-vs-sample std CAUGHT, floor-index-vs-numpy quartiles CAUGHT. Honest caveat: swapping only q1 while leaving q3 floor-indexed is NOT caught — a mixed-definition fence that no realistic refactor produces, noted rather than over-engineered.",
-        "174 passed, 26 skipped from both repo root and apps/python. App still boots with all 11 pre-existing OpenAPI paths. Client check-types CLEAN, client suites 24/24, prisma schema valid."
-      ],
-      "tasks": [
-        "DONE: services/cleaning_service.py — CLEANING_OPS registry + apply_fixture_case() for the parity harness",
-        "DONE: schemas/preprocess.py — CleaningOperation + preview contracts",
-        "DONE: routers/preprocess.py registered in routers/__init__.py + main.py tags_metadata (preview only; the other three endpoints are F4 tasks)"
-      ],
-      "acceptance": [
-        "Ops: drop_missing, fill_missing{ffill,bfill,mean,median,constant,linear}, remove_duplicates, remove_outlier{zscore,iqr}, clip, smooth{moving_avg,exponential} — DONE",
-        "20 of 23 parity fixtures pass as real assertions. The 3 precleanse fixtures are a DOCUMENTED DEFERRAL, not a pass: its 'drop' deletes a single tag's cell, which a rectangular frame cannot express without a fourth 'absent' status. Deferred rather than faked — the original 'all 23' wording is amended here rather than quietly reported as met.",
-        "Unknown op type -> ValueError -> HTTPException(422) — VERIFIED by test_unknown_operation_is_422_not_502 (F3), and sabotage-probed by removing both 422 clauses from the router.",
-        "Every pandas call wrapped in asyncio.to_thread — DONE for /preview, the only route that exists. F4 must uphold this for materialize/clean/rows."
-      ],
-      "verification": [
-        "apps/python/.venv/bin/python -m pytest tests -q  ->  0 skipped in the parity layer",
-        "remove_duplicates has NO client counterpart and therefore no fixture: defined as keep-first on duplicate timestamp across the whole frame. NOT the same as data_service.py:143 _dedupe, which dedupes on timestamp STRING at batch-window boundaries. Cover it with a plain unit test."
-      ]
-    },
-    {
-      "id": "F3",
-      "title": "Preview before apply",
-      "description": "Capped-sample preview returning before/after, missing summary, row-count delta and column stats. Writes nothing.",
-      "dependencies": ["F2"],
-      "status": "completed",
-      "acceptance": [
-        "Returns sample rows before + after, per-column missing summary, row-count and column-count deltas — VERIFIED end-to-end against live MinIO",
-        "Stays inside PYTHON_TIMEOUT.metadata (30s) — MEASURED 0.60s on a 10M-row / 4-tag / 396 MB artifact, ~50x headroom",
-        "Creates no object and no DatasetVersion row — asserted by a fake store whose every mutating attribute raises"
-      ],
-      "verification": [
-        "test_preview_writes_nothing + test_route_writes_nothing use NoWriteStore, which raises via __getattr__ on any non-read attribute. Always runs — deliberately NOT gated on live MinIO, because a guarantee that skips proves nothing (same failure shape as the F0 importorskip).",
-        "test_the_guard_is_actually_armed asserts the fake itself still raises, so it cannot rot into a mock that absorbs put_frame.",
-        "Sabotage-probed 4 regressions, all caught: source_row_count reverted to the window height (4 failures), drop_missing dropped from SAMPLE_SENSITIVE (1), column_stats counting Bad cells (3), both 422 clauses removed from the router (2).",
-        "Live end-to-end: 6-row artifact with a Bad hole, fill_missing/linear filled 0.0/Bad -> 72.0/Good, missing 1->0; bucket listing unchanged before/after and the source frame byte-identical afterwards.",
-        "Scale: 1M rows 0.12s, 10M rows 0.60s; source_row_count reported the true 10,000,000 while sampled_rows stayed at the 5,000 cap.",
-        "Full suite 192 passed / 26 skipped, identical from apps/python and from the repo root."
-      ],
+      "description": "The inspection deliverable itself. Produce this file and the audit document that records the current Dataset Creation Flow, its persistence points, and the gaps against the target Lakehouse architecture — before any code changes.",
       "tasks": [
         {
-          "id": "F3.1",
+          "id": "DS-LAKE-001-T01",
+          "title": "Write feature_list.preprocessing.json in the CLAUDE.md §19 schema",
           "status": "completed",
-          "title": "schemas/preprocess.py — PreviewRequest/PreviewResponse contracts with sample+preview row caps"
+          "progress": 100
         },
         {
-          "id": "F3.2",
+          "id": "DS-LAKE-001-T02",
+          "title": "Write docs/DATASET_FLOW_AUDIT.md with the ten required report sections",
           "status": "completed",
-          "title": "services/preview_service.py — build_preview, column_stats over GOOD cells only, sampling warnings"
+          "progress": 100
         },
         {
-          "id": "F3.3",
+          "id": "DS-LAKE-001-T03",
+          "title": "Record the two integrity defects found during inspection (missing currentVersionId FK, Edit-mount version mint) with file:line evidence",
           "status": "completed",
-          "title": "routers/preprocess.py — POST /v1/preprocess/preview, 422 for caller-fixable errors, 502 otherwise"
+          "progress": 100
         },
         {
-          "id": "F3.4",
+          "id": "DS-LAKE-001-T04",
+          "title": "Record the Rule Book staleness conflict (docs/ARCHITECTURE.md and docs/CODEBASE.md omit the entire data layer) per CLAUDE.md §1",
           "status": "completed",
-          "title": "dependencies.get_object_store with a lazy minio/pyarrow import so PI routes stay free of storage deps"
-        },
-        {
-          "id": "F3.5",
-          "status": "completed",
-          "title": "ObjectStore.get_frame_head — head window plus the artifact's TRUE row count"
-        },
-        {
-          "id": "F3.6",
-          "status": "completed",
-          "title": "asyncio.to_thread offload so the sync pandas work never runs on the event loop"
-        },
-        {
-          "id": "F3.7",
-          "status": "completed",
-          "title": "tests/test_preview_service.py — 18 tests incl. the no-writes guarantee"
+          "progress": 100
         }
       ],
-      "notes": "Three defects were fixed before the tests were written rather than pinned as-is. (1) source_row_count and sampled_rows were the same expression, so `sampled: true` was unfalsifiable — the client was told it held a sample and handed a total equal to that sample. Fixed now specifically because no consumer exists yet; F4 will zod-parse this shape and F5 will render it. (2) build_preview ran sync on the event loop, so one preview stalled every PI fetch. (3) SAMPLE_SENSITIVE matched on (type, method) with string methods only, so drop_missing and remove_duplicates — the two ops that move delta.row_count, the headline number — never matched and got no 'may differ' warning."
-    },
-    {
-      "id": "F4",
-      "title": "Job runner + status / cancel / retry",
-      "description": "NestJS orchestration: 202 + jobId, one postToPython call per operation chaining objectKeys through tmp/{jobId}/, with real per-op progress and honest restart semantics.",
-      "dependencies": ["F1", "F2"],
-      "status": "completed",
-      "tasks": [
-        "DONE Python: POST /v1/preprocess/materialize — fetches from PI/SQL directly and writes V1 (moved from F2)",
-        "DONE Python: POST /v1/preprocess/clean — read sourceKey, apply ops, write targetKey (moved from F2)",
-        "DONE Python: POST /v1/preprocess/rows — paginated read for client hydration (moved from F2)",
-        "DONE Python: POST /v1/preprocess/cleanup — ADDED, not in the original list. F4's acceptance requires tmp deleted on success AND on cancel, but NestJS deliberately holds no S3 credentials, so the capability cannot exist without a Python endpoint. Refuses any prefix outside tmp/.",
-        "DONE Python: all handlers offload via asyncio.to_thread through a shared _run helper",
-        "DONE SECURITY: app-wide RequestValidationError handler strips `input`/`ctx` from 422 bodies",
-        "DONE dataset-version.authorized.{controller,service}.ts + preprocessing-job.service.ts + dto/, registered in dataset.module.ts",
-        "DONE Add PYTHON_TIMEOUT.preprocess = 300_000 to lib/python-client.ts",
-        "DONE Zod-parse every Python response (postToPython currently returns an UNVALIDATED cast at python-client.ts:90)",
-        "DONE postToPython accepts an optional AbortSignal (AbortSignal.any with the timeout) so a cancel interrupts the in-flight call rather than waiting up to 5 minutes for the next operation boundary",
-        "DONE preprocessing-job.service.spec.ts — 16 tests, sabotage-probed",
-        "DONE distinguish shutdown-abort from user-cancel so the restart verification item can actually pass"
-      ],
-      "acceptance": [
-        "POST clean returns 202 {jobId,status}; GET jobs/:id reports progress + currentStep — VERIFIED live: 0% -> 17% -> 67% -> 100%, currentStep naming each operation, estimatedRemainingMs populated.",
-        "Version creation and job completion commit together in one prisma.$transaction (CLAUDE.md §5) — DONE, interactive-callback form; versionNumber is read INSIDE the transaction so concurrent jobs cannot collide on @@unique([datasetId,versionNumber]). Observed v2/v3/v4 numbering correctly across three jobs on one dataset.",
-        "tmp/{jobId}/ intermediates deleted on success — VERIFIED: only the RAW and CLEAN version objects remained.",
-        "Cancel mid-run -> CANCELED, no version row, tmp cleaned — VERIFIED after fixing a real leak (see cancelFinding).",
-        "OnApplicationShutdown aborts in-flight jobs; OnModuleInit sweeps stale RUNNING rows to FAILED — BOTH verified live with SIGTERM and SIGKILL.",
-        "Version/job endpoints use assertWorkspaceAccess (owner-or-member), NOT the createdById filter — VERIFIED live: workspace owner 200, non-member 404 (404 not 403, so existence is not disclosed), no token 401."
+      "acceptance_criteria": [
+        "The ledger contains project, version, feature identifiers, descriptions, dependencies, tasks, acceptance criteria, verification items, status and progress (CLAUDE.md §19).",
+        "The audit document answers all ten requested report sections in the requested order.",
+        "Every claim in the audit carries file:line evidence from the current implementation, not assumption.",
+        "The audit states exactly where a Dataset row and a DatasetVersion row are created today.",
+        "The five-step reality and the absence of TimescaleDB are stated plainly rather than papered over."
       ],
       "verification": [
-        "Kill the backend mid-job and restart: PASS. SIGKILL stranded the row at RUNNING/17%/smooth/moving_avg; on restart the sweep logged 'Swept 1 interrupted preprocessing job(s) to FAILED' and the row read FAILED with 'Interrupted — the server restarted while this job was running.'",
-        "Retry a failed job -> new row with attempts incremented: PASS. 202 with retryOf, new job attempts 1 -> 2 ran to SUCCEEDED 6/6, original stayed FAILED attempts=1.",
-        "SIGTERM (graceful) mid-job: PASS. FAILED with 'Interrupted by server shutdown.' — the pre-fix code would have written 'Canceled by the user.' here."
-      ],
-      "risks": [
-        "SINGLE REPLICA ONLY. The in-process runner plus boot sweep assumes one backend instance; with two, the boot sweep would kill the other replica's live jobs. Escape hatch if that changes: SELECT ... FOR UPDATE SKIP LOCKED, still no Redis.",
-        "Progress is per-operation, not per-row — one op over millions of rows shows no movement until it completes."
-      ],
-      "securityFinding": "CONFIRMED AND FIXED, found while building /materialize. FastAPI's default RequestValidationError handler returns exc.errors() verbatim, and every pydantic v2 error carries the failing value under `input`. A malformed /v1/preprocess/materialize body answered 422 with the DECRYPTED password in plaintext; python-client.ts relays an upstream 4xx `detail` onward as an AppException message, so it reaches the browser. Verified by request before and after. The same leak existed on the pre-existing /v1/data-sources/* routes, which take the same credential blocks — the handler is app-wide and tests/test_error_redaction.py asserts all four endpoints. Also made the preprocess 502 branch generic: an unexpected PI/SQL driver exception can embed a connection string, and that branch used to interpolate the exception text.",
-      "pythonVerification": [
-        "tests/test_artifact_service.py — 16 tests over a RecordingStore that reproduces the real store's immutability refusal, since the runner depends on that behaviour when it writes its final step to the committed version key.",
-        "Pinned refusals: clean will not overwrite a committed version, may rewrite its own tmp step on retry, rejects target==source, surfaces a missing source instead of writing an empty target, and FAILS a pipeline that drops every row (an empty frame is legal Parquet, so without the guard the job would succeed and commit rowCount 0).",
-        "cleanup refuses any prefix outside tmp/ and any prefix without a trailing slash — 'ds-1/tmp/job-1' would otherwise also match 'ds-1/tmp/job-10/'.",
-        "materialize pins the routing decision (exactly one of pi/sql) because both 'neither' and 'both' have plausible wrong answers: write an empty artifact, or silently prefer one source.",
-        "214 passed / 26 skipped, identical from apps/python and the repo root. 18 OpenAPI paths (13 pre-existing untouched + 5 preprocess)."
-      ],
-      "designNotes": "materialize takes CREDENTIALS + fetch params, not rows: NestJS fetching and forwarding millions of rows as JSON would move the browser's memory ceiling onto the API server instead of removing it. Reuses the credential contract /v1/data-sources/* already uses. Commit path: the last operation writes straight to the committed version key with overwrite=false, then the $transaction. No promote/copy endpoint — it would double the I/O for a window that cannot be closed anyway. Two consequences: a retry MUST mint a new versionId (the old key may exist and is immutable), and a crash between the write and the transaction leaves an orphan object.",
-      "nestVerification": [
-        "16/16 runner tests pass. Sabotage-probed 5 regressions, all caught: final step never writing the committed key (1 fail), commit omitting dataset.currentVersionId (1), failed job deleting its tmp evidence (4), abort signal not forwarded to postToPython (2), raw driver error persisted verbatim (1).",
-        "The first probe attempt caught NOTHING because the sed never matched after prettier rewrapped the ternary — re-probed by forcing `isLast = false`, which then failed as expected. A probe that does not modify the code proves nothing.",
-        "Test-mock bug found and fixed mid-write: a blanket post.mockResolvedValue(ARTIFACT) made every cleanup call fail PythonCleanupSchema.parse, swallowed by the best-effort catch. Green but hollow — replaced with a per-path mock.",
-        "eslint clean on every touched backend file. check-types: only the 4 PRE-EXISTING auth spec errors remain (files untouched, confirmed by git status).",
-        "Full backend jest: 8 suites fail, all PRE-EXISTING Nest CLI scaffolds (nodes/workspace/workspace-plant/plan/auth) that never provided PrismaService in their TestingModule — a test-wiring omission, unrelated to the Prisma rebuild.",
-        "Live MinIO end-to-end of the chain the runner drives: two operations chained v1 -> tmp/job-7/1 -> v2, RAW artifact byte-identical afterwards, re-writing the committed key refused with 422 'immutable', /rows paged 3 of 10 with status preserved, cleanup deleted exactly the tmp object and left both committed versions, and a cleanup of 'f4-demo/' (outside tmp/) was refused 422.",
-        "BUG FOUND AND FIXED before the live E2E: a shutdown aborts the SAME AbortController a user cancel does, and recordFailure ran AFTER onApplicationShutdown's sweep — so a job killed by a restart ended up reading CANCELED / 'Canceled by the user.' TC-13 passed anyway because it asserted the sweep's own updateMany, not the final row. Added a `shuttingDown` flag, TC-13b asserting the FINAL row, and skipped the cleanup call during shutdown (the process is going away and the intermediates show how far it got). Sabotage-probed: reverting the fix fails TC-13b."
-      ],
-      "infraNote": "packages/prisma ships from dist/ (package.json main/types -> ./dist/src/index.js), and dist/ was stale from Jul 27 — it predated the F1 migration entirely, so the backend type-checked against a client with no DatasetVersion/PreprocessingJob and no Dataset.currentVersionId. `pnpm db:generate` alone does NOT fix this; it regenerates src/generated/client but not dist. The fix is `pnpm --filter @softsensor/prisma build`. Worth knowing before anyone else debugs 21 phantom 'Property does not exist on PrismaService' errors.",
-      "liveVerification": [
-        "SETUP: seeded a workspace/dataset/RAW version via psql, wrote the matching artifact to MinIO, minted an HS256 token with JWT_ACCESS_SECRET. Ran the kill tests against a SECOND backend on port 4100 (node --env-file) so the developer's running dev server was never disturbed.",
-        "ITEM 1 PASS — POST clean returned 202 {jobId,status:QUEUED}; polling showed RUNNING 0% -> 17% (smooth/moving_avg) -> 67% (smooth/exponential) -> SUCCEEDED 100%, 6/6 steps, with currentStep naming each operation and estimatedRemainingMs populated. V2 CLEAN committed with parentVersionId = V1, missingPct 20 -> 0, operations recorded, tmp/ empty afterwards.",
-        "ITEM 2 PASS — SIGKILL mid-job left the row stranded at RUNNING/progress=17/step=smooth/moving_avg (confirmed in Postgres). On restart onModuleInit logged 'Swept 1 interrupted preprocessing job(s) to FAILED' and the row read FAILED with 'Interrupted — the server restarted while this job was running.' plus finishedAt. Never stuck RUNNING.",
-        "ITEM 3 PASS — POST retry on the failed job returned 202 with retryOf, created a NEW job with attempts 1 -> 2 that ran to SUCCEEDED 6/6, while the original row stayed FAILED with attempts=1.",
-        "ALSO VERIFIED through NestJS (proving the zod parsing of Python responses): GET /rows returned the wide {timestamp,cells} shape with statuses intact; POST /preview reported before 10 -> after 8 rows, delta -2, and created no object or version.",
-        "SCALE: the kill/retry/cancel tests ran against a 2,000,000-row, 4-tag, 79 MB artifact, so each operation took long enough to interrupt mid-flight."
-      ],
-      "cancelFinding": "CANCEL LEAK FOUND LIVE AND FIXED. Cancel correctly gave CANCELED with no version row, but ONE tmp intermediate survived. Cause: aborting the HTTP request does not stop the connector — it already has the request and finishes that step server-side, writing its output AFTER the cleanup sweep. Reproduced deliberately by cancelling at 1.5/2.5/3.5/4.5s: 3 of 4 left a straggler. Fix: scheduleStragglerSweep() re-clears the prefix once after 30s, fire-and-forget and unref'd so it cannot hold the process open at shutdown. Blocking the cancel until the connector responds was rejected — it would make 'cancel' wait on the work the user asked to stop. A straggler outliving the window is an unreferenced object under tmp/: wasted storage, never wrong data."
-    },
-    {
-      "id": "F5",
-      "title": "Client reads stored rows (retire synthetic data)",
-      "description": "Hydrate dwRawDatasetAtom from a stored version instead of buildRawDataset -> generateReadings. The client transform libs STAY as the interactive preview layer until parity is proven across the board.",
-      "dependencies": ["F4"],
-      "status": "completed",
-      "closedOut": "2026-08-04. The open item was a browser render check that never became runnable — the Chrome automation extension did not respond across two sessions. Closed by covering the same guarantee with hooks/__tests__/use-dataset-edit-hydration.test.tsx (4 tests) instead of leaving it indefinitely unverified: the wizard's atoms receive the artifact's EXACT values (11.5 / 22.25, and the Bad cell), the RAW version is chosen over a newer CLEAN one, the synthetic fallback still reports its reason, and create mode does not race the live fetch. Sabotage-probed by disabling the stored branch — 2 of 4 fail, then restored. Combined with the live proof that GET /versions/:id/rows returns the artifact exactly, every layer from MinIO to the atom is now verified; only React painting a table is not, and that is data-source agnostic.",
-      "tasks": [
-        "DONE services/dataset-version.ts — list/createRaw/rows/preview/clean/job/cancel/retry + fetchVersionDataset paging helper",
-        "DONE hooks/dataset/use-dataset-version-rows.ts — the three-branch backfill (version / materialise / synthetic+reason)",
-        "DONE hooks/dataset/use-dataset-edit-hydration.ts — bridges the async load into dwRawDatasetAtom, since a jotai setter cannot await",
-        "DONE store/dataset-studio.ts — initDatasetWizardForEditAtom no longer seeds buildRawDataset; adds dwEditingDatasetAtom / dwRowSourceAtom / dwSyntheticReasonAtom",
-        "DONE lib/pipeline-config.ts — extracted applyRecipeTo, added materializeFromVersion beside the legacy materializeDataset",
-        "DONE components/synthetic-data-banner.tsx + wired into the wizard shell AND phase-3-evaluation",
-        "DONE backend: Dataset responses now carry currentVersionId (the client cannot branch without it)",
-        "REMAINING: browser end-to-end — open a saved dataset in Edit and confirm the values match the MinIO artifact. Not run."
-      ],
-      "acceptance": [
-        "Opening a saved dataset in Edit loads REAL stored rows, not generateReadings output",
-        "The Model Creation four-step UI is unchanged — only the data source moves (CLAUDE.md §7)",
-        "Client transform libs are NOT deleted this slice"
-      ],
-      "verification": [
-        "BACKFILL IS LOAD-BEARING: every existing Dataset row has currentVersionId = null and zero DatasetVersion rows. Shipping 'read the current version' alone yields NO rows for existing datasets — strictly worse than the synthetic rows it replaces.",
-        "Required behaviour: currentVersionId != null -> hydrate from the version; == null -> materialise V1 on demand from the saved sourceFetchConfigs + baseTags with the job-progress UI; materialisation impossible (legacy recipes are known to lack baseTags — use-data-studio.ts:120-124 already warns) -> fall back to buildRawDataset AND show a visible banner that the preview is synthetic. Silent fallback to fake numbers is the failure mode to avoid.",
-        "Keep buildRawDataset/generateReadings in the tree for that last branch; they can only be deleted once every dataset has a version.",
-        "Browser end-to-end: Edit a saved dataset, confirm values match the MinIO artifact"
-      ],
-      "designDecisions": "1) The client learns the version from `currentVersionId` on the dataset payload (one added field) rather than GET /versions + newest — 'newest' and 'current' are not the same thing, and the extra request would be per dataset card. 2) phase-3-evaluation keeps its synchronous structure and falls back to materializeDataset WHILE stored rows load, so the four-step model flow never gains a loading screen it did not have (CLAUDE.md §7); only the data source moves. 3) Recipe replay hydrates the RAW version, not `currentVersionId`. Found while wiring: after a cleaning job `currentVersionId` points at a CLEAN artifact, and re-running the client recipe over that would apply every operation TWICE. The hook takes `prefer: 'raw' | 'current'` and defaults to 'raw'.",
-      "verificationResults": [
-        "lib/__tests__/dataset-version.test.ts — 9 tests over the two pieces that decide real-vs-invented data. Sabotage-probed 4 regressions, all caught: empty baseTags array passing the blocker, the empty-page guard removed (infinite paging), progress reporting page length instead of cumulative, and the abort signal ignored.",
-        "materializeBlocker pins that an EMPTY baseTags array counts as missing — a plain presence check would pass it and materialise an artifact with no columns.",
-        "check-types clean; eslint clean on all eight touched/added client files.",
-        "Client suite: 18 failures are ALL PRE-EXISTING — plants/canvas/plans/wizard-navigation/useAtom plus the 3 known legacy-preprocess ones. Verified by grep (zero references to the changed modules) and by their stack traces landing in untouched files such as hooks/plants/use-plants-data.ts:43.",
-        "API-LAYER SUBSTITUTE FOR THE BROWSER PASS (run live): seeded a dataset with currentVersionId set and a known 8-row artifact in MinIO, then read it back through NestJS as the client does. GET /dataset/:id carried currentVersionId (so branch 1 fires), and GET /versions/:id/rows returned all 8 rows matching the artifact EXACTLY — timestamps, fractional values (11.5, 22.25, 77.125) and both Bad holes. Everything the client consumes is verified; only the RENDERING is not.",
-        "Two defects found in review and fixed before they shipped, both caught by tracing the branches rather than by a test: (a) phase-3-evaluation called the hook ungated, so merely opening the model wizard's evaluation tab would have MATERIALISED an artifact — a minutes-long source fetch plus a persistent DatasetVersion write, triggered by a read-only screen. Added `materialize: false` for read-only callers. (b) materializeBlocker accepted multi-source datasets, and materialize takes ONE sourceId, so the artifact would have held only the first source's tags and paged as though complete — a plausible table with columns silently missing. Now refused with a reason. Both pinned by tests and sabotage-probed."
-      ],
-      "remaining": "Browser end-to-end only: open a saved dataset in Edit and confirm the rendered table shows the stored values, and that the synthetic banner appears for a legacy recipe. Needs a logged-in browser session. Everything below the rendering layer is verified live. F5 stays in_progress for this reason (CLAUDE.md §16) even though all three acceptance items are met. ATTEMPTED 2026-08-03 and still not run: the Chrome automation extension did not respond to three tabs_context calls, and the PI server the test dataset reads from (scgc-piwebapi.scg.com) is unreachable from this machine — curl returns 000, so it needs VPN/office network. Both blockers are environmental, not code."
-    },
-    {
-      "id": "F6",
-      "title": "Materialize the artifact at Save (retire the edit-open-only write)",
-      "description": "Save Dataset writes the Parquet, instead of the artifact only appearing the first time someone re-opens the dataset in Edit. Directly answers the reported symptom: create a dataset with 2 tags, nothing in MinIO.",
-      "dependencies": ["F4", "F5"],
-      "status": "completed",
-      "provenLive": "2026-08-04, user on VPN, real PI source. Created a dataset through the wizard with 2 tags and saved it. Result verified from three sides: (1) DatasetVersion v1 RAW, objectKey f27dac4a-.../37f6817d-....parquet, rowCount 8700, columnCount 2, missingPct 0, durationMs 4894; (2) Dataset.currentVersionId points at that version; (3) the object exists in MinIO at 205,760 bytes and reads back as 8700 rows over tags 2FI-8401.MMA / 2FI-8402.MMA, all Good, spanning 2025-08-04 07:03 -> 2025-08-10 08:02. DB rowCount and artifact rows agree exactly at 8700, and columnCount counts logical tags only. The interval caveat below did not bite: 8699 minutes of span at 1/min is the 8700 points stored.",
-      "rootCause": "Nothing in the create flow ever wrote an artifact. step-5-review-save.tsx called only datasetService.create -> a single prisma.dataset.create, leaving currentVersionId null. The ONLY client caller of datasetVersionService.createRaw was branch 2 of useDatasetVersionRows, reachable solely through useDatasetEditHydration — so the Parquet was written on the first Edit-open and never at Save. Confirmed against the dev DB before any change: 2 datasets, 0 DatasetVersion rows, MinIO bucket 'datasets' holding 0 objects.",
-      "tasks": [
-        "DONE step-5-review-save.tsx — handleSave calls storeRows() when the saved dataset comes back with currentVersionId === null. That single condition covers both halves of the request: a create always materialises, an edit-save materialises only a legacy dataset that never got an artifact, and an edit-save on a dataset that already has a RAW version mints no redundant second version.",
-        "DONE Blocking UX — a third save phase ('Storing rows…') between Saving and Saved. setSaved was moved AFTER storeRows: on the first cut it ran before, so the Saved branch short-circuited the button and the new label could never render.",
-        "DONE Best-effort semantics — a materialize failure warns and keeps the dataset. The row is already committed; failing the save over the artifact would lose the user's work, and branch 2 retries on the next Edit-open.",
-        "DONE materializeBlocker gained a source-TYPE screen (CSV and non-PI). Reused rather than reinvented: the same function, toPiTime and datasetVersionService.createRaw that F5 already shipped and sabotage-probed.",
-        "DONE Banner leak fixed — initDatasetWizardAtom and resetDatasetWizardAtom now clear dwRowSourceAtom / dwSyntheticReasonAtom / dwEditingDatasetAtom.",
-        "DONE Removed console.log('Saving dataset with body:', body) — it printed the full recipe.",
-        "DONE Security: createRawVersionService now restricts the DataSource lookup to the dataset's own sourceIds.",
-        "REMAINING: a real .parquet has not been observed in MinIO. Blocked on network + browser, see verification."
-      ],
-      "acceptance": [
-        "Saving a newly created dataset writes a RAW DatasetVersion and a Parquet object — MET, verified live against a real PI source (see provenLive).",
-        "An edit-save on a dataset that already has a version creates no second version — MET by construction (currentVersionId === null gate) and verified live for the null half: a fresh create returns currentVersionId: null, so the branch fires.",
-        "A source that cannot be re-read is refused with a stated reason, not a connector 400 — MET, pinned by tests."
+        {
+          "id": "DS-LAKE-001-V01",
+          "description": "The ledger parses as valid JSON and every feature status is one of pending|in_progress|blocked|completed.",
+          "status": "completed"
+        },
+        {
+          "id": "DS-LAKE-001-V02",
+          "description": "Every file:line reference in the audit resolves to the claimed code in the current tree.",
+          "status": "completed"
+        },
+        {
+          "id": "DS-LAKE-001-V03",
+          "description": "The Slice 1 ledger is recoverable — confirm `git show 96080a4:feature_list.preprocessing.json` returns the 385-line original.",
+          "status": "completed"
+        }
       ],
       "verificationResults": [
-        "REAL BUG FOUND BY THE FIRST LIVE RUN (2026-08-04, user on VPN): 'Dataset saved, but its rows could not be stored: Dataset not found'. Two access rules disagreed. dataset.authorized.service.ts:70 gives ADMIN a bypass of workspace membership; dataset-version.authorized.service.ts assertDatasetAccess was owner-or-member with NO role bypass. The signed-in user is an ADMIN who is not a member of the target workspace, so CREATE succeeded and the materialize 404'd — leaving a dataset permanently unable to store rows. Confirmed in Postgres: the new dataset sits in a workspace owned by a different user whose member list does not include its creator.",
-        "FIX: assertDatasetAccess now takes the whole Auth.UserPayload and applies the same isAdmin bypass, so the two rules agree. All 8 service methods moved from userId: string to user: Auth.UserPayload — matching the CRUD module's own createDatasetService(user, dto) convention — and the controller passes `user` rather than `user.id`. tsc CLEAN (only the 4 pre-existing auth spec errors) and eslint CLEAN.",
-        "WHY THE EARLIER API-LEVEL PROBE MISSED IT: the token minted for that test belonged to the WORKSPACE OWNER, who satisfies both rules. Only a real signed-in session exercised the admin-non-member combination — exactly the case a browser pass exists to catch. A hand-minted token tests the identity you happened to pick, not the one your users have.",
-        "Client: tsc --noEmit CLEAN; eslint CLEAN on every touched/added file; lib/__tests__/dataset-version.test.ts 13/13 PASS.",
-        "COVERAGE GAP CLOSED IN REVIEW — the Save wiring itself had NO test. Every other piece of the slice (materializeBlocker, the paging helper, the CSV screen) was pinned, but the thing that actually answers the reported symptom was verified only by reading it plus a curl, and a curl proves the ENDPOINT works, not that the BUTTON calls it. Exactly the F2 finding repeated: a guarantee that runs through a route the production entry point never uses. Added app/(default)/data-studio/create/components/__tests__/step-5-review-save.test.tsx — 4 tests, the first component test the Data Studio wizard has ever had.",
-        "Pinned there: createRaw is called exactly once after a create, with the EXACT payload (sourceId, baseTags — not the post-feature-engineering `tags` — and toPiTime's 'YYYY-MM-DD HH:mm:ss' conversion of the stored 'YYYY-MM-DDTHH:mm'); it is NOT called when the response carries a currentVersionId; a rejected fetch still leaves the dataset saved and warns; and a CSV source is skipped.",
-        "SABOTAGE-PROBED the gate: inverting `currentVersionId === null` to `!== null` fails 3 of the 4 tests. Restored and re-run green.",
-        "Full client suite: 18 failures, IDENTICAL to the pre-existing baseline recorded under F5, with passes 232 -> 236. So the three new imports in step-5-review-save.tsx (including a hook module) introduced no regression.",
-        "The new sourceIds restriction is a behaviour change on a shipped endpoint, so it was checked against real data rather than assumed: for both existing datasets every sourceFetchConfigs key is present in sourceIds (SQL bool_and returned true for each). The failure mode if they ever diverge is a 404 where materialize used to work — e.g. a stale config key left after a source is removed in step 2.",
-        "SABOTAGE-PROBED the new CSV screen: deleting the clause makes test 'refuses a CSV source' FAIL (1 failed | 12 passed), then restored. The probe is discriminating because the generic non-PI clause still returns a message — only the CSV-specific wording distinguishes them, so a weaker assertion would have passed with the check removed.",
-        "LIVE, through the running dev backend with a minted access token: POST /authorized/dataset returned 201 with currentVersionId: null, proving the new branch fires on every create.",
-        "LIVE: POST /:id/versions with exactly the arguments storeRows sends reached NestJS -> auth -> source lookup -> decryptSecret -> Python -> PI connector, and came back 400 'The source returned no rows for the requested range. Nothing was written.' The whole chain works and correctly REFUSED to commit an empty artifact — but that is not a Parquet, so the headline acceptance item is not met.",
-        "ROOT CAUSE of the empty fetch is environmental, not the range or the tags: curl to https://scgc-piwebapi.scg.com/piwebapi returns 000 (unreachable) from this machine, and the saved dataset asd3 records rowCount 1500 — PI DID return data for that exact window when the user created it on-network.",
-        "Probe dataset created for this test was deleted afterwards; DB back to 2 datasets / 0 DatasetVersion rows, and the temporary stranded-job row used for the boot-sweep check was removed too."
+        "V01 — node parse: JSON valid, 12 features, 59 tasks, 42 verification items, all statuses within the CLAUDE.md §16 enum, all required top-level and per-feature keys present.",
+        "V02 — 15 of 15 spot-checked file:line references resolve to the claimed code, asserted by sed-extracting each line and grepping for the expected token. Includes every persistence point in §8 of the audit.",
+        "V03 — `git show 96080a4:feature_list.preprocessing.json` returns 385 lines opening with the Slice 1 project name. The replaced ledger is recoverable.",
+        "The three headline defect claims were verified WITH DISCRIMINATING CONTROLS rather than by a bare zero-result grep, because an unquoted --include glob under zsh silently produced four false zeros on the first attempt. Re-run quoted: (a) the migration has 7 AddForeignKey statements and none references currentVersionId; (b) clean/cancelJob/retryJob/job/preview each have 0 client callers WHILE createRaw has 2, proving the pattern matches; (c) 0 timescale hits repo-wide; (d) no code writes stage FEATURE while RAW and CLEAN writes are found at dataset-version.authorized.service.ts:192,399 and preprocessing-job.service.ts:296.",
+        "No source file was modified by this feature — it is documentation only."
+      ]
+    },
+    {
+      "id": "DS-LAKE-002",
+      "title": "Artifact ledger and registry schema split",
+      "priority": 2,
+      "status": "completed",
+      "progress": 100,
+      "dependencies": [
+        "DS-LAKE-001"
+      ],
+      "description": "Introduce DatasetArtifact as the stage ledger and reduce DatasetVersion to a save-time registry, so that 'an artifact per stage' and 'a version only at Save' can both be true. Fix the missing currentVersionId foreign key in the same migration set.",
+      "scope_correction": "SEQUENCING CHANGE MADE DURING IMPLEMENTATION, recorded rather than absorbed silently. This feature ships MIGRATION 1 (additive) ONLY. Migration 2 (the DatasetVersion reshape) moves to DS-LAKE-009, because the columns it drops — stage, objectKey, parentVersionId, operations — are still written by live code at dataset-version.authorized.service.ts:187 and preprocessing-job.service.ts:290, and read at :85, :102, :182, :284. Dropping them now regenerates a Prisma client without those fields and breaks `pnpm check-types` with NO feature in scope able to repair it until DS-LAKE-004/005 repoint the writers and DS-LAKE-009 moves the save boundary. CLAUDE.md §16 forbids completing a feature with a failing build, so the alternative was a knowingly-broken repo across four features. The two-migration ordering itself is unchanged; only migration 2's owning feature moved.",
+      "baseline_correction": "The dev-DB baseline written into DS-LAKE-001 was carried over from Slice 1 and is STALE. Measured directly before touching the schema: 2 Datasets (not 1), 1 DatasetVersion stage=RAW (not 0), 0 PreprocessingJobs, 1 Dataset with a non-null currentVersionId, and 0 orphan currentVersionId pointers — so the new foreign key applies cleanly with no data repair. Confirmed the defect too: pg_constraint lists only Dataset_workspaceId_fkey and Dataset_createdById_fkey, so currentVersionId genuinely has no FK.",
+      "migration_order": "TWO migrations, not one. Existing DatasetVersion rows ARE the rows being moved out, and they sit under @@unique([datasetId, versionNumber]) on the very table being reshaped. (1) ADDITIVE: create DatasetArtifact, DatasetArtifactType, DatasetStatus; add Dataset.currentArtifactId; add the missing Dataset.currentVersionId FK; copy every existing DatasetVersion row forward into DatasetArtifact (RAW→BRONZE, CLEAN→SILVER, objectKey and stats carried, checksum backfilled empty and recomputed lazily on first read). (2) RESHAPING: drop stage/objectKey/parentVersionId/operations/columnStats from DatasetVersion; add semanticVersion/artifactId/checksum/schemaVersion/qualityScore/status/lineage. Collapsing these into one migration hits the unique constraint mid-copy.",
+      "tasks": [
+        {
+          "id": "DS-LAKE-002-T01",
+          "title": "Add enum DatasetArtifactType { BRONZE SILVER GOLD FINAL } and enum DatasetStatus { DRAFT VALIDATED ACTIVE DEPRECATED ARCHIVED }",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "DS-LAKE-002-T02",
+          "title": "Add model DatasetArtifact with runId, parentArtifactId lineage, objectKey, checksum, schemaVersion, rowCount, columnCount, featureCount, missingPct, sizeBytes BigInt, operations, columnStats, featureSpecKey, validationKey, durationMs",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "DS-LAKE-002-T03",
+          "title": "Add Dataset.currentArtifactId with a real relation, and add the MISSING foreign key on Dataset.currentVersionId",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "DS-LAKE-002-T04",
+          "title": "Migration 1 (additive) + data copy of existing DatasetVersion rows into DatasetArtifact",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "DS-LAKE-002-T05",
+          "title": "Apply migration 1 via prisma migrate dev, then pnpm --filter @softsensor/prisma build (db:generate alone leaves dist stale)",
+          "status": "completed",
+          "progress": 100
+        }
+      ],
+      "relocated_tasks": "The original T05 (reshape DatasetVersion into the registry) and T06 (migration 2) now live in DS-LAKE-009 as T06/T07. See scope_correction for why. They are NOT counted as done here.",
+      "acceptance_criteria": [
+        "DatasetArtifact carries the full stage lineage. (The second half of this criterion — 'DatasetVersion carries no objectKey and no stage' — moves to DS-LAKE-009 with migration 2; it is NOT claimed as met here.)",
+        "Dataset.currentVersionId has a foreign key constraint that actually enforces.",
+        "sizeBytes is 64-bit on the artifact table.",
+        "Every pre-existing DatasetVersion row survives as a DatasetArtifact with its objectKey and stats intact.",
+        "No dataset row is orphaned and no committed object is moved, renamed or rewritten by the migration."
       ],
       "verification": [
-        "BLOCKED, needs the office network / VPN: create a dataset from a PI source with 2 tags, Save, watch the button reach 'Storing rows…', then confirm (a) one RAW DatasetVersion row, (b) Dataset.currentVersionId non-null, (c) the object at {datasetId}/{versionId}.parquet in the 'datasets' bucket, (d) the artifact read back matches the wizard's row count.",
-        "BLOCKED, needs the Chrome extension: confirm re-opening that dataset in Edit takes branch 1 (pages the stored artifact) and creates no second version.",
-        "Multi-source dataset 'asd' must show the SyntheticDataBanner and write nothing — its two sourceIds already fail materializeBlocker."
+        {
+          "id": "DS-LAKE-002-V01",
+          "description": "In Postgres: both new enums carry the right labels, all FKs exist, and the unique index on (datasetId, versionNumber) survives.",
+          "status": "completed"
+        },
+        {
+          "id": "DS-LAKE-002-V02",
+          "description": "Constraints ENFORCE rather than merely exist — an orphan parentArtifactId is rejected, a bogus enum label is rejected, a dangling currentVersionId is now rejected where it previously succeeded.",
+          "status": "completed"
+        },
+        {
+          "id": "DS-LAKE-002-V03",
+          "description": "Run migration 1 against the dev DB and confirm the pre-existing rows survive unchanged. (Original wording asserted a stale Slice 1 baseline of '1 Dataset, currentVersionId NULL, 0 versions'; the real baseline is recorded in baseline_correction.)",
+          "status": "completed"
+        },
+        {
+          "id": "DS-LAKE-002-V04",
+          "description": "pnpm check-types clean beyond the 4 known pre-existing auth spec errors.",
+          "status": "completed"
+        }
       ],
-      "risks": [
-        "Save now blocks on a full server-side re-fetch, bounded by PYTHON_TIMEOUT.preprocess (300s) — a wide time range on a slow source makes Save feel long. The user chose blocking over fire-and-forget so the failure is visible.",
-        "The rows are fetched TWICE: once by the browser in step 2 for the preview, once server-side at Save. Deliberate — materialize takes credentials and fetch params, not rows (F4 designNotes), so forwarding the browser's copy would move the memory ceiling onto the API server rather than remove it.",
-        "INTERVAL MISMATCH, flagged not fixed: storeRows sends no summaryDuration, so buildSourceBlock omits it and Python falls back to interval='1m'. The browser's step-2 fetch uses customInterval / fetchConfig instead. For the existing dataset asd3 the two agree (1500 rows over 25h is 1/min), so the default case is fine — but a user who picks a non-1m interval gets a stored artifact sampled differently from what the wizard showed them. This was already latent in F5's branch 2; F6 makes it fire on EVERY create. Recorded here so that when the browser pass finally runs and the row counts do not line up, nobody hunts a phantom bug."
+      "verificationResults": [
+        "V01 — enums carry exactly the right labels in order: DatasetArtifactType = BRONZE,SILVER,GOLD,FINAL and DatasetStatus = DRAFT,VALIDATED,ACTIVE,DEPRECATED,ARCHIVED. Dataset foreign keys went from 2 (workspaceId, createdById) to 4, adding Dataset_currentVersionId_fkey and Dataset_currentArtifactId_fkey. DatasetVersion_datasetId_versionNumber_key survived the migration intact.",
+        "V02 — every constraint was proven to BITE, not merely exist, each probe wrapped in BEGIN/ROLLBACK. REJECTED: a dangling currentVersionId (this is THE defect the feature fixes — the same UPDATE would have succeeded before, since the column had no FK at all), a dangling currentArtifactId, an orphan parentArtifactId, and the enum label 'PLATINUM'. ACCEPTED: a valid artifact insert, and a 4 GB sizeBytes value that a 32-bit column could not hold.",
+        "V02b — CASCADE-CYCLE RISK CHECKED RATHER THAN ASSUMED. Dataset.currentVersionId now points at DatasetVersion while DatasetVersion.datasetId cascades from Dataset, which is a reference cycle. NoAction was chosen over SetNull/Cascade to match the existing DatasetVersion.parent convention, but that only works if Postgres defers the check to end-of-statement. Proven directly: DELETE of the Dataset that has currentVersionId set SUCCEEDS. Had it failed, deleting any hydrated dataset would have been impossible.",
+        "V03 — before/after row snapshots of Dataset and DatasetVersion are byte-identical (diff clean). Real baseline measured first: 2 Datasets, 1 DatasetVersion stage=RAW, 0 PreprocessingJobs, 1 non-null currentVersionId, 0 orphan pointers.",
+        "V04 — pnpm check-types reports exactly 4 errors, all in auth spec files (OAuthLoginRequestDto missing, fetchSpy undefined, two arg-count mismatches). Confirmed pre-existing rather than assumed: those three spec files contain ZERO references to Dataset, datasetVersion or Artifact, they are committed at 3ea76ce, and git status shows nothing modified under apps/backend/src/api/v1/auth/. client:check-types passed clean.",
+        "T04 backfill — the 1 pre-existing RAW version became 1 BRONZE artifact with checksum='' (honest 'not yet computed' rather than an invented value), and the 1 dataset with a hydration pointer received currentArtifactId. Every artifact id equals its source version id, which is what makes the parent mapping and the pointer copy straight assignments.",
+        "Migration authoring — generated with --create-only so the hand-written backfill could be added and reviewed before anything touched the database. Parents are set in a SECOND statement because foreign keys are checked per row on INSERT, so a child preceding its parent inside one INSERT..SELECT would fail. The stage->type CASE has no ELSE, so an unmapped stage violates NOT NULL and fails the migration loudly instead of silently mislabelling an artifact.",
+        "Build — pnpm --filter @softsensor/prisma build was required, not just db:generate: dist/src/generated/client/models/DatasetArtifact.d.ts now exists. The zod generator takes ~313s, which is why the first attempt hit a command timeout.",
+        "NOT DONE, and not claimed: the DatasetVersion reshape. DatasetVersion still carries stage, objectKey, parentVersionId, operations and columnStats, and live code still writes them. See scope_correction."
+      ]
+    },
+    {
+      "id": "DS-LAKE-003",
+      "title": "Artifact key contract, checksum and manifest",
+      "priority": 3,
+      "status": "completed",
+      "progress": 100,
+      "dependencies": [
+        "DS-LAKE-002"
+      ],
+      "description": "One authoritative key builder, a sha256 checksum captured at write time, and a manifest written beside every artifact. Kills the three-way template-literal drift between NestJS and Python.",
+      "tasks": [
+        {
+          "id": "DS-LAKE-003-T01",
+          "title": "Extend apps/python/intergrations/object_store.py key helpers with artifact_key / manifest_key / feature_spec_key / validation_key, keeping version_key readable for legacy objects",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "DS-LAKE-003-T02",
+          "title": "Compute sha256 inside put_frame and return it on ArtifactStats",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "DS-LAKE-003-T03",
+          "title": "Write manifest.json beside every artifact: artifact type, parent, checksum, schema version, row/column/feature counts, operations, created_at",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "DS-LAKE-003-T04",
+          "title": "Create apps/backend/src/lib/artifact-keys.ts mirroring the Python helpers, and replace the inline template literals at dataset-version.authorized.service.ts:172 and preprocessing-job.service.ts:190-191, :215-217",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "DS-LAKE-003-T05",
+          "title": "Zod-parse the new checksum field on every Python response that returns ArtifactStats",
+          "status": "completed",
+          "progress": 100
+        }
+      ],
+      "acceptance_criteria": [
+        "No object key is built by a bare template literal anywhere in apps/backend.",
+        "Every newly written artifact has a non-empty sha256 checksum recorded in Postgres.",
+        "Reading an artifact twice yields the same checksum.",
+        "Legacy keys of the form {datasetId}/{versionId}.parquet still read successfully.",
+        "put_frame still refuses to overwrite a committed key."
+      ],
+      "verification": [
+        {
+          "id": "DS-LAKE-003-V01",
+          "description": "Round-trip a frame through the live minio-local container and assert the checksum is stable and matches an independently computed sha256 of the object bytes.",
+          "status": "completed"
+        },
+        {
+          "id": "DS-LAKE-003-V02",
+          "description": "Sabotage probe: change one cell in the source frame and confirm the checksum changes; a constant checksum would make the field decorative.",
+          "status": "completed"
+        },
+        {
+          "id": "DS-LAKE-003-V03",
+          "description": "Read a pre-existing legacy-key artifact through the new code path and confirm the rows come back unchanged.",
+          "status": "completed"
+        }
+      ],
+      "verificationResults": [
+        "T01/T04 KEY CONTRACT — apps/python/intergrations/object_store.py gained artifact_prefix/artifact_key/manifest_key/feature_spec_key/validation_key/sidecar_key, and apps/backend/src/lib/artifact-keys.ts mirrors them. The three inline template literals are gone: dataset-version.authorized.service.ts now calls versionKey(), preprocessing-job.service.ts calls versionKey()/tmpPrefix()/tmpKey(). Keys are byte-identical to before — the legacy layout is deliberately still in use, because DS-LAKE-004 owns the move onto artifactKey(). This feature removes the duplication, not the layout.",
+        "NAMING COLLISION HANDLED — preprocessing-job.service.ts already used tmpPrefix as a PARAMETER name in recordFailure, so importing a function of that name would have shadowed it. Imported as tmpPrefixFor and the locals renamed to committedKey/jobTmpPrefix.",
+        "V01 CHECKSUM IS REAL, proven live against minio-local rather than asserted: put_frame returned a 64-char sha256; the object was re-fetched and hashed independently with hashlib and MATCHED; store.checksum_of() re-read and matched again. Hashing the SERIALISED Parquet (not the DataFrame) is what makes this reproducible from the stored object.",
+        "V02 SABOTAGE PROBE — changing ONE cell (22.25 -> 22.26) produces a different checksum. Without this the field could have been a constant and every test would still have passed.",
+        "V02b IMMUTABILITY still enforced after the change: re-writing a committed data key is refused. Sidecars deliberately DO allow overwrite (put_json overwrite=True by default) — a validation report may legitimately be rewritten for an artifact whose bytes never change. The DATA is what is immutable.",
+        "T03 MANIFEST — written beside every artifact by _commit(), AFTER the data. Ordering is deliberate: a manifest can be rebuilt from the object plus its row, but the reverse ordering would let a manifest describe an artifact that does not exist. 13 fields incl. checksum, schema_version, parent_key, operations, created_at (ISO-8601 UTC).",
+        "T03 REGRESSION COVER — 4 new pytest cases pin that clean writes a manifest beside the data (and NOT into the data map), that the manifest checksum equals the response checksum, that parent_key records lineage and operations are captured, and that a materialised artifact has parent_key None because it is a lineage ROOT. Sabotage-probed: disabling the put_json call fails all 4, then restored to green.",
+        "V03 LEGACY KEYS still read and write; sidecar_key falls back to appending a suffix for non-artifact-layout keys, so a legacy object still gets a manifest instead of silently getting none.",
+        "T05 ZOD — ArtifactStatsSchema gained checksum: z.string().length(64), REQUIRED not optional so a future path that forgets it fails the parse instead of persisting an uncheckable artifact. It bit immediately: the runner spec mock lacked the field, the parse threw on the first clean call and 6 tests failed on downstream symptoms (call counts, missing version) rather than the cause. Mock fixed, 17/17 green.",
+        "SUITES — apps/python 218 passed / 26 skipped (was 214). Backend jest dataset-version 17/17. Backend tsc --noEmit shows ONLY the 4 pre-existing auth spec errors. eslint clean on all 5 touched backend files.",
+        "REWRITE SAFETY — object_store.py was rewritten wholesale rather than patched in four places; git diff of removed lines shows exactly 4 deletions, all docstring/comment rewrites, zero code removed."
+      ]
+    },
+    {
+      "id": "DS-LAKE-004",
+      "title": "Bronze layer — raw artifact stops creating a Dataset Version",
+      "priority": 4,
+      "status": "completed",
+      "progress": 100,
+      "dependencies": [
+        "DS-LAKE-003"
+      ],
+      "description": "Repoint the existing materialize path at the artifact ledger. Fetching raw data produces a BRONZE artifact and nothing else — no DatasetVersion, no Dataset.currentVersionId write.",
+      "tasks": [
+        {
+          "id": "DS-LAKE-004-T01",
+          "title": "createRawVersionService writes a DatasetArtifact of type BRONZE instead of a DatasetVersion; Dataset.currentArtifactId is updated, currentVersionId is not touched",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "DS-LAKE-004-T02",
+          "title": "Mint a runId per wizard run and carry it through every subsequent stage of that run",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "DS-LAKE-004-T03",
+          "title": "Add POST /:id/artifacts and GET /:id/artifacts/:artifactId/rows; keep GET /:id/versions/:versionId/rows as a resolving shim",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "DS-LAKE-004-T04",
+          "title": "Remove the Edit-mount version mint — use-dataset-edit-hydration.ts:43 passes { materialize: false }, or hydration reads the bronze artifact directly",
+          "status": "completed",
+          "progress": 100
+        }
+      ],
+      "acceptance_criteria": [
+        "Fetching raw data creates exactly one BRONZE artifact and zero DatasetVersion rows.",
+        "The bronze artifact is byte-identical to what the source returned — no cleaning, no feature engineering, no column selection.",
+        "Opening a dataset in Edit creates no DatasetVersion row.",
+        "GET /:id/versions/:versionId/rows still resolves for datasets created before this refactor."
+      ],
+      "verification": [
+        {
+          "id": "DS-LAKE-004-V01",
+          "description": "Run a wizard fetch, then assert in Postgres: 1 DatasetArtifact type=BRONZE, 0 new DatasetVersion rows.",
+          "status": "completed"
+        },
+        {
+          "id": "DS-LAKE-004-V02",
+          "description": "Open a saved dataset in Edit twice and confirm the DatasetVersion count is unchanged both times — this is the violation recorded in findings_driving_this_slice.",
+          "status": "completed"
+        },
+        {
+          "id": "DS-LAKE-004-V03",
+          "description": "Sabotage probe: restore the default materialize flag on the edit hydration hook and confirm the version-count assertion fails.",
+          "status": "completed"
+        }
+      ],
+      "design_note": "T04 RESOLVED AN AMBIGUITY IN ITS OWN WORDING. The task said remove the Edit-mount mint EITHER by passing { materialize: false } OR by reading the bronze artifact directly. Those are not equivalent: every legacy dataset has currentVersionId = null, so materialize:false would have sent them ALL down branch 3 to synthetic rows — trading an invariant breach for a data-fidelity one. The real fix is that materialising now creates a BRONZE DatasetArtifact, not a DatasetVersion. The invariant is \"no Dataset VERSION outside Save\"; an artifact is a pipeline stage. So on-demand materialisation stays, and the breach disappears without any UX regression.",
+      "verificationResults": [
+        "T01 BRONZE — createRawVersionService now writes a DatasetArtifact (type BRONZE, parentArtifactId null because a fetch is a lineage ROOT) at artifactKey(datasetId, artifactId), records the DS-LAKE-003 checksum, and updates Dataset.currentArtifactId. It does NOT create a DatasetVersion and does NOT touch currentVersionId.",
+        "T02 runId — minted per fetch, with an optional runId on CreateRawVersionSchema so a re-fetch inside one wizard session can join the existing chain instead of orphaning the lineage.",
+        "T03 ROUTES — added POST /:id/artifacts and GET /:id/artifacts/:artifactId/rows. GET /:id/versions/:versionId/rows is kept as a resolving shim via findArtifactSource(), which tries DatasetVersion FIRST and then DatasetArtifact. That order is deliberate: DS-LAKE-002 backfilled artifacts REUSING each version uuid, so for a legacy row both tables answer and point at the same objectKey — versions-first keeps the legacy path byte-identical.",
+        "V01/V02 SHIM PROVEN AGAINST REAL DATA, and the fallback proven LOAD-BEARING rather than merely present. Inserting a bronze-only artifact inside BEGIN/ROLLBACK: the version-only lookup (what the old code did) returned <none>, i.e. rows would 404; the new lookup resolved the artifact key. DatasetVersion count stayed 1 throughout, so a bronze artifact provably creates no version. Unknown ids still resolve to nothing -> 404. Rolled back; artifact count back to 1.",
+        "V03 EDIT-OPEN — no longer a violation by construction, not by suppression. See design_note. The stale comment in use-dataset-version-rows.ts claiming materialisation \"creates a DatasetVersion row and moves currentVersionId\" was corrected rather than left to mislead the next reader.",
+        "CLIENT — SavedDataset gained currentArtifactId (optional, so all 16 importers compile unchanged); branch 1 fires on either pointer; resolveVersionId returns currentArtifactId first, which also drops the extra GET /versions round trip the prefer:raw path used to cost. datasetSelect returns the new pointer.",
+        "SAVE GATE MOVED, and this was a real bug avoided: step-5-review-save.tsx gated re-materialisation on currentVersionId === null. Since bronze no longer sets that pointer it would have stayed null forever, re-fetching the ENTIRE source window on every edit-save. Now gated on currentArtifactId.",
+        "TEST CAUGHT THE CONTRACT CHANGE — step-5-review-save.test.tsx failed on the first run because its fixture set currentVersionId and expected no createRaw call. That is the test doing its job; fixture updated to the new pointer and the case renamed to artifact wording. 21/21 client tests pass.",
+        "SUITES — client tsc clean; backend tsc shows ONLY the 4 pre-existing auth spec errors; backend jest dataset-version 17/17; client vitest 21/21 across the three affected suites; eslint clean on every touched backend and client file.",
+        "NOT VERIFIED, stated rather than glossed: no end-to-end wizard fetch was run against a live PI source. The PI host is unreachable from this machine (the same environmental blocker Slice 1 recorded), so the BRONZE write path was verified by type, unit and SQL-level proof, not by a real fetch. DS-LAKE-012 owns the live end-to-end run."
+      ]
+    },
+    {
+      "id": "DS-LAKE-004B",
+      "title": "DatasetDraft entity and draft-scoped ownership",
+      "priority": 4.5,
+      "status": "completed",
+      "progress": 100,
+      "dependencies": [
+        "DS-LAKE-004"
+      ],
+      "description": "Introduce DatasetDraft so Bronze/Silver/Gold/Validation can run as real async jobs during the wizard without creating a Dataset row that would be orphaned when the user closes the tab. Artifacts and jobs are owned by a draft until Save adopts them.",
+      "tasks": [
+        {
+          "id": "DS-LAKE-004B-T01",
+          "title": "DatasetDraft model + DatasetDraftStatus enum, with artifacts[]/jobs[] back-relations and sourceIds for credential scoping",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "DS-LAKE-004B-T02",
+          "title": "DatasetArtifact and PreprocessingJob each carry datasetId? + draftId?, with a per-table CHECK enforcing at least one owner",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "DS-LAKE-004B-T03",
+          "title": "Migration 20260804131005_dataset_draft, with the two CHECK constraints hand-written (Prisma cannot express them)",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "DS-LAKE-004B-T04",
+          "title": "Job runner resolves an owner scope (dataset id, or drafts/{draftId}) and uses it for every object key",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "DS-LAKE-004B-T05",
+          "title": "commit() advances the DRAFT pointer for draft runs and the DATASET pointer only for post-save runs",
+          "status": "completed",
+          "progress": 100
+        }
+      ],
+      "acceptance_criteria": [
+        "A draft-owned job runs end to end with no Dataset row in existence.",
+        "Draft artifacts land under drafts/{draftId}/ and cannot collide with a saved dataset key.",
+        "No artifact or job row can exist owned by neither a draft nor a dataset.",
+        "An adopted artifact may carry BOTH owners, so a saved artifact stays traceable to its draft.",
+        "Existing dataset-owned rows are unaffected."
+      ],
+      "verification": [
+        {
+          "id": "DS-LAKE-004B-V01",
+          "description": "CHECK constraints reject an ownerless artifact and an ownerless job, and accept draft-only, dataset-only and both.",
+          "status": "completed"
+        },
+        {
+          "id": "DS-LAKE-004B-V02",
+          "description": "A draft job writes only under drafts/{draftId}/ and advances the draft pointer, never the dataset.",
+          "status": "completed"
+        },
+        {
+          "id": "DS-LAKE-004B-V03",
+          "description": "Existing rows survive the migration and the suite stays green.",
+          "status": "completed"
+        }
+      ],
+      "verificationResults": [
+        "V01 CONSTRAINTS PROVEN TO BITE, each probe in BEGIN/ROLLBACK. REJECTED: an artifact with neither owner, a job with neither owner. ACCEPTED: a draft-owned artifact with no dataset, a draft-owned job with no dataset, and an ADOPTED artifact carrying both — the last one matters, because adoption at Save sets datasetId while KEEPING draftId.",
+        "V02 SABOTAGE-PROBED, not merely asserted. Replacing the owner scope with a hardcoded dataset id fails TC-18 (keys leave the drafts/ namespace) and TC-20 (an ownerless job stops refusing to run); restored to 20/20. TC-19 pins that a draft run calls datasetDraft.update and NEVER dataset.update or datasetVersion.create — touching Dataset there would recreate the exact orphan-record problem this decision exists to prevent.",
+        "V03 Data intact after migration: 1 artifact, 2 datasets, 1 version, 0 drafts. Backend tsc clean beyond the 4 pre-existing auth spec errors; jest dataset-version 20/20 (was 17).",
+        "TYPE SYSTEM CAUGHT THE REAL WORK: relaxing datasetId to nullable produced 4 compiler errors, all in the runner, each one a place that silently assumed a dataset existed. That is the change the decision actually requires, and the compiler found every site.",
+        "RUNTIME GUARD OVER ASSERTION: the runner refuses a job owned by neither rather than using a non-null assertion. A  would have compiled and then lied if the CHECK were ever dropped.",
+        "MY OWN VERIFICATION BUG, recorded: an CLEAN check printed CLEAN over 3 real prettier errors, because tail always exits 0. Re-checked on eslint exit code; errors fixed; now genuinely clean."
+      ]
+    },
+    {
+      "id": "DS-LAKE-005",
+      "title": "Silver layer — wire the dead server cleaning path into Step 3",
+      "priority": 5,
+      "status": "completed",
+      "progress": 100,
+      "dependencies": [
+        "DS-LAKE-004"
+      ],
+      "description": "The server cleaning pipeline is fully built, parity-tested and has zero client callers. Give it callers. Step 3 stops computing the cleaned frame in the browser and starts driving a preprocessing job that produces a SILVER artifact.",
+      "tasks": [
+        {
+          "id": "DS-LAKE-005-T01",
+          "title": "Step 3.2 calls datasetVersionService.preview for the interactive before/after panel instead of running preprocessPipelines in the browser (HYBRID, user decision: server preview only on the final scrubber step, debounced — not every intermediate edit)",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "DS-LAKE-005-T02",
+          "title": "Step 3 'apply' starts a cleaning job via datasetVersionService.clean and polls job status, reusing the existing progress UI with an adapter for the operation-shaped progress fields",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "DS-LAKE-005-T03",
+          "title": "PreprocessingJobService commits a SILVER DatasetArtifact with parentArtifactId = the bronze artifact, and NO DatasetVersion",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "DS-LAKE-005-T04",
+          "title": "Wire cancel and retry to the existing endpoints so a long clean is interruptible from the wizard",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "DS-LAKE-005-T05",
+          "title": "Keep the client transform libs in the tree as the fast local preview until parity is proven across the board",
+          "status": "completed",
+          "progress": 100
+        }
+      ],
+      "acceptance_criteria": [
+        "datasetVersionService.clean, .job, .cancelJob and .retryJob all have real client callers.",
+        "A completed clean produces exactly one SILVER artifact whose parentArtifactId is the bronze artifact, and zero DatasetVersion rows.",
+        "The Step 3 controls and their behaviour are unchanged from the user's point of view.",
+        "Cancelling mid-clean leaves no artifact and no orphaned tmp objects beyond the known straggler window.",
+        "The bronze artifact is unchanged after the clean — verified by checksum, not by inspection."
+      ],
+      "verification": [
+        {
+          "id": "DS-LAKE-005-V01",
+          "description": "Grep confirms non-zero client call sites for clean/job/cancelJob/retryJob, closing the dead-code finding.",
+          "status": "completed"
+        },
+        {
+          "id": "DS-LAKE-005-V02",
+          "description": "Live run against minio-local: bronze checksum recorded before and after the clean is identical.",
+          "status": "completed"
+        },
+        {
+          "id": "DS-LAKE-005-V03",
+          "description": "Cleaned output matches what the browser previously computed for the same recipe, within the parity tolerance already established (rel_tol 1e-9 / abs_tol 1e-12).",
+          "status": "completed"
+        },
+        {
+          "id": "DS-LAKE-005-V04",
+          "description": "Cancel mid-job: job CANCELED, zero artifacts, tmp prefix cleared by the straggler sweep.",
+          "status": "completed"
+        }
+      ],
+      "verificationResults": [
+        "T03 DONE — the cleaning runner now commits a SILVER DatasetArtifact with parentArtifactId = the bronze source, joins its parent runId, sets Dataset.currentArtifactId, and creates NO DatasetVersion. Migration 20260804122113_preprocessing_job_artifact_pointers added sourceArtifactId/resultArtifactId additively; the legacy version pointers stay until DS-LAKE-009 (user-confirmed choice).",
+        "T03 BOUNDARY PROVEN BY SABOTAGE, not by reading: re-adding a tx.datasetVersion.create call inside commit() fails TC-04, then restored to 17/17. The negative assertion (expect(tx.datasetVersion.create).not.toHaveBeenCalled()) is what stops the persistence boundary regressing silently.",
+        "LEGACY JOBS NOT STRANDED — run() falls back to sourceVersion when sourceArtifact is null, so a job row queued before this deploy still executes. TC-11 had to be strengthened for this: nulling only sourceVersion left the fixture with an artifact and the refusal never fired, so the test was passing for the wrong reason.",
+        "CONCURRENCY IMPROVED as a side effect: commit() no longer reads max(versionNumber) inside the transaction, because the artifact table has no per-dataset sequence. Two concurrent cleaning jobs can no longer contend for the same number.",
+        "resolveJobSource() prefers ARTIFACTS while findArtifactSource() prefers VERSIONS. That asymmetry is deliberate and commented: the first answers what a NEW job should read (prefer the ledger so the silver result gets a real parent), the second answers where the bytes are (a legacy row must keep its historical answer).",
+        "T05 DONE — the client transform libs are untouched and remain the fast local preview.",
+        "T01 DEFERRED by user decision: the interactive imputation panel keeps its instant in-browser preview rather than a round trip per adjustment. Recorded, not hidden.",
+        "SUITES — backend tsc clean beyond the 4 pre-existing auth spec errors; client tsc clean; backend jest dataset-version 17/17; eslint clean on every touched backend file.",
+        "NOT DONE — no client wiring. datasetVersionService.clean/job/cancelJob/retryJob still have zero callers, so the DEAD-CODE finding that motivated this feature is NOT yet closed. See blocker.",
+        "CLIENT WIRING DONE (this session, draft-first) — new services/dataset-draft.ts + hooks/dataset/use-dataset-draft-pipeline.ts give datasetDraftService.clean/job/cancelJob/retryJob real callers, closing V01 by grep. Step 3.2 Save Cleaned Tags now fires void applyClean(cleaningTags, draft) as a best-effort server sync (never blocks the pre-existing local Save flow), with Cancel/Retry surfaced inline only in the state they apply to.",
+        "OP MAPPING VERIFIED, NOT GUESSED — read apps/python/services/cleaning_service.py:285-343 before writing lib/cleaning-op-mapper.ts. CLEANING_OPS is keyed by the browsers own CleaningMethod values by design (comment: \"so a saved recipe replays without translation\"); resolve_method() short-circuits to identity when op_type is already a registry key and method is omitted. So type: step.method needs no alias table; param/paramLow pass through by name via _PARAM_ALIASES. Pinned by lib/__tests__/cleaning-op-mapper.test.ts.",
+        "BACKEND DRAFT API SURFACE ADDED — DatasetDraft lifecycle (create/get/abandon) + draft-scoped materialize/rows/clean/job/cancel/retry endpoints (apps/backend/src/api/v1/dataset-draft/**), sharing the SAME PreprocessingJobService singleton as the dataset path (DatasetVersionModule now exports it) rather than a second instance with a disjoint running map. Source-scoping guard (draft.sourceIds, mirroring dataset.sourceIds) sabotage-probed: removing it flips the refusal test to fail before being restored to green.",
+        "BUG FOUND AND FIXED IN PASSING — retryJobService (dataset-scoped, pre-existing) copied only sourceVersionId on retry, dropping sourceArtifactId. Every DS-LAKE-005-era artifact-sourced job retried through it would have been created with NEITHER pointer set, which run() refuses to execute. Fixed; draft-scoped retryDraftJobService was written correctly from the start.",
+        "NOT VERIFIED THIS SESSION — V03 (parity tolerance vs the browsers own prior computation) and V04 (live cancel-mid-job against minio-local) were not run live; the op-mapping is verified by reading the shared registry and by unit tests, not by an end-to-end parity run. Left pending rather than marked done.",
+        "SUITES — backend: 25/25 new+existing dataset-draft/dataset-version jest tests green, tsc clean beyond the 4 pre-existing unrelated auth errors, eslint clean. client: tsc clean; new cleaning-op-mapper (4) + use-dataset-draft-pipeline (3) tests green; dataset-studio/dataset-version/step-5/preset-apply suites (48 tests) unaffected; the 3 pre-existing lib/__tests__/preprocessing.test.ts failures are the already-documented ones and did not grow. client eslint could not run — eslint-module-utils is missing from node_modules, a pre-existing environment gap unrelated to this session (confirmed absent from node_modules/.pnpm before any edit here).",
+        "T01 CLOSED under a user-chosen hybrid (reversing the earlier full-defer): new POST /:id/artifacts/:artifactId/preview (backend, draft-scoped, mirrors the dataset path previewService, writes nothing) + datasetDraftService.preview (client) + requestFinalPreview/finalPreview on use-dataset-draft-pipeline.ts. Wired in step-3-2-imputation.tsx via a useEffect keyed on previewIndex === draft.length: EVERY intermediate scrubber position still computes purely locally (preprocessPipelines, unchanged) — only reaching the final step fires a 600ms-debounced server call, and leaving the final step resets to idle so a stale server preview can never sit next to a local preview of an earlier step. Backend: 7/7 dataset-draft jest (2 new), tsc/eslint clean. Client: 5/5 use-dataset-draft-pipeline tests (2 new, fake-timer debounce + idle-reset proof), tsc clean; the 6-suite/50-test regression set stayed green.",
+        "V03 CLOSED, LIVE — added test_apply_operations_matches_client_output to apps/python/tests/test_parity.py, driving the ACTUAL runtime path (apply_operations, the function PreprocessingJobService really calls via /v1/preprocess/clean) with request-shaped operations built the same way lib/cleaning-op-mapper.ts::toCleaningOperations builds them, against every applicable golden fixture (19/23; 3 precleanse-engine fixtures stay deferred per existing project scope, 1 fixture is deliberately per-tag-divergent and not the wizards shape). All 19 pass within the established rel_tol 1e-9/abs_tol 1e-12. Full python suite: 302 passed, 30 skipped (skips are the pre-existing documented ones plus the 4 new, all legitimate), 0 failures.",
+        "V04 CLOSED, LIVE — real minio-local + real running python (:8000) + a real PreprocessingJobService instance against the live dev Postgres. Seeded a genuine BRONZE artifact (5000 rows, 2 tags, 5% Bad cells) via ObjectStore.put_frame, then a 4-operation PreprocessingJob row. start() reached RUNNING with completedSteps=1 (genuinely mid-job, proven by polling, not assumed), then cancel() was called live: job settled to CANCELED with error \"Canceled by the user.\", zero new DatasetArtifact rows were created (only the pre-existing BRONZE remained under that runId) — proving no SILVER artifact leaks out of an interrupted job. Immediately after cancel, one straggler tmp object was still present (the in-flight connector step landing after the abort, exactly as documented in preprocessing-job.service.ts) — held the process open 33s and confirmed the scheduled straggler sweep cleared it: tmp prefix empty. This is not a hypothetical — the straggler was observed, then observed cleared. All seeded rows/objects deleted afterward; dev DB and MinIO left as found."
+      ],
+      "blocker_resolution": "RESOLVED by the artifact-first decision. The blocker was that create mode has no dataset id and no bronze artifact at Step 3. Under the decision there is no dataset id BY DESIGN, and stages address a draft namespace instead. T03 (the SILVER commit path) stays completed; T01/T02/T04 are re-scoped onto draft artifacts and depend on the open question above."
+    },
+    {
+      "id": "DS-LAKE-006",
+      "title": "Gold layer — port feature engineering and emit feature_spec.json",
+      "priority": 6,
+      "status": "pending",
+      "progress": 0,
+      "dependencies": [
+        "DS-LAKE-005"
+      ],
+      "description": "Port applyFeatures, selectColumns and toModelReady from the browser to Python behind a golden-fixture gate, then produce a GOLD artifact with its feature specification stored beside it. This is the one genuinely new compute stage — DatasetVersionStage.FEATURE has existed in the enum since the first migration and no code has ever written it.",
+      "tasks": [
+        {
+          "id": "DS-LAKE-006-T01",
+          "title": "GATE FIRST: extend packages/parity-fixtures with cases covering derived features, column selection, and every scaler — deterministic, no Math.random, no wall clock",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-006-T02",
+          "title": "apps/python/services/feature_service.py — port the transforms, matching the client bug-for-bug",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-006-T03",
+          "title": "Extend the pytest parity harness to consume the new fixtures and fail loudly on drift",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-006-T04",
+          "title": "Emit feature_spec.json: feature names, transformations, scaling, encoding, feature version, feature hash",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-006-T05",
+          "title": "POST /v1/preprocess/features producing a GOLD artifact with parentArtifactId = the silver artifact",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-006-T06",
+          "title": "Step 4 drives the server transform; the browser copy stays as the interactive preview",
+          "status": "pending",
+          "progress": 0
+        }
+      ],
+      "acceptance_criteria": [
+        "Every feature-engineering fixture passes as a real assertion, not a silent skip.",
+        "A GOLD artifact is produced with parentArtifactId = silver and featureSpecKey populated.",
+        "feature_spec.json contains feature names, transformations, scaling, encoding, feature version and feature hash.",
+        "The feature hash is stable for an identical configuration and changes when any transform changes.",
+        "Step 4's UI is unchanged."
+      ],
+      "verification": [
+        {
+          "id": "DS-LAKE-006-V01",
+          "description": "Prove the gate bites: mutate one expected value in a fixture and confirm the suite FAILS, then restore. A gate that only reports green proves nothing — this is the exact failure mode caught in Slice 1's F0.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-006-V02",
+          "description": "Sabotage probe the quirks specifically — rounding convention, scaler denominators, column ordering — on inputs where the alternatives provably differ.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-006-V03",
+          "description": "The server's GOLD frame equals the browser's Step 4 output for the same recipe, within the established tolerance.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-006-V04",
+          "description": "Existing apps/python suite does not regress.",
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "DS-LAKE-007",
+      "title": "Validation layer — quality gate and report",
+      "priority": 7,
+      "status": "pending",
+      "progress": 0,
+      "dependencies": [
+        "DS-LAKE-006"
+      ],
+      "description": "The mandatory gate before a dataset may become official. Builds on assert_frame_shape, which is already the frame contract's enforcement primitive.",
+      "tasks": [
+        {
+          "id": "DS-LAKE-007-T01",
+          "title": "apps/python/services/validation_service.py — schema validation via assert_frame_shape, missing-value threshold, duplicate timestamp detection, feature consistency against feature_spec.json, statistical validation, completeness",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-007-T02",
+          "title": "POST /v1/preprocess/validate — reads an artifact, writes validation_report.json, returns PASS/FAIL plus per-check detail",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-007-T03",
+          "title": "Compute a quality score from the check results with a documented, testable formula",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-007-T04",
+          "title": "Backend endpoint POST /:id/artifacts/:artifactId/validate with a zod-parsed response contract",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-007-T05",
+          "title": "Configurable thresholds with stated defaults, so a FAIL is explainable rather than arbitrary",
+          "status": "pending",
+          "progress": 0
+        }
+      ],
+      "acceptance_criteria": [
+        "Validation writes a report and returns PASS or FAIL with a per-check breakdown.",
+        "Validation writes no data artifact and mutates no frame.",
+        "A FAIL names which check failed and by how much.",
+        "The quality score is deterministic for a given artifact.",
+        "Validation runs inside its HTTP timeout on a realistically large artifact."
+      ],
+      "verification": [
+        {
+          "id": "DS-LAKE-007-V01",
+          "description": "Craft an artifact that violates each check in turn and confirm each one FAILS independently — a validator that passes everything is indistinguishable from no validator.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-007-V02",
+          "description": "Assert validation writes nothing, using the NoWriteStore pattern already proven for preview.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-007-V03",
+          "description": "Measure runtime on a multi-million-row artifact and record the headroom against the timeout.",
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "DS-LAKE-008",
+      "title": "Step 5 validation gate",
+      "priority": 8,
+      "status": "pending",
+      "progress": 0,
+      "dependencies": [
+        "DS-LAKE-007"
+      ],
+      "description": "Surface the validation result inside the existing Review & Save step and block the Save button on FAIL. No step is added — this is the user-confirmed placement.",
+      "tasks": [
+        {
+          "id": "DS-LAKE-008-T01",
+          "title": "Validation report card in step-5-review-save.tsx: overall verdict, quality score, per-check rows",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-008-T02",
+          "title": "Disable Save while validation is pending or FAILED, with the reason stated on the control rather than in a toast",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-008-T03",
+          "title": "Re-validate when the recipe changes, so a stale PASS cannot authorise a save",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-008-T04",
+          "title": "Follow docs/DESIGN_SYSTEM.md status colours — red/amber are reserved for workspace and plant status; data-quality UI uses neutral treatments",
+          "status": "pending",
+          "progress": 0
+        }
+      ],
+      "acceptance_criteria": [
+        "A FAILED validation makes Save unreachable, and the reason is visible without opening a dialog.",
+        "A stale PASS cannot survive a recipe change.",
+        "DW_TOTAL_STEPS is still 5 and wizard-shell labels are unchanged.",
+        "The gate honours the reserved status-colour rule."
+      ],
+      "verification": [
+        {
+          "id": "DS-LAKE-008-V01",
+          "description": "Component test: FAIL disables Save; PASS enables it; changing the recipe after a PASS re-disables it until revalidation.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-008-V02",
+          "description": "Sabotage probe: remove the disabled condition and confirm the test fails.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-008-V03",
+          "description": "Confirm no rows are written to Dataset, DatasetArtifact or DatasetVersion on the FAIL path.",
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "DS-LAKE-009",
+      "title": "Final artifact and the Save Dataset persistence boundary",
+      "priority": 9,
+      "status": "pending",
+      "progress": 0,
+      "dependencies": [
+        "DS-LAKE-008"
+      ],
+      "description": "Save Dataset becomes the only operation that creates a DatasetVersion. It promotes the validated GOLD artifact into a FINAL artifact and commits the registry row atomically.",
+      "tasks": [
+        {
+          "id": "DS-LAKE-009-T01",
+          "title": "Produce a FINAL artifact from the validated gold artifact, with parentArtifactId = gold and validationKey populated",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-009-T02",
+          "title": "Create the DatasetVersion in one prisma.$transaction: semanticVersion, artifactId, checksum, schemaVersion, rowCount, featureCount, qualityScore, status DRAFT, frozen lineage snapshot",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-009-T03",
+          "title": "Read versionNumber inside the transaction so concurrent saves cannot collide on @@unique([datasetId, versionNumber])",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-009-T04",
+          "title": "Refuse to save when validation has not passed — server-side, not only in the UI",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-009-T05",
+          "title": "Assert no code path outside Save creates a DatasetVersion",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-009-T06",
+          "title": "RELOCATED FROM DS-LAKE-002. Reshape DatasetVersion into the registry: add semanticVersion, artifactId, checksum, schemaVersion, qualityScore, status, lineage; drop stage, objectKey, parentVersionId, operations, columnStats",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-009-T07",
+          "title": "RELOCATED FROM DS-LAKE-002. Migration 2 (reshaping) via pnpm db:migrate:dev, then pnpm --filter @softsensor/prisma build. Safe only here: this feature is where the last writer of the dropped columns disappears",
+          "status": "pending",
+          "progress": 0
+        }
+      ],
+      "acceptance_criteria": [
+        "Save Dataset is the only DatasetVersion write in the codebase.",
+        "A failed save leaves no partial version and no duplicate.",
+        "Save never creates a Model record.",
+        "The final artifact is reachable from the version and carries a complete parent chain back to bronze.",
+        "A save attempted without a PASS is refused by the server even if the client is bypassed."
+      ],
+      "verification": [
+        {
+          "id": "DS-LAKE-009-V01",
+          "description": "Grep every prisma.datasetVersion.create call site and confirm exactly one, in the save path.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-009-V02",
+          "description": "Force a mid-transaction failure and confirm zero DatasetVersion rows remain.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-009-V03",
+          "description": "Full wizard run: exactly one DatasetVersion, and four DatasetArtifact rows sharing one runId with an intact parentArtifactId chain BRONZE→SILVER→GOLD→FINAL.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-009-V04",
+          "description": "Call the save endpoint directly with an unvalidated artifact and confirm it is refused.",
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "DS-LAKE-010",
+      "title": "Dataset registry lifecycle, promotion and lineage",
+      "priority": 10,
+      "status": "pending",
+      "progress": 0,
+      "dependencies": [
+        "DS-LAKE-009"
+      ],
+      "description": "Status transitions and a promotion path that moves metadata only. No artifact is copied, regenerated or overwritten when a dataset is promoted.",
+      "tasks": [
+        {
+          "id": "DS-LAKE-010-T01",
+          "title": "Promotion endpoint enforcing legal transitions DRAFT→VALIDATED→ACTIVE→DEPRECATED→ARCHIVED",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-010-T02",
+          "title": "Reject illegal transitions with an AppException from @softsensor/common, never a raw HttpException",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-010-T03",
+          "title": "Lineage endpoint returning the full artifact chain for a version, for audit and reproducibility",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-010-T04",
+          "title": "Registry list/detail responses carry status, semanticVersion, checksum, qualityScore, rowCount, featureCount and owner",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-010-T05",
+          "title": "Enforce at most one ACTIVE version per dataset",
+          "status": "pending",
+          "progress": 0
+        }
+      ],
+      "acceptance_criteria": [
+        "Promotion updates metadata only — objectKey and checksum are byte-identical before and after.",
+        "Illegal transitions are refused.",
+        "The registry returns metadata only and never dataset rows.",
+        "Lineage resolves from any version back to its bronze artifact.",
+        "A dataset never has two ACTIVE versions."
+      ],
+      "verification": [
+        {
+          "id": "DS-LAKE-010-V01",
+          "description": "Record every artifact checksum before promotion and re-read after; assert equality. Also confirm the MinIO object count is unchanged.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-010-V02",
+          "description": "Attempt ARCHIVED→ACTIVE and confirm refusal.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-010-V03",
+          "description": "Inspect every registry response body and confirm no row payload leaks into it.",
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "DS-LAKE-011",
+      "title": "Loader seam — enqueue, retry, pluggable sink",
+      "priority": 11,
+      "status": "pending",
+      "progress": 0,
+      "dependencies": [
+        "DS-LAKE-009"
+      ],
+      "description": "The asynchronous hand-off from a committed dataset to a serving layer. Scoped by user decision to the seam only: the job row, the enqueue point, the sink interface and independent retry. The TimescaleDB sink and the dashboard rewiring are deferred, because TimescaleDB does not exist in this repository and adding it is new infrastructure (CLAUDE.md §3).",
+      "scope_note": "This feature ships a working loader with a no-op or logging sink. It is NOT marked completed on the strength of a stub: its acceptance criteria are about the seam's guarantees — enqueue, isolation from Save, retry — all of which are testable without a real sink.",
+      "tasks": [
+        {
+          "id": "DS-LAKE-011-T01",
+          "title": "LoaderJob model + status enum, mirroring the PreprocessingJob shape so the existing runner patterns transfer",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-011-T02",
+          "title": "Sink interface with a single default implementation, so a Timescale sink can be added later without touching the enqueue path",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-011-T03",
+          "title": "Enqueue after a successful Save, outside the save transaction",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-011-T04",
+          "title": "Independent retry with attempt counting, and boot-sweep semantics matching PreprocessingJobService",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-011-T05",
+          "title": "Job status endpoint so a future UI can report load progress",
+          "status": "pending",
+          "progress": 0
+        }
+      ],
+      "acceptance_criteria": [
+        "A loader failure never fails or rolls back Save.",
+        "A failed loader job can be retried independently and increments its attempt count.",
+        "The enqueue happens outside the save transaction.",
+        "No dataset row is read from the serving layer by any existing reader — MinIO remains the source of truth.",
+        "The deferred Timescale sink is recorded in deferred[], not silently implied as done."
+      ],
+      "verification": [
+        {
+          "id": "DS-LAKE-011-V01",
+          "description": "Force the sink to throw, save a dataset, and confirm the dataset and its version are committed while the LoaderJob lands FAILED.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-011-V02",
+          "description": "Retry the failed job and confirm a fresh attempt with attempts incremented, leaving the original row's history intact.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-011-V03",
+          "description": "Kill the backend mid-load and confirm the boot sweep does not leave a job stuck RUNNING.",
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "DS-LAKE-012",
+      "title": "End-to-end verification of the Lakehouse invariants",
+      "priority": 12,
+      "status": "pending",
+      "progress": 0,
+      "dependencies": [
+        "DS-LAKE-001",
+        "DS-LAKE-002",
+        "DS-LAKE-003",
+        "DS-LAKE-004",
+        "DS-LAKE-005",
+        "DS-LAKE-006",
+        "DS-LAKE-007",
+        "DS-LAKE-008",
+        "DS-LAKE-009",
+        "DS-LAKE-010",
+        "DS-LAKE-011"
+      ],
+      "description": "Prove every invariant the refactor claims, against a real run on live MinIO and Postgres — not by reading the code.",
+      "tasks": [
+        {
+          "id": "DS-LAKE-012-T01",
+          "title": "Full wizard run end to end against a real source, recording every artifact and row",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-012-T02",
+          "title": "Reproducibility check — rebuild the dataset from MinIO artifacts alone, with Postgres consulted only for pointers",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-012-T03",
+          "title": "Model flow regression against one pre-refactor dataset and one post-refactor dataset",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-012-T04",
+          "title": "pnpm format, pnpm lint, pnpm check-types, pnpm build; python pytest; client vitest",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-012-T05",
+          "title": "Write the final report: architecture, storage, lifecycle, metadata, versioning, lineage, loader, MinIO, API and breaking changes, migration plan, validation results",
+          "status": "pending",
+          "progress": 0
+        }
+      ],
+      "acceptance_criteria": [
+        "Raw rows exist only in MinIO.",
+        "Clean rows exist only in MinIO.",
+        "Feature rows exist only in MinIO.",
+        "The final dataset exists in MinIO.",
+        "The Dataset Registry stores metadata only.",
+        "A Dataset Version is created only after Save Dataset.",
+        "Dataset promotion updates metadata only.",
+        "The Loader retries independently of Save.",
+        "The dataset is reproducible from MinIO alone.",
+        "Model Training still works with no modification to apps/client/app/(default)/models/create/**."
+      ],
+      "verification": [
+        {
+          "id": "DS-LAKE-012-V01",
+          "description": "Query every Postgres table and confirm no timeseries rows are stored anywhere.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-012-V02",
+          "description": "Reconstruct the final dataset from its MinIO artifact and assert it matches the registry's recorded rowCount, featureCount and checksum.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-012-V03",
+          "description": "git diff confirms zero changes under apps/client/app/(default)/models/create/.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-012-V04",
+          "description": "Client suite failure count is compared against the recorded pre-existing baseline (18 failures, including 3 in lib/__tests__/preprocessing.test.ts on the legacy preprocess path) and has not grown.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-012-V05",
+          "description": "pnpm build succeeds from a clean state, including pnpm --filter @softsensor/prisma build so dist/ is not stale.",
+          "status": "pending"
+        }
       ]
     }
   ],
-  "followUps": [
-    "docs/ARCHITECTURE.md and docs/CODEBASE.md never mention apps/python and state the repo is TypeScript-only. Stale — they are authoritative for the NestJS/Next/Prisma layers only (CLAUDE.md §1 conflict surfaced, not absorbed).",
-    "Normalise the population-vs-sample std split and the floor-index quartiles once parity is proven, as a deliberate visible change with fixtures regenerated in the same commit.",
-    "materializeDataset ignores config.tagConstants while edit-mode rehydration passes them — the same recipe currently derives two different raw grids.",
-    "use-dataset-pipeline-nav.ts canAdvance runs the FULL pipeline just to test rows.length > 0, and wizard-shell.tsx:84 calls it inline in the render body, so on step 4 the whole chain re-executes every render. Memoise the result, not the function identity."
-  ],
   "deferred": [
-    "Parquet row-group pushdown in ObjectStore.get_frame_slice/get_frame_head: both read the whole object then slice, so the preview's sample cap bounds COMPUTE, not I/O. Measured fine today (0.60s at 10M rows on local MinIO) — the binding constraint is resident memory and link speed to storage, not the 30s timeout. Revisit when artifacts outgrow memory or storage moves off the local network.",
-    "Concurrent preview memory: asyncio.to_thread introduced real concurrency where the event loop previously serialised previews. The measured 0.60s/10M-row figure is SINGLE-REQUEST; resident cost is ~800MB per in-flight preview against one lru_cached ObjectStore, so N concurrent large previews multiply it. A semaphore is the fix when it matters; concurrent footprint has not been measured.",
-    "ColumnStats.count is TOTAL rows and `missing` is separate, so good = count - missing. The other plausible reading (count = non-null observations, total = count + missing) yields a wrong '% good'. Self-consistent today because missing_pct == missing/count*100, but F4 zod-parses this shape and F5 renders it — pin it with a field description before either lands.",
-    "routers/data_source.py interpolates the exception into its 502 detail (f'PI Web API error: {exc}'), the pattern hardened in routers/preprocess.py. Probed /sql/test with a bad port: it returns 200 with a failed-test result and does NOT leak the password, so this is a latent risk rather than a confirmed leak. Left unchanged to keep the security fix scoped to the confirmed one.",
-    "8 pre-existing backend jest suites fail because Nest CLI scaffold specs (nodes, workspace, workspace-plant, plan, auth controllers) call Test.createTestingModule({providers:[X]}) without providing PrismaService. Plus 4 pre-existing tsc errors in auth spec files. Neither is caused by this slice; both were confirmed present on untouched files.",
-    "A hard-killed job's tmp intermediates are never reclaimed. Keeping tmp on FAILED is deliberate (it is the only evidence of which step broke), and the boot sweep fixes the DB row but not storage — so SIGKILLed jobs leak tmp permanently. Observed: 2 objects / ~100 MB from one killed job. Wants a janitor that clears tmp for jobs FAILED more than N days ago.",
-    "scheduleStragglerSweep uses an unref'd 30s timer, so it does NOT survive a restart: a cancel followed by a shutdown inside that window leaves the straggler behind. Same class as the item above and the same fix (a tmp janitor) covers both.",
-    "buildRawDataset/generateReadings and the client transform libs stay in the tree, per F5's own acceptance. They can only be deleted once every dataset has a committed version AND parity is proven across the board — branch 3 of the hook is their last remaining caller."
+    "TimescaleDB provisioning — image swap, extension, hypertables, retention and continuous aggregates. Nothing of this exists today and adding it is new infrastructure requiring an explicit decision (CLAUDE.md §3).",
+    "The TimescaleDB loader sink. DS-LAKE-011 ships the seam and the interface; the concrete sink lands with the infrastructure decision.",
+    "Dashboard and live-feed rewiring. Every dashboard figure today is either derived client-side from workspace/node rows or generated by lib/mock-readings — use-sensor-readings.ts:3-7 and use-pipeline-analytics.ts:43-58. services/readings.ts does not exist. This violates the 'no mock data' rule in docs/CODEBASE.md but predates this slice.",
+    "Multi-source and CSV materialisation. materializeBlocker (use-dataset-version-rows.ts:100-106) refuses more than one source, CSV sources, and any non-PI type. Those datasets keep the synthetic fallback and its visible banner.",
+    "The Model Creation persistence boundary. The Model row is created at Step 2 (use-model-training.ts:56 → use-model-commit.ts:81), not at Save Model. Tracked by docs/feature_list.json MODEL-FLOW-003 and MODEL-FLOW-007; explicitly out of scope here.",
+    "Multi-replica job ownership. The in-process runner's boot sweep marks every RUNNING row FAILED, which is only correct with one backend instance. Escape hatch when that changes: SELECT ... FOR UPDATE SKIP LOCKED with an owner column — still no Redis.",
+    "A tmp janitor. A hard-killed job's tmp intermediates are never reclaimed, and scheduleStragglerSweep's unref'd 30s timer does not survive a restart. Both leak storage, never wrong data.",
+    "Deleting buildRawDataset and generateReadings. They remain the last resort for datasets with no artifact, and can only go once every dataset has a committed version.",
+    "Parquet row-group pushdown. get_frame_slice and get_frame_head read the whole object then slice, so caps bound compute rather than I/O. Measured acceptable today; revisit when artifacts outgrow memory.",
+    "docs/ARCHITECTURE.md and docs/CODEBASE.md do not describe apps/python, MinIO, object storage, the dataset models or background jobs at all. Updating them is worthwhile but is documentation work, not part of this refactor."
   ],
-  "findings": [
-    "PreprocessingJob progress fields (progress/currentStep/totalSteps/completedSteps/estimatedRemainingMs) do NOT match the client's FetchProgress (totalBatches/completedBatches/currentBatchTags/totalTags/completedTags/etaMs/failedBatches). The plan claimed they were the same fields; they are not — FetchProgress is tag-batch-shaped for PI fetching, job progress is operation-shaped. F5 needs a thin adapter. Reusing the progress UI COMPONENT does not require identical field names, so the DB model was left alone rather than contorted.",
-    "SQL materialize is bounded at 50,000 rows by SQLQueryRequest.limit (le=50000), which is the pre-existing /sql/query cap, not something this slice introduced. PI materialize has no such cap. Raise it deliberately if SQL sources need to exceed that.",
-    "Cancelling stops the PIPELINE from advancing but does not stop the connector's current step: aborting the HTTP request leaves Python computing server-side. Anything that assumes cancel halts work immediately (billing, resource accounting, an 'stopped at' timestamp) would be wrong.",
-    "phase-3-evaluation calls toModelReady(materializeDataset(...)), but materializeDataset ALREADY ends with toModelReady — the scaling is applied twice. Pre-existing, deliberately preserved in F5 so the swap changes only the data source and not the numbers on screen. Worth fixing as its own visible change.",
-    "resolveVersionId calls GET /versions on every hydration when prefer==='raw', which reintroduces the per-dataset round trip that putting currentVersionId on the payload was meant to avoid. Both are correct — the payload field answers 'is there anything stored?', the list answers 'which one is RAW' — but the two rationales read as inconsistent unless you know that. Collapsible later by returning the raw version id on the dataset payload too."
-  ]
+  "global_definition_of_done": [
+    "MinIO is the single source of truth; Postgres stores metadata and pointers only.",
+    "Every processing stage produces its own immutable artifact.",
+    "No artifact is ever overwritten; a new run produces a new artifact.",
+    "Every artifact records its parent, so lineage supports audit and reproduction.",
+    "Every artifact carries a checksum computed at write time.",
+    "Validation is mandatory and a FAIL blocks the commit.",
+    "A Dataset Version is created only by Save Dataset.",
+    "Intermediate stages never create a Dataset Version.",
+    "Dataset rows are never stored in the Dataset Registry.",
+    "Promotion changes metadata only; no artifact is copied or regenerated.",
+    "Saving a Dataset never creates a Model and never starts training.",
+    "The five-step wizard UX is unchanged.",
+    "No use of any and no @ts-ignore.",
+    "Errors are raised as AppException from @softsensor/common, never as raw Nest HTTP exceptions.",
+    "Multi-step writes that must succeed together run in a Prisma transaction.",
+    "Every feature is marked completed only after its acceptance criteria and verification items are actually verified, not merely implemented."
+  ],
+  "draft_architecture": {
+    "entity": "DatasetDraft { id, name?, workspaceId, sourceIds[], status ACTIVE|SAVED|ABANDONED, currentArtifactId?, savedDatasetId?, createdById, createdAt, updatedAt } with artifacts[] and jobs[] back-relations.",
+    "ownership_rule": "DatasetArtifact and PreprocessingJob each carry BOTH datasetId? and draftId?, with a CHECK constraint per table: (datasetId IS NOT NULL OR draftId IS NOT NULL).",
+    "why_nullable": "READ THIS BEFORE CHANGING IT. The instruction \"do not make PreprocessingJob.datasetId nullable\" and the rule \"must reference either a Draft or a Dataset, never neither\" can only both hold if the COLUMN is nullable and a CHECK does the enforcing — a NOT NULL datasetId cannot coexist with a draft-owned job. The column is nullable; it is never unconstrained.",
+    "both_set_is_legal": "Adoption at Save sets datasetId while KEEPING draftId, so a saved artifact stays traceable to the run that produced it. The CHECK permits both deliberately.",
+    "minio_layout": "drafts/{draftId}/artifacts/{artifactId}/data.parquet, with the DS-LAKE-003 sidecars beside it. The earlier drafts/{userId}/... proposal is DROPPED: the DatasetDraft row carries createdById, so ownership is a database fact and does not need to be smuggled into the object key.",
+    "source_scoping": "CRITICAL, carried over unchanged in intent. Draft materialize must scope the DataSource lookup to DatasetDraft.sourceIds, exactly as the dataset path scopes to Dataset.sourceIds (dataset-version.authorized.service.ts:224). The secret is decrypted server-side, so an unconstrained lookup would let a caller name an arbitrary source id and have the server connect with that source credentials.",
+    "adoption_not_copying": "Save sets datasetId on the existing artifact rows and leaves objectKey untouched. No artifact is copied, rewritten or regenerated — required by the slice global_definition_of_done."
+  }
 }

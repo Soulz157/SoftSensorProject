@@ -22,9 +22,12 @@ from typing import Any
 import pandas as pd
 
 from intergrations.object_store import (
+    MANIFEST_FILENAME,
     TIMESTAMP_COLUMN,
     ArtifactStats,
     ObjectStore,
+    build_manifest,
+    sidecar_key,
     tag_columns,
 )
 from schemas.preprocess import (
@@ -49,8 +52,38 @@ def _stats_payload(stats: ArtifactStats, started: float) -> dict[str, Any]:
         "column_count": stats.column_count,
         "size_bytes": stats.size_bytes,
         "missing_pct": stats.missing_pct,
+        "checksum": stats.checksum,
         "duration_ms": int((time.perf_counter() - started) * 1000),
     }
+
+
+def _commit(
+    store: ObjectStore,
+    stats: ArtifactStats,
+    started: float,
+    *,
+    parent_key: str | None = None,
+    operations: Any = None,
+) -> dict[str, Any]:
+    """Write the manifest beside the data, then return the response payload.
+
+    The manifest is written AFTER the data, and its failure does not unwind the
+    data object. That ordering is deliberate: the data is the expensive thing to
+    reproduce and a manifest can be rebuilt from the object plus its row, while
+    the reverse ordering would let a manifest describe an artifact that does not
+    exist.
+    """
+    payload = _stats_payload(stats, started)
+    store.put_json(
+        sidecar_key(stats.object_key, MANIFEST_FILENAME),
+        build_manifest(
+            stats,
+            parent_key=parent_key,
+            operations=operations,
+            duration_ms=payload["duration_ms"],
+        ),
+    )
+    return payload
 
 
 def assert_frame_is_usable(frame: pd.DataFrame) -> None:
@@ -106,7 +139,9 @@ def materialize(store: ObjectStore, request: MaterializeRequest) -> dict[str, An
 
     assert_frame_is_usable(frame)
     stats = store.put_frame(frame, request.target_key, overwrite=request.overwrite)
-    return _stats_payload(stats, started)
+    # No parent: a materialised artifact is a lineage root — it comes from the
+    # source system, not from another artifact.
+    return _commit(store, stats, started)
 
 
 def clean(store: ObjectStore, request: CleanRequest) -> dict[str, Any]:
@@ -129,7 +164,13 @@ def clean(store: ObjectStore, request: CleanRequest) -> dict[str, Any]:
     assert_frame_is_usable(result)
 
     stats = store.put_frame(result, request.target_key, overwrite=request.overwrite)
-    return _stats_payload(stats, started)
+    return _commit(
+        store,
+        stats,
+        started,
+        parent_key=request.source_key,
+        operations=[operation.to_step() for operation in request.operations],
+    )
 
 
 def rows(store: ObjectStore, request: RowsRequest) -> dict[str, Any]:

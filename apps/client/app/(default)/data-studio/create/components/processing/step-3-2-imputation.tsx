@@ -21,6 +21,7 @@ import {
 } from '@/store/dataset-studio'
 import { useImputationTagList } from '@/hooks/dataset/use-imputation-tag-list'
 import { useDatasetTagSelection } from '@/hooks/dataset/use-dataset-tag-selection'
+import { useDatasetDraftPipeline } from '@/hooks/dataset/use-dataset-draft-pipeline'
 import { ImputationDetailPanel } from './imputation/imputation-detail-panel'
 import { CleaningTagBadges } from './imputation/cleaning-tag-badges'
 import { ProcessingActionFooter } from './processing-action-footer'
@@ -44,6 +45,7 @@ export function Step32Imputation({ nav }: Props) {
   const {
     cropRange,
     valueCrop,
+    valueClip,
     exclusions,
     conditionalRules,
     statisticalRules,
@@ -59,11 +61,20 @@ export function Step32Imputation({ nav }: Props) {
       precleanseBreakdown(raw, {
         crop: cropRange,
         valueCrop,
+        valueClip,
         exclusions,
         conditional: conditionalRules,
         statistical: statisticalRules,
       }),
-    [raw, cropRange, valueCrop, exclusions, conditionalRules, statisticalRules],
+    [
+      raw,
+      cropRange,
+      valueCrop,
+      valueClip,
+      exclusions,
+      conditionalRules,
+      statisticalRules,
+    ],
   )
   const base = breakdown.dataset
 
@@ -141,12 +152,27 @@ export function Step32Imputation({ nav }: Props) {
     cleaningTags.length > 0 && cleaningTags.every(t => cleanedSet.has(t))
   const canSave = cleaningTags.length > 0 && (dirty || !allCleaned)
 
+  const {
+    syncState,
+    applyClean,
+    cancel,
+    retry,
+    finalPreview,
+    requestFinalPreview,
+  } = useDatasetDraftPipeline()
+
   const handleSave = () => {
     if (cleaningTags.length === 0) return
     saveCleanedTags(cleaningTags, draft)
     toast.success(
       `Cleaned ${cleaningTags.length} tag${cleaningTags.length === 1 ? '' : 's'}`,
     )
+    // "Local preview, server on Apply": the toast above and every control on
+    // this page are the SAME as before this hook existed — this call only
+    // adds a real SILVER artifact behind the save. A failure lands in
+    // `syncState`, not in a dialog, so it cannot block the local flow that
+    // already happened above.
+    void applyClean(cleaningTags, draft)
   }
   const preprocessed = useMemo(
     () => preprocessPipelines(base, cleaningPipelines),
@@ -164,6 +190,23 @@ export function Step32Imputation({ nav }: Props) {
     )
     return tagFillPreview(base, processed, isolatedTag)
   }, [base, draft, previewIndex, isolatedTag])
+
+  // T01 hybrid: a server-verified preview fires ONLY when the scrubber is
+  // sitting on the final step (every draft step applied) — every intermediate
+  // scrub position stays purely local (`previewRows` above), unchanged. Any
+  // other scrubber position resets to idle so a stale server preview can
+  // never be shown next to a local preview of an earlier step.
+  useEffect(() => {
+    const atFinalStep =
+      previewIndex === draft.length &&
+      draft.length > 0 &&
+      cleaningTags.length > 0
+    if (atFinalStep) {
+      requestFinalPreview(cleaningTags, draft)
+    } else {
+      requestFinalPreview([], [])
+    }
+  }, [previewIndex, draft, cleaningTags, requestFinalPreview])
 
   // Live full-draft dataset (all selected tags) for the Cut Off section, so
   // cropping always operates on the filled data.
@@ -205,6 +248,33 @@ export function Step32Imputation({ nav }: Props) {
         </div>
       </div>
 
+      {/* Server sync status — read-only, never gates Save. The interactive
+          panel's preview stays local; this just reports whether the last
+          saved batch also produced a SILVER artifact server-side. Cancel and
+          Retry only appear for the state they apply to — neither is a new
+          control on the ALWAYS-visible surface (DS-LAKE-005-T04). */}
+      {syncState.status !== 'idle' && (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <p>
+            {syncState.status === 'syncing' &&
+              'Syncing cleaned data to the server…'}
+            {syncState.status === 'synced' && 'Synced to the server.'}
+            {syncState.status === 'error' &&
+              `Server sync failed: ${syncState.error ?? 'unknown error'}`}
+          </p>
+          {syncState.status === 'syncing' && (
+            <Button size="sm" variant="ghost" onClick={() => void cancel()}>
+              Cancel sync
+            </Button>
+          )}
+          {syncState.status === 'error' && (
+            <Button size="sm" variant="ghost" onClick={() => void retry()}>
+              Retry sync
+            </Button>
+          )}
+        </div>
+      )}
+
       <CleaningTagBadges tags={cleaningTags} onRemove={removeCleaningTag} />
 
       <div className="relative">
@@ -232,6 +302,29 @@ export function Step32Imputation({ nav }: Props) {
                 quality={isolatedQuality}
               />
 
+              {/* T01 hybrid: server-verified check, ONLY visible when the
+                  scrubber is on the final step. The chart above stays purely
+                  local at every position — this is a supplementary number,
+                  never a replacement for it. */}
+              {finalPreview.status !== 'idle' && (
+                <p className="text-xs text-muted-foreground">
+                  {finalPreview.status === 'loading' &&
+                    'Verifying the final pipeline against the server…'}
+                  {finalPreview.status === 'error' &&
+                    `Server verification failed: ${finalPreview.error ?? 'unknown error'}`}
+                  {finalPreview.status === 'ready' && finalPreview.data && (
+                    <>
+                      Server-verified: {finalPreview.data.before.row_count} →{' '}
+                      {finalPreview.data.after.row_count} rows,{' '}
+                      {finalPreview.data.before.missing_pct.toFixed(1)}% →{' '}
+                      {finalPreview.data.after.missing_pct.toFixed(1)}% missing.
+                      {finalPreview.data.warnings.length > 0 &&
+                        ` ${finalPreview.data.warnings.join(' ')}`}
+                    </>
+                  )}
+                </p>
+              )}
+
               <CutOffSection
                 raw={raw}
                 precleansed={processedDataset}
@@ -239,9 +332,11 @@ export function Step32Imputation({ nav }: Props) {
                 cropRange={cropRange}
                 onCropChange={nav.setCropRange}
                 valueCrop={valueCrop}
+                valueClip={nav.valueClip}
                 previewTags={previewTags}
                 onPreviewTagsChange={setPreviewTags}
                 onValueCropChange={nav.setValueCrop}
+                onValueClipChange={nav.setValueClip}
                 exclusions={exclusions}
                 onExcludeRange={excl =>
                   nav.setExclusions([...exclusions, excl])

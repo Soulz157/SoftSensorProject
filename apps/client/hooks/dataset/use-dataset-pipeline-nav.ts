@@ -12,6 +12,7 @@ import {
 } from '@/lib/feature-engineering'
 import {
   precleanse,
+  ValueClip,
   type ConditionalRule,
   type CropRange,
   type RangeExclusion,
@@ -50,6 +51,7 @@ import {
   dwHiddenTagsAtom,
   dwFocusedTagAtom,
   dwModeAtom,
+  dwValueClipAtom,
 } from '@/store/dataset-studio'
 import {
   mpSelectedSavedSourceIdAtom,
@@ -79,6 +81,7 @@ export interface UseDatasetPipelineNavResult {
   sourceFetchConfigs: Record<string, DataSourceConfig>
   cropRange: CropRange
   valueCrop: ValueCrop
+  valueClip: ValueClip
   exclusions: RangeExclusion[]
   conditionalRules: ConditionalRule[]
   statisticalRules: StatisticalRule[]
@@ -114,6 +117,7 @@ export interface UseDatasetPipelineNavResult {
   resetFetch: () => void
   setCropRange: (range: CropRange) => void
   setValueCrop: (crop: ValueCrop) => void
+  setValueClip: (clip: ValueClip) => void
   setExclusions: (exclusions: RangeExclusion[]) => void
   processingSubStep: 1 | 2
   setProcessingSubStep: (step: 1 | 2) => void
@@ -185,6 +189,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
 
   const [cropRange, setCropRangeAtom] = useAtom(dwCropRangeAtom)
   const [valueCrop, setValueCropAtom] = useAtom(dwValueCropAtom)
+  const [valueClip, setValueClipAtom] = useAtom(dwValueClipAtom)
   const [exclusions, setExclusionsAtom] = useAtom(dwExclusionsAtom)
   const [conditionalRules, setConditionalRulesAtom] = useAtom(
     dwConditionalRulesAtom,
@@ -221,6 +226,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
             precleanse(rawDataset, {
               crop: cropRange,
               valueCrop,
+              valueClip,
               exclusions,
               conditional: conditionalRules,
               statistical: statisticalRules,
@@ -234,6 +240,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
             precleanse(featured, {
               crop: cropRange,
               valueCrop,
+              valueClip,
               exclusions,
               conditional: conditionalRules,
               statistical: statisticalRules,
@@ -257,6 +264,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
       rawDataset,
       cropRange,
       valueCrop,
+      valueClip,
       exclusions,
       conditionalRules,
       statisticalRules,
@@ -495,6 +503,14 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
     [setValueCropAtom, setHighestUnlocked],
   )
 
+  const setValueClip = useCallback(
+    (clip: ValueClip) => {
+      setValueClipAtom(clip)
+      setHighestUnlocked(prev => Math.min(prev, 3))
+    },
+    [setValueClipAtom, setHighestUnlocked],
+  )
+
   const setExclusions = useCallback(
     (next: RangeExclusion[]) => {
       setExclusionsAtom(next)
@@ -597,6 +613,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
     sourceFetchConfigs,
     cropRange,
     valueCrop,
+    valueClip,
     exclusions,
     conditionalRules,
     statisticalRules,
@@ -627,6 +644,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
     setSourceFetchConfigs,
     setCropRange,
     setValueCrop,
+    setValueClip,
     setExclusions,
     setConditionalRules,
     setStatisticalRules,

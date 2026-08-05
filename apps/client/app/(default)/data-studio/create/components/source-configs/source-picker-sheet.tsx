@@ -90,7 +90,7 @@ export function SourcePickerSheet({ open, onOpenChange }: Props) {
   if (loading) {
     return (
       <Sheet open={open} onOpenChange={onOpenChange}>
-        <SheetContent className="flex w-180 flex-col sm:max-w-180">
+        <SheetContent className="flex w-180! flex-col sm:max-w-180!">
           <SheetHeader>
             <SheetTitle>Data Sources</SheetTitle>
             <SheetDescription>Loading connections...</SheetDescription>
@@ -102,7 +102,10 @@ export function SourcePickerSheet({ open, onOpenChange }: Props) {
   return (
     <>
       <Sheet open={open} onOpenChange={onOpenChange}>
-        <SheetContent className="flex w-180 flex-col sm:max-w-180">
+        <SheetContent
+          side="right"
+          className="flex w-180! flex-col sm:max-w-180!"
+        >
           <SheetHeader>
             <SheetTitle>Data Sources</SheetTitle>
             <SheetDescription>
@@ -221,7 +224,7 @@ export function SourcePickerSheet({ open, onOpenChange }: Props) {
                 </button>
               </div>
             ) : (
-              <div className="grid gap-3 ">
+              <div className="grid gap-3 w-full">
                 {filteredSources.map(source => (
                   <SourceCard
                     key={source.id}
