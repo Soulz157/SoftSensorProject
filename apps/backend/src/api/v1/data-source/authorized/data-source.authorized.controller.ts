@@ -22,6 +22,7 @@ import {
   AdHocSourceDto,
   FetchParamsDto,
   MetadataParamsDto,
+  ResolveTagsDto,
   TagsCurrentDto,
 } from './dto/data-source.connect.dto';
 
@@ -128,7 +129,19 @@ export class DataSourceAuthorizedController {
     @Param('id') id: string,
     @Body() body: TagsCurrentDto,
   ) {
-    console.log('tagsCurrentController called with body:', body);
     return this.connect.tagsCurrentById(user.id, id, body);
+  }
+
+  @Post('/:id/tags/resolve')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Check whether tag names exist in the source, by name',
+  })
+  async resolveTagsController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Body() body: ResolveTagsDto,
+  ) {
+    return this.connect.resolveTagsById(user.id, id, body);
   }
 }

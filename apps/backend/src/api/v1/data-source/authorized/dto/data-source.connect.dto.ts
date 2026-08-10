@@ -27,7 +27,8 @@ export const AdHocSourceSchema = z.object({
 export const MetadataParamsSchema = z.object({
   table: z.string().optional(),
   nameFilter: z.string().optional(),
-  maxCount: z.number().int().min(1).max(10000).optional(),
+  page: z.number().int().min(1).optional(),
+  pageSize: z.number().int().min(1).max(5000).optional(),
 });
 
 /** Fetch op params — superset across PI / SQL / REST; the service picks the
@@ -56,7 +57,12 @@ export const TagsCurrentSchema = z.object({
   batchSize: z.number().int().min(1).max(1000).optional(),
 });
 
+export const ResolveTagsSchema = z.object({
+  tagNames: z.array(z.string()).min(1),
+});
+
 export class AdHocSourceDto extends createZodDto(AdHocSourceSchema) {}
 export class MetadataParamsDto extends createZodDto(MetadataParamsSchema) {}
 export class FetchParamsDto extends createZodDto(FetchParamsSchema) {}
 export class TagsCurrentDto extends createZodDto(TagsCurrentSchema) {}
+export class ResolveTagsDto extends createZodDto(ResolveTagsSchema) {}

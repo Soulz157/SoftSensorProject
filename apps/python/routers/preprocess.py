@@ -29,11 +29,17 @@ from schemas.preprocess import (
     CleanRequest,
     CleanupRequest,
     CleanupResponse,
+    ColumnStatsRequest,
+    ColumnStatsResponse,
     MaterializeRequest,
+    MetadataRequest,
+    MetadataResponse,
     PreviewRequest,
     PreviewResponse,
     RowsRequest,
     RowsResponse,
+    TagCatalogRequest,
+    TagCatalogResponse,
 )
 from services import artifact_service
 from services.cleaning_service import CleaningError
@@ -136,14 +142,82 @@ async def clean_artifact(
     description=(
         "Paginated hydration for the client. Returns the same wide "
         "`{timestamp, cells}` row shape as the preview, plus the artifact's "
-        "total row count so the caller knows when to stop paging."
+        "total row count so the caller knows when to stop paging. "
+        "`format: 'arrow'` (DS-LAKE-005B-A-T05) returns the same page as an "
+        "Arrow IPC stream instead, with the envelope carried in response "
+        "headers (X-Total-Row-Count, X-Offset, X-Filtered, X-Start-Time, "
+        "X-End-Time) rather than the JSON body. `response_model` above only "
+        "applies to the default `format: 'json'` — FastAPI skips it "
+        "automatically when the handler returns a `Response` directly."
     ),
 )
 async def read_rows(
     body: RowsRequest,
     store: ObjectStore = Depends(get_object_store),
 ):
+    # Both branches stay inside `_run` so an unknown tag maps to 422 on
+    # EITHER format, not just the JSON one — the same except-chain every
+    # other handler in this router relies on.
+    if body.format == "arrow":
+        return await _run(artifact_service.rows_arrow, store, body)
     return await _run(artifact_service.rows, store, body)
+
+
+@router.post(
+    "/metadata",
+    response_model=MetadataResponse,
+    summary="Tag list and timestamp range of a committed artifact",
+    description=(
+        "Reads only the Parquet footer and the `timestamp` column — never the "
+        "tag or status columns. Row count, column count, tag count, missingPct, "
+        "checksum and createdAt already live on the DatasetArtifact row, so "
+        "NestJS serves those without calling this endpoint at all "
+        "(DS-LAKE-005B-A-T01)."
+    ),
+)
+async def read_metadata(
+    body: MetadataRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.metadata, store, body)
+
+
+@router.post(
+    "/tags",
+    response_model=TagCatalogResponse,
+    summary="Paginated, searchable tag names for a committed artifact",
+    description=(
+        "Reads only the Parquet footer, via the same call `/metadata` uses — "
+        "never a tag or status column. Browsing 8,000+ tags this way costs "
+        "one object download regardless of how many pages the client turns "
+        "(DS-LAKE-005B-A-T03)."
+    ),
+)
+async def read_tag_catalog(
+    body: TagCatalogRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.tag_catalog, store, body)
+
+
+@router.post(
+    "/column-stats",
+    response_model=ColumnStatsResponse,
+    summary="Per-tag aggregate stats sidecar for a committed artifact",
+    description=(
+        "Reads ONLY column_stats.json, written beside the data at write time "
+        "— data.parquet is never opened, so serving stats for 8,000 tags "
+        "costs exactly the same one object download as one tag "
+        "(DS-LAKE-005B-A-T07). A missing sidecar (a legacy artifact written "
+        "before this task) is a 422, not a fallback compute-on-read — that "
+        "would open data.parquet and defeat the point of the sidecar."
+    ),
+)
+async def read_column_stats(
+    body: ColumnStatsRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.column_stats, store, body)
 
 
 @router.post(

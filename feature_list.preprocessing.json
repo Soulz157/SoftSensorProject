@@ -1,11 +1,11 @@
 {
   "project": "Dataset Creation Flow — Lakehouse Refactor",
-  "version": "2.0.0",
+  "version": "3.1.0",
   "plan": "~/.claude/plans/claude-md-rewrite-in-feature-list-prepr-starry-pike.md",
   "audit_document": "docs/DATASET_FLOW_AUDIT.md",
-  "description": "Refactor the Dataset Creation Flow onto a Bronze/Silver/Gold/Final Lakehouse pipeline while keeping the existing five-step wizard UX intact. Every processing stage produces an immutable MinIO artifact with lineage and checksum. A Dataset Version is created ONLY at Save. TimescaleDB is a future serving layer reached through a Loader seam, never the source of truth.",
+  "description": "Refactor the Dataset Creation Flow into a scalable Bronze/Silver/Gold/Final Lakehouse pipeline while keeping the existing five-step wizard UX intact. Every processing stage produces an immutable MinIO artifact with lineage and checksum. A Dataset Version is created ONLY at Save. MinIO is the single source of truth for rows. Large datasets are accessed through server-side metadata, pagination, bounded previews and virtualized frontend rendering; the browser must never materialize or clone the full dataset. Server-side Parquet querying is the default path for large artifacts. TimescaleDB remains a future serving layer reached through an asynchronous Loader seam.",
   "status": "in_progress",
-  "progress": 46,
+  "progress": 35,
   "supersedes": {
     "project": "Data Cleaning & Feature Engineering Service Pipeline — Slice 1",
     "version": "1.0.0",
@@ -13,6 +13,25 @@
     "recovery": "This file was replaced by explicit user decision. The full Slice 1 ledger — including its found-bug records (the assert_tags_are_storable guard that could never fire, the float-comparison parity fix, the eager-import regression, the cancel straggler leak, the admin-non-member 404) — is recoverable with: git show 96080a4:feature_list.preprocessing.json",
     "plan": "~/.claude/plans/claude-md-feature-data-magical-quiche.md"
   },
+  "revision_log": [
+    {
+      "version": "3.1.0",
+      "reason": "External architecture review of v3.0.0. Two capability gaps and five internal defects were found. No completed feature is reopened; no wizard step changes; no new infrastructure is introduced.",
+      "gaps_closed": [
+        "TRANSPORT FORMAT WAS ABSENT. v3.0.0 bounded the row COUNT through cursor pagination but never bounded the COST PER ROW. A 100-row viewport over an 8,000-tag artifact is 800,000 JSON numbers -- bounded by the letter of the contract and still slow. Arrow IPC is now the required wire format for numeric payloads (DS-LAKE-005B-A-T05).",
+        "DOWNSAMPLING WAS ABSENT. Bounding tags, time range and row limit does not bound points-per-series: one tag at a 1-minute interval over six months is 260,000 points. A row limit yields either a truncated window (a wrong chart) or the whole series (a slow one). Server-side LTTB with a shared bucket basis is now required (DS-LAKE-005B-A-T06)."
+      ],
+      "defects_fixed": [
+        "LINEAGE WOULD HAVE BECOME A DANGLING POINTER -- the same defect class already recorded against Dataset.currentVersionId. DS-LAKE-009B's cleanup predicate checked ownership, adoption, retention age and active jobs, and its acceptance criterion said 'never deletes an artifact referenced by a DatasetVersion'. But DatasetVersion.artifactId points only at FINAL; BRONZE and SILVER are referenced TRANSITIVELY through parentArtifactId. A literal implementation deletes bronze and leaves DS-LAKE-012-T02 ('rebuild from MinIO artifacts alone') passing only inside the retention window. Fixed by DS-LAKE-009B-T08.",
+        "'RECLAIM ARTIFACTS AND JOB METADATA' WAS AMBIGUOUS between deleting MinIO objects and deleting ledger rows. Deleting DatasetArtifact rows destroys the operations recipe, and DS-LAKE-009-T06 already drops operations from DatasetVersion -- so the recipe would survive nowhere. Fixed by DS-LAKE-009B-T09: objects are reclaimed, rows never are.",
+        "DatasetVersion.sizeBytes REMAINED A 32-BIT INT. The finding is recorded in this file and DS-LAKE-002-T02 widened DatasetArtifact.sizeBytes to BigInt, but DS-LAKE-009-T06's reshape list omitted the registry column. It overflows at ~2.1 GB, which an 8,000-tag artifact reaches. Folded into DS-LAKE-009-T06.",
+        "THE BOUNDED RULES WERE CONDITIONED ON 'large datasets'. Nobody defines large, so the hedge licenses two code paths -- and the unbounded one rots until someone calls it with a big dataset. architecture.large_dataset_rule, frontend_data_contract.forbidden and DoD items 12 to 14 are now unconditional.",
+        "DS-LAKE-005-T05 AND DS-LAKE-005-T01 CONTRADICTED frontend_data_contract.forbidden. Keeping the client transform libs as the fast local preview, with server preview only on the final scrubber step, means the browser still computes transforms during intermediate edits. That reconciles with 'no client-side full-dataset cleaning' only if the local preview operates on a bounded sample, which v3.0.0 never stated. Stated and type-enforced by DS-LAKE-005B-B-T04. DS-LAKE-005 itself is NOT reopened: it shipped against the contract as written."
+      ],
+      "resequenced": "DS-LAKE-005B carried 10 tasks and 9 verifications spanning an access contract, a frontend migration and a query-engine benchmark, and DS-LAKE-006 depended on all of it -- so feature engineering was blocked behind a 16,000-tag benchmark. A benchmark is a measurement, not a structural dependency. Split into 005B-A (access contract, blocking), 005B-B (frontend viewport migration, non-blocking), 005B-C (query engine and layout benchmark, non-blocking, parallelisable). DS-LAKE-006 now depends on 005B-A only.",
+      "progress_note": "The feature count moved from 15 to 17, so the mean-progress denominator changed. Six completed features out of seventeen is 35, not 40. No work was undone."
+    }
+  ],
   "note": "Own file per CLAUDE.md §19. feature_list.json tracks the completed 'PI Data Source Verification & Historical Fetch Workflow'; docs/feature_list.json tracks 'Model Creation Flow Refactor'. Neither is touched by this slice.",
   "existing_flow": {
     "preserve": true,
@@ -80,6 +99,7 @@
       "VALIDATION — quality gate producing validation_report.json and a quality score; PASS is required to save",
       "FINAL — the official dataset artifact, written only after validation passes",
       "REGISTRY — DatasetVersion metadata rows, created only at Save",
+      "QUERY — server-side metadata, pagination, bounded preview and Parquet query path; browser never owns the full artifact",
       "LOADER — asynchronous, retried independently, never blocks or fails Save",
       "SERVING — TimescaleDB (DEFERRED; does not exist in this repo today)"
     ],
@@ -109,7 +129,27 @@
       "validation_report": "datasets/{datasetId}/artifacts/{artifactId}/validation_report.json (FINAL only)",
       "intermediates": "datasets/{datasetId}/tmp/{jobId}/{n}.parquet (unchanged)",
       "legacy": "datasets/{datasetId}/{versionId}.parquet — still readable, never written again"
-    }
+    },
+    "large_dataset_rule": "UNCONDITIONAL. The browser receives only metadata, selected-tag previews and bounded row windows -- for every dataset, at every size. Full artifact materialisation, deep cloning and full-dataset React state are forbidden outright. Server-side pagination/filtering and frontend row virtualization are both always required. The earlier phrasing scoped these rules to 'large datasets'; nobody defines large, so the hedge licensed a second unbounded code path that would rot until it was called with a big dataset.",
+    "query_engine": "apps/python is the dataset query/processing boundary. DuckDB/Parquet-native querying should be used for large-artifact reads where it reduces I/O through predicate/projection pushdown; the implementation must be benchmarked against the current object-store reader before adoption. Parquet requires the whole footer to be read and decoded before any data page is touched, so writer settings (statistics on value columns, row-group sizing, codec) are part of the benchmark, not an afterthought.",
+    "frontend_data_contract": {
+      "metadata": "Dataset/artifact metadata, schema, tag catalog and statistics only",
+      "viewport": "Only the currently requested rows and bounded preview window",
+      "operations": "Cleaning/feature-engineering configuration and selected tags, not the full dataset",
+      "forbidden": [
+        "Full dataset in React state -- at any dataset size",
+        "structuredClone/deep clone of the full dataset -- at any dataset size",
+        "Full dataset JSON transfer for table rendering",
+        "JSON arrays of numbers on the row or preview path, where Arrow IPC is required",
+        "Any series payload exceeding max_points without server-side downsampling",
+        "Client-side full-dataset cleaning or feature engineering",
+        "Passing an unbounded frame into a client transform library"
+      ],
+      "transport": "Numeric row and preview payloads cross the wire as columnar binary (Arrow IPC). JSON is for metadata, tag catalog and configuration only. Arrow buffers decode into the existing columnar TypedArray store without an intermediate object graph, and cross a worker boundary by transfer rather than by clone. Cursor pagination bounds the row COUNT; the wire format is what bounds the COST PER ROW.",
+      "downsampling": "Every series-returning endpoint takes max_points and downsamples server-side with LTTB. Average or bucket-mean is not acceptable: process data carries its meaning in the extremes and a mean erases the spike a reliability engineer opened the chart to see. The response envelope always states whether downsampling occurred, the reduction ratio, and the bucket boundaries used. A before/after pair MUST share one bucket basis so that a visible difference is attributable to the transform and never to the sampler.",
+      "local_preview_rule": "The client transform libraries retained by DS-LAKE-005-T05 accept a server-provided bounded sample and nothing else. This is enforced by the type system, not by convention -- see DS-LAKE-005B-B-T04. Without it, 'keep the fast local preview' and 'no client-side full-dataset cleaning' are in direct contradiction, and the contradiction resolves at runtime as the out-of-memory failure this refactor exists to remove."
+    },
+    "serving_layer_constraint": "DEFERRED BUT RECORDED NOW. TimescaleDB does not exist in this repository, and the Loader ships as a seam only. The sink interface must nonetheless not assume a wide frame: PostgreSQL enforces a hard 1600-column ceiling per table, dropped columns keep counting against it until a table rewrite, and the practical ceiling is lower still because a tuple must fit one 8192-byte heap page. An 8,000-tag artifact -- 16,000 columns if quality is a sibling column per tag -- cannot be loaded wide under any configuration. A narrow (ts, tag_id, value, quality) shape is the only viable target. Recording the constraint at seam-design time is far cheaper than discovering it when the concrete sink is written."
   },
   "decisions": {
     "validation_placement": "A gate on the existing Step 5, not a sixth step. User-confirmed. Satisfies 'Validation is mandatory' and 'FAIL must not be committed' with zero change to DW_TOTAL_STEPS, wizard-shell labels, nav gating or the edit-mode landing step.",
@@ -120,7 +160,11 @@
     "compatibility": "GET /:id/versions/:versionId/rows is preserved as a resolving shim so apps/client/app/(default)/models/create/** needs no edits. The refactor's own checklist requires 'Model Training still works without modification'.",
     "ui": "No step is added, removed or reordered. Step 3 and Step 4 keep their controls; only the compute moves from the browser to the server.",
     "artifact_first": "USER DECISION (supersedes the DS-LAKE-005 blocker). Hybrid artifact-first: every wizard stage (Bronze, Silver, Gold, Validation) writes an immutable artifact to MinIO ONLY. No Dataset row, no DatasetArtifact row, no DatasetVersion row exists until the user clicks Save Dataset. Save then creates the Dataset registry entry, the artifact rows, the Dataset Version, commits metadata, and enqueues the Loader job. This removes orphan Dataset records, keeps the wizard fully interactive, and keeps MinIO the single source of truth.",
-    "draft_first": "USER DECISION, supersedes the earlier artifact-first note. A dedicated DatasetDraft entity owns wizard-time artifacts and jobs. Bronze, Silver, Feature and Validation all remain ASYNCHRONOUS jobs with progress, cancellation and retry — the draft is what makes that possible without an orphan Dataset row. Dataset, DatasetVersion and the Loader enqueue happen only at Save Dataset, which ADOPTS the draft artifacts rather than regenerating them."
+    "draft_first": "USER DECISION, supersedes the earlier artifact-first note. A dedicated DatasetDraft entity owns wizard-time artifacts and jobs. Bronze, Silver, Feature and Validation all remain ASYNCHRONOUS jobs with progress, cancellation and retry — the draft is what makes that possible without an orphan Dataset row. Dataset, DatasetVersion and the Loader enqueue happen only at Save Dataset, which ADOPTS the draft artifacts rather than regenerating them.",
+    "transport": "REVIEW OUTCOME v3.1.0. Arrow IPC for numeric payloads, JSON for metadata. Adopted because the v3.0.0 contract bounded row count while leaving per-row cost unbounded, and because banning structuredClone does not prevent the default React/postMessage paths from deep-copying anyway. Arrow removes the copy structurally instead of by prohibition. No new service: this is a serialisation change inside apps/python and apps/client.",
+    "downsampling": "REVIEW OUTCOME v3.1.0. LTTB server-side, never average. The non-obvious requirement is the SHARED BUCKET BASIS for before/after: sample the two series independently and the diff the user sees is partly the sampler's, which makes the Step 3.2 scrubber untrustworthy in exactly the workflow it exists for. DS-LAKE-005B-A-V06 tests this with an identity recipe: a no-op clean must produce a byte-identical before/after after downsampling.",
+    "reproducibility_anchor": "REVIEW OUTCOME v3.1.0. Option (a) REPRODUCIBLE-FROM-SOURCE is chosen over (b) reproducible-from-recipe. A BRONZE artifact reachable through the parentArtifactId chain of any DatasetVersion that is not ARCHIVED is pinned, and retention age cannot override the pin. SILVER and GOLD objects remain reclaimable because they are re-derivable from BRONZE plus the operations recorded on their ledger rows. Rationale: (b) rests on re-fetching the source, and a PI archive absorbs backfills and manual edits, so a re-fetch is not guaranteed to reproduce the rows a deployed soft sensor was trained on. Storage is the cheaper side of that trade.",
+    "cleanup_scope": "REVIEW OUTCOME v3.1.0. Cleanup reclaims MinIO objects. It never deletes a DatasetArtifact row. Rows are the audit trail and they carry the operations recipe; objects are the bytes. objectReclaimedAt on the row is what records the reclamation. This also removes the ambiguity in the phrase 'reclaim draft-owned artifacts and job metadata'."
   },
   "findings_driving_this_slice": [
     "THE SILVER PIPELINE IS ALREADY BUILT AND COMPLETELY DEAD. cleaning_service.py (512 lines, parity-tested), PreprocessingJobService (~480 lines), and the /clean, /jobs/:id, /cancel, /retry endpoints have ZERO client callers — verified by grep across apps/client. The wizard cleans in-browser at step-5-review-save.tsx:82-108 instead. Wiring this up, not writing it, is the core of the refactor.",
@@ -130,7 +174,10 @@
     "The MinIO key helpers are re-implemented as TypeScript template literals in three places — dataset-version.authorized.service.ts:172, preprocessing-job.service.ts:190-191 and :215-217 — duplicating object_store.py:311-323. Adding artifact types multiplies that drift, so the shared contract lands before the new types do.",
     "DatasetVersion.sizeBytes is a 32-bit Int (schema.prisma:358) while preview_service.py:24 documents a real 396 MB artifact. Fine today, wrong at ~2.1 GB.",
     "Save is two non-atomic phases by design (step-5-review-save.tsx:178-182): the dataset row commits, then the artifact is best-effort. The refactor keeps the failure visible but moves the artifact work in front of the commit.",
-    "docs/ARCHITECTURE.md and docs/CODEBASE.md contain ZERO mentions of apps/python, MinIO, S3, Parquet, Dataset, DatasetVersion, PreprocessingJob or background jobs. They are authoritative for the NestJS/Next/Prisma layers only. Surfaced per CLAUDE.md §1 rather than absorbed; DS-LAKE-001 records it in the audit doc."
+    "docs/ARCHITECTURE.md and docs/CODEBASE.md contain ZERO mentions of apps/python, MinIO, S3, Parquet, Dataset, DatasetVersion, PreprocessingJob or background jobs. They are authoritative for the NestJS/Next/Prisma layers only. Surfaced per CLAUDE.md §1 rather than absorbed; DS-LAKE-001 records it in the audit doc.",
+    "REVIEW FINDING v3.1.0 -- THE CLEANUP PREDICATE CHECKS THE WRONG REFERENCE. DS-LAKE-009B-T03 verifies ownership, adoption state, retention age and absence of active jobs; the acceptance criterion says cleanup 'never deletes an artifact referenced by a DatasetVersion'. DatasetVersion.artifactId references FINAL only. BRONZE and SILVER are referenced transitively via parentArtifactId, so a faithful implementation of the criterion as written deletes them. That is the same defect class as the missing Dataset.currentVersionId foreign key, arriving by a different route.",
+    "REVIEW FINDING v3.1.0 -- COUNTING TAGS UNDERSTATES THE WIDTH. DS-LAKE-005B correctly separates tagCount from columnCount, but no task states how quality/status is carried. If quality is a sibling column per tag, 8,000 tags is 16,000 columns and every benchmark stated in tags is measuring half the real artifact. Process data is typically over 95 percent Good, so a bitmask or a sparse exception table is likely to win -- but it has to be measured, not assumed.",
+    "REVIEW FINDING v3.1.0 -- DS-LAKE-005B WAS THREE FEATURES WEARING ONE ID, and DS-LAKE-006 depended on all of it. Feature engineering was therefore blocked behind a 16,000-tag benchmark and a DuckDB port, neither of which it needs. Split into A/B/C with 006 depending on A alone."
   ],
   "features": [
     {
@@ -608,15 +655,403 @@
       "blocker_resolution": "RESOLVED by the artifact-first decision. The blocker was that create mode has no dataset id and no bronze artifact at Step 3. Under the decision there is no dataset id BY DESIGN, and stages address a draft namespace instead. T03 (the SILVER commit path) stays completed; T01/T02/T04 are re-scoped onto draft artifacts and depend on the open question above."
     },
     {
+      "id": "DS-LAKE-005B-A",
+      "title": "Bounded server-side dataset access contract",
+      "priority": 5.5,
+      "status": "in_progress",
+      "progress": 100,
+      "dependencies": [
+        "DS-LAKE-005"
+      ],
+      "description": "The blocking half of the old DS-LAKE-005B. Establish the server-side access contract that makes the browser a viewport consumer: metadata, paginated tag catalog, cursor-paginated rows and bounded preview -- carried over a wire format and a sampling rule that bound cost, not merely count. Nothing downstream needs the query-engine benchmark, so nothing downstream waits for it.",
+      "tasks": [
+        {
+          "id": "DS-LAKE-005B-A-T01",
+          "title": "Artifact metadata endpoint returning rowCount, columnCount, tagCount, schema, time range, quality summary, checksum and artifact identity without dataset rows. columnCount and tagCount are reported separately and never conflated -- a quality sibling column per tag doubles the width and every downstream budget depends on knowing which number is which",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "DS-LAKE-005B-A-T02",
+          "title": "Server-side cursor pagination for artifact rows with a server-enforced bounded limit, tag filter, column projection and start/end time filters; an unbounded row request is clamped or rejected, at every dataset size",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "DS-LAKE-005B-A-T03",
+          "title": "Server-side paginated tag catalog with search/filter support so 8,000+ tags can be browsed without loading time-series values",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "DS-LAKE-005B-A-T04",
+          "title": "Bounded artifact preview endpoint for selected tags and time windows; preview is read-only and must never create Dataset, DatasetArtifact or DatasetVersion rows",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "DS-LAKE-005B-A-T05",
+          "title": "RESCOPED BY USER DECISION (option b, was blocked -- see prior blockedReason preserved below): Arrow IPC as the wire format for /rows ONLY (narrowed from the original 'every numeric row and preview payload' during implementation -- /preview's response is a nested JSON envelope with no clean binary representation and zero consumers; recorded as its own out-of-scope decision below, not silently dropped), negotiated (JSON remains the default; Arrow is opt-in), served from apps/python and passed through apps/backend untouched. Client adoption (columnar TypedArray store, worker-boundary transfer, decode) is explicitly OUT OF SCOPE for this task -- deferred to a later client-adoption feature, along with V04's benchmark, which cannot be verified without a client decoder.",
+          "status": "completed",
+          "progress": 100,
+          "priorBlockedReason": "Missing client infrastructure (CLAUDE.md Section 17), grepped not assumed: no *.worker.* file anywhere under apps/client; no apache-arrow in apps/client/package.json or the repo root; zero hits for Float64Array|Float32Array|SharedArrayBuffer|new Worker|postMessage|\\.transfer\\( across apps/client; lib/fetcher.ts's fetchClient ends in an unconditional `return response.json()` with no arraybuffer path; DataRow (lib/preprocessing.ts) is row-oriented, not columnar; recharts is the only chart lib. Two options were presented: (a) build client infra as new T05 scope, or (b) rescope to server-side Arrow only, move V04 to a later client-adoption feature. USER CHOSE (b).",
+          "userDecision": "User explicitly selected option (b): 'Server-side Arrow IPC transport capability -- not client adoption yet.' Scope for this task: apps/python emits Arrow IPC on request (negotiated, JSON remains default), apps/backend passes it through without decoding. No apps/client changes. V04 (JSON-vs-Arrow benchmark) is DEFERRED, not closed -- it requires a client decoder to compare against, which does not exist and is out of this task's scope."
+        },
+        {
+          "id": "DS-LAKE-005B-A-T06",
+          "title": "max_points parameter with server-side LTTB downsampling on every series-returning endpoint. The response envelope states the downsampled flag, the reduction ratio and the bucket boundaries. A before/after pair is sampled on ONE shared bucket basis so a visible diff is attributable to the transform and never to the sampler",
+          "status": "completed",
+          "progress": 100
+        },
+        {
+          "id": "DS-LAKE-005B-A-T07",
+          "title": "Per-tag aggregate sidecar column_stats.json written beside the artifact at write time -- coverage, null percentage, outlier count, min, max, mean, drift indicator, cleaned flag. This is the only view that can show 8,000 tags at once, and it is what makes the wizard a QA surface rather than a spreadsheet. DatasetArtifact.columnStats stores the sidecar key, not 8,000 rows of JSONB",
+          "status": "completed",
+          "progress": 100
+        }
+      ],
+      "acceptance_criteria": [
+        "Metadata, tag-catalog and column-stats responses carry no time-series row payload.",
+        "The row endpoint has a bounded server-enforced limit and supports cursor pagination; an unbounded request is clamped or rejected regardless of dataset size.",
+        "Tag browsing can display 8,000+ tags without transferring their complete time-series values.",
+        "Preview requests are bounded by selected tags, time range and row limit, and cause no persistence side effect.",
+        "Numeric row and preview payloads are columnar binary; no JSON array of numbers is emitted on either path.",
+        "No endpoint returns more than max_points per series without downsampling, and the response states the ratio.",
+        "A before/after pair is downsampled on identical bucket boundaries.",
+        "No full Dataset clone or deep clone is required for Before/After comparison.",
+        "columnCount and tagCount are both reported and are never the same field.",
+        "Per-tag statistics are served from the sidecar without opening data.parquet.",
+        "The access path preserves the row values and ordering semantics required by the existing parity fixtures.",
+        "Registry/list/detail endpoints continue to return metadata only and never dataset rows."
+      ],
+      "verification": [
+        {
+          "id": "DS-LAKE-005B-A-V01",
+          "description": "API test requests more than the maximum row limit and confirms the server clamps or rejects rather than returning an unbounded payload. Repeat against a deliberately small artifact: the bound must not be conditional on size.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-005B-A-V02",
+          "description": "API test confirms metadata, tag-catalog and column-stats responses contain no time-series row payload.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-005B-A-V03",
+          "description": "Preview test with 2 tags and a bounded time range confirms only the requested subset is returned, and the NoWriteStore pattern already proven for preview confirms no persistence side effect.",
+          "status": "completed"
+        },
+        {
+          "id": "DS-LAKE-005B-A-V04",
+          "description": "Wire-format benchmark: identical viewport requested as JSON and as Arrow on an 8,000-tag artifact, recording bytes on the wire and main-thread decode milliseconds for each. Record the ratio in the benchmark report.",
+          "status": "deferred",
+          "note": "Deferred, not closed, by the user's T05 rescope decision (option b): 'main-thread decode milliseconds' requires a client-side Arrow decoder, which is explicitly out of scope for the rescoped T05 (server-side transport only). Revisit when a client-adoption feature exists."
+        },
+        {
+          "id": "DS-LAKE-005B-A-V05",
+          "description": "Preview one tag over six months at a 1-minute interval: confirm the response is at or under max_points, that the reported ratio matches the input and output lengths, and that the local extrema of the source series survive the reduction.",
+          "status": "pending",
+          "note": "PARTIALLY CLOSED, left pending on the same standard T02's V01 used ('API test' named vs. what actually ran). Clauses (a) 'at or under max_points' and (b) 'ratio matches input/output lengths' ARE closed by test_max_points_bypasses_the_sample_rows_head_cut / test_series_respects_the_max_points_ceiling against the literal six-month/1-minute scenario. Clause (c) 'local extrema survive' is NOT closed: the only spike test uses a 500-vs-~20 deviation that plain area-based LTTB would also keep without the added global-extrema guard, so it demonstrates the easy case, not the guard's necessity. A discriminating adversarial case (two comparably-extreme points sharing one bucket) was not constructed. Flip to completed only once that case exists and passes."
+        },
+        {
+          "id": "DS-LAKE-005B-A-V06",
+          "description": "SAMPLER ATTRIBUTION TEST -- run a preview through an identity recipe (a clean that provably changes nothing) and confirm before and after are identical after downsampling. A non-empty diff here proves the sampler is contaminating the comparison, which would make the Step 3.2 scrubber untrustworthy in the one workflow it exists for. This is the LTTB equivalent of DS-LAKE-006-V01: a comparison that can never show a false difference is worth nothing if it can also show a fake one.",
+          "status": "completed"
+        },
+        {
+          "id": "DS-LAKE-005B-A-V07",
+          "description": "Serve per-tag statistics for an 8,000-tag synthetic artifact and confirm data.parquet is never opened, by instrumenting the object store rather than by reading the code.",
+          "status": "completed",
+          "note": "Closed exactly as specified -- instrumented on the store, not inferred from code. test_column_stats_read_serves_the_sidecar_without_opening_the_data builds an 8,000-tag frame, commits it, then asserts RecordingStore.get_frame_calls is unchanged after reading column-stats. That fixture takes ~29s and is most of this task's added suite time (12s -> 42s); recorded so a future 'speed up the suite' pass does not shrink it to a few tags and silently void the verification."
+        }
+      ],
+      "verificationResults": [
+        "T01 DONE -- new GET /:id/artifacts/:artifactId/metadata on BOTH authorized/dataset-drafts (getDraftArtifactMetadataService) and authorized/dataset (getArtifactMetadataService, canonical-artifact-id only, no legacy DatasetVersion shim). rowCount/tagCount(=existing columnCount field)/missingPct/checksum/createdAt are served straight off the DatasetArtifact row -- zero I/O. tags and the time range are the only fields that call Python.",
+        "PYTHON: ObjectStore.get_frame_metadata(key) added (intergrations/object_store.py) -- one object download, then pq.ParquetFile for the tag list AND the physical column_count from the FOOTER (no column decode), plus pyarrow.compute min/max over ONLY the timestamp column (not assumed-sorted). tag_columns() refactored onto a shared _tags_from_columns() helper so the DataFrame path and the footer-only path can never define 'tag' differently. New POST /v1/preprocess/metadata (schemas.preprocess.MetadataRequest/MetadataResponse, services/artifact_service.metadata, routers/preprocess.py) mirrors the /rows handler shape exactly.",
+        "ADVISOR CATCH, FIXED BEFORE COMPLETION -- first pass computed columnCount as tagCount * 2 in NestJS and returned sizeBytes as a raw Prisma BigInt. Both were wrong: (1) a derived columnCount could disagree with the tags array on a legacy/backfilled artifact (columnCount defaults to 0), and 2N silently dropped the timestamp column the codebase's own docstring defines as part of the 2N+1 physical width; (2) `JSON.stringify({a: 1n})` throws TypeError and no Fastify BigInt serializer exists anywhere in this app (checked apps/backend/src/main.ts) -- a real HTTP call to either new route would 500, invisible to the mocked-Prisma unit test. Fixed: column_count is now MEASURED in the same footer read as tags (len(schema_names), Python and NestJS both updated, tests updated), and sizeBytes.toString() ships instead of the bigint. A mocked unit test cannot catch a serialization failure; recorded so the next task remembers to check for one.",
+        "V02 PARTIALLY CLOSED for the metadata leg only -- backend test asserts res.data has no 'rows' property; tag-catalog and column-stats responses are T03/T07, not yet built, so V02 stays open overall.",
+        "NOT DONE THIS TASK, LEFT FOR T02/T03 -- read services/artifact_service.rows() while here: it calls store.get_frame(key) (the FULL object) and slices in pandas AFTER decoding every column. ObjectStore.get_frame_slice()/get_frame_head() already exist and do the same full-decode-then-slice, not real row-group pushdown. T02's 'server-enforced bounded limit... at every dataset size' is not satisfied by the current rows path -- it downloads and decodes all 2N+1 columns on every page request regardless of the requested limit. Flagging so T02 does not assume this is already solved.",
+        "SUITES -- python: 307 passed, 30 skipped (was 302/30 at DS-LAKE-005; +5 new tests, 0 new skips), including a LIVE test against minio-local exercising the real pyarrow footer read (test_get_frame_metadata_reads_tags_and_range_without_decoding_values), not just the RecordingStore fake. backend: dataset-draft.authorized.service.spec.ts 9/9 (2 new); tsc clean beyond the same 4 pre-existing auth spec errors DS-LAKE-005 already documented; full `pnpm --filter backend test` run recorded as baseline -- 8 pre-existing failing suites (auth/plan/workspace/nodes/workspace-plant, all NestJS DI 'cannot resolve PrismaService' errors), none touching dataset-draft/dataset-version/preprocessing-job, none in this session's git diff, so treated as pre-existing environment state and not investigated further.",
+        "NOT VERIFIED THIS SESSION -- no live run against the NEW dataset-version (saved-dataset) metadata route or the draft route's Python round trip end-to-end (only python's own live-MinIO test and backend's mocked-postToPython unit tests ran). V01/V03/V04/V05/V06/V07 are T02/T04/T05/T06/T07 concerns and remain pending.",
+        "T02 DONE -- rows() (services/artifact_service.py) now takes tags/start_time/end_time on RowsRequest. tags drives REAL pyarrow column projection (store.get_frame(key, columns=[timestamp, tag, tag__status, ...])) -- proven live against minio-local (test_get_frame_column_projection_excludes_the_other_tag), not just the RecordingStore fake. An unknown requested tag reaches pyarrow as ArrowInvalid, which subclasses ValueError -- routers/preprocess.py's existing except-chain already maps that to 422 with ZERO new error-handling code (confirmed by an interactive pyarrow check before writing anything). start_time/end_time filter the frame by pd.Timestamp comparison BEFORE offset/limit is applied, and total_row_count now describes the FILTERED view, not the raw file, so offset/limit page the same thing the client sees. NestJS: ListRowsSchema gained tags (comma-separated query string -> string[], since this app registers no qs parser and Fastify's default querystring parser gives a bare string for one repeated key and an array for two -- confirmed by reading main.ts, not assumed) plus startTime/endTime; both listDraftRowsService and listRowsService forward all three to Python only when present.",
+        "V01 PROXY-VERIFIED, NOT FULLY CLOSED -- the >50,000 limit ceiling was ALREADY pre-existing (zod .max(50_000) on ListRowsSchema, predates this task) and is enforced at DTO validation, before any artifact lookup, so it cannot be conditional on artifact size by construction. Added an explicit schema-unit test proving the reject (ListRowsSchema.parse({limit: 50_001}) throws, 50_000 does not) plus a Python-side RowsRequest(limit=50_001) rejection test. Left V01 'pending' rather than 'completed': its description says 'API test' and what ran is a schema/DTO-level test, not a live HTTP round trip through the global ZodValidationPipe -- same class of gap the previous session's BigInt catch exists to warn about, so not overclaiming here either.",
+        "NOT DONE, EXPLICITLY DEFERRED -- true row-group/predicate pushdown for the time filter. start_time/end_time still filter AFTER the (now column-projected) frame is fully decoded in pandas, so a narrow time window on an 8,000-tag artifact pays for decoding every row of the requested columns, not just the matching ones. Column projection (the tags param) is the real I/O win landed this task; time-range pushdown would need Parquet row-group statistics or a partitioned layout, which is DS-LAKE-005B-C benchmark territory (query-engine layout decision), not T02.",
+        "ADVISOR CATCH, FIXED BEFORE COMPLETION -- first pass left total_row_count meaning two different things (raw artifact vs filtered view) depending on request params the RESPONSE never echoed: a client caching a page, or a second component reading the same response, could not tell '6 rows total' from '6 rows in this window of 5,000'. Same class of gap as the T01 BigInt catch -- invisible to a test that only asserts on the request body sent to Python. Fixed: RowsResponse/PythonRowsSchema gained filtered/start_time/end_time, echoing exactly what artifact_service.rows() applied; both NestJS services map it through as filtered/startTime/endTime. Separately caught: ?tags= (empty string) parsed to [] in NestJS, which is truthy, so query.tags && {tags: query.tags} forwarded tags: [] to Python -- Python treats tags:null as 'every tag' but tags:[] as 'select nothing', so the two layers disagreed on what an empty filter means. Fixed by folding an empty parsed array to undefined in the zod transform, and pinned with a test (`tags: ''` -> undefined) so a future edit to either side cannot quietly re-introduce the disagreement. NOTE (nit, not fixed): the echoed start_time/end_time are the REQUEST's raw strings, not the resolved effective window -- a range wider than the artifact echoes back the over-wide request rather than the artifact's actual bounds. `filtered` plus the requested range is enough to disambiguate totalRowCount, which was the actual concern, so left as-is.",
+        "CURSOR DECISION, RECORDED NOT BUILT -- T02's title says 'cursor pagination'; no opaque cursor token was built. `offset` IS the cursor: artifacts are immutable once committed (checksum-verified, DS-LAKE-002/003), so an offset is a stable resume position for the lifetime of that artifact, unlike a mutable table where offset drift is the reason cursor tokens exist. A caller resumes with `offset: previousOffset + rows.length` against the returned `totalRowCount` (now the FILTERED count) until it reaches that total. No acceptance criterion or verification item names an opaque token specifically. Chose not to build one on minimal-change grounds (CLAUDE.md Section 3) -- recorded here so a future reader does not assume token-based cursors exist, and so the choice is visible to disagree with rather than buried in reasoning.",
+        "GREPPED, NOT ASSUMED -- confirmed no other backend consumer parses a /v1/preprocess/rows response with the now-stricter PythonRowsSchema (filtered/start_time/end_time are non-optional keys): preprocessing-job.service.ts imports from the same dto file but never references PythonRowsSchema, only listDraftRowsService and listRowsService call it, both touched this task. Also checked apps/client/services/dataset-draft.ts's DraftRowsPage type: it does not yet declare filtered/startTime/endTime. The new fields are additive on the wire (nothing breaks), but the client cannot SEE them until that type and its call sites are updated -- left undone as out of scope for T02 (a server-side pagination contract task), not silently forgotten; no current UI feature calls the tag/time filter params yet, so there is no consumer waiting on this.",
+        "SUITES -- python: 314 passed, 30 skipped (was 307/30 after T01; +7 new tests, 0 new skips), including 2 live minio-local tests (get_frame_metadata from T01, get_frame column projection new this task). backend: dataset-draft.authorized.service.spec.ts 15/15 (6 new); tsc clean beyond the same 4 pre-existing auth errors (one new self-inflicted error caught and fixed in this pass -- z.string().optional().transform(fn) makes the DTO's 'tags' key REQUIRED-but-possibly-undefined in TypeScript's inferred type rather than optional, because zod's ZodEffects wrapping happens before the ZodOptional; moving .optional() to AFTER .transform() fixed it, and check-types was re-run to confirm before calling this done rather than trusting the fix by inspection); eslint clean on every touched backend file; full pnpm --filter backend test stayed at the same 8 pre-existing failing suites (96/104 vs 90/98 before T02, i.e. +6 passing, 0 new failing).",
+        "T03 DONE -- new GET /:id/artifacts/:artifactId/tags on BOTH authorized/dataset-drafts and authorized/dataset (canonical-artifact-id only, mirroring T01/T02). Built entirely on the T01 primitive: artifact_service.tag_catalog() calls the SAME store.get_frame_metadata() as metadata() -- zero new ObjectStore surface, zero new I/O primitive. The full tag list from that footer-only read is sorted alphabetically (a catalog is for browsing, not file/schema-column order, which is a write-time artifact nobody would recognise), case-insensitive substring-filtered by `search`, then offset/limit-sliced in memory -- all pure Python list ops after the one object download, so paging or searching 8,000+ tags costs the same single download every time, proven by a test asserting store.get_frame_calls stays 0 (tag_columns/status columns are never decoded). NestJS: new TagCatalogSchema (search/offset/limit, limit capped at 5,000 not 50,000 -- deliberately a SEPARATE schema from ListRowsSchema, not shared, since a tag-catalog page size has nothing to do with a row-limit ceiling) and PythonTagCatalogSchema; getDraftArtifactTagCatalogService/getArtifactTagCatalogService both forward search only when set, mirroring the T02 tags/startTime/endTime pattern.",
+        "V02 TAG-CATALOG LEG CLOSED -- response is {totalCount, offset, search, tags}, no row payload, matching the metadata leg T01 already closed. column-stats is the remaining leg, gated on T07.",
+        "ADVISOR CATCH, FIXED BEFORE COMPLETION -- /metadata (T01) returned tags in schema/file-column order; /tags (T03) returned them sorted(). Same underlying footer read, two silent orderings for the same artifact -- a client indexing tags from /metadata then paging /tags would see rows reorder between the two calls with no error. T03's own reasoning ('a catalog is for browsing, not file order') applies identically to /metadata's tags array. Fixed at the single source: ObjectStore.get_frame_metadata now returns tags pre-sorted, tag_catalog() no longer re-sorts (would have been a second place that could disagree), and T01's live test (test_get_frame_metadata_reads_tags_and_range_without_decoding_values) was strengthened from set(...) == {...} to an ordered list assertion so the guarantee is pinned, not incidental. Also closed: the 5,000 tag-catalog limit ceiling and RowsRequest's 50,000 ceiling were each untested on one side after their respective tasks; added the same-shape bound test to both TagCatalogSchema/TagCatalogRequest that V01 already established for rows. And pinned search='' -> 'no filter' end-to-end through the SERVICE (not just the schema), the same class of check that caught tags=[] in T02.",
+        "V02 TAG-CATALOG LEG CLOSED -- response is {totalCount, offset, search, tags}, no row payload, matching the metadata leg T01 already closed. column-stats is the remaining leg, gated on T07.",
+        "GREPPED FOR T04, NOT ACTED ON -- apps/python/services/tag_service.py::TagService.list_tags (live PI-source tag browsing, part of the uncommitted uses in git status) uses a DIFFERENT vocabulary entirely: name_filter as a glob ('*'), page/page_size/hasNext pagination (not offset/limit/totalCount), and a TagItem response carrying description/value/unit/quality, not bare tag-name strings. T03's tag_catalog is for ARTIFACT tags (post-ingest, immutable, footer-read); tag_service is for a LIVE PI SOURCE (pre-ingest, glob search, current values) -- genuinely different data sources, so the vocabulary split is justified, not an oversight. Recorded because if the wizard's tag table is meant to render both through one component, T04 (or whichever task wires the client) needs two adapters for one UI concept, not a shared one. Not fixed here: T03 was not changed to match this uncommitted, unrelated WIP.",
+        "SUITES -- python: 321 passed, 30 skipped (was 319/30 before this fix pass; +2 new tests, 0 new skips). backend: dataset-draft.authorized.service.spec.ts 20/20 (2 new); tsc clean beyond the same 4 pre-existing auth errors; eslint clean on every touched backend file.",
+        "T04 DONE -- PreviewRequest/PreviewResponse gained tags/start_time/end_time (Python) and PreviewVersionDto/PythonPreviewSchema gained the camelCase/snake_case twins (NestJS), same shape as T02's rows(). build_preview() rewritten: was store.get_frame_head(key, sample_rows) (whole-object read, head-from-row-0 only, no projection, no time filter possible); now store.get_frame(key, columns=[...]) with the SAME column-projection construction as artifact_service.rows(), then the SAME pd.Timestamp time-filter pattern, THEN the sample_rows cap -- so a Bad stretch in the middle of a multi-year, 8,000-tag artifact is previewable without downloading rows first, which a HEAD-only preview could never reach. Unknown tag -> pyarrow ArrowInvalid -> 422, zero new error handling, same free ride as T02. source_row_count now describes the WINDOW (tags+time applied), and the response echoes filtered/start_time/end_time proactively this time -- T02's advisor catch applied on the first pass here, not after a review flagged it.",
+        "OBJECTSTORE.GET_FRAME_HEAD REMOVED -- its one caller (build_preview) needed column projection and a pre-cap time filter, neither of which its (key, limit) signature took, so the head+count logic moved inline in build_preview instead of growing a third parameter set on the storage method. Confirmed zero other callers before removing (grep, not assumed). test_preview_service.py's NoWriteStore fake (the read-only guard proven by test_the_guard_is_actually_armed) updated from get_frame_head to get_frame(key, columns=None) to match -- this is the SAME allowlist-widening the guard exists to force: a fake that silently absorbed the new call would have let a preview-path write slip through undetected.",
+        "BUG FOUND AND FIXED IN PASSING (advisor-flagged, carried from T03's own notes) -- dataset-version.authorized.service.ts::previewService resolved its source via findVersion(), which queries ONLY the legacy DatasetVersion table. Every artifact-first dataset (DS-LAKE-004 onward -- no DatasetVersion row exists until Save Dataset) 404'd on preview even though listRowsService next door, on the same controller, already resolved the same ids correctly via findArtifactSource() (version-first, artifact-fallback). Adding tags/time bounds to a preview that 404s on every draft-derived dataset would have been invisible dead functionality. Fixed: previewService now calls findArtifactSource(), matching listRowsService. findVersion() itself removed as dead code (zero remaining callers, confirmed by grep before deletion) -- the same orphan-cleanup discipline applied to get_frame_head above.",
+        "NOT TESTED AT THE SERVICE-SPEC LAYER -- dataset-version.authorized.service.ts has NO existing .spec.ts file (true since before this session; only dataset-draft.authorized.service and preprocessing-job.service have unit coverage in this codebase). The findVersion -> findArtifactSource fix and the tags/startTime/endTime forwarding on THIS file are therefore verified by tsc + eslint + manual code inspection only, not by a jest assertion, unlike the identical draft-path change which IS tested. Recorded as a real gap, not silently left implicit: if this fix is wrong, nothing in the test suite would catch it. A live run or a new spec file would close this; neither was done this pass, matching the established (if imperfect) precedent for this file rather than expanding test scope unilaterally.",
+        "SUITES -- python: 327 passed, 30 skipped (was 321/30 before T04; +6 new tests, 0 new skips; test_preview_service.py's 3 stale (key, limit) assertions from the pre-refactor get_frame_head shape were updated to (key, columns) as part of the same pass, not left broken and then patched -- found by running the suite, not by re-reading the diff). backend: dataset-draft.authorized.service.spec.ts 22/22 (2 new); tsc clean beyond the same 4 pre-existing auth errors; eslint clean on every touched file; full pnpm --filter backend test stayed at the same 8 pre-existing failing suites (103/111 vs 101/109 before T04, i.e. +2 passing, 0 new failing).",
+        "ADVISOR CATCH, FIXED BEFORE COMPLETION -- V03 ('preview test with 2 tags and a bounded time range confirms only the requested subset is returned') was T04's own named verification item and had NO combined test: the tag-projection test used one tag and no time range, the time-window test used no tags. Neither alone proves V03's actual claim, and the tag test ran against source_frame()'s only 2 tags, so 'return 2 of 2' could not have distinguished subsetting from doing nothing. Fixed: added three_tag_frame() specifically so a 3rd tag exists to exclude, and test_v03_two_tags_plus_time_range_returns_only_the_requested_subset asserts the projected column list, the third tag's absence from EVERY row and column-stats entry in both before/after, source_row_count as the window height, and filtered=True -- all in one request, matching V03's wording. V03 flipped to completed.",
+        "TWO SMALLER ADVISOR ITEMS, BOTH RESOLVED -- (1) PythonPreviewSchema.filtered/start_time/end_time are LENIENT (.default()/.optional()) while T02's PythonRowsSchema.filtered is required-with-no-default; this was a real inconsistency between sibling schemas with no recorded reason. Resolved by keeping the lenient version (rows() is unusable without a correct filtered flag for client-side pagination; preview's critical payload is before/after/delta, filtered is supplementary) and writing the reasoning into the schema itself so a future reader does not 'fix' one to match the other. (2) sampling_warnings() said 'not the whole dataset' even when a tag/time filter had already narrowed the view to a window smaller than the artifact -- misleading once T04 made that possible. Fixed to say 'the requested window' when tags/start_time/end_time are set, pinned with a new test asserting both phrasings on the same store.",
+        "SUITES (fix pass) -- python: 329 passed, 30 skipped (+2 new tests, 0 new skips). backend: dataset-draft.authorized.service.spec.ts unchanged at 22/22 (fix pass was comment-only on the NestJS side); eslint clean on the touched dto file.",
+        "T05 BLOCKED, NOT STARTED -- inspected before writing any code (CLAUDE.md Section 17: 'DO NOT modify code during initial inspection' for a blocked dependency). T05's title requires an EXISTING columnar TypedArray store and worker boundary in apps/client; grepped for both and found neither -- see blockedReason on the T05 task entry for the full grep receipts (no *.worker.* files, no apache-arrow dependency, zero Float64Array/SharedArrayBuffer/Worker/postMessage hits, fetchClient hardcoded to response.json(), DataRow is row-oriented not columnar, recharts is the only chart lib). Considered building the server-side Arrow half alone and rejected it: V04's benchmark needs a client decoder to compare against and cannot be verified without one; a binary passthrough would forfeit the parse-never-cast Zod boundary T01-T04 spent four tasks establishing (PythonRowsSchema/PythonPreviewSchema); and it would ship a wire format with zero callers. Set status to blocked with the two real options recorded (build client infra as new T05 scope, or rescope T05 to server-only and move V04 to a later client-adoption feature) -- this is the user's call, not a default to guess. Task list has no dependencies field on any task (checked before assuming T06/T07 wait on T05), so proceeding to T06 next rather than stalling the feature on an open decision.",
+        "T06 DONE -- new services/downsample.py (LTTB, tested standalone -- 11 unit tests -- BEFORE any endpoint code existed to call it, per advisor guidance this task, since the algorithm's own claims (the max_points ceiling, extrema survival) needed proving before building request/response plumbing around a design that might not hold them). Buckets are TIME-domain (window span / bucket count), not textbook LTTB's index-count domain -- the one design choice everything else depends on: a row-removing op changes row COUNT but not the time SPAN, so before/after computed against edges derived once and reused share identical bucket boundaries regardless of how many rows either side has, which is what makes V06 (identity recipe -> identical downsampled output) provable rather than coincidental. max_points is a ceiling INCLUSIVE of the two endpoints LTTB always keeps (num_buckets = max_points - 2), not max_points-plus-two -- checked against the literal 'at or under max_points' wording in V05 before writing the loop.",
+        "ADVISOR-DRIVEN DESIGN, NOT GUESSED -- three real forks surfaced and were resolved with advisor before code, not after: (1) whether /rows also needs max_points -- NO, scoped to /preview only: neither V05 nor V06 names /rows, and T02's offset/limit page against totalRowCount (the FILTERED count) is incoherent against a REDUCED set, so adding it would break a contract shipped two tasks ago for no verification item. Recorded as an OPEN GAP against acceptance criterion 'no endpoint returns more than max_points per series without downsampling', which does read broader than V05/V06 -- visible to disagree with, not buried. (2) sample_rows' head cut is BYPASSED when max_points is set: V05's 'local extrema of the SOURCE series survive' cannot hold if a trough past sample_rows' cut was never in LTTB's input at all, not merely hard to select -- proven by test_max_points_bypasses_the_sample_rows_head_cut with a spike planted at row 200,000 of a 259,200-row window. This path is bounded by a NEW ceiling, MAX_DOWNSAMPLE_WINDOW_ROWS=500,000, deliberately NOT a reuse of MAX_SAMPLE_ROWS (that constant also caps RowsRequest.limit -- T02's page-size ceiling -- and raising it would have silently raised that too). (3) response shape: the downsampled series lives in a NEW field (before/after.series), NOT inside the existing rows/preview_rows (capped at MAX_PREVIEW_ROWS=200) -- overloading rows would have made 'max_points=2000 returns >=200 points' silently unverifiable, the same class of unfalsifiable test T04's V03 catch already burned once this feature.",
+        "EXTREMA GUARD, WITH A NAMED LIMIT -- pure area-based LTTB does not guarantee a spike survives (two extreme points sharing a bucket only keep one). Added global-max/global-min PROTECTION: the two most extreme points in a series are force-selected in whichever bucket they land, overriding the area pick for that bucket only. Proven with test_a_single_injected_spike_survives_the_reduction / _trough_ variants BEFORE endpoint wiring, per advisor's explicit 'write this test first' instruction -- a failing version of this test would have invalidated the whole design, cheaper to learn there than after the request/response layers existed. NAMED LIMIT, recorded not silently assumed: this guarantees the two GLOBAL extrema survive, not every LOCAL extremum -- a second spike smaller than the global max but still locally prominent has no protection beyond area selection. ADVISOR CATCH, FIXED BEFORE COMPLETION -- first pass used plain np.argmax/argmin, which on a real artifact finds a Bad cell's 0.0 hole (frame_service.MISSING_VALUE) before a genuine negative trough, protecting a hole instead of the real minimum. Fixed: lttb_indices gained an optional valid boolean mask (nanargmax/nanargmin over masked values, sentinel -1 index when nothing is eligible so protection disables without raising); build_preview passes the reference tag's __status==GOOD mask. Pinned with two new tests (hole excluded from protection; all-invalid disables cleanly, does not raise).",
+        "PYTHON WIRING -- PreviewRequest.max_points (Field ge=3, le=MAX_DOWNSAMPLE_POINTS=10_000); PreviewSide gained downsampled/downsample_ratio/series (series=None, downsampled=False by default so the schema validates whether or not max_points was requested -- set in summarise()'s return dict, overwritten by _apply_downsampling only when max_points is set); PreviewResponse gained max_points (echoed) and bucket_edges (the SAME edges array both before/after were bucketed against, captured once from whichever side's lttb_indices call ran first, not recomputed -- avoided a redundant third LTTB call in an early draft of _apply_downsampling, caught and fixed before running tests). build_preview: when max_points is set, source window (post tag/time filter) is NOT head-cut by sample_rows; sampled is forced False on that path (the OLD meaning -- 'computed on a head slice' -- does not apply, since LTTB spans the full window) and a SEPARATE downsample_warnings() carries the LTTB caveat, keeping the two caveats from merging into one misleading string (the exact class of bug T04's advisor pass fixed for sampling_warnings).",
+        "NESTJS WIRING -- PreviewVersionSchema gained maxPoints (z.number ge3 le10_000, optional); PreviewSideSchema gained downsampled/downsample_ratio/series (lenient -- .default()/.optional(), matching T04's documented reasoning: before/after/delta is the critical payload, these are supplementary); PythonPreviewSchema gained max_points/bucket_edges (lenient, same reasoning). previewService AND previewDraftService both forward maxPoints -> max_points only when set, mirroring the existing tags/startTime/endTime pattern exactly -- both call sites edited identically, not just one and forgotten.",
+        "SUITES -- python: 347 passed, 30 skipped (was 329/30 before T06; +18 new tests -- 11 in test_downsample.py proving the algorithm standalone, 7 in test_preview_service.py proving it through build_preview end to end including a literal V05 scenario (six-month/1-minute single-tag frame, spike at row 200,000) and a literal V06 scenario (operations=[], assert before.series == after.series exactly)). backend: dataset-draft.authorized.service.spec.ts 24/24 (+2 new: maxPoints forwarded and echoed through the lenient schema; maxPoints omitted when not supplied, downsampled defaults false). tsc clean beyond the same 4 pre-existing auth-spec errors (unchanged from every prior task this session). eslint clean on every touched file. full pnpm --filter backend test: 105/113 vs 103/111 before T06 (+2 passing, 0 new failing), same 8 pre-existing failing suites (auth/plan/workspace/nodes DI errors, none touching this feature's files).",
+        "NOT DONE, RECORDED NOT ASSUMED -- (1) acceptance criterion 'No endpoint returns more than max_points per series without downsampling' reads broader than V05/V06, which only name preview; /rows has no max_points and its 50,000-row ceiling remains the only bound on it. Deliberate, for the offset/totalRowCount reason above, but the acceptance criterion is not fully closed by this task. (2) extrema protection covers the two GLOBAL extrema only, not every local peak -- a real artifact with several comparably-sized spikes could still lose some of them to plain area selection. (3) dataset-version.authorized.service.ts still has no .spec.ts file in this codebase (the same pre-existing gap recorded at T04) -- previewService's maxPoints forwarding is verified by tsc/eslint/manual inspection and the mirrored draft-side test, not by a jest assertion on this exact file.",
+        "ADVISOR CATCH, FIXED BEFORE COMPLETION -- TWO of T06's own tests could not fail against the design they claimed to prove. test_v06_identity_recipe_downsamples_before_and_after_identically used operations=[], so before/after were data-identical (same length, same timestamps) -- textbook INDEX-count bucketing (the design V06 exists to reject) would have passed this test too; it proved apply_operations([]) is a no-op, not that edges are shared. test_row_removing_op_still_shares_bucket_edges_with_before ran drop_missing against a fixture with ZERO Bad cells -- removed nothing, asserted only 'bucket_edges is not None', true under any implementation. Same unfalsifiability class as T04's V03 catch, now landed on the verification item that is the actual reason time-domain buckets exist. FIXED: replaced the second test with test_row_removing_op_narrows_after_but_still_buckets_against_before_edges -- marks the trailing 30% of a 259,200-row fixture Bad, runs drop_missing (after becomes both shorter AND >20% narrower in span than before), then maps every after.series timestamp onto the before-derived bucket_edges via the same searchsorted logic lttb_indices uses internally, and asserts zero collisions. This is genuinely discriminating: under wrongly-per-side-derived edges the math predicts collisions (after's compressed span rebucketed at the same count produces closer-together picks that fold onto the same wider before-bucket); under the actual shared-edges design at most one point can land in each before-bucket by construction. The test was run and passed against the real implementation, not merely reasoned about. Kept the identity-recipe test as an additional cheap regression guard, not the sole proof.",
+        "ALSO FIXED -- test_valid_mask_stops_a_bad_cell_hole_from_being_protected_as_the_trough set the injected trough to -500.0, BELOW the 0.0 hole, so unmasked np.argmin already found the real trough correctly and the mask being present or absent made no difference -- the test could not fail. Fixed: trough moved to 8.0 (still the true minimum among Good cells, since the sine floor is 15.0) with the hole staying at 0.0 (now genuinely lower), plus an explicit sanity assertion that the UNMASKED call picks the hole first, so the masked assertion is proven to be exercising something real rather than trusted by construction.",
+        "HONESTLY DOWNGRADED, NOT LEFT OVERSTATED -- test_a_single_injected_spike_survives_the_reduction (500 vs a ~[15,25] sine floor) has by far the largest triangle area in its bucket regardless of global-extrema protection, so plain area-based LTTB would keep it too; this test does not independently prove the protection mechanism is load-bearing, only that it does not break the easy case. Documented that scope limit directly in the test's own docstring rather than letting 'the spike survives' read as proof the guard matters. A genuinely adversarial case (two comparably-extreme points sharing one bucket, or a globally-extreme point with small LOCAL deviation) was not constructed -- named as a real gap, not silently assumed closed.",
+        "SUITES (fix pass) -- python: 347 passed, 30 skipped (same count as before the fix pass -- one test replaced 1:1, three tests corrected in place, zero added, zero removed net). All four touched tests re-run individually and confirmed passing against the real implementation, not just the full-suite green: test_a_single_injected_spike_survives_the_reduction, test_valid_mask_stops_a_bad_cell_hole_from_being_protected_as_the_trough, test_rows_table_is_unaffected_by_max_points, test_row_removing_op_narrows_after_but_still_buckets_against_before_edges.",
+        "T05 DONE (rescoped per user decision, option b: 'Server-side Arrow IPC transport capability -- not client adoption yet') -- /rows only (see title's own note on why /preview Arrow was ruled out: nested before/after/columns/delta JSON envelope has no clean binary representation and zero consumers). PYTHON: RowsRequest gained format: Literal['json','arrow']='json'. artifact_service.rows() split into a shared _paginate() (projection/time-filter/pagination, unchanged logic) plus two leaf encoders: rows() (unchanged JSON) and NEW rows_arrow() -- takes the sliced DataFrame straight to pa.Table.from_pandas (the real 2N+1 physical columns), NOT the {timestamp,cells} object graph JSON builds, so the binary path is a genuine columnar win rather than JSON-in-a-wrapper. Envelope scalars (total_row_count/offset/filtered/start_time/end_time) travel as X-* response headers, not the Arrow payload -- tags and page length are already intrinsic to the stream (schema field names, num_rows), and NestJS passes the bytes through without decoding, so headers are the only place a caller (or NestJS itself) can see pagination state without a full decode. routers/preprocess.py: read_rows branches on body.format INSIDE _run for both paths -- critical, since _run's except-chain is what maps ArrowInvalid/ValueError to 422 instead of 502, and every /rows guarantee since T02 depends on that chain running.",
+        "ADVISOR-DRIVEN, NOT GUESSED -- before writing code, advisor caught that my first framing risked shipping the binary format as a second, less-safe replacement for the JSON contract. Five constraints came out of that pass and were followed exactly: (1) stay inside _run, not a bypass -- proven by test_rows_arrow_unknown_tag_is_422_not_502 (the same-shaped test as T04's preview sibling). (2) branch BEFORE row-shaping, not after -- rows_arrow never calls sample_rows()/builds PreviewRow. (3) envelope via headers, not Arrow schema metadata -- decided by asking who needs to read it: NestJS is a byte passthrough that cannot see inside the stream, so headers are the only place it can observe filtered/offset without decoding, which schema metadata would not give it. (4) postToPython could not carry this (hardcoded res.json()) -- added postBinaryToPython as a SEPARATE export in python-client.ts rather than widening postToPython<TRes> to a union, so no existing JSON caller's inferred type changed. (5) /preview scoped OUT, title corrected to say '/rows ONLY' rather than silently underdelivering against the broader title an earlier tool call had written.",
+        "NESTJS WIRING -- ListRowsSchema gained format: z.enum(['json','arrow']).default('json'). listRowsService (dataset-version) and listDraftRowsService (dataset-draft) both branch identically: format==='arrow' calls postBinaryToPython and returns {format:'arrow', buffer, contentType, headers} with NO Zod parse (there is nothing to validate an opaque byte buffer against -- PythonRowsSchema's parse-never-cast guarantee applies to the json branch only, stated as a deliberate, explicit gap in both the code comment and here); format==='json' is byte-for-byte the pre-T05 behaviour, now returning {format:'json', ...} as an added discriminant. Both controllers (dataset-version's TWO rows routes -- canonical + legacy compat shim -- and dataset-draft's one) switched to @Res({passthrough:false}) and manually reply.headers(...).type(...).status(200).send(buffer) for arrow, reply.status(...).send(result) for json.",
+        "ADVISOR CATCH, FIXED BEFORE COMPLETION -- TWO gaps caught on the completion-readiness pass, one type-safety, one test-coverage (this one blocked closing the task): (1) dataset-version's sendRowsResult had the json branch typed as {format:'json'; statusCode:number; [key:string]:unknown} -- the index signature swallowed the whole `data` payload from type-checking, so a future rename/drop of `data` would compile fine. Fixed: retyped to Awaited<ReturnType<DatasetVersionAuthorizedService['listRowsService']>>, the REAL return type, index signature deleted. (2) BLOCKER -- the controller's reply.headers/type/status/send call sequence, the literal new code this task exists to add, had ZERO test coverage anywhere: the Python side proved Arrow bytes+headers, the NestJS SERVICE side proved the branch and return shape, but nothing ever executed the Fastify reply calls that actually write the HTTP response -- and switching two existing rows routes to @Res({passthrough:false}) means their JSON path ALSO now depends on that manual send, not just the new arrow path. tsc cannot verify a reply call sequence serializes correctly. Fixed: new dataset-version.authorized.controller.spec.ts (first controller spec for this file -- no prior precedent), controller instantiated directly (new DatasetVersionAuthorizedController(mockService), no Nest TestingModule needed since @Res/@Query decorators require no runtime resolution outside an actual HTTP server), hand-rolled reply double asserting the exact call sequence for both branches AND both rows routes (canonical + legacy). 3/3 passing.",
+        "OUT OF SCOPE, RECORDED NOT SILENT -- /preview Arrow (V04's original benchmark target) -- ruled out during implementation for the nested-envelope reason above, not merely deferred by the T05 title's own initial overreach. Client-side decode/adoption -- explicitly the user's option (b), unchanged from the blocked-decision record. The Zod validation gap on the binary /rows path -- stated in code comments on both postBinaryToPython and both NestJS services, restated here: PythonRowsSchema's guarantee (every other connector response in this codebase is parsed, never cast) does NOT apply to format=arrow; there is nothing to validate an opaque buffer against, and this is accepted because nothing in apps/client consumes this format yet.",
+        "RECURRING SHAPE, WORTH NAMING -- ListRowsSchema.format: z.enum([...]).default('json') makes THREE existing dataset-draft.authorized.service.spec.ts call sites fail tsc ('format is missing... required in type ListRowsDto') exactly the same way T02's ListRowsSchema.tags .optional().transform() ordering did: a zod .default() makes a field OPTIONAL on the schema's INPUT type but NON-OPTIONAL on its OUTPUT type, and createZodDto types the DTO class off the output. Every DTO field with a default (offset, limit, format, sampleRows, etc.) has this shape and any test literal omitting it will fail tsc, not silently pass with a wrong value -- which is the safe failure mode, but worth remembering as a recurring zod-inference trap rather than re-discovering it each task.",
+        "SUITES -- python: 354 passed, 30 skipped (was 347/30 before T05; +7 new tests: 4 service-level in test_artifact_service.py proving rows_arrow matches rows_json byte-for-byte via a real pyarrow decode round-trip, plus a header/filter test, plus an unknown-tag ValueError test, plus a format-defaults-to-json pin; 3 HTTP-level via TestClient proving the 422-not-502 guarantee and the documented content-type/headers). backend: dataset-draft.authorized.service.spec.ts 25/25 (+1, forwards format=arrow to postBinaryToPython not postToPython); NEW dataset-version.authorized.controller.spec.ts 3/3 (the controller-level gap advisor blocked on); full pnpm --filter backend test 109/117 vs 106/114 before T05 (+3 passing, 0 new failing), same 8 pre-existing DI-error suites unrelated to this feature. tsc clean beyond the same 4 pre-existing auth-spec errors carried since DS-LAKE-005. eslint clean on every touched file including the new controller spec.",
+        "T07 DONE -- column_stats.json sidecar, written beside the artifact at every write site that produces one. DRIFT METRIC WAS A USER DECISION, not invented silently: AskUserQuestion presented three readings (vs parent artifact / vs within-window baseline / skip drift entirely for this task) because the repo had zero precedent for the term, grepped first to confirm. User chose 'Vs parent artifact' -- signed mean delta (this artifact's Good-cell mean minus the immediate parent's, via parentArtifactId), None (not 0) when there is no parent or either side has no Good cells, since 'no comparison possible' and 'no drift occurred' are different facts and collapsing them to 0 would misrepresent a lineage root as unchanged. No drift threshold or boolean flag was invented -- the sidecar carries the signed delta only, leaving any 'is this drift significant' judgment to a future consumer.",
+        "PYTHON -- new services/column_stats_service.py: build_column_stats(frame, operations, parent_frame=None) -> dict[tag, stats], written and unit-tested (16 tests) BEFORE wiring into artifact_service, per this session's established discipline. Per tag: coverage/null_pct (Good-cell percentage and complement), outlier_count (1.5x IQR fence over positional quartiles -- matches _op_outlier_median's own convention -- over Good cells only, READ-ONLY, never mutates), min/max/mean (Good cells only, since Bad cells hold the frame_service.MISSING_VALUE 0.0 hole), drift (see above), cleaned (bool -- did any operation in the request that PRODUCED this artifact name this tag; CleaningOperation.tags omitted or containing '*' means every tag, checked via _operation_applies_to_tag against every operation in the request, not just the first).",
+        "SIDECAR IS A POINTER, NOT A PAYLOAD -- packages/prisma/prisma/schema.prisma: DatasetArtifact.columnStats Json? became columnStatsKey String? (migration 20260810004836_ds_lake_005b_a_t07_column_stats_key, applied). Postgres holds a MinIO pointer, not up to 8,000 tags of JSONB. artifact_service._commit() now writes the sidecar (sidecar_key(stats.object_key, COLUMN_STATS_FILENAME)) alongside the existing manifest whenever column_stats is passed, and echoes the key on the commit response so NestJS can persist it in the SAME write that creates the DatasetArtifact row -- no second round trip.",
+        "GREPPED, NOT ASSUMED -- confirmed _commit() has exactly two production callers, materialize() and clean(), and both pass column_stats on every call; the only caller that omits it (producing columnStatsKey: null) is test code exercising _commit() directly. The null branch therefore exists for a direct-unit-test shape, not because some real artifact type is allowed to skip a sidecar -- every artifact this codebase writes in production gets one.",
+        "POSTGRES-FIRST 404 SHORT-CIRCUIT, matching T01/T03's zero-I/O pattern -- getArtifactColumnStatsService/getDraftArtifactColumnStatsService check artifact.columnStatsKey for null BEFORE calling Python, returning a 404 from data already in hand for a pre-T07 artifact rather than round-tripping to get Python's own 422 for a missing sidecar. Wrong-dataset/wrong-draft artifact ids also 404 via the existing findFirst(where: {id, datasetId}) pattern, tested on the draft side.",
+        "READ PATH COSTS ONE DOWNLOAD REGARDLESS OF TAG COUNT -- artifact_service.column_stats() reads ONLY the sidecar (store.get_json(sidecar_key(...))), never opens data.parquet. New GET /:id/artifacts/:artifactId/column-stats on both authorized/dataset and authorized/dataset-drafts, mirroring T01/T03's shape exactly (canonical-artifact-id only, no legacy DatasetVersion shim).",
+        "TEST COVERAGE IS ASYMMETRIC BY DESIGN, NAMED NOT HIDDEN -- dataset-draft.authorized.service.spec.ts gained 3 new tests (forwards source_key, returns stats; 404s without calling Python when columnStatsKey is null; 404s for a wrong-draft artifact id), suite 28/28. dataset-version.authorized.service.ts::getArtifactColumnStatsService has NO spec file -- same pre-existing gap recorded at T04 and T05 (this file has never had unit coverage in this codebase) -- verified by tsc/eslint/manual inspection only. Neither new column-stats controller route (draft or dataset-version) is executed by any test; both are plain `return this.service...` delegation with no @Res() plumbing, smaller-risk than T05's reply-sequence gap but still unexercised, stated rather than let 375/28/112 imply full coverage.",
+        "SUITES -- python: 375 passed, 30 skipped (was 354/30 before T07; +21 new tests: 16 in test_column_stats_service.py proving the pure function standalone, 5 in test_artifact_service.py proving the sidecar write-on-commit, the drift-vs-parent computation, the None-not-zero lineage-root case, the zero-I/O read including the 8,000-tag instrumented case, and the missing-sidecar 404). backend: dataset-draft.authorized.service.spec.ts 28/28 (was 25/25, +3). tsc clean beyond the same 4 pre-existing auth-spec errors carried since DS-LAKE-005 -- required rebuilding packages/prisma (pnpm build, not just db:generate/migrate:dev) since @softsensor/prisma's published types come from a compiled dist/ that migration/generation alone does not refresh; caught by check-types still reporting the OLD field name after the schema edit, confirmed fixed by grepping columnStatsKey into dist/src/generated/client/models/DatasetArtifact.d.ts before re-running. eslint clean on every touched file. full pnpm --filter backend test 112/120 vs 109/117 before T07 (+3 passing, 0 new failing), same 8 pre-existing DI-error suites unrelated to this feature.",
+        "FEATURE PROGRESS -- 7/7 tasks complete (T01-T07 all done) = 100% on TASKS. Feature status stays in_progress rather than flipping to completed, because task completion and verification completion track separately (the same precedent T02 set, where V01 stayed pending after its owning task closed): V01/V02 are still pending (never re-tested end-to-end as live API calls across this feature's seven tasks), V04 is deferred (needs a client Arrow decoder that does not exist), and V05's 'local extrema survive' clause is still open (the adversarial two-comparable-spikes-one-bucket case was never constructed). V03/V06/V07 are completed. Closing those four remaining verification items -- or explicitly re-scoping/deferring them the way V04 was -- is what would earn 'completed' on the feature itself. DS-LAKE-006 (Gold layer / feature engineering) depends on DS-LAKE-005 and DS-LAKE-005B-A per its own declared dependencies -- both are now task-complete, so DS-LAKE-006 is unblocked to start regardless of this feature's open verification items."
+      ]
+    },
+    {
+      "id": "DS-LAKE-005B-B",
+      "title": "Frontend viewport migration and virtualization",
+      "priority": 5.6,
+      "status": "in_progress",
+      "progress": 0,
+      "dependencies": [
+        "DS-LAKE-005B-A"
+      ],
+      "description": "Move the browser from owner to viewport consumer, and close the contradiction v3.0.0 left open between keeping the client transform libraries as a fast local preview and forbidding client-side full-dataset work. Does not block DS-LAKE-006.",
+      "dependency_correction": "DISCOVERED DURING T01, NOT ASSUMED AT PLANNING TIME -- the description's own 'Does not block DS-LAKE-006' claim has the edge backwards. Reading Step 3.1's DataAnalysisCard and Step 5's save pipeline directly (not inferring from titles) shows T01's Step 4/5 legs, T03's Step 4 half, and T05 all require a server-side feature-engineering path that only DS-LAKE-006 (feature_service.py) will ship, and DS-LAKE-006 is itself unstarted (all tasks pending). So the real edge is DS-LAKE-006 BLOCKS finishing three of this feature's five tasks, not the reverse. This does not stop DS-LAKE-006 from starting -- its own declared dependency is DS-LAKE-005 + DS-LAKE-005B-A, both task-complete -- but it means this feature cannot reach 'completed' without DS-LAKE-006 landing first, which is worth knowing before picking the next task here.",
+      "tasks": [
+        {
+          "id": "DS-LAKE-005B-B-T01",
+          "title": "Replace full-dataset frontend materialisation and cloning with metadata + viewport state; remove structuredClone/deep-clone/full-row state paths on every dataset path, not only the large ones",
+          "status": "blocked",
+          "progress": 0,
+          "userDecisions": [
+            "Q1 (scope): 'Full scope now' chosen over 'narrow to one step first' -- T01 covers the whole wizard, not just Step 3's tag table. OVERTAKEN BY INSPECTION (same session, after the answer): checking Step 3.1's DataAnalysisCard and Step 5's save pipeline directly showed 3 of T01's 5 nominal consumer legs (Step 3.1, Step 4, Step 5) cannot migrate today regardless of scope choice -- they are missing SERVER CAPABILITY, not blocked by a client-wiring decision 'full scope' could have unblocked. A reader who treats Q1 as a still-live directive to 'migrate the whole wizard now' will hit the exact same wall this entry already hit. Only 2 of 5 legs (Step 3.2, the tag sidebar) are even theoretically in reach, and neither was migrated this pass either -- see blockedReason.",
+            "Q2 (Bronze ordering): 'Background-create, migrate reads only' chosen over 'make Bronze an async job too' -- Step 2's client fetch and the CSV upload path stay exactly as they are (named gaps, not silently dropped); materialize() fires in the background once Step 2's fetch completes, and only read-consumers were in scope to migrate onto viewport hooks. FOLLOW-UP FIX SHIPPED (same session): the background fire-and-forget had a real duplicate-artifact-creation risk if it raced with Step 3.2's lazy ensureBronze -- closed by an in-flight promise dedup in dataset-draft-bronze.ts, not by adding a user-facing failure surface (a background pre-warm failing is still invisible to the user by design; see verificationResults for the exact mechanism and why)."
+          ],
+          "correction": "Finding 2 below (recorded before any code was touched) was WRONG in one clause and is corrected here rather than left standing: the grep that produced it excluded apps/client/services/, so it missed that `datasetVersionService.rows()` DOES have exactly one caller -- `fetchVersionDataset` (services/dataset-version.ts:223), which pages the bounded /rows endpoint at 5,000/page but then ACCUMULATES every page into one full in-memory `Dataset` before returning. That is a bounded endpoint used in unbounded mode, a sharper and more specific finding than 'zero callers'. `datasetDraftService.rows()` genuinely does still have zero callers -- that half of Finding 2 stands.",
+          "blockedReason": "RE-BLOCKED WITH A SHARPER REASON after further inspection (both AskUserQuestion decisions above already resolved, so this is not a third scoping question). Two of T01's five nominal consumers were checked file-by-file before touching anything else, and both turn out to have no safe read-migration target today -- not a client-wiring gap this time, a MISSING SERVER CAPABILITY gap: (1) Step 3.1's `DataAnalysisCard` (data-analysis-card.tsx) renders a histogram, a boxplot, a scatter/regression chart and a correlation heatmap, none of which any DS-LAKE-005B-A endpoint can supply -- column_stats.json (T07) carries coverage/outlier_count/min/max/mean, not a distribution, quartiles, raw (x,y) pairs or a correlation matrix, and it is also a SNAPSHOT of the committed artifact, not reactive to the crop/conditional/statistical rules Step 3.1 lets the user edit live via `precleanse(raw, {crop, conditional, statistical})` -- so even the fields it does carry can't reflect an in-progress edit. THIS IS NOT ONLY A CHARTING SHORTFALL: `applyValueClip` (lib/precleanse.ts:120) is fed a value-clip bound computed by `percentileBounds` (:149) OVER WHATEVER FRAME IT IS HANDED. Under viewport state that frame is a window, not the artifact -- a percentile bound moves with scroll/page position, so the threshold the engineer SEES when setting a clip is not the one the pipeline would actually apply once the full artifact is considered. This is now fixed at the server layer (see verificationResults, edit 3/#7) with `percentiles` fields on BOTH column_stats.json (the committed-artifact snapshot) and preview's per-side column stats (a RECOMPUTE-UNDER-CURRENT-RULES mode -- reflects whatever crop/conditional/statistical operations are live, not a stale snapshot) -- the client-side switch from `percentileBounds`-on-a-window to reading one of these two is NOT done yet, since Step 3.1 has no consumer to switch in the first place (see finding above). (2) Step 5 (`step-5-review-save.tsx:86-100`) runs `applyFeatures -> precleanse -> preprocessPipelines -> selectColumns -> toModelReady` entirely client-side over the FULL raw dataset to compute what gets saved -- this is the single most load-bearing full-Dataset consumer in the wizard, it is gated on DS-LAKE-006 (feature_service.py, unstarted) exactly like Step 4, and it is a genuinely NEW finding beyond the unbounded-payload concern: it recomputes the entire cleaning pipeline a second time, independently of and possibly diverging from whatever SILVER artifact Step 3.2's server clean job already produced for the same tags -- see the feature-level #6 finding below, which traces what ACTUALLY gets persisted (neither of the two candidates named here) and why nothing was deleted. Given all this, shipping speculative client read methods (metadata/tagCatalog/columnStats) with zero real callers would reproduce the exact 'built and completely dead' pattern this feature exists to fix -- so those were NOT added this pass. What WAS built this pass (background-warm dedup, a windowed reader + BoundedSample brand, server-side percentile fields) is groundwork, not progress against THIS task's own title -- recorded in verificationResults, task progress stays 0. Remaining open question for whoever picks this back up: T01's Step 4/5 legs, T03's Step 4 half, and T05 cannot close until DS-LAKE-006 ships a server-side feature-engineering path -- see the feature-level dependency_correction below."
+        },
+        {
+          "id": "DS-LAKE-005B-B-T02",
+          "title": "Virtualize large frontend tables using the existing table abstraction or TanStack Table + TanStack Virtual; render only the visible window on BOTH axes -- with 8,000 tags the horizontal axis is as unbounded as the vertical one and column virtualization is not optional",
+          "status": "completed",
+          "progress": 100,
+          "verificationResults": "SHIPPED: `raw-readings-table.tsx` (Step 3's pivoted readings table — one row per timestamp, one column per tag) rewritten from shadcn `<Table>` to a div-based ARIA-role grid (`role=\"table\"/\"row\"/\"columnheader\"/\"cell\"`) windowed on BOTH axes with `@tanstack/react-virtual` (`useVirtualizer` twice — row axis and, separately, `horizontal: true` column axis). This is the table the task's own rationale names directly ('with 8,000 tags the horizontal axis is as unbounded as the vertical one') — every tag becomes a COLUMN here, which is what made both axes genuinely O(tags x rows) before this change; native `<table>` was dropped on purpose because virtualizing individual `<tr>`/`<td>` inside a real table breaks column-sizing layout (the browser needs every row present to size columns) — `components/ui/table.tsx` itself is untouched, this is a local escape hatch not a change to the shared primitive. Sticky header row and sticky timestamp column are preserved via `position: sticky` on the outer wrapper divs; only the CELLS inside them are windowed. Confirmed callers unchanged: `step-2-raw-data.tsx` and `data-analysis-card.tsx` both still call `<RawReadingsTable dataset={...} scalers={...} />` with the same prop signature, zero call-site changes needed.\n\nDEPENDENCY ADDED: `@tanstack/react-virtual` (`pnpm --filter client add @tanstack/react-virtual`) — the first new frontend runtime dependency this slice has added (CLAUDE.md SS3 wants that visible, not buried in a diff). The task title itself pre-approved 'TanStack Table + TanStack Virtual' as an option; only `react-virtual` was taken, not `react-table` — no table-abstraction layer was introduced, the existing hand-rolled pivot/render logic was kept and only the mount strategy changed.\n\nREAL BUG CAUGHT AND FIXED BEFORE SHIPPING (self-review via advisor, not asked for by the user but part of this session's 'verify before declaring done' pattern): the first draft's code comment claimed `estimateSize: () => ROW_HEIGHT` was 'exact, not a guess' — untrue, the old rows were shadcn `<TableCell>` with unmeasured padding, replaced here with plain `flex items-center px-2` divs. Fixed two ways: (1) wired `ref={rowVirtualizer.measureElement}` + `data-index={vr.index}` onto each row div so the virtualizer self-corrects against the real rendered height instead of trusting the constant forever (cheap, removes the risk entirely rather than just documenting it); (2) reworded the comment to say ROW_HEIGHT is a starting estimate, not an exact value. Net effect is low-risk in practice too: each row div also carries an explicit inline `height: vr.size` style, which already pins its rendered height regardless of content — `measureElement` is insurance against a future edit that changes that, not a fix for an active bug today.\n\nVERIFIED, NOT JUST ASSUMED: `group-hover:bg-muted` on the absolutely-positioned cells still fires correctly even though the cells left the normal-flow box of their `.group` row ancestor. Reasoned from the CSS spec rather than empirically (jsdom does not compute layout or hover state, so this cannot be unit-tested): `:hover` propagates to ancestors by DOM parentage, not visual/geometric containment — any cell painted under the cursor still flags its `.group` row ancestor as hovered regardless of `position: absolute`. Documented inline in the component so a future reader doesn't re-flag it as suspicious.\n\nTEST-INFRA FIX, REPO-WIDE IMPACT: jsdom ships no `ResizeObserver` global at all. `@tanstack/react-virtual` constructs one unconditionally, so ANY test rendering a virtualized component throws `ReferenceError: ResizeObserver is not defined` — not scoped to this component's own test file. Fixed with a guarded stub in `vitest.setup.ts` (`typeof globalThis.ResizeObserver === 'undefined'`).\n\nDEBUGGING FINDING WORTH PRESERVING: the first test draft mocked `HTMLElement.prototype.getBoundingClientRect`, assuming that's what TanStack Virtual reads for its initial size measurement — wrong assumption, 3 of 5 tests failed with only the sticky Timestamp header ever mounting (a 0-size computed visible range). Root-caused by reading `@tanstack/virtual-core`'s own source directly rather than guessing a second mock configuration: its `getRect(element)` reads `element.offsetWidth`/`offsetHeight` SYNCHRONOUSLY on the very first call, before any ResizeObserver entry exists — and jsdom hardcodes both properties to 0 regardless of CSS. Fixed by spying on the `offsetWidth`/`offsetHeight` GETTERS instead (`vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(800)`, same for height). All 5 tests then passed; a 6th test (below) was added afterward.\n\n`raw-readings-table.test.tsx` — 6 tests, all passing: bounded column-header mounts for an 8,000-tag dataset; bounded row mounts for a 50-row dataset; total mounted cell count far below the O(tags x rows) theoretical ceiling (asserted <2,000 vs a 1.6M theoretical ceiling for the fixture used); correct content for a small dataset where every column mounts; empty state for zero tags/zero rows; and — added after an advisor pass flagged that a count-only assertion at scroll position zero cannot distinguish real windowing from a broken windower that always renders the same first N columns — a scrolled-state test that sets `scrollLeft` on the scroll container, dispatches a `scroll` event, and asserts the mounted tag IDENTITIES changed (TI-0 unmounts, a tag ~31 columns in mounts), not just that the count stayed bounded.\n\nSCOPE DECISION ON `unified-tag-table.tsx` (Step 1's 8,000-tag catalog table) — INSPECTED, FOUND ALREADY BOUNDED, NOT IN SCOPE: the task title says 'large frontend tables' (plural) and this file is the other obvious 8,000-tag table in the wizard, so it was checked file-by-file before being excluded, not skipped on assumption. Evidence: `rows` is sourced from `useDatasetTagSearch` (hooks/dataset/use-dataset-tag-search.ts), which is genuinely paginated, not client-accumulated — wildcard/browse mode fetches `PAGE_SIZE=100` rows per page via `useDatasetTagMetadata`'s `goto(id, page)` (a page SWITCH, confirmed no `[...prev, ...next]` accumulation pattern anywhere in that hook), and names mode resolves in one shot but is hard-capped at `MAX_NAMES=500` client-side before rendering. So `filteredRows` (unified-tag-table.tsx:423, the actual render loop's input) never exceeds 100 (browse) or 500 (names) mounted `<TableRow>`s regardless of how many tags exist in the source catalog — structurally different from `raw-readings-table.tsx`'s bug, where EVERY tag becomes a column with no pagination at all. Both are well within native `<table>` rendering tolerance; virtualizing an already-100-row-capped table would add `@tanstack/react-virtual` overhead and an ARIA-grid rewrite for a problem that does not exist here. No code changed in this file this pass.\n\nRegression check: `pnpm --filter client check-types` — zero new errors (pre-existing `feature-preset.test.ts` errors, already named in T01's ledger note, are unaffected and unrelated to this file). Full `pnpm --filter client exec vitest run` before vs after: same pre-existing baseline of 9 failing files / 41 failing tests (isometric-map, machine-node, use-dashboard-data, plans, canvas-page, use-plants-data, useAtom, feature-preset.test.ts, preset-apply-modal.test.tsx) — unchanged by this diff; passing tests went 300->301 (the new scroll test), files unchanged at 30 (all 6 tests live in the one raw-readings-table.test.tsx file already counted). Zero regressions, zero new failures.\n\nNOT DONE / OUT OF SCOPE FOR THIS TASK: V03 (BoundedSample type-gate test), V04 (server-path cleaning test) and V05 (memory benchmark) belong to T04/T03/T05 respectively, not T02 — V03 was already partially advanced by T01's #7 work (brandBoundedSample shipped with one real call site) but full closure is still gated on DS-LAKE-006 per the feature-level dependency_correction."
+        },
+        {
+          "id": "DS-LAKE-005B-B-T03",
+          "title": "Step 3 and Step 4 previews consume only bounded server results",
+          "status": "blocked",
+          "progress": 0,
+          "blockedReason": "All 3 legs checked file-by-file before touching anything (wizard-shell.tsx -> step-3-eda.tsx -> Step31EDA + Step32Imputation; wizard-shell.tsx -> Step4FeatureEngineering). None is startable today, for two different reasons.\n\nCAPABILITY GAP (2 legs, already recorded, not restated here -- see DS-LAKE-005B-B-T01's blockedReason for the full evidence trail): Step 3.1 (`Step31EDA`/`DataAnalysisCard`) has no server endpoint for histogram/boxplot/scatter/correlation; Step 4 (`Step4FeatureEngineering`) needs DS-LAKE-006's server-side feature path, itself unstarted. Both are the same finding T01 already made, just hit again from T03's different task title.\n\nARCHITECTURE-DECISION GAP, NOT A CAPABILITY GAP (1 leg, new this task): Step 3.2 (`Step32Imputation`, processing/step-3-2-imputation.tsx:41) reads `dwRawDatasetAtom` and runs `preprocessPipelines` CLIENT-SIDE for every scrubber position except the last. This is not an oversight -- `useDatasetDraftPipeline`'s own doc comment (hooks/dataset/use-dataset-draft-pipeline.ts:65) states the pattern is 'Local preview, server on Apply (USER-CONFIRMED UX)', shipped under DS-LAKE-005 T02/T04. `requestFinalPreview` already calls a genuinely bounded server preview (`datasetDraftService.preview(id, source, {operations})`, draft + Bronze source, not the raw client dataset) -- but it is deliberately gated to fire ONLY at `previewIndex === draft.length`, the final scrubber position, precisely so every earlier scrub position stays instant and local. Making T03's own acceptance criterion true for this leg -- 'consume only bounded server results' -- means firing that same bounded call at EVERY scrubber position instead of only the last, which is not a bug fix, it is REVERSING a previously confirmed user decision about how the scrubber should feel. CLAUDE.md SS3 ('preserve existing behavior unless the user explicitly requests a behavior change') and the conflict-handling rule both say surface this rather than rewrite it unilaterally -- so it was not touched.\n\nOPEN QUESTION for whoever picks this back up (same shape as the feature-level #6 fork already on record -- naming it, not resolving it): should the scrubber's intermediate positions become server round-trips (closing T03 for this leg, at the cost of the instant-local feel DS-LAKE-005 shipped on purpose), or does the local-preview hybrid stand as an accepted, permanent exception to this feature's 'bounded server results only' acceptance criterion? Nothing in this task's own wording answers that, and no DS-LAKE-006 dependency blocks getting an answer today -- this is a real, answerable-now fork, not a capability wait."
+        },
+        {
+          "id": "DS-LAKE-005B-B-T04",
+          "title": "Type-enforce the local preview boundary: the retained client transform libraries accept a distinct bounded-sample type (a branded BoundedSample, not a bare frame) so a full frame cannot be handed to them by mistake. This is what reconciles DS-LAKE-005-T05 and DS-LAKE-005-T01 with frontend_data_contract.forbidden -- convention alone already failed once",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-005B-B-T05",
+          "title": "A cleaning or feature-engineering operation on 2-3 tags, 10+ tags or all tags executes server-side without sending the complete dataset to the browser",
+          "status": "pending",
+          "progress": 0
+        }
+      ],
+      "acceptance_criteria": [
+        "The frontend never downloads the complete time-series artifact merely to display a table.",
+        "The table DOM remains bounded while browsing 8,000+ tags through virtualization, on both axes.",
+        "Cleaning 2-3 tags, 10+ tags and all tags does not require a full Dataset payload in the browser.",
+        "A full frame cannot be passed to a client transform library without a compile error.",
+        "Browser memory does not grow proportionally with total dataset size while the viewport is held constant."
+      ],
+      "verification": [
+        {
+          "id": "DS-LAKE-005B-B-V01",
+          "description": "Static scan confirms no path -- large or small -- stores the complete artifact in React state or calls structuredClone/deep-clone on the full dataset.",
+          "status": "pending",
+          "note": "PARTIALLY CLOSED BY EVIDENCE ALREADY GATHERED, not yet flipped. The clone-call clause IS closed: `grep -rn \"structuredClone|deepClone|deep-clone|_.cloneDeep|JSON.parse(JSON.stringify\" apps/client` returns zero hits repo-wide (checked at T01's inspection, before any code changed). The live violation is the OTHER clause -- 'stores the complete artifact in React state' -- which is true and unclosed: `dwRawDatasetAtom`/`dwFeaturedDatasetAtom` (store/dataset-studio.ts:86,140) hold and derive over the full `Dataset` object, not a clone of it. Recorded so a future pass does not go hunting for clone calls that were never the problem."
+        },
+        {
+          "id": "DS-LAKE-005B-B-V02",
+          "description": "UI test renders a synthetic 8,000-tag catalog and confirms mounted DOM row AND column counts stay within the virtualization window rather than 8,000 mounted rows.",
+          "status": "completed",
+          "note": "Satisfied by `raw-readings-table.test.tsx` (6/6 passing) — a synthetic 8,000-tag x 50/200-row dataset renders far fewer than 8,000 mounted column headers and far fewer than the full row count, on both axes, with a dedicated cell-count assertion (<2,000 mounted vs a 1.6M theoretical O(tags x rows) ceiling) and a scrolled-state test proving the mounted set changes identity on scroll, not just stays count-bounded. See DS-LAKE-005B-B-T02's verificationResults for the full technical account, including the `unified-tag-table.tsx` scope decision (inspected, found already bounded via pre-existing pagination/500-name cap, not touched this pass)."
+        },
+        {
+          "id": "DS-LAKE-005B-B-V03",
+          "description": "PROVE THE TYPE GATE BITES: a fixture that passes an unbounded frame into a client transform library must fail type-checking, asserted with @ts-expect-error so that removing the brand breaks the build. A boundary that only holds while everyone remembers it is not a boundary.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-005B-B-V04",
+          "description": "Cleaning test proves 2-3 tags, 10+ tags and all-tag operations use the server job/artifact path without transferring the full dataset to the browser.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-005B-B-V05",
+          "description": "Browser memory and interaction benchmark demonstrates that increasing total dataset size while keeping the viewport constant does not cause proportional browser memory growth.",
+          "status": "pending"
+        }
+      ],
+      "verificationResults": [
+        "T01 INSPECTION ONLY, NO CODE TOUCHED, per CLAUDE.md Section 17 -- full grep receipts are on the T01 task's blockedReason field, summarised here. Set T01 to blocked rather than guessing a scope, matching the DS-LAKE-005B-A-T05 precedent this session already established.",
+        "FINDING 1 -- `Dataset` (lib/preprocessing.ts:29) is `{tags: string[], rows: DataRow[]}`, fully row-shaped and fully materialised. `dwRawDatasetAtom`/`dwFeaturedDatasetAtom` (store/dataset-studio.ts:86,140) hold it and derive `applyFeatures` over the WHOLE frame on every render. 9 files read or write these atoms directly: step-2/3.1/3.2/4/5-review-save, dataset-tag-sidebar, use-dataset-edit-hydration, use-dataset-studio-fetch, use-dataset-pipeline-nav, use-csv-materialize. Migrating to viewport state changes the TYPE these consume, not a data source behind a stable atom -- the real reason T01 as titled is feature-sized, not task-sized.",
+        "FINDING 2 -- CORRECTED, see the task's own `correction` field for the full story. `datasetDraftService.rows()` has ZERO callers in apps/client (grepped hooks/ and app/, confirmed again including services/). `datasetVersionService.rows()` has exactly ONE -- `fetchVersionDataset` (services/dataset-version.ts:223) -- and it pages the bounded endpoint at 5,000/page but ACCUMULATES every page into one full `Dataset` before returning, so the endpoint is used in unbounded mode rather than genuinely unused. No client method exists yet for /metadata, /tags catalog or /column-stats -- three of DS-LAKE-005B-A's four read endpoints have no client wrapper at all; that part of the original finding stands. The original grep excluded apps/client/services/, which is why it missed fetchVersionDataset's call -- recorded so the same mistake is not repeated.",
+        "FINDING 3 -- use-dataset-studio-fetch.ts:99 is where the full-dataset state is CREATED: sequential PI batch fetches merged into `dwRawDatasetAtom` live as they land, for real streaming-progress UX (%, ETA, cancel, retry-failed-only). A SEPARATE, PARALLEL path (use-dataset-draft-pipeline.ts) re-fetches the same PI data server-side into a real BRONZE artifact, but only for the clean-job/preview path -- its rows never flow back to `dwRawDatasetAtom`. Today's Step 2 pays for the fetch twice; only the browser copy drives any UI. A viewport-state migration has no 'partial batch landed' analogue, so this file's design and 'viewport state' are in tension, not just its type.",
+        "FINDING 4 -- precleanse.ts:476 (`precleanse(raw: Dataset, cfg): Dataset`) and :120 (`applyValueClip`) are pure full-Dataset-in/full-Dataset-out functions run synchronously in-browser on every scrubber edit. T04's branded BoundedSample is what makes this safe to keep doing locally -- T01 and T04 are coupled by construction (doing T01 first leaves these libs ungated; doing T04 first has nothing real to brand yet).",
+        "V01 PARTIALLY CLOSED BY THIS INSPECTION -- see the note on V01 itself: the clone-call clause is already satisfied (zero structuredClone/deepClone hits repo-wide); the full-artifact-in-React-state clause is the real, still-open violation.",
+        "TWO OPTIONS PRESENTED TO USER, NOT DEFAULTED -- (a) T01 becomes 'build the client artifact-read layer (metadata/tags/rows/column-stats hooks) and rewire Step 2 onward onto it, in the same pass as T04's brand' -- full-scope reading, an estimated 15-20 files across store/hooks/components/lib; (b) narrow T01 to ONE wizard step (Step 3's tag table, which T02's virtualization work also needs) as a proof-of-shape migration, leaving Steps 2/4/5 and the fetch-time dual-path question for a follow-up task.",
+        "USER CHOSE (a) FULL SCOPE, THEN A SECOND FORK SURFACED BEFORE ANY CONSUMER COULD MIGRATE -- no Bronze artifact exists until Step 3.2's first Apply (`ensureBronze` inside use-dataset-draft-pipeline.ts), and `materialize` is a blocking inline call ('can take minutes'), unlike `clean`'s 202+jobId+poll shape. Making Step 2 create it synchronously would have regressed the streaming-batch UX (%, ETA, cancel, retry-failed-only) `use-dataset-studio-fetch.ts` exists for -- a real conflict with `decisions.ui` ('only the compute moves from the browser to the server') and CLAUDE.md Section 3's preserve-behaviour rule. Also surfaced: CSV upload (`dwCsvDatasetAtom`, use-csv-materialize.ts) writes the raw Dataset directly with NO server artifact behind it at all -- no viewport story either way. Presented as a second, narrower question rather than guessed: (a) background-create + migrate reads only, leaving Step 2/CSV as named gaps; (b) make Bronze an async job too, extending into backend scope inside a frontend-titled task. User chose (a).",
+        "THIRD DISCOVERY, RESOLVED WITHOUT A THIRD QUESTION -- checking DataAnalysisCard (Step 3.1's actual render target, before committing it as the first consumer per advisor's own caveat) found it renders a histogram, boxplot, scatter/regression chart and correlation heatmap, none of which column_stats.json (T07) or any other DS-LAKE-005B-A endpoint can supply, and it is reactive to LIVE crop/conditional/statistical edits, which a static sidecar snapshot cannot reflect either way. Checking Step 5 (the advisor-suggested fallback) found it runs the ENTIRE `applyFeatures -> precleanse -> preprocessPipelines -> selectColumns -> toModelReady` chain client-side to compute what gets saved -- gated on unstarted DS-LAKE-006, and a genuinely new finding: it recomputes cleaning independently of whatever SILVER artifact Step 3.2's own server job already produced for the same tags, a duplicate-computation/divergence risk beyond the unbounded-payload one. Neither is a safe migration target today. This is an engineering fact (what data a component needs vs. what the server can supply), not a user-judgment fork, so it was resolved directly rather than asked.",
+        "WHAT T01 ACTUALLY SHIPPED, given the above -- exactly the one piece that is real, has an existing consumer, and matches the user's Q2 decision: background-fire `materialize` when Step 2's fetch completes. `ensureDraft`/`ensureBronze` (previously private closures inside use-dataset-draft-pipeline.ts) were extracted into pure, atom-free functions `ensureDraftId`/`ensureBronzeArtifactId` (new file hooks/dataset/dataset-draft-bronze.ts) so the logic has exactly one implementation. `useDatasetDraftPipeline` (Step 3.2) now calls the shared functions and still owns the user-visible `dwDraftSyncStateAtom` banner on failure -- unchanged behaviour, its own 5/5 test suite reruns green with zero test edits. New `useDatasetBronzeWarm` (hooks/dataset/use-dataset-bronze-warm.ts) calls the SAME shared functions from Step 2's fetch-success branch (use-dataset-studio-fetch.ts, after `setFetchState({status:'done'})`, using the fetch's own full requested tag list) but deliberately does NOT touch `dwDraftSyncStateAtom` -- a background pre-warm succeeding or failing must be invisible, since `ensureBronze` still resolves the artifact lazily on the user's real first Apply if the warm never landed. Pinned by 3 new tests (success sets the shared draft/artifact atoms without touching syncState; a rejected materialize is swallowed silently with syncState still idle; a second warm call reuses the existing artifact instead of re-materializing).",
+        "DELIBERATELY NOT SHIPPED THIS PASS, NAMED NOT SILENT -- the client metadata()/tagCatalog()/columnStats() service methods were not added: with Step 3.1/4/5 all blocked on missing server capability, they would land with zero real callers, the exact 'built and completely dead' pattern Finding 2 already flagged once this task. (The T04 BoundedSample brand WAS added in the follow-up pass below, once a real call site existed -- corrected here, an earlier draft of this entry said otherwise.) metadata()/tagCatalog() are the correct next step for whichever task gets a real consumer (T02's virtualized tag table needs tagCatalog()).",
+        "SUITES (first pass) -- vitest: use-dataset-draft-pipeline.test.ts 5/5 (unchanged, proves the extraction is behaviour-preserving); new use-dataset-bronze-warm.test.ts 3/3. tsc clean beyond the one pre-existing baseline error in preset-apply-modal.test.tsx (WIP predating this session). One real bug caught and fixed in passing: dataset-draft-bronze.ts's first draft imported `CustomDateRange` from `@/store/model-pipeline` (wrong module -- it is exported from `@/store/data-visualize`), caught by tsc before any test ran. eslint could not run on ANY file, including untouched ones (`Cannot find module 'eslint-module-utils/resolve'`) -- confirmed as a broken environment install predating this session's changes, not investigated further.",
+        "FOLLOW-UP PASS (same session, user-directed): four edits to this entry, three new findings, one grep -- executed in the order #5 -> #6 -> grep -> T04 brand -> #7.",
+        "EDIT 4 RESOLVED -- Q2's background materialize() had a real duplicate-artifact-creation risk: if the warm from Step 2 raced with Step 3.2's lazy `ensureBronze` (user reaches Step 3.2 and clicks Apply while the warm is still in flight), BOTH would fire `materialize`, i.e. two server-side source re-fetches and two BRONZE artifacts for one logical fetch -- 'the same shape as the double-fetch this feature exists to fix', per the instruction that caught it. Fixed with an in-flight promise cache in dataset-draft-bronze.ts, keyed per draftId (ensureDraftId) and per draftId+sorted-tags (ensureBronzeArtifactId): a second caller with the same key awaits the FIRST caller's request instead of issuing its own; the cache entry clears once the promise settles (success or failure) so a later, separate attempt still gets a fresh try. Proven by 4 new tests in dataset-draft-bronze.test.ts (concurrent callers share one materialize call; a shared failure propagates to both awaiters then frees the key; concurrent ensureDraftId calls share one create call; DIFFERENT tag sets do NOT share a key). 'How does a failure reach the UI' -- answered precisely, not left vague: by design, usually not at all (the existing lazy-retry stall is the only symptom, unchanged from before this task); the ONE case it surfaces is the race case just described, where the dedup makes Step 3.2's own `ensureBronze` await the SAME failing promise, so it correctly lands in `dwDraftSyncStateAtom` because a real user action is genuinely waiting on it at that point. A separate always-silent observability atom was considered and rejected (advisor-flagged) -- it would be a reader-less construct, the same class of dead code Finding 2 already named once.",
+        "#5 SHIPPED -- fetchVersionDataset's accumulate-loop (services/dataset-version.ts:223) was NOT changed -- its one caller, useDatasetVersionRows, feeds every downstream wizard step (DataAnalysisCard's histogram/boxplot/scatter/correlation, Step 5's client pipeline) a full Dataset today, and neither has a safe bounded replacement yet (this entry's own blockedReason), so changing its return type would break real, currently-working consumers. Instead, a NEW windowed reader `fetchVersionRowsPage(datasetId, versionId, {offset, limit})` was added alongside it, returning exactly ONE bounded page (via the existing datasetVersionService.rows() call) instead of accumulating. This has NO production caller yet -- named explicitly, not hidden -- it exists so BoundedSample (T04) has a real, tested construction site today rather than being introduced speculatively; it becomes load-bearing the moment a consumer is ready to read one page at a time. Proven by a new test asserting exactly ONE fetchClient call for offset:100/limit:50 (vs. fetchVersionDataset's existing 'pages until whole artifact' test on the same file) -- the one guarantee this function exists for.",
+        "T04 BRAND SHIPPED, GIVEN A REAL CALL SITE, NOT SPECULATIVELY -- `BoundedSample` (lib/preprocessing.ts) is `Dataset & {[uniqueSymbolBrand]: true}`, private symbol, mintable only via `brandBoundedSample()`. `fetchVersionRowsPage` returns one. Deliberately does NOT retype `precleanse`/`applyValueClip` -- those remain out of scope per this entry's own blockedReason (Step 3.1/5 have no server replacement yet); retyping them is the REST of T04, once a consumer needs that specific boundary. V03-style compile-time proof added (not merely asserted): a test with `@ts-expect-error` shows a bare `Dataset` literal cannot satisfy a `BoundedSample`-typed parameter without going through `brandBoundedSample()` -- checked by `pnpm check-types`, and it genuinely bites (confirmed by first getting a real TS2739 error from an accidental interface-name collision with an EXISTING unrelated `VersionRowsPage` type in the same file -- caught by tsc, renamed the new one to `BoundedVersionRowsPage`, not silently worked around).",
+        "GREP RESULT -- lib/feature-engineering.ts DOES contain lookback-window feature kinds: `lag` (shift by k) and `rolling` (mean/min/max/std/ROC over a window), both of which need rows BEFORE a viewport's leading edge to compute correctly at that edge. DS-LAKE-006-T02's own stated scope is 'port the transforms, matching the client bug-for-bug' -- ALL of them, not a subset -- so once DS-LAKE-006 ships, `dwFeaturedDatasetAtom`/`applyFeatures` (Step 4's client-side call) has no reason to keep running client-side at all and gets DELETED, not retyped. Concrete simplification this pass earns: `BoundedSample` needs NO lead-in/lookback-margin field -- the one client transform that would have needed one is leaving the client entirely, not becoming a bounded-viewport consumer of it. Recorded so a future T04 continuation does not add lookback plumbing this repo will never use.",
+        "#6 -- STEP 5 PERSISTENCE TRACED PRECISELY. THE ORIGINAL FRAMING ('client pipeline vs. Step 3.2's SILVER artifact, whichever loses gets deleted') undercounted the candidates -- there are THREE, and the winner is neither of the two named. Read step-5-review-save.tsx's handleSave + storeRows directly: (a) `finalDataset` (the client-computed applyFeatures->precleanse->preprocessPipelines->selectColumns->toModelReady chain) -- only its `tags` and `rowCount` (plus `missingPct` via `datasetQuality(cleansed)`) reach the server, as denormalised DISPLAY metadata on the Dataset row; its actual row VALUES are computed, shown on the review screen, and then discarded. (b) Step 3.2's SILVER artifact (`dwDraftArtifactIdAtom`/`dwDraftIdAtom`, real server clean job, real bytes written to MinIO) -- these atoms are NOT IMPORTED by step-5-review-save.tsx at all. Created, job run, bytes written, never referenced at Save. (c) `storeRows` -> `datasetVersionService.createRaw(datasetId, {tags: config.baseTags, sourceId, startTime, endTime})` -- a FRESH RAW re-fetch from source using Step 1's ORIGINAL tag list, none of Steps 3/4/5's transforms applied. THIS is what `currentArtifactId` points at and what `useDatasetVersionRows`/Edit mode reads back (its own doc: 'prefer raw, replay recipe on demand' -- an intentional architecture, not a bug, predating DS-LAKE-005: `pipelineConfig` is persisted in full specifically so the SAME recipe can be replayed deterministically against the raw artifact by any later consumer). So the real answer to 'which output is persisted' is: NONE of the two candidates named in the instruction -- a THIRD, older raw-plus-recipe-replay pattern wins, and (b) -- Step 3.2's real, paid-for server SILVER artifact -- is unconditionally abandoned every time it runs.",
+        "#6 -- WHY NOTHING WAS DELETED. The instruction's own rule ('whichever loses is dead weight and gets deleted') was calibrated to a two-way fork; this is a three-way one with a different, PRE-EXISTING winner. Deleting Step 3.2's SILVER-artifact-creation call would revert DS-LAKE-005-T02/T03/T04 -- completed, verified tasks in THIS SAME ledger, from an earlier feature -- on an instruction written before this specific finding existed. Deleting the raw-plus-recipe-replay pattern instead would be a materially larger rewrite (Edit mode, Model Training, and Save all key off it) and would remove the ONLY mechanism that currently makes 'apply the recipe once, replay it consistently everywhere' true. RESOLVED (ADR-DS-LAKE-005B-B-006, user-approved, same session as this finding): Option (i). Save adopts the completed artifact (GOLD -> validated -> FINAL, once DS-LAKE-006/007 ship) instead of re-fetching raw and instead of using the client-computed `finalDataset`. This closes candidates (a) client-pipeline and (c) raw-refetch from the three-way finding above; candidate (b) -- Step 3.2's SILVER artifact -- becomes an intermediate stage that feeds GOLD/FINAL, not a dead end. IMPLEMENTATION IS NOT A NEW 005B-B TASK: DS-LAKE-009 ('Final artifact and the Save Dataset persistence boundary') and DS-LAKE-009B (artifact lifecycle/cleanup) already spec this exact mechanism in more depth than a first draft here would have (DatasetVersion reshape with a real `artifactId` pointer, concurrency-safe versionNumber allocation, a server-side validation gate, transitive-lineage-aware cleanup eligibility) -- discovered by reading DatasetArtifact's own schema comment ('DS-LAKE-009 reserves that for Save Dataset') AFTER two tasks were first drafted directly under 005B-B, then removed same session rather than shipping a smaller, divergent schema that DS-LAKE-009-T06 would have to partially undo. This ADR's rationale and rules stand as the accepted architecture DS-LAKE-009 should implement against; DS-LAKE-009 itself still depends on DS-LAKE-007 (validation/FINAL), which depends on DS-LAKE-006 (GOLD), both `pending`, zero tasks started -- so Step 5 keeps its current raw-refetch behavior (candidate (c)) until that chain lands. Full ADR at the feature level (see `adr` field above); full investigation and file-level plan at /Users/seolzzz/.claude/plans/can-we-continue-in-composed-bachman.md.",
+        "#6 -- THIRD FINDING, NOT IN THE ORIGINAL INSTRUCTION: A THIRD SOURCE FETCH, MADE WORSE BY THIS TASK'S OWN Q2 CHANGE. `res.data.currentArtifactId` in handleSave comes from `datasetService.create/update`'s response -- a brand-new Dataset row, with NO code path anywhere in step-5-review-save.tsx that adopts the DRAFT's artifact (`dwDraftArtifactIdAtom`) into it (no draft atoms are even imported, confirmed above). So `!res.data.currentArtifactId` is true on every create-mode Save, unconditionally, and `storeRows` ALWAYS fires its own full source re-fetch. Before this task: 2 source fetches per wizard run (Step 2's client fetch, storeRows's createRaw). After this task's Q2 background warm: 3 (Step 2, the background materialize, storeRows's createRaw) -- Q2's own change adds real cost to a pattern this exact feature exists to remove, and it was worth surfacing rather than treating Q2 as closed. Not fixed this pass -- fixing it means resolving the #6 divergence first (adopting the draft artifact only makes sense once it is decided WHICH artifact Save should keep).",
+        "#7 SHIPPED -- server-side percentile fields, closing edit 3's second half (the applyValueClip blocker, not just DataAnalysisCard's charts). New `percentile_bounds(good, points)` in column_stats_service.py: linear-interpolated over `PERCENTILE_POINTS = (1,5,10,20,80,90,95,99)` -- the EXACT points the client's own CLIP_PRESETS (data-cropping-chart.tsx: [1,99]/[5,95]/[10,90]/[20,80]) need, using the SAME floor/ceil positional interpolation as `percentileBounds` (lib/precleanse.ts), not `numpy.percentile`'s default method, so a value computed server-side agrees with what the client would compute over the same population. Wired into BOTH stats surfaces: `build_column_stats` (column_stats.json, the COMMITTED-artifact snapshot) gained a `percentiles` field per tag; `preview_service.column_stats` (per-side stats inside /preview) gained the SAME field -- this is the 'recompute under current rules' mode the instruction asked for, since preview already runs over whatever crop/exclusion/statistical operations were just applied, live, not a snapshot. Schemas updated on both languages: `TagColumnStats`/`ColumnStats` (Python, Optional[dict[str,float]]) and their zod mirrors `TagColumnStatsSchema`/`ColumnStatsSchema` (NestJS) -- without the zod update, the new field would have been SILENTLY STRIPPED at the NestJS boundary (zod's default non-strict parse drops unknown keys), which would have made the whole addition invisible past the backend regardless of what Python sent. `DraftPreviewColumnStats` (apps/client/services/dataset-draft.ts) also mirrors it -- no current UI caller reads it yet, named explicitly (matches this task's own discipline against hidden dead fields; unlike a whole unused SERVICE METHOD, a documented field on an already-real, already-called response is not the same risk class).",
+        "#7 CAUGHT A REAL BUG BEFORE RUNNING -- the first draft of a new percentile test used raw status ints (`STATUS_GOOD`/`STATUS_BAD` are 0/1 respectively in object_store.py, NOT 1/0) and had them backwards, which would have silently tested the WRONG cells as 'Good'. Caught by re-reading the constants before running, not by a failing test -- the bug would not have failed the assertion it was near (both branches happened to produce the same-shaped output), which is exactly why it needed catching before, not after.",
+        "#7 SUITES -- python: 381 passed, 30 skipped (was 375/30 before this pass; +6: 5 in test_column_stats_service.py for percentile_bounds/build_column_stats, 1 in test_preview_service.py proving the 'recompute under current rules' claim directly -- narrowing the frame changes the percentiles, not merely that the key exists). backend: dataset-draft.authorized.service.spec.ts caught a real, correct failure -- ITS OWN pre-existing column-stats mock fixture (from T07, an earlier task) lacked the now-required `percentiles` field and failed ZodError on the first run; this is the exact safe-failure-mode this session has repeatedly relied on (a stricter schema catching a stale mock loudly, not silently passing). Fixed by adding `percentiles: {p1, p99}` to the fixture; suite back to 51/51 (dataset-draft + dataset-version combined). tsc (`pnpm --filter client check-types`, `pnpm --filter backend check-types`) both clean beyond the SAME pre-existing baselines carried all session (1 client WIP error, 4 backend auth-spec errors).",
+        "FULL-REPO CHECK, BASELINE CONFIRMED NOT CAUSED -- ran the entire client vitest suite once (not just the touched files) to check for ripple effects from editing lib/preprocessing.ts (widely imported). 9 unrelated test files failed (isometric-map, machine-node, use-dashboard-data, plans, canvas-page, use-plants-data, useAtom, plus the already-identified feature-preset.ts/preset-apply-modal.tsx WIP) -- NONE touch dataset-studio, preprocessing.ts's Dataset/DataRow/BoundedSample, dataset-version.ts or dataset-draft.ts; none appear in this session's git diff at any point. Confirmed pre-existing/unrelated by grep against the session's own change list rather than assumed. Full backend suite re-run: 112/120, same 8 pre-existing DI-error suites as every prior task this session, 0 new failures.",
+        "T01 STAYS BLOCKED, PROGRESS STAYS 0 -- nothing shipped this pass closes T01's own acceptance criterion ('replace full-dataset frontend materialisation... with viewport state'); every change is real, tested, load-bearing GROUNDWORK (dedup safety, a windowed reader with a real construction site for T04's brand, server-side percentile fields closing a second blocker edit 3 surfaced) for whichever future pass gets an actual consumer to migrate. The read-migration half of T01 remains blocked on DS-LAKE-006 for Step 4/5, has no resolved design for Step 3.1 (missing histogram/boxplot/scatter/correlation endpoints), and #6's three-way Step 5 divergence is a real, named, UNRESOLVED architecture fork -- not something task progress should silently claim past."
+      ],
+      "adr": {
+        "id": "ADR-DS-LAKE-005B-B-006",
+        "title": "Save persists DatasetVersion from the completed SILVER/GOLD artifact, not from a raw re-fetch + client recipe replay.",
+        "status": "accepted",
+        "decidedBy": "user, DS-LAKE-005B-B-T01 follow-up (Step 5 persistence fork)",
+        "context": "Step 5 had three independent, disconnected outputs (T01's verificationResults #6): a client-computed pipeline whose row values are discarded after display, Step 3.2's real server SILVER artifact (created, then unconditionally abandoned), and a raw re-fetch that becomes the dataset's only stored rows. None was what the user actually asked the pipeline to produce.",
+        "decision": "Save adopts the draft's most-recently-completed processing artifact (SILVER today; GOLD once DS-LAKE-006 ships; FINAL once DS-LAKE-007 ships) as the Dataset's own artifact, by pointer, not by copy. Save does not re-fetch from PI. Save does not replay applyFeatures/precleanse/preprocessPipelines/selectColumns/toModelReady, client-side or server-side, to produce what gets stored.",
+        "rationale": "The artifact already exists in MinIO with a checksum at the moment Save is clicked; recomputing it is waste and a divergence risk. `DatasetArtifact`'s own schema comment (schema.prisma:475-476) already anticipates this exact mechanism ('ADOPTED at Save -- never copied, never rewritten') but the adoption code does not exist yet. `DatasetDraft.savedDatasetId` and `Dataset.currentArtifactId` are existing, currently-dormant fields built for exactly this pointer (confirmed zero write sites repo-wide before this ADR).",
+        "consequences": "`Dataset.currentArtifactId` stops being overwritten by a fresh BRONZE re-fetch at Save time and instead is set from the draft's artifact. `DatasetArtifact.datasetId` gets adopted (set), `draftId` stays for traceability. `DatasetDraft.savedDatasetId` gets set for the first time. A `DatasetVersion` row is still created, by reference not copy (open question -- see T06's implementation notes for the sourceArtifactId-FK vs shared-objectKey fork). Edit mode and Model Training's evaluation phase start reading the adopted artifact for every NEW save; pre-ADR saves keep using the legacy raw-refetch fallback until backfilled or forever.",
+        "failureBehavior": "If adoption fails, Save MUST NOT leave a Dataset row with a null/dangling currentArtifactId reported as saved -- no partial success, no silent 'saved' state over a broken pointer (mirrors CLAUDE.md SS13's Model-flow Save-boundary rule). A failed Save must not delete or invalidate the draft's artifact -- the draft stays exactly as it was, re-saveable.",
+        "cleanupBehavior": "Adoption is a pointer flip inside the Save transaction. Deleting/expiring intermediate or orphaned-draft artifacts is explicitly NOT part of the Save transaction and is not built by this ADR -- no retention/GC job exists today for DatasetArtifact rows (only `clearTmp`/`/v1/preprocess/cleanup` exists, and that clears a job's tmp/ scratch prefix, an unrelated mechanism). Flagged as a real follow-up gap.",
+        "planDocument": "Full investigation and file-level plan: /Users/seolzzz/.claude/plans/can-we-continue-in-composed-bachman.md"
+      },
+      "dependencyGraphNote": "ADR -> T01 (blocked, unchanged) -> T02 (completed) -> T04 (pending) -> T05 (blocked on DS-LAKE-006). Step 5 Save itself is NOT a 005B-B task -- DS-LAKE-009 (Final artifact + Save Dataset persistence boundary) and DS-LAKE-009B (artifact lifecycle/cleanup) already spec this exact work in more depth (versioned DatasetVersion reshape, concurrency-safe versionNumber, server-side validation gate, transitive-lineage cleanup eligibility) -- found AFTER T06/T07 were first drafted here, corrected same session. DS-LAKE-009 depends on DS-LAKE-007 (validation/FINAL), itself depending on DS-LAKE-006 (GOLD/feature engineering), both `pending`, zero tasks started. T03 (blocked) is orthogonal -- same DS-LAKE-006 wall as T05."
+    },
+    {
+      "id": "DS-LAKE-005B-C",
+      "title": "Parquet-native query path and layout benchmark",
+      "priority": 5.7,
+      "status": "pending",
+      "progress": 0,
+      "dependencies": [
+        "DS-LAKE-005B-A"
+      ],
+      "description": "The measurement half of the old DS-LAKE-005B. Introduce a Parquet-native reader behind a benchmark gate and decide the physical layout from numbers rather than from taste. Blocks nothing: it runs in parallel with DS-LAKE-006 onward and its output is a decision record, not an API.",
+      "tasks": [
+        {
+          "id": "DS-LAKE-005B-C-T01",
+          "title": "Introduce a Python-side Parquet query path using DuckDB or an equivalent Parquet-native reader behind an interface; preserve the existing reader as a compatibility path until benchmark parity is proven",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-005B-C-T02",
+          "title": "Golden parity test proving the Parquet-native path returns the same selected rows, values and ordering as the existing reader",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-005B-C-T03",
+          "title": "Benchmark 1,000 / 4,000 / 8,000 / 16,000 TAGS and state the corresponding columnCount for each case, including whether quality siblings are counted -- a result quoted in tags while the artifact is twice as wide is measuring the wrong artifact",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-005B-C-T04",
+          "title": "Measure footer/metadata decode cost as its own line item, and benchmark writer settings against it: statistics on or off for value columns, row-group sizing, codec choice. Parquet must read and decode the entire footer before touching any data page, so these settings dominate first-open latency on wide artifacts",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-005B-C-T05",
+          "title": "Choose the partition strategy from the measurements -- candidates are date partitioning, column-group sharding at a measured tag-per-shard width, and a long (ts, tag_id, value, quality) layout with a pivot on read. Continue to avoid one-file-per-tag unless the numbers justify it",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-005B-C-T06",
+          "title": "Evaluate the quality/status width strategy with measured cost at 8,000 tags: sibling column per tag versus bitmask packing versus a sparse exception table storing only non-Good samples",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-005B-C-T07",
+          "title": "Add large-dataset observability for API latency, bytes read, Python memory/CPU, backend memory, browser memory, first render, scroll performance and filter latency",
+          "status": "pending",
+          "progress": 0
+        }
+      ],
+      "acceptance_criteria": [
+        "The Parquet-native path is adopted only after benchmark parity against the existing reader is proven.",
+        "The benchmark report records results for 1,000/4,000/8,000/16,000 tags with the columnCount stated for each.",
+        "Footer/metadata decode cost is reported separately from data-page read cost.",
+        "The selected layout and quality-width strategy are each supported by benchmark results rather than assumption.",
+        "The existing reader remains available as a compatibility path for as long as any artifact depends on it."
+      ],
+      "verification": [
+        {
+          "id": "DS-LAKE-005B-C-V01",
+          "description": "Golden parity test proves the Parquet-native query path returns the same selected rows and values as the existing reader, including ordering.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-005B-C-V02",
+          "description": "Benchmark report records 1,000/4,000/8,000/16,000-tag results with stated columnCount, identifies the chosen file/partition strategy, and states the rationale.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-005B-C-V03",
+          "description": "Writer-setting sweep shows the measured effect of statistics on/off and row-group size on first-open latency for the widest case.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-005B-C-V04",
+          "description": "Quality-width comparison reports storage and read cost for sibling columns, bitmask and sparse exception table at 8,000 tags on realistically sparse fault data.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-005B-C-V05",
+          "description": "Observability dashboard or log fields exist and are populated by a real run, not by a synthetic emitter.",
+          "status": "pending"
+        }
+      ]
+    },
+    {
       "id": "DS-LAKE-006",
       "title": "Gold layer — port feature engineering and emit feature_spec.json",
       "priority": 6,
       "status": "pending",
       "progress": 0,
       "dependencies": [
-        "DS-LAKE-005"
+        "DS-LAKE-005",
+        "DS-LAKE-005B-A"
       ],
-      "description": "Port applyFeatures, selectColumns and toModelReady from the browser to Python behind a golden-fixture gate, then produce a GOLD artifact with its feature specification stored beside it. This is the one genuinely new compute stage — DatasetVersionStage.FEATURE has existed in the enum since the first migration and no code has ever written it.",
+      "description": "Port applyFeatures, selectColumns and toModelReady from the browser to Python behind a golden-fixture gate, then produce a GOLD artifact with its feature specification stored beside it. The full transform runs server-side against the SILVER artifact; the browser receives only bounded preview results and configuration state. This is the one genuinely new compute stage. Depends on the DS-LAKE-005B-A access contract only: the query-engine benchmark in DS-LAKE-005B-C is a measurement and does not gate this port.",
       "tasks": [
         {
           "id": "DS-LAKE-006-T01",
@@ -650,7 +1085,7 @@
         },
         {
           "id": "DS-LAKE-006-T06",
-          "title": "Step 4 drives the server transform; the browser copy stays as the interactive preview",
+          "title": "Step 4 drives the full feature-engineering transform server-side; the browser copy is bounded interactive preview only and never a full-dataset materialisation",
           "status": "pending",
           "progress": 0
         }
@@ -660,7 +1095,8 @@
         "A GOLD artifact is produced with parentArtifactId = silver and featureSpecKey populated.",
         "feature_spec.json contains feature names, transformations, scaling, encoding, feature version and feature hash.",
         "The feature hash is stable for an identical configuration and changes when any transform changes.",
-        "Step 4's UI is unchanged."
+        "Step 4's UI is unchanged.",
+        "Feature engineering of an 8,000+ tag artifact never requires the complete artifact in the browser."
       ],
       "verification": [
         {
@@ -732,7 +1168,8 @@
         "Validation writes no data artifact and mutates no frame.",
         "A FAIL names which check failed and by how much.",
         "The quality score is deterministic for a given artifact.",
-        "Validation runs inside its HTTP timeout on a realistically large artifact."
+        "Validation runs inside its HTTP timeout on a realistically large artifact.",
+        "Validation operates directly on the artifact/server-side and does not materialize the full dataset in Next.js."
       ],
       "verification": [
         {
@@ -748,6 +1185,11 @@
         {
           "id": "DS-LAKE-007-V03",
           "description": "Measure runtime on a multi-million-row artifact and record the headroom against the timeout.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-007-V04",
+          "description": "Run validation against an 8,000+ tag synthetic artifact and confirm the browser receives only the bounded validation result, not dataset rows.",
           "status": "pending"
         }
       ]
@@ -855,7 +1297,7 @@
         },
         {
           "id": "DS-LAKE-009-T06",
-          "title": "RELOCATED FROM DS-LAKE-002. Reshape DatasetVersion into the registry: add semanticVersion, artifactId, checksum, schemaVersion, qualityScore, status, lineage; drop stage, objectKey, parentVersionId, operations, columnStats",
+          "title": "RELOCATED FROM DS-LAKE-002. Reshape DatasetVersion into the registry: add semanticVersion, artifactId, checksum, schemaVersion, qualityScore, status, lineage; drop stage, objectKey, parentVersionId, operations, columnStats. WIDEN sizeBytes to BigInt -- v3.0.0 widened the column on DatasetArtifact (DS-LAKE-002-T02) but left the registry copy a 32-bit Int, which the file's own finding records as wrong at ~2.1 GB and an 8,000-tag artifact reaches",
           "status": "pending",
           "progress": 0
         },
@@ -871,7 +1313,8 @@
         "A failed save leaves no partial version and no duplicate.",
         "Save never creates a Model record.",
         "The final artifact is reachable from the version and carries a complete parent chain back to bronze.",
-        "A save attempted without a PASS is refused by the server even if the client is bypassed."
+        "A save attempted without a PASS is refused by the server even if the client is bypassed.",
+        "No remaining 32-bit Int size column can overflow on a multi-gigabyte artifact, on either DatasetArtifact or DatasetVersion."
       ],
       "verification": [
         {
@@ -892,6 +1335,128 @@
         {
           "id": "DS-LAKE-009-V04",
           "description": "Call the save endpoint directly with an unvalidated artifact and confirm it is refused.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-009-V05",
+          "description": "Write a DatasetVersion row with sizeBytes above 2^31-1 and read it back intact. An Int column fails this outright, so the check cannot pass by accident.",
+          "status": "pending"
+        }
+      ],
+      "crossReference": "ADR-DS-LAKE-005B-B-006 (accepted, see DS-LAKE-005B-B.adr) already decided the architecture this feature implements: Save adopts the completed artifact by pointer, never re-fetches raw, never replays the cleaning/feature recipe. DS-LAKE-005B-B-T01's verificationResults traces the CURRENT (pre-DS-LAKE-009) Step 5 behavior in detail (three-way divergence: client pipeline, abandoned SILVER artifact, raw-refetch-that-actually-wins) -- read that before starting T01/T02 here, it is the exact baseline this feature's diff is against. Plan document with file-level detail (written before this feature's own existing spec was found, so some of it duplicates T01-T07 above -- treat DS-LAKE-009's own task list as authoritative where they differ): /Users/seolzzz/.claude/plans/can-we-continue-in-composed-bachman.md"
+    },
+    {
+      "id": "DS-LAKE-009B",
+      "title": "Intermediate Artifact Lifecycle and Cleanup",
+      "priority": 9.5,
+      "status": "pending",
+      "progress": 0,
+      "dependencies": [
+        "DS-LAKE-009"
+      ],
+      "description": "Keep Bronze/Silver/Gold artifacts available long enough for recovery, audit and retry, then reclaim them after the Final artifact and registry are safely committed. Cleanup must never run before Save has established the final persistence boundary. Draft abandonment and temporary object retention are handled explicitly rather than through ad-hoc deletion.",
+      "tasks": [
+        {
+          "id": "DS-LAKE-009B-T01",
+          "title": "Define configurable retention policy for draft, Bronze, Silver and Gold artifacts; FINAL artifacts are retained according to dataset lifecycle rather than intermediate cleanup",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-009B-T02",
+          "title": "After successful Save, mark the draft adopted and make its artifacts eligible for lifecycle cleanup without copying or rewriting the FINAL artifact",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-009B-T03",
+          "title": "Add safe cleanup worker/job that verifies artifact ownership, adoption state, retention age and absence of active jobs before deletion",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-009B-T04",
+          "title": "Configure MinIO lifecycle rules for eligible temporary/intermediate object prefixes where the retention model can be expressed safely; application-level cleanup remains the authority when reference checks are required",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-009B-T05",
+          "title": "Handle abandoned DatasetDraft records: mark ABANDONED, retain for the configured recovery window, then reclaim draft-owned artifacts and job metadata",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-009B-T06",
+          "title": "Make cleanup idempotent and retryable so a partial delete cannot corrupt DatasetVersion lineage or remove a referenced artifact",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-009B-T07",
+          "title": "Keep cleanup out of the Save transaction and never make a successful Save depend on cleanup success",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-009B-T08",
+          "title": "Cleanup eligibility must be computed over TRANSITIVE lineage, not direct reference. An artifact is ineligible while it is reachable through the parentArtifactId chain of any DatasetVersion whose status is not ARCHIVED. DatasetVersion.artifactId points at FINAL only, so a direct-reference check leaves every BRONZE and SILVER object deletable -- the same dangling-pointer defect already recorded against Dataset.currentVersionId. Per decisions.reproducibility_anchor, a pinned BRONZE cannot be released by retention age",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-009B-T09",
+          "title": "Cleanup reclaims MinIO objects only and never deletes a DatasetArtifact row; record objectReclaimedAt on the row instead. The ledger row carries the operations recipe and DS-LAKE-009-T06 drops operations from DatasetVersion, so deleting rows would leave the recipe stored nowhere. This also resolves the ambiguity in T05's phrase 'reclaim draft-owned artifacts and job metadata'",
+          "status": "pending",
+          "progress": 0
+        }
+      ],
+      "acceptance_criteria": [
+        "Save commits FINAL and DatasetVersion before any intermediate artifact becomes cleanup-eligible.",
+        "Cleanup never deletes an artifact referenced by a DatasetVersion or active job.",
+        "Draft artifacts are reclaimed only after the configured abandonment/recovery window.",
+        "Cleanup failure does not roll back or mark a successfully saved Dataset as failed.",
+        "Cleanup is idempotent and safe to retry.",
+        "No FINAL artifact is deleted by the intermediate-artifact cleanup path.",
+        "Lineage remains resolvable for every retained DatasetVersion.",
+        "Cleanup never deletes an object reachable through the parentArtifactId chain of a non-ARCHIVED DatasetVersion, whatever its retention age.",
+        "Cleanup deletes no DatasetArtifact row; reclamation is recorded on the surviving row.",
+        "The operations recipe for every stage of a retained DatasetVersion is still readable after cleanup has run."
+      ],
+      "verification": [
+        {
+          "id": "DS-LAKE-009B-V01",
+          "description": "Create a saved dataset and verify its FINAL artifact remains while eligible intermediate artifacts are eventually reclaimed according to the configured policy.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-009B-V02",
+          "description": "Attempt cleanup while an intermediate artifact is referenced by an active job and confirm deletion is refused.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-009B-V03",
+          "description": "Force cleanup to fail halfway, rerun it, and confirm the second run converges without deleting referenced objects.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-009B-V04",
+          "description": "Create an abandoned draft, advance time beyond the configured retention window, and confirm draft artifacts are reclaimed while unrelated saved artifacts remain.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-009B-V05",
+          "description": "Verify a loader failure or cleanup failure cannot roll back a DatasetVersion that was already committed.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-009B-V06",
+          "description": "Build a four-deep BRONZE-SILVER-GOLD-FINAL chain, save it, advance time past every configured retention window, run cleanup, and confirm the BRONZE OBJECT survives because it is pinned by transitive lineage -- while an unrelated abandoned draft's artifacts are reclaimed in the same pass. Then archive the version and confirm the pin releases.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-009B-V07",
+          "description": "Assert cleanup issues no DELETE against DatasetArtifact, and that every reclaimed artifact still resolves with objectReclaimedAt set and its operations recipe readable.",
           "status": "pending"
         }
       ]
@@ -1042,11 +1607,16 @@
         "DS-LAKE-002",
         "DS-LAKE-003",
         "DS-LAKE-004",
+        "DS-LAKE-004B",
         "DS-LAKE-005",
+        "DS-LAKE-005B-A",
+        "DS-LAKE-005B-B",
+        "DS-LAKE-005B-C",
         "DS-LAKE-006",
         "DS-LAKE-007",
         "DS-LAKE-008",
         "DS-LAKE-009",
+        "DS-LAKE-009B",
         "DS-LAKE-010",
         "DS-LAKE-011"
       ],
@@ -1081,6 +1651,36 @@
           "title": "Write the final report: architecture, storage, lifecycle, metadata, versioning, lineage, loader, MinIO, API and breaking changes, migration plan, validation results",
           "status": "pending",
           "progress": 0
+        },
+        {
+          "id": "DS-LAKE-012-T06",
+          "title": "Large Dataset benchmark with 1,000/4,000/8,000/16,000 tags covering metadata load, pagination, preview, filter, table virtualization and server-side cleaning/feature-engineering. Consumes the DS-LAKE-005B-C layout decision and the DS-LAKE-005B-A wire-format measurement rather than repeating them",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-012-T07",
+          "title": "Verify opening Step 3 and Step 4 never downloads the complete artifact into the browser and that all-tag operations execute through server jobs",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-012-T08",
+          "title": "Verify browser memory remains bounded as total dataset size increases while the visible viewport remains constant",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-012-T09",
+          "title": "Verify intermediate-artifact cleanup after Save does not remove FINAL or break lineage and that abandoned drafts are reclaimed after retention",
+          "status": "pending",
+          "progress": 0
+        },
+        {
+          "id": "DS-LAKE-012-T10",
+          "title": "Verify the reproducibility anchor end to end: rebuild a saved dataset from its pinned BRONZE object plus the recorded operations, and confirm the result matches the FINAL artifact checksum after intermediate cleanup has already run",
+          "status": "pending",
+          "progress": 0
         }
       ],
       "acceptance_criteria": [
@@ -1093,7 +1693,12 @@
         "Dataset promotion updates metadata only.",
         "The Loader retries independently of Save.",
         "The dataset is reproducible from MinIO alone.",
-        "Model Training still works with no modification to apps/client/app/(default)/models/create/**."
+        "Model Training still works with no modification to apps/client/app/(default)/models/create/**.",
+        "The browser does not materialize the complete dataset during Step 3, Step 4 or Review & Save.",
+        "8,000+ tags can be browsed with bounded API payloads and a bounded DOM.",
+        "Server-side cleaning and feature engineering work for 2–3 tags, 10+ tags and all-tag selections without full browser payloads.",
+        "Intermediate cleanup reclaims eligible artifacts without breaking FINAL, registry or lineage.",
+        "A saved dataset is still rebuildable from its pinned BRONZE artifact and recorded operations after intermediate cleanup has run."
       ],
       "verification": [
         {
@@ -1120,6 +1725,16 @@
           "id": "DS-LAKE-012-V05",
           "description": "pnpm build succeeds from a clean state, including pnpm --filter @softsensor/prisma build so dist/ is not stale.",
           "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-012-V06",
+          "description": "Measure browser heap and network transfer for 1,000/4,000/8,000/16,000-tag datasets; confirm no full-artifact transfer occurs and memory remains bounded by viewport/preview size.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-012-V07",
+          "description": "Run the cleanup lifecycle against a saved draft and an abandoned draft, then verify FINAL lineage and registry integrity.",
+          "status": "pending"
         }
       ]
     }
@@ -1133,8 +1748,10 @@
     "Multi-replica job ownership. The in-process runner's boot sweep marks every RUNNING row FAILED, which is only correct with one backend instance. Escape hatch when that changes: SELECT ... FOR UPDATE SKIP LOCKED with an owner column — still no Redis.",
     "A tmp janitor. A hard-killed job's tmp intermediates are never reclaimed, and scheduleStragglerSweep's unref'd 30s timer does not survive a restart. Both leak storage, never wrong data.",
     "Deleting buildRawDataset and generateReadings. They remain the last resort for datasets with no artifact, and can only go once every dataset has a committed version.",
-    "Parquet row-group pushdown. get_frame_slice and get_frame_head read the whole object then slice, so caps bound compute rather than I/O. Measured acceptable today; revisit when artifacts outgrow memory.",
-    "docs/ARCHITECTURE.md and docs/CODEBASE.md do not describe apps/python, MinIO, object storage, the dataset models or background jobs at all. Updating them is worthwhile but is documentation work, not part of this refactor."
+    "docs/ARCHITECTURE.md and docs/CODEBASE.md do not describe apps/python, MinIO, object storage, the dataset models or background jobs at all. Updating them is worthwhile but is documentation work, not part of this refactor.",
+    "Apache Iceberg or another table-format migration. The v3 path remains MinIO + Parquet; adopt Iceberg only if measured dataset/version scale requires table-format metadata and snapshot management.",
+    "One-file-per-tag Parquet partitioning. The layout must be benchmarked first; small-file explosion is explicitly out of scope until measurements justify a partition strategy.",
+    "Multi-replica distributed job ownership remains deferred as already documented."
   ],
   "global_definition_of_done": [
     "MinIO is the single source of truth; Postgres stores metadata and pointers only.",
@@ -1148,11 +1765,23 @@
     "Dataset rows are never stored in the Dataset Registry.",
     "Promotion changes metadata only; no artifact is copied or regenerated.",
     "Saving a Dataset never creates a Model and never starts training.",
+    "The browser never owns the full Dataset for large artifacts; metadata, viewport rows and bounded previews are separate concerns.",
+    "Server-side pagination/filtering and frontend virtualization are both used for large dataset browsing.",
+    "Cleaning and feature engineering operate on server-side artifacts; selecting all tags never requires a full browser payload.",
+    "Intermediate artifacts are retained by policy and cleaned only after the final persistence boundary is safe.",
+    "Cleanup is independent of Save success and cannot delete referenced FINAL/registry artifacts.",
     "The five-step wizard UX is unchanged.",
     "No use of any and no @ts-ignore.",
     "Errors are raised as AppException from @softsensor/common, never as raw Nest HTTP exceptions.",
     "Multi-step writes that must succeed together run in a Prisma transaction.",
-    "Every feature is marked completed only after its acceptance criteria and verification items are actually verified, not merely implemented."
+    "Every feature is marked completed only after its acceptance criteria and verification items are actually verified, not merely implemented.",
+    "Numeric row and preview payloads cross the wire as columnar binary (Arrow IPC), never as JSON arrays of numbers.",
+    "No endpoint returns more than max_points per series without server-side downsampling, and a before/after pair always shares one bucket basis so a visible diff is never the sampler's.",
+    "Cleanup reclaims MinIO objects only; DatasetArtifact rows are never deleted because they are the audit trail and they carry the recipe.",
+    "An artifact reachable through the parentArtifactId chain of a non-ARCHIVED DatasetVersion is pinned, and retention age cannot release it.",
+    "Every bounded rule is unconditional -- there is no 'large dataset' threshold and therefore no second unbounded code path.",
+    "Client transform libraries accept a bounded sample type; passing a full frame is a compile error, not a code-review question.",
+    "The Loader sink interface assumes a narrow serving schema; no design step may assume an 8,000-tag frame can be loaded wide."
   ],
   "draft_architecture": {
     "entity": "DatasetDraft { id, name?, workspaceId, sourceIds[], status ACTIVE|SAVED|ABANDONED, currentArtifactId?, savedDatasetId?, createdById, createdAt, updatedAt } with artifacts[] and jobs[] back-relations.",
@@ -1162,5 +1791,38 @@
     "minio_layout": "drafts/{draftId}/artifacts/{artifactId}/data.parquet, with the DS-LAKE-003 sidecars beside it. The earlier drafts/{userId}/... proposal is DROPPED: the DatasetDraft row carries createdById, so ownership is a database fact and does not need to be smuggled into the object key.",
     "source_scoping": "CRITICAL, carried over unchanged in intent. Draft materialize must scope the DataSource lookup to DatasetDraft.sourceIds, exactly as the dataset path scopes to Dataset.sourceIds (dataset-version.authorized.service.ts:224). The secret is decrypted server-side, so an unconstrained lookup would let a caller name an arbitrary source id and have the server connect with that source credentials.",
     "adoption_not_copying": "Save sets datasetId on the existing artifact rows and leaves objectKey untouched. No artifact is copied, rewritten or regenerated — required by the slice global_definition_of_done."
+  },
+  "target_architecture_v3": {
+    "frontend": [
+      "Next.js wizard remains five steps",
+      "Metadata/tag catalog is paginated",
+      "Rows are cursor-paginated and bounded",
+      "Preview is selected-tag/time-window bounded and server-downsampled",
+      "Numeric payloads arrive as Arrow IPC and decode into the columnar TypedArray store",
+      "Large tables are virtualized on both axes",
+      "No full Dataset clone/materialisation, at any dataset size",
+      "Client transform libraries are reachable only with a bounded sample type"
+    ],
+    "backend": [
+      "NestJS orchestrates DatasetDraft, jobs, persistence boundary and access contracts",
+      "Postgres stores metadata/pointers only",
+      "No timeseries rows in registry tables"
+    ],
+    "python": [
+      "FastAPI owns dataset processing and query boundary",
+      "Parquet-native query path is benchmarked and used for large artifacts",
+      "Cleaning/feature engineering/validation operate server-side",
+      "Series responses are LTTB-downsampled with a declared ratio and a shared bucket basis"
+    ],
+    "storage": [
+      "MinIO stores Bronze/Silver/Gold/Final Parquet artifacts",
+      "Sidecar manifest/checksum/feature spec/validation report/column stats remain metadata artifacts",
+      "Intermediate artifacts use explicit retention and cleanup, with transitive-lineage pinning"
+    ],
+    "serving": [
+      "Loader is asynchronous and independent of Save",
+      "The sink interface assumes a narrow schema; a wide 8,000-tag load is not representable in PostgreSQL",
+      "TimescaleDB remains deferred until infrastructure is explicitly introduced"
+    ]
   }
 }

@@ -209,3 +209,66 @@ describe('fetchVersionDataset', () => {
     expect(pages.handler).toHaveBeenCalledTimes(1)
   })
 })
+
+// ── windowed reader (DS-LAKE-005B-B-T01/T04) ────────────────────────────────
+
+describe('fetchVersionRowsPage', () => {
+  beforeEach(() => pages.handler.mockReset())
+  afterEach(() => vi.resetModules())
+
+  async function subject() {
+    const mod = await import('@/services/dataset-version')
+    return mod.fetchVersionRowsPage
+  }
+
+  it('fetches exactly ONE page — no accumulation loop', async () => {
+    pages.handler.mockImplementation((endpoint: string) => {
+      const offset = Number(/offset=(\d+)/.exec(endpoint)?.[1] ?? 0)
+      const limit = Number(/limit=(\d+)/.exec(endpoint)?.[1] ?? 0)
+      return Promise.resolve({
+        data: {
+          totalRowCount: 500,
+          offset,
+          tags: ['TI-101'],
+          rows: Array.from({ length: limit }, (_, i) => row(offset + i)),
+        },
+      })
+    })
+
+    const fetchVersionRowsPage = await subject()
+    const result = await fetchVersionRowsPage('ds-1', 'v-1', {
+      offset: 100,
+      limit: 50,
+    })
+
+    // The one guarantee this function exists for: unlike fetchVersionDataset,
+    // it must NOT keep paging until it has the whole artifact.
+    expect(pages.handler).toHaveBeenCalledTimes(1)
+    expect(result.page.rows).toHaveLength(50)
+    expect(result.page.tags).toEqual(['TI-101'])
+    expect(result.totalRowCount).toBe(500)
+    expect(result.offset).toBe(100)
+  })
+
+  it('type gate: a bare Dataset cannot satisfy BoundedSample without brandBoundedSample()', () => {
+    // V03-style compile-time proof. This is checked by `pnpm check-types`,
+    // not by vitest's runtime assertions — if `brandBoundedSample()` were
+    // removed or the brand's uniqueness broken, the line below would stop
+    // erroring and `@ts-expect-error` itself would fail as an unused
+    // directive, so this test's real assertion is that the build stays red
+    // without going through the one legitimate constructor.
+    function acceptsOnlyBoundedSample(
+      page: import('@/lib/preprocessing').BoundedSample,
+    ) {
+      return page
+    }
+    function attemptWithBareDataset() {
+      const bare: import('@/lib/preprocessing').Dataset = { tags: [], rows: [] }
+      // @ts-expect-error — a bare Dataset is not a BoundedSample; only
+      // brandBoundedSample() may mint one.
+      return acceptsOnlyBoundedSample(bare)
+    }
+    void attemptWithBareDataset
+    expect(true).toBe(true)
+  })
+})

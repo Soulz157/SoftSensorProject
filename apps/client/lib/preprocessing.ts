@@ -32,6 +32,34 @@ export interface Dataset {
 }
 
 /**
+ * A `Dataset` that provably came from ONE bounded server page, not an
+ * accumulate-everything loop (DS-LAKE-005B-B-T04, given a real call site by
+ * T01's fetchVersionRowsPage in services/dataset-version.ts).
+ *
+ * The brand is a private, non-exported symbol — a plain `Dataset` cannot be
+ * assigned where a `BoundedSample` is expected without going through
+ * `brandBoundedSample()`, which only legitimate server-page readers should
+ * call. This is what turns "handed the full frame where a bounded page was
+ * expected" from a convention into a compile error, per V03's own wording:
+ * "a boundary that only holds while everyone remembers it is not a
+ * boundary."
+ *
+ * Deliberately does NOT gate `precleanse`/`applyValueClip` — those two are
+ * out of scope for this task (DS-LAKE-005B-B-T01's blockedReason and the
+ * feature's own dependency_correction record exactly why: DataAnalysisCard
+ * and Step 5 have no safe server-side replacement yet). Retyping their
+ * signatures to accept `BoundedSample` is the rest of T04, once a real
+ * consumer exists for THAT boundary too.
+ */
+declare const boundedSampleBrand: unique symbol
+export type BoundedSample = Dataset & { readonly [boundedSampleBrand]: true }
+
+/** The one legitimate way to mint a `BoundedSample` — from a real page. */
+export function brandBoundedSample(page: Dataset): BoundedSample {
+  return page as BoundedSample
+}
+
+/**
  * Split a dataset's columns into numeric vs categorical groups. There is no
  * categorical dtype in the data model yet (`Cell.value` is always `number`),
  * so every tag is numeric today — the single place to add a real data-driven
@@ -93,18 +121,30 @@ function noise01(seed: string): number {
   return ((h >>> 0) % 100000) / 100000 - 0.5
 }
 
-function cloneRows(rows: DataRow[]): DataRow[] {
-  return rows.map(r => ({
-    timestamp: r.timestamp,
-    cells: Object.fromEntries(
-      Object.entries(r.cells).map(([k, v]) => [k, { ...v }]),
-    ),
-  }))
+export function cloneRow(r: DataRow): DataRow {
+  const cells: Record<string, Cell> = {}
+  for (const key in r.cells) cells[key] = { ...r.cells[key]! }
+  return { timestamp: r.timestamp, cells }
+}
+
+export function cloneRows(rows: DataRow[]): DataRow[] {
+  const out = new Array<DataRow>(rows.length)
+  for (let i = 0; i < rows.length; i++) out[i] = cloneRow(rows[i]!)
+  return out
 }
 
 function roundTo(value: number, precision: number): number {
   const factor = Math.pow(10, precision)
   return Math.round(value * factor) / factor
+}
+
+function goodValuesOf(rows: DataRow[], tag: string): number[] {
+  const out: number[] = []
+  for (const r of rows) {
+    const c = r.cells[tag]
+    if (c && c.status === 'Good') out.push(c.value)
+  }
+  return out
 }
 
 export function buildRawDataset(
@@ -153,8 +193,6 @@ export function buildRawDataset(
     }
   }
 
-  // Constant-value override (runs last so constants always win): every grid row
-  // reads as a flat Good series of the user-supplied constant.
   if (constantEntries.length > 0) {
     for (const row of rows) {
       for (const [tag, value] of constantEntries) {
@@ -166,16 +204,13 @@ export function buildRawDataset(
   return { tags, rows }
 }
 
-/** Fill a single tag's Bad/Questionable cells in place per its strategy. */
 function applyFillStrategy(
   rows: DataRow[],
   tag: string,
   config: FillStrategyConfig,
 ): void {
-  const goodValues = rows
-    .map(r => r.cells[tag])
-    .filter((c): c is Cell => !!c && c.status === 'Good')
-    .map(c => c.value)
+  const needsValues = config.strategy === 'mean' || config.strategy === 'median'
+  const goodValues = needsValues ? goodValuesOf(rows, tag) : []
 
   let fillValue: number | undefined
   if (config.strategy === 'mean' && goodValues.length > 0) {
@@ -194,7 +229,6 @@ function applyFillStrategy(
   for (let i = 0; i < rows.length; i++) {
     const cell = rows[i]?.cells[tag]
     if (!cell || cell.status === 'Good') continue
-
     if (config.strategy === 'forward') {
       let p = i - 1
       while (p >= 0 && rows[p]?.cells[tag]?.status !== 'Good') p--
@@ -245,7 +279,7 @@ export function preprocess(
 
   // 2. Drop rows where any drop-semantics tag is Bad (preserves old global rule).
   const kept = rows.filter(
-    row => !fillTags.some(t => row.cells[t]?.status === 'Bad'),
+    row => !dropTags.some(t => row.cells[t]?.status === 'Bad'),
   )
 
   // 3. Linear-interpolate Questionable cells for drop-semantics tags.
@@ -367,13 +401,6 @@ function interpolateTag(rows: DataRow[], tag: string): void {
   }
 }
 
-function goodValuesOf(rows: DataRow[], tag: string): number[] {
-  return rows
-    .map(r => r.cells[tag])
-    .filter((c): c is Cell => !!c && c.status === 'Good')
-    .map(c => c.value)
-}
-
 /** Apply one cleaning step to a single tag in place; `drop` steps mark rows. */
 function applyCleaningStep(
   rows: DataRow[],
@@ -434,12 +461,13 @@ function applyCleaningStep(
     return
   }
   if (method === 'outlier_median') {
-    const vals = rows
-      .map(r => r.cells[tag])
-      .filter((c): c is Cell => !!c)
-      .map(c => c.value)
-    if (vals.length === 0) return
-    const sorted = [...vals].sort((a, b) => a - b)
+    const sorted: number[] = []
+    for (const r of rows) {
+      const c = r.cells[tag]
+      if (c) sorted.push(c.value)
+    }
+    if (sorted.length === 0) return
+    sorted.sort((a, b) => a - b)
     const q1 = sorted[Math.floor(sorted.length * 0.25)] ?? 0
     const q3 = sorted[Math.floor(sorted.length * 0.75)] ?? 0
     const iqr = q3 - q1
@@ -498,12 +526,14 @@ export function preprocessPipelines(
   pipelines: Record<string, TagPipeline>,
 ): Dataset {
   const { tags } = raw
+  const active = tags.filter(t => (pipelines[t]?.length ?? 0) > 0)
+  if (active.length === 0) return { tags, rows: raw.rows }
+
   const rows = cloneRows(raw.rows)
   const dropRows = new Set<number>()
 
-  for (const tag of tags) {
-    const steps = pipelines[tag]
-    if (!steps || steps.length === 0) continue
+  for (const tag of active) {
+    const steps = pipelines[tag]!
     const precision = tagMeta(tag)?.precision ?? 2
     for (const step of steps) {
       applyCleaningStep(rows, tag, step, dropRows, precision)
@@ -523,7 +553,14 @@ function median(sorted: number[]): number {
   return n % 2 === 0 ? ((sorted[mid - 1] ?? 0) + hi) / 2 : hi
 }
 
-/** Scale one column's values by the chosen method (guards zero spread → 0). */
+function medianRange(arr: number[], start: number, end: number): number {
+  const n = end - start
+  if (n <= 0) return 0
+  const mid = start + (n >> 1)
+  const hi = arr[mid] ?? 0
+  return n % 2 === 0 ? ((arr[mid - 1] ?? 0) + hi) / 2 : hi
+}
+
 function scaleColumn(values: number[], method: ScalerMethod): number[] {
   if (method === 'none') return values.map(v => roundTo(v, 3))
 
@@ -563,15 +600,89 @@ export function toModelReady(
   const { tags } = clean
   const rows = cloneRows(clean.rows)
 
+  // Allocated at most once per call, reused by every robust-scaled column.
+  let sortBuf: number[] | null = null
+
   for (const t of tags) {
-    const values = rows.map(r => r.cells[t]?.value ?? 0)
-    const scaled = scaleColumn(values, scalers[t] ?? DEFAULT_SCALER)
-    rows.forEach((row, i) => {
-      const cell = row.cells[t]
-      if (!cell) return
-      cell.value = scaled[i] ?? 0
-      cell.status = 'Good'
-    })
+    const method = scalers[t] ?? DEFAULT_SCALER
+
+    if (method === 'none') {
+      for (const row of rows) {
+        const c = row.cells[t]
+        if (!c) continue
+        c.value = roundTo(c.value, 3)
+        c.status = 'Good'
+      }
+      continue
+    }
+
+    if (method === 'minmax') {
+      let lo = Infinity
+      let hi = -Infinity
+      for (const row of rows) {
+        const v = row.cells[t]?.value
+        if (typeof v !== 'number' || !Number.isFinite(v)) continue
+        if (v < lo) lo = v
+        if (v > hi) hi = v
+      }
+      const span = lo === Infinity ? 0 : hi - lo
+      for (const row of rows) {
+        const c = row.cells[t]
+        if (!c) continue
+        c.value = span === 0 ? 0 : roundTo((c.value - lo) / span, 3)
+        c.status = 'Good'
+      }
+      continue
+    }
+
+    if (method === 'standard') {
+      // Welford instead of E[x²] − E[x]²: plant tags whose absolute value
+      // dwarfs their spread (a temperature at 800 K with std 0.5) lose most of
+      // their significant digits in the naive form.
+      let n = 0
+      let mean = 0
+      let m2 = 0
+      for (const row of rows) {
+        const v = row.cells[t]?.value
+        if (typeof v !== 'number' || !Number.isFinite(v)) continue
+        n++
+        const d = v - mean
+        mean += d / n
+        m2 += d * (v - mean)
+      }
+      const std = n > 0 ? Math.sqrt(m2 / n) : 0
+      for (const row of rows) {
+        const c = row.cells[t]
+        if (!c) continue
+        c.value = std === 0 ? 0 : roundTo((c.value - mean) / std, 3)
+        c.status = 'Good'
+      }
+      continue
+    }
+
+    sortBuf ??= new Array<number>(rows.length)
+    let k = 0
+    for (const row of rows) {
+      const v = row.cells[t]?.value
+      if (typeof v === 'number' && Number.isFinite(v)) sortBuf[k++] = v
+    }
+    if (k === 0) continue
+    const buf = sortBuf
+    buf.length = k
+    buf.sort((a, b) => a - b)
+
+    const med = medianRange(buf, 0, k)
+    const iqr =
+      medianRange(buf, Math.ceil(k / 2), k) -
+      medianRange(buf, 0, Math.floor(k / 2))
+
+    for (const row of rows) {
+      const c = row.cells[t]
+      if (!c) continue
+      c.value = iqr === 0 ? 0 : roundTo((c.value - med) / iqr, 3)
+      c.status = 'Good'
+    }
+    sortBuf.length = rows.length
   }
 
   return { tags, rows }
@@ -649,12 +760,19 @@ export function tagFillPreview(
   base: Dataset,
   filled: Dataset,
   tag: string,
+  limit?: number,
 ): TagFillPreviewRow[] {
+  const src =
+    limit && base.rows.length > limit ? base.rows.slice(-limit) : base.rows
+
+  const wanted = new Set(src.map(r => r.timestamp))
   const afterByTs = new Map<string, number | null>(
-    filled.rows.map(r => [r.timestamp, r.cells[tag]?.value ?? null]),
+    filled.rows
+      .filter(r => wanted.has(r.timestamp))
+      .map(r => [r.timestamp, r.cells[tag]?.value ?? null]),
   )
 
-  return base.rows.map(r => {
+  return src.map(r => {
     const cell = r.cells[tag]
     return {
       timestamp: r.timestamp,

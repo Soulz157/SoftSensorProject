@@ -6,10 +6,12 @@ import { getSourceTagCatalog, type MockTagRow } from '@/lib/mock-readings'
 import { csvToDataset, parseCsvText } from '@/lib/csv'
 import {
   dwSelectedSourcesAtom,
+  dwSelectedTagKeysAtom,
   dwCsvDatasetAtom,
   dwCsvFileNameAtom,
   dwCsvUploadTagsAtom,
 } from '@/store/dataset-studio'
+import { sourceIdOf, tagNameOf } from './use-dataset-tag-metadata'
 import type { UseDatasetPipelineNavResult } from './use-dataset-pipeline-nav'
 
 export interface DatasetTagRow {
@@ -17,8 +19,9 @@ export interface DatasetTagRow {
   tagName: string
   originalName: string
   dataSource: string
-  status: 'good' | 'error'
+  status: 'good' | 'bad'
   errorReason?: string
+  sourceId: string | null
 }
 
 /**
@@ -32,6 +35,7 @@ export function useDatasetTagTable(
   tagsBySource: Map<string, string[]> = new Map(),
 ) {
   const sources = useAtomValue(dwSelectedSourcesAtom)
+  const selectedKeys = useAtomValue(dwSelectedTagKeysAtom)
   const csvUploadTags = useAtomValue(dwCsvUploadTagsAtom)
   const removedTags = nav.removedTags
   const editedTags = nav.editedTags
@@ -67,6 +71,7 @@ export function useDatasetTagTable(
           dataSource: source.name,
           status: mock.status,
           errorReason: mock.errorReason,
+          sourceId: source.id,
         })
       }
     }
@@ -81,6 +86,7 @@ export function useDatasetTagTable(
         originalName: tag,
         dataSource: 'CSV Upload',
         status: 'good',
+        sourceId: null,
       })
     }
 
@@ -94,12 +100,36 @@ export function useDatasetTagTable(
         originalName: tag,
         dataSource: 'Manual',
         status: 'good',
+        sourceId: null,
+      })
+    }
+
+    // A tag selected by name (e.g. a preset match, resolved directly against
+    // PI) may not be on the currently loaded catalog page for its source —
+    // metadata browsing is paginated, name resolution is not. Without this, a
+    // matched tag becomes selected but the table renders no row for it.
+    for (const key of selectedKeys) {
+      const sourceId = sourceIdOf(key)
+      if (sourceId === 'manual') continue
+      const originalName = tagNameOf(key)
+      if (seen.has(originalName)) continue
+      const source = sources.find(s => s.id === sourceId)
+      if (!source) continue
+      seen.add(originalName)
+      result.push({
+        id: key,
+        tagName: editedTags[originalName] ?? originalName,
+        originalName,
+        dataSource: source.name,
+        status: 'good',
+        sourceId,
       })
     }
 
     return result
   }, [
     sources,
+    selectedKeys,
     tagsBySource,
     csvUploadTags,
     removedTags,

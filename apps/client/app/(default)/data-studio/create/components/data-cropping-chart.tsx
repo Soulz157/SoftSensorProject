@@ -268,6 +268,7 @@ export function DataCroppingChart({
   const clipBasisIsApprox = !clipBasis
 
   const indexByTs = useMemo(() => {
+    if (!cropRange) return null
     const m = new Map<string, number>()
     for (let i = timestamps.length - 1; i >= 0; i--) m.set(timestamps[i]!, i)
     return m
@@ -298,8 +299,8 @@ export function DataCroppingChart({
 
   const committed = useMemo<[number, number]>(() => {
     if (!cropRange) return [0, lastIdx]
-    const from = indexByTs.get(cropRange.from)
-    const to = indexByTs.get(cropRange.to)
+    const from = indexByTs?.get(cropRange.from)
+    const to = indexByTs?.get(cropRange.to)
     return [from ?? 0, to ?? lastIdx]
   }, [cropRange, indexByTs, lastIdx])
 
@@ -359,7 +360,6 @@ export function DataCroppingChart({
     if (el) gridRectRef.current = el.getBoundingClientRect()
   }, [])
 
-  // คำนวณแกน X จาก Pixel หน้าจอตรงๆ แก้อาการ 20px offset เลื่อน
   const indexFromClientX = useCallback(
     (clientX: number): number => {
       const rect = gridRectRef.current
@@ -371,7 +371,6 @@ export function DataCroppingChart({
     [timestamps.length],
   )
 
-  // คำนวณแกน Y
   const valueFromClientY = useCallback(
     (clientY: number): number => {
       const rect = gridRectRef.current
@@ -454,8 +453,6 @@ export function DataCroppingChart({
 
   const applyPresetClip = (loPct: number, hiPct: number) => {
     if (!tag || !onValueClipChange) return
-    // NOTE: percentileBounds sort ค่าทั้ง series — O(n log n) บน main thread
-    // ที่ระดับล้าน row ควรย้ายไปคำนวณฝั่ง server จาก parquet statistics
     const bound = percentileBounds(clipSource, tag, loPct, hiPct)
     if (!bound) return
     const impact = clipImpact(clipSource, tag, bound.min, bound.max)

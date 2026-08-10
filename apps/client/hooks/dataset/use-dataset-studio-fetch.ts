@@ -11,6 +11,7 @@ import {
   toPiTime,
   type PiDataFetchResponse,
 } from '@/lib/dataset-fetch'
+import { useDatasetBronzeWarm } from './use-dataset-bronze-warm'
 import type { Dataset } from '@/lib/preprocessing'
 import {
   dwCustomDateRangeAtom,
@@ -103,6 +104,7 @@ export function useDatasetStudioFetch(): UseDatasetStudioFetchResult {
   const customDateRange = useAtomValue(dwCustomDateRangeAtom)
   const customInterval = useAtomValue(dwCustomIntervalAtom)
   const fetchConfig = useAtomValue(dwFetchConfigAtom)
+  const warmBronze = useDatasetBronzeWarm()
 
   const controllerRef = useRef<AbortController | null>(null)
   const contextRef = useRef<FetchContext | null>(null)
@@ -259,9 +261,15 @@ export function useDatasetStudioFetch(): UseDatasetStudioFetchResult {
         })
       } else {
         setFetchState({ status: 'done', progress: 100 })
+        // Background pre-warm (DS-LAKE-005B-B-T01) — only on a clean, full
+        // success. A partial/failed run has no complete tag list to
+        // materialize correctly, and `ctx.allTags` still refers to the
+        // FULL requested set (not per-batch), which is what `materialize`
+        // needs.
+        warmBronze(ctx.allTags)
       }
     },
-    [setFetchState, setProgress, setRawDataset, tagConstants],
+    [setFetchState, setProgress, setRawDataset, tagConstants, warmBronze],
   )
 
   /**

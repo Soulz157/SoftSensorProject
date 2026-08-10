@@ -15,7 +15,12 @@
  * timestamp is left untouched, and the row itself is never removed.
  */
 import type { CutoffOp } from '@/types/cutoff'
-import type { Cell, DataRow, Dataset } from '@/lib/preprocessing'
+import {
+  cloneRow,
+  type Cell,
+  type DataRow,
+  type Dataset,
+} from '@/lib/preprocessing'
 
 export type CropRange = { from: string; to: string } | null
 export interface ClipBound {
@@ -254,9 +259,7 @@ function isStatisticalOutlier(
   std: number,
   threshold: number,
 ): boolean {
-  // std === 0 means a flat series — nothing can be an outlier.
   if (std === 0) return false
-  // zscore and stddev share the same test: |value - mean| > threshold·std.
   return Math.abs(value - mean) > threshold * std
 }
 
@@ -291,214 +294,207 @@ export function statisticalMatchCount(
  * row-level), (2) statistical rules, (3) conditional rules (both cell-level).
  * Immutable — returns a new dataset. Disabled or incomplete rules are skipped.
  */
-export function precleanse(raw: Dataset, cfg: PrecleanseConfig): Dataset {
-  let rows = cloneRows(raw.rows)
+// ─── internal pipeline ─────────────────────────────────────────────────────
 
-  // 1. Crop — keep rows within [from, to] inclusive (ISO strings compare lexically).
-  if (cfg.crop) {
-    const { from, to } = cfg.crop
-    rows = rows.filter(r => r.timestamp >= from && r.timestamp <= to)
-  }
-
-  // 1b. Value crop — row-level, per tag. Drop rows whose reading for a cropped
-  // tag falls outside [min, max]. Rows missing that tag's cell are kept (no
-  // point to judge), so other tags' readings at that timestamp survive.
-  if (cfg.valueCrop) {
-    for (const [tag, bound] of Object.entries(cfg.valueCrop)) {
-      rows = rows.filter(r => {
-        const cell = r.cells[tag]
-        if (!cell) return true
-        return cell.value >= bound.min && cell.value <= bound.max
-      })
-    }
-  }
-
-  // 1c. Exclusions — the inverse of crop. `time` removes whole rows inside the
-  // band; `value` drops only the keyed tag's cell inside the band (other tags at
-  // that timestamp survive, mirroring the outlier drop-cell semantics below).
-  if (cfg.exclusions) {
-    for (const ex of cfg.exclusions) {
-      if (ex.time) {
-        const { from, to } = ex.time
-        rows = rows.filter(r => !(r.timestamp >= from && r.timestamp <= to))
-      }
-      if (ex.value) {
-        const { tag, min, max } = ex.value
-        for (const r of rows) {
-          const cell = r.cells[tag]
-          if (cell && cell.value >= min && cell.value <= max)
-            delete r.cells[tag]
-        }
-      }
-    }
-  }
-
-  const markCell = (cell: Cell | undefined) => {
-    if (cell) cell.status = 'Bad'
-  }
-  // "drop" only ever removes the matched tag's own cell — never the row —
-  // so an outlier rule on one tag can't erase every other tag's reading at
-  // the same timestamp.
-  const dropCell = (row: DataRow, tag: string) => {
-    delete row.cells[tag]
-  }
-
-  // 2. Statistical rules — flag values beyond `threshold` std-devs from the mean.
-  for (const rule of cfg.statistical) {
-    if (!rule.enabled) continue
-    const tags = rule.tag === 'ALL' ? raw.tags : [rule.tag]
-    for (const tag of tags) {
-      const { mean, std } = tagStats({ tags: raw.tags, rows }, tag)
-      for (const row of rows) {
-        const cell = row.cells[tag]
-        if (!cell || cell.status !== 'Good') continue
-        if (!isStatisticalOutlier(cell.value, mean, std, rule.threshold))
-          continue
-        if (rule.action === 'drop') dropCell(row, tag)
-        else markCell(cell)
-      }
-    }
-  }
-
-  // 3. Conditional rules — flag values satisfying `tag {op} value`.
-  for (const rule of cfg.conditional) {
-    if (!rule.enabled || rule.value === '') continue
-    const target = rule.value
-    for (const row of rows) {
-      const cell = row.cells[rule.tag]
-      if (!cell) continue
-      if (!matchesConditional(cell.value, rule.op, target)) continue
-      if (rule.action === 'drop') dropCell(row, rule.tag)
-      else markCell(cell)
-    }
-  }
-  if (cfg.valueClip) {
-    for (const [tag, bound] of Object.entries(cfg.valueClip)) {
-      for (const row of rows) {
-        const cell = row.cells[tag]
-        if (!cell || cell.status !== 'Good') continue
-        if (cell.value < bound.min) {
-          cell.value = bound.min
-          cell.clipped = true
-        } else if (cell.value > bound.max) {
-          cell.value = bound.max
-          cell.clipped = true
-        }
-      }
-    }
-  }
-
-  return { tags: raw.tags, rows }
-}
-
-/**
- * Per-stage removal counts. Crop stages remove whole **rows**; outlier rules
- * only touch **cells** (mark `Bad` or drop that tag's cell — never the row),
- * so those are counted as affected **points**. Units differ on purpose — the
- * summary labels them accordingly.
- */
 export interface PrecleanseRemoved {
-  /** Rows dropped by the time crop. */
   timeCrop: number
-  /** Rows dropped by the value (Y-axis) crop. */
   valueCrop: number
-  /** Rows dropped by dragged time-exclusion bands. */
   exclude: number
-  /** Cells flagged/dropped by conditional rules. */
+  excludeCells: number
   conditional: number
-  /** Cells flagged/dropped by statistical rules. */
   statistical: number
   clipped: number
 }
 
 export interface PrecleanseBreakdown {
-  /** Fully pre-cleansed dataset (same result as `precleanse(raw, cfg)`). */
   dataset: Dataset
   removed: PrecleanseRemoved
-  /** Rows remaining after all stages. */
   keptRows: number
-  /** Rows in the raw dataset before any stage. */
   totalRows: number
+  beforeRules?: Dataset
+}
+interface StageCounts {
+  timeCrop: number
+  valueCrop: number
+  exclude: number
+  excludeCells: number
+  statistical: number
+  conditional: number
+  clipped: number
+}
+
+const zeroCounts = (): StageCounts => ({
+  timeCrop: 0,
+  valueCrop: 0,
+  exclude: 0,
+  excludeCells: 0,
+  statistical: 0,
+  conditional: 0,
+  clipped: 0,
+})
+
+interface RunResult {
+  rows: DataRow[]
+  counts: StageCounts
+  beforeRules?: DataRow[]
 }
 
 /**
- * Count cells that were `Good` in `a` but are no longer `Good` (marked `Bad`
- * or dropped) in `b`. `a` and `b` must share the same rows — true for the
- * cell-level (statistical/conditional) stages, which never remove rows.
+ * The whole pipeline in ONE pass.
+ *
+ * Phase A filters using the ORIGINAL row objects — a filter never writes, so
+ * nothing needs cloning yet. Phase B clones only the survivors. Phase C mutates
+ * those clones in place and increments a counter at every write site, which is
+ * what lets `precleanseBreakdown` report per-stage numbers without re-running
+ * the pipeline and diffing datasets.
  */
-function goodCellsLost(a: Dataset, b: Dataset): number {
-  const bByTs = new Map(b.rows.map(r => [r.timestamp, r]))
-  let lost = 0
-  for (const row of a.rows) {
-    const bRow = bByTs.get(row.timestamp)
-    for (const tag of a.tags) {
-      const ac = row.cells[tag]
-      if (!ac || ac.status !== 'Good') continue
-      const bc = bRow?.cells[tag]
-      if (!bc || bc.status !== 'Good') lost++
+function runPipeline(
+  raw: Dataset,
+  cfg: PrecleanseConfig,
+  wantBeforeRules = false,
+): RunResult {
+  const counts = zeroCounts()
+
+  let rows: DataRow[] = raw.rows
+
+  if (cfg.crop) {
+    const { from, to } = cfg.crop
+    const before = rows.length
+    rows = rows.filter(r => r.timestamp >= from && r.timestamp <= to)
+    counts.timeCrop = before - rows.length
+  }
+  const cropEntries = cfg.valueCrop ? Object.entries(cfg.valueCrop) : []
+  if (cropEntries.length > 0) {
+    const before = rows.length
+    rows = rows.filter(r => {
+      for (const [tag, bound] of cropEntries) {
+        const cell = r.cells[tag]
+        // Rows missing that tag's cell are kept — no reading to judge.
+        if (cell && (cell.value < bound.min || cell.value > bound.max)) {
+          return false
+        }
+      }
+      return true
+    })
+    counts.valueCrop = before - rows.length
+  }
+
+  const timeBands = (cfg.exclusions ?? [])
+    .map(e => e.time)
+    .filter((t): t is NonNullable<RangeExclusion['time']> => t !== null)
+  const excludeValues = (cfg.exclusions ?? [])
+    .map(e => e.value)
+    .filter((v): v is NonNullable<RangeExclusion['value']> => v !== null)
+
+  if (timeBands.length > 0) {
+    const before = rows.length
+    rows = rows.filter(
+      r => !timeBands.some(b => r.timestamp >= b.from && r.timestamp <= b.to),
+    )
+    counts.exclude = before - rows.length
+  }
+
+  const out: DataRow[] = new Array(rows.length)
+  for (let i = 0; i < rows.length; i++) out[i] = cloneRow(rows[i]!)
+
+  for (const { tag, min, max } of excludeValues) {
+    for (const row of out) {
+      const cell = row.cells[tag]
+      if (!cell || cell.value < min || cell.value > max) continue
+      if (cell.status === 'Good') counts.excludeCells++
+      delete row.cells[tag]
     }
   }
-  return lost
-}
 
-function clippedCells(ds: Dataset): number {
-  let n = 0
-  for (const row of ds.rows) {
-    for (const tag of ds.tags) if (row.cells[tag]?.clipped) n++
+  const beforeRules = !wantBeforeRules
+    ? undefined
+    : excludeValues.length === 0
+      ? rows === raw.rows
+        ? rows.slice()
+        : rows
+      : out.map(cloneRow)
+
+  for (const rule of cfg.statistical) {
+    if (!rule.enabled) continue
+    const tags = rule.tag === 'ALL' ? raw.tags : [rule.tag]
+    for (const tag of tags) {
+      const { mean, std } = tagStats({ tags: raw.tags, rows: out }, tag)
+      if (std === 0) continue
+      for (const row of out) {
+        const cell = row.cells[tag]
+        if (!cell || cell.status !== 'Good') continue
+        if (!isStatisticalOutlier(cell.value, mean, std, rule.threshold)) {
+          continue
+        }
+        counts.statistical++
+        if (rule.action === 'drop') delete row.cells[tag]
+        else cell.status = 'Bad'
+      }
+    }
   }
-  return n
+
+  for (const rule of cfg.conditional) {
+    if (!rule.enabled || rule.value === '') continue
+    const target = rule.value
+    for (const row of out) {
+      const cell = row.cells[rule.tag]
+      if (!cell) continue
+      if (!matchesConditional(cell.value, rule.op, target)) continue
+      if (cell.status === 'Good') counts.conditional++
+      if (rule.action === 'drop') delete row.cells[rule.tag]
+      else cell.status = 'Bad'
+    }
+  }
+
+  const clipEntries = cfg.valueClip ? Object.entries(cfg.valueClip) : []
+  for (const [tag, bound] of clipEntries) {
+    for (const row of out) {
+      const cell = row.cells[tag]
+      if (!cell || cell.status !== 'Good') continue
+      if (cell.value < bound.min) {
+        cell.value = bound.min
+        cell.clipped = true
+        counts.clipped++
+      } else if (cell.value > bound.max) {
+        cell.value = bound.max
+        cell.clipped = true
+        counts.clipped++
+      }
+    }
+  }
+
+  return { rows: out, counts, beforeRules }
 }
 
-/**
- * Run `precleanse` while attributing what each stage removed — powers the
- * Cut-off Summary. Applies the same stage order as `precleanse` (time crop →
- * value crop → statistical → conditional) so the attribution matches the real
- * result. `dataset` equals `precleanse(raw, cfg)`.
- */
+export function precleanse(raw: Dataset, cfg: PrecleanseConfig): Dataset {
+  return { tags: raw.tags, rows: runPipeline(raw, cfg).rows }
+}
+
 export function precleanseBreakdown(
   raw: Dataset,
   cfg: PrecleanseConfig,
+  opts: { withBeforeRules?: boolean } = {},
 ): PrecleanseBreakdown {
-  const totalRows = raw.rows.length
-
-  const afterCrop = precleanse(raw, {
-    crop: cfg.crop,
-    conditional: [],
-    statistical: [],
-  })
-  const afterValue = precleanse(raw, {
-    crop: cfg.crop,
-    valueCrop: cfg.valueCrop,
-    conditional: [],
-    statistical: [],
-  })
-  const afterExclude = precleanse(raw, {
-    crop: cfg.crop,
-    valueCrop: cfg.valueCrop,
-    exclusions: cfg.exclusions,
-    conditional: [],
-    statistical: [],
-  })
-  const afterStat = precleanse(raw, {
-    crop: cfg.crop,
-    valueCrop: cfg.valueCrop,
-    exclusions: cfg.exclusions,
-    conditional: [],
-    statistical: cfg.statistical,
-  })
-  const full = precleanse(raw, cfg)
-
+  const { rows, counts, beforeRules } = runPipeline(
+    raw,
+    cfg,
+    opts.withBeforeRules,
+  )
   return {
-    dataset: full,
+    dataset: { tags: raw.tags, rows },
     removed: {
-      timeCrop: totalRows - afterCrop.rows.length,
-      valueCrop: afterCrop.rows.length - afterValue.rows.length,
-      exclude: afterValue.rows.length - afterExclude.rows.length,
-      statistical: goodCellsLost(afterExclude, afterStat),
-      conditional: goodCellsLost(afterStat, full),
-      clipped: clippedCells(full),
+      timeCrop: counts.timeCrop,
+      valueCrop: counts.valueCrop,
+      exclude: counts.exclude,
+      excludeCells: counts.excludeCells,
+      statistical: counts.statistical,
+      conditional: counts.conditional,
+      clipped: counts.clipped,
     },
-    keptRows: full.rows.length,
-    totalRows,
+    beforeRules: beforeRules
+      ? { tags: raw.tags, rows: beforeRules }
+      : undefined,
+    keptRows: rows.length,
+    totalRows: raw.rows.length,
   }
 }

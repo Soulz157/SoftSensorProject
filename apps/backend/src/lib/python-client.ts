@@ -17,7 +17,7 @@ import { env } from '@/config/env.config';
 /** Default upstream timeouts (ms). Fetches over a time range can be slow. */
 export const PYTHON_TIMEOUT = {
   test: 15_000,
-  metadata: 30_000,
+  metadata: 300_000,
   fetch: 120_000,
   /**
    * Preprocessing writes whole artifacts, so it is the slowest hop by an order
@@ -101,15 +101,19 @@ export async function postMultipartToPython<TRes>(
 }
 
 /**
- * Shared transport for every call in this module: one timeout shape, one error
- * mapping. Callers differ only in how they encode the body.
+ * Shared transport for every call in this module: one timeout shape, one
+ * error mapping. Returns the raw, already-`ok` `Response` — callers decide
+ * how to read the body (`.json()` for `send`, `.arrayBuffer()` for the
+ * binary path DS-LAKE-005B-A-T05 added), so a divergence in how JSON vs
+ * binary responses are FETCHED cannot happen; only how they're DECODED can
+ * differ, which is inherent to the two formats.
  */
-async function send<TRes>(
+async function fetchOk(
   path: string,
   init: RequestInit,
   timeoutMs: number,
   signal?: AbortSignal,
-): Promise<TRes> {
+): Promise<Response> {
   let res: Response;
   try {
     res = await fetch(`${baseUrl()}${path}`, {
@@ -143,6 +147,9 @@ async function send<TRes>(
   if (!res.ok) {
     let detail = `Data connector error (${res.status}).`;
     try {
+      // FastAPI's HTTPException body is always `{detail: ...}` JSON,
+      // regardless of what format the SUCCESS response would have been —
+      // safe to assume here even on the binary path.
       const parsed = (await res.json()) as FastApiError;
       if (parsed?.detail) detail = parsed.detail;
     } catch {
@@ -157,5 +164,68 @@ async function send<TRes>(
     });
   }
 
+  return res;
+}
+
+async function send<TRes>(
+  path: string,
+  init: RequestInit,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<TRes> {
+  const res = await fetchOk(path, init, timeoutMs, signal);
   return (await res.json()) as TRes;
+}
+
+/**
+ * What `postBinaryToPython` hands back — the raw bytes plus enough of the
+ * response to reconstruct it for the browser (content type, and whichever
+ * envelope headers the connector set, e.g. the `X-Total-Row-Count` family
+ * DS-LAKE-005B-A-T05's `/rows?format=arrow` sends).
+ */
+export interface BinaryPythonResponse {
+  buffer: Buffer;
+  contentType: string;
+  headers: Record<string, string>;
+}
+
+/**
+ * POST a JSON body to the FastAPI connector and return the RAW response
+ * body, undecoded — for a wire format `postToPython`'s `res.json()` cannot
+ * parse (DS-LAKE-005B-A-T05: Arrow IPC). Deliberately a SEPARATE function
+ * rather than widening `postToPython<TRes>`'s return type to a union —
+ * that would force every existing JSON caller to narrow a type it never
+ * needed to think about.
+ *
+ * NOTE: the parse-never-cast Zod boundary every other connector response in
+ * this codebase goes through (`PythonRowsSchema` etc.) does not apply here —
+ * there is nothing to validate an opaque byte buffer against. This is a
+ * deliberate, explicit gap for a format with no NestJS-side reader yet.
+ */
+export async function postBinaryToPython(
+  path: string,
+  body: unknown,
+  timeoutMs: number = PYTHON_TIMEOUT.fetch,
+  signal?: AbortSignal,
+): Promise<BinaryPythonResponse> {
+  const res = await fetchOk(
+    path,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+    timeoutMs,
+    signal,
+  );
+  const buffer = Buffer.from(await res.arrayBuffer());
+  const headers: Record<string, string> = {};
+  for (const [key, value] of res.headers.entries()) {
+    if (key.toLowerCase().startsWith('x-')) headers[key] = value;
+  }
+  return {
+    buffer,
+    contentType: res.headers.get('content-type') ?? 'application/octet-stream',
+    headers,
+  };
 }

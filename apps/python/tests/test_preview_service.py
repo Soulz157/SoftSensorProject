@@ -18,6 +18,7 @@ that absorbs `put_frame` and lets everything pass.
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -59,6 +60,37 @@ def source_frame() -> pd.DataFrame:
     )
 
 
+def three_tag_frame() -> pd.DataFrame:
+    """V03 asks for '2 tags' returning 'only the requested subset' — that is
+    unfalsifiable against a 2-tag source (2 of 2 proves nothing about
+    subsetting), so this fixture exists specifically to have a third tag to
+    exclude.
+    """
+    df = source_frame()
+    df["PI-201"] = [100.0, 101.0, 102.0, 103.0, 104.0]
+    df["PI-201__status"] = pd.array([STATUS_GOOD] * 5, dtype="int8")
+    return df
+
+
+def six_month_single_tag_frame(spike_at: int | None = None) -> pd.DataFrame:
+    """V05's own scenario: one tag, six months, 1-minute interval — matching
+    `tests/test_downsample.py::six_month_series` but shaped as a full 2N+1
+    preview frame so it can go through `build_preview` end to end, not just
+    the LTTB core."""
+    periods = 6 * 30 * 24 * 60  # ~259,200 rows
+    timestamps = pd.date_range("2026-01-01", periods=periods, freq="1min")
+    values = 20.0 + 5.0 * np.sin(np.linspace(0, 200 * np.pi, periods))
+    if spike_at is not None:
+        values[spike_at] = 500.0
+    return pd.DataFrame(
+        {
+            "timestamp": timestamps,
+            "TI-101": values,
+            "TI-101__status": pd.array([STATUS_GOOD] * periods, dtype="int8"),
+        }
+    )
+
+
 class NoWriteStore:
     """Read-only stand-in for `ObjectStore`. Any mutation is a test failure.
 
@@ -72,11 +104,22 @@ class NoWriteStore:
 
     def __init__(self, frame: pd.DataFrame) -> None:
         self._frame = frame
-        self.reads: list[tuple[str, int]] = []
+        self.reads: list[tuple[str, list[str] | None]] = []
 
-    def get_frame_head(self, key: str, limit: int) -> tuple[pd.DataFrame, int]:
-        self.reads.append((key, limit))
-        return self._frame.head(limit).reset_index(drop=True), int(len(self._frame))
+    def get_frame(
+        self, key: str, columns: list[str] | None = None
+    ) -> pd.DataFrame:
+        self.reads.append((key, columns))
+        if columns is None:
+            return self._frame.copy()
+        # Mirrors pyarrow's real refusal (ArrowInvalid, a ValueError subclass)
+        # so a test against this fake proves the same error class the
+        # router's except-chain expects — same convention as
+        # `test_artifact_service.RecordingStore.get_frame`.
+        missing = [c for c in columns if c not in self._frame.columns]
+        if missing:
+            raise ValueError(f"No match for FieldRef.Name({missing[0]!r}) in schema")
+        return self._frame[columns].copy()
 
     def __getattr__(self, name: str):
         raise AssertionError(
@@ -116,7 +159,7 @@ def test_preview_writes_nothing() -> None:
     )
     # Reached the end, so no mutating attribute was touched on the way.
     assert result["before"]["row_count"] == 5
-    assert store.reads == [("ds-1/v1.parquet", 5_000)]
+    assert store.reads == [("ds-1/v1.parquet", None)]  # no tags -> no projection
 
 
 # ── sampling honesty ─────────────────────────────────────────────────────
@@ -185,6 +228,110 @@ def test_operations_insensitive_to_sampling_get_only_the_generic_warning() -> No
     assert len(result["warnings"]) == 1
 
 
+# ── bounded window: tags + time range (DS-LAKE-005B-A-T04) ───────────────
+
+
+def test_tag_filter_projects_columns_the_other_tag_is_gone() -> None:
+    store = NoWriteStore(source_frame())
+    result = build_preview(store, request_for(tags=["TI-101"]))
+
+    assert store.reads == [
+        ("ds-1/v1.parquet", ["timestamp", "TI-101", "TI-101__status"])
+    ]
+    assert result["before"]["column_count"] == 1
+    assert all("FI-404" not in row["cells"] for row in result["before"]["rows"])
+
+
+def test_unknown_preview_tag_is_rejected_not_silently_dropped() -> None:
+    store = NoWriteStore(source_frame())
+    with pytest.raises(ValueError):
+        build_preview(store, request_for(tags=["NOPE"]))
+
+
+def test_time_window_narrows_source_row_count_before_the_sample_cap() -> None:
+    store = NoWriteStore(source_frame())
+    result = build_preview(
+        store,
+        request_for(
+            start_time="2026-06-22 00:01:00",
+            end_time="2026-06-22 00:03:00",
+            sample_rows=2,
+        ),
+    )
+
+    # Window is 3 rows (00:01..00:03); sample_rows=2 caps it further.
+    assert result["source_row_count"] == 3
+    assert result["sampled"] is True
+    assert result["sampled_rows"] == 2
+    assert result["filtered"] is True
+    assert result["start_time"] == "2026-06-22 00:01:00"
+    assert result["end_time"] == "2026-06-22 00:03:00"
+
+
+def test_v03_two_tags_plus_time_range_returns_only_the_requested_subset() -> None:
+    """DS-LAKE-005B-A-T04-V03, verbatim: 2 tags AND a bounded time range in
+    ONE request, against a 3-tag source, so PI-201 being absent actually
+    proves subsetting rather than being the source's only tag anyway.
+    """
+    store = NoWriteStore(three_tag_frame())
+    result = build_preview(
+        store,
+        request_for(
+            tags=["TI-101", "FI-404"],
+            start_time="2026-06-22 00:01:00",
+            end_time="2026-06-22 00:03:00",
+        ),
+    )
+
+    projected_columns = store.reads[0][1]
+    assert projected_columns is not None
+    assert set(projected_columns) == {
+        "timestamp",
+        "TI-101",
+        "TI-101__status",
+        "FI-404",
+        "FI-404__status",
+    }
+    assert "PI-201" not in projected_columns
+
+    for side in (result["before"], result["after"]):
+        for row in side["rows"]:
+            assert set(row["cells"]) == {"TI-101", "FI-404"}
+        assert {c["tag"] for c in side["columns"]} == {"TI-101", "FI-404"}
+
+    assert result["source_row_count"] == 3  # window is 00:01..00:03
+    assert result["filtered"] is True
+    # The no-write half of V03 is the NoWriteStore guard itself
+    # (test_the_guard_is_actually_armed) plus test_preview_writes_nothing —
+    # reaching this assertion at all means nothing outside get_frame was
+    # called.
+
+
+def test_sampling_warning_says_window_not_whole_dataset_when_filtered() -> None:
+    """'the whole dataset' would be false once a tag/time filter narrows the
+    view — the sample is the first N rows of the WINDOW, not the artifact.
+    """
+    store = NoWriteStore(source_frame())
+
+    unfiltered = build_preview(store, request_for(sample_rows=2))
+    assert "the whole dataset" in unfiltered["warnings"][0]
+
+    filtered = build_preview(
+        store, request_for(sample_rows=1, start_time="2026-06-22 00:01:00")
+    )
+    assert "the requested window" in filtered["warnings"][0]
+    assert "the whole dataset" not in filtered["warnings"][0]
+
+
+def test_no_time_window_is_not_flagged_filtered() -> None:
+    store = NoWriteStore(source_frame())
+    result = build_preview(store, request_for())
+
+    assert result["filtered"] is False
+    assert result["start_time"] is None
+    assert result["end_time"] is None
+
+
 # ── statistics ───────────────────────────────────────────────────────────
 
 
@@ -209,6 +356,28 @@ def test_column_stats_of_an_all_bad_column_are_null_not_zero() -> None:
     assert stats["mean"] is None
     assert stats["min"] is None
     assert stats["std"] is None
+    assert stats["percentiles"] is None
+
+
+def test_column_stats_percentiles_reflect_the_current_frame_not_a_snapshot() -> None:
+    """DS-LAKE-005B-B-T01 edit 3: this IS the "recompute under current rules"
+    mode — it runs over whatever frame the caller (e.g. a live crop/exclusion
+    preview) just produced, not a committed-artifact-time snapshot like
+    `column_stats_service.build_column_stats`. Proven by showing the
+    percentiles genuinely differ when the frame changes, not just that the
+    key exists."""
+    stats_full = column_stats(source_frame(), "TI-101")
+    assert stats_full["percentiles"] is not None
+    assert set(stats_full["percentiles"].keys()) == {
+        "p1", "p5", "p10", "p20", "p80", "p90", "p95", "p99",
+    }
+
+    # Same tag, a DIFFERENT frame (as a live crop would produce) — the
+    # recomputed percentiles must move with it, not stay pinned to the first
+    # frame's population.
+    narrowed = source_frame().iloc[:2]
+    stats_narrowed = column_stats(narrowed, "TI-101")
+    assert stats_narrowed["percentiles"] != stats_full["percentiles"]
 
 
 def test_column_count_is_logical_tags_only() -> None:
@@ -242,6 +411,176 @@ def test_preview_rows_are_capped_independently_of_the_sample() -> None:
     assert len(result["before"]["rows"]) == 2
     assert result["before"]["rows"][0]["cells"]["TI-101"]["status"] == "Good"
     assert result["before"]["rows"][1]["cells"]["TI-101"]["status"] == "Bad"
+
+
+# ── T06: max_points / LTTB downsampling ─────────────────────────────────
+
+
+def test_max_points_bypasses_the_sample_rows_head_cut() -> None:
+    """V05: a local extremum past sample_rows' head cut is unreachable if the
+    cut runs before LTTB does. sample_rows is deliberately left far below
+    the window's true size (259,200 rows) — if the head cut still applied,
+    a spike this far in would never enter the computation at all."""
+    spike_at = 200_000  # well past any realistic sample_rows default
+    store = NoWriteStore(six_month_single_tag_frame(spike_at=spike_at))
+
+    result = build_preview(
+        store, request_for(source_key="ds-1/v1.parquet", sample_rows=5_000, max_points=2_000)
+    )
+
+    assert result["sampled"] is False  # no head truncation occurred
+    assert result["before"]["downsampled"] is True
+    series_timestamps = {row["timestamp"] for row in result["before"]["series"]}
+    spike_ts = six_month_single_tag_frame()["timestamp"].iloc[spike_at]
+    assert spike_ts.isoformat(sep=" ") in series_timestamps
+
+
+def test_series_respects_the_max_points_ceiling() -> None:
+    store = NoWriteStore(six_month_single_tag_frame())
+    result = build_preview(store, request_for(max_points=1_500))
+
+    assert len(result["before"]["series"]) <= 1_500
+    assert len(result["after"]["series"]) <= 1_500
+    assert result["max_points"] == 1_500
+    assert result["bucket_edges"] is not None
+    assert result["before"]["downsample_ratio"] is not None
+
+
+def test_rows_table_is_unaffected_by_max_points() -> None:
+    """`rows`/`preview_rows` (the small table) must stay exactly what they
+    were before T06 — `series` is an ADDITIONAL payload, not a replacement.
+
+    Uses the six-month fixture with `sample_rows` deliberately far below its
+    259,200-row total, so the "without" branch actually engages the head
+    cut — an earlier version used the 5-row `source_frame()` fixture with
+    `sample_rows=5,000`, which never cut anything in either branch, so the
+    bypass path this test names was never exercised.
+    """
+    store = NoWriteStore(six_month_single_tag_frame())
+    without = build_preview(
+        store, request_for(sample_rows=1_000, preview_rows=3)
+    )
+    with_downsampling = build_preview(
+        store, request_for(sample_rows=1_000, preview_rows=3, max_points=3)
+    )
+
+    assert without["before"]["row_count"] == 1_000  # head cut engaged
+    assert with_downsampling["before"]["row_count"] == 259_200  # bypass engaged
+    assert without["before"]["rows"] == with_downsampling["before"]["rows"]
+
+
+def test_window_over_the_downsample_ceiling_is_a_cleaning_error() -> None:
+    """MAX_DOWNSAMPLE_WINDOW_ROWS bounds the max_points-bypass path
+    regardless of max_points itself — a caller cannot dodge the ceiling by
+    asking for very few points back."""
+    from schemas.preprocess import MAX_DOWNSAMPLE_WINDOW_ROWS
+
+    periods = MAX_DOWNSAMPLE_WINDOW_ROWS + 1
+    timestamps = pd.date_range("2026-01-01", periods=periods, freq="1s")
+    frame = pd.DataFrame(
+        {
+            "timestamp": timestamps,
+            "TI-101": [1.0] * periods,
+            "TI-101__status": pd.array([STATUS_GOOD] * periods, dtype="int8"),
+        }
+    )
+    store = NoWriteStore(frame)
+
+    with pytest.raises(ValueError, match="capped at"):
+        build_preview(store, request_for(sample_rows=5_000, max_points=100))
+
+
+def test_v06_identity_recipe_downsamples_before_and_after_identically() -> None:
+    """T06's core guarantee: an identity recipe (zero operations — after IS
+    before) must downsample to the IDENTICAL series on both sides. Any diff
+    here could only be introduced by the sampler picking different points
+    for before vs after, which is exactly what the shared bucket-edges
+    design exists to make impossible.
+    """
+    store = NoWriteStore(six_month_single_tag_frame(spike_at=90_000))
+
+    result = build_preview(
+        store, request_for(operations=[], sample_rows=5_000, max_points=1_200)
+    )
+
+    assert result["delta"]["row_count"] == 0  # confirms this really was a no-op
+    assert result["before"]["series"] == result["after"]["series"]
+    assert result["before"]["downsample_ratio"] == result["after"]["downsample_ratio"]
+
+
+def test_row_removing_op_narrows_after_but_still_buckets_against_before_edges() -> None:
+    """The actually discriminating case for V06's shared-basis claim.
+
+    An earlier version of this test ran `drop_missing` against a fixture
+    with zero Bad cells — it removed nothing, so "both sides report the same
+    bucket_edges" was true under ANY implementation, including one where
+    each side wrongly derived its own edges from an identical (because
+    unchanged) span. That proved nothing about sharing.
+
+    Here the trailing 30% of the window is marked Bad, so `after` is both
+    shorter AND meaningfully narrower in time span than `before`. Under
+    WRONG per-side edges, after's compressed span would be rebucketed into
+    the same bucket COUNT over a narrower range — consecutive after-picks
+    would then land closer together in time than a before-bucket is wide,
+    and mapping them onto before's (wider) edges would show two picks
+    colliding into the same before-bucket. Under the actual shared-edges
+    design, after's own `lttb_indices` call is given before's edges
+    directly, so at most one point can land in each before-bucket by
+    construction — collisions are the falsifiable signal.
+    """
+    frame = six_month_single_tag_frame()
+    total = len(frame)
+    cutoff = int(total * 0.7)
+    status = frame["TI-101__status"].to_numpy().copy()
+    status[cutoff:] = STATUS_BAD
+    frame["TI-101__status"] = pd.array(status, dtype="int8")
+    store = NoWriteStore(frame)
+
+    result = build_preview(
+        store,
+        request_for(
+            operations=[CleaningOperation(type="drop_missing")],
+            sample_rows=5_000,
+            max_points=1_000,
+        ),
+    )
+
+    edges = result["bucket_edges"]
+    assert edges is not None
+    before_span = pd.Timestamp(edges[-1]) - pd.Timestamp(edges[0])
+    after_series = result["after"]["series"]
+    after_span = pd.Timestamp(after_series[-1]["timestamp"]) - pd.Timestamp(
+        after_series[0]["timestamp"]
+    )
+    # Confirms the scenario actually narrowed the span — otherwise the
+    # collision check below would pass vacuously.
+    assert after_span < before_span * 0.8
+
+    edge_array = np.array([np.datetime64(e) for e in edges])
+    after_timestamps = np.array(
+        [np.datetime64(row["timestamp"]) for row in after_series]
+    )
+    # The two forced endpoints (first/last kept regardless of bucket) are
+    # not part of the one-per-bucket guarantee — excluded from the check.
+    interior = after_timestamps[1:-1]
+    bucket_ids = np.searchsorted(edge_array, interior, side="right") - 1
+    bucket_ids = np.clip(bucket_ids, 0, len(edge_array) - 2)
+
+    assert len(bucket_ids) == len(set(bucket_ids.tolist())), (
+        "after.series points collided into the same before-derived bucket — "
+        "this is what per-side (unshared) bucket edges would produce, "
+        "exactly the failure mode V06 exists to prevent."
+    )
+
+
+def test_downsample_warning_present_only_when_max_points_used() -> None:
+    store = NoWriteStore(six_month_single_tag_frame())
+
+    plain = build_preview(store, request_for())
+    downsampled = build_preview(store, request_for(max_points=1_000))
+
+    assert not any("downsampled" in w.lower() or "lttb" in w.lower() for w in plain["warnings"])
+    assert any("lttb" in w.lower() for w in downsampled["warnings"])
 
 
 # ── caller-fixable failures ──────────────────────────────────────────────
@@ -348,4 +687,36 @@ def test_route_writes_nothing(client) -> None:
         },
     )
     assert response.status_code == 200
-    assert store.reads == [("ds-1/v1.parquet", 5_000)]
+    assert store.reads == [("ds-1/v1.parquet", None)]  # no tags -> no projection
+
+
+def test_unknown_preview_tag_is_422_not_502(client) -> None:
+    http, _ = client
+    response = http.post(
+        "/v1/preprocess/preview",
+        json={
+            "source_key": "ds-1/v1.parquet",
+            "operations": [{"type": "drop_missing"}],
+            "tags": ["NOPE"],
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_time_window_reaches_the_response(client) -> None:
+    http, _ = client
+    response = http.post(
+        "/v1/preprocess/preview",
+        json={
+            "source_key": "ds-1/v1.parquet",
+            "operations": [{"type": "drop_missing"}],
+            "start_time": "2026-06-22 00:01:00",
+            "end_time": "2026-06-22 00:03:00",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["filtered"] is True
+    assert body["source_row_count"] == 3
+    assert body["start_time"] == "2026-06-22 00:01:00"
+    assert body["end_time"] == "2026-06-22 00:03:00"

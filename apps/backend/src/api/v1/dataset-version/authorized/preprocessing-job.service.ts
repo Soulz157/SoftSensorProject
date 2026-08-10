@@ -314,6 +314,7 @@ export class PreprocessingJobService
           missingPct: stats.missing_pct,
           sizeBytes: BigInt(stats.size_bytes),
           operations,
+          columnStatsKey: stats.column_stats_key,
           durationMs: Date.now() - startedAt,
           createdById: job.createdById,
         },

@@ -78,31 +78,15 @@ export function Step32Imputation({ nav }: Props) {
   )
   const base = breakdown.dataset
 
-  const cropped = useMemo(
-    () =>
-      precleanse(raw, {
-        crop: cropRange,
-        valueCrop,
-        exclusions,
-        conditional: [],
-        statistical: [],
-      }),
-    [raw, cropRange, valueCrop, exclusions],
-  )
+  const cropped = base
 
-  // Ensure the sidebar visibility selection is initialized (side-effect only).
   useDatasetTagSelection(base)
 
   const setHighestUnlocked = useSetAtom(dwHighestUnlockedAtom)
-  // Editing the pipeline or saving changes the produced dataset — relock the
-  // downstream (materialized) steps so they recompute.
   const relock = () => setHighestUnlocked(prev => Math.min(prev, 4))
 
-  // Local editable draft. NOT auto-committed — Save is the sole commit point,
-  // so unsaved edits never leak into the persisted pipelines or Step 5.
   const [draft, setDraft] = useState<CleaningStep[]>([])
   const [previewTags, setPreviewTags] = useState<string[]>([])
-  // Step-by-step preview scrubber index + the isolated tag it previews.
   const [previewIndex, setPreviewIndex] = useState(0)
   const [rawIsolated, setRawIsolated] = useState('')
 
@@ -175,11 +159,11 @@ export function Step32Imputation({ nav }: Props) {
     void applyClean(cleaningTags, draft)
   }
   const preprocessed = useMemo(
-    () => preprocessPipelines(base, cleaningPipelines),
+    () => preprocessPipelines(base, cleaningPipelines).rows.length,
     [base, cleaningPipelines],
   )
-  const allDropped = base.rows.length > 0 && preprocessed.rows.length === 0
 
+  const allDropped = base.rows.length > 0 && preprocessed === 0
   // Step-by-step preview for the isolated tag: apply only the first
   // `previewIndex` draft steps so the scrubber shows each stage's effect live.
   const previewRows = useMemo(() => {
@@ -373,7 +357,7 @@ export function Step32Imputation({ nav }: Props) {
         nextLabel="Continue"
         onBack={() => nav.setProcessingSubStep(1)}
         onNext={nav.next}
-        nextDisabled={preprocessed.rows.length === 0}
+        nextDisabled={preprocessed === 0}
       />
     </div>
   )

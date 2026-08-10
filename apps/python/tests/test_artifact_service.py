@@ -29,8 +29,11 @@ from schemas.preprocess import (
     CleaningOperation,
     CleanRequest,
     CleanupRequest,
+    ColumnStatsRequest,
     MaterializeRequest,
+    MetadataRequest,
     RowsRequest,
+    TagCatalogRequest,
 )
 from services import artifact_service
 
@@ -55,6 +58,30 @@ def frame(statuses: list[int] | None = None) -> pd.DataFrame:
     )
 
 
+def wide_frame() -> pd.DataFrame:
+    """Two tags, so a tag-filter test can prove the OTHER tag is really gone."""
+    return pd.DataFrame(
+        {
+            "timestamp": TS,
+            "TI-101": [70.0, 71.0, 72.0, 73.0, 74.0, 75.0],
+            "TI-101__status": pd.array([STATUS_GOOD] * 6, dtype="int8"),
+            "FI-404": [10.0, 11.0, 12.0, 13.0, 14.0, 15.0],
+            "FI-404__status": pd.array([STATUS_GOOD] * 6, dtype="int8"),
+        }
+    )
+
+
+def many_tags_frame(names: list[str]) -> pd.DataFrame:
+    """A frame with exactly the given tag names — for catalog pagination and
+    search tests, where only the NAMES matter, not the values.
+    """
+    data: dict[str, object] = {"timestamp": TS}
+    for name in names:
+        data[name] = [0.0] * len(TS)
+        data[f"{name}__status"] = pd.array([STATUS_GOOD] * len(TS), dtype="int8")
+    return pd.DataFrame(data)
+
+
 class RecordingStore:
     """In-memory stand-in that keeps the real store's immutability rule.
 
@@ -71,11 +98,25 @@ class RecordingStore:
         #: Sidecars land here rather than in `objects`, so a test asserting on
         #: data writes is never confused by a manifest.
         self.documents: dict[str, object] = {}
+        #: Distinct from `get_frame_metadata` calls — a test proving "never
+        #: decodes tag/status values" needs to know THIS was zero, not just
+        #: that nothing was written.
+        self.get_frame_calls = 0
 
-    def get_frame(self, key: str) -> pd.DataFrame:
+    def get_frame(self, key: str, columns: list[str] | None = None) -> pd.DataFrame:
+        self.get_frame_calls += 1
         if key not in self.objects:
             raise ObjectStoreError(f"Could not read '{key}': NoSuchKey")
-        return self.objects[key].copy()
+        df = self.objects[key]
+        if columns is None:
+            return df.copy()
+        # Mirrors pyarrow's real refusal (ArrowInvalid, a ValueError subclass —
+        # confirmed against a live pq.read_table call) so a test against this
+        # fake proves the same error class the router's except-chain expects.
+        missing = [c for c in columns if c not in df.columns]
+        if missing:
+            raise ValueError(f"No match for FieldRef.Name({missing[0]!r}) in schema")
+        return df[columns].copy()
 
     def put_frame(
         self, df: pd.DataFrame, key: str, *, overwrite: bool = False
@@ -107,12 +148,45 @@ class RecordingStore:
         self.documents[key] = document
         return 1
 
+    def get_json(self, key: str) -> object:
+        # Mirrors the real store's refusal (ObjectStoreError) on a missing
+        # key — DS-LAKE-005B-A-T07's column_stats read maps this to 422
+        # through the same except-chain a missing data object already uses.
+        if key not in self.documents:
+            raise ObjectStoreError(f"Could not read '{key}': NoSuchKey")
+        return self.documents[key]
+
     def delete_prefix(self, prefix: str) -> int:
         hits = [k for k in self.objects if k.startswith(prefix)]
         for key in hits:
             del self.objects[key]
         self.deleted_prefixes.append(prefix)
         return len(hits)
+
+    def get_frame_metadata(self, key: str) -> dict[str, object]:
+        if key not in self.objects:
+            raise ObjectStoreError(f"Could not read '{key}': NoSuchKey")
+        df = self.objects[key]
+        tags = sorted(tag_columns(df))  # mirrors ObjectStore.get_frame_metadata
+        column_count = len(df.columns)
+        if len(df) == 0:
+            return {
+                "tags": tags,
+                "column_count": column_count,
+                "row_count": 0,
+                "start_time": None,
+                "end_time": None,
+            }
+        lo, hi = df["timestamp"].min(), df["timestamp"].max()
+        return {
+            "tags": tags,
+            "column_count": column_count,
+            "row_count": int(len(df)),
+            "start_time": (
+                lo.isoformat(sep=" ") if hasattr(lo, "isoformat") else str(lo)
+            ),
+            "end_time": hi.isoformat(sep=" ") if hasattr(hi, "isoformat") else str(hi),
+        }
 
 
 # ── clean ────────────────────────────────────────────────────────────────
@@ -222,6 +296,9 @@ def test_rows_pages_and_reports_the_whole_artifact_height() -> None:
     # Offset 2 is the Bad hole; status must survive the trip.
     assert page["rows"][0]["cells"]["TI-101"] == {"value": 0.0, "status": "Bad"}
     assert page["rows"][1]["cells"]["TI-101"]["status"] == "Good"
+    assert page["filtered"] is False
+    assert page["start_time"] is None
+    assert page["end_time"] is None
 
 
 def test_rows_past_the_end_is_an_empty_page_not_an_error() -> None:
@@ -239,6 +316,282 @@ def test_rows_reads_only() -> None:
     artifact_service.rows(store, RowsRequest(source_key="ds-1/v1.parquet"))
     assert store.writes == []
     assert store.deleted_prefixes == []
+
+
+def test_rows_limit_is_bounded_regardless_of_artifact_size() -> None:
+    """T02-V01: the ceiling is on the REQUEST, not conditional on how big the
+    source is — proven here against a 6-row artifact, the smallest kind.
+    """
+    with pytest.raises(ValueError):
+        RowsRequest(source_key="ds-1/v1.parquet", limit=50_001)
+
+
+# ── rows: tag filter / column projection (DS-LAKE-005B-A-T02) ────────────
+
+
+def test_rows_tag_filter_projects_columns_and_the_other_tag_is_gone() -> None:
+    store = RecordingStore({"ds-1/v1.parquet": wide_frame()})
+    page = artifact_service.rows(
+        store, RowsRequest(source_key="ds-1/v1.parquet", tags=["TI-101"])
+    )
+
+    assert page["tags"] == ["TI-101"]
+    assert all("FI-404" not in row["cells"] for row in page["rows"])
+    # A tag filter alone is not a TIME filter — total_row_count still
+    # describes every row, just narrower columns.
+    assert page["filtered"] is False
+
+
+def test_rows_unknown_tag_is_rejected_not_silently_dropped() -> None:
+    store = RecordingStore({"ds-1/v1.parquet": wide_frame()})
+    with pytest.raises(ValueError):
+        artifact_service.rows(
+            store, RowsRequest(source_key="ds-1/v1.parquet", tags=["NOPE"])
+        )
+
+
+def test_rows_omitted_tags_still_returns_every_tag() -> None:
+    store = RecordingStore({"ds-1/v1.parquet": wide_frame()})
+    page = artifact_service.rows(store, RowsRequest(source_key="ds-1/v1.parquet"))
+    assert set(page["tags"]) == {"TI-101", "FI-404"}
+
+
+# ── rows: start/end time filter (DS-LAKE-005B-A-T02) ─────────────────────
+
+
+def test_rows_time_filter_narrows_the_total_and_the_page() -> None:
+    store = RecordingStore({"ds-1/v1.parquet": frame()})
+    page = artifact_service.rows(
+        store,
+        RowsRequest(
+            source_key="ds-1/v1.parquet",
+            start_time="2026-06-22 00:02:00",
+            end_time="2026-06-22 00:03:00",
+        ),
+    )
+
+    assert page["total_row_count"] == 2  # not the artifact's 6
+    assert len(page["rows"]) == 2
+    assert page["rows"][0]["timestamp"] == "2026-06-22 00:02:00"
+    assert page["rows"][1]["timestamp"] == "2026-06-22 00:03:00"
+    # The response announces the filter it applied — a caller must be able to
+    # tell "2 rows total" from "2 rows in this window" without re-sending
+    # the request it made.
+    assert page["filtered"] is True
+    assert page["start_time"] == "2026-06-22 00:02:00"
+    assert page["end_time"] == "2026-06-22 00:03:00"
+
+
+def test_rows_time_filter_offset_and_limit_apply_to_the_filtered_view() -> None:
+    """`offset` pages the FILTERED result, not the raw file — otherwise a
+    tight time window plus a nonzero offset would silently return nothing.
+    """
+    store = RecordingStore({"ds-1/v1.parquet": frame()})
+    page = artifact_service.rows(
+        store,
+        RowsRequest(
+            source_key="ds-1/v1.parquet",
+            start_time="2026-06-22 00:01:00",
+            offset=1,
+            limit=2,
+        ),
+    )
+    # Filtered view is rows 1..5 (5 rows); offset 1 into that starts at row 2.
+    assert page["total_row_count"] == 5
+    assert page["rows"][0]["timestamp"] == "2026-06-22 00:02:00"
+
+
+# ── rows: Arrow IPC transport (DS-LAKE-005B-A-T05) ────────────────────────
+
+
+def test_rows_arrow_returns_the_same_page_as_json_in_binary() -> None:
+    """The discriminating claim: `rows_arrow` must describe the SAME page
+    `rows` does — same values, same statuses, same envelope scalars — just
+    encoded differently. Decodes the Arrow IPC stream with pyarrow itself
+    (not a hand-rolled parser) so a real client's decode path is exercised.
+    """
+    import pyarrow as pa
+
+    store = RecordingStore({"ds-1/v1.parquet": wide_frame()})
+    request = RowsRequest(source_key="ds-1/v1.parquet", offset=1, limit=3)
+
+    json_page = artifact_service.rows(store, request)
+    response = artifact_service.rows_arrow(store, request)
+
+    assert response.media_type == "application/vnd.apache.arrow.stream"
+    assert response.headers["X-Total-Row-Count"] == str(json_page["total_row_count"])
+    assert response.headers["X-Offset"] == "1"
+    assert response.headers["X-Filtered"] == "false"
+    assert "X-Start-Time" not in response.headers  # absent, not empty-string
+
+    table = pa.ipc.open_stream(response.body).read_all()
+    assert table.column_names == ["timestamp", "TI-101", "TI-101__status", "FI-404", "FI-404__status"]
+    assert table.num_rows == len(json_page["rows"]) == 3
+
+    decoded = table.to_pylist()
+    for arrow_row, json_row in zip(decoded, json_page["rows"]):
+        assert arrow_row["TI-101"] == json_row["cells"]["TI-101"]["value"]
+        assert arrow_row["FI-404"] == json_row["cells"]["FI-404"]["value"]
+
+
+def test_rows_arrow_time_filter_sets_the_filtered_header_and_range() -> None:
+    store = RecordingStore({"ds-1/v1.parquet": frame()})
+    request = RowsRequest(
+        source_key="ds-1/v1.parquet",
+        start_time="2026-06-22 00:01:00",
+        offset=0,
+        limit=100,
+    )
+
+    response = artifact_service.rows_arrow(store, request)
+
+    assert response.headers["X-Filtered"] == "true"
+    assert response.headers["X-Start-Time"] == "2026-06-22 00:01:00"
+    assert response.headers["X-Total-Row-Count"] == "5"
+
+
+def test_rows_arrow_unknown_tag_raises_the_same_error_json_would() -> None:
+    """Both formats must fail the SAME way for the same bad input — proven
+    at the service level here; the HTTP-level sibling below proves the
+    router's error mapping (`_run`) actually catches it as 422, not 502.
+    """
+    store = RecordingStore({"ds-1/v1.parquet": wide_frame()})
+    request = RowsRequest(source_key="ds-1/v1.parquet", tags=["NOPE-1"])
+
+    with pytest.raises(ValueError):
+        artifact_service.rows(store, request)
+    with pytest.raises(ValueError):
+        artifact_service.rows_arrow(store, request)
+
+
+def test_rows_json_is_still_the_default_format() -> None:
+    """`format` defaults to json — every existing caller that never sends it
+    must keep getting the JSON body unchanged."""
+    assert RowsRequest(source_key="ds-1/v1.parquet").format == "json"
+
+
+# ── tag catalog (DS-LAKE-005B-A-T03) ──────────────────────────────────────
+
+CATALOG_TAGS = ["TI-101", "TI-102", "FI-404", "PI-201", "LI-303"]
+
+
+def test_tag_catalog_is_alphabetical_not_file_order() -> None:
+    store = RecordingStore({"ds-1/v1.parquet": many_tags_frame(CATALOG_TAGS)})
+    page = artifact_service.tag_catalog(
+        store, TagCatalogRequest(source_key="ds-1/v1.parquet", limit=10)
+    )
+
+    assert page["tags"] == ["FI-404", "LI-303", "PI-201", "TI-101", "TI-102"]
+    assert page["total_count"] == 5
+
+
+def test_tag_catalog_pages_without_loading_the_whole_list() -> None:
+    store = RecordingStore({"ds-1/v1.parquet": many_tags_frame(CATALOG_TAGS)})
+    page = artifact_service.tag_catalog(
+        store, TagCatalogRequest(source_key="ds-1/v1.parquet", offset=2, limit=2)
+    )
+
+    assert page["tags"] == ["PI-201", "TI-101"]  # alphabetical index 2..3
+    assert page["total_count"] == 5  # the full match count, not the page
+    assert page["offset"] == 2
+
+
+def test_tag_catalog_search_is_a_case_insensitive_substring_match() -> None:
+    store = RecordingStore({"ds-1/v1.parquet": many_tags_frame(CATALOG_TAGS)})
+    page = artifact_service.tag_catalog(
+        store, TagCatalogRequest(source_key="ds-1/v1.parquet", search="ti-1")
+    )
+
+    assert page["tags"] == ["TI-101", "TI-102"]
+    assert page["total_count"] == 2
+    assert page["search"] == "ti-1"
+
+
+def test_tag_catalog_search_with_no_matches_is_an_empty_page_not_an_error() -> None:
+    store = RecordingStore({"ds-1/v1.parquet": many_tags_frame(CATALOG_TAGS)})
+    page = artifact_service.tag_catalog(
+        store, TagCatalogRequest(source_key="ds-1/v1.parquet", search="nope")
+    )
+
+    assert page["tags"] == []
+    assert page["total_count"] == 0
+
+
+def test_tag_catalog_never_decodes_row_values() -> None:
+    """A catalog that opened tag/status columns would defeat the entire point
+    of DS-LAKE-005B-A-T03 for an 8,000-tag artifact.
+    """
+    store = RecordingStore({"ds-1/v1.parquet": many_tags_frame(CATALOG_TAGS)})
+    artifact_service.tag_catalog(
+        store, TagCatalogRequest(source_key="ds-1/v1.parquet")
+    )
+    assert store.get_frame_calls == 0  # only get_frame_metadata was used
+    assert store.writes == []
+    assert store.deleted_prefixes == []
+
+
+def test_tag_catalog_limit_is_bounded_regardless_of_artifact_size() -> None:
+    """Same shape as test_rows_limit_is_bounded_regardless_of_artifact_size —
+    a SEPARATE ceiling from RowsRequest's, since a tag-catalog page has
+    nothing to do with a row-limit budget.
+    """
+    with pytest.raises(ValueError):
+        TagCatalogRequest(source_key="ds-1/v1.parquet", limit=5_001)
+
+
+def test_tag_catalog_empty_search_means_every_tag() -> None:
+    """Both layers already agree here (falsy in Python, falsy in NestJS's
+    `query.search &&` guard) — pinned so a future edit to either cannot
+    quietly split them the way the T02 `tags=''` case did.
+    """
+    store = RecordingStore({"ds-1/v1.parquet": many_tags_frame(CATALOG_TAGS)})
+    page = artifact_service.tag_catalog(
+        store, TagCatalogRequest(source_key="ds-1/v1.parquet", search="", limit=10)
+    )
+    assert page["total_count"] == 5
+
+
+# ── metadata (DS-LAKE-005B-A-T01) ───────────────────────────────────────
+
+
+def test_metadata_reports_tags_and_time_range() -> None:
+    store = RecordingStore({"ds-1/v1.parquet": frame()})
+    meta = artifact_service.metadata(
+        store, MetadataRequest(source_key="ds-1/v1.parquet")
+    )
+
+    assert meta["tags"] == ["TI-101"]
+    assert meta["column_count"] == 3  # timestamp + TI-101 + TI-101__status (2N+1)
+    assert meta["row_count"] == 6
+    assert meta["start_time"] == "2026-06-22 00:00:00"
+    assert meta["end_time"] == "2026-06-22 00:05:00"
+
+
+def test_metadata_of_an_empty_artifact_has_no_time_range() -> None:
+    empty = frame().iloc[0:0]
+    store = RecordingStore({"ds-1/empty.parquet": empty})
+    meta = artifact_service.metadata(
+        store, MetadataRequest(source_key="ds-1/empty.parquet")
+    )
+
+    assert meta["row_count"] == 0
+    assert meta["start_time"] is None
+    assert meta["end_time"] is None
+
+
+def test_metadata_reads_only() -> None:
+    store = RecordingStore({"ds-1/v1.parquet": frame()})
+    artifact_service.metadata(store, MetadataRequest(source_key="ds-1/v1.parquet"))
+    assert store.writes == []
+    assert store.deleted_prefixes == []
+
+
+def test_metadata_surfaces_a_missing_source() -> None:
+    store = RecordingStore()
+    with pytest.raises(ObjectStoreError):
+        artifact_service.metadata(
+            store, MetadataRequest(source_key="ds-1/nope.parquet")
+        )
 
 
 # ── cleanup ──────────────────────────────────────────────────────────────
@@ -397,3 +750,175 @@ def test_materialized_artifact_has_no_parent() -> None:
     assert isinstance(manifest, dict)
     assert manifest["parent_key"] is None
     assert manifest["operations"] == []
+
+
+# ── column_stats sidecar (DS-LAKE-005B-A-T07) ─────────────────────────────
+
+
+def test_clean_writes_a_column_stats_sidecar_beside_the_data() -> None:
+    store = RecordingStore({"ds-1/v1.parquet": frame()})
+    payload = _clean_once(store)
+
+    key = "ds-1/artifacts/a2/column_stats.json"
+    assert key in store.documents
+    assert key not in store.objects  # not mistaken for a data object
+    assert payload["column_stats_key"] == key
+
+
+def test_column_stats_sidecar_has_one_entry_per_tag_with_drift_against_the_parent() -> None:
+    store = RecordingStore({"ds-1/v1.parquet": frame()})
+    _clean_once(store)
+
+    stats = store.documents["ds-1/artifacts/a2/column_stats.json"]
+    assert set(stats.keys()) == {"TI-101"}
+    entry = stats["TI-101"]
+    # drop_missing removed the one Bad row, so the cleaned frame is 100% Good
+    # and identical in value to the parent's Good cells — drift near zero.
+    assert entry["cleaned"] is True
+    assert entry["drift"] == pytest.approx(0.0, abs=1e-6)
+    assert entry["coverage"] == 100.0
+
+
+def test_a_lineage_root_gets_null_drift_not_zero() -> None:
+    """No parent to compare against — drift is None, not 0. Exercised at the
+    same level `test_materialized_artifact_has_no_parent` already uses
+    (`_commit` directly): `materialize()`'s own PI/SQL fetch needs a live
+    source to unit test meaningfully, but the column-stats behaviour this
+    test pins is entirely about `_commit`/`build_column_stats`, which
+    `materialize()` calls with `parent_frame=None` regardless of source.
+    """
+    from services.column_stats_service import build_column_stats
+
+    store = RecordingStore()
+    stats = ArtifactStats(
+        object_key="ds-1/artifacts/a1/data.parquet",
+        row_count=6,
+        column_count=2,
+        size_bytes=1024,
+        missing_pct=0.0,
+        checksum="b" * 64,
+    )
+    column_stats = build_column_stats(frame(), operations=[])
+    artifact_service._commit(store, stats, 0.0, column_stats=column_stats)
+
+    sidecar = store.documents["ds-1/artifacts/a1/column_stats.json"]
+    assert sidecar["TI-101"]["drift"] is None
+    assert sidecar["TI-101"]["cleaned"] is False
+
+
+# ── column_stats read (DS-LAKE-005B-A-T07/V07) ────────────────────────────
+
+
+def test_column_stats_read_serves_the_sidecar_without_opening_the_data() -> None:
+    """V07's literal claim, AT the literal 8,000-tag scale it names: data.parquet
+    is never opened to answer a column-stats request — instrumented on the
+    object store itself (get_frame_calls), not inferred from reading the
+    code."""
+    eight_thousand_tags = [f"TAG-{i}" for i in range(8_000)]
+    store = RecordingStore({"ds-1/v1.parquet": many_tags_frame(eight_thousand_tags)})
+    _clean_once_many_tags(store)
+
+    before = store.get_frame_calls  # the clean() above already read once
+    result = artifact_service.column_stats(
+        store, ColumnStatsRequest(source_key="ds-1/artifacts/a2/data.parquet")
+    )
+
+    assert store.get_frame_calls == before  # unchanged — no frame was read
+    assert len(result["stats"]) == 8_000
+    assert set(result["stats"].keys()) == set(eight_thousand_tags)
+
+
+def test_column_stats_read_surfaces_a_missing_sidecar() -> None:
+    """A legacy artifact with no sidecar — 422 via the existing except-chain,
+    not a silent empty page and not a compute-on-read fallback (which would
+    open data.parquet and defeat the point of the sidecar)."""
+    store = RecordingStore({"ds-1/v1.parquet": frame()})
+    with pytest.raises(ObjectStoreError):
+        artifact_service.column_stats(
+            store, ColumnStatsRequest(source_key="ds-1/v1.parquet")
+        )
+
+
+def _clean_once_many_tags(store: "RecordingStore") -> dict[str, object]:
+    return artifact_service.clean(
+        store,
+        CleanRequest(
+            source_key="ds-1/v1.parquet",
+            target_key="ds-1/artifacts/a2/data.parquet",
+            operations=[],
+        ),
+    )
+
+
+# ── router contract: /rows format=arrow (DS-LAKE-005B-A-T05) ─────────────
+#
+# `test_preview_service.py` established why this matters: the handler's
+# except-chain ends in `except Exception -> 502`, so if the arrow branch
+# ever bypassed `_run`, an unknown tag would turn from a caller-fixable 422
+# into a 502 with a server-side traceback. This is the sibling of that
+# file's `test_unknown_preview_tag_is_422_not_502`, for `/rows`.
+
+
+@pytest.fixture()
+def client():
+    from fastapi.testclient import TestClient
+
+    from dependencies import get_object_store
+    from main import app
+
+    store = RecordingStore({"ds-1/v1.parquet": wide_frame()})
+    app.dependency_overrides[get_object_store] = lambda: store
+    try:
+        yield TestClient(app), store
+    finally:
+        app.dependency_overrides.pop(get_object_store, None)
+
+
+def test_rows_arrow_unknown_tag_is_422_not_502(client) -> None:
+    http, _ = client
+    response = http.post(
+        "/v1/preprocess/rows",
+        json={"source_key": "ds-1/v1.parquet", "tags": ["NOPE-1"], "format": "arrow"},
+    )
+    assert response.status_code == 422
+
+
+def test_rows_arrow_route_returns_the_documented_content_type_and_headers() -> None:
+    import pyarrow as pa
+    from fastapi.testclient import TestClient
+
+    from dependencies import get_object_store
+    from main import app
+
+    store = RecordingStore({"ds-1/v1.parquet": wide_frame()})
+    app.dependency_overrides[get_object_store] = lambda: store
+    try:
+        response = TestClient(app).post(
+            "/v1/preprocess/rows",
+            json={"source_key": "ds-1/v1.parquet", "offset": 0, "limit": 3, "format": "arrow"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_object_store, None)
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/vnd.apache.arrow.stream"
+    assert response.headers["x-total-row-count"] == "6"
+    assert response.headers["x-offset"] == "0"
+    assert response.headers["x-filtered"] == "false"
+
+    table = pa.ipc.open_stream(response.content).read_all()
+    assert table.num_rows == 3
+
+
+def test_rows_route_still_returns_json_when_format_is_omitted(client) -> None:
+    """Every existing caller sends no `format` at all — this pins that the
+    default stays the JSON body they already parse, unchanged by T05."""
+    http, _ = client
+    response = http.post(
+        "/v1/preprocess/rows",
+        json={"source_key": "ds-1/v1.parquet", "offset": 0, "limit": 3},
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    body = response.json()
+    assert "rows" in body and "total_row_count" in body

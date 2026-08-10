@@ -209,3 +209,49 @@ def test_get_frame_slice_windows_rows(store: ObjectStore) -> None:
         store.get_frame_slice(key, offset=0, limit=0)
 
     store.delete_prefix("pytest-object-store/")
+
+
+def test_get_frame_metadata_reads_tags_and_range_without_decoding_values(
+    store: ObjectStore,
+) -> None:
+    """DS-LAKE-005B-A-T01: the footer-driven path, against a real Parquet
+    object — the RecordingStore fake in `test_artifact_service.py` proves the
+    service wiring, this proves the actual pyarrow read.
+    """
+    df = good_frame()
+    key = "pytest-object-store/metadata.parquet"
+    store.put_frame(df, key, overwrite=True)
+
+    meta = store.get_frame_metadata(key)
+
+    # Alphabetical, not schema/file-column order (FI-404 is written second in
+    # good_frame() but must sort first) — /metadata and /tags must agree.
+    assert meta["tags"] == ["FI-404", "TI-101"]
+    # timestamp + 2 tags + 2 status sidecars (2N+1 for N=2)
+    assert meta["column_count"] == 5
+    assert meta["row_count"] == 2
+    assert meta["start_time"] == "2026-06-22 00:00:00"
+    assert meta["end_time"] == "2026-06-22 00:01:00"
+
+    store.delete_prefix("pytest-object-store/")
+
+
+def test_get_frame_column_projection_excludes_the_other_tag(
+    store: ObjectStore,
+) -> None:
+    """DS-LAKE-005B-A-T02: real Parquet column projection, and the real
+    rejection type an unknown column raises — `artifact_service.rows` relies
+    on this being a `ValueError` subclass to turn a bad tag name into a 422.
+    """
+    df = good_frame()
+    key = "pytest-object-store/projection.parquet"
+    store.put_frame(df, key, overwrite=True)
+
+    projected = store.get_frame(key, columns=["timestamp", "TI-101"])
+    assert list(projected.columns) == ["timestamp", "TI-101"]
+    assert "FI-404" not in projected.columns
+
+    with pytest.raises(ValueError):
+        store.get_frame(key, columns=["timestamp", "NOPE"])
+
+    store.delete_prefix("pytest-object-store/")

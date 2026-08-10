@@ -15,6 +15,31 @@ export interface CreateDataSourceInput {
   config?: DataSourceConfig
 }
 
+export interface ResolvedTagItem {
+  tagName: string
+  exists: boolean
+  /**
+   * The name as PI stores it — differs from `tagName` only in case. Null when
+   * the tag doesn't exist. Used as the map key so a tag typed in a different
+   * case doesn't become two separate entries.
+   */
+  actualName: string | null
+  description: string | null
+  unit: string | null
+  pointType: string | null
+  value: number | string | null
+  isGood: boolean | null
+  questionable: boolean | null
+  substituted: boolean | null
+  timestamp: string | null
+}
+
+export interface TagResolveResponse {
+  count: number
+  found: number
+  tags: ResolvedTagItem[]
+}
+
 interface ApiResponse<T> {
   data: T
   statusCode: number
@@ -57,6 +82,7 @@ export interface TagMetaItem {
 export interface TagMetadataResponse {
   total: number
   tags: TagMetaItem[]
+  hasNext: boolean
 }
 
 /** Ad-hoc connection details for testing a source before it is saved. */
@@ -132,10 +158,27 @@ export const dataSourceService = {
       body: JSON.stringify({ tagList, ...(batchSize ? { batchSize } : {}) }),
     }),
 
+  resolveTags: (
+    id: string,
+    tagNames: string[],
+    opts?: { signal?: AbortSignal },
+  ): Promise<ApiResponse<TagResolveResponse>> =>
+    fetchClient(`/api/v1/authorized/data-source/${id}/tags/resolve`, {
+      method: 'POST',
+      body: JSON.stringify({ tagNames }),
+      signal: opts?.signal,
+    }),
+
   /** Browse tag metadata for a source (PI tag search) — metadata only, no archive. */
   metadata: (
     id: string,
-    params?: { nameFilter?: string; maxCount?: number; table?: string },
+    params?: {
+      nameFilter?: string
+      page?: number
+      pageSize?: number
+      table?: string
+    },
+    cancel?: { signal: AbortSignal },
   ): Promise<ApiResponse<TagMetadataResponse>> =>
     fetchClient(`/api/v1/authorized/data-source/${id}/metadata`, {
       method: 'POST',

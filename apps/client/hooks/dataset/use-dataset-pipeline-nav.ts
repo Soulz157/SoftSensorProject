@@ -147,7 +147,6 @@ export interface UseDatasetPipelineNavResult {
 export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
   const mode = useAtomValue(dwModeAtom)
   const isEditLocked = mode === 'edit'
-  // Stable ref so the schema-lock guard can live inside memoized setters
   // without adding `isEditLocked` to every dependency array.
   const lockedRef = useRef(isEditLocked)
   lockedRef.current = isEditLocked
@@ -294,8 +293,6 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
     setCurrentStep(prev => Math.max(1, prev - 1))
   }, [setCurrentStep])
 
-  // Exposed publicly now — was a private helper only. Clears fetch state +
-  // raw dataset so downstream steps recompute against a fresh fetch.
   const resetFetch = useCallback(() => {
     setFetchState({ status: 'idle', progress: 0 })
     setRawDataset({ tags: [], rows: [] })
@@ -319,11 +316,6 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
     ],
   )
 
-  // Re-added — switches CSV upload vs Saved Source input mode. Ported from the
-  // old useModelPipelineNav.setTagInputMethod reset chain, minus the
-  // Training/Results reset (out of scope for this hook). Relock target
-  // adjusted to step 1 to match this hook's numbering (step 1 = tag
-  // selection is the earliest step here).
   const setTagInputMethod = useCallback(
     (method: TagInputMethod) => {
       if (lockedRef.current) return

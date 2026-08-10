@@ -32,7 +32,10 @@ class TagItem(BaseModel):
 
 
 class TagListResponse(BaseModel):
-    total: int
+    count: int
+    page: int = None
+    page_size: int = None
+    hasNext: bool = None
     tags: list[TagItem]
 
 
@@ -44,6 +47,21 @@ class TagCurrent(BaseModel):
     isGood: Optional[bool] = None
     questionable: Optional[bool] = None
     substituted: Optional[bool] = None
+
+
+class TagResolveItem(BaseModel):
+    tagName: str
+    exists: bool
+    isGood: Optional[bool] = None
+    questionable: Optional[bool] = None
+    substituted: Optional[bool] = None
+    timestamp: Optional[str] = None
+
+
+class TagResolveResponse(BaseModel):
+    count: int
+    found: int
+    tags: list[TagResolveItem]
 
 
 class TagCurrentRequest(BaseModel):

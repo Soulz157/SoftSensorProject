@@ -157,6 +157,7 @@ export const dwCleaningTagsAtom = atom<string[]>([])
 // set). Distinct from a tag merely having steps — Save is the commit point that
 // moves a batch from Pending → Cleaned. Sidebar renders the green check off this.
 export const dwCleanedTagsAtom = atom<string[]>([])
+export const dwSelectedTagKeysAtom = atom<Set<string>>(new Set<string>())
 
 // Step 4 — Feature Engineering
 // Selected columns to keep (original + engineered); null = keep all.

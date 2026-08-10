@@ -6,9 +6,11 @@ import {
   Param,
   Post,
   Query,
+  Res,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import type { FastifyReply } from 'fastify';
 import { JwtAccessGuard } from '@/guards/jwt-access.guard';
 import { Users } from '@/common/decorators/user.decorator';
 import { DatasetDraftAuthorizedService } from './dataset-draft.authorized.service';
@@ -18,6 +20,7 @@ import {
   ListRowsDto,
   PreviewVersionDto,
   StartCleanJobDto,
+  TagCatalogDto,
 } from '../../dataset-version/authorized/dto/dataset-version.authorized.dto';
 
 /**
@@ -95,14 +98,96 @@ export class DatasetDraftAuthorizedController {
 
   @Get('/:id/artifacts/:artifactId/rows')
   @HttpCode(200)
-  @ApiOperation({ summary: 'Read a page of rows from a draft artifact' })
+  @ApiOperation({
+    summary: 'Read a page of rows from a draft artifact',
+    description:
+      '`format=arrow` (DS-LAKE-005B-A-T05, rescoped to server-side transport ' +
+      'only) returns the page as an Arrow IPC stream instead of JSON, with ' +
+      'the envelope in X-Total-Row-Count/X-Offset/X-Filtered/X-Start-Time/' +
+      'X-End-Time response headers. No current client reads this format.',
+  })
   async listDraftArtifactRowsController(
     @Users() user: Auth.UserPayload,
     @Param('id') id: string,
     @Param('artifactId') artifactId: string,
     @Query() query: ListRowsDto,
+    @Res({ passthrough: false }) reply: FastifyReply,
   ) {
-    return this.service.listDraftRowsService(user, id, artifactId, query);
+    const result = await this.service.listDraftRowsService(
+      user,
+      id,
+      artifactId,
+      query,
+    );
+    if (result.format === 'arrow') {
+      reply.headers(result.headers);
+      reply.type(result.contentType);
+      reply.status(200);
+      reply.send(result.buffer);
+      return;
+    }
+    reply.status(result.statusCode).send(result);
+  }
+
+  @Get('/:id/artifacts/:artifactId/metadata')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Artifact metadata: schema, time range, quality summary',
+    description:
+      'Bounded viewport metadata, never a row payload (DS-LAKE-005B-A-T01). ' +
+      'rowCount/tagCount/missingPct/checksum come from the DatasetArtifact ' +
+      'row with zero I/O; tags and the time range are read from the object.',
+  })
+  async getDraftArtifactMetadataController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+  ) {
+    return this.service.getDraftArtifactMetadataService(user, id, artifactId);
+  }
+
+  @Get('/:id/artifacts/:artifactId/tags')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Paginated, searchable tag catalog',
+    description:
+      'Same footer-only read as /metadata (DS-LAKE-005B-A-T03) — never a ' +
+      'row payload, so 8,000+ tags can be browsed one page at a time.',
+  })
+  async getDraftArtifactTagCatalogController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Query() query: TagCatalogDto,
+  ) {
+    return this.service.getDraftArtifactTagCatalogService(
+      user,
+      id,
+      artifactId,
+      query,
+    );
+  }
+
+  @Get('/:id/artifacts/:artifactId/column-stats')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Per-tag aggregate stats sidecar (coverage, outliers, drift)',
+    description:
+      'Reads ONLY the column_stats.json sidecar written at write time ' +
+      '(DS-LAKE-005B-A-T07) — data.parquet is never opened, so this costs ' +
+      'the same one object download for 8,000 tags as for one. 404 if the ' +
+      'artifact predates this task and has no sidecar.',
+  })
+  async getDraftArtifactColumnStatsController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+  ) {
+    return this.service.getDraftArtifactColumnStatsService(
+      user,
+      id,
+      artifactId,
+    );
   }
 
   @Post('/:id/artifacts/:artifactId/preview')

@@ -1,12 +1,22 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAtomValue } from 'jotai'
 import { dwSelectedSourcesAtom } from '@/store/dataset-studio'
 import { dataSourceService, type TagMetaItem } from '@/services/data-sources'
 
 export type TagQuality = 'good' | 'questionable' | 'bad' | 'unknown'
 
+export const tagKey = (sourceId: string, tagName: string) =>
+  `${sourceId}::${tagName}`
+
+export const sourceIdOf = (key: string) => key.slice(0, key.indexOf('::'))
+export const tagNameOf = (key: string) => key.slice(key.indexOf('::') + 2)
+
+interface PageResult {
+  tags: TagMetaItem[]
+  hasNext: boolean
+}
 /**
  * Derive a traffic-light quality from PI snapshot flags. `Is Good = false` is a
  * Bad reading; otherwise a Questionable flag downgrades to amber; a clean Good
@@ -23,6 +33,7 @@ export function deriveTagQuality(m: {
 }
 
 export interface TagMeta {
+  tagName: string
   description: string | null
   value: number | string | null
   unit: string | null
@@ -36,6 +47,7 @@ export interface TagMeta {
 
 function toMeta(item: TagMetaItem): TagMeta {
   return {
+    tagName: item.tag_name,
     description: item.description,
     value: item.value,
     unit: item.unit,
@@ -50,13 +62,13 @@ function toMeta(item: TagMetaItem): TagMeta {
 
 interface Result {
   metaByTag: Map<string, TagMeta>
-  /**
-   * Real PI tag names per source id. The tag table builds its rows from these
-   * so `originalName` matches the `metaByTag` keys — building rows from the
-   * mock catalogue instead is what made every lookup miss.
-   */
   tagsBySource: Map<string, string[]>
+
+  hasNextBySource: Map<string, boolean>
+  pageBySource: Map<string, number>
+  goto: (id: string, page: number) => void
   loading: boolean
+  refetch: () => void
   error: string | null
 }
 
@@ -67,69 +79,169 @@ interface Result {
  * the map resolves. Bounded by `maxCount` (server-side pagination is a
  * follow-up for very large PI systems).
  */
-export function useDatasetTagMetadata(maxCount = 1000): Result {
+export function useDatasetTagMetadata(
+  nameFilter = '*',
+  pageSize = 100,
+  enabled = true,
+): Result {
   const sources = useAtomValue(dwSelectedSourcesAtom)
-  const [metaByTag, setMetaByTag] = useState<Map<string, TagMeta>>(new Map())
-  const [tagsBySource, setTagsBySource] = useState<Map<string, string[]>>(
+  const [pages, setPages] = useState<Map<string, PageResult>>(new Map())
+
+  const [pageBySource, setPageBySource] = useState<Map<string, number>>(
     new Map(),
   )
+
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [reloadNonce, setReloadNonce] = useState(0)
 
-  const piSourceIds = sources
-    .filter(s => s.type === 'aveva')
-    .map(s => s.id)
-    .join(',')
+  const cache = useRef(new Map<string, PageResult>())
+
+  const ids = useMemo(
+    () => sources.filter(s => s.type === 'aveva').map(s => s.id),
+    [sources],
+  )
+
+  const idsKey = JSON.stringify(ids)
+  useEffect(() => {
+    cache.current.clear()
+    setPageBySource(new Map())
+  }, [nameFilter, pageSize])
 
   useEffect(() => {
-    const ids = piSourceIds ? piSourceIds.split(',') : []
-    if (ids.length === 0) {
-      setMetaByTag(new Map())
-      setTagsBySource(new Map())
+    setPageBySource(prev => {
+      const next = new Map<string, number>()
+      for (const id of ids) {
+        const p = prev.get(id)
+        if (p !== undefined) next.set(id, p)
+      }
+      return next.size === prev.size ? prev : next
+    })
+  }, [idsKey])
+
+  const wantKey = ids
+    .map(id => `${id}::${nameFilter}::${pageBySource.get(id) ?? 1}`)
+    .join('|')
+
+  useEffect(() => {
+    if (!enabled || ids.length === 0) {
+      setPages(new Map())
       setError(null)
+      setLoading(false)
       return
     }
+    if (ids.length === 0) {
+      setPages(new Map())
+      setError(null)
+      setLoading(false)
+      return
+    }
+
+    const wanted = ids.map(id => ({
+      id,
+      page: pageBySource.get(id) ?? 1,
+      key: `${id}::${nameFilter}::${pageBySource.get(id) ?? 1}`,
+    }))
+
+    const missing = wanted.filter(w => !cache.current.has(w.key))
+    if (missing.length === 0) {
+      setPages(new Map(wanted.map(w => [w.id, cache.current.get(w.key)!])))
+      setError(null)
+      setLoading(false)
+      return
+    }
+
+    const ctrl = new AbortController()
+    setLoading(true)
+    setError(null)
 
     let cancelled = false
     setLoading(true)
     setError(null)
 
-    Promise.all(
-      ids.map(id =>
-        dataSourceService
-          .metadata(id, { nameFilter: '*', maxCount })
-          .then(res => res.data.tags)
-          .catch(() => [] as TagMetaItem[]),
+    Promise.allSettled(
+      missing.map(w =>
+        dataSourceService.metadata(
+          w.id,
+          { nameFilter, page: w.page, pageSize },
+          { signal: ctrl.signal },
+        ),
       ),
     )
-      .then(perSource => {
-        if (cancelled) return
-        const map = new Map<string, TagMeta>()
-        // `perSource` preserves the order of `ids`, so index i belongs to ids[i].
-        const bySource = new Map<string, string[]>()
-        perSource.forEach((tags, i) => {
-          const id = ids[i]
-          if (id)
-            bySource.set(
-              id,
-              tags.map(t => t.tag_name),
-            )
-          for (const item of tags) map.set(item.tag_name, toMeta(item))
+      .then(results => {
+        // console.log('metadata results', results)
+        if (ctrl.signal.aborted) return
+        const failed: string[] = []
+
+        results.forEach((r, i) => {
+          const w = missing[i]
+          if (!w) return
+          if (r.status === 'rejected') {
+            failed.push(w.id)
+            return
+          }
+          const d = r.value.data
+          cache.current.set(w.key, {
+            tags: d.tags,
+            hasNext: d.hasNext === true,
+          })
         })
-        setMetaByTag(map)
-        setTagsBySource(bySource)
-        if (map.size === 0) {
-          setError('No tag metadata returned for the selected PI source(s).')
-        }
+
+        setPages(
+          new Map(
+            wanted
+              .map(w => [w.id, cache.current.get(w.key)] as const)
+              .filter((e): e is [string, PageResult] => e[1] !== undefined),
+          ),
+        )
+        setError(
+          failed.length
+            ? `Metadata unavailable for ${failed.length}/${ids.length} source(s).`
+            : null,
+        )
       })
       .finally(() => {
-        if (!cancelled) setLoading(false)
+        if (!ctrl.signal.aborted) setLoading(false)
       })
 
-    return () => {
-      cancelled = true
-    }
-  }, [piSourceIds, maxCount])
+    // cancelled flag เดิมปิดแค่ setState — request ยังค้างใน threadpool
+    return () => ctrl.abort()
+  }, [wantKey, idsKey, nameFilter, pageSize])
 
-  return { metaByTag, tagsBySource, loading, error }
+  const { metaByTag, tagsBySource, hasNextBySource } = useMemo(() => {
+    const meta = new Map<string, TagMeta>()
+    const bySource = new Map<string, string[]>()
+    const hasNext = new Map<string, boolean>()
+    for (const [id, page] of pages) {
+      hasNext.set(id, page.hasNext)
+      bySource.set(
+        id,
+        page.tags.map(t => t.tag_name),
+      )
+      for (const t of page.tags) meta.set(tagKey(id, t.tag_name), toMeta(t))
+    }
+    return { metaByTag: meta, tagsBySource: bySource, hasNextBySource: hasNext }
+  }, [pages])
+
+  const goto = useCallback(
+    (id: string, page: number) =>
+      setPageBySource(prev => new Map(prev).set(id, Math.max(1, page))),
+    [],
+  )
+
+  const refetch = useCallback(() => {
+    for (const key of [...cache.current.keys()]) cache.current.delete(key)
+    setReloadNonce(n => n + 1)
+  }, [wantKey, idsKey, nameFilter, pageSize, enabled, reloadNonce])
+
+  return {
+    metaByTag,
+    tagsBySource,
+    hasNextBySource,
+    pageBySource,
+    goto,
+    refetch,
+    loading,
+    error,
+  }
 }

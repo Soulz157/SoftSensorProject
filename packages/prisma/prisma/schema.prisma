@@ -512,9 +512,16 @@ model DatasetArtifact {
   sizeBytes BigInt @default(0)
 
   /// Operations that produced THIS artifact from its parent.
-  operations  Json
-  /// Per-column min/max/mean/nullCount captured at write time.
-  columnStats Json?
+  operations Json
+
+  /// column_stats.json sidecar key, written beside the data at write time
+  /// (DS-LAKE-005B-A-T07) — NOT the stats themselves. Per-tag coverage/
+  /// outlier/drift/etc. for an 8,000-tag artifact is not something Postgres
+  /// should hold as JSONB; MinIO already holds the data these stats
+  /// describe, and this column is a pointer into the same layout
+  /// featureSpecKey/validationKey below use. Null for an artifact written
+  /// before this task or via a write path this task did not reach.
+  columnStatsKey String?
 
   /// Sidecar object keys written beside the data. featureSpecKey is set on GOLD
   /// (DS-LAKE-006), validationKey on FINAL (DS-LAKE-007).

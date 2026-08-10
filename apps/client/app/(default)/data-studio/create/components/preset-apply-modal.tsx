@@ -44,6 +44,8 @@ import {
   canApply,
   compareTags,
   requiredDatasetTags,
+  TagComparison,
+  TagLookup,
   toFeatureConfigs,
   type PresetDocument,
   type PresetFeature,
@@ -51,19 +53,21 @@ import {
   type SdtaConfig,
   type TagCheck,
 } from '@/lib/feature-preset'
+import {
+  TagResolution,
+  useTagResolution,
+} from '@/hooks/dataset/use-tag-resolution'
 
 /** What Apply hands to the wizard. Derived here so Step 4 need not re-derive. */
 export interface AppliedPreset {
   document: PresetDocument
-  /** The picker row this document came from — provenance for dwFeaturePresetAtom. */
   summary: PresetSummary
-  /** Equations, queued for Step 4. Nothing is evaluated yet. */
   featureConfigs: FeatureConfig[]
-  /** Base tags the preset needs, with overrides applied. */
-  requiredTags: string[]
   overrides: Record<string, string>
+  /** Verified against PI — the table builds selection keys from this. */
+  comparison: TagComparison
+  resolved: Map<string, TagResolution>
 }
-
 interface Props {
   /** Step-1 rows, NOT tag names — the gate needs each row's status. */
   rows: DatasetTagRow[]
@@ -73,7 +77,7 @@ interface Props {
    * not to whichever preset happens to be selected. A user may want the cut
    * config with no preset chosen at all.
    */
-  onApplySdta: (sdta: SdtaConfig) => void
+  onApplySdta: (sdta: SdtaConfig, lookup: TagLookup) => void
 }
 
 type StatusFilter = 'all' | 'matched' | 'attention'
@@ -124,14 +128,28 @@ export function PresetApplyManager({
   const [dragging, setDragging] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
-  // Global, not local: an SD&TA config loaded once is worth keeping around if
-  // the sheet is closed and reopened, rather than refetching every time.
   const [sdta, setSdta] = useAtom(dwSdtaConfigAtom)
   const [sdtaLoading, setSdtaLoading] = useState(false)
   const [sdtaError, setSdtaError] = useState<string | null>(null)
   const [sdtaApplied, setSdtaApplied] = useState(false)
 
   // ── derived ──────────────────────────────────────────────────────────────
+
+  const tagsToResolve = useMemo(() => {
+    const set = new Set<string>()
+    if (document) {
+      for (const t of document.required_base_tags) set.add(overrides[t] ?? t)
+      set.add(document.target_y)
+    }
+    for (const c of sdta?.conditions ?? []) set.add(c.tag)
+    return [...set]
+  }, [document, overrides, sdta])
+
+  const {
+    resolved,
+    loading: resolveLoading,
+    error: resolveError,
+  } = useTagResolution(tagsToResolve)
 
   const units = useMemo(
     () => [...new Set(presets.map(p => p.unit))].sort(),
@@ -147,8 +165,9 @@ export function PresetApplyManager({
   )
 
   const comparison = useMemo(
-    () => (document ? compareTags(document, rows, overrides) : null),
-    [document, rows, overrides],
+    () =>
+      document ? compareTags(document, { resolved, rows }, overrides) : null,
+    [document, resolved, rows, overrides],
   )
 
   /** Healthy tags only — remapping onto a broken tag would not help. */
@@ -184,17 +203,15 @@ export function PresetApplyManager({
     [document],
   )
 
-  const targetPresent = useMemo(
-    () =>
-      document
-        ? rows.some(r => r.tagName === document.target_y && r.status === 'good')
-        : false,
-    [document, rows],
-  )
+  const targetPresent = Boolean(document && resolved.has(document.target_y))
 
   const attention = comparison ? comparison.missing + comparison.unhealthy : 0
   const applicable = Boolean(
-    document && comparison && canApply(document, comparison),
+    document &&
+    comparison &&
+    !resolveLoading &&
+    !resolveError &&
+    canApply(document, comparison),
   )
 
   // ── actions ──────────────────────────────────────────────────────────────
@@ -247,27 +264,26 @@ export function PresetApplyManager({
   )
 
   const handleApply = useCallback(() => {
-    if (!document || !comparison || !canApply(document, comparison)) return
-    // The row this document was loaded from — carries the id/objectKey the
-    // wizard's provenance atom needs, which the document itself does not.
+    if (!document || !comparison || !applicable) return
     const summary = configs.find(p => p.id === presetId)
     if (!summary) return
     onApplyPreset({
       document,
       summary,
       featureConfigs: toFeatureConfigs(document, overrides),
-      requiredTags: requiredDatasetTags(document, overrides),
       overrides,
+      comparison,
+      resolved,
     })
-    toast.success(
-      `Applied ${document.name}. ${equations.length} equation(s) queued for Step 4.`,
-    )
     setOpen(false)
+    // Toast lives in the caller now — it knows how many tags were actually
+    // selected, which this component cannot see.
   }, [
     document,
     comparison,
+    applicable,
     overrides,
-    equations.length,
+    resolved,
     configs,
     presetId,
     onApplyPreset,
@@ -290,9 +306,9 @@ export function PresetApplyManager({
 
   const handleApplySdta = useCallback(() => {
     if (!sdta) return
-    onApplySdta(sdta)
+    onApplySdta(sdta, { resolved, rows })
     setSdtaApplied(true)
-  }, [sdta, onApplySdta])
+  }, [sdta, resolved, rows, onApplySdta])
 
   // ── render ───────────────────────────────────────────────────────────────
 
@@ -483,10 +499,25 @@ export function PresetApplyManager({
                   </div>
                 </div>
 
+                {resolveLoading && (
+                  <LoadingRow label="Checking tags against PI…" />
+                )}
+                {resolveError && <Notice tone="error">{resolveError}</Notice>}
+
                 <div className="min-h-0 flex-1 overflow-y-auto">
                   {visibleChecks.length === 0 ? (
-                    <p className="p-6 text-center text-xs text-muted-foreground">
-                      No tags match this filter.
+                    <p className="text-xs text-muted-foreground">
+                      {resolveLoading
+                        ? 'Verifying tags against PI…'
+                        : resolveError
+                          ? 'Tag verification failed — cannot apply safely.'
+                          : document && comparison && !applicable
+                            ? document.incomplete
+                              ? 'This configuration lists no features in the workbook.'
+                              : `${attention} required tag(s) still need attention.`
+                            : document
+                              ? 'All required tags are available.'
+                              : ''}
                     </p>
                   ) : (
                     <table className="w-full text-xs">
@@ -826,13 +857,10 @@ function PresetPreview({
         </Collapsible.Trigger>
         <Collapsible.Content className="space-y-1.5 pt-1.5">
           {equations.map(eq => (
-            <div key={eq.name} className="rounded-lg bg-muted/40 p-2.5">
-              <p className="font-mono text-xs text-foreground">{eq.name}</p>
-              <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
+            <div key={eq.name} className="mt-1 rounded-lg bg-muted/40 p-2.5">
+              <p className=" break-all font-mono text-[11px] text-muted-foreground">
                 {eq.formula}
               </p>
-              {/* Advisory, not an operating state — so muted, not amber.
-                  Warning Amber is reserved for plant conditions (DESIGN.md §2). */}
               {eq.parse_warnings.length > 0 && (
                 <p className="mt-1 flex items-start gap-1 text-[11px] text-muted-foreground">
                   <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
@@ -854,7 +882,7 @@ function PresetPreview({
             {rawTags.map(tag => (
               <span
                 key={tag.name}
-                className="rounded bg-muted/60 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
+                className="mt-1 rounded bg-muted/60 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
               >
                 {tag.name}
               </span>

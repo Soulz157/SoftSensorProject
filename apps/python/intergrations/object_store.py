@@ -40,6 +40,7 @@ from typing import Any
 
 import pandas as pd
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from minio import Minio
 from minio.error import S3Error
@@ -64,6 +65,11 @@ SCHEMA_VERSION = 1
 MANIFEST_FILENAME = "manifest.json"
 FEATURE_SPEC_FILENAME = "feature_spec.json"
 VALIDATION_REPORT_FILENAME = "validation_report.json"
+#: DS-LAKE-005B-A-T07. Per-tag aggregate stats, written beside the data at
+#: write time via the same `sidecar_key()` pattern as the manifest — a
+#: reader derives this key from `source_key` alone, the same way `/metadata`
+#: and `/tags` do, rather than needing a separately-stored location.
+COLUMN_STATS_FILENAME = "column_stats.json"
 DATA_FILENAME = "data.parquet"
 
 #: Root prefix for imported soft-sensor feature presets. A prefix inside the
@@ -100,6 +106,16 @@ class ArtifactStats:
     checksum: str
 
 
+def _tags_from_columns(columns: list[str]) -> list[str]:
+    """Shared by `tag_columns` (has a DataFrame) and `get_frame_metadata`
+    (has only Parquet schema names, no decoded columns) so the two never
+    diverge on what counts as a tag.
+    """
+    return [
+        c for c in columns if c != TIMESTAMP_COLUMN and not c.endswith(STATUS_SUFFIX)
+    ]
+
+
 def tag_columns(df: pd.DataFrame) -> list[str]:
     """Logical tags only — excludes `timestamp` and every status sidecar.
 
@@ -107,9 +123,7 @@ def tag_columns(df: pd.DataFrame) -> list[str]:
     use this definition or they disagree on screen: the frame carries 2N+1
     physical columns for N logical tags.
     """
-    return [
-        c for c in df.columns if c != TIMESTAMP_COLUMN and not c.endswith(STATUS_SUFFIX)
-    ]
+    return _tags_from_columns(list(df.columns))
 
 
 def status_column(tag: str) -> str:
@@ -333,6 +347,64 @@ class ObjectStore:
                 response.close()
                 response.release_conn()
 
+    def get_frame_metadata(self, key: str) -> dict[str, Any]:
+        """Tag names and the timestamp range, without decoding tag or status
+        columns.
+
+        The tag list and row count come from the Parquet footer; only the
+        `timestamp` column's data is actually decoded, and via `pyarrow.compute`
+        rather than an assumption that the frame is sorted. An 8,000-tag
+        artifact still costs one object download, but not 16,000 columns of
+        decode — DS-LAKE-005B-A-T01's metadata endpoint is this call plus the
+        counters already sitting on the artifact row, so it never opens
+        `data.parquet` at all when only the DatasetArtifact row is served.
+
+        `tags` is ALPHABETICAL, not schema/file-column order —
+        DS-LAKE-005B-A-T03's `tag_catalog()` is built on this same call, and a
+        client that indexes tags from `/metadata` then pages `/tags` must see
+        one consistent order for the same names, not two.
+        """
+        response = None
+        try:
+            response = self._client.get_object(self.bucket, key)
+            payload = response.read()
+        except S3Error as err:
+            raise ObjectStoreError(f"Could not read '{key}': {err.code}") from err
+        finally:
+            if response is not None:
+                response.close()
+                response.release_conn()
+
+        buffer = io.BytesIO(payload)
+        parquet_file = pq.ParquetFile(buffer)
+        schema_names = list(parquet_file.schema_arrow.names)
+        tags = sorted(_tags_from_columns(schema_names))
+        row_count = int(parquet_file.metadata.num_rows)
+
+        start_time: str | None = None
+        end_time: str | None = None
+        if row_count and TIMESTAMP_COLUMN in schema_names:
+            column = pq.read_table(buffer, columns=[TIMESTAMP_COLUMN]).column(
+                TIMESTAMP_COLUMN
+            )
+            lo = pc.min(column).as_py()
+            hi = pc.max(column).as_py()
+            start_time = lo.isoformat(sep=" ") if hasattr(lo, "isoformat") else str(lo)
+            end_time = hi.isoformat(sep=" ") if hasattr(hi, "isoformat") else str(hi)
+
+        return {
+            "tags": tags,
+            #: PHYSICAL width, measured from the same schema read as `tags` —
+            #: `timestamp` + one column per tag + one `__status` sidecar per
+            #: tag, i.e. 2N+1 for N logical tags. Deliberately the schema's own
+            #: column count, not `2 * len(tags)`: a derived number can disagree
+            #: with `tags` on a legacy or malformed row, a measured one cannot.
+            "column_count": len(schema_names),
+            "row_count": row_count,
+            "start_time": start_time,
+            "end_time": end_time,
+        }
+
     def get_json(self, key: str) -> Any:
         response = None
         try:
@@ -375,18 +447,12 @@ class ObjectStore:
             raise ValueError("offset must be >= 0 and limit must be > 0")
         return self.get_frame(key).iloc[offset : offset + limit].reset_index(drop=True)
 
-    def get_frame_head(self, key: str, limit: int) -> tuple[pd.DataFrame, int]:
-        """Head window plus the artifact's TRUE row count.
-
-        `get_frame_slice` discards the total, and the total is the only thing
-        that can tell a caller whether the window it got back is the whole
-        dataset or the first page of something much larger. The read is
-        whole-object either way (see above), so returning it costs nothing.
-        """
-        if limit <= 0:
-            raise ValueError("limit must be > 0")
-        frame = self.get_frame(key)
-        return frame.head(limit).reset_index(drop=True), int(len(frame))
+    # `get_frame_head` (head window + true row count) was removed in
+    # DS-LAKE-005B-A-T04: its one caller, `preview_service.build_preview`,
+    # needed column projection and a time filter applied BEFORE the head cap,
+    # neither of which this method took, so the head/count logic moved
+    # in-line there (mirroring `artifact_service.rows`) instead of growing a
+    # third parameter set here.
 
     # ── delete ───────────────────────────────────────────────────────────
 

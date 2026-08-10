@@ -1,5 +1,11 @@
 import { fetchClient } from '@/lib/fetcher'
-import type { Cell, Dataset, DataRow } from '@/lib/preprocessing'
+import {
+  brandBoundedSample,
+  type BoundedSample,
+  type Cell,
+  type Dataset,
+  type DataRow,
+} from '@/lib/preprocessing'
 
 /**
  * Dataset versions and preprocessing jobs.
@@ -235,6 +241,41 @@ export async function fetchVersionDataset(
   }
 
   return { tags, rows }
+}
+
+export interface BoundedVersionRowsPage {
+  page: BoundedSample
+  totalRowCount: number
+  offset: number
+}
+
+/**
+ * ONE bounded page of a version's rows — the windowed counterpart to
+ * `fetchVersionDataset`'s accumulate-everything loop (DS-LAKE-005B-B-T01/T04).
+ *
+ * `fetchVersionDataset` is left completely unchanged: its one caller,
+ * `useDatasetVersionRows`, feeds every downstream wizard step a full
+ * `Dataset` today (DataAnalysisCard's histogram/boxplot/scatter/correlation
+ * tabs and Step 5's client pipeline both need it — see the DS-LAKE-005B-B-T01
+ * blockedReason for why neither has a safe bounded replacement yet), so
+ * changing what it returns would break real, currently-working consumers.
+ *
+ * This function has NO production caller yet — it exists so `BoundedSample`
+ * has one real, tested construction site today rather than being introduced
+ * speculatively. It becomes load-bearing the moment any consumer is ready to
+ * read one page at a time instead of accumulating the whole artifact.
+ */
+export async function fetchVersionRowsPage(
+  datasetId: string,
+  versionId: string,
+  params: { offset: number; limit: number },
+): Promise<BoundedVersionRowsPage> {
+  const res = await datasetVersionService.rows(datasetId, versionId, params)
+  return {
+    page: brandBoundedSample({ tags: res.data.tags, rows: res.data.rows }),
+    totalRowCount: res.data.totalRowCount,
+    offset: params.offset,
+  }
 }
 
 export type { Cell, DataRow }

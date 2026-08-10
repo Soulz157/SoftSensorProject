@@ -3,6 +3,7 @@ import type { FeatureConfig, FormulaFeature } from '@/lib/feature-engineering'
 import type { DatasetTagRow } from '@/hooks/dataset/use-dataset-tag-table'
 import type { ConditionalRule, RangeExclusion } from '@/lib/precleanse'
 import type { CutoffOp } from '@/types/cutoff'
+import { TagResolution } from '@/hooks/dataset/use-tag-resolution'
 
 /**
  * Pure logic for applying an imported soft-sensor preset to the dataset wizard.
@@ -94,28 +95,25 @@ export interface SdtaConfig {
  */
 export type TagCheckStatus = 'matched' | 'error' | 'missing'
 
+export interface TagLookup {
+  resolved: Map<string, TagResolution>
+  rows: DatasetTagRow[]
+}
+
 export interface TagCheck {
-  /** The tag the preset asked for. */
   tag: string
   status: TagCheckStatus
-  /** Feature names that need this tag. */
   usedIn: string[]
-  /** Whether it is needed by an equation, a raw-tag feature, or both. */
   usedBy: Array<'equation' | 'raw_tag'>
-  /**
-   * The dataset tag actually resolved to, when it differs from `tag` — either a
-   * case/whitespace variant or a user override. Null when they are identical.
-   */
   mappedTo: string | null
-  /** Why the Step-1 row is unusable. Only set when `status === 'error'`. */
   errorReason?: string
-  /**
-   * A lab measurement (`.lab`/`.Lab`), which lives in manual sample data rather
-   * than the PI historian. A missing one means "this data has not been joined
-   * yet", not "you typed the tag wrong", and the UI must say so — otherwise the
-   * first preset a user opens is blocked with a misleading explanation.
-   */
   isLabTag: boolean
+  /**
+   * The PI source this tag lives on — null for a manual row or a missing tag.
+   * Apply uses it to build the selection key directly instead of guessing,
+   * which it had to do when only the name was available.
+   */
+  sourceId: string | null
 }
 
 export interface TagComparison {
@@ -141,22 +139,19 @@ function normalize(tag: string): string {
 }
 
 /**
- * Compare a preset's required base tags against the Step-1 tag table.
+ * Compare a preset's required base tags against the plant.
  *
- * Takes ROWS, not tag names. The distinction is load-bearing: the table
- * includes rows whose status is `error`, and a plain `string[]` cannot tell
- * them apart from healthy ones. Comparing against names alone reports a broken
- * tag as Matched, drives the missing count to zero, and enables Apply — which
- * then queues a fetch for a tag already known to be bad.
- *
- * @param overrides Map of required tag → chosen dataset tag, from the "map to…"
- * control. Only consulted when the tag does not resolve on its own.
+ * Resolution order is deliberate: a loaded row wins over a PI resolution,
+ * because the row is the only thing that knows a tag is present-but-broken.
+ * Falling through to `resolved` is what makes this work under pagination.
  */
 export function compareTags(
   doc: PresetDocument,
-  rows: DatasetTagRow[],
+  lookup: TagLookup,
   overrides: Record<string, string> = {},
 ): TagComparison {
+  const { resolved, rows } = lookup
+
   const byExact = new Map<string, DatasetTagRow>()
   const byNormalized = new Map<string, DatasetTagRow>()
   for (const row of rows) {
@@ -165,6 +160,12 @@ export function compareTags(
     if (!byExact.has(row.tagName)) byExact.set(row.tagName, row)
     const key = normalize(row.tagName)
     if (!byNormalized.has(key)) byNormalized.set(key, row)
+  }
+
+  const resolvedNormalized = new Map<string, [string, TagResolution]>()
+  for (const [name, res] of resolved) {
+    const key = normalize(name)
+    if (!resolvedNormalized.has(key)) resolvedNormalized.set(key, [name, res])
   }
 
   const required = new Map<
@@ -181,30 +182,62 @@ export function compareTags(
   }
 
   const checks: TagCheck[] = [...required.entries()].map(([tag, use]) => {
-    const override = overrides[tag]
-    const row =
-      (override ? byExact.get(override) : undefined) ??
-      byExact.get(tag) ??
-      byNormalized.get(normalize(tag))
-
-    const resolved = row?.tagName ?? null
+    const wanted = overrides[tag] ?? tag
     const base = {
       tag,
       usedIn: use.usedIn,
       usedBy: [...use.usedBy],
-      mappedTo: resolved && resolved !== tag ? resolved : null,
       isLabTag: isLabTag(tag),
     }
 
-    if (!row) return { ...base, status: 'missing' as const }
-    if (row.status === 'error') {
+    // 1) A row on the loaded page — the only place `bad` is knowable.
+    const row = byExact.get(wanted) ?? byNormalized.get(normalize(wanted))
+    if (row) {
+      const mappedTo = row.tagName !== tag ? row.tagName : null
+      if (row.status === 'bad') {
+        return {
+          ...base,
+          status: 'error' as const,
+          mappedTo,
+          errorReason: row.errorReason,
+          sourceId: row.sourceId ?? null,
+        }
+      }
       return {
         ...base,
-        status: 'error' as const,
-        errorReason: row.errorReason,
+        status: 'matched' as const,
+        mappedTo,
+        sourceId: row.sourceId ?? null,
       }
     }
-    return { ...base, status: 'matched' as const }
+
+    // 2) Not on this page — ask what PI said about the name.
+    const direct = resolved.get(wanted)
+    if (direct) {
+      return {
+        ...base,
+        status: 'matched' as const,
+        mappedTo: wanted !== tag ? wanted : null,
+        sourceId: direct.sourceId,
+      }
+    }
+    const near = resolvedNormalized.get(normalize(wanted))
+    if (near) {
+      const [actualName, res] = near
+      return {
+        ...base,
+        status: 'matched' as const,
+        mappedTo: actualName !== tag ? actualName : null,
+        sourceId: res.sourceId,
+      }
+    }
+
+    return {
+      ...base,
+      status: 'missing' as const,
+      mappedTo: null,
+      sourceId: null,
+    }
   })
 
   const matched = checks.filter(c => c.status === 'matched').length
@@ -216,8 +249,6 @@ export function compareTags(
     matched,
     unhealthy,
     missing,
-    // An empty requirement list is vacuously ready, but `incomplete` presets
-    // are gated separately — see `canApply`.
     readyPct:
       checks.length === 0 ? 100 : Math.round((matched / checks.length) * 100),
     ready: matched === checks.length,
@@ -255,14 +286,16 @@ export function requiredDatasetTags(
 
 /** What applying a preset changes about the wizard's Step-1 selection. */
 export interface PresetApplication {
-  /** Current selection unioned with the preset's required tags. */
-  selectedTags: string[]
-  /** The preset's target (Y) — recorded regardless of whether it is present. */
+  /**
+   * Selection keys (`${sourceId}::${tagName}`) to union into the selection.
+   * Keys, not names: selection has to survive paging, and the same tag name
+   * on two plants must stay distinguishable.
+   */
+  selectionKeys: string[]
   targetTag: string
-  /** Whether the target already exists as a healthy row. Purely informational
-   * for the caller (e.g. to skip a "not in this dataset" toast); the target is
-   * never added to `selectedTags` when this is false. */
   targetInCatalogue: boolean
+  /** Matched but with no PI source (manual row) — cannot be keyed. */
+  unselectable: string[]
 }
 
 /**
@@ -278,22 +311,29 @@ export interface PresetApplication {
  */
 export function planPresetApplication(
   document: PresetDocument,
-  requiredTags: string[],
-  currentSelectedTags: string[],
-  rows: DatasetTagRow[],
+  comparison: TagComparison,
+  resolved: Map<string, TagResolution>,
 ): PresetApplication {
-  const next = new Set(currentSelectedTags)
-  for (const tag of requiredTags) next.add(tag)
+  const keys: string[] = []
+  const unselectable: string[] = []
 
-  const targetInCatalogue = rows.some(
-    r => r.tagName === document.target_y && r.status === 'good',
-  )
-  if (targetInCatalogue) next.add(document.target_y)
+  for (const check of comparison.checks) {
+    if (check.status !== 'matched') continue
+    const name = check.mappedTo ?? check.tag
+    if (check.sourceId) keys.push(`${check.sourceId}::${name}`)
+    else unselectable.push(name)
+  }
+
+  // Every workbook target is a `.lab` tag, absent from PI by construction, so
+  // it never blocks apply — union it in only when PI actually resolved it.
+  const targetRes = resolved.get(document.target_y)
+  if (targetRes) keys.push(`${targetRes.sourceId}::${document.target_y}`)
 
   return {
-    selectedTags: [...next],
+    selectionKeys: keys,
     targetTag: document.target_y,
-    targetInCatalogue,
+    targetInCatalogue: Boolean(targetRes),
+    unselectable,
   }
 }
 
@@ -396,15 +436,20 @@ function isCutoffOp(op: string): op is CutoffOp {
  */
 export function planSdtaApplication(
   sdta: SdtaConfig,
-  rows: DatasetTagRow[],
+  lookup: TagLookup,
   makeId: () => string = () => crypto.randomUUID(),
 ): SdtaApplication {
+  const { resolved, rows } = lookup
+
   const exclusions: RangeExclusion[] = sdta.ranges.map(range => ({
     time: { from: range.from, to: range.to },
     value: null,
   }))
 
-  const healthyTags = new Set(
+  const badRows = new Set(
+    rows.filter(r => r.status === 'bad').map(r => r.tagName),
+  )
+  const healthyRows = new Set(
     rows.filter(r => r.status === 'good').map(r => r.tagName),
   )
 
@@ -419,7 +464,13 @@ export function planSdtaApplication(
       })
       continue
     }
-    if (!healthyTags.has(condition.tag)) {
+    if (badRows.has(condition.tag)) {
+      droppedConditions.push({ tag: condition.tag, reason: 'Tag is in error' })
+      continue
+    }
+    // Checking rows alone dropped conditions on tags that exist but sit on
+    // another catalog page.
+    if (!healthyRows.has(condition.tag) && !resolved.has(condition.tag)) {
       droppedConditions.push({
         tag: condition.tag,
         reason: 'Tag not in this dataset',

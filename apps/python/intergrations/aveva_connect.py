@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 import os
 import time
 import logging
@@ -10,6 +11,17 @@ from osisoft.pidevclub.piwebapi.models import PIStreamValue, PITimedValue
 
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+TAG_COLUMNS = [
+    "tag_name", "description", "unit", "point_type",
+    "value", "timestamp", "Is Good", "Questionable", "Substituted",
+]
+
+
+@dataclass
+class TagPage:
+    df: pd.DataFrame
+    has_next: bool
 
 
 def chunked(lst: list, size: int) -> Generator[list, None, None]:
@@ -151,18 +163,107 @@ class PIWebAPI:
             streamValues
         )
 
+    def resolve_tags(
+        self,
+        tag_names: list[str],
+        batch_size: int = 50,
+    ) -> dict[str, dict | None]:
+        """
+        Existence check by NAME — "does PI know this exact tag?".
+
+        `/points/multiple?path=…&includeMode=All` is the only endpoint that
+        answers that for a batch of exact names in one call. The two obvious
+        alternatives cannot: `dataServer.get_points` browses a catalog by
+        wildcard and `streamSet.get_values_ad_hoc` takes WebIds — neither
+        accepts `path=`, which is where the "unexpected keyword argument
+        'path'" TypeError came from. `convert_paths_to_web_ids` is no good
+        either: it RAISES on the first name that doesn't resolve, and a name
+        that doesn't resolve is exactly the answer this method exists to
+        report.
+
+        Returns one entry per requested name: a dict when PI resolved it,
+        None when it did not.
+        """
+        resolved: dict[str, dict | None] = {t: None for t in tag_names}
+
+        for chunk in chunked(tag_names, batch_size):
+            paths = [f"\\\\{self.pi_server}\\{tag}" for tag in chunk]
+            by_path = {p.lower(): t for p, t in zip(paths, chunk)}
+
+            try:
+                points = self.client.point.get_multiple(
+                    path=paths,
+                    include_mode="All",
+                )
+            except Exception as e:
+                raise RuntimeError(f"resolve_tags chunk failed: {e}") from e
+
+            items = list(points.items or [])
+            by_web_id: dict[str, str] = {}
+
+            for pos, item in enumerate(items):
+                web_id = getattr(getattr(item, "object", None), "web_id", None)
+                if web_id is None:
+                    continue
+
+                ident = getattr(item, "identifier", None)
+                name = by_path.get(ident.lower()) if ident else None
+                if name is None and len(items) == len(chunk):
+                    name = chunk[pos]
+                if name is None or name not in resolved:
+                    continue
+
+                resolved[name] = {"web_id": web_id}
+                by_web_id[web_id] = name
+
+            if not by_web_id:
+                continue
+
+            try:
+                snapshot = self.client.streamSet.get_values_ad_hoc(
+                    web_id=list(by_web_id),
+                    selected_fields=(
+                        "items.webId;"
+                        "items.value.timestamp;"
+                        "items.value.good;"
+                        "items.value.questionable;"
+                        "items.value.substituted"
+                    ),
+                )
+            except Exception as e:
+                print(f"⚠️  resolve_tags snapshot skipped — {e}")
+                continue
+
+            for item in (snapshot.items or []):
+                name = by_web_id.get(getattr(item, "web_id", None))
+                val = getattr(item, "value", None)
+                if name is None or val is None:
+                    continue
+                resolved[name].update({
+                    "is_good": getattr(val, "good", None),
+                    "questionable": getattr(val, "questionable", None),
+                    "substituted": getattr(val, "substituted", None),
+                    "timestamp": getattr(val, "timestamp", None),
+                })
+
+        return resolved
+
     def search_tags(
         self,
         name_filter: str = "*",
-        max_count: int = 10,
+        page_size: int = 1000,
+        start_index: int = 0,
         batch_size: int = 100,
     ) -> pd.DataFrame:
         data_server = self._resolve_data_server()
+        rows = []
+        webid_by_tag: dict[str, str] = {}
 
         points = self.client.dataServer.get_points(
             web_id=data_server.web_id,
             name_filter=name_filter,
-            max_count=max_count,
+            start_index=start_index,
+            max_count=page_size+1,
             selected_fields=(
                 "items.name;"
                 "items.descriptor;"
@@ -171,10 +272,11 @@ class PIWebAPI:
                 "items.webId"
             ),
         )
+        items = list(points.items or [])
+        has_next = len(items) > page_size
+        items = items[:page_size]
 
-        rows = []
-        webid_by_tag: dict[str, str] = {}
-        for item in points.items:
+        for item in items:
             rows.append({
                 "tag_name": item.name,
                 "description": item.descriptor,
@@ -183,9 +285,18 @@ class PIWebAPI:
             })
             webid_by_tag[item.name] = item.web_id
 
-        df_tags = pd.DataFrame(rows)
+        if not rows:
+            return TagPage(pd.DataFrame(columns=TAG_COLUMNS), False)
 
+        df_tags = pd.DataFrame(rows).drop_duplicates("tag_name")
         tag_names = df_tags["tag_name"].tolist()
+
+        # if not include_quality:
+        #     for col in ("value", "timestamp", "Is Good", "Questionable", "Substituted"):
+        #         df_tags[col] = None
+        #     df_tags["timestamp"] = pd.to_datetime(
+        #         df_tags["timestamp"], errors="coerce", utc=True)
+        #     return TagPage(df_tags[TAG_COLUMNS], has_next)
 
         # If this PI Web API version ignores `items.webId`, every snapshot call
         # below would fail and the per-chunk except would fill quality with
@@ -252,23 +363,23 @@ class PIWebAPI:
         df_result = pd.merge(df_tags, df_status, on="tag_name", how="left")
 
         df_result["timestamp"] = (
-            pd.to_datetime(df_result["timestamp"], errors="coerce")
+            pd.to_datetime(df_result["timestamp"], errors="coerce", utc=True)
         )
 
-        df_result = df_result[[
-            "tag_name",
-            "description",
-            "unit",
-            "point_type",
-            "value",
-            "timestamp",
-            "Is Good",
-            "Questionable",
-            # "Annotated",
-            "Substituted",
-        ]]
+        # df_result = df_result[[
+        #     "tag_name",
+        #     "description",
+        #     "unit",
+        #     "point_type",
+        #     "value",
+        #     "timestamp",
+        #     "Is Good",
+        #     "Questionable",
+        #     # "Annotated",
+        #     "Substituted",
+        # ]]
 
-        return df_result
+        return TagPage(df_result[TAG_COLUMNS], has_next)
 
     def inspect_tag_attributes(
         self,

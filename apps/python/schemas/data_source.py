@@ -24,7 +24,8 @@ class PICredentials(BaseModel):
     api_server: str = Field(..., description="PI Web API base URL")
     pi_server: str = Field(..., description="PI Data Server name")
     user: str
-    password: str = Field(..., repr=False)  # repr=False: keep out of logs/reprs
+    # repr=False: keep out of logs/reprs
+    password: str = Field(..., repr=False)
 
 
 class PITestRequest(BaseModel):
@@ -33,8 +34,15 @@ class PITestRequest(BaseModel):
 
 class PITagsRequest(BaseModel):
     credentials: PICredentials
-    name_filter: str = Field("*", description="Wildcard filter, e.g. D1-* or *MEAS*")
-    max_count: int = Field(40, ge=1, le=10000)
+    name_filter: str = Field(
+        "*", description="Wildcard filter, e.g. D1-* or *MEAS*")
+    page: int = Field(1, ge=1, le=100)
+    page_size: int = Field(40, ge=40,  le=10000)
+
+
+class TagResolveRequest(BaseModel):
+    credentials: PICredentials
+    tag_list: list[str] = Field(..., min_length=1)
 
 
 class PICurrentRequest(BaseModel):

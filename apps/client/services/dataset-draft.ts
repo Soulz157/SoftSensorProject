@@ -81,6 +81,13 @@ interface DraftPreviewColumnStats {
   mean: number | null
   median: number | null
   std: number | null
+  /**
+   * p1/p5/p10/p20/p80/p90/p95/p99 (DS-LAKE-005B-B-T01, edit 3) — recomputed
+   * live over whatever operations THIS preview just applied. No current
+   * caller reads this yet; it exists so `percentileBounds` (precleanse.ts)
+   * has a real bound to switch to instead of deriving one from a viewport.
+   */
+  percentiles: Record<string, number> | null
 }
 
 interface DraftPreviewSide {

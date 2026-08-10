@@ -8,11 +8,7 @@ import {
 } from '@/services/dataset-draft'
 import type { PreprocessingJobStatus } from '@/services/dataset-version'
 import { toCleaningOperations } from '@/lib/cleaning-op-mapper'
-import {
-  toPiTime,
-  resolveInterval,
-  piFetchInputError,
-} from '@/lib/dataset-fetch'
+import { ensureDraftId, ensureBronzeArtifactId } from './dataset-draft-bronze'
 import type { CleaningStep } from '@/lib/preprocessing'
 import {
   dwWorkspaceIdAtom,
@@ -99,51 +95,38 @@ export function useDatasetDraftPipeline(): UseDatasetDraftPipelineResult {
   // otherwise a slow first preview could overwrite a faster later one.
   const previewTokenRef = useRef(0)
 
+  // Logic itself lives in dataset-draft-bronze.ts (DS-LAKE-005B-B-T01),
+  // shared with the background warm fired from Step 2's fetch completion —
+  // these callbacks just wire it to THIS hook's atoms and to `syncState`,
+  // which is what makes a failure here (unlike the background warm's) show
+  // the "Server sync failed" banner in Step 3.2.
   const ensureDraft = useCallback(async (): Promise<string> => {
-    if (draftId) return draftId
-    // Same single-PI-source scope as the wizard's live fetch (F8) — no
-    // separate rule invented here.
-    const source = selectedSources.find(s => s.type === 'aveva')
-    if (!source) {
-      throw new Error(
-        'Server sync currently supports PI / AVEVA sources, same as the wizard fetch.',
-      )
-    }
-    const res = await datasetDraftService.create({
-      workspaceId,
-      sourceIds: [source.id],
-    })
-    setDraftId(res.data.id)
-    return res.data.id
+    const id = await ensureDraftId({ workspaceId, selectedSources }, draftId)
+    if (id !== draftId) setDraftId(id)
+    return id
   }, [draftId, workspaceId, selectedSources, setDraftId])
 
   const ensureBronze = useCallback(
     async (id: string, tags: string[]): Promise<string> => {
-      if (artifactId) return artifactId
-      const guard = piFetchInputError(
-        selectedSources,
+      const artId = await ensureBronzeArtifactId(
+        {
+          workspaceId,
+          selectedSources,
+          customDateRange,
+          customInterval,
+          fetchConfig,
+          period,
+        },
+        id,
+        artifactId,
         tags,
-        customDateRange?.from,
-        customDateRange?.to,
       )
-      if (!guard.ok) throw new Error(guard.error)
-
-      const summaryDuration =
-        fetchConfig.summaryDuration.trim() ||
-        resolveInterval(period, customInterval)
-
-      const res = await datasetDraftService.materialize(id, {
-        sourceId: guard.source.id,
-        tags,
-        startTime: toPiTime(customDateRange!.from),
-        endTime: toPiTime(customDateRange!.to),
-        summaryDuration,
-      })
-      setArtifactId(res.data.id)
-      return res.data.id
+      if (artId !== artifactId) setArtifactId(artId)
+      return artId
     },
     [
       artifactId,
+      workspaceId,
       selectedSources,
       customDateRange,
       customInterval,

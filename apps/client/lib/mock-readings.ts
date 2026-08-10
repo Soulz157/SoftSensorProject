@@ -311,7 +311,7 @@ export function latestReading(
 
 export interface MockTagRow {
   tagName: string
-  status: 'good' | 'error'
+  status: 'good' | 'bad'
   errorReason?: string
 }
 
@@ -327,15 +327,15 @@ export const SOURCE_MOCK_TAGS: Record<string, MockTagRow[]> = {
     { tagName: 'PI-303', status: 'good' },
     {
       tagName: 'VI-202',
-      status: 'error',
+      status: 'bad',
       errorReason: 'Tag not found in historian',
     },
     { tagName: 'FI-101', status: 'good' },
-    { tagName: 'TI-205', status: 'error', errorReason: 'No data in last 24 h' },
+    { tagName: 'TI-205', status: 'bad', errorReason: 'No data in last 24 h' },
     { tagName: 'ambient_temp_c', status: 'good' },
     {
       tagName: 'cooling_water_flow',
-      status: 'error',
+      status: 'bad',
       errorReason: 'Tag deprecated — use CWF-NEW',
     },
   ],
@@ -344,14 +344,14 @@ export const SOURCE_MOCK_TAGS: Record<string, MockTagRow[]> = {
     { tagName: 'discharge_pressure', status: 'good' },
     {
       tagName: 'suction_pressure',
-      status: 'error',
+      status: 'bad',
       errorReason: 'Column mapping failed',
     },
     { tagName: 'flow_rate', status: 'good' },
     { tagName: 'motor_current', status: 'good' },
     {
       tagName: 'vibration_rms',
-      status: 'error',
+      status: 'bad',
       errorReason: 'Null values > 30%',
     },
   ],
@@ -361,7 +361,7 @@ export const SOURCE_MOCK_TAGS: Record<string, MockTagRow[]> = {
     { tagName: 'CMP-001.outlet_pressure', status: 'good' },
     {
       tagName: 'CMP-001.power_kw',
-      status: 'error',
+      status: 'bad',
       errorReason: 'Connection timeout',
     },
     { tagName: 'CMP-002.speed', status: 'good' },

@@ -7,6 +7,7 @@ apps/backend src/lib/python-client.ts. The browser never calls them directly.
 
 PI (AVEVA) is implemented here. SQL and REST sub-routes are added by F4 / F5.
 """
+from asyncio import log
 import traceback
 
 from fastapi import APIRouter, HTTPException
@@ -19,6 +20,7 @@ from schemas.data_source import (
     PIFetchRequest,
     PITagsRequest,
     PITestRequest,
+    TagResolveRequest,
     SQLColumnsRequest,
     SQLColumnsResponse,
     SQLQueryRequest,
@@ -27,7 +29,7 @@ from schemas.data_source import (
     SQLTablesResponse,
     SQLTestRequest,
 )
-from schemas.data import DataFetchResponse, TagListResponse, TagCurrentResponse
+from schemas.data import DataFetchResponse, TagListResponse, TagCurrentResponse, TagResolveResponse
 from services.data_source_service import PIDataSourceService, SQLDataSourceService
 
 router = APIRouter(prefix="/v1/data-sources", tags=["DataSources"])
@@ -59,7 +61,8 @@ def pi_tags(body: PITagsRequest) -> TagListResponse:
         return _pi.list_tags(
             body.credentials,
             name_filter=body.name_filter,
-            max_count=body.max_count,
+            page=body.page,
+            page_size=body.page_size,
         )
     except Exception as exc:
         traceback.print_exc()
@@ -79,6 +82,15 @@ def pi_current(body: PICurrentRequest) -> TagCurrentResponse:
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
         raise HTTPException(status_code=502, detail=f"PI Web API error: {exc}")
+
+
+@router.post("/pi/tags/resolve", response_model=TagResolveResponse)
+def pi_resolve_tags(body: TagResolveRequest) -> TagResolveResponse:
+    try:
+        return _pi.resolve_tags(body.credentials, body.tag_list)
+    except Exception:
+        log.exception("pi_resolve_tags failed")
+        raise HTTPException(502, "PI Web API error")
 
 
 @router.post(

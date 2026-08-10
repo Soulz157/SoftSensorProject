@@ -7,6 +7,7 @@ import type {
   AdHocSourceDto,
   FetchParamsDto,
   MetadataParamsDto,
+  ResolveTagsDto,
   TagsCurrentDto,
 } from './dto/data-source.connect.dto';
 
@@ -161,7 +162,8 @@ export class DataSourceConnectService {
           {
             credentials: this.buildPiCredentials(src),
             name_filter: params.nameFilter ?? '*',
-            max_count: params.maxCount ?? 40,
+            page: params.page ?? 1,
+            page_size: params.pageSize ?? 200,
           },
           PYTHON_TIMEOUT.metadata,
         );
@@ -264,6 +266,37 @@ export class DataSourceConnectService {
       default:
         throw this.unsupported(src.type);
     }
+  }
+
+  async resolveTagsById(userId: string, id: string, params: ResolveTagsDto) {
+    return this.resolveTags(await this.resolveById(userId, id), params);
+  }
+
+  /**
+   * Existence check by NAME, independent of the tag-catalog pagination.
+   *
+   * Non-PI sources return exists:false rather than throwing — preset comparison
+   * runs across every selected source, and one SQL source in the list must not
+   * fail the whole check. Contrast tagsCurrentById, which throws 400: that one
+   * is a direct user action on a single PI source.
+   */
+  private async resolveTags(src: ResolvedSource, params: ResolveTagsDto) {
+    if (src.type !== 'aveva') {
+      return this.ok({
+        count: params.tagNames.length,
+        found: 0,
+        tags: params.tagNames.map((t) => ({ tagName: t, exists: false })),
+      });
+    }
+    const res = await postToPython(
+      '/v1/data-sources/pi/tags/resolve',
+      {
+        credentials: this.buildPiCredentials(src),
+        tag_list: params.tagNames,
+      },
+      PYTHON_TIMEOUT.metadata,
+    );
+    return this.ok(res);
   }
 
   // ── credential mapping (row/config → connector contract) ────────────────────

@@ -17,7 +17,7 @@ from intergrations.pi_http import (
     pi_timeout,
 )
 from intergrations.sql_connect import SQLDataSource
-from schemas.data import DataFetchRequest, DataFetchResponse, TagListResponse
+from schemas.data import DataFetchRequest, DataFetchResponse, TagListResponse, TagResolveItem, TagResolveResponse
 from schemas.data_source import (
     ConnectionTestResponse,
     PICredentials,
@@ -74,12 +74,12 @@ class PIDataSourceService:
         )
 
     def list_tags(
-        self, creds: PICredentials, name_filter: str, max_count: int
+        self, creds: PICredentials, name_filter: str, page: int, page_size: int,
     ) -> TagListResponse:
         client = build_pi_client(creds)
         with pi_timeout(METADATA_TIMEOUT):
             return TagService(client).list_tags(
-                name_filter=name_filter, max_count=max_count
+                name_filter=name_filter, page=page, page_size=page_size,
             )
 
     def current_values(
@@ -90,6 +90,29 @@ class PIDataSourceService:
             return TagService(client).current_values(
                 tag_list, batch_size=batch_size
             )
+
+    def resolve_tags(
+        self, credentials: PICredentials, tag_names: list[str]
+    ) -> TagResolveResponse:
+        client = build_pi_client(credentials)
+        resolved = client.resolve_tags(tag_names)
+
+        items = [
+            TagResolveItem(
+                tagName=name,
+                exists=snap is not None,
+                isGood=(snap or {}).get("is_good"),
+                questionable=(snap or {}).get("questionable"),
+                substituted=(snap or {}).get("substituted"),
+                timestamp=(snap or {}).get("timestamp"),
+            )
+            for name, snap in resolved.items()
+        ]
+        return TagResolveResponse(
+            count=len(items),
+            found=sum(1 for i in items if i.exists),
+            tags=items,
+        )
 
     async def fetch(
         self, body: PIFetchRequest, interval: str

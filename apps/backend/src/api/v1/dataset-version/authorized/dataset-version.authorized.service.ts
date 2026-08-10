@@ -2,18 +2,26 @@ import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { PrismaService, PrismaTypes } from '@softsensor/prisma';
 import { AppException } from '@softsensor/common';
-import { postToPython, PYTHON_TIMEOUT } from '@/lib/python-client';
+import {
+  postBinaryToPython,
+  postToPython,
+  PYTHON_TIMEOUT,
+} from '@/lib/python-client';
 import { artifactKey } from '@/lib/artifact-keys';
 import { buildSourceBlock } from '@/lib/source-block';
 import { PreprocessingJobService } from './preprocessing-job.service';
 import {
   ArtifactStatsSchema,
+  PythonColumnStatsSchema,
+  PythonMetadataSchema,
   PythonPreviewSchema,
   PythonRowsSchema,
+  PythonTagCatalogSchema,
   type CreateRawVersionDto,
   type ListRowsDto,
   type PreviewVersionDto,
   type StartCleanJobDto,
+  type TagCatalogDto,
 } from './dto/dataset-version.authorized.dto';
 
 /**
@@ -82,19 +90,10 @@ export class DatasetVersionAuthorizedService {
     return dataset;
   }
 
-  private async findVersion(datasetId: string, versionId: string) {
-    const version = await this.prisma.datasetVersion.findFirst({
-      where: { id: versionId, datasetId },
-    });
-    if (!version) {
-      throw new AppException({
-        statusCode: 404,
-        message: 'Dataset version not found',
-        type: 'ERROR',
-      });
-    }
-    return version;
-  }
+  // `findVersion` (DatasetVersion-only lookup) was removed in
+  // DS-LAKE-005B-A-T04: its one caller, `previewService`, switched to
+  // `findArtifactSource` (version-first, artifact-fallback) to fix a 404 on
+  // every artifact-first dataset — see that method's docstring.
 
   /**
    * Resolve an id that may be EITHER a DatasetVersion or a DatasetArtifact.
@@ -275,6 +274,7 @@ export class DatasetVersionAuthorizedService {
           sizeBytes: BigInt(stats.size_bytes),
           // A bronze artifact is produced by a FETCH, not by operations.
           operations: [],
+          columnStatsKey: stats.column_stats_key,
           durationMs: Date.now() - startedAt,
           createdById: user.id,
         },
@@ -314,19 +314,39 @@ export class DatasetVersionAuthorizedService {
     // Accepts a version id (legacy) or an artifact id (DS-LAKE-004 onwards).
     const source = await this.findArtifactSource(datasetId, versionId);
 
+    const pythonBody = {
+      source_key: source.objectKey,
+      offset: query.offset,
+      limit: query.limit,
+      ...(query.tags && { tags: query.tags }),
+      ...(query.startTime && { start_time: query.startTime }),
+      ...(query.endTime && { end_time: query.endTime }),
+    };
+
+    if (query.format === 'arrow') {
+      // DS-LAKE-005B-A-T05 (rescoped: server-side transport only). No Zod
+      // parse here — there is nothing to validate an opaque Arrow byte
+      // buffer against; PythonRowsSchema's guarantee applies to the json
+      // branch below only. The controller passes these bytes straight to
+      // the browser, undecoded.
+      const binary = await postBinaryToPython(
+        '/v1/preprocess/rows',
+        { ...pythonBody, format: 'arrow' },
+        PYTHON_TIMEOUT.fetch,
+      );
+      return { format: 'arrow' as const, ...binary };
+    }
+
     const page = PythonRowsSchema.parse(
       await postToPython(
         '/v1/preprocess/rows',
-        {
-          source_key: source.objectKey,
-          offset: query.offset,
-          limit: query.limit,
-        },
+        pythonBody,
         PYTHON_TIMEOUT.fetch,
       ),
     );
 
     return {
+      format: 'json' as const,
       statusCode: 200,
       message: 'Rows fetched successfully',
       type: 'SUCCESS' as const,
@@ -334,12 +354,192 @@ export class DatasetVersionAuthorizedService {
         totalRowCount: page.total_row_count,
         offset: page.offset,
         tags: page.tags,
+        filtered: page.filtered,
+        startTime: page.start_time,
+        endTime: page.end_time,
         rows: page.rows,
       },
     };
   }
 
-  /** Preview writes nothing — no job, no version row, no object. */
+  // ── metadata ─────────────────────────────────────────────────────────────
+
+  /**
+   * Artifact metadata for a bounded viewport, not a row payload
+   * (DS-LAKE-005B-A-T01). Canonical-artifact-id only — unlike `listRowsService`
+   * this has no legacy `DatasetVersion` compat shim, since nothing existing
+   * ever called it before this endpoint existed.
+   *
+   * Mirrors `DatasetDraftAuthorizedService.getDraftArtifactMetadataService`.
+   */
+  async getArtifactMetadataService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    artifactId: string,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+    const artifact = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, datasetId },
+    });
+    if (!artifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Dataset artifact not found',
+        type: 'ERROR',
+      });
+    }
+
+    const meta = PythonMetadataSchema.parse(
+      await postToPython(
+        '/v1/preprocess/metadata',
+        { source_key: artifact.objectKey },
+        PYTHON_TIMEOUT.metadata,
+      ),
+    );
+
+    return {
+      statusCode: 200,
+      message: 'Artifact metadata fetched successfully',
+      type: 'SUCCESS' as const,
+      data: {
+        id: artifact.id,
+        runId: artifact.runId,
+        type: artifact.type,
+        parentArtifactId: artifact.parentArtifactId,
+        checksum: artifact.checksum,
+        rowCount: artifact.rowCount,
+        tagCount: artifact.columnCount,
+        // Measured from the same schema read as `tags`, not `tagCount * 2` —
+        // a derived number could disagree with `tags` on a legacy artifact.
+        columnCount: meta.column_count,
+        missingPct: artifact.missingPct,
+        // BigInt is not JSON-serialisable; Fastify has no BigInt replacer
+        // registered (checked: no setSerializerCompiler/toJSON patch exists).
+        sizeBytes: artifact.sizeBytes.toString(),
+        tags: meta.tags,
+        startTime: meta.start_time,
+        endTime: meta.end_time,
+        createdAt: artifact.createdAt.toISOString(),
+      },
+    };
+  }
+
+  /**
+   * Paginated, searchable tag catalog (DS-LAKE-005B-A-T03). Canonical
+   * artifact-id only, mirroring `getArtifactMetadataService` — no legacy
+   * `DatasetVersion` compat shim, since nothing existing ever called this.
+   */
+  async getArtifactTagCatalogService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    artifactId: string,
+    query: TagCatalogDto,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+    const artifact = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, datasetId },
+      select: { objectKey: true },
+    });
+    if (!artifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Dataset artifact not found',
+        type: 'ERROR',
+      });
+    }
+
+    const page = PythonTagCatalogSchema.parse(
+      await postToPython(
+        '/v1/preprocess/tags',
+        {
+          source_key: artifact.objectKey,
+          offset: query.offset,
+          limit: query.limit,
+          ...(query.search && { search: query.search }),
+        },
+        PYTHON_TIMEOUT.metadata,
+      ),
+    );
+
+    return {
+      statusCode: 200,
+      message: 'Tag catalog fetched successfully',
+      type: 'SUCCESS' as const,
+      data: {
+        totalCount: page.total_count,
+        offset: page.offset,
+        search: page.search,
+        tags: page.tags,
+      },
+    };
+  }
+
+  /**
+   * Per-tag aggregate stats sidecar (DS-LAKE-005B-A-T07). Canonical
+   * artifact-id only, mirroring `getArtifactMetadataService`.
+   *
+   * Checks `columnStatsKey` BEFORE calling Python: an artifact written
+   * before this task (or by a write path this task did not reach) has no
+   * sidecar, and that is knowable from Postgres alone — short-circuiting
+   * here gives a clearer 404 than round-tripping to Python only to get its
+   * own 422 for the same missing object.
+   */
+  async getArtifactColumnStatsService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    artifactId: string,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+    const artifact = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, datasetId },
+      select: { objectKey: true, columnStatsKey: true },
+    });
+    if (!artifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Dataset artifact not found',
+        type: 'ERROR',
+      });
+    }
+    if (!artifact.columnStatsKey) {
+      throw new AppException({
+        statusCode: 404,
+        message:
+          'No column statistics available for this artifact (written before DS-LAKE-005B-A-T07, or a write path that did not produce one).',
+        type: 'ERROR',
+      });
+    }
+
+    const result = PythonColumnStatsSchema.parse(
+      await postToPython(
+        '/v1/preprocess/column-stats',
+        { source_key: artifact.objectKey },
+        PYTHON_TIMEOUT.metadata,
+      ),
+    );
+
+    return {
+      statusCode: 200,
+      message: 'Column statistics fetched successfully',
+      type: 'SUCCESS' as const,
+      data: {
+        columnStatsKey: result.column_stats_key,
+        stats: result.stats,
+      },
+    };
+  }
+
+  /**
+   * Preview writes nothing — no job, no version row, no object.
+   *
+   * Resolves via `findArtifactSource` (version-first, artifact-fallback),
+   * NOT `findVersion` — that was this method's bug before DS-LAKE-005B-A-T04:
+   * `findVersion` only ever queries `DatasetVersion`, so every artifact-first
+   * dataset (DS-LAKE-004 onward, no `DatasetVersion` row until Save) 404'd
+   * here even though `listRowsService` next door already resolved the same
+   * ids correctly. Bounding by tags/time only matters if the endpoint is
+   * reachable in the first place.
+   */
   async previewService(
     user: Auth.UserPayload,
     datasetId: string,
@@ -347,17 +547,24 @@ export class DatasetVersionAuthorizedService {
     dto: PreviewVersionDto,
   ) {
     await this.assertDatasetAccess(datasetId, user);
-    const version = await this.findVersion(datasetId, versionId);
+    const source = await this.findArtifactSource(datasetId, versionId);
 
     const preview = PythonPreviewSchema.parse(
       await postToPython(
         '/v1/preprocess/preview',
         {
-          source_key: version.objectKey,
+          source_key: source.objectKey,
           operations: dto.operations,
           precision: dto.precision,
           ...(dto.sampleRows && { sample_rows: dto.sampleRows }),
           ...(dto.previewRows && { preview_rows: dto.previewRows }),
+          ...(dto.tags && { tags: dto.tags }),
+          ...(dto.startTime && { start_time: dto.startTime }),
+          ...(dto.endTime && { end_time: dto.endTime }),
+          // DS-LAKE-005B-A-T06: bypasses the sample_rows head cut on the
+          // Python side, so the request can take longer than a plain
+          // preview — still well inside PYTHON_TIMEOUT.metadata.
+          ...(dto.maxPoints && { max_points: dto.maxPoints }),
         },
         PYTHON_TIMEOUT.metadata,
       ),

@@ -7,6 +7,31 @@ from intergrations import PIWebAPI
 from intergrations.aveva_connect import chunked
 
 
+API_FIELD_MAP = {
+    "tag_name": "tag_name",
+    "description": "description",
+    "unit": "unit",
+    "point_type": "point_type",
+    "value": "value",
+    "timestamp": "timestamp",
+    "Is Good": "is_good",
+    "Questionable": "questionable",
+    "Substituted": "substituted",
+}
+
+
+def tags_to_records(df: pd.DataFrame) -> list[dict]:
+    out = df.copy()
+    out["timestamp"] = out["timestamp"].apply(
+        lambda t: t.isoformat() if pd.notna(t) else None)
+    # digital point (XV-101 OPEN/CLOSED) คืน value เป็น object ไม่ใช่ scalar
+    # ถ้าไม่ flatten frontend จะ render [object Object]
+    out["value"] = out["value"].apply(
+        lambda v: v.get("Name") if isinstance(v, dict) else v)
+    out = out.rename(columns=API_FIELD_MAP)[list(API_FIELD_MAP.values())]
+    return out.astype(object).where(pd.notna(out), None).to_dict(orient="records")
+
+
 def _to_tag_item(rec: dict) -> TagItem:
     return TagItem(
         tag_name=str(rec.get("tag_name", "")),
@@ -14,9 +39,9 @@ def _to_tag_item(rec: dict) -> TagItem:
         value=rec.get("value"),
         unit=rec.get("unit") or None,
         point_type=rec.get("point_type") or None,
-        isGood=rec.get("Is Good"),
-        questionable=rec.get("Questionable"),
-        substituted=rec.get("Substituted"),
+        isGood=rec.get("is_good"),
+        questionable=rec.get("questionable"),
+        substituted=rec.get("substituted"),
         timestamp=rec.get("timestamp") or None,
     )
 
@@ -26,21 +51,25 @@ class TagService:
         self.webapi = webapi
 
     def list_tags(
-        self, name_filter: str = "*", max_count: int = 10, batch_size: int = 100
+        self, name_filter: str = "*", page: int = 1,
+        page_size: int = 1_000, batch_size: int = 100
     ) -> TagListResponse:
+        if page < 1:
+            raise ValueError("page must be >= 1")
+
+        start_index = (page - 1) * page_size
         raw = self.webapi.search_tags(
-            name_filter=name_filter, max_count=max_count, batch_size=batch_size
+            name_filter=name_filter, start_index=start_index, page_size=page_size, batch_size=batch_size
         )
 
-        if isinstance(raw, pd.DataFrame):
-            # date_format="iso" → the snapshot `timestamp` column serializes as an
-            # ISO string (not epoch ms), matching TagItem.timestamp: Optional[str].
-            records = json.loads(raw.to_json(orient="records", date_format="iso"))
-        else:
-            records = list(raw)
-
-        items = [_to_tag_item(r) for r in records]
-        return TagListResponse(total=len(items), tags=items)
+        items = [_to_tag_item(r) for r in tags_to_records(raw.df)]
+        return TagListResponse(
+            count=len(items),
+            page=page,
+            page_size=page_size,
+            hasNext=raw.has_next,
+            tags=items,
+        )
 
     def current_values(
         self, tag_list: list[str], batch_size: int = 100

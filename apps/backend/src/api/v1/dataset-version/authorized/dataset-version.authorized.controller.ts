@@ -6,9 +6,11 @@ import {
   Param,
   Post,
   Query,
+  Res,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import type { FastifyReply } from 'fastify';
 import { JwtAccessGuard } from '@/guards/jwt-access.guard';
 import { Users } from '@/common/decorators/user.decorator';
 import { DatasetVersionAuthorizedService } from './dataset-version.authorized.service';
@@ -17,6 +19,7 @@ import {
   ListRowsDto,
   PreviewVersionDto,
   StartCleanJobDto,
+  TagCatalogDto,
 } from './dto/dataset-version.authorized.dto';
 
 /**
@@ -85,14 +88,28 @@ export class DatasetVersionAuthorizedController {
 
   @Get('/:id/artifacts/:artifactId/rows')
   @HttpCode(200)
-  @ApiOperation({ summary: 'Read a page of rows from a committed artifact' })
+  @ApiOperation({
+    summary: 'Read a page of rows from a committed artifact',
+    description:
+      '`format=arrow` (DS-LAKE-005B-A-T05, rescoped to server-side transport ' +
+      'only) returns the page as an Arrow IPC stream instead of JSON, with ' +
+      'the envelope in X-Total-Row-Count/X-Offset/X-Filtered/X-Start-Time/' +
+      'X-End-Time response headers. No current client reads this format.',
+  })
   async listArtifactRowsController(
     @Users() user: Auth.UserPayload,
     @Param('id') id: string,
     @Param('artifactId') artifactId: string,
     @Query() query: ListRowsDto,
+    @Res({ passthrough: false }) reply: FastifyReply,
   ) {
-    return this.service.listRowsService(user, id, artifactId, query);
+    const result = await this.service.listRowsService(
+      user,
+      id,
+      artifactId,
+      query,
+    );
+    return this.sendRowsResult(reply, result);
   }
 
   @Get('/:id/versions/:versionId/rows')
@@ -102,15 +119,103 @@ export class DatasetVersionAuthorizedController {
     description:
       'Compatibility shim. Resolves a DatasetVersion id OR a DatasetArtifact ' +
       'id, so datasets created before DS-LAKE-004 keep working and the model ' +
-      'wizard needs no changes.',
+      'wizard needs no changes. Supports `format=arrow` identically to the ' +
+      'canonical artifact route above.',
   })
   async listRowsController(
     @Users() user: Auth.UserPayload,
     @Param('id') id: string,
     @Param('versionId') versionId: string,
     @Query() query: ListRowsDto,
+    @Res({ passthrough: false }) reply: FastifyReply,
   ) {
-    return this.service.listRowsService(user, id, versionId, query);
+    const result = await this.service.listRowsService(
+      user,
+      id,
+      versionId,
+      query,
+    );
+    return this.sendRowsResult(reply, result);
+  }
+
+  /**
+   * Shared by both rows routes above (canonical + legacy compat shim), so
+   * the arrow-vs-json branch cannot drift between them. `@Res({passthrough:
+   * false})` hands over full control of the reply — needed for the arrow
+   * branch's raw bytes/headers — so the json branch must also send
+   * manually here rather than relying on Nest's automatic serialization.
+   */
+  private sendRowsResult(
+    reply: FastifyReply,
+    result: Awaited<
+      ReturnType<DatasetVersionAuthorizedService['listRowsService']>
+    >,
+  ) {
+    if (result.format === 'arrow') {
+      reply.headers(result.headers);
+      reply.type(result.contentType);
+      reply.status(200);
+      reply.send(result.buffer);
+      return;
+    }
+    reply.status(result.statusCode).send(result);
+  }
+
+  @Get('/:id/artifacts/:artifactId/metadata')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Artifact metadata: schema, time range, quality summary',
+    description:
+      'Bounded viewport metadata, never a row payload (DS-LAKE-005B-A-T01). ' +
+      'rowCount/tagCount/missingPct/checksum come from the DatasetArtifact ' +
+      'row with zero I/O; tags and the time range are read from the object.',
+  })
+  async getArtifactMetadataController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+  ) {
+    return this.service.getArtifactMetadataService(user, id, artifactId);
+  }
+
+  @Get('/:id/artifacts/:artifactId/tags')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Paginated, searchable tag catalog',
+    description:
+      'Same footer-only read as /metadata (DS-LAKE-005B-A-T03) — never a ' +
+      'row payload, so 8,000+ tags can be browsed one page at a time.',
+  })
+  async getArtifactTagCatalogController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Query() query: TagCatalogDto,
+  ) {
+    return this.service.getArtifactTagCatalogService(
+      user,
+      id,
+      artifactId,
+      query,
+    );
+  }
+
+  @Get('/:id/artifacts/:artifactId/column-stats')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Per-tag aggregate stats sidecar (coverage, outliers, drift)',
+    description:
+      'Reads ONLY the column_stats.json sidecar written at write time ' +
+      '(DS-LAKE-005B-A-T07) — data.parquet is never opened, so this costs ' +
+      'the same one object download for 8,000 tags as for one. 404 if the ' +
+      'artifact predates this task and has no sidecar.',
+  })
+  async getArtifactColumnStatsController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+  ) {
+    return this.service.getArtifactColumnStatsService(user, id, artifactId);
   }
 
   @Post('/:id/versions/:versionId/preview')

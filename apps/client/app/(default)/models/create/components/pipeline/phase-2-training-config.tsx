@@ -6,6 +6,7 @@ import {
   Info,
   LineChart,
   Loader2,
+  Timer,
   Upload,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -16,6 +17,7 @@ import { CoreConfig } from './training-config/core-config'
 import { AlgorithmSelector } from './training-config/algorithm-selector'
 import { AutoMlToggles } from './training-config/automl-toggles'
 import { DynamicHyperparameters } from './training-config/dynamic-hyperparameters'
+import { RuntimeEstimate } from './training-config/runtime-estimate'
 
 interface Props {
   nav: UsePipelineNavResult
@@ -35,8 +37,6 @@ export function Phase2TrainingConfig({ nav }: Props) {
   const training = useModelTraining()
   const tags = selectedDataset?.tags ?? []
 
-  // Primary algorithm drives the manual hyperparameter grid, which is only
-  // relevant for a single algorithm with AutoML tuning off.
   const primaryAlgorithm = algorithms[0] ?? 'ols'
   const showHyperparams = algorithms.length === 1 && !findBestParams
 
@@ -46,7 +46,10 @@ export function Phase2TrainingConfig({ nav }: Props) {
   const numLeaves = hyperparameters?.num_leaves
     ? Number(hyperparameters.num_leaves)
     : 31
-  const complexityScore = Math.min((numLeaves / 100) * 100, 100)
+  const nEstimators = hyperparameters?.n_estimators
+    ? Number(hyperparameters.n_estimators)
+    : undefined
+  const rowCount = selectedDataset?.rowCount ?? 0
 
   const canTrain =
     targetVariables.length > 0 &&
@@ -171,7 +174,7 @@ export function Phase2TrainingConfig({ nav }: Props) {
         <div className="lg:col-span-1">
           <section className="sticky top-6 space-y-4 rounded-xl border border-border/60 bg-muted/30 p-4 sm:p-5">
             <div className="flex items-center gap-2 pb-2 border-b border-border/50">
-              <LineChart className="h-4 w-4 text-primary" />
+              <Timer className="h-4 w-4 text-primary" />
               <h3 className="text-sm font-medium text-foreground">
                 Algorithm Insights
               </h3>
@@ -179,53 +182,17 @@ export function Phase2TrainingConfig({ nav }: Props) {
 
             {/* Mockup Visualization for Algorithm Behavior */}
             <div className="space-y-4 pt-2">
-              <div className="space-y-1.5">
-                <div className="flex justify-between text-xs">
-                  <span className="text-muted-foreground">
-                    Model Complexity
-                  </span>
-                  <span className="font-medium">
-                    {complexityScore.toFixed(0)}%
-                  </span>
-                </div>
-                {/* Visual Indicator for Complexity */}
-                <div className="h-2 w-full rounded-full bg-secondary overflow-hidden flex">
-                  <div
-                    className={`h-full transition-all duration-300 ${complexityScore > 70 ? 'bg-amber-500' : 'bg-primary'}`}
-                    style={{ width: `${complexityScore}%` }}
-                  />
-                </div>
-                <p className="text-[10px] text-muted-foreground pt-1">
-                  {complexityScore > 70
-                    ? 'High complexity. Watch out for overfitting.'
-                    : 'Balanced complexity based on Num leaves.'}
-                </p>
-              </div>
-
-              <div className="rounded-lg bg-background p-3 border border-border/50 space-y-2">
-                <div className="flex items-start gap-2">
-                  <Info className="h-3.5 w-3.5 text-blue-500 mt-0.5 shrink-0" />
-                  <p className="text-xs text-foreground leading-relaxed">
-                    With{' '}
-                    <span className="font-medium">
-                      Learning Rate {learningRate}
-                    </span>
-                    , the model will{' '}
-                    {learningRate > 0.1
-                      ? 'converge quickly but might miss the global minimum.'
-                      : 'learn steadily. Requires more boosting rounds.'}
-                  </p>
-                </div>
-              </div>
-
-              {/* Placeholder for real charts (e.g., Recharts) */}
-              <div className="h-32 w-full rounded-lg border border-dashed border-border flex items-center justify-center bg-background/50">
-                <p className="text-xs text-muted-foreground text-center px-4">
-                  (Learning Curve Chart Placeholder)
-                  <br />
-                  <span className="text-[10px]">Integrate Recharts here</span>
-                </p>
-              </div>
+              <RuntimeEstimate
+                rows={rowCount}
+                features={Math.max(tags.length - targetVariables.length, 1)}
+                algorithms={algorithms}
+                targets={targetVariables.length}
+                findBestModel={findBestModel}
+                findBestParams={findBestParams}
+                nEstimators={nEstimators}
+                status={training.status}
+                progress={training.progress}
+              />
             </div>
           </section>
         </div>
