@@ -73,7 +73,17 @@ def test_fixture_is_well_formed(fixture: dict[str, Any]) -> None:
     for key in ("name", "engine", "input", "config", "expected"):
         assert key in fixture, f"{fixture.get('name')} is missing {key!r}"
 
-    assert fixture["engine"] in {"preprocessPipelines", "precleanse"}
+    # DS-LAKE-006-T01 added applyFeatures/selectColumns/toModelReady fixtures
+    # (Gold-layer transforms). Widened here only so the integrity layer stays
+    # green for them; live parity dispatch for these three is DS-LAKE-006-T03,
+    # once feature_service.py (T02) exists to dispatch to.
+    assert fixture["engine"] in {
+        "preprocessPipelines",
+        "precleanse",
+        "applyFeatures",
+        "selectColumns",
+        "toModelReady",
+    }
 
     for side in ("input", "expected"):
         grid = fixture[side]
@@ -136,6 +146,34 @@ def test_identity_case_is_a_true_no_op(fixture: dict[str, Any]) -> None:
 
 
 # ───────────────────── layer 2: parity (live once F2 lands) ─────────────────
+
+def _feature_service():
+    """Import the DS-LAKE-006-T02 service, or skip THIS test only.
+
+    Same reasoning as `_cleaning_service` below — not a module-level
+    `pytest.importorskip`, so the integrity layer stays live even before T02
+    lands.
+    """
+    return pytest.importorskip(
+        "services.feature_service",
+        reason=(
+            "DS-LAKE-006-T02 not implemented yet — services/feature_service.py "
+            "does not exist. This assertion activates automatically once it "
+            "does."
+        ),
+    )
+
+
+# Which service owns each engine's `apply_fixture_case`. Widened here rather
+# than in feature_service/cleaning_service themselves — this IS DS-LAKE-006-T03's
+# "extend the harness to consume the new fixtures" job, done minimally as
+# T02's own verification step rather than deferred whole; noted, not hidden.
+_FEATURE_ENGINES = {"applyFeatures", "selectColumns", "toModelReady"}
+
+
+def _service_for(engine: str):
+    return _feature_service() if engine in _FEATURE_ENGINES else _cleaning_service()
+
 
 def _cleaning_service():
     """Import the F2 service, or skip THIS test only.
@@ -321,11 +359,11 @@ def test_comparison_still_catches_real_divergence() -> None:
 
 
 def test_matches_client_output(fixture: dict[str, Any]) -> None:
-    cleaning_service = _cleaning_service()
+    service = _service_for(fixture["engine"])
 
     frame = wide_to_frame(fixture["input"])
     try:
-        result = cleaning_service.apply_fixture_case(
+        result = service.apply_fixture_case(
             frame, fixture["config"], fixture["engine"]
         )
     except NotImplementedError as err:

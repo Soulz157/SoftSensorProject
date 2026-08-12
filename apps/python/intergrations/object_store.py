@@ -43,7 +43,10 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from minio import Minio
+from minio.commonconfig import ENABLED, Filter, Tag
+from minio.datatypes import Tags
 from minio.error import S3Error
+from minio.lifecycleconfig import Expiration, LifecycleConfig, Rule
 
 from config import settings
 
@@ -78,6 +81,25 @@ DATA_FILENAME = "data.parquet"
 #: while a prefix needs none.
 PRESET_ROOT = "feature-presets/"
 SDTA_FILENAME = "sdta.json"
+
+#: DS-LAKE-009B-T04. Every tmp object is written under a PER-DATASET prefix
+#: (`{datasetId}/tmp/{jobId}/...`), so no single S3/MinIO lifecycle Prefix
+#: filter can match "tmp/ under any dataset" — Prefix is a literal, anchored
+#: match, not a wildcard. An object TAG has no such limitation: tagging every
+#: tmp write with this key/value lets one bucket-wide lifecycle rule
+#: (`ensure_tmp_lifecycle_rule`) target them regardless of which dataset they
+#: belong to.
+TMP_LIFECYCLE_TAG_KEY = "lifecycle"
+TMP_LIFECYCLE_TAG_VALUE = "tmp"
+#: Stable so re-running `ensure_tmp_lifecycle_rule` replaces THIS rule rather
+#: than accumulating a duplicate on every app restart.
+TMP_LIFECYCLE_RULE_ID = "ds-lake-009b-tmp-expiry"
+#: Backstop only — PreprocessingJobService already clears tmp/ on every job
+#: success/cancel via /cleanup (see routers/preprocess.py). This rule exists
+#: for what that best-effort call misses: a hard crash mid-job, or a
+#: straggler that outlives the sweep window. Generous on purpose, since
+#: correctness never depends on it firing promptly.
+TMP_LIFECYCLE_EXPIRY_DAYS = 7
 
 
 class ObjectStoreError(RuntimeError):
@@ -288,6 +310,14 @@ class ObjectStore:
         pq.write_table(pa.Table.from_pandas(df, preserve_index=False), buffer)
         payload = buffer.getvalue()
 
+        # DS-LAKE-009B-T04: tag tmp writes so ensure_tmp_lifecycle_rule's
+        # bucket-wide rule can find them — see TMP_LIFECYCLE_TAG_KEY's doc
+        # comment for why a tag is used instead of a Prefix filter.
+        object_tags = None
+        if "/tmp/" in key:
+            object_tags = Tags.new_object_tags()
+            object_tags[TMP_LIFECYCLE_TAG_KEY] = TMP_LIFECYCLE_TAG_VALUE
+
         try:
             self._client.put_object(
                 self.bucket,
@@ -295,6 +325,7 @@ class ObjectStore:
                 io.BytesIO(payload),
                 length=len(payload),
                 content_type="application/vnd.apache.parquet",
+                tags=object_tags,
             )
         except S3Error as err:
             raise ObjectStoreError(f"Could not write '{key}': {err.code}") from err
@@ -470,6 +501,74 @@ class ObjectStore:
                 f"Could not clear prefix '{prefix}': {err.code}"
             ) from err
         return removed
+
+    # ── lifecycle ────────────────────────────────────────────────────────
+
+    def ensure_tmp_lifecycle_rule(self) -> None:
+        """DS-LAKE-009B-T04: idempotent bootstrap of a bucket-wide expiry
+        rule for tmp/ objects, matched by tag (see TMP_LIFECYCLE_TAG_KEY).
+
+        Backstop only, per TMP_LIFECYCLE_EXPIRY_DAYS's doc comment — the
+        application-level /cleanup call remains the primary, prompt path.
+        Committed artifact prefixes (`.../artifacts/{artifactId}/`) are
+        NEVER expressed here: they need the reference check T08's
+        eligibility predicate performs, which a bucket lifecycle rule
+        cannot do — only application-level cleanup (ArtifactCleanupService)
+        is authoritative for those.
+
+        Has NO automatic runtime caller in this service, deliberately — the
+        same convention `ensure_bucket()` already documents on itself.
+        `docker-compose.yml` doesn't declare MinIO (it runs as an
+        uncommitted `minio-local` container — decisions.storage), so wiring
+        this into every app boot would make bucket-lifecycle mutation a
+        hard dependency of starting the service at all. Verified live
+        against `minio-local` (idempotent: a second call makes no API
+        call), and left as an explicit ops bootstrap step — run it once
+        per environment, the same way `ensure_bucket()` is.
+        """
+        desired = Rule(
+            ENABLED,
+            rule_id=TMP_LIFECYCLE_RULE_ID,
+            rule_filter=Filter(tag=Tag(TMP_LIFECYCLE_TAG_KEY, TMP_LIFECYCLE_TAG_VALUE)),
+            expiration=Expiration(days=TMP_LIFECYCLE_EXPIRY_DAYS),
+        )
+
+        try:
+            existing = self._client.get_bucket_lifecycle(self.bucket)
+        except S3Error as err:
+            # NoSuchLifecycleConfiguration means "none set yet" — not a
+            # failure to surface.
+            if err.code != "NoSuchLifecycleConfiguration":
+                raise ObjectStoreError(
+                    f"Could not read lifecycle config for '{self.bucket}': "
+                    f"{err.code}"
+                ) from err
+            existing = None
+
+        other_rules = [
+            rule
+            for rule in (existing.rules if existing else [])
+            if rule.rule_id != TMP_LIFECYCLE_RULE_ID
+        ]
+        current = next(
+            (
+                rule
+                for rule in (existing.rules if existing else [])
+                if rule.rule_id == TMP_LIFECYCLE_RULE_ID
+            ),
+            None,
+        )
+        if current == desired:
+            return  # already in the desired state — no-op, no API call
+
+        try:
+            self._client.set_bucket_lifecycle(
+                self.bucket, LifecycleConfig([*other_rules, desired])
+            )
+        except S3Error as err:
+            raise ObjectStoreError(
+                f"Could not set lifecycle rule on '{self.bucket}': {err.code}"
+            ) from err
 
 
 # ── key helpers ──────────────────────────────────────────────────────────

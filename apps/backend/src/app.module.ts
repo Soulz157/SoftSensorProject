@@ -20,6 +20,7 @@ import { DatasetModule } from './api/v1/dataset/dataset.module';
 import { DatasetVersionModule } from './api/v1/dataset-version/dataset-version.module';
 import { DatasetDraftModule } from './api/v1/dataset-draft/dataset-draft.module';
 import { FeaturePresetModule } from './api/v1/feature-preset/feature.preset.module';
+import { ArtifactCleanupModule } from './api/v1/artifact-cleanup/artifact-cleanup.module';
 
 @Module({
   imports: [
@@ -58,6 +59,7 @@ import { FeaturePresetModule } from './api/v1/feature-preset/feature.preset.modu
     DatasetVersionModule,
     DatasetDraftModule,
     FeaturePresetModule,
+    ArtifactCleanupModule,
   ],
   providers: [
     {

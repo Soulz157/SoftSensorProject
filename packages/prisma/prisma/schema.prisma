@@ -413,36 +413,66 @@ enum PreprocessingJobStatus {
   CANCELED
 }
 
-/// An immutable snapshot of materialised rows, stored as Parquet in object
-/// storage. Postgres holds metadata and a pointer only — never the rows.
+/// The Dataset Registry row. Created ONLY by Save Dataset (DS-LAKE-009) — see
+/// ADR-DS-LAKE-005B-B-006 for why this points to an already-completed FINAL
+/// artifact instead of owning its own bytes.
+///
+/// Reshaped by DS-LAKE-009-T06 from the old shape (stage/objectKey/
+/// parentVersionId/operations/columnStats — a version used to own storage
+/// AND a live parent chain, which is exactly why every intermediate stage
+/// used to wrongly create one). DatasetArtifact now owns storage and the
+/// live, queryable lineage chain (`parentArtifactId`); this table owns the
+/// REGISTRY facts about one saved version — semantic label, quality-gate
+/// result at Save time, promotion status — plus a FROZEN lineage snapshot,
+/// not a second live parent-pointer chain.
 ///
 /// Creating one of these is NOT a Model commit: CLAUDE.md §8 reserves that for
 /// Save Model, and nothing here touches the Model table.
 model DatasetVersion {
-  id              String              @id @default(uuid())
-  datasetId       String
-  dataset         Dataset             @relation(fields: [datasetId], references: [id], onDelete: Cascade)
-  /// Lineage: V1 (raw) -> V2 (clean) -> V3 (feature). Null for a root version.
-  parentVersionId String?
-  parent          DatasetVersion?     @relation("VersionLineage", fields: [parentVersionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  children        DatasetVersion[]    @relation("VersionLineage")
-  versionNumber   Int
-  stage           DatasetVersionStage
+  id            String  @id @default(uuid())
+  datasetId     String
+  dataset       Dataset @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  versionNumber Int
+  /// Display label, e.g. "1.0.0" — a human-facing tag, distinct from
+  /// `versionNumber`'s raw sequence. DS-LAKE-009-T03 keys concurrency-safe
+  /// allocation off `versionNumber`, never this field.
+  semanticVersion String?
 
-  /// Object-storage key, e.g. "{datasetId}/{versionId}.parquet".
-  objectKey   String
-  format      String  @default("parquet")
+  /// The FINAL artifact this version points to, by reference — never a byte
+  /// copy (ADR-DS-LAKE-005B-B-006). Nullable: a row backfilled by
+  /// DS-LAKE-002-T04 (before this reshape existed) has no FINAL artifact to
+  /// point at; DS-LAKE-009-T07's migration decides whether/how to backfill
+  /// it from the shared legacy id the backfill already gave every such row.
+  artifactId String?
+  artifact   DatasetArtifact? @relation(fields: [artifactId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  /// sha256 of the artifact's stored Parquet bytes, copied at Save time —
+  /// not re-derived from `artifact.checksum` on every read.
+  checksum      String?
+  schemaVersion Int     @default(1)
+
   /// LOGICAL tag count — excludes `timestamp` and every `__status` sidecar.
-  columnCount Int     @default(0)
-  rowCount    Int     @default(0)
-  missingPct  Float   @default(0)
-  sizeBytes   Int     @default(0)
+  columnCount  Int   @default(0)
+  featureCount Int   @default(0)
+  rowCount     Int   @default(0)
+  missingPct   Float @default(0)
+  /// 64-bit on purpose, matching DatasetArtifact.sizeBytes (DS-LAKE-002-T02)
+  /// — the old 32-bit Int here topped out around 2.1 GB, and an 8,000-tag
+  /// artifact already reaches it.
+  sizeBytes BigInt @default(0)
 
-  /// Operations that produced THIS version from its parent.
-  operations  Json
-  /// Per-column min/max/mean/nullCount captured at write time.
-  columnStats Json?
-  durationMs  Int?
+  /// DS-LAKE-007's quality score (0-100) at Save time, frozen — re-running
+  /// validation later never changes what a saved version already promised.
+  qualityScore Float?
+  status       DatasetStatus @default(DRAFT)
+
+  /// Frozen BRONZE -> SILVER -> GOLD -> FINAL chain (ids/checksums/types) as
+  /// of Save time — a point-in-time snapshot, not a live FK walk.
+  /// DatasetArtifact.parentArtifactId remains the live, queryable chain;
+  /// this is what a saved version promises never changes underneath it.
+  lineage Json?
+
+  durationMs Int?
 
   createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
   createdById String
@@ -456,7 +486,7 @@ model DatasetVersion {
 
   @@unique([datasetId, versionNumber])
   @@index([datasetId])
-  @@index([parentVersionId])
+  @@index([artifactId])
 }
 
 /// One immutable Lakehouse stage output, stored as Parquet in object storage.
@@ -533,11 +563,22 @@ model DatasetArtifact {
   createdById String
   createdAt   DateTime @default(now())
 
+  /// DS-LAKE-009B-T09: set when ArtifactCleanupService has deleted this
+  /// artifact's MinIO objects. The row itself is NEVER deleted — it is the
+  /// audit trail and the only place `operations` (the recipe that produced
+  /// it) survives, per decisions.cleanup_scope. Null means the bytes are
+  /// still in MinIO; non-null means only the row remains.
+  objectReclaimedAt DateTime?
+
   /// Back-relation for Dataset.currentArtifactId.
   currentOf Dataset[] @relation("DatasetCurrentArtifact")
 
   jobsAsSource PreprocessingJob[] @relation("JobSourceArtifact")
   jobsAsResult PreprocessingJob[] @relation("JobResultArtifact")
+
+  /// Back-relation for DatasetVersion.artifactId (DS-LAKE-009-T06) — the
+  /// FINAL artifact a saved registry row points to.
+  versions DatasetVersion[]
 
   @@index([datasetId])
   @@index([runId])

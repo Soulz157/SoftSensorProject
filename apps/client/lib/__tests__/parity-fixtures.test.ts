@@ -19,6 +19,26 @@
  *   - `exponential` seeds the EMA with the first value (adjust=False)
  *   - rounding is per-tag `tagMeta(tag)?.precision ?? 2`
  *   - forward/backward fill flips status to Good even with no donor cell
+ *
+ * DS-LAKE-006-T01 extends this GATE FIRST (same discipline, new engines) to
+ * cover `applyFeatures`/`selectColumns`/`toModelReady` — the Gold-layer
+ * transforms feature_service.py (T02) must port next. New quirks pinned here:
+ *   - a `rolling` window requires a FULL window of Good source values or the
+ *     whole cell is Bad — no partial-window average at the edges
+ *   - `ratio`'s divisor(s) being exactly 0 is Bad, not Infinity/NaN
+ *   - `log` of a non-positive value is Bad, not NaN
+ *   - `toModelReady` scales every FINITE value regardless of its original
+ *     Good/Bad/Questionable status, and always emits Good afterward — a Bad
+ *     cell with a real (non-hole) numeric value is silently laundered to
+ *     Good by scaling, which is why the base grid (real values on Bad cells,
+ *     never synthetic 0-holes) is reused here rather than a cleaner one
+ *   - `standard` scaling uses Welford's online mean/variance (population,
+ *     ddof=0), not the naive E[x²]-E[x]² form
+ *   - `robust` scaling's median/IQR come from `medianRange` over the SORTED
+ *     finite values, matching precleanse's own quartile convention, not
+ *     `numpy.percentile`'s interpolated one
+ *   - every scaled value is rounded to 3 decimals unconditionally — NOT the
+ *     per-tag `tagMeta(tag)?.precision` the cleaning ops use
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
@@ -26,11 +46,18 @@ import { describe, expect, it } from 'vitest'
 
 import {
   preprocessPipelines,
+  toModelReady,
   type CleaningStep,
   type Dataset,
   type DataRow,
+  type ScalerMethod,
 } from '@/lib/preprocessing'
 import { precleanse, type PrecleanseConfig } from '@/lib/precleanse'
+import {
+  applyFeatures,
+  selectColumns,
+  type FeatureConfig,
+} from '@/lib/feature-engineering'
 import { tagMeta } from '@/lib/mock-readings'
 
 const FIXTURE_DIR = path.resolve(
@@ -120,7 +147,12 @@ const PRECISION: Record<string, number> = Object.fromEntries(
 interface Fixture {
   name: string
   /** Which client function produced `expected` — Python dispatches on this. */
-  engine: 'preprocessPipelines' | 'precleanse'
+  engine:
+    | 'preprocessPipelines'
+    | 'precleanse'
+    | 'applyFeatures'
+    | 'selectColumns'
+    | 'toModelReady'
   input: Dataset
   config: Record<string, unknown>
   expected: Dataset
@@ -160,6 +192,83 @@ function precleanseCase(name: string, cfg: PrecleanseConfig): Fixture {
     input,
     config: { precision: PRECISION, precleanse: cfg },
     expected: precleanse(input, cfg),
+  }
+}
+
+/** One `FeatureConfig[]` applied through the real client engine. */
+function featureCase(
+  name: string,
+  configs: FeatureConfig[],
+  input: Dataset = buildInput(),
+): Fixture {
+  return {
+    name,
+    engine: 'applyFeatures',
+    input,
+    config: { precision: PRECISION, features: configs },
+    expected: applyFeatures(input, configs),
+  }
+}
+
+function selectColumnsCase(name: string, kept: string[] | null): Fixture {
+  const input = buildInput()
+  return {
+    name,
+    engine: 'selectColumns',
+    input,
+    config: { precision: PRECISION, kept },
+    expected: selectColumns(input, kept),
+  }
+}
+
+function scalerCase(name: string, method: ScalerMethod): Fixture {
+  const input = buildInput()
+  const scalers = Object.fromEntries(TAGS.map(t => [t, method]))
+  return {
+    name,
+    engine: 'toModelReady',
+    input,
+    config: { scalers },
+    expected: toModelReady(input, scalers),
+  }
+}
+
+/**
+ * A tiny, hand-built 3-row grid where TAGS[1]'s value is exactly 0 at row 1 —
+ * `buildInput()`'s randomised readings essentially never land on exact 0, so
+ * `ratio`'s "divisor is exactly 0 -> Bad" branch (feature-engineering.ts:139)
+ * needs its own input to ever fire. Row 2 adds a genuinely Bad source cell
+ * (distinct from the zero-divisor case) so this input isn't all-Good — the
+ * Python parity suite's own integrity check requires every fixture's input
+ * to contain a non-Good cell, `no_ops_is_identity` aside.
+ */
+function buildRatioZeroInput(): Dataset {
+  const [a, b] = TAGS
+  return {
+    tags: [a!, b!],
+    rows: [
+      {
+        timestamp: new Date(Date.UTC(2026, 5, 22, 0, 0)).toISOString(),
+        cells: {
+          [a!]: { value: 10, status: 'Good' },
+          [b!]: { value: 2, status: 'Good' },
+        },
+      },
+      {
+        timestamp: new Date(Date.UTC(2026, 5, 22, 0, 1)).toISOString(),
+        cells: {
+          [a!]: { value: 10, status: 'Good' },
+          [b!]: { value: 0, status: 'Good' },
+        },
+      },
+      {
+        timestamp: new Date(Date.UTC(2026, 5, 22, 0, 2)).toISOString(),
+        cells: {
+          [a!]: { value: 10, status: 'Bad' },
+          [b!]: { value: 5, status: 'Good' },
+        },
+      },
+    ],
   }
 }
 
@@ -257,6 +366,94 @@ function buildFixtures(): Fixture[] {
       conditional: [],
       statistical: [],
     }),
+
+    // ── DS-LAKE-006-T01: derived features (applyFeatures) ──────────────────
+    featureCase('feature_lag', [
+      { id: 'f-lag', kind: 'lag', tag: 'TI-101', k: 3 },
+    ]),
+    featureCase('feature_rolling_mean', [
+      {
+        id: 'f-roll-mean',
+        kind: 'rolling',
+        tag: 'TI-101',
+        window: 5,
+        agg: 'mean',
+      },
+    ]),
+    featureCase('feature_rolling_std', [
+      {
+        id: 'f-roll-std',
+        kind: 'rolling',
+        tag: 'VI-202',
+        window: 4,
+        agg: 'std',
+      },
+    ]),
+    featureCase('feature_rolling_roc', [
+      {
+        id: 'f-roll-roc',
+        kind: 'rolling',
+        tag: 'FI-404',
+        window: 3,
+        agg: 'ROC',
+      },
+    ]),
+    featureCase('feature_delta', [
+      { id: 'f-delta', kind: 'delta', tag: 'TI-101' },
+    ]),
+    featureCase('feature_arith_add', [
+      {
+        id: 'f-arith-add',
+        kind: 'arith',
+        op: 'add',
+        tags: ['TI-101', 'VI-202'],
+      },
+    ]),
+    // Bad propagation from a source cell — no custom input needed, the base
+    // grid's ragged Bad/Questionable cells already drive this.
+    featureCase('feature_ratio', [
+      { id: 'f-ratio', kind: 'ratio', tags: ['TI-101', 'FI-404'] },
+    ]),
+    // The base grid's random readings essentially never land on exact 0, so
+    // "divisor is exactly 0 -> Bad" needs its own hand-built input.
+    featureCase(
+      'feature_ratio_by_zero_is_bad',
+      [{ id: 'f-ratio-zero', kind: 'ratio', tags: TAGS.slice(0, 2) }],
+      buildRatioZeroInput(),
+    ),
+    // Row 27's injected `base * -3` outlier makes every tag negative there,
+    // which is exactly what fires log's "non-positive -> Bad" branch.
+    featureCase('feature_log', [{ id: 'f-log', kind: 'log', tag: 'TI-101' }]),
+    featureCase('feature_datetime_hour', [
+      { id: 'f-dt-hour', kind: 'datetime', part: 'hour' },
+    ]),
+    featureCase('feature_formula', [
+      {
+        id: 'f-formula',
+        kind: 'formula',
+        name: 'sum_two',
+        expr: 'c0 + c1',
+        vars: { c0: 'TI-101', c1: 'VI-202' },
+        display: 'TI-101 + VI-202',
+      },
+    ]),
+    // A later config reading an EARLIER config's derived column — proves
+    // `applyFeatures` mutates the same row set in place across configs, not
+    // just against the original input.
+    featureCase('feature_chain_lag_then_delta_of_lag', [
+      { id: 'f-lag1', kind: 'lag', tag: 'TI-101', k: 1 },
+      { id: 'f-delta-of-lag', kind: 'delta', tag: 'TI-101__lag1' },
+    ]),
+
+    // ── DS-LAKE-006-T01: column selection (selectColumns) ───────────────────
+    selectColumnsCase('select_columns_subset', ['TI-101', 'FI-404']),
+    selectColumnsCase('select_columns_keep_all_is_identity', null),
+
+    // ── DS-LAKE-006-T01: every scaler (toModelReady) ────────────────────────
+    scalerCase('scaler_minmax', 'minmax'),
+    scalerCase('scaler_standard', 'standard'),
+    scalerCase('scaler_robust', 'robust'),
+    scalerCase('scaler_none', 'none'),
   ]
 }
 

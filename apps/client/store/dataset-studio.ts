@@ -174,6 +174,17 @@ export const dwProcessingSubStepAtom = atom<1 | 2>(1)
 // null until the first "Save Cleaned Tags" triggers the server sync.
 export const dwDraftIdAtom = atom<string | null>(null)
 export const dwDraftArtifactIdAtom = atom<string | null>(null)
+// DS-LAKE-006-T06. The GOLD artifact Step 4's background warm produces from
+// `dwDraftArtifactIdAtom` (normally SILVER) — kept SEPARATE from it on
+// purpose: overwriting `dwDraftArtifactIdAtom` with the GOLD result would
+// make the NEXT feature-recipe edit compute GOLD-from-GOLD instead of
+// GOLD-from-SILVER, silently losing the ability to redo feature engineering
+// against the same cleaned base. No current reader — Step 5 Save still uses
+// the pre-DS-LAKE-009 raw-refetch/client-pipeline path (ADR-DS-LAKE-005B-B-006
+// names DS-LAKE-009 as where Save adopts a completed artifact); this exists
+// so Step 4 itself satisfies its own AC ("drives the transform server-side"),
+// not because Save reads it yet.
+export const dwDraftGoldArtifactIdAtom = atom<string | null>(null)
 export interface DraftSyncState {
   status: 'idle' | 'syncing' | 'synced' | 'error'
   error?: string
@@ -339,6 +350,13 @@ export const resetDatasetWizardAtom = atom(null, (_get, set) => {
   set(dwEditingDatasetAtom, null)
   set(dwRowSourceAtom, null)
   set(dwSyntheticReasonAtom, null)
+  // DS-LAKE-005B-B-T01 (Step 5 leg). Without this, a second wizard run in
+  // the same session would inherit the just-SAVED draft's id — every
+  // .../artifacts/:id/finalize and .../save call would target a draft
+  // DS-LAKE-009-T03's own guard now 409s on (already saved once).
+  set(dwDraftIdAtom, null)
+  set(dwDraftArtifactIdAtom, null)
+  set(dwDraftGoldArtifactIdAtom, null)
 })
 
 /**

@@ -25,8 +25,11 @@ from fastapi import Response
 
 from intergrations.object_store import (
     COLUMN_STATS_FILENAME,
+    DATA_FILENAME,
+    FEATURE_SPEC_FILENAME,
     MANIFEST_FILENAME,
     TIMESTAMP_COLUMN,
+    VALIDATION_REPORT_FILENAME,
     ArtifactStats,
     ObjectStore,
     build_manifest,
@@ -35,26 +38,35 @@ from intergrations.object_store import (
     tag_columns,
 )
 from schemas.preprocess import (
+    ArtifactReclaimRequest,
     CleanRequest,
     CleanupRequest,
     ColumnStatsRequest,
+    FeaturesRequest,
     MaterializeRequest,
     MetadataRequest,
     RowsRequest,
     TagCatalogRequest,
+    ValidateRequest,
 )
 from services.cleaning_service import apply_operations
 from services.column_stats_service import build_column_stats
 from services.data_source_service import PIDataSourceService, SQLDataSourceService
+from services.feature_service import apply_features, select_columns, to_model_ready
+from services.feature_spec_service import build_feature_spec
 from services.frame_service import from_pi_response, from_sql_response
 from services.preview_service import sample_rows
+from services.validation_service import run_validation
 
 _pi = PIDataSourceService()
 _sql = SQLDataSourceService()
 
 
 def _stats_payload(
-    stats: ArtifactStats, started: float, column_stats_key: str | None = None
+    stats: ArtifactStats,
+    started: float,
+    column_stats_key: str | None = None,
+    feature_spec_key: str | None = None,
 ) -> dict[str, Any]:
     return {
         "object_key": stats.object_key,
@@ -65,6 +77,7 @@ def _stats_payload(
         "checksum": stats.checksum,
         "duration_ms": int((time.perf_counter() - started) * 1000),
         "column_stats_key": column_stats_key,
+        "feature_spec_key": feature_spec_key,
     }
 
 
@@ -76,19 +89,22 @@ def _commit(
     parent_key: str | None = None,
     operations: Any = None,
     column_stats: dict[str, Any] | None = None,
+    feature_spec: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write the manifest (and, since DS-LAKE-005B-A-T07, the column-stats
-    sidecar) beside the data, then return the response payload.
+    sidecar; since DS-LAKE-006-T05, the feature-spec sidecar) beside the
+    data, then return the response payload.
 
-    Both sidecars are written AFTER the data, and neither's failure unwinds
-    the data object — the data is the expensive thing to reproduce and a
-    sidecar can be rebuilt from the object plus its row, while the reverse
-    ordering would let a sidecar describe an artifact that does not exist.
+    Every sidecar is written AFTER the data, and none of their failures
+    unwind the data object — the data is the expensive thing to reproduce
+    and a sidecar can be rebuilt from the object plus its row, while the
+    reverse ordering would let a sidecar describe an artifact that does not
+    exist.
 
-    `column_stats` is a plain dict (not a DataFrame) — the caller
-    (`materialize`/`clean`) computes it from frames it already holds in
-    memory; `_commit` never reads a frame itself, so it can never become a
-    second place that opens `data.parquet` at write time.
+    `column_stats`/`feature_spec` are plain dicts (not DataFrames) — the
+    caller (`materialize`/`clean`/`features`) computes them from frames it
+    already holds in memory; `_commit` never reads a frame itself, so it can
+    never become a second place that opens `data.parquet` at write time.
     """
     payload = _stats_payload(
         stats,
@@ -96,6 +112,11 @@ def _commit(
         column_stats_key=(
             sidecar_key(stats.object_key, COLUMN_STATS_FILENAME)
             if column_stats is not None
+            else None
+        ),
+        feature_spec_key=(
+            sidecar_key(stats.object_key, FEATURE_SPEC_FILENAME)
+            if feature_spec is not None
             else None
         ),
     )
@@ -111,6 +132,10 @@ def _commit(
     if column_stats is not None:
         store.put_json(
             sidecar_key(stats.object_key, COLUMN_STATS_FILENAME), column_stats
+        )
+    if feature_spec is not None:
+        store.put_json(
+            sidecar_key(stats.object_key, FEATURE_SPEC_FILENAME), feature_spec
         )
     return payload
 
@@ -167,7 +192,8 @@ def materialize(store: ObjectStore, request: MaterializeRequest) -> dict[str, An
         )
 
     assert_frame_is_usable(frame)
-    stats = store.put_frame(frame, request.target_key, overwrite=request.overwrite)
+    stats = store.put_frame(frame, request.target_key,
+                            overwrite=request.overwrite)
     # No parent: a materialised artifact is a lineage root — it comes from the
     # source system, not from another artifact. build_column_stats(parent_frame=
     # None) reports drift=None for every tag, not 0 — there is nothing to
@@ -196,7 +222,8 @@ def clean(store: ObjectStore, request: CleanRequest) -> dict[str, Any]:
     # committing an empty version.
     assert_frame_is_usable(result)
 
-    stats = store.put_frame(result, request.target_key, overwrite=request.overwrite)
+    stats = store.put_frame(result, request.target_key,
+                            overwrite=request.overwrite)
     # `source` (the PARENT) is already in memory from the get_frame above —
     # DS-LAKE-005B-A-T07's drift needs it, and this is the only place clean()
     # ever needs to hold both frames at once; _commit itself never reads one.
@@ -211,6 +238,83 @@ def clean(store: ObjectStore, request: CleanRequest) -> dict[str, Any]:
         operations=[operation.to_step() for operation in request.operations],
         column_stats=column_stats,
     )
+
+
+def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:
+    """DS-LAKE-006-T05. `source_key` is the SILVER artifact; `target_key` is
+    the GOLD artifact. `_commit`'s `parent_key=request.source_key` is what
+    makes the GOLD write's manifest.json point at the silver artifact —
+    the object-store-level counterpart to `DatasetArtifact.parentArtifactId`
+    (a Postgres FK NestJS sets when it persists the row this endpoint's
+    response feeds; this service never touches Postgres, same division of
+    labour `materialize`/`clean` already keep — see module docstring).
+
+    Order is fixed: applyFeatures -> selectColumns -> toModelReady, matching
+    the client pipeline's own tail (`step-5-review-save.tsx`:
+    `applyFeatures -> precleanse -> ... -> selectColumns -> toModelReady`) —
+    cleaning already happened to produce the SILVER source, so only the
+    feature/select/scale stages run here.
+    """
+    started = time.perf_counter()
+
+    source = store.get_frame(request.source_key)
+    step_configs = [f.to_step() for f in request.features]
+
+    result = apply_features(source, step_configs)
+    result = select_columns(result, request.selected_columns)
+    result = to_model_ready(result, tag_columns(result), request.scalers)
+
+    assert_frame_is_usable(result)
+
+    stats = store.put_frame(
+        result, request.target_key, overwrite=request.overwrite)
+
+    spec = build_feature_spec(
+        step_configs, request.selected_columns, request.scalers)
+
+    return _commit(
+        store,
+        stats,
+        started,
+        parent_key=request.source_key,
+        operations=step_configs,
+        feature_spec=spec,
+    )
+
+
+def validate(store: ObjectStore, request: ValidateRequest) -> dict[str, Any]:
+    """DS-LAKE-007-T02. Read `source_key`, run every check, write the report
+    sidecar, return it. No `_commit` here — validation writes no DATA
+    artifact (AC), only the report sidecar, so `_commit`'s manifest/
+    lineage machinery (built around a NEW data object) does not apply.
+
+    `feature_spec_key` is fetched and passed through if given; a caller
+    validating a BRONZE/SILVER artifact simply omits it, and
+    `feature_consistency` skips rather than fails (see
+    `validation_service`'s own module docstring).
+    """
+    frame = store.get_frame(request.source_key)
+    feature_spec = (
+        store.get_json(request.feature_spec_key)
+        if request.feature_spec_key
+        else None
+    )
+
+    kwargs: dict[str, Any] = {
+        "feature_spec": feature_spec,
+        "expected_tags": request.expected_tags,
+    }
+    if request.max_missing_pct is not None:
+        kwargs["max_missing_pct"] = request.max_missing_pct
+    if request.max_outlier_fraction is not None:
+        kwargs["max_outlier_fraction"] = request.max_outlier_fraction
+
+    report = run_validation(frame, **kwargs)
+
+    report_key = sidecar_key(request.source_key, VALIDATION_REPORT_FILENAME)
+    store.put_json(report_key, report)
+    report["validation_report_key"] = report_key
+    return report
 
 
 def _paginate(store: ObjectStore, request: RowsRequest) -> tuple[pd.DataFrame, pd.DataFrame, int, bool]:
@@ -239,14 +343,16 @@ def _paginate(store: ObjectStore, request: RowsRequest) -> tuple[pd.DataFrame, p
 
     is_filtered = request.start_time is not None or request.end_time is not None
     if request.start_time is not None:
-        frame = frame[frame[TIMESTAMP_COLUMN] >= pd.Timestamp(request.start_time)]
+        frame = frame[frame[TIMESTAMP_COLUMN]
+                      >= pd.Timestamp(request.start_time)]
     if request.end_time is not None:
-        frame = frame[frame[TIMESTAMP_COLUMN] <= pd.Timestamp(request.end_time)]
+        frame = frame[frame[TIMESTAMP_COLUMN]
+                      <= pd.Timestamp(request.end_time)]
     if is_filtered:
         frame = frame.reset_index(drop=True)
 
     total = int(len(frame))
-    page = frame.iloc[request.offset : request.offset + request.limit].reset_index(
+    page = frame.iloc[request.offset: request.offset + request.limit].reset_index(
         drop=True
     )
     return frame, page, total, is_filtered
@@ -364,7 +470,7 @@ def tag_catalog(store: ObjectStore, request: TagCatalogRequest) -> dict[str, Any
         tags = [t for t in tags if needle in t.lower()]
 
     total = len(tags)
-    page = tags[request.offset : request.offset + request.limit]
+    page = tags[request.offset: request.offset + request.limit]
 
     return {
         "source_key": request.source_key,
@@ -406,3 +512,20 @@ def cleanup(store: ObjectStore, request: CleanupRequest) -> dict[str, Any]:
         "prefix": request.prefix,
         "deleted": store.delete_prefix(request.prefix),
     }
+
+
+def reclaim_artifact(
+    store: ObjectStore, request: ArtifactReclaimRequest
+) -> dict[str, Any]:
+    """Delete one committed artifact's objects — DS-LAKE-009B.
+
+    `ArtifactReclaimRequest` already refuses anything that is not a committed
+    artifact's data key, so the prefix derived here is always
+    `.../artifacts/{artifactId}/`, never `tmp/` or a preset. `delete_prefix`
+    counts and removes whatever it finds and does not error on an absent
+    prefix, which is what makes a retried cleanup pass converge: calling this
+    twice for the same artifact returns `deleted: 0` the second time instead
+    of failing.
+    """
+    prefix = request.object_key[: -len(DATA_FILENAME)]
+    return {"prefix": prefix, "deleted": store.delete_prefix(prefix)}

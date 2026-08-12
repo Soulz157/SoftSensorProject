@@ -16,6 +16,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
+from intergrations.object_store import DATA_FILENAME
 from schemas.data_source import PIFetchRequest, SQLQueryRequest
 
 # Ceilings chosen so a preview always answers inside PYTHON_TIMEOUT.metadata
@@ -110,6 +111,39 @@ class ArtifactStatsResponse(BaseModel):
     #: writes one, so this is None only for a write path this task did not
     #: reach (there are none currently).
     column_stats_key: Optional[str] = None
+    #: DS-LAKE-006-T05. The feature_spec.json sidecar's key, so NestJS can
+    #: persist DatasetArtifact.featureSpecKey — set only by `/features`
+    #: (materialize/clean have no feature recipe to describe, so this is
+    #: None for them, same reasoning as column_stats_key above being None
+    #: for a write path that never produces one).
+    feature_spec_key: Optional[str] = None
+
+
+class ValidationCheckResponse(BaseModel):
+    """Mirrors `validation_service.CheckResult.to_dict()` field for field."""
+
+    name: str
+    passed: bool
+    skipped: bool
+    detail: str
+    measured: Optional[float] = None
+    threshold: Optional[float] = None
+    offenders: list[str] = Field(default_factory=list)
+
+
+class ValidationReportResponse(BaseModel):
+    """DS-LAKE-007-T02. Mirrors `validation_service.run_validation`'s return
+    shape, plus the sidecar key the endpoint wrote it under (NestJS persists
+    this onto DatasetArtifact.validationKey, same precedent as
+    columnStatsKey/featureSpecKey)."""
+
+    status: Literal["PASS", "FAIL"]
+    #: DS-LAKE-007-T03. 100 minus the weight of every failed check, floored
+    #: at 0 — see validation_service.compute_quality_score's own docstring.
+    quality_score: float
+    checks: list[ValidationCheckResponse]
+    failed_checks: list[str]
+    validation_report_key: str
 
 
 class SqlMaterializeSpec(BaseModel):
@@ -178,6 +212,112 @@ class CleanRequest(BaseModel):
                 "artifact and never edits its input in place."
             )
         return self
+
+
+class FeatureConfigRequest(BaseModel):
+    """One `FeatureConfig` (DS-LAKE-006-T02/T05). One flat model with mostly
+    optional fields, same pragmatic shape as `CleaningOperation` above rather
+    than eight separate discriminated classes — the union really is this
+    heterogeneous client-side too (`feature-engineering.ts`'s own type).
+
+    `kind: 'formula'` is accepted here (a caller may legitimately submit a
+    recipe containing one, e.g. one saved before this port existed) but
+    `feature_service.apply_features` raises `NotImplementedError` for it —
+    see that module's docstring for why formula is not ported.
+    """
+
+    id: str
+    kind: Literal[
+        "lag", "rolling", "delta", "arith", "ratio", "log", "datetime", "formula"
+    ]
+    tag: Optional[str] = None
+    tags: Optional[list[str]] = None
+    k: Optional[int] = None
+    window: Optional[int] = None
+    agg: Optional[str] = None
+    op: Optional[str] = None
+    part: Optional[str] = None
+    name: Optional[str] = None
+    expr: Optional[str] = None
+    vars: Optional[dict[str, str]] = None
+    display: Optional[str] = None
+
+    def to_step(self) -> dict[str, Any]:
+        """Plain dict for `feature_service.apply_features`/`build_feature_spec`.
+
+        Omits unset fields rather than sending `None` through — `feature_service`
+        indexes required fields directly (`cfg['tag']`, `cfg['k']`, ...) per
+        `kind`, and a present-but-`None` key would raise a different, more
+        confusing error than a genuinely missing one.
+        """
+        payload: dict[str, Any] = {"id": self.id, "kind": self.kind}
+        for name in (
+            "tag",
+            "tags",
+            "k",
+            "window",
+            "agg",
+            "op",
+            "part",
+            "name",
+            "expr",
+            "vars",
+            "display",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                payload[name] = value
+        return payload
+
+
+class FeaturesRequest(BaseModel):
+    """DS-LAKE-006-T05. Reads `source_key` (the SILVER artifact), writes
+    `target_key` (the GOLD artifact) — applies features, then column
+    selection, then scaling, in that fixed order (matching the client
+    pipeline: `applyFeatures -> precleanse -> ... -> selectColumns ->
+    toModelReady`; this endpoint covers the feature/select/scale tail, not
+    cleaning, which already happened to produce the SILVER source).
+    """
+
+    source_key: str
+    target_key: str
+    features: list[FeatureConfigRequest] = Field(default_factory=list)
+    selected_columns: Optional[list[str]] = Field(None, alias="selectedColumns")
+    scalers: dict[str, str] = Field(default_factory=dict)
+    overwrite: bool = False
+
+    model_config = {"populate_by_name": True}
+
+    @model_validator(mode="after")
+    def target_differs_from_source(self) -> "FeaturesRequest":
+        if self.source_key == self.target_key:
+            raise ValueError(
+                "source_key and target_key must differ — a features write "
+                "produces a new artifact and never edits its input in place."
+            )
+        return self
+
+
+class ValidateRequest(BaseModel):
+    """DS-LAKE-007-T02. Read-only against `source_key` — validation writes
+    no data artifact and mutates no frame (feature AC); the ONE write this
+    endpoint makes is `validation_report.json`, a sidecar beside the data,
+    same as `column_stats.json`/`feature_spec.json`.
+
+    `feature_spec_key`/`expected_tags` are both optional and independently
+    meaningful: a BRONZE/SILVER artifact has no feature spec to check
+    against (that check SKIPS, not fails — see `validation_service`'s own
+    module docstring), and a caller that does not know the wizard's base
+    tag list simply omits `expected_tags` rather than guessing one.
+    """
+
+    source_key: str
+    feature_spec_key: Optional[str] = None
+    expected_tags: Optional[list[str]] = None
+    #: None means "use validation_service's own default" — the threshold
+    #: VALUES live in one place (that module), not duplicated here.
+    max_missing_pct: Optional[float] = None
+    max_outlier_fraction: Optional[float] = None
 
 
 class RowsRequest(BaseModel):
@@ -367,6 +507,40 @@ class CleanupRequest(BaseModel):
 
 
 class CleanupResponse(BaseModel):
+    prefix: str
+    deleted: int
+
+
+class ArtifactReclaimRequest(BaseModel):
+    """Delete one committed artifact's stored objects (data + sidecars).
+
+    DS-LAKE-009B. Only `ArtifactCleanupService` calls this, and only after
+    Postgres has proven the artifact eligible (not reachable through any
+    non-ARCHIVED DatasetVersion's lineage, and past its retention window).
+    NestJS never sends an arbitrary prefix — it sends the artifact row's own
+    `objectKey` (`.../artifacts/{artifactId}/data.parquet`), and the prefix is
+    derived from that here, the opposite guard from `CleanupRequest`: this
+    endpoint refuses anything that is NOT a committed artifact key, so it
+    cannot be pointed at `tmp/`, a preset, or a legacy version key by mistake.
+    """
+
+    object_key: str = Field(..., examples=["ds-1/artifacts/art-7/data.parquet"])
+
+    @model_validator(mode="after")
+    def object_key_is_a_committed_artifact(self) -> "ArtifactReclaimRequest":
+        if "/artifacts/" not in self.object_key or not self.object_key.endswith(
+            f"/{DATA_FILENAME}"
+        ):
+            raise ValueError(
+                "object_key must be a committed artifact's data key "
+                f"('.../artifacts/{{artifactId}}/{DATA_FILENAME}'). Refusing "
+                "to reclaim a tmp/, preset or legacy object through this "
+                "endpoint."
+            )
+        return self
+
+
+class ArtifactReclaimResponse(BaseModel):
     prefix: str
     deleted: int
 

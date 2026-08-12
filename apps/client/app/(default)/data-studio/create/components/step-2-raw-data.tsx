@@ -646,8 +646,6 @@ export function Step2RawData({ nav }: Props) {
               </div>
             </div>
           </div>
-
-          <RawReadingsTable dataset={raw} />
         </div>
       ) : csvBypass ? (
         /* CSV with nothing uploaded yet — Step 1 owns the file. */

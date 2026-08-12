@@ -25,12 +25,15 @@ from fastapi import APIRouter, Depends, HTTPException
 from dependencies import get_object_store
 from intergrations.object_store import ObjectStore, ObjectStoreError
 from schemas.preprocess import (
+    ArtifactReclaimRequest,
+    ArtifactReclaimResponse,
     ArtifactStatsResponse,
     CleanRequest,
     CleanupRequest,
     CleanupResponse,
     ColumnStatsRequest,
     ColumnStatsResponse,
+    FeaturesRequest,
     MaterializeRequest,
     MetadataRequest,
     MetadataResponse,
@@ -40,6 +43,8 @@ from schemas.preprocess import (
     RowsResponse,
     TagCatalogRequest,
     TagCatalogResponse,
+    ValidateRequest,
+    ValidationReportResponse,
 )
 from services import artifact_service
 from services.cleaning_service import CleaningError
@@ -64,6 +69,13 @@ async def _run(handler, *args):
         # Missing artifact, or storage refused the read/write.
         raise HTTPException(status_code=422, detail=str(e))
     except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except NotImplementedError as e:
+        # DS-LAKE-006-T05: a `formula`-kind feature — a real, named,
+        # not-yet-supported request shape, not an unexpected server fault.
+        # No current route relies on this propagating as 502 instead
+        # (`apply_fixture_case`, the only other NotImplementedError raiser,
+        # is test-only and never reaches this router).
         raise HTTPException(status_code=422, detail=str(e))
     except Exception:
         # Message deliberately generic. The 422 branches above raise messages
@@ -133,6 +145,46 @@ async def clean_artifact(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(artifact_service.clean, store, body)
+
+
+@router.post(
+    "/features",
+    response_model=ArtifactStatsResponse,
+    summary="Apply feature engineering, column selection and scaling",
+    description=(
+        "Reads `source_key` (the SILVER artifact), writes `target_key` (the "
+        "GOLD artifact) — applyFeatures, then selectColumns, then "
+        "toModelReady, in that fixed order. Writes feature_spec.json beside "
+        "the data; `feature_spec_key` in the response is what NestJS "
+        "persists as DatasetArtifact.featureSpecKey. `formula`-kind features "
+        "are not supported yet (see feature_service.py's module docstring) "
+        "and fail this request with 422."
+    ),
+)
+async def create_features(
+    body: FeaturesRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.features, store, body)
+
+
+@router.post(
+    "/validate",
+    response_model=ValidationReportResponse,
+    summary="Run the validation gate against a committed artifact",
+    description=(
+        "Read-only against the artifact — writes no data object, mutates no "
+        "frame. The one write is validation_report.json, a sidecar beside "
+        "the data (same as column_stats.json/feature_spec.json). Returns "
+        "PASS/FAIL with a per-check breakdown naming which check failed "
+        "and by how much."
+    ),
+)
+async def validate_artifact(
+    body: ValidateRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.validate, store, body)
 
 
 @router.post(
@@ -236,3 +288,25 @@ async def cleanup_prefix(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(artifact_service.cleanup, store, body)
+
+
+@router.post(
+    "/artifacts/reclaim",
+    response_model=ArtifactReclaimResponse,
+    summary="Delete one committed artifact's stored objects",
+    description=(
+        "DS-LAKE-009B. Called by ArtifactCleanupService once Postgres has "
+        "proven the artifact eligible — not reachable through any "
+        "non-ARCHIVED DatasetVersion's lineage, and past its retention "
+        "window. Deletes data.parquet and every sidecar beside it. "
+        "Idempotent: a retried call on an already-reclaimed artifact "
+        "returns deleted: 0 rather than failing. The opposite guard from "
+        "/cleanup — this endpoint refuses anything that is NOT a committed "
+        "artifact key, so it cannot be pointed at tmp/ or a preset."
+    ),
+)
+async def reclaim_artifact(
+    body: ArtifactReclaimRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.reclaim_artifact, store, body)

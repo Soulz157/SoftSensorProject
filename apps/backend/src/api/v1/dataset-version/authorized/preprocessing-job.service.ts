@@ -146,13 +146,23 @@ export class PreprocessingJobService
   private async run(jobId: string): Promise<void> {
     const job = await this.prisma.preprocessingJob.findUnique({
       where: { id: jobId },
-      include: { sourceVersion: true, sourceArtifact: true },
+      include: {
+        sourceVersion: { include: { artifact: true } },
+        sourceArtifact: true,
+      },
     });
     // DS-LAKE-005: jobs now read an ARTIFACT. `sourceVersion` is still accepted
     // so a job row queued before this change still runs rather than being
-    // stranded by a deploy.
-    const sourceObject = job?.sourceArtifact ?? job?.sourceVersion ?? null;
-    if (!job || !sourceObject) {
+    // stranded by a deploy. DS-LAKE-009-T07: the registry reshape moved
+    // `objectKey` OFF DatasetVersion onto DatasetArtifact — a legacy
+    // `sourceVersion` now resolves its key through its OWN `artifact`
+    // pointer instead (hence `include`-ing it above), not a column it no
+    // longer has.
+    const sourceObjectKey =
+      job?.sourceArtifact?.objectKey ??
+      job?.sourceVersion?.artifact?.objectKey ??
+      null;
+    if (!job || !sourceObjectKey) {
       this.logger.error(
         `Job ${jobId} has no source artifact; refusing to run.`,
       );
@@ -205,7 +215,7 @@ export class PreprocessingJobService
     });
 
     try {
-      let sourceKey = sourceObject.objectKey;
+      let sourceKey = sourceObjectKey;
       let stats: ArtifactStats | null = null;
 
       for (const [index, operation] of operations.entries()) {

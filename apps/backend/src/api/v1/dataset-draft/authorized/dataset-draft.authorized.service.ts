@@ -17,13 +17,20 @@ import {
   PythonPreviewSchema,
   PythonRowsSchema,
   PythonTagCatalogSchema,
+  ValidationReportSchema,
+  type CreateFeaturesDto,
   type CreateRawVersionDto,
   type ListRowsDto,
   type PreviewVersionDto,
   type StartCleanJobDto,
   type TagCatalogDto,
+  type ValidateArtifactDto,
+  type PromoteFinalArtifactDto,
 } from '../../dataset-version/authorized/dto/dataset-version.authorized.dto';
-import { type CreateDraftDto } from './dto/dataset-draft.authorized.dto';
+import {
+  type CreateDraftDto,
+  type SaveDraftAsDatasetDto,
+} from './dto/dataset-draft.authorized.dto';
 
 /**
  * DatasetDraft — the wizard-time owner under the Draft-first architecture
@@ -273,6 +280,519 @@ export class DatasetDraftAuthorizedService {
         rowCount: artifact.rowCount,
         columnCount: artifact.columnCount,
         missingPct: artifact.missingPct,
+      },
+    };
+  }
+
+  /**
+   * DS-LAKE-006-T06. Runs feature engineering + column selection + scaling
+   * SERVER-SIDE against an existing draft artifact (normally SILVER, but
+   * not required to be — this adopts whatever `:artifactId` points at,
+   * same artifact-stage-agnostic design already noted for the Save-from-
+   * completed-artifact ADR). Produces a GOLD artifact.
+   *
+   * Inline, not job-queued — mirrors `materializeDraftArtifactService`
+   * above, not `startDraftCleanJobService`: feature engineering is one
+   * combined operation here, not a per-tag chained pipeline, so there is no
+   * meaningful per-step progress to track. (Decided explicitly, not
+   * assumed — see feature_list.preprocessing.json DS-LAKE-006-T06.)
+   *
+   * `parentArtifactId: source.id` is the REAL Postgres FK T05's own
+   * verificationResults flagged as still missing — that gap closes here.
+   */
+  async createDraftFeaturesArtifactService(
+    user: Auth.UserPayload,
+    draftId: string,
+    artifactId: string,
+    dto: CreateFeaturesDto,
+  ) {
+    await this.assertDraftAccess(draftId, user);
+    const source = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, draftId },
+    });
+    if (!source) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Draft artifact not found',
+        type: 'ERROR',
+      });
+    }
+
+    const newArtifactId = randomUUID();
+    const startedAt = Date.now();
+    const scope = `drafts/${draftId}`;
+
+    const stats = ArtifactStatsSchema.parse(
+      await postToPython(
+        '/v1/preprocess/features',
+        {
+          source_key: source.objectKey,
+          target_key: artifactKey(scope, newArtifactId),
+          features: dto.features,
+          selectedColumns: dto.selectedColumns ?? null,
+          scalers: dto.scalers,
+          overwrite: dto.overwrite ?? false,
+        },
+        PYTHON_TIMEOUT.preprocess,
+      ),
+    );
+
+    const artifact = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.datasetArtifact.create({
+        data: {
+          id: newArtifactId,
+          draftId,
+          // Continues the SAME BRONZE -> SILVER -> GOLD -> FINAL chain the
+          // source belongs to — unlike a fresh materialize, this is not a
+          // lineage root, so it does not mint its own runId.
+          runId: source.runId,
+          parentArtifactId: source.id,
+          type: 'GOLD',
+          objectKey: stats.object_key,
+          checksum: stats.checksum,
+          rowCount: stats.row_count,
+          columnCount: stats.column_count,
+          missingPct: stats.missing_pct,
+          sizeBytes: BigInt(stats.size_bytes),
+          operations: dto.features,
+          // No column_stats.json from /features — that sidecar is a
+          // cleaning-op concern (drift/coverage/outlier), which this
+          // endpoint has nothing to compute.
+          columnStatsKey: null,
+          featureSpecKey: stats.feature_spec_key ?? null,
+          durationMs: Date.now() - startedAt,
+          createdById: user.id,
+        },
+      });
+      await tx.datasetDraft.update({
+        where: { id: draftId },
+        data: { currentArtifactId: created.id },
+      });
+      return created;
+    });
+    return {
+      statusCode: 201,
+      message: 'Draft gold artifact created successfully',
+      type: 'SUCCESS' as const,
+      data: {
+        id: artifact.id,
+        runId: artifact.runId,
+        parentArtifactId: artifact.parentArtifactId,
+        type: artifact.type,
+        checksum: artifact.checksum,
+        rowCount: artifact.rowCount,
+        columnCount: artifact.columnCount,
+        missingPct: artifact.missingPct,
+        featureSpecKey: artifact.featureSpecKey,
+      },
+    };
+  }
+
+  /**
+   * DS-LAKE-007-T04. Thin endpoint (AskUserQuestion, this task): calls
+   * Python, zod-parses the response, returns it. Creates or updates NO
+   * DatasetArtifact row — a later task decides whether/how a PASS becomes
+   * a FINAL artifact (the schema's own "validationKey on FINAL" comment
+   * anticipates this, but it is not this task's job to build).
+   *
+   * `featureSpecKey` is read off the artifact BEING validated, not
+   * supplied by the caller — see `ValidateArtifactSchema`'s own doc
+   * comment for why a separate field would just be a second way to name
+   * the wrong spec.
+   */
+  async validateDraftArtifactService(
+    user: Auth.UserPayload,
+    draftId: string,
+    artifactId: string,
+    dto: ValidateArtifactDto,
+  ) {
+    await this.assertDraftAccess(draftId, user);
+    const artifact = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, draftId },
+      select: { objectKey: true, featureSpecKey: true },
+    });
+    if (!artifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Draft artifact not found',
+        type: 'ERROR',
+      });
+    }
+
+    const report = ValidationReportSchema.parse(
+      await postToPython(
+        '/v1/preprocess/validate',
+        {
+          source_key: artifact.objectKey,
+          ...(artifact.featureSpecKey && {
+            feature_spec_key: artifact.featureSpecKey,
+          }),
+          ...(dto.expectedTags && { expected_tags: dto.expectedTags }),
+          ...(dto.maxMissingPct !== undefined && {
+            max_missing_pct: dto.maxMissingPct,
+          }),
+          ...(dto.maxOutlierFraction !== undefined && {
+            max_outlier_fraction: dto.maxOutlierFraction,
+          }),
+        },
+        PYTHON_TIMEOUT.preprocess,
+      ),
+    );
+
+    return {
+      statusCode: 200,
+      message: 'Validation report generated successfully',
+      type: 'SUCCESS' as const,
+      data: report,
+    };
+  }
+
+  /**
+   * DS-LAKE-009-T01. Promotes `:artifactId` (normally GOLD, but not
+   * required to be — same artifact-stage-agnostic design as
+   * `createDraftFeaturesArtifactService`: a dataset with no feature
+   * engineering never has a GOLD artifact, and must still be saveable from
+   * SILVER) into a FINAL artifact, ONLY if it validates PASS.
+   *
+   * Re-validates the source itself rather than trusting a caller-supplied
+   * report key — accepting one from the request body would reopen
+   * SERVER-side exactly the stale-PASS vector DS-LAKE-008-T03 closed
+   * CLIENT-side. This is deliberately NOT redundant with DS-LAKE-009-T04:
+   * this guards artifact PROMOTION (can a FAIL become a FINAL?); T04
+   * guards the Save Dataset transaction itself (can something that was
+   * never promoted through here still get committed as a version?) —
+   * different entry point, different guard, both server-side.
+   *
+   * A FINAL artifact is a Postgres-only promotion, never a byte copy:
+   * `DatasetArtifact.datasetId`'s own schema comment says artifacts are
+   * "ADOPTED... never copied, never rewritten" — the same principle one
+   * step earlier. `objectKey`/`checksum` are the SOURCE's, verbatim;
+   * `ObjectStore` refuses a second write to an existing key anyway
+   * (immutability), so there is no Python write here, only the /validate
+   * read. `operations: []` — promotion applies no transform, same
+   * convention as `materializeDraftArtifactService`'s BRONZE row.
+   * `datasetId` is NOT set here (no `Dataset` exists yet) — DS-LAKE-009-T02
+   * is where adoption happens, same as every earlier artifact stage.
+   */
+  async promoteDraftArtifactToFinalService(
+    user: Auth.UserPayload,
+    draftId: string,
+    artifactId: string,
+    dto: PromoteFinalArtifactDto,
+  ) {
+    await this.assertDraftAccess(draftId, user);
+    const source = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, draftId },
+    });
+    if (!source) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Draft artifact not found',
+        type: 'ERROR',
+      });
+    }
+
+    const startedAt = Date.now();
+    const report = ValidationReportSchema.parse(
+      await postToPython(
+        '/v1/preprocess/validate',
+        {
+          source_key: source.objectKey,
+          ...(source.featureSpecKey && {
+            feature_spec_key: source.featureSpecKey,
+          }),
+          ...(dto.expectedTags && { expected_tags: dto.expectedTags }),
+          ...(dto.maxMissingPct !== undefined && {
+            max_missing_pct: dto.maxMissingPct,
+          }),
+          ...(dto.maxOutlierFraction !== undefined && {
+            max_outlier_fraction: dto.maxOutlierFraction,
+          }),
+        },
+        PYTHON_TIMEOUT.preprocess,
+      ),
+    );
+
+    if (report.status !== 'PASS') {
+      throw new AppException({
+        statusCode: 422,
+        message:
+          `Validation failed — cannot promote to a final artifact ` +
+          `(quality score ${report.quality_score}, failed: ` +
+          `${report.failed_checks.join(', ') || 'unknown'}).`,
+        type: 'ERROR',
+      });
+    }
+
+    const finalArtifactId = randomUUID();
+
+    const artifact = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.datasetArtifact.create({
+        data: {
+          id: finalArtifactId,
+          draftId,
+          runId: source.runId,
+          parentArtifactId: source.id,
+          type: 'FINAL',
+          objectKey: source.objectKey,
+          checksum: source.checksum,
+          rowCount: source.rowCount,
+          columnCount: source.columnCount,
+          missingPct: source.missingPct,
+          sizeBytes: source.sizeBytes,
+          operations: [],
+          columnStatsKey: source.columnStatsKey,
+          featureSpecKey: source.featureSpecKey,
+          validationKey: report.validation_report_key,
+          durationMs: Date.now() - startedAt,
+          createdById: user.id,
+        },
+      });
+      await tx.datasetDraft.update({
+        where: { id: draftId },
+        data: { currentArtifactId: created.id },
+      });
+      return created;
+    });
+
+    return {
+      statusCode: 201,
+      message: 'Draft final artifact created successfully',
+      type: 'SUCCESS' as const,
+      data: {
+        id: artifact.id,
+        runId: artifact.runId,
+        parentArtifactId: artifact.parentArtifactId,
+        type: artifact.type,
+        checksum: artifact.checksum,
+        rowCount: artifact.rowCount,
+        columnCount: artifact.columnCount,
+        missingPct: artifact.missingPct,
+        featureSpecKey: artifact.featureSpecKey,
+        validationKey: artifact.validationKey,
+        qualityScore: report.quality_score,
+      },
+    };
+  }
+
+  /**
+   * DS-LAKE-009-T02. The ONLY place a `DatasetVersion` is ever created
+   * (DS-LAKE-009-T05 audits this claim). Adopts the draft's FINAL artifact
+   * BY POINTER — never re-fetches raw, never replays the recipe
+   * (ADR-DS-LAKE-005B-B-006).
+   *
+   * Looks up the FINAL artifact explicitly (`type: 'FINAL'`, newest first)
+   * rather than trusting `draft.currentArtifactId`, which can drift back to
+   * GOLD if the recipe is edited after promotion (advisor-flagged). 422s if
+   * none exists — a draft that never went through `.../finalize` has
+   * nothing valid to save.
+   *
+   * Re-validates that artifact for a fresh Save-time quality score:
+   * `DatasetVersion.qualityScore`'s own schema comment says "at Save time,
+   * frozen" — copying a number computed at promotion time would violate
+   * that. This doubles as DS-LAKE-009-T04's guard (refuses an artifactId
+   * that was never promoted through T01, or whose bytes no longer PASS) as
+   * a direct consequence, not by duplicating T01's check — T04 remains its
+   * own task to harden/verify this further, not reinvent it.
+   *
+   * `versionNumber` is read inside the transaction (DS-LAKE-009-T03),
+   * against the just-created `dataset.id` via `tx`, not `this.prisma` —
+   * every write here always creates a brand-new `Dataset` in the SAME
+   * transaction, so no other row can share its id and no other write can
+   * be racing it for that id specifically. The read-then-insert pattern is
+   * not airtight under Postgres's default READ COMMITTED (two concurrent
+   * transactions targeting the SAME datasetId could both read "no rows
+   * yet" and compute the same next number) — `@@unique([datasetId,
+   * versionNumber])` is the actual backstop, surfacing as a raw Prisma
+   * P2002 rather than a mapped `AppException`. `createDatasetService` (the
+   * plain CRUD path, `@@unique([workspaceId, name])`) has the same
+   * untranslated-P2002 gap today — kept consistent with that precedent
+   * rather than adding handling here alone. Recorded explicitly, not
+   * silently assumed solved: today this is provably unreachable (every
+   * save creates a fresh Dataset, so `datasetId` can never collide across
+   * two concurrent saves), and stays that way until some future path
+   * saves a SECOND version onto an EXISTING dataset.
+   *
+   * `draft.status === 'SAVED'` is refused up front (409) — a reachable
+   * concurrency hole distinct from T03's own versionNumber question,
+   * closed here rather than left for T04: `assertDraftAccess` does not
+   * check status, and the FINAL artifact stays findable by
+   * `{ draftId, type: 'FINAL' }` after adoption (`draftId` is kept, per
+   * the adoption comment above) — without this guard, a second save of an
+   * already-saved draft would create a SECOND `Dataset`, re-point the same
+   * artifact's `datasetId` away from the first, and overwrite
+   * `savedDatasetId`, leaving dataset #1's `currentArtifactId` dangling.
+   */
+  async saveDraftAsDatasetService(
+    user: Auth.UserPayload,
+    draftId: string,
+    dto: SaveDraftAsDatasetDto,
+  ) {
+    const draft = await this.assertDraftAccess(draftId, user);
+    if (draft.status === 'SAVED') {
+      throw new AppException({
+        statusCode: 409,
+        message:
+          'Draft has already been saved as a Dataset — a draft can only ' +
+          'be saved once.',
+        type: 'ERROR',
+      });
+    }
+
+    const finalArtifact = await this.prisma.datasetArtifact.findFirst({
+      where: { draftId, type: 'FINAL' },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!finalArtifact) {
+      throw new AppException({
+        statusCode: 422,
+        message:
+          'Draft has no finalized artifact to save — promote one via ' +
+          '.../artifacts/:artifactId/finalize first.',
+        type: 'ERROR',
+      });
+    }
+
+    // DS-LAKE-009-T04: no expectedTags/maxMissingPct/maxOutlierFraction
+    // overrides here (see SaveDraftAsDatasetSchema's own doc comment) —
+    // Save re-checks against the artifact's own thresholds, it does not
+    // let the caller configure new ones.
+    const report = ValidationReportSchema.parse(
+      await postToPython(
+        '/v1/preprocess/validate',
+        {
+          source_key: finalArtifact.objectKey,
+          ...(finalArtifact.featureSpecKey && {
+            feature_spec_key: finalArtifact.featureSpecKey,
+          }),
+        },
+        PYTHON_TIMEOUT.preprocess,
+      ),
+    );
+
+    if (report.status !== 'PASS') {
+      throw new AppException({
+        statusCode: 422,
+        message:
+          `Validation failed — cannot save dataset (quality score ` +
+          `${report.quality_score}, failed: ` +
+          `${report.failed_checks.join(', ') || 'unknown'}).`,
+        type: 'ERROR',
+      });
+    }
+
+    // Frozen lineage snapshot: walk parentArtifactId from FINAL back to the
+    // BRONZE root, root-first. DatasetArtifact.parentArtifactId stays the
+    // live, queryable chain — this is the point-in-time copy a saved
+    // version promises never changes underneath it.
+    type ArtifactLink = {
+      id: string;
+      type: string;
+      checksum: string;
+      objectKey: string;
+      parentArtifactId: string | null;
+    };
+    const lineage: Array<{
+      id: string;
+      type: string;
+      checksum: string;
+      objectKey: string;
+    }> = [];
+    let cursor: ArtifactLink | null = finalArtifact;
+    while (cursor) {
+      lineage.unshift({
+        id: cursor.id,
+        type: cursor.type,
+        checksum: cursor.checksum,
+        objectKey: cursor.objectKey,
+      });
+      cursor = cursor.parentArtifactId
+        ? await this.prisma.datasetArtifact.findUnique({
+            where: { id: cursor.parentArtifactId },
+          })
+        : null;
+    }
+
+    const { dataset, version } = await this.prisma.$transaction(async (tx) => {
+      const dataset = await tx.dataset.create({
+        data: {
+          name: dto.name,
+          description: dto.description ?? null,
+          workspaceId: draft.workspaceId,
+          sourceIds: draft.sourceIds,
+          tags: dto.tags,
+          pipelineConfig: dto.pipelineConfig as PrismaTypes.InputJsonValue,
+          fileUrl: dto.fileUrl ?? null,
+          rowCount: finalArtifact.rowCount,
+          missingPct: finalArtifact.missingPct,
+          createdById: user.id,
+        },
+      });
+
+      // Adopt by pointer — datasetId set, draftId kept for traceability,
+      // never copied/rewritten (DatasetArtifact.datasetId's own comment).
+      await tx.datasetArtifact.update({
+        where: { id: finalArtifact.id },
+        data: { datasetId: dataset.id },
+      });
+
+      // DS-LAKE-009-T03: read inside the transaction, via `tx` — see the
+      // method doc comment for why this narrows but does not eliminate the
+      // race, and why that gap is provably unreachable today.
+      const last = await tx.datasetVersion.findFirst({
+        where: { datasetId: dataset.id },
+        orderBy: { versionNumber: 'desc' },
+        select: { versionNumber: true },
+      });
+      const versionNumber = (last?.versionNumber ?? 0) + 1;
+
+      const version = await tx.datasetVersion.create({
+        data: {
+          datasetId: dataset.id,
+          versionNumber,
+          semanticVersion: `${versionNumber}.0.0`,
+          artifactId: finalArtifact.id,
+          checksum: finalArtifact.checksum,
+          schemaVersion: finalArtifact.schemaVersion,
+          columnCount: finalArtifact.columnCount,
+          featureCount: finalArtifact.featureCount,
+          rowCount: finalArtifact.rowCount,
+          missingPct: finalArtifact.missingPct,
+          sizeBytes: finalArtifact.sizeBytes,
+          qualityScore: report.quality_score,
+          status: 'DRAFT',
+          lineage: lineage,
+          createdById: user.id,
+        },
+      });
+
+      await tx.dataset.update({
+        where: { id: dataset.id },
+        data: {
+          currentArtifactId: finalArtifact.id,
+          currentVersionId: version.id,
+        },
+      });
+
+      await tx.datasetDraft.update({
+        where: { id: draftId },
+        data: { savedDatasetId: dataset.id, status: 'SAVED' },
+      });
+
+      return { dataset, version };
+    });
+
+    return {
+      statusCode: 201,
+      message: 'Dataset saved successfully',
+      type: 'SUCCESS' as const,
+      data: {
+        id: dataset.id,
+        versionId: version.id,
+        versionNumber: version.versionNumber,
+        artifactId: finalArtifact.id,
+        qualityScore: report.quality_score,
+        lineage,
       },
     };
   }

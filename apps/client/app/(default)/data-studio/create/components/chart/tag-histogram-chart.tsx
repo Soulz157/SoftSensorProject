@@ -31,6 +31,27 @@ const ZOOM_MIN = 1
 const ZOOM_MAX = 8
 const ZOOM_STEP = 1.4
 
+const TARGET_Y_TICKS = 5
+const Y_ZOOM_MIN = 1
+const Y_ZOOM_MAX = 50
+const Y_ZOOM_STEP = 1.6
+
+function niceStep(range: number, target = TARGET_Y_TICKS): number {
+  if (!Number.isFinite(range) || range <= 0) return 1
+  const rough = range / target
+  const mag = 10 ** Math.floor(Math.log10(rough))
+  const norm = rough / mag
+  const mult = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10
+  return mult * mag
+}
+
+function fmtCount(n: number): string {
+  const abs = Math.abs(n)
+  if (abs >= 1_000_000) return `${fmt(n / 1_000_000)}M`
+  if (abs >= 1_000) return `${fmt(n / 1_000)}k`
+  return fmt(n)
+}
+
 function clamp01(n: number): number {
   return Math.min(1, Math.max(0, n))
 }
@@ -57,16 +78,21 @@ function computeLayerOpacities(layerCount: number) {
 
 export function TagHistogramChart({ dataset, tags }: Props) {
   const [zoom, setZoom] = useState(1)
+  const [yZoom, setYZoom] = useState(1)
   const [center, setCenter] = useState(0.5)
-  const clipId = useId()
-  const dragRef = useRef<{ x: number } | null>(null)
 
   const zoomIn = () => setZoom(z => Math.min(ZOOM_MAX, z * ZOOM_STEP))
   const zoomOut = () => setZoom(z => Math.max(ZOOM_MIN, z / ZOOM_STEP))
+  const yZoomIn = () => setYZoom(z => Math.min(Y_ZOOM_MAX, z * Y_ZOOM_STEP))
+  const yZoomOut = () => setYZoom(z => Math.max(Y_ZOOM_MIN, z / Y_ZOOM_STEP))
   const resetView = () => {
     setZoom(1)
+    setYZoom(1)
     setCenter(0.5)
   }
+
+  const clipId = useId()
+  const dragRef = useRef<{ x: number } | null>(null)
 
   const goodValuesByTag = useMemo(() => {
     const map = new Map<string, number[]>()
@@ -173,17 +199,17 @@ export function TagHistogramChart({ dataset, tags }: Props) {
     0,
     ...layers.flatMap(l => l.kdeCounts.map(p => p.y)),
   )
-  const yMaxRaw = (maxKdeCount || 1) * 1.1
-  const yMax = Math.max(1, Math.ceil(yMaxRaw))
-
+  const yMaxFull = Math.max(1, (maxKdeCount || 1) * 1.1)
+  const yMaxView = yMaxFull / yZoom
   const xScale = (v: number) =>
     PAD_LEFT + ((v - xMin) / (xMax - xMin || 1)) * PLOT_W
-  const yScale = (c: number) => PAD_TOP + PLOT_H - (c / (yMax || 1)) * PLOT_H
-  const tickStep = yMax <= 10 ? 1 : yMax <= 20 ? 2 : yMax <= 50 ? 5 : 10
+  const yScale = (c: number) =>
+    PAD_TOP + PLOT_H - (c / (yMaxView || 1)) * PLOT_H
 
+  const yStep = niceStep(yMaxView)
   const yTicks = Array.from(
-    { length: Math.floor(yMax / tickStep) + 1 },
-    (_, i) => i * tickStep,
+    { length: Math.floor(yMaxView / yStep) + 2 },
+    (_, i) => i * yStep,
   )
 
   const kdePath = (layer: TagLayer) =>
@@ -268,35 +294,68 @@ export function TagHistogramChart({ dataset, tags }: Props) {
       </div>
 
       <div className="relative">
-        <div className="absolute top-2 right-2 z-10 flex gap-1 rounded-md border border-border bg-background/90 p-1">
-          <Button
-            variant="outline"
-            size="icon-sm"
-            aria-label="Zoom in"
-            onClick={zoomIn}
-            disabled={zoom >= ZOOM_MAX}
-          >
-            <ZoomIn className="h-4 w-4" />
-          </Button>
-          <Button
-            variant="outline"
-            size="icon-sm"
-            aria-label="Zoom out"
-            onClick={zoomOut}
-            disabled={zoom <= ZOOM_MIN}
-          >
-            <ZoomOut className="h-4 w-4" />
-          </Button>
-          <Button
-            variant="outline"
-            size="icon-sm"
-            aria-label="Reset view"
-            onClick={resetView}
-            disabled={zoom <= ZOOM_MIN}
-          >
-            <RotateCcw className="h-4 w-4" />
-          </Button>
+        <div className="p-2 sm:p-1">
+          <div className="absolute top-2 right-2 z-10 flex items-center gap-1 rounded-md border border-border bg-background/90 p-1 ">
+            <span className="px-0.5 font-mono text-[10px] text-muted-foreground">
+              X
+            </span>
+            <Button
+              variant="outline"
+              size="icon-sm"
+              aria-label="Zoom in on value axis"
+              onClick={zoomIn}
+              disabled={zoom >= ZOOM_MAX}
+            >
+              <ZoomIn className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="outline"
+              size="icon-sm"
+              aria-label="Zoom out on value axis"
+              onClick={zoomOut}
+              disabled={zoom <= ZOOM_MIN}
+            >
+              <ZoomOut className="h-4 w-4" />
+            </Button>
+
+            <span className="mx-0.5 h-5 w-px bg-border" />
+
+            <span className="px-0.5 font-mono text-[10px] text-muted-foreground">
+              Y
+            </span>
+            <Button
+              variant="outline"
+              size="icon-sm"
+              aria-label="Zoom in on count axis"
+              onClick={yZoomIn}
+              disabled={yZoom >= Y_ZOOM_MAX}
+            >
+              <ZoomIn className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="outline"
+              size="icon-sm"
+              aria-label="Zoom out on count axis"
+              onClick={yZoomOut}
+              disabled={yZoom <= Y_ZOOM_MIN}
+            >
+              <ZoomOut className="h-4 w-4" />
+            </Button>
+
+            <span className="mx-0.5 h-5 w-px bg-border" />
+
+            <Button
+              variant="outline"
+              size="icon-sm"
+              aria-label="Reset view"
+              onClick={resetView}
+              disabled={zoom <= ZOOM_MIN && yZoom <= Y_ZOOM_MIN}
+            >
+              <RotateCcw className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
+
         <svg
           viewBox={`0 0 ${W} ${H}`}
           className="w-full max-h-50"
@@ -448,7 +507,7 @@ export function TagHistogramChart({ dataset, tags }: Props) {
               fill="var(--muted-foreground)"
               className="font-mono text-[10px]"
             >
-              {fmt(tick.v)}
+              {fmtCount(tick.v)}
             </text>
           ))}
 

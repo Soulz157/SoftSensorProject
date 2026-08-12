@@ -350,6 +350,33 @@ describe('PreprocessingJobService — failure and cancellation', () => {
     expect(post).not.toHaveBeenCalled();
     expect(prisma.preprocessingJob.update).not.toHaveBeenCalled();
   });
+
+  it('TC-12 (DS-LAKE-009-T07): a legacy sourceVersion resolves its key through its OWN artifact pointer, not a column DatasetVersion no longer has', async () => {
+    post.mockResolvedValue(ARTIFACT);
+    const { service } = makeService(
+      buildJob({
+        sourceArtifact: null,
+        sourceArtifactId: null,
+        sourceVersionId: 'v-legacy-1',
+        // The registry reshape (DS-LAKE-009-T06) dropped `objectKey` off
+        // DatasetVersion — a legacy job resolves it through the version's
+        // OWN `artifact` relation instead (populated by this same task's
+        // migration backfill for real pre-reshape rows).
+        sourceVersion: {
+          runId: null,
+          artifact: { objectKey: 'ds-1/legacy/v-legacy-1.parquet' },
+        },
+      }),
+    );
+
+    await (service as unknown as Runnable).run('job-1');
+
+    const [, firstBody] = post.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    expect(firstBody.source_key).toBe('ds-1/legacy/v-legacy-1.parquet');
+  });
 });
 
 describe('PreprocessingJobService — lifecycle', () => {

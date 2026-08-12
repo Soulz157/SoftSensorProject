@@ -45,6 +45,54 @@ export const CleaningOperationSchema = z.object({
 
 export type CleaningOperation = z.infer<typeof CleaningOperationSchema>;
 
+// ── feature engineering (DS-LAKE-006) ───────────────────────────────────────
+
+/**
+ * Mirrors apps/python `schemas.preprocess.FeatureConfigRequest`. One flat
+ * schema with mostly-optional fields, same pragmatic shape as
+ * `CleaningOperationSchema` above rather than a discriminated union per
+ * `kind` — the client's own `FeatureConfig` type is this heterogeneous too.
+ */
+export const FeatureConfigSchema = z.object({
+  id: z.string().min(1),
+  kind: z.enum([
+    'lag',
+    'rolling',
+    'delta',
+    'arith',
+    'ratio',
+    'log',
+    'datetime',
+    'formula',
+  ]),
+  tag: z.string().optional(),
+  tags: z.array(z.string()).optional(),
+  k: z.number().int().optional(),
+  window: z.number().int().optional(),
+  agg: z.string().optional(),
+  op: z.string().optional(),
+  part: z.string().optional(),
+  name: z.string().optional(),
+  expr: z.string().optional(),
+  vars: z.record(z.string(), z.string()).optional(),
+  display: z.string().optional(),
+});
+
+export type FeatureConfig = z.infer<typeof FeatureConfigSchema>;
+
+/**
+ * Mirrors apps/python `schemas.preprocess.FeaturesRequest`'s payload half
+ * (`source_key`/`target_key` are server-computed from the draft/artifact ids
+ * in the route, not client-supplied, unlike the Python schema which is
+ * called directly).
+ */
+export const CreateFeaturesSchema = z.object({
+  features: z.array(FeatureConfigSchema).default([]),
+  selectedColumns: z.array(z.string()).nullable().optional(),
+  scalers: z.record(z.string(), z.string()).default({}),
+  overwrite: z.boolean().optional(),
+});
+
 // ── requests ───────────────────────────────────────────────────────────────
 
 /**
@@ -156,8 +204,47 @@ export const PreviewVersionSchema = z.object({
   maxPoints: z.number().int().min(3).max(10_000).optional(),
 });
 
+/**
+ * DS-LAKE-007-T04, thin-endpoint scope: calls Python, zod-parses the
+ * response, returns it. No DatasetArtifact row is created or updated here
+ * — the schema's own comment ("validationKey on FINAL") anticipates a
+ * later task adopting this into a FINAL artifact; that decision was
+ * deliberately deferred (AskUserQuestion, this task), not silently taken.
+ *
+ * No `featureSpecKey` field here on purpose: the artifact BEING validated
+ * already carries its OWN `featureSpecKey` column (set at write time by
+ * DS-LAKE-006-T06, null for BRONZE/SILVER) — the service reads that
+ * directly rather than asking the caller to separately name a spec, which
+ * would just be a second way to pass the WRONG one.
+ */
+export const ValidateArtifactSchema = z.object({
+  expectedTags: z.array(z.string()).optional(),
+  maxMissingPct: z.number().optional(),
+  maxOutlierFraction: z.number().optional(),
+});
+
+/**
+ * DS-LAKE-009-T01. Same override fields as `ValidateArtifactSchema` — this
+ * endpoint re-validates the source artifact itself (never trusts a
+ * client-supplied report; see `promoteDraftArtifactToFinalService`'s own
+ * doc comment) — kept as its OWN schema rather than reused, matching this
+ * file's one-schema-per-endpoint convention (`CreateFeaturesSchema` vs
+ * `ValidateArtifactSchema` are separate despite both wrapping a Python
+ * call too).
+ */
+export const PromoteFinalArtifactSchema = z.object({
+  expectedTags: z.array(z.string()).optional(),
+  maxMissingPct: z.number().optional(),
+  maxOutlierFraction: z.number().optional(),
+});
+
 export class CreateRawVersionDto extends createZodDto(CreateRawVersionSchema) {}
 export class StartCleanJobDto extends createZodDto(StartCleanJobSchema) {}
+export class CreateFeaturesDto extends createZodDto(CreateFeaturesSchema) {}
+export class ValidateArtifactDto extends createZodDto(ValidateArtifactSchema) {}
+export class PromoteFinalArtifactDto extends createZodDto(
+  PromoteFinalArtifactSchema,
+) {}
 export class ListRowsDto extends createZodDto(ListRowsSchema) {}
 export class TagCatalogDto extends createZodDto(TagCatalogSchema) {}
 export class PreviewVersionDto extends createZodDto(PreviewVersionSchema) {}
@@ -188,9 +275,40 @@ export const ArtifactStatsSchema = z.object({
    * connector mid-rollout.
    */
   column_stats_key: z.string().nullable().optional(),
+  /**
+   * DS-LAKE-006-T05. The feature_spec.json sidecar's key — persisted onto
+   * DatasetArtifact.featureSpecKey. Optional/nullable: only `/features`
+   * writes set it; every earlier write path never sends this field.
+   */
+  feature_spec_key: z.string().nullable().optional(),
 });
 
 export type ArtifactStats = z.infer<typeof ArtifactStatsSchema>;
+
+// ── validation (DS-LAKE-007) ────────────────────────────────────────────
+// ValidateArtifactSchema itself lives earlier, alongside the other request
+// schemas (CreateFeaturesSchema etc.) — only the PYTHON RESPONSE shapes
+// belong in this section, same convention as ArtifactStatsSchema above.
+
+/** Mirrors apps/python `schemas.preprocess.ValidationCheckResponse`. */
+const ValidationCheckSchema = z.object({
+  name: z.string(),
+  passed: z.boolean(),
+  skipped: z.boolean(),
+  detail: z.string(),
+  measured: z.number().nullable().optional(),
+  threshold: z.number().nullable().optional(),
+  offenders: z.array(z.string()),
+});
+
+/** Mirrors apps/python `schemas.preprocess.ValidationReportResponse`. */
+export const ValidationReportSchema = z.object({
+  status: z.enum(['PASS', 'FAIL']),
+  quality_score: z.number(),
+  checks: z.array(ValidationCheckSchema),
+  failed_checks: z.array(z.string()),
+  validation_report_key: z.string(),
+});
 
 const TagColumnStatsSchema = z.object({
   tag: z.string(),

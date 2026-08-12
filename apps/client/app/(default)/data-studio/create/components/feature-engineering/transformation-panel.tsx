@@ -249,7 +249,7 @@ export function FeatureTransformDialog({
                         htmlFor={`scaler-${opt.value}`}
                         className={cn(
                           'relative flex cursor-pointer items-start gap-4 rounded-xl border p-4 transition-colors hover:bg-muted/50 motion-reduce:transition-none',
-                          'has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring has-[:focus-visible]:ring-offset-1 has-[:focus-visible]:ring-offset-background',
+                          'has-focus-visible:ring-2 has-focus-visible:ring-ring has-focus-visible:ring-offset-1 has-focus-visible:ring-offset-background',
                           isActive
                             ? 'border-primary bg-primary/10'
                             : 'border-border/50 bg-background/50',

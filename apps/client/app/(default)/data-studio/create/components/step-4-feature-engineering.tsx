@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 import { useAtomValue } from 'jotai'
 import { Binary, CheckSquare, Wrench } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -16,6 +16,7 @@ import {
   dwTimeRangeAtom,
 } from '@/store/dataset-studio'
 import type { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipeline-nav'
+import { useDatasetGoldWarm } from '@/hooks/dataset/use-dataset-gold-warm'
 import { ExtractionPanel } from './feature-engineering/extraction-panel'
 import { CreationPanel } from './feature-engineering/creation-panel'
 import { SelectionPanel } from './feature-engineering/selection-panel'
@@ -42,14 +43,23 @@ export function Step4FeatureEngineering({ nav }: Props) {
     setFeatureConfigs,
     selectedColumns,
     setSelectedColumns,
+    scalerConfigs,
   } = nav
 
   const period = useAtomValue(dwTimeRangeAtom)
   const range = PERIOD_TO_RANGE[period]
 
+  // DS-LAKE-006-T06: "Step 4 drives the full feature-engineering transform
+  // server-side." No new UI — this fires in the background whenever the
+  // recipe settles (debounced inside the hook itself). `featured` below
+  // (the LOCAL derived atom driving this component's own panels/analysis
+  // card) is untouched and stays the bounded interactive preview.
+  const warmGold = useDatasetGoldWarm()
+  useEffect(() => {
+    warmGold(featureConfigs, selectedColumns, scalerConfigs)
+  }, [warmGold, featureConfigs, selectedColumns, scalerConfigs])
+
   const originalColumns = raw.tags
-  // Live raw + engineered dataset (recomputed from the recipe by the derived
-  // atom) — single source for the sidebar, selection panel, and analysis card.
   const featured = useAtomValue(dwFeaturedDatasetAtom)
   const engineeredColumns = useMemo(
     () => featured.tags.filter(t => !originalColumns.includes(t)),
@@ -73,6 +83,24 @@ export function Step4FeatureEngineering({ nav }: Props) {
     if (cfg && selectedColumns !== null) {
       const col = featureColumnName(cfg)
       setSelectedColumns(selectedColumns.filter(c => c !== col))
+    }
+  }
+
+  const renameFeature = (id: string, newName: string) => {
+    const cfg = featureConfigs.find(c => c.id === id)
+    if (!cfg || cfg.kind !== 'formula') return
+
+    const oldCol = featureColumnName(cfg)
+    const newCol = featureColumnName({ ...cfg, name: newName })
+    if (newCol === oldCol) return
+
+    setFeatureConfigs(prev =>
+      prev.map(c => (c.id === id ? { ...c, name: newName } : c)),
+    )
+    if (selectedColumns !== null) {
+      setSelectedColumns(
+        selectedColumns.map(col => (col === oldCol ? newCol : col)),
+      )
     }
   }
 
@@ -167,6 +195,7 @@ export function Step4FeatureEngineering({ nav }: Props) {
               features={featureConfigs}
               onAdd={addFeature}
               onRemove={removeFeature}
+              onRename={renameFeature}
             />
           </TabsContent>
 

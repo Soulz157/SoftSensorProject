@@ -107,6 +107,19 @@ export class DatasetVersionAuthorizedService {
    * DS-LAKE-002's backfill REUSED each version's uuid as its artifact id, so
    * for a legacy row both tables answer and they point at the same objectKey.
    * Versions first keeps the legacy path byte-identical to its old behaviour.
+   *
+   * DS-LAKE-009-T07: DatasetVersion no longer OWNS objectKey directly (the
+   * registry reshape moved storage ownership onto DatasetArtifact) — but the
+   * paragraph above still holds, because the backfill's shared-uuid design
+   * means the artifact lookup below answers IDENTICALLY for every legacy
+   * row that the version lookup used to. Verified directly against this
+   * repo's dev DB, not assumed: the one pre-reshape row's artifact twin
+   * carries the exact same objectKey the version column held before this
+   * migration dropped it. The version-first branch is therefore now
+   * REDUNDANT rather than merely broken, and is removed below rather than
+   * patched to chase objectKey through `version.artifact` — there is
+   * nothing the version branch would answer that the artifact branch does
+   * not already answer the same way.
    */
   /**
    * Decide which pointer a job row should carry for a given source id.
@@ -145,12 +158,6 @@ export class DatasetVersionAuthorizedService {
     datasetId: string,
     id: string,
   ): Promise<{ objectKey: string }> {
-    const version = await this.prisma.datasetVersion.findFirst({
-      where: { id, datasetId },
-      select: { objectKey: true },
-    });
-    if (version) return version;
-
     const artifact = await this.prisma.datasetArtifact.findFirst({
       where: { id, datasetId },
       select: { objectKey: true },
@@ -166,6 +173,31 @@ export class DatasetVersionAuthorizedService {
 
   // ── versions ─────────────────────────────────────────────────────────────
 
+  /**
+   * DS-LAKE-009-T07: `parentVersionId`/`stage`/`operations` no longer exist
+   * on DatasetVersion (the registry reshape — DS-LAKE-009-T06). Replaced
+   * with the fields the reshaped registry row actually carries:
+   * `semanticVersion`/`artifactId`/`status`/`qualityScore`/`featureCount`.
+   * `lineage` (the frozen chain snapshot) is deliberately NOT included here
+   * — same reasoning as `column_stats.json` living beside the data rather
+   * than inline in a list response: a per-version detail read is the right
+   * place for it, not a list of every version at once.
+   *
+   * `sizeBytes` is cast through `Number(...)`: Prisma's BigInt does not
+   * `JSON.stringify` (throws `TypeError`), and this is a live GET endpoint
+   * — the widen to BigInt (T06) exists for the COLUMN's own ceiling, not to
+   * change what the wire format sends.
+   *
+   * ONE consumer of the OLD shape was checked, not assumed clean:
+   * `use-dataset-version-rows.ts:215` filters `v.stage === 'RAW'`, but only
+   * reaches that branch when `dataset.currentArtifactId` is null AND
+   * `dataset.currentVersionId` is set — a combination the DS-LAKE-002
+   * backfill's own `UPDATE ... SET currentArtifactId = currentVersionId`
+   * makes unreachable for every dataset in this DB today. Even if reached,
+   * a missing `stage` degrades to that same file's own existing "no RAW
+   * version found" fallback (`raw?.id ?? dataset.currentVersionId`), not a
+   * crash — so this response shape change is not silently risking that path.
+   */
   async listVersionsService(user: Auth.UserPayload, datasetId: string) {
     await this.assertDatasetAccess(datasetId, user);
     const items = await this.prisma.datasetVersion.findMany({
@@ -181,14 +213,16 @@ export class DatasetVersionAuthorizedService {
       data: items.map((item) => ({
         id: item.id,
         datasetId: item.datasetId,
-        parentVersionId: item.parentVersionId,
+        semanticVersion: item.semanticVersion,
+        artifactId: item.artifactId,
         versionNumber: item.versionNumber,
-        stage: item.stage,
+        status: item.status,
+        qualityScore: item.qualityScore,
         rowCount: item.rowCount,
         columnCount: item.columnCount,
+        featureCount: item.featureCount,
         missingPct: item.missingPct,
-        sizeBytes: item.sizeBytes,
-        operations: item.operations,
+        sizeBytes: Number(item.sizeBytes),
         durationMs: item.durationMs,
         createdAt: item.createdAt.toISOString(),
         createdBy:

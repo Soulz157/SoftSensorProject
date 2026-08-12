@@ -66,6 +66,10 @@ import {
 } from '@/lib/feature-preset'
 import { SourcePickerSheet } from './source-configs/source-picker-sheet'
 import { PresetApplyManager } from './preset-apply-modal'
+import {
+  MAX_PATTERNS,
+  PATTERN_CAP,
+} from '@/hooks/dataset/use-multi-pattern-search'
 
 const PAGE_SIZE = 100
 
@@ -262,6 +266,9 @@ export function UnifiedTagTable({ nav }: Props) {
     tagsBySource,
     notFound,
     droppedNames,
+    truncatedPatterns,
+    emptyPatterns,
+    droppedPatterns,
     hasNextBySource,
     pageBySource,
     goto,
@@ -576,7 +583,7 @@ export function UnifiedTagTable({ nav }: Props) {
         <div className="relative min-w-45 flex-1">
           <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
-            placeholder="Search PI, or paste tag names separated by commas…"
+            placeholder="Search PI · AI*, FIC* · or paste full tag names"
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
             className="h-8 pl-8 pr-8 text-xs"
@@ -757,12 +764,12 @@ export function UnifiedTagTable({ nav }: Props) {
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
             {mode === 'names'
               ? 'Checking names against PI…'
-              : 'Loading tag metadata…'}
+              : mode === 'patterns'
+                ? 'Searching patterns in PI…'
+                : 'Loading tag metadata…'}
           </span>
         )}
 
-        {/* Without this the only symptom of a failed or timed-out call was a
-            spinner that quietly stopped. */}
         {!metaLoading && metaError && (
           <span className="flex items-center gap-1.5 text-xs font-medium text-destructive">
             <AlertCircle className="h-3.5 w-3.5" />
@@ -770,6 +777,8 @@ export function UnifiedTagTable({ nav }: Props) {
           </span>
         )}
 
+        {/* Distinct from metaError on purpose: `error` means "could not check",
+            these mean "checked, and this is the answer". */}
         {mode === 'names' && !metaLoading && notFound.length > 0 && (
           <span
             title={notFound.join(', ')}
@@ -780,10 +789,37 @@ export function UnifiedTagTable({ nav }: Props) {
           </span>
         )}
 
+        {mode === 'patterns' &&
+          !metaLoading &&
+          truncatedPatterns.length > 0 && (
+            <span
+              title={truncatedPatterns.join(', ')}
+              className="flex items-center gap-1.5 text-xs font-medium text-amber-600 dark:text-amber-400"
+            >
+              <AlertCircle className="h-3.5 w-3.5" />
+              {truncatedPatterns.length} pattern(s) hit the {PATTERN_CAP}-tag
+              limit — narrow them to see the rest
+            </span>
+          )}
+
+        {mode === 'patterns' && !metaLoading && emptyPatterns.length > 0 && (
+          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <AlertCircle className="h-3.5 w-3.5" />
+            No matches for {emptyPatterns.join(', ')}
+          </span>
+        )}
+
         {droppedNames > 0 && (
           <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <AlertCircle className="h-3.5 w-3.5" />
             {droppedNames} name(s) over the {MAX_NAMES} limit were not checked
+          </span>
+        )}
+
+        {droppedPatterns.length > 0 && (
+          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <AlertCircle className="h-3.5 w-3.5" />
+            Only the first {MAX_PATTERNS} patterns were searched
           </span>
         )}
       </div>
@@ -829,6 +865,7 @@ export function UnifiedTagTable({ nav }: Props) {
           <p className="text-sm font-medium text-muted-foreground">
             No tags match
           </p>
+
           <button
             type="button"
             onClick={() => {

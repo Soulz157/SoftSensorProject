@@ -1,5 +1,7 @@
 import { fetchClient } from '@/lib/fetcher'
-import type { DataRow } from '@/lib/preprocessing'
+import type { DataRow, ScalerMethod } from '@/lib/preprocessing'
+import type { FeatureConfig } from '@/lib/feature-engineering'
+import type { PipelineConfig } from '@/lib/pipeline-config'
 import type {
   CleaningOperationInput,
   CreateRawVersionInput,
@@ -45,6 +47,50 @@ export interface DraftArtifact {
   rowCount: number
   columnCount: number
   missingPct: number
+  /** DS-LAKE-006-T06. Only present on a `/features` (GOLD) response. */
+  parentArtifactId?: string | null
+  featureSpecKey?: string | null
+  /** DS-LAKE-009-T01. Only present on a `/finalize` (FINAL) response. */
+  validationKey?: string | null
+  qualityScore?: number
+}
+
+/** DS-LAKE-009-T02 `/save` response — note there is no `name` field; the
+ * caller already has it (it just sent it in the request body). */
+export interface SavedDataset {
+  id: string
+  versionId: string
+  versionNumber: number
+  artifactId: string
+  qualityScore: number
+  lineage: Array<{
+    id: string
+    type: 'BRONZE' | 'SILVER' | 'GOLD' | 'FINAL'
+    checksum: string
+    objectKey: string
+  }>
+}
+
+/** Mirrors apps/python `schemas.preprocess.ValidationCheckResponse` field
+ * for field, same snake_case-wire convention as `DraftPreviewResult`. */
+export interface ValidationCheck {
+  name: string
+  passed: boolean
+  skipped: boolean
+  detail: string
+  measured: number | null
+  threshold: number | null
+  offenders: string[]
+}
+
+/** Mirrors apps/python `schemas.preprocess.ValidationReportResponse`
+ * (DS-LAKE-007-T02/T03) via NestJS's `ValidationReportSchema.parse`. */
+export interface ValidationReport {
+  status: 'PASS' | 'FAIL'
+  quality_score: number
+  checks: ValidationCheck[]
+  failed_checks: string[]
+  validation_report_key: string
 }
 
 export interface DraftPreprocessingJob {
@@ -183,6 +229,82 @@ export const datasetDraftService = {
       `${one(draftId)}/artifacts/${encodeURIComponent(artifactId)}/clean`,
       { method: 'POST', body: JSON.stringify(body) },
     ),
+
+  /** DS-LAKE-006-T06. Inline (not job-queued) — one combined operation, not
+   * a chained per-tag pipeline. Runs applyFeatures -> selectColumns ->
+   * toModelReady server-side against `artifactId` (normally SILVER),
+   * producing a GOLD artifact whose `parentArtifactId` is that source. */
+  createFeatures: (
+    draftId: string,
+    artifactId: string,
+    body: {
+      features: FeatureConfig[]
+      selectedColumns?: string[] | null
+      scalers?: Record<string, ScalerMethod>
+    },
+  ): Promise<ApiResponse<DraftArtifact>> =>
+    fetchClient(
+      `${one(draftId)}/artifacts/${encodeURIComponent(artifactId)}/features`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+
+  /** DS-LAKE-008-T01. Read-only against `artifactId` (normally GOLD, else
+   * SILVER) — writes no data, only its own `validation_report.json`
+   * sidecar server-side. No `featureSpecKey` field on the request body:
+   * the artifact's own column carries it, forwarded automatically by
+   * `validateDraftArtifactService` (DS-LAKE-007-T04). */
+  validate: (
+    draftId: string,
+    artifactId: string,
+    body: {
+      expectedTags?: string[]
+      maxMissingPct?: number
+      maxOutlierFraction?: number
+    } = {},
+  ): Promise<ApiResponse<ValidationReport>> =>
+    fetchClient(
+      `${one(draftId)}/artifacts/${encodeURIComponent(artifactId)}/validate`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+
+  /** DS-LAKE-009-T01. Promotes `artifactId` (normally GOLD, else SILVER)
+   * into a FINAL artifact — the server REFUSES (422) unless it re-validates
+   * PASS, never trusting a client-supplied report. Same override fields as
+   * `validate`, forwarded as-is. */
+  finalize: (
+    draftId: string,
+    artifactId: string,
+    body: {
+      expectedTags?: string[]
+      maxMissingPct?: number
+      maxOutlierFraction?: number
+    } = {},
+  ): Promise<ApiResponse<DraftArtifact>> =>
+    fetchClient(
+      `${one(draftId)}/artifacts/${encodeURIComponent(artifactId)}/finalize`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+
+  /** DS-LAKE-009-T02. The ONLY call that creates a persistent Dataset from
+   * this draft — adopts the draft's FINAL artifact by pointer (never a raw
+   * refetch, never a recipe replay). No `artifactId` param: the server
+   * looks up the draft's own FINAL artifact itself. Refuses (422) if none
+   * exists or it no longer PASSes; refuses (409) if this draft was already
+   * saved once. */
+  save: (
+    draftId: string,
+    body: {
+      name: string
+      description?: string
+      tags: string[]
+      pipelineConfig: PipelineConfig
+      fileUrl?: string | null
+    },
+  ): Promise<ApiResponse<SavedDataset>> =>
+    fetchClient(`${one(draftId)}/save`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 
   job: (
     draftId: string,

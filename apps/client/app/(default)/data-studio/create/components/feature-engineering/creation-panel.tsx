@@ -1,7 +1,7 @@
 'use client'
 
 import { useMemo, useRef, useState } from 'react'
-import { Plus, X, FunctionSquare, Blocks } from 'lucide-react'
+import { Plus, X, FunctionSquare, Blocks, Pencil, Check } from 'lucide-react'
 import {
   Card,
   CardContent,
@@ -37,6 +37,7 @@ interface Props {
   features: FeatureConfig[]
   onAdd: (cfg: FeatureConfig) => void
   onRemove: (id: string) => void
+  onRename: (id: string, name: string) => void
 }
 
 type Mode = 'formula' | 'builder'
@@ -73,6 +74,7 @@ export function CreationPanel({
   features,
   onAdd,
   onRemove,
+  onRename,
 }: Props) {
   const [mode, setMode] = useState<Mode>('formula')
   const [formula, setFormula] = useState('')
@@ -80,6 +82,42 @@ export function CreationPanel({
   const [chain, setChain] = useState<ChainLink[]>([{ op: '+', col: '' }])
   const [name, setName] = useState('')
   const taRef = useRef<HTMLTextAreaElement>(null)
+
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [draft, setDraft] = useState('')
+
+  const takenNames = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const c of sourceColumns) m.set(c, '')
+    for (const f of features) m.set(featureColumnName(f), f.id)
+    return m
+  }, [sourceColumns, features])
+
+  const draftName = sanitizeName(draft)
+  const renameError = useMemo(() => {
+    if (!editingId) return null
+    if (!draftName) return 'Name is required'
+    const owner = takenNames.get(draftName)
+    if (owner !== undefined && owner !== editingId)
+      return owner === ''
+        ? `"${draftName}" is an existing source column`
+        : `"${draftName}" is already used by another feature`
+    return null
+  }, [editingId, draftName, takenNames])
+
+  const startEdit = (f: FeatureConfig) => {
+    setEditingId(f.id)
+    setDraft(f.kind === 'formula' ? (f.name ?? '') : featureColumnName(f))
+  }
+  const cancelEdit = () => {
+    setEditingId(null)
+    setDraft('')
+  }
+  const commitEdit = () => {
+    if (!editingId || renameError) return
+    onRename(editingId, draftName)
+    cancelEdit()
+  }
 
   const created = useMemo(
     () => features.filter(f => f.kind === 'formula'),
@@ -379,32 +417,107 @@ export function CreationPanel({
 
         {created.length > 0 && (
           <ul className="space-y-1.5">
-            {created.map(f => (
-              <li
-                key={f.id}
-                className="flex items-center justify-between gap-2 rounded-lg border border-border px-3 py-2"
-              >
-                <div className="min-w-0">
-                  <p className="truncate font-mono text-xs text-foreground">
-                    {featureColumnName(f)}
-                  </p>
-                  {f.kind === 'formula' && f.display && (
-                    <p className="truncate font-mono text-[11px] text-muted-foreground">
-                      = {f.display}
-                    </p>
-                  )}
-                </div>
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className="h-7 w-7 shrink-0"
-                  onClick={() => onRemove(f.id)}
-                  aria-label={`Remove ${featureColumnName(f)}`}
+            {created.map(f => {
+              const colName = featureColumnName(f)
+              const isEditing = editingId === f.id
+
+              return (
+                <li
+                  key={f.id}
+                  className="flex items-center justify-between gap-2 rounded-lg border border-border px-3 py-2"
                 >
-                  <X className="h-3.5 w-3.5" />
-                </Button>
-              </li>
-            ))}
+                  {isEditing ? (
+                    <div className="min-w-0 flex-1 space-y-1">
+                      <Input
+                        autoFocus
+                        value={draft}
+                        onChange={e => setDraft(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault()
+                            commitEdit()
+                          }
+                          if (e.key === 'Escape') {
+                            e.preventDefault()
+                            cancelEdit()
+                          }
+                        }}
+                        className="h-7 font-mono text-xs"
+                        aria-label={`Rename ${colName}`}
+                        aria-invalid={Boolean(renameError)}
+                      />
+                      {renameError ? (
+                        <p className="text-[11px] text-destructive">
+                          {renameError}
+                        </p>
+                      ) : draftName !== draft.trim() ? (
+                        <p className="truncate font-mono text-[11px] text-muted-foreground">
+                          → {draftName}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <div className="min-w-0">
+                      <p className="truncate font-mono text-xs text-foreground">
+                        {colName}
+                      </p>
+                      {f.kind === 'formula' && f.display && (
+                        <p className="truncate font-mono text-[11px] text-muted-foreground">
+                          = {f.display}
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="flex shrink-0 items-center gap-0.5">
+                    {isEditing ? (
+                      <>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-7 w-7 text-primary"
+                          onClick={commitEdit}
+                          disabled={Boolean(renameError)}
+                          aria-label={`Save name for ${colName}`}
+                        >
+                          <Check className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-7 w-7 text-muted-foreground"
+                          onClick={cancelEdit}
+                          aria-label={`Cancel renaming ${colName}`}
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </Button>
+                      </>
+                    ) : (
+                      <>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                          onClick={() => startEdit(f)}
+                          aria-label={`Rename ${colName}`}
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-7 w-7"
+                          onClick={() => onRemove(f.id)}
+                          aria-label={`Remove ${colName}`}
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                </li>
+              )
+            })}
           </ul>
         )}
       </CardContent>

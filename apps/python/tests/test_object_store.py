@@ -18,6 +18,8 @@ from intergrations.object_store import (
     STATUS_GOOD,
     STATUS_QUESTIONABLE,
     STATUS_SUFFIX,
+    TMP_LIFECYCLE_EXPIRY_DAYS,
+    TMP_LIFECYCLE_RULE_ID,
     ObjectStore,
     ObjectStoreError,
     assert_frame_shape,
@@ -255,3 +257,41 @@ def test_get_frame_column_projection_excludes_the_other_tag(
         store.get_frame(key, columns=["timestamp", "NOPE"])
 
     store.delete_prefix("pytest-object-store/")
+
+
+# ── lifecycle (DS-LAKE-009B-T04) ─────────────────────────────────────────
+
+
+def test_tmp_writes_are_tagged_for_lifecycle_expiry(store: ObjectStore) -> None:
+    """A tmp/ write must carry the tag `ensure_tmp_lifecycle_rule`'s bucket
+    rule matches on — a committed artifact write must NOT, or the bucket
+    rule would expire real data."""
+    df = good_frame()
+    tmp = tmp_key("pytest-object-store", "job-lifecycle", 1)
+    committed = "pytest-object-store/artifacts/art-1/data.parquet"
+
+    store.put_frame(df, tmp, overwrite=True)
+    store.put_frame(df, committed, overwrite=True)
+
+    tmp_tags = store._client.get_object_tags(store.bucket, tmp)
+    committed_tags = store._client.get_object_tags(store.bucket, committed)
+
+    assert tmp_tags is not None and dict(tmp_tags) == {"lifecycle": "tmp"}
+    assert not committed_tags
+
+    store.delete_prefix("pytest-object-store/")
+
+
+def test_ensure_tmp_lifecycle_rule_is_idempotent(store: ObjectStore) -> None:
+    """Re-running the bootstrap must not accumulate duplicate rules — it is
+    meant to be safe to call on every deploy, not just once ever."""
+    store.ensure_tmp_lifecycle_rule()
+    first = store._client.get_bucket_lifecycle(store.bucket)
+
+    store.ensure_tmp_lifecycle_rule()
+    second = store._client.get_bucket_lifecycle(store.bucket)
+
+    matching = [r for r in second.rules if r.rule_id == TMP_LIFECYCLE_RULE_ID]
+    assert len(matching) == 1
+    assert matching[0].expiration.days == TMP_LIFECYCLE_EXPIRY_DAYS
+    assert len(second.rules) == len(first.rules)

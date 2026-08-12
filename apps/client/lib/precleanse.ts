@@ -17,6 +17,7 @@
 import type { CutoffOp } from '@/types/cutoff'
 import {
   cloneRow,
+  type BoundedSample,
   type Cell,
   type DataRow,
   type Dataset,
@@ -177,6 +178,34 @@ export function percentileBounds(
   }
   return { min: at(loPct), max: at(hiPct) }
 }
+
+/**
+ * DS-LAKE-005B-B-T04: bounded-input entry point for `percentileBounds`.
+ *
+ * ADDITIVE, not a replacement — `percentileBounds` above keeps its `Dataset`
+ * signature because every current caller (`data-cropping-chart.tsx:456`,
+ * via `clipSource ?? rawDataset`) still holds `dwRawDatasetAtom`'s full,
+ * unbounded frame; T01 (the viewport migration that would give Step 3.1 a
+ * real windowed/bounded value to pass here) is still `blocked`. Retyping the
+ * existing signature today would break that live component for no working
+ * replacement.
+ *
+ * This function exists so V03 has a real, non-speculative entry point to
+ * gate: `BoundedSample extends Dataset`, so passing a `BoundedSample` in is
+ * always fine — the type error V03 tests for is a caller trying to pass a
+ * BARE `Dataset` in instead. Once T01 ships a windowed reader for Step 3.1,
+ * that call site switches to THIS function and the compiler enforces it can
+ * never again receive an unbounded frame.
+ */
+export function percentileBoundsBounded(
+  sample: BoundedSample,
+  tag: string,
+  loPct: number,
+  hiPct: number,
+): ClipBound | null {
+  return percentileBounds(sample, tag, loPct, hiPct)
+}
+
 /**
  * Index of the row whose timestamp is closest to `targetMs` (epoch ms).
  * `timestamps` are ascending ISO strings. Linear min-abs-diff scan — datasets

@@ -35,7 +35,7 @@ export function SegmentedToggle<T extends string>({
           aria-pressed={value === opt.value}
           onClick={() => onChange(opt.value)}
           className={cn(
-            'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors',
+            'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer',
             value === opt.value
               ? 'bg-primary text-primary-foreground'
               : 'bg-card text-muted-foreground hover:bg-accent hover:text-foreground',

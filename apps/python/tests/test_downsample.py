@@ -81,6 +81,45 @@ def test_a_single_injected_spike_survives_the_reduction():
     assert spike_at in result.indices
 
 
+def test_two_comparably_extreme_points_in_one_bucket_the_guard_is_what_saves_the_true_extreme():
+    """V05's own scope note (feature_list.preprocessing.json): the spike test
+    above is not discriminating — a 500-vs-~20 deviation wins the area
+    contest on its own, guard or no guard. This constructs the case the note
+    asks for: two points sharing ONE bucket where the TRUE global extreme has
+    a SMALL triangle area (so pure area-based selection would drop it) and a
+    second, comparably-elevated-but-not-global-max point has a LARGER area
+    (so it wins the area contest instead).
+
+    5 points, max_points=3 -> one interior bucket holds indices 1-3:
+      idx0 (t=0,  v=0)   — always-kept start anchor
+      idx1 (t=10, v=100) — the TRUE global max, placed close in time to the
+                           start anchor so its triangle area is small
+      idx2 (t=90, v=50)  — comparably elevated (well above the 5.0/0.0
+                           floor at idx3/idx4) but NOT the global max — far
+                           from the anchor line, so it wins area-based
+                           selection on its own
+      idx3 (t=95, v=5)
+      idx4 (t=100,v=0)   — always-kept end anchor
+
+    Sanity check FIRST (same convention as the Bad-cell-hole test below):
+    with idx1 excluded from protection eligibility, pure area-based
+    selection must pick idx2, not idx1 — proving the scenario really is
+    discriminating before trusting the protected assertion.
+    """
+    timestamps = np.array([0, 10, 90, 95, 100], dtype="datetime64[s]")
+    values = np.array([0.0, 100.0, 50.0, 5.0, 0.0])
+    global_max_idx = 1  # value 100 — the true global max
+
+    valid = np.ones(len(values), dtype=bool)
+    valid[global_max_idx] = False
+    unprotected = lttb_indices(timestamps, values, max_points=3, valid=valid)
+    assert global_max_idx not in unprotected.indices
+    assert 2 in unprotected.indices  # area-based pick, not the true extreme
+
+    protected = lttb_indices(timestamps, values, max_points=3)
+    assert global_max_idx in protected.indices
+
+
 def test_a_single_injected_trough_survives_the_reduction():
     periods = 6 * 30 * 24 * 60
     trough_at = periods // 3

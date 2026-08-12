@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createStore, Provider } from 'jotai'
 import { Step5ReviewSave } from '../step-5-review-save'
@@ -14,6 +14,10 @@ import {
   dwModeAtom,
   dwFeaturePresetAtom,
   dwTargetTagAtom,
+  dwDraftIdAtom,
+  dwDraftArtifactIdAtom,
+  dwDraftGoldArtifactIdAtom,
+  dwFeatureConfigsAtom,
 } from '@/store/dataset-studio'
 import type { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipeline-nav'
 import type { PresetSummary } from '@/lib/feature-preset'
@@ -44,6 +48,17 @@ vi.mock('@/services/dataset', () => ({
 vi.mock('@/services/dataset-version', () => ({
   datasetVersionService: {
     createRaw: (...args: unknown[]) => createRaw(...args),
+  },
+}))
+
+const validateArtifact = vi.fn()
+const finalizeArtifact = vi.fn()
+const saveDraft = vi.fn()
+vi.mock('@/services/dataset-draft', () => ({
+  datasetDraftService: {
+    validate: (...args: unknown[]) => validateArtifact(...args),
+    finalize: (...args: unknown[]) => finalizeArtifact(...args),
+    save: (...args: unknown[]) => saveDraft(...args),
   },
 }))
 
@@ -100,6 +115,28 @@ beforeEach(() => {
   store.set(dwSelectedSourcesAtom, [])
   store.set(dwRawDatasetAtom, { tags: [], rows: [] })
   createRaw.mockResolvedValue({ data: { id: 'ver-1' } })
+  // Unused unless a test sets dwDraftIdAtom/dwDraftArtifactIdAtom — the gate
+  // stays 'unavailable' otherwise, matching every pre-T02 test's assumption.
+  validateArtifact.mockResolvedValue({
+    data: {
+      status: 'PASS',
+      quality_score: 100,
+      checks: [],
+      failed_checks: [],
+      validation_report_key: 'k',
+    },
+  })
+  finalizeArtifact.mockResolvedValue({ data: { id: 'final-1' } })
+  saveDraft.mockResolvedValue({
+    data: {
+      id: 'ds-1',
+      versionId: 'ver-1',
+      versionNumber: 1,
+      artifactId: 'final-1',
+      qualityScore: 100,
+      lineage: [],
+    },
+  })
 })
 
 const clickSave = async () => {
@@ -265,5 +302,343 @@ describe('Step5ReviewSave — feature preset provenance', () => {
     }
     expect(body.pipelineConfig.featurePreset).toBeUndefined()
     expect(body.pipelineConfig.targetTag).toBeUndefined()
+  })
+})
+
+describe('Step5ReviewSave — validation gate (DS-LAKE-008-T02)', () => {
+  const withGateArtifact = () => {
+    store.set(dwDraftIdAtom, 'draft-1')
+    store.set(dwDraftArtifactIdAtom, 'silver-1')
+  }
+
+  it('disables Save and states the reason while validation is pending', async () => {
+    let resolveValidate!: (v: unknown) => void
+    validateArtifact.mockReturnValue(
+      new Promise(r => {
+        resolveValidate = r
+      }),
+    )
+    withGateArtifact()
+
+    render(
+      <Provider store={store}>
+        <Step5ReviewSave nav={nav} />
+      </Provider>,
+    )
+
+    expect(screen.getByRole('button', { name: /save dataset/i })).toBeDisabled()
+    expect(screen.getByText(/waiting for validation to finish/i)).toBeVisible()
+
+    // Resolve so the pending promise doesn't leak into the next test.
+    resolveValidate({
+      data: {
+        status: 'PASS',
+        quality_score: 100,
+        checks: [],
+        failed_checks: [],
+        validation_report_key: 'k',
+      },
+    })
+  })
+
+  it('disables Save, states the reason, and writes nothing when validation FAILS', async () => {
+    validateArtifact.mockResolvedValue({
+      data: {
+        status: 'FAIL',
+        quality_score: 80,
+        checks: [],
+        failed_checks: ['missing_values'],
+        validation_report_key: 'k',
+      },
+    })
+    createDataset.mockResolvedValue(saved(null))
+    withGateArtifact()
+
+    render(
+      <Provider store={store}>
+        <Step5ReviewSave nav={nav} />
+      </Provider>,
+    )
+
+    const button = await screen.findByRole('button', {
+      name: /save dataset/i,
+    })
+    await waitFor(() => expect(button).toBeDisabled())
+    expect(screen.getByText(/fix the failed check\(s\) above/i)).toBeVisible()
+
+    // V03: the FAIL path must write NOTHING — Dataset, DatasetArtifact
+    // (via createFeatures/materialize) or DatasetVersion (via createRaw).
+    // A disabled button already stops a real click; this proves handleSave
+    // itself also refuses, so a bypassed disabled attribute (e.g. a
+    // programmatic dispatch in a future regression) can't slip through.
+    expect(createDataset).not.toHaveBeenCalled()
+    expect(createRaw).not.toHaveBeenCalled()
+  })
+
+  it('re-enables Save once validation resolves to PASS', async () => {
+    withGateArtifact() // beforeEach's default mock resolves PASS
+
+    render(
+      <Provider store={store}>
+        <Step5ReviewSave nav={nav} />
+      </Provider>,
+    )
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: /save dataset/i }),
+      ).toBeEnabled(),
+    )
+    expect(
+      screen.queryByText(/waiting for validation to finish/i),
+    ).not.toBeInTheDocument()
+  })
+
+  it('leaves Save enabled when no draft artifact exists yet (unavailable, not blocking)', () => {
+    // No dwDraftIdAtom/dwDraftArtifactIdAtom set — same state every
+    // pre-T02 test in this file already exercises, and edit mode's own
+    // permanent state (use-dataset-edit-hydration.ts never sets these).
+    render(
+      <Provider store={store}>
+        <Step5ReviewSave nav={nav} />
+      </Provider>,
+    )
+
+    expect(screen.getByRole('button', { name: /save dataset/i })).toBeEnabled()
+    expect(validateArtifact).not.toHaveBeenCalled()
+  })
+})
+
+describe('Step5ReviewSave — recipe-change revalidation (DS-LAKE-008-T03)', () => {
+  const withGateArtifact = () => {
+    store.set(dwDraftIdAtom, 'draft-1')
+    store.set(dwDraftArtifactIdAtom, 'silver-1')
+  }
+
+  it('revalidates when a recipe field changes, without waiting for a new artifact id', async () => {
+    withGateArtifact()
+
+    render(
+      <Provider store={store}>
+        <Step5ReviewSave nav={nav} />
+      </Provider>,
+    )
+    await waitFor(() => expect(validateArtifact).toHaveBeenCalledTimes(1))
+
+    act(() => {
+      store.set(dwFeatureConfigsAtom, [
+        { id: 'f1', kind: 'lag', tag: 'TI-101', k: 1 },
+      ] as never)
+    })
+
+    await waitFor(() => expect(validateArtifact).toHaveBeenCalledTimes(2))
+    // Same artifact id both calls — proves this fired from T03's recipe
+    // watcher, not from T01's gateArtifactId-rotation path (that path is
+    // covered separately by use-dataset-validation.test.ts).
+    expect(validateArtifact).toHaveBeenNthCalledWith(
+      2,
+      'draft-1',
+      'silver-1',
+      {},
+    )
+  })
+
+  it('re-disables Save immediately on a recipe change after a PASS, before revalidation resolves (DS-LAKE-008-V01)', async () => {
+    withGateArtifact() // beforeEach's default validateArtifact mock resolves PASS
+    // DS-LAKE-005B-B-T01. This test is about validation staleness, not
+    // GOLD-readiness — set so the mid-test dwFeatureConfigsAtom change below
+    // doesn't ALSO trip the new goldNotReady guard and swap the asserted
+    // "waiting for validation" message for "waiting for feature engineering".
+    store.set(dwDraftGoldArtifactIdAtom, 'gold-1')
+
+    render(
+      <Provider store={store}>
+        <Step5ReviewSave nav={nav} />
+      </Provider>,
+    )
+    const button = await screen.findByRole('button', { name: /save dataset/i })
+    await waitFor(() => expect(button).toBeEnabled())
+
+    // A stale PASS must not survive the edit: disabled the instant the
+    // recipe changes, not only after the new validate() call resolves.
+    let resolveSecond!: (v: unknown) => void
+    validateArtifact.mockReturnValueOnce(
+      new Promise(r => {
+        resolveSecond = r
+      }),
+    )
+    act(() => {
+      store.set(dwFeatureConfigsAtom, [
+        { id: 'f1', kind: 'lag', tag: 'TI-101', k: 1 },
+      ] as never)
+    })
+
+    expect(button).toBeDisabled()
+    expect(screen.getByText(/waiting for validation to finish/i)).toBeVisible()
+
+    resolveSecond({
+      data: {
+        status: 'PASS',
+        quality_score: 100,
+        checks: [],
+        failed_checks: [],
+        validation_report_key: 'k',
+      },
+    })
+    await waitFor(() => expect(button).toBeEnabled())
+  })
+
+  it('does not double-fire on mount', async () => {
+    withGateArtifact()
+
+    render(
+      <Provider store={store}>
+        <Step5ReviewSave nav={nav} />
+      </Provider>,
+    )
+    await waitFor(() => expect(validateArtifact).toHaveBeenCalledTimes(1))
+
+    // Let any effect scheduled for mount settle; count must stay at 1 — the
+    // recipe watcher's first-render guard exists specifically to stop it
+    // from re-running T01's own initial validation a second time.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(validateArtifact).toHaveBeenCalledTimes(1)
+  })
+
+  it('does nothing on a recipe change when there is no gate artifact', () => {
+    // Unavailable stays unavailable — nothing to revalidate against.
+    render(
+      <Provider store={store}>
+        <Step5ReviewSave nav={nav} />
+      </Provider>,
+    )
+
+    act(() => {
+      store.set(dwFeatureConfigsAtom, [
+        { id: 'f1', kind: 'lag', tag: 'TI-101', k: 1 },
+      ] as never)
+    })
+
+    expect(validateArtifact).not.toHaveBeenCalled()
+  })
+})
+
+describe('Step5ReviewSave — artifact-adoption save (DS-LAKE-005B-B-T01, Step 5 leg)', () => {
+  const withGateArtifact = () => {
+    store.set(dwDraftIdAtom, 'draft-1')
+    store.set(dwDraftArtifactIdAtom, 'silver-1')
+  }
+
+  it('finalizes then saves via the draft — never touches the legacy create/createRaw path', async () => {
+    withGateArtifact()
+    await clickSave()
+
+    await waitFor(() => expect(saveDraft).toHaveBeenCalledTimes(1))
+    expect(finalizeArtifact).toHaveBeenCalledWith('draft-1', 'silver-1', {})
+    expect(saveDraft).toHaveBeenCalledWith(
+      'draft-1',
+      expect.objectContaining({ name: 'Boiler' }),
+    )
+    expect(createDataset).not.toHaveBeenCalled()
+    expect(updateDataset).not.toHaveBeenCalled()
+    expect(createRaw).not.toHaveBeenCalled()
+  })
+
+  it('reuses the FINAL artifact from the first finalize call on a retry, rather than minting a second one', async () => {
+    withGateArtifact()
+    // First attempt's save fails (e.g. a name collision) — `saved` stays
+    // false, so a second click is a real, reachable retry, not a click on
+    // a permanently-disabled "Saved" button.
+    saveDraft.mockRejectedValueOnce(new Error('name collision'))
+
+    render(
+      <Provider store={store}>
+        <Step5ReviewSave nav={nav} />
+      </Provider>,
+    )
+    const button = await screen.findByRole('button', { name: /save dataset/i })
+    await waitFor(() => expect(button).toBeEnabled())
+
+    await userEvent.click(button)
+    await waitFor(() => expect(saveDraft).toHaveBeenCalledTimes(1))
+    expect(finalizeArtifact).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(button).toBeEnabled())
+
+    await userEvent.click(button)
+    await waitFor(() => expect(saveDraft).toHaveBeenCalledTimes(2))
+
+    // Still only ONE finalize call — the cached FINAL id was reused.
+    expect(finalizeArtifact).toHaveBeenCalledTimes(1)
+  })
+
+  it('edit mode still calls datasetService.update and never touches the new draft-save path', async () => {
+    store.set(dwModeAtom, 'edit')
+    // No draftId/gateArtifactId — edit mode never sets these in production
+    // (use-dataset-edit-hydration.ts never writes them, per T01's own doc
+    // comment), so this is the realistic case, not a hypothetical one.
+    updateDataset.mockResolvedValue(saved('artifact-1'))
+
+    render(
+      <Provider store={store}>
+        <Step5ReviewSave nav={nav} />
+      </Provider>,
+    )
+    await userEvent.click(screen.getByRole('button', { name: /save changes/i }))
+
+    await waitFor(() => expect(updateDataset).toHaveBeenCalledTimes(1))
+    expect(finalizeArtifact).not.toHaveBeenCalled()
+    expect(saveDraft).not.toHaveBeenCalled()
+  })
+
+  it('a create-mode flow with no draft (e.g. CSV-only) still takes the legacy create path', async () => {
+    // No dwDraftIdAtom/dwDraftArtifactIdAtom set.
+    createDataset.mockResolvedValue(saved(null))
+
+    await clickSave()
+
+    await waitFor(() => expect(createDataset).toHaveBeenCalledTimes(1))
+    expect(finalizeArtifact).not.toHaveBeenCalled()
+    expect(saveDraft).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a toast and leaves the dataset unsaved when the save call rejects', async () => {
+    withGateArtifact()
+    saveDraft.mockRejectedValue(new Error('quota exceeded'))
+
+    render(
+      <Provider store={store}>
+        <Step5ReviewSave nav={nav} />
+      </Provider>,
+    )
+    await userEvent.click(screen.getByRole('button', { name: /save dataset/i }))
+
+    await waitFor(() => expect(saveDraft).toHaveBeenCalledTimes(1))
+    // Save button text reverts — never shows the "Saved" state.
+    expect(
+      screen.queryByRole('button', { name: /saved/i }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: /save dataset/i }),
+    ).toBeInTheDocument()
+  })
+
+  it('blocks Save when a feature recipe exists but GOLD has not been produced yet', async () => {
+    withGateArtifact()
+    store.set(dwFeatureConfigsAtom, [
+      { id: 'f1', kind: 'lag', tag: 'TI-101', k: 1 },
+    ] as never)
+    // dwDraftGoldArtifactIdAtom deliberately left unset.
+
+    render(
+      <Provider store={store}>
+        <Step5ReviewSave nav={nav} />
+      </Provider>,
+    )
+
+    const button = await screen.findByRole('button', { name: /save dataset/i })
+    expect(button).toBeDisabled()
+    expect(
+      screen.getByText(/waiting for feature engineering to finish/i),
+    ).toBeVisible()
   })
 })

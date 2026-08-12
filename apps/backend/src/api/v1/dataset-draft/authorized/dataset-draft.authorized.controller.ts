@@ -14,13 +14,19 @@ import type { FastifyReply } from 'fastify';
 import { JwtAccessGuard } from '@/guards/jwt-access.guard';
 import { Users } from '@/common/decorators/user.decorator';
 import { DatasetDraftAuthorizedService } from './dataset-draft.authorized.service';
-import { CreateDraftDto } from './dto/dataset-draft.authorized.dto';
 import {
+  CreateDraftDto,
+  SaveDraftAsDatasetDto,
+} from './dto/dataset-draft.authorized.dto';
+import {
+  CreateFeaturesDto,
   CreateRawVersionDto,
   ListRowsDto,
   PreviewVersionDto,
+  PromoteFinalArtifactDto,
   StartCleanJobDto,
   TagCatalogDto,
+  ValidateArtifactDto,
 } from '../../dataset-version/authorized/dto/dataset-version.authorized.dto';
 
 /**
@@ -94,6 +100,98 @@ export class DatasetDraftAuthorizedController {
     @Body() body: CreateRawVersionDto,
   ) {
     return this.service.materializeDraftArtifactService(user, id, body);
+  }
+
+  @Post('/:id/artifacts/:artifactId/features')
+  @HttpCode(201)
+  @ApiOperation({
+    summary: 'Run feature engineering server-side, producing a GOLD artifact',
+    description:
+      'applyFeatures -> selectColumns -> toModelReady against the named ' +
+      'source artifact (normally SILVER). Inline, not job-queued — one ' +
+      'combined operation, not a chained per-tag pipeline like /clean. ' +
+      'Sets parentArtifactId to the source artifact and persists ' +
+      'featureSpecKey from the feature_spec.json sidecar.',
+  })
+  async createDraftFeaturesArtifactController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Body() body: CreateFeaturesDto,
+  ) {
+    return this.service.createDraftFeaturesArtifactService(
+      user,
+      id,
+      artifactId,
+      body,
+    );
+  }
+
+  @Post('/:id/artifacts/:artifactId/validate')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Run the validation gate against a draft artifact',
+    description:
+      'Read-only against the artifact and creates no DatasetArtifact row ' +
+      '— returns PASS/FAIL, a quality score, and a per-check breakdown. ' +
+      "Uses the artifact's own featureSpecKey (if it has one) automatically.",
+  })
+  async validateDraftArtifactController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Body() body: ValidateArtifactDto,
+  ) {
+    return this.service.validateDraftArtifactService(
+      user,
+      id,
+      artifactId,
+      body,
+    );
+  }
+
+  @Post('/:id/artifacts/:artifactId/finalize')
+  @HttpCode(201)
+  @ApiOperation({
+    summary: 'Promote a draft artifact into a FINAL artifact',
+    description:
+      'Re-validates the artifact server-side and REFUSES (422) unless it ' +
+      'PASSes — never trusts a client-supplied validation result. Never ' +
+      'copies bytes: the FINAL row shares its source objectKey/checksum ' +
+      'verbatim. Creates NO Dataset or DatasetVersion — Save Dataset ' +
+      '(DS-LAKE-009-T02) is the only place those are created.',
+  })
+  async promoteDraftArtifactToFinalController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Body() body: PromoteFinalArtifactDto,
+  ) {
+    return this.service.promoteDraftArtifactToFinalService(
+      user,
+      id,
+      artifactId,
+      body,
+    );
+  }
+
+  @Post('/:id/save')
+  @HttpCode(201)
+  @ApiOperation({
+    summary: 'Save the draft as a persistent Dataset',
+    description:
+      'The ONLY operation that creates a DatasetVersion (DS-LAKE-009-T02). ' +
+      "Adopts the draft's FINAL artifact by pointer — never copies bytes, " +
+      'never re-fetches raw, never replays the recipe. Re-validates the ' +
+      'artifact for a fresh Save-time quality score and REFUSES (422) if ' +
+      'no FINAL artifact exists or it no longer PASSes.',
+  })
+  async saveDraftAsDatasetController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Body() body: SaveDraftAsDatasetDto,
+  ) {
+    return this.service.saveDraftAsDatasetService(user, id, body);
   }
 
   @Get('/:id/artifacts/:artifactId/rows')

@@ -24,3 +24,36 @@ export const CreateDraftSchema = z.object({
 });
 
 export class CreateDraftDto extends createZodDto(CreateDraftSchema) {}
+
+/**
+ * DS-LAKE-009-T02. Deliberately its OWN schema, not `CreateDatasetSchema`
+ * reused with an optional `draftId` bolted on — `workspaceId`/`sourceIds`
+ * come from the draft itself and `rowCount`/`missingPct` come from the
+ * FINAL artifact being adopted, so none of those fields belong on this
+ * request at all. Keeping Save as a single-purpose endpoint (rather than a
+ * second code path through `createDatasetService`) is what lets
+ * DS-LAKE-009-T05 ("assert no code path outside Save creates a
+ * DatasetVersion") audit one call site instead of two.
+ *
+ * DS-LAKE-009-T04: deliberately has NO `expectedTags`/`maxMissingPct`/
+ * `maxOutlierFraction` override fields, unlike `ValidateArtifactSchema`/
+ * `PromoteFinalArtifactSchema`. At `/finalize` those overrides are how a
+ * caller CONFIGURES the promotion gate — a legitimate first use. At Save
+ * there is nothing to configure: the artifact was already promoted under
+ * whatever thresholds applied then, and Save's re-validation is a
+ * re-CHECK, not a second configuration point. Accepting them here would
+ * let a caller who bypasses the UI relax the gate in the same request that
+ * asks Save to enforce it — exactly what "server-side, not only in the
+ * UI" rules out.
+ */
+export const SaveDraftAsDatasetSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().optional(),
+  tags: z.array(z.string()).default([]),
+  pipelineConfig: z.record(z.string(), z.unknown()).default({}),
+  fileUrl: z.string().nullish(),
+});
+
+export class SaveDraftAsDatasetDto extends createZodDto(
+  SaveDraftAsDatasetSchema,
+) {}

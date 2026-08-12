@@ -26,6 +26,7 @@ from intergrations.object_store import (
     tag_columns,
 )
 from schemas.preprocess import (
+    ArtifactReclaimRequest,
     CleaningOperation,
     CleanRequest,
     CleanupRequest,
@@ -622,6 +623,58 @@ def test_cleanup_requires_a_trailing_slash() -> None:
     """Without it, `ds-1/tmp/job-1` also matches `ds-1/tmp/job-10/...`."""
     with pytest.raises(ValueError, match="end with"):
         CleanupRequest(prefix="ds-1/tmp/job-1")
+
+
+# ── reclaim (DS-LAKE-009B) ───────────────────────────────────────────────
+#
+# `RecordingStore.delete_prefix` only tracks the `.objects` dict, not
+# `.documents` — a test-fake simplification, not a production behaviour.
+# In the real `ObjectStore`, sidecars are just other keys under the same
+# prefix in the same bucket, so `delete_prefix` already removes them too;
+# that path is proven against real MinIO by `test_object_store.py`'s live
+# round trip, not re-proven here against a fake that cannot model it.
+
+
+def test_reclaim_deletes_the_named_artifact_only() -> None:
+    store = RecordingStore(
+        {
+            "ds-1/artifacts/art-7/data.parquet": frame(),
+            "ds-1/artifacts/art-8/data.parquet": frame(),
+        }
+    )
+    result = artifact_service.reclaim_artifact(
+        store, ArtifactReclaimRequest(object_key="ds-1/artifacts/art-7/data.parquet")
+    )
+
+    assert result == {"prefix": "ds-1/artifacts/art-7/", "deleted": 1}
+    assert set(store.objects) == {"ds-1/artifacts/art-8/data.parquet"}
+
+
+def test_reclaim_is_idempotent() -> None:
+    """A retried cleanup pass on an already-reclaimed artifact must not fail —
+    this is what lets ArtifactCleanupService retry after a partial failure
+    without needing to know which artifacts it already got to."""
+    store = RecordingStore({"ds-1/artifacts/art-7/data.parquet": frame()})
+    request = ArtifactReclaimRequest(object_key="ds-1/artifacts/art-7/data.parquet")
+
+    first = artifact_service.reclaim_artifact(store, request)
+    second = artifact_service.reclaim_artifact(store, request)
+
+    assert first["deleted"] == 1
+    assert second["deleted"] == 0
+
+
+def test_reclaim_refuses_a_key_outside_artifacts() -> None:
+    """The opposite guard from cleanup: this must never be pointed at tmp/."""
+    with pytest.raises(ValueError, match="committed artifact's data key"):
+        ArtifactReclaimRequest(object_key="ds-1/tmp/job-1/1.parquet")
+
+
+def test_reclaim_refuses_a_sidecar_key() -> None:
+    """Only the data key is accepted, not a sidecar beside it — catches a
+    copy-paste of the wrong key rather than the intended artifact's."""
+    with pytest.raises(ValueError, match="committed artifact's data key"):
+        ArtifactReclaimRequest(object_key="ds-1/artifacts/art-7/manifest.json")
 
 
 # ── materialize request validation ───────────────────────────────────────

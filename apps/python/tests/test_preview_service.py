@@ -435,6 +435,40 @@ def test_max_points_bypasses_the_sample_rows_head_cut() -> None:
     assert spike_ts.isoformat(sep=" ") in series_timestamps
 
 
+def test_v05_full_scenario_ratio_and_both_extrema_survive_end_to_end() -> None:
+    """V05, literally, through the real `build_preview` pipeline — not the
+    raw `lttb_indices` core `test_downsample.py` exercises. Two things no
+    other test here checks together:
+
+    1. The reported ratio matches the TRUE source length (259,200), not a
+       post-sample-cut length. `sample_rows` is set far below the window on
+       purpose, so sampling and downsampling both engage on one request —
+       the specific interaction where a wrong denominator could hide.
+    2. A spike AND a trough survive together, at the realistic scale, in
+       the same response.
+    """
+    periods = 6 * 30 * 24 * 60  # 259,200 — matches six_month_single_tag_frame
+    spike_at, trough_at = 90_000, 180_000
+    frame = six_month_single_tag_frame()
+    frame.loc[spike_at, "TI-101"] = 500.0
+    frame.loc[trough_at, "TI-101"] = -500.0
+    store = NoWriteStore(frame)
+
+    result = build_preview(store, request_for(sample_rows=5_000, max_points=2_000))
+
+    assert result["sampled"] is False  # full window entered downsampling
+    series = result["before"]["series"]
+    assert len(series) <= 2_000
+    assert result["max_points"] == 2_000
+
+    expected_ratio = round(periods / len(series), 4)
+    assert result["before"]["downsample_ratio"] == expected_ratio
+
+    series_timestamps = {row["timestamp"] for row in series}
+    assert frame["timestamp"].iloc[spike_at].isoformat(sep=" ") in series_timestamps
+    assert frame["timestamp"].iloc[trough_at].isoformat(sep=" ") in series_timestamps
+
+
 def test_series_respects_the_max_points_ceiling() -> None:
     store = NoWriteStore(six_month_single_tag_frame())
     result = build_preview(store, request_for(max_points=1_500))

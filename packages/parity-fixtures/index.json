@@ -105,6 +105,78 @@
     {
       "name": "precleanse_time_crop",
       "engine": "precleanse"
+    },
+    {
+      "name": "feature_lag",
+      "engine": "applyFeatures"
+    },
+    {
+      "name": "feature_rolling_mean",
+      "engine": "applyFeatures"
+    },
+    {
+      "name": "feature_rolling_std",
+      "engine": "applyFeatures"
+    },
+    {
+      "name": "feature_rolling_roc",
+      "engine": "applyFeatures"
+    },
+    {
+      "name": "feature_delta",
+      "engine": "applyFeatures"
+    },
+    {
+      "name": "feature_arith_add",
+      "engine": "applyFeatures"
+    },
+    {
+      "name": "feature_ratio",
+      "engine": "applyFeatures"
+    },
+    {
+      "name": "feature_ratio_by_zero_is_bad",
+      "engine": "applyFeatures"
+    },
+    {
+      "name": "feature_log",
+      "engine": "applyFeatures"
+    },
+    {
+      "name": "feature_datetime_hour",
+      "engine": "applyFeatures"
+    },
+    {
+      "name": "feature_formula",
+      "engine": "applyFeatures"
+    },
+    {
+      "name": "feature_chain_lag_then_delta_of_lag",
+      "engine": "applyFeatures"
+    },
+    {
+      "name": "select_columns_subset",
+      "engine": "selectColumns"
+    },
+    {
+      "name": "select_columns_keep_all_is_identity",
+      "engine": "selectColumns"
+    },
+    {
+      "name": "scaler_minmax",
+      "engine": "toModelReady"
+    },
+    {
+      "name": "scaler_standard",
+      "engine": "toModelReady"
+    },
+    {
+      "name": "scaler_robust",
+      "engine": "toModelReady"
+    },
+    {
+      "name": "scaler_none",
+      "engine": "toModelReady"
     }
   ]
 }

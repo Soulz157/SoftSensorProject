@@ -9,6 +9,7 @@ import {
 } from './use-dataset-tag-metadata'
 import { useTagResolution } from './use-tag-resolution'
 import { parseTagSearch, type TagSearch } from '@/lib/tag-search'
+import { PATTERN_CAP, useMultiPatternSearch } from './use-multi-pattern-search'
 
 /** Server caps tag_names; ตัดที่ฝั่ง client แล้วบอกผู้ใช้ว่าตัดไปเท่าไหร่ */
 export const MAX_NAMES = 500
@@ -21,6 +22,10 @@ export interface UseDatasetTagSearchResult {
   notFound: string[]
   /** โหมด names: จำนวนชื่อที่เกิน cap แล้วถูกตัด */
   droppedNames: number
+  truncatedPatterns: string[]
+  /** patterns mode: matched nothing */
+  emptyPatterns: string[]
+  droppedPatterns: string[]
   hasNextBySource: Map<string, boolean>
   pageBySource: Map<string, number>
   goto: (id: string, page: number) => void
@@ -53,14 +58,18 @@ export function useDatasetTagSearch(
   const droppedNames =
     search.mode === 'names' ? search.names.length - names.length : 0
 
+  const patternList = useMemo(
+    () => (search.mode === 'patterns' ? search.patterns : []),
+    [search],
+  )
+
   const catalog = useDatasetTagMetadata(
     search.mode === 'wildcard' ? search.pattern : '*',
     pageSize,
-    !isNames,
+    search.mode === 'wildcard',
   )
-
   const resolution = useTagResolution(names)
-  //   const pattern = useMultiPatternSearch(patternList, PATTERN_CAP)
+  const patterns = useMultiPatternSearch(patternList, PATTERN_CAP)
 
   const resolvedView = useMemo(() => {
     const meta = new Map<string, TagMeta>()
@@ -93,34 +102,61 @@ export function useDatasetTagSearch(
     return { meta, bySource }
   }, [isNames, resolution.resolved])
 
-  if (!isNames) {
+  const empty = useMemo(() => new Map<string, never>(), [])
+
+  if (search.mode === 'patterns') {
     return {
-      mode: 'wildcard',
-      metaByTag: catalog.metaByTag,
-      tagsBySource: catalog.tagsBySource,
+      mode: 'patterns',
+      metaByTag: patterns.metaByTag,
+      tagsBySource: patterns.tagsBySource,
       notFound: [],
       droppedNames: 0,
-      hasNextBySource: catalog.hasNextBySource,
-      pageBySource: catalog.pageBySource,
+      truncatedPatterns: patterns.truncatedPatterns,
+      emptyPatterns: patterns.emptyPatterns,
+      droppedPatterns: patterns.droppedPatterns,
+      // Merged multi-pattern results have no single cursor to advance.
+      hasNextBySource: empty as Map<string, boolean>,
+      pageBySource: empty as Map<string, number>,
       goto: catalog.goto,
-      refetch: catalog.refetch,
-      loading: catalog.loading,
-      error: catalog.error,
+      refetch: patterns.refetch,
+      loading: patterns.loading,
+      error: patterns.error,
+    }
+  }
+
+  if (search.mode === 'names') {
+    return {
+      mode: 'names',
+      metaByTag: resolvedView.meta,
+      tagsBySource: resolvedView.bySource,
+      notFound: resolution.notFound,
+      droppedNames,
+      truncatedPatterns: [],
+      emptyPatterns: [],
+      droppedPatterns: [],
+      hasNextBySource: empty as Map<string, boolean>,
+      pageBySource: empty as Map<string, number>,
+      goto: catalog.goto,
+      refetch: resolution.refetch,
+      loading: resolution.loading,
+      error: resolution.error,
     }
   }
 
   return {
-    mode: 'names',
-    metaByTag: resolvedView.meta,
-    tagsBySource: resolvedView.bySource,
-    notFound: resolution.notFound,
-    droppedNames,
-    // resolve ไม่มีหน้า — ส่ง Map ว่างเพื่อให้ pagination bar ไม่ render
-    hasNextBySource: new Map(),
-    pageBySource: new Map(),
+    mode: 'wildcard',
+    metaByTag: catalog.metaByTag,
+    tagsBySource: catalog.tagsBySource,
+    notFound: [],
+    droppedNames: 0,
+    truncatedPatterns: [],
+    emptyPatterns: [],
+    droppedPatterns: [],
+    hasNextBySource: catalog.hasNextBySource,
+    pageBySource: catalog.pageBySource,
     goto: catalog.goto,
     refetch: catalog.refetch,
-    loading: resolution.loading,
-    error: resolution.error,
+    loading: catalog.loading,
+    error: catalog.error,
   }
 }
