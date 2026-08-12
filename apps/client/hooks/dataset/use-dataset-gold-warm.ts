@@ -24,6 +24,12 @@ const GOLD_WARM_DEBOUNCE_MS = 800
  * `dwFeaturedDatasetAtom` (the LOCAL derived atom Step 4's own UI reads for
  * instant feedback) is untouched by this hook — that stays the "bounded
  * interactive preview" the AC names; this hook is the other half.
+ * CORRECTION (DS-LAKE-006-AC5 audit): as originally written, that preview
+ * was NOT actually bounded — it read `dwRawDatasetAtom` (the full dataset)
+ * directly. Fixed by `useDatasetFeaturePreviewSample`
+ * (dwFeaturePreviewSampleAtom, a real bounded `/rows` page), which
+ * `dwFeaturedDatasetAtom` now reads instead. This sentence was true in
+ * intent from T06's own design but not in the code until that fix landed.
  *
  * Debounced (800ms, matching `requestFinalPreview`'s own 600ms class of
  * debounce in `use-dataset-draft-pipeline.ts`, slightly longer since a

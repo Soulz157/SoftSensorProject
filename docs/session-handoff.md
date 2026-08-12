@@ -112,27 +112,27 @@ recipe stays readable (DS-LAKE-009B).
 
 # Feature Status
 
-| Feature        | Status         | Notes                                                                                                                                                                                                                                               |
-| -------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| DS-LAKE-001    | ✅ Complete    | Feature ledger & flow audit                                                                                                                                                                                                                         |
-| DS-LAKE-002    | ✅ Complete    | Artifact ledger & registry schema split                                                                                                                                                                                                             |
-| DS-LAKE-003    | ✅ Complete    | Artifact key contract, checksum, manifest                                                                                                                                                                                                           |
-| DS-LAKE-004    | ✅ Complete    | Bronze layer stops creating a Dataset Version                                                                                                                                                                                                       |
-| DS-LAKE-004B   | ✅ Complete    | DatasetDraft entity, draft-scoped ownership                                                                                                                                                                                                         |
-| DS-LAKE-005    | ✅ Complete    | Silver layer — server cleaning path wired into Step 3                                                                                                                                                                                               |
-| DS-LAKE-005B-A | ✅ Complete    | Bounded server-side access contract — V01/V02 closed by structural proof, V05 by new end-to-end test, V04 deferred (recorded scope decision)                                                                                                        |
-| DS-LAKE-005B-B | 🚧 In Progress | Frontend viewport migration — 2 tasks (T01, T03) blocked, no reason on file; needs investigation                                                                                                                                                    |
-| DS-LAKE-005B-C | ⏳ Pending     | Parquet-native query path & layout benchmark                                                                                                                                                                                                        |
-| DS-LAKE-006    | 🚧 In Progress | Gold layer — feature engineering port. All 6 tasks completed (found substantially pre-built, untracked); feature-level status held at in_progress because AC5 (browser boundedness) genuinely fails — owned by DS-LAKE-005B-B-T04, not this feature |
-| DS-LAKE-007    | ⏳ Pending     | Validation layer — quality gate & report                                                                                                                                                                                                            |
-| DS-LAKE-008    | ⏳ Pending     | Step 5 validation gate                                                                                                                                                                                                                              |
-| DS-LAKE-009    | ✅ Complete    | Final artifact & Save Dataset persistence boundary — live-verified                                                                                                                                                                                  |
-| DS-LAKE-009B   | ✅ Complete    | Intermediate artifact lifecycle & cleanup — live-verified (7/7 verification items, real Postgres+MinIO+Python)                                                                                                                                      |
-| DS-LAKE-010    | ⏳ Pending     | Dataset registry lifecycle, promotion, lineage                                                                                                                                                                                                      |
-| DS-LAKE-011    | ⏳ Pending     | Loader seam — enqueue, retry, pluggable sink                                                                                                                                                                                                        |
-| DS-LAKE-012    | ⏳ Pending     | End-to-end verification of Lakehouse invariants                                                                                                                                                                                                     |
+| Feature        | Status         | Notes                                                                                                                                                |
+| -------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| DS-LAKE-001    | ✅ Complete    | Feature ledger & flow audit                                                                                                                          |
+| DS-LAKE-002    | ✅ Complete    | Artifact ledger & registry schema split                                                                                                              |
+| DS-LAKE-003    | ✅ Complete    | Artifact key contract, checksum, manifest                                                                                                            |
+| DS-LAKE-004    | ✅ Complete    | Bronze layer stops creating a Dataset Version                                                                                                        |
+| DS-LAKE-004B   | ✅ Complete    | DatasetDraft entity, draft-scoped ownership                                                                                                          |
+| DS-LAKE-005    | ✅ Complete    | Silver layer — server cleaning path wired into Step 3                                                                                                |
+| DS-LAKE-005B-A | ✅ Complete    | Bounded server-side access contract — V01/V02 closed by structural proof, V05 by new end-to-end test, V04 deferred (recorded scope decision)         |
+| DS-LAKE-005B-B | 🚧 In Progress | Frontend viewport migration — T02/T04 done, T01/T03 blocked (no reason on file), T05 pending                                                         |
+| DS-LAKE-005B-C | ⏳ Pending     | Parquet-native query path & layout benchmark                                                                                                         |
+| DS-LAKE-006    | ✅ Complete    | Gold layer — feature engineering port. Found substantially pre-built, untracked; AC5 (browser boundedness) fixed same session via DS-LAKE-005B-B-T04 |
+| DS-LAKE-007    | ⏳ Pending     | Validation layer — quality gate & report                                                                                                             |
+| DS-LAKE-008    | ⏳ Pending     | Step 5 validation gate                                                                                                                               |
+| DS-LAKE-009    | ✅ Complete    | Final artifact & Save Dataset persistence boundary — live-verified                                                                                   |
+| DS-LAKE-009B   | ✅ Complete    | Intermediate artifact lifecycle & cleanup — live-verified (7/7 verification items, real Postgres+MinIO+Python)                                       |
+| DS-LAKE-010    | ⏳ Pending     | Dataset registry lifecycle, promotion, lineage                                                                                                       |
+| DS-LAKE-011    | ⏳ Pending     | Loader seam — enqueue, retry, pluggable sink                                                                                                         |
+| DS-LAKE-012    | ⏳ Pending     | End-to-end verification of Lakehouse invariants                                                                                                      |
 
-Overall: 9 of 17 features complete (53%), per `feature_list.preprocessing.json`.
+Overall: 10 of 17 features complete (59%), per `feature_list.preprocessing.json`.
 
 ---
 
@@ -155,28 +155,23 @@ Overall: 9 of 17 features complete (53%), per `feature_list.preprocessing.json`.
 In dependency order:
 
 1. Unblock DS-LAKE-005B-B-T01/T03 (reason not recorded — check with
-   whoever left them blocked before resuming). DS-LAKE-006 landing
-   (below) does NOT unblock these on its own — Step 4/5's local
-   materialization gap is DS-LAKE-005B-B-T04's job, not DS-LAKE-006's;
-   re-check T01/T03's blockedReason against current code before
-   assuming they're clear.
+   whoever left them blocked before resuming). DS-LAKE-006 landing and
+   T04's fix (below) do NOT unblock these on their own — T01/T03's real
+   blocker is Step 3.1/4/5 missing server capability for charts and the
+   Step-5 save-time recompute, a different gap than T04's; re-check
+   T01/T03's blockedReason against current code before assuming they're
+   clear.
 2. DS-LAKE-005B-C — Parquet-native query path & layout benchmark.
-3. Close DS-LAKE-006's remaining gap: AC5 (browser boundedness) fails
-   because `dwFeaturedDatasetAtom` (store/dataset-studio.ts:140-142)
-   computes over the full `dwRawDatasetAtom`, not a bounded sample —
-   this is DS-LAKE-005B-B-T04's `BoundedSample` brand type job. All 6
-   of DS-LAKE-006's own tasks are done (2026-08-12 audit); only the
-   feature-level flip to `completed` is blocked on this, cross-owned.
-4. DS-LAKE-007 — Validation layer / quality gate.
+3. DS-LAKE-007 — Validation layer / quality gate.
    Note: `apps/python/services/validation_service.py`, its tests, and
    a `/v1/preprocess/validate` route already exist untracked (found
    2026-08-12, same session as the DS-LAKE-006 audit) — same
    pre-built-but-untracked pattern DS-LAKE-006 turned out to be; check
    before starting from scratch, same as DS-LAKE-006 was.
-5. DS-LAKE-008 — Step 5 validation gate (client-side wiring).
-6. DS-LAKE-010 — Dataset registry lifecycle, promotion, lineage.
-7. DS-LAKE-011 — Loader seam.
-8. DS-LAKE-012 — End-to-end verification of every Lakehouse invariant.
+4. DS-LAKE-008 — Step 5 validation gate (client-side wiring).
+5. DS-LAKE-010 — Dataset registry lifecycle, promotion, lineage.
+6. DS-LAKE-011 — Loader seam.
+7. DS-LAKE-012 — End-to-end verification of every Lakehouse invariant.
 
 ---
 
@@ -274,20 +269,88 @@ Model Wizard additionally reads
   V04 (JSON-vs-Arrow wire-format benchmark) stays deferred — a recorded
   scope decision, not something "finish" un-defers.
 
+- **Audited DS-LAKE-006 (Gold layer / feature engineering port)** and
+  found it substantially already built, entirely untracked in git.
+  `feature_service.py`, `feature_spec_service.py`, all 18 feature/
+  scaler/select_columns parity fixtures, the `/v1/preprocess/features`
+  route, NestJS's `createDraftFeaturesArtifactService`, and the client's
+  `useDatasetGoldWarm` hook were all present and wired end to end —
+  `git status` shows every one of them `??` (untracked) and
+  `packages/parity-fixtures/index.json` as `M` (modified vs HEAD). Same
+  exposure class as the DS-LAKE-009 data-loss incident above, larger
+  here. **Resolved same session**: this was already committed by the
+  user, outside this conversation, in `f0bf964` ("feat(backend): Update
+  Bronze, Silver Layers in MinIO", 81 files) — discovered when asked to
+  commit it and finding `git status` already clean for everything but
+  this handoff doc.
+
+  Verified all 6 tasks completed with live evidence, not citation alone:
+  ran the real parity suite (225 passed / 67 skipped, every skip class
+  accounted for), then ran two live sabotage probes — mutated a feature
+  fixture's expected value (999.999) and confirmed `test_parity.py`
+  fails and correctly reports the exact diff (V01); flipped
+  `_welford_population_std` from population to sample convention
+  (`/n` → `/(n-1)`) and confirmed the parity harness catches a
+  0.003-magnitude drift, not just gross wrongness (V02) — both fixtures/
+  code restored from backup immediately after, `git diff --stat` empty
+  both times.
+
+  **Initially found `in_progress`, one acceptance criterion genuinely
+  failing**: AC5 ("feature engineering of an 8,000+ tag artifact never
+  requires the complete artifact in the browser"). `dwFeaturedDatasetAtom`
+  computed `applyFeatures` over `dwRawDatasetAtom` — the full
+  client-materialized dataset, not a bounded sample — for Step 4's live
+  local preview. T06's own doc comment claimed this atom "stays the
+  bounded interactive preview"; checked directly, it wasn't.
+
+  Also found (not audited this pass): `apps/python/services/
+validation_service.py`, its tests, and a `/v1/preprocess/validate`
+  route already exist, also untracked — same drift pattern, belongs to
+  DS-LAKE-007.
+
+- **Fixed AC5, same session (DS-LAKE-005B-B-T04)**. Added
+  `applyFeaturesBounded` (`lib/feature-engineering.ts`, additive, mirrors
+  the existing `percentileBoundsBounded` pattern from `precleanse.ts`
+  exactly) and `dwFeaturePreviewSampleAtom` +
+  `useDatasetFeaturePreviewSample` (new hook) — fetches ONE real bounded
+  page via `datasetDraftService.rows()` (DS-LAKE-005B-A's `/rows`
+  endpoint, previously zero callers), brands it as a genuine
+  `BoundedSample` (not a client-side slice of the already-full raw
+  dataset — that would satisfy the compiler without satisfying what the
+  brand documents), and `dwFeaturedDatasetAtom` now reads that instead of
+  `dwRawDatasetAtom`. `DataAnalysisCard` — which shared the same atom —
+  was deliberately kept on a separate, still-unbounded feed
+  (`analysisDataset`, computed locally): its real gap (no server endpoint
+  can supply histogram/boxplot/scatter/correlation data) was already
+  named as out of scope in DS-LAKE-005B-B-T01, and silently truncating
+  its input to 1,000 rows would have been a real, unannounced regression
+  for any dataset over that size, not a fix.
+
+  Verified: `npx tsc --noEmit` — 0 new errors (59 before and after,
+  identical file set, all pre-existing in unrelated `feature-preset`
+  test files, confirmed via `git stash` diff). New type-gate test
+  `feature-engineering-bounded.test.ts` mirrors `precleanse.test.ts`'s
+  `@ts-expect-error` pattern. 44 tests passed across the full relevant
+  suite (dataset-studio-feature-preset / feature-engineering-bounded /
+  precleanse / parity-fixtures / use-dataset-gold-warm /
+  step-5-review-save).
+
+  DS-LAKE-006 flipped to `completed`. DS-LAKE-005B-B-T04 flipped to
+  `completed` (scoped narrowly to this one consumer, not every client
+  transform library the task title names — T01/T03/T05 remain the
+  broader migration).
+
 ---
 
 # Next Session
 
 Primary Goal
 
-Unblock DS-LAKE-005B-B (2 blocked tasks, reason not on file), then
-move to DS-LAKE-005B-C or DS-LAKE-006 depending on priority call.
-
-Before starting DS-LAKE-006/007, check whether
-`apps/python/services/feature_service.py`,
-`feature_spec_service.py`, and `validation_service.py` (all present,
-untracked) already satisfy some or all of those tasks' acceptance
-criteria — the code may be ahead of the tracked task status.
+Unblock DS-LAKE-005B-B-T01/T03 properly (real blocker: Step 3.1/4/5
+missing server capability + Step 5's independent save-time recompute —
+re-check `blockedReason` against current code first), or move to
+DS-LAKE-005B-C / DS-LAKE-007 (audit first — see Session Notes above,
+same untracked-code pattern DS-LAKE-006 turned out to be).
 
 Do NOT
 

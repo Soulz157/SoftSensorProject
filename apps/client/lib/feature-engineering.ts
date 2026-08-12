@@ -11,7 +11,7 @@
  * Column naming: `TI-101__lag3`, `TI-101__roll5_mean`, `A__over__B`,
  * `TI-101__delta`. Double-underscore keeps names free of `.` (recharts-safe).
  */
-import type { Cell, DataRow, Dataset } from '@/lib/preprocessing'
+import type { BoundedSample, Cell, DataRow, Dataset } from '@/lib/preprocessing'
 import { compileFormula } from './formula'
 
 export type RollingAgg = 'mean' | 'std' | 'min' | 'max' | 'ROC'
@@ -245,6 +245,33 @@ export function applyFeatures(ds: Dataset, configs: FeatureConfig[]): Dataset {
   }
 
   return { tags, rows }
+}
+
+/**
+ * DS-LAKE-006-AC5 / DS-LAKE-005B-B-T04: bounded-input entry point for
+ * `applyFeatures`, mirroring `precleanse.ts::percentileBoundsBounded`
+ * exactly — ADDITIVE, not a replacement. `applyFeatures` above keeps its
+ * `Dataset` signature; every caller that still only holds a full frame
+ * (e.g. `step-5-review-save.tsx`'s save-time recompute, which genuinely
+ * needs the complete dataset, not a preview) is unaffected.
+ *
+ * This exists so Step 4's LIVE LOCAL PREVIEW (`dwFeaturedDatasetAtom`) can
+ * be retyped to require a `BoundedSample` — a real bounded page from the
+ * server's `/rows` endpoint (DS-LAKE-005B-A), not a client-side slice of
+ * an already-fully-materialized dataset; slicing `dwRawDatasetAtom` would
+ * satisfy the compiler without satisfying what the brand documents
+ * ("provably came from ONE bounded server page" — see `BoundedSample`'s
+ * own doc comment in preprocessing.ts). `applyFeatures` never removes or
+ * adds rows (see its own doc comment above), so a bounded input always
+ * produces a bounded output — the cast back to a bare `Dataset` here is
+ * safe and matches what every current consumer of the preview actually
+ * needs (tag list + row count check, not a re-brand for further chaining).
+ */
+export function applyFeaturesBounded(
+  sample: BoundedSample,
+  configs: FeatureConfig[],
+): Dataset {
+  return applyFeatures(sample, configs)
 }
 
 /**

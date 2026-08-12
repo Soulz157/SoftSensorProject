@@ -6,6 +6,7 @@ import { Binary, CheckSquare, Wrench } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
 import {
+  applyFeatures,
   featureColumnName,
   type FeatureConfig,
 } from '@/lib/feature-engineering'
@@ -17,6 +18,7 @@ import {
 } from '@/store/dataset-studio'
 import type { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipeline-nav'
 import { useDatasetGoldWarm } from '@/hooks/dataset/use-dataset-gold-warm'
+import { useDatasetFeaturePreviewSample } from '@/hooks/dataset/use-dataset-feature-preview-sample'
 import { ExtractionPanel } from './feature-engineering/extraction-panel'
 import { CreationPanel } from './feature-engineering/creation-panel'
 import { SelectionPanel } from './feature-engineering/selection-panel'
@@ -32,12 +34,15 @@ interface Props {
 /**
  * Step 4 — Feature Engineering. Authors the `FeatureConfig[]` recipe (plus
  * per-column scaling and selection) that the pipeline applies as
- * raw → applyFeatures → precleanse → fill → select → scale. All columns are
- * derived from the real fetched dataset (`dwRawDatasetAtom`).
+ * raw → applyFeatures → precleanse → fill → select → scale. Column NAMES
+ * (`raw.tags`) come from `dwRawDatasetAtom`; the live preview VALUES
+ * (`featured`, below) come from a bounded server page, not the full raw
+ * dataset — see `useDatasetFeaturePreviewSample` (DS-LAKE-006-AC5).
  */
 export function Step4FeatureEngineering({ nav }: Props) {
   const raw = useAtomValue(dwRawDatasetAtom)
   const featurePreset = useAtomValue(dwFeaturePresetAtom)
+  useDatasetFeaturePreviewSample()
   const {
     featureConfigs,
     setFeatureConfigs,
@@ -52,8 +57,10 @@ export function Step4FeatureEngineering({ nav }: Props) {
   // DS-LAKE-006-T06: "Step 4 drives the full feature-engineering transform
   // server-side." No new UI — this fires in the background whenever the
   // recipe settles (debounced inside the hook itself). `featured` below
-  // (the LOCAL derived atom driving this component's own panels/analysis
-  // card) is untouched and stays the bounded interactive preview.
+  // (the LOCAL derived atom driving this component's own panels/tag
+  // sidebar) is untouched and stays the bounded interactive preview —
+  // genuinely bounded as of DS-LAKE-006-AC5's fix, via
+  // `useDatasetFeaturePreviewSample` above, not just in name.
   const warmGold = useDatasetGoldWarm()
   useEffect(() => {
     warmGold(featureConfigs, selectedColumns, scalerConfigs)
@@ -66,6 +73,18 @@ export function Step4FeatureEngineering({ nav }: Props) {
     [featured.tags, originalColumns],
   )
   const allColumns = featured.tags
+  // DataAnalysisCard is deliberately NOT switched to `featured`
+  // (DS-LAKE-006-AC5's fix). It was already named as a separate, still-open
+  // gap before this fix (DS-LAKE-005B-B-T01's blockedReason: no server
+  // endpoint can supply its histogram/boxplot/scatter/correlation data, and
+  // a HEAD-1000 sample would silently change what those charts show for any
+  // dataset over 1,000 rows — swapping this feed was never part of what AC5
+  // asks for). Recomputes on the full raw dataset exactly as it did before
+  // this fix — zero behavior change here, on purpose.
+  const analysisDataset = useMemo(
+    () => applyFeatures(raw, featureConfigs),
+    [raw, featureConfigs],
+  )
 
   const addFeature = (cfg: FeatureConfig) => {
     setFeatureConfigs(prev => [...prev, cfg])
@@ -212,7 +231,7 @@ export function Step4FeatureEngineering({ nav }: Props) {
           </TabsContent>
         </div>
 
-        <DataAnalysisCard dataset={featured} range={range} />
+        <DataAnalysisCard dataset={analysisDataset} range={range} />
       </Tabs>
     </div>
   )

@@ -1,11 +1,16 @@
 import { atom } from 'jotai'
 import type { SavedDataSource } from '@/lib/mock-data-sources'
 import {
+  brandBoundedSample,
+  type BoundedSample,
   type Dataset,
   type ScalerMethod,
   type TagPipeline,
 } from '@/lib/preprocessing'
-import { applyFeatures, type FeatureConfig } from '@/lib/feature-engineering'
+import {
+  applyFeaturesBounded,
+  type FeatureConfig,
+} from '@/lib/feature-engineering'
 import { EMPTY_PIPELINE_CONFIG } from '@/lib/pipeline-config'
 import type { SavedDataset } from '@/store/datasets'
 import type {
@@ -134,11 +139,28 @@ export const dwTargetTagAtom = atom<string | null>(null)
 // pipelineConfig — it is import-time state, not part of the saved recipe.
 export const dwSdtaConfigAtom = atom<SdtaConfig | null>(null)
 
-// Raw dataset + engineered feature columns, recomputed live from the recipe.
-// Read-only derived — never writes back to dwRawDatasetAtom (fetch seam).
-// `applyFeatures` returns the raw dataset unchanged when there are no configs.
+// DS-LAKE-006-AC5 / DS-LAKE-005B-B-T04: a real bounded page of the draft's
+// current source artifact, fetched via the server's bounded /rows endpoint
+// (DS-LAKE-005B-A) by `useDatasetFeaturePreviewSample`. NOT a client-side
+// slice of dwRawDatasetAtom — see `applyFeaturesBounded`'s doc comment in
+// feature-engineering.ts for why that would satisfy the compiler without
+// satisfying what `BoundedSample` actually documents. Empty until the hook's
+// first fetch resolves.
+export const dwFeaturePreviewSampleAtom = atom<BoundedSample>(
+  brandBoundedSample({ tags: [], rows: [] }),
+)
+
+// Feature-engineered preview for Step 4's own UI (panels, analysis card,
+// tag sidebar) — recomputed live from the recipe, but over the BOUNDED
+// sample above, not the full raw dataset. Read-only derived. Deliberately
+// NOT what Step 5 uses to compute what actually gets saved — that recompute
+// is separate and genuinely needs the full dataset (see step-5-review-
+// save.tsx), which this atom is not a substitute for.
 export const dwFeaturedDatasetAtom = atom<Dataset>(get =>
-  applyFeatures(get(dwRawDatasetAtom), get(dwFeatureConfigsAtom)),
+  applyFeaturesBounded(
+    get(dwFeaturePreviewSampleAtom),
+    get(dwFeatureConfigsAtom),
+  ),
 )
 export const dwCropRangeAtom = atom<CropRange>(null)
 export const dwValueCropAtom = atom<ValueCrop>({})
