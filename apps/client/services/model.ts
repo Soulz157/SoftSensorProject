@@ -21,6 +21,7 @@ export async function createModel(dto: {
   workspaceId: string
   name: string
   nodeId?: string
+  datasetId?: string
   config?: ModelConfig
 }): Promise<AIModel> {
   const res: { data: AIModel } = await fetchClient('/api/v1/authorized/model', {
@@ -35,6 +36,7 @@ export async function updateModel(
   dto: {
     name?: string
     nodeId?: string | null
+    datasetId?: string | null
     deployStatus?: 'stopped' | 'running' | 'error' | 'initializing'
     prodStatus?: 'normal' | 'warning' | 'alert' | 'offline' | 'frozen'
     statusDetail?: string | null

@@ -99,12 +99,6 @@ export function PlantsMap({
   const { data: hoveredModelsRaw } = useModels(hoveredId ?? '')
   const hoveredFailedCount = failedDeploys(hoveredModelsRaw ?? []).length
 
-  // const totalFailedDeploys = useMemo(
-  //   () =>
-  //     Object.values(failedDeploysByWorkspace ?? {}).reduce((s, n) => s + n, 0),
-  //   [failedDeploysByWorkspace],
-  // )
-
   const overallBinary: BinaryStatus =
     totalAlarms > 0 || hasOffline || nodeWarnings > 0 ? 'abnormal' : 'normal'
   const overallColor = BINARY_STATUS_META[overallBinary].color
@@ -154,7 +148,7 @@ export function PlantsMap({
   }, [hoverPos, containerSize])
 
   const zoomBtnCls = cn(
-    'flex h-8 w-8 items-center justify-center rounded-lg text-sm transition-colors',
+    'flex h-8 w-8 items-center justify-center rounded-lg text-sm transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50',
     isDark
       ? 'bg-black/40 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white'
       : 'bg-white/80 border border-black/10 text-foreground hover:bg-white',
@@ -254,7 +248,7 @@ export function PlantsMap({
           aria-pressed={!isDark}
           onClick={() => setTheme('light')}
           className={cn(
-            'flex h-10 w-10 items-center justify-center rounded-full transition-colors duration-200',
+            'flex h-10 w-10 items-center justify-center rounded-full outline-none transition-colors duration-200 focus-visible:ring-3 focus-visible:ring-ring/50',
             !isDark
               ? 'bg-white/90 text-gray-900 shadow-sm'
               : 'text-white/60 hover:text-white/90',
@@ -268,7 +262,7 @@ export function PlantsMap({
           aria-pressed={isDark}
           onClick={() => setTheme('dark')}
           className={cn(
-            'flex h-10 w-10 items-center justify-center rounded-full transition-colors duration-200',
+            'flex h-10 w-10 items-center justify-center rounded-full outline-none transition-colors duration-200 focus-visible:ring-3 focus-visible:ring-ring/50',
             isDark
               ? 'bg-white/20 text-white shadow-sm'
               : 'text-white/60 hover:text-white/90',

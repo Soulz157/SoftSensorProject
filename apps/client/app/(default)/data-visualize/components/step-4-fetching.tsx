@@ -12,7 +12,7 @@ import {
 } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { DateTimePicker, toDateTimeLocal } from '@/components/ui/Datetime'
+import { DateTimePicker, toDateTimeLocal } from '@/components/date-time-picker'
 import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
 import { Skeleton } from '@/components/ui/skeleton'

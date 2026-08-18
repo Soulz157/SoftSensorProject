@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "sessions": {
+    "bd50126f-8c67-412f-b827-900ae81f7cfb": {
+      "updatedAt": 1783947079458,
+      "files": {
+        "/Users/seolzzz/Developer/Repco/SoftSensorProject/apps/client/app/(default)/data-studio/create/components/processing/data-analysis-card.tsx": {
+          "editCount": 1,
+          "findings": []
+        }
+      }
+    }
+  }
+}

@@ -21,17 +21,19 @@ export function AuthPanel() {
       </h1>
 
       <p className="text-zinc-400 text-lg mb-10 max-w-md text-center">
-        Welcome back to the SoftSensor platform. <br /> Please log in to manage
-        your workspaces.
+        http://localhost:3000/models/create Welcome back to the SoftSensor
+        platform. <br /> Please log in to manage your workspaces.
       </p>
 
-      <Button className="group relative  cursor-pointer flex items-center gap-3 w-40 h-12 px-8 py-4 bg-white hover:bg-zinc-200 text-black rounded-full font-bold text-lg transition-all hover:scale-105 active:scale-95 shadow-[0_0_40px_rgba(255,255,255,0.1)]">
-        <LogIn
-          size={24}
-          className="group-hover:translate-x-1 transition-transform"
-        />
-        <Link href="/login">continue</Link>
-      </Button>
+      <Link href="/login">
+        <Button className="group relative  cursor-pointer flex items-center gap-3 w-40 h-12 px-8 py-4 bg-white hover:bg-zinc-200 text-black rounded-full font-bold text-lg transition-all hover:scale-105 active:scale-95 shadow-[0_0_40px_rgba(255,255,255,0.1)]">
+          <LogIn
+            size={24}
+            className="group-hover:translate-x-1 transition-transform"
+          />
+          continue
+        </Button>
+      </Link>
     </div>
   )
 }

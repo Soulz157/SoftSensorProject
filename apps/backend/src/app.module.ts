@@ -16,6 +16,13 @@ import { NodesModule } from './api/v1/nodes/nodes.module';
 import { WorkspacePlantModule } from './api/v1/workspace-plant/workspace.plant.module';
 import { ModelModule } from './api/v1/model/model.module';
 import { DataSourceModule } from './api/v1/data-source/data-source.module';
+import { DatasetModule } from './api/v1/dataset/dataset.module';
+import { DatasetVersionModule } from './api/v1/dataset-version/dataset-version.module';
+import { DatasetDraftModule } from './api/v1/dataset-draft/dataset-draft.module';
+import { FeaturePresetModule } from './api/v1/feature-preset/feature.preset.module';
+import { ArtifactCleanupModule } from './api/v1/artifact-cleanup/artifact-cleanup.module';
+import { ModelRunModule } from './api/v1/model-run/model-run.module';
+import { TrainningContainerModule } from './api/v1/trainning-container/trainning-container.module';
 
 @Module({
   imports: [
@@ -50,6 +57,13 @@ import { DataSourceModule } from './api/v1/data-source/data-source.module';
     WorkspacePlantModule,
     ModelModule,
     DataSourceModule,
+    DatasetModule,
+    DatasetVersionModule,
+    DatasetDraftModule,
+    FeaturePresetModule,
+    ArtifactCleanupModule,
+    ModelRunModule,
+    TrainningContainerModule,
   ],
   providers: [
     {

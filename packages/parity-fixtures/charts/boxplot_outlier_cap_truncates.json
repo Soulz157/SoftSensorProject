@@ -1,0 +1,214 @@
+{
+  "name": "boxplot_outlier_cap_truncates",
+  "engine": "boxplot",
+  "input": {
+    "tags": ["TI-101"],
+    "rows": [
+      {
+        "timestamp": "2026-06-22T00:00:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 70,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:01:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 71,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:02:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 72,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:03:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 70,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:04:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 71,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:05:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 72,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:06:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 70,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:07:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 71,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:08:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 72,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:09:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 70,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:10:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 71,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:11:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 72,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:12:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 592,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:13:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": -458,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:14:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 612,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:15:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": -478,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:16:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 632,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:17:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": -498,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:18:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 652,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:19:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": -518,
+            "status": "Good"
+          }
+        }
+      }
+    ]
+  },
+  "config": {
+    "source_key": "fixture/chart-artifact.parquet",
+    "tags": ["TI-101"],
+    "outlier_cap": 3
+  },
+  "expected": {
+    "source_key": "fixture/chart-artifact.parquet",
+    "tags": [
+      {
+        "tag": "TI-101",
+        "min": -518,
+        "q1": 70,
+        "median": 71,
+        "mean": 69.4,
+        "q3": 72,
+        "max": 652,
+        "whisker_low": 67,
+        "whisker_high": 75,
+        "outliers": [-518, -498, -478],
+        "outlier_count": 8,
+        "count": 20
+      }
+    ],
+    "insufficient_tags": []
+  }
+}

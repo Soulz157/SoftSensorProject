@@ -11,13 +11,15 @@ import {
   mpNodeIdAtom,
   mpModeAtom,
   mpEditModelIdAtom,
-  mpSavedDataSourcesAtom,
-  mpSelectedSavedSourceIdAtom,
-  mpSelectedTagsAtom,
-  mpRawDatasetAtom,
-  mpTimeRangeAtom,
-  mpCustomDateRangeAtom,
-  mpFillStrategiesAtom,
+  mpSelectedDatasetAtom,
+  mpAlgorithmAtom,
+  mpAlgorithmsAtom,
+  mpFindBestModelAtom,
+  mpFindBestParamsAtom,
+  mpTargetVariableAtom,
+  mpHyperparamsAtom,
+  mpLossFunctionAtom,
+  mpTrainTestSplitAtom,
   mpSelectedMetricsAtom,
   mpCreatedModelIdAtom,
 } from '@/store/model-pipeline'
@@ -39,28 +41,29 @@ export function useModelCommit(): () => Promise<string | null> {
   const description = useAtomValue(mpDescriptionAtom)
   const workspaceId = useAtomValue(mpWorkspaceIdAtom)
   const nodeId = useAtomValue(mpNodeIdAtom)
-  const savedSources = useAtomValue(mpSavedDataSourcesAtom)
-  const savedSourceId = useAtomValue(mpSelectedSavedSourceIdAtom)
-  const selectedTags = useAtomValue(mpSelectedTagsAtom)
-  const rawDataset = useAtomValue(mpRawDatasetAtom)
-  const timeRange = useAtomValue(mpTimeRangeAtom)
-  const customDateRange = useAtomValue(mpCustomDateRangeAtom)
-  const fillStrategies = useAtomValue(mpFillStrategiesAtom)
+  const dataset = useAtomValue(mpSelectedDatasetAtom)
+  const algorithm = useAtomValue(mpAlgorithmAtom)
+  const algorithms = useAtomValue(mpAlgorithmsAtom)
+  const findBestModel = useAtomValue(mpFindBestModelAtom)
+  const findBestParams = useAtomValue(mpFindBestParamsAtom)
+  const targetVariables = useAtomValue(mpTargetVariableAtom)
+  const hyperparameters = useAtomValue(mpHyperparamsAtom)
+  const lossFunction = useAtomValue(mpLossFunctionAtom)
+  const trainTestSplit = useAtomValue(mpTrainTestSplitAtom)
   const selectedMetrics = useAtomValue(mpSelectedMetricsAtom)
 
   return useCallback(async (): Promise<string | null> => {
-    // Persist the tags actually fetched/trained (Step-4 subset). Fall back to
-    // the confirmed list when no dataset exists yet (e.g. edit-mode hydration).
-    const committedTags =
-      rawDataset.tags.length > 0 ? rawDataset.tags : selectedTags
     const config = buildModelConfig({
       description,
-      savedSources,
-      savedSourceId,
-      selectedTags: committedTags,
-      timeRange,
-      customDateRange,
-      fillStrategies,
+      datasetId: dataset?.id ?? '',
+      algorithm,
+      algorithms,
+      findBestModel,
+      findBestParams,
+      targetVariables,
+      hyperparameters,
+      lossFunction,
+      trainTestSplit,
       selectedMetrics,
     })
 
@@ -68,6 +71,7 @@ export function useModelCommit(): () => Promise<string | null> {
       await updateModel(editModelId, {
         name: name.trim(),
         nodeId: nodeId || null,
+        datasetId: dataset?.id ?? null,
         config,
       })
       return editModelId
@@ -78,6 +82,7 @@ export function useModelCommit(): () => Promise<string | null> {
         workspaceId,
         name: name.trim(),
         nodeId: nodeId || undefined,
+        datasetId: dataset?.id,
         config,
       })
       setCreatedModelId(model.id)
@@ -87,6 +92,7 @@ export function useModelCommit(): () => Promise<string | null> {
     await updateModel(createdModelId, {
       name: name.trim(),
       nodeId: nodeId || null,
+      datasetId: dataset?.id ?? null,
       config,
     })
     return createdModelId
@@ -98,14 +104,16 @@ export function useModelCommit(): () => Promise<string | null> {
     name,
     nodeId,
     description,
-    savedSources,
-    savedSourceId,
-    selectedTags,
-    rawDataset,
-    timeRange,
-    customDateRange,
-    fillStrategies,
+    dataset,
+    algorithm,
+    algorithms,
+    findBestModel,
+    findBestParams,
+    hyperparameters,
+    lossFunction,
+    trainTestSplit,
     selectedMetrics,
+    targetVariables,
     setCreatedModelId,
   ])
 }

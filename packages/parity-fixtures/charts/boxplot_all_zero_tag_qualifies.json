@@ -1,0 +1,79 @@
+{
+  "name": "boxplot_all_zero_tag_qualifies",
+  "engine": "boxplot",
+  "input": {
+    "tags": ["TI-101"],
+    "rows": [
+      {
+        "timestamp": "2026-06-22T00:00:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 0,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:01:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 0,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:02:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 0,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:03:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 0,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:04:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 0,
+            "status": "Good"
+          }
+        }
+      }
+    ]
+  },
+  "config": {
+    "source_key": "fixture/chart-artifact.parquet",
+    "tags": ["TI-101"],
+    "outlier_cap": 50
+  },
+  "expected": {
+    "source_key": "fixture/chart-artifact.parquet",
+    "tags": [
+      {
+        "tag": "TI-101",
+        "min": 0,
+        "q1": 0,
+        "median": 0,
+        "mean": 0,
+        "q3": 0,
+        "max": 0,
+        "whisker_low": 0,
+        "whisker_high": 0,
+        "outliers": [],
+        "outlier_count": 0,
+        "count": 5
+      }
+    ],
+    "insufficient_tags": []
+  }
+}

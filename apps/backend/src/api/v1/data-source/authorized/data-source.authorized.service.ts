@@ -1,6 +1,11 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService, type PrismaModels } from '@softsensor/prisma';
+import {
+  PrismaService,
+  PrismaTypes,
+  type PrismaModels,
+} from '@softsensor/prisma';
 import { AppException } from '@softsensor/common';
+import { encryptSecret } from '@/lib/crypto';
 import type {
   CreateDataSourceDto,
   UpdateDataSourceDto,
@@ -22,6 +27,7 @@ export class DataSourceAuthorizedService {
       host: item.host,
       username: item.username,
       dbName: item.dbName,
+      config: item.config ?? null,
       status: item.status,
       lastUsed: item.updatedAt.toISOString().split('T')[0] ?? '',
       createdBy:
@@ -29,6 +35,14 @@ export class DataSourceAuthorizedService {
           .filter(Boolean)
           .join(' ') || 'Unknown',
     };
+  }
+
+  private toJsonInput(
+    config: Record<string, unknown> | undefined,
+  ): PrismaTypes.InputJsonValue | undefined {
+    return config === undefined
+      ? undefined
+      : (config as PrismaTypes.InputJsonValue);
   }
 
   async listDataSourceService(userId: string) {
@@ -52,8 +66,10 @@ export class DataSourceAuthorizedService {
         type: dto.type,
         host: dto.host ?? '',
         username: dto.username ?? '',
-        password: dto.password ?? '',
+        // Encrypt the user-supplied secret; never store it plaintext.
+        secretCiphertext: encryptSecret(dto.password ?? ''),
         dbName: dto.dbName ?? '',
+        config: this.toJsonInput(dto.config),
         status: 'connected',
         createdById: userId,
       },
@@ -87,8 +103,16 @@ export class DataSourceAuthorizedService {
         ...(dto.type !== undefined && { type: dto.type }),
         ...(dto.host !== undefined && { host: dto.host }),
         ...(dto.username !== undefined && { username: dto.username }),
-        ...(dto.password !== undefined && { password: dto.password }),
+        // Re-encrypt only when a new secret is provided; a blank/omitted
+        // password leaves the stored ciphertext untouched.
+        ...(dto.password !== undefined &&
+          dto.password !== '' && {
+            secretCiphertext: encryptSecret(dto.password),
+          }),
         ...(dto.dbName !== undefined && { dbName: dto.dbName }),
+        ...(dto.config !== undefined && {
+          config: this.toJsonInput(dto.config),
+        }),
       },
       include: { createdBy: { select: { firstName: true, lastName: true } } },
     });

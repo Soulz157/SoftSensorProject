@@ -3,7 +3,7 @@
 import { useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { FileUp, Plus, Trash2, X } from 'lucide-react'
-import { DateTimePicker } from '@/components/ui/Datetime'
+import { DateTimePicker } from '@/components/date-time-picker'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'

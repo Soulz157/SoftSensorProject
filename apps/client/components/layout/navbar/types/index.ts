@@ -1,5 +1,4 @@
 export interface NavbarProps {
-  onCreateWorkspace?: () => void
   onMenuClick?: () => void
 }
 

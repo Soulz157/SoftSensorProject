@@ -25,14 +25,17 @@ export interface AlertRow {
   kind: 'node' | 'model'
   equipmentName: string | null
   modelName: string | null
+  workspaceId: string
   workspaceName: string
   plantName: string | null
   typeLabel: string
+  typeName: string
   status: AlertStatus
   detailError: string | null
   errorLogs?: ModelLog[]
   affectedNode?: { name: string; planName: string | null }
   href: string
+  timestamp: string
 }
 
 /** Severity order (lower = more severe) — drives the default sort. */
@@ -100,6 +103,24 @@ export function formatLocation(row: AlertRow): string {
     : row.workspaceName
 }
 
+/**
+ * Ordered, non-null location segments for breadcrumb display (row UI only —
+ * `formatLocation` above stays unchanged since sort/filter/location-options
+ * and existing tests depend on its exact "Workspace > Plant" contract).
+ * Node rows already show the equipment name as the row title, so the
+ * breadcrumb stops at the plant to avoid repeating it. Model rows show the
+ * model name as the title, so the affected equipment name (if any) is a
+ * genuinely new segment and is appended.
+ */
+export function locationBreadcrumb(row: AlertRow): string[] {
+  const segments = [row.workspaceName]
+  if (row.plantName) segments.push(row.plantName)
+  if (row.kind === 'model' && row.equipmentName) {
+    segments.push(row.equipmentName)
+  }
+  return segments
+}
+
 interface BuildAlertsArgs {
   workspaces: Workspace[]
   nodesByWorkspaceId: Record<string, CanvasNode[]>
@@ -138,13 +159,16 @@ export function buildAlerts({
         kind: 'node',
         equipmentName: node.data.name,
         modelName: null,
+        workspaceId: workspace.id,
         workspaceName: workspace.name,
         plantName:
           plantNameByWorkspacePlan.get(workspace.id)?.get(node.planId) ?? null,
         typeLabel: deriveNodeTypeLabel(node.data.type, status),
+        typeName: capitalize(node.data.type),
         status,
         detailError: null,
         href: `/plants/${workspace.id}?nodeId=${node.id}`,
+        timestamp: node.updatedAt,
       })
     }
   }
@@ -171,10 +195,12 @@ export function buildAlerts({
       kind: 'model',
       equipmentName,
       modelName: model.name,
+      workspaceId: model.workspaceId,
       workspaceName:
         model.workspaceName ?? workspaceNameById.get(model.workspaceId) ?? '—',
       plantName,
       typeLabel: ALERT_STATUS_LABEL.failed,
+      typeName: 'Model',
       status: 'failed',
       detailError: model.data?.statusDetail ?? null,
       errorLogs: errorLogs.length > 0 ? errorLogs : undefined,
@@ -182,6 +208,7 @@ export function buildAlerts({
         ? { name: equipmentName ?? 'Unknown Node', planName: plantName }
         : undefined,
       href: `/models/${model.id}`,
+      timestamp: errorLogs.at(-1)?.timestamp ?? model.updatedAt,
     })
   }
 
@@ -218,6 +245,8 @@ export interface AlertFilters {
   location: string | 'all'
   type: string | 'all'
   search: string
+  dateFrom: string | null
+  dateTo: string | null
 }
 
 export const EMPTY_FILTERS: AlertFilters = {
@@ -225,6 +254,8 @@ export const EMPTY_FILTERS: AlertFilters = {
   location: 'all',
   type: 'all',
   search: '',
+  dateFrom: null,
+  dateTo: null,
 }
 
 export function filterAlerts(rows: AlertRow[], f: AlertFilters): AlertRow[] {
@@ -233,6 +264,8 @@ export function filterAlerts(rows: AlertRow[], f: AlertFilters): AlertRow[] {
     if (f.status !== 'all' && row.status !== f.status) return false
     if (f.location !== 'all' && formatLocation(row) !== f.location) return false
     if (f.type !== 'all' && row.typeLabel !== f.type) return false
+    if (f.dateFrom && row.timestamp < f.dateFrom) return false
+    if (f.dateTo && row.timestamp > f.dateTo) return false
     if (q) {
       const haystack =
         `${row.equipmentName ?? ''} ${row.modelName ?? ''}`.toLowerCase()
@@ -265,4 +298,43 @@ export function countByStatus(rows: AlertRow[]): AlertCounts {
   const counts: AlertCounts = { failed: 0, alarm: 0, offline: 0, warning: 0 }
   for (const r of rows) counts[r.status]++
   return counts
+}
+
+export interface AlertGroup {
+  workspaceId: string
+  workspaceName: string
+  rows: AlertRow[]
+}
+
+/**
+ * Groups rows by workspace, severity-sorting within each group. Groups are
+ * ordered worst-severity-first (the most severe row in the group), with an
+ * alphabetical tiebreak — so the workspace that needs attention most surfaces
+ * at the top of the list.
+ */
+export function groupByWorkspace(rows: AlertRow[]): AlertGroup[] {
+  const byId = new Map<string, AlertGroup>()
+  for (const row of rows) {
+    let group = byId.get(row.workspaceId)
+    if (!group) {
+      group = {
+        workspaceId: row.workspaceId,
+        workspaceName: row.workspaceName,
+        rows: [],
+      }
+      byId.set(row.workspaceId, group)
+    }
+    group.rows.push(row)
+  }
+
+  const groups = Array.from(byId.values())
+  for (const group of groups) group.rows.sort(compareBySeverity)
+
+  groups.sort((a, b) => {
+    const aBest = Math.min(...a.rows.map(r => ALERT_STATUS_PRIORITY[r.status]))
+    const bBest = Math.min(...b.rows.map(r => ALERT_STATUS_PRIORITY[r.status]))
+    return aBest - bBest || a.workspaceName.localeCompare(b.workspaceName)
+  })
+
+  return groups
 }

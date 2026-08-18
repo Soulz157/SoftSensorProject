@@ -2,6 +2,9 @@ import { describe, it, expect } from 'vitest'
 import {
   computeMetrics,
   generateAnalysis,
+  residualHistogram,
+  normalQuantile,
+  qqPoints,
   type EvalPoint,
 } from './model-evaluation'
 import type { AIModel } from '@/types'
@@ -21,6 +24,7 @@ const MODEL: AIModel = {
   name: 'Pump A',
   data: { deployStatus: 'running', prodStatus: 'normal', logs: [] },
   nodesId: null,
+  datasetId: null,
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
   nodes: null,
@@ -67,5 +71,69 @@ describe('generateAnalysis', () => {
     expect(analysis.graphExplanation).toContain('No paired')
     expect(analysis.rootCause.length).toBe(1)
     expect(analysis.suggestions.length).toBe(1)
+  })
+})
+
+describe('residualHistogram', () => {
+  it('returns empty for no residuals', () => {
+    expect(residualHistogram([])).toEqual([])
+  })
+
+  it('bin counts sum to the sample size', () => {
+    const residuals = [-3, -1, -1, 0, 0, 0, 1, 1, 2, 3]
+    const bins = residualHistogram(residuals, 8)
+    const total = bins.reduce((s, b) => s + b.count, 0)
+    expect(total).toBe(residuals.length)
+  })
+
+  it('collapses a degenerate (all-equal) input to one centred bin', () => {
+    const bins = residualHistogram([2, 2, 2])
+    expect(bins).toHaveLength(1)
+    expect(bins[0]!.count).toBe(3)
+    expect(bins[0]!.mid).toBe(2)
+  })
+})
+
+describe('normalQuantile', () => {
+  it('is ~0 at the median', () => {
+    expect(Math.abs(normalQuantile(0.5))).toBeLessThan(1e-6)
+  })
+
+  it('matches known standard-normal quantiles', () => {
+    expect(normalQuantile(0.975)).toBeCloseTo(1.959964, 3)
+    expect(normalQuantile(0.025)).toBeCloseTo(-1.959964, 3)
+  })
+
+  it('stays finite at the clamped endpoints', () => {
+    expect(Number.isFinite(normalQuantile(0))).toBe(true)
+    expect(Number.isFinite(normalQuantile(1))).toBe(true)
+  })
+})
+
+describe('qqPoints', () => {
+  it('returns one point per residual with a symmetric domain', () => {
+    const residuals = Array.from({ length: 50 }, (_, i) => i - 24.5)
+    const { points, domain } = qqPoints(residuals)
+    expect(points).toHaveLength(50)
+    expect(domain[0]).toBe(-domain[1])
+  })
+
+  it('produces sorted, centred standardized sample quantiles', () => {
+    const residuals = Array.from({ length: 101 }, (_, i) => i - 50)
+    const { points } = qqPoints(residuals)
+    // Sample quantiles are the sorted standardized residuals → non-decreasing.
+    for (let i = 1; i < points.length; i++) {
+      expect(points[i]!.sample).toBeGreaterThanOrEqual(points[i - 1]!.sample)
+    }
+    // Symmetric input → the median standardized sample sits at ~0, and the
+    // mid-range points hug the y = x diagonal (tails legitimately diverge for
+    // non-normal data).
+    const mid = points[Math.floor(points.length / 2)]!
+    expect(Math.abs(mid.sample)).toBeLessThan(0.05)
+    expect(Math.abs(mid.sample - mid.theoretical)).toBeLessThan(0.1)
+  })
+
+  it('handles the empty case', () => {
+    expect(qqPoints([])).toEqual({ points: [], domain: [-3, 3] })
   })
 })

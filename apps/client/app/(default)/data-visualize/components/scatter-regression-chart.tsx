@@ -24,6 +24,7 @@ import {
   type ChartConfig,
 } from '@/components/ui/chart'
 import { tagMeta } from '@/lib/mock-readings'
+import { mostCorrelatedPartner, pearsonMatrix } from '@/lib/data-quality'
 import {
   CORRELATED_PAIR,
   linearRegression,
@@ -57,7 +58,17 @@ function defaultPair(tags: string[]): { x: string; y: string } {
 const fmt = (v: number) =>
   v.toLocaleString(undefined, { maximumFractionDigits: 2 })
 
-export function ScatterRegressionChart({ dataset }: { dataset: Dataset }) {
+interface Props {
+  dataset: Dataset
+  /**
+   * When set, locks Y to this tag (e.g. driven by an external tag selector)
+   * and defaults X to its most-correlated partner. X remains user-changeable
+   * via its own select; re-defaults whenever `forcedY` changes.
+   */
+  forcedY?: string
+}
+
+export function ScatterRegressionChart({ dataset, forcedY }: Props) {
   const { tags } = dataset
   const reduced = usePrefersReducedMotion()
 
@@ -65,9 +76,35 @@ export function ScatterRegressionChart({ dataset }: { dataset: Dataset }) {
   const [xTag, setXTag] = useState(init.x)
   const [yTag, setYTag] = useState(init.y)
 
+  const hasForcedY = forcedY !== undefined && tags.includes(forcedY)
+
+  const forcedDefaultX = useMemo(() => {
+    if (!hasForcedY) return null
+    const matrix = pearsonMatrix(dataset)
+    return (
+      mostCorrelatedPartner(matrix, forcedY!) ??
+      tags.find(t => t !== forcedY) ??
+      forcedY!
+    )
+  }, [hasForcedY, dataset, forcedY, tags])
+
+  // Re-default X whenever the externally-forced Y tag changes — adjusted
+  // during render (React's documented "adjusting state when a prop
+  // changes" pattern) rather than in an effect, to avoid the extra render
+  // pass a setState-in-effect would cause.
+  const [prevForcedY, setPrevForcedY] = useState(forcedY)
+  if (forcedY !== prevForcedY) {
+    setPrevForcedY(forcedY)
+    if (forcedDefaultX) setXTag(forcedDefaultX)
+  }
+
   const defaulted = defaultPair(tags)
-  const resolvedX = tags.includes(xTag) ? xTag : defaulted.x
-  const resolvedY = tags.includes(yTag) ? yTag : defaulted.y
+  const resolvedX = tags.includes(xTag) ? xTag : (forcedDefaultX ?? defaulted.x)
+  const resolvedY = hasForcedY
+    ? forcedY!
+    : tags.includes(yTag)
+      ? yTag
+      : defaulted.y
 
   const points = useMemo(
     () => toScatterPoints(dataset, resolvedX, resolvedY),
@@ -115,23 +152,30 @@ export function ScatterRegressionChart({ dataset }: { dataset: Dataset }) {
             </SelectContent>
           </Select>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-muted-foreground">Y</span>
-          <Select value={resolvedY} onValueChange={setYTag}>
-            {' '}
-            {/* ✅ ใช้ resolvedY */}
-            <SelectTrigger className="h-8 w-40">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {tags.map(t => (
-                <SelectItem key={t} value={t}>
-                  {tagMeta(t)?.label ?? t}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+        {hasForcedY ? (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">Y</span>
+            <span className="font-mono text-xs text-foreground">
+              {yMeta?.label ?? resolvedY}
+            </span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">Y</span>
+            <Select value={resolvedY} onValueChange={setYTag}>
+              <SelectTrigger className="h-8 w-40">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {tags.map(t => (
+                  <SelectItem key={t} value={t}>
+                    {tagMeta(t)?.label ?? t}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
         <div className="ml-auto rounded-md bg-muted px-2.5 py-1 font-mono text-xs text-foreground">
           y = {fmt(reg.slope)}x + {fmt(reg.intercept)} · R² ={' '}
           {reg.r2.toFixed(3)}

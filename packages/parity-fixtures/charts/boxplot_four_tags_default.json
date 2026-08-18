@@ -1,0 +1,916 @@
+{
+  "name": "boxplot_four_tags_default",
+  "engine": "boxplot",
+  "input": {
+    "tags": ["TI-101", "VI-202", "FI-404", "XX-999"],
+    "rows": [
+      {
+        "timestamp": "2026-06-22T00:00:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 71.4,
+            "status": "Bad"
+          },
+          "VI-202": {
+            "value": 3.36,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 121,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 11.57,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:01:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 72.4,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 5.32,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 122,
+            "status": "Questionable"
+          },
+          "XX-999": {
+            "value": 9.94,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:02:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 72.4,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 2.81,
+            "status": "Bad"
+          },
+          "FI-404": {
+            "value": 121,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 11.33,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:03:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 73,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 3.8,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 120,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 8.4,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:04:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 72.9,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 5.7,
+            "status": "Questionable"
+          },
+          "FI-404": {
+            "value": 121,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 10.01,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:05:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 71.6,
+            "status": "Bad"
+          },
+          "VI-202": {
+            "value": 4.94,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 120,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 9.9,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:06:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 73.5,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 5.6,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 122,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 8.54,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:07:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 72.3,
+            "status": "Questionable"
+          },
+          "VI-202": {
+            "value": 5.49,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 119,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 9.12,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:08:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 72.5,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 3.26,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 118,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 9.71,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:09:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 360,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 22.5,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 600,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 50,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:10:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 71.1,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 3.3,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 121,
+            "status": "Bad"
+          },
+          "XX-999": {
+            "value": 10.27,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:11:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 70.8,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 4.77,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 121,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 10.23,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:12:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 72.5,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 3.28,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 120,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 11.22,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:13:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 71,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 5.8,
+            "status": "Bad"
+          },
+          "FI-404": {
+            "value": 120,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 11.18,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:14:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 72.8,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 2.93,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 121,
+            "status": "Questionable"
+          },
+          "XX-999": {
+            "value": 10.41,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:15:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 71.4,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 3.34,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 120,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 11.05,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:16:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 71,
+            "status": "Bad"
+          },
+          "VI-202": {
+            "value": 5.65,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 120,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 9.34,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:17:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 70.7,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 4.49,
+            "status": "Questionable"
+          },
+          "FI-404": {
+            "value": 118,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 11.64,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:18:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 70.6,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 4.28,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 119,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 10.27,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:19:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 70.7,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 3.21,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 119,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 8.33,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:20:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 71.5,
+            "status": "Questionable"
+          },
+          "VI-202": {
+            "value": 3.1,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 120,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 11.46,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:21:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 71,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 5.55,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 122,
+            "status": "Bad"
+          },
+          "XX-999": {
+            "value": 9.58,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:22:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 70.5,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 4.12,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 122,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 8.83,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:23:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 73.5,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 2.96,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 120,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 10.58,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:24:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 71.6,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 5.53,
+            "status": "Bad"
+          },
+          "FI-404": {
+            "value": 121,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 11.71,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:25:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 72.5,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 5.94,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 122,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 9.2,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:26:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 73.3,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 4.5,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 122,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 8.97,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:27:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": -216,
+            "status": "Bad"
+          },
+          "VI-202": {
+            "value": -13.5,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": -360,
+            "status": "Questionable"
+          },
+          "XX-999": {
+            "value": -30,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:28:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 72.7,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 4.18,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 121,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 9.29,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:29:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 71.4,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 5.55,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 121,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 11.79,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:30:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 72.1,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 4.95,
+            "status": "Questionable"
+          },
+          "FI-404": {
+            "value": 119,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 11.74,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:31:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 72.6,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 4.68,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 119,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 8.01,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:32:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 73.1,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 3.94,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 121,
+            "status": "Bad"
+          },
+          "XX-999": {
+            "value": 10.65,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:33:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 72.7,
+            "status": "Questionable"
+          },
+          "VI-202": {
+            "value": 3.45,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 119,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 10,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:34:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 73.7,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 2.78,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 121,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 10.6,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:35:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 71.1,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 4.9,
+            "status": "Bad"
+          },
+          "FI-404": {
+            "value": 119,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 11.05,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:36:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 73.2,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 3.59,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 119,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 11.8,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:37:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 71.4,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 6.18,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 119,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 10.05,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:38:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 71.5,
+            "status": "Bad"
+          },
+          "VI-202": {
+            "value": 5.28,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 122,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 9.65,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:39:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 71.9,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 5.95,
+            "status": "Bad"
+          },
+          "FI-404": {
+            "value": 120,
+            "status": "Good"
+          },
+          "XX-999": {
+            "value": 11.23,
+            "status": "Good"
+          }
+        }
+      }
+    ]
+  },
+  "config": {
+    "source_key": "fixture/chart-artifact.parquet",
+    "tags": ["TI-101", "VI-202", "FI-404", "XX-999"],
+    "outlier_cap": 50
+  },
+  "expected": {
+    "source_key": "fixture/chart-artifact.parquet",
+    "tags": [
+      {
+        "tag": "TI-101",
+        "min": 70.5,
+        "q1": 71.1,
+        "median": 72.4,
+        "mean": 81.05937499999999,
+        "q3": 72.92500000000001,
+        "max": 360,
+        "whisker_low": 70.5,
+        "whisker_high": 75.66250000000004,
+        "outliers": [360],
+        "outlier_count": 1,
+        "count": 32
+      },
+      {
+        "tag": "VI-202",
+        "min": -13.5,
+        "q1": 3.295,
+        "median": 4.15,
+        "mean": 4.2915624999999995,
+        "q3": 5.362500000000001,
+        "max": 22.5,
+        "whisker_low": 0.19374999999999876,
+        "whisker_high": 8.463750000000001,
+        "outliers": [-13.5, 22.5],
+        "outlier_count": 2,
+        "count": 32
+      },
+      {
+        "tag": "FI-404",
+        "min": 118,
+        "q1": 119,
+        "median": 120,
+        "mean": 134.26470588235293,
+        "q3": 121,
+        "max": 600,
+        "whisker_low": 118,
+        "whisker_high": 124,
+        "outliers": [600],
+        "outlier_count": 1,
+        "count": 34
+      },
+      {
+        "tag": "XX-999",
+        "min": -30,
+        "q1": 9.3275,
+        "median": 10.25,
+        "mean": 10.21625,
+        "q3": 11.2225,
+        "max": 50,
+        "whisker_low": 6.485000000000001,
+        "whisker_high": 14.065,
+        "outliers": [-30, 50],
+        "outlier_count": 2,
+        "count": 40
+      }
+    ],
+    "insufficient_tags": []
+  }
+}

@@ -11,6 +11,8 @@
  * (tag, timestamp) so re-renders and range switches stay stable (no flicker).
  */
 
+import type { SavedDataSource } from './mock-data-sources'
+
 /** PI value quality, per `docs/PLAN.md` §6 (`Good | Bad | Questionable`). */
 export type SensorQuality = 'Good' | 'Bad' | 'Questionable'
 
@@ -305,4 +307,90 @@ export function latestReading(
   readings: SensorReading[],
 ): SensorReading | undefined {
   return readings.length ? readings[readings.length - 1] : undefined
+}
+
+export interface MockTagRow {
+  tagName: string
+  status: 'good' | 'bad'
+  errorReason?: string
+}
+
+/**
+ * Phase 6 placeholder tag-discovery catalog, keyed by `SavedDataSource.id`.
+ * Demo seed sources (`ds-1`/`ds-2`/`ds-3`) get a fixed hand-authored list;
+ * every other real source falls back to `defaultMockTags`. Swap path: replace
+ * with a real tag-discovery API response keyed by source id.
+ */
+export const SOURCE_MOCK_TAGS: Record<string, MockTagRow[]> = {
+  'ds-1': [
+    { tagName: 'TI-101', status: 'good' },
+    { tagName: 'PI-303', status: 'good' },
+    {
+      tagName: 'VI-202',
+      status: 'bad',
+      errorReason: 'Tag not found in historian',
+    },
+    { tagName: 'FI-101', status: 'good' },
+    { tagName: 'TI-205', status: 'bad', errorReason: 'No data in last 24 h' },
+    { tagName: 'ambient_temp_c', status: 'good' },
+    {
+      tagName: 'cooling_water_flow',
+      status: 'bad',
+      errorReason: 'Tag deprecated — use CWF-NEW',
+    },
+  ],
+  'ds-2': [
+    { tagName: 'pump_speed', status: 'good' },
+    { tagName: 'discharge_pressure', status: 'good' },
+    {
+      tagName: 'suction_pressure',
+      status: 'bad',
+      errorReason: 'Column mapping failed',
+    },
+    { tagName: 'flow_rate', status: 'good' },
+    { tagName: 'motor_current', status: 'good' },
+    {
+      tagName: 'vibration_rms',
+      status: 'bad',
+      errorReason: 'Null values > 30%',
+    },
+  ],
+  'ds-3': [
+    { tagName: 'CMP-001.speed', status: 'good' },
+    { tagName: 'CMP-001.inlet_temp', status: 'good' },
+    { tagName: 'CMP-001.outlet_pressure', status: 'good' },
+    {
+      tagName: 'CMP-001.power_kw',
+      status: 'bad',
+      errorReason: 'Connection timeout',
+    },
+    { tagName: 'CMP-002.speed', status: 'good' },
+    { tagName: 'CMP-002.vibration', status: 'good' },
+  ],
+}
+
+/**
+ * User-added sources (random UUID) have no preset mock tags — synthesize a
+ * small deterministic set so the new connection shows up in tag-selection
+ * tables. Phase 6 placeholder, same approved mock pattern as `SOURCE_MOCK_TAGS`.
+ */
+export function defaultMockTags(source: SavedDataSource): MockTagRow[] {
+  const base =
+    source.name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '') || 'tag'
+  return [
+    { tagName: `${base}_signal_1`, status: 'good' },
+    { tagName: `${base}_signal_2`, status: 'good' },
+    { tagName: `${base}_signal_3`, status: 'good' },
+  ]
+}
+
+/** Looks up the mock tag catalog for a source, falling back to a synthesized set. */
+export function getSourceTagCatalog(
+  sourceId: string,
+  source?: SavedDataSource,
+): MockTagRow[] {
+  return SOURCE_MOCK_TAGS[sourceId] ?? (source ? defaultMockTags(source) : [])
 }

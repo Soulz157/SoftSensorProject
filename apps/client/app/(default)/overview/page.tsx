@@ -1,7 +1,7 @@
 'use client'
 import { useMemo } from 'react'
 import { useRouter } from 'next/navigation'
-import { usePlantsData } from '@/hooks/use-plants-data'
+import { usePlantsData } from '@/hooks/plants/use-plants-data'
 import { useAllModels } from '@/hooks/use-all-models'
 import { failedDeploys, failedCountByNodeId } from '@/lib/model-status'
 
@@ -12,6 +12,7 @@ import { PlantsMap } from './components/overview-map'
 import { OverviewSearch } from './components/overview-search'
 import { OverviewDetailPanel } from './components/overview-detail-panel'
 import { OverviewSkeleton } from './components/overview-skeleton'
+import { CreateWorkspaceForm } from '@/components/auth/create-workspace-form'
 
 export default function PlantsPage() {
   const router = useRouter()
@@ -56,21 +57,18 @@ export default function PlantsPage() {
   if (workspaces.length === 0)
     return (
       <div className="flex h-full w-full flex-col items-center justify-center gap-3">
-        <p className="text-sm font-medium text-foreground">No workspaces yet</p>
-        <p className="text-xs text-muted-foreground">
-          Create a workspace to start monitoring.
-        </p>
+        <CreateWorkspaceForm />
       </div>
     )
 
   return (
     <div className="flex h-full w-full overflow-hidden">
       <div className="relative flex-1 overflow-hidden">
-        <div className="pointer-events-none absolute left-0 right-0 top-0 z-10 bg-linear-to-b from-black/50 to-transparent px-4 pb-6 pt-3">
-          <h1 className="text-sm font-semibold tracking-wide text-white drop-shadow">
+        <div className="pointer-events-none absolute left-0 right-0 top-0 z-10 bg-linear-to-b from-black/70 to-black/55 px-4 pb-6 pt-3">
+          <h1 className="text-sm font-semibold tracking-wide text-muted-foreground dark:text-white drop-shadow">
             Workspaces Overview
           </h1>
-          <p className="text-xs text-white/70 drop-shadow">
+          <p className="text-xs text-muted-foreground  dark:text-white/70 drop-shadow">
             {workspaces.length} workspaces monitored
           </p>
         </div>
@@ -119,6 +117,7 @@ export default function PlantsPage() {
               onViewWorkspace={id => router.push(`/plants/${id}`)}
               onOpenPipeEditor={id => router.push(`/workspaces/${id}/canvas`)}
               onViewAlerts={() => router.push('/alerts')}
+              onOpenSettings={id => router.push(`/workspaces/${id}/settings`)}
             />
           </div>
         </>

@@ -26,6 +26,7 @@ interface Props {
   nodes: CanvasNode[]
   plantsLoading: boolean
   disabled: boolean
+  nameConflict: boolean
   onName: (v: string) => void
   onDescription: (v: string) => void
   onWorkspace: (id: string) => void
@@ -43,6 +44,7 @@ export function ModelMetadataSection({
   nodes,
   plantsLoading,
   disabled,
+  nameConflict,
   onName,
   onDescription,
   onWorkspace,
@@ -63,7 +65,13 @@ export function ModelMetadataSection({
           value={name}
           onChange={e => onName(e.target.value)}
           disabled={disabled}
+          aria-invalid={nameConflict}
         />
+        {nameConflict && (
+          <p className="text-xs text-destructive">
+            A model with this name already exists in this location.
+          </p>
+        )}
       </div>
 
       <div className="space-y-1.5">
@@ -81,51 +89,53 @@ export function ModelMetadataSection({
         />
       </div>
 
-      <div className="space-y-1.5">
-        <Label>
-          Workspace <span className="text-destructive">*</span> &amp; Plant{' '}
-          <span className="text-destructive">*</span>
-        </Label>
-        <CascadeSelectors
-          workspaces={workspaces}
-          workspaceId={workspaceId}
-          onWorkspaceChange={onWorkspace}
-          plants={plants}
-          plantId={plantId}
-          onPlantChange={onPlant}
-          plantsLoading={plantsLoading}
-        />
-      </div>
-
-      {workspaceId && plantId && (
-        <div className="space-y-1.5">
+      <div className="flex flex-col sm:flex-row gap-4 items-start w-full">
+        <div className="space-y-1.5 flex-1 w-full">
           <Label>
-            Equipment<span className="text-destructive">*</span>
+            Workspace <span className="text-destructive">*</span> &amp; Plant{' '}
+            <span className="text-destructive">*</span>
           </Label>
-          <Select
-            value={nodeId || 'none'}
-            onValueChange={v => onNode(v === 'none' ? '' : v)}
-            disabled={disabled}
-          >
-            <SelectTrigger className="w-full">
-              <SelectValue placeholder="Select equipment" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="none">— Unassigned —</SelectItem>
-              {nodes.map(n => (
-                <SelectItem key={n.id} value={n.id}>
-                  {(n.data as { name?: string }).name ?? n.id}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          {nodes.length === 0 && (
-            <p className="text-xs text-muted-foreground">
-              No equipment found in this plant. Add nodes to the canvas first.
-            </p>
-          )}
+          <CascadeSelectors
+            workspaces={workspaces}
+            workspaceId={workspaceId}
+            onWorkspaceChange={onWorkspace}
+            plants={plants}
+            plantId={plantId}
+            onPlantChange={onPlant}
+            plantsLoading={plantsLoading}
+          />
         </div>
-      )}
+
+        {workspaceId && plantId && (
+          <div className="space-y-1.5 flex-1 w-full">
+            <Label>
+              Equipment<span className="text-destructive">*</span>
+            </Label>
+            <Select
+              value={nodeId || 'none'}
+              onValueChange={v => onNode(v === 'none' ? '' : v)}
+              disabled={disabled}
+            >
+              <SelectTrigger className="h-9 w-56">
+                <SelectValue placeholder="Select equipment" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">— Unassigned —</SelectItem>
+                {nodes.map(n => (
+                  <SelectItem key={n.id} value={n.id}>
+                    {(n.data as { name?: string }).name ?? n.id}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {nodes.length === 0 && (
+              <p className="text-xs text-muted-foreground">
+                No equipment found in this plant. Add nodes to the canvas first.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   )
 }

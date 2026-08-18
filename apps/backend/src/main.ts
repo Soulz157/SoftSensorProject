@@ -36,7 +36,7 @@ async function bootstrap() {
   );
 
   app.setGlobalPrefix('api', {
-    exclude: ['/swagger', '/swagger/{*path}'],
+    exclude: ['swagger', 'swagger/{*path}'],
   });
 
   await app.register(fastifyCookie);
@@ -55,6 +55,7 @@ async function bootstrap() {
   //     forbidNonWhitelisted: true,
   //   }),
   // );
+
   app.useGlobalFilters(new HttpExceptionFilter());
   app.useGlobalInterceptors(new ClassSerializerInterceptor(app.get(Reflector)));
 

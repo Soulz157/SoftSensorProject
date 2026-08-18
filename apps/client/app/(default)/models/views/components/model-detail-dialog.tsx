@@ -210,12 +210,12 @@ export function ModelDetailDialog({ model, open, onClose }: Props) {
           </div>
         </ScrollArea>
 
-        <DialogFooter className="border-t border-border p-4">
+        <DialogFooter className="border-t border-border p-6">
           <Button variant="outline" className="flex-1" onClick={onClose}>
             Close
           </Button>
           <Button
-            className="flex-1 gap-1.5"
+            className="flex-1 gap-1.5 "
             onClick={() => {
               onClose()
               router.push(`/models/${model.id}`)

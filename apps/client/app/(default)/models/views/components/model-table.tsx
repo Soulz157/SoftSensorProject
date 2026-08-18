@@ -4,6 +4,7 @@ import {
   Activity,
   AlertCircle,
   AlertTriangle,
+  Braces,
   Info,
   MoreHorizontal,
   Pencil,
@@ -22,6 +23,7 @@ import { effectiveProdStatus } from '@/lib/model-status'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { ModelDetailDialog } from './model-detail-dialog'
+import { ViewConfigDialog } from './view-config-dialog'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
   Table,
@@ -139,6 +141,7 @@ export function ModelTable({
   onToggleDeploy,
 }: Props) {
   const [detailModel, setDetailModel] = useState<AIModel | null>(null)
+  const [configModel, setConfigModel] = useState<AIModel | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<AIModel | null>(null)
   const [deployTarget, setDeployTarget] = useState<{
     model: AIModel
@@ -322,7 +325,7 @@ export function ModelTable({
                           <MoreHorizontal className="h-4 w-4" />
                         </Button>
                       </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
+                      <DropdownMenuContent align="end" className="w-full">
                         <DropdownMenuItem onClick={() => onLog(m)}>
                           <Terminal className="h-3.5 w-3.5" />
                           Console
@@ -342,6 +345,10 @@ export function ModelTable({
                         <DropdownMenuItem onClick={() => setDetailModel(m)}>
                           <Info className="h-3.5 w-3.5" />
                           Details
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => setConfigModel(m)}>
+                          <Braces className="h-3.5 w-3.5" />
+                          View config
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
@@ -424,6 +431,12 @@ export function ModelTable({
         model={detailModel}
         open={detailModel !== null}
         onClose={() => setDetailModel(null)}
+      />
+
+      <ViewConfigDialog
+        model={configModel}
+        open={configModel !== null}
+        onClose={() => setConfigModel(null)}
       />
     </>
   )

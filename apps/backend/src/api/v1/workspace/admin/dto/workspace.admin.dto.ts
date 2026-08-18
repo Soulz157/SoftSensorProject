@@ -16,7 +16,7 @@ export const AdminWorkspaceItemSchema = z.object({
   name: z.string(),
   color: z.string(),
   icon: z.string(),
-  createdAt: z.date(),
+  createdAt: z.iso.datetime(),
   owner: z.object({
     id: z.string(),
     firstName: z.string().nullable(),
@@ -39,7 +39,7 @@ export const AdminWorkspaceMemberSchema = z.object({
   id: z.string(),
   userId: z.string(),
   role: z.enum(['OWNER', 'STAFF', 'VIEWER']),
-  createdAt: z.date(),
+  createdAt: z.iso.datetime(),
   user: z.object({
     id: z.string(),
     firstName: z.string().nullable(),
@@ -54,8 +54,8 @@ export const AdminWorkspaceDetailSchema = z.object({
   icon: z.string(),
   color: z.string(),
   description: z.string().nullable(),
-  createdAt: z.date(),
-  updatedAt: z.date(),
+  createdAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
   _count: z.object({
     members: z.number().int(),
     models: z.number().int(),

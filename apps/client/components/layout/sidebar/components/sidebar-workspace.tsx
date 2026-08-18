@@ -9,7 +9,7 @@ import {
   SlidersHorizontal,
   TriangleAlert,
   X,
-  Users2,
+  Plus,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -42,12 +42,14 @@ interface SidebarWorkspacesProps {
   isCollapsed: boolean
   logic: SidebarLogic
   onClose: () => void
+  onCreateWorkspace: () => void
 }
 
 const ITEM_HEIGHT = 40
 const MAX_VISIBLE = 5
 
 export function SidebarWorkspaces({
+  onCreateWorkspace,
   isCollapsed,
   logic,
   onClose,
@@ -81,7 +83,7 @@ export function SidebarWorkspaces({
             </Link>
             <button
               onClick={() => setWorkspaceOpen(!workspaceOpen)}
-              className="flex h-5 w-5 items-center justify-center text-sidebar-foreground/60 hover:text-sidebar-foreground transition-colors"
+              className="cursor-pointer flex h-5 w-5 items-center justify-center text-sidebar-foreground/60 hover:text-sidebar-foreground transition-colors"
             >
               <ChevronDown
                 className={cn(
@@ -98,12 +100,39 @@ export function SidebarWorkspaces({
             {workspaces.length === 0 ? (
               <div
                 className={cn(
-                  'flex items-center gap-2 rounded-md px-3 py-2 text-sm text-sidebar-foreground/50',
-                  isCollapsed && 'justify-center',
+                  'flex rounded-md',
+                  isCollapsed
+                    ? 'justify-center p-2'
+                    : 'flex-col items-center gap-3 px-3 py-4',
                 )}
               >
-                <Building2 className="h-4 w-4 shrink-0" />
-                {!isCollapsed && <span>No workspaces</span>}
+                {isCollapsed ? (
+                  <Button
+                    onClick={onCreateWorkspace}
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 text-sidebar-foreground/50 hover:bg-sidebar-accent hover:text-sidebar-foreground"
+                    title="Create Workspace"
+                  >
+                    <Plus className="h-4 w-4" />
+                  </Button>
+                ) : (
+                  <>
+                    <div className="flex items-center gap-2 text-sm text-sidebar-foreground/50">
+                      <Building2 className="h-4 w-4 shrink-0" />
+                      <span>No workspaces</span>
+                    </div>
+                    <Button
+                      onClick={onCreateWorkspace}
+                      variant="outline"
+                      size="sm"
+                      className="w-full gap-2 h-8 text-xs border-dashed border-muted-foreground/30 text-muted-foreground hover:border-primary hover:text-primary transition-colors cursor-pointer"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      Create Workspace
+                    </Button>
+                  </>
+                )}
               </div>
             ) : (
               <ScrollArea className="pr-1" style={{ height: listHeight }}>
@@ -111,7 +140,7 @@ export function SidebarWorkspaces({
                   {workspaces.map(ws => (
                     <Link
                       key={ws.id}
-                      href={`/workspaces/${ws.id}`}
+                      href={`/plants/${ws.id}/`}
                       onClick={() => {
                         setActiveWorkspace(ws.id)
                         onClose()
@@ -239,15 +268,9 @@ export function SidebarWorkspaces({
                   exact: true,
                 },
                 {
-                  href: `/workspaces/${currentWorkspace.id}/details`,
+                  href: `/workspaces/${currentWorkspace.id}/settings`,
                   icon: <SlidersHorizontal className="h-3.5 w-3.5 shrink-0" />,
                   label: 'Workspace Settings',
-                  exact: false,
-                },
-                {
-                  href: `/workspaces/${currentWorkspace.id}/members`,
-                  icon: <Users2 className="h-3.5 w-3.5 shrink-0" />,
-                  label: 'Members / Team',
                   exact: false,
                 },
               ].map(link => {

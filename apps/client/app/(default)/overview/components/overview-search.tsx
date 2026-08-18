@@ -97,7 +97,7 @@ export function OverviewSearch({
               aria-label={`Filter by ${label}`}
               onClick={() => onStatusToggle(key)}
               className={cn(
-                'flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-medium transition-all duration-150',
+                'flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-medium outline-none transition-all duration-150 focus-visible:ring-3 focus-visible:ring-ring/50',
                 active
                   ? 'text-white'
                   : isDark
@@ -135,7 +135,7 @@ export function OverviewSearch({
           aria-label="Clear all filters"
           onClick={clearAll}
           className={cn(
-            'shrink-0 rounded-full p-0.5 transition-colors',
+            'shrink-0 rounded-full p-0.5 outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50',
             isDark
               ? 'text-white/40 hover:text-white/70'
               : 'text-muted-foreground hover:text-foreground',

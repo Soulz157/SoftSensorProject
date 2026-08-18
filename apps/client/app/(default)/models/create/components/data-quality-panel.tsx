@@ -10,6 +10,7 @@ import {
   type TagQuality,
 } from '@/lib/data-quality'
 import type { Dataset } from '@/lib/preprocessing'
+import { StatTile } from './stat-tile'
 
 interface Props {
   dataset: Dataset
@@ -60,46 +61,39 @@ export function DataQualityPanel({ dataset }: Props) {
     <div className="space-y-4 rounded-xl bg-card p-4 ring-1 ring-foreground/10">
       <div className="flex items-center gap-2">
         <ShieldCheck className="h-4 w-4 text-muted-foreground" />
-        <p className="text-sm font-medium text-foreground">
+        <h2 className="text-sm font-medium text-foreground">
           Data Quality Overview
-        </p>
+        </h2>
       </div>
 
       {/* Dataset headline */}
-      <div className="grid grid-cols-3 gap-3">
-        <div className="rounded-lg bg-muted/40 p-3">
-          <p className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
-            Good
-          </p>
-          <p className="mt-1 font-mono text-lg text-emerald-600 dark:text-emerald-400">
-            {fmtPct(100 - overall.missingPct - overall.suspectPct)}
-          </p>
-          <p className="text-[11px] text-muted-foreground">
-            {overall.good} cells
-          </p>
-        </div>
-        <div className="rounded-lg bg-muted/40 p-3">
-          <p className="flex items-center gap-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
-            <CircleHelp className="h-3 w-3" /> Suspect
-          </p>
-          <p className="mt-1 font-mono text-lg text-amber-600 dark:text-amber-400">
-            {fmtPct(overall.suspectPct)}
-          </p>
-          <p className="text-[11px] text-muted-foreground">
-            {overall.suspect} cells
-          </p>
-        </div>
-        <div className="rounded-lg bg-muted/40 p-3">
-          <p className="flex items-center gap-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
-            <CircleAlert className="h-3 w-3" /> Missing
-          </p>
-          <p className="mt-1 font-mono text-lg text-destructive">
-            {fmtPct(overall.missingPct)}
-          </p>
-          <p className="text-[11px] text-muted-foreground">
-            {overall.missing} cells
-          </p>
-        </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <StatTile
+          surface="muted"
+          valueSize="md"
+          label="Good"
+          value={fmtPct(100 - overall.missingPct - overall.suspectPct)}
+          sub={`${overall.good} cells`}
+          toneClassName="text-emerald-600 dark:text-emerald-400"
+        />
+        <StatTile
+          surface="muted"
+          valueSize="md"
+          icon={CircleHelp}
+          label="Suspect"
+          value={fmtPct(overall.suspectPct)}
+          sub={`${overall.suspect} cells`}
+          toneClassName="text-amber-600 dark:text-amber-400"
+        />
+        <StatTile
+          surface="muted"
+          valueSize="md"
+          icon={CircleAlert}
+          label="Missing"
+          value={fmtPct(overall.missingPct)}
+          sub={`${overall.missing} cells`}
+          toneClassName="text-destructive"
+        />
       </div>
 
       {/* Per-tag breakdown */}

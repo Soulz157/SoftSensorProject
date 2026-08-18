@@ -6,6 +6,8 @@ import {
   buildAlerts,
   filterAlerts,
   formatLocation,
+  locationBreadcrumb,
+  groupByWorkspace,
   sortAlerts,
   EMPTY_FILTERS,
 } from './alerts'
@@ -78,6 +80,7 @@ function failedModel(
       ],
     },
     nodesId: opts.node ? `node-${id}` : null,
+    datasetId: null,
     createdAt: '2026-06-29T00:00:00Z',
     updatedAt: '2026-06-29T00:00:00Z',
     nodes: opts.node
@@ -134,6 +137,7 @@ describe('buildAlerts', () => {
     expect(row!.plantName).toBe('Plant 1')
     expect(formatLocation(row!)).toBe('Repco > Plant 1')
     expect(row!.typeLabel).toBe('Sensor Alarm')
+    expect(row!.typeName).toBe('Sensor')
     expect(row!.modelName).toBeNull()
     expect(row!.detailError).toBeNull()
   })
@@ -153,6 +157,7 @@ describe('buildAlerts', () => {
     expect(row!.modelName).toBe('Vibration Model')
     expect(formatLocation(row!)).toBe('Repco > Plant 2')
     expect(row!.typeLabel).toBe('Deploy Failed')
+    expect(row!.typeName).toBe('Model')
     expect(row!.detailError).toBe('R-squared dropped below 0.8')
     expect(row!.errorLogs).toHaveLength(1)
   })
@@ -229,5 +234,189 @@ describe('sortAlerts + filterAlerts', () => {
 
   it('returns all rows with empty filters', () => {
     expect(filterAlerts(rows, EMPTY_FILTERS)).toHaveLength(3)
+  })
+
+  it('filters by dateFrom/dateTo (inclusive bounds)', () => {
+    // Fixture rows all carry timestamp '2026-06-29T00:00:00Z' (nodes) or
+    // '2026-06-29T10:00:00Z' (the failed model's last error log).
+    const inRange = filterAlerts(rows, {
+      ...EMPTY_FILTERS,
+      dateFrom: '2026-06-29T00:00:00Z',
+      dateTo: '2026-06-29T10:00:00Z',
+    })
+    expect(inRange).toHaveLength(3)
+
+    const excludesEverything = filterAlerts(rows, {
+      ...EMPTY_FILTERS,
+      dateFrom: '2026-07-01T00:00:00Z',
+    })
+    expect(excludesEverything).toHaveLength(0)
+
+    const onlyModel = filterAlerts(rows, {
+      ...EMPTY_FILTERS,
+      dateFrom: '2026-06-29T05:00:00Z',
+    })
+    expect(onlyModel).toHaveLength(1)
+    expect(onlyModel[0]!.modelName).toBe('Temp Predictor V1')
+  })
+})
+
+describe('timestamp derivation', () => {
+  it('uses node.updatedAt for node rows', () => {
+    const [row] = buildAlerts({
+      workspaces: [workspace()],
+      plantsByWorkspaceId: { [WS_ID]: [plant(PLANT_A, 'Plant 1')] },
+      nodesByWorkspaceId: {
+        [WS_ID]: [node('n1', PLANT_A, { status: 'alarm', name: 'Reactor A' })],
+      },
+      models: [],
+    })
+    expect(row!.timestamp).toBe('2026-06-29T00:00:00Z')
+  })
+
+  it('uses the last error log timestamp for model rows when present', () => {
+    const [row] = buildAlerts({
+      workspaces: [workspace()],
+      plantsByWorkspaceId: { [WS_ID]: [] },
+      nodesByWorkspaceId: { [WS_ID]: [] },
+      models: [failedModel('m1', 'Temp Predictor V1')],
+    })
+    expect(row!.timestamp).toBe('2026-06-29T10:00:00Z')
+  })
+
+  it('falls back to model.updatedAt when there are no error logs', () => {
+    const modelNoLogs: ModelWithWorkspace = {
+      ...failedModel('m2', 'No Logs Model'),
+      data: {
+        deployStatus: 'error',
+        prodStatus: 'offline',
+        logs: [],
+      },
+    }
+    const [row] = buildAlerts({
+      workspaces: [workspace()],
+      plantsByWorkspaceId: { [WS_ID]: [] },
+      nodesByWorkspaceId: { [WS_ID]: [] },
+      models: [modelNoLogs],
+    })
+    expect(row!.timestamp).toBe('2026-06-29T00:00:00Z') // modelNoLogs.updatedAt
+  })
+})
+
+describe('locationBreadcrumb', () => {
+  it('stops at the plant for node rows (equipment is already the row title)', () => {
+    const [row] = buildAlerts({
+      workspaces: [workspace()],
+      plantsByWorkspaceId: {
+        [WS_ID]: [plant(PLANT_A, 'Plant 1')],
+      },
+      nodesByWorkspaceId: {
+        [WS_ID]: [node('n1', PLANT_A, { status: 'alarm', name: 'Reactor A' })],
+      },
+      models: [],
+    })
+    expect(locationBreadcrumb(row!)).toEqual(['Repco', 'Plant 1'])
+  })
+
+  it('appends the affected equipment name for model rows linked to a node', () => {
+    const [row] = buildAlerts({
+      workspaces: [workspace()],
+      plantsByWorkspaceId: { [WS_ID]: [] },
+      nodesByWorkspaceId: { [WS_ID]: [] },
+      models: [
+        failedModel('m1', 'Vibration Model', {
+          node: { name: 'Pump 02', planId: PLANT_B, planName: 'Plant 2' },
+        }),
+      ],
+    })
+    expect(locationBreadcrumb(row!)).toEqual(['Repco', 'Plant 2', 'Pump 02'])
+  })
+
+  it('is just the workspace for an unlinked model row', () => {
+    const [row] = buildAlerts({
+      workspaces: [workspace()],
+      plantsByWorkspaceId: { [WS_ID]: [] },
+      nodesByWorkspaceId: { [WS_ID]: [] },
+      models: [failedModel('m2', 'Orphan Model')],
+    })
+    expect(locationBreadcrumb(row!)).toEqual(['Repco'])
+  })
+})
+
+describe('groupByWorkspace', () => {
+  const WS_A = 'ws-a'
+  const WS_B = 'ws-b'
+
+  function ws(id: string, name: string): Workspace {
+    return {
+      id,
+      ownerId: 'owner-1',
+      name,
+      createdAt: '2026-06-29T00:00:00Z',
+      updatedAt: '2026-06-29T00:00:00Z',
+      _count: { members: 1, models: 0 },
+      modelsCount: 0,
+    }
+  }
+
+  function nodeIn(
+    wsId: string,
+    id: string,
+    status: CanvasNode['data']['status'],
+    name: string,
+  ): CanvasNode {
+    return {
+      id,
+      workspaceId: wsId,
+      planId: 'plan-1',
+      data: { type: 'sensor', status, name, x: 0, y: 0 },
+      models: [],
+      createdAt: '2026-06-29T00:00:00Z',
+      updatedAt: '2026-06-29T00:00:00Z',
+    }
+  }
+
+  it('groups rows by workspace, severity-sorted within group, worst-group-first ordering', () => {
+    const rows = buildAlerts({
+      workspaces: [ws(WS_A, 'Zebra Plant'), ws(WS_B, 'Alpha Plant')],
+      plantsByWorkspaceId: { [WS_A]: [], [WS_B]: [] },
+      nodesByWorkspaceId: {
+        // Zebra Plant: only a warning (least severe).
+        [WS_A]: [nodeIn(WS_A, 'n1', 'warning', 'Warn Node')],
+        // Alpha Plant: an alarm + a warning — alarm makes this group worse.
+        [WS_B]: [
+          nodeIn(WS_B, 'n2', 'warning', 'Warn Node 2'),
+          nodeIn(WS_B, 'n3', 'alarm', 'Alarm Node'),
+        ],
+      },
+      models: [],
+    })
+
+    const groups = groupByWorkspace(rows)
+    expect(groups).toHaveLength(2)
+    // Alpha Plant (has an alarm) ranks above Zebra Plant (only a warning),
+    // even though 'Alpha' < 'Zebra' would also win alphabetically — the
+    // severity ordering must be the primary key, not just alphabetical luck.
+    expect(groups[0]!.workspaceName).toBe('Alpha Plant')
+    expect(groups[0]!.rows.map(r => r.status)).toEqual(['alarm', 'warning'])
+    expect(groups[1]!.workspaceName).toBe('Zebra Plant')
+  })
+
+  it('alphabetically tiebreaks groups of equal worst severity', () => {
+    const rows = buildAlerts({
+      workspaces: [ws(WS_A, 'Zebra Plant'), ws(WS_B, 'Alpha Plant')],
+      plantsByWorkspaceId: { [WS_A]: [], [WS_B]: [] },
+      nodesByWorkspaceId: {
+        [WS_A]: [nodeIn(WS_A, 'n1', 'warning', 'Warn Node')],
+        [WS_B]: [nodeIn(WS_B, 'n2', 'warning', 'Warn Node 2')],
+      },
+      models: [],
+    })
+
+    const groups = groupByWorkspace(rows)
+    expect(groups.map(g => g.workspaceName)).toEqual([
+      'Alpha Plant',
+      'Zebra Plant',
+    ])
   })
 })

@@ -1,0 +1,46 @@
+{
+  "name": "boxplot_zero_good_values_insufficient",
+  "engine": "boxplot",
+  "input": {
+    "tags": ["TI-101"],
+    "rows": [
+      {
+        "timestamp": "2026-06-22T00:00:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 70,
+            "status": "Bad"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:01:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 70,
+            "status": "Bad"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:02:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 70,
+            "status": "Bad"
+          }
+        }
+      }
+    ]
+  },
+  "config": {
+    "source_key": "fixture/chart-artifact.parquet",
+    "tags": ["TI-101"],
+    "outlier_cap": 50
+  },
+  "expected": {
+    "source_key": "fixture/chart-artifact.parquet",
+    "tags": [],
+    "insufficient_tags": ["TI-101"]
+  }
+}

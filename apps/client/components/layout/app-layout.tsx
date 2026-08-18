@@ -33,12 +33,10 @@ export function AppLayout({ children }: AppLayoutProps) {
         onClose={() => setSidebarOpen(false)}
         isCollapsed={sidebarCollapsed}
         onToggleCollapse={() => setSidebarCollapsed(prev => !prev)}
+        onCreateWorkspace={() => setCreateDialogOpen(true)}
       />
       <div className="flex flex-1 flex-col overflow-hidden">
-        <Navbar
-          onMenuClick={() => setSidebarOpen(true)}
-          onCreateWorkspace={() => setCreateDialogOpen(true)}
-        />
+        <Navbar onMenuClick={() => setSidebarOpen(true)} />
         <main className="flex-1 overflow-y-auto">{children}</main>
       </div>
 

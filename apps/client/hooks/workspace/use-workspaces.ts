@@ -10,6 +10,21 @@ interface UseWorkspacesOptions {
   enabled?: boolean
 }
 
+// Dedup concurrent getWorkspaces() calls: sidebar + navbar mount in the same
+// tick and would each fire GET /workspace. Share one in-flight request instead.
+let inFlightWorkspaces: Promise<{ data: Workspace[] }> | null = null
+function sharedGetWorkspaces() {
+  if (!inFlightWorkspaces) {
+    inFlightWorkspaces = workspaceService.getWorkspaces() as Promise<{
+      data: Workspace[]
+    }>
+    inFlightWorkspaces.finally(() => {
+      inFlightWorkspaces = null
+    })
+  }
+  return inFlightWorkspaces
+}
+
 export function useWorkspaces({ enabled = true }: UseWorkspacesOptions = {}) {
   const { status } = useSession()
   const [workspaces, setWorkspaces] = useAtom(workspacesAtom)
@@ -25,9 +40,7 @@ export function useWorkspaces({ enabled = true }: UseWorkspacesOptions = {}) {
     setLoading(true)
     setError(null)
     try {
-      const data = (await workspaceService.getWorkspaces()) as {
-        data: Workspace[]
-      }
+      const data = await sharedGetWorkspaces()
       setWorkspaces(data.data)
     } catch {
       const message = 'Failed to load workspaces'

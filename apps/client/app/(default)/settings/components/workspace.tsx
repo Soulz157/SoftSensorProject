@@ -1,10 +1,12 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
-import { Building2, ImagePlus, Loader2 } from 'lucide-react'
+import { Building2, ImagePlus, Loader2, Trash2 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { workspaceService } from '@/services/workspace'
 import {
   AlertDialog,
@@ -28,14 +30,12 @@ import { WorkspaceMembers } from '@/app/(default)/workspaces/[id]/components/wor
 import { workspaceIcons, workspaceColors } from '@/store/workspace'
 import Image from 'next/image'
 
-const inputClass =
-  'h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring'
-
 export function WorkspaceTab() {
   const { data: session } = useSession()
   const { workspaces, refetch } = useWorkspaces()
   const { updateWorkspace, isUpdating } = useUpdateWorkspace()
   const { deleteWorkspace, isDeleting } = useDeleteWorkspace()
+
   const [preferredId, setPreferredId] = useState('')
   const [drafts, setDrafts] = useState<Record<string, Partial<Workspace>>>({})
   const [thumbnailPreview, setThumbnailPreview] = useState<string | null>(null)
@@ -79,7 +79,7 @@ export function WorkspaceTab() {
     })
     if (result.success) {
       setDrafts(prev => ({ ...prev, [selectedWorkspaceId]: {} }))
-      toast.success('Workspace updated')
+      toast.success('Workspace updated successfully')
     } else {
       toast.error(result.error ?? 'Failed to update workspace')
     }
@@ -123,6 +123,7 @@ export function WorkspaceTab() {
     setPendingThumbnail(file)
     setThumbnailPreview(URL.createObjectURL(file))
   }
+
   const handleThumbnailUpload = async () => {
     if (!pendingThumbnail || !selectedWorkspaceId) return
     setIsUploadingThumbnail(true)
@@ -132,12 +133,19 @@ export function WorkspaceTab() {
         pendingThumbnail,
       )
       setPendingThumbnail(null)
-      toast.success('Thumbnail uploaded')
+      toast.success('Thumbnail uploaded successfully')
+      refetch?.() // ดึงข้อมูลใหม่หลังจากอัปโหลดเสร็จเพื่อให้แสดง URL ล่าสุด
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Upload failed')
     } finally {
       setIsUploadingThumbnail(false)
     }
+  }
+
+  const cancelThumbnailUpload = () => {
+    setPendingThumbnail(null)
+    setThumbnailPreview(null)
+    if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
   useEffect(() => {
@@ -155,7 +163,7 @@ export function WorkspaceTab() {
     workspaceIcons.find(i => i.id === effectiveIcon)?.icon ?? Building2
 
   return (
-    <>
+    <div className="space-y-6">
       <div>
         <h2 className="text-xl font-semibold text-foreground">Workspace</h2>
         <p className="text-sm text-muted-foreground mt-1">
@@ -163,7 +171,7 @@ export function WorkspaceTab() {
         </p>
       </div>
 
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
         {workspaces.map(w => (
           <button
             key={w.id}
@@ -171,11 +179,11 @@ export function WorkspaceTab() {
             className={cn(
               'rounded-lg border-2 p-3 text-left transition-all',
               selectedWorkspaceId === w.id
-                ? 'border-primary bg-primary/5'
-                : 'border-border hover:border-primary/50',
+                ? 'border-primary bg-primary/5 ring-1 ring-primary/20'
+                : 'border-border hover:border-primary/50 bg-card',
             )}
           >
-            <p className="text-xs font-medium text-foreground truncate">
+            <p className="text-sm font-medium text-foreground truncate">
               {w.name}
             </p>
           </button>
@@ -185,7 +193,7 @@ export function WorkspaceTab() {
       {selectedWorkspace && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm font-medium">
+            <CardTitle className="text-base font-medium">
               Workspace Details
             </CardTitle>
           </CardHeader>
@@ -193,7 +201,7 @@ export function WorkspaceTab() {
             <div className="flex items-center gap-4">
               <div
                 className={cn(
-                  'h-14 w-14 rounded-xl flex items-center justify-center shadow',
+                  'h-14 w-14 rounded-xl flex items-center justify-center shadow-sm shrink-0',
                   selectedColor,
                 )}
               >
@@ -204,26 +212,24 @@ export function WorkspaceTab() {
                   {effectiveName}
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  Workspace icon preview
+                  Live preview of your workspace icon
                 </p>
               </div>
             </div>
 
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium text-foreground">
-                Workspace Name
-              </label>
-              <input
-                className={inputClass}
+            <div className="space-y-2">
+              <Label htmlFor="workspace-name">Workspace Name</Label>
+              <Input
+                id="workspace-name"
                 value={effectiveName}
                 onChange={e => setField('name', e.target.value)}
+                placeholder="Enter workspace name"
+                className="max-w-md"
               />
             </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-foreground">
-                Icon
-              </label>
+            <div className="space-y-3">
+              <Label>Default Icon</Label>
               <div className="flex flex-wrap gap-2">
                 {workspaceIcons.map(({ id, label, icon: Icon }) => (
                   <button
@@ -231,10 +237,10 @@ export function WorkspaceTab() {
                     title={label}
                     onClick={() => setField('icon', id)}
                     className={cn(
-                      'h-9 w-9 rounded-md border-2 flex items-center justify-center transition-all',
+                      'h-10 w-10 rounded-md border flex items-center justify-center transition-all',
                       effectiveIcon === id
-                        ? 'border-primary bg-primary/10 text-primary'
-                        : 'border-border text-muted-foreground hover:border-primary/50 hover:text-foreground',
+                        ? 'border-primary bg-primary/10 text-primary ring-1 ring-primary'
+                        : 'border-input bg-background text-muted-foreground hover:border-primary/50 hover:text-foreground',
                     )}
                   >
                     <Icon className="h-4 w-4" />
@@ -243,31 +249,27 @@ export function WorkspaceTab() {
               </div>
             </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-foreground">
-                Color
-              </label>
-              <div className="flex gap-2 py-2">
+            <div className="space-y-3">
+              <Label>Theme Color</Label>
+              <div className="flex gap-2">
                 {workspaceColors.map(({ id, bg }) => (
                   <button
                     key={id}
                     onClick={() => setField('color', id)}
                     className={cn(
-                      'h-8 w-8 rounded-full transition-all',
+                      'h-8 w-8 rounded-full transition-all focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2',
                       bg,
                       effectiveColor === id
-                        ? 'ring-2 ring-offset-2 ring-foreground scale-110'
-                        : 'hover:scale-105 opacity-70 hover:opacity-100',
+                        ? 'ring-2 ring-offset-2 ring-offset-card scale-110'
+                        : 'hover:scale-105 opacity-80 hover:opacity-100',
                     )}
                   />
                 ))}
               </div>
             </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-foreground">
-                Thumbnail
-              </label>
+            <div className="space-y-3">
+              <Label>Thumbnail Image</Label>
               <input
                 ref={fileInputRef}
                 type="file"
@@ -277,10 +279,10 @@ export function WorkspaceTab() {
               />
               <div
                 className={cn(
-                  'group relative cursor-pointer overflow-hidden rounded-xl border-2 border-dashed transition-colors',
+                  'group relative cursor-pointer overflow-hidden rounded-xl border-2 border-dashed transition-all max-w-xl',
                   dragOver
                     ? 'border-primary bg-primary/5'
-                    : 'border-border hover:border-primary/50',
+                    : 'border-input hover:border-primary/50 hover:bg-accent/50',
                 )}
                 onClick={() => fileInputRef.current?.click()}
                 onDragOver={e => {
@@ -298,62 +300,83 @@ export function WorkspaceTab() {
                         `${process.env.NEXT_PUBLIC_API_URL}${selectedWorkspace?.thumbnailUrl}`
                       }
                       alt="Workspace thumbnail"
-                      width={256}
-                      height={144}
-                      className="h-36 w-full object-cover"
+                      width={400}
+                      height={225}
+                      className="h-40 w-full object-cover"
                       unoptimized={true}
                     />
-                    <div className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors group-hover:bg-black/30">
-                      <Badge
-                        variant="secondary"
-                        className="opacity-0 transition-opacity group-hover:opacity-100"
-                      >
-                        Replace
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
+                      <Badge variant="secondary" className="shadow-sm">
+                        Replace Image
                       </Badge>
                     </div>
                     {isUploadingThumbnail && (
-                      <div className="absolute inset-0 flex flex-col justify-end bg-black/40">
+                      <div className="absolute inset-0 flex flex-col justify-end bg-black/50 p-3">
                         <Progress
                           value={undefined}
-                          className="m-2 h-1.5 w-[calc(100%-16px)] bg-white/20"
+                          className="h-2 w-full bg-white/20"
                         />
                       </div>
                     )}
                   </>
                 ) : (
-                  <div className="flex h-36 flex-col items-center justify-center gap-2">
-                    <ImagePlus
-                      className={cn(
-                        'h-7 w-7 transition-colors',
-                        dragOver ? 'text-primary' : 'text-muted-foreground',
-                      )}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      {dragOver ? 'Drop to upload' : 'Click or drag image here'}
-                    </p>
-                    <p className="text-[10px] text-muted-foreground/60">
-                      JPEG, PNG, WebP · max 5 MB
-                    </p>
+                  <div className="flex h-40 flex-col items-center justify-center gap-3 p-4">
+                    <div className="rounded-full bg-primary/10 p-3">
+                      <ImagePlus
+                        className={cn(
+                          'h-6 w-6 transition-colors',
+                          dragOver ? 'text-primary' : 'text-primary/60',
+                        )}
+                      />
+                    </div>
+                    <div className="text-center">
+                      <p className="text-sm font-medium text-foreground">
+                        {dragOver
+                          ? 'Drop image here'
+                          : 'Click or drag image to upload'}
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        JPEG, PNG, WebP (Max 5MB)
+                      </p>
+                    </div>
                   </div>
                 )}
               </div>
+
+              {/* Action buttons when a new thumbnail is selected but not yet uploaded */}
               {pendingThumbnail && (
-                <div className="flex items-center justify-between">
-                  <p className="truncate text-xs text-muted-foreground">
-                    {pendingThumbnail.name}
-                  </p>
-                  <Button
-                    type="button"
-                    size="sm"
-                    disabled={isUploadingThumbnail}
-                    onClick={handleThumbnailUpload}
-                    className="ml-2 gap-1.5"
-                  >
-                    {isUploadingThumbnail && (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    )}
-                    Upload
-                  </Button>
+                <div className="flex items-center justify-between max-w-md rounded-lg border bg-muted/40 px-3 py-2">
+                  <div className="flex items-center gap-2 overflow-hidden pr-2">
+                    <ImagePlus className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <p className="truncate text-xs text-muted-foreground">
+                      {pendingThumbnail.name}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                      onClick={cancelThumbnailUpload}
+                      disabled={isUploadingThumbnail}
+                      title="Cancel upload"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="h-7 px-3 text-xs"
+                      disabled={isUploadingThumbnail}
+                      onClick={handleThumbnailUpload}
+                    >
+                      {isUploadingThumbnail && (
+                        <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
+                      )}
+                      Upload
+                    </Button>
+                  </div>
                 </div>
               )}
             </div>
@@ -366,42 +389,47 @@ export function WorkspaceTab() {
           <Button
             onClick={saveWorkspace}
             disabled={isUpdating}
-            className="gap-2 min-w-32"
+            className="min-w-32"
           >
+            {isUpdating && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             {isUpdating ? 'Saving...' : 'Save Changes'}
           </Button>
         </div>
       )}
 
       {selectedWorkspace && isOwner && (
-        <Card className="border-destructive/40">
+        <Card className="border-destructive/30 bg-destructive/5">
           <CardHeader>
-            <CardTitle className="text-sm font-medium text-destructive">
+            <CardTitle className="text-base font-medium text-destructive">
               Danger Zone
             </CardTitle>
           </CardHeader>
-          <CardContent className="flex items-center justify-between">
+          <CardContent className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
               <p className="text-sm font-medium text-foreground">
-                Delete this workspace
+                Delete Workspace
               </p>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Permanently remove this workspace and all its data.
+              <p className="text-xs text-muted-foreground mt-1">
+                Permanently remove this workspace, including all associated
+                models and data.
               </p>
             </div>
             <AlertDialog>
               <AlertDialogTrigger asChild>
-                <Button variant="destructive" size="sm" disabled={isDeleting}>
+                <Button variant="destructive" disabled={isDeleting}>
                   {isDeleting ? 'Deleting...' : 'Delete Workspace'}
                 </Button>
               </AlertDialogTrigger>
               <AlertDialogContent>
                 <AlertDialogHeader>
-                  <AlertDialogTitle>Delete workspace?</AlertDialogTitle>
+                  <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
                   <AlertDialogDescription>
-                    This will permanently delete{' '}
-                    <strong>{selectedWorkspace.name}</strong> and all its data.
-                    This action cannot be undone.
+                    This action cannot be undone. This will permanently delete
+                    the{' '}
+                    <span className="font-semibold text-foreground">
+                      {selectedWorkspace.name}
+                    </span>{' '}
+                    workspace and all of its associated data.
                   </AlertDialogDescription>
                 </AlertDialogHeader>
                 <AlertDialogFooter>
@@ -422,6 +450,6 @@ export function WorkspaceTab() {
       {selectedWorkspaceId && (
         <WorkspaceMembers workspaceId={selectedWorkspaceId} />
       )}
-    </>
+    </div>
   )
 }

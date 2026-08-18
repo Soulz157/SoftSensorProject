@@ -87,7 +87,7 @@ export default function WorkspacesPage() {
             </p>
           </div>
           <Button
-            className="gap-2 bg-primary text-primary-foreground shadow-md hover:bg-primary/90"
+            className="cursor-pointer gap-2 bg-primary text-primary-foreground shadow-md hover:bg-primary/90"
             onClick={() => setIsOpen(true)}
           >
             <Plus className="h-4 w-4" />

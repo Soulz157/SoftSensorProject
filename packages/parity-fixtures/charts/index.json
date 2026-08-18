@@ -1,0 +1,57 @@
+{
+  "generatedBy": "apps/client/lib/__tests__/chart-parity-fixtures.test.ts",
+  "cases": [
+    {
+      "name": "histogram_two_tags_default",
+      "engine": "histogram"
+    },
+    {
+      "name": "histogram_four_tags_shared_domain",
+      "engine": "histogram"
+    },
+    {
+      "name": "histogram_custom_bin_and_kde_counts",
+      "engine": "histogram"
+    },
+    {
+      "name": "histogram_insufficient_tag_excluded",
+      "engine": "histogram"
+    },
+    {
+      "name": "histogram_all_tags_insufficient",
+      "engine": "histogram"
+    },
+    {
+      "name": "boxplot_four_tags_default",
+      "engine": "boxplot"
+    },
+    {
+      "name": "boxplot_outlier_cap_truncates",
+      "engine": "boxplot"
+    },
+    {
+      "name": "boxplot_all_zero_tag_qualifies",
+      "engine": "boxplot"
+    },
+    {
+      "name": "boxplot_zero_good_values_insufficient",
+      "engine": "boxplot"
+    },
+    {
+      "name": "boxplot_single_good_value",
+      "engine": "boxplot"
+    },
+    {
+      "name": "scatter_two_tags_default",
+      "engine": "scatter"
+    },
+    {
+      "name": "scatter_all_good_no_divergence",
+      "engine": "scatter"
+    },
+    {
+      "name": "scatter_perfect_line",
+      "engine": "scatter"
+    }
+  ]
+}
