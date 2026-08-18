@@ -3,17 +3,38 @@
 import { useId, useMemo, useRef, useState } from 'react'
 import { BarChart3, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import {
-  tagDistribution,
-  kdeEstimate,
-  densityToCount,
-} from '@/lib/data-quality'
 import { chartColorVar, resolveTagMeta } from '@/lib/mock-readings'
-import type { Dataset } from '@/lib/preprocessing'
+import type { DraftHistogramResult } from '@/services/dataset-draft'
 
+/**
+ * DS-LAKE-005B-D-T01. Consumes the SERVER histogram response — mean/median/
+ * KDE curve are computed by `histogram_service.py`, not this component. The
+ * `kde` points arrive already rescaled onto the count axis (density * n *
+ * binWidth); this component does no statistics of its own anymore, only
+ * axis/zoom/pan presentation. `Dataset` is deliberately NOT accepted here
+ * (DS-LAKE-005B-D-V05 type gate) — a caller cannot hand this component a
+ * bare full-frame dataset even by accident.
+ *
+ * `status` distinguishes empty states the old dataset-driven version
+ * couldn't tell apart:
+ *   - 'no-tags': `tags` is empty (e.g. `useCompareTags` hasn't seeded a
+ *     selection yet on first mount) — genuinely nothing to query. Caught
+ *     as a real bug in review: without this case, an empty `tags` on first
+ *     render fell through to 'ready' with no data, rendering "Not enough
+ *     values to build a histogram for " (blank) instead of the true reason.
+ *   - 'pending': no draft artifact exists yet to query (e.g. Step 3.1
+ *     before the first "Save Cleaned Tags" sync) — NOT the same as "queried
+ *     and found insufficient data". Rendering the insufficient-data message
+ *     here would misreport a wait as a real finding.
+ *   - 'loading': a request is in flight for the current artifact/tags.
+ *   - 'ready': `data` reflects the current artifact/tags (or the request
+ *     failed — `data` stays null and the insufficient-data message shows;
+ *     callers surface fetch errors separately, this component does not).
+ */
 interface Props {
-  dataset: Dataset
+  data: DraftHistogramResult | null
   tags: string[]
+  status: 'no-tags' | 'pending' | 'loading' | 'ready'
 }
 
 const W = 750
@@ -24,8 +45,6 @@ const PAD_TOP = 32
 const PAD_BOTTOM = 32
 const PLOT_W = W - PAD_LEFT - PAD_RIGHT
 const PLOT_H = H - PAD_TOP - PAD_BOTTOM
-const BIN_COUNT = 12
-const KDE_SAMPLES = 100
 const MAX_TAGS_FOR_INLINE_LABELS = 5
 const ZOOM_MIN = 1
 const ZOOM_MAX = 8
@@ -76,7 +95,7 @@ function computeLayerOpacities(layerCount: number) {
   return { fillOpacity, haloOpacity, strokeOpacity }
 }
 
-export function TagHistogramChart({ dataset, tags }: Props) {
+export function TagHistogramChart({ data, tags, status }: Props) {
   const [zoom, setZoom] = useState(1)
   const [yZoom, setYZoom] = useState(1)
   const [center, setCenter] = useState(0.5)
@@ -94,39 +113,16 @@ export function TagHistogramChart({ dataset, tags }: Props) {
   const clipId = useId()
   const dragRef = useRef<{ x: number } | null>(null)
 
-  const goodValuesByTag = useMemo(() => {
-    const map = new Map<string, number[]>()
-    for (const tag of tags) {
-      const values: number[] = []
-      for (const row of dataset.rows) {
-        const cell = row.cells[tag]
-        if (cell && cell.status === 'Good') values.push(cell.value)
-      }
-      map.set(tag, values)
-    }
-    return map
-  }, [dataset, tags])
+  const insufficientTags = data?.insufficient_tags ?? []
 
-  const { qualifyingTags, insufficientTags } = useMemo(() => {
-    const qualifying = tags.filter(
-      t => (goodValuesByTag.get(t)?.length ?? 0) >= 2,
-    )
-    const insufficient = tags.filter(t => !qualifying.includes(t))
-    return { qualifyingTags: qualifying, insufficientTags: insufficient }
-  }, [tags, goodValuesByTag])
-
+  // Unpadded domain, straight from the server response. Padding is applied
+  // client-side below — same 0.5x-range formula the server used internally
+  // to sample the KDE curve, so `paddedDomain` here reproduces the exact
+  // bounds `data.tags[].kde`'s x-values already span.
   const domain = useMemo(() => {
-    const allQualifyingValues = qualifyingTags.flatMap(
-      t => goodValuesByTag.get(t) ?? [],
-    )
-    if (allQualifyingValues.length < 2) return null
-    return {
-      min: Math.min(...allQualifyingValues),
-      max: Math.max(...allQualifyingValues),
-    }
-  }, [qualifyingTags, goodValuesByTag])
-
-  const binWidth = domain ? (domain.max - domain.min) / BIN_COUNT : 0
+    if (data?.domain_min == null || data?.domain_max == null) return null
+    return { min: data.domain_min, max: data.domain_max }
+  }, [data])
 
   const paddedDomain = useMemo(() => {
     if (!domain) return null
@@ -136,24 +132,57 @@ export function TagHistogramChart({ dataset, tags }: Props) {
   }, [domain])
 
   const layers = useMemo<TagLayer[]>(() => {
-    if (!domain || !paddedDomain || binWidth <= 0) return []
-    return qualifyingTags.map(tag => {
-      const values = goodValuesByTag.get(tag) ?? []
-      const { mean, median } = tagDistribution(dataset, tag)
-      const kde = kdeEstimate(values, paddedDomain, KDE_SAMPLES)
-      const kdeCounts = kde.map(p => ({
-        x: p.x,
-        y: densityToCount(p.y, values.length, binWidth),
-      }))
-      return {
-        tag,
-        color: chartColorVar(resolveTagMeta(tag).chartIndex),
-        mean,
-        median,
-        kdeCounts,
-      }
+    if (!data || !domain) return []
+    // Preserve `tags` (the caller's selection order) rather than
+    // `data.tags`' order — both agree in practice (the server iterates the
+    // request's own `tags` array), but keying off the prop keeps color
+    // assignment stable even if that ever changes server-side.
+    const byTag = new Map(data.tags.map(t => [t.tag, t]))
+    return tags.flatMap(tag => {
+      const t = byTag.get(tag)
+      if (!t) return []
+      return [
+        {
+          tag,
+          color: chartColorVar(resolveTagMeta(tag).chartIndex),
+          mean: t.mean,
+          median: t.median,
+          kdeCounts: t.kde,
+        },
+      ]
     })
-  }, [dataset, qualifyingTags, domain, paddedDomain, binWidth, goodValuesByTag])
+  }, [data, domain, tags])
+
+  if (status === 'no-tags') {
+    return (
+      <div className="flex h-80 flex-col items-center justify-center gap-2 text-center">
+        <BarChart3 className="h-8 w-8 text-muted-foreground/40" />
+        <p className="text-sm text-muted-foreground">
+          Select a tag to compare above.
+        </p>
+      </div>
+    )
+  }
+
+  if (status === 'pending') {
+    return (
+      <div className="flex h-80 flex-col items-center justify-center gap-2 text-center">
+        <BarChart3 className="h-8 w-8 text-muted-foreground/40" />
+        <p className="text-sm text-muted-foreground">
+          Save cleaned tags to build a histogram.
+        </p>
+      </div>
+    )
+  }
+
+  if (status === 'loading') {
+    return (
+      <div className="flex h-80 flex-col items-center justify-center gap-2 text-center">
+        <BarChart3 className="h-8 w-8 animate-pulse text-muted-foreground/40" />
+        <p className="text-sm text-muted-foreground">Loading histogram…</p>
+      </div>
+    )
+  }
 
   if (!domain || !paddedDomain || layers.length === 0) {
     return (

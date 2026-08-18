@@ -7,15 +7,17 @@ the browser has been the only implementation, so this reproduces its
 behaviour exactly — quirks included — and `packages/parity-fixtures`
 (DS-LAKE-006-T01) proves it.
 
-`formula` features are NOT ported here. `compileFormula`
-(feature-engineering.ts) is `mathjs.parse(expr).compile()` — bug-for-bug
-parity with mathjs's operator precedence, implicit multiplication, number
-coercion and error surface is not something a Python math parser reproduces,
-and adding one would mean a new dependency plus a new eval surface over
-user-authored strings for an approximation, not an equal. Deferred the same
-way `precleanse`'s cell-level `drop` was deferred in `cleaning_service.py`:
-`apply_fixture_case` raises `NotImplementedError` for it, so the fixture
-skips loudly rather than passing wrongly.
+`formula` features ARE ported, via `formula_service.py` — but only the
+subset of mathjs that actually reaches this module: numeric literals, alias
+identifiers (`c0`, `c1`, …, never real column names — `tokenizeColumns` in
+`apps/client/lib/formula.ts` rewrites those away before a formula config is
+ever built), `+ - * /`, parentheses, unary sign. `^` and function calls are
+deliberately excluded, not merely unimplemented — see `formula_service.py`'s
+own module docstring for why (JS/Python numeric divergence on `^`, and the
+fact that `toFeatureConfigs` never validates a preset's formula before
+sending it here, so this module cannot assume mathjs's full grammar was
+ever checked). Anything outside that subset raises `FeatureError` rather
+than being guessed at.
 
 Quirks that are load-bearing, each covered by a DS-LAKE-006-T01 fixture:
 
@@ -72,6 +74,7 @@ from intergrations.object_store import (
     tag_columns,
 )
 from services.cleaning_service import _median_sorted, _round_to
+from services.formula_service import compile_formula, eval_formula_row
 
 DEFAULT_SCALER = "minmax"
 
@@ -174,14 +177,6 @@ def _compute_feature_column(
             n, STATUS_GOOD, dtype="int8"
         )
 
-    if kind == "formula":
-        raise NotImplementedError(
-            "kind 'formula' is not implemented — compileFormula is "
-            "mathjs.parse(expr).compile(); porting it would mean a new "
-            "Python math-parser dependency and an approximation, not an "
-            "exact match. See feature_service.py's module docstring."
-        )
-
     # Every remaining kind reads from existing tag column(s), which may
     # themselves be a PREVIOUSLY-added feature column — `apply_features`
     # mutates the same frame across configs, so later configs see earlier
@@ -193,6 +188,37 @@ def _compute_feature_column(
             df[tag].to_numpy(dtype="float64"),
             df[status_column(tag)].to_numpy(dtype="int8"),
         )
+
+    if kind == "formula":
+        # Compiled ONCE per config, outside the row loop — mirrors
+        # `computeColumn`'s own `compiled = compileFormula(cfg.expr)` call
+        # site, which also runs once before its `rows.map`. Unlike the
+        # client, a compile failure here raises immediately (FeatureError)
+        # rather than silently emitting an all-Bad column — see
+        # formula_service.py's module docstring for why that divergence is
+        # deliberate, not an oversight.
+        compiled = compile_formula(cfg["expr"])
+        var_srcs = {
+            alias: source(tag) for alias, tag in cfg["vars"].items()
+        }
+        for i in range(n):
+            scope: dict[str, float] = {}
+            row_bad = False
+            for alias, src in var_srcs.items():
+                v = _good_value(src[0][i], src[1][i]) if src is not None else None
+                if v is None:
+                    row_bad = True
+                    break
+                scope[alias] = v
+            if row_bad:
+                values[i], statuses[i] = 0.0, STATUS_BAD
+                continue
+            result = eval_formula_row(compiled, scope)
+            if result is None:
+                values[i], statuses[i] = 0.0, STATUS_BAD
+            else:
+                values[i], statuses[i] = result, STATUS_GOOD
+        return values, statuses
 
     if kind == "lag":
         src = source(cfg["tag"])
@@ -211,7 +237,8 @@ def _compute_feature_column(
     if kind == "delta":
         src = source(cfg["tag"])
         for i in range(n):
-            cur = _good_value(src[0][i], src[1][i]) if src is not None else None
+            cur = _good_value(src[0][i], src[1][i]
+                              ) if src is not None else None
             prev = (
                 _good_value(src[0][i - 1], src[1][i - 1])
                 if src is not None and i > 0
@@ -290,7 +317,8 @@ def _compute_feature_column(
             collected: list[float] = []
             complete = True
             for j in range(start, i + 1):
-                v = _good_value(src[0][j], src[1][j]) if src is not None else None
+                v = _good_value(src[0][j], src[1][j]
+                                ) if src is not None else None
                 if v is None:
                     complete = False
                 else:
@@ -302,14 +330,17 @@ def _compute_feature_column(
             ):
                 values[i], statuses[i] = 0.0, STATUS_BAD
             else:
-                values[i], statuses[i] = _aggregate(collected, agg), STATUS_GOOD
+                values[i], statuses[i] = _aggregate(
+                    collected, agg), STATUS_GOOD
         return values, statuses
 
     raise FeatureError(f"Unknown feature kind {kind!r}")
 
 
 def apply_features(
-    df: pd.DataFrame, configs: Sequence[Mapping[str, Any]]
+    df: pd.DataFrame,
+    configs: Sequence[Mapping[str, Any]],
+    skipped: list[str] | None = None,
 ) -> pd.DataFrame:
     """Append one derived column per config, in order (`applyFeatures`).
 
@@ -317,12 +348,21 @@ def apply_features(
     `if (tags.includes(col)) continue`. Configs are applied against the
     SAME frame progressively, so a later config can read an earlier
     config's own derived column (DS-LAKE-006-T01's chaining fixture pins
-    this).
+    this). Semantics unchanged (still a silent, idempotent no-op — a
+    re-run of the same config list must not raise) — this was a deliberate
+    user decision, not a default: a preset can mint a `formula` feature
+    whose workbook-derived name collides with a real tag, so `skipped`
+    (when the caller passes a list) gets the collided column name appended,
+    letting `artifact_service.features` keep `feature_spec.json` from
+    claiming a feature that was never computed, without changing what
+    `apply_features` itself does.
     """
     out = df.copy()
     for cfg in configs:
         col = feature_column_name(cfg)
         if col in out.columns:
+            if skipped is not None:
+                skipped.append(col)
             continue
         values, statuses = _compute_feature_column(out, cfg)
         out[col] = values
@@ -390,7 +430,8 @@ def _scale_column(values: np.ndarray, method: str) -> np.ndarray:
             lo = float(finite.min())
             span = float(finite.max()) - lo
         return np.array(
-            [0.0 if span == 0 else _round_to((v - lo) / span, 3) for v in values]
+            [0.0 if span == 0 else _round_to(
+                (v - lo) / span, 3) for v in values]
         )
 
     if method == "standard":
@@ -398,7 +439,8 @@ def _scale_column(values: np.ndarray, method: str) -> np.ndarray:
         finite_in_order = [float(v) for v in values if np.isfinite(v)]
         mean, std = _welford_population_std(finite_in_order)
         return np.array(
-            [0.0 if std == 0 else _round_to((v - mean) / std, 3) for v in values]
+            [0.0 if std == 0 else _round_to(
+                (v - mean) / std, 3) for v in values]
         )
 
     if method == "robust":
@@ -407,14 +449,44 @@ def _scale_column(values: np.ndarray, method: str) -> np.ndarray:
         if k == 0:
             return values.copy()  # caller: skip entirely, do not force Good
         med = _median_sorted(finite_sorted)
-        upper = _median_sorted(finite_sorted[math.ceil(k / 2) :])
+        upper = _median_sorted(finite_sorted[math.ceil(k / 2):])
         lower = _median_sorted(finite_sorted[: math.floor(k / 2)])
         iqr = upper - lower
         return np.array(
-            [0.0 if iqr == 0 else _round_to((v - med) / iqr, 3) for v in values]
+            [0.0 if iqr == 0 else _round_to(
+                (v - med) / iqr, 3) for v in values]
         )
 
     raise FeatureError(f"Unknown scaler {method!r}")
+
+
+def assert_target_is_unscaled(target_y: str | None, scalers: dict[str, str]) -> None:
+    """The target must not appear in the scaler config at all.
+
+    Not "default it to none" — an explicit refusal. `dwScalerConfigsAtom`
+    documents "missing key defaults to min-max", so silence here means the
+    target gets min-max scaled, which is the exact opposite of the decision.
+    A scaled Y whose scaler params were not persisted makes every prediction
+    unrecoverable in engineering units.
+    """
+    if target_y and target_y in scalers:
+        raise ValueError(
+            f"'{target_y}' is the target — it must not be scaled. Remove it "
+            "from the scaler config; the target is stored in engineering "
+            "units so predictions come back directly comparable to the tag."
+        )
+
+
+def force_keep_target(selected: list[str] | None, target_y: str | None) -> list[str] | None:
+    """Keep the target through column selection.
+
+    A GOLD artifact whose target column was dropped is not a broken dataset —
+    it is an unusable one that looks fine, and only fails at model-fit time in
+    a different service.
+    """
+    if selected is None or not target_y:
+        return selected
+    return selected if target_y in selected else [*selected, target_y]
 
 
 def to_model_ready(

@@ -46,7 +46,8 @@ export class ArtifactCleanupAdminService {
   constructor(private readonly prisma: PrismaService) {}
 
   async run(options: { dryRun: boolean }): Promise<ArtifactCleanupRunResult> {
-    const protectedArtifactIds = await this.computeProtectedArtifactIds();
+    const { protectedArtifactIds, objectKeySharedWithFinalIds } =
+      await this.computeProtectedArtifactIds();
 
     const candidates = await this.prisma.datasetArtifact.findMany({
       where: { type: { not: 'FINAL' }, objectReclaimedAt: null },
@@ -94,10 +95,17 @@ export class ArtifactCleanupAdminService {
     }
 
     const eligibleIds = new Set(
-      selectCleanupEligibleArtifacts(candidates, protectedArtifactIds, drafts, {
-        draftRecoveryHours: env.CLEANUP_DRAFT_RECOVERY_HOURS,
-        intermediateRetentionHours: env.CLEANUP_INTERMEDIATE_RETENTION_HOURS,
-      }),
+      selectCleanupEligibleArtifacts(
+        candidates,
+        protectedArtifactIds,
+        drafts,
+        {
+          draftRecoveryHours: env.CLEANUP_DRAFT_RECOVERY_HOURS,
+          intermediateRetentionHours: env.CLEANUP_INTERMEDIATE_RETENTION_HOURS,
+        },
+        new Date(),
+        objectKeySharedWithFinalIds,
+      ),
     );
     const eligibleArtifacts = candidates.filter(
       (artifact) =>
@@ -220,16 +228,29 @@ export class ArtifactCleanupAdminService {
    * uses to build its lineage snapshot (dataset-draft.authorized.service.ts)
    * — chains are shallow (BRONZE→SILVER→GOLD→FINAL, at most 4 deep), so this
    * is a handful of point lookups per live version, not a full-table scan.
+   *
+   * Also returns `objectKeySharedWithFinalIds` — for each live version, the
+   * ONE artifact directly promoted to its FINAL (the first hop of the same
+   * walk, before `cursor` moves past it). That artifact's `objectKey` is
+   * FINAL's own objectKey too (`promoteDraftArtifactToFinalService` never
+   * copies bytes), so it needs its own type-agnostic hard pin in
+   * `selectCleanupEligibleArtifacts` — see that module's doc comment for the
+   * incident this fixes.
    */
-  private async computeProtectedArtifactIds(): Promise<Set<string>> {
+  private async computeProtectedArtifactIds(): Promise<{
+    protectedArtifactIds: Set<string>;
+    objectKeySharedWithFinalIds: Set<string>;
+  }> {
     const liveVersions = await this.prisma.datasetVersion.findMany({
       where: { status: { not: 'ARCHIVED' }, artifactId: { not: null } },
       select: { artifactId: true },
     });
 
     const protectedIds = new Set<string>();
+    const objectKeySharedWithFinalIds = new Set<string>();
     for (const version of liveVersions) {
       let cursor = version.artifactId;
+      let isDirectFinalParent = true;
       while (cursor && !protectedIds.has(cursor)) {
         protectedIds.add(cursor);
         const parent = await this.prisma.datasetArtifact.findUnique({
@@ -237,8 +258,15 @@ export class ArtifactCleanupAdminService {
           select: { parentArtifactId: true },
         });
         cursor = parent?.parentArtifactId ?? null;
+        // First hop from FINAL (version.artifactId) lands on the artifact
+        // FINAL was promoted from — exactly the one sharing FINAL's bytes.
+        // Every subsequent hop is a genuine ancestor, re-derivable as usual.
+        if (isDirectFinalParent && cursor) {
+          objectKeySharedWithFinalIds.add(cursor);
+        }
+        isDirectFinalParent = false;
       }
     }
-    return protectedIds;
+    return { protectedArtifactIds: protectedIds, objectKeySharedWithFinalIds };
   }
 }

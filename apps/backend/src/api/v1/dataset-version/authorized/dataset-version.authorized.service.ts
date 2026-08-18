@@ -9,10 +9,14 @@ import {
 } from '@/lib/python-client';
 import { artifactKey } from '@/lib/artifact-keys';
 import { buildSourceBlock } from '@/lib/source-block';
+import { isLegalTransition } from '@/lib/dataset-version-transitions';
 import { PreprocessingJobService } from './preprocessing-job.service';
+import { LoaderJobService } from '../../loader/loader-job.service';
 import {
   ArtifactStatsSchema,
+  CorrelationRequestDto,
   PythonColumnStatsSchema,
+  PythonCorrelationSchema,
   PythonMetadataSchema,
   PythonPreviewSchema,
   PythonRowsSchema,
@@ -20,6 +24,7 @@ import {
   type CreateRawVersionDto,
   type ListRowsDto,
   type PreviewVersionDto,
+  type PromoteVersionStatusDto,
   type StartCleanJobDto,
   type TagCatalogDto,
 } from './dto/dataset-version.authorized.dto';
@@ -47,6 +52,7 @@ export class DatasetVersionAuthorizedService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly jobs: PreprocessingJobService,
+    private readonly loaderJobs: LoaderJobService,
   ) {}
 
   // ── access ───────────────────────────────────────────────────────────────
@@ -217,6 +223,10 @@ export class DatasetVersionAuthorizedService {
         artifactId: item.artifactId,
         versionNumber: item.versionNumber,
         status: item.status,
+        // DS-LAKE-010-T04. Every other named registry field (status,
+        // semanticVersion, qualityScore, rowCount, featureCount, owner via
+        // createdBy) was already here — checksum was the one gap.
+        checksum: item.checksum,
         qualityScore: item.qualityScore,
         rowCount: item.rowCount,
         columnCount: item.columnCount,
@@ -230,6 +240,163 @@ export class DatasetVersionAuthorizedService {
             .filter(Boolean)
             .join(' ') || 'Unknown',
       })),
+    };
+  }
+
+  /**
+   * DS-LAKE-010-T01/T02/T05: moves a DatasetVersion's own `status` through
+   * the registry lifecycle. Pure metadata — no artifact, no MinIO call, no
+   * `postToPython` — the ONE write is `datasetVersion.update({data:
+   * {status}})`, nothing else on the row changes (AC0: objectKey/checksum
+   * byte-identical before/after, trivially true since neither field is
+   * touched).
+   *
+   * Same-state requests short-circuit to a no-write success BEFORE
+   * consulting `isLegalTransition` — see that module's own doc comment for
+   * why idempotency is handled here, not folded into the predicate.
+   */
+  async promoteVersionService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    versionId: string,
+    dto: PromoteVersionStatusDto,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+    const version = await this.prisma.datasetVersion.findFirst({
+      where: { id: versionId, datasetId },
+      select: { id: true, status: true },
+    });
+    if (!version) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Dataset version not found',
+        type: 'ERROR',
+      });
+    }
+
+    if (version.status === dto.status) {
+      return {
+        statusCode: 200,
+        message: `Version is already ${dto.status}`,
+        type: 'SUCCESS' as const,
+        data: { id: version.id, status: version.status },
+      };
+    }
+
+    if (!isLegalTransition(version.status, dto.status)) {
+      throw new AppException({
+        statusCode: 422,
+        message: `Illegal transition: ${version.status} -> ${dto.status}. Legal path is DRAFT -> VALIDATED -> ACTIVE -> DEPRECATED -> ARCHIVED, one step at a time.`,
+        type: 'ERROR',
+      });
+    }
+
+    // T05: at most one ACTIVE version per dataset. Refused, not
+    // auto-demoted — see dataset-version-transitions.ts's doc comment for
+    // why. Read-then-write inside a transaction narrows the race the same
+    // way DS-LAKE-009-T03's versionNumber allocation does (see that
+    // method's own comment on why the residual window is accepted, not
+    // eliminated, here for the same reason: no acceptance criterion or
+    // verification item requires surviving a genuinely concurrent double
+    // promote, and the smallest safe solution matches existing precedent
+    // rather than introducing a new locking primitive for it).
+    if (dto.status === 'ACTIVE') {
+      const updated = await this.prisma.$transaction(async (tx) => {
+        const otherActive = await tx.datasetVersion.findFirst({
+          where: { datasetId, status: 'ACTIVE', id: { not: versionId } },
+          select: { id: true },
+        });
+        if (otherActive) {
+          throw new AppException({
+            statusCode: 422,
+            message: `Dataset already has an ACTIVE version (${otherActive.id}). Demote it to DEPRECATED first.`,
+            type: 'ERROR',
+          });
+        }
+        return tx.datasetVersion.update({
+          where: { id: versionId },
+          data: { status: dto.status },
+          select: { id: true, status: true },
+        });
+      });
+      return {
+        statusCode: 200,
+        message: `Version promoted to ${updated.status}`,
+        type: 'SUCCESS' as const,
+        data: updated,
+      };
+    }
+
+    const updated = await this.prisma.datasetVersion.update({
+      where: { id: versionId },
+      data: { status: dto.status },
+      select: { id: true, status: true },
+    });
+    return {
+      statusCode: 200,
+      message: `Version promoted to ${updated.status}`,
+      type: 'SUCCESS' as const,
+      data: updated,
+    };
+  }
+
+  /**
+   * DS-LAKE-010-T03: returns the FROZEN lineage snapshot recorded at Save
+   * time (`DatasetVersion.lineage`, DS-LAKE-009), root-first (BRONZE
+   * first). Deliberately NOT a live `parentArtifactId` walk — DS-LAKE-009B
+   * stamps `objectReclaimedAt` on reclaimed intermediates and leaves the
+   * row, so a live walk could return artifacts whose bytes are already
+   * gone; the frozen snapshot is what a saved version actually promises.
+   *
+   * A version saved before this snapshot existed has `lineage: null` — it
+   * genuinely cannot resolve back to BRONZE (AC3), so this 404s rather than
+   * returning an empty array that would misrepresent "resolved to nothing"
+   * as success.
+   */
+  async getVersionLineageService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    versionId: string,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+    const version = await this.prisma.datasetVersion.findFirst({
+      where: { id: versionId, datasetId },
+      select: { id: true, lineage: true },
+    });
+    if (!version) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Dataset version not found',
+        type: 'ERROR',
+      });
+    }
+    if (!version.lineage) {
+      throw new AppException({
+        statusCode: 404,
+        message:
+          'No lineage snapshot recorded for this version (it predates the lineage feature).',
+        type: 'ERROR',
+      });
+    }
+
+    // The DB column is Prisma's generic JSON type; the shape actually
+    // written is frozen and known (dataset-draft.authorized.service.ts's
+    // `saveDraftAsDatasetService`, the ONLY writer of this column) — cast,
+    // not `any`, matching this codebase's write-side precedent for the
+    // same JSON column (`lineage: lineage` there is typed at the write,
+    // this is the equivalent at the read).
+    const lineage = version.lineage as unknown as Array<{
+      id: string;
+      type: string;
+      checksum: string;
+      objectKey: string;
+    }>;
+
+    return {
+      statusCode: 200,
+      message: 'Lineage fetched successfully',
+      type: 'SUCCESS' as const,
+      data: { versionId: version.id, lineage },
     };
   }
 
@@ -543,23 +710,85 @@ export class DatasetVersionAuthorizedService {
         type: 'ERROR',
       });
     }
+    try {
+      const result = PythonColumnStatsSchema.parse(
+        await postToPython(
+          '/v1/preprocess/column-stats',
+          { source_key: artifact.objectKey },
+          PYTHON_TIMEOUT.metadata,
+        ),
+      );
+      return {
+        statusCode: 200,
+        message: 'Column statistics fetched successfully',
+        type: 'SUCCESS' as const,
+        data: {
+          columnStatsKey: result.column_stats_key,
+          stats: result.stats,
+        },
+      };
+    } catch (err) {
+      if ((err as { statusCode?: number })?.statusCode === 422) {
+        throw new AppException({
+          statusCode: 404,
+          message:
+            'Column statistics sidecar is recorded but missing from storage.',
+          type: 'ERROR',
+        });
+      }
+      throw err;
+    }
+  }
 
-    const result = PythonColumnStatsSchema.parse(
+  /**
+   * DS-LAKE-005B-D-T05b (saved leg). Mirrors
+   * `dataset-draft.authorized.service.ts::getDraftArtifactCorrelationService`
+   * exactly — same Python call, same zod parse, response returned unmapped.
+   * The only difference is the access rule and the artifact lookup key
+   * (`datasetId` rather than `draftId`), the same divergence every other
+   * paired method in these two services already has.
+   */
+  async getArtifactCorrelationService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    artifactId: string,
+    dto: CorrelationRequestDto,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+    const artifact = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, datasetId },
+      select: { objectKey: true },
+    });
+    if (!artifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Artifact not found',
+        type: 'ERROR',
+      });
+    }
+
+    const correlation = PythonCorrelationSchema.parse(
       await postToPython(
-        '/v1/preprocess/column-stats',
-        { source_key: artifact.objectKey },
+        '/v1/preprocess/correlation',
+        {
+          source_key: artifact.objectKey,
+          operations: dto.operations,
+          precision: dto.precision,
+          tags: dto.tags,
+          ...(dto.sampleRows && { sample_rows: dto.sampleRows }),
+          ...(dto.startTime && { start_time: dto.startTime }),
+          ...(dto.endTime && { end_time: dto.endTime }),
+          ...(dto.topK && { top_k: dto.topK }),
+        },
         PYTHON_TIMEOUT.metadata,
       ),
     );
 
     return {
       statusCode: 200,
-      message: 'Column statistics fetched successfully',
+      message: 'Correlation matrix generated successfully',
       type: 'SUCCESS' as const,
-      data: {
-        columnStatsKey: result.column_stats_key,
-        stats: result.stats,
-      },
+      data: correlation,
     };
   }
 
@@ -696,6 +925,58 @@ export class DatasetVersionAuthorizedService {
         startedAt: job.startedAt?.toISOString() ?? null,
         finishedAt: job.finishedAt?.toISOString() ?? null,
       },
+    };
+  }
+
+  /**
+   * DS-LAKE-011-T05: job status endpoint so a future UI can report load
+   * progress. Field-by-field response (no spread of the raw Prisma row),
+   * same convention as every other endpoint in this file.
+   */
+  async getLoaderJobStatusService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    jobId: string,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+    const job = await this.loaderJobs.getStatus(datasetId, jobId);
+
+    return {
+      statusCode: 200,
+      message: 'Loader job fetched successfully',
+      type: 'SUCCESS' as const,
+      data: {
+        id: job.id,
+        datasetId: job.datasetId,
+        versionId: job.versionId,
+        status: job.status,
+        error: job.error,
+        attempts: job.attempts,
+        startedAt: job.startedAt?.toISOString() ?? null,
+        finishedAt: job.finishedAt?.toISOString() ?? null,
+      },
+    };
+  }
+
+  /** DS-LAKE-011-T04: independent retry, mirrors retryJobService's own
+   * access-check-then-delegate shape. */
+  async retryLoaderJobService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    jobId: string,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+    // Ownership check before delegating -- loaderJobs.retry() itself has no
+    // datasetId to scope against (mirrors retryJobService's own shape,
+    // which also re-fetches inside the service after this same check).
+    await this.loaderJobs.getStatus(datasetId, jobId);
+    const result = await this.loaderJobs.retry(jobId);
+
+    return {
+      statusCode: 202,
+      message: 'Retry accepted',
+      type: 'SUCCESS' as const,
+      data: result,
     };
   }
 

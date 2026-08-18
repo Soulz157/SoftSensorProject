@@ -21,6 +21,8 @@ import { DatasetVersionModule } from './api/v1/dataset-version/dataset-version.m
 import { DatasetDraftModule } from './api/v1/dataset-draft/dataset-draft.module';
 import { FeaturePresetModule } from './api/v1/feature-preset/feature.preset.module';
 import { ArtifactCleanupModule } from './api/v1/artifact-cleanup/artifact-cleanup.module';
+import { ModelRunModule } from './api/v1/model-run/model-run.module';
+import { TrainningContainerModule } from './api/v1/trainning-container/trainning-container.module';
 
 @Module({
   imports: [
@@ -60,6 +62,8 @@ import { ArtifactCleanupModule } from './api/v1/artifact-cleanup/artifact-cleanu
     DatasetDraftModule,
     FeaturePresetModule,
     ArtifactCleanupModule,
+    ModelRunModule,
+    TrainningContainerModule,
   ],
   providers: [
     {

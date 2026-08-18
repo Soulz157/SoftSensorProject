@@ -1,0 +1,61 @@
+{
+  "name": "histogram_all_tags_insufficient",
+  "engine": "histogram",
+  "input": {
+    "tags": ["TI-101", "VI-202"],
+    "rows": [
+      {
+        "timestamp": "2026-06-22T00:00:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 70,
+            "status": "Good"
+          },
+          "VI-202": {
+            "value": 4.5,
+            "status": "Bad"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:01:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 70,
+            "status": "Bad"
+          },
+          "VI-202": {
+            "value": 4.5,
+            "status": "Bad"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:02:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 70,
+            "status": "Bad"
+          },
+          "VI-202": {
+            "value": 4.5,
+            "status": "Bad"
+          }
+        }
+      }
+    ]
+  },
+  "config": {
+    "source_key": "fixture/chart-artifact.parquet",
+    "tags": ["TI-101", "VI-202"],
+    "bin_count": 12,
+    "kde_samples": 100
+  },
+  "expected": {
+    "source_key": "fixture/chart-artifact.parquet",
+    "domain_min": null,
+    "domain_max": null,
+    "tags": [],
+    "insufficient_tags": ["TI-101", "VI-202"]
+  }
+}

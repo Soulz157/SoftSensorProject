@@ -16,6 +16,7 @@
  */
 import type { CutoffOp } from '@/types/cutoff'
 import {
+  brandBoundedSample,
   cloneRow,
   type BoundedSample,
   type Cell,
@@ -497,6 +498,37 @@ function runPipeline(
 
 export function precleanse(raw: Dataset, cfg: PrecleanseConfig): Dataset {
   return { tags: raw.tags, rows: runPipeline(raw, cfg).rows }
+}
+
+/**
+ * DS-LAKE-005B-D-T07. `BoundedSample`-in/`BoundedSample`-out sibling of
+ * `precleanse` — the entry point `Step31EDA` now feeds `DataAnalysisCard`
+ * with, so a bare `Dataset` can no longer reach that card's `dataset` prop
+ * (mirrors `percentileBoundsBounded`'s own gate above: `BoundedSample
+ * extends Dataset`, so passing one in is always fine; the type error this
+ * exists to produce is a caller trying to pass a BARE `Dataset` instead).
+ *
+ * ADDITIVE, not a replacement — `precleanse` above keeps its `Dataset`
+ * signature because `data-cropping-chart.tsx` still holds `dwRawDatasetAtom`'s
+ * full frame and that migration is DS-LAKE-005B-D-T08's job, not this one.
+ * `Step31EDA` itself also keeps calling `precleanse` on the full `raw` frame
+ * for its own `emptied`/`nextDisabled` gating — that gate needs the TRUE
+ * row count, which a bounded sample cannot answer correctly (a rule could
+ * empty the first N rows of a sample while thousands of real rows survive
+ * elsewhere in the artifact). Only the value handed to `DataAnalysisCard`
+ * switches to this function.
+ *
+ * Crop/conditional/statistical rules only ever REMOVE rows or mutate cell
+ * values/status in place (see `runPipeline` above) — never add rows — so a
+ * bounded input always produces a bounded-or-smaller output; re-branding
+ * the result is safe, same argument `applyFeaturesBounded` makes in
+ * `feature-engineering.ts`.
+ */
+export function precleanseBounded(
+  sample: BoundedSample,
+  cfg: PrecleanseConfig,
+): BoundedSample {
+  return brandBoundedSample(precleanse(sample, cfg))
 }
 
 export function precleanseBreakdown(

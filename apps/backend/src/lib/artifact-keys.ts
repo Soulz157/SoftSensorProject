@@ -38,6 +38,13 @@ export const VALIDATION_REPORT_FILENAME = 'validation_report.json';
 export const PRESET_ROOT = 'feature-presets/';
 export const SDTA_FILENAME = 'sdta.json';
 
+export const RUN_UPLOAD_FILENAMES = [
+  'model.joblib',
+  'metrics.json',
+  'run_manifest.json',
+  'predictions.parquet',
+] as const;
+
 export function artifactPrefix(datasetId: string, artifactId: string): string {
   return `${datasetId}/artifacts/${artifactId}/`;
 }
@@ -99,4 +106,18 @@ export function tmpKey(datasetId: string, jobId: string, step: number): string {
 
 export function tmpPrefix(datasetId: string, jobId: string): string {
   return `${datasetId}/tmp/${jobId}/`;
+}
+
+export const MODEL_ROOT = 'models/';
+
+export function modelRunPrefix(modelId: string, runId: string): string {
+  return `${MODEL_ROOT}${modelId}/runs/${runId}/`;
+}
+
+export function modelRunKey(
+  modelId: string,
+  runId: string,
+  filename: string,
+): string {
+  return `${modelRunPrefix(modelId, runId)}${filename}`;
 }

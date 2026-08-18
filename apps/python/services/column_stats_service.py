@@ -44,6 +44,16 @@ repo before this task (grepped, confirmed empty):
   `numpy.percentile`'s default method) so a value computed here agrees with
   what the client would have computed over the same population — this
   parity is the point, not an implementation detail.
+* `median` / `std` — Good-only, same population as `mean`. `std` is the
+  SAMPLE standard deviation (ddof=1), the same estimator
+  `histogram_service._tag_distribution` uses — though not the same number,
+  since that one runs over a sampled window under live operations while this
+  runs over the committed frame. `None` below 2 Good cells rather than 0.0
+  (a single point has no defined spread; the histogram service's `0.0` there
+  is an unreachable branch, its tags being filtered to `insufficient_tags`
+  first). Added in DS-LAKE-005B-D-T09 — a sidecar written before that task
+  has neither key and is NOT backfilled on read, since that would open
+  `data.parquet` and defeat this file's entire premise.
 """
 
 from __future__ import annotations
@@ -64,24 +74,23 @@ def _good_values(frame: pd.DataFrame, tag: str) -> np.ndarray:
     return values[statuses == STATUS_GOOD]
 
 
-def _outlier_count(good: np.ndarray) -> int:
+def _outlier_count(ordered: np.ndarray) -> int:
     """Count of Good values outside the positional 1.5*IQR fence.
 
     Positional quartiles (`sorted[floor(n*q)]`), matching
     `_op_outlier_median` — `numpy.quantile` would move the fences and this
     count would then disagree with what `remove_outlier/iqr` actually flags.
     """
-    n = good.size
+    n = ordered.size
     if n < 4:
         # Fewer than 4 points makes a quartile split not meaningful; nothing
         # is flagged rather than a fence computed from 1-3 values.
         return 0
-    ordered = np.sort(good)
     q1 = float(ordered[math.floor(n * 0.25)])
     q3 = float(ordered[math.floor(n * 0.75)])
     iqr = q3 - q1
     lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
-    return int(np.sum((good < lo) | (good > hi)))
+    return int(np.sum((ordered < lo) | (ordered > hi)))
 
 
 #: The 8 percentile points the client's own value-clip presets need
@@ -89,6 +98,33 @@ def _outlier_count(good: np.ndarray) -> int:
 #: Computed once as flat points, not as pre-paired bounds, so a future
 #: preset added client-side needs no server change.
 PERCENTILE_POINTS: tuple[int, ...] = (1, 5, 10, 20, 80, 90, 95, 99)
+
+
+def _percentile_bounds_sorted(
+    ordered: np.ndarray, points: tuple[int, ...] = PERCENTILE_POINTS
+) -> dict[str, float] | None:
+    """`percentile_bounds` for a caller that ALREADY holds a sorted array.
+
+    Split out from the public wrapper below so `build_column_stats` can sort
+    once per tag and share that array with `_outlier_count` and the median —
+    at 8,000 tags the previous shape sorted the same values three times per
+    tag. PRECONDITION: `ordered` is ascending; passing an unsorted array
+    silently returns wrong percentiles rather than raising, which is exactly
+    why the public entry point stays and keeps sorting for everyone else.
+    """
+    n = ordered.size
+    if n == 0:
+        return None
+
+    def at(p: float) -> float:
+        idx = (n - 1) * p / 100
+        lo = math.floor(idx)
+        hi = math.ceil(idx)
+        if lo == hi:
+            return float(ordered[lo])
+        return float(ordered[lo] + (ordered[hi] - ordered[lo]) * (idx - lo))
+
+    return {f"p{p}": round(at(p), 6) for p in points}
 
 
 def percentile_bounds(
@@ -104,21 +140,11 @@ def percentile_bounds(
     agree" is not a guarantee, and a value-clip bound is exactly the kind of
     number where a client and server silently disagreeing would surface as a
     threshold the engineer set not being the one the pipeline applied.
+
+    Takes an UNSORTED array and sorts it. A caller that already has one
+    sorted wants `_percentile_bounds_sorted` instead.
     """
-    if good.size == 0:
-        return None
-    ordered = np.sort(good)
-    n = ordered.size
-
-    def at(p: float) -> float:
-        idx = (n - 1) * p / 100
-        lo = math.floor(idx)
-        hi = math.ceil(idx)
-        if lo == hi:
-            return float(ordered[lo])
-        return float(ordered[lo] + (ordered[hi] - ordered[lo]) * (idx - lo))
-
-    return {f"p{p}": round(at(p), 6) for p in points}
+    return _percentile_bounds_sorted(np.sort(good), points)
 
 
 def _operation_applies_to_tag(operation: CleaningOperation, tag: str) -> bool:
@@ -138,11 +164,22 @@ def build_column_stats(
 
     for tag in tags:
         good = _good_values(frame, tag)
+        ordered = np.sort(good)
+        n = ordered.size
+
         total = int(len(frame))
-        missing = int(total - good.size)
+        missing = int(total - n)
         null_pct = round(missing / total * 100, 4) if total else 0.0
         coverage = round(100.0 - null_pct, 4)
-        mean = float(good.mean()) if good.size else None
+
+        mean = float(good.mean()) if n else None
+        if n == 0:
+            median = None
+        elif n % 2:
+            median = float(ordered[n // 2])
+        else:
+            median = float((ordered[n // 2 - 1] + ordered[n // 2]) / 2)
+        std = float(good.std(ddof=1)) if n >= 2 else None
 
         drift = None
         if parent_frame is not None and tag in tag_columns(parent_frame) and mean is not None:
@@ -154,12 +191,14 @@ def build_column_stats(
             "tag": tag,
             "coverage": coverage,
             "null_pct": null_pct,
-            "outlier_count": _outlier_count(good),
-            "min": float(good.min()) if good.size else None,
-            "max": float(good.max()) if good.size else None,
+            "outlier_count": _outlier_count(ordered),
+            "min": float(ordered[0]) if n else None,
+            "max": float(ordered[-1]) if n else None,
             "mean": round(mean, 6) if mean is not None else None,
+            "median": round(median, 6) if median is not None else None,
+            "std": round(std, 6) if std is not None else None,
             "drift": drift,
-            "percentiles": percentile_bounds(good),
+            "percentiles": _percentile_bounds_sorted(ordered),
             "cleaned": any(
                 _operation_applies_to_tag(operation, tag) for operation in operations
             ),

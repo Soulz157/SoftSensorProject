@@ -45,11 +45,19 @@ export class CreateDraftDto extends createZodDto(CreateDraftSchema) {}
  * let a caller who bypasses the UI relax the gate in the same request that
  * asks Save to enforce it — exactly what "server-side, not only in the
  * UI" rules out.
+ *
+ * `tags` (DS-LAKE-005B-B-T01, Step 5 leg): now the SAME class of field as
+ * `rowCount`/`missingPct` above — optional, not required, because the
+ * server derives it from the FINAL artifact being adopted when the caller
+ * omits it (`getDraftArtifactMetadataService`'s own Python `/metadata`
+ * call, reused). Kept optional rather than removed so a caller that still
+ * sends an explicit list (legacy UI path, or a future non-UI caller with a
+ * real reason to override) is not rejected outright.
  */
 export const SaveDraftAsDatasetSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional(),
-  tags: z.array(z.string()).default([]),
+  tags: z.array(z.string()).optional(),
   pipelineConfig: z.record(z.string(), z.unknown()).default({}),
   fileUrl: z.string().nullish(),
 });

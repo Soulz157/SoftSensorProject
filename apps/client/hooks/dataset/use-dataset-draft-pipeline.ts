@@ -6,7 +6,7 @@ import {
   datasetDraftService,
   type DraftPreviewResult,
 } from '@/services/dataset-draft'
-import type { PreprocessingJobStatus } from '@/services/dataset-version'
+import { pollDraftJobUntilTerminal } from '@/lib/poll-preprocessing-job'
 import { toCleaningOperations } from '@/lib/cleaning-op-mapper'
 import { ensureDraftId, ensureBronzeArtifactId } from './dataset-draft-bronze'
 import type { CleaningStep } from '@/lib/preprocessing'
@@ -22,8 +22,6 @@ import {
   dwDraftSyncStateAtom,
 } from '@/store/dataset-studio'
 
-const TERMINAL: PreprocessingJobStatus[] = ['SUCCEEDED', 'FAILED', 'CANCELED']
-const POLL_MS = 1_200
 /**
  * T01 hybrid debounce. The scrubber reaching its final step is a discrete
  * event, not a keystroke stream, but a short debounce still collapses a rapid
@@ -138,27 +136,27 @@ export function useDatasetDraftPipeline(): UseDatasetDraftPipelineResult {
 
   const pollUntilTerminal = useCallback(
     async (id: string, job: string): Promise<void> => {
-      while (!cancelledRef.current) {
-        const res = await datasetDraftService.job(id, job)
-        if (TERMINAL.includes(res.data.status)) {
-          if (res.data.status === 'SUCCEEDED') {
-            setSyncState({ status: 'synced' })
-            // A completed clean is the source for the NEXT clean job, so it
-            // joins its own artifact chain rather than the bronze's.
-            if (res.data.resultArtifactId) {
-              setArtifactId(res.data.resultArtifactId)
-            }
-          } else if (res.data.status === 'FAILED') {
-            setSyncState({
-              status: 'error',
-              error: res.data.error ?? 'Cleaning job failed.',
-            })
-          } else {
-            setSyncState({ status: 'idle' })
-          }
-          return
-        }
-        await new Promise(resolve => setTimeout(resolve, POLL_MS))
+      // Shared with useDatasetGoldWarm's FEATURE-stage poll (module doc) —
+      // one poller, two callers with different terminal-state handling.
+      const result = await pollDraftJobUntilTerminal(
+        id,
+        job,
+        () => cancelledRef.current,
+      )
+      if (!result) return // cancelled — cancel() already reset syncState.
+
+      if (result.status === 'SUCCEEDED') {
+        setSyncState({ status: 'synced' })
+        // A completed clean is the source for the NEXT clean job, so it
+        // joins its own artifact chain rather than the bronze's.
+        if (result.resultArtifactId) setArtifactId(result.resultArtifactId)
+      } else if (result.status === 'FAILED') {
+        setSyncState({
+          status: 'error',
+          error: result.error ?? 'Cleaning job failed.',
+        })
+      } else {
+        setSyncState({ status: 'idle' })
       }
     },
     [setSyncState, setArtifactId],

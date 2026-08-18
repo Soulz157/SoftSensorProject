@@ -156,7 +156,14 @@ export const dwFeaturePreviewSampleAtom = atom<BoundedSample>(
 // NOT what Step 5 uses to compute what actually gets saved — that recompute
 // is separate and genuinely needs the full dataset (see step-5-review-
 // save.tsx), which this atom is not a substitute for.
-export const dwFeaturedDatasetAtom = atom<Dataset>(get =>
+//
+// Typed `BoundedSample`, not `Dataset` (DS-LAKE-005B-D-T07): the value
+// really is one now that `applyFeaturesBounded` re-brands its output — this
+// atom is `DataAnalysisCard`'s dataset feed at Step 4, and that prop is
+// itself `BoundedSample`-typed. `BoundedSample extends Dataset`, so this
+// widened type breaks nothing at either of the two existing `.tags`/`.rows`
+// readers.
+export const dwFeaturedDatasetAtom = atom<BoundedSample>(get =>
   applyFeaturesBounded(
     get(dwFeaturePreviewSampleAtom),
     get(dwFeatureConfigsAtom),
@@ -207,6 +214,13 @@ export const dwDraftArtifactIdAtom = atom<string | null>(null)
 // so Step 4 itself satisfies its own AC ("drives the transform server-side"),
 // not because Save reads it yet.
 export const dwDraftGoldArtifactIdAtom = atom<string | null>(null)
+// Surfaces `useDatasetGoldWarm`'s own failures (formula-kind 422s chief among
+// them — feature presets emit ONLY `kind: 'formula'`, unimplemented server-
+// side). Previously swallowed silently; now read by Step 4 and folded into
+// Step 5's `goldNotReady` message so "Waiting for feature engineering to
+// finish…" states the real reason instead of nothing. Cleared on a fresh
+// warm attempt, on success, and on wizard reset alongside the other two.
+export const dwGoldWarmErrorAtom = atom<string | null>(null)
 export interface DraftSyncState {
   status: 'idle' | 'syncing' | 'synced' | 'error'
   error?: string
@@ -379,6 +393,7 @@ export const resetDatasetWizardAtom = atom(null, (_get, set) => {
   set(dwDraftIdAtom, null)
   set(dwDraftArtifactIdAtom, null)
   set(dwDraftGoldArtifactIdAtom, null)
+  set(dwGoldWarmErrorAtom, null)
 })
 
 /**

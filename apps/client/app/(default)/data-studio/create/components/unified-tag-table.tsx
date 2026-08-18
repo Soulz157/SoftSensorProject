@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { featureColumnName } from '@/lib/feature-engineering'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import { toast } from 'sonner'
 import { format } from 'date-fns'
@@ -680,6 +681,21 @@ export function UnifiedTagTable({ nav }: Props) {
             // Step 4 is normally visited, but a preset should augment manually
             // authored features, not silently discard them.
             nav.setFeatureConfigs(prev => [...prev, ...featureConfigs])
+
+            // Mirrors Step 4's own `addFeature` two-part write
+            // (step-4-feature-engineering.tsx) — without this, a preset's
+            // equation columns are queued in featureConfigs but silently
+            // absent from selectedColumns once the user has touched Step 4's
+            // selection panel (selectedColumns !== null), so `select_columns`
+            // server-side drops exactly the columns the preset just added.
+            if (nav.selectedColumns !== null) {
+              const newCols = featureConfigs
+                .map(featureColumnName)
+                .filter(col => !nav.selectedColumns!.includes(col))
+              if (newCols.length > 0) {
+                nav.setSelectedColumns([...nav.selectedColumns, ...newCols])
+              }
+            }
 
             // Write through the selection atom, NOT nav.setSelectedTags: the
             // sync effect derives nav.selectedTags from selectedKeys and would

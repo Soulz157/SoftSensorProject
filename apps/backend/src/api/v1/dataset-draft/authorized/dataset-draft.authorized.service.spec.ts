@@ -1,7 +1,12 @@
 import { AppException } from '@softsensor/common';
-import { postBinaryToPython, postToPython } from '@/lib/python-client';
+import {
+  postBinaryToPython,
+  postToPython,
+  PYTHON_TIMEOUT,
+} from '@/lib/python-client';
 import { DatasetDraftAuthorizedService } from './dataset-draft.authorized.service';
 import type { PreprocessingJobService } from '../../dataset-version/authorized/preprocessing-job.service';
+import type { LoaderJobService } from '../../loader/loader-job.service';
 import {
   ListRowsSchema,
   TagCatalogSchema,
@@ -129,13 +134,20 @@ function firstCreateArg(mock: jest.Mock): { data: Record<string, unknown> } {
 
 function makeService(prisma: ReturnType<typeof buildPrisma>) {
   const jobs = { start: jest.fn(), cancel: jest.fn() };
+  const loaderJobs = {
+    enqueue: jest.fn().mockResolvedValue('loader-job-1'),
+    start: jest.fn(),
+    retry: jest.fn(),
+    getStatus: jest.fn(),
+  };
   const service = new DatasetDraftAuthorizedService(
     prisma as unknown as ConstructorParameters<
       typeof DatasetDraftAuthorizedService
     >[0],
     jobs as unknown as PreprocessingJobService,
+    loaderJobs as unknown as LoaderJobService,
   );
-  return { service, jobs };
+  return { service, jobs, loaderJobs };
 }
 
 const MATERIALIZE_DTO: CreateRawVersionDto = {
@@ -662,6 +674,19 @@ const ARTIFACT_CHAIN: Record<string, unknown> = {
   'gold-1': GOLD_ARTIFACT,
 };
 
+/** DS-LAKE-005B-B-T01 (Step 5 leg). `schemas.preprocess.MetadataResponse`
+ * shape — what `saveDraftAsDatasetService` parses via `PythonMetadataSchema`
+ * when `dto.tags` is omitted and it derives the real tag list from the
+ * FINAL artifact's own footer instead. */
+const PYTHON_METADATA_FOR_SAVE = {
+  source_key: FINAL_ARTIFACT.objectKey,
+  tags: ['TI-101', 'TI-102', 'FI-201'],
+  column_count: 7,
+  row_count: FINAL_ARTIFACT.rowCount,
+  start_time: '2026-01-01T00:00:00Z',
+  end_time: '2026-01-02T00:00:00Z',
+};
+
 describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T02)', () => {
   beforeEach(() => jest.clearAllMocks());
 
@@ -697,6 +722,7 @@ describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T
 
     await service.saveDraftAsDatasetService(USER, 'draft-1', {
       name: 'ds',
+      tags: ['TI-101'],
     } as never);
 
     expect(prisma.datasetArtifact.findFirst).toHaveBeenCalledWith(
@@ -731,6 +757,7 @@ describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T
 
     await service.saveDraftAsDatasetService(USER, 'draft-1', {
       name: 'My Dataset',
+      tags: ['TI-101'],
     } as never);
 
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
@@ -751,6 +778,37 @@ describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T
     });
   });
 
+  it('DS-LAKE-011-T03: enqueues the loader job AFTER the transaction resolves, with the committed dataset/version ids', async () => {
+    const prisma = chainedPrisma();
+    post.mockResolvedValueOnce(VALIDATION_REPORT);
+    const { service, loaderJobs } = makeService(prisma);
+
+    const callOrder: string[] = [];
+    prisma.$transaction.mockImplementationOnce(
+      async (fn: (tx: unknown) => unknown) => {
+        const result = await fn(prisma._tx);
+        callOrder.push('transaction');
+        return result;
+      },
+    );
+    loaderJobs.enqueue.mockImplementationOnce(async () => {
+      callOrder.push('enqueue');
+      return 'loader-job-1';
+    });
+
+    await service.saveDraftAsDatasetService(USER, 'draft-1', {
+      name: 'ds',
+      tags: ['TI-101'],
+    } as never);
+
+    expect(loaderJobs.enqueue).toHaveBeenCalledWith(
+      'dataset-1',
+      'version-1',
+      USER.id,
+    );
+    expect(callOrder).toEqual(['transaction', 'enqueue']);
+  });
+
   it('adopts the FINAL artifact by pointer: datasetId set, draftId untouched (still passed through create args)', async () => {
     const prisma = chainedPrisma();
     post.mockResolvedValueOnce(VALIDATION_REPORT);
@@ -758,6 +816,7 @@ describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T
 
     await service.saveDraftAsDatasetService(USER, 'draft-1', {
       name: 'ds',
+      tags: ['TI-101'],
     } as never);
 
     expect(prisma._tx.datasetArtifact.update).toHaveBeenCalledWith(
@@ -775,6 +834,7 @@ describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T
 
     await service.saveDraftAsDatasetService(USER, 'draft-1', {
       name: 'ds',
+      tags: ['TI-101'],
     } as never);
 
     expect(prisma._tx.dataset.update).toHaveBeenCalledWith(
@@ -801,6 +861,7 @@ describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T
 
     await service.saveDraftAsDatasetService(USER, 'draft-1', {
       name: 'ds',
+      tags: ['TI-101'],
     } as never);
 
     const versionArg = firstCreateArg(prisma._tx.datasetVersion.create);
@@ -829,6 +890,7 @@ describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T
 
     await service.saveDraftAsDatasetService(USER, 'draft-1', {
       name: 'ds',
+      tags: ['TI-101'],
     } as never);
 
     const datasetArg = firstCreateArg(prisma._tx.dataset.create);
@@ -865,6 +927,7 @@ describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T
 
     await service.saveDraftAsDatasetService(USER, 'draft-1', {
       name: 'ds',
+      tags: ['TI-101'],
     } as never);
 
     expect(prisma._tx.datasetVersion.findFirst).toHaveBeenCalledWith(
@@ -888,6 +951,7 @@ describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T
 
     await service.saveDraftAsDatasetService(USER, 'draft-1', {
       name: 'ds',
+      tags: ['TI-101'],
     } as never);
 
     const versionArg = firstCreateArg(prisma._tx.datasetVersion.create);
@@ -902,6 +966,7 @@ describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T
 
     await service.saveDraftAsDatasetService(USER, 'draft-1', {
       name: 'ds',
+      tags: ['TI-101'],
       expectedTags: ['should-be-ignored'],
       maxMissingPct: 100,
       maxOutlierFraction: 1,
@@ -926,6 +991,68 @@ describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T
 
     expect(prisma.$transaction).not.toHaveBeenCalled();
     expect(prisma._tx.dataset.create).not.toHaveBeenCalled();
+  });
+
+  // DS-LAKE-005B-B-T01 (Step 5 leg). `tags` joins rowCount/missingPct as an
+  // artifact-derived field: omitted by the caller, it comes from the FINAL
+  // artifact's own Python `/metadata` read, not a client-computed list.
+  it('derives tags from the FINAL artifact via Python /metadata when dto.tags is omitted', async () => {
+    const prisma = chainedPrisma();
+    post
+      .mockResolvedValueOnce(VALIDATION_REPORT)
+      .mockResolvedValueOnce(PYTHON_METADATA_FOR_SAVE);
+    const { service } = makeService(prisma);
+
+    await service.saveDraftAsDatasetService(USER, 'draft-1', {
+      name: 'ds',
+    } as never);
+
+    expect(post).toHaveBeenNthCalledWith(
+      2,
+      '/v1/preprocess/metadata',
+      { source_key: FINAL_ARTIFACT.objectKey },
+      PYTHON_TIMEOUT.metadata,
+    );
+    const datasetArg = firstCreateArg(prisma._tx.dataset.create);
+    expect(datasetArg.data.tags).toEqual(PYTHON_METADATA_FOR_SAVE.tags);
+  });
+
+  it('uses the caller-supplied tags list as-is when dto.tags is provided — no /metadata call', async () => {
+    const prisma = chainedPrisma();
+    post.mockResolvedValueOnce(VALIDATION_REPORT);
+    const { service } = makeService(prisma);
+
+    await service.saveDraftAsDatasetService(USER, 'draft-1', {
+      name: 'ds',
+      tags: ['TI-999'],
+    } as never);
+
+    expect(post).toHaveBeenCalledTimes(1);
+    const datasetArg = firstCreateArg(prisma._tx.dataset.create);
+    expect(datasetArg.data.tags).toEqual(['TI-999']);
+  });
+
+  it('runs the /metadata derivation call BEFORE opening $transaction, not inside it', async () => {
+    const prisma = chainedPrisma();
+    const callOrder: string[] = [];
+    post.mockImplementationOnce(async () => VALIDATION_REPORT);
+    post.mockImplementationOnce(async () => {
+      callOrder.push('metadata');
+      return PYTHON_METADATA_FOR_SAVE;
+    });
+    prisma.$transaction.mockImplementationOnce(
+      async (fn: (tx: unknown) => unknown) => {
+        callOrder.push('transaction');
+        return fn(prisma._tx);
+      },
+    );
+    const { service } = makeService(prisma);
+
+    await service.saveDraftAsDatasetService(USER, 'draft-1', {
+      name: 'ds',
+    } as never);
+
+    expect(callOrder).toEqual(['metadata', 'transaction']);
   });
 });
 

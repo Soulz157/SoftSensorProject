@@ -176,6 +176,73 @@ def test_applied_feature_columns_preserve_config_order_not_alphabetical() -> Non
     )
 
 
+# ── quirk: `formula` gates on Good status per source cell, same as every ──
+# ── other kind — `apply_features`, not the full `artifact_service.features` ──
+# ── pipeline, where `to_model_ready` scales every FINITE value and forces ──
+# ── status to Good regardless of origin, laundering exactly the Bad row  ──
+# ── this test exists to prove.                                            ──
+
+
+def test_formula_bad_input_yields_bad_output_at_the_apply_features_level() -> None:
+    import pandas as pd
+
+    from intergrations.object_store import STATUS_BAD, STATUS_GOOD
+
+    df = pd.DataFrame(
+        {
+            "timestamp": ["2026-06-22 00:00:00", "2026-06-22 00:01:00"],
+            "TI-101": [70.0, 71.0],
+            "TI-101__status": pd.array([STATUS_GOOD, STATUS_BAD], dtype="int8"),
+        }
+    )
+    configs = [
+        {
+            "id": "f1",
+            "kind": "formula",
+            "name": "c0_plus_1",
+            "expr": "c0 + 1",
+            "vars": {"c0": "TI-101"},
+        }
+    ]
+    out = apply_features(df, configs)
+
+    assert list(out["c0_plus_1"]) == [71.0, 0.0]
+    assert list(out["c0_plus_1__status"]) == [STATUS_GOOD, STATUS_BAD]
+
+
+def test_formula_rejects_pow_with_a_named_error() -> None:
+    """`^` is excluded deliberately, not merely unimplemented — see
+    `formula_service.py`'s own module docstring for why (JS/Python numeric
+    divergence on non-integer exponents)."""
+    from services.formula_service import FormulaError
+
+    df = frame(["TI-101"], [{"TI-101": 2.0}])
+    configs = [
+        {"id": "f1", "kind": "formula", "expr": "c0 ^ 2", "vars": {"c0": "TI-101"}}
+    ]
+    with pytest.raises(FormulaError, match=r"\^"):
+        apply_features(df, configs)
+
+
+def test_formula_rejects_a_function_call() -> None:
+    """No `validateFormula` call gates a preset's formula before it reaches
+    this module (`toFeatureConfigs` in `feature-preset.ts` never calls it) —
+    so a function call must be rejected here, not silently evaluated."""
+    from services.formula_service import FormulaError
+
+    df = frame(["TI-101"], [{"TI-101": 4.0}])
+    configs = [
+        {
+            "id": "f1",
+            "kind": "formula",
+            "expr": "sqrt(c0)",
+            "vars": {"c0": "TI-101"},
+        }
+    ]
+    with pytest.raises(FormulaError):
+        apply_features(df, configs)
+
+
 # ── V01: prove the gate bites — sabotage a real fixture's expected grid ───
 
 

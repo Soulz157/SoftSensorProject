@@ -7,6 +7,9 @@ just that `passed` flips to `False`.
 
 from __future__ import annotations
 
+import time
+
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -247,3 +250,50 @@ def test_quality_score_is_deterministic_for_the_same_report() -> None:
     second = vs.run_validation(df)["quality_score"]
     third = vs.run_validation(df)["quality_score"]
     assert first == second == third == 90.0  # 100 - statistical's weight (10)
+
+
+# ── V03: runtime headroom on a realistically large artifact ────────────────
+
+
+def test_run_validation_has_real_headroom_under_the_http_timeout_at_scale() -> None:
+    """DS-LAKE-007-V03: measure wall-clock time on a multi-million-row,
+    multi-tag artifact and record the headroom against
+    PYTHON_TIMEOUT.preprocess (300s, apps/backend/src/lib/python-client.ts) —
+    the only timeout NestJS's /validate call site actually applies.
+
+    2,000,000 rows x 20 tags = 40,000,000 cells, comparable in scale to a
+    multi-month, multi-tag PI export. Asserts wall time is well under the
+    real timeout with a wide margin (60s, one fifth), not just "did not
+    time out on this dev machine" — the margin is the actual claim V03 asks
+    to be recorded.
+    """
+    rows = 2_000_000
+    tags = [f"TI-{i:04d}" for i in range(20)]
+    timestamps = pd.date_range("2020-01-01", periods=rows, freq="min")
+    rng = np.random.default_rng(seed=42)
+
+    data: dict[str, object] = {"timestamp": timestamps}
+    for tag in tags:
+        data[tag] = rng.normal(50.0, 5.0, size=rows)
+        # ~5% Bad cells per tag — realistic, well under the 20% default
+        # missing-value threshold, so this measures the checks' real cost,
+        # not an early-exit path.
+        statuses = np.full(rows, STATUS_GOOD, dtype="int8")
+        bad_idx = rng.choice(rows, size=rows // 20, replace=False)
+        statuses[bad_idx] = STATUS_BAD
+        data[f"{tag}__status"] = pd.array(statuses, dtype="int8")
+
+    df = pd.DataFrame(data)
+
+    started = time.monotonic()
+    result = vs.run_validation(df)
+    elapsed = time.monotonic() - started
+
+    http_timeout_seconds = 300  # PYTHON_TIMEOUT.preprocess, python-client.ts
+    headroom_seconds = http_timeout_seconds - elapsed
+    assert result["status"] in ("PASS", "FAIL")  # ran to completion, not a crash
+    assert elapsed < http_timeout_seconds - 60, (
+        f"validation took {elapsed:.2f}s against a {http_timeout_seconds}s "
+        f"HTTP timeout — only {headroom_seconds:.2f}s headroom, under the "
+        "60s margin this test requires."
+    )

@@ -6,6 +6,12 @@ import {
   type Dataset,
   type DataRow,
 } from '@/lib/preprocessing'
+import { column } from 'mathjs'
+import {
+  DraftArtifactMetadata,
+  DraftCorrelationResult,
+  DraftRowsPage,
+} from './dataset-draft'
 
 /**
  * Dataset versions and preprocessing jobs.
@@ -51,6 +57,27 @@ export interface DatasetVersion {
   /** ISO 8601 */
   createdAt: string
   createdBy: string
+}
+
+export interface ArtifactTagColumnStats {
+  tag: string
+  coverage: number
+  null_pct: number
+  outlier_count: number
+  min?: number | null
+  max?: number | null
+  mean?: number | null
+  median?: number | null
+  std?: number | null
+  drift?: number | null
+  percentiles?: Record<string, number> | null
+  cleaned: boolean
+}
+
+export interface ArtifactColumnStatsResult {
+  columnStatsKey: string
+  /** Keyed by tag name — O(1) lookup, single page by design. */
+  stats: Record<string, ArtifactTagColumnStats>
 }
 
 export interface PreprocessingJob {
@@ -107,10 +134,95 @@ export interface CleaningOperationInput {
 
 const base = (datasetId: string) =>
   `/api/v1/authorized/dataset/${encodeURIComponent(datasetId)}`
+export interface ArtifactTagColumnStats {
+  tag: string
+  coverage: number
+  null_pct: number
+  outlier_count: number
+  min?: number | null
+  max?: number | null
+  mean?: number | null
+  median?: number | null
+  std?: number | null
+  drift?: number | null
+  percentiles?: Record<string, number> | null
+  cleaned: boolean
+}
+
+export interface ArtifactColumnStatsResult {
+  columnStatsKey: string
+  /** Keyed by tag name — O(1) lookup, single page by design. */
+  stats: Record<string, ArtifactTagColumnStats>
+}
+
+export const datasetArtifactService = {
+  metadata: (
+    datasetId: string,
+    artifactId: string,
+  ): Promise<ApiResponse<DraftArtifactMetadata>> =>
+    fetchClient(`${artifact(datasetId, artifactId)}/metadata`, {
+      method: 'GET',
+    }),
+
+  columnStats: (
+    datasetId: string,
+    artifactId: string,
+  ): Promise<ApiResponse<ArtifactColumnStatsResult>> =>
+    fetchClient(`${artifact(datasetId, artifactId)}/column-stats`, {
+      method: 'GET',
+    }),
+
+  /** `tags` is optional but NOT decorative: DS-LAKE-012 found the omission
+   * live — with no `tags`, the server's `ListRowsSchema` treats it as "every
+   * tag" (see that schema's own doc comment) and returns every column's
+   * cells for the requested row window, which on an 8,000-tag artifact is
+   * tens of megabytes for a 200-row preview. Every caller rendering a bounded
+   * preview table MUST pass the tag list it actually displays. */
+  rows: (
+    datasetId: string,
+    artifactId: string,
+    params: { offset: number; limit: number; tags?: string[] },
+  ): Promise<ApiResponse<DraftRowsPage>> =>
+    fetchClient(
+      `${artifact(datasetId, artifactId)}/rows` +
+        `?offset=${params.offset}&limit=${params.limit}` +
+        (params.tags?.length
+          ? `&tags=${params.tags.map(encodeURIComponent).join(',')}`
+          : ''),
+      { method: 'GET' },
+    ),
+
+  /** `operations` is sent as `[]` and is not a parameter: see this object's
+   * own doc comment. `tags` stays the CANDIDATE universe — the server
+   * resolves it down and echoes back what it resolved. */
+  correlation: (
+    datasetId: string,
+    artifactId: string,
+    body: { tags: string[]; topK?: number },
+    signal?: AbortSignal,
+  ): Promise<ApiResponse<DraftCorrelationResult>> =>
+    fetchClient(`${artifact(datasetId, artifactId)}/correlation`, {
+      method: 'POST',
+      body: JSON.stringify({ operations: [], ...body }),
+      signal,
+    }),
+}
 
 export const datasetVersionService = {
   list: (datasetId: string): Promise<ApiResponse<DatasetVersion[]>> =>
     fetchClient(`${base(datasetId)}/versions`, { method: 'GET' }),
+  columnStats: (
+    datasetId: string,
+    versionId: string,
+    artifactId: string,
+    signal?: AbortSignal,
+  ): Promise<ApiResponse<ArtifactColumnStatsResult>> =>
+    fetchClient(
+      `${base(datasetId)}/versions/${encodeURIComponent(
+        versionId,
+      )}/artifacts/${encodeURIComponent(artifactId)}/column-stats`,
+      { method: 'GET', signal },
+    ),
 
   /** Materialise V1 from a saved source. Runs inline; can take minutes. */
   createRaw: (
@@ -194,6 +306,10 @@ export const datasetVersionService = {
       method: 'POST',
     }),
 }
+
+const one = (datasetId: string) => `${base}/${encodeURIComponent(datasetId)}`
+const artifact = (datasetId: string, artifactId: string) =>
+  `${one(datasetId)}/artifacts/${encodeURIComponent(artifactId)}`
 
 /**
  * Page a whole version into the wide `Dataset` the wizard renders.

@@ -75,6 +75,7 @@ model User {
   datasetDrafts       DatasetDraft[]
   preprocessingJobs   PreprocessingJob[]
   presetImports       FeaturePresetImport[]
+  loaderJobs          LoaderJob[]
 }
 
 model Account {
@@ -93,24 +94,24 @@ model Account {
 }
 
 model Workspace {
-  id           String            @id @default(uuid())
-  ownerId      String
-  owner        User              @relation(fields: [ownerId], references: [id])
-  name         String
-  icon         String
-  color        String
-  description  String?
-  thumbnailUrl String?
-  createdAt    DateTime          @default(now())
-  updatedAt    DateTime          @updatedAt
-  deletedAt    DateTime?
-  logs         WorkspaceLog[]
-  members      WorkspaceMember[]
-  nodes        Nodes[]
-  models       Model[]
-  edges        Edge[]
-  plans        WorkspacePlant[]
-  datasets     Dataset[]
+  id            String                @id @default(uuid())
+  ownerId       String
+  owner         User                  @relation(fields: [ownerId], references: [id])
+  name          String
+  icon          String
+  color         String
+  description   String?
+  thumbnailUrl  String?
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+  deletedAt     DateTime?
+  logs          WorkspaceLog[]
+  members       WorkspaceMember[]
+  nodes         Nodes[]
+  models        Model[]
+  edges         Edge[]
+  plans         WorkspacePlant[]
+  datasets      Dataset[]
   datasetDrafts DatasetDraft[]
   presetImports FeaturePresetImport[]
 
@@ -164,17 +165,18 @@ model WorkspaceMember {
 }
 
 model Model {
-  id          String    @id @default(uuid())
-  workspaceId String
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  name        String
-  data        Json?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  nodes       Nodes?    @relation(fields: [nodesId], references: [id])
-  nodesId     String?
-  dataset     Dataset?  @relation(fields: [datasetId], references: [id])
-  datasetId   String?
+  id                String             @id @default(uuid())
+  workspaceId       String
+  workspace         Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  name              String
+  data              Json?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  nodes             Nodes?             @relation(fields: [nodesId], references: [id])
+  nodesId           String?
+  dataset           Dataset?           @relation(fields: [datasetId], references: [id])
+  datasetId         String?
+  modelTrainingRuns ModelTrainingRun[]
 
   @@unique([workspaceId, name])
   @@index([workspaceId])
@@ -269,19 +271,19 @@ model PasswordResetToken {
 }
 
 model DataSource {
-  id       String @id @default(uuid())
-  name     String
-  type     String
-  host     String @default("")
-  username String @default("")
-  secretCiphertext String @default("")
-  dbName           String @default("")
-  status           String @default("connected")
-  config      Json?
-  createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
-  createdById String
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id               String   @id @default(uuid())
+  name             String
+  type             String
+  host             String   @default("")
+  username         String   @default("")
+  secretCiphertext String   @default("")
+  dbName           String   @default("")
+  status           String   @default("connected")
+  config           Json?
+  createdBy        User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  createdById      String
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
   @@index([createdById])
 }
@@ -304,9 +306,10 @@ model Dataset {
   updatedAt      DateTime  @updatedAt
   models         Model[]
 
-  versions  DatasetVersion[]
-  jobs      PreprocessingJob[]
-  artifacts DatasetArtifact[]
+  versions   DatasetVersion[]
+  jobs       PreprocessingJob[]
+  artifacts  DatasetArtifact[]
+  loaderJobs LoaderJob[]
 
   /// Version the wizard hydrates from. Null for every pre-existing dataset,
   /// which is why the client must keep a fallback until they are backfilled.
@@ -413,6 +416,17 @@ enum PreprocessingJobStatus {
   CANCELED
 }
 
+/// DS-LAKE-011: mirrors PreprocessingJobStatus exactly, so the existing
+/// runner patterns (boot sweep, retry, attempt counting) transfer without
+/// inventing a second state machine.
+enum LoaderJobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELED
+}
+
 /// The Dataset Registry row. Created ONLY by Save Dataset (DS-LAKE-009) — see
 /// ADR-DS-LAKE-005B-B-006 for why this points to an already-completed FINAL
 /// artifact instead of owning its own bytes.
@@ -429,10 +443,10 @@ enum PreprocessingJobStatus {
 /// Creating one of these is NOT a Model commit: CLAUDE.md §8 reserves that for
 /// Save Model, and nothing here touches the Model table.
 model DatasetVersion {
-  id            String  @id @default(uuid())
-  datasetId     String
-  dataset       Dataset @relation(fields: [datasetId], references: [id], onDelete: Cascade)
-  versionNumber Int
+  id              String  @id @default(uuid())
+  datasetId       String
+  dataset         Dataset @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  versionNumber   Int
   /// Display label, e.g. "1.0.0" — a human-facing tag, distinct from
   /// `versionNumber`'s raw sequence. DS-LAKE-009-T03 keys concurrency-safe
   /// allocation off `versionNumber`, never this field.
@@ -452,14 +466,14 @@ model DatasetVersion {
   schemaVersion Int     @default(1)
 
   /// LOGICAL tag count — excludes `timestamp` and every `__status` sidecar.
-  columnCount  Int   @default(0)
-  featureCount Int   @default(0)
-  rowCount     Int   @default(0)
-  missingPct   Float @default(0)
+  columnCount  Int    @default(0)
+  featureCount Int    @default(0)
+  rowCount     Int    @default(0)
+  missingPct   Float  @default(0)
   /// 64-bit on purpose, matching DatasetArtifact.sizeBytes (DS-LAKE-002-T02)
   /// — the old 32-bit Int here topped out around 2.1 GB, and an 8,000-tag
   /// artifact already reaches it.
-  sizeBytes BigInt @default(0)
+  sizeBytes    BigInt @default(0)
 
   /// DS-LAKE-007's quality score (0-100) at Save time, frozen — re-running
   /// validation later never changes what a saved version already promised.
@@ -480,6 +494,7 @@ model DatasetVersion {
 
   jobsAsSource PreprocessingJob[] @relation("JobSource")
   jobsAsResult PreprocessingJob[] @relation("JobResult")
+  loaderJobs   LoaderJob[]
 
   /// Back-relation for Dataset.currentVersionId, which finally has a real FK.
   currentOf Dataset[] @relation("DatasetCurrentVersion")
@@ -505,7 +520,7 @@ model DatasetArtifact {
   /// true. An artifact starts owned by a draft and is ADOPTED (datasetId set,
   /// draftId kept for traceability) at Save — never copied, never rewritten.
   datasetId String?
-  dataset   Dataset? @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  dataset   Dataset?      @relation(fields: [datasetId], references: [id], onDelete: Cascade)
   draftId   String?
   draft     DatasetDraft? @relation(fields: [draftId], references: [id], onDelete: Cascade)
 
@@ -601,7 +616,7 @@ model PreprocessingJob {
   /// at the column level is what lets a job exist before any Dataset does; the
   /// CHECK is what forbids a job owned by neither.
   datasetId String?
-  dataset   Dataset? @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  dataset   Dataset?      @relation(fields: [datasetId], references: [id], onDelete: Cascade)
   draftId   String?
   draft     DatasetDraft? @relation(fields: [draftId], references: [id], onDelete: Cascade)
 
@@ -649,6 +664,45 @@ model PreprocessingJob {
   @@index([status])
 }
 
+/// DS-LAKE-011: the asynchronous hand-off from a committed DatasetVersion to
+/// a serving-layer sink. Created ONLY after Save Dataset (DS-LAKE-009)
+/// commits, OUTSIDE that transaction — a loader failure never fails or
+/// rolls back Save (AC0). `datasetId`/`versionId` are both required (unlike
+/// PreprocessingJob's nullable draft/dataset pair): a loader has nothing to
+/// load until a DatasetVersion exists, so there is no draft-time case to
+/// support here.
+///
+/// Scoped to the seam only — the TimescaleDB sink itself is deferred
+/// (CLAUDE.md §3: new infrastructure not in this repo). See the `LoaderSink`
+/// interface (apps/backend/src/api/v1/loader) for the single default,
+/// non-Timescale implementation this seam ships with today.
+model LoaderJob {
+  id String @id @default(uuid())
+
+  datasetId String
+  dataset   Dataset        @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  versionId String
+  version   DatasetVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+
+  status   LoaderJobStatus @default(QUEUED)
+  error    String?
+  /// Mirrors PreprocessingJob.attempts exactly: incremented by the runner
+  /// on start, carried forward (not reset to 0) by retry.
+  attempts Int             @default(0)
+
+  startedAt  DateTime?
+  finishedAt DateTime?
+
+  createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([datasetId])
+  @@index([versionId])
+  @@index([status])
+}
+
 /// One soft-sensor workbook upload.
 ///
 /// Groups the presets it produced, which is what makes a re-upload a NEW import
@@ -663,7 +717,7 @@ model FeaturePresetImport {
   workspaceId String
   workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
-  fileName String
+  fileName     String
   /// Object prefix every document in this import lives under, e.g.
   /// "feature-presets/{workspaceId}/{importId}/". Built by NestJS — the Python
   /// service only ever appends a filename to it. Mirrored in
@@ -671,9 +725,9 @@ model FeaturePresetImport {
   objectPrefix String
 
   /// Sheets in the workbook, including the ones that produced nothing.
-  sheetCount Int @default(0)
+  sheetCount    Int      @default(0)
   /// Presets written for this import.
-  presetCount Int @default(0)
+  presetCount   Int      @default(0)
   /// Sheets with no `No | Y | X` header. An SD&TA sheet is NOT listed here —
   /// it is recognised and parsed into sdtaKey, not skipped.
   skippedSheets String[]
@@ -698,16 +752,16 @@ model FeaturePresetImport {
 /// into Postgres would create a second source of truth that can drift from the
 /// object, and the object is the one the wizard actually applies.
 model FeaturePreset {
-  id       String              @id @default(uuid())
-  importId String
-  import   FeaturePresetImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+  id          String              @id @default(uuid())
+  importId    String
+  import      FeaturePresetImport @relation(fields: [importId], references: [id], onDelete: Cascade)
   /// Denormalised from the import so a workspace-scoped list needs no join.
   workspaceId String
 
   /// Slug of sheet + config, e.g. "s-204-no1". Unique per IMPORT, not per
   /// workspace — the same unit and config legitimately reappear in every
   /// re-upload, and each upload's copy points at its own object.
-  presetId String
+  presetId      String
   /// Process unit. One sheet per unit in the source workbook.
   unit          String
   configNo      Int
@@ -715,19 +769,19 @@ model FeaturePreset {
   samplingPoint String?
   /// The lab measurement this preset predicts. Always a `.lab` tag, which is
   /// why it cannot be required to exist in a PI tag list.
-  targetY String
+  targetY       String
 
-  objectKey     String
-  equationCount Int    @default(0)
-  rawTagCount   Int    @default(0)
+  objectKey        String
+  equationCount    Int      @default(0)
+  rawTagCount      Int      @default(0)
   /// Deduped union across every feature. Held here so the picker can show
   /// readiness against a dataset without fetching the document.
   requiredBaseTags String[]
   /// True when the sheet declared a target but listed no X rows. Four of the
   /// nine presets in the reference workbook are like this, so the UI has to be
   /// able to show them as unusable rather than pretend they do not exist.
-  incomplete Boolean  @default(false)
-  createdAt  DateTime @default(now())
+  incomplete       Boolean  @default(false)
+  createdAt        DateTime @default(now())
 
   @@unique([importId, presetId])
   @@index([workspaceId])
@@ -746,4 +800,94 @@ model Edge {
 
   @@unique([workspaceId, sourceId, targetId, sourceHandle, targetHandle])
   @@index([workspaceId])
+}
+
+enum ModelRunStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELED
+}
+
+model ModelTrainingRun {
+  id      String @id @default(uuid())
+  modelId String
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  /// For tracing back to Data Studio only. NOT how the container resolves
+  /// data: a dataset is editable (see initDatasetWizardForEditAtom), so an
+  /// id-only reference would silently retrain on different rows later.
+  datasetId        String
+  goldArtifactId   String
+  /// The key actually read. Pinned so a layout change cannot redirect a
+  /// replay of this run to a different object.
+  goldObjectKey    String
+  /// sha256 of data.parquet at submit time. The container re-hashes what it
+  /// downloads and fails on mismatch — this is what makes the run
+  /// reproducible rather than merely repeatable.
+  artifactChecksum String
+  featureSpecKey   String?
+
+  /// One run predicts one Y. N targets on one artifact = N runs.
+  targetY String
+
+  algorithm       String
+  hyperparameters Json
+  /// Recorded, never re-derived. A run whose seed was implicit cannot be
+  /// reproduced even with identical bytes.
+  seed            Int
+
+  /// Includes the COMPUTED cut_timestamp, not just the ratio — see the
+  /// container's step 8. A ratio alone resolves differently against a
+  /// different row count.
+  splitSpec Json
+
+  /// Digest, never a tag. `:latest` makes the image a moving target and the
+  /// run unreproducible by construction.
+  imageDigest String
+  containerId String?
+
+  /// sha256 of the run token, never the token. A leaked table dump must not
+  /// yield working credentials.
+  tokenHash      String
+  /// Callbacks are refused past this even if the token is right — a
+  /// container that hangs must not keep a live credential indefinitely.
+  tokenExpiresAt DateTime
+
+  status        ModelRunStatus @default(QUEUED)
+  /// Present only on FAILED. Written from the container's own report or from
+  /// a non-zero exit code the runner observed.
+  failureReason String?
+
+  modelKey       String?
+  metricsKey     String?
+  manifestKey    String?
+  predictionsKey String?
+  /// Denormalised from metrics.json for list/sort without an object read —
+  /// the same reasoning DatasetArtifact uses for rowCount and missingPct.
+  metrics        Json?
+
+  createdAt  DateTime  @default(now())
+  startedAt  DateTime?
+  finishedAt DateTime?
+
+  logs ModelTrainingRunLog[]
+
+  @@index([modelId, createdAt])
+  @@index([status])
+}
+
+/// Per-run, not per-model: concurrent runs on one model would otherwise
+/// interleave into one unreadable stream.
+model ModelTrainingRunLog {
+  id    String           @id @default(uuid())
+  runId String
+  run   ModelTrainingRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  level     String   @default("info")
+  message   String
+  createdAt DateTime @default(now())
+
+  @@index([runId, createdAt])
 }

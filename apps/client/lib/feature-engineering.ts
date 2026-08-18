@@ -11,7 +11,13 @@
  * Column naming: `TI-101__lag3`, `TI-101__roll5_mean`, `A__over__B`,
  * `TI-101__delta`. Double-underscore keeps names free of `.` (recharts-safe).
  */
-import type { BoundedSample, Cell, DataRow, Dataset } from '@/lib/preprocessing'
+import {
+  brandBoundedSample,
+  type BoundedSample,
+  type Cell,
+  type DataRow,
+  type Dataset,
+} from '@/lib/preprocessing'
 import { compileFormula } from './formula'
 
 export type RollingAgg = 'mean' | 'std' | 'min' | 'max' | 'ROC'
@@ -251,9 +257,21 @@ export function applyFeatures(ds: Dataset, configs: FeatureConfig[]): Dataset {
  * DS-LAKE-006-AC5 / DS-LAKE-005B-B-T04: bounded-input entry point for
  * `applyFeatures`, mirroring `precleanse.ts::percentileBoundsBounded`
  * exactly — ADDITIVE, not a replacement. `applyFeatures` above keeps its
- * `Dataset` signature; every caller that still only holds a full frame
- * (e.g. `step-5-review-save.tsx`'s save-time recompute, which genuinely
- * needs the complete dataset, not a preview) is unaffected.
+ * `Dataset` signature; every caller that still only holds a full frame is
+ * unaffected.
+ *
+ * CORRECTION (DS-LAKE-005B-B-T01, Step 5 leg): this comment previously named
+ * `step-5-review-save.tsx`'s save-time recompute as an example of a caller
+ * that "genuinely needs the complete dataset" — checked directly, that
+ * claim no longer holds for the draft/Save path (the one DS-LAKE-009's Save
+ * actually persists from). Once Save started adopting the FINAL artifact by
+ * pointer, `finalDataset.tags` was the only value from that recompute to
+ * survive into the request; T01 closed that gap by deriving `tags`
+ * server-side instead, and the recompute no longer runs at all on that path
+ * (early-returns empty). It still runs, and still genuinely needs the full
+ * frame, on the legacy branch (edit mode / CSV-only / create mode with no
+ * draft) — same discipline as the DS-LAKE-006-T06 and DS-LAKE-005B-C-T03
+ * comment corrections: cite the current code, not the original assumption.
  *
  * This exists so Step 4's LIVE LOCAL PREVIEW (`dwFeaturedDatasetAtom`) can
  * be retyped to require a `BoundedSample` — a real bounded page from the
@@ -263,15 +281,22 @@ export function applyFeatures(ds: Dataset, configs: FeatureConfig[]): Dataset {
  * ("provably came from ONE bounded server page" — see `BoundedSample`'s
  * own doc comment in preprocessing.ts). `applyFeatures` never removes or
  * adds rows (see its own doc comment above), so a bounded input always
- * produces a bounded output — the cast back to a bare `Dataset` here is
- * safe and matches what every current consumer of the preview actually
- * needs (tag list + row count check, not a re-brand for further chaining).
+ * produces a bounded output — re-branding the result is safe.
+ *
+ * UPDATED DS-LAKE-005B-D-T07: now re-brands via `brandBoundedSample`
+ * (was a bare-`Dataset` cast) because `dwFeaturedDatasetAtom` gained a
+ * second consumer — `DataAnalysisCard`, whose `dataset` prop is itself
+ * `BoundedSample`-typed as of this task — so the earlier "not a re-brand
+ * for further chaining" rationale no longer holds. Every prior consumer
+ * (`featured.tags`/`featured.rows` in `step-4-feature-engineering.tsx`
+ * and `dataset-tag-sidebar.tsx`) still compiles unchanged: `BoundedSample`
+ * is structurally a `Dataset`.
  */
 export function applyFeaturesBounded(
   sample: BoundedSample,
   configs: FeatureConfig[],
-): Dataset {
-  return applyFeatures(sample, configs)
+): BoundedSample {
+  return brandBoundedSample(applyFeatures(sample, configs))
 }
 
 /**

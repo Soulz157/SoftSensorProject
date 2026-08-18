@@ -521,3 +521,114 @@ describe('PreprocessingJobService — draft-owned runs (DS-LAKE-005)', () => {
     expect(post).not.toHaveBeenCalled();
   });
 });
+
+describe('PreprocessingJobService — FEATURE stage (DS-LAKE-006-T06 reversal)', () => {
+  const FEATURE_ARTIFACT = {
+    ...ARTIFACT,
+    feature_spec_key: 'ds-1/artifacts/g-1/feature_spec.json',
+  };
+
+  function buildFeatureJob(overrides: Record<string, unknown> = {}) {
+    return buildJob({
+      stage: 'FEATURE',
+      operations: {
+        features: [{ id: 'f1', kind: 'lag', tag: 'TI-101', k: 1 }],
+        selectedColumns: null,
+        scalers: { 'TI-101': 'minmax' },
+      },
+      ...overrides,
+    });
+  }
+
+  it('FEAT-01: sends ONE call to /v1/preprocess/features, not /clean', async () => {
+    post.mockResolvedValue(FEATURE_ARTIFACT);
+    const { service } = makeService(buildFeatureJob());
+    await (service as unknown as Runnable).run('job-1');
+
+    expect(cleanCalls()).toHaveLength(0);
+    const featureCalls = post.mock.calls.filter(
+      ([path]) => path === '/v1/preprocess/features',
+    );
+    expect(featureCalls).toHaveLength(1);
+
+    const [, body] = featureCalls[0] as [string, Record<string, unknown>];
+    expect(body.source_key).toBe('ds-1/artifacts/a-1/data.parquet');
+    expect(body.features).toEqual([
+      { id: 'f1', kind: 'lag', tag: 'TI-101', k: 1 },
+    ]);
+    // Field casing mirrors the inline /features route exactly.
+    expect(body.selectedColumns).toBeNull();
+    expect(body.scalers).toEqual({ 'TI-101': 'minmax' });
+  });
+
+  it('FEAT-02: reports totalSteps as 1, not features.length — one combined call has no per-step progress', async () => {
+    post.mockResolvedValue(FEATURE_ARTIFACT);
+    const { service, prisma } = makeService(
+      buildFeatureJob({
+        operations: {
+          features: [
+            { id: 'f1', kind: 'lag', tag: 'TI-101', k: 1 },
+            { id: 'f2', kind: 'lag', tag: 'TI-101', k: 2 },
+            { id: 'f3', kind: 'lag', tag: 'TI-101', k: 3 },
+          ],
+          selectedColumns: null,
+          scalers: {},
+        },
+      }),
+    );
+    await (service as unknown as Runnable).run('job-1');
+
+    const runningWrite = firstWrite(prisma.preprocessingJob.update);
+    expect(runningWrite.totalSteps).toBe(1);
+  });
+
+  it('FEAT-03: commits a GOLD artifact with featureSpecKey set, completedSteps 1', async () => {
+    post.mockResolvedValue(FEATURE_ARTIFACT);
+    const { service, tx } = makeService(buildFeatureJob());
+    await (service as unknown as Runnable).run('job-1');
+
+    const artifact = firstWrite(tx.datasetArtifact.create);
+    expect(artifact.type).toBe('GOLD');
+    expect(artifact.featureSpecKey).toBe(FEATURE_ARTIFACT.feature_spec_key);
+    expect(artifact.parentArtifactId).toBe('a-1');
+
+    const jobWrite = firstWrite(tx.preprocessingJob.update);
+    expect(jobWrite).toMatchObject({ status: 'SUCCEEDED', completedSteps: 1 });
+  });
+
+  it('FEAT-04: a CLEAN-shaped payload on a FEATURE-stage job FAILS rather than committing a zero-feature GOLD', async () => {
+    // The exact failure mode readFeatureRecipe exists to prevent: a
+    // mis-stored row must not silently run with an empty recipe and
+    // report SUCCEEDED.
+    const { service, prisma, tx } = makeService(
+      buildFeatureJob({
+        operations: { operations: [{ type: 'drop_missing' }], precision: {} },
+      }),
+    );
+    await (service as unknown as Runnable).run('job-1');
+
+    expect(post).not.toHaveBeenCalled();
+    expect(tx.datasetArtifact.create).not.toHaveBeenCalled();
+    const final = { data: lastWrite(prisma.preprocessingJob.update) };
+    expect(final.data.status).toBe('FAILED');
+    expect(final.data.error).toContain('feature recipe');
+  });
+
+  it('FEAT-05: a FEATURE-shaped payload on a CLEAN-stage job FAILS rather than running zero operations', async () => {
+    const { service, prisma, tx } = makeService(
+      buildJob({
+        stage: 'CLEAN',
+        operations: {
+          features: [{ id: 'f1', kind: 'lag', tag: 'TI-101', k: 1 }],
+        },
+      }),
+    );
+    await (service as unknown as Runnable).run('job-1');
+
+    expect(post).not.toHaveBeenCalled();
+    expect(tx.datasetArtifact.create).not.toHaveBeenCalled();
+    const final = { data: lastWrite(prisma.preprocessingJob.update) };
+    expect(final.data.status).toBe('FAILED');
+    expect(final.data.error).toContain('cleaning pipeline');
+  });
+});

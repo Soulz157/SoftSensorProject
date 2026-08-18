@@ -8,13 +8,24 @@ import {
   ChartTooltip,
   type ChartConfig,
 } from '@/components/ui/chart'
-import { tagBoxplotStats, type BoxplotStats } from '@/lib/data-quality'
 import { chartColorVar, resolveTagMeta } from '@/lib/mock-readings'
-import type { Dataset } from '@/lib/preprocessing'
+import type { DraftBoxplotResult } from '@/services/dataset-draft'
 
+/**
+ * DS-LAKE-005B-D-T03. Consumes the SERVER box plot response — five-number
+ * summary + 1.5×IQR whiskers + capped outlier list are computed by
+ * `boxplot_service.py`, not this component. `Dataset` is deliberately NOT
+ * accepted here (same DS-LAKE-005B-D-V05 type gate `TagHistogramChart`
+ * applies) — a caller cannot hand this component a bare full-frame dataset
+ * even by accident.
+ *
+ * `status` mirrors `TagHistogramChart`'s exact union and reasoning —
+ * see that component's own doc comment for 'no-tags'/'pending'/'loading'.
+ */
 interface Props {
-  dataset: Dataset
+  data: DraftBoxplotResult | null
   tags: string[]
+  status: 'no-tags' | 'pending' | 'loading' | 'ready'
 }
 
 const CHART_HEIGHT = 500
@@ -22,10 +33,6 @@ const Y_TICK_COUNT = 6
 
 function fmt(n: number): string {
   return n.toLocaleString(undefined, { maximumFractionDigits: 2 })
-}
-
-function hasData(stats: BoxplotStats): boolean {
-  return stats.min !== stats.max || stats.median !== 0
 }
 
 function niceTicks(min: number, max: number, count: number): number[] {
@@ -52,7 +59,16 @@ function niceTicks(min: number, max: number, count: number): number[] {
 interface BoxRow {
   tag: string
   color: string
-  stats: BoxplotStats
+  min: number
+  q1: number
+  median: number
+  mean: number
+  q3: number
+  max: number
+  whiskerLow: number
+  whiskerHigh: number
+  outliers: number[]
+  outlierCount: number
   iqr: [number, number]
   showLabels: boolean
 }
@@ -68,8 +84,17 @@ type BoxShapeProps = {
 function BoxWhiskerShape(props: BoxShapeProps) {
   const { x = 0, y = 0, width = 0, height = 0, payload } = props
   if (!payload) return <g />
-  const { stats, color, showLabels } = payload
-  const { q1, q3, median, mean, whiskerLow, whiskerHigh, outliers } = stats
+  const {
+    q1,
+    q3,
+    median,
+    mean,
+    whiskerLow,
+    whiskerHigh,
+    outliers,
+    color,
+    showLabels,
+  } = payload
 
   const span = q3 - q1
   const pxPerUnit = span !== 0 ? height / span : 0
@@ -156,7 +181,9 @@ function BoxWhiskerShape(props: BoxShapeProps) {
         </>
       )}
 
-      {/* outliers — hollow rings so they read as "outside" the distribution */}
+      {/* outliers — hollow rings so they read as "outside" the distribution.
+          `outliers` is the CAPPED list; `payload.outlierCount` (shown in the
+          tooltip) is the true total, which may exceed what's plotted here. */}
       {outliers.map((v, i) => (
         <circle
           key={`${v}-${i}`}
@@ -212,17 +239,69 @@ function BoxWhiskerShape(props: BoxShapeProps) {
   )
 }
 
-export function TagBoxplotChart({ dataset, tags }: Props) {
-  const statsByTag = useMemo(() => {
-    const map = new Map<string, BoxplotStats>()
-    for (const tag of tags) map.set(tag, tagBoxplotStats(dataset, tag))
-    return map
-  }, [dataset, tags])
+export function TagBoxplotChart({ data, tags, status }: Props) {
+  const insufficientTags = data?.insufficient_tags ?? []
 
-  const qualifyingTags = tags.filter(t => hasData(statsByTag.get(t)!))
-  const insufficientTags = tags.filter(t => !qualifyingTags.includes(t))
+  const rows = useMemo<BoxRow[]>(() => {
+    if (!data) return []
+    const byTag = new Map(data.tags.map(t => [t.tag, t]))
+    const showLabels = data.tags.length <= 5
+    return tags.flatMap(tag => {
+      const t = byTag.get(tag)
+      if (!t) return []
+      return [
+        {
+          tag,
+          color: chartColorVar(resolveTagMeta(tag).chartIndex),
+          min: t.min,
+          q1: t.q1,
+          median: t.median,
+          mean: t.mean,
+          q3: t.q3,
+          max: t.max,
+          whiskerLow: t.whisker_low,
+          whiskerHigh: t.whisker_high,
+          outliers: t.outliers,
+          outlierCount: t.outlier_count,
+          iqr: [t.q1, t.q3] as [number, number],
+          showLabels,
+        },
+      ]
+    })
+  }, [data, tags])
 
-  if (qualifyingTags.length === 0) {
+  if (status === 'no-tags') {
+    return (
+      <div className="flex h-80 flex-col items-center justify-center gap-2 text-center">
+        <BoxSelect className="h-8 w-8 text-muted-foreground/40" />
+        <p className="text-sm text-muted-foreground">
+          Select a tag to compare above.
+        </p>
+      </div>
+    )
+  }
+
+  if (status === 'pending') {
+    return (
+      <div className="flex h-80 flex-col items-center justify-center gap-2 text-center">
+        <BoxSelect className="h-8 w-8 text-muted-foreground/40" />
+        <p className="text-sm text-muted-foreground">
+          Save cleaned tags to build a box plot.
+        </p>
+      </div>
+    )
+  }
+
+  if (status === 'loading') {
+    return (
+      <div className="flex h-80 flex-col items-center justify-center gap-2 text-center">
+        <BoxSelect className="h-8 w-8 animate-pulse text-muted-foreground/40" />
+        <p className="text-sm text-muted-foreground">Loading box plot…</p>
+      </div>
+    )
+  }
+
+  if (rows.length === 0) {
     return (
       <div className="flex h-80 flex-col items-center justify-center gap-2 text-center">
         <BoxSelect className="h-8 w-8 text-muted-foreground/40" />
@@ -234,25 +313,8 @@ export function TagBoxplotChart({ dataset, tags }: Props) {
     )
   }
 
-  const showLabels = qualifyingTags.length <= 5
-
-  const rows: BoxRow[] = qualifyingTags.map(tag => {
-    const stats = statsByTag.get(tag)!
-    return {
-      tag,
-      color: chartColorVar(resolveTagMeta(tag).chartIndex),
-      stats,
-      iqr: [stats.q1, stats.q3],
-      showLabels,
-    }
-  })
-
-  const rawMin = Math.min(
-    ...rows.map(r => Math.min(r.stats.min, ...r.stats.outliers)),
-  )
-  const rawMax = Math.max(
-    ...rows.map(r => Math.max(r.stats.max, ...r.stats.outliers)),
-  )
+  const rawMin = Math.min(...rows.map(r => Math.min(r.min, ...r.outliers)))
+  const rawMax = Math.max(...rows.map(r => Math.max(r.max, ...r.outliers)))
   const ticks = niceTicks(rawMin, rawMax, Y_TICK_COUNT)
   const domain: [number, number] = [ticks[0]!, ticks[ticks.length - 1]!]
 
@@ -310,33 +372,39 @@ export function TagBoxplotChart({ dataset, tags }: Props) {
                   <dl className="grid grid-cols-2 gap-x-3 gap-y-0.5 font-mono text-[11px] text-muted-foreground">
                     <dt>Min</dt>
                     <dd className="text-right text-foreground">
-                      {fmt(row.stats.min)}
+                      {fmt(row.min)}
                     </dd>
                     <dt>Q1</dt>
                     <dd className="text-right text-foreground">
-                      {fmt(row.stats.q1)}
+                      {fmt(row.q1)}
                     </dd>
                     <dt>Median</dt>
                     <dd className="text-right text-foreground">
-                      {fmt(row.stats.median)}
+                      {fmt(row.median)}
                     </dd>
                     <dt>Mean</dt>
                     <dd className="text-right text-foreground">
-                      {fmt(row.stats.mean)}
+                      {fmt(row.mean)}
                     </dd>
                     <dt>Q3</dt>
                     <dd className="text-right text-foreground">
-                      {fmt(row.stats.q3)}
+                      {fmt(row.q3)}
                     </dd>
                     <dt>Max</dt>
                     <dd className="text-right text-foreground">
-                      {fmt(row.stats.max)}
+                      {fmt(row.max)}
                     </dd>
-                    {row.stats.outliers.length > 0 && (
+                    {row.outlierCount > 0 && (
                       <>
                         <dt>Outliers</dt>
                         <dd className="text-right text-foreground">
-                          {row.stats.outliers.length}
+                          {row.outlierCount}
+                          {row.outliers.length < row.outlierCount && (
+                            <span className="text-muted-foreground">
+                              {' '}
+                              ({row.outliers.length} shown)
+                            </span>
+                          )}
                         </dd>
                       </>
                     )}

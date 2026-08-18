@@ -14,6 +14,7 @@ tmp objects.
 """
 
 from __future__ import annotations
+from datetime import datetime, timezone
 
 import asyncio
 import time
@@ -32,10 +33,18 @@ from intergrations.object_store import (
     VALIDATION_REPORT_FILENAME,
     ArtifactStats,
     ObjectStore,
+    ObjectStoreError,
     build_manifest,
     sidecar_key,
     status_column,
     tag_columns,
+    METRICS_FILENAME,
+    MODEL_FILENAME,
+    PREDICTIONS_FILENAME,
+    RUN_MANIFEST_FILENAME,
+    is_committed_artifact_key,
+    is_model_run_key,
+    model_run_key,
 )
 from schemas.preprocess import (
     ArtifactReclaimRequest,
@@ -52,7 +61,12 @@ from schemas.preprocess import (
 from services.cleaning_service import apply_operations
 from services.column_stats_service import build_column_stats
 from services.data_source_service import PIDataSourceService, SQLDataSourceService
-from services.feature_service import apply_features, select_columns, to_model_ready
+from services.feature_service import (
+    apply_features,
+    feature_column_name,
+    select_columns,
+    to_model_ready,
+)
 from services.feature_spec_service import build_feature_spec
 from services.frame_service import from_pi_response, from_sql_response
 from services.preview_service import sample_rows
@@ -61,12 +75,17 @@ from services.validation_service import run_validation
 _pi = PIDataSourceService()
 _sql = SQLDataSourceService()
 
+_ALLOWED_RUN_UPLOADS = frozenset(
+    {MODEL_FILENAME, METRICS_FILENAME, RUN_MANIFEST_FILENAME, PREDICTIONS_FILENAME}
+)
+
 
 def _stats_payload(
     stats: ArtifactStats,
     started: float,
     column_stats_key: str | None = None,
     feature_spec_key: str | None = None,
+    skipped_features: list[str] | None = None,
 ) -> dict[str, Any]:
     return {
         "object_key": stats.object_key,
@@ -78,6 +97,12 @@ def _stats_payload(
         "duration_ms": int((time.perf_counter() - started) * 1000),
         "column_stats_key": column_stats_key,
         "feature_spec_key": feature_spec_key,
+        # Names of feature columns `apply_features` skipped due to a name
+        # collision with an already-existing column (see `apply_features`'s
+        # own docstring) — always [] for materialize/clean, which never
+        # call apply_features at all. Only `features()` ever populates
+        # this; every other caller passes nothing, defaulting it to [].
+        "skipped_features": skipped_features or [],
     }
 
 
@@ -90,6 +115,7 @@ def _commit(
     operations: Any = None,
     column_stats: dict[str, Any] | None = None,
     feature_spec: dict[str, Any] | None = None,
+    skipped_features: list[str] | None = None,
 ) -> dict[str, Any]:
     """Write the manifest (and, since DS-LAKE-005B-A-T07, the column-stats
     sidecar; since DS-LAKE-006-T05, the feature-spec sidecar) beside the
@@ -119,6 +145,7 @@ def _commit(
             if feature_spec is not None
             else None
         ),
+        skipped_features=skipped_features,
     )
     store.put_json(
         sidecar_key(stats.object_key, MANIFEST_FILENAME),
@@ -260,7 +287,8 @@ def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:
     source = store.get_frame(request.source_key)
     step_configs = [f.to_step() for f in request.features]
 
-    result = apply_features(source, step_configs)
+    skipped_columns: list[str] = []
+    result = apply_features(source, step_configs, skipped=skipped_columns)
     result = select_columns(result, request.selected_columns)
     result = to_model_ready(result, tag_columns(result), request.scalers)
 
@@ -269,8 +297,38 @@ def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:
     stats = store.put_frame(
         result, request.target_key, overwrite=request.overwrite)
 
+    # Exclude collided configs from the sidecar — feature_spec.json must
+    # only claim features that were actually computed, not merely
+    # requested. `feature_column_name` is cheap enough to recompute per
+    # config here (config lists are short) rather than have
+    # `apply_features` return column names paired with configs.
+    computed_configs = [
+        cfg for cfg in step_configs
+        if feature_column_name(cfg) not in skipped_columns
+    ]
     spec = build_feature_spec(
-        step_configs, request.selected_columns, request.scalers)
+        computed_configs, request.selected_columns, request.scalers)
+    # `source` (the SILVER parent) is already in memory from the get_frame
+    # above — same shape `clean()` uses, and the only place features() holds
+    # both frames at once.
+    #
+    # This sidecar was omitted when T05 was written on the reading that
+    # column_stats is "a cleaning-op concern". That holds for `drift` alone;
+    # coverage/min/max/mean/median/std describe the COLUMN, and this is the
+    # one stage that MINTS columns — a derived feature (lag, rolling mean,
+    # ratio) has never had stats computed anywhere upstream, because it did
+    # not exist upstream. Without this the GOLD row carries
+    # columnStatsKey=null, /finalize copies that null onto FINAL, and every
+    # dataset that ran feature engineering — the wizard's main path — has no
+    # readable statistics for its saved artifact at all.
+    #
+    # `drift` for a column that exists on both sides stays meaningful
+    # (scaling moved the mean by exactly this much); for a newly derived
+    # column `build_column_stats` already reports None, which is the
+    # correct "no comparison possible", not a special case to add here.
+    column_stats = build_column_stats(
+        result, operations=[], parent_frame=source
+    )
 
     return _commit(
         store,
@@ -278,7 +336,9 @@ def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:
         started,
         parent_key=request.source_key,
         operations=step_configs,
+        column_stats=column_stats,
         feature_spec=spec,
+        skipped_features=skipped_columns,
     )
 
 
@@ -529,3 +589,64 @@ def reclaim_artifact(
     """
     prefix = request.object_key[: -len(DATA_FILENAME)]
     return {"prefix": prefix, "deleted": store.delete_prefix(prefix)}
+
+
+def presign_artifact(store: ObjectStore, body) -> dict:
+    if not is_committed_artifact_key(body.source_key):
+        raise ValueError(
+            f"'{body.source_key}' is not a committed artifact data key. "
+            "Only .../artifacts/{artifactId}/data.parquet can be presigned "
+            "for reading."
+        )
+
+    data_url = store.presigned_get(body.source_key)
+
+    sidecar_urls: dict[str, str | None] = {}
+    for filename in body.sidecars:
+        key = sidecar_key(body.source_key, filename)
+        # A missing sidecar is null, not a failure — see the request schema.
+        sidecar_urls[filename] = store.presigned_get(
+            key) if store.exists(key) else None
+
+    meta = store.get_frame_metadata(body.source_key)
+
+    return {
+        "data_url": data_url,
+        "sidecar_urls": sidecar_urls,
+        # Recomputed from the stored bytes, not read off a row: this value
+        # exists so the container can detect a mismatch against what NestJS
+        # recorded, and reading both from the same place would prove nothing.
+        "checksum": store.checksum_of(body.source_key),
+        "row_count": meta["row_count"],
+        "expires_at": (
+            datetime.now(timezone.utc) + store.PRESIGN_READ_TTL
+        ).isoformat(),
+    }
+
+
+def presign_model_run_upload(store: ObjectStore, body) -> dict:
+    unknown = sorted(set(body.filenames) - _ALLOWED_RUN_UPLOADS)
+    if unknown:
+        raise ValueError(
+            f"Not part of the training-run layout: {unknown}. "
+            f"Allowed: {sorted(_ALLOWED_RUN_UPLOADS)}."
+        )
+
+    upload_urls: dict[str, str] = {}
+    for filename in body.filenames:
+        key = model_run_key(body.model_id, body.run_id, filename)
+        # Belt and braces: the allow-list above already constrains the
+        # filename, but the ids come from the request too, and this predicate
+        # is the one thing standing between a malformed id and a write outside
+        # models/.
+        if not is_model_run_key(key):
+            raise ValueError(
+                f"Refusing to presign a write outside models/: '{key}'")
+        upload_urls[filename] = store.presigned_put(key)
+
+    return {
+        "upload_urls": upload_urls,
+        "expires_at": (
+            datetime.now(timezone.utc) + store.PRESIGN_WRITE_TTL
+        ).isoformat(),
+    }

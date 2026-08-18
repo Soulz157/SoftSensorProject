@@ -2,8 +2,28 @@
   "project": "Model Creation Flow Refactor",
   "version": "1.0.0",
   "description": "Refactor the existing Model Creation Flow to keep the current four-step user experience while separating model training, evaluation, fine-tuning, and final model persistence. Training and fine-tuning must not commit the model to the database. The model is persisted only when the user explicitly clicks Save Model in Step 4.",
-  "status": "in_progress",
-  "progress": 25,
+  "status": "blocked",
+  "progress": 12,
+  "decisions": {
+    "draft_persistence": {
+      "chosen": "B — ModelDraft as a database entity",
+      "date": "2026-08-18",
+      "rationale": "A training container has no browser: it authenticates with a run token hashed into a row, reads its spec from /claim, and writes logs and metrics back over HTTP. A client-only jotai draft (MODEL-FLOW-002 as built) is unreachable from that process, so training could not run against it at all. Mirrors DatasetDraft (DS-LAKE-005), which solved the identical problem for the dataset wizard and is already proven in production — including the abandon-not-delete rule and the adopt-by-pointer save.",
+      "rejected": {
+        "A — nullable modelId on ModelTrainingRun": "Would work, but leaves the draft's own configuration (name, location, dataset, algorithm, target, split) with nowhere server-side to live, so Step 4's Save Model would still have to trust a client-supplied config. DatasetDraft exists precisely to avoid that.",
+        "C — create Model at training, flip status at Save": "Directly contradicts the global definition of done. Also leaks: an abandoned wizard leaves a Model row in the workspace listing."
+      }
+    },
+    "persistence_boundary_clarified": {
+      "note": "'No database commit before Save Model' means no persistent MODEL record. It does not mean no writes at all. ModelDraft, ModelTrainingRun, ModelTrainingRunLog and ModelFineTuningJob are all written before Save Model — they are job and workspace rows, the same class of row PreprocessingJob and DatasetArtifact occupy during the dataset wizard, where DS-LAKE-005 already accepted them. What Save Model creates is the Model itself, and it adopts everything else by pointer."
+    },
+    "artifact_scope": {
+      "note": "Run outputs are written under drafts/{modelDraftId}/runs/{runId}/, not models/{modelId}/runs/{runId}/ — a modelId does not exist when the container uploads. Save Model adopts those objects by pointer (never copies bytes), the same rule DatasetArtifact.datasetId's own schema comment states. is_model_run_key/model_run_key must accept the draft scope; see MODEL-FLOW-006-T07."
+    },
+    "fine_tuning_undefined": {
+      "note": "MODEL-FLOW-005 is BLOCKED on a definition, not on engineering. train.py fits once and exits; HistGradientBoostingRegressor has no incremental warm start. 'Fine-tuning' here most likely means 'retrain with a different hyperparameter set, reusing the same split', which is a search loop, not fine-tuning in the transfer-learning sense. Naming it correctly changes what T01-T08 are."
+    }
+  },
 
   "existing_flow": {
     "preserve": true,
@@ -83,6 +103,102 @@
   },
 
   "features": [
+        {
+      "id": "MODEL-FLOW-000",
+      "title": "Unblock the Training Path — Correctness Prerequisites",
+      "priority": 0,
+      "status": "pending",
+      "progress": 0,
+      "dependencies": [],
+
+      "description": "Four defects that make the existing training path either impossible to start or unsafe to trust. None is a refactor; every one is a correctness fix that MODEL-FLOW-003 onward depend on. T02 in particular gates every metric Step 3 displays.",
+
+      "tasks": [
+        {
+          "id": "MODEL-FLOW-000-T01",
+          "title": "Fix unsatisfiable artifact precondition in createRunService",
+          "status": "pending",
+          "progress": 0,
+          "detail": "createRunService requires artifact.type === 'GOLD' AND artifact.datasetId != null. saveDraftAsDatasetService sets datasetId on the FINAL row only — a GOLD artifact keeps just its draftId — so no run can ever be created. Change to type === 'FINAL'. Nothing is lost: promoteDraftArtifactToFinalService copies objectKey/checksum/featureSpecKey from its source verbatim and writes no bytes, so FINAL and its GOLD parent are the same object with the same feature spec, and FINAL additionally carries the validationKey proving it passed the gate. Also restore the findUnique call, which was overwritten with a fragment of saveDraftAsDatasetService (references tx/finalArtifact/dataset, none in scope — the file does not compile)."
+        },
+        {
+          "id": "MODEL-FLOW-000-T02",
+          "title": "Record the target in feature_spec.json so the leakage guard can fire",
+          "status": "pending",
+          "progress": 0,
+          "detail": "train.py::assert_no_target_leakage reads derived_from_target, target_y and target_scaled from feature_spec.json. build_feature_spec(features, selected_columns, scalers) has no target parameter and emits none of the three, so `derived` is always empty and the guard returns before checking anything. This is the highest-severity item in the plan: the failure it catches LOOKS LIKE SUCCESS. A lab target sampled daily against a 1-minute PI grid with any target-derived lag feature yields R² near 1.0, and Step 3 would render that with a convincing actual-vs-predicted chart. Requires threading the target through FeaturesRequest -> the NestJS DTO -> the client's Step 4 call, and computing derived_from_target from the feature configs. target_y/target_scaled/derived_from_target must NOT enter featureHash: they describe how a run READS the artifact, not how it was built, so two runs with different targets against the same bytes must still share a hash."
+        },
+        {
+          "id": "MODEL-FLOW-000-T03",
+          "title": "Fix container resource limits (tmpfs exceeds the memory cap)",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Memory is 4 GiB while /scratch is an 8 GiB tmpfs. A tmpfs is charged to the container's own memory cgroup, so bytes written to /scratch count as RAM. train.py stages data.parquet there AND loads it into a DataFrame, so the peak is roughly the artifact size twice over plus pandas expansion. The container is OOM-killed with no message train.py can report — it surfaces only as a non-zero exit in watch(). Raise Memory and lower the tmpfs size so the two are consistent."
+        },
+        {
+          "id": "MODEL-FLOW-000-T04",
+          "title": "Align the container's callback base path with the controller",
+          "status": "pending",
+          "progress": 0,
+          "detail": "train.py builds API = {API_BASE}/internal/model/runs/{RUN_ID}; ModelRunAuthorizedController is @Controller('authorized/model/runs') behind the /api/v1 global prefix. Every callback 404s, starting with /claim. Pick one: either the container's path gains the real prefix, or the controller moves to internal/model/runs — the latter reads better, since 'authorized' means a user JWT everywhere else in this codebase and this controller explicitly does not take one."
+        },
+        {
+          "id": "MODEL-FLOW-000-T05",
+          "title": "Stop leaking tokenHash from cancelRunService",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Its findFirst has no omit, and the early return for an already-terminal run returns that row straight to the caller. The other three read paths already omit it. A token hash reaching the browser is not exploitable on its own, but it is the kind of leak that becomes one after any change to how tokens are compared."
+        },
+        {
+          "id": "MODEL-FLOW-000-T06",
+          "title": "Remove the debug print of the presign request",
+          "status": "pending",
+          "progress": 0,
+          "detail": "routers/preprocess.py::presign_artifact prints the whole request body. Neither the request nor the response should reach a log: a presigned URL is a bearer capability for the artifact bytes, and anyone who can read the log can download them for the lifetime of the URL."
+        },
+        {
+          "id": "MODEL-FLOW-000-T07",
+          "title": "Delete the dead tag_stats path",
+          "status": "pending",
+          "progress": 0,
+          "detail": "artifact_service.tag_stats duplicates column_stats line for line, references TagStatsRequest which is not imported (the module fails to import), and has no router endpoint. Its NestJS counterparts are equally broken: getDraftArtifactTagStatsService uses an unimported PythonTagStatsSchema, and getDraftArtifactStatsController calls a method name that does not exist. Remove all four, plus the POST /:id/artifacts/:artifactId/stats route."
+        }
+      ],
+
+      "acceptance_criteria": [
+        "POST /:modelId/runs succeeds for a dataset saved through the wizard.",
+        "feature_spec.json for a GOLD artifact records target_y, target_scaled and derived_from_target.",
+        "A run whose target-derived features cannot carry real history FAILS with the leakage message, rather than reporting a high R².",
+        "featureHash is unchanged by the target fields — proven by a test, not by inspection.",
+        "A container training on the largest available artifact completes without being OOM-killed.",
+        "Every train.py callback reaches its controller.",
+        "No read path returns tokenHash.",
+        "The connector service imports cleanly and no endpoint duplicates /column-stats."
+      ],
+
+      "verification": [
+        {
+          "id": "MODEL-FLOW-000-V01",
+          "description": "Create a run against a saved dataset and confirm a 201 with a QUEUED row.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-000-V02",
+          "description": "Construct a lag feature derived from a lab target on a 1-minute grid and confirm the run FAILS with the leakage message. This is the test that proves T02 actually works — the guard passing silently is indistinguishable from the guard being absent.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-000-V03",
+          "description": "Assert featureHash is identical for two specs differing only in target_y.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-000-V04",
+          "description": "Run end-to-end and confirm /claim, /log, /upload-urls and /complete all return 2xx.",
+          "status": "pending"
+        }
+      ]
+    },
     {
       "id": "MODEL-FLOW-001",
       "title": "Audit Current Model Creation and Training Persistence Flow",
@@ -163,13 +279,13 @@
 
     {
       "id": "MODEL-FLOW-002",
-      "title": "Introduce Model Draft Workspace Without Changing the Existing User Flow",
+      "title": "Model Draft Workspace as a Database Entity",
       "priority": 2,
-      "status": "completed",
-      "progress": 100,
+      "status": "needs_rework",
+      "progress": 40,
       "dependencies": ["MODEL-FLOW-001"],
-      "implementation": "Client-only jotai draft in apps/client/store/model-pipeline.ts: DraftState + mpDraftIdAtom/mpDraftStateAtom/mpTrainingResultAtom/mpEvaluationResultAtom/mpArtifactRefAtom, wired into resetWizardAtom. No DB entity (scope decision).",
-
+      "implementation": "SUPERSEDED. The first pass built a client-only jotai draft (apps/client/store/model-pipeline.ts: DraftState + mpDraftIdAtom/mpDraftStateAtom/mpTrainingResultAtom/mpEvaluationResultAtom/mpArtifactRefAtom, wired into resetWizardAtom). That state is still useful as wizard UI state and is NOT being deleted — but it cannot serve as the draft MODEL-FLOW-003 needs: a training container has no browser and reads its spec from an HTTP endpoint backed by a row. See decisions.draft_persistence.",
+      "rework_note": "The jotai atoms stay as the wizard's local mirror. What is added is the server-side owner beneath them.",
       "description": "Introduce a temporary Model Draft Workspace that stores the current model configuration, training result, evaluation result, and artifacts before the user clicks Save Model.",
 
       "tasks": [
@@ -203,6 +319,35 @@
           "status": "completed",
           "progress": 100
         }
+                {
+          "id": "MODEL-FLOW-002-T06",
+          "title": "Add the ModelDraft Prisma entity",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Mirror DatasetDraft field for field where the concepts match: id, workspaceId, name, status (ACTIVE | SAVED | ABANDONED), savedModelId, createdById, timestamps. Model-specific: plantId, nodeId, datasetId, targetY, algorithm, hyperparameters (Json), splitRatio, currentRunId. ABANDON, never delete — the same reason DatasetDraft gives: a stale wizard tab that keeps polling gets an honest ABANDONED instead of a 404 for a row that vanished under it."
+        },
+        {
+          "id": "MODEL-FLOW-002-T07",
+          "title": "Repoint ModelTrainingRun at the draft",
+          "status": "pending",
+          "progress": 0,
+          "detail": "modelId becomes nullable; add modelDraftId. Exactly the shape DatasetArtifact already uses (draftId set at creation, datasetId set at adoption, draftId KEPT afterward for traceability). A run created from the wizard has modelDraftId and a null modelId until Save Model adopts it."
+        },
+        {
+          "id": "MODEL-FLOW-002-T08",
+          "title": "ModelDraft lifecycle endpoints",
+          "status": "pending",
+          "progress": 0,
+          "detail": "POST /model-drafts, GET /model-drafts/:id, POST /model-drafts/:id/abandon, PATCH for config. Its own top-level route, not nested under authorized/model — a draft is not a model and has no model id to key a nested route on, the same reasoning dataset-drafts states for itself."
+        },
+        {
+          "id": "MODEL-FLOW-002-T09",
+          "title": "Sync the jotai draft to the server draft",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Step 1 creates the ModelDraft on first meaningful edit; Step 2 PATCHes the training config before starting a run. The client keeps its local mirror for instant feedback — the server copy is what the container reads."
+        }
+      ],
       ],
 
       "draft_data": [
@@ -221,12 +366,12 @@
         "model_config_reference"
       ],
 
-      "acceptance_criteria": [
+     "acceptance_criteria": [
         "The existing four-step UI remains unchanged.",
-        "Model setup information is associated with a Model Draft.",
-        "Training configuration is associated with a Model Draft.",
-        "The Model Draft can exist without creating a persistent Model database record.",
-        "The Model Draft can be used throughout Steps 2, 3, and 4."
+        "A ModelDraft row exists and holds Step 1 and Step 2 configuration.",
+        "No Model row is created when a draft is created.",
+        "A training run can be created against a ModelDraft with no Model in existence.",
+        "Abandoning a draft leaves its runs and artifacts in place."
       ],
 
       "verification": [

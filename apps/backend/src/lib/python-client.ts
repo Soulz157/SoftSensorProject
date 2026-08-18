@@ -1,5 +1,19 @@
+import { Logger } from '@nestjs/common';
 import { AppException } from '@softsensor/common';
 import { env } from '@/config/env.config';
+
+/**
+ * DS-LAKE-005B-C-T07 (large-dataset observability, server-side slice).
+ * `fetchOk` is the ONE choke point every export in this module funnels
+ * through — the natural place to log API latency (backend's-eye view,
+ * includes network + FastAPI's own `_run` time), response bytes, and this
+ * PROCESS's memory at call time, without threading instrumentation through
+ * every individual `postToPython`/`postBinaryToPython`/`postMultipartToPython`
+ * call site. `new Logger(...)` outside a NestJS-managed class is standard —
+ * this file is a plain module, not an `@Injectable`, so there is no DI
+ * context to inject a scoped logger from.
+ */
+const logger = new Logger('PythonClient');
 
 /**
  * Server-to-server client for the FastAPI data-connector service (apps/python).
@@ -114,6 +128,7 @@ async function fetchOk(
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<Response> {
+  const started = Date.now();
   let res: Response;
   try {
     res = await fetch(`${baseUrl()}${path}`, {
@@ -123,6 +138,15 @@ async function fetchOk(
         : AbortSignal.timeout(timeoutMs),
     });
   } catch (err) {
+    // Logged BEFORE the existing error mapping below — a network failure or
+    // timeout is exactly the kind of thing DS-LAKE-005B-C-T07 wants a
+    // latency figure for too, not just the happy path. `path` only (a
+    // hardcoded route string like '/v1/preprocess/clean'), never `err`
+    // itself, same "no request detail in a log" rule this file's own
+    // module docstring states for error messages.
+    logger.warn(
+      `python_request_failed path=${path} elapsed_ms=${Date.now() - started}`,
+    );
     // Do NOT include `err` details verbatim — they can echo the request.
     if (err instanceof AppException) throw err;
     const timedOut = err instanceof Error && err.name === 'TimeoutError';
@@ -143,6 +167,19 @@ async function fetchOk(
       type: 'ERROR',
     });
   }
+
+  // DS-LAKE-005B-C-T07 (large-dataset observability, server-side slice):
+  // logged for EVERY response, ok or not — a slow 422/502 is still a
+  // latency data point. `content-length` is what Python/undici actually
+  // set on the wire; falls back to '?' rather than 0 when absent (chunked
+  // responses have no header) so the log line cannot be misread as "zero
+  // bytes transferred". `process.memoryUsage().rss` is this NODE
+  // PROCESS's own resident set at call time, not a per-request delta —
+  // same "process-level snapshot, not a profile" scope as Python's
+  // `_peak_rss_kb()` (routers/preprocess.py) on the other side of this hop.
+  logger.log(
+    `python_request path=${path} status=${res.status} elapsed_ms=${Date.now() - started} bytes=${res.headers.get('content-length') ?? '?'} rss_mb=${(process.memoryUsage().rss / 1024 / 1024).toFixed(1)}`,
+  );
 
   if (!res.ok) {
     let detail = `Data connector error (${res.status}).`;

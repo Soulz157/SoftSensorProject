@@ -12,7 +12,21 @@
  *     chain is a HARD PIN for BRONZE only — age can never override it.
  *   - SILVER and GOLD stay age-releasable even while reachable, because they
  *     are re-derivable from BRONZE plus the operations recorded on their own
- *     ledger row (never deleted — see DS-LAKE-009B-T09/decisions.cleanup_scope).
+ *     ledger row (never deleted — see DS-LAKE-009B-T09/decisions.cleanup_scope) —
+ *     EXCEPT the one SILVER or GOLD artifact directly promoted to a live
+ *     FINAL. `promoteDraftArtifactToFinalService` never copies bytes: FINAL
+ *     is written with `objectKey: source.objectKey`, literally the same
+ *     MinIO object as its promoted parent (ADR-DS-LAKE-005B-B-006, "by
+ *     reference — never a byte copy"). Reclaiming that specific parent
+ *     deletes the FINAL's own readable bytes — the FINAL row survives
+ *     untouched in Postgres but 404s from MinIO, which is a WORSE failure
+ *     than a missing row because nothing signals the loss. Found and fixed
+ *     during DS-LAKE-012's end-to-end verification (2026-08-17): the
+ *     existing predicate correctly protected BRONZE via `protectedArtifactIds`
+ *     but never applied the same protection to a promoted SILVER/GOLD,
+ *     because the "re-derivable, so age-releasable" reasoning above is true
+ *     for every OTHER SILVER/GOLD in the chain, just not for the one FINAL
+ *     is literally reading from right now.
  *
  * A uniform "reachable ⇒ pinned" reading of T08 would pin BRONZE, SILVER and
  * GOLD alike and make cleanup a no-op for every saved dataset — V01 requires
@@ -108,6 +122,13 @@ function hoursSince(from: Date, now: Date): number {
  * @param protectedArtifactIds  every artifact id reachable through the
  *                              parentArtifactId chain of any non-ARCHIVED
  *                              DatasetVersion's FINAL artifact.
+ * @param objectKeySharedWithFinalIds  the ONE artifact per live (non-ARCHIVED)
+ *                              DatasetVersion that was directly promoted to
+ *                              its FINAL — i.e. `version.artifact.parentArtifactId`.
+ *                              Reclaiming it deletes the FINAL's own bytes
+ *                              (see the module doc comment). Hard-pinned
+ *                              regardless of type, unlike `protectedArtifactIds`
+ *                              which only hard-pins BRONZE.
  * @param drafts                every draft referenced by `artifacts`,
  *                              keyed by id.
  */
@@ -117,6 +138,7 @@ export function selectCleanupEligibleArtifacts(
   drafts: ReadonlyMap<string, CleanupDraftInfo>,
   config: CleanupEligibilityConfig,
   now: Date = new Date(),
+  objectKeySharedWithFinalIds: ReadonlySet<string> = new Set(),
 ): string[] {
   const eligible: string[] = [];
 
@@ -126,6 +148,15 @@ export function selectCleanupEligibleArtifacts(
     // Hard pin — BRONZE reachable from a live (non-ARCHIVED) version can
     // never be reclaimed by age, per decisions.reproducibility_anchor.
     if (artifact.type === 'BRONZE' && protectedArtifactIds.has(artifact.id)) {
+      continue;
+    }
+
+    // Hard pin — this exact artifact's bytes ARE a live FINAL's bytes
+    // (shared objectKey, never copied). Type-agnostic on purpose: this can
+    // be a SILVER (features step skipped) or a GOLD (the common case), and
+    // either would otherwise fall through to the age-releasable branch
+    // below. See the module doc comment for the full incident.
+    if (objectKeySharedWithFinalIds.has(artifact.id)) {
       continue;
     }
 

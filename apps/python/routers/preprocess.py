@@ -18,6 +18,10 @@ logs the request, and no error path echoes it — the same rule
 """
 
 import asyncio
+import logging
+import resource
+import sys
+import time
 import traceback
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -28,29 +32,62 @@ from schemas.preprocess import (
     ArtifactReclaimRequest,
     ArtifactReclaimResponse,
     ArtifactStatsResponse,
+    ArtifactPresignRequest,
+    ArtifactPresignResponse,
+    BoxplotRequest,
+    BoxplotResponse,
+    ModelRunUploadPresignRequest,
+    ModelRunUploadPresignResponse,
     CleanRequest,
     CleanupRequest,
     CleanupResponse,
     ColumnStatsRequest,
     ColumnStatsResponse,
     FeaturesRequest,
+    HistogramRequest,
+    HistogramResponse,
     MaterializeRequest,
     MetadataRequest,
     MetadataResponse,
     PreviewRequest,
     PreviewResponse,
+    CorrelationRequest,
+    CorrelationResponse,
     RowsRequest,
     RowsResponse,
+    ScatterRequest,
+    ScatterResponse,
     TagCatalogRequest,
     TagCatalogResponse,
     ValidateRequest,
     ValidationReportResponse,
 )
 from services import artifact_service
+from services.boxplot_service import build_boxplot
 from services.cleaning_service import CleaningError
+from services.correlation_matrix_service import build_correlation_matrix
+from services.histogram_service import build_histogram
 from services.preview_service import build_preview
+from services.scatter_service import build_scatter
 
 router = APIRouter(prefix="/v1/preprocess", tags=["Preprocess"])
+
+logger = logging.getLogger(__name__)
+
+
+def _peak_rss_kb() -> int:
+    """`resource.getrusage(...).ru_maxrss` — peak resident set size for the
+    WHOLE PROCESS since it started, not a per-request delta (the kernel
+    gives no cheaper per-call figure without external tooling, and this is
+    the "how big did this process get" observability signal DS-LAKE-005B-C
+    -T07 asks for, not a per-request allocation profile). Units are
+    PLATFORM-DEPENDENT and a real, documented POSIX quirk: Linux reports
+    KB, macOS (Darwin) reports BYTES — normalised to KB here so dev (macOS)
+    and prod (Linux container) logs are directly comparable, not silently
+    off by 1024x from each other.
+    """
+    raw = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return raw // 1024 if sys.platform == "darwin" else raw
 
 
 async def _run(handler, *args):
@@ -59,7 +96,20 @@ async def _run(handler, *args):
     One place rather than five copies of the same except-chain: a divergence
     between them would surface as one endpoint answering 502 where its
     neighbours answer 422, which the job runner would then have to special-case.
+
+    DS-LAKE-005B-C-T07 (large-dataset observability, server-side slice):
+    every handler in this router funnels through here, so this is the one
+    place to log API latency + Python CPU time consumed by the request +
+    the process's peak memory, without touching any of the ~14 individual
+    handlers. `ru_utime`/`ru_stime` are CUMULATIVE PROCESS counters (same
+    platform-independence as `ru_maxrss` above, no macOS/Linux unit quirk
+    on these two fields) — the BEFORE/AFTER delta isolates what THIS
+    request's `asyncio.to_thread` call actually burned, not the process
+    total. Logged in `finally` so a failed request is measured too — a
+    slow failure is exactly the kind of thing this exists to catch.
     """
+    started = time.perf_counter()
+    cpu_before = resource.getrusage(resource.RUSAGE_SELF)
     try:
         return await asyncio.to_thread(handler, *args)
     except CleaningError as e:
@@ -89,6 +139,20 @@ async def _run(handler, *args):
             status_code=502,
             detail="Preprocessing failed. See the connector service logs.",
         )
+    finally:
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        cpu_after = resource.getrusage(resource.RUSAGE_SELF)
+        cpu_ms = (
+            (cpu_after.ru_utime + cpu_after.ru_stime)
+            - (cpu_before.ru_utime + cpu_before.ru_stime)
+        ) * 1000
+        logger.info(
+            "preprocess_request handler=%s elapsed_ms=%.1f cpu_ms=%.1f peak_rss_kb=%d",
+            getattr(handler, "__name__", repr(handler)),
+            elapsed_ms,
+            cpu_ms,
+            _peak_rss_kb(),
+        )
 
 
 @router.post(
@@ -108,6 +172,94 @@ async def preview_pipeline(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(build_preview, store, body)
+
+
+@router.post(
+    "/histogram",
+    response_model=HistogramResponse,
+    summary="Histogram/KDE for one or more tags, recomputed under live operations",
+    description=(
+        "DS-LAKE-005B-D-T01. Same window-then-apply-operations shape as "
+        "/preview — reads a capped head window, applies the operations, and "
+        "returns bug-for-bug parity with the client's own tagDistribution/"
+        "kdeEstimate/densityToCount (lib/data-quality.ts). Writes nothing. "
+        "`tags` is REQUIRED (unlike /preview) — the domain is shared across "
+        "every overlaid tag, so 'every tag' is never a sane default here."
+    ),
+)
+async def histogram_pipeline(
+    body: HistogramRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(build_histogram, store, body)
+
+
+@router.post(
+    "/boxplot",
+    response_model=BoxplotResponse,
+    summary="Five-number summary + capped outlier list per tag, recomputed under live operations",
+    description=(
+        "DS-LAKE-005B-D-T03. Same window-then-apply-operations shape as "
+        "/histogram — reads a capped head window, applies the operations, "
+        "and returns bug-for-bug parity with the client's own "
+        "tagBoxplotStats (lib/data-quality.ts). Writes nothing. `tags` is "
+        "REQUIRED (unlike /preview) — a box plot with no tags named is "
+        "never a sane default. The outlier list is capped by `outlier_cap`; "
+        "`outlier_count` on each tag always carries the true, uncapped total."
+    ),
+)
+async def boxplot_pipeline(
+    body: BoxplotRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(build_boxplot, store, body)
+
+
+@router.post(
+    "/scatter",
+    response_model=ScatterResponse,
+    summary="Decimated scatter cloud + full-frame regression for two tags",
+    description=(
+        "DS-LAKE-005B-D-T04. Same window-then-apply-operations shape as "
+        "/histogram and /boxplot — reads a capped head window, applies the "
+        "operations, and returns bug-for-bug parity with the client's own "
+        "linearRegression (lib/preprocessing.ts) for the coefficients. "
+        "Writes nothing. `points` is decimated via 2D grid binning for "
+        "plotting only (NOT the /preview LTTB path — a scatter's axes are "
+        "tag values, not time); the regression is always fit over the FULL "
+        "Good-filtered frame and `n` states the true count, never the "
+        "decimated one. A pair counts only when BOTH x and y are Good — a "
+        "deliberate, tracked divergence from the client's status-blind "
+        "toScatterPoints, which this endpoint does not port."
+    ),
+)
+async def scatter_pipeline(
+    body: ScatterRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(build_scatter, store, body)
+
+
+@router.post(
+    "/correlation",
+    response_model=CorrelationResponse,
+    summary="Pearson correlation matrix over a server-resolved column list, hard-capped",
+    description=(
+        "DS-LAKE-005B-D-T05b. Same window-then-apply-operations shape as "
+        "/histogram, /boxplot and /scatter. `tags` is the CANDIDATE "
+        "universe; the server resolves it (DS-LAKE-005B-D-T05a: near-"
+        "constant filter, then rank by IQR/median or CV) down to at most "
+        "`top_k` columns before computing the matrix — 8,000 candidate "
+        "tags is never 64M matrix cells. The response ECHOES the resolved "
+        "list, since a server-side auto-pick means the client cannot "
+        "infer which columns it got."
+    ),
+)
+async def correlation_pipeline(
+    body: CorrelationRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(build_correlation_matrix, store, body)
 
 
 @router.post(
@@ -310,3 +462,50 @@ async def reclaim_artifact(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(artifact_service.reclaim_artifact, store, body)
+
+
+@router.post(
+    "/artifacts/presign",
+    response_model=ArtifactPresignResponse,
+    summary="Time-limited read URLs for one committed artifact",
+    description=(
+        "Mints presigned GET URLs so a training container can read "
+        "data.parquet and its sidecars WITHOUT holding S3 credentials — the "
+        "same boundary /materialize keeps for source credentials, in the "
+        "opposite direction. Same guard as /artifacts/reclaim: anything that "
+        "is not a committed artifact data key is refused, so this cannot be "
+        "pointed at tmp/ or a preset. Returns the artifact's checksum "
+        "alongside, so the holder can verify the bytes it downloaded rather "
+        "than trusting them. URLs are short-lived on purpose (15 min) — the "
+        "container is expected to download to local disk before training, "
+        "not to stream from object storage for the length of a fit."
+    ),
+)
+async def presign_artifact(
+    body: ArtifactPresignRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    print(
+        f"Presign request for artifact {body}")
+    return await _run(artifact_service.presign_artifact, store, body)
+
+
+@router.post(
+    "/models/runs/presign-upload",
+    response_model=ModelRunUploadPresignResponse,
+    summary="Time-limited write URLs for one training run's outputs",
+    description=(
+        "The write half of /artifacts/presign. Refuses any key outside "
+        "models/{modelId}/runs/{runId}/, so a run cannot be talked into "
+        "overwriting a dataset artifact — which put_frame's immutability "
+        "refusal cannot protect here, because the write happens in another "
+        "process. Called at the END of a run rather than at submit: a URL "
+        "minted up front would have to outlive the whole fit, turning a "
+        "30-minute capability into a multi-hour one for no gain."
+    ),
+)
+async def presign_model_run_upload(
+    body: ModelRunUploadPresignRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.presign_model_run_upload, store, body)

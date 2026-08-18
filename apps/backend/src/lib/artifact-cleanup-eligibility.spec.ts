@@ -188,6 +188,8 @@ describe('selectCleanupEligibleArtifacts', () => {
 
     // version not archived yet — walking parentArtifactId from FINAL reaches all three
     const reachable = new Set(['final-1', 'gold-1', 'silver-1', 'bronze-1']);
+    // gold-1 is FINAL's direct promoted parent — shares its objectKey.
+    const objectKeySharedWithFinal = new Set(['gold-1']);
 
     const before = selectCleanupEligibleArtifacts(
       [...chain, abandonedSibling],
@@ -198,13 +200,15 @@ describe('selectCleanupEligibleArtifacts', () => {
       }),
       CONFIG,
       NOW,
+      objectKeySharedWithFinal,
     );
-    // BRONZE survives (pinned); SILVER/GOLD/abandoned sibling reclaim; FINAL never touched.
-    expect(before.sort()).toEqual(
-      ['abandoned-bronze', 'gold-1', 'silver-1'].sort(),
-    );
+    // BRONZE survives (pinned); gold-1 survives (shares FINAL's bytes);
+    // SILVER (a genuine ancestor, not the direct parent) and the abandoned
+    // sibling reclaim; FINAL never touched.
+    expect(before.sort()).toEqual(['abandoned-bronze', 'silver-1'].sort());
 
-    // Now the version is ARCHIVED — nothing is reachable any more, so BRONZE releases too.
+    // Now the version is ARCHIVED — nothing is reachable or FINAL-shared any
+    // more, so BRONZE and gold-1 both release too.
     const after = selectCleanupEligibleArtifacts(
       [...chain, abandonedSibling],
       new Set(),
@@ -214,9 +218,49 @@ describe('selectCleanupEligibleArtifacts', () => {
       }),
       CONFIG,
       NOW,
+      new Set(),
     );
     expect(after.sort()).toEqual(
       ['abandoned-bronze', 'bronze-1', 'gold-1', 'silver-1'].sort(),
     );
+  });
+
+  it('regression (DS-LAKE-012): never reclaims the SILVER/GOLD artifact directly promoted to a live FINAL, even though it is normally age-releasable', () => {
+    // promoteDraftArtifactToFinalService writes FINAL with the SAME
+    // objectKey as its source — reclaiming that source deletes FINAL's own
+    // bytes even though the FINAL row and protectedArtifactIds walk both
+    // look untouched. This is true whether the promoted source is a GOLD
+    // (the common case) or a SILVER (features step skipped).
+    const goldCase = selectCleanupEligibleArtifacts(
+      [artifact({ id: 'gold-1', type: 'GOLD' })],
+      new Set(), // not reachable via the generic walk — irrelevant here
+      drafts({ 'draft-1': { status: 'SAVED', updatedAt: hoursAgo(500) } }),
+      CONFIG,
+      NOW,
+      new Set(['gold-1']),
+    );
+    expect(goldCase).toEqual([]);
+
+    const silverCase = selectCleanupEligibleArtifacts(
+      [artifact({ id: 'silver-1', type: 'SILVER' })],
+      new Set(),
+      drafts({ 'draft-1': { status: 'SAVED', updatedAt: hoursAgo(500) } }),
+      CONFIG,
+      NOW,
+      new Set(['silver-1']),
+    );
+    expect(silverCase).toEqual([]);
+
+    // A DIFFERENT GOLD in the same draft — not the one promoted to FINAL —
+    // still releases normally. The pin is per-artifact, not per-draft.
+    const unrelatedGoldStillReleases = selectCleanupEligibleArtifacts(
+      [artifact({ id: 'gold-2', type: 'GOLD' })],
+      new Set(),
+      drafts({ 'draft-1': { status: 'SAVED', updatedAt: hoursAgo(500) } }),
+      CONFIG,
+      NOW,
+      new Set(['gold-1']), // gold-2 is not in this set
+    );
+    expect(unrelatedGoldStillReleases).toEqual(['gold-2']);
   });
 });

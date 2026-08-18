@@ -12,6 +12,7 @@ The operation shape mirrors the browser's saved recipe closely enough that a
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
@@ -59,7 +60,8 @@ class CleaningOperation(BaseModel):
     # Domain-friendly aliases.
     window: Optional[int] = Field(None, description="smooth{moving_avg}")
     alpha: Optional[float] = Field(None, description="smooth{exponential}")
-    threshold: Optional[float] = Field(None, description="remove_outlier{zscore}")
+    threshold: Optional[float] = Field(
+        None, description="remove_outlier{zscore}")
     value: Optional[float] = Field(None, description="fill_missing{constant}")
     min: Optional[float] = Field(None, description="clip lower bound")
     max: Optional[float] = Field(None, description="clip upper bound")
@@ -117,6 +119,54 @@ class ArtifactStatsResponse(BaseModel):
     #: None for them, same reasoning as column_stats_key above being None
     #: for a write path that never produces one).
     feature_spec_key: Optional[str] = None
+    #: Feature-config names `apply_features` skipped due to a name
+    #: collision with an already-existing column (see `feature_service.
+    #: apply_features`'s own docstring — the skip itself is unchanged,
+    #: deliberately kept idempotent; this only stops feature_spec.json
+    #: from claiming an uncomputed feature ran). Always [] for materialize/
+    #: clean, which never call apply_features.
+    skipped_features: list[str] = []
+
+
+class ArtifactPresignRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    source_key: str = Field(
+        ..., description="The committed artifact's data.parquet key."
+    )
+    #: Sidecars are opt-in per name rather than always-all: a caller that
+    #: needs only the data should not be handed capabilities it has no use
+    #: for. Unknown/absent sidecars come back as null, not an error — a
+    #: BRONZE artifact legitimately has no feature_spec.json.
+    sidecars: list[str] = Field(default_factory=list)
+
+
+class ArtifactPresignResponse(BaseModel):
+    data_url: str
+    #: Keyed by the sidecar filename that was asked for. Null value = that
+    #: sidecar does not exist on this artifact.
+    sidecar_urls: dict[str, str | None]
+    #: From the artifact's own bytes, so the container can verify what it
+    #: downloaded against what NestJS recorded on the run row.
+    checksum: str
+    row_count: int
+    expires_at: str
+
+
+class ModelRunUploadPresignRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    model_id: str
+    run_id: str
+    #: Filenames under models/{modelId}/runs/{runId}/. Explicit rather than
+    #: "presign everything" so a run that produced no predictions.parquet is
+    #: not handed a URL implying it should have.
+    filenames: list[str]
+
+
+class ModelRunUploadPresignResponse(BaseModel):
+    upload_urls: dict[str, str]
+    expires_at: str
 
 
 class ValidationCheckResponse(BaseModel):
@@ -282,9 +332,17 @@ class FeaturesRequest(BaseModel):
     source_key: str
     target_key: str
     features: list[FeatureConfigRequest] = Field(default_factory=list)
-    selected_columns: Optional[list[str]] = Field(None, alias="selectedColumns")
+    selected_columns: Optional[list[str]] = Field(
+        None, alias="selectedColumns")
     scalers: dict[str, str] = Field(default_factory=dict)
     overwrite: bool = False
+    target_y: str | None = Field(
+        default=None,
+        description=(
+            "The tag the model predicts. Recorded in feature_spec.json and "
+            "force-kept through select_columns. Never scaled."
+        ),
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -497,7 +555,8 @@ class CleanupRequest(BaseModel):
     @model_validator(mode="after")
     def prefix_is_a_directory(self) -> "CleanupRequest":
         if not self.prefix.endswith("/"):
-            raise ValueError("prefix must end with '/' so it cannot match a sibling.")
+            raise ValueError(
+                "prefix must end with '/' so it cannot match a sibling.")
         if "tmp/" not in self.prefix:
             raise ValueError(
                 "Refusing to clear a prefix outside tmp/. Committed dataset "
@@ -524,7 +583,8 @@ class ArtifactReclaimRequest(BaseModel):
     cannot be pointed at `tmp/`, a preset, or a legacy version key by mistake.
     """
 
-    object_key: str = Field(..., examples=["ds-1/artifacts/art-7/data.parquet"])
+    object_key: str = Field(..., examples=[
+        "ds-1/artifacts/art-7/data.parquet"])
 
     @model_validator(mode="after")
     def object_key_is_a_committed_artifact(self) -> "ArtifactReclaimRequest":
@@ -554,7 +614,8 @@ class PreviewRequest(BaseModel):
     operations: list[CleaningOperation] = Field(default_factory=list)
     #: Per-tag decimal places. Python has no access to the client's tagMeta, so
     #: this must travel in the request or every value rounds to the default.
-    precision: dict[str, int] = Field(default_factory=dict, examples=[{"TI-101": 1}])
+    precision: dict[str, int] = Field(
+        default_factory=dict, examples=[{"TI-101": 1}])
     sample_rows: int = Field(
         DEFAULT_SAMPLE_ROWS,
         ge=1,
@@ -586,6 +647,275 @@ class PreviewRequest(BaseModel):
     #: table) are unaffected; this is a separate, larger series meant for a
     #: chart, not the table.
     max_points: Optional[int] = Field(None, ge=3, le=MAX_DOWNSAMPLE_POINTS)
+
+
+#: Silverman's rule-of-thumb KDE sample count, matching the client's
+#: `KDE_SAMPLES` constant (tag-histogram-chart.tsx) bug-for-bug.
+DEFAULT_HISTOGRAM_KDE_SAMPLES = 100
+#: Matches the client's `BIN_COUNT` constant — used only to rescale KDE
+#: density onto a count axis (`density * n * binWidth`), not for discrete
+#: binning; the chart itself is a smoothed density curve, not bars.
+DEFAULT_HISTOGRAM_BIN_COUNT = 12
+
+
+class HistogramRequest(BaseModel):
+    """DS-LAKE-005B-D-T01. Reuses `PreviewRequest`'s exact payload shape
+    (TRANSPORT decision, DS-LAKE-005B-D.userDecisions) — a NEW endpoint, not
+    an extension of `/preview`'s response, so chart cadence stays independent
+    of `/preview`'s own scrubber-driven one.
+    """
+
+    source_key: str = Field(...,
+                            description="Object key of the source artifact")
+    operations: list[CleaningOperation] = Field(default_factory=list)
+    precision: dict[str, int] = Field(default_factory=dict)
+    #: Which tags to overlay — REQUIRED (unlike `PreviewRequest.tags`, which
+    #: means "every tag" when omitted): a histogram/KDE domain is shared
+    #: across every overlaid tag (see `histogram_service.build_histogram`),
+    #: so "every tag in an 8,000-tag artifact" is never a sane default here.
+    tags: list[str] = Field(..., min_length=1)
+    sample_rows: int = Field(
+        DEFAULT_SAMPLE_ROWS,
+        ge=1,
+        le=MAX_SAMPLE_ROWS,
+        description="Rows read from the head of the WINDOW to compute against",
+    )
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    kde_samples: int = Field(DEFAULT_HISTOGRAM_KDE_SAMPLES, ge=3, le=500)
+    bin_count: int = Field(DEFAULT_HISTOGRAM_BIN_COUNT, ge=1, le=200)
+
+
+class KdePoint(BaseModel):
+    x: float
+    y: float
+
+
+class TagHistogram(BaseModel):
+    tag: str
+    mean: float
+    median: float
+    mode: float
+    std: float
+    min: float
+    max: float
+    range: float
+    #: Count of Good values this tag contributed — `densityToCount`'s `n`.
+    count: int
+    #: `kdeCounts` in the client's own naming — KDE density already rescaled
+    #: onto the shared count axis, ready to plot with no further client math.
+    kde: list[KdePoint]
+
+
+class HistogramResponse(BaseModel):
+    source_key: str
+    #: The domain (UNPADDED, before the 50% visual pad) shared across every
+    #: qualifying tag — `null` when fewer than 2 tags have >=2 Good values.
+    domain_min: Optional[float] = None
+    domain_max: Optional[float] = None
+    tags: list[TagHistogram]
+    #: Requested tags with fewer than 2 Good values in this window — excluded
+    #: from `tags`/the shared domain, named so the client can say why.
+    insufficient_tags: list[str]
+
+
+#: Bounds the OUTLIER LIST specifically (DS-LAKE-005B-D-T03's own scope_note:
+#: "CAPPED outlier list carrying its own total count") — a value with no
+#: client-side equivalent, since `tagBoxplotStats` never caps its outlier
+#: array today. `outlier_count` on `TagBoxplot` always carries the true,
+#: uncapped total regardless of this cap.
+DEFAULT_BOXPLOT_OUTLIER_CAP = 50
+
+
+class BoxplotRequest(BaseModel):
+    """DS-LAKE-005B-D-T03. Same payload shape as `HistogramRequest`
+    (TRANSPORT decision, DS-LAKE-005B-D.userDecisions) — reuses the identical
+    operations/precision/tags/sample_rows/start_time/end_time fields so this
+    endpoint's reactivity mechanism is the same one `/histogram` already
+    proved live against real MinIO data, not a second implementation of it.
+    """
+
+    source_key: str = Field(...,
+                            description="Object key of the source artifact")
+    operations: list[CleaningOperation] = Field(default_factory=list)
+    precision: dict[str, int] = Field(default_factory=dict)
+    #: Tags to summarize — REQUIRED, same rationale as `HistogramRequest.tags`:
+    #: unlike `/preview` there is no sane "every tag" default for a chart
+    #: request that returns one box per tag.
+    tags: list[str] = Field(..., min_length=1)
+    sample_rows: int = Field(
+        DEFAULT_SAMPLE_ROWS,
+        ge=1,
+        le=MAX_SAMPLE_ROWS,
+        description="Rows read from the head of the WINDOW to compute against",
+    )
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    outlier_cap: int = Field(DEFAULT_BOXPLOT_OUTLIER_CAP, ge=1, le=500)
+
+
+class TagBoxplot(BaseModel):
+    tag: str
+    min: float
+    q1: float
+    median: float
+    mean: float
+    q3: float
+    max: float
+    #: 1.5×IQR whisker caps, clamped to the observed data range — matches
+    #: `BoxplotStats.whiskerLow`/`whiskerHigh` (`lib/data-quality.ts`).
+    whisker_low: float
+    whisker_high: float
+    #: CAPPED at the request's `outlier_cap` — see `outlier_count` for the
+    #: true, uncapped total. `len(outliers) < outlier_count` means truncated.
+    outliers: list[float]
+    outlier_count: int
+    count: int
+
+
+class BoxplotResponse(BaseModel):
+    source_key: str
+    tags: list[TagBoxplot]
+    #: Requested tags with 0 Good values in this window. NOT a port of the
+    #: client's presentational `hasData` check (`min != max or median != 0`)
+    #: — `boxplot_service.py::_qualifies` deliberately gates on `count > 0`
+    #: instead, since `hasData` mislabels a tag whose Good values are ALL
+    #: exactly 0 (e.g. a valve stuck fully closed) as insufficient data,
+    #: when it is real data. See `_qualifies`'s own docstring for the full
+    #: reasoning; DS-LAKE-005B-D-T02's chart-parity fixture
+    #: `boxplot_all_zero_tag_qualifies` pins this divergence directly.
+    insufficient_tags: list[str]
+
+
+#: Grid/hex-binning decimation cap for the plotted point cloud — see
+#: `services.downsample.grid_bin_indices`'s own docstring
+#: (ADR-DS-LAKE-005B-D-scatter-decimation) for why this is NOT `lttb_indices`.
+DEFAULT_SCATTER_MAX_POINTS = 2_000
+
+
+class ScatterRequest(BaseModel):
+    """DS-LAKE-005B-D-T04. Similar payload shape to `HistogramRequest`/
+    `BoxplotRequest` (operations/precision/sample_rows/start_time/end_time),
+    but takes exactly TWO tags (`x_tag`/`y_tag`) rather than a `tags` list —
+    a scatter plot has a fixed 2D shape, unlike histogram/boxplot's N-tag
+    overlay.
+    """
+
+    source_key: str = Field(...,
+                            description="Object key of the source artifact")
+    operations: list[CleaningOperation] = Field(default_factory=list)
+    precision: dict[str, int] = Field(default_factory=dict)
+    x_tag: str = Field(..., min_length=1)
+    y_tag: str = Field(..., min_length=1)
+    sample_rows: int = Field(
+        DEFAULT_SAMPLE_ROWS,
+        ge=1,
+        le=MAX_SAMPLE_ROWS,
+        description="Rows read from the head of the WINDOW to compute against",
+    )
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    #: Caps the PLOTTED point cloud only — see `n`/regression fields on the
+    #: response, which are always computed over the FULL Good-filtered
+    #: frame, never the decimated sample (this task's own HARD REQUIREMENT).
+    max_points: int = Field(
+        DEFAULT_SCATTER_MAX_POINTS, ge=10, le=MAX_DOWNSAMPLE_POINTS
+    )
+
+
+class ScatterPoint(BaseModel):
+    x: float
+    y: float
+
+
+class ScatterResponse(BaseModel):
+    source_key: str
+    x_tag: str
+    y_tag: str
+    #: Decimated for plotting — see `n` for the TRUE point count this was
+    #: sampled down from.
+    points: list[ScatterPoint]
+    #: The TRUE count of (x, y) pairs where BOTH cells are Good — the
+    #: regression below is fit over all `n` of them, never over
+    #: `len(points)`. ADR-DS-LAKE-005B-D-scatter-status-filter: unlike the
+    #: client's `toScatterPoints` (status-blind), a pair counts only when
+    #: BOTH x and y are Good, matching histogram/boxplot's `_good_values`
+    #: convention — see that ADR for why this is a deliberate, tracked
+    #: divergence from the client function, not a silent "fix".
+    n: int
+    slope: float
+    intercept: float
+    r2: float
+    #: Whether `points` is a strict subset of the `n` Good pairs (false
+    #: when `n <= max_points`, in which case `points` IS every pair).
+    downsampled: bool
+
+
+#: Hard ceiling on the correlation matrix's OUTPUT size (`top_k x top_k`
+#: cells) — the direction DS-LAKE-005B-D-T05b's own scope_note names as
+#: the real danger: 8,000 candidate tags is not 8,000 matrix cells, it's
+#: 64M. Chosen so the worst case (100x100 = 10,000 cells) stays a small
+#: JSON payload regardless of how many tags `tags` names.
+DEFAULT_CORRELATION_TOP_K = 20
+MAX_CORRELATION_TOP_K = 100
+
+
+class CorrelationRequest(BaseModel):
+    """DS-LAKE-005B-D-T05b. Same operations/precision/sample_rows/
+    start_time/end_time fields as Histogram/Boxplot/ScatterRequest —
+    proven reactivity mechanism, not a second implementation of it.
+
+    `tags` is the CANDIDATE universe (required, same convention as
+    Histogram/Boxplot/ScatterRequest.tags) — this endpoint does not itself
+    decide "every tag on the artifact". `top_k` bounds the OUTPUT: the
+    response's matrix is always `len(resolved) x len(resolved)`,
+    `len(resolved) <= top_k`, regardless of `len(tags)`.
+    """
+
+    source_key: str = Field(...,
+                            description="Object key of the source artifact")
+    operations: list[CleaningOperation] = Field(default_factory=list)
+    precision: dict[str, int] = Field(default_factory=dict)
+    tags: list[str] = Field(..., min_length=1)
+    sample_rows: int = Field(
+        DEFAULT_SAMPLE_ROWS,
+        ge=1,
+        le=MAX_SAMPLE_ROWS,
+        description="Rows read from the head of the WINDOW to compute against",
+    )
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    top_k: int = Field(
+        DEFAULT_CORRELATION_TOP_K, ge=2, le=MAX_CORRELATION_TOP_K
+    )
+
+
+class CorrelationResponse(BaseModel):
+    source_key: str
+    #: RESOLVED column list, in ranked order — the client cannot infer
+    #: which columns it got (server-side auto-pick, DS-LAKE-005B-D's own
+    #: userDecisions), so this MUST be echoed; `matrix[i][j]` is the
+    #: correlation between `tags[i]` and `tags[j]`.
+    tags: list[str]
+    #: `matrix[i][i] == 1.0`; symmetric.
+    matrix: list[list[float]]
+    #: Which ranking metric ("iqr_median" | "cv") placed each resolved tag
+    #: into `tags` — DS-LAKE-005B-D's own acceptance criteria requires the
+    #: response "states the ranking metric used"; per-tag because
+    #: `correlation_selector` can rank different tags by different
+    #: branches within the same request (DS-LAKE-005B-D-T05a).
+    column_metrics: dict[str, str]
+    #: Requested tags with fewer than 2 Good values — never scored, never
+    #: eligible for `tags`.
+    insufficient_tags: list[str]
+    #: Requested tags that WERE scored but excluded as near-constant
+    #: before ranking (DS-LAKE-005B-D-T05a) — distinct from
+    #: `insufficient_tags`: these have real data, just not enough
+    #: variability to be worth correlating.
+    near_constant_tags: list[str]
+    #: `len(tags)` from the REQUEST — lets the client render "k of N,
+    #: ranked by <metric>" without re-deriving N itself.
+    total_candidates: int
 
 
 class ColumnStats(BaseModel):

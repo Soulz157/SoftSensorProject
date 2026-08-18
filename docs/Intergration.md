@@ -64,21 +64,21 @@ Do NOT create a duplicate PI Web API integration unless the current implementati
 The desired flow is:
 
 User
-  ↓
+↓
 Enter Data Source Credentials
-  ↓
+↓
 Frontend sends request to Backend
-  ↓
+↓
 Backend authenticates with PI Web API
-  ↓
+↓
 Backend fetches real PI data
-  ↓
+↓
 Backend returns safe data / metadata to Client
-  ↓
+↓
 User selects data
-  ↓
+↓
 Dataset is created
-  ↓
+↓
 Dataset can be used in Model Creation Flow
 
 User credentials must be handled securely.
@@ -212,18 +212,18 @@ Security requirements:
 The desired high-level architecture is:
 
 Client
-  ↓
+↓
 NestJS Backend API
-  ↓
+↓
 Data Source Service / Adapter
-  ↓
+↓
 ┌───────────────────┬───────────────────┬───────────────────┐
-│                   │                   │
-PI Web API          SQL Database        RESTful API
-│                   │                   │
+│ │ │
+PI Web API SQL Database RESTful API
+│ │ │
 └───────────────────┴───────────────────┴───────────────────┘
-                    ↓
-                 Dataset
+↓
+Dataset
 
 The Client must NOT connect directly to:
 
@@ -282,19 +282,19 @@ Update the Data Source UI where necessary to support at least:
 Expected conceptual flow:
 
 Select Data Source
-    ↓
+↓
 Configure Connection
-    ↓
+↓
 Enter Credentials
-    ↓
+↓
 Test Connection
-    ↓
+↓
 Connection Successful
-    ↓
+↓
 Browse / Select Data
-    ↓
+↓
 Preview Data
-    ↓
+↓
 Create / Use Dataset
 
 The UI should provide appropriate states such as:
@@ -319,13 +319,13 @@ Follow the existing project architecture.
 Preferred structure:
 
 Controller
-    ↓
+↓
 DTO / Validation
-    ↓
+↓
 Service
-    ↓
+↓
 Data Source Adapter / Integration
-    ↓
+↓
 External Data Source
 
 Controllers should remain thin.
@@ -374,7 +374,7 @@ NEVER:
 - Log API Keys.
 - Log Bearer Tokens.
 - Expose database credentials to the browser.
-- Expose secrets using NEXT_PUBLIC_ environment variables.
+- Expose secrets using NEXT*PUBLIC* environment variables.
 
 If credentials must be persisted:
 
@@ -448,17 +448,17 @@ Do not couple Data Source retrieval directly to Final Model persistence.
 The flow should conceptually be:
 
 Data Source
-    ↓
+↓
 Fetch Real Data
-    ↓
+↓
 Dataset
-    ↓
+↓
 Model Creation
-    ↓
+↓
 Training
-    ↓
+↓
 Evaluation
-    ↓
+↓
 Save Model
 
 ---
@@ -571,7 +571,7 @@ After implementation, verify:
 - API Keys are not logged.
 - Bearer Tokens are not logged.
 - Database credentials are not exposed to the Client.
-- No secrets use NEXT_PUBLIC_ environment variables.
+- No secrets use NEXT*PUBLIC* environment variables.
 - SSRF risks are considered for RESTful API URLs.
 - SQL Injection risks are addressed.
 
@@ -580,17 +580,17 @@ After implementation, verify:
 Verify:
 
 Data Source
-    ↓
+↓
 Real Data
-    ↓
+↓
 Dataset
-    ↓
+↓
 Model Creation Step 1
-    ↓
+↓
 Training Step 2
-    ↓
+↓
 Evaluation Step 3
-    ↓
+↓
 Save Model Step 4
 
 The Data Source integration must not automatically create or commit a final Model.

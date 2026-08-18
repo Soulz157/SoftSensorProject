@@ -83,8 +83,10 @@ export function Phase3Evaluation({ nav }: Props) {
 
   // Real rows from the dataset's committed RAW artifact when one exists; falls
   // back to synthetic rows for legacy recipes, with `rowSource` saying which.
-  const { dataset: storedRaw, source: rowSource } =
-    useDatasetVersionRows(selectedDataset, { materialize: false })
+  const { dataset: storedRaw, source: rowSource } = useDatasetVersionRows(
+    selectedDataset,
+    { materialize: false },
+  )
 
   const modelReady = useMemo(() => {
     if (!selectedDataset) return { tags: [], rows: [] }

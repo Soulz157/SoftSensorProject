@@ -148,15 +148,26 @@ export function Step32Imputation({ nav }: Props) {
   const handleSave = () => {
     if (cleaningTags.length === 0) return
     saveCleanedTags(cleaningTags, draft)
+    // DS-LAKE-012-T01 fix: `applyClean` silently no-ops when `draft` is empty
+    // (use-dataset-draft-pipeline.ts) — no job is started, no SILVER artifact
+    // is ever produced. The toast must say so rather than claiming "Cleaned",
+    // which previously fired unconditionally and was indistinguishable from a
+    // real server-synced clean. Marking tags clean with an empty pipeline is
+    // still a legitimate action (accept raw), just not a cleaning one.
+    const count = cleaningTags.length
+    const plural = count === 1 ? '' : 's'
     toast.success(
-      `Cleaned ${cleaningTags.length} tag${cleaningTags.length === 1 ? '' : 's'}`,
+      draft.length === 0
+        ? `Marked ${count} tag${plural} as clean (no cleaning step added)`
+        : `Cleaned ${count} tag${plural}`,
     )
     // "Local preview, server on Apply": the toast above and every control on
     // this page are the SAME as before this hook existed — this call only
     // adds a real SILVER artifact behind the save. A failure lands in
     // `syncState`, not in a dialog, so it cannot block the local flow that
-    // already happened above.
-    void applyClean(cleaningTags, draft)
+    // already happened above. Skipped entirely when `draft` is empty — there
+    // is no cleaning pipeline to sync, and `applyClean` would no-op anyway.
+    if (draft.length > 0) void applyClean(cleaningTags, draft)
   }
   const preprocessed = useMemo(
     () => preprocessPipelines(base, cleaningPipelines).rows.length,

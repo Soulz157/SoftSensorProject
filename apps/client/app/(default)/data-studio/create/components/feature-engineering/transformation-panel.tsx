@@ -149,7 +149,7 @@ export function FeatureTransformDialog({
               ) : (
                 <div className="space-y-4">
                   {/* Numeric group */}
-                  <div className="space-y-2">
+                  <div className="space-y-2 ">
                     <p className="text-[11px] font-semibold text-muted-foreground">
                       Numeric
                       <span className="ml-1 font-normal normal-case">
@@ -171,7 +171,7 @@ export function FeatureTransformDialog({
                           className="min-w-0 flex-1 cursor-pointer truncate font-mono text-sm font-medium leading-none"
                           title={col}
                         >
-                          {col}
+                          {col.length > 20 ? col.slice(0, 20) + '...' : col}
                         </label>
                       </div>
                     ))}

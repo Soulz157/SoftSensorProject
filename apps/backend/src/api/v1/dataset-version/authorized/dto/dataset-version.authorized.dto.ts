@@ -205,6 +205,93 @@ export const PreviewVersionSchema = z.object({
 });
 
 /**
+ * DS-LAKE-005B-D-T01. Reuses `PreviewVersionSchema`'s payload shape
+ * (TRANSPORT decision, DS-LAKE-005B-D.userDecisions) — a NEW endpoint, not
+ * an extension of `/preview`'s response, so chart cadence stays independent
+ * of the scrubber's own.
+ *
+ * `tags` is REQUIRED here (unlike `PreviewVersionSchema.tags`, which means
+ * "every tag"): the histogram/KDE domain is shared across every overlaid
+ * tag, so "every tag in an 8,000-tag artifact" is never a sane default.
+ */
+export const HistogramRequestSchema = z.object({
+  operations: z.array(CleaningOperationSchema).default([]),
+  precision: z.record(z.string(), z.number().int()).default({}),
+  tags: z.array(z.string()).min(1),
+  sampleRows: z.number().int().min(1).max(50_000).optional(),
+  startTime: z.string().optional(),
+  endTime: z.string().optional(),
+  kdeSamples: z.number().int().min(3).max(500).optional(),
+  binCount: z.number().int().min(1).max(200).optional(),
+});
+
+export class HistogramRequestDto extends createZodDto(HistogramRequestSchema) {}
+
+/**
+ * DS-LAKE-005B-D-T03. Same TRANSPORT shape as `HistogramRequestSchema` —
+ * the box plot reuses the identical payload fields, proven live for
+ * `/histogram` already, rather than a second implementation of the same
+ * reactivity mechanism.
+ */
+export const BoxplotRequestSchema = z.object({
+  operations: z.array(CleaningOperationSchema).default([]),
+  precision: z.record(z.string(), z.number().int()).default({}),
+  tags: z.array(z.string()).min(1),
+  sampleRows: z.number().int().min(1).max(50_000).optional(),
+  startTime: z.string().optional(),
+  endTime: z.string().optional(),
+  /** Caps the OUTLIER LIST only — `outlierCount` on each tag always carries
+   * the true, uncapped total regardless of this cap. */
+  outlierCap: z.number().int().min(1).max(500).optional(),
+});
+
+export class BoxplotRequestDto extends createZodDto(BoxplotRequestSchema) {}
+
+/**
+ * DS-LAKE-005B-D-T04. Similar payload shape to `HistogramRequestSchema`/
+ * `BoxplotRequestSchema` (operations/precision/sampleRows/startTime/
+ * endTime), but takes exactly TWO tags (`xTag`/`yTag`) rather than a `tags`
+ * list — a scatter plot has a fixed 2D shape, unlike histogram/boxplot's
+ * N-tag overlay.
+ */
+export const ScatterRequestSchema = z.object({
+  operations: z.array(CleaningOperationSchema).default([]),
+  precision: z.record(z.string(), z.number().int()).default({}),
+  xTag: z.string().min(1),
+  yTag: z.string().min(1),
+  sampleRows: z.number().int().min(1).max(50_000).optional(),
+  startTime: z.string().optional(),
+  endTime: z.string().optional(),
+  /** Caps the PLOTTED point cloud only — `n` and the regression fields on
+   * the response are always computed over the FULL Good-filtered frame. */
+  maxPoints: z.number().int().min(10).max(10_000).optional(),
+});
+
+export class ScatterRequestDto extends createZodDto(ScatterRequestSchema) {}
+
+/**
+ * DS-LAKE-005B-D-T05b. `tags` is the CANDIDATE universe (same required-list
+ * convention as Histogram/Boxplot/ScatterRequestSchema); `topK` bounds the
+ * OUTPUT — the response's matrix is always `resolved.length x
+ * resolved.length`, `resolved.length <= topK`, regardless of `tags.length`.
+ * The one field in this feature that can regress DS-LAKE-005B-B's AC5 on
+ * its own if left unbounded (8,000 tags² is 64M matrix cells).
+ */
+export const CorrelationRequestSchema = z.object({
+  operations: z.array(CleaningOperationSchema).default([]),
+  precision: z.record(z.string(), z.number().int()).default({}),
+  tags: z.array(z.string()).min(1),
+  sampleRows: z.number().int().min(1).max(50_000).optional(),
+  startTime: z.string().optional(),
+  endTime: z.string().optional(),
+  topK: z.number().int().min(2).max(100).optional(),
+});
+
+export class CorrelationRequestDto extends createZodDto(
+  CorrelationRequestSchema,
+) {}
+
+/**
  * DS-LAKE-007-T04, thin-endpoint scope: calls Python, zod-parses the
  * response, returns it. No DatasetArtifact row is created or updated here
  * — the schema's own comment ("validationKey on FINAL") anticipates a
@@ -238,12 +325,28 @@ export const PromoteFinalArtifactSchema = z.object({
   maxOutlierFraction: z.number().optional(),
 });
 
+/**
+ * DS-LAKE-010-T01. NOT the same concept as `PromoteFinalArtifactSchema`
+ * above — that one promotes a DRAFT ARTIFACT (BRONZE/SILVER/GOLD) to FINAL,
+ * inside Save Dataset. This one moves a saved DatasetVersion's own
+ * `status` through the registry lifecycle
+ * (DRAFT -> VALIDATED -> ACTIVE -> DEPRECATED -> ARCHIVED,
+ * lib/dataset-version-transitions.ts). Named `...VersionStatus...`
+ * specifically so the two never get confused at a call site.
+ */
+export const PromoteVersionStatusSchema = z.object({
+  status: z.enum(['DRAFT', 'VALIDATED', 'ACTIVE', 'DEPRECATED', 'ARCHIVED']),
+});
+
 export class CreateRawVersionDto extends createZodDto(CreateRawVersionSchema) {}
 export class StartCleanJobDto extends createZodDto(StartCleanJobSchema) {}
 export class CreateFeaturesDto extends createZodDto(CreateFeaturesSchema) {}
 export class ValidateArtifactDto extends createZodDto(ValidateArtifactSchema) {}
 export class PromoteFinalArtifactDto extends createZodDto(
   PromoteFinalArtifactSchema,
+) {}
+export class PromoteVersionStatusDto extends createZodDto(
+  PromoteVersionStatusSchema,
 ) {}
 export class ListRowsDto extends createZodDto(ListRowsSchema) {}
 export class TagCatalogDto extends createZodDto(TagCatalogSchema) {}
@@ -281,6 +384,14 @@ export const ArtifactStatsSchema = z.object({
    * writes set it; every earlier write path never sends this field.
    */
   feature_spec_key: z.string().nullable().optional(),
+  /**
+   * Feature-config names skipped due to a name collision with an
+   * already-existing column (`feature_service.apply_features`'s own
+   * docstring). Always [] for materialize/clean, which never call
+   * apply_features; optional so a pre-this-field Python response still
+   * parses.
+   */
+  skipped_features: z.array(z.string()).optional(),
 });
 
 export type ArtifactStats = z.infer<typeof ArtifactStatsSchema>;
@@ -314,22 +425,19 @@ const TagColumnStatsSchema = z.object({
   tag: z.string(),
   coverage: z.number(),
   null_pct: z.number(),
-  outlier_count: z.number().int().nonnegative(),
-  min: z.number().nullable(),
-  max: z.number().nullable(),
-  mean: z.number().nullable(),
-  drift: z.number().nullable(),
-  /**
-   * p1/p5/p10/p20/p80/p90/p95/p99 (DS-LAKE-005B-B-T01, edit 3) — a
-   * value-clip bound needs the FULL artifact's percentiles, not one computed
-   * from whatever viewport window happens to be in browser state. Nullable
-   * (not optional): Python always sends the key, `null` when there are no
-   * Good cells to compute it from.
-   */
-  percentiles: z.record(z.string(), z.number()).nullable(),
+  outlier_count: z.number().int(),
+  min: z.number().nullable().optional(),
+  max: z.number().nullable().optional(),
+  mean: z.number().nullable().optional(),
+  // `.nullish()` not `.nullable()` — a legacy sidecar OMITS the key
+  // entirely (undefined), a new one with <2 Good cells sends null. Both
+  // must parse, and both mean "nothing to show" to the table.
+  median: z.number().nullish(),
+  std: z.number().nullish(),
+  drift: z.number().nullish(),
+  percentiles: z.record(z.string(), z.number()).nullish(),
   cleaned: z.boolean(),
 });
-
 /**
  * apps/python `schemas.preprocess.ColumnStatsResponse` (DS-LAKE-005B-A-T07).
  * No request DTO — the route takes only path params (dataset/artifact id),
@@ -340,6 +448,30 @@ export const PythonColumnStatsSchema = z.object({
   source_key: z.string(),
   column_stats_key: z.string(),
   stats: z.record(z.string(), TagColumnStatsSchema),
+});
+
+/**
+ * apps/python `schemas.preprocess.CorrelationResponse` (DS-LAKE-005B-D-T05b).
+ * CORRECTED (this session, live-caught): the prior version of this schema
+ * (`correlation_matrix`/`resolved_tags`/`sample_rows`/`start_time`/
+ * `end_time`) matched none of Python's actual response fields — `.parse()`
+ * threw a ZodError on every real call, so `/correlation` was broken end to
+ * end since it shipped. Field names/shapes below are read directly off
+ * `CorrelationResponse` in `apps/python/schemas/preprocess.py`, not guessed:
+ * `matrix` is `list[list[float]]` (positionally indexed, NOT a `tags`-keyed
+ * record), and Python never sends `sample_rows`/`start_time`/`end_time` on
+ * this response at all. The client's `DraftCorrelationResult`
+ * (`services/dataset-draft.ts`) was already built against this correct
+ * shape — only this schema was stale.
+ */
+export const PythonCorrelationSchema = z.object({
+  source_key: z.string(),
+  tags: z.array(z.string()),
+  matrix: z.array(z.array(z.number())),
+  column_metrics: z.record(z.string(), z.string()),
+  insufficient_tags: z.array(z.string()),
+  near_constant_tags: z.array(z.string()),
+  total_candidates: z.number().int(),
 });
 
 const PreviewCellSchema = z.object({
@@ -472,6 +604,97 @@ export const PythonMetadataSchema = z.object({
   row_count: z.number().int().nonnegative(),
   start_time: z.string().nullable(),
   end_time: z.string().nullable(),
+});
+
+/**
+ * apps/python `schemas.preprocess.HistogramResponse` (DS-LAKE-005B-D-T01).
+ * `domain_min`/`domain_max` are `null` together when no requested tag
+ * qualifies (fewer than 2 Good values) — never independently null, since the
+ * domain is one shared value across every qualifying tag, not per-tag.
+ */
+const PythonKdePointSchema = z.object({
+  x: z.number(),
+  y: z.number(),
+});
+
+const PythonTagHistogramSchema = z.object({
+  tag: z.string(),
+  mean: z.number(),
+  median: z.number(),
+  mode: z.number(),
+  std: z.number(),
+  min: z.number(),
+  max: z.number(),
+  range: z.number(),
+  count: z.number().int().nonnegative(),
+  kde: z.array(PythonKdePointSchema),
+});
+
+export const PythonHistogramSchema = z.object({
+  source_key: z.string(),
+  domain_min: z.number().nullable(),
+  domain_max: z.number().nullable(),
+  tags: z.array(PythonTagHistogramSchema),
+  insufficient_tags: z.array(z.string()),
+});
+
+/**
+ * apps/python `schemas.preprocess.BoxplotResponse` (DS-LAKE-005B-D-T03).
+ * `outliers` is CAPPED at the request's `outlierCap`; `outlier_count` always
+ * carries the true, uncapped total — `outliers.length < outlier_count`
+ * means the list was truncated.
+ */
+const PythonTagBoxplotSchema = z.object({
+  tag: z.string(),
+  min: z.number(),
+  q1: z.number(),
+  median: z.number(),
+  mean: z.number(),
+  q3: z.number(),
+  max: z.number(),
+  whisker_low: z.number(),
+  whisker_high: z.number(),
+  outliers: z.array(z.number()),
+  outlier_count: z.number().int().nonnegative(),
+  count: z.number().int().nonnegative(),
+});
+
+export const PythonBoxplotSchema = z.object({
+  source_key: z.string(),
+  tags: z.array(PythonTagBoxplotSchema),
+  /** Requested tags with 0 Good values in this window. Gated on
+   * `count > 0` server-side — NOT the client's `hasData` check
+   * (`min != max or median != 0`), which would mislabel an all-zero-
+   * valued tag as insufficient (`boxplot_service.py::_qualifies`). */
+  insufficient_tags: z.array(z.string()),
+});
+
+const PythonScatterPointSchema = z.object({
+  x: z.number(),
+  y: z.number(),
+});
+
+/**
+ * apps/python `schemas.preprocess.ScatterResponse` (DS-LAKE-005B-D-T04).
+ * `points` is DECIMATED (2D grid binning, not LTTB — a scatter's axes are
+ * tag values, not time) for plotting only; `n`/`slope`/`intercept`/`r2`
+ * are always computed over the FULL Good-filtered frame, never the
+ * decimated sample. A pair counts toward `n` only when BOTH x and y are
+ * Good — a deliberate divergence from the client's status-blind
+ * `toScatterPoints` (`lib/preprocessing.ts`), which this endpoint does
+ * not port; `toScatterPoints` itself is untouched because it also backs
+ * Model Creation Flow evaluation metrics.
+ */
+export const PythonScatterSchema = z.object({
+  source_key: z.string(),
+  x_tag: z.string(),
+  y_tag: z.string(),
+  points: z.array(PythonScatterPointSchema),
+  n: z.number().int().nonnegative(),
+  slope: z.number(),
+  intercept: z.number(),
+  r2: z.number(),
+  downsampled: z.boolean(),
 });
 
 /** apps/python `schemas.preprocess.TagCatalogResponse` (DS-LAKE-005B-A-T03). */

@@ -6,13 +6,13 @@ import { Binary, CheckSquare, Wrench } from 'lucide-react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
 import {
-  applyFeatures,
   featureColumnName,
   type FeatureConfig,
 } from '@/lib/feature-engineering'
 import {
   dwFeaturedDatasetAtom,
   dwFeaturePresetAtom,
+  dwGoldWarmErrorAtom,
   dwRawDatasetAtom,
   dwTimeRangeAtom,
 } from '@/store/dataset-studio'
@@ -42,6 +42,7 @@ interface Props {
 export function Step4FeatureEngineering({ nav }: Props) {
   const raw = useAtomValue(dwRawDatasetAtom)
   const featurePreset = useAtomValue(dwFeaturePresetAtom)
+  const goldWarmError = useAtomValue(dwGoldWarmErrorAtom)
   useDatasetFeaturePreviewSample()
   const {
     featureConfigs,
@@ -73,18 +74,13 @@ export function Step4FeatureEngineering({ nav }: Props) {
     [featured.tags, originalColumns],
   )
   const allColumns = featured.tags
-  // DataAnalysisCard is deliberately NOT switched to `featured`
-  // (DS-LAKE-006-AC5's fix). It was already named as a separate, still-open
-  // gap before this fix (DS-LAKE-005B-B-T01's blockedReason: no server
-  // endpoint can supply its histogram/boxplot/scatter/correlation data, and
-  // a HEAD-1000 sample would silently change what those charts show for any
-  // dataset over 1,000 rows — swapping this feed was never part of what AC5
-  // asks for). Recomputes on the full raw dataset exactly as it did before
-  // this fix — zero behavior change here, on purpose.
-  const analysisDataset = useMemo(
-    () => applyFeatures(raw, featureConfigs),
-    [raw, featureConfigs],
-  )
+  // DS-LAKE-005B-D-T07: DataAnalysisCard now takes `featured` directly
+  // (the bounded local preview above) instead of a separately-computed
+  // full-frame `analysisDataset` — the gap DS-LAKE-005B-B-T01's
+  // blockedReason named (no server endpoint could supply its histogram/
+  // boxplot/scatter/correlation data) is closed as of D-T01/T03/T04/T05b;
+  // `dataset` is now `BoundedSample`-typed on that component and a
+  // HEAD-1,000 sample is exactly what it's built to accept.
 
   const addFeature = (cfg: FeatureConfig) => {
     setFeatureConfigs(prev => [...prev, cfg])
@@ -156,6 +152,13 @@ export function Step4FeatureEngineering({ nav }: Props) {
           Features and column selection are locked while editing preprocessing —
           they define the schema downstream models depend on.
         </EditLockBanner>
+      )}
+
+      {goldWarmError && (
+        <p className="text-xs text-muted-foreground">
+          Feature engineering failed to run server-side:{' '}
+          <span className="text-foreground">{goldWarmError}</span>
+        </p>
       )}
 
       <Tabs
@@ -231,7 +234,7 @@ export function Step4FeatureEngineering({ nav }: Props) {
           </TabsContent>
         </div>
 
-        <DataAnalysisCard dataset={analysisDataset} range={range} />
+        <DataAnalysisCard dataset={featured} range={range} />
       </Tabs>
     </div>
   )

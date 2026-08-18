@@ -18,7 +18,11 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { precleanse } from '@/lib/precleanse'
-import { preprocessPipelines, toModelReady } from '@/lib/preprocessing'
+import {
+  preprocessPipelines,
+  toModelReady,
+  type Dataset,
+} from '@/lib/preprocessing'
 import { applyFeatures, selectColumns } from '@/lib/feature-engineering'
 import { datasetQuality } from '@/lib/data-quality'
 import type { PipelineConfig } from '@/lib/pipeline-config'
@@ -27,6 +31,7 @@ import { datasetVersionService } from '@/services/dataset-version'
 import { datasetDraftService } from '@/services/dataset-draft'
 import { materializeBlocker } from '@/hooks/dataset/use-dataset-version-rows'
 import { useDatasetValidation } from '@/hooks/dataset/use-dataset-validation'
+import { useDatasetArtifactMetadata } from '@/hooks/dataset/use-dataset-artifact-metadata'
 import { toPiTime } from '@/lib/dataset-fetch'
 import {
   dwNameAtom,
@@ -47,6 +52,7 @@ import {
   dwFeaturePresetAtom,
   dwTargetTagAtom,
   dwDraftGoldArtifactIdAtom,
+  dwGoldWarmErrorAtom,
   resetDatasetWizardAtom,
 } from '@/store/dataset-studio'
 import type { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipeline-nav'
@@ -54,6 +60,14 @@ import type { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pi
 interface Props {
   nav: UseDatasetPipelineNavResult
 }
+
+// DS-LAKE-005B-B-T01 (Step 5 leg). The pipeline useMemo's early-return value
+// on the draft/Save path, where nothing downstream reads `cleansed`/
+// `finalDataset` any more (`targetMissing`/the tiles switch to `metadata`;
+// `datasetDraftService.save` no longer takes a `tags` field). Local, not
+// `store/dataset-studio.ts`'s own module-private `EMPTY_DATASET` — that one
+// is not exported.
+const EMPTY_DATASET: Dataset = { tags: [], rows: [] }
 
 export function Step5ReviewSave({ nav }: Props) {
   const router = useRouter()
@@ -77,6 +91,7 @@ export function Step5ReviewSave({ nav }: Props) {
   const resetWizard = useSetAtom(resetDatasetWizardAtom)
   const validation = useDatasetValidation()
   const goldArtifactId = useAtomValue(dwDraftGoldArtifactIdAtom)
+  const goldWarmError = useAtomValue(dwGoldWarmErrorAtom)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   // Save has two server phases: the dataset row, then the stored artifact.
@@ -101,9 +116,38 @@ export function Step5ReviewSave({ nav }: Props) {
     scalerConfigs,
   } = nav
 
-  // Same pipeline as `materializeDataset`:
-  // raw → features → precleanse → fill → select → scale.
+  // DS-LAKE-005B-B-T01 (Step 5 leg). Same condition `handleSave` already
+  // branches on below — computed once here so the pipeline gate and the
+  // save body agree by construction, never independently.
+  const isDraftSavePath = Boolean(
+    mode === 'create' && validation.draftId && validation.gateArtifactId,
+  )
+
+  // DS-LAKE-005B-B-T01 (Step 5 leg, moved up from below `goldNotReady` so it
+  // is available to the metadata-artifact selection right after it).
+  const featuresRequested =
+    features.length > 0 || Boolean(selectedColumns && selectedColumns.length)
+
+  // Was: "Same pipeline as `materializeDataset`: raw → features → precleanse
+  // → fill → select → scale" — unconditionally, on every render.
+  //
+  // DS-LAKE-005B-B-T01 (Step 5 leg). In the draft/Save path this pipeline no
+  // longer runs at all: the FINAL artifact adopted by Save (ADR-DS-LAKE-005B
+  // -B-006) is now the single source of truth for what a saved Dataset
+  // advertises, and `useDatasetArtifactMetadata` below reads it directly.
+  // The early return is the mechanism, not just the intent — a condition
+  // placed further down the callback would still execute the transform
+  // chain first. `raw` (`dwRawDatasetAtom`) still sits in memory regardless
+  // (Step 2's fetch fills it; out of scope here per T01's own recorded Q2
+  // decision) — this closes COMPUTING OVER the full dataset and DERIVING a
+  // persisted DB field from it, not holding it.
+  //
+  // The legacy branch (edit mode, CSV-only, or create mode with no draft)
+  // keeps running this exactly as before — it has no artifact to adopt.
   const { cleansed, finalDataset } = useMemo(() => {
+    if (isDraftSavePath)
+      return { cleansed: EMPTY_DATASET, finalDataset: EMPTY_DATASET }
+
     const featured = applyFeatures(raw, features)
     const cleaned = precleanse(featured, {
       crop: cropRange,
@@ -119,6 +163,7 @@ export function Step5ReviewSave({ nav }: Props) {
       finalDataset: toModelReady(selected, scalerConfigs),
     }
   }, [
+    isDraftSavePath,
     raw,
     features,
     cropRange,
@@ -130,6 +175,24 @@ export function Step5ReviewSave({ nav }: Props) {
     selectedColumns,
     scalerConfigs,
   ])
+
+  // DS-LAKE-005B-B-T01 (Step 5 leg). Which artifact the metadata tiles/banner
+  // read — deliberately NOT `validation.gateArtifactId` alone: that falls
+  // back to SILVER when GOLD isn't ready, and SILVER has neither the derived
+  // features nor the column selection applied. Using it here would
+  // re-introduce, in the display path, the exact defect `goldNotReady`
+  // (below) exists to prevent Save from doing. `null` while a
+  // features/selection recipe is waiting on GOLD renders the tiles as
+  // pending, in the same window Save is already blocked.
+  const metadataArtifactId = isDraftSavePath
+    ? featuresRequested
+      ? goldArtifactId
+      : validation.gateArtifactId
+    : null
+  const { metadata } = useDatasetArtifactMetadata(
+    isDraftSavePath ? validation.draftId : null,
+    metadataArtifactId,
+  )
 
   // DS-LAKE-008-T03. Same recipe fields `finalDataset` itself already
   // depends on (minus `raw` — a source/time-range change, not a recipe
@@ -173,8 +236,17 @@ export function Step5ReviewSave({ nav }: Props) {
   // supports assembling X now and joining lab Y later — hard-blocking Save
   // would make that workflow impossible. Every workbook target is a `.lab`
   // tag absent from PI by construction, so this is expected, not exceptional.
+  //
+  // DS-LAKE-005B-B-T01 (Step 5 leg). In the draft path this reads the
+  // artifact's own tag list (`metadata.tags`, possibly still loading —
+  // `undefined` while pending reads as "not missing" rather than flashing a
+  // false-positive banner) instead of `finalDataset.tags`, which the
+  // pipeline gate above no longer computes for this path.
   const targetMissing = Boolean(
-    targetTag && !finalDataset.tags.includes(targetTag),
+    targetTag &&
+    (isDraftSavePath
+      ? metadata && !metadata.tags.includes(targetTag)
+      : !finalDataset.tags.includes(targetTag)),
   )
 
   // DS-LAKE-005B-B-T01 (Step 5 leg, advisor-flagged). `validation.gateArtifactId`
@@ -184,8 +256,8 @@ export function Step5ReviewSave({ nav }: Props) {
   // neither, so the saved Dataset would advertise columns its own artifact
   // doesn't contain. Blocks Save (not just the new-path branch) until GOLD
   // catches up, rather than silently finalizing SILVER for a feature recipe.
-  const featuresRequested =
-    features.length > 0 || Boolean(selectedColumns && selectedColumns.length)
+  // (`featuresRequested` itself is computed earlier, above the pipeline gate
+  // — reused here as-is, not redeclared.)
   const goldNotReady = Boolean(
     validation.draftId && featuresRequested && !goldArtifactId,
   )
@@ -201,7 +273,9 @@ export function Step5ReviewSave({ nav }: Props) {
     validation.status === 'FAIL' ||
     goldNotReady
   const validationBlockReason = goldNotReady
-    ? 'Waiting for feature engineering to finish…'
+    ? goldWarmError
+      ? `Feature engineering failed: ${goldWarmError}`
+      : 'Waiting for feature engineering to finish…'
     : validation.status === 'pending'
       ? 'Waiting for validation to finish…'
       : validation.status === 'FAIL'
@@ -241,7 +315,11 @@ export function Step5ReviewSave({ nav }: Props) {
       // draft's completed artifact by pointer — no raw re-fetch, no recipe
       // replay server-side. Only reachable in create mode with a real draft
       // + gate artifact; edit mode and any create-mode flow with no draft
-      // (e.g. CSV-only) keep the legacy path below untouched.
+      // (e.g. CSV-only) keep the legacy path below untouched. Same condition
+      // as `isDraftSavePath` above — checked again here (not just
+      // `if (isDraftSavePath)`) so TypeScript narrows `validation.draftId`/
+      // `gateArtifactId` from `string | null` to `string` directly, without
+      // a non-null assertion.
       if (
         mode === 'create' &&
         validation.draftId &&
@@ -267,10 +345,14 @@ export function Step5ReviewSave({ nav }: Props) {
           }
         }
 
+        // DS-LAKE-005B-B-T01 (Step 5 leg). No `tags` field — the server
+        // derives it from the FINAL artifact it is adopting (same one this
+        // `finalArtifactId` points at), rather than trusting a
+        // client-computed list `finalDataset` no longer even produces on
+        // this path.
         await datasetDraftService.save(draftId, {
           name: name.trim(),
           description: description.trim() || undefined,
-          tags: finalDataset.tags,
           pipelineConfig,
           fileUrl: null,
         })
@@ -404,13 +486,17 @@ export function Step5ReviewSave({ nav }: Props) {
         <div className="rounded-xl bg-card p-4 ring-1 ring-foreground/10">
           <p className="text-xs text-muted-foreground">Tags</p>
           <p className="mt-1 text-2xl font-semibold tabular-nums">
-            {finalDataset.tags.length}
+            {isDraftSavePath
+              ? (metadata?.tagCount.toLocaleString() ?? '—')
+              : finalDataset.tags.length}
           </p>
         </div>
         <div className="rounded-xl bg-card p-4 ring-1 ring-foreground/10">
           <p className="text-xs text-muted-foreground">Rows</p>
           <p className="mt-1 text-2xl font-semibold tabular-nums">
-            {finalDataset.rows.length.toLocaleString()}
+            {isDraftSavePath
+              ? (metadata?.rowCount.toLocaleString() ?? '—')
+              : finalDataset.rows.length.toLocaleString()}
           </p>
         </div>
         <div className="rounded-xl bg-card p-4 ring-1 ring-foreground/10">

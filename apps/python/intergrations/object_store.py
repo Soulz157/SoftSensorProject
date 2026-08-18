@@ -30,14 +30,19 @@ Good cells only. A plain value frame would lose that and silently change results
 """
 
 from __future__ import annotations
-
+from datetime import datetime, timedelta, timezone
 import hashlib
 import io
 import json
+import logging
+import os
+import tempfile
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+import duckdb
 import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -193,7 +198,8 @@ def assert_frame_shape(df: pd.DataFrame) -> None:
             f"'<name>{STATUS_SUFFIX}' collides with another tag's quality column."
         )
 
-    tags = [c for c in columns if c != TIMESTAMP_COLUMN and not c.endswith(STATUS_SUFFIX)]
+    tags = [c for c in columns if c !=
+            TIMESTAMP_COLUMN and not c.endswith(STATUS_SUFFIX)]
     status_cols = [c for c in columns if c.endswith(STATUS_SUFFIX)]
 
     orphans = [c for c in status_cols if c[: -len(STATUS_SUFFIX)] not in tags]
@@ -242,6 +248,9 @@ def sha256_hex(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+logger = logging.getLogger(__name__)
+
+
 class ObjectStore:
     """Thin Parquet-over-MinIO wrapper.
 
@@ -261,6 +270,7 @@ class ObjectStore:
         secure = raw_endpoint.startswith("https://")
         host = raw_endpoint.split("://", 1)[-1].rstrip("/")
 
+        self._presign_minio: Minio | None = None
         self.bucket = bucket or settings.S3_BUCKET
         self._client = Minio(
             host,
@@ -328,7 +338,8 @@ class ObjectStore:
                 tags=object_tags,
             )
         except S3Error as err:
-            raise ObjectStoreError(f"Could not write '{key}': {err.code}") from err
+            raise ObjectStoreError(
+                f"Could not write '{key}': {err.code}") from err
 
         return ArtifactStats(
             object_key=key,
@@ -350,7 +361,8 @@ class ObjectStore:
         if not overwrite and self.exists(key):
             raise ObjectStoreError(f"Refusing to overwrite sidecar '{key}'.")
 
-        payload = json.dumps(document, indent=2, sort_keys=True, default=str).encode()
+        payload = json.dumps(document, indent=2,
+                             sort_keys=True, default=str).encode()
         try:
             self._client.put_object(
                 self.bucket,
@@ -360,19 +372,38 @@ class ObjectStore:
                 content_type="application/json",
             )
         except S3Error as err:
-            raise ObjectStoreError(f"Could not write '{key}': {err.code}") from err
+            raise ObjectStoreError(
+                f"Could not write '{key}': {err.code}") from err
         return len(payload)
 
     # ── read ─────────────────────────────────────────────────────────────
 
     def get_frame(self, key: str, columns: list[str] | None = None) -> pd.DataFrame:
         response = None
+        # DS-LAKE-005B-C-T07 (large-dataset observability, server-side
+        # slice): `get_frame` is the one real read choke point most other
+        # reads funnel through (`get_frame_slice` calls this directly) — the
+        # natural, single place to log bytes actually pulled from MinIO,
+        # same reasoning `put_frame` already logs `size_bytes` on write via
+        # `ArtifactStats`. Timed separately from `_run`'s wall-clock figure
+        # (routers/preprocess.py) — that measures the WHOLE request
+        # including pandas/pyarrow decode; this isolates the storage GET.
+        started = time.perf_counter()
         try:
             response = self._client.get_object(self.bucket, key)
-            table = pq.read_table(io.BytesIO(response.read()), columns=columns)
+            raw = response.read()
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            logger.info(
+                "object_store_read key=%s bytes_read=%d elapsed_ms=%.1f",
+                key,
+                len(raw),
+                elapsed_ms,
+            )
+            table = pq.read_table(io.BytesIO(raw), columns=columns)
             return table.to_pandas()
         except S3Error as err:
-            raise ObjectStoreError(f"Could not read '{key}': {err.code}") from err
+            raise ObjectStoreError(
+                f"Could not read '{key}': {err.code}") from err
         finally:
             if response is not None:
                 response.close()
@@ -400,7 +431,8 @@ class ObjectStore:
             response = self._client.get_object(self.bucket, key)
             payload = response.read()
         except S3Error as err:
-            raise ObjectStoreError(f"Could not read '{key}': {err.code}") from err
+            raise ObjectStoreError(
+                f"Could not read '{key}': {err.code}") from err
         finally:
             if response is not None:
                 response.close()
@@ -420,8 +452,10 @@ class ObjectStore:
             )
             lo = pc.min(column).as_py()
             hi = pc.max(column).as_py()
-            start_time = lo.isoformat(sep=" ") if hasattr(lo, "isoformat") else str(lo)
-            end_time = hi.isoformat(sep=" ") if hasattr(hi, "isoformat") else str(hi)
+            start_time = lo.isoformat(sep=" ") if hasattr(
+                lo, "isoformat") else str(lo)
+            end_time = hi.isoformat(sep=" ") if hasattr(
+                hi, "isoformat") else str(hi)
 
         return {
             "tags": tags,
@@ -442,7 +476,8 @@ class ObjectStore:
             response = self._client.get_object(self.bucket, key)
             return json.loads(response.read())
         except S3Error as err:
-            raise ObjectStoreError(f"Could not read '{key}': {err.code}") from err
+            raise ObjectStoreError(
+                f"Could not read '{key}': {err.code}") from err
         finally:
             if response is not None:
                 response.close()
@@ -460,7 +495,8 @@ class ObjectStore:
             response = self._client.get_object(self.bucket, key)
             return sha256_hex(response.read())
         except S3Error as err:
-            raise ObjectStoreError(f"Could not read '{key}': {err.code}") from err
+            raise ObjectStoreError(
+                f"Could not read '{key}': {err.code}") from err
         finally:
             if response is not None:
                 response.close()
@@ -476,7 +512,73 @@ class ObjectStore:
         """
         if offset < 0 or limit <= 0:
             raise ValueError("offset must be >= 0 and limit must be > 0")
-        return self.get_frame(key).iloc[offset : offset + limit].reset_index(drop=True)
+        return self.get_frame(key).iloc[offset: offset + limit].reset_index(drop=True)
+
+    def get_frame_slice_duckdb(
+        self, key: str, offset: int = 0, limit: int = 1000
+    ) -> pd.DataFrame:
+        """DS-LAKE-005B-C-T01: Parquet-native row window, SAME contract as
+        `get_frame_slice` above (same signature, same return shape) so the
+        two are interchangeable at any call site and directly comparable in
+        a golden parity test — this is the "interface" the task asks for:
+        two methods sharing one contract, not a separate abstract class with
+        a single real implementation and a speculative second one.
+
+        `get_frame_slice` reads the WHOLE object into pyarrow, THEN slices
+        in pandas (its own doc comment names this gap explicitly). This
+        path instead asks DuckDB's `read_parquet` to push the OFFSET/LIMIT
+        down past the row-group metadata, so it need not decode the whole
+        file — the intended benefit. DuckDB cannot read an in-memory buffer
+        via `read_parquet` (SQL-level table function, needs a path), so the
+        object is still downloaded once here (no new network behaviour —
+        `get_frame`/`get_frame_slice` do the same single download) and
+        staged to a temp file DuckDB opens directly.
+
+        MEASURED, NOT ASSUMED (DS-LAKE-005B-C-T03,
+        docs/DS-LAKE-005B-C-BENCHMARK.md, 2026-08-13): at 1,000 rows this
+        path is 2.5x-16x SLOWER than `get_frame_slice`, and the gap widens
+        with tag count. The per-call temp-file write (up to ~168MB at
+        16,000 tags) and the single-row-group case (no row groups to skip
+        at this row count) both plausibly dominate — not confirmed, and out
+        of scope to chase further here. This method is NOT currently faster
+        and is not wired into any live endpoint; do not adopt it on the
+        strength of this doc comment's original reasoning — see the
+        benchmark report before making that call (AC0: adoption requires
+        proven parity/benefit, not an unproven assumption, which is exactly
+        what this correction is about).
+
+        Column ORDER matches `get_frame`'s (`SELECT *` preserves file
+        column order, same as pyarrow's default) — required for the golden
+        parity test's ordering claim to be meaningful.
+        """
+        if offset < 0 or limit <= 0:
+            raise ValueError("offset must be >= 0 and limit must be > 0")
+
+        response = None
+        tmp_path: str | None = None
+        try:
+            response = self._client.get_object(self.bucket, key)
+            payload = response.read()
+        except S3Error as err:
+            raise ObjectStoreError(
+                f"Could not read '{key}': {err.code}") from err
+        finally:
+            if response is not None:
+                response.close()
+                response.release_conn()
+
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:
+                tmp.write(payload)
+                tmp_path = tmp.name
+            relation = duckdb.sql(
+                f"SELECT * FROM read_parquet(?) OFFSET {offset} LIMIT {limit}",
+                params=[tmp_path],
+            )
+            return relation.df().reset_index(drop=True)
+        finally:
+            if tmp_path is not None:
+                os.unlink(tmp_path)
 
     # `get_frame_head` (head window + true row count) was removed in
     # DS-LAKE-005B-A-T04: its one caller, `preview_service.build_preview`,
@@ -529,7 +631,8 @@ class ObjectStore:
         desired = Rule(
             ENABLED,
             rule_id=TMP_LIFECYCLE_RULE_ID,
-            rule_filter=Filter(tag=Tag(TMP_LIFECYCLE_TAG_KEY, TMP_LIFECYCLE_TAG_VALUE)),
+            rule_filter=Filter(
+                tag=Tag(TMP_LIFECYCLE_TAG_KEY, TMP_LIFECYCLE_TAG_VALUE)),
             expiration=Expiration(days=TMP_LIFECYCLE_EXPIRY_DAYS),
         )
 
@@ -569,7 +672,85 @@ class ObjectStore:
             raise ObjectStoreError(
                 f"Could not set lifecycle rule on '{self.bucket}': {err.code}"
             ) from err
+    # ── presign ──────────────────────────────────────────────────────────
+    #
+    # A presigned URL is a bearer capability: whoever holds it can perform
+    # exactly that one method on that one object until it expires. That is
+    # narrower than what a credential grants, which is why the training
+    # container gets these instead of S3_ACCESS_KEY — the class docstring's
+    # "only this service holds S3 credentials" rule survives intact.
 
+    #: Read TTL. The container downloads data.parquet to local disk BEFORE
+    #: training starts (see train.py step 2), so this only has to outlive a
+    #: download, not a 3-hour fit. A URL sized to the training run would be a
+    #: long-lived capability for no benefit.
+    PRESIGN_READ_TTL = timedelta(minutes=15)
+    #: Write TTL. Minted at the END of a run, on request, for the same reason.
+    PRESIGN_WRITE_TTL = timedelta(minutes=30)
+
+    def _presign_client(self) -> Minio:
+        """Minio client bound to the PUBLICLY reachable endpoint.
+
+        SigV4 signs the Host header, so the hostname is baked into the
+        signature and cannot be rewritten afterwards without invalidating it.
+        `S3_ENDPOINT` is what THIS service dials — per
+        `ensure_tmp_lifecycle_rule`'s doc comment MinIO runs as an
+        uncommitted `minio-local` container, a name a training container on
+        another network cannot resolve. `S3_PUBLIC_ENDPOINT` is the name the
+        CONTAINER must use; it falls back to `S3_ENDPOINT` for the case where
+        the two are genuinely the same, so a single-network deployment needs
+        no new config.
+        """
+        if getattr(self, "_presign_minio", None) is None:
+            raw = getattr(settings, "S3_PUBLIC_ENDPOINT",
+                          None) or settings.S3_ENDPOINT
+            secure = raw.startswith("https://")
+            host = raw.split("://", 1)[-1].rstrip("/")
+            self._presign_minio = Minio(
+                host,
+                access_key=settings.S3_ACCESS_KEY,
+                secret_key=settings.S3_SECRET_KEY,
+                region=settings.S3_REGION,
+                secure=secure,
+            )
+        return self._presign_minio
+
+    def presigned_get(self, key: str, *, ttl: timedelta | None = None) -> str:
+        """Time-limited read URL for one object.
+
+        Requires the object to exist: a URL for a missing key returns 404 only
+        once the container is already running, which turns a fixable
+        submit-time error into an opaque mid-run failure.
+        """
+        if not self.exists(key):
+            raise ObjectStoreError(
+                f"Cannot presign '{key}': object not found.")
+        try:
+            return self._presign_client().get_presigned_url(
+                "GET", self.bucket, key, expires=ttl or self.PRESIGN_READ_TTL
+            )
+        except S3Error as err:
+            raise ObjectStoreError(
+                f"Could not presign read for '{key}': {err.code}"
+            ) from err
+
+    def presigned_put(self, key: str, *, ttl: timedelta | None = None) -> str:
+        """Time-limited write URL for one object.
+
+        No existence check and no overwrite refusal here — unlike `put_frame`,
+        this cannot enforce immutability, because the write happens outside
+        this process. That is why `is_model_run_key` gates the caller: run
+        outputs live under a run id that is created once and never reused, so
+        the key is effectively write-once by construction rather than by check.
+        """
+        try:
+            return self._presign_client().get_presigned_url(
+                "PUT", self.bucket, key, expires=ttl or self.PRESIGN_WRITE_TTL
+            )
+        except S3Error as err:
+            raise ObjectStoreError(
+                f"Could not presign write for '{key}': {err.code}"
+            ) from err
 
 # ── key helpers ──────────────────────────────────────────────────────────
 #
@@ -682,3 +863,33 @@ def build_manifest(
         "duration_ms": duration_ms,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+MODEL_ROOT = "models/"
+MODEL_FILENAME = "model.joblib"
+METRICS_FILENAME = "metrics.json"
+RUN_MANIFEST_FILENAME = "run_manifest.json"
+PREDICTIONS_FILENAME = "predictions.parquet"
+
+
+def model_run_prefix(model_id: str, run_id: str) -> str:
+    return f"{MODEL_ROOT}{model_id}/runs/{run_id}/"
+
+
+def model_run_key(model_id: str, run_id: str, filename: str) -> str:
+    return f"{model_run_prefix(model_id, run_id)}{filename}"
+
+
+def is_committed_artifact_key(key: str) -> bool:
+    """Whether `key` is a committed artifact's data object.
+
+    The same predicate `/artifacts/reclaim` needs, extracted so the presign
+    guard cannot drift from it. Deliberately NOT a check that the object
+    exists — that is a separate question, and conflating the two would make
+    "malformed key" and "missing artifact" indistinguishable to the caller.
+    """
+    return "/artifacts/" in key and key.endswith(f"/{DATA_FILENAME}")
+
+
+def is_model_run_key(key: str) -> bool:
+    return key.startswith(MODEL_ROOT) and "/runs/" in key

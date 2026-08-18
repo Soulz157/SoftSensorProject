@@ -42,6 +42,8 @@ import {
   dwCleaningTagsAtom,
   dwCleanedTagsAtom,
   dwHighestUnlockedAtom,
+  dwTargetTagAtom,
+  dwRawDatasetAtom,
 } from '@/store/dataset-studio'
 import { useDatasetTagSelection } from '@/hooks/dataset/use-dataset-tag-selection'
 import { BadDataBreakdown } from './bad-data-breakdown'
@@ -60,20 +62,24 @@ interface TagGroup {
 }
 
 export function DatasetTagSidebar() {
-  // Raw + engineered columns so newly created features show up live.
-  const raw = useAtomValue(dwFeaturedDatasetAtom)
   const featureConfigs = useAtomValue(dwFeatureConfigsAtom)
   const selectedTags = useAtomValue(dwSelectedTagsAtom)
   const csvTags = useAtomValue(dwCsvUploadTagsAtom)
   const sources = useAtomValue(dwSelectedSourcesAtom)
+  const fetched = useAtomValue(dwRawDatasetAtom)
+  const featured = useAtomValue(dwFeaturedDatasetAtom)
 
-  // Before a fetch completes the raw dataset is empty — fall back to the
-  // Step-1 tag selection so the sidebar still lists tags on steps 1/2.
-  const dataset: Dataset = useMemo(
-    () => (raw.tags.length > 0 ? raw : { tags: selectedTags, rows: [] }),
-    [raw, selectedTags],
-  )
-  const hasData = raw.rows.length > 0
+  const dataset: Dataset = useMemo(() => {
+    const base = fetched.tags.length > 0 ? fetched.tags : selectedTags
+    const seen = new Set(base)
+    const engineered = featured.tags.filter(t => !seen.has(t))
+    return {
+      tags: [...base, ...engineered],
+      rows: featured.rows.length > 0 ? featured.rows : fetched.rows,
+    }
+  }, [fetched, featured, selectedTags])
+
+  const hasData = dataset.rows.length > 0
 
   const {
     tags,
@@ -92,8 +98,7 @@ export function DatasetTagSidebar() {
 
   const [query, setQuery] = useState('')
   const [collapsed, setCollapsed] = useAtom(dwTagSidebarCollapsedAtom)
-  // On Step 3.2 the row checkboxes pick cleaning targets rather than toggling
-  // chart visibility (the Eye button keeps that role). Other steps are unchanged.
+  const targetTag = useAtomValue(dwTargetTagAtom)
   const currentStep = useAtomValue(dwCurrentStepAtom)
   const subStep = useAtomValue(dwProcessingSubStepAtom)
   const [cleaningTags, setCleaningTags] = useAtom(dwCleaningTagsAtom)
@@ -103,7 +108,6 @@ export function DatasetTagSidebar() {
   const cleaningSet = useMemo(() => new Set(cleaningTags), [cleaningTags])
   const cleanedSet = useMemo(() => new Set(cleanedTags), [cleanedTags])
 
-  // A cleaning-target change alters the produced dataset — relock downstream.
   const relock = () => setHighestUnlocked(prev => Math.min(prev, 4))
   const toggleCleaning = (tag: string) => {
     setCleaningTags(prev =>
@@ -111,8 +115,12 @@ export function DatasetTagSidebar() {
     )
     relock()
   }
+  const cleanableTags = useMemo(
+    () => tags.filter(t => t !== targetTag),
+    [tags, targetTag],
+  )
   const selectAllCleaning = () => {
-    setCleaningTags([...tags])
+    setCleaningTags(cleanableTags)
     relock()
   }
   const clearCleaning = () => {
@@ -126,13 +134,24 @@ export function DatasetTagSidebar() {
   )
 
   const groups = useMemo<TagGroup[]>(() => {
-    const engineered = tags.filter(t => engineeredNames.has(t))
-    const base = tags.filter(t => !engineeredNames.has(t))
+    const isTarget = (t: string) => targetTag !== null && t === targetTag
+
+    const engineered = tags.filter(t => engineeredNames.has(t) && !isTarget(t))
+    const base = tags.filter(t => !engineeredNames.has(t) && !isTarget(t))
     const csv = new Set(csvTags)
     const csvInDataset = base.filter(t => csv.has(t))
     const others = base.filter(t => !csv.has(t))
 
     const result: TagGroup[] = []
+
+    if (targetTag) {
+      result.push({
+        id: 'target',
+        label: 'Target Tag (Y)',
+        tags: tags.filter(isTarget),
+      })
+    }
+
     if (csvInDataset.length > 0 && others.length > 0) {
       const sourceLabel =
         sources.length === 1 ? sources[0]!.name : 'Source Data'
@@ -149,7 +168,7 @@ export function DatasetTagSidebar() {
       })
     }
     return result
-  }, [tags, csvTags, sources, engineeredNames])
+  }, [tags, csvTags, sources, engineeredNames, targetTag])
 
   const q = query.trim().toLowerCase()
   const matches = (tag: string) => tag.toLowerCase().includes(q)
@@ -263,20 +282,30 @@ export function DatasetTagSidebar() {
                       <AccordionTrigger className="px-3 py-1.5 text-[11px] font-semibold tracking-wider text-muted-foreground uppercase hover:no-underline">
                         {group.label}
                         <Badge className="ml-2 h-4 items-center bg-muted font-medium text-muted-foreground">
-                          {group.tags.length}
+                          {group.id === 'target' ? 'Y' : group.tags.length}
                         </Badge>
                       </AccordionTrigger>
                       <AccordionContent className="pb-2">
                         {groupTags.length === 0 ? (
-                          <p className="px-4 py-1.5 text-xs text-muted-foreground">
-                            No matches
-                          </p>
+                          group.id === 'target' && group.tags.length === 0 ? (
+                            <p className="mx-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-[11px] leading-snug text-amber-700 dark:text-amber-400">
+                              <span className="font-mono font-medium">
+                                {targetTag}
+                              </span>
+                            </p>
+                          ) : (
+                            <p className="px-4 py-1.5 text-xs text-muted-foreground">
+                              No matches
+                            </p>
+                          )
                         ) : (
                           <ul className="pr-1">
                             {groupTags.map(tag => {
                               const isHidden = hidden.has(tag)
                               const isFocused = tag === focusedTag[0]
                               const badCount = badByTag[tag] ?? 0
+                              const isTargetRow = tag === targetTag
+
                               return (
                                 <li key={tag}>
                                   <div
@@ -284,7 +313,9 @@ export function DatasetTagSidebar() {
                                     tabIndex={0}
                                     onClick={() => {
                                       setFocused([tag])
-                                      toggleCleaning(tag)
+                                      if (isCleaning && !isTargetRow) {
+                                        toggleCleaning(tag)
+                                      }
                                     }}
                                     onKeyDown={e => {
                                       if (e.key === 'Enter' || e.key === ' ') {

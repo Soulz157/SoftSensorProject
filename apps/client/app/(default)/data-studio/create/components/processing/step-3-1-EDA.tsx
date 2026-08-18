@@ -3,9 +3,14 @@
 import { useMemo } from 'react'
 import { useAtomValue } from 'jotai'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { precleanse } from '@/lib/precleanse'
+import { precleanse, precleanseBounded } from '@/lib/precleanse'
 import { PERIOD_TO_RANGE } from '@/store/model-pipeline'
-import { dwRawDatasetAtom, dwTimeRangeAtom } from '@/store/dataset-studio'
+import {
+  dwFeaturePreviewSampleAtom,
+  dwRawDatasetAtom,
+  dwTimeRangeAtom,
+} from '@/store/dataset-studio'
+import { useDatasetFeaturePreviewSample } from '@/hooks/dataset/use-dataset-feature-preview-sample'
 import { DataAnalysisCard } from './data-analysis-card'
 import { ProcessingActionFooter } from './processing-action-footer'
 import { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipeline-nav'
@@ -21,6 +26,15 @@ export function Step31EDA({ nav }: Props) {
 
   const { cropRange, conditionalRules, statisticalRules } = nav
 
+  // DS-LAKE-005B-D-T07. Same bounded page `Step4FeatureEngineering` warms
+  // via this hook (`dwDraftArtifactIdAtom` — the draft's SILVER source
+  // artifact — is identical at both steps; `DataAnalysisCard`'s own
+  // GOLD-if-present-else-draft comment already documents that Step 3.1
+  // always resolves to `draftArtifactId`). Calling it here too just warms
+  // the shared atom earlier, before Step 4 ever mounts.
+  useDatasetFeaturePreviewSample()
+  const sample = useAtomValue(dwFeaturePreviewSampleAtom)
+
   const precleansed = useMemo(
     () =>
       precleanse(raw, {
@@ -29,6 +43,21 @@ export function Step31EDA({ nav }: Props) {
         statistical: statisticalRules,
       }),
     [raw, cropRange, conditionalRules, statisticalRules],
+  )
+
+  // BOUNDED counterpart, for `DataAnalysisCard` only — `precleansed` above
+  // (full frame) stays the source of truth for `emptied`/`nextDisabled`
+  // below, which need the TRUE row count: a rule could empty the first N
+  // rows of `sample` while thousands of real rows survive elsewhere in the
+  // artifact, so gating navigation on the bounded result would be wrong.
+  const precleansedSample = useMemo(
+    () =>
+      precleanseBounded(sample, {
+        crop: cropRange,
+        conditional: conditionalRules,
+        statistical: statisticalRules,
+      }),
+    [sample, cropRange, conditionalRules, statisticalRules],
   )
 
   const emptied = raw.rows.length > 0 && precleansed.rows.length === 0
@@ -41,7 +70,7 @@ export function Step31EDA({ nav }: Props) {
         imputing missing values.
       </p>
 
-      <DataAnalysisCard dataset={precleansed} range={range} />
+      <DataAnalysisCard dataset={precleansedSample} range={range} />
 
       {emptied && (
         <Alert variant="destructive">

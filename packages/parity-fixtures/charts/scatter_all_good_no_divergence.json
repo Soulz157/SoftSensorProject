@@ -1,0 +1,160 @@
+{
+  "name": "scatter_all_good_no_divergence",
+  "engine": "scatter",
+  "input": {
+    "tags": ["TI-101", "FI-404"],
+    "rows": [
+      {
+        "timestamp": "2026-06-22T00:00:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 10,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 20,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:01:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 11,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 22,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:02:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 12,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 24,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:03:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 13,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 26,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:04:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 14,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 28,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:05:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 15,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 30,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:06:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 16,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 32,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:07:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 17,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 34,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:08:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 18,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 36,
+            "status": "Good"
+          }
+        }
+      },
+      {
+        "timestamp": "2026-06-22T00:09:00.000Z",
+        "cells": {
+          "TI-101": {
+            "value": 19,
+            "status": "Good"
+          },
+          "FI-404": {
+            "value": 38,
+            "status": "Good"
+          }
+        }
+      }
+    ]
+  },
+  "config": {
+    "source_key": "fixture/chart-artifact.parquet",
+    "x_tag": "TI-101",
+    "y_tag": "FI-404",
+    "max_points": 2000
+  },
+  "expected": {
+    "source_key": "fixture/chart-artifact.parquet",
+    "x_tag": "TI-101",
+    "y_tag": "FI-404",
+    "n": 10,
+    "slope": 2,
+    "intercept": 0,
+    "r2": 1
+  },
+  "clientQuirk": {
+    "n": 10,
+    "slope": 2,
+    "intercept": 0,
+    "r2": 1
+  }
+}

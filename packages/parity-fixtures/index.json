@@ -1,12 +1,7 @@
 {
   "generatedBy": "apps/client/lib/__tests__/parity-fixtures.test.ts",
   "rowCount": 40,
-  "tags": [
-    "TI-101",
-    "VI-202",
-    "FI-404",
-    "XX-999"
-  ],
+  "tags": ["TI-101", "VI-202", "FI-404", "XX-999"],
   "precision": {
     "TI-101": 1,
     "VI-202": 2,

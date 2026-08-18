@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from services.downsample import lttb_indices, time_bucket_edges
+from services.downsample import grid_bin_indices, lttb_indices, time_bucket_edges
 
 # ── V05: six months at 1-minute interval, one tag ──────────────────────────
 
@@ -247,3 +247,57 @@ def test_row_removing_op_changes_count_but_edges_stay_shared():
     assert before.bucket_edges == after.bucket_edges
     assert len(before.indices) <= max_points
     assert len(after.indices) <= max_points
+
+
+# ── DS-LAKE-005B-D-T04: grid_bin_indices (2D scatter decimation) ───────────
+#
+# Standalone, before the request/response plumbing around it, same
+# discipline this file's own header describes for lttb_indices. Moved here
+# from an ad-hoc shell check run during development — committed so the
+# claim in DS-LAKE-005B-D-T04's own `result` is actually verifiable, not
+# just asserted.
+
+
+def test_grid_bounded_no_dupes_ascending():
+    rng = np.random.default_rng(42)
+    x = rng.uniform(0, 100, 5_000)
+    y = rng.uniform(0, 100, 5_000)
+
+    result = grid_bin_indices(x, y, 200)
+
+    assert result.downsampled is True
+    assert len(result.indices) <= 200
+    assert len(set(result.indices.tolist())) == len(result.indices)
+    assert (np.diff(result.indices) > 0).all()
+
+
+def test_grid_below_cap_is_identity():
+    rng = np.random.default_rng(42)
+    x = rng.uniform(0, 100, 50)
+    y = rng.uniform(0, 100, 50)
+
+    result = grid_bin_indices(x, y, 200)
+
+    assert result.downsampled is False
+    assert len(result.indices) == 50
+
+
+def test_grid_valid_mask_excludes_points():
+    rng = np.random.default_rng(42)
+    x = rng.uniform(0, 100, 5_000)
+    y = rng.uniform(0, 100, 5_000)
+    valid = np.zeros(5_000, dtype=bool)
+    valid[::2] = True  # only even indices eligible
+
+    result = grid_bin_indices(x, y, 200, valid=valid)
+
+    assert all(i % 2 == 0 for i in result.indices)
+
+
+def test_grid_single_occupied_cell_for_a_degenerate_point():
+    xs = np.full(500, 5.0)
+    ys = np.full(500, 5.0)
+
+    result = grid_bin_indices(xs, ys, 100)
+
+    assert len(result.indices) == 1

@@ -15,9 +15,11 @@ import {
 } from '@/lib/artifact-keys';
 import {
   ArtifactStatsSchema,
+  CreateFeaturesSchema,
   PythonCleanupSchema,
   type ArtifactStats,
   type CleaningOperation,
+  type FeatureConfig,
 } from './dto/dataset-version.authorized.dto';
 
 /**
@@ -187,27 +189,65 @@ export class PreprocessingJobService
       return;
     }
 
-    const operations = this.readOperations(job.operations);
-    const precision = this.readPrecision(job.operations);
+    // FEATURE (DS-LAKE-006-T06 reversal — feature engineering now runs as a
+    // job, matching CLEAN, per an explicit user decision recorded in
+    // feature_list.preprocessing.json). One combined Python call, not a
+    // per-operation chain like CLEAN — there is no meaningful per-step
+    // progress, so totalSteps is honestly 1, not features.length; a jump
+    // from 0% to 100% in one tick is what "one call" actually looks like,
+    // not a stall to hide.
+    const isFeatureJob = job.stage === 'FEATURE';
+
     const controller = new AbortController();
     this.running.set(jobId, controller);
 
     const startedAt = Date.now();
     // Minted up front so the final step can write directly to its key.
     const artifactId = randomUUID();
-    // DS-LAKE-005 writes the committed SILVER output into the artifact layout.
+    // DS-LAKE-005 writes the committed SILVER (or, for a FEATURE job, GOLD)
+    // output into the artifact layout.
     //
     // Renamed off `versionKey`/`tmpPrefix` because those are now imported
     // helpers, and `tmpPrefix` is also a parameter name in `recordFailure`.
     const committedKey = artifactKey(scope, artifactId);
     const jobTmpPrefix = tmpPrefixFor(scope, jobId);
 
+    // Read (and, for FEATURE, re-validate) the stored recipe BEFORE the
+    // RUNNING transition, but inside its own try/catch: `readOperations`/
+    // `readFeatureRecipe` now THROW on a shape mismatch (belt-and-suspenders
+    // against the wrong reader ever reaching the wrong stage's payload) —
+    // letting that throw escape uncaught here would skip both the RUNNING
+    // AND the FAILED writes, leaving the row stuck at QUEUED forever
+    // (`start()`'s outer catch only logs). Routing it through the SAME
+    // `recordFailure` every other failure uses keeps this one terminal
+    // state, not a silent stall.
+    let operations: CleaningOperation[] = [];
+    let precision: Record<string, number> = {};
+    let featureRecipe: {
+      features: FeatureConfig[];
+      selectedColumns: string[] | null;
+      scalers: Record<string, string>;
+    } | null = null;
+    try {
+      if (isFeatureJob) {
+        featureRecipe = this.readFeatureRecipe(job.operations);
+      } else {
+        operations = this.readOperations(job.operations);
+        precision = this.readPrecision(job.operations);
+      }
+    } catch (err) {
+      this.running.delete(jobId);
+      await this.recordFailure(jobId, jobTmpPrefix, controller, err);
+      return;
+    }
+    const totalSteps = isFeatureJob ? 1 : operations.length;
+
     await this.prisma.preprocessingJob.update({
       where: { id: jobId },
       data: {
         status: 'RUNNING',
         startedAt: new Date(),
-        totalSteps: operations.length,
+        totalSteps,
         completedSteps: 0,
         progress: 0,
         attempts: { increment: 1 },
@@ -215,64 +255,101 @@ export class PreprocessingJobService
     });
 
     try {
-      let sourceKey = sourceObjectKey;
       let stats: ArtifactStats | null = null;
 
-      for (const [index, operation] of operations.entries()) {
+      if (isFeatureJob) {
+        const recipe = featureRecipe!;
         this.assertNotCanceled(controller);
-
-        const isLast = index === operations.length - 1;
-        // Only the final step writes the committed key; earlier ones go to tmp
-        // so a failure leaves each stage intact and inspectable.
-        const targetKey = isLast
-          ? committedKey
-          : tmpKey(scope, jobId, index + 1);
-
         await this.reportStep(jobId, {
-          completedSteps: index,
-          totalSteps: operations.length,
-          currentStep: this.describe(operation),
+          completedSteps: 0,
+          totalSteps: 1,
+          currentStep: 'features',
           startedAt,
         });
 
+        // Field casing mirrors the inline `/features` route exactly
+        // (`createDraftFeaturesArtifactService`) — Python's FeaturesRequest
+        // accepts `selectedColumns` camelCase despite `source_key`/
+        // `target_key` being snake_case; this is not a typo to "fix".
         stats = ArtifactStatsSchema.parse(
           await postToPython(
-            '/v1/preprocess/clean',
+            '/v1/preprocess/features',
             {
-              source_key: sourceKey,
-              target_key: targetKey,
-              operations: [operation],
-              precision,
-              // tmp steps may be rewritten by a retry; a committed key never.
-              overwrite: !isLast,
+              source_key: sourceObjectKey,
+              target_key: committedKey,
+              features: recipe.features,
+              selectedColumns: recipe.selectedColumns,
+              scalers: recipe.scalers,
+              overwrite: false,
             },
             PYTHON_TIMEOUT.preprocess,
             controller.signal,
           ),
         );
+      } else {
+        let sourceKey = sourceObjectKey;
 
-        sourceKey = targetKey;
+        for (const [index, operation] of operations.entries()) {
+          this.assertNotCanceled(controller);
+
+          const isLast = index === operations.length - 1;
+          // Only the final step writes the committed key; earlier ones go to
+          // tmp so a failure leaves each stage intact and inspectable.
+          const targetKey = isLast
+            ? committedKey
+            : tmpKey(scope, jobId, index + 1);
+
+          await this.reportStep(jobId, {
+            completedSteps: index,
+            totalSteps: operations.length,
+            currentStep: this.describe(operation),
+            startedAt,
+          });
+
+          stats = ArtifactStatsSchema.parse(
+            await postToPython(
+              '/v1/preprocess/clean',
+              {
+                source_key: sourceKey,
+                target_key: targetKey,
+                operations: [operation],
+                precision,
+                // tmp steps may be rewritten by a retry; a committed key never.
+                overwrite: !isLast,
+              },
+              PYTHON_TIMEOUT.preprocess,
+              controller.signal,
+            ),
+          );
+
+          sourceKey = targetKey;
+        }
       }
 
       this.assertNotCanceled(controller);
       if (!stats) {
         throw new AppException({
           statusCode: 400,
-          message: 'A cleaning job needs at least one operation.',
+          message: isFeatureJob
+            ? 'Feature engineering produced no result.'
+            : 'A cleaning job needs at least one operation.',
           type: 'ERROR',
         });
       }
 
-      // The SILVER output joins its BRONZE parent's run, so the whole chain
-      // shares one runId. A legacy version-sourced job has no run to join, so
-      // it starts one rather than inventing a shared id.
+      // The SILVER (or GOLD) output joins its parent's run, so the whole
+      // chain shares one runId. A legacy version-sourced job has no run to
+      // join, so it starts one rather than inventing a shared id.
       await this.commit(
         job,
         artifactId,
         stats,
-        operations,
+        isFeatureJob ? featureRecipe!.features : operations,
+        isFeatureJob ? 1 : operations.length,
         startedAt,
         job.sourceArtifact?.runId ?? randomUUID(),
+        isFeatureJob ? 'GOLD' : 'SILVER',
+        isFeatureJob ? (stats.feature_spec_key ?? null) : null,
       );
       await this.clearTmp(jobTmpPrefix);
     } catch (err) {
@@ -297,14 +374,18 @@ export class PreprocessingJobService
     },
     artifactId: string,
     stats: ArtifactStats,
-    operations: CleaningOperation[],
+    operations: CleaningOperation[] | FeatureConfig[],
+    completedSteps: number,
     startedAt: number,
     runId: string,
+    artifactType: 'SILVER' | 'GOLD',
+    featureSpecKey: string | null,
   ): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
-      // DS-LAKE-005: this commits a SILVER ARTIFACT, not a DatasetVersion.
-      // A cleaning run is a pipeline stage; only Save Dataset creates a version
-      // (DS-LAKE-009). `currentVersionId` is deliberately not touched.
+      // DS-LAKE-005: this commits a SILVER (or, since the FEATURE-job
+      // reversal, GOLD) ARTIFACT, not a DatasetVersion. A pipeline run is a
+      // stage; only Save Dataset creates a version (DS-LAKE-009).
+      // `currentVersionId` is deliberately not touched.
       //
       // The version-number read that used to live here is gone with it: the
       // artifact table has no per-dataset sequence to collide on, so two
@@ -316,7 +397,7 @@ export class PreprocessingJobService
           draftId: job.draftId,
           runId,
           parentArtifactId: job.sourceArtifactId,
-          type: 'SILVER',
+          type: artifactType,
           objectKey: stats.object_key,
           checksum: stats.checksum,
           rowCount: stats.row_count,
@@ -324,7 +405,12 @@ export class PreprocessingJobService
           missingPct: stats.missing_pct,
           sizeBytes: BigInt(stats.size_bytes),
           operations,
+          // /clean always writes column_stats.json; /features does not (a
+          // cleaning-op concern it has nothing to compute — same reasoning
+          // the inline features route already documents), so this is null
+          // for every GOLD row exactly as it is for the inline path today.
           columnStatsKey: stats.column_stats_key,
+          featureSpecKey,
           durationMs: Date.now() - startedAt,
           createdById: job.createdById,
         },
@@ -335,7 +421,7 @@ export class PreprocessingJobService
         data: {
           status: 'SUCCEEDED',
           progress: 100,
-          completedSteps: operations.length,
+          completedSteps,
           currentStep: null,
           estimatedRemainingMs: 0,
           resultArtifactId: artifact.id,
@@ -484,9 +570,30 @@ export class PreprocessingJobService
    * replay with it. Older rows may hold a bare array.
    */
   private readOperations(raw: PrismaTypes.JsonValue): CleaningOperation[] {
-    const list = Array.isArray(raw)
-      ? raw
-      : (raw as { operations?: unknown } | null)?.operations;
+    // `run()` branches on `job.stage` before either reader is ever called,
+    // so this never SHOULD see a FEATURE payload — this guard is
+    // belt-and-suspenders against that branch being wrong or bypassed in a
+    // future edit. Without it, a `{features: [...]}` payload has no
+    // `operations` key, `list` falls through to `undefined`, and this would
+    // silently return `[]` — a job that runs, writes an artifact with zero
+    // operations applied, and reports SUCCEEDED. Refusing loudly is the only
+    // safe failure mode for a payload shape this reader does not recognize.
+    const payload = Array.isArray(raw)
+      ? null
+      : (raw as { operations?: unknown; features?: unknown } | null);
+    if (
+      payload &&
+      payload.features !== undefined &&
+      payload.operations === undefined
+    ) {
+      throw new AppException({
+        statusCode: 500,
+        message:
+          'Stored job payload is a feature recipe, not a cleaning pipeline — refusing to run as CLEAN.',
+        type: 'ERROR',
+      });
+    }
+    const list = Array.isArray(raw) ? raw : payload?.operations;
     // Shape is not re-validated here: the same array was zod-parsed by
     // `StartCleanJobSchema` on the way in, and Python rejects an unknown
     // operation with an actionable 422 regardless.
@@ -497,6 +604,69 @@ export class PreprocessingJobService
     if (Array.isArray(raw) || raw === null) return {};
     const payload = raw as { precision?: Record<string, number> };
     return payload?.precision ?? {};
+  }
+
+  /**
+   * `PreprocessingJob.operations` stores `{ features, selectedColumns,
+   * scalers }` for a FEATURE-stage job — the same shape `CreateFeaturesDto`
+   * validates on the inline `/features` route (`startDraftFeaturesJobService`
+   * writes it verbatim), re-validated here with the SAME zod schema so a
+   * corrupt or hand-edited row fails loudly instead of running with
+   * silently-dropped fields.
+   *
+   * Never called for a CLEAN job — `run()` branches on `job.stage` before
+   * either reader runs — but this still actively refuses a CLEAN-shaped
+   * payload (has `operations`, not `features`) rather than coercing it to an
+   * empty recipe, mirroring `readOperations`'s own refusal in the other
+   * direction. The failure mode this exists to prevent: a FEATURE job that
+   * SUCCEEDS with zero features computed, committing a GOLD artifact that
+   * looks fine and is not — worse than today's inline 422, because nothing
+   * about it looks like a failure.
+   */
+  private readFeatureRecipe(raw: PrismaTypes.JsonValue): {
+    features: FeatureConfig[];
+    selectedColumns: string[] | null;
+    scalers: Record<string, string>;
+  } {
+    if (Array.isArray(raw) || !raw || typeof raw !== 'object') {
+      throw new AppException({
+        statusCode: 500,
+        message:
+          'Stored job payload is not a feature recipe — refusing to run as FEATURE.',
+        type: 'ERROR',
+      });
+    }
+    const payload = raw as {
+      operations?: unknown;
+      features?: unknown;
+      selectedColumns?: unknown;
+      scalers?: unknown;
+    };
+    if (payload.operations !== undefined && payload.features === undefined) {
+      throw new AppException({
+        statusCode: 500,
+        message:
+          'Stored job payload is a cleaning pipeline, not a feature recipe — refusing to run as FEATURE.',
+        type: 'ERROR',
+      });
+    }
+    const parsed = CreateFeaturesSchema.safeParse({
+      features: payload.features ?? [],
+      selectedColumns: payload.selectedColumns ?? null,
+      scalers: payload.scalers ?? {},
+    });
+    if (!parsed.success) {
+      throw new AppException({
+        statusCode: 500,
+        message: 'Stored feature recipe failed validation — refusing to run.',
+        type: 'ERROR',
+      });
+    }
+    return {
+      features: parsed.data.features,
+      selectedColumns: parsed.data.selectedColumns ?? null,
+      scalers: parsed.data.scalers,
+    };
   }
 
   /**

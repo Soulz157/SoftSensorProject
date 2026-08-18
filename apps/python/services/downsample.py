@@ -33,6 +33,7 @@ limitation in `feature_list.preprocessing.json`, not silently assumed.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -173,4 +174,118 @@ def lttb_indices(
         bucket_edges=[pd.Timestamp(e).isoformat(sep=" ") for e in bucket_edges],
         downsampled=True,
         ratio=round(n / len(indices), 4),
+    )
+
+
+@dataclass(frozen=True)
+class GridSampleResult:
+    """`indices` are source row positions into the ORIGINAL (x, y) arrays,
+    ascending, deduplicated — one representative point per OCCUPIED grid
+    cell (the point nearest that cell's centroid), so a sparse region
+    returns fewer points than a dense one at the same `max_points` budget,
+    rather than every cell being padded to look equally full."""
+
+    indices: np.ndarray
+    grid_dims: tuple[int, int]
+    downsampled: bool
+    ratio: float
+
+
+def grid_bin_indices(
+    x: np.ndarray,
+    y: np.ndarray,
+    max_points: int,
+    valid: np.ndarray | None = None,
+) -> GridSampleResult:
+    """Select at most `max_points` (x, y) row indices via 2D grid binning.
+
+    ADR-DS-LAKE-005B-D-scatter-decimation (this task's own scope_note asked
+    to CONFIRM `lttb_indices`'s applicability rather than assume it —
+    confirmed NOT applicable): `lttb_indices` above buckets on the TIME
+    axis, but a scatter plot's X axis is an arbitrary tag VALUE, not time —
+    time-bucketed selection would retain points chosen for temporal shape
+    while discarding the 2D cloud's DENSITY structure, which is the thing a
+    scatter is read for. This bins the (x, y) plane instead: a roughly
+    square grid sized to `max_points` and the observed aspect ratio, one
+    representative point per occupied cell. Cell OCCUPANCY determines the
+    returned count, not a fixed resolution — a sparse region legitimately
+    returns fewer points; padding to exactly `max_points` would fabricate
+    points nobody observed.
+
+    `valid` (boolean, same length as `x`/`y`) EXCLUDES points from
+    consideration entirely — unlike `lttb_indices`'s narrower "excluded
+    from extrema protection only", a scatter has no bucket/area fallback
+    for an excluded point, so it must never be selected. Callers pass
+    Good-only validity (ADR-DS-LAKE-005B-D-scatter-status-filter) so a Bad
+    cell's `0.0` MISSING_VALUE hole can never appear in the plotted cloud.
+    """
+    n = len(x)
+    keep = np.flatnonzero(valid) if valid is not None else np.arange(n)
+
+    if keep.size == 0:
+        return GridSampleResult(
+            indices=np.array([], dtype=np.int64),
+            grid_dims=(0, 0),
+            downsampled=False,
+            ratio=1.0,
+        )
+
+    if max_points < 1 or keep.size <= max_points:
+        return GridSampleResult(
+            indices=np.sort(keep),
+            grid_dims=(0, 0),
+            downsampled=False,
+            ratio=1.0,
+        )
+
+    xs = x[keep]
+    ys = y[keep]
+    x_min, x_max = float(xs.min()), float(xs.max())
+    y_min, y_max = float(ys.min()), float(ys.max())
+    x_range = x_max - x_min
+    y_range = y_max - y_min
+
+    # Roughly square grid sized to the observed aspect ratio, so a wide-flat
+    # cloud isn't binned into tall thin cells that never fill.
+    aspect = (x_range / y_range) if y_range > 0 else 1.0
+    aspect = aspect if math.isfinite(aspect) and aspect > 0 else 1.0
+    cols = max(1, round(math.sqrt(max_points * aspect)))
+    rows = max(1, round(max_points / cols))
+
+    x_width = x_range / cols if x_range > 0 else 1.0
+    y_height = y_range / rows if y_range > 0 else 1.0
+
+    col_ids = (
+        np.clip(((xs - x_min) / x_width).astype(np.int64), 0, cols - 1)
+        if x_range > 0
+        else np.zeros(keep.size, dtype=np.int64)
+    )
+    row_ids = (
+        np.clip(((ys - y_min) / y_height).astype(np.int64), 0, rows - 1)
+        if y_range > 0
+        else np.zeros(keep.size, dtype=np.int64)
+    )
+    cell_ids = row_ids * cols + col_ids
+
+    # The point nearest its cell's centroid represents that cell — a
+    # genuinely representative point, not an arbitrary first-seen one.
+    centroid_x = x_min + (col_ids + 0.5) * x_width
+    centroid_y = y_min + (row_ids + 0.5) * y_height
+    dist_sq = (xs - centroid_x) ** 2 + (ys - centroid_y) ** 2
+
+    # Primary sort key is the LAST argument to `lexsort` (numpy convention):
+    # groups by cell, then orders each group by ascending distance so the
+    # first row of each group is that cell's nearest-to-centroid point.
+    order = np.lexsort((dist_sq, cell_ids))
+    sorted_cell_ids = cell_ids[order]
+    first_in_group = np.concatenate(
+        ([True], sorted_cell_ids[1:] != sorted_cell_ids[:-1])
+    )
+    chosen = np.sort(keep[order[first_in_group]])
+
+    return GridSampleResult(
+        indices=chosen,
+        grid_dims=(cols, rows),
+        downsampled=True,
+        ratio=round(keep.size / chosen.size, 4) if chosen.size else 1.0,
     )

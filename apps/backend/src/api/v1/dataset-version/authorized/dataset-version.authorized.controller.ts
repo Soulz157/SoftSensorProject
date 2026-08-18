@@ -15,9 +15,11 @@ import { JwtAccessGuard } from '@/guards/jwt-access.guard';
 import { Users } from '@/common/decorators/user.decorator';
 import { DatasetVersionAuthorizedService } from './dataset-version.authorized.service';
 import {
+  CorrelationRequestDto,
   CreateRawVersionDto,
   ListRowsDto,
   PreviewVersionDto,
+  PromoteVersionStatusDto,
   StartCleanJobDto,
   TagCatalogDto,
 } from './dto/dataset-version.authorized.dto';
@@ -50,6 +52,41 @@ export class DatasetVersionAuthorizedController {
     @Param('id') id: string,
   ) {
     return this.service.listVersionsService(user, id);
+  }
+
+  @Post('/:id/versions/:versionId/promote')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Promote a version through the registry lifecycle',
+    description:
+      'DS-LAKE-010. Legal path: DRAFT -> VALIDATED -> ACTIVE -> ' +
+      'DEPRECATED -> ARCHIVED, one step at a time. Metadata-only — no ' +
+      'artifact is copied, regenerated or overwritten.',
+  })
+  async promoteVersionController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('versionId') versionId: string,
+    @Body() body: PromoteVersionStatusDto,
+  ) {
+    return this.service.promoteVersionService(user, id, versionId, body);
+  }
+
+  @Get('/:id/versions/:versionId/lineage')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'The frozen BRONZE -> FINAL artifact chain for one version',
+    description:
+      'DS-LAKE-010-T03. Returns the point-in-time snapshot recorded at ' +
+      'Save time, root-first — not a live query, so it stays correct even ' +
+      'after intermediate-artifact cleanup reclaims older objects.',
+  })
+  async getVersionLineageController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('versionId') versionId: string,
+  ) {
+    return this.service.getVersionLineageService(user, id, versionId);
   }
 
   @Post('/:id/versions')
@@ -218,6 +255,33 @@ export class DatasetVersionAuthorizedController {
     return this.service.getArtifactColumnStatsService(user, id, artifactId);
   }
 
+  @Post('/:id/artifacts/:artifactId/correlation')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Pearson correlation matrix over a server-resolved column list, hard-capped',
+    description:
+      'DS-LAKE-005B-D-T05b, saved-dataset leg. Read-only — creates no ' +
+      'object, job or artifact. `tags` is the candidate universe; the ' +
+      'server resolves it down to at most `topK` columns and echoes the ' +
+      'resolved list back. Unlike the draft leg this artifact is immutable, ' +
+      'so `operations` is always sent empty — there is no pending recipe ' +
+      'for a committed artifact to be recomputed under.',
+  })
+  async getArtifactCorrelationController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Body() body: CorrelationRequestDto,
+  ) {
+    return this.service.getArtifactCorrelationService(
+      user,
+      id,
+      artifactId,
+      body,
+    );
+  }
+
   @Post('/:id/versions/:versionId/preview')
   @HttpCode(200)
   @ApiOperation({
@@ -288,5 +352,37 @@ export class DatasetVersionAuthorizedController {
     @Param('jobId') jobId: string,
   ) {
     return this.service.retryJobService(user, id, jobId);
+  }
+
+  @Get('/:id/loader-jobs/:jobId')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Loader job status (DS-LAKE-011)',
+    description:
+      'The asynchronous hand-off from a committed DatasetVersion to a ' +
+      'serving-layer sink. Metadata only — never dataset rows.',
+  })
+  async getLoaderJobController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('jobId') jobId: string,
+  ) {
+    return this.service.getLoaderJobStatusService(user, id, jobId);
+  }
+
+  @Post('/:id/loader-jobs/:jobId/retry')
+  @HttpCode(202)
+  @ApiOperation({
+    summary: 'Retry a failed or canceled loader job (DS-LAKE-011)',
+    description:
+      'Creates a NEW loader job rather than resetting the old one, so the ' +
+      'failed attempt stays on the record.',
+  })
+  async retryLoaderJobController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('jobId') jobId: string,
+  ) {
+    return this.service.retryLoaderJobService(user, id, jobId);
   }
 }

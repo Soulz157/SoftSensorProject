@@ -19,11 +19,15 @@ import {
   SaveDraftAsDatasetDto,
 } from './dto/dataset-draft.authorized.dto';
 import {
+  BoxplotRequestDto,
+  CorrelationRequestDto,
   CreateFeaturesDto,
   CreateRawVersionDto,
+  HistogramRequestDto,
   ListRowsDto,
   PreviewVersionDto,
   PromoteFinalArtifactDto,
+  ScatterRequestDto,
   StartCleanJobDto,
   TagCatalogDto,
   ValidateArtifactDto,
@@ -120,6 +124,30 @@ export class DatasetDraftAuthorizedController {
     @Body() body: CreateFeaturesDto,
   ) {
     return this.service.createDraftFeaturesArtifactService(
+      user,
+      id,
+      artifactId,
+      body,
+    );
+  }
+
+  @Post('/:id/artifacts/:artifactId/features/job')
+  @HttpCode(202)
+  @ApiOperation({
+    summary: 'Start a draft-scoped feature-engineering job (202 + jobId)',
+    description:
+      'Async replacement for POST .../features (kept running during the ' +
+      'transition — see its own description). Returns immediately with a ' +
+      'job id; poll `GET /:id/jobs/:jobId` for progress. The result lands ' +
+      'as a GOLD artifact under this draft.',
+  })
+  async startDraftFeaturesJobController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Body() body: CreateFeaturesDto,
+  ) {
+    return this.service.startDraftFeaturesJobService(
       user,
       id,
       artifactId,
@@ -304,6 +332,103 @@ export class DatasetDraftAuthorizedController {
     @Body() body: PreviewVersionDto,
   ) {
     return this.service.previewDraftService(user, id, artifactId, body);
+  }
+
+  @Post('/:id/artifacts/:artifactId/histogram')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Histogram/KDE for one or more tags, recomputed under live operations',
+    description:
+      'DS-LAKE-005B-D-T01. Creates NO object, job or artifact — read-only, ' +
+      'same guarantee /preview makes. Reflects the crop/conditional/' +
+      'statistical rules currently live in Step 3.1, not a committed-' +
+      'artifact snapshot.',
+  })
+  async getDraftArtifactHistogramController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Body() body: HistogramRequestDto,
+  ) {
+    return this.service.getDraftArtifactHistogramService(
+      user,
+      id,
+      artifactId,
+      body,
+    );
+  }
+
+  @Post('/:id/artifacts/:artifactId/boxplot')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Five-number summary + capped outlier list per tag, recomputed under live operations',
+    description:
+      'DS-LAKE-005B-D-T03. Creates NO object, job or artifact — read-only, ' +
+      'same guarantee /preview and /histogram make.',
+  })
+  async getDraftArtifactBoxplotController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Body() body: BoxplotRequestDto,
+  ) {
+    return this.service.getDraftArtifactBoxplotService(
+      user,
+      id,
+      artifactId,
+      body,
+    );
+  }
+
+  @Post('/:id/artifacts/:artifactId/scatter')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Decimated scatter cloud + full-frame regression for two tags',
+    description:
+      'DS-LAKE-005B-D-T04. Creates NO object, job or artifact — read-only, ' +
+      'same guarantee /preview, /histogram and /boxplot make. Regression ' +
+      'coefficients are always fit over the full Good-filtered frame, ' +
+      'never the decimated point sample.',
+  })
+  async getDraftArtifactScatterController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Body() body: ScatterRequestDto,
+  ) {
+    return this.service.getDraftArtifactScatterService(
+      user,
+      id,
+      artifactId,
+      body,
+    );
+  }
+
+  @Post('/:id/artifacts/:artifactId/correlation')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Pearson correlation matrix over a server-resolved column list, hard-capped',
+    description:
+      'DS-LAKE-005B-D-T05b. Creates NO object, job or artifact — read-only, ' +
+      'same guarantee /preview, /histogram, /boxplot and /scatter make. ' +
+      '`tags` is the candidate universe; the server resolves it down to ' +
+      'at most `topK` columns and echoes the resolved list back.',
+  })
+  async getDraftArtifactCorrelationController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Body() body: CorrelationRequestDto,
+  ) {
+    return this.service.getDraftArtifactCorrelationService(
+      user,
+      id,
+      artifactId,
+      body,
+    );
   }
 
   @Post('/:id/artifacts/:artifactId/clean')

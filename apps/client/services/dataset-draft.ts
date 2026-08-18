@@ -162,6 +162,147 @@ export interface DraftPreviewResult {
   warnings: string[]
 }
 
+/** One overlaid tag's distribution + KDE curve. Mirrors apps/python
+ * `schemas.preprocess.TagHistogram` field for field, same snake_case-wire
+ * convention as `DraftPreviewResult` — the backend service returns Python's
+ * response unmapped (`getDraftArtifactHistogramService`), same as preview. */
+export interface DraftTagHistogram {
+  tag: string
+  mean: number
+  median: number
+  mode: number
+  std: number
+  min: number
+  max: number
+  range: number
+  count: number
+  /** Already rescaled onto the count axis server-side (density * n *
+   * binWidth) — NOT a raw density curve. Ready to plot as-is. */
+  kde: { x: number; y: number }[]
+}
+
+/**
+ * Mirrors apps/python `schemas.preprocess.HistogramResponse`
+ * (DS-LAKE-005B-D-T01). `domain_min`/`domain_max` are `null` together when
+ * no requested tag qualifies (fewer than 2 Good values) — never
+ * independently null, since the domain is one shared value across every
+ * overlaid tag, not per-tag.
+ */
+export interface DraftHistogramResult {
+  source_key: string
+  domain_min: number | null
+  domain_max: number | null
+  tags: DraftTagHistogram[]
+  insufficient_tags: string[]
+}
+
+/** One tag's five-number summary + capped outlier list. Mirrors apps/python
+ * `schemas.preprocess.TagBoxplot` field for field, same snake_case-wire
+ * convention as `DraftPreviewResult`/`DraftHistogramResult` — the backend
+ * service returns Python's response unmapped. */
+export interface DraftTagBoxplot {
+  tag: string
+  min: number
+  q1: number
+  median: number
+  mean: number
+  q3: number
+  max: number
+  whisker_low: number
+  whisker_high: number
+  /** CAPPED at the request's `outlierCap` — see `outlier_count` for the
+   * true, uncapped total. `outliers.length < outlier_count` means truncated. */
+  outliers: number[]
+  outlier_count: number
+  count: number
+}
+
+/** Mirrors apps/python `schemas.preprocess.BoxplotResponse`
+ * (DS-LAKE-005B-D-T03). */
+export interface DraftBoxplotResult {
+  source_key: string
+  tags: DraftTagBoxplot[]
+  insufficient_tags: string[]
+}
+
+/** One decimated plot point. Mirrors apps/python
+ * `schemas.preprocess.ScatterPoint`. */
+export interface DraftScatterPoint {
+  x: number
+  y: number
+}
+
+/**
+ * Mirrors apps/python `schemas.preprocess.ScatterResponse`
+ * (DS-LAKE-005B-D-T04), same snake_case-wire convention as
+ * `DraftHistogramResult`/`DraftBoxplotResult` — returned unmapped.
+ *
+ * `points` is DECIMATED (server-side 2D grid binning) for plotting only —
+ * `n`/`slope`/`intercept`/`r2` are always computed over the FULL
+ * Good-filtered frame, never the decimated sample. A pair counts toward
+ * `n` only when BOTH x and y are Good — deliberately NOT the same rule
+ * `lib/preprocessing.ts::toScatterPoints` uses (status-blind); this is a
+ * tracked divergence, not a bug — see `scatter_service.py`'s own docstring.
+ */
+export interface DraftScatterResult {
+  source_key: string
+  x_tag: string
+  y_tag: string
+  points: DraftScatterPoint[]
+  n: number
+  slope: number
+  intercept: number
+  r2: number
+  downsampled: boolean
+}
+
+/**
+ * Mirrors apps/python `schemas.preprocess.CorrelationResponse`
+ * (DS-LAKE-005B-D-T05b), same snake_case-wire convention as the other
+ * chart results — returned unmapped.
+ *
+ * `tags` is the RESOLVED list (server-side auto-pick, near-constant
+ * filter + IQR/median-or-CV ranking, DS-LAKE-005B-D-T05a) — never assume
+ * it equals the request's own `tags`; the client cannot infer which
+ * columns it got and must read this field, not re-derive it.
+ */
+export interface DraftCorrelationResult {
+  source_key: string
+  tags: string[]
+  /** `matrix[i][j]` is the correlation between `tags[i]` and `tags[j]`. */
+  matrix: number[][]
+  /** Which ranking metric ("iqr_median" | "cv") placed each resolved tag. */
+  column_metrics: Record<string, string>
+  insufficient_tags: string[]
+  near_constant_tags: string[]
+  total_candidates: number
+}
+
+/**
+ * DS-LAKE-005B-B-T01 (Step 5 leg). `GET .../artifacts/:artifactId/metadata`'s
+ * response shape — bounded viewport metadata, never a row payload
+ * (DS-LAKE-005B-A-T01). `tags` is the artifact's full logical tag-name list;
+ * at 8,000 tags this is a tens-of-KB array, accepted deliberately (still
+ * bounded by schema width, never by row count) rather than adding a second
+ * `/tags?search=` round trip for the one caller that only needs a boolean.
+ */
+export interface DraftArtifactMetadata {
+  id: string
+  runId: string
+  type: 'BRONZE' | 'SILVER' | 'GOLD' | 'FINAL'
+  parentArtifactId: string | null
+  checksum: string
+  rowCount: number
+  tagCount: number
+  columnCount: number
+  missingPct: number
+  sizeBytes: string
+  tags: string[]
+  startTime: string | null
+  endTime: string | null
+  createdAt: string
+}
+
 const base = '/api/v1/authorized/dataset-drafts'
 const one = (draftId: string) => `${base}/${encodeURIComponent(draftId)}`
 
@@ -205,6 +346,106 @@ export const datasetDraftService = {
       { method: 'POST', body: JSON.stringify(body) },
     ),
 
+  /** DS-LAKE-005B-D-T01. Histogram/KDE for one or more tags, recomputed
+   * under `operations` against a draft artifact. Writes nothing — same
+   * read-only guarantee as `preview()`. `tags` is REQUIRED (unlike
+   * `preview`'s optional `tags`): the domain is shared across every
+   * overlaid tag, so "every tag" is never a sane default here. */
+  histogram: (
+    draftId: string,
+    artifactId: string,
+    body: {
+      operations: CleaningOperationInput[]
+      tags: string[]
+      precision?: Record<string, number>
+      sampleRows?: number
+      startTime?: string
+      endTime?: string
+      kdeSamples?: number
+      binCount?: number
+    },
+    /** DS-LAKE-005B-D-T06. Forwarded straight to `fetch` — lets
+     * `useDebouncedAbortableRequest` cancel an in-flight request the
+     * moment it's superseded, not just ignore its eventual response. */
+    signal?: AbortSignal,
+  ): Promise<ApiResponse<DraftHistogramResult>> =>
+    fetchClient(
+      `${one(draftId)}/artifacts/${encodeURIComponent(artifactId)}/histogram`,
+      { method: 'POST', body: JSON.stringify(body), signal },
+    ),
+
+  /** DS-LAKE-005B-D-T03. Five-number summary + capped outlier list per tag,
+   * recomputed under `operations` against a draft artifact. Writes nothing —
+   * same read-only guarantee as `preview()`/`histogram()`. */
+  boxplot: (
+    draftId: string,
+    artifactId: string,
+    body: {
+      operations: CleaningOperationInput[]
+      tags: string[]
+      precision?: Record<string, number>
+      sampleRows?: number
+      startTime?: string
+      endTime?: string
+      outlierCap?: number
+    },
+    signal?: AbortSignal,
+  ): Promise<ApiResponse<DraftBoxplotResult>> =>
+    fetchClient(
+      `${one(draftId)}/artifacts/${encodeURIComponent(artifactId)}/boxplot`,
+      { method: 'POST', body: JSON.stringify(body), signal },
+    ),
+
+  /** DS-LAKE-005B-D-T04. Decimated scatter cloud + full-frame regression
+   * for two tags, recomputed under `operations` against a draft artifact.
+   * Writes nothing — same read-only guarantee as `preview()`/`histogram()`/
+   * `boxplot()`. `xTag`/`yTag` are REQUIRED (unlike `tags` elsewhere): a
+   * scatter plot has a fixed 2D shape, not an N-tag overlay. */
+  scatter: (
+    draftId: string,
+    artifactId: string,
+    body: {
+      operations: CleaningOperationInput[]
+      xTag: string
+      yTag: string
+      precision?: Record<string, number>
+      sampleRows?: number
+      startTime?: string
+      endTime?: string
+      maxPoints?: number
+    },
+    signal?: AbortSignal,
+  ): Promise<ApiResponse<DraftScatterResult>> =>
+    fetchClient(
+      `${one(draftId)}/artifacts/${encodeURIComponent(artifactId)}/scatter`,
+      { method: 'POST', body: JSON.stringify(body), signal },
+    ),
+
+  /** DS-LAKE-005B-D-T05b. Correlation matrix over a server-resolved column
+   * list, recomputed under `operations` against a draft artifact. Writes
+   * nothing — same read-only guarantee as the other chart endpoints.
+   * `tags` is the CANDIDATE universe (required, same convention as
+   * `histogram()`/`boxplot()`/`scatter()`) — the server resolves it down
+   * to at most `topK` columns; the response echoes what was resolved. */
+  correlation: (
+    draftId: string,
+    artifactId: string,
+    body: {
+      operations: CleaningOperationInput[]
+      tags: string[]
+      precision?: Record<string, number>
+      sampleRows?: number
+      startTime?: string
+      endTime?: string
+      topK?: number
+    },
+    signal?: AbortSignal,
+  ): Promise<ApiResponse<DraftCorrelationResult>> =>
+    fetchClient(
+      `${one(draftId)}/artifacts/${encodeURIComponent(artifactId)}/correlation`,
+      { method: 'POST', body: JSON.stringify(body), signal },
+    ),
+
   rows: (
     draftId: string,
     artifactId: string,
@@ -213,6 +454,19 @@ export const datasetDraftService = {
     fetchClient(
       `${one(draftId)}/artifacts/${encodeURIComponent(artifactId)}/rows` +
         `?offset=${params.offset}&limit=${params.limit}`,
+      { method: 'GET' },
+    ),
+
+  /** DS-LAKE-005B-B-T01 (Step 5 leg). Bounded viewport metadata, never a row
+   * payload (DS-LAKE-005B-A-T01) — schema/time-range/quality summary read
+   * off the artifact's own footer. First real caller is
+   * `useDatasetArtifactMetadata`, added alongside this method. */
+  metadata: (
+    draftId: string,
+    artifactId: string,
+  ): Promise<ApiResponse<DraftArtifactMetadata>> =>
+    fetchClient(
+      `${one(draftId)}/artifacts/${encodeURIComponent(artifactId)}/metadata`,
       { method: 'GET' },
     ),
 
@@ -245,6 +499,23 @@ export const datasetDraftService = {
   ): Promise<ApiResponse<DraftArtifact>> =>
     fetchClient(
       `${one(draftId)}/artifacts/${encodeURIComponent(artifactId)}/features`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+
+  /** DS-LAKE-006-T06 reversal. 202 + jobId, same shape as `clean()` — poll
+   * `job()`. Async replacement for `createFeatures` above; that inline
+   * route stays live during the transition, not removed. */
+  startFeaturesJob: (
+    draftId: string,
+    artifactId: string,
+    body: {
+      features: FeatureConfig[]
+      selectedColumns?: string[] | null
+      scalers?: Record<string, ScalerMethod>
+    },
+  ): Promise<ApiResponse<{ jobId: string; status: PreprocessingJobStatus }>> =>
+    fetchClient(
+      `${one(draftId)}/artifacts/${encodeURIComponent(artifactId)}/features/job`,
       { method: 'POST', body: JSON.stringify(body) },
     ),
 
@@ -296,7 +567,10 @@ export const datasetDraftService = {
     body: {
       name: string
       description?: string
-      tags: string[]
+      /** DS-LAKE-005B-B-T01 (Step 5 leg). Optional — the server derives the
+       * real logical tag list from the FINAL artifact when omitted, rather
+       * than trusting a client-computed one. */
+      tags?: string[]
       pipelineConfig: PipelineConfig
       fileUrl?: string | null
     },

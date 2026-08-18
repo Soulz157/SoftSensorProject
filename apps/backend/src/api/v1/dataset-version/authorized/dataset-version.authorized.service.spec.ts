@@ -2,6 +2,7 @@ import { AppException } from '@softsensor/common';
 import { postToPython } from '@/lib/python-client';
 import { DatasetVersionAuthorizedService } from './dataset-version.authorized.service';
 import type { PreprocessingJobService } from './preprocessing-job.service';
+import type { LoaderJobService } from '../../loader/loader-job.service';
 
 /**
  * DS-LAKE-009-T07. Covers the two methods this task materially changed —
@@ -43,20 +44,29 @@ function buildPrisma(overrides: Record<string, unknown> = {}) {
     datasetVersion: {
       findFirst: jest.fn().mockResolvedValue(null),
       findMany: jest.fn().mockResolvedValue([]),
+      update: jest.fn(),
     },
+    $transaction: jest.fn(),
     ...overrides,
   };
 }
 
 function makeService(prisma: ReturnType<typeof buildPrisma>) {
   const jobs = { start: jest.fn(), cancel: jest.fn() };
+  const loaderJobs = {
+    enqueue: jest.fn(),
+    start: jest.fn(),
+    retry: jest.fn(),
+    getStatus: jest.fn(),
+  };
   const service = new DatasetVersionAuthorizedService(
     prisma as unknown as ConstructorParameters<
       typeof DatasetVersionAuthorizedService
     >[0],
     jobs as unknown as PreprocessingJobService,
+    loaderJobs as unknown as LoaderJobService,
   );
-  return { service, jobs };
+  return { service, jobs, loaderJobs };
 }
 
 describe('DatasetVersionAuthorizedService — findArtifactSource (DS-LAKE-009-T07)', () => {
@@ -153,5 +163,199 @@ describe('DatasetVersionAuthorizedService — listVersionsService (DS-LAKE-009-T
     expect(res.data[0]).not.toHaveProperty('stage');
     expect(res.data[0]).not.toHaveProperty('parentVersionId');
     expect(res.data[0]).not.toHaveProperty('operations');
+  });
+});
+
+describe('DatasetVersionAuthorizedService — promoteVersionService (DS-LAKE-010)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('404s when the version does not belong to the dataset', async () => {
+    const prisma = buildPrisma();
+    const { service } = makeService(prisma);
+
+    await expect(
+      service.promoteVersionService(USER, 'ds-1', 'ghost', {
+        status: 'VALIDATED',
+      } as never),
+    ).rejects.toThrow(AppException);
+  });
+
+  it('same-state request is an idempotent no-op — no write, no throw', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetVersion.findFirst.mockResolvedValue({
+      id: 'v-1',
+      status: 'VALIDATED',
+    });
+    prisma.datasetVersion.update = jest.fn();
+    const { service } = makeService(prisma);
+
+    const res = await service.promoteVersionService(USER, 'ds-1', 'v-1', {
+      status: 'VALIDATED',
+    } as never);
+
+    expect(res.data).toEqual({ id: 'v-1', status: 'VALIDATED' });
+    expect(prisma.datasetVersion.update).not.toHaveBeenCalled();
+  });
+
+  it('DS-LAKE-010-V02: refuses ARCHIVED -> ACTIVE', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetVersion.findFirst.mockResolvedValue({
+      id: 'v-1',
+      status: 'ARCHIVED',
+    });
+    prisma.datasetVersion.update = jest.fn();
+    const { service } = makeService(prisma);
+
+    await expect(
+      service.promoteVersionService(USER, 'ds-1', 'v-1', {
+        status: 'ACTIVE',
+      } as never),
+    ).rejects.toThrow(AppException);
+    expect(prisma.datasetVersion.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses a skip (DRAFT -> ACTIVE)', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetVersion.findFirst.mockResolvedValue({
+      id: 'v-1',
+      status: 'DRAFT',
+    });
+    prisma.datasetVersion.update = jest.fn();
+    const { service } = makeService(prisma);
+
+    await expect(
+      service.promoteVersionService(USER, 'ds-1', 'v-1', {
+        status: 'ACTIVE',
+      } as never),
+    ).rejects.toThrow(AppException);
+    expect(prisma.datasetVersion.update).not.toHaveBeenCalled();
+  });
+
+  it('DS-LAKE-010-V01: a legal promotion writes ONLY status, nothing else on the row', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetVersion.findFirst.mockResolvedValue({
+      id: 'v-1',
+      status: 'DRAFT',
+    });
+    prisma.datasetVersion.update = jest
+      .fn()
+      .mockResolvedValue({ id: 'v-1', status: 'VALIDATED' });
+    const { service } = makeService(prisma);
+
+    await service.promoteVersionService(USER, 'ds-1', 'v-1', {
+      status: 'VALIDATED',
+    } as never);
+
+    expect(prisma.datasetVersion.update).toHaveBeenCalledTimes(1);
+    expect(prisma.datasetVersion.update).toHaveBeenCalledWith({
+      where: { id: 'v-1' },
+      data: { status: 'VALIDATED' },
+      select: { id: true, status: true },
+    });
+    // AC0's structural half: the `data` payload is `{status}` alone — no
+    // objectKey/checksum field appears anywhere in this call, so neither
+    // can change. No `postToPython` call either (verified by the shared
+    // `post` mock never firing across this whole describe block).
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('DS-LAKE-010-T05: refuses promoting to ACTIVE while another version already holds it', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetVersion.findFirst.mockResolvedValue({
+      id: 'v-2',
+      status: 'VALIDATED',
+    });
+    const tx = {
+      datasetVersion: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'v-1' }), // the OTHER active version
+        update: jest.fn(),
+      },
+    };
+    prisma.$transaction = jest.fn((cb: (t: typeof tx) => unknown) => cb(tx));
+    const { service } = makeService(prisma);
+
+    await expect(
+      service.promoteVersionService(USER, 'ds-1', 'v-2', {
+        status: 'ACTIVE',
+      } as never),
+    ).rejects.toThrow(AppException);
+    expect(tx.datasetVersion.update).not.toHaveBeenCalled();
+  });
+
+  it('promotes to ACTIVE when no other version currently holds it', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetVersion.findFirst.mockResolvedValue({
+      id: 'v-2',
+      status: 'VALIDATED',
+    });
+    const tx = {
+      datasetVersion: {
+        findFirst: jest.fn().mockResolvedValue(null), // no other ACTIVE version
+        update: jest.fn().mockResolvedValue({ id: 'v-2', status: 'ACTIVE' }),
+      },
+    };
+    prisma.$transaction = jest.fn((cb: (t: typeof tx) => unknown) => cb(tx));
+    const { service } = makeService(prisma);
+
+    const res = await service.promoteVersionService(USER, 'ds-1', 'v-2', {
+      status: 'ACTIVE',
+    } as never);
+
+    expect(res.data).toEqual({ id: 'v-2', status: 'ACTIVE' });
+    expect(tx.datasetVersion.update).toHaveBeenCalledWith({
+      where: { id: 'v-2' },
+      data: { status: 'ACTIVE' },
+      select: { id: true, status: true },
+    });
+  });
+});
+
+describe('DatasetVersionAuthorizedService — getVersionLineageService (DS-LAKE-010-T03)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('404s when the version does not belong to the dataset', async () => {
+    const prisma = buildPrisma();
+    const { service } = makeService(prisma);
+
+    await expect(
+      service.getVersionLineageService(USER, 'ds-1', 'ghost'),
+    ).rejects.toThrow(AppException);
+  });
+
+  it('404s when the version predates the lineage snapshot (lineage: null)', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetVersion.findFirst.mockResolvedValue({
+      id: 'v-1',
+      lineage: null,
+    });
+    const { service } = makeService(prisma);
+
+    await expect(
+      service.getVersionLineageService(USER, 'ds-1', 'v-1'),
+    ).rejects.toThrow(AppException);
+  });
+
+  it('DS-LAKE-010-AC3: returns the frozen chain root-first, BRONZE first', async () => {
+    const chain = [
+      { id: 'bronze-1', type: 'BRONZE', checksum: 'b', objectKey: 'k-b' },
+      { id: 'silver-1', type: 'SILVER', checksum: 's', objectKey: 'k-s' },
+      { id: 'final-1', type: 'FINAL', checksum: 'f', objectKey: 'k-f' },
+    ];
+    const prisma = buildPrisma();
+    prisma.datasetVersion.findFirst.mockResolvedValue({
+      id: 'v-1',
+      lineage: chain,
+    });
+    const { service } = makeService(prisma);
+
+    const res = await service.getVersionLineageService(USER, 'ds-1', 'v-1');
+
+    expect(res.data.lineage[0]).toMatchObject({ type: 'BRONZE' });
+    expect(res.data.lineage[res.data.lineage.length - 1]).toMatchObject({
+      type: 'FINAL',
+    });
+    // DS-LAKE-010-V03: no row-level payload anywhere in this response —
+    // just the frozen artifact-chain metadata already asserted above.
+    expect(res.data).not.toHaveProperty('rows');
   });
 });

@@ -54,11 +54,13 @@ vi.mock('@/services/dataset-version', () => ({
 const validateArtifact = vi.fn()
 const finalizeArtifact = vi.fn()
 const saveDraft = vi.fn()
+const fetchMetadata = vi.fn()
 vi.mock('@/services/dataset-draft', () => ({
   datasetDraftService: {
     validate: (...args: unknown[]) => validateArtifact(...args),
     finalize: (...args: unknown[]) => finalizeArtifact(...args),
     save: (...args: unknown[]) => saveDraft(...args),
+    metadata: (...args: unknown[]) => fetchMetadata(...args),
   },
 }))
 
@@ -127,6 +129,29 @@ beforeEach(() => {
     },
   })
   finalizeArtifact.mockResolvedValue({ data: { id: 'final-1' } })
+  // DS-LAKE-005B-B-T01 (Step 5 leg). Default so tests that reach the draft
+  // path without asserting on metadata content still settle into a resolved
+  // state rather than staying `pending` — same reasoning as `validateArtifact`'s
+  // own default PASS above. Individual tests override this when the
+  // metadata VALUE itself is what's under test.
+  fetchMetadata.mockResolvedValue({
+    data: {
+      id: 'final-1',
+      runId: 'run-1',
+      type: 'FINAL',
+      parentArtifactId: 'gold-1',
+      checksum: 'c'.repeat(64),
+      rowCount: 100,
+      tagCount: 3,
+      columnCount: 7,
+      missingPct: 1.2,
+      sizeBytes: '4096',
+      tags: ['TI-101', 'PI-303', 'FI-201'],
+      startTime: '2026-06-22T00:00:00Z',
+      endTime: '2026-06-22T01:00:00Z',
+      createdAt: '2026-06-22T01:05:00Z',
+    },
+  })
   saveDraft.mockResolvedValue({
     data: {
       id: 'ds-1',
@@ -640,5 +665,81 @@ describe('Step5ReviewSave — artifact-adoption save (DS-LAKE-005B-B-T01, Step 5
     expect(
       screen.getByText(/waiting for feature engineering to finish/i),
     ).toBeVisible()
+  })
+
+  // DS-LAKE-005B-B-T01 (Step 5 leg). `raw` is set to a NON-trivial dataset
+  // (5 tags, 7 rows) that this fixture's trivial recipe (no features/crop/
+  // exclusions, selectedColumns null) would reproduce almost unchanged if
+  // the client pipeline ran — so a tile showing 5/7 would mean the pipeline
+  // ran; showing the default fetchMetadata fixture's 3/100 instead proves
+  // it did not. Scoped precisely to what this proves: Step 5's OWN
+  // `useMemo` transform chain did not run — `use-dataset-pipeline-nav.ts`'s
+  // separate `canAdvance` pipeline (a different consumer of `nav`, not
+  // exercised by this fixture) is untouched by this change and this test
+  // makes no claim about it.
+  it('reads Tags/Rows tiles from artifact metadata, not the client pipeline, on the draft path', async () => {
+    withGateArtifact()
+    act(() => {
+      store.set(dwRawDatasetAtom, {
+        tags: ['A', 'B', 'C', 'D', 'E'],
+        rows: Array.from({ length: 7 }, (_, i) => ({
+          timestamp: `t${i}`,
+          cells: {},
+        })),
+      })
+    })
+
+    render(
+      <Provider store={store}>
+        <Step5ReviewSave nav={nav} />
+      </Provider>,
+    )
+
+    await waitFor(() => expect(fetchMetadata).toHaveBeenCalled())
+    expect(await screen.findByText('3')).toBeInTheDocument() // Tags: metadata.tagCount
+    expect(screen.getByText('100')).toBeInTheDocument() // Rows: metadata.rowCount
+    expect(screen.getByText('7')).toBeInTheDocument() // Raw rows: unaffected, still raw.rows.length
+    expect(screen.queryByText('5')).not.toBeInTheDocument() // would appear if the pipeline ran
+  })
+
+  it('omits tags from the save request on the draft path — the server derives it from the artifact', async () => {
+    withGateArtifact()
+    await clickSave()
+
+    await waitFor(() => expect(saveDraft).toHaveBeenCalledTimes(1))
+    const [, body] = saveDraft.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ]
+    expect(body).not.toHaveProperty('tags')
+  })
+
+  it('target-missing banner reads metadata.tags on the draft path — warns when metadata confirms absence', async () => {
+    withGateArtifact()
+    store.set(dwTargetTagAtom, 'LAB-999') // absent from the default fetchMetadata fixture's tags
+    render(
+      <Provider store={store}>
+        <Step5ReviewSave nav={nav} />
+      </Provider>,
+    )
+
+    expect(await screen.findByText(/is not in this dataset/i)).toBeVisible()
+  })
+
+  it('target-missing banner reads metadata.tags on the draft path — silent once metadata confirms presence', async () => {
+    withGateArtifact()
+    store.set(dwTargetTagAtom, 'TI-101') // present in the default fetchMetadata fixture's tags
+    render(
+      <Provider store={store}>
+        <Step5ReviewSave nav={nav} />
+      </Provider>,
+    )
+
+    await waitFor(() => expect(fetchMetadata).toHaveBeenCalled())
+    await waitFor(() =>
+      expect(
+        screen.queryByText(/is not in this dataset/i),
+      ).not.toBeInTheDocument(),
+    )
   })
 })

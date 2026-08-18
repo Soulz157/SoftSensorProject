@@ -10,18 +10,27 @@ import {
 import { artifactKey } from '@/lib/artifact-keys';
 import { buildSourceBlock } from '@/lib/source-block';
 import { PreprocessingJobService } from '../../dataset-version/authorized/preprocessing-job.service';
+import { LoaderJobService } from '../../loader/loader-job.service';
 import {
   ArtifactStatsSchema,
+  PythonBoxplotSchema,
   PythonColumnStatsSchema,
+  PythonCorrelationSchema,
+  PythonHistogramSchema,
   PythonMetadataSchema,
   PythonPreviewSchema,
   PythonRowsSchema,
+  PythonScatterSchema,
   PythonTagCatalogSchema,
   ValidationReportSchema,
+  type BoxplotRequestDto,
+  type CorrelationRequestDto,
   type CreateFeaturesDto,
   type CreateRawVersionDto,
+  type HistogramRequestDto,
   type ListRowsDto,
   type PreviewVersionDto,
+  type ScatterRequestDto,
   type StartCleanJobDto,
   type TagCatalogDto,
   type ValidateArtifactDto,
@@ -55,6 +64,7 @@ export class DatasetDraftAuthorizedService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly jobs: PreprocessingJobService,
+    private readonly loaderJobs: LoaderJobService,
   ) {}
 
   // ── access ───────────────────────────────────────────────────────────────
@@ -358,7 +368,7 @@ export class DatasetDraftAuthorizedService {
           // No column_stats.json from /features — that sidecar is a
           // cleaning-op concern (drift/coverage/outlier), which this
           // endpoint has nothing to compute.
-          columnStatsKey: null,
+          columnStatsKey: stats.column_stats_key ?? null,
           featureSpecKey: stats.feature_spec_key ?? null,
           durationMs: Date.now() - startedAt,
           createdById: user.id,
@@ -370,9 +380,13 @@ export class DatasetDraftAuthorizedService {
       });
       return created;
     });
+    const skipped = stats.skipped_features ?? [];
     return {
       statusCode: 201,
-      message: 'Draft gold artifact created successfully',
+      message:
+        skipped.length > 0
+          ? `Draft gold artifact created successfully (skipped ${skipped.length} feature(s) colliding with existing columns: ${skipped.join(', ')})`
+          : 'Draft gold artifact created successfully',
       type: 'SUCCESS' as const,
       data: {
         id: artifact.id,
@@ -713,6 +727,24 @@ export class DatasetDraftAuthorizedService {
         : null;
     }
 
+    // DS-LAKE-005B-B-T01 (Step 5 leg). `tags` joins rowCount/missingPct/
+    // columnCount/etc. above as an artifact-derived field: when the caller
+    // omits it, the FINAL artifact's own logical tag list is read via the
+    // same Python `/metadata` call `getDraftArtifactMetadataService` already
+    // makes — footer-only, no parquet rows opened. Runs outside
+    // `$transaction`, same discipline as the validate call above it. A
+    // caller that still sends an explicit `tags` array (legacy UI path) is
+    // honoured as-is.
+    const tags =
+      dto.tags ??
+      PythonMetadataSchema.parse(
+        await postToPython(
+          '/v1/preprocess/metadata',
+          { source_key: finalArtifact.objectKey },
+          PYTHON_TIMEOUT.metadata,
+        ),
+      ).tags;
+
     const { dataset, version } = await this.prisma.$transaction(async (tx) => {
       const dataset = await tx.dataset.create({
         data: {
@@ -720,7 +752,7 @@ export class DatasetDraftAuthorizedService {
           description: dto.description ?? null,
           workspaceId: draft.workspaceId,
           sourceIds: draft.sourceIds,
-          tags: dto.tags,
+          tags,
           pipelineConfig: dto.pipelineConfig as PrismaTypes.InputJsonValue,
           fileUrl: dto.fileUrl ?? null,
           rowCount: finalArtifact.rowCount,
@@ -781,6 +813,15 @@ export class DatasetDraftAuthorizedService {
 
       return { dataset, version };
     });
+
+    // DS-LAKE-011-T03: enqueue AFTER the transaction has committed, never
+    // inside it — a loader failure must never fail or roll back Save
+    // (AC0). `enqueue` itself never throws for a sink-side failure (see
+    // its own doc comment); only a genuine job-row write failure would
+    // reach here, and that is intentionally NOT caught — a save that
+    // already succeeded reporting an unrelated post-commit error is more
+    // honest than silently swallowing it.
+    await this.loaderJobs.enqueue(dataset.id, version.id, user.id);
 
     return {
       statusCode: 201,
@@ -1088,6 +1129,212 @@ export class DatasetDraftAuthorizedService {
     };
   }
 
+  /**
+   * DS-LAKE-005B-D-T01. Histogram/KDE for Step 3.1's DataAnalysisCard —
+   * same shape as `previewDraftService` immediately above (artifact lookup,
+   * forward the operations payload, zod-parse the Python response, return
+   * it as-is). Creates no object, job or artifact — read-only, same
+   * guarantee `/preview` makes.
+   */
+  async getDraftArtifactHistogramService(
+    user: Auth.UserPayload,
+    draftId: string,
+    artifactId: string,
+    dto: HistogramRequestDto,
+  ) {
+    await this.assertDraftAccess(draftId, user);
+    const artifact = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, draftId },
+      select: { objectKey: true },
+    });
+    if (!artifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Draft artifact not found',
+        type: 'ERROR',
+      });
+    }
+
+    const histogram = PythonHistogramSchema.parse(
+      await postToPython(
+        '/v1/preprocess/histogram',
+        {
+          source_key: artifact.objectKey,
+          operations: dto.operations,
+          precision: dto.precision,
+          tags: dto.tags,
+          ...(dto.sampleRows && { sample_rows: dto.sampleRows }),
+          ...(dto.startTime && { start_time: dto.startTime }),
+          ...(dto.endTime && { end_time: dto.endTime }),
+          ...(dto.kdeSamples && { kde_samples: dto.kdeSamples }),
+          ...(dto.binCount && { bin_count: dto.binCount }),
+        },
+        PYTHON_TIMEOUT.metadata,
+      ),
+    );
+
+    return {
+      statusCode: 200,
+      message: 'Histogram generated successfully',
+      type: 'SUCCESS' as const,
+      data: histogram,
+    };
+  }
+
+  /**
+   * DS-LAKE-005B-D-T03. Box plot for Step 3.1's DataAnalysisCard — same
+   * shape as `getDraftArtifactHistogramService` immediately above (artifact
+   * lookup, forward the operations payload, zod-parse the Python response,
+   * return it as-is). Creates no object, job or artifact — read-only, same
+   * guarantee `/preview` and `/histogram` make.
+   */
+  async getDraftArtifactBoxplotService(
+    user: Auth.UserPayload,
+    draftId: string,
+    artifactId: string,
+    dto: BoxplotRequestDto,
+  ) {
+    await this.assertDraftAccess(draftId, user);
+    const artifact = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, draftId },
+      select: { objectKey: true },
+    });
+    if (!artifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Draft artifact not found',
+        type: 'ERROR',
+      });
+    }
+
+    const boxplot = PythonBoxplotSchema.parse(
+      await postToPython(
+        '/v1/preprocess/boxplot',
+        {
+          source_key: artifact.objectKey,
+          operations: dto.operations,
+          precision: dto.precision,
+          tags: dto.tags,
+          ...(dto.sampleRows && { sample_rows: dto.sampleRows }),
+          ...(dto.startTime && { start_time: dto.startTime }),
+          ...(dto.endTime && { end_time: dto.endTime }),
+          ...(dto.outlierCap && { outlier_cap: dto.outlierCap }),
+        },
+        PYTHON_TIMEOUT.metadata,
+      ),
+    );
+
+    return {
+      statusCode: 200,
+      message: 'Box plot generated successfully',
+      type: 'SUCCESS' as const,
+      data: boxplot,
+    };
+  }
+
+  /**
+   * DS-LAKE-005B-D-T04. Scatter cloud + regression for Step 3.1's
+   * DataAnalysisCard — same shape as `getDraftArtifactHistogramService`/
+   * `getDraftArtifactBoxplotService` above (artifact lookup, forward the
+   * operations payload, zod-parse the Python response, return it as-is).
+   * Creates no object, job or artifact — read-only, same guarantee
+   * `/preview`, `/histogram` and `/boxplot` make.
+   */
+  async getDraftArtifactScatterService(
+    user: Auth.UserPayload,
+    draftId: string,
+    artifactId: string,
+    dto: ScatterRequestDto,
+  ) {
+    await this.assertDraftAccess(draftId, user);
+    const artifact = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, draftId },
+      select: { objectKey: true },
+    });
+    if (!artifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Draft artifact not found',
+        type: 'ERROR',
+      });
+    }
+
+    const scatter = PythonScatterSchema.parse(
+      await postToPython(
+        '/v1/preprocess/scatter',
+        {
+          source_key: artifact.objectKey,
+          operations: dto.operations,
+          precision: dto.precision,
+          x_tag: dto.xTag,
+          y_tag: dto.yTag,
+          ...(dto.sampleRows && { sample_rows: dto.sampleRows }),
+          ...(dto.startTime && { start_time: dto.startTime }),
+          ...(dto.endTime && { end_time: dto.endTime }),
+          ...(dto.maxPoints && { max_points: dto.maxPoints }),
+        },
+        PYTHON_TIMEOUT.metadata,
+      ),
+    );
+
+    return {
+      statusCode: 200,
+      message: 'Scatter data generated successfully',
+      type: 'SUCCESS' as const,
+      data: scatter,
+    };
+  }
+
+  /**
+   * DS-LAKE-005B-D-T05b. Correlation matrix over a server-resolved column
+   * list for Step 3.1's DataAnalysisCard — same shape as the histogram/
+   * boxplot/scatter services above. Creates no object, job or artifact —
+   * read-only, same guarantee every other chart endpoint makes.
+   */
+  async getDraftArtifactCorrelationService(
+    user: Auth.UserPayload,
+    draftId: string,
+    artifactId: string,
+    dto: CorrelationRequestDto,
+  ) {
+    await this.assertDraftAccess(draftId, user);
+    const artifact = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, draftId },
+      select: { objectKey: true },
+    });
+    if (!artifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Draft artifact not found',
+        type: 'ERROR',
+      });
+    }
+
+    const correlation = PythonCorrelationSchema.parse(
+      await postToPython(
+        '/v1/preprocess/correlation',
+        {
+          source_key: artifact.objectKey,
+          operations: dto.operations,
+          precision: dto.precision,
+          tags: dto.tags,
+          ...(dto.sampleRows && { sample_rows: dto.sampleRows }),
+          ...(dto.startTime && { start_time: dto.startTime }),
+          ...(dto.endTime && { end_time: dto.endTime }),
+          ...(dto.topK && { top_k: dto.topK }),
+        },
+        PYTHON_TIMEOUT.metadata,
+      ),
+    );
+
+    return {
+      statusCode: 200,
+      message: 'Correlation matrix generated successfully',
+      type: 'SUCCESS' as const,
+      data: correlation,
+    };
+  }
+
   // ── silver: clean job ────────────────────────────────────────────────────
 
   /**
@@ -1135,6 +1382,70 @@ export class DatasetDraftAuthorizedService {
     return {
       statusCode: 202,
       message: 'Cleaning job accepted',
+      type: 'SUCCESS' as const,
+      data: { jobId: job.id, status: job.status },
+    };
+  }
+
+  // ── gold: feature engineering job ───────────────────────────────────────
+
+  /**
+   * Start a draft-scoped feature-engineering job — the async replacement
+   * for `createDraftFeaturesArtifactService` below (DS-LAKE-006-T06
+   * reversal: feature engineering now runs as a `PreprocessingJob`, matching
+   * `/clean`, per an explicit user decision — the inline route is KEPT
+   * running during the transition, not removed, so existing callers and
+   * `step-5-review-save.tsx`'s gating on a 201 response are undisturbed
+   * until the client is switched over).
+   *
+   * `stage: 'FEATURE'` is the first-ever writer of that enum value.
+   * `operations` stores `{ features, selectedColumns, scalers }` — a
+   * different JSON shape than CLEAN's `{ operations, precision }`, read
+   * back by the runner's `readFeatureRecipe`, never `readOperations`.
+   */
+  async startDraftFeaturesJobService(
+    user: Auth.UserPayload,
+    draftId: string,
+    artifactId: string,
+    dto: CreateFeaturesDto,
+  ) {
+    await this.assertDraftAccess(draftId, user);
+    const source = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, draftId },
+      select: { id: true },
+    });
+    if (!source) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Draft artifact not found',
+        type: 'ERROR',
+      });
+    }
+
+    const job = await this.prisma.preprocessingJob.create({
+      data: {
+        draftId,
+        sourceArtifactId: source.id,
+        status: 'QUEUED',
+        stage: 'FEATURE',
+        // One combined Python call, not a chained per-tag pipeline — the
+        // runner sets totalSteps to 1 itself once it reads this row (see
+        // preprocessing-job.service.ts's own comment on why), not
+        // dto.features.length; left at the Prisma column default here.
+        operations: {
+          features: dto.features,
+          selectedColumns: dto.selectedColumns ?? null,
+          scalers: dto.scalers,
+        },
+        createdById: user.id,
+      },
+    });
+
+    this.jobs.start(job.id);
+
+    return {
+      statusCode: 202,
+      message: 'Feature engineering job accepted',
       type: 'SUCCESS' as const,
       data: { jobId: job.id, status: job.status },
     };

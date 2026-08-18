@@ -1,7 +1,7 @@
 'use client'
 
 import { useMemo, useState } from 'react'
-import { useAtom } from 'jotai'
+import { useAtom, useAtomValue } from 'jotai'
 import {
   BarChart3,
   BoxSelect,
@@ -21,6 +21,13 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import {
@@ -28,37 +35,237 @@ import {
   ScalerMethod,
   toChartRows,
   toModelReady,
-  type Dataset,
+  type BoundedSample,
 } from '@/lib/preprocessing'
 import { tagDistribution } from '@/lib/data-quality'
 import type { TimeRange } from '@/lib/mock-readings'
-import { dwScalerConfigsAtom } from '@/store/dataset-studio'
+import {
+  dwDraftIdAtom,
+  dwDraftArtifactIdAtom,
+  dwDraftGoldArtifactIdAtom,
+  dwScalerConfigsAtom,
+} from '@/store/dataset-studio'
+import { useDatasetArtifactMetadata } from '@/hooks/dataset/use-dataset-artifact-metadata'
+import { useDatasetHistogram } from '@/hooks/dataset/use-dataset-histogram'
+import { useDatasetBoxplot } from '@/hooks/dataset/use-dataset-boxplot'
+import { useDatasetScatter } from '@/hooks/dataset/use-dataset-scatter'
+import { useDatasetCorrelation } from '@/hooks/dataset/use-dataset-correlation'
 import { SegmentedToggle } from '@/app/(default)/data-visualize/components/segmented-toggle'
 import { useDatasetTagSelection } from '@/hooks/dataset/use-dataset-tag-selection'
 import { useCompareTags } from '@/hooks/dataset/use-compare-tags'
-import { ScatterRegressionChart } from '@/app/(default)/data-visualize/components/scatter-regression-chart'
 import { RawTrendChart } from '../chart/raw-data-chart'
 import { RawReadingsTable } from '../raw-readings-table'
 import { TagHistogramChart } from '../chart/tag-histogram-chart'
 import { TagBoxplotChart } from '../chart/tag-boxplot-chart'
-import { CorrelationHeatmap } from '../correlation-heatmap'
+import { TagScatterChart } from '../chart/tag-scatter-chart'
+import { TagCorrelationChart } from '../chart/tag-correlation-chart'
 import { CompareTagsPopover } from './compare-tags-popover'
 import { FeatureTransformDialog } from '../feature-engineering/transformation-panel'
 import { ScrollArea } from '@/components/ui/scroll-area'
 
 interface Props {
-  dataset: Dataset
+  /**
+   * DS-LAKE-005B-D-T07: `BoundedSample`, not a bare `Dataset` — both
+   * callers (`step-3-1-EDA.tsx`'s `precleanseBounded`,
+   * `step-4-feature-engineering.tsx`'s `dwFeaturedDatasetAtom`) now supply
+   * one, and `BoundedSample`'s brand is what makes a full-frame regression
+   * here a compile error rather than a silent perf/memory footgun (see
+   * `BoundedSample`'s own doc comment in `lib/preprocessing.ts`). Every
+   * internal call below (`classifyColumns`, `toModelReady`, `toChartRows`,
+   * `tagDistribution`, `useDatasetTagSelection`, `RawReadingsTable`) still
+   * accepts it unchanged — `BoundedSample extends Dataset`.
+   */
+  dataset: BoundedSample
   range: TimeRange
 }
+type TabStatus = 'no-tags' | 'pending' | 'loading' | 'ready'
 
 function fmt(n: number): string {
   return n.toLocaleString(undefined, { maximumFractionDigits: 2 })
+}
+
+/**
+ * DS-LAKE-005B-D-T04 (rev). Axis picker for the Scatter tab. Lives in the
+ * PARENT for the same reason `CompareTagsPopover` does — `TagScatterChart`
+ * stays presentational and takes `xTag`/`yTag` as props. Candidate set is
+ * `activeTags` (every tag in the sidebar), NOT `compareTags` — scatter is a
+ * pairwise view, so it has no reason to inherit the 2-4 compare cap that
+ * histogram/boxplot need.
+ */
+function AxisSelect({
+  axis,
+  value,
+  tags,
+  colorForTag,
+  onChange,
+}: {
+  axis: 'X' | 'Y'
+  value: string | null
+  tags: string[]
+  colorForTag: (tag: string) => string
+  onChange: (tag: string) => void
+}) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="text-[11px] font-medium text-muted-foreground">
+        {axis}
+      </span>
+      <Select value={value ?? undefined} onValueChange={onChange}>
+        <SelectTrigger className="h-8 w-55 c2ursor-pointer font-mono text-xs">
+          <SelectValue placeholder={`Select ${axis} tag`} />
+        </SelectTrigger>
+        <SelectContent>
+          {tags.map(tag => (
+            <SelectItem
+              key={tag}
+              value={tag}
+              className="cursor-pointer font-mono text-xs"
+            >
+              <span className="flex items-center gap-2">
+                <span
+                  className="h-2 w-2 shrink-0 rounded-full"
+                  style={{ backgroundColor: colorForTag(tag) }}
+                />
+                {tag}
+              </span>
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  )
 }
 
 export function DataAnalysisCard({ dataset, range }: Props) {
   const { activeTags, focusedTag, colorForTag, selectAll } =
     useDatasetTagSelection(dataset)
   const { compareTags, toggle, atCap } = useCompareTags(activeTags)
+
+  // DS-LAKE-005B-D-T01/T03. Histogram and boxplot tabs read the SERVER
+  // artifact, not `dataset` — the two tabs migrated off the full client
+  // frame so far (T04-T08 cover scatter/correlation, still untouched).
+  //
+  // GOLD-if-present-else-draft mirrors step-5-review-save.tsx's
+  // `featuresRequested ? goldArtifactId : gateArtifactId` construction, but
+  // simplified: this card has no `featuresRequested`/validation-gate
+  // concept of its own, so it falls through directly. At Step 3.1 `gold` is
+  // always null (Step 4 hasn't run yet) — this correctly resolves to
+  // `draftArtifactId` (BRONZE/SILVER, itself null until the first "Save
+  // Cleaned Tags" sync, which is exactly the 'pending' case below). At
+  // Step 4, `draftArtifactId` (SILVER) is already populated by the time
+  // this card mounts, so both tabs show real data immediately and upgrade
+  // to GOLD the moment `useDatasetGoldWarm`'s background job lands —
+  // without this card doing anything to notice that transition itself.
+  // Shared across every server-backed tab (not `histogramArtifactId` —
+  // T03 needs the identical id, so this is named for what it IS, not for
+  // the first tab that happened to need it).
+  const draftId = useAtomValue(dwDraftIdAtom)
+  const draftArtifactId = useAtomValue(dwDraftArtifactIdAtom)
+  const goldArtifactId = useAtomValue(dwDraftGoldArtifactIdAtom)
+  const analysisArtifactId = goldArtifactId ?? draftArtifactId
+  const { metadata: analysisMetadata } = useDatasetArtifactMetadata(
+    draftId,
+    analysisArtifactId,
+  )
+  const artifactTags = useMemo(() => {
+    if (!analysisMetadata) return []
+    const inArtifact = new Set(analysisMetadata.tags)
+    return activeTags.filter(t => inArtifact.has(t))
+  }, [analysisMetadata, activeTags])
+
+  // `compareTags` starts `[]` on first render (`useCompareTags` seeds it
+  // from an effect, which fires AFTER mount) — without checking this
+  // first, that render fell through to 'ready' with zero tags and
+  // rendered a false "not enough values" finding instead of the true
+  // reason. Same status derivation for both server-backed tabs.
+  const statusFor = (hasTags: boolean, loading: boolean): TabStatus =>
+    !hasTags
+      ? 'no-tags'
+      : !analysisArtifactId
+        ? 'pending'
+        : loading
+          ? 'loading'
+          : 'ready'
+
+  const { histogram, loading: histogramLoading } = useDatasetHistogram(
+    draftId,
+    analysisArtifactId,
+    compareTags,
+  )
+  const histogramStatus = statusFor(compareTags.length > 0, histogramLoading)
+
+  const { boxplot, loading: boxplotLoading } = useDatasetBoxplot(
+    draftId,
+    analysisArtifactId,
+    compareTags,
+  )
+  const boxplotStatus = statusFor(compareTags.length > 0, boxplotLoading)
+
+  // DS-LAKE-005B-D-T04. Scatter's Y follows the focused tag (same
+  // convention the old client-only ScatterRegressionChart used via
+  // `forcedY`); X is the first OTHER compare tag. No correlation-based
+  // auto-default here — that needs the full client frame, which this
+  // server-backed tab's whole point is to not require (see
+  // `TagScatterChart`'s own doc comment).
+  const [xPick, setXPick] = useState<string | null>(null)
+  const [yPick, setYPick] = useState<string | null>(null)
+
+  const scatterYTag = useMemo(() => {
+    if (yPick && activeTags.includes(yPick)) return yPick
+    const focused = focusedTag[0]
+    if (focused && activeTags.includes(focused)) return focused
+    return activeTags[0] ?? null
+  }, [yPick, focusedTag, activeTags])
+
+  const scatterXTag = useMemo(() => {
+    if (xPick && activeTags.includes(xPick) && xPick !== scatterYTag)
+      return xPick
+    return activeTags.find(t => t !== scatterYTag) ?? null
+  }, [xPick, activeTags, scatterYTag])
+
+  // Picking a tag already on the other axis SWAPS rather than rejects — an
+  // axis flip is the single most common reason to touch these at all, and it
+  // keeps both dropdowns showing the full `activeTags` list (no disabled rows).
+  const pickX = (tag: string) => {
+    if (tag === scatterYTag) setYPick(scatterXTag)
+    setXPick(tag)
+  }
+  const pickY = (tag: string) => {
+    if (tag === scatterXTag) setXPick(scatterYTag)
+    setYPick(tag)
+  }
+
+  const { scatter, loading: scatterLoading } = useDatasetScatter(
+    draftId,
+    analysisArtifactId,
+    scatterXTag,
+    scatterYTag,
+  )
+  const scatterStatus = statusFor(
+    Boolean(scatterXTag && scatterYTag),
+    scatterLoading,
+  )
+
+  // DS-LAKE-005B-D-T07. Candidate set is `activeTags` (every tag currently
+  // in the sidebar), not `compareTags` (the histogram/boxplot compare cap)
+  // — the old client-only `CorrelationHeatmap dataset={dataset}` ranged
+  // over the full active tag set, and correlation's own value is in
+  // surfacing relationships OUTSIDE whatever 2-4 tags happen to be pinned
+  // for comparison. The server does its own near-constant filter + ranking
+  // + hard cap (DS-LAKE-005B-D-T05a/T05b) over whatever candidate list is
+  // sent, so sending more than will be shown is by design, not waste.
+
+  const { correlation, loading: correlationLoading } = useDatasetCorrelation(
+    draftId,
+    analysisArtifactId,
+    artifactTags,
+  )
+  const correlationStatus = statusFor(
+    artifactTags.length >= 2,
+    correlationLoading,
+  )
+
+  const pendingFeatureCount = activeTags.length - artifactTags.length
   const [tab, setTab] = useState('line')
   const [scaledView, setScaledView] = useState(false)
   const [isViewAll, setIsViewAll] = useState(false)
@@ -97,7 +304,20 @@ export function DataAnalysisCard({ dataset, range }: Props) {
     [dataset, activeTags],
   )
 
-  if (dataset.tags.length === 0) return null
+  // DS-LAKE-005B-D-T07 CORRECTION (advisor-caught): this used to gate on
+  // the FULL frame's tag list, which was always populated by the time this
+  // card mounted (raw dataset arrives at Step 2, well before Step 3.1/4).
+  // `dataset` is now the bounded preview sample, which starts EMPTY and
+  // only fills once its own async fetch resolves (`useDatasetBronzeWarm`'s
+  // background artifact warm, then `useDatasetFeaturePreviewSample`'s
+  // `/rows` call) — a `return null` here made the ENTIRE card vanish
+  // during that window, including the four tabs that already handle it
+  // gracefully via their own `status === 'pending'`/`'loading'` states.
+  // Removed: `raw-data-chart.tsx:225` (Line) and
+  // `raw-readings-table.tsx:122` (Raw Table) already render their own
+  // empty-state placeholder when `tags`/`rows` are empty, and the stat
+  // table below already no-ops via `statRows.length > 0` — nothing here
+  // needs a top-level suppress.
 
   return (
     <div className="space-y-4 rounded-xl bg-card p-4 ring-1 ring-foreground/10">
@@ -138,6 +358,24 @@ export function DataAnalysisCard({ dataset, range }: Props) {
               toggle={toggle}
               atCap={atCap}
               colorForTag={colorForTag}
+            />
+          </div>
+        )}
+        {tab === 'scatter' && (
+          <div className="mb-3 flex flex-wrap items-center justify-end gap-3">
+            <AxisSelect
+              axis="X"
+              value={scatterXTag}
+              tags={activeTags}
+              colorForTag={colorForTag}
+              onChange={pickX}
+            />
+            <AxisSelect
+              axis="Y"
+              value={scatterYTag}
+              tags={activeTags}
+              colorForTag={colorForTag}
+              onChange={pickY}
             />
           </div>
         )}
@@ -195,6 +433,9 @@ export function DataAnalysisCard({ dataset, range }: Props) {
 
         <div className="min-w-0">
           <TabsContent value="line" className="mt-0">
+            <p className="mb-3 text-[11px] text-muted-foreground">
+              Preview window — a bounded sample, not the full artifact.
+            </p>
             <RawTrendChart
               rows={chartRows}
               tags={activeTags}
@@ -205,24 +446,73 @@ export function DataAnalysisCard({ dataset, range }: Props) {
             />
           </TabsContent>
           <TabsContent value="raw-table" className="mt-0">
+            <p className="mb-3 text-[11px] text-muted-foreground">
+              Preview window — a bounded sample, not the full artifact.
+            </p>
             <RawReadingsTable
               dataset={showScaled ? scaledDataset : dataset}
               scalers={scalerConfigs}
             />
           </TabsContent>
           <TabsContent value="histogram" className="mt-0">
-            <TagHistogramChart dataset={dataset} tags={compareTags} />
+            {histogramStatus === 'ready' && (
+              <p className="mb-3 text-[11px] text-muted-foreground">
+                Computed on the saved artifact — crop and outlier rules below
+                are not reflected here yet.
+              </p>
+            )}
+            <TagHistogramChart
+              data={histogram}
+              tags={compareTags}
+              status={histogramStatus}
+            />
           </TabsContent>
           <TabsContent value="boxplot" className="mt-0">
-            <TagBoxplotChart dataset={dataset} tags={compareTags} />
+            {boxplotStatus === 'ready' && (
+              <p className="mb-3 text-[11px] text-muted-foreground">
+                Computed on the saved artifact — crop and outlier rules below
+                are not reflected here yet.
+              </p>
+            )}
+            <TagBoxplotChart
+              data={boxplot}
+              tags={compareTags}
+              status={boxplotStatus}
+            />
           </TabsContent>
           <TabsContent value="scatter" className="mt-0">
-            <ScatterRegressionChart dataset={dataset} forcedY={focusedTag[0]} />
+            {scatterStatus === 'ready' && (
+              <p className="mb-3 text-[11px] text-muted-foreground">
+                Computed on the saved artifact — crop and outlier rules below
+                are not reflected here yet.
+              </p>
+            )}
+            <TagScatterChart
+              data={scatter}
+              xTag={scatterXTag ?? ''}
+              yTag={scatterYTag ?? ''}
+              status={scatterStatus}
+            />
           </TabsContent>
           <TabsContent value="correlation" className="mt-0">
-            <CorrelationHeatmap
-              dataset={dataset}
-              highlightTag={focusedTag[0]}
+            {correlationStatus === 'ready' && (
+              <p className="mb-3 text-[11px] text-muted-foreground">
+                Computed on the saved artifact — crop and outlier rules below
+                are not reflected here yet.
+                {pendingFeatureCount > 0 && (
+                  <>
+                    {' '}
+                    {pendingFeatureCount} derived{' '}
+                    {pendingFeatureCount === 1 ? 'feature is' : 'features are'}{' '}
+                    not included yet — they appear once feature engineering
+                    finishes writing them to the artifact.
+                  </>
+                )}
+              </p>
+            )}
+            <TagCorrelationChart
+              data={correlation}
+              status={correlationStatus}
             />
           </TabsContent>
         </div>

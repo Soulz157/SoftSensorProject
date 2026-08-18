@@ -9,6 +9,7 @@ cryptography==49.0.0
 decorator==5.3.1
 detect-installer==0.1.0
 dnspython==2.8.0
+duckdb==1.5.5
 email-validator==2.3.0
 fastapi==0.139.0
 fastapi-cli==0.0.30

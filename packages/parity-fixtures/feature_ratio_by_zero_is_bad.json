@@ -2,10 +2,7 @@
   "name": "feature_ratio_by_zero_is_bad",
   "engine": "applyFeatures",
   "input": {
-    "tags": [
-      "TI-101",
-      "VI-202"
-    ],
+    "tags": ["TI-101", "VI-202"],
     "rows": [
       {
         "timestamp": "2026-06-22T00:00:00.000Z",
@@ -59,19 +56,12 @@
       {
         "id": "f-ratio-zero",
         "kind": "ratio",
-        "tags": [
-          "TI-101",
-          "VI-202"
-        ]
+        "tags": ["TI-101", "VI-202"]
       }
     ]
   },
   "expected": {
-    "tags": [
-      "TI-101",
-      "VI-202",
-      "TI-101__over__VI-202"
-    ],
+    "tags": ["TI-101", "VI-202", "TI-101__over__VI-202"],
     "rows": [
       {
         "timestamp": "2026-06-22T00:00:00.000Z",

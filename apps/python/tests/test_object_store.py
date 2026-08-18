@@ -213,6 +213,52 @@ def test_get_frame_slice_windows_rows(store: ObjectStore) -> None:
     store.delete_prefix("pytest-object-store/")
 
 
+def test_get_frame_slice_duckdb_matches_get_frame_slice(store: ObjectStore) -> None:
+    """DS-LAKE-005B-C-V01: golden parity — the DuckDB-native path returns the
+    SAME selected rows, values and ordering as the existing pandas-slice
+    path, for the same (key, offset, limit).
+
+    20 rows, 2 tags (one with a non-Good status mixed in) and several
+    overlapping/edge-case windows — enough to be a real ordering claim, not
+    just "the first row matches." Exercises: a window fully inside the
+    frame, a window starting mid-frame, a window whose limit runs past the
+    end of the frame, and offset=0.
+    """
+    n = 20
+    df = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-06-01", periods=n, freq="min"),
+            "TI-101": [70.0 + i * 0.5 for i in range(n)],
+            "TI-101__status": pd.array(
+                [STATUS_GOOD if i % 4 != 3 else STATUS_BAD for i in range(n)],
+                dtype="int8",
+            ),
+            "FI-404": [100.0 + i for i in range(n)],
+            "FI-404__status": pd.array(
+                [STATUS_GOOD if i % 5 != 4 else STATUS_QUESTIONABLE for i in range(n)],
+                dtype="int8",
+            ),
+        }
+    )
+    key = "pytest-object-store/parity.parquet"
+    store.put_frame(df, key, overwrite=True)
+
+    windows = [(0, 5), (7, 5), (15, 10), (0, 100), (19, 1)]
+    for offset, limit in windows:
+        pandas_path = store.get_frame_slice(key, offset=offset, limit=limit)
+        duckdb_path = store.get_frame_slice_duckdb(key, offset=offset, limit=limit)
+
+        assert list(pandas_path.columns) == list(duckdb_path.columns), (
+            f"column order differs at offset={offset} limit={limit}"
+        )
+        pd.testing.assert_frame_equal(
+            pandas_path.reset_index(drop=True),
+            duckdb_path.reset_index(drop=True),
+        )
+
+    store.delete_prefix("pytest-object-store/")
+
+
 def test_get_frame_metadata_reads_tags_and_range_without_decoding_values(
     store: ObjectStore,
 ) -> None:
