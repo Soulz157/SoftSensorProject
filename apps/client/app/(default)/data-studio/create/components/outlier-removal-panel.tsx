@@ -2,6 +2,7 @@
 
 import { nanoid } from 'nanoid'
 import { Filter, Plus, Sigma, Trash2 } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
@@ -338,6 +339,20 @@ export function OutlierRemovalPanel({
                 value={rule.action}
                 onChange={a => updateConditional(rule.id, { action: a })}
               />
+              {/* Preset-authored, not hand-drawn — stays editable on purpose:
+                  `presetCutSignature` (feature-preset-apply.ts) derives the
+                  SD&TA card's in-sync flag from this same `source` field, so
+                  editing or deleting the rule here is what un-syncs the card
+                  and re-enables its Apply button. Locking the row would break
+                  that feedback loop. */}
+              {rule.source === 'sdta' && (
+                <Badge
+                  variant="outline"
+                  className="h-5 gap-1 px-1.5 text-[10px] font-normal text-muted-foreground"
+                >
+                  SD&amp;TA
+                </Badge>
+              )}
               <div className="ml-auto flex items-center gap-2">
                 <Switch
                   checked={rule.enabled}

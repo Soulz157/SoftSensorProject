@@ -17,8 +17,8 @@ import {
 } from 'lucide-react'
 import type { SavedDataset } from '@/store/datasets'
 import type { DataSourceKind } from '@/lib/mock-data-sources'
-import { useDatasetDetail } from '@/hooks/dataset/use-dataset-detail'
-import { datasetTimeSpanLabel } from '@/lib/dataset-stats'
+import { useArtifactMetadata } from '@/hooks/dataset/use-dataset-artifact-metadata'
+import { artifactTimeSpanLabel } from '@/lib/dataset-stats'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -88,8 +88,11 @@ export function DatasetCard({
   onRename,
   onDelete,
 }: Props) {
-  const { ds } = useDatasetDetail(d)
-  const timeSpan = datasetTimeSpanLabel(ds)
+  // Real artifact footer, not a synthetic reconstruction (DS-LAKE-013) — the
+  // card and its own detail sheet must report the same span for the same
+  // dataset, which only holds if both read the same source.
+  const { metadata } = useArtifactMetadata(d.id, d.currentArtifactId)
+  const timeSpan = artifactTimeSpanLabel(metadata?.startTime, metadata?.endTime)
   const source = sourceType ? SOURCE_META[sourceType] : null
   const SourceIcon = source?.icon ?? Database
 

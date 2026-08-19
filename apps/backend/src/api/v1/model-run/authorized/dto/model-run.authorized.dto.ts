@@ -7,11 +7,22 @@ const JsonScalar = z.union([z.string(), z.number(), z.boolean(), z.null()]);
 
 const MetricsSchema = z.record(z.string(), JsonScalar);
 
+// The 10 runnable algorithms: build_model (images/trainer/train.py) has a
+// branch for each. lstm/gru are deliberately excluded — they need a
+// windowing pipeline change this trainer doesn't have yet (tracked
+// separately); the wizard disables both inline so this enum is the second
+// line of defense, not the first.
 export const TrainingAlgorithmEnum = z.enum([
   'ols',
   'ridge',
-  'hgb',
   'hist_gradient_boosting',
+  'svm',
+  'mlp',
+  'grp',
+  'pls',
+  'random_forest',
+  'lightgbm',
+  'xgboost',
 ]);
 
 export const RunStatusEnum = z.enum([
@@ -30,7 +41,10 @@ export const HyperparametersSchema = z.record(
 export const CreateModelRunSchema = z.object({
   datasetId: z.string().uuid(),
   targetY: z.string().min(1),
-  algorithm: z.enum(['hgb', 'hist_gradient_boosting', 'ridge', 'ols']),
+  // Was a second inline copy of the same enum — the exact drift this task
+  // exists to fix. Point at the one definition instead of a second list
+  // someone has to remember to update in step.
+  algorithm: TrainingAlgorithmEnum,
   hyperparameters: z.record(z.string(), z.unknown()).default({}),
   // A FRACTION, not a percentage. `chronological_split` multiplies by
   // len(frame) directly — passing 80 would slice at 80x the row count and

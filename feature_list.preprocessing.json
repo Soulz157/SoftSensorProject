@@ -2042,6 +2042,87 @@
       ],
       "progress_note": "2026-08-17: 8/10 tasks and 6/7 verification items fully closed with live evidence against real Postgres/MinIO/backend/python -- including the first SILVER ever produced in this DB, a byte-identical reproducibility proof both before and after a real cleanup run, and TWO real defects found and fixed (FINAL-byte-loss in cleanup eligibility; unbounded /rows fetch, 76MB->489KB). NOT DONE: T06/T08/V06's full 1k/4k/16k-tag sweep and any live-browser heap/DOM measurement -- deliberately scoped down given session cost, not silently dropped. See docs/DS-LAKE-012-VERIFICATION.md for the full account.",
       "result": "docs/DS-LAKE-012-VERIFICATION.md is the full report. Real chain: Dataset d3acec46 / DatasetVersion 13ef93aa. Two real bugs found+fixed live: (1) cleanup eligibility could reclaim the SILVER/GOLD artifact sharing a live FINAL's objectKey, silently destroying its bytes -- fixed in artifact-cleanup-eligibility.ts + artifact-cleanup.admin.service.ts, verified live before/after; (2) useArtifactRows never bounded the tags axis, unbounded on wide datasets -- fixed in dataset-version.ts + use-artifact-rows.ts + dataset-detail-sheet.tsx, verified live (76MB->489KB at 8,000 tags). Also fixed a pre-existing pnpm-build blocker (dead field in model-run-launch.authorized.service.ts, unrelated module) so V05 could close."
+    },
+    {
+      "id": "DS-LAKE-013",
+      "title": "Dataset library reads its committed artifact",
+      "priority": 13,
+      "status": "completed",
+      "progress": 100,
+      "dependencies": [
+        "DS-LAKE-004",
+        "DS-LAKE-005B-A",
+        "DS-LAKE-009"
+      ],
+      "description": "The dataset detail sheet was already written against the real artifact endpoints (per-tag stats, correlation, metadata, bounded rows) but every one of them was dead: `DatasetAuthorizedService.mapToResponse` selected `currentArtifactId` and never returned it, so every hook received `artifactId = null`. Connects the library page (detail sheet, grid cards, edit-mode hydration) to the artifact it already committed, in place of synthetic/wizard-computed numbers.",
+      "findings_driving_this_slice": [
+        "dataset.authorized.service.ts: `currentArtifactId` selected but dropped in `mapToResponse` -- absent from every dataset CRUD response, so the sheet's four artifact hooks always no-op.",
+        "dataset-detail-sheet.tsx Data preview: `sampleLoading || !sample` is `false || true` on a null artifact -- a permanent Skeleton, not a loading state.",
+        "dataset-card.tsx read `useDatasetDetail` -> `buildRawDataset` (Phase-6 mock layer) for its Time span KPI, so the card and its own detail sheet could show two different spans for one dataset.",
+        "`DatasetVersion.stage` does not exist on the Prisma model (moved to `PreprocessingJob`) -- the client type declared it anyway, and `use-dataset-version-rows.ts`'s RAW-version filter always returned `[]`.",
+        "step-5-review-save.tsx:394's `if (!res.data.currentArtifactId)` guard was always true given finding 1, so every edit-save re-materialised a BRONZE artifact regardless of whether one already existed.",
+        "`Dataset.currentArtifactId` is stage-polymorphic: `createRaw` points it at BRONZE, Save-Dataset repoints it at FINAL. Edit mode already hydrated whichever one it found via the pre-existing `currentVersionId` path, so this slice surfaces that condition with a banner rather than introducing it."
+      ],
+      "decisions": {
+        "double_apply_deferred": "Edit mode hydrating a FINAL (already cleaned/feature-engineered) artifact and then replaying Step 3's pipeline on top is pre-existing, not introduced here -- fixing it needs BRONZE readable through the dataset routes (today gated `where: { id, datasetId }`, and only FINAL is adopted at Save), which is a real architecture change, not an artifact-wiring one. This slice ships `dwRowStageAtom` + a wizard banner naming the condition, and defers the fix. BRONZE bytes survive for a future fix -- `artifact-cleanup-eligibility.ts` hard-pins reachable BRONZE regardless of age.",
+        "grid_cards_included": "User decision: read the real artifact metadata in dataset-card.tsx too (not sheet-only), so a card and its own detail sheet never disagree on Time span for the same dataset. Retired `use-dataset-detail.ts` and `datasetTimeSpanLabel` (each had exactly one caller, the card)."
+      },
+      "tasks": [
+        {
+          "id": "DS-LAKE-013-T01",
+          "title": "Backend: return `currentArtifactId` + `currentArtifactType` from every dataset CRUD response",
+          "status": "completed",
+          "progress": 100,
+          "result": "`datasetSelect` joins `currentArtifact: { select: { type: true } } }` (no extra query); `mapToResponse` emits both fields. `listDatasetService` switched `include: { createdBy }` to `select: datasetSelect` so the relation join is present on the list endpoint too -- narrows the raw row, does not change the mapped response shape (single consumer, `listDatasetController`, grep-verified)."
+        },
+        {
+          "id": "DS-LAKE-013-T02",
+          "title": "Client types: `SavedDataset.currentArtifactType`",
+          "status": "completed",
+          "progress": 100,
+          "result": "`DatasetArtifactStage` extracted and exported from `services/dataset-draft.ts` (previously three separate inline `'BRONZE' | 'SILVER' | 'GOLD' | 'FINAL'` literals); `store/datasets.ts` gained `currentArtifactType` and dropped the `?` on `currentArtifactId` now that the server always sends it."
+        },
+        {
+          "id": "DS-LAKE-013-T03",
+          "title": "Detail sheet: real data + honest empty/error states",
+          "status": "completed",
+          "progress": 100,
+          "result": "Three-state Data preview (was a permanent Skeleton on a null artifact); stage badge from `currentArtifactType`; `useArtifactMetadata`'s `error` surfaced instead of a silent `-`; source badges skeleton during `useDataSources()`'s load window instead of flashing 'Unknown source'; one shared empty-state message for the whole lower half when no artifact exists, replacing four independent ones; dead `date-fns/locale` import and a stale one-sheet-per-row comment removed."
+        },
+        {
+          "id": "DS-LAKE-013-T04",
+          "title": "Grid cards: real artifact metadata + shared fetch cache",
+          "status": "completed",
+          "progress": 100,
+          "result": "`dataset-card.tsx` reads `useArtifactMetadata` + the new `artifactTimeSpanLabel` (moved from the sheet's local `spanLabel`) instead of `buildRawDataset`. Added a session-lived promise cache in `use-dataset-artifact-metadata.ts`, keyed `${ownerId}:${artifactId}`, shared by both the draft and saved-dataset hooks -- resolved promises only, a rejection is deleted from the map in its own `.catch` so one transient failure cannot pin every later caller, and capped at 200 entries. Retired `use-dataset-detail.ts` and `datasetTimeSpanLabel` (last callers gone)."
+        },
+        {
+          "id": "DS-LAKE-013-T05",
+          "title": "Edit mode: stage-aware hydration + non-BRONZE warning",
+          "status": "completed",
+          "progress": 100,
+          "result": "Dropped the phantom `DatasetVersion.stage` field/filter (no such Prisma column) and aligned the client `DatasetVersion` interface to `listVersionsService`'s real response. `VersionRowsState.stage` and `dwRowStageAtom` carry the hydrated artifact's stage through to `wizard-shell.tsx`, which warns when edit mode hydrated anything past BRONZE (reused `SyntheticDataBanner`'s styling via new optional `title`/`message` overrides rather than adding a second banner component)."
+        },
+        {
+          "id": "DS-LAKE-013-T06",
+          "title": "End-to-end verification",
+          "status": "completed",
+          "progress": 100,
+          "acceptance_criteria": [
+            "A draft-saved dataset's card and its own detail sheet report the same Time span.",
+            "The detail sheet's per-tag stats, correlation card, and Data preview render real rows for a dataset with a committed artifact, and never show a permanent Skeleton.",
+            "A dataset with no artifact shows one honest empty-state message across stats/correlation/preview, not four independent ones.",
+            "Opening Edit on a draft-saved (FINAL-artifact) dataset shows the non-BRONZE warning banner; opening Edit on a `createRaw`-only (BRONZE-artifact) dataset does not.",
+            "Saving from Edit no longer fires `POST /:id/versions` when `currentArtifactId` is already set -- the behaviour the dead guard at step-5-review-save.tsx:394 always claimed but never delivered.",
+            "`pnpm lint`, `pnpm check-types`, `pnpm build` pass; client `vitest` passes, including `dataset-studio-feature-preset.test.ts` and `step-5-review-save.test.tsx` updated for `currentArtifactType`."
+          ],
+          "result": "Backend + client `tsc --noEmit` both clean for every file this slice touched, after fixing one self-inflicted regression (a dangling `DatasetVersionStage` reference in `PreprocessingJob.stage`, split out as `PreprocessingJobStage` -- that name is a REAL, separate field, distinct from the phantom `DatasetVersion.stage` this slice removed). `preset-apply-modal.test.tsx`'s SD&TA test updated for the new button label and 3-arg `onApplySdta` call -- now passes. `pnpm lint` could not run (environment-wide `eslint-module-utils` module missing, reproduced on an untouched file too -- pre-existing, out of scope). Full `pnpm vitest` surfaces pre-existing failures unrelated to this slice: `lib/__tests__/feature-preset.test.ts` (26 tests, a prior uncommitted `TagHealth`/`TagLookup` refactor of `compareTags`/`planPresetApplication` never updated its tests), `store/__tests__/dataset-studio-feature-preset.test.ts` (4 tests, imports a `dwSdtaConfigAtom` that predates the SD&TA staging model and no longer exists), and 2 order-dependent failures in `step-5-review-save.test.tsx` that pass in isolation and whose source file this slice never touched. Isolated via direct diff inspection (confirmed zero overlap between this slice's changed lines and the failing assertions) -- not fixed, as they belong to unrelated already-in-progress work on this branch."
+        }
+      ],
+      "deferred": [
+        "Edit-mode double-apply fix (reading true BRONZE through the dataset routes, not just FINAL) -- needs BRONZE adopted at Save or a widened artifact-read guard, plus a backfill for existing datasets. See `decisions.double_apply_deferred`.",
+        "Cross-user source resolution: `getSourceMeta` resolves against `useDataSources()`, scoped `where: { createdById: userId }` -- a dataset whose sources were created by a teammate renders every badge 'Unknown source' permanently. This slice fixed only the transient half (a loading skeleton during `allSources`'s fetch window); the permanent case is a backend authorization-scope decision, out of scope here."
+      ]
     }
   ],
   "deferred": [

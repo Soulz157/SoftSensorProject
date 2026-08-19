@@ -1,0 +1,56 @@
+name: "Setup Node + pnpm"
+description: >
+  Installs pnpm (version taken from package.json#packageManager), sets up Node
+  with the pnpm store cached, materialises a CI .env file, and installs
+  dependencies with a frozen lockfile.
+
+inputs:
+  node-version:
+    description: "Node.js major version"
+    required: false
+    default: "20"
+  install:
+    description: "Run `pnpm install --frozen-lockfile` (set to 'false' to skip)"
+    required: false
+    default: "true"
+  filter:
+    description: "Optional pnpm workspace filter, e.g. '@dslake/api...'"
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    # pnpm MUST be installed before setup-node, otherwise `cache: pnpm`
+    # cannot resolve the store path and silently caches nothing.
+    - name: Install pnpm
+      uses: pnpm/action-setup@v4 # TODO: pin to commit SHA
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4 # TODO: pin to commit SHA
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: pnpm
+
+    # dotenvx crashes on a missing .env. Prefer a committed .env.ci holding
+    # non-secret CI defaults; fall back to an empty file.
+    - name: Materialise CI .env
+      shell: bash
+      run: |
+        if [ -f .env.ci ]; then
+          cp .env.ci .env
+          echo "Using .env.ci"
+        else
+          : > .env
+          echo "::warning::No .env.ci found — created an empty .env. Commit a .env.ci with non-secret CI defaults."
+        fi
+
+    - name: Install dependencies
+      if: inputs.install == 'true'
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.filter }}" ]; then
+          pnpm install --frozen-lockfile --filter "${{ inputs.filter }}"
+        else
+          pnpm install --frozen-lockfile
+        fi

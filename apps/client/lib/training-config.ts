@@ -47,6 +47,47 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: true,
     },
   ],
+  ridge: [
+    {
+      kind: 'number',
+      key: 'alpha',
+      label: 'Alpha (regularization)',
+      defaultValue: 1.0,
+      step: 0.1,
+      min: 0,
+    },
+  ],
+  // Key names match `xgboost`/`lightgbm` below on purpose, not `max_iter` /
+  // `max_leaf_nodes` (the estimator's real kwargs) — train.py's
+  // hist_gradient_boosting branch maps n_estimators→max_iter and
+  // num_leaves→max_leaf_nodes so the three boosting algorithms present one
+  // shared vocabulary to the user.
+  hist_gradient_boosting: [
+    {
+      kind: 'number',
+      key: 'learning_rate',
+      label: 'Learning rate',
+      defaultValue: 0.1,
+      step: 0.01,
+      min: 0,
+    },
+    {
+      kind: 'number',
+      key: 'n_estimators',
+      label: 'N-estimators',
+      defaultValue: 200,
+      step: 10,
+      min: 1,
+    },
+    {
+      kind: 'number',
+      key: 'num_leaves',
+      label: 'Num leaves',
+      defaultValue: 31,
+      step: 1,
+      min: 2,
+    },
+  ],
   svm: [
     {
       kind: 'number',

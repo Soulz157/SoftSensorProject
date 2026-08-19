@@ -62,8 +62,13 @@ def download(url: str, dest: Path) -> Path:
     reader that issues range requests hours into a fit gets a 403 halfway
     through, which surfaces as a corrupt-looking read rather than an auth
     failure.
+
+    Deliberately NOT `SESSION`: that carries the run token, and S3/MinIO
+    reject a request presenting both query-string auth and an Authorization
+    header. The upload path below already uses bare `requests` for exactly
+    this reason — the asymmetry was the bug, not the design.
     """
-    with SESSION.get(url, stream=True, timeout=300) as response:
+    with requests.get(url, stream=True, timeout=300) as response:
         response.raise_for_status()
         with dest.open("wb") as handle:
             for chunk in response.iter_content(chunk_size=1024 * 1024):
@@ -159,9 +164,56 @@ def chronological_split(
     return ordered.iloc[:cut], ordered.iloc[cut:], cut_timestamp
 
 
-def build_model(algorithm: str, hyperparameters: dict[str, Any], seed: int):
-    from sklearn.ensemble import HistGradientBoostingRegressor
+# Measured against this image (scikit-learn 1.5.2) under the production
+# container's own resource limits — Memory=8GiB (no swap), NanoCpus=2,
+# tmpfs /scratch=2GiB (trainning-container.authorized.service.ts) — by
+# fitting GaussianProcessRegressor on synthetic (n, 10) data at increasing n
+# and recording peak RSS (resource.getrusage) and wall time:
+#
+#     n        time_s   peak_rss_gib
+#     500      0.01     0.18
+#     1,000    3.30     0.20
+#     2,000    5.68     0.28
+#     4,000    16.15    0.54
+#     8,000    43.73    1.60
+#     10,000   62.33    2.44   <- chosen ceiling
+#     12,000   89.78    3.39
+#
+# Peak RSS fits ~24 bytes * n^2 (three n x n float64 matrices — kernel,
+# kernel gradient, Cholesky factor), confirming the O(n^2) memory model an
+# OOM kill would otherwise hide: the container is killed by the cgroup, not
+# by Python, so no RuntimeError is ever raised and the only surfaced message
+# is the exit-code backstop's "Container exited 137" (trainning-container.
+# authorized.service.ts watch()). At n=10,000 (2.44 GiB) there is ample
+# headroom below the 8 GiB cap after reserving budget for the in-memory
+# pandas frame (~1 GiB) and the tmpfs artifacts including model.joblib,
+# which for GPR holds an n x n Cholesky factor of comparable size to the fit
+# itself (~1-1.5 GiB reserved). Wall time at the threshold is ~1 minute,
+# well inside a background training job's patience. Measured 2026-08-18
+# against scgc/soft-sensor-trainer:1.0.1.
+#
+# Measured at 10 features; this system also produces very wide artifacts
+# (docs/DS-LAKE-005B-C-BENCHMARK.md records a 16,001-column one). X_train_
+# is n*d*8 bytes and kernel distance work is O(n^2*d), so a wide frame eats
+# further into the reserve and inflates wall time beyond this table — the
+# margin below (10,000 vs the ~15,700 the memory model alone would allow)
+# is there to absorb that, not measured at d >> 10 directly.
+GPR_MAX_TRAIN_ROWS = 10_000
+
+
+def build_model(
+    algorithm: str,
+    hyperparameters: dict[str, Any],
+    seed: int,
+    n_train_rows: int,
+    feature_spec: dict[str, Any],
+):
+    from sklearn.cross_decomposition import PLSRegression
+    from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
+    from sklearn.gaussian_process import GaussianProcessRegressor
     from sklearn.linear_model import LinearRegression, Ridge
+    from sklearn.neural_network import MLPRegressor
+    from sklearn.svm import SVR
 
     if algorithm in ("hgb", "hist_gradient_boosting"):
         return HistGradientBoostingRegressor(
@@ -171,36 +223,131 @@ def build_model(algorithm: str, hyperparameters: dict[str, Any], seed: int):
             random_state=seed,
         )
     if algorithm == "ridge":
-        return Ridge(alpha=float(hyperparameters.get("alpha", 1.0)), random_state=seed)
+        # random_state dropped: Ridge only consults it for solver='sag'/'saga',
+        # neither of which is reachable here — it was inert, not load-bearing.
+        return Ridge(alpha=float(hyperparameters.get("alpha", 1.0)))
     if algorithm == "ols":
-        return LinearRegression()
+        # `fit_intercept` is the UI's only ols knob (training-config.ts:42-49)
+        # and was previously collected, validated, and echoed into
+        # run_manifest.json while LinearRegression() silently ignored it.
+        return LinearRegression(
+            fit_intercept=bool(hyperparameters.get("fit_intercept", True))
+        )
+    if algorithm == "svm":
+        # feature_spec["scaling"] is written by the pipeline
+        # (feature_spec_service.py) but otherwise never read by this trainer
+        # — only the target's scaling is gated, above. SVR is the one
+        # algorithm sensitive enough to unscaled inputs that its absence is
+        # worth naming. Not fatal: the user may want to see exactly that
+        # result.
+        if not feature_spec.get("scaling"):
+            log(
+                "SVR is scale-sensitive (superlinear in samples, kernel "
+                "distances dominated by feature magnitude) and "
+                "feature_spec.json reports no scaling on the input "
+                "features — results may be dominated by whichever feature "
+                "has the largest raw magnitude.",
+                "warn",
+            )
+        return SVR(
+            C=float(hyperparameters.get("C", 1.0)),
+            kernel=str(hyperparameters.get("kernel", "rbf")),
+            epsilon=float(hyperparameters.get("epsilon", 0.1)),
+        )
+    if algorithm == "mlp":
+        # UI sends a scalar hidden layer size (training-config.ts:80-105);
+        # MLPRegressor wants a tuple of layer sizes.
+        hidden = int(hyperparameters.get("hidden_layer_sizes", 100))
+        return MLPRegressor(
+            hidden_layer_sizes=(hidden,),
+            alpha=float(hyperparameters.get("alpha", 0.0001)),
+            max_iter=int(hyperparameters.get("max_iter", 200)),
+            random_state=seed,
+        )
+    if algorithm == "grp":
+        if n_train_rows > GPR_MAX_TRAIN_ROWS:
+            raise RuntimeError(
+                "Gaussian Process Regression allocates an n x n kernel "
+                f"matrix and is O(n^3) in fit time; {n_train_rows} train "
+                f"rows exceeds the measured ceiling of {GPR_MAX_TRAIN_ROWS} "
+                "for this container's memory limit (see GPR_MAX_TRAIN_ROWS "
+                "in train.py for how that number was measured). Use Random "
+                "Forest, LightGBM, or XGBoost for a dataset this size, or "
+                "shorten the training window."
+            )
+        return GaussianProcessRegressor(
+            alpha=float(hyperparameters.get("alpha", 1e-10)),
+            n_restarts_optimizer=int(hyperparameters.get("n_restarts_optimizer", 0)),
+            random_state=seed,
+        )
+    if algorithm == "pls":
+        # No manual clamp on n_components vs. feature count: sklearn already
+        # raises a clear ValueError ("`n_components` upper bound is N")
+        # which the top-level handler (main's __main__ guard) reports
+        # verbatim as failureReason — as actionable as anything we'd write
+        # here, so it is left to surface unmodified.
+        return PLSRegression(
+            n_components=int(hyperparameters.get("n_components", 2)),
+            max_iter=int(hyperparameters.get("max_iter", 500)),
+        )
+    if algorithm == "random_forest":
+        # `max_depth` is a nullable-number in the UI (null = unlimited
+        # depth, training-config.ts:176-181) — None must stay None, never
+        # be coerced through int().
+        max_depth = hyperparameters.get("max_depth")
+        return RandomForestRegressor(
+            n_estimators=int(hyperparameters.get("n_estimators", 100)),
+            max_depth=int(max_depth) if max_depth is not None else None,
+            random_state=seed,
+        )
+    if algorithm == "lightgbm":
+        import lightgbm
+
+        # lightgbm 4.x moved goss from a boosting_type value to its own
+        # data_sample_strategy param; passing boosting_type='goss' still
+        # works (verified against the pinned 4.5.0) but prints a
+        # "backwards compatibility" warning on every fit. Map it explicitly
+        # instead of letting a deprecation path run silently on every run.
+        ui_boosting_type = str(hyperparameters.get("boosting_type", "gbdt"))
+        if ui_boosting_type == "goss":
+            boosting_kwargs = {"boosting_type": "gbdt",
+                                "data_sample_strategy": "goss"}
+        else:
+            boosting_kwargs = {"boosting_type": ui_boosting_type}
+        return lightgbm.LGBMRegressor(
+            learning_rate=float(hyperparameters.get("learning_rate", 0.1)),
+            num_leaves=int(hyperparameters.get("num_leaves", 31)),
+            random_state=seed,
+            **boosting_kwargs,
+        )
+    if algorithm == "xgboost":
+        import xgboost
+
+        return xgboost.XGBRegressor(
+            n_estimators=int(hyperparameters.get("n_estimators", 100)),
+            learning_rate=float(hyperparameters.get("learning_rate", 0.1)),
+            max_depth=int(hyperparameters.get("max_depth", 6)),
+            random_state=seed,
+        )
+    if algorithm in ("lstm", "gru"):
+        # Backstop only: the API rejects lstm/gru before a container is ever
+        # spawned (TrainingAlgorithmEnum) and the wizard disables both
+        # options inline — this branch exists for a caller that bypasses
+        # the API. Deferred, not unsupported-by-omission: it needs a
+        # windowed (samples, timesteps, features) input built BEFORE the
+        # chronological split (a pipeline change, not a build_model
+        # branch), a sequence_length hyperparameter this trainer does not
+        # collect, and tensorflow or torch in this image — none of which
+        # exist yet. Tracked separately from this catalogue extension.
+        raise RuntimeError(
+            f"'{algorithm}' is not implemented: it needs a windowed "
+            "(samples, timesteps, features) input, a sequence_length "
+            "hyperparameter, and tensorflow/torch in this image, none of "
+            "which exist yet. Pick a tabular algorithm instead — Random "
+            "Forest, LightGBM, or XGBoost are strong defaults for "
+            "time-ordered plant data."
+        )
     raise RuntimeError(f"Unsupported algorithm '{algorithm}'.")
-
-
-def build_feature_spec(
-    features, selected_columns, scalers,
-    target_y: str | None = None,
-) -> dict[str, Any]:
-    # `target_y` and the two fields derived from it are NOT part of the
-    # hash: they describe how a downstream RUN reads this artifact, not how
-    # the artifact was built. Two runs with different targets against the
-    # same GOLD bytes must still share a featureHash.
-    #
-    # `derived_from_target` is what `train.py::assert_no_target_leakage`
-    # gates on — an empty list there means "no target-derived features",
-    # NOT "unknown", so it must be computed here rather than omitted.
-    spec = {...}
-    if target_y is not None:
-        spec["target_y"] = target_y
-        # Explicit False, not omitted: train.py distinguishes "recorded as
-        # unscaled" from "never recorded".
-        spec["target_scaled"] = scalers.get(target_y, "none") != "none"
-        spec["derived_from_target"] = [
-            cfg.get("name") or feature_column_name(cfg)
-            for cfg in features
-            if _reads_tag(cfg, target_y)
-        ]
-    return spec
 
 
 def main() -> int:
@@ -309,8 +456,13 @@ def main() -> int:
     # ── 9. fit, score, write ─────────────────────────────────────────────
     from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
-    model = build_model(spec["algorithm"], spec.get(
-        "hyperparameters") or {}, spec["seed"])
+    model = build_model(
+        spec["algorithm"],
+        spec.get("hyperparameters") or {},
+        spec["seed"],
+        len(train),
+        feature_spec,
+    )
     model.fit(train[feature_cols], train[target_y])
     predicted = model.predict(test[feature_cols])
 
@@ -346,7 +498,7 @@ def main() -> int:
         "artifact_checksum": actual,
         "image_digest": spec["imageDigest"],
         "target_y": target_y,
-        "target_scaled": False,
+        "target_scaled": bool(feature_spec.get("target_scaled", False)),
         "derived_from_target": derived,
         "feature_columns": feature_cols,
         "algorithm": spec["algorithm"],

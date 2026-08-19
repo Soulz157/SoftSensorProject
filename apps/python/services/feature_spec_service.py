@@ -41,6 +41,18 @@ before this task, grepped, confirmed empty):
   scaler, or selection changes (DS-LAKE-006's own acceptance criterion) —
   proven directly in `tests/test_feature_spec_quirks.py`, not merely
   asserted.
+* `target_y` / `target_scaled` / `derived_from_target` — present ONLY when
+  a target is passed (MODEL-FLOW-000-T02). These describe how a downstream
+  training RUN reads this artifact, not how the artifact was built, so
+  they are computed AFTER the hash and never enter it: two runs with
+  different targets against the same GOLD bytes must still share a
+  featureHash. `derived_from_target` is what
+  `train.py::assert_no_target_leakage` gates on, so it must be the
+  TRANSITIVE closure of "reads the target" — a later feature can read an
+  earlier feature's own derived column (chaining fixture, see above), so a
+  direct-read-only check would miss e.g. a rolling window over a lag of
+  the target. An empty list there means "no target-derived features", not
+  "unknown", so it is computed here rather than ever omitted.
 """
 
 from __future__ import annotations
@@ -76,17 +88,48 @@ def _canonical_hash_payload(
     )
 
 
+def _derived_from_target(
+    features: Sequence[Mapping[str, Any]], target_y: str
+) -> list[str]:
+    """Transitive closure of "reads the target", in application order.
+
+    A config is target-derived if it reads the target directly, OR if it
+    reads a column produced by an earlier target-derived config — features
+    apply in order and a later one may read an earlier one's own output
+    (module docstring above). Missing the transitive case would silently
+    under-report `derived_from_target`, which is exactly the hole T02
+    exists to close: the leakage guard trusts this list completely.
+    """
+    tainted = {target_y}
+    derived: list[str] = []
+    for cfg in features:
+        out = cfg.get("name") or feature_column_name(cfg)
+        reads: set[str] = set()
+        tag = cfg.get("tag")
+        if tag is not None:
+            reads.add(tag)
+        reads.update(cfg.get("tags") or [])
+        reads.update((cfg.get("vars") or {}).values())
+        if reads & tainted:
+            tainted.add(out)
+            derived.append(out)
+    return sorted(derived)
+
+
 def build_feature_spec(
     features: Sequence[Mapping[str, Any]],
     selected_columns: list[str] | None,
     scalers: Mapping[str, str],
+    target_y: str | None = None,
 ) -> dict[str, Any]:
     """Build `feature_spec.json`'s content for one GOLD write.
 
     `features` — the `FeatureConfig[]`-shaped list `applyFeatures`/
     `apply_features` consumed to produce this artifact, in APPLICATION
     order. `scalers` — the same `Record<string, ScalerMethod>` shape
-    `toModelReady`/`to_model_ready` consumed.
+    `toModelReady`/`to_model_ready` consumed. `target_y` — the tag a
+    downstream training run predicts; optional because this sidecar is
+    also written for artifacts nothing will ever train on.
     """
     scaling = [
         {"tag": tag, "method": method} for tag, method in sorted(scalers.items())
@@ -94,7 +137,7 @@ def build_feature_spec(
     canonical = _canonical_hash_payload(features, selected_columns, scaling)
     feature_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
-    return {
+    spec: dict[str, Any] = {
         "featureVersion": FEATURE_SPEC_VERSION,
         "features": [
             {
@@ -109,3 +152,13 @@ def build_feature_spec(
         "encoding": [],
         "featureHash": feature_hash,
     }
+
+    if target_y is not None:
+        # Explicit False, not omitted: train.py distinguishes "recorded as
+        # unscaled" from "never recorded" (feature_spec.json predates this
+        # field on any artifact written before T02).
+        spec["target_y"] = target_y
+        spec["target_scaled"] = scalers.get(target_y, "none") != "none"
+        spec["derived_from_target"] = _derived_from_target(features, target_y)
+
+    return spec

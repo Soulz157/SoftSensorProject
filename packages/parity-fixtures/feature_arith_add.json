@@ -2,7 +2,12 @@
   "name": "feature_arith_add",
   "engine": "applyFeatures",
   "input": {
-    "tags": ["TI-101", "VI-202", "FI-404", "XX-999"],
+    "tags": [
+      "TI-101",
+      "VI-202",
+      "FI-404",
+      "XX-999"
+    ],
     "rows": [
       {
         "timestamp": "2026-06-22T00:00:00.000Z",
@@ -858,12 +863,21 @@
         "id": "f-arith-add",
         "kind": "arith",
         "op": "add",
-        "tags": ["TI-101", "VI-202"]
+        "tags": [
+          "TI-101",
+          "VI-202"
+        ]
       }
     ]
   },
   "expected": {
-    "tags": ["TI-101", "VI-202", "FI-404", "XX-999", "TI-101__add__VI-202"],
+    "tags": [
+      "TI-101",
+      "VI-202",
+      "FI-404",
+      "XX-999",
+      "TI-101__add__VI-202"
+    ],
     "rows": [
       {
         "timestamp": "2026-06-22T00:00:00.000Z",

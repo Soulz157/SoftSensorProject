@@ -21,8 +21,14 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
   /** Digest, resolved once at boot. See resolveDigest. */
   imageDigest = '';
 
+  // 1.0.2: build_model widened from 3 branches (ols/ridge/hgb) to 10 —
+  // TrainingAlgorithmEnum now allows all 10, so the default image MUST
+  // agree or every other algorithm passes validation, spawns a container,
+  // downloads and checksums the artifact, and only then dies on
+  // "Unsupported algorithm" (images/trainer/train.py). Bump this default
+  // alongside any future build_model change that isn't purely additive.
   private readonly imageRef =
-    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.0';
+    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.2';
   private readonly network = process.env.TRAINING_NETWORK ?? 'dslake_default';
   private readonly memoryBytes = Number(
     process.env.TRAINING_MEMORY_BYTES ?? 8 * 1024 ** 3,
@@ -130,7 +136,7 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
         await this.prisma.modelTrainingRun.update({
           where: { id: runId },
           data: {
-            status: StatusCode === 0 ? 'FAILED' : 'FAILED',
+            status: 'FAILED',
             failureReason:
               StatusCode === 0
                 ? `Container exited 0 without reporting a result. Tail: ${tail}`
@@ -142,7 +148,7 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
     } catch (err) {
       this.log.error(`watch failed for run ${runId}`, err);
     } finally {
-      await this.reap(container);
+      await this.reap(container, false);
     }
   }
 
@@ -159,7 +165,8 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
     }
   }
 
-  private async reap(container: Docker.Container) {
+  private async reap(container: Docker.Container, failed: boolean) {
+    if (failed && process.env.TRAINING_KEEP_FAILED === '1') return;
     try {
       await container.remove({ force: true });
     } catch {

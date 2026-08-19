@@ -1,0 +1,176 @@
+# ---------------------------------------------------------------------------
+# Reusable: build ONE container image, push it, scan it, attest it.
+# Returns the immutable digest so downstream deploys use the exact bytes that
+# were tested and scanned — never a rebuild, never a floating tag.
+# ---------------------------------------------------------------------------
+name: Build image (reusable)
+
+on:
+    workflow_call:
+        inputs:
+            image:
+                description: "Image short name, e.g. dslake-api"
+                required: true
+                type: string
+            dockerfile:
+                description: "Path to the Dockerfile"
+                required: true
+                type: string
+            context:
+                description: "Build context"
+                required: false
+                type: string
+                default: "."
+            namespace:
+                description: "Registry namespace (must be lowercase)"
+                required: false
+                type: string
+                default: "ghcr.io/soft-sensor-project"
+            platforms:
+                required: false
+                type: string
+                default: "linux/amd64"
+            push:
+                required: false
+                type: boolean
+                default: true
+            fail-on-vuln:
+                description: "Fail the build on HIGH/CRITICAL fixable vulnerabilities"
+                required: false
+                type: boolean
+                default: true
+        outputs:
+            image:
+                description: "Fully qualified image reference pinned by digest"
+                value: ${{ jobs.build.outputs.image }}
+            digest:
+                value: ${{ jobs.build.outputs.digest }}
+
+permissions:
+    contents: read
+
+jobs:
+    build:
+        name: ${{ inputs.image }}
+        runs-on: ubuntu-latest
+        timeout-minutes: 40
+        permissions:
+            contents: read
+            packages: write # push to GHCR
+            id-token: write # keyless signing / attestation via OIDC
+            attestations: write
+            security-events: write # upload Trivy SARIF
+        outputs:
+            image: ${{ steps.ref.outputs.image }}
+            digest: ${{ steps.build.outputs.digest }}
+
+        steps:
+            - uses: actions/checkout@v4 # TODO: pin to commit SHA
+
+            - uses: docker/setup-buildx-action@v3 # TODO: pin to commit SHA
+
+            - name: Log in to registry
+              if: inputs.push
+              uses: docker/login-action@v3 # TODO: pin to commit SHA
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Derive tags and labels
+              id: meta
+              uses: docker/metadata-action@v5 # TODO: pin to commit SHA
+              with:
+                  images: ${{ inputs.namespace }}/${{ inputs.image }}
+                  tags: |
+                      type=sha,format=long
+                      type=ref,event=branch
+                      type=semver,pattern={{version}}
+                  labels: |
+                      org.opencontainers.image.title=${{ inputs.image }}
+                      org.opencontainers.image.revision=${{ github.sha }}
+
+            - name: Build and push
+              id: build
+              uses: docker/build-push-action@v6 # TODO: pin to commit SHA
+              with:
+                  context: ${{ inputs.context }}
+                  file: ${{ inputs.dockerfile }}
+                  platforms: ${{ inputs.platforms }}
+                  push: ${{ inputs.push }}
+                  tags: ${{ steps.meta.outputs.tags }}
+                  labels: ${{ steps.meta.outputs.labels }}
+                  # Registry-backed layer cache scoped per image so the services do not
+                  # thrash each other's cache entries.
+                  cache-from: type=gha,scope=${{ inputs.image }}
+                  cache-to: type=gha,mode=max,scope=${{ inputs.image }}
+                  provenance: mode=max
+                  sbom: true
+                  build-args: |
+                      GIT_SHA=${{ github.sha }}
+
+            - name: Compute digest-pinned reference
+              id: ref
+              run: echo "image=${{ inputs.namespace }}/${{ inputs.image }}@${{ steps.build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+
+            # ---- Layer 5: supply chain -------------------------------------------
+            - name: Scan image (Trivy) — SARIF for code scanning
+              uses: aquasecurity/trivy-action@master # TODO: pin to a release SHA
+              with:
+                  image-ref: ${{ steps.ref.outputs.image }}
+                  format: sarif
+                  output: trivy.sarif
+                  severity: MEDIUM,HIGH,CRITICAL
+                  ignore-unfixed: true
+
+            - name: Upload Trivy SARIF
+              if: always()
+              uses: github/codeql-action/upload-sarif@v3 # TODO: pin to commit SHA
+              with:
+                  sarif_file: trivy.sarif
+                  category: trivy-${{ inputs.image }}
+
+            - name: Scan image (Trivy) — hard gate
+              if: inputs.fail-on-vuln
+              uses: aquasecurity/trivy-action@master # TODO: pin to a release SHA
+              with:
+                  image-ref: ${{ steps.ref.outputs.image }}
+                  severity: HIGH,CRITICAL
+                  ignore-unfixed: true
+                  exit-code: "1"
+                  # Document time-boxed exceptions in .trivyignore, with an expiry date.
+                  trivyignores: .trivyignore
+
+            - name: Generate SBOM
+              uses: anchore/sbom-action@v0 # TODO: pin to commit SHA
+              with:
+                  image: ${{ steps.ref.outputs.image }}
+                  format: spdx-json
+                  artifact-name: sbom-${{ inputs.image }}.spdx.json
+
+            - name: Attest build provenance (SLSA)
+              if: inputs.push
+              uses: actions/attest-build-provenance@v2 # TODO: pin to commit SHA
+              with:
+                  subject-name: ${{ inputs.namespace }}/${{ inputs.image }}
+                  subject-digest: ${{ steps.build.outputs.digest }}
+                  push-to-registry: true
+
+            - name: Install cosign
+              if: inputs.push
+              uses: sigstore/cosign-installer@v3 # TODO: pin to commit SHA
+
+            - name: Sign image (cosign keyless)
+              if: inputs.push
+              run: |
+                  cosign sign --yes "${{ steps.ref.outputs.image }}"
+              env:
+                  COSIGN_EXPERIMENTAL: "1"
+
+            - name: Summary
+              run: |
+                  {
+                    echo "### ${{ inputs.image }}"
+                    echo ""
+                    echo "\`${{ steps.ref.outputs.image }}\`"
+                  } >> "$GITHUB_STEP_SUMMARY"

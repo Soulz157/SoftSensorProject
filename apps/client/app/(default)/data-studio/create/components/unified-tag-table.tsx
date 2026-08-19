@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 import { format } from 'date-fns'
 import {
   AlertCircle,
+  AlertTriangle,
   ChevronLeft,
   ChevronRight,
   Loader2,
@@ -15,6 +16,7 @@ import {
   RefreshCw,
   Search,
   Settings2,
+  Target,
   Trash2,
   Upload,
   X,
@@ -61,10 +63,8 @@ import {
   dwSelectedTagKeysAtom,
   dwTargetTagAtom,
 } from '@/store/dataset-studio'
-import {
-  planPresetApplication,
-  planSdtaApplication,
-} from '@/lib/feature-preset'
+import { planPresetApplication } from '@/lib/feature-preset'
+import { useStageSdtaPreset } from '@/hooks/use-sdta-preset'
 import { SourcePickerSheet } from './source-configs/source-picker-sheet'
 import { PresetApplyManager } from './preset-apply-modal'
 import {
@@ -253,6 +253,11 @@ export function UnifiedTagTable({ nav }: Props) {
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const debouncedSearch = useDebounced(searchQuery, 300)
+  // Step 1 has no fetched rows to plan a health-aware cut against, so
+  // pressing Apply on the SD&TA card here STAGES the config rather than
+  // planning it — the real plan happens in Step 3.2's `SdtaPresetCard`,
+  // against real data (DS-LAKE-013).
+  const stageSdta = useStageSdtaPreset()
 
   /**
    * One search box, two modes (see `lib/tag-search.ts`):
@@ -297,7 +302,13 @@ export function UnifiedTagTable({ nav }: Props) {
   const piSourceIdsKey = JSON.stringify(piSources.map(s => s.id))
 
   const setFeaturePreset = useSetAtom(dwFeaturePresetAtom)
-  const setTargetTag = useSetAtom(dwTargetTagAtom)
+  // Read as well as write: the same atom the preset path below writes is what
+  // marks the row here, so the two entry points cannot disagree on which tag
+  // is Y. It stores a bare tag NAME, never a selection key — every reader
+  // compares names (step-5-review-save against the artifact's own tag list,
+  // dataset-tag-sidebar against the frame) and it reaches Python as the
+  // `target_y` column name.
+  const [targetTag, setTargetTag] = useAtom(dwTargetTagAtom)
 
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editValue, setEditValue] = useState('')
@@ -355,6 +366,47 @@ export function UnifiedTagTable({ nav }: Props) {
     })
 
   const clearSelection = () => setSelectedKeys(new Set())
+
+  // ── Target (Y) ───────────────────────────────────────────────────────────
+  // Engineered columns exist in the client frame the moment their equation is
+  // queued, but NOT in the stored artifact until the feature job has run.
+  // Naming one as Y fails inside pyarrow with `No match for FieldRef.Name` at
+  // run creation — nowhere a user could act on it — so they are refused here
+  // instead. Mirrors `dataset-tag-sidebar.tsx`'s own engineered-name set.
+  const engineeredNames = useMemo(
+    () => new Set(nav.featureConfigs.map(featureColumnName)),
+    [nav.featureConfigs],
+  )
+
+  const isTargetRow = useCallback(
+    (r: DatasetTagRow) => targetTag !== null && r.tagName === targetTag,
+    [targetTag],
+  )
+
+  /**
+   * Exactly one target comes for free — the atom holds a single string, so a
+   * new pick replaces the previous one with no clearing pass, and the UI
+   * cannot build the multi-target state the run-creation endpoint rejects.
+   */
+  const toggleTarget = useCallback(
+    (r: DatasetTagRow) => {
+      if (engineeredNames.has(r.tagName)) return
+      if (isTargetRow(r)) {
+        setTargetTag(null)
+        return
+      }
+      setTargetTag(r.tagName)
+      // A target has to be in the fetch to reach the artifact at all. Mirrors
+      // what the preset path already does (`planPresetApplication` unions the
+      // resolved target into its selection keys), and goes through the
+      // selection atom for the reason `onApplyPreset` spells out below.
+      setSelectedKeys(prev => {
+        const k = rowKey(r)
+        return prev.has(k) ? prev : new Set(prev).add(k)
+      })
+    },
+    [engineeredNames, isTargetRow, setTargetTag, setSelectedKeys, rowKey],
+  )
 
   // Prune by source, not by row set: a key whose source is still selected is
   // valid even when its tag sits on a page we haven't loaded.
@@ -435,11 +487,14 @@ export function UnifiedTagTable({ nav }: Props) {
         : searchedRows.filter(r => getEffectiveStatus(r) === statusFilter)
     // Selected tags float to the top of this page — a source page is fetched
     // PAGE_SIZE rows at a time, so a tag picked earlier (e.g. via a preset)
-    // could otherwise sit off-screen below the fold on its own page.
+    // could otherwise sit off-screen below the fold on its own page. The
+    // target outranks them for the same reason: there is only ever one.
     return [...base].sort(
-      (a, b) => Number(isSelected(b)) - Number(isSelected(a)),
+      (a, b) =>
+        Number(isTargetRow(b)) - Number(isTargetRow(a)) ||
+        Number(isSelected(b)) - Number(isSelected(a)),
     )
-  }, [searchedRows, statusFilter, getEffectiveStatus, isSelected])
+  }, [searchedRows, statusFilter, getEffectiveStatus, isSelected, isTargetRow])
 
   const selectedRows = useMemo(
     () => rows.filter(isSelected),
@@ -489,10 +544,19 @@ export function UnifiedTagTable({ nav }: Props) {
 
   const commitEdit = useCallback(
     (row: DatasetTagRow) => {
+      const wasTarget = isTargetRow(row)
       renameRow(row, editValue)
       setEditingId(null)
+      // Follow the rename. The target is stored by NAME, so leaving the old
+      // one behind orphans it silently — the user would only find out at Step
+      // 5, as "target is not in this dataset". Guard mirrors renameRow's own
+      // no-op condition exactly, or a rejected rename would retarget anyway.
+      const trimmed = editValue.trim()
+      if (wasTarget && trimmed !== '' && trimmed !== row.originalName) {
+        setTargetTag(trimmed)
+      }
     },
-    [editValue, renameRow],
+    [editValue, renameRow, isTargetRow, setTargetTag],
   )
 
   const cancelEdit = useCallback(() => setEditingId(null), [])
@@ -502,6 +566,9 @@ export function UnifiedTagTable({ nav }: Props) {
   // which would discard picks made on other pages.
   const bulkDelete = () => {
     const removed = selectedRows.map(rowKey)
+    // Deleting the target's own row leaves the atom pointing at a tag the
+    // dataset no longer has — same orphan the rename path guards against.
+    if (selectedRows.some(isTargetRow)) setTargetTag(null)
     selectedRows.forEach(deleteRow)
     setSelectedKeys(prev => {
       const next = new Set(prev)
@@ -721,29 +788,13 @@ export function UnifiedTagTable({ nav }: Props) {
               )
             }
           }}
-          onApplySdta={(sdta, lookup) => {
-            // Lookup comes from the modal — it carries the PI resolutions, so a
-            // condition on a tag from another catalog page is no longer dropped.
-            const plan = planSdtaApplication(sdta, lookup)
-
-            // Time exclusions have no functional updater on nav — read then
-            // write. Conditional rules do, so use it rather than duplicating
-            // the read-then-write pattern for no reason.
-            nav.setExclusions([...nav.exclusions, ...plan.exclusions])
-            nav.setConditionalRules(prev => [...prev, ...plan.conditionalRules])
-
-            if (plan.droppedConditions.length > 0) {
-              toast.warning(
-                `Applied cut config, but ${plan.droppedConditions.length} condition(s) were skipped: ` +
-                  plan.droppedConditions
-                    .map(d => `${d.tag} (${d.reason})`)
-                    .join(', '),
-              )
-            } else {
-              toast.success(
-                `Applied ${plan.exclusions.length} exclusion window(s) and ${plan.conditionalRules.length} condition(s) at Step 3.`,
-              )
-            }
+          onApplySdta={(sdta, summary, importFileName) => {
+            // Toasts live inside the hook — it knows the staging verdict
+            // ('empty' / 'staged' / 'replaced'), which this callback cannot
+            // see, and no `nav.set*` writes happen here at all: nothing is
+            // cut until the user picks a combine mode and presses Apply in
+            // Step 3.2's card.
+            stageSdta(sdta, summary, importFileName)
           }}
         />
 
@@ -849,6 +900,31 @@ export function UnifiedTagTable({ nav }: Props) {
         />
       )}
 
+      {/* `selectedTagNames` IS the set that gets fetched — it already drops
+          unselected and Bad-status rows and understands keys from pages that
+          are not loaded, so this also covers a preset-set `.lab` target with
+          no row on screen. */}
+      {targetTag && !selectedTagNames.includes(targetTag) && (
+        // Loud through placement + icon, not colour: amber/red are reserved
+        // for plant operating state (DESIGN.md §2), and a target that is not
+        // in the fetch is a data-workflow state, not one. Deliberately NOT
+        // blocking — assembling X now and joining lab Y later is a legitimate
+        // workflow, the same call step-5-review-save.tsx makes.
+        <div className="flex items-start gap-2.5 rounded-xl border border-border bg-muted/40 p-3">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+          <div className="space-y-0.5 text-xs">
+            <p className="font-medium text-foreground">
+              Target <span className="font-mono">{targetTag}</span> is not in
+              this dataset
+            </p>
+            <p className="text-muted-foreground">
+              This dataset can be saved, but it cannot train a model until the
+              target is supplied — typically by CSV upload or lab ingestion.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* ── Table ────────────────────────────────────────────────────────── */}
       {rows.length === 0 ? (
         <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-border py-10 text-center">
@@ -918,7 +994,7 @@ export function UnifiedTagTable({ nav }: Props) {
                 <TableHead className="w-16 text-center">Subst.</TableHead>
                 <TableHead className="w-40">Timestamp (local)</TableHead>
                 <TableHead className="w-24">Status</TableHead>
-                <TableHead className="w-20 pr-4 text-right">Actions</TableHead>
+                <TableHead className="w-24 pr-4 text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -930,8 +1006,17 @@ export function UnifiedTagTable({ nav }: Props) {
                   ? metaByTag.get(tagKey(row.sourceId, row.originalName))
                   : undefined
 
+                const isTarget = isTargetRow(row)
+                const isEngineered = engineeredNames.has(row.tagName)
+
                 return (
-                  <TableRow key={row.id}>
+                  <TableRow
+                    key={row.id}
+                    // Background tint, not a left accent stripe — DESIGN.md
+                    // §"Don't" calls stripes SCADA chrome and names a tint as
+                    // the replacement.
+                    className={cn(isTarget && 'bg-primary/5')}
+                  >
                     {/* Row selection */}
                     <TableCell className="pl-4 text-center">
                       <input
@@ -958,16 +1043,32 @@ export function UnifiedTagTable({ nav }: Props) {
                           className="w-full rounded border border-primary bg-transparent px-2 py-0.5 font-mono text-xs text-foreground outline-none focus:ring-1 focus:ring-primary"
                         />
                       ) : (
-                        <span
-                          className={cn(
-                            'block truncate',
-                            getEffectiveStatus(row) === 'bad' &&
-                              'text-destructive',
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className={cn(
+                              'truncate',
+                              getEffectiveStatus(row) === 'bad' &&
+                                'text-destructive',
+                            )}
+                            title={row.tagName}
+                          >
+                            {row.tagName}
+                          </span>
+                          {/* The checkbox already means "include as an input".
+                              This says the column is Y — train.py drops it
+                              from X — so the two must not read alike. Uses
+                              `primary`, never a status colour: red/amber/
+                              green/grey are reserved for plant operating
+                              state (DESIGN.md §2). */}
+                          {isTarget && (
+                            <span
+                              title="Target (Y) — excluded from the input features"
+                              className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary"
+                            >
+                              Y
+                            </span>
                           )}
-                          title={row.tagName}
-                        >
-                          {row.tagName}
-                        </span>
+                        </div>
                       )}
                       {/* Manual/CSV tags carry a user-set constant instead of a
                           live reading. */}
@@ -1057,6 +1158,29 @@ export function UnifiedTagTable({ nav }: Props) {
                       <div className="flex items-center justify-end gap-1">
                         <button
                           type="button"
+                          disabled={isEngineered}
+                          aria-pressed={isTarget}
+                          title={
+                            isEngineered
+                              ? `${row.tagName} is an engineered feature — it does not exist in the stored artifact until the feature job runs, so training cannot find the column. Choose a source tag as the target.`
+                              : isTarget
+                                ? 'Clear target (Y)'
+                                : 'Set as target (Y)'
+                          }
+                          onClick={() => toggleTarget(row)}
+                          className={cn(
+                            'flex h-6 w-6 items-center justify-center rounded transition-colors',
+                            isEngineered
+                              ? 'cursor-not-allowed text-muted-foreground/40'
+                              : isTarget
+                                ? 'text-primary hover:bg-primary/10'
+                                : 'text-muted-foreground hover:bg-muted hover:text-primary',
+                          )}
+                        >
+                          <Target className="h-3 w-3" />
+                        </button>
+                        <button
+                          type="button"
                           title="Rename tag"
                           onClick={() => startEdit(row)}
                           className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
@@ -1066,7 +1190,10 @@ export function UnifiedTagTable({ nav }: Props) {
                         <button
                           type="button"
                           title="Remove tag"
-                          onClick={() => deleteRow(row)}
+                          onClick={() => {
+                            if (isTarget) setTargetTag(null)
+                            deleteRow(row)
+                          }}
                           className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
                         >
                           <Trash2 className="h-3 w-3" />

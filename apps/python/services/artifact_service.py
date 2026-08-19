@@ -42,7 +42,9 @@ from intergrations.object_store import (
     MODEL_FILENAME,
     PREDICTIONS_FILENAME,
     RUN_MANIFEST_FILENAME,
+    draft_run_key,
     is_committed_artifact_key,
+    is_draft_run_key,
     is_model_run_key,
     model_run_key,
 )
@@ -64,6 +66,7 @@ from services.data_source_service import PIDataSourceService, SQLDataSourceServi
 from services.feature_service import (
     apply_features,
     feature_column_name,
+    force_keep_target,
     select_columns,
     to_model_ready,
 )
@@ -287,9 +290,17 @@ def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:
     source = store.get_frame(request.source_key)
     step_configs = [f.to_step() for f in request.features]
 
+    # Computed once and reused for both the actual column drop AND the spec
+    # that describes it — request.selected_columns alone would let the spec
+    # claim a different column set than what select_columns actually kept,
+    # and since selectedColumns is part of the featureHash payload, that
+    # would make the hash describe bytes that don't exist.
+    effective_selected = force_keep_target(
+        request.selected_columns, request.target_y)
+
     skipped_columns: list[str] = []
     result = apply_features(source, step_configs, skipped=skipped_columns)
-    result = select_columns(result, request.selected_columns)
+    result = select_columns(result, effective_selected)
     result = to_model_ready(result, tag_columns(result), request.scalers)
 
     assert_frame_is_usable(result)
@@ -307,7 +318,7 @@ def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:
         if feature_column_name(cfg) not in skipped_columns
     ]
     spec = build_feature_spec(
-        computed_configs, request.selected_columns, request.scalers)
+        computed_configs, effective_selected, request.scalers, request.target_y)
     # `source` (the SILVER parent) is already in memory from the get_frame
     # above — same shape `clean()` uses, and the only place features() holds
     # both frames at once.
@@ -632,16 +643,30 @@ def presign_model_run_upload(store: ObjectStore, body) -> dict:
             f"Allowed: {sorted(_ALLOWED_RUN_UPLOADS)}."
         )
 
+    # EXACTLY ONE of model_id / draft_id — enforced by the request schema's
+    # own validator (MODEL-FLOW-003-T08). A run started from the wizard has
+    # no model_id yet and writes under drafts/ instead.
+    if body.draft_id is not None:
+        build_key = lambda filename: draft_run_key(  # noqa: E731
+            body.draft_id, body.run_id, filename)
+        is_well_formed = is_draft_run_key
+        root = "drafts/"
+    else:
+        build_key = lambda filename: model_run_key(  # noqa: E731
+            body.model_id, body.run_id, filename)
+        is_well_formed = is_model_run_key
+        root = "models/"
+
     upload_urls: dict[str, str] = {}
     for filename in body.filenames:
-        key = model_run_key(body.model_id, body.run_id, filename)
+        key = build_key(filename)
         # Belt and braces: the allow-list above already constrains the
         # filename, but the ids come from the request too, and this predicate
-        # is the one thing standing between a malformed id and a write outside
-        # models/.
-        if not is_model_run_key(key):
+        # is the one thing standing between a malformed id and a write
+        # outside the owner's own root.
+        if not is_well_formed(key):
             raise ValueError(
-                f"Refusing to presign a write outside models/: '{key}'")
+                f"Refusing to presign a write outside {root}: '{key}'")
         upload_urls[filename] = store.presigned_put(key)
 
     return {

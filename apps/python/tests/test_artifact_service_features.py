@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import pytest
 
-from intergrations.object_store import ObjectStoreError
+from intergrations.object_store import ObjectStoreError, tag_columns
 from schemas.preprocess import FeatureConfigRequest, FeaturesRequest
 from services import artifact_service
-from tests.test_artifact_service import RecordingStore, frame
+from tests.test_artifact_service import RecordingStore, frame, wide_frame
 
 
 def test_features_writes_the_target_and_leaves_the_source_alone() -> None:
@@ -201,6 +201,42 @@ def test_features_surfaces_a_collision_skip_and_excludes_it_from_the_spec() -> N
     spec_names = [f["name"] for f in spec["features"]]
     assert "TI-101" not in spec_names
     assert spec_names == ["TI-101__lag1"]
+
+
+def test_features_force_keeps_target_through_select_columns() -> None:
+    """MODEL-FLOW-000-T02: force_keep_target must feed the ACTUAL column
+    drop, not just the spec. A caller can omit the target from
+    selected_columns (Step 4's UI has no reason to know it must include it)
+    — the target must survive anyway, or the GOLD artifact looks fine and
+    is not: it fails only much later, at model-fit time, in a different
+    service (force_keep_target's own docstring).
+
+    wide_frame() carries TI-101 and FI-404; selected_columns names TI-101
+    only, target_y is FI-404 — omitted from the explicit list on purpose.
+    """
+    store = RecordingStore({"ds-1/artifacts/silver-id/data.parquet": wide_frame()})
+    result = artifact_service.features(
+        store,
+        FeaturesRequest(
+            source_key="ds-1/artifacts/silver-id/data.parquet",
+            target_key="ds-1/artifacts/gold-id/data.parquet",
+            features=[],
+            selected_columns=["TI-101"],
+            target_y="FI-404",
+        ),
+    )
+
+    # The bytes actually written carry the target — not just the spec.
+    written = store.objects["ds-1/artifacts/gold-id/data.parquet"]
+    assert "FI-404" in tag_columns(written)
+    assert "TI-101" in tag_columns(written)
+
+    # The spec's selectedColumns must agree with what was actually written
+    # — a spec claiming a narrower set than the bytes contain would make
+    # the featureHash describe an artifact that doesn't exist.
+    spec = store.documents["ds-1/artifacts/gold-id/feature_spec.json"]
+    assert spec["selectedColumns"] == ["TI-101", "FI-404"]
+    assert result["feature_spec_key"] == "ds-1/artifacts/gold-id/feature_spec.json"
 
 
 def test_features_applies_select_columns_before_returning() -> None:

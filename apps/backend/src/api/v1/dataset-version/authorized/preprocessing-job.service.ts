@@ -227,6 +227,7 @@ export class PreprocessingJobService
       features: FeatureConfig[];
       selectedColumns: string[] | null;
       scalers: Record<string, string>;
+      targetY: string | null;
     } | null = null;
     try {
       if (isFeatureJob) {
@@ -281,6 +282,7 @@ export class PreprocessingJobService
               selectedColumns: recipe.selectedColumns,
               scalers: recipe.scalers,
               overwrite: false,
+              target_y: recipe.targetY,
             },
             PYTHON_TIMEOUT.preprocess,
             controller.signal,
@@ -627,6 +629,7 @@ export class PreprocessingJobService
     features: FeatureConfig[];
     selectedColumns: string[] | null;
     scalers: Record<string, string>;
+    targetY: string | null;
   } {
     if (Array.isArray(raw) || !raw || typeof raw !== 'object') {
       throw new AppException({
@@ -641,6 +644,7 @@ export class PreprocessingJobService
       features?: unknown;
       selectedColumns?: unknown;
       scalers?: unknown;
+      targetY?: unknown;
     };
     if (payload.operations !== undefined && payload.features === undefined) {
       throw new AppException({
@@ -654,6 +658,7 @@ export class PreprocessingJobService
       features: payload.features ?? [],
       selectedColumns: payload.selectedColumns ?? null,
       scalers: payload.scalers ?? {},
+      targetY: payload.targetY ?? null,
     });
     if (!parsed.success) {
       throw new AppException({
@@ -666,6 +671,7 @@ export class PreprocessingJobService
       features: parsed.data.features,
       selectedColumns: parsed.data.selectedColumns ?? null,
       scalers: parsed.data.scalers,
+      targetY: parsed.data.targetY ?? null,
     };
   }
 

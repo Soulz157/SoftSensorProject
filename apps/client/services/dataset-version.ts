@@ -6,7 +6,6 @@ import {
   type Dataset,
   type DataRow,
 } from '@/lib/preprocessing'
-import { column } from 'mathjs'
 import {
   DraftArtifactMetadata,
   DraftCorrelationResult,
@@ -32,8 +31,6 @@ interface ApiResponse<T> {
   type: string
 }
 
-export type DatasetVersionStage = 'RAW' | 'CLEAN' | 'FEATURE'
-
 export type PreprocessingJobStatus =
   | 'QUEUED'
   | 'RUNNING'
@@ -41,18 +38,44 @@ export type PreprocessingJobStatus =
   | 'FAILED'
   | 'CANCELED'
 
+/**
+ * A `PreprocessingJob`'s own stage — RAW→CLEAN→FEATURE, which pipeline leg
+ * this job ran. Distinct from `DatasetArtifactStage`
+ * (BRONZE/SILVER/GOLD/FINAL, `services/dataset-draft.ts`), which is the
+ * ARTIFACT's stage. Prisma's enum backing this column is still literally
+ * named `DatasetVersionStage` (`schema.prisma`) — a naming leftover from
+ * before `DatasetVersion.stage` was removed and this concept moved onto
+ * `PreprocessingJob` — but nothing on the client-visible `DatasetVersion`
+ * type has carried a `stage` since (DS-LAKE-013).
+ */
+export type PreprocessingJobStage = 'RAW' | 'CLEAN' | 'FEATURE'
+
+/**
+ * Mirrors `listVersionsService`'s actual response
+ * (`dataset-version.authorized.service.ts`) field for field — the previous
+ * shape here (`parentVersionId`, `stage: DatasetVersionStage`, `operations`)
+ * did not exist on the server at all: `DatasetVersion` has no `stage`
+ * column (that concept moved to `PreprocessingJob`), so the one caller that
+ * filtered on it (`use-dataset-version-rows.ts`) always got `[]` back
+ * (DS-LAKE-013).
+ */
 export interface DatasetVersion {
   id: string
   datasetId: string
-  parentVersionId: string | null
+  semanticVersion: string | null
+  /** The FINAL artifact this version points to, by reference. Null for a
+   * row backfilled before this reshape existed. */
+  artifactId: string | null
   versionNumber: number
-  stage: DatasetVersionStage
+  status: string
+  checksum: string | null
+  qualityScore: number | null
   rowCount: number
   /** LOGICAL tags — excludes the timestamp and every `__status` sidecar. */
   columnCount: number
+  featureCount: number
   missingPct: number
   sizeBytes: number
-  operations: unknown
   durationMs: number | null
   /** ISO 8601 */
   createdAt: string
@@ -83,7 +106,7 @@ export interface ArtifactColumnStatsResult {
 export interface PreprocessingJob {
   id: string
   status: PreprocessingJobStatus
-  stage: DatasetVersionStage
+  stage: PreprocessingJobStage
   progress: number
   currentStep: string | null
   totalSteps: number
@@ -134,26 +157,9 @@ export interface CleaningOperationInput {
 
 const base = (datasetId: string) =>
   `/api/v1/authorized/dataset/${encodeURIComponent(datasetId)}`
-export interface ArtifactTagColumnStats {
-  tag: string
-  coverage: number
-  null_pct: number
-  outlier_count: number
-  min?: number | null
-  max?: number | null
-  mean?: number | null
-  median?: number | null
-  std?: number | null
-  drift?: number | null
-  percentiles?: Record<string, number> | null
-  cleaned: boolean
-}
 
-export interface ArtifactColumnStatsResult {
-  columnStatsKey: string
-  /** Keyed by tag name — O(1) lookup, single page by design. */
-  stats: Record<string, ArtifactTagColumnStats>
-}
+const artifact = (datasetId: string, artifactId: string) =>
+  `${base(datasetId)}/artifacts/${encodeURIComponent(artifactId)}`
 
 export const datasetArtifactService = {
   metadata: (
@@ -306,10 +312,6 @@ export const datasetVersionService = {
       method: 'POST',
     }),
 }
-
-const one = (datasetId: string) => `${base}/${encodeURIComponent(datasetId)}`
-const artifact = (datasetId: string, artifactId: string) =>
-  `${one(datasetId)}/artifacts/${encodeURIComponent(artifactId)}`
 
 /**
  * Page a whole version into the wide `Dataset` the wizard renders.

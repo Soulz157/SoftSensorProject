@@ -13,6 +13,7 @@ import {
 } from '@/lib/feature-engineering'
 import { EMPTY_PIPELINE_CONFIG } from '@/lib/pipeline-config'
 import type { SavedDataset } from '@/store/datasets'
+import type { DatasetArtifactStage } from '@/services/dataset-draft'
 import type {
   ConditionalRule,
   CropRange,
@@ -32,6 +33,11 @@ import {
   type HistoricalFetchConfig,
 } from '@/lib/fetch-config'
 import type { PresetSummary, SdtaConfig } from '@/lib/feature-preset'
+import {
+  SdtaPreset,
+  isEmptySdta,
+  upsertSdtaPreset,
+} from '@/lib/feature-preset-apply'
 
 export const DW_TOTAL_STEPS = 5
 
@@ -133,11 +139,25 @@ export const dwFeaturePresetAtom = atom<PresetSummary | null>(null)
 // it would block every preset — see canApply() in lib/feature-preset.ts. Its
 // absence is instead surfaced as a loud, non-blocking warning at Step 5.
 export const dwTargetTagAtom = atom<string | null>(null)
-// SD&TA (shutdown/turnaround) cut config from the same workbook, if it had one.
-// Parsed and available for the opt-in "Apply SD/TA cut config" card; consuming
-// it into dwExclusionsAtom / dwConditionalRulesAtom is FP-8. Not persisted in
-// pipelineConfig — it is import-time state, not part of the saved recipe.
-export const dwSdtaConfigAtom = atom<SdtaConfig | null>(null)
+
+// SD&TA (shutdown/turnaround) cut configs from imported workbooks. Staged
+// here by the preset manager; nothing is cut until the user selects presets
+// and applies in Step 3.2's card. Not persisted in pipelineConfig — the
+// resulting exclusions/rules are, this list is import-time state.
+export const dwSdtaPresetsAtom = atom<SdtaPreset[]>([])
+
+export type StageSdtaResult = 'staged' | 'replaced' | 'empty'
+
+export const dwStageSdtaPresetAtom = atom(
+  null,
+  (get, set, preset: SdtaPreset): StageSdtaResult => {
+    if (isEmptySdta(preset.config)) return 'empty'
+    const current = get(dwSdtaPresetsAtom)
+    const existed = current.some(p => p.id === preset.id)
+    set(dwSdtaPresetsAtom, upsertSdtaPreset(current, preset))
+    return existed ? 'replaced' : 'staged'
+  },
+)
 
 // DS-LAKE-006-AC5 / DS-LAKE-005B-B-T04: a real bounded page of the draft's
 // current source artifact, fetched via the server's bounded /rows endpoint
@@ -270,6 +290,17 @@ export const dwRowSourceAtom = atom<'stored' | 'synthetic' | null>(null)
 /** Why synthetic rows were used, for the banner. Null unless synthetic. */
 export const dwSyntheticReasonAtom = atom<string | null>(null)
 
+/**
+ * Pipeline stage of the artifact `dwRawDatasetAtom` was hydrated from — the
+ * edit-mode twin of `VersionRowsState.stage`
+ * (`hooks/dataset/use-dataset-version-rows.ts`), written by
+ * `useDatasetEditHydration`. Null while `dwRowSourceAtom !== 'stored'` or
+ * before hydration resolves. `wizard-shell.tsx` reads this to warn when the
+ * hydrated rows are already past BRONZE — Step 3's crop/clean/impute would
+ * otherwise double-apply on top of an already-processed artifact.
+ */
+export const dwRowStageAtom = atom<DatasetArtifactStage | null>(null)
+
 export interface InitDatasetWizardSeed {
   name: string
   description: string
@@ -310,7 +341,7 @@ export const initDatasetWizardAtom = atom(
     set(dwFeatureConfigsAtom, [])
     set(dwFeaturePresetAtom, null)
     set(dwTargetTagAtom, null)
-    set(dwSdtaConfigAtom, null)
+    set(dwSdtaPresetsAtom, [])
     set(dwCropRangeAtom, null)
     set(dwExclusionsAtom, [])
     set(dwValueCropAtom, {})
@@ -335,6 +366,7 @@ export const initDatasetWizardAtom = atom(
     set(dwEditingDatasetAtom, null)
     set(dwRowSourceAtom, null)
     set(dwSyntheticReasonAtom, null)
+    set(dwRowStageAtom, null)
   },
 )
 
@@ -365,7 +397,7 @@ export const resetDatasetWizardAtom = atom(null, (_get, set) => {
   set(dwFeatureConfigsAtom, [])
   set(dwFeaturePresetAtom, null)
   set(dwTargetTagAtom, null)
-  set(dwSdtaConfigAtom, null)
+  set(dwSdtaPresetsAtom, [])
   set(dwCropRangeAtom, null)
   set(dwConditionalRulesAtom, [])
   set(dwStatisticalRulesAtom, [])
@@ -386,6 +418,7 @@ export const resetDatasetWizardAtom = atom(null, (_get, set) => {
   set(dwEditingDatasetAtom, null)
   set(dwRowSourceAtom, null)
   set(dwSyntheticReasonAtom, null)
+  set(dwRowStageAtom, null)
   // DS-LAKE-005B-B-T01 (Step 5 leg). Without this, a second wizard run in
   // the same session would inherit the just-SAVED draft's id — every
   // .../artifacts/:id/finalize and .../save call would target a draft
@@ -465,6 +498,7 @@ export const initDatasetWizardForEditAtom = atom(
     set(dwEditingDatasetAtom, dataset)
     set(dwRowSourceAtom, null)
     set(dwSyntheticReasonAtom, null)
+    set(dwRowStageAtom, null)
 
     // Step 3 — Preprocessing (EDITABLE surface).
     set(dwCropRangeAtom, config.cropRange)
@@ -489,7 +523,7 @@ export const initDatasetWizardForEditAtom = atom(
     set(dwFeaturePresetAtom, config.featurePreset ?? null)
     set(dwTargetTagAtom, config.targetTag ?? null)
     // Not persisted (see the atom's own comment) — nothing to hydrate.
-    set(dwSdtaConfigAtom, null)
+    set(dwSdtaPresetsAtom, [])
 
     set(dwProcessingSubStepAtom, 1)
     set(dwHiddenTagsAtom, [])

@@ -91,6 +91,11 @@ export const CreateFeaturesSchema = z.object({
   selectedColumns: z.array(z.string()).nullable().optional(),
   scalers: z.record(z.string(), z.string()).default({}),
   overwrite: z.boolean().optional(),
+  // The tag a downstream training run predicts (MODEL-FLOW-000-T02).
+  // Optional: this endpoint also writes GOLD artifacts nothing will ever
+  // train on. Forwarded to python as target_y, never scaled, force-kept
+  // through column selection — see FeaturesRequest.target_y.
+  targetY: z.string().nullable().optional(),
 });
 
 // ── requests ───────────────────────────────────────────────────────────────

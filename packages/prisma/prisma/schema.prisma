@@ -73,6 +73,7 @@ model User {
   datasetVersions     DatasetVersion[]
   datasetArtifacts    DatasetArtifact[]
   datasetDrafts       DatasetDraft[]
+  modelDrafts         ModelDraft[]
   preprocessingJobs   PreprocessingJob[]
   presetImports       FeaturePresetImport[]
   loaderJobs          LoaderJob[]
@@ -113,6 +114,7 @@ model Workspace {
   plans         WorkspacePlant[]
   datasets      Dataset[]
   datasetDrafts DatasetDraft[]
+  modelDrafts   ModelDraft[]
   presetImports FeaturePresetImport[]
 
   @@index([ownerId])
@@ -802,6 +804,73 @@ model Edge {
   @@index([workspaceId])
 }
 
+enum ModelDraftStatus {
+  ACTIVE
+  /// Set when a run owned by this draft completes SUCCEEDED
+  /// (MODEL-FLOW-003-T07). Still editable — PATCH only refuses once SAVED —
+  /// so the wizard can adjust config and retrain without a status detour.
+  TRAINED
+  SAVED
+  ABANDONED
+}
+
+/// A model being configured and trained in the wizard, before it is worth
+/// persisting as a Model. Mirrors DatasetDraft's role: exists so training
+/// can run as a real job — authenticating via a run token hashed into a
+/// row, reading its spec from an HTTP endpoint, reporting logs/metrics back
+/// — WITHOUT creating a Model row a browserless training container could
+/// never reach. Runs hang off a draft; Save Model promotes the draft by
+/// ADOPTING its winning run's artifacts rather than regenerating them.
+/// See CLAUDE.md §8 and decisions.draft_persistence (MODEL-FLOW-002).
+model ModelDraft {
+  id          String    @id @default(uuid())
+  name        String?
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  /// Cascade selection from Step 1. plantId has no direct home on the final
+  /// Model (which stores only nodesId, itself resolving to a plant via
+  /// Nodes.planId) — kept here so the wizard can hydrate the cascade
+  /// selector on reload before a node is necessarily chosen yet.
+  plantId String?
+  nodeId  String?
+
+  datasetId String?
+
+  /// One run predicts one Y — a multi-target selection maps to null here,
+  /// never to an arbitrary first entry, so a multi-target draft fails
+  /// loudly at training-create rather than silently training on whichever
+  /// target sorted first.
+  targetY         String?
+  algorithm       String?
+  hyperparameters Json    @default("{}")
+  /// FRACTION (0.5-0.95), never a percentage — chronological_split
+  /// multiplies by row count, so a UI percentage (e.g. 80) would slice at
+  /// 80x the intended length. Converted once, at the client boundary.
+  splitRatio      Float?
+
+  status ModelDraftStatus @default(ACTIVE)
+
+  /// Latest/winning run, for wizard hydration — same role
+  /// DatasetDraft.currentArtifactId plays for the dataset wizard.
+  currentRunId String?
+
+  /// Set when the draft is promoted, so a saved Model is traceable back to
+  /// the draft that produced it.
+  savedModelId String?
+
+  createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  trainingRuns ModelTrainingRun[]
+
+  @@index([workspaceId])
+  @@index([createdById])
+  @@index([status])
+}
+
 enum ModelRunStatus {
   QUEUED
   RUNNING
@@ -811,9 +880,17 @@ enum ModelRunStatus {
 }
 
 model ModelTrainingRun {
-  id      String @id @default(uuid())
-  modelId String
-  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+  id String @id @default(uuid())
+
+  /// EXACTLY ONE of modelId / modelDraftId is set at creation — enforced by
+  /// a CHECK constraint in the migration, same "never neither" shape
+  /// DatasetArtifact.datasetId/draftId already uses. A run created from the
+  /// wizard has modelDraftId and a null modelId until Save Model adopts it
+  /// (modelId set, modelDraftId KEPT for traceability — never cleared).
+  modelId      String?
+  model        Model?      @relation(fields: [modelId], references: [id], onDelete: Cascade)
+  modelDraftId String?
+  modelDraft   ModelDraft? @relation(fields: [modelDraftId], references: [id], onDelete: Cascade)
 
   /// For tracing back to Data Studio only. NOT how the container resolves
   /// data: a dataset is editable (see initDatasetWizardForEditAtom), so an
@@ -875,6 +952,7 @@ model ModelTrainingRun {
   logs ModelTrainingRunLog[]
 
   @@index([modelId, createdAt])
+  @@index([modelDraftId])
   @@index([status])
 }
 

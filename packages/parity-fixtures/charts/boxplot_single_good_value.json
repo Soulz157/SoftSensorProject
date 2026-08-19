@@ -2,7 +2,9 @@
   "name": "boxplot_single_good_value",
   "engine": "boxplot",
   "input": {
-    "tags": ["TI-101"],
+    "tags": [
+      "TI-101"
+    ],
     "rows": [
       {
         "timestamp": "2026-06-22T00:00:00.000Z",
@@ -35,7 +37,9 @@
   },
   "config": {
     "source_key": "fixture/chart-artifact.parquet",
-    "tags": ["TI-101"],
+    "tags": [
+      "TI-101"
+    ],
     "outlier_cap": 50
   },
   "expected": {

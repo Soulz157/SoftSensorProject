@@ -1,0 +1,194 @@
+# ---------------------------------------------------------------------------
+# Reusable: deploy a set of digest-pinned images to ONE environment.
+#
+# Order is deliberate:  migrate -> deploy -> smoke -> (rollback on failure)
+# Migrations must be expand-only so the previous app version keeps working if
+# the deploy is rolled back. See docs/CICD.md § Database migrations.
+# ---------------------------------------------------------------------------
+name: Deploy (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "GitHub Environment name (development | staging | production)"
+        required: true
+        type: string
+      api-image:
+        required: true
+        type: string
+      client-image:
+        required: true
+        type: string
+      connector-image:
+        required: true
+        type: string
+      run-migrations:
+        required: false
+        type: boolean
+        default: true
+      health-url:
+        description: "Endpoint returning {status, version} for the smoke test"
+        required: true
+        type: string
+      strategy:
+        description: "rolling | canary | blue-green"
+        required: false
+        type: string
+        default: "rolling"
+
+permissions:
+  contents: read
+
+jobs:
+  # -------------------------------------------------------------------------
+  migrate:
+    name: Migrate database
+    if: inputs.run-migrations
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write # OIDC — no long-lived cloud credentials stored
+    steps:
+      - uses: actions/checkout@v4
+
+      # Replace with your cloud's OIDC login action:
+      #   azure/login@v2  |  aws-actions/configure-aws-credentials@v4  |  google-github-actions/auth@v2
+      - name: Cloud auth (OIDC)
+        uses: azure/login@v2 # TODO: pin to commit SHA
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Dry-run migrations (print plan)
+        run: |
+          docker run --rm \
+            -e DATABASE_URL="${{ secrets.DATABASE_URL }}" \
+            "${{ inputs.api-image }}" \
+            node dist/cli.js migrate:status
+
+      - name: Apply migrations (idempotent, forward-only)
+        run: |
+          docker run --rm \
+            -e DATABASE_URL="${{ secrets.DATABASE_URL }}" \
+            "${{ inputs.api-image }}" \
+            node dist/cli.js migrate:deploy
+
+  # -------------------------------------------------------------------------
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    needs: migrate
+    # Proceed when migrations succeeded OR were skipped, but not when they failed.
+    if: always() && (needs.migrate.result == 'success' || needs.migrate.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      # Required reviewers, wait timers, deployment branch rules and
+      # environment secrets are configured in the GitHub UI, not here.
+      name: ${{ inputs.environment }}
+      url: ${{ inputs.health-url }}
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      previous: ${{ steps.snapshot.outputs.previous }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cloud auth (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Record currently-running digests (rollback target)
+        id: snapshot
+        run: |
+          # Capture what is live BEFORE we change anything so rollback is one step.
+          previous=$(./scripts/deploy/current-digests.sh "${{ inputs.environment }}")
+          echo "previous=$previous" >> "$GITHUB_OUTPUT"
+          echo "Rollback target: $previous"
+
+      - name: Verify image signatures before rollout
+        run: |
+          for img in "${{ inputs.api-image }}" "${{ inputs.client-image }}" "${{ inputs.connector-image }}"; do
+            cosign verify "$img" \
+              --certificate-identity-regexp "https://github.com/${{ github.repository }}/.github/workflows/.*" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          done
+
+      - name: Roll out (${{ inputs.strategy }})
+        run: |
+          ./scripts/deploy/apply.sh \
+            --env "${{ inputs.environment }}" \
+            --strategy "${{ inputs.strategy }}" \
+            --api "${{ inputs.api-image }}" \
+            --client "${{ inputs.client-image }}" \
+            --connector "${{ inputs.connector-image }}"
+
+  # -------------------------------------------------------------------------
+  smoke:
+    name: Smoke test
+    needs: deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wait for healthy + correct version
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            body=$(curl -fsS --max-time 10 "${{ inputs.health-url }}" || true)
+            version=$(printf '%s' "$body" | jq -r '.version // empty')
+            if [ "$version" = "${{ github.sha }}" ]; then
+              echo "Healthy and running ${{ github.sha }}"
+              exit 0
+            fi
+            echo "attempt $attempt — got '${version:-none}', expected ${{ github.sha }}"
+            sleep 10
+          done
+          echo "::error::Deployed version never converged to ${{ github.sha }}"
+          exit 1
+
+      - name: Critical-path E2E
+        run: pnpm exec playwright test --grep @smoke
+        env:
+          BASE_URL: ${{ inputs.health-url }}
+
+  # -------------------------------------------------------------------------
+  rollback:
+    name: Automatic rollback
+    needs: [deploy, smoke]
+    if: failure() && needs.deploy.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cloud auth (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Restore previous digests
+        run: |
+          echo "::warning::Smoke test failed — rolling back ${{ inputs.environment }}"
+          ./scripts/deploy/rollback.sh \
+            --env "${{ inputs.environment }}" \
+            --to '${{ needs.deploy.outputs.previous }}'
+
+      - name: Notify
+        run: |
+          echo "::error::Rolled back ${{ inputs.environment }} to the previous release. Database migrations were NOT reverted — verify expand-only compatibility."

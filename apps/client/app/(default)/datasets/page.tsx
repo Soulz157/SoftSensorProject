@@ -70,6 +70,7 @@ export default function DatasetsPage() {
         getWorkspaceName={s.getWorkspaceName}
         getSourceName={s.getSourceName}
         getSourceMeta={s.getSourceMeta}
+        sourcesLoading={s.loading}
         onCreateDataset={() => s.setDatasetDialogOpen(true)}
         onDeleteDataset={s.deleteDataset}
         onRenameDataset={s.updateDataset}

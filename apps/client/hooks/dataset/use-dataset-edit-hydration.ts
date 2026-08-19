@@ -8,6 +8,7 @@ import {
   dwModeAtom,
   dwRawDatasetAtom,
   dwRowSourceAtom,
+  dwRowStageAtom,
   dwSyntheticReasonAtom,
 } from '@/store/dataset-studio'
 import { useDatasetVersionRows } from './use-dataset-version-rows'
@@ -31,11 +32,13 @@ export function useDatasetEditHydration(): void {
   const setRawDataset = useSetAtom(dwRawDatasetAtom)
   const setFetchState = useSetAtom(dwFetchStateAtom)
   const setRowSource = useSetAtom(dwRowSourceAtom)
+  const setRowStage = useSetAtom(dwRowStageAtom)
   const setSyntheticReason = useSetAtom(dwSyntheticReasonAtom)
 
   const {
     dataset: rows,
     source,
+    stage,
     status,
     loaded,
     total,
@@ -59,6 +62,7 @@ export function useDatasetEditHydration(): void {
     if (status === 'done' && rows) {
       setRawDataset(rows)
       setRowSource(source)
+      setRowStage(stage)
       setSyntheticReason(syntheticReason)
       setFetchState({ status: 'done', progress: 100 })
     }
@@ -67,6 +71,7 @@ export function useDatasetEditHydration(): void {
     dataset,
     rows,
     source,
+    stage,
     status,
     loaded,
     total,
@@ -74,6 +79,7 @@ export function useDatasetEditHydration(): void {
     setRawDataset,
     setFetchState,
     setRowSource,
+    setRowStage,
     setSyntheticReason,
   ])
 }

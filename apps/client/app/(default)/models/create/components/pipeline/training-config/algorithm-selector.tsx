@@ -19,6 +19,18 @@ import {
 
 const MAX = 3
 
+/**
+ * Algorithms the trainer can't run yet (images/trainer/train.py `build_model`
+ * — needs a windowed 3D input the pipeline doesn't build). Disabled here so
+ * the refusal is where the choice is made, not three layers downstream at
+ * run creation (MODEL-FLOW-003-T10). Neutral/muted styling only — red/amber
+ * are reserved for workspace and plant status, not catalogue availability.
+ */
+const DEFERRED_REASON: Partial<Record<Algorithm, string>> = {
+  lstm: 'Needs sequence support not yet in the trainer',
+  gru: 'Needs sequence support not yet in the trainer',
+}
+
 interface Props {
   algorithms: Algorithm[]
   onChange: (algorithms: Algorithm[]) => void
@@ -92,17 +104,31 @@ export function AlgorithmSelector({ algorithms, onChange }: Props) {
             <DropdownMenuSeparator />
             {ALGORITHMS.map(a => {
               const checked = algorithms.includes(a)
+              const deferredReason = DEFERRED_REASON[a]
               return (
                 <DropdownMenuCheckboxItem
                   key={a}
                   checked={checked}
                   disabled={
-                    (!checked && atCap) || (checked && algorithms.length <= 1)
+                    // deferredReason only blocks SELECTING it — a hydrated
+                    // draft that already carries a deferred algorithm must
+                    // still be able to uncheck it here, subject to the same
+                    // "keep at least one" rule every algorithm follows.
+                    (!checked && Boolean(deferredReason)) ||
+                    (!checked && atCap) ||
+                    (checked && algorithms.length <= 1)
                   }
                   onCheckedChange={on => toggle(a, on)}
                   className="cursor-pointer"
                 >
-                  {ALGORITHM_LABELS[a]}
+                  <span className="flex flex-col">
+                    <span>{ALGORITHM_LABELS[a]}</span>
+                    {deferredReason && (
+                      <span className="text-[10px] text-muted-foreground">
+                        {deferredReason}
+                      </span>
+                    )}
+                  </span>
                 </DropdownMenuCheckboxItem>
               )
             })}

@@ -24,7 +24,11 @@ from intergrations.object_store import (
     ObjectStoreError,
     assert_frame_shape,
     assert_tags_are_storable,
+    draft_run_key,
+    is_draft_run_key,
+    is_model_run_key,
     missing_pct,
+    model_run_key,
     tag_columns,
     tmp_key,
     tmp_prefix,
@@ -141,6 +145,50 @@ def test_key_helpers_are_scoped_by_dataset() -> None:
 
 def test_status_codes_are_distinct() -> None:
     assert len({STATUS_GOOD, STATUS_BAD, STATUS_QUESTIONABLE}) == 3
+
+
+# ── model-run key guard (MODEL-FLOW-000-T09) ────────────────────────────────
+
+
+def test_is_model_run_key_accepts_well_formed_keys() -> None:
+    assert is_model_run_key(model_run_key("m1", "r1", "model.joblib"))
+    assert is_model_run_key("models/m1/runs/r1/model.joblib")
+
+
+def test_is_model_run_key_rejects_traversal_and_malformed_segments() -> None:
+    """Structural, not substring: startswith('models/') and '/runs/' in key
+    used to accept 'models/../../x/runs/y/z' — this is the regression that
+    guard exists to close."""
+    assert not is_model_run_key("models/../../x/runs/r1/model.joblib")
+    assert not is_model_run_key("models/../runs/r1/model.joblib")
+    assert not is_model_run_key("models/m1/runs/../r1/model.joblib")
+    assert not is_model_run_key("models//runs/r1/model.joblib")
+    assert not is_model_run_key("models/m1/runs/r1/sub/model.joblib")
+    assert not is_model_run_key("models/m1/notruns/r1/model.joblib")
+    assert not is_model_run_key("models/m1/runs//model.joblib")
+    assert not is_model_run_key("not-models/m1/runs/r1/model.joblib")
+
+
+def test_is_draft_run_key_accepts_well_formed_keys() -> None:
+    assert is_draft_run_key(draft_run_key("d1", "r1", "model.joblib"))
+    assert is_draft_run_key("drafts/d1/runs/r1/model.joblib")
+
+
+def test_is_draft_run_key_rejects_traversal_and_malformed_segments() -> None:
+    """Same structural predicate as is_model_run_key, rooted at drafts/ —
+    see that function's own regression test for what this closes."""
+    assert not is_draft_run_key("drafts/../../x/runs/r1/model.joblib")
+    assert not is_draft_run_key("drafts/../runs/r1/model.joblib")
+    assert not is_draft_run_key("drafts/d1/runs/../r1/model.joblib")
+    assert not is_draft_run_key("drafts//runs/r1/model.joblib")
+    assert not is_draft_run_key("drafts/d1/runs/r1/sub/model.joblib")
+    assert not is_draft_run_key("drafts/d1/notruns/r1/model.joblib")
+    assert not is_draft_run_key("drafts/d1/runs//model.joblib")
+    assert not is_draft_run_key("not-drafts/d1/runs/r1/model.joblib")
+    # Cross-root: a model-shaped key must not satisfy the draft predicate,
+    # and vice versa — the two roots are never interchangeable.
+    assert not is_draft_run_key("models/m1/runs/r1/model.joblib")
+    assert not is_model_run_key("drafts/d1/runs/r1/model.joblib")
 
 
 # ── live MinIO ───────────────────────────────────────────────────────────

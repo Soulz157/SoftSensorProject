@@ -866,6 +866,11 @@ def build_manifest(
 
 
 MODEL_ROOT = "models/"
+# A run started from the wizard has no model_id yet — Save Model has not
+# happened (MODEL-FLOW-003-T08). Its outputs write here instead, under the
+# ModelDraft that owns it; Save Model later adopts them by pointer rather
+# than copying bytes. Mirrored in TypeScript at artifact-keys.ts.
+DRAFT_ROOT = "drafts/"
 MODEL_FILENAME = "model.joblib"
 METRICS_FILENAME = "metrics.json"
 RUN_MANIFEST_FILENAME = "run_manifest.json"
@@ -880,6 +885,14 @@ def model_run_key(model_id: str, run_id: str, filename: str) -> str:
     return f"{model_run_prefix(model_id, run_id)}{filename}"
 
 
+def draft_run_prefix(draft_id: str, run_id: str) -> str:
+    return f"{DRAFT_ROOT}{draft_id}/runs/{run_id}/"
+
+
+def draft_run_key(draft_id: str, run_id: str, filename: str) -> str:
+    return f"{draft_run_prefix(draft_id, run_id)}{filename}"
+
+
 def is_committed_artifact_key(key: str) -> bool:
     """Whether `key` is a committed artifact's data object.
 
@@ -892,4 +905,38 @@ def is_committed_artifact_key(key: str) -> bool:
 
 
 def is_model_run_key(key: str) -> bool:
-    return key.startswith(MODEL_ROOT) and "/runs/" in key
+    """Whether `key` is a well-formed training-run output object.
+
+    Structural, not substring: requires exactly
+    `models/{model_id}/runs/{run_id}/{filename}` — four non-empty path
+    segments after the root, none of them `.` or `..`. A substring test
+    (`startswith("models/") and "/runs/" in key`) would accept a traversal
+    like `models/../../x/runs/y/z`, which the old implementation did. This
+    is the one thing standing between a malformed id and a presigned write
+    outside `models/` (see `presign_model_run_upload`'s own comment).
+    """
+    if not key.startswith(MODEL_ROOT):
+        return False
+    parts = key[len(MODEL_ROOT):].split("/")
+    if len(parts) != 4 or parts[1] != "runs":
+        return False
+    return all(segment and segment not in (".", "..") for segment in parts)
+
+
+def is_draft_run_key(key: str) -> bool:
+    """Whether `key` is a well-formed draft-scoped training-run output object.
+
+    Same structural shape as `is_model_run_key`, rooted at `drafts/` instead
+    of `models/` — a run started from the wizard has no model_id yet
+    (MODEL-FLOW-003-T08). Kept as a separate predicate rather than widening
+    `is_model_run_key` to accept either root: the two roots are never
+    interchangeable at a call site (a caller must already know which scope
+    it is minting a URL for), so merging them would let a bug pick the wrong
+    root silently instead of failing a type/branch check.
+    """
+    if not key.startswith(DRAFT_ROOT):
+        return False
+    parts = key[len(DRAFT_ROOT):].split("/")
+    if len(parts) != 4 or parts[1] != "runs":
+        return False
+    return all(segment and segment not in (".", "..") for segment in parts)

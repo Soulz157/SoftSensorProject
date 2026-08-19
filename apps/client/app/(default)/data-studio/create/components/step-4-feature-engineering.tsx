@@ -14,6 +14,7 @@ import {
   dwFeaturePresetAtom,
   dwGoldWarmErrorAtom,
   dwRawDatasetAtom,
+  dwTargetTagAtom,
   dwTimeRangeAtom,
 } from '@/store/dataset-studio'
 import type { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipeline-nav'
@@ -43,6 +44,7 @@ export function Step4FeatureEngineering({ nav }: Props) {
   const raw = useAtomValue(dwRawDatasetAtom)
   const featurePreset = useAtomValue(dwFeaturePresetAtom)
   const goldWarmError = useAtomValue(dwGoldWarmErrorAtom)
+  const targetTag = useAtomValue(dwTargetTagAtom)
   useDatasetFeaturePreviewSample()
   const {
     featureConfigs,
@@ -64,8 +66,8 @@ export function Step4FeatureEngineering({ nav }: Props) {
   // `useDatasetFeaturePreviewSample` above, not just in name.
   const warmGold = useDatasetGoldWarm()
   useEffect(() => {
-    warmGold(featureConfigs, selectedColumns, scalerConfigs)
-  }, [warmGold, featureConfigs, selectedColumns, scalerConfigs])
+    warmGold(featureConfigs, selectedColumns, scalerConfigs, targetTag)
+  }, [warmGold, featureConfigs, selectedColumns, scalerConfigs, targetTag])
 
   const originalColumns = raw.tags
   const featured = useAtomValue(dwFeaturedDatasetAtom)

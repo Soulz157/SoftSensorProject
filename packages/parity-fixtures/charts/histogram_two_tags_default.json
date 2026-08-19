@@ -2,7 +2,12 @@
   "name": "histogram_two_tags_default",
   "engine": "histogram",
   "input": {
-    "tags": ["TI-101", "VI-202", "FI-404", "XX-999"],
+    "tags": [
+      "TI-101",
+      "VI-202",
+      "FI-404",
+      "XX-999"
+    ],
     "rows": [
       {
         "timestamp": "2026-06-22T00:00:00.000Z",
@@ -848,7 +853,10 @@
   },
   "config": {
     "source_key": "fixture/chart-artifact.parquet",
-    "tags": ["TI-101", "FI-404"],
+    "tags": [
+      "TI-101",
+      "FI-404"
+    ],
     "bin_count": 12,
     "kde_samples": 100
   },

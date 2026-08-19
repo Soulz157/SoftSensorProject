@@ -485,8 +485,6 @@ async def presign_artifact(
     body: ArtifactPresignRequest,
     store: ObjectStore = Depends(get_object_store),
 ):
-    print(
-        f"Presign request for artifact {body}")
     return await _run(artifact_service.presign_artifact, store, body)
 
 
@@ -495,8 +493,11 @@ async def presign_artifact(
     response_model=ModelRunUploadPresignResponse,
     summary="Time-limited write URLs for one training run's outputs",
     description=(
-        "The write half of /artifacts/presign. Refuses any key outside "
-        "models/{modelId}/runs/{runId}/, so a run cannot be talked into "
+        "The write half of /artifacts/presign. Takes exactly one of "
+        "model_id (Save Model has happened) or draft_id (training against "
+        "a wizard ModelDraft, MODEL-FLOW-003-T08) and refuses any key "
+        "outside that owner's own models/{id}/runs/{runId}/ or "
+        "drafts/{id}/runs/{runId}/ root, so a run cannot be talked into "
         "overwriting a dataset artifact — which put_frame's immutability "
         "refusal cannot protect here, because the write happens in another "
         "process. Called at the END of a run rather than at submit: a URL "

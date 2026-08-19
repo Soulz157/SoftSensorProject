@@ -13,6 +13,8 @@ import {
 import type { SavedDataset } from '@/store/datasets'
 import type { DataSourceKind } from '@/lib/mock-data-sources'
 import type { ArtifactTagColumnStats } from '@/services/dataset-version'
+import type { DatasetArtifactStage } from '@/services/dataset-draft'
+import { artifactTimeSpanLabel } from '@/lib/dataset-stats'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -37,7 +39,6 @@ import { useArtifactColumnStats } from '@/hooks/dataset/use-dataset-artifact-col
 import { useArtifactMetadata } from '@/hooks/dataset/use-dataset-artifact-metadata'
 import { useArtifactRows } from '@/hooks/dataset/use-artifact-rows'
 import { useArtifactCorrelation } from '@/hooks/dataset/use-artifact-correlation'
-import { ar } from 'date-fns/locale'
 
 const SOURCE_META: Record<DataSourceKind, { label: string; icon: LucideIcon }> =
   {
@@ -46,6 +47,16 @@ const SOURCE_META: Record<DataSourceKind, { label: string; icon: LucideIcon }> =
     csv: { label: 'CSV', icon: FileText },
     api: { label: 'API', icon: Plug },
   }
+
+/** `currentArtifactId` is stage-polymorphic (see `SavedDataset.currentArtifactType`'s
+ * doc comment) — every number in this sheet describes whichever stage this
+ * badge names, so it has to be visible, not inferred. */
+const STAGE_LABEL: Record<DatasetArtifactStage, string> = {
+  BRONZE: 'Raw',
+  SILVER: 'Cleaned',
+  GOLD: 'Feature-engineered',
+  FINAL: 'Processed',
+}
 
 export interface DetailSource {
   name: string
@@ -66,19 +77,6 @@ function fmt(n: number | null | undefined): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })
-}
-
-function spanLabel(first?: string | null, last?: string | null): string {
-  if (!first || !last) return '—'
-  const a = new Date(first)
-  const b = new Date(last)
-  if (Number.isNaN(+a) || Number.isNaN(+b)) return '—'
-  const days = Math.max(1, Math.round((+b - +a) / 86_400_000))
-  return days >= 365
-    ? `${(days / 365).toFixed(1)} yr`
-    : days >= 30
-      ? `${Math.round(days / 30)} mo`
-      : `${days} d`
 }
 
 function KpiCard({
@@ -109,6 +107,12 @@ interface Props {
   onOpenChange: (open: boolean) => void
   workspaceName: string
   sources: DetailSource[]
+  /** True while `useDataSources()` is still loading. `sources` is already
+   * populated by then (same length as `dataset.sourceIds`), just with every
+   * entry resolved to the "Unknown source" placeholder — this tells the
+   * header to show a skeleton for that window instead of flashing a wrong
+   * answer before the real one arrives. */
+  sourcesLoading?: boolean
 }
 
 export function DatasetDetailSheet({
@@ -117,11 +121,14 @@ export function DatasetDetailSheet({
   onOpenChange,
   workspaceName,
   sources,
+  sourcesLoading = false,
 }: Props) {
-  // Every id is gated on `open`. A library page renders one sheet per row;
-  // ungated, opening the page would fire four requests per dataset for
-  // sheets nobody has looked at. Passing null (rather than skipping the
-  // hook call) keeps hook order stable — each hook no-ops on a null id.
+  // Every id is gated on `open`. ONE sheet is rendered per page (outside the
+  // card grid's `.map`, driven by a single `detailTarget` selection in
+  // `datasets-tab.tsx`) — the gate exists so switching `detailTarget` always
+  // starts a fresh fetch rather than reusing a previous dataset's in-flight
+  // one. Passing null (rather than skipping the hook call) keeps hook order
+  // stable — each hook no-ops on a null id.
   const datasetId = open ? (dataset?.id ?? null) : null
   const versionId = open ? (dataset?.currentVersionId ?? null) : null
   const artifactId = open ? (dataset?.currentArtifactId ?? null) : null
@@ -135,6 +142,7 @@ export function DatasetDetailSheet({
     columnStats,
     loading: statsLoading,
     missing: statsMissing,
+    error: statsError,
   } = useArtifactColumnStats(datasetId, artifactId)
 
   // Row count and time span come from the artifact FOOTER, not from any row
@@ -142,10 +150,11 @@ export function DatasetDetailSheet({
   // artifact-level bounds). The old `datasetTimeSpanLabel(ds)` read the
   // first and last row of a client frame — quietly wrong the moment that
   // frame was a bounded sample rather than the whole artifact.
-  const { metadata, loading: metadataLoading } = useArtifactMetadata(
-    datasetId,
-    artifactId,
-  )
+  const {
+    metadata,
+    loading: metadataLoading,
+    error: metadataError,
+  } = useArtifactMetadata(datasetId, artifactId)
 
   const { correlation, loading: corrLoading } = useArtifactCorrelation(
     datasetId,
@@ -153,14 +162,15 @@ export function DatasetDetailSheet({
     tags,
   )
 
-  const { sample, loading: sampleLoading } = useArtifactRows(
-    datasetId,
-    artifactId,
-    tags,
-  )
+  const {
+    sample,
+    loading: sampleLoading,
+    error: sampleError,
+  } = useArtifactRows(datasetId, artifactId, tags)
 
   const rowCount = metadata?.rowCount ?? dataset?.rowCount ?? 0
-  const timeSpan = spanLabel(metadata?.startTime, metadata?.endTime)
+  const timeSpan = artifactTimeSpanLabel(metadata?.startTime, metadata?.endTime)
+  const hasArtifact = artifactId !== null
 
   // Ordered by the DATASET's own tag list, not the sidecar's key order: the
   // sidecar is a dict (JSON insertion order is an accident of the writer),
@@ -215,8 +225,12 @@ export function DatasetDetailSheet({
               {dataset.description && (
                 <SheetDescription>{dataset.description}</SheetDescription>
               )}
-              <div className="mt-1 flex flex-wrap gap-1.5">
-                {sources.length === 0 ? (
+              <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                {sourcesLoading ? (
+                  sources.map((_, i) => (
+                    <Skeleton key={i} className="h-5 w-24 rounded-full" />
+                  ))
+                ) : sources.length === 0 ? (
                   <Badge variant="secondary">No source</Badge>
                 ) : (
                   sources.map((s, i) => {
@@ -237,6 +251,14 @@ export function DatasetDetailSheet({
                     )
                   })
                 )}
+                {dataset.currentArtifactType && (
+                  <Badge
+                    variant="outline"
+                    className="font-mono text-[10px] text-muted-foreground"
+                  >
+                    {STAGE_LABEL[dataset.currentArtifactType]}
+                  </Badge>
+                )}
               </div>
             </SheetHeader>
 
@@ -254,7 +276,14 @@ export function DatasetDetailSheet({
                 <KpiCard label="Features" value={String(tags.length)} />
                 <KpiCard
                   label="Time span of data"
-                  value={metadataLoading ? '…' : timeSpan}
+                  value={
+                    metadataLoading
+                      ? '…'
+                      : metadataError
+                        ? 'Unavailable'
+                        : timeSpan
+                  }
+                  sub={metadataError ?? undefined}
                 />
               </div>
 
@@ -275,152 +304,182 @@ export function DatasetDetailSheet({
                 </ScrollArea>
               </section>
 
-              {/* Per-tag statistics */}
-              <section className="space-y-2">
-                <p className="text-sm font-semibold text-foreground">
-                  Per-tag statistics
-                </p>
-                {statsLoading ? (
-                  <div className="space-y-2 rounded-lg border border-border p-3">
-                    {Array.from({ length: 5 }).map((_, i) => (
-                      <Skeleton key={i} className="h-6 w-full" />
-                    ))}
-                  </div>
-                ) : statsMissing ? (
-                  // A 404 is NOT the same as an empty result, and must not
-                  // render as one: it means this artifact has no sidecar
-                  // (written before DS-LAKE-005B-A-T07, or by a write path
-                  // that produced none). Showing "no statistics" flat would
-                  // read as "this dataset has no tags", which is false and
-                  // sends someone looking for the wrong bug.
-                  <p className="rounded-lg border border-border p-4 text-center text-xs text-muted-foreground">
-                    This artifact has no statistics sidecar — it was written
-                    before per-tag statistics were captured.
-                  </p>
-                ) : perTagStats.length === 0 ? (
-                  <p className="rounded-lg border border-border p-4 text-center text-xs text-muted-foreground">
-                    No statistics available for this artifact.
-                  </p>
-                ) : (
-                  <ScrollArea className="h-56 rounded-lg border border-border">
-                    <Table>
-                      <TableHeader>
-                        <TableRow className="bg-card">
-                          <TableHead className="sticky top-0 bg-card">
-                            Tag
-                          </TableHead>
-                          <TableHead className="sticky top-0 bg-card text-right">
-                            Mean
-                          </TableHead>
-                          <TableHead className="sticky top-0 bg-card text-right">
-                            Median
-                          </TableHead>
-                          <TableHead className="sticky top-0 bg-card text-right">
-                            Max
-                          </TableHead>
-                          <TableHead className="sticky top-0 bg-card text-right">
-                            Min
-                          </TableHead>
-                          <TableHead className="sticky top-0 bg-card text-right">
-                            SD
-                          </TableHead>
-                          <TableHead className="sticky top-0 bg-card text-right">
-                            Coverage
-                          </TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {perTagStats.map(s => (
-                          <TableRow key={s.tag}>
-                            <TableCell className="font-mono text-foreground">
-                              {s.tag}
-                            </TableCell>
-                            <TableCell className="text-right font-mono">
-                              {fmt(s.mean)}
-                            </TableCell>
-                            <TableCell className="text-right font-mono">
-                              {fmt(s.median)}
-                            </TableCell>
-                            <TableCell className="text-right font-mono">
-                              {fmt(s.max)}
-                            </TableCell>
-                            <TableCell className="text-right font-mono">
-                              {fmt(s.min)}
-                            </TableCell>
-                            <TableCell className="text-right font-mono">
-                              {fmt(s.std)}
-                            </TableCell>
-                            <TableCell className="text-right font-mono">
-                              {fmt(s.coverage)}%
-                            </TableCell>
-                          </TableRow>
+              {hasArtifact ? (
+                <>
+                  {/* Per-tag statistics */}
+                  <section className="space-y-2">
+                    <p className="text-sm font-semibold text-foreground">
+                      Per-tag statistics
+                    </p>
+                    {statsLoading ? (
+                      <div className="space-y-2 rounded-lg border border-border p-3">
+                        {Array.from({ length: 5 }).map((_, i) => (
+                          <Skeleton key={i} className="h-6 w-full" />
                         ))}
-                      </TableBody>
-                    </Table>
-                  </ScrollArea>
-                )}
-              </section>
+                      </div>
+                    ) : statsMissing ? (
+                      // A 404 is NOT the same as an empty result, and must not
+                      // render as one: it means this artifact has no sidecar
+                      // (written before DS-LAKE-005B-A-T07, or by a write path
+                      // that produced none). Showing "no statistics" flat would
+                      // read as "this dataset has no tags", which is false and
+                      // sends someone looking for the wrong bug.
+                      <p className="rounded-lg border border-border p-4 text-center text-xs text-muted-foreground">
+                        This artifact has no statistics sidecar — it was written
+                        before per-tag statistics were captured.
+                      </p>
+                    ) : statsError ? (
+                      // A failed request is not an empty result. Falling through to the
+                      // empty state below would blame the artifact for a transport problem
+                      // and send someone looking for missing data that is actually there.
+                      <p className="rounded-lg border border-border p-4 text-center text-xs text-muted-foreground">
+                        Could not load statistics — {statsError}
+                      </p>
+                    ) : perTagStats.length === 0 ? (
+                      <p className="rounded-lg border border-border p-4 text-center text-xs text-muted-foreground">
+                        No statistics available for this artifact.
+                      </p>
+                    ) : (
+                      <ScrollArea className="h-56 rounded-lg border border-border">
+                        <Table>
+                          <TableHeader>
+                            <TableRow className="bg-card">
+                              <TableHead className="sticky top-0 bg-card">
+                                Tag
+                              </TableHead>
+                              <TableHead className="sticky top-0 bg-card text-right">
+                                Mean
+                              </TableHead>
+                              <TableHead className="sticky top-0 bg-card text-right">
+                                Median
+                              </TableHead>
+                              <TableHead className="sticky top-0 bg-card text-right">
+                                Max
+                              </TableHead>
+                              <TableHead className="sticky top-0 bg-card text-right">
+                                Min
+                              </TableHead>
+                              <TableHead className="sticky top-0 bg-card text-right">
+                                SD
+                              </TableHead>
+                              <TableHead className="sticky top-0 bg-card text-right">
+                                Coverage
+                              </TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {perTagStats.map(s => (
+                              <TableRow key={s.tag}>
+                                <TableCell className="font-mono text-foreground">
+                                  {s.tag}
+                                </TableCell>
+                                <TableCell className="text-right font-mono">
+                                  {fmt(s.mean)}
+                                </TableCell>
+                                <TableCell className="text-right font-mono">
+                                  {fmt(s.median)}
+                                </TableCell>
+                                <TableCell className="text-right font-mono">
+                                  {fmt(s.max)}
+                                </TableCell>
+                                <TableCell className="text-right font-mono">
+                                  {fmt(s.min)}
+                                </TableCell>
+                                <TableCell className="text-right font-mono">
+                                  {fmt(s.std)}
+                                </TableCell>
+                                <TableCell className="text-right font-mono">
+                                  {fmt(s.coverage)}%
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </ScrollArea>
+                    )}
+                  </section>
 
-              {/* Top correlated tag pairs */}
-              {!corrLoading && topPairs.length > 0 && (
-                <Card className="overflow-hidden shadow-sm">
-                  <CardHeader className="bg-muted/30 px-4 py-3 border-b border-border">
-                    <CardTitle className="text-sm font-semibold text-foreground">
-                      Top correlated tags
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="p-0">
-                    <ul className="divide-y divide-border">
-                      {topPairs.map((p, i) => {
-                        const isHighCorrelation = Math.abs(p.r) >= 0.8
-                        return (
-                          <li
-                            key={`${p.a}-${p.b}`}
-                            className="flex items-center justify-between gap-3 px-4 py-2.5 text-xs transition-colors hover:bg-muted/50"
-                          >
-                            <span className="flex min-w-0 items-center gap-2">
-                              <span className="text-muted-foreground">
-                                {i + 1}.
-                              </span>
-                              <span className="truncate font-mono text-foreground font-medium">
-                                {p.a}
-                                <span className="text-muted-foreground mx-1">
-                                  ↔
+                  {/* Top correlated tag pairs */}
+                  {!corrLoading && topPairs.length > 0 && (
+                    <Card className="overflow-hidden shadow-sm">
+                      <CardHeader className="bg-muted/30 px-4 py-3 border-b border-border">
+                        <CardTitle className="text-sm font-semibold text-foreground">
+                          Top correlated tags
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent className="p-0">
+                        <ul className="divide-y divide-border">
+                          {topPairs.map((p, i) => {
+                            const isHighCorrelation = Math.abs(p.r) >= 0.8
+                            return (
+                              <li
+                                key={`${p.a}-${p.b}`}
+                                className="flex items-center justify-between gap-3 px-4 py-2.5 text-xs transition-colors hover:bg-muted/50"
+                              >
+                                <span className="flex min-w-0 items-center gap-2">
+                                  <span className="text-muted-foreground">
+                                    {i + 1}.
+                                  </span>
+                                  <span className="truncate font-mono text-foreground font-medium">
+                                    {p.a}
+                                    <span className="text-muted-foreground mx-1">
+                                      ↔
+                                    </span>
+                                    {p.b}
+                                  </span>
                                 </span>
-                                {p.b}
-                              </span>
-                            </span>
-                            <Badge
-                              variant={
-                                isHighCorrelation ? 'default' : 'secondary'
-                              }
-                              className={`shrink-0 font-mono ${isHighCorrelation ? 'bg-primary' : ''}`}
-                            >
-                              {p.r >= 0 ? '+' : ''}
-                              {p.r.toFixed(2)}
-                            </Badge>
-                          </li>
-                        )
-                      })}
-                    </ul>
-                  </CardContent>
-                </Card>
-              )}
+                                <Badge
+                                  variant={
+                                    isHighCorrelation ? 'default' : 'secondary'
+                                  }
+                                  className={`shrink-0 font-mono ${isHighCorrelation ? 'bg-primary' : ''}`}
+                                >
+                                  {p.r >= 0 ? '+' : ''}
+                                  {p.r.toFixed(2)}
+                                </Badge>
+                              </li>
+                            )
+                          })}
+                        </ul>
+                      </CardContent>
+                    </Card>
+                  )}
 
-              {/* Data preview */}
-              <section className="space-y-2">
-                <p className="text-sm font-semibold text-foreground">
-                  Data preview
-                </p>
-                <p className="text-[11px] text-muted-foreground">
-                  Preview window — a bounded sample, not the full artifact.
-                </p>
-                {sampleLoading || !sample ? (
-                  <Skeleton className="h-64 w-full rounded-lg" />
-                ) : (
-                  <DataTableView dataset={sample} />
-                )}
-              </section>
+                  {/* Data preview */}
+                  <section className="space-y-2">
+                    <p className="text-sm font-semibold text-foreground">
+                      Data preview
+                    </p>
+                    <p className="text-[11px] text-muted-foreground">
+                      Preview window — a bounded sample, not the full artifact.
+                    </p>
+                    {sampleLoading ? (
+                      <Skeleton className="h-64 w-full rounded-lg" />
+                    ) : sampleError ? (
+                      <p className="rounded-lg border border-border p-4 text-center text-xs text-muted-foreground">
+                        Could not load a preview — {sampleError}
+                      </p>
+                    ) : sample ? (
+                      <DataTableView dataset={sample} />
+                    ) : (
+                      <p className="rounded-lg border border-border p-4 text-center text-xs text-muted-foreground">
+                        Could not load a preview for this artifact.
+                      </p>
+                    )}
+                  </section>
+                </>
+              ) : (
+                // One shared message for the whole lower half rather than four
+                // independent empty states (stats/correlation/preview each
+                // reading differently) — a dataset with no committed artifact
+                // yet has nothing real to show in any of them, for the same
+                // reason, so it should say so once.
+                <div className="rounded-lg border border-border p-6 text-center text-xs text-muted-foreground">
+                  This dataset has no stored artifact yet — statistics,
+                  correlations, and a data preview will appear once its rows are
+                  committed.
+                </div>
+              )}
             </div>
           </>
         )}

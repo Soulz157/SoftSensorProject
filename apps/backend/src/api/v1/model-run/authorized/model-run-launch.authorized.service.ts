@@ -50,14 +50,21 @@ export class ModelRunLaunchAuthorizedService {
       });
   }
 
-  async createRunService(
-    modelId: string,
-    dto: CreateTrainingRunDto,
-    userId: string,
-    role: string,
-  ) {
-    await this.assertModelAccess(modelId, userId, role);
-
+  /**
+   * Validates the submitted artifact/target/split against the FINAL
+   * artifact it names and returns the run-row fields that do not depend on
+   * ownership. Shared by both `createRunService` (Model-owned) and
+   * `createDraftRunService` (ModelDraft-owned, MODEL-FLOW-003) so the two
+   * cannot drift on what makes a run trainable — see this file's own
+   * history (MODEL-FLOW-000-T01) for what happens when they do.
+   *
+   * Deliberately reads target/algorithm/hyperparameters/split FROM THE
+   * REQUEST BODY, never off a ModelDraft row: `useModelDraftSync` PATCHes
+   * the draft on a 600ms debounce and swallows failures silently, so the
+   * draft can be stale at the instant Start Training is clicked. The body
+   * is what the run row records and what makes the run reproducible.
+   */
+  private async buildRunData(dto: CreateTrainingRunDto) {
     const artifact = await this.prisma.datasetArtifact.findUnique({
       where: { id: dto.goldArtifactId },
     });
@@ -106,43 +113,48 @@ export class ModelRunLaunchAuthorizedService {
       );
     }
 
-    const token = randomBytes(32).toString('base64url');
-    const run = await this.prisma.modelTrainingRun.create({
-      data: {
-        modelId,
-        datasetId: artifact.datasetId,
-        goldArtifactId: artifact.id,
-        goldObjectKey: artifact.objectKey,
-        artifactChecksum: artifact.checksum,
-        featureSpecKey: artifact.featureSpecKey,
-        targetY: dto.targetY,
-        algorithm: dto.algorithm,
-        hyperparameters: dto.hyperparameters ?? {},
-        // Generated, not defaulted to a constant: a fixed seed across every
-        // run hides variance, and an unrecorded one makes replay impossible.
-        seed: dto.seed ?? randomInt(1, 2 ** 31 - 1),
-        splitSpec: {
-          method: 'chronological',
-          ratio: dto.trainTestSplit ?? 0.8,
-          // cut_timestamp/train_rows/test_rows are filled by the container —
-          // they cannot be known until non-Good target rows are dropped.
-        },
-        imageDigest: this.runner.imageDigest,
-        tokenHash: createHash('sha256').update(token).digest('hex'),
-        tokenExpiresAt: new Date(Date.now() + RUN_TOKEN_TTL_MS),
-        status: 'QUEUED',
+    return {
+      datasetId: artifact.datasetId,
+      goldArtifactId: artifact.id,
+      goldObjectKey: artifact.objectKey,
+      artifactChecksum: artifact.checksum,
+      featureSpecKey: artifact.featureSpecKey,
+      targetY: dto.targetY,
+      algorithm: dto.algorithm,
+      hyperparameters: dto.hyperparameters ?? {},
+      // Generated, not defaulted to a constant: a fixed seed across every
+      // run hides variance, and an unrecorded one makes replay impossible.
+      seed: dto.seed ?? randomInt(1, 2 ** 31 - 1),
+      splitSpec: {
+        method: 'chronological' as const,
+        ratio: dto.trainTestSplit ?? 0.8,
+        // cut_timestamp/train_rows/test_rows are filled by the container —
+        // they cannot be known until non-Good target rows are dropped.
       },
-      omit: { tokenHash: true },
-    });
+    };
+  }
 
-    // Spawn out of band. A create request must not block for the length of an
-    // image pull, and the run row is already durable — a spawn failure marks
-    // it FAILED rather than losing it.
-    void this.runner.spawn(run.id, token).catch(async (err) => {
+  /** Mint a run token and its hash. The plaintext never touches a DB row. */
+  private mintToken(): { token: string; tokenHash: string } {
+    const token = randomBytes(32).toString('base64url');
+    return {
+      token,
+      tokenHash: createHash('sha256').update(token).digest('hex'),
+    };
+  }
+
+  /**
+   * Spawn out of band. A create request must not block for the length of an
+   * image pull, and the run row is already durable — a spawn failure marks
+   * it FAILED rather than losing it. Shared by both owner paths so a spawn
+   * failure is handled identically regardless of what owns the run.
+   */
+  private trackSpawn(runId: string, token: string): void {
+    void this.runner.spawn(runId, token).catch(async (err) => {
       const reason = err instanceof Error ? err.message : String(err);
-      this.log.error(`spawn failed for run ${run.id}`, err);
+      this.log.error(`spawn failed for run ${runId}`, err);
       await this.prisma.modelTrainingRun.update({
-        where: { id: run.id },
+        where: { id: runId },
         data: {
           status: 'FAILED',
           failureReason: `Could not start container: ${reason}`.slice(0, 2000),
@@ -151,7 +163,84 @@ export class ModelRunLaunchAuthorizedService {
         },
       });
     });
+  }
 
+  async createRunService(
+    modelId: string,
+    dto: CreateTrainingRunDto,
+    userId: string,
+    role: string,
+  ) {
+    await this.assertModelAccess(modelId, userId, role);
+    const runData = await this.buildRunData(dto);
+    const { token, tokenHash } = this.mintToken();
+
+    const run = await this.prisma.modelTrainingRun.create({
+      data: {
+        ...runData,
+        modelId,
+        imageDigest: this.runner.imageDigest,
+        tokenHash,
+        tokenExpiresAt: new Date(Date.now() + RUN_TOKEN_TTL_MS),
+        status: 'QUEUED',
+      },
+      omit: { tokenHash: true },
+    });
+
+    this.trackSpawn(run.id, token);
+    return run;
+  }
+
+  /**
+   * Same run-creation path as `createRunService`, keyed by a ModelDraft
+   * instead of a Model (MODEL-FLOW-003) — the whole point of the refactor:
+   * training must be able to run before a persistent Model exists.
+   * Creates NO Model row and never reads or writes one.
+   */
+  async createDraftRunService(
+    draftId: string,
+    dto: CreateTrainingRunDto,
+    userId: string,
+    role: string,
+  ) {
+    const draft = await this.assertDraftAccess(draftId, userId, role);
+    if (draft.status === 'SAVED') {
+      throw new BadRequestException(
+        `Draft ${draftId} has already been saved as a Model — its runs are ` +
+          `frozen. Start a new draft to train again.`,
+      );
+    }
+    if (draft.status === 'ABANDONED') {
+      throw new BadRequestException(`Draft ${draftId} has been abandoned.`);
+    }
+
+    const runData = await this.buildRunData(dto);
+    const { token, tokenHash } = this.mintToken();
+
+    // Interactive transaction, not the array form: the draft update needs
+    // the run's generated id, so the two writes cannot be independent
+    // statements — but they must still land atomically, or a reader could
+    // observe a run with no draft pointing at it yet as "current".
+    const run = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.modelTrainingRun.create({
+        data: {
+          ...runData,
+          modelDraftId: draftId,
+          imageDigest: this.runner.imageDigest,
+          tokenHash,
+          tokenExpiresAt: new Date(Date.now() + RUN_TOKEN_TTL_MS),
+          status: 'QUEUED',
+        },
+        omit: { tokenHash: true },
+      });
+      await tx.modelDraft.update({
+        where: { id: draftId },
+        data: { currentRunId: created.id },
+      });
+      return created;
+    });
+
+    this.trackSpawn(run.id, token);
     return run;
   }
 
@@ -185,6 +274,32 @@ export class ModelRunLaunchAuthorizedService {
     return canceled;
   }
 
+  async cancelDraftRunService(
+    draftId: string,
+    runId: string,
+    userId: string,
+    role: string,
+  ) {
+    await this.assertDraftAccess(draftId, userId, role);
+    const run = await this.prisma.modelTrainingRun.findFirst({
+      where: { id: runId, modelDraftId: draftId },
+      omit: { tokenHash: true },
+    });
+    if (!run) throw new NotFoundException();
+    if (run.status !== 'QUEUED' && run.status !== 'RUNNING') return run;
+
+    if (run.containerId) await this.runner.kill(run.containerId);
+    return this.prisma.modelTrainingRun.update({
+      where: { id: runId },
+      omit: { tokenHash: true },
+      data: {
+        status: 'CANCELED',
+        finishedAt: new Date(),
+        tokenExpiresAt: new Date(0),
+      },
+    });
+  }
+
   async listRunsService(modelId: string, userId: string, role: string) {
     await this.assertModelAccess(modelId, userId, role);
     const runs = await this.prisma.modelTrainingRun.findMany({
@@ -196,6 +311,15 @@ export class ModelRunLaunchAuthorizedService {
     return runs;
   }
 
+  async listDraftRunsService(draftId: string, userId: string, role: string) {
+    await this.assertDraftAccess(draftId, userId, role);
+    return this.prisma.modelTrainingRun.findMany({
+      where: { modelDraftId: draftId },
+      omit: { tokenHash: true },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
   async getRunService(
     modelId: string,
     runId: string,
@@ -205,6 +329,27 @@ export class ModelRunLaunchAuthorizedService {
     await this.assertModelAccess(modelId, userId, role);
     const run = await this.prisma.modelTrainingRun.findFirst({
       where: { id: runId, modelId },
+      omit: { tokenHash: true },
+      include: { logs: { orderBy: { createdAt: 'asc' }, take: 500 } },
+    });
+    if (!run) throw new NotFoundException();
+    return run;
+  }
+
+  /**
+   * Draft-scoped twin of `getRunService` — required for Step 2/3 polling
+   * (MODEL-FLOW-003-T09): a wizard run has `modelId: null` until Save Model
+   * adopts it, so the model-keyed lookup above always 404s for it.
+   */
+  async getDraftRunService(
+    draftId: string,
+    runId: string,
+    userId: string,
+    role: string,
+  ) {
+    await this.assertDraftAccess(draftId, userId, role);
+    const run = await this.prisma.modelTrainingRun.findFirst({
+      where: { id: runId, modelDraftId: draftId },
       omit: { tokenHash: true },
       include: { logs: { orderBy: { createdAt: 'asc' }, take: 500 } },
     });
@@ -228,5 +373,26 @@ export class ModelRunLaunchAuthorizedService {
     if (!model) throw new NotFoundException('Model not found');
     await this.assertHasAccess(model.workspaceId, userId, role);
     return model;
+  }
+
+  /**
+   * Draft twin of `assertModelAccess`, same duplication rationale: importing
+   * `ModelDraftAuthorizedService` here would pull `ModelDraftModule` into
+   * `ModelRunModule`, and this file's whole reason to hold run-creation
+   * logic is that `ModelDraftAuthorizedService` cannot resolve an
+   * artifact/training concern without the reverse import existing too.
+   */
+  private async assertDraftAccess(
+    draftId: string,
+    userId: string,
+    role: string,
+  ) {
+    const draft = await this.prisma.modelDraft.findUnique({
+      where: { id: draftId },
+      select: { id: true, workspaceId: true, status: true },
+    });
+    if (!draft) throw new NotFoundException('Model draft not found');
+    await this.assertHasAccess(draft.workspaceId, userId, role);
+    return draft;
   }
 }

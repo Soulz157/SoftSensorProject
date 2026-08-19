@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { datasetArtifactService } from '@/services/dataset-version'
 import type { Dataset } from '@/lib/preprocessing'
+import { set } from 'zod'
 
 /** Bounded preview window, not the artifact. 200 rows is what the Data
  * preview table shows before it scrolls — pulling more would be paid for
@@ -23,6 +24,7 @@ export function useArtifactRows(
 ) {
   const [sample, setSample] = useState<Dataset | null>(null)
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const tokenRef = useRef(0)
   const boundedTags = tags.slice(0, PREVIEW_TAGS)
   // Stable content key, not the array reference: `tags` is a fresh array
@@ -54,8 +56,13 @@ export function useArtifactRows(
         // `/rows` returns a page envelope; `DataTableView` wants a Dataset.
         setSample({ tags: res.data.tags, rows: res.data.rows })
         setLoading(false)
-      } catch {
-        if (tokenRef.current !== token) return
+      } catch (err) {
+        if (tokenRef.current === token) {
+          setError(
+            err instanceof Error ? err.message : 'Failed to load a preview',
+          )
+          setLoading(false)
+        }
         setSample(null)
         setLoading(false)
       }
@@ -65,5 +72,5 @@ export function useArtifactRows(
     // `boundedTagsKey` is its stable stand-in.
   }, [datasetId, artifactId, boundedTagsKey])
 
-  return { sample, loading }
+  return { sample, loading, error }
 }

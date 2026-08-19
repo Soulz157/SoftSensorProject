@@ -30,6 +30,10 @@ interface Props {
   getWorkspaceName: Studio['getWorkspaceName']
   getSourceName: Studio['getSourceName']
   getSourceMeta: Studio['getSourceMeta']
+  /** `useDataSources()`'s own loading flag — threaded through so the detail
+   * sheet can show a skeleton instead of "Unknown source" during the window
+   * before `allSources` arrives. */
+  sourcesLoading: boolean
   onCreateDataset: () => void
   onDeleteDataset: (id: string) => Promise<void>
   onRenameDataset: (
@@ -46,6 +50,7 @@ export function DatasetsTab({
   getWorkspaceName,
   getSourceName,
   getSourceMeta,
+  sourcesLoading,
   onCreateDataset,
   onDeleteDataset,
   onRenameDataset,
@@ -119,6 +124,7 @@ export function DatasetsTab({
               )
             : []
         }
+        sourcesLoading={sourcesLoading}
       />
 
       <DatasetConfigDialog

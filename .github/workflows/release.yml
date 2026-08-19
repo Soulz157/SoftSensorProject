@@ -1,0 +1,151 @@
+# ---------------------------------------------------------------------------
+# Release — the ONLY workflow that produces artefacts and deploys them.
+#
+#   ci  ->  build 3 images (once)  ->  dev  ->  staging  ->  production
+#
+# Every environment receives the SAME digests. Nothing is ever rebuilt between
+# stages, so what runs in production is byte-identical to what passed CI.
+# ---------------------------------------------------------------------------
+name: Release
+
+on:
+    push:
+        branches: [main]
+    workflow_dispatch:
+        inputs:
+            skip-production:
+                description: "Stop after staging"
+                type: boolean
+                default: false
+
+permissions:
+    contents: read
+
+concurrency:
+    # Never cancel a release in flight — a half-applied rollout is worse than a queue.
+    group: release-${{ github.ref }}
+    cancel-in-progress: false
+
+jobs:
+    ci:
+        name: CI
+        uses: ./.github/workflows/ci.yml
+        secrets: inherit
+
+    # -------------------------------------------------------------------------
+    # Build once. Three images in parallel, each returning an immutable digest.
+    # -------------------------------------------------------------------------
+    image-api:
+        name: Image
+        needs: ci
+        uses: ./.github/workflows/_build-image.yml
+        with:
+            image: dslake-api
+            dockerfile: apps/api/Dockerfile
+            context: .
+        secrets: inherit
+
+    image-client:
+        name: Image
+        needs: ci
+        uses: ./.github/workflows/_build-image.yml
+        with:
+            image: dslake-client
+            dockerfile: apps/client/Dockerfile
+            context: .
+        secrets: inherit
+
+    image-connector:
+        name: Image
+        needs: ci
+        uses: ./.github/workflows/_build-image.yml
+        with:
+            image: dslake-connector
+            dockerfile: services/connector/Dockerfile
+            context: services/connector
+        secrets: inherit
+
+    # -------------------------------------------------------------------------
+    # Promote the same digests through the environments.
+    # -------------------------------------------------------------------------
+    dev:
+        name: Development
+        needs: [image-api, image-client, image-connector]
+        uses: ./.github/workflows/_deploy.yml
+        with:
+            environment: development
+            api-image: ${{ needs.image-api.outputs.image }}
+            client-image: ${{ needs.image-client.outputs.image }}
+            connector-image: ${{ needs.image-connector.outputs.image }}
+            health-url: https://dslake-dev.internal/api/health
+            strategy: rolling
+        secrets: inherit
+
+    staging:
+        name: Staging
+        # `dev` enforces the promotion order; the image jobs must also be listed
+        # because the `needs` context only exposes DIRECT dependencies' outputs.
+        needs: [dev, image-api, image-client, image-connector]
+        uses: ./.github/workflows/_deploy.yml
+        with:
+            environment: staging
+            api-image: ${{ needs.image-api.outputs.image }}
+            client-image: ${{ needs.image-client.outputs.image }}
+            connector-image: ${{ needs.image-connector.outputs.image }}
+            health-url: https://dslake-staging.internal/api/health
+            strategy: rolling
+        secrets: inherit
+
+    production:
+        name: Production
+        needs: [staging, image-api, image-client, image-connector]
+        if: ${{ github.event_name == 'push' || !inputs.skip-production }}
+        # Gating lives on the `production` GitHub Environment:
+        #   - required reviewers
+        #   - wait timer
+        #   - deployment branch rule: main only
+        # Add a maintenance-window check in scripts/deploy/apply.sh for plant-facing
+        # systems — B.Grimm sites should not take a rollout during peak load.
+        uses: ./.github/workflows/_deploy.yml
+        with:
+            environment: production
+            api-image: ${{ needs.image-api.outputs.image }}
+            client-image: ${{ needs.image-client.outputs.image }}
+            connector-image: ${{ needs.image-connector.outputs.image }}
+            health-url: https://dslake.internal/api/health
+            strategy: canary
+        secrets: inherit
+
+    # -------------------------------------------------------------------------
+    # Traceability: tag the released commit and record DORA inputs.
+    # -------------------------------------------------------------------------
+    record:
+        name: Record release
+        needs: production
+        if: success()
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        permissions:
+            contents: write # create the release/tag
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - name: Create GitHub release
+              run: |
+                  gh release create "rel-$(date -u +%Y%m%d)-${GITHUB_SHA::7}" \
+                    --generate-notes \
+                    --target "$GITHUB_SHA" \
+                    --title "Release ${GITHUB_SHA::7}"
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Send deployment marker
+              run: |
+                  curl -fsS -X POST "$DATADOG_EVENT_URL" \
+                    -H "DD-API-KEY: ${{ secrets.DATADOG_API_KEY }}" \
+                    -H "Content-Type: application/json" \
+                    -d "{\"title\":\"DS-LAKE production deploy\",\"text\":\"${GITHUB_SHA}\",\"tags\":[\"env:production\",\"service:dslake\"]}"
+              env:
+                  DATADOG_EVENT_URL: ${{ vars.DATADOG_EVENT_URL }}

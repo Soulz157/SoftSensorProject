@@ -11,6 +11,7 @@ import {
   datasetVersionService,
   fetchVersionDataset,
 } from '@/services/dataset-version'
+import type { DatasetArtifactStage } from '@/services/dataset-draft'
 import type { SavedDataset } from '@/store/datasets'
 
 /**
@@ -46,6 +47,15 @@ export type VersionRowsStatus =
 export interface VersionRowsState {
   dataset: Dataset | null
   source: RowSource | null
+  /**
+   * Pipeline stage of the artifact `dataset` was hydrated from — null while
+   * `source !== 'stored'` (synthetic rows have no real stage) or before a
+   * fetch resolves. `currentArtifactId` is stage-polymorphic (BRONZE from
+   * `createRaw`, FINAL once Save Dataset adopts it), so a caller that
+   * replays a recipe over these rows needs to know which one it got: doing
+   * so on top of a FINAL artifact double-applies the pipeline.
+   */
+  stage: DatasetArtifactStage | null
   status: VersionRowsStatus
   /** Rows loaded so far, and the artifact total — for the progress UI. */
   loaded: number
@@ -58,6 +68,7 @@ export interface VersionRowsState {
 const IDLE: VersionRowsState = {
   dataset: null,
   source: null,
+  stage: null,
   status: 'idle',
   loaded: 0,
   total: 0,
@@ -168,6 +179,7 @@ export function useDatasetVersionRows(
           config.tagConstants,
         ),
         source: 'synthetic',
+        stage: null,
         status: 'done',
         loaded: 0,
         total: 0,
@@ -176,7 +188,10 @@ export function useDatasetVersionRows(
       })
     }
 
-    const page = async (versionId: string) => {
+    const page = async (
+      versionId: string,
+      stage: DatasetArtifactStage | null,
+    ) => {
       const rows = await fetchVersionDataset(dataset.id, versionId, {
         signal,
         onProgress: (loaded, total) =>
@@ -188,6 +203,7 @@ export function useDatasetVersionRows(
       setState({
         dataset: rows,
         source: 'stored',
+        stage,
         status: 'done',
         loaded: rows.rows.length,
         total: rows.rows.length,
@@ -197,36 +213,56 @@ export function useDatasetVersionRows(
     }
 
     /**
-     * The artifact to read. For recipe replay this must be the RAW version,
-     * not the newest one — see the `prefer` note above.
+     * The artifact to read, and the pipeline stage it is at. For recipe
+     * replay this must be the RAW version, not the newest one — see the
+     * `prefer` note above.
      */
-    const resolveVersionId = async (): Promise<string | null> => {
+    const resolveVersionId = async (): Promise<{
+      id: string
+      stage: DatasetArtifactStage | null
+    } | null> => {
       // DS-LAKE-004: new datasets carry `currentArtifactId` and get no
       // `currentVersionId` until Save Dataset. The bronze artifact IS the raw
       // one, so there is no lineage to walk and no version list to fetch —
       // which also removes the extra round trip the `prefer: 'raw'` path costs.
-      if (dataset.currentArtifactId) return dataset.currentArtifactId
+      // `currentArtifactType` names whichever stage the pointer is CURRENTLY
+      // at (BRONZE from `createRaw`, FINAL once Save Dataset repoints it) —
+      // see `SavedDataset.currentArtifactType`'s doc comment.
+      if (dataset.currentArtifactId) {
+        return {
+          id: dataset.currentArtifactId,
+          stage: dataset.currentArtifactType,
+        }
+      }
 
       if (!dataset.currentVersionId) return null
-      if (prefer === 'current') return dataset.currentVersionId
+      // Legacy-only past this point: DS-LAKE-002's backfill sets
+      // `currentArtifactId` on every dataset that has a `currentVersionId`,
+      // so this branch is unreachable for any dataset in the DB today —
+      // kept for a hypothetical row a future migration misses.
+      // `DatasetVersion` carries no `stage` column (that concept moved to
+      // `PreprocessingJob`), so there is no server signal left to pick a
+      // RAW version by; every version this resolves to points at the FINAL
+      // artifact it was saved with (`DatasetVersion.artifactId`, written
+      // once at Save and never rewritten).
+      if (prefer === 'current') {
+        return { id: dataset.currentVersionId, stage: 'FINAL' }
+      }
 
       const versions = await datasetVersionService.list(dataset.id)
-      const raw = versions.data
-        .filter(v => v.stage === 'RAW')
-        .sort((a, b) => a.versionNumber - b.versionNumber)[0]
-      // No RAW version means the lineage predates this scheme; the current one
-      // is the only thing to read, and re-applying the recipe is still closer
-      // to right than showing nothing.
-      return raw?.id ?? dataset.currentVersionId
+      const earliest = versions.data.sort(
+        (a, b) => a.versionNumber - b.versionNumber,
+      )[0]
+      return { id: earliest?.id ?? dataset.currentVersionId, stage: 'FINAL' }
     }
 
     const run = async () => {
       // ── 1. a committed artifact exists ──────────────────────────────────
       if (dataset.currentArtifactId || dataset.currentVersionId) {
         setState({ ...IDLE, status: 'loading' })
-        const versionId = await resolveVersionId()
-        if (signal.aborted || !versionId) return
-        await page(versionId)
+        const resolved = await resolveVersionId()
+        if (signal.aborted || !resolved) return
+        await page(resolved.id, resolved.stage)
         return
       }
 
@@ -253,7 +289,9 @@ export function useDatasetVersionRows(
         endTime: toPiTime(config.customDateRange!.to),
       })
       if (signal.aborted) return
-      await page(created.data.id)
+      // `createRaw` always produces a BRONZE artifact
+      // (`dataset-version.authorized.service.ts`'s `createRawArtifactService`).
+      await page(created.data.id, 'BRONZE')
     }
 
     run().catch((err: unknown) => {

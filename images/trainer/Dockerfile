@@ -1,5 +1,11 @@
 FROM python:3.12-slim
 
+# libgomp1: lightgbm/xgboost dlopen libgomp.so.1 at import time for OpenMP;
+# python:3.12-slim carries no apt packages at all, so without this the
+# import fails inside build_model, after download + checksum verification.
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN useradd --create-home --uid 10001 trainer
 WORKDIR /app
 

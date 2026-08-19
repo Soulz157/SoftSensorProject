@@ -27,6 +27,14 @@ interface ApiResponse<T> {
 
 export type DatasetDraftStatus = 'ACTIVE' | 'SAVED' | 'ABANDONED'
 
+/** Pipeline stage of a `DatasetArtifact` row — BRONZE (raw fetch) through
+ * FINAL (adopted at Save). Named here because it is the artifact's own
+ * identity, not draft- or dataset-specific; `SavedDataset.currentArtifactType`
+ * (`store/datasets.ts`) and `VersionRowsState.stage`
+ * (`hooks/dataset/use-dataset-version-rows.ts`) both reuse it rather than
+ * declaring a second copy of the same four literals. */
+export type DatasetArtifactStage = 'BRONZE' | 'SILVER' | 'GOLD' | 'FINAL'
+
 export interface DatasetDraft {
   id: string
   name: string | null
@@ -42,7 +50,7 @@ export interface DatasetDraft {
 export interface DraftArtifact {
   id: string
   runId: string
-  type: 'BRONZE' | 'SILVER' | 'GOLD' | 'FINAL'
+  type: DatasetArtifactStage
   checksum: string
   rowCount: number
   columnCount: number
@@ -65,7 +73,7 @@ export interface SavedDataset {
   qualityScore: number
   lineage: Array<{
     id: string
-    type: 'BRONZE' | 'SILVER' | 'GOLD' | 'FINAL'
+    type: DatasetArtifactStage
     checksum: string
     objectKey: string
   }>
@@ -289,7 +297,7 @@ export interface DraftCorrelationResult {
 export interface DraftArtifactMetadata {
   id: string
   runId: string
-  type: 'BRONZE' | 'SILVER' | 'GOLD' | 'FINAL'
+  type: DatasetArtifactStage
   parentArtifactId: string | null
   checksum: string
   rowCount: number
@@ -495,6 +503,7 @@ export const datasetDraftService = {
       features: FeatureConfig[]
       selectedColumns?: string[] | null
       scalers?: Record<string, ScalerMethod>
+      targetY?: string | null
     },
   ): Promise<ApiResponse<DraftArtifact>> =>
     fetchClient(
@@ -512,6 +521,7 @@ export const datasetDraftService = {
       features: FeatureConfig[]
       selectedColumns?: string[] | null
       scalers?: Record<string, ScalerMethod>
+      targetY?: string | null
     },
   ): Promise<ApiResponse<{ jobId: string; status: PreprocessingJobStatus }>> =>
     fetchClient(

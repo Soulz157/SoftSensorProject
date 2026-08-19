@@ -1,17 +1,9 @@
 'use client'
 
-import {
-  AlertTriangle,
-  Cpu,
-  Info,
-  LineChart,
-  Loader2,
-  Timer,
-  Upload,
-} from 'lucide-react'
+import { AlertTriangle, Cpu, Loader2, Timer, Upload } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Progress } from '@/components/ui/progress'
 import { useModelTraining } from '@/hooks/model/use-model-training'
+import { useModelDraftSync } from '@/hooks/model/use-model-draft-sync'
 import type { UsePipelineNavResult } from '@/hooks/model/use-model-pipeline-nav'
 import { CoreConfig } from './training-config/core-config'
 import { AlgorithmSelector } from './training-config/algorithm-selector'
@@ -34,7 +26,12 @@ export function Phase2TrainingConfig({ nav }: Props) {
     lossFunction,
     trainTestSplit,
   } = nav
-  const training = useModelTraining()
+  // MODEL-FLOW-002: syncs Step 1 + Step 2 config to a server-side
+  // ModelDraft in the background. This component mounting IS "advancing
+  // Step 1 -> 2" — canAdvance(1) already validated workspace/plant/node/
+  // dataset/name before the wizard let the user get here.
+  const { ensureDraftId } = useModelDraftSync()
+  const training = useModelTraining({ ensureDraftId })
   const tags = selectedDataset?.tags ?? []
 
   const primaryAlgorithm = algorithms[0] ?? 'ols'
@@ -157,7 +154,12 @@ export function Phase2TrainingConfig({ nav }: Props) {
                   : 'Start Training'}
             </Button>
             {training.status === 'training' && (
-              <Progress value={training.progress} className="h-1.5" />
+              // A fit has no reportable percentage (MODEL-FLOW-003-T09) —
+              // train.py emits log lines, not a fraction. Showing the
+              // latest one is more honest than a bar that fakes a fraction.
+              <p className="text-xs text-muted-foreground truncate">
+                {training.lastLog ?? 'Training container starting…'}
+              </p>
             )}
             {training.status === 'error' && (
               <p className="text-xs text-destructive">{training.error}</p>

@@ -1,92 +1,386 @@
-# .github/workflows/ci.yml
+# ---------------------------------------------------------------------------
+# CI — quality gates for pull requests, merge queue, and (via workflow_call)
+# the release pipeline. This workflow NEVER deploys and NEVER pushes images.
+#
+# Contract: `ci-gate` is the single required status check in branch protection.
+# ---------------------------------------------------------------------------
 name: CI
 
 on:
-  push:
-    branches: [main, develop]
   pull_request:
     branches: [main, develop]
+  merge_group:
+  workflow_call: {}
 
-env:
-  REGISTRY: ghcr.io/soft-sensor-project
-
+# Least privilege at workflow level. Jobs that need more must opt in.
 permissions:
   contents: read
-  packages: write
-  actions: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Supersede stale runs on feature branches, never on protected branches.
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  NODE_VERSION: "20"
+  PYTHON_VERSION: "3.12"
+  PYTHON_DIR: services/connector # <-- adjust to your FastAPI connector path
+  DO_NOT_TRACK: "1"
+  NEXT_TELEMETRY_DISABLED: "1"
+  TURBO_TELEMETRY_DISABLED: "1"
 
 jobs:
-  detect-changes:
+  # =========================================================================
+  # Layer 1 — pre-flight
+  # =========================================================================
+  changes:
     name: Detect changes
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
-      frontend: ${{ steps.changes.outputs.frontend }}
+      node: ${{ steps.filter.outputs.node }}
+      client: ${{ steps.filter.outputs.client }}
+      api: ${{ steps.filter.outputs.api }}
+      python: ${{ steps.filter.outputs.python }}
+      migrations: ${{ steps.filter.outputs.migrations }}
+      docker: ${{ steps.filter.outputs.docker }}
+    steps:
+      - uses: actions/checkout@v4 # TODO: pin to commit SHA
+
+      - name: Filter changed paths
+        uses: dorny/paths-filter@v3 # TODO: pin to commit SHA
+        id: filter
+        with:
+          filters: .github/paths-filter.yml
+          # On push/merge_group there is no PR base; compare against the parent.
+          base: ${{ github.event_name == 'pull_request' && github.base_ref || '' }}
+
+  guards:
+    name: Repo guards
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4 # TODO: pin to commit SHA
+        with:
+          fetch-depth: 0 # gitleaks needs history to scan the diff range
+
+      - name: Secret scan
+        # gitleaks-action v2 requires GITLEAKS_LICENSE for GitHub organisations.
+        # Swap for trufflesecurity/trufflehog if you prefer no license key.
+        uses: gitleaks/gitleaks-action@v2 # TODO: pin to commit SHA
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+          GITLEAKS_ENABLE_SUMMARY: "true"
+
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          # `--frozen-lockfile` inside the composite action IS the lockfile
+          # integrity check: it fails when pnpm-lock.yaml drifts from package.json.
+          install: "true"
+
+      - name: Lint commit messages
+        if: github.event_name == 'pull_request'
+        run: |
+          pnpm exec commitlint \
+            --from "origin/${{ github.base_ref }}" \
+            --to "${{ github.event.pull_request.head.sha }}" \
+            --verbose
+
+  # =========================================================================
+  # Layer 2 — static analysis (parallel, fail fast, independent)
+  # =========================================================================
+  lint-node:
+    name: Lint (TS)
+    needs: changes
+    if: needs.changes.outputs.node == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node
         with:
-          fetch-depth: 0
+          node-version: ${{ env.NODE_VERSION }}
 
-      - uses: dorny/paths-filter@v3
-        id: changes
-        with:
-          filters: |
-            frontend:
-              - 'apps/client/**'
-              - '.github/workflows/ci.yml'
+      - name: ESLint
+        # Re-enable as a hard gate once the existing violations are burned down.
+        # Keep `continue-on-error` ONLY as a temporary migration state and track
+        # the remaining count — never comment the step out entirely.
+        continue-on-error: true
+        run: pnpm lint --max-warnings=0
 
-  ci:
-    name: CI — Lint · Type · Test · Build
+      - name: Prettier check
+        run: pnpm exec prettier --check .
+
+      - name: Unused exports / dead code
+        continue-on-error: true
+        run: pnpm exec knip --no-exit-code
+
+  typecheck-node:
+    name: Type check (TS)
+    needs: changes
+    if: needs.changes.outputs.node == 'true'
     runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-
+    timeout-minutes: 15
     steps:
-      # ─── Checkout ───
-      - name: Checkout code
-        uses: actions/checkout@v4
-        env:
-          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-
-      # ─── Setup Node ───
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node
         with:
-          node-version: "20"
-          cache: "pnpm"
-
-      # ─── Create empty .env so dotenvx doesn't crash ───
-      - name: Create .env
-        run: touch .env
-
-      # ─── Install ───
-      - name: Install dependencies
-        run: pnpm install
-
-      # ─── Lint ───
-      # - name: Lint
-      #   run: pnpm lint
-
-      # ─── Type Check ───
-      - name: Type check
+          node-version: ${{ env.NODE_VERSION }}
+      - name: tsc --noEmit
         run: pnpm check-types
 
-      # ─── Test ───
-      - name: Run tests
-        run: pnpm test
-        env:
-          NODE_ENV: test
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          API_KEY: ${{ secrets.API_KEY }}
+  lint-python:
+    name: Lint + type (Python)
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-python
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          working-directory: ${{ env.PYTHON_DIR }}
 
-      # ─── Build ───
-      - name: Build
-        run: pnpm build
+      - name: Ruff (lint)
+        working-directory: ${{ env.PYTHON_DIR }}
+        run: ruff check --output-format=github .
+
+      - name: Ruff (format)
+        working-directory: ${{ env.PYTHON_DIR }}
+        run: ruff format --check .
+
+      - name: mypy
+        working-directory: ${{ env.PYTHON_DIR }}
+        run: mypy .
+
+  # =========================================================================
+  # Layer 3 — tests against ephemeral dependencies
+  # =========================================================================
+  test-node:
+    name: Test (TS)
+    needs: changes
+    if: needs.changes.outputs.node == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      timescaledb:
+        image: timescale/timescaledb:latest-pg16
         env:
-          NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: dslake_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d dslake_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+      minio:
+        image: bitnami/minio:latest
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+          MINIO_DEFAULT_BUCKETS: bronze,silver,gold
+        ports: ["9000:9000"]
+        options: >-
+          --health-cmd "mc ready local || curl -f http://localhost:9000/minio/health/live"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      NODE_ENV: test
+      # Ephemeral, non-secret credentials. Nothing here touches production, and
+      # tests keep working on pull requests from forks (which cannot read secrets).
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/dslake_test
+      S3_ENDPOINT: http://localhost:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_FORCE_PATH_STYLE: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Apply migrations
+        run: pnpm --filter @dslake/api migrate:deploy
+
+      - name: Unit tests
+        run: pnpm test:unit -- --coverage
+
+      - name: Integration tests
+        run: pnpm test:integration
+
+      - name: Enforce coverage threshold
+        run: pnpm exec nyc check-coverage --lines 70 --functions 70 --branches 60
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4 # TODO: pin to commit SHA
+        with:
+          name: coverage-node
+          path: coverage/
+          retention-days: 7
+
+  test-python:
+    name: Test (Python)
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      timescaledb:
+        image: timescale/timescaledb:latest-pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: dslake_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d dslake_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/dslake_test
+      # PI Web API is never called for real in CI — responses are replayed from
+      # recorded cassettes so the pipeline stays green without plant network access.
+      PI_WEBAPI_MODE: cassette
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-python
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          working-directory: ${{ env.PYTHON_DIR }}
+
+      - name: pytest
+        working-directory: ${{ env.PYTHON_DIR }}
+        run: pytest -q --cov --cov-report=xml --cov-fail-under=70
+
+  # =========================================================================
+  # Layer 3b — cross-language contract check
+  # This is the gate that catches snake_case / camelCase field drift between
+  # NestJS DTOs, the FastAPI connector, and the Next.js client BEFORE runtime.
+  # =========================================================================
+  contract:
+    name: API contract
+    needs: changes
+    if: needs.changes.outputs.node == 'true' || needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: ./.github/actions/setup-python
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          working-directory: ${{ env.PYTHON_DIR }}
+
+      - name: Generate OpenAPI schemas
+        run: |
+          pnpm --filter @dslake/api openapi:generate --out contracts/api.generated.json
+          python -m app.export_openapi --out ../../contracts/connector.generated.json
+        working-directory: .
+
+      - name: Diff against committed snapshots
+        run: |
+          set -euo pipefail
+          fail=0
+          for name in api connector; do
+            if ! diff -u "contracts/$name.json" "contracts/$name.generated.json"; then
+              echo "::error file=contracts/$name.json::OpenAPI schema changed. Review the diff, then run 'pnpm contracts:update' and commit."
+              fail=1
+            fi
+          done
+          exit $fail
+
+      - name: Typed client is in sync
+        run: |
+          pnpm contracts:codegen
+          git diff --exit-code -- packages/api-client/src/generated \
+            || { echo "::error::Generated API client is stale. Run 'pnpm contracts:codegen' and commit."; exit 1; }
+
+  # =========================================================================
+  # Layer 4 — build once, publish the artifact
+  # =========================================================================
+  build:
+    name: Build
+    needs: [changes, typecheck-node]
+    if: needs.changes.outputs.node == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      # NEXT_PUBLIC_* is inlined into the client bundle — it is public by
+      # definition. Store it as a repository/environment VARIABLE, not a secret.
+      NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Build all packages
+        run: pnpm build
+
+      - name: Bundle size budget
+        continue-on-error: true
+        run: pnpm exec size-limit
+
+      - name: Upload build output
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ github.sha }}
+          path: |
+            apps/client/.next/
+            apps/api/dist/
+            packages/*/dist/
+          retention-days: 7
+          if-no-files-found: error
+
+  # =========================================================================
+  # Aggregation gate — the ONLY required status check in branch protection.
+  # Handles skipped jobs correctly (a skipped job must not block the merge).
+  # =========================================================================
+  ci-gate:
+    name: ci-gate
+    if: always()
+    needs:
+      - changes
+      - guards
+      - lint-node
+      - typecheck-node
+      - lint-python
+      - test-node
+      - test-python
+      - contract
+      - build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Summarise
+        run: |
+          echo "### CI results" >> "$GITHUB_STEP_SUMMARY"
+          cat <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          ${{ toJSON(needs) }}
+          EOF
+
+      - name: Fail if any gate failed or was cancelled
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          echo "::error::One or more CI gates did not pass."
+          exit 1
+
+      - name: All gates green
+        run: echo "All required checks passed."

@@ -36,7 +36,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
-import { dwSdtaConfigAtom, dwWorkspaceIdAtom } from '@/store/dataset-studio'
+import { dwWorkspaceIdAtom } from '@/store/dataset-studio'
 import { useFeaturePresets } from '@/hooks/dataset/use-feature-presets'
 import type { DatasetTagRow } from '@/hooks/dataset/use-dataset-tag-table'
 import type { FeatureConfig } from '@/lib/feature-engineering'
@@ -45,7 +45,6 @@ import {
   compareTags,
   requiredDatasetTags,
   TagComparison,
-  TagLookup,
   toFeatureConfigs,
   type PresetDocument,
   type PresetFeature,
@@ -75,9 +74,17 @@ interface Props {
   /**
    * Opt-in — separate from onApplyPreset because SD&TA belongs to the IMPORT,
    * not to whichever preset happens to be selected. A user may want the cut
-   * config with no preset chosen at all.
+   * config with no preset chosen at all, so `summary` is nullable rather than
+   * required — `importFileName` names the import itself, for the caller to
+   * fall back to when it is. Stages the cut for Step 3.2 rather than applying
+   * it here — see `useStageSdtaPreset` (DS-LAKE-013): Step 1 has no fetched
+   * rows to plan a health-aware cut against.
    */
-  onApplySdta: (sdta: SdtaConfig, lookup: TagLookup) => void
+  onApplySdta: (
+    sdta: SdtaConfig,
+    summary: PresetSummary | null,
+    importFileName: string,
+  ) => void
 }
 
 type StatusFilter = 'all' | 'matched' | 'attention'
@@ -128,7 +135,7 @@ export function PresetApplyManager({
   const [dragging, setDragging] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
-  const [sdta, setSdta] = useAtom(dwSdtaConfigAtom)
+  const [sdta, setSdta] = useState<SdtaConfig | null>(null)
   const [sdtaLoading, setSdtaLoading] = useState(false)
   const [sdtaError, setSdtaError] = useState<string | null>(null)
   const [sdtaApplied, setSdtaApplied] = useState(false)
@@ -306,9 +313,12 @@ export function PresetApplyManager({
 
   const handleApplySdta = useCallback(() => {
     if (!sdta) return
-    onApplySdta(sdta, { resolved, rows })
+    // Null is a first-class case, not an error — SD&TA belongs to the
+    // import, so applying with no unit/preset selected is a normal action.
+    const summary = presets.find(p => p.id === presetId) ?? null
+    onApplySdta(sdta, summary, currentImport?.fileName ?? 'Imported cut config')
     setSdtaApplied(true)
-  }, [sdta, resolved, rows, onApplySdta])
+  }, [sdta, presets, presetId, currentImport, onApplySdta])
 
   // ── render ───────────────────────────────────────────────────────────────
 
@@ -715,8 +725,9 @@ function SdtaCard({
             <Stat label="Conditions" value={sdta.conditions.length} />
           </div>
           <p className="mt-1.5 text-[11px] text-muted-foreground">
-            Applying adds time exclusions and conditional drop rules at Step 3 —
-            cleaning is unaffected until you do.
+            Staging queues this cut config for Step 3.2, where it is combined
+            with the fetched data and applied as time exclusions and conditional
+            drop rules — nothing is cut yet.
           </p>
           <Button
             size="sm"
@@ -725,7 +736,7 @@ function SdtaCard({
             className="mt-2 h-7 w-full cursor-pointer text-xs"
             onClick={onApply}
           >
-            {applied ? 'Cut config applied' : 'Apply cut config'}
+            {applied ? 'Staged — choose it in Step 3.2' : 'Stage cut config'}
           </Button>
         </>
       )}

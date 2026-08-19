@@ -108,6 +108,7 @@ describe('feature preset provenance round-trips through edit mode', () => {
         updatedAt: '2026-08-05T00:00:00Z',
         currentVersionId: null,
         currentArtifactId: null,
+        currentArtifactType: null,
       } as unknown as SavedDataset,
       sources: [],
     }

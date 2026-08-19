@@ -21,8 +21,8 @@ export function AuthPanel() {
       </h1>
 
       <p className="text-zinc-400 text-lg mb-10 max-w-md text-center">
-        http://localhost:3000/models/create Welcome back to the SoftSensor
-        platform. <br /> Please log in to manage your workspaces.
+        Welcome back to the SoftSensor platform.
+        <br /> Please log in to manage your workspaces.
       </p>
 
       <Link href="/login">

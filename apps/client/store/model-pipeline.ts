@@ -39,6 +39,12 @@ export interface TrainState {
   status: 'idle' | 'training' | 'done' | 'error'
   progress: number
   error?: string
+  /**
+   * Latest log line from the container (MODEL-FLOW-003-T09). A fit has no
+   * reportable percentage — train.py emits log lines, not a fraction — so
+   * this is what the UI shows in place of a fake progress bar while RUNNING.
+   */
+  lastLog?: string
 }
 
 export const MP_TOTAL_STEPS = 4
@@ -51,6 +57,8 @@ export const mpSelectedDatasetAtom = atom<SavedDataset | null>(null)
 
 export type Algorithm =
   | 'ols'
+  | 'ridge'
+  | 'hist_gradient_boosting'
   | 'svm'
   | 'mlp'
   | 'grp'
@@ -62,6 +70,8 @@ export type Algorithm =
   | 'gru'
 export const ALGORITHMS: Algorithm[] = [
   'ols',
+  'ridge',
+  'hist_gradient_boosting',
   'svm',
   'mlp',
   'grp',
@@ -74,6 +84,8 @@ export const ALGORITHMS: Algorithm[] = [
 ]
 export const ALGORITHM_LABELS: Record<Algorithm, string> = {
   ols: 'Linear Regression',
+  ridge: 'Ridge Regression',
+  hist_gradient_boosting: 'Histogram Gradient Boosting',
   svm: 'Support Vector Machine',
   grp: 'Gaussian Process Regression',
   mlp: 'MLP (Neural Network)',
@@ -184,9 +196,27 @@ export const mpDraftIdAtom = atom<string>('')
 /** Draft lifecycle: 'draft' → 'trained' (Step 2 done) → 'saved' (Step 4 commit). */
 export const mpDraftStateAtom = atom<DraftState>('draft')
 
-/** Mock training summary produced in Step 2 (client-only — no real artifact file). */
+/**
+ * Server-side ModelDraft id (MODEL-FLOW-002), distinct from mpDraftIdAtom
+ * above — that one is a purely client-local session id with no backend
+ * record; this one IS the row a training container reads its spec from.
+ * null until Step 1 -> 2 first creates it. Cleared on every wizard reset,
+ * same as mpDraftIdAtom, so a fresh wizard run never inherits a stale
+ * draft's id.
+ */
+export const mpServerDraftIdAtom = atom<string | null>(null)
+
+/**
+ * Training summary produced in Step 2, sourced from a real ModelTrainingRun
+ * (MODEL-FLOW-003-T05) — no longer a mock. `metrics` is denormalised from
+ * the run's own `metrics.json` sidecar and passed through as-is; mapping it
+ * onto the Step 3 Evaluation UI's specific metric keys is the next
+ * feature's job, not this one's.
+ */
 export interface DraftTrainingResult {
+  runId: string
   algorithm: Algorithm
+  metrics: Record<string, unknown> | null
   trainedAt: string
 }
 export const mpTrainingResultAtom = atom<DraftTrainingResult | null>(null)
@@ -199,9 +229,9 @@ export interface DraftEvaluationResult {
 export const mpEvaluationResultAtom = atom<DraftEvaluationResult | null>(null)
 
 /**
- * Reference to the trained model artifact. Mock — training is client-side, so
- * this holds a synthetic id only, letting Save Model record an artifact ref.
- * TODO(MODEL-FLOW-006): point at a real object-storage artifact once training is real.
+ * Object-storage key of the trained model artifact (MODEL-FLOW-003-T06) —
+ * the completed run's own `modelKey`, under `drafts/{draftId}/runs/{runId}/`
+ * until Save Model adopts it by pointer.
  */
 export const mpArtifactRefAtom = atom<string | null>(null)
 
@@ -298,6 +328,10 @@ export const resetWizardAtom = atom(null, (_get, set) => {
   set(mpTrainingResultAtom, null)
   set(mpEvaluationResultAtom, null)
   set(mpArtifactRefAtom, null)
+  // Server-side ModelDraft id — a fresh wizard run must not inherit a
+  // previous run's draft, the same reasoning the dataset wizard's own
+  // resetDatasetWizardAtom states for dwDraftIdAtom.
+  set(mpServerDraftIdAtom, null)
   set(mpAutoRetrainAtom, false)
   set(mpRetrainWarnSdAtom, 1.5)
   set(mpRetrainCriticalSdAtom, 3.0)

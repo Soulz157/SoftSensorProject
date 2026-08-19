@@ -62,22 +62,30 @@ export function topCorrelatedPairs(ds: Dataset, limit = 10): TagPair[] {
   return topCorrelations(pearsonMatrix(ds), 0).slice(0, limit)
 }
 
-const MINUTE = 60_000
-const HOUR = 60 * MINUTE
-const DAY = 24 * HOUR
+const DAY = 86_400_000
 
 /**
- * Human-readable span between the first and last row timestamps — the wall-clock
- * window the dataset covers. Returns '—' when there are fewer than 2 rows.
- * `buildRawDataset` emits rows sorted ascending, so first/last bound the range.
+ * Human-readable span between an artifact's `startTime`/`endTime`, as
+ * returned by `GET .../artifacts/:artifactId/metadata` — the FOOTER bounds
+ * of the real committed artifact, not a client-held row sample. Replaces
+ * the earlier `datasetTimeSpanLabel(ds)`, which read the first/last
+ * timestamp of a client `Dataset` and was quietly wrong the moment that
+ * frame was a bounded preview rather than the whole artifact (DS-LAKE-013).
+ * Shared by the detail sheet and the grid card so both report the same
+ * number for the same dataset.
  */
-export function datasetTimeSpanLabel(ds: Dataset): string {
-  const { rows } = ds
-  if (rows.length < 2) return '—'
-  const first = Date.parse(rows[0]!.timestamp)
-  const last = Date.parse(rows[rows.length - 1]!.timestamp)
-  const ms = Math.abs(last - first)
-  if (ms >= DAY) return `${Math.round(ms / DAY)}d`
-  if (ms >= HOUR) return `${Math.round(ms / HOUR)}h`
-  return `${Math.round(ms / MINUTE)}m`
+export function artifactTimeSpanLabel(
+  start: string | null | undefined,
+  end: string | null | undefined,
+): string {
+  if (!start || !end) return '—'
+  const a = new Date(start)
+  const b = new Date(end)
+  if (Number.isNaN(+a) || Number.isNaN(+b)) return '—'
+  const days = Math.max(1, Math.round((+b - +a) / DAY))
+  return days >= 365
+    ? `${(days / 365).toFixed(1)} yr`
+    : days >= 30
+      ? `${Math.round(days / 30)} mo`
+      : `${days} d`
 }

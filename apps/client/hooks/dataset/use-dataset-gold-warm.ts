@@ -69,6 +69,7 @@ export function useDatasetGoldWarm(): (
   features: FeatureConfig[],
   selectedColumns: string[] | null,
   scalers: Record<string, ScalerMethod>,
+  targetY?: string | null,
 ) => void {
   const draftId = useAtomValue(dwDraftIdAtom)
   const sourceArtifactId = useAtomValue(dwDraftArtifactIdAtom)
@@ -86,7 +87,7 @@ export function useDatasetGoldWarm(): (
   )
 
   return useCallback(
-    (features, selectedColumns, scalers) => {
+    (features, selectedColumns, scalers, targetY) => {
       // Guard BEFORE cancel/token-bump, not after: `sourceArtifactId` flips
       // through null during a BRONZE re-fetch, which busts this callback's
       // memoization (it's a dep below) and re-fires the outer effect even
@@ -109,7 +110,7 @@ export function useDatasetGoldWarm(): (
             const started = await datasetDraftService.startFeaturesJob(
               draftId,
               sourceArtifactId,
-              { features, selectedColumns, scalers },
+              { features, selectedColumns, scalers, targetY },
             )
             // A newer edit superseded this attempt before the job even
             // started polling — stop here, same as the post-poll check

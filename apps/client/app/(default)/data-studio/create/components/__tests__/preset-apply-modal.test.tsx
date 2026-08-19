@@ -285,7 +285,7 @@ describe('PresetApplyManager — SD&TA cut config', () => {
     expect(loadSdta).toHaveBeenCalledWith('imp-1')
   })
 
-  it('hands the loaded config to onApplySdta and marks it applied', async () => {
+  it('hands the loaded config to onApplySdta with no preset selected, and marks it staged', async () => {
     loadSdta.mockResolvedValue(SDTA)
     const user = userEvent.setup()
     const { onApplySdta } = renderSheet([row('QQ001A2.PV')])
@@ -293,12 +293,14 @@ describe('PresetApplyManager — SD&TA cut config', () => {
     await openSheet(user)
     await user.click(screen.getByRole('button', { name: /load cut config/i }))
     await user.click(
-      await screen.findByRole('button', { name: /apply cut config/i }),
+      await screen.findByRole('button', { name: /stage cut config/i }),
     )
 
-    expect(onApplySdta).toHaveBeenCalledWith(SDTA)
+    // No unit/preset was selected above — `summary` is null, and the modal
+    // falls back to the import's own file name (DS-LAKE-013).
+    expect(onApplySdta).toHaveBeenCalledWith(SDTA, null, 'templates.xlsx')
     expect(
-      screen.getByRole('button', { name: /cut config applied/i }),
+      screen.getByRole('button', { name: /staged.*step 3\.2/i }),
     ).toBeDisabled()
   })
 

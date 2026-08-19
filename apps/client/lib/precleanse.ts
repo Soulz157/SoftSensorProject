@@ -48,6 +48,7 @@ export type ValueClip = Record<string, ClipBound>
 export interface RangeExclusion {
   time: { from: string; to: string } | null
   value: { tag: string; min: number; max: number } | null
+  source?: 'sdta'
 }
 
 export interface ClipImpact {
@@ -60,8 +61,19 @@ export interface ClipImpact {
   points: number
 }
 
-/** `mark` → set the matched cell's status to `Bad`; `drop` → remove the row. */
-export type OutlierAction = 'mark' | 'drop'
+/**
+ * `mark` → set the matched cell's status to `Bad`.
+ * `drop` → remove just that tag's cell at the matched row.
+ * `drop_row` → remove the whole row.
+ *
+ * `drop_row` exists for SD&TA gate conditions ("the unit was down when
+ * FC-101 < 10"). Under `drop` the row survived with every OTHER tag intact,
+ * so shutdown data still reached the model — the opposite of what the sheet
+ * asked for. It is NOT the default: a user-authored outlier rule should keep
+ * deleting one cell, because that is a statement about one sensor, not about
+ * whether the timestamp is valid at all.
+ */
+export type OutlierAction = 'mark' | 'drop' | 'drop_row'
 
 export interface ConditionalRule {
   id: string
@@ -70,6 +82,8 @@ export interface ConditionalRule {
   value: number | ''
   action: OutlierAction
   enabled: boolean
+  /** Who authored this rule. Absent = added by hand in the Cut-Off sidebar. */
+  source?: 'sdta'
 }
 
 export type StatisticalMethod = 'zscore' | 'stddev'
@@ -102,6 +116,92 @@ export const EMPTY_PRECLEANSE_CONFIG: PrecleanseConfig = {
   exclusions: [],
   conditional: [],
   statistical: [],
+}
+export interface RemovedItem {
+  key: keyof PrecleanseRemoved
+  label: string
+  count: number
+}
+
+/**
+ * Rows lost, per stage.
+ *
+ * Sums EXACTLY to `totalRows - keptRows` — every stage here is disjoint
+ * (`runPipeline` filters sequentially, and the two `drop_row` counters share
+ * one `dropRows` Set so a row hit by both is counted once, under whichever
+ * loop reached it first). `assertRowsBalance` below is what keeps that true
+ * as stages are added.
+ *
+ * Returning a labelled list rather than letting the sidebar read fields off
+ * `PrecleanseRemoved` directly is deliberate: a new counter shows up in the UI
+ * by construction instead of being silently dropped, which is exactly how
+ * `drop_row` would otherwise have gone unreported.
+ */
+export function removedRowItems(removed: PrecleanseRemoved): RemovedItem[] {
+  return [
+    { key: 'timeCrop', label: 'Time crop', count: removed.timeCrop },
+    { key: 'valueCrop', label: 'Value crop', count: removed.valueCrop },
+    { key: 'exclude', label: 'Excluded ranges', count: removed.exclude },
+    {
+      key: 'conditionalRows',
+      label: 'Condition (whole row)',
+      count: removed.conditionalRows,
+    },
+    {
+      key: 'statisticalRows',
+      label: 'Statistical (whole row)',
+      count: removed.statisticalRows,
+    },
+  ]
+}
+
+/**
+ * Cells lost, per stage. Kept SEPARATE from rows on purpose — adding the two
+ * into one "removed" figure is a category error: deleting one tag's reading at
+ * a timestamp leaves every other tag there intact, and the row still trains.
+ */
+export function removedCellItems(removed: PrecleanseRemoved): RemovedItem[] {
+  return [
+    {
+      key: 'excludeCells',
+      label: 'Excluded values',
+      count: removed.excludeCells,
+    },
+    {
+      key: 'conditional',
+      label: 'Condition (cell)',
+      count: removed.conditional,
+    },
+    {
+      key: 'statistical',
+      label: 'Statistical (cell)',
+      count: removed.statistical,
+    },
+  ]
+}
+
+export function removedRowTotal(removed: PrecleanseRemoved): number {
+  return removedRowItems(removed).reduce((sum, i) => sum + i.count, 0)
+}
+
+export function removedCellTotal(removed: PrecleanseRemoved): number {
+  return removedCellItems(removed).reduce((sum, i) => sum + i.count, 0)
+}
+
+/**
+ * Dev-only guard. A mismatch means a stage started removing rows without a
+ * counter — the class of bug that let SD&TA conditions appear to cut nothing.
+ */
+export function assertRowsBalance(b: PrecleanseBreakdown): void {
+  if (process.env.NODE_ENV === 'production') return
+  const expected = b.totalRows - b.keptRows
+  const actual = removedRowTotal(b.removed)
+  if (expected !== actual) {
+    console.error(
+      `[precleanse] row accounting off by ${expected - actual}: ` +
+        `${b.totalRows} - ${b.keptRows} = ${expected}, counters sum to ${actual}`,
+    )
+  }
 }
 
 export function clipImpact(
@@ -334,6 +434,10 @@ export interface PrecleanseRemoved {
   conditional: number
   statistical: number
   clipped: number
+  /** Rows removed by a `drop_row` conditional rule. */
+  conditionalRows: number
+  /** Rows removed by a `drop_row` statistical rule. */
+  statisticalRows: number
 }
 
 export interface PrecleanseBreakdown {
@@ -351,6 +455,10 @@ interface StageCounts {
   statistical: number
   conditional: number
   clipped: number
+  /** Rows removed by a `drop_row` conditional rule. */
+  conditionalRows: number
+  /** Rows removed by a `drop_row` statistical rule. */
+  statisticalRows: number
 }
 
 const zeroCounts = (): StageCounts => ({
@@ -361,6 +469,8 @@ const zeroCounts = (): StageCounts => ({
   statistical: 0,
   conditional: 0,
   clipped: 0,
+  conditionalRows: 0,
+  statisticalRows: 0,
 })
 
 interface RunResult {
@@ -400,9 +510,8 @@ function runPipeline(
       for (const [tag, bound] of cropEntries) {
         const cell = r.cells[tag]
         // Rows missing that tag's cell are kept — no reading to judge.
-        if (cell && (cell.value < bound.min || cell.value > bound.max)) {
+        if (cell && (cell.value < bound.min || cell.value > bound.max))
           return false
-        }
       }
       return true
     })
@@ -443,6 +552,7 @@ function runPipeline(
         ? rows.slice()
         : rows
       : out.map(cloneRow)
+  const dropRows = new Set<number>()
 
   for (const rule of cfg.statistical) {
     if (!rule.enabled) continue
@@ -450,15 +560,27 @@ function runPipeline(
     for (const tag of tags) {
       const { mean, std } = tagStats({ tags: raw.tags, rows: out }, tag)
       if (std === 0) continue
-      for (const row of out) {
+      for (let i = 0; i < out.length; i++) {
+        const row = out[i]!
         const cell = row.cells[tag]
         if (!cell || cell.status !== 'Good') continue
         if (!isStatisticalOutlier(cell.value, mean, std, rule.threshold)) {
           continue
         }
         counts.statistical++
-        if (rule.action === 'drop') delete row.cells[tag]
-        else cell.status = 'Bad'
+        if (rule.action === 'drop_row') {
+          if (!dropRows.has(i)) counts.statisticalRows++
+          dropRows.add(i)
+          // Deliberately no `delete` — the whole row goes, and leaving the
+          // cell intact keeps `beforeRules` diffs readable.
+        } else if (rule.action === 'drop') {
+          // Was `delete row.cells[rule.tag]` — a latent bug: under
+          // `rule.tag === 'ALL'` that names no real column, so the delete
+          // silently no-opped while `counts.statistical` still incremented.
+          delete row.cells[tag]
+        } else {
+          cell.status = 'Bad'
+        }
       }
     }
   }
@@ -466,19 +588,30 @@ function runPipeline(
   for (const rule of cfg.conditional) {
     if (!rule.enabled || rule.value === '') continue
     const target = rule.value
-    for (const row of out) {
+    for (let i = 0; i < out.length; i++) {
+      const row = out[i]!
       const cell = row.cells[rule.tag]
       if (!cell) continue
       if (!matchesConditional(cell.value, rule.op, target)) continue
       if (cell.status === 'Good') counts.conditional++
-      if (rule.action === 'drop') delete row.cells[rule.tag]
-      else cell.status = 'Bad'
+      if (rule.action === 'drop_row') {
+        if (!dropRows.has(i)) counts.conditionalRows++
+        dropRows.add(i)
+      } else {
+        if (cell.status === 'Good') counts.conditional++
+        if (rule.action === 'drop') delete row.cells[rule.tag]
+        else cell.status = 'Bad'
+      }
     }
   }
 
+  // Before clip, so a clipped-then-dropped cell is not counted as clipped.
+  const kept =
+    dropRows.size === 0 ? out : out.filter((_, i) => !dropRows.has(i))
+
   const clipEntries = cfg.valueClip ? Object.entries(cfg.valueClip) : []
   for (const [tag, bound] of clipEntries) {
-    for (const row of out) {
+    for (const row of kept) {
       const cell = row.cells[tag]
       if (!cell || cell.status !== 'Good') continue
       if (cell.value < bound.min) {
@@ -493,7 +626,7 @@ function runPipeline(
     }
   }
 
-  return { rows: out, counts, beforeRules }
+  return { rows: kept, counts, beforeRules }
 }
 
 export function precleanse(raw: Dataset, cfg: PrecleanseConfig): Dataset {
@@ -551,6 +684,8 @@ export function precleanseBreakdown(
       statistical: counts.statistical,
       conditional: counts.conditional,
       clipped: counts.clipped,
+      conditionalRows: counts.conditionalRows,
+      statisticalRows: counts.statisticalRows,
     },
     beforeRules: beforeRules
       ? { tags: raw.tags, rows: beforeRules }

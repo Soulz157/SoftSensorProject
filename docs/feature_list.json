@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "description": "Refactor the existing Model Creation Flow to keep the current four-step user experience while separating model training, evaluation, fine-tuning, and final model persistence. Training and fine-tuning must not commit the model to the database. The model is persisted only when the user explicitly clicks Save Model in Step 4.",
   "status": "blocked",
-  "progress": 12,
+  "progress": 33,
+  "progress_note": "MODEL-FLOW-000, -001, -002 completed 2026-08-18 (3 of 10 features — denominator moved 9->10 on 2026-08-19 when MODEL-FLOW-009 was added; see that feature's own status for why it's separate from the -003 catalogue work, not an increment to it). Still blocked overall: MODEL-FLOW-005 remains blocked pending a definition of 'fine-tuning' (decisions.fine_tuning_undefined); MODEL-FLOW-009 (lstm/gru) is newly blocked pending a windowing pipeline. -003 is in_progress (T10's catalogue half resolved 2026-08-19, AutoML half still blocked) — the rest of this note (-004/-006/-007/-008 status) pre-dates 2026-08-19 and was not re-audited this pass.",
   "decisions": {
     "draft_persistence": {
       "chosen": "B — ModelDraft as a database entity",
@@ -103,65 +104,97 @@
   },
 
   "features": [
-        {
+    {
       "id": "MODEL-FLOW-000",
       "title": "Unblock the Training Path — Correctness Prerequisites",
       "priority": 0,
-      "status": "pending",
-      "progress": 0,
+      "status": "completed",
+      "progress": 100,
       "dependencies": [],
 
       "description": "Four defects that make the existing training path either impossible to start or unsafe to trust. None is a refactor; every one is a correctness fix that MODEL-FLOW-003 onward depend on. T02 in particular gates every metric Step 3 displays.",
+      "reaudit_note": "Re-audited 2026-08-18 before implementation, by reading each named file directly (not by report). Five of the seven original tasks (T01, T03, T04, T05, T07) described code that was ALREADY CORRECT at commit 1df3c53 — the audit that produced this feature had drifted from the tree. T03's premise was inverted (memory 8 GiB > tmpfs 2 GiB, already consistent, not the reverse). Only T02 and T06 were live defects; both are now fixed. The likely cause of the drift: images/trainer/train.py:180-203 held a half-applied T02 patch (a broken orphan build_feature_spec with an undefined _reads_tag and an unimportable `spec = {...}` set-of-Ellipsis) — evidence someone started T02 before, landed the Pydantic field and helper functions, and left the wiring. See T08-T10 for defects found during re-audit that were NOT in the original task list.",
 
       "tasks": [
         {
           "id": "MODEL-FLOW-000-T01",
           "title": "Fix unsatisfiable artifact precondition in createRunService",
-          "status": "pending",
-          "progress": 0,
-          "detail": "createRunService requires artifact.type === 'GOLD' AND artifact.datasetId != null. saveDraftAsDatasetService sets datasetId on the FINAL row only — a GOLD artifact keeps just its draftId — so no run can ever be created. Change to type === 'FINAL'. Nothing is lost: promoteDraftArtifactToFinalService copies objectKey/checksum/featureSpecKey from its source verbatim and writes no bytes, so FINAL and its GOLD parent are the same object with the same feature spec, and FINAL additionally carries the validationKey proving it passed the gate. Also restore the findUnique call, which was overwritten with a fragment of saveDraftAsDatasetService (references tx/finalArtifact/dataset, none in scope — the file does not compile)."
+          "status": "completed",
+          "progress": 100,
+          "detail": "createRunService requires artifact.type === 'GOLD' AND artifact.datasetId != null. saveDraftAsDatasetService sets datasetId on the FINAL row only — a GOLD artifact keeps just its draftId — so no run can ever be created. Change to type === 'FINAL'. Nothing is lost: promoteDraftArtifactToFinalService copies objectKey/checksum/featureSpecKey from its source verbatim and writes no bytes, so FINAL and its GOLD parent are the same object with the same feature spec, and FINAL additionally carries the validationKey proving it passed the gate. Also restore the findUnique call, which was overwritten with a fragment of saveDraftAsDatasetService (references tx/finalArtifact/dataset, none in scope — the file does not compile).",
+          "verification_note": "Re-verified 2026-08-18 by reading model-run-launch.authorized.service.ts directly: line 65 already reads `artifact.type !== 'FINAL'` (not 'GOLD'), the findUnique at line 61 is intact, and `tsc --noEmit` reports zero errors in this module. Already satisfied — no code change needed."
         },
         {
           "id": "MODEL-FLOW-000-T02",
           "title": "Record the target in feature_spec.json so the leakage guard can fire",
-          "status": "pending",
-          "progress": 0,
-          "detail": "train.py::assert_no_target_leakage reads derived_from_target, target_y and target_scaled from feature_spec.json. build_feature_spec(features, selected_columns, scalers) has no target parameter and emits none of the three, so `derived` is always empty and the guard returns before checking anything. This is the highest-severity item in the plan: the failure it catches LOOKS LIKE SUCCESS. A lab target sampled daily against a 1-minute PI grid with any target-derived lag feature yields R² near 1.0, and Step 3 would render that with a convincing actual-vs-predicted chart. Requires threading the target through FeaturesRequest -> the NestJS DTO -> the client's Step 4 call, and computing derived_from_target from the feature configs. target_y/target_scaled/derived_from_target must NOT enter featureHash: they describe how a run READS the artifact, not how it was built, so two runs with different targets against the same bytes must still share a hash."
+          "status": "completed",
+          "progress": 100,
+          "detail": "train.py::assert_no_target_leakage reads derived_from_target, target_y and target_scaled from feature_spec.json. build_feature_spec(features, selected_columns, scalers) has no target parameter and emits none of the three, so `derived` is always empty and the guard returns before checking anything. This is the highest-severity item in the plan: the failure it catches LOOKS LIKE SUCCESS. A lab target sampled daily against a 1-minute PI grid with any target-derived lag feature yields R² near 1.0, and Step 3 would render that with a convincing actual-vs-predicted chart. Requires threading the target through FeaturesRequest -> the NestJS DTO -> the client's Step 4 call, and computing derived_from_target from the feature configs. target_y/target_scaled/derived_from_target must NOT enter featureHash: they describe how a run READS the artifact, not how it was built, so two runs with different targets against the same bytes must still share a hash.",
+          "verification_note": "Implemented 2026-08-18. build_feature_spec gained an optional 4th target_y param; when set it adds target_y/target_scaled/derived_from_target AFTER the hash is computed (never entering it). derived_from_target is a TRANSITIVE closure (a forward pass tracking every column that reads the target or an already-tainted column), not a direct-read check — the original task text under-specified this, and a direct-read predicate would miss a feature chained off an earlier target-derived feature. artifact_service.py::features() now also calls the existing (previously orphaned) force_keep_target helper once and reuses that same effective column list for both select_columns and build_feature_spec, so the spec never claims a different column set than what was actually written. Threaded through CreateFeaturesSchema (NestJS), both python call sites (inline /features route and the async job path incl. readFeatureRecipe), and the client (dwTargetTagAtom -> useDatasetGoldWarm -> startFeaturesJob), with targetTag added to the warming effect's dependency list. assert_target_is_unscaled was deliberately left uncalled — a scaled target is recorded truthfully and blocked later at training time by train.py's existing check, not at dataset-save time. Verified via 6 new pytest cases in test_feature_spec_quirks.py (14/14 pass) proving build_feature_spec's own contract, PLUS a 7th seam test (test_features_force_keeps_target_through_select_columns in test_artifact_service_features.py) proving the wiring at the call site actually works: with selected_columns deliberately omitting the target, both the WRITTEN BYTES and the spec's selectedColumns retain it — the first-pass draft of this note cited only the unit-level tests, which would have missed a broken call site. Full apps/python suite: 617 passed, 1 pre-existing unrelated failure (test_features_writes_feature_spec_sidecar_and_returns_its_key, confirmed via git stash to predate this branch), 66 skipped."
         },
         {
           "id": "MODEL-FLOW-000-T03",
           "title": "Fix container resource limits (tmpfs exceeds the memory cap)",
-          "status": "pending",
-          "progress": 0,
-          "detail": "Memory is 4 GiB while /scratch is an 8 GiB tmpfs. A tmpfs is charged to the container's own memory cgroup, so bytes written to /scratch count as RAM. train.py stages data.parquet there AND loads it into a DataFrame, so the peak is roughly the artifact size twice over plus pandas expansion. The container is OOM-killed with no message train.py can report — it surfaces only as a non-zero exit in watch(). Raise Memory and lower the tmpfs size so the two are consistent."
+          "status": "completed",
+          "progress": 100,
+          "detail": "CORRECTED 2026-08-18: this task's premise was inverted against the tree. trainning-container.authorized.service.ts:27-29 sets Memory to 8 GiB (`8 * 1024 ** 3`) and line 92 sets the /scratch tmpfs to 2 GiB (`size=2g`) — memory already exceeds the tmpfs, which is the consistent direction, not the reverse this task described. Neither value is overridden by any TRAINING_MEMORY_BYTES/TRAINING_NANO_CPUS env var in .env or .env.example, so these code defaults are the effective, already-safe limits.",
+          "verification_note": "Verified 2026-08-18 by reading trainning-container.authorized.service.ts:19-30,83-95 directly. Already satisfied — no code change needed. The residual risk the original reasoning still correctly names (tmpfs pages are charged to the container's memory cgroup, so /scratch + the in-memory DataFrame + sklearn all share the 8 GiB cap) remains true and worth monitoring under a large artifact, but is not a defect to fix."
         },
         {
           "id": "MODEL-FLOW-000-T04",
           "title": "Align the container's callback base path with the controller",
-          "status": "pending",
-          "progress": 0,
-          "detail": "train.py builds API = {API_BASE}/internal/model/runs/{RUN_ID}; ModelRunAuthorizedController is @Controller('authorized/model/runs') behind the /api/v1 global prefix. Every callback 404s, starting with /claim. Pick one: either the container's path gains the real prefix, or the controller moves to internal/model/runs — the latter reads better, since 'authorized' means a user JWT everywhere else in this codebase and this controller explicitly does not take one."
+          "status": "completed",
+          "progress": 100,
+          "detail": "train.py builds API = {API_BASE}/internal/model/runs/{RUN_ID}; ModelRunAuthorizedController is @Controller('authorized/model/runs') behind the /api/v1 global prefix. Every callback 404s, starting with /claim. Pick one: either the container's path gains the real prefix, or the controller moves to internal/model/runs — the latter reads better, since 'authorized' means a user JWT everywhere else in this codebase and this controller explicitly does not take one.",
+          "verification_note": "Verified 2026-08-18 by reading images/trainer/train.py:29-42 directly. Line 40 already builds `{API_BASE}/api/v1/authorized/model/runs/{RUN_ID}`, matching the controller's `authorized/model/runs` path behind `setGlobalPrefix('api')` + URI versioning v1. Already satisfied — no code change needed. Note: nothing in CI builds images/trainer/Dockerfile, so a deployed image tagged scgc/soft-sensor-trainer:1.0.0 could still carry stale train.py — the repo source is correct, deployment currency was not verified."
         },
         {
           "id": "MODEL-FLOW-000-T05",
           "title": "Stop leaking tokenHash from cancelRunService",
-          "status": "pending",
-          "progress": 0,
-          "detail": "Its findFirst has no omit, and the early return for an already-terminal run returns that row straight to the caller. The other three read paths already omit it. A token hash reaching the browser is not exploitable on its own, but it is the kind of leak that becomes one after any change to how tokens are compared."
+          "status": "completed",
+          "progress": 100,
+          "detail": "Its findFirst has no omit, and the early return for an already-terminal run returns that row straight to the caller. The other three read paths already omit it. A token hash reaching the browser is not exploitable on its own, but it is the kind of leak that becomes one after any change to how tokens are compared.",
+          "verification_note": "Verified 2026-08-18 by reading model-run-launch.authorized.service.ts:158-186 directly. `omit: { tokenHash: true }` is present on both the findFirst (line 167) and the update (line 177); the early-terminal-run return at line 170 returns the already-omitted row. Already satisfied — no code change needed."
         },
         {
           "id": "MODEL-FLOW-000-T06",
           "title": "Remove the debug print of the presign request",
-          "status": "pending",
-          "progress": 0,
-          "detail": "routers/preprocess.py::presign_artifact prints the whole request body. Neither the request nor the response should reach a log: a presigned URL is a bearer capability for the artifact bytes, and anyone who can read the log can download them for the lifetime of the URL."
+          "status": "completed",
+          "progress": 100,
+          "detail": "routers/preprocess.py::presign_artifact prints the whole request body. Neither the request nor the response should reach a log: a presigned URL is a bearer capability for the artifact bytes, and anyone who can read the log can download them for the lifetime of the URL.",
+          "verification_note": "Fixed 2026-08-18: deleted the `print(f\"Presign request for artifact {body}\")` at routers/preprocess.py:488-489. Confirmed this router module has no other importer besides main.py's route mount."
         },
         {
           "id": "MODEL-FLOW-000-T07",
           "title": "Delete the dead tag_stats path",
-          "status": "pending",
-          "progress": 0,
-          "detail": "artifact_service.tag_stats duplicates column_stats line for line, references TagStatsRequest which is not imported (the module fails to import), and has no router endpoint. Its NestJS counterparts are equally broken: getDraftArtifactTagStatsService uses an unimported PythonTagStatsSchema, and getDraftArtifactStatsController calls a method name that does not exist. Remove all four, plus the POST /:id/artifacts/:artifactId/stats route."
+          "status": "completed",
+          "progress": 100,
+          "detail": "artifact_service.tag_stats duplicates column_stats line for line, references TagStatsRequest which is not imported (the module fails to import), and has no router endpoint. Its NestJS counterparts are equally broken: getDraftArtifactTagStatsService uses an unimported PythonTagStatsSchema, and getDraftArtifactStatsController calls a method name that does not exist. Remove all four, plus the POST /:id/artifacts/:artifactId/stats route.",
+          "verification_note": "Verified 2026-08-18 via repo-wide grep for tag_stats|TagStatsRequest|PythonTagStatsSchema|getDraftArtifactTagStats|getDraftArtifactStatsController — zero hits anywhere in apps/backend, apps/python, or packages. Already satisfied — no code change needed."
+        },
+        {
+          "id": "MODEL-FLOW-000-T08",
+          "title": "Delete the orphan half-applied build_feature_spec in train.py",
+          "status": "completed",
+          "progress": 100,
+          "detail": "Found during T02 re-audit, not in the original task list. images/trainer/train.py:180-203 held a second, broken copy of build_feature_spec: `spec = {...}` is a set containing Ellipsis (the next line's item assignment would raise TypeError), `_reads_tag` is undefined anywhere in the repo, and `feature_column_name` is not imported into train.py. Unreachable from main() — the trainer only ever reads feature_spec.json, it does not author one; the connector (feature_spec_service.py) owns that. Latent, not fatal, but the most plausible explanation for how T02 came to look already-attempted.",
+          "verification_note": "Fixed 2026-08-18: deleted the orphan function. Confirmed via grep that nothing imports train.py as a module (it is a standalone container ENTRYPOINT)."
+        },
+        {
+          "id": "MODEL-FLOW-000-T09",
+          "title": "Harden is_model_run_key against path traversal",
+          "status": "completed",
+          "progress": 100,
+          "detail": "Found during re-audit. object_store.py's is_model_run_key was a substring test (`key.startswith('models/') and '/runs/' in key'`), so a malformed model_id like '../../x' would pass. Currently unreachable — the sole caller (presign_model_run_upload) builds keys only from run.modelId/run.id off the ModelTrainingRun row, never from a container-supplied id directly — but MODEL-FLOW-003-T08 widens this predicate to accept the draft scope too, which is when a malformed id becomes reachable.",
+          "verification_note": "Fixed 2026-08-18: rewrote as a structural check requiring exactly 4 non-empty path segments after MODEL_ROOT (model_id/runs/run_id/filename), none of them '.' or '..', mirroring is_committed_artifact_key's sibling shape. Confirmed the sole caller (artifact_service.presign_model_run_upload) still passes with well-formed keys. Added test_is_model_run_key_rejects_traversal_and_malformed_segments to tests/test_object_store.py (8 cases: valid key, '../../x' traversal, mid-path '..', double-slash, extra segment, wrong literal, empty segment, wrong root) — all pass. This is the actual claim the task makes; a passing pre-existing suite alone would not have proven it."
+        },
+        {
+          "id": "MODEL-FLOW-000-T10",
+          "title": "Collapse the degenerate ternary in watch()",
+          "status": "completed",
+          "progress": 100,
+          "detail": "Found during re-audit. trainning-container.authorized.service.ts:133 was `status: StatusCode === 0 ? 'FAILED' : 'FAILED'` — both branches identical, so the condition is dead code. The failureReason string two lines below correctly distinguishes a clean exit that never called /complete from a genuine crash; only the status assignment was affected.",
+          "verification_note": "Fixed 2026-08-18: collapsed to a plain `status: 'FAILED'`. The two distinct failureReason strings are unchanged."
         }
       ],
 
@@ -180,22 +213,26 @@
         {
           "id": "MODEL-FLOW-000-V01",
           "description": "Create a run against a saved dataset and confirm a 201 with a QUEUED row.",
-          "status": "pending"
+          "status": "pending",
+          "note": "Requires a live backend + Postgres + Docker daemon, not available in this session. Not run."
         },
         {
           "id": "MODEL-FLOW-000-V02",
           "description": "Construct a lag feature derived from a lab target on a 1-minute grid and confirm the run FAILS with the leakage message. This is the test that proves T02 actually works — the guard passing silently is indistinguishable from the guard being absent.",
-          "status": "pending"
+          "status": "pending",
+          "note": "Manual, end-to-end only — images/trainer/ has zero tests and train.py reads os.environ at import time, so it is not importable without a running container. Also requires rebuilding the trainer image (nothing in CI builds images/trainer/Dockerfile). Not run in this session."
         },
         {
           "id": "MODEL-FLOW-000-V03",
           "description": "Assert featureHash is identical for two specs differing only in target_y.",
-          "status": "pending"
+          "status": "completed",
+          "note": "Verified 2026-08-18: test_target_fields_are_excluded_from_the_hash in test_feature_spec_quirks.py asserts a spec with no target, target_y='TI-101', and target_y='VI-202' (same features/selection/scalers) all share one featureHash. 14/14 tests in the file pass."
         },
         {
           "id": "MODEL-FLOW-000-V04",
           "description": "Run end-to-end and confirm /claim, /log, /upload-urls and /complete all return 2xx.",
-          "status": "pending"
+          "status": "pending",
+          "note": "Requires a live backend + Docker daemon, not available in this session. Not run."
         }
       ]
     },
@@ -281,11 +318,11 @@
       "id": "MODEL-FLOW-002",
       "title": "Model Draft Workspace as a Database Entity",
       "priority": 2,
-      "status": "needs_rework",
-      "progress": 40,
+      "status": "completed",
+      "progress": 100,
       "dependencies": ["MODEL-FLOW-001"],
-      "implementation": "SUPERSEDED. The first pass built a client-only jotai draft (apps/client/store/model-pipeline.ts: DraftState + mpDraftIdAtom/mpDraftStateAtom/mpTrainingResultAtom/mpEvaluationResultAtom/mpArtifactRefAtom, wired into resetWizardAtom). That state is still useful as wizard UI state and is NOT being deleted — but it cannot serve as the draft MODEL-FLOW-003 needs: a training container has no browser and reads its spec from an HTTP endpoint backed by a row. See decisions.draft_persistence.",
-      "rework_note": "The jotai atoms stay as the wizard's local mirror. What is added is the server-side owner beneath them.",
+      "implementation": "SUPERSEDED-then-REWORKED. The first pass built a client-only jotai draft (apps/client/store/model-pipeline.ts: DraftState + mpDraftIdAtom/mpDraftStateAtom/mpTrainingResultAtom/mpEvaluationResultAtom/mpArtifactRefAtom, wired into resetWizardAtom). That state is still useful as wizard UI state and was NOT deleted — but it could not serve as the draft MODEL-FLOW-003 needs: a training container has no browser and reads its spec from an HTTP endpoint backed by a row. See decisions.draft_persistence. T06-T09 (2026-08-18) added the server-side ModelDraft beneath it: Prisma entity + migration, ModelTrainingRun repointed with a CHECK constraint, a new authorized/model-draft module (create/get/patch/abandon), and a client sync hook (mpServerDraftIdAtom + useModelDraftSync) wired into Phase2TrainingConfig.",
+      "rework_note": "The jotai atoms stay as the wizard's local mirror. What was added is the server-side owner beneath them — done.",
       "description": "Introduce a temporary Model Draft Workspace that stores the current model configuration, training result, evaluation result, and artifacts before the user clicks Save Model.",
 
       "tasks": [
@@ -318,36 +355,39 @@
           "title": "Store training and evaluation references in Model Draft",
           "status": "completed",
           "progress": 100
-        }
-                {
+        },
+        {
           "id": "MODEL-FLOW-002-T06",
           "title": "Add the ModelDraft Prisma entity",
-          "status": "pending",
-          "progress": 0,
-          "detail": "Mirror DatasetDraft field for field where the concepts match: id, workspaceId, name, status (ACTIVE | SAVED | ABANDONED), savedModelId, createdById, timestamps. Model-specific: plantId, nodeId, datasetId, targetY, algorithm, hyperparameters (Json), splitRatio, currentRunId. ABANDON, never delete — the same reason DatasetDraft gives: a stale wizard tab that keeps polling gets an honest ABANDONED instead of a 404 for a row that vanished under it."
+          "status": "completed",
+          "progress": 100,
+          "detail": "Mirror DatasetDraft field for field where the concepts match: id, workspaceId, name, status (ACTIVE | SAVED | ABANDONED), savedModelId, createdById, timestamps. Model-specific: plantId, nodeId, datasetId, targetY, algorithm, hyperparameters (Json), splitRatio, currentRunId. ABANDON, never delete — the same reason DatasetDraft gives: a stale wizard tab that keeps polling gets an honest ABANDONED instead of a 404 for a row that vanished under it.",
+          "verification_note": "Implemented 2026-08-18: ModelDraftStatus enum + ModelDraft model added to schema.prisma, mirroring DatasetDraft. Back-relations added to Workspace and User. Migration 20260818021838_model_flow_002_model_draft applied cleanly to the live dev Postgres (softsensorproject-db-1)."
         },
         {
           "id": "MODEL-FLOW-002-T07",
           "title": "Repoint ModelTrainingRun at the draft",
-          "status": "pending",
-          "progress": 0,
-          "detail": "modelId becomes nullable; add modelDraftId. Exactly the shape DatasetArtifact already uses (draftId set at creation, datasetId set at adoption, draftId KEPT afterward for traceability). A run created from the wizard has modelDraftId and a null modelId until Save Model adopts it."
+          "status": "completed",
+          "progress": 100,
+          "detail": "modelId becomes nullable; add modelDraftId. Exactly the shape DatasetArtifact already uses (draftId set at creation, datasetId set at adoption, draftId KEPT afterward for traceability). A run created from the wizard has modelDraftId and a null modelId until Save Model adopts it.",
+          "verification_note": "Implemented 2026-08-18: modelId -> String?, modelDraftId String? + relation + index added. Hand-written CHECK constraint (ModelTrainingRun_owner_present, migration 20260818021900_model_flow_002_owner_check) enforces 'never neither', mirroring DatasetArtifact_owner_present. Confirmed it actually FIRES, not just that it exists in \\d output: ran an explicit INSERT with both modelId and modelDraftId null inside a BEGIN/ROLLBACK against the live dev DB — got 'ERROR: ... violates check constraint \"ModelTrainingRun_owner_present\"', then rolled back cleanly (no data left behind). Fixed the resulting compile break in model-run.authorized.service.ts (mintUploadUrls/complete used run.modelId as a bare string) with a requireModelId() guard that throws until MODEL-FLOW-003-T08 repoints run object keys at the draft prefix — this path is unreachable today since createRunService always sets modelId. pnpm --filter=backend check-types and build both clean (only the 4 pre-existing unrelated auth/**/*.spec.ts errors remain)."
         },
         {
           "id": "MODEL-FLOW-002-T08",
           "title": "ModelDraft lifecycle endpoints",
-          "status": "pending",
-          "progress": 0,
-          "detail": "POST /model-drafts, GET /model-drafts/:id, POST /model-drafts/:id/abandon, PATCH for config. Its own top-level route, not nested under authorized/model — a draft is not a model and has no model id to key a nested route on, the same reasoning dataset-drafts states for itself."
+          "status": "completed",
+          "progress": 100,
+          "detail": "POST /model-drafts, GET /model-drafts/:id, POST /model-drafts/:id/abandon, PATCH for config. Its own top-level route, not nested under authorized/model — a draft is not a model and has no model id to key a nested route on, the same reasoning dataset-drafts states for itself.",
+          "verification_note": "Implemented 2026-08-18: new api/v1/model-draft module (controller/service/dto), mirroring dataset-draft's access-control shape (assertWorkspaceAccess/assertDraftAccess, 404-not-403, admin bypass). PATCH added deliberately — a divergence from DatasetDraft (see decisions.draft_persistence): a training container has no browser and reads its spec from this row, so it must stay current as Step 2 changes, not shipped once at Save. Registered in app.module.ts. Verified live: booted the backend against the real dev DB, confirmed all 4 routes mounted (POST/GET/PATCH/abandon on /api/v1/authorized/model-drafts), and confirmed the JwtAccessGuard rejects an unauthenticated POST with 401 (not 404) — proves routing + guard wiring end to end. Full auth-flow creation was not exercised (would need a seeded user/session)."
         },
         {
           "id": "MODEL-FLOW-002-T09",
           "title": "Sync the jotai draft to the server draft",
-          "status": "pending",
-          "progress": 0,
-          "detail": "Step 1 creates the ModelDraft on first meaningful edit; Step 2 PATCHes the training config before starting a run. The client keeps its local mirror for instant feedback — the server copy is what the container reads."
+          "status": "completed",
+          "progress": 100,
+          "detail": "Step 1 creates the ModelDraft on first meaningful edit; Step 2 PATCHes the training config before starting a run. The client keeps its local mirror for instant feedback — the server copy is what the container reads.",
+          "verification_note": "Implemented 2026-08-18: services/model-draft.ts (object-literal service) + hooks/model/use-model-draft-sync.ts (create-on-first-edit with in-flight dedup, mirroring dataset-draft-bronze.ts; 600ms debounced PATCH). Wired into Phase2TrainingConfig — that component only mounts once canAdvance(1) has validated workspace/plant/node/dataset/name, which is the 'advancing Step 1 -> 2' trigger. New mpServerDraftIdAtom cleared in BOTH resetWizardAtom and resetPipeline (the two reset writers previously disagreed on which mp* atoms they touched). targetY is written null unless exactly one target is selected (never targetVariables[0]) — the MODEL-FLOW-003-T10 trap named in decisions. splitRatio converted from percentage to fraction at the client boundary. pnpm --filter=client check-types and build both clean (pre-existing unrelated test-file errors only, confirmed identical with/without this branch's changes via git stash)."
         }
-      ],
       ],
 
       "draft_data": [
@@ -366,7 +406,7 @@
         "model_config_reference"
       ],
 
-     "acceptance_criteria": [
+      "acceptance_criteria": [
         "The existing four-step UI remains unchanged.",
         "A ModelDraft row exists and holds Step 1 and Step 2 configuration.",
         "No Model row is created when a draft is created.",
@@ -378,96 +418,138 @@
         {
           "id": "MODEL-FLOW-002-V01",
           "description": "Create a Model Draft and verify that no persistent Model database record is created.",
-          "status": "completed"
+          "status": "completed",
+          "note": "Re-verified 2026-08-18 against the real server-side entity (T06-T09): ModelDraftAuthorizedService.createDraftService issues exactly one prisma.modelDraft.create call and touches the Model table nowhere in the file — confirmed by inspection, not merely by the earlier client-only mock."
         },
         {
           "id": "MODEL-FLOW-002-V02",
           "description": "Verify that Step 1 and Step 2 configuration can be retrieved from the Model Draft.",
-          "status": "completed"
+          "status": "completed",
+          "note": "Re-verified 2026-08-18: GET /api/v1/authorized/model-drafts/:id returns the full mapped shape (plantId/nodeId/datasetId/targetY/algorithm/hyperparameters/splitRatio). Route mounting + JwtAccessGuard confirmed live (401 on an unauthenticated request, not 404). Config round-trip through an authenticated session was not exercised in this session — would need a seeded user."
+        },
+        {
+          "id": "MODEL-FLOW-002-V03",
+          "description": "Create a training run against a ModelDraft with no Model in existence.",
+          "status": "pending",
+          "note": "Deferred to MODEL-FLOW-003 by design — createRunService still requires an existing modelId (MODEL-FLOW-003-T02 is what repoints it to accept a draft). Not a MODEL-FLOW-002 defect: the acceptance criterion describes the end state after 003 lands, and 002's own job was only to give 003 a row to repoint at."
         }
       ]
     },
 
     {
       "id": "MODEL-FLOW-003",
-      "title": "Refactor Training to Run Without Database Commit",
+      "title": "Training Against a Draft, With No Model Commit",
       "priority": 3,
-      "status": "pending",
-      "progress": 0,
-      "dependencies": ["MODEL-FLOW-002"],
+      "status": "in_progress",
+      "progress": 90,
+      "dependencies": ["MODEL-FLOW-000", "MODEL-FLOW-002"],
 
-      "description": "Keep the existing Step 2 Training experience but change the backend behavior so that clicking Training runs the model training process without committing the final model to the database.",
-
+      "implementation": "Backend done 2026-08-18 (T02/T04/T07/T08) — see each task's verification_note. Client done same day (T01/T03/T04/T05/T06/T09): use-model-training.ts rewritten — no longer calls useModelCommit(); instead validates (single target, single algorithm, algorithm in the training container's supported set, AutoML toggles off, dataset has a FINAL artifact), calls the new modelDraftRunService.create via authorized/model-drafts/:draftId/runs, and polls modelDraftRunService.get on a 2.5s interval until the run reaches a terminal status, resuming the poll on remount from ModelDraft.currentRunId if a run is still in flight. useModelDraftSync now exposes ensureDraftId so Start Training can guarantee a draft exists even if the 600ms PATCH debounce hasn't fired yet. TrainState gained lastLog (shown as text in place of the old fake progress bar — T09); mpTrainingResultAtom/mpArtifactRefAtom are populated from the completed run's metrics/modelKey on SUCCEEDED (T05/T06). T10 is the one open item, and its catalogue half was resolved 2026-08-19: validation now enforces exactly one target and one algorithm before a run is created; the wizard's algorithm catalogue (now 12 entries: ols/ridge/hist_gradient_boosting/svm/mlp/grp/pls/random_forest/lightgbm/xgboost/lstm/gru) is intentional per product decision, and train.py's build_model was extended to implement 10 of the 12 (images/trainer/train.py) — lstm/gru remain deferred to MODEL-FLOW-009 and disabled inline in the wizard. STILL OPEN: AutoML toggles (Find Best Model/Params) still have no training-container counterpart — that half of T10 stays blocked; see MODEL-FLOW-003-T10's blocked_reason for why it is not a build_model change.",
+      "description": "Keep Step 2's experience unchanged while training runs against a ModelDraft. Training writes job rows (ModelTrainingRun, ModelTrainingRunLog) — it must, the container authenticates against one and reports into the other — but creates no Model. See decisions.persistence_boundary_clarified.",
       "tasks": [
         {
           "id": "MODEL-FLOW-003-T01",
           "title": "Keep existing Training button behavior",
-          "status": "pending",
-          "progress": 0
+          "status": "completed",
+          "progress": 100,
+          "verification_note": "Implemented 2026-08-18: Phase2TrainingConfig's button JSX (label/spinner/disabled logic driven by training.status) is untouched. The only visible change is what T09 asks for — the numeric progress bar is replaced by the latest log line while training. pnpm --filter=client check-types clean for this file."
         },
         {
           "id": "MODEL-FLOW-003-T02",
           "title": "Update training API to receive Model Draft context",
-          "status": "pending",
-          "progress": 0
+          "status": "completed",
+          "progress": 100,
+          "verification_note": "Implemented 2026-08-18: POST authorized/model-drafts/:draftId/runs (ModelDraftRunAuthorizedController -> createDraftRunService). Reuses buildRunData's artifact validation (FINAL type, checksum, datasetId, target-in-metadata, MIN_LABELLED_ROWS=30) unchanged from the Model-scoped path; refuses 400 if the draft is already SAVED or ABANDONED. pnpm --filter=backend check-types clean."
         },
         {
           "id": "MODEL-FLOW-003-T03",
           "title": "Remove persistent Model database commit from training",
-          "status": "pending",
-          "progress": 0
+          "status": "completed",
+          "progress": 100,
+          "verification_note": "Implemented 2026-08-18: use-model-training.ts no longer imports or calls useModelCommit(). Checked its only other caller (phase-4-deploy.tsx, Step 4's real Save Model path) and mpCreatedModelIdAtom's only other reader (use-model-pipeline-nav.ts's wizard-reset function) — neither is affected, so useModelCommit's create-once-then-update guard now takes its create branch correctly on the FIRST call, which is Step 4, not Step 2."
         },
         {
           "id": "MODEL-FLOW-003-T04",
           "title": "Run training against the Model Draft",
-          "status": "pending",
-          "progress": 0
+          "status": "completed",
+          "progress": 100,
+          "verification_note": "Implemented 2026-08-18: createDraftRunService runs an interactive $transaction creating the run (modelDraftId set, modelId null) then updating modelDraft.currentRunId, then mints a run token and spawns the container via the existing TrainningContainerAuthorizedService (untouched, already correct from MODEL-FLOW-000). Container reads its spec the same way regardless of owner. Client side (use-model-training.ts) now calls this via modelDraftRunService.create (services/model-draft.ts) after validating target/algorithm/dataset-artifact client-side — see the feature's own implementation note for what that guard covers."
         },
         {
           "id": "MODEL-FLOW-003-T05",
           "title": "Persist training result to temporary workspace",
-          "status": "pending",
-          "progress": 0
+          "status": "completed",
+          "progress": 100,
+          "verification_note": "Implemented 2026-08-18: DraftTrainingResult widened with runId + metrics (was algorithm/trainedAt only, a MODEL-FLOW-002 mock). use-model-training.ts's poll loop sets mpTrainingResultAtom on SUCCEEDED, passing run.metrics through as-is (Record<string, unknown> | null) — no Step 3 metric-key mapping attempted here, that belongs to the feature that wires Step 3 to real data. Nothing reads this atom yet (grep confirmed), so widening it broke no existing consumer."
         },
         {
           "id": "MODEL-FLOW-003-T06",
           "title": "Persist trained model artifact reference",
-          "status": "pending",
-          "progress": 0
+          "status": "completed",
+          "progress": 100,
+          "verification_note": "Implemented 2026-08-18: mpArtifactRefAtom set to run.modelKey on SUCCEEDED in the same poll-loop branch as T05 — the key already lives under drafts/{draftId}/runs/{runId}/ per T08. Comment on the atom updated to drop the MODEL-FLOW-002 'mock, TODO' language since this is now real."
         },
         {
           "id": "MODEL-FLOW-003-T07",
           "title": "Update Model Draft state to TRAINED",
-          "status": "pending",
-          "progress": 0
+          "status": "completed",
+          "progress": 100,
+          "verification_note": "Implemented 2026-08-18: ModelDraftStatus enum gained TRAINED (migration 20260818085151_model_flow_003_draft_trained_status, applied live). ModelRunAuthorizedService.complete() resolves the run's owner and, for a draft-owned run going SUCCEEDED, runs an array-form $transaction updating the run AND modelDraft.status/currentRunId together — avoids a reader seeing a SUCCEEDED run against a still-ACTIVE draft. @softsensor/prisma needed its own `pnpm --filter=@softsensor/prisma build` (not just `prisma generate`) to refresh dist/ before the new enum value type-checked in the backend — prisma generate alone only refreshes src/generated/client, not the package's compiled output its package.json types/main point at. pnpm --filter=backend check-types now clean (only the 4 pre-existing unrelated auth/**/*.spec.ts errors remain, confirmed via git diff --stat against those files showing no changes this session)."
+        },
+        {
+          "id": "MODEL-FLOW-003-T08",
+          "title": "Scope run outputs under the draft prefix",
+          "status": "completed",
+          "progress": 100,
+          "detail": "presign_model_run_upload writes to models/{modelId}/runs/{runId}/, but no modelId exists when the container uploads. Move to drafts/{modelDraftId}/runs/{runId}/ and widen is_model_run_key/model_run_key accordingly — that predicate is the only thing standing between a malformed id and a write outside the models prefix, so widening it needs its own test.",
+          "verification_note": "Implemented 2026-08-18: DRAFT_ROOT/draftRunPrefix/draftRunKey added in artifact-keys.ts and object_store.py (kept as separate functions from the model versions, not merged, to keep each root's structural check independent). is_draft_run_key added with the same 4-segment/no-traversal validation as is_model_run_key. ModelRunUploadPresignRequest widened with an exactly_one_owner model_validator (mirrors MaterializeRequest.exactly_one_source's existing pattern); presign_model_run_upload branches on draft_id vs model_id. presignModelRunUpload's TS signature changed to a discriminated union enforcing exactly-one-of at compile time. ModelRunAuthorizedService.mintUploadUrls/complete both resolve owner first and branch the key builder accordingly. Verified: apps/python/.venv/bin/python -m pytest tests/test_object_store.py -k run_key -q -> 4 passed. Full python suite also run: 595 passed, 66 skipped, 1 failed — the failure (test_features_writes_feature_spec_sidecar_and_returns_its_key, a column_stats_key assertion) is unrelated and pre-existing, confirmed absent from this session's diff of both artifact_service.py and its test file."
+        },
+        {
+          "id": "MODEL-FLOW-003-T09",
+          "title": "Replace the mock progress ramp with real polling",
+          "status": "completed",
+          "progress": 100,
+          "verification_note": "Implemented 2026-08-18: the 400ms x6 setInterval ramp is gone. On create, use-model-training.ts polls modelDraftRunService.get(draftId, runId) (wraps GET authorized/model-drafts/:draftId/runs/:runId, which includes logs like getRunService does) every 2.5s until the run reaches SUCCEEDED/FAILED/CANCELED. Progress stays a plain number (0 while training, 100 on done) so RuntimeEstimate's existing ETA math (progress > 5 gate) degrades safely without needing changes to that file; the actual INDETERMINATE signal is TrainState.lastLog, rendered as text in Phase2TrainingConfig in place of the old <Progress> bar (components/ui/progress.tsx is shadcn-generated/immutable and has no indeterminate styling to lean on). A mount effect resumes polling from ModelDraft.currentRunId if trainState.status is still 'training' after a remount. Hardened after review: a single dropped poll no longer surfaces as an error — a transient failure would otherwise push the user to Retrain, which spawns a SECOND container against the same draft (the backend only refuses a SAVED/ABANDONED draft, not a still-training one). failCountRef tolerates up to MAX_CONSECUTIVE_POLL_FAILURES (3) misses in a row, reset on any success, before giving up."
+        },
+        {
+          "id": "MODEL-FLOW-003-T10",
+          "title": "Narrow Step 2 to one target and one algorithm",
+          "status": "blocked",
+          "progress": 80,
+          "detail": "train.py fits spec['targetY'], a single string, and one algorithm. Today's multi-select would silently train on whichever entry sorted first. Also: the UI's split is a percentage while chronological_split multiplies by the row count — 80 instead of 0.8 slices at 80x the length and raises 'leaves one side empty' with a number nobody can trace to a slider. Convert once, at the client boundary, and have the API refuse anything outside (0.5, 0.95).",
+          "verification_note": "Split-ratio conversion was already done (useModelDraftSync's PATCH, MODEL-FLOW-002) and the API-side clamp was already done (CreateTrainingRunSchema.trainTestSplit min(0.5).max(0.95)) — both pre-date this task. 2026-08-18: use-model-training.ts refuses to create a run unless targetVariables.length === 1 and algorithms.length === 1, so a multi-select can no longer silently train on whichever entry sorted first — it errors instead, visibly. 2026-08-19: the catalogue half of blocked_reason is resolved — see below. Task stays blocked on the AutoML half only.",
+          "blocked_reason": "CATALOGUE HALF RESOLVED 2026-08-19: product decision made — the wizard's Algorithm catalogue (12 entries: ols/ridge/hist_gradient_boosting/svm/mlp/grp/pls/random_forest/lightgbm/xgboost/lstm/gru) is intentional; every algorithm is meant to run against real plant data and be compared before anything is narrowed. train.py's build_model was extended to cover 10 of the 12 (images/trainer/train.py); the bare 'hgb' string was dropped from the client-facing enum (kept as a build_model branch alongside 'hist_gradient_boosting' for backend compatibility only — one algorithm, one client-facing id); lstm/gru are deferred to MODEL-FLOW-009 (a data-shape/pipeline change, not a build_model branch) and disabled inline in AlgorithmSelector with a stated reason so a user cannot select a run that will always fail. STILL BLOCKED — AUTOML HALF: Find Best Model / Find Best Params have no training-container counterpart, and this task does not resolve that — one run fits one algorithm; AutoML is N runs orchestrated ABOVE the container (a client/backend loop calling create-run repeatedly and comparing results), not a flag passed into train.py. Sizing that as a build_model change would understate it the same way sizing lstm/gru as one would have. T10's client-side AutoML refusal (use-model-training.ts, \"AutoML ... isn't wired to a real training run yet\") stays in place unchanged. Decision needed before this task can close: define the AutoML orchestration loop, or formally drop the two toggles from the UI."
         }
       ],
 
       "acceptance_criteria": [
         "The Step 2 user interface remains unchanged.",
-        "Clicking Training starts the model training process.",
-        "Training does not create a persistent Model database record.",
-        "Training result is stored in the Model Draft Workspace.",
+        "Clicking Training starts a real container.",
+        "Training creates NO Model row. It does create ModelTrainingRun and ModelTrainingRunLog rows — required for the container to authenticate and report.",
+        "The run references a ModelDraft, not a Model.",
         "Training metrics are available to Step 3 Evaluation.",
-        "The trained model artifact is associated with the Model Draft.",
-        "Training completion changes the Model Draft state to TRAINED."
+        "Run artifacts are written under the draft's own object prefix.",
+        "Training completion sets the draft state to TRAINED."
       ],
 
       "verification": [
         {
           "id": "MODEL-FLOW-003-V01",
-          "description": "Run training from Step 2 and verify that no Model record is created in the database.",
-          "status": "pending"
+          "description": "Run training from Step 2 and verify SELECT count(*) FROM \"Model\" is unchanged, while a ModelTrainingRun row exists against the draft.",
+          "status": "pending",
+          "note": "Verified by code inspection only, 2026-08-18: createDraftRunService's $transaction writes ModelTrainingRun with modelDraftId set / modelId null and touches modelDraft only for currentRunId — no prisma.model.create/update call anywhere on this path. A live boot to run the actual SQL check was attempted (backend dev server) but apps/backend has no .env in this environment (JwtStrategy throws 'requires a secret or key' on startup) — not fabricating one. Needs a real DB query against a live backend to close out."
         },
         {
           "id": "MODEL-FLOW-003-V02",
           "description": "Verify that the training result is available for Step 3 Evaluation.",
-          "status": "pending"
+          "status": "pending",
+          "note": "mpTrainingResultAtom is populated on SUCCEEDED (T05), but nothing reads it yet — Step 3's own wiring to real data is MODEL-FLOW-004's job, not this feature's. 'Available' is true structurally; 'consumed' isn't yet true anywhere."
         },
         {
           "id": "MODEL-FLOW-003-V03",
           "description": "Verify that the trained artifact is associated with the Model Draft.",
-          "status": "pending"
+          "status": "pending",
+          "note": "mpArtifactRefAtom is populated from run.modelKey on SUCCEEDED (T06), and that key is written under drafts/{draftId}/runs/{runId}/ (T08, pytest-verified). Not yet exercised end-to-end with a real container run — same live-boot blocker as V01."
         }
       ]
     },
@@ -547,8 +629,8 @@
       "id": "MODEL-FLOW-005",
       "title": "Implement Background Fine-Tuning Process",
       "priority": 5,
-      "status": "pending",
-      "progress": 0,
+      "status": "blocked",
+      "blocked_on": "A definition of 'fine-tuning' for this system — see decisions.fine_tuning_undefined. train.py fits once and exits; HistGradientBoostingRegressor offers no incremental warm start. Until it is settled whether this means a hyperparameter search, a retrain on a widened window, or something else, T01-T08 describe a job whose work is unspecified.",
       "dependencies": ["MODEL-FLOW-003", "MODEL-FLOW-004"],
 
       "description": "Add an asynchronous background fine-tuning process that operates on the trained Model Draft and does not commit the model to the database.",
@@ -797,6 +879,13 @@
           "title": "Mark Model Draft as SAVED after successful commit",
           "status": "pending",
           "progress": 0
+        },
+        {
+          "id": "MODEL-FLOW-007-T10",
+          "title": "Adopt the run's artifacts by pointer",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Save Model sets modelId on the winning ModelTrainingRun and keeps its object keys as they are — never copies bytes, never re-uploads, exactly what DatasetArtifact.datasetId's own schema comment prescribes for the dataset side. modelDraftId is kept for traceability. Refuse (409) a draft already SAVED: without that guard a second save creates a second Model, repoints the same run away from the first, and leaves the first dangling — the identical hole saveDraftAsDatasetService closes for datasets."
         }
       ],
 
@@ -935,6 +1024,75 @@
           "status": "pending"
         }
       ]
+    },
+
+    {
+      "id": "MODEL-FLOW-009",
+      "title": "Sequence Model Training (LSTM/GRU) — Deferred, Needs a Windowing Pipeline",
+      "priority": 9,
+      "status": "blocked",
+      "blocked_on": "lstm/gru need a data-SHAPE change (2D samples x features -> 3D samples x timesteps x features) upstream of the split, plus a sequence_length hyperparameter and a deep-learning runtime this image doesn't carry. This is not a build_model branch — recorded separately per CLAUDE.md 17 (missing infrastructure, unclear contract) rather than left as an omission when MODEL-FLOW-003-T10's catalogue half was resolved (images/trainer/train.py; apps/client/store/model-pipeline.ts Algorithm catalogue).",
+      "dependencies": ["MODEL-FLOW-003"],
+
+      "description": "The wizard's Algorithm catalogue includes lstm and gru; train.py's build_model raises a named error for both rather than the generic 'Unsupported algorithm' message, and the wizard disables both inline (AlgorithmSelector) so a user cannot select a run that will always fail. This feature is what it would take to actually run them — not scoped or estimated as part of the 10-algorithm tabular extension, because the shape of the work is different in kind, not degree.",
+
+      "tasks": [
+        {
+          "id": "MODEL-FLOW-009-T01",
+          "title": "Design the windowing step (2D -> 3D) and where it runs in the pipeline",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Sequence models need (samples, timesteps, features); train.py currently builds a flat (samples, features) frame and hands feature_cols straight to fit(). Windowing must happen BEFORE chronological_split (train.py:143-164) — windowing after the split lets a window's timesteps span the train/test boundary, which is exactly the ordering bug the module docstring already warns about for the non-Good-target drop (train.py:8-12), just one step later in the pipeline."
+        },
+        {
+          "id": "MODEL-FLOW-009-T02",
+          "title": "Extend the leakage guard to cover window-straddling, not just row-wise lags",
+          "status": "pending",
+          "progress": 0,
+          "detail": "assert_no_target_leakage (train.py:101-140) reasons about row-wise lag features via the target's labelled-vs-row median sampling gap — it says nothing about a WINDOW that starts before the cut and ends after it. A window straddling chronological_split's boundary is a leakage path today's guard cannot see, because it was written for a different failure shape (a lag column repeating the current target value, not a window spanning two sides of a split). This needs its own check, not a parameter on the existing one."
+        },
+        {
+          "id": "MODEL-FLOW-009-T03",
+          "title": "Add sequence_length (and validate epochs/batch_size/hidden_size against it) to the hyperparameter contract",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Correction to an earlier framing of this gap: HYPERPARAMS.lstm / HYPERPARAMS.gru (apps/client/lib/training-config.ts:212-264) already collect epochs, batch_size, and hidden_size — those are NOT missing. The one genuinely missing field is sequence_length, the value that actually defines the window this feature needs. Both the DTO's HyperparametersSchema and the client catalogue need it added, and epochs/batch_size need a documented default now that they will actually be consumed by a real fit loop instead of sitting unused."
+        },
+        {
+          "id": "MODEL-FLOW-009-T04",
+          "title": "Add a deep-learning runtime to the trainer image and re-audit sizing",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Needs tensorflow or torch (+~1.5-2 GB), which changes build time and the memory/tmpfs sizing MODEL-FLOW-000-T03 already audited and closed (8 GiB Memory, no swap; 2 GiB tmpfs /scratch sharing the same cgroup — trainning-container.authorized.service.ts). That audit's 'not a defect to fix' conclusion was reached against the current sklearn-only image; it does not automatically extend to an image carrying a full DL framework and this needs its own pass, not an inherited one."
+        }
+      ],
+
+      "acceptance_criteria": [
+        "A windowing step exists and runs strictly before chronological_split, never after.",
+        "A window cannot straddle the train/test cut — verified by a leakage-style guard, not by convention.",
+        "sequence_length is a real, validated hyperparameter end to end (client catalogue, DTO, train.py), not inferred or hardcoded.",
+        "The trainer image's memory/tmpfs sizing is re-verified against the DL runtime it now carries, not assumed unchanged from the sklearn-only audit.",
+        "Until all of the above land, lstm/gru remain refused — at the API (TrainingAlgorithmEnum), in the wizard (AlgorithmSelector, disabled with a reason), and in build_model (named backstop error) — never silently mapped to a tabular algorithm."
+      ],
+
+      "verification": [
+        {
+          "id": "MODEL-FLOW-009-V01",
+          "description": "Attempt to select lstm or gru in the wizard and confirm the option is disabled with a stated reason, not merely absent.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-009-V02",
+          "description": "Attempt to force lstm/gru through directly against the API (bypassing the wizard) and confirm a 400 from TrainingAlgorithmEnum, not a spawned container.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-009-V03",
+          "description": "Call build_model('lstm', ...) directly and confirm the named error (windowing/sequence_length/runtime), not the generic 'Unsupported algorithm' message.",
+          "status": "completed",
+          "note": "Verified 2026-08-19 as part of the tabular-algorithm extension: build_model raises a message naming the missing windowing step, the missing sequence_length hyperparameter, and the missing tensorflow/torch runtime, and suggests Random Forest/LightGBM/XGBoost instead."
+        }
+      ]
     }
   ],
 
@@ -953,6 +1111,8 @@
     "Save Model is the only persistence boundary for the final Model.",
     "Failed Save Model operations do not leave partial Model records.",
     "End-to-end verification passes.",
-    "No unrelated functionality is changed or broken."
+    "No unrelated functionality is changed or broken.",
+    "No persistent MODEL record is created before Save Model. Draft, job and log rows ARE written before it — they are what makes a container able to run and report at all.",
+    "Every metric shown in Step 3 comes from a run whose target-leakage guard actually executed."
   ]
 }

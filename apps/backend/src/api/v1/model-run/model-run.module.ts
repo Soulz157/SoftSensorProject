@@ -4,6 +4,7 @@ import { ModelRunAuthorizedService } from './authorized/model-run.authorized.ser
 import { RunTokenGuard } from '@/guards/run-token.guard';
 import { TrainningContainerModule } from '../trainning-container/trainning-container.module';
 import { ModelRunLaunchAuthorizedController } from './authorized/model-run-launch.authorized.controller';
+import { ModelDraftRunAuthorizedController } from './authorized/model-draft-run.authorized.controller';
 import { ModelRunLaunchAuthorizedService } from './authorized/model-run-launch.authorized.service';
 
 @Module({
@@ -11,6 +12,8 @@ import { ModelRunLaunchAuthorizedService } from './authorized/model-run-launch.a
   controllers: [
     ModelRunAuthorizedController,
     ModelRunLaunchAuthorizedController,
+    // Draft-scoped twin (MODEL-FLOW-003) — training before a Model exists.
+    ModelDraftRunAuthorizedController,
   ],
   providers: [
     ModelRunLaunchAuthorizedService,

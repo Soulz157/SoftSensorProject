@@ -12,7 +12,9 @@ import { useDatasetPipelineNav } from '@/hooks/dataset/use-dataset-pipeline-nav'
 import { useDatasetEditHydration } from '@/hooks/dataset/use-dataset-edit-hydration'
 import {
   dwFetchRequiredAtom,
+  dwModeAtom,
   dwRowSourceAtom,
+  dwRowStageAtom,
   dwSyntheticReasonAtom,
 } from '@/store/dataset-studio'
 import { SyntheticDataBanner } from '@/components/synthetic-data-banner'
@@ -45,8 +47,22 @@ export function WizardShell() {
   // (or materialises one). No-op in create mode, where the live fetch owns the
   // same atom.
   useDatasetEditHydration()
+  const mode = useAtomValue(dwModeAtom)
   const rowSource = useAtomValue(dwRowSourceAtom)
   const syntheticReason = useAtomValue(dwSyntheticReasonAtom)
+  const rowStage = useAtomValue(dwRowStageAtom)
+  // Edit mode only, and only once real rows resolve: `currentArtifactId` is
+  // stage-polymorphic (`SavedDataset.currentArtifactType`'s doc comment), so
+  // a dataset saved past BRONZE (cleaned/feature-engineered/finalized)
+  // hydrates already-processed rows here -- Step 3's crop/clean/impute would
+  // then double-apply on top of them. Known limitation (DS-LAKE-013): the
+  // fix here is surfacing the condition, not yet reading the true BRONZE
+  // artifact.
+  const showStageWarning =
+    mode === 'edit' &&
+    rowSource === 'stored' &&
+    rowStage !== null &&
+    rowStage !== 'BRONZE'
 
   const hideFooterNext = nav.currentStep === 5
   // ตรวจสอบว่าเป็น Step 1 หรือ 2 เพื่อจัด Layout ปุ่มไว้ด้านบน
@@ -154,6 +170,13 @@ export function WizardShell() {
                 cannot live on one screen the user might skip past. */}
             {rowSource === 'synthetic' && syntheticReason && (
               <SyntheticDataBanner reason={syntheticReason} />
+            )}
+            {showStageWarning && (
+              <SyntheticDataBanner
+                reason=""
+                title="These rows are already processed"
+                message={`Hydrated from a ${rowStage} artifact, not the original raw fetch. Cropping, cleaning, and imputation here apply on top of that processing -- they do not replace it.`}
+              />
             )}
             {body}
           </div>

@@ -156,12 +156,27 @@ class ArtifactPresignResponse(BaseModel):
 class ModelRunUploadPresignRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
-    model_id: str
+    #: EXACTLY ONE of model_id / draft_id — same "never neither" shape
+    #: Prisma's ModelTrainingRun.modelId/modelDraftId CHECK constraint uses.
+    #: A run started from the wizard has no model_id yet (MODEL-FLOW-003-T08)
+    #: and writes under drafts/{draftId}/runs/{runId}/ instead.
+    model_id: str | None = None
+    draft_id: str | None = None
     run_id: str
-    #: Filenames under models/{modelId}/runs/{runId}/. Explicit rather than
-    #: "presign everything" so a run that produced no predictions.parquet is
-    #: not handed a URL implying it should have.
+    #: Filenames under {models|drafts}/{ownerId}/runs/{runId}/. Explicit
+    #: rather than "presign everything" so a run that produced no
+    #: predictions.parquet is not handed a URL implying it should have.
     filenames: list[str]
+
+    @model_validator(mode="after")
+    def exactly_one_owner(self) -> "ModelRunUploadPresignRequest":
+        if (self.model_id is None) == (self.draft_id is None):
+            raise ValueError(
+                "Provide exactly one of 'model_id' or 'draft_id'. A presign "
+                "request naming both or neither cannot resolve a single "
+                "unambiguous run-output prefix."
+            )
+        return self
 
 
 class ModelRunUploadPresignResponse(BaseModel):

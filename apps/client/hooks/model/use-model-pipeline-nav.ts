@@ -28,6 +28,7 @@ import {
   mpRetrainCriticalSdAtom,
   mpDriftMonitorAtom,
   mpDriftThresholdPctAtom,
+  mpServerDraftIdAtom,
   type Algorithm,
   type HyperparamValue,
 } from '@/store/model-pipeline'
@@ -120,6 +121,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
   const setTrainState = useSetAtom(mpTrainStateAtom)
   const setCreatedModelId = useSetAtom(mpCreatedModelIdAtom)
   const setSelectedMetrics = useSetAtom(mpSelectedMetricsAtom)
+  const setServerDraftId = useSetAtom(mpServerDraftIdAtom)
 
   const resetTraining = useCallback(() => {
     setTrainState({ status: 'idle', progress: 0 })
@@ -349,6 +351,10 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     setDriftThresholdPctAtom(10)
     setHighestUnlocked(1)
     setCurrentStep(1)
+    // Server-side ModelDraft id — fires on every workspace/plant change
+    // (use-create-model.ts), so a draft keyed to the OLD workspace must
+    // not survive; the next meaningful edit creates a fresh one.
+    setServerDraftId(null)
   }, [
     setSelectedDatasetAtom,
     setAlgorithmAtom,
@@ -369,6 +375,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     setDriftThresholdPctAtom,
     setHighestUnlocked,
     setCurrentStep,
+    setServerDraftId,
   ])
 
   return {

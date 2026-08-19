@@ -18,6 +18,7 @@ import {
   dwRawDatasetAtom,
   dwTimeRangeAtom,
   dwHighestUnlockedAtom,
+  dwSdtaPresetsAtom,
 } from '@/store/dataset-studio'
 import { useImputationTagList } from '@/hooks/dataset/use-imputation-tag-list'
 import { useDatasetTagSelection } from '@/hooks/dataset/use-dataset-tag-selection'
@@ -27,6 +28,8 @@ import { CleaningTagBadges } from './imputation/cleaning-tag-badges'
 import { ProcessingActionFooter } from './processing-action-footer'
 import { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipeline-nav'
 import { CutOffSection } from '../cutoff-section'
+import { datasetHealth } from '@/lib/feature-preset'
+import { SdtaPresetCard } from '../sdta-preset-card'
 
 interface Props {
   nav: UseDatasetPipelineNavResult
@@ -144,6 +147,10 @@ export function Step32Imputation({ nav }: Props) {
     finalPreview,
     requestFinalPreview,
   } = useDatasetDraftPipeline()
+
+  const presets = useAtomValue(dwSdtaPresetsAtom)
+
+  const health = useMemo(() => datasetHealth(raw.tags), [raw.tags])
 
   const handleSave = () => {
     if (cleaningTags.length === 0) return
@@ -274,6 +281,20 @@ export function Step32Imputation({ nav }: Props) {
 
       <div className="relative">
         <div className="min-w-0 space-y-4">
+          <SdtaPresetCard
+            presets={presets}
+            health={health}
+            exclusions={exclusions}
+            conditionalRules={conditionalRules}
+            onExclusionsChange={next => {
+              nav.setExclusions(next)
+              relock()
+            }}
+            onConditionalChange={next => {
+              nav.setConditionalRules(next)
+              relock()
+            }}
+          />
           {cleaningTags.length > 0 ? (
             <div className="space-y-4">
               {dirty && (

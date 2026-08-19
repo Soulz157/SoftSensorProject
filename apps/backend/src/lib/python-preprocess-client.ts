@@ -56,11 +56,26 @@ export async function presignArtifact(input: {
   return PresignArtifactSchema.parse(res);
 }
 
-export async function presignModelRunUpload(input: {
-  model_id: string;
-  run_id: string;
-  filenames: string[];
-}): Promise<PresignedUpload> {
+/**
+ * EXACTLY ONE of `model_id` / `draft_id` — mirrors the Python schema's own
+ * `exactly_one_owner` validator. A run started from the wizard has no
+ * model_id yet (MODEL-FLOW-003-T08) and presigns under `drafts/` instead.
+ */
+export async function presignModelRunUpload(
+  input:
+    | {
+        model_id: string;
+        draft_id?: never;
+        run_id: string;
+        filenames: string[];
+      }
+    | {
+        model_id?: never;
+        draft_id: string;
+        run_id: string;
+        filenames: string[];
+      },
+): Promise<PresignedUpload> {
   const res = await postToPython<unknown>(
     '/v1/preprocess/models/runs/presign-upload',
     input,

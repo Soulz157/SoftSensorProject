@@ -109,6 +109,13 @@ export function tmpPrefix(datasetId: string, jobId: string): string {
 }
 
 export const MODEL_ROOT = 'models/';
+/**
+ * A run started from the wizard has no modelId yet — Save Model has not
+ * happened (MODEL-FLOW-003-T08). Its outputs write here instead, under the
+ * ModelDraft that owns it, and Save Model adopts them by pointer rather than
+ * copying bytes (see decisions.artifact_scope in docs/feature_list.json).
+ */
+export const DRAFT_ROOT = 'drafts/';
 
 export function modelRunPrefix(modelId: string, runId: string): string {
   return `${MODEL_ROOT}${modelId}/runs/${runId}/`;
@@ -120,4 +127,16 @@ export function modelRunKey(
   filename: string,
 ): string {
   return `${modelRunPrefix(modelId, runId)}${filename}`;
+}
+
+export function draftRunPrefix(draftId: string, runId: string): string {
+  return `${DRAFT_ROOT}${draftId}/runs/${runId}/`;
+}
+
+export function draftRunKey(
+  draftId: string,
+  runId: string,
+  filename: string,
+): string {
+  return `${draftRunPrefix(draftId, runId)}${filename}`;
 }

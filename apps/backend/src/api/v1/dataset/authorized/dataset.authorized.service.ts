@@ -27,6 +27,15 @@ const datasetSelect = {
    * seeing both.
    */
   currentArtifactId: true,
+  // The pointer above is stage-polymorphic: `createRaw` points it at a
+  // BRONZE artifact, Save-Dataset repoints it at FINAL, and a post-save
+  // preprocessing job can repoint it again. The client cannot label what
+  // it is showing (raw vs. already-processed) without knowing the stage,
+  // so the type ships alongside the id rather than requiring a second
+  // round trip to look it up.
+  currentArtifact: {
+    select: { type: true },
+  },
   createdAt: true,
   updatedAt: true,
   createdBy: {
@@ -61,6 +70,10 @@ export class DatasetAuthorizedService {
       // `currentVersionId` is the authoritative one — "the newest version" is
       // not the same thing.
       currentVersionId: item.currentVersionId,
+      currentArtifactId: item.currentArtifactId,
+      // See the `currentArtifact` select comment above — null only when
+      // `currentArtifactId` itself is null (no artifact select fires).
+      currentArtifactType: item.currentArtifact?.type ?? null,
       createdAt: item.createdAt.toISOString(),
       updatedAt: item.updatedAt.toISOString(),
       createdBy:
@@ -102,7 +115,7 @@ export class DatasetAuthorizedService {
         createdById: userId,
         ...(workspaceId && { workspaceId }),
       },
-      include: { createdBy: { select: { firstName: true, lastName: true } } },
+      select: datasetSelect,
       orderBy: { createdAt: 'desc' },
     });
     return {

@@ -114,3 +114,79 @@ def test_spec_content_matches_the_ac_fields() -> None:
         "honest empty list, not an invented scheme"
     )
     assert isinstance(spec["featureHash"], str) and len(spec["featureHash"]) == 64
+
+
+# ── target threading (MODEL-FLOW-000-T02) ──────────────────────────────────
+
+
+def test_target_fields_absent_when_no_target_given() -> None:
+    """The six AC fields are ALWAYS present; the three target fields are
+    present ONLY when target_y is passed — never as null placeholders."""
+    spec = _base_spec()
+    assert "target_y" not in spec
+    assert "target_scaled" not in spec
+    assert "derived_from_target" not in spec
+
+
+def test_target_fields_present_when_target_given() -> None:
+    spec = build_feature_spec(
+        copy.deepcopy(BASE_FEATURES), list(BASE_SELECTED), dict(BASE_SCALERS),
+        target_y="TI-101",
+    )
+    assert set(spec) == {
+        "featureVersion", "features", "selectedColumns", "scaling",
+        "encoding", "featureHash", "target_y", "target_scaled",
+        "derived_from_target",
+    }
+    assert spec["target_y"] == "TI-101"
+    assert spec["target_scaled"] is True  # TI-101 has a minmax scaler in BASE_SCALERS
+    assert spec["derived_from_target"] == ["TI-101__lag3"]
+
+
+def test_target_scaled_is_explicit_false_when_unscaled() -> None:
+    spec = build_feature_spec(
+        copy.deepcopy(BASE_FEATURES), list(BASE_SELECTED), {},
+        target_y="TI-101",
+    )
+    assert spec["target_scaled"] is False
+
+
+def test_derived_from_target_is_empty_when_nothing_reads_the_target() -> None:
+    spec = build_feature_spec(
+        copy.deepcopy(BASE_FEATURES), list(BASE_SELECTED), dict(BASE_SCALERS),
+        target_y="FI-404",  # not read by any BASE_FEATURES config
+    )
+    assert spec["derived_from_target"] == []
+
+
+def test_derived_from_target_is_a_transitive_closure() -> None:
+    """A later feature can read an earlier feature's own derived column —
+    both must land in derived_from_target, not just the direct reader.
+    Y__lag1 reads Y directly; Y__lag1__roll5 reads Y__lag1, not Y."""
+    target = "Y"
+    chained = [
+        {"id": "f1", "kind": "lag", "tag": target, "k": 1},
+        {
+            "id": "f2", "kind": "rolling", "tag": "Y__lag1",
+            "window": 5, "agg": "mean",
+        },
+    ]
+    spec = build_feature_spec(chained, None, {}, target_y=target)
+    assert spec["derived_from_target"] == sorted(["Y__lag1", "Y__lag1__roll5_mean"])
+
+
+def test_target_fields_are_excluded_from_the_hash() -> None:
+    """The hash describes how the artifact was BUILT, not how a run reads
+    it — two runs with different targets against the same GOLD bytes must
+    still share a featureHash."""
+    no_target = _base_spec()
+    with_target_a = build_feature_spec(
+        copy.deepcopy(BASE_FEATURES), list(BASE_SELECTED), dict(BASE_SCALERS),
+        target_y="TI-101",
+    )
+    with_target_b = build_feature_spec(
+        copy.deepcopy(BASE_FEATURES), list(BASE_SELECTED), dict(BASE_SCALERS),
+        target_y="VI-202",
+    )
+    assert no_target["featureHash"] == with_target_a["featureHash"]
+    assert with_target_a["featureHash"] == with_target_b["featureHash"]
