@@ -1,0 +1,93 @@
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Param,
+  Patch,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { JwtAccessGuard } from '@/guards/jwt-access.guard';
+import { Users } from '@/common/decorators/user.decorator';
+import { ModelDraftAuthorizedService } from './model-draft.authorized.service';
+import {
+  CreateModelDraftDto,
+  PatchModelDraftDto,
+} from './dto/model-draft.authorized.dto';
+
+/**
+ * `ModelDraft` — the Model Creation wizard's server-side owner while no
+ * `Model` row exists yet (MODEL-FLOW-002).
+ *
+ * Deliberately its own top-level route (`authorized/model-drafts`), not
+ * nested under `authorized/model` like the run routes next door: a draft is
+ * not a model and has no model id to key a nested route on — same
+ * reasoning `DatasetDraftAuthorizedController` states for itself.
+ *
+ * Thin by design (CLAUDE.md §5) — every method delegates.
+ */
+@ApiBearerAuth()
+@ApiTags('Model Draft')
+@Controller('authorized/model-drafts')
+@UseGuards(JwtAccessGuard)
+export class ModelDraftAuthorizedController {
+  constructor(private readonly service: ModelDraftAuthorizedService) {}
+
+  @Post()
+  @HttpCode(201)
+  @ApiOperation({
+    summary: 'Start a Model Creation draft',
+    description:
+      'Creates NO Model row. Training runs against this draft until Save ' +
+      'Model promotes it.',
+  })
+  async createDraftController(
+    @Users() user: Auth.UserPayload,
+    @Body() body: CreateModelDraftDto,
+  ) {
+    return this.service.createDraftService(user, body);
+  }
+
+  @Get('/:id')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Fetch a Model Creation draft' })
+  async getDraftController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+  ) {
+    return this.service.getDraftService(user, id);
+  }
+
+  @Patch('/:id')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Update a Model Creation draft configuration',
+    description:
+      'Whichever fields are provided are updated; the rest are left as ' +
+      'they are. Refuses (409) once the draft has been saved as a Model.',
+  })
+  async patchDraftController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Body() body: PatchModelDraftDto,
+  ) {
+    return this.service.patchDraftService(user, id, body);
+  }
+
+  @Post('/:id/abandon')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Abandon a draft',
+    description:
+      'Marks the draft ABANDONED. Its training runs are left in place — ' +
+      'nothing is deleted.',
+  })
+  async abandonDraftController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+  ) {
+    return this.service.abandonDraftService(user, id);
+  }
+}
