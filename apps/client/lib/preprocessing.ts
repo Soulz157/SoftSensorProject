@@ -350,6 +350,8 @@ export type CleaningMethod =
   // outliers
   | 'zscore'
   | 'clip'
+  | 'crop'
+  | 'exclude'
   | 'outlier_median'
   // smoothing
   | 'moving_avg'
@@ -359,9 +361,9 @@ export interface CleaningStep {
   uid: string
   category: CleaningCategory
   method: CleaningMethod
-  /** window (moving_avg) · alpha (exponential) · z-threshold · constant · clip high */
+  /** window (moving_avg) · alpha (exponential) · z-threshold · constant · clip/crop/exclude high */
   param?: number
-  /** clip low bound only */
+  /** clip/crop/exclude low bound only */
   paramLow?: number
 }
 
@@ -457,6 +459,50 @@ function applyCleaningStep(
       if (!cell) continue
       if (low !== undefined && cell.value < low) cell.value = low
       if (high !== undefined && cell.value > high) cell.value = high
+    }
+    return
+  }
+  // Value-axis counterparts of the cropping chart's `crop`/`exclude` drag
+  // modes, sharing the Min/Max params `clip` already uses. The trio differs
+  // only in what it does to a matched reading: `clip` clamps it to the bound,
+  // `crop` KEEPS the band and drops the rows outside it, `exclude` keeps
+  // everything outside and marks what is inside Bad.
+  //
+  // Both are a deliberate no-op while neither bound is set, the same guard
+  // `clip` documents: an unbounded `crop` would drop every row and an
+  // unbounded `exclude` would mark the whole tag Bad, so adding the step
+  // before typing a bound must change nothing.
+  if (method === 'crop') {
+    const low = step.paramLow
+    const high = step.param
+    if (low === undefined && high === undefined) return
+    for (let i = 0; i < rows.length; i++) {
+      const cell = rows[i]?.cells[tag]
+      if (!cell) continue
+      const outside =
+        (low !== undefined && cell.value < low) ||
+        (high !== undefined && cell.value > high)
+      // Row-level, like `drop` — the union across tags is removed once at the
+      // end of preprocessPipelines, so cropping one tag trims that timestamp
+      // for the others too. That is the same trade `drop` already makes.
+      if (outside) dropRows.add(i)
+    }
+    return
+  }
+  if (method === 'exclude') {
+    const low = step.paramLow
+    const high = step.param
+    if (low === undefined && high === undefined) return
+    for (const row of rows) {
+      const cell = row.cells[tag]
+      if (!cell) continue
+      const inside =
+        (low === undefined || cell.value >= low) &&
+        (high === undefined || cell.value <= high)
+      // Marked Bad rather than dropped: null-equivalent, so a later fill step
+      // in the same pipeline can impute it, and only THIS tag is affected —
+      // dropping the row would delete the timestamp for every other tag.
+      if (inside) cell.status = 'Bad'
     }
     return
   }

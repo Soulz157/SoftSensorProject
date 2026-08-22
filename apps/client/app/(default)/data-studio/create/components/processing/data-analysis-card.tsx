@@ -84,8 +84,31 @@ interface Props {
    */
   dataset: BoundedSample
   range: TimeRange
+  /**
+   * MODEL-FLOW-010: an explicit dataset-scoped artifact to analyse. Supplying
+   * both makes every server-backed tab read THAT artifact through the
+   * dataset-scoped routes, and no `dw*` draft atom takes part in the routing
+   * decision — which is what lets a caller outside the data-studio wizard (the
+   * model wizard's Dataset Review step) mount this card at all. Left off, the
+   * routing falls back to the draft atoms exactly as before, so both
+   * data-studio callers are unaffected.
+   */
+  datasetId?: string | null
+  artifactId?: string | null
+  /**
+   * Feature transforms WRITE `dwScalerConfigsAtom` — the data-studio draft
+   * store. A read-only caller must not mount that dialog, or changing a scaler
+   * while reviewing a dataset for training would silently edit an unrelated
+   * dataset draft. It also must not INHERIT that config: those scalers belong
+   * to another wizard's pipeline, so the Raw/Scaled toggle and the stat-table
+   * badges are suppressed with it. Defaults to true for the existing callers.
+   */
+  showTransforms?: boolean
 }
 type TabStatus = 'no-tags' | 'pending' | 'loading' | 'ready' | 'unavailable'
+
+/** Stable empty ref — a fresh `{}` each render would re-run every memo below. */
+const NO_SCALERS: Record<string, ScalerMethod> = {}
 
 function fmt(n: number): string {
   return n.toLocaleString(undefined, { maximumFractionDigits: 2 })
@@ -143,7 +166,13 @@ function AxisSelect({
   )
 }
 
-export function DataAnalysisCard({ dataset, range }: Props) {
+export function DataAnalysisCard({
+  dataset,
+  range,
+  datasetId,
+  artifactId,
+  showTransforms = true,
+}: Props) {
   const { activeTags, focusedTag, colorForTag, selectAll } =
     useDatasetTagSelection(dataset)
   const { compareTags, toggle, atCap } = useCompareTags(activeTags)
@@ -187,13 +216,25 @@ export function DataAnalysisCard({ dataset, range }: Props) {
   // once the user Applies in edit mode a real SILVER exists in THIS draft,
   // and staying pinned to the adopted BRONZE would show raw data for the
   // rest of the session.
-  const useDatasetLeg =
-    !analysisArtifactId && !!editingDataset?.adoptedBronzeArtifactId
+  // An explicitly supplied artifact wins outright and short-circuits all of
+  // the above: the caller has named exactly what to read, so no draft atom
+  // gets a say. Without this the model wizard — where every `dw*` atom is
+  // null — resolves to no artifact at all and the four server-backed tabs sit
+  // on 'pending' forever.
+  const explicit = Boolean(datasetId && artifactId)
+  const adoptedBronzeId = editingDataset?.adoptedBronzeArtifactId ?? null
+  const useDatasetLeg = explicit || (!analysisArtifactId && !!adoptedBronzeId)
 
-  const dsId = useDatasetLeg ? editingDataset!.id : null
-  const dsArtifactId = useDatasetLeg
-    ? editingDataset!.adoptedBronzeArtifactId
-    : null
+  const dsId = explicit
+    ? (datasetId ?? null)
+    : useDatasetLeg
+      ? (editingDataset?.id ?? null)
+      : null
+  const dsArtifactId = explicit
+    ? (artifactId ?? null)
+    : useDatasetLeg
+      ? adoptedBronzeId
+      : null
   const dfId = useDatasetLeg ? null : draftId
   const dfArtifactId = useDatasetLeg ? null : analysisArtifactId
 
@@ -328,23 +369,29 @@ export function DataAnalysisCard({ dataset, range }: Props) {
     setScalerConfigs(prev => ({ ...prev, [column]: method }))
   }
 
+  // Read-only callers see NO scalers rather than another wizard's. Reading
+  // them would be the mirror of the write this flag already blocks: the
+  // Raw/Scaled toggle and the stat-table badges would report a transform the
+  // reviewer never configured and cannot see the origin of.
+  const activeScalers = showTransforms ? scalerConfigs : NO_SCALERS
+
   const columnGroups = useMemo(() => classifyColumns(dataset), [dataset])
 
   // How many columns have an explicit scaler — only these transform; the rest
   // pass through. Drives the Raw/Scaled toggle enablement + caption.
   const scaledTagCount = useMemo(
-    () => dataset.tags.filter(t => scalerConfigs[t]).length,
-    [dataset.tags, scalerConfigs],
+    () => dataset.tags.filter(t => activeScalers[t]).length,
+    [dataset.tags, activeScalers],
   )
 
   // Scale ONLY configured columns: pass 'none' for the rest so toModelReady
   // doesn't default them to min-max.
   const scaledDataset = useMemo(() => {
     const cfg = Object.fromEntries(
-      dataset.tags.map(t => [t, scalerConfigs[t] ?? 'none']),
+      dataset.tags.map(t => [t, activeScalers[t] ?? 'none']),
     ) as Record<string, ScalerMethod>
     return toModelReady(dataset, cfg)
-  }, [dataset, scalerConfigs])
+  }, [dataset, activeScalers])
 
   const showScaled = scaledView && scaledTagCount > 0
 
@@ -486,12 +533,14 @@ export function DataAnalysisCard({ dataset, range }: Props) {
                 />
               </div>
             )}
-            <FeatureTransformDialog
-              numericColumns={columnGroups.numeric}
-              categoricalColumns={columnGroups.categorical}
-              scalerConfigs={scalerConfigs}
-              setScalerConfig={handleSetScaler}
-            />
+            {showTransforms && (
+              <FeatureTransformDialog
+                numericColumns={columnGroups.numeric}
+                categoricalColumns={columnGroups.categorical}
+                scalerConfigs={scalerConfigs}
+                setScalerConfig={handleSetScaler}
+              />
+            )}
           </div>
         )}
 
@@ -515,7 +564,7 @@ export function DataAnalysisCard({ dataset, range }: Props) {
             </p>
             <RawReadingsTable
               dataset={showScaled ? scaledDataset : dataset}
-              scalers={scalerConfigs}
+              scalers={activeScalers}
             />
           </TabsContent>
           <TabsContent value="histogram" className="mt-0">
@@ -620,14 +669,14 @@ export function DataAnalysisCard({ dataset, range }: Props) {
                         <span className="truncate font-mono text-xs">
                           {row.tag}
                         </span>
-                        {scalerConfigs[row.tag] &&
-                          scalerConfigs[row.tag] !== 'none' && (
+                        {activeScalers[row.tag] &&
+                          activeScalers[row.tag] !== 'none' && (
                             <span
-                              title={`Feature transform: ${scalerConfigs[row.tag]} scaler`}
+                              title={`Feature transform: ${activeScalers[row.tag]} scaler`}
                               className="inline-flex items-center gap-1 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium text-primary"
                             >
                               <WandSparkles className="h-3 w-3 shrink-0" />
-                              {scalerConfigs[row.tag]}
+                              {activeScalers[row.tag]}
                             </span>
                           )}
                       </span>

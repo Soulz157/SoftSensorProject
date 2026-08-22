@@ -121,13 +121,27 @@ def test_input_grid_contains_non_good_cells(fixture: dict[str, Any]) -> None:
 
 def test_drop_cases_actually_drop_rows(fixture: dict[str, Any]) -> None:
     """Pins the row-dropping quirks: `drop` removes the union of marked rows once
-    at the end, while `precleanse` conditional-drop removes CELLS, not rows."""
+    at the end, while `precleanse` conditional-drop removes CELLS, not rows.
+
+    `crop` is the third row-dropper — it removes the rows OUTSIDE its band.
+    Its `exclude` twin deliberately is NOT: exclude marks the matched cells Bad
+    so a later fill can impute them, and only for its own tag. That difference
+    is the whole point of having both, so the `else` branch below pins every
+    `exclude_*` fixture at an unchanged row count rather than exempting them.
+    """
     name = fixture["name"]
     n_in = len(fixture["input"]["rows"])
     n_out = len(fixture["expected"]["rows"])
 
     if name.startswith("drop_") or name == "precleanse_time_crop":
         assert n_out < n_in, f"{name} was expected to remove rows ({n_in} -> {n_out})"
+    elif name.startswith("crop_") and not name.endswith("_is_noop"):
+        # The no-bounds case is excluded on purpose: an unbounded crop must
+        # change nothing, so it belongs in the unchanged-row-count branch.
+        assert n_out < n_in, (
+            f"{name} is a value-axis crop — the rows outside its band must be "
+            f"REMOVED ({n_in} -> {n_out})."
+        )
     elif name == "precleanse_conditional_drop":
         assert n_out == n_in, (
             "precleanse 'drop' deletes only that tag's cell and must NOT remove "

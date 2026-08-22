@@ -2,6 +2,8 @@
 
 import {
   ArrowRight,
+  Ban,
+  Crop,
   Info,
   Plus,
   Trash2,
@@ -112,6 +114,24 @@ const TOOLKIT: Record<CleaningCategory, ToolkitItem[]> = {
       method: 'clip',
       label: 'Clip Bounds',
       icon: Scissors,
+      paramLowLabel: 'Min',
+      paramLabel: 'Max',
+    },
+    {
+      // Same Min/Max params as Clip Bounds, and the same no-default rule for
+      // the same reason: an unbounded crop would drop every row. The trio
+      // mirrors the cropping chart's drag modes — clip clamps to the band,
+      // crop keeps it, exclude removes it.
+      method: 'crop',
+      label: 'Crop to Range',
+      icon: Crop,
+      paramLowLabel: 'Min',
+      paramLabel: 'Max',
+    },
+    {
+      method: 'exclude',
+      label: 'Exclude Range',
+      icon: Ban,
       paramLowLabel: 'Min',
       paramLabel: 'Max',
     },

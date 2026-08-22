@@ -6,6 +6,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -14,6 +15,7 @@ import { Users } from '@/common/decorators/user.decorator';
 import { ModelDraftAuthorizedService } from './model-draft.authorized.service';
 import {
   CreateModelDraftDto,
+  ListModelDraftQueryDto,
   PatchModelDraftDto,
 } from './dto/model-draft.authorized.dto';
 
@@ -48,6 +50,26 @@ export class ModelDraftAuthorizedController {
     @Body() body: CreateModelDraftDto,
   ) {
     return this.service.createDraftService(user, body);
+  }
+
+  /**
+   * Declared BEFORE `@Get('/:id')` on purpose — Nest matches routes in
+   * declaration order, and a bare GET would otherwise never be reached.
+   */
+  @Get()
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'List Model Creation drafts',
+    description:
+      'Scoped to workspaces the caller can reach, newest-touched first. ' +
+      'Optionally filtered by workspace and status — the models list asks ' +
+      'for ACTIVE to offer an unfinished wizard back to the user.',
+  })
+  async listDraftsController(
+    @Users() user: Auth.UserPayload,
+    @Query() query: ListModelDraftQueryDto,
+  ) {
+    return this.service.listDraftsService(user, query);
   }
 
   @Get('/:id')

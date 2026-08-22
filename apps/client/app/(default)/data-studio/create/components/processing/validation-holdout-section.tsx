@@ -148,11 +148,11 @@ export function ValidationHoldoutSection({
           }
         />
         <span className="text-sm font-medium text-foreground">
-          Keep Validation (optional)
+          Split Validation data (optional)
         </span>
         {resplitPending && (
           <span className="text-[11px] text-muted-foreground">
-            Applying holdout…
+            Applying…
           </span>
         )}
       </label>
@@ -161,7 +161,7 @@ export function ValidationHoldoutSection({
           <div className="grid grid-cols-2 gap-3">
             <div className="grid gap-1.5">
               <Label htmlFor="mp-holdout-from" className="text-xs">
-                Holdout Start
+                Start
               </Label>
               <DateTimePicker
                 id="mp-holdout-from"
@@ -177,7 +177,7 @@ export function ValidationHoldoutSection({
             </div>
             <div className="grid gap-1.5">
               <Label htmlFor="mp-holdout-to" className="text-xs">
-                Holdout End
+                End
               </Label>
               <DateTimePicker
                 id="mp-holdout-to"

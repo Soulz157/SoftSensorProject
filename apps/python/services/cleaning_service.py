@@ -42,6 +42,7 @@ import numpy as np
 import pandas as pd
 
 from intergrations.object_store import (
+    STATUS_BAD,
     STATUS_GOOD,
     TIMESTAMP_COLUMN,
     status_column,
@@ -223,6 +224,47 @@ def _op_clip(values, statuses, step, precision, drop_rows) -> None:
             values[i] = float(high)
 
 
+def _op_crop(values, statuses, step, precision, drop_rows) -> None:
+    """Keep the [paramLow, param] band; DROP the rows outside it.
+
+    Row-level like `drop`, so the union across tags is removed once at the end
+    — cropping one tag trims that timestamp for the others too.
+
+    A no-op while neither bound is set: an unbounded crop would drop every
+    row, so adding the step before typing a bound must change nothing. Mirrors
+    `applyCleaningStep`'s `crop` branch exactly.
+    """
+    low = step.get("paramLow")
+    high = step.get("param")
+    if low is None and high is None:
+        return
+    for i in range(len(values)):
+        outside = (low is not None and values[i] < low) or (
+            high is not None and values[i] > high
+        )
+        if outside:
+            drop_rows.add(i)
+
+
+def _op_exclude(values, statuses, step, precision, drop_rows) -> None:
+    """Mark everything INSIDE [paramLow, param] Bad — the inverse of `crop`.
+
+    Bad rather than dropped: null-equivalent, so a later fill step in the same
+    pipeline can impute it, and only THIS tag is affected. No rounding, values
+    untouched. Same both-bounds-unset no-op guard as `crop`.
+    """
+    low = step.get("paramLow")
+    high = step.get("param")
+    if low is None and high is None:
+        return
+    for i in range(len(values)):
+        inside = (low is None or values[i] >= low) and (
+            high is None or values[i] <= high
+        )
+        if inside:
+            statuses[i] = STATUS_BAD
+
+
 def _op_outlier_median(values, statuses, step, precision, drop_rows) -> None:
     """IQR fence, replacing outliers with the median. Status untouched.
 
@@ -299,6 +341,8 @@ CLEANING_OPS: dict[str, Callable] = {
     # outliers
     "zscore": _op_zscore,
     "clip": _op_clip,
+    "crop": _op_crop,
+    "exclude": _op_exclude,
     "outlier_median": _op_outlier_median,
     # smoothing
     "moving_avg": _op_moving_avg,

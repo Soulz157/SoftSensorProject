@@ -67,6 +67,30 @@
       "engine": "preprocessPipelines"
     },
     {
+      "name": "crop_both_bounds",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "crop_low_only",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "crop_no_bounds_is_noop",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "exclude_both_bounds",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "exclude_high_only",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "exclude_no_bounds_is_noop",
+      "engine": "preprocessPipelines"
+    },
+    {
       "name": "smooth_moving_avg_default",
       "engine": "preprocessPipelines"
     },

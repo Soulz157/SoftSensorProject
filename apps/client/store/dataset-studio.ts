@@ -383,6 +383,21 @@ export const initDatasetWizardAtom = atom(
     set(dwSelectedColumnsAtom, null)
     set(dwScalerConfigsAtom, {})
     set(dwProcessingSubStepAtom, 1)
+    set(dwValueClipAtom, {})
+    set(dwSelectedTagKeysAtom, new Set<string>())
+    // Draft-first server state. Mirrors resetDatasetWizardAtom's own fix for
+    // "THE GROUP THAT CAUSED THE DRIFT" — a stale dwFeaturePreviewSampleAtom
+    // is what the tag sidebar and every chart actually read their tag list
+    // from, not dwSelectedTagsAtom above, so leaving it here leaks a prior
+    // EDIT session's tags into a fresh create run.
+    set(dwDraftIdAtom, null)
+    set(dwDraftArtifactIdAtom, null)
+    set(dwDraftGoldArtifactIdAtom, null)
+    set(dwBronzeWarmStateAtom, 'idle')
+    set(dwGoldWarmErrorAtom, null)
+    set(dwDraftSyncStateAtom, { status: 'idle' })
+    set(dwFeaturePreviewSampleAtom, brandBoundedSample({ tags: [], rows: [] }))
+    set(dwFeaturePreviewSampleStateAtom, 'idle')
     set(dwHiddenTagsAtom, [])
     set(dwFocusedTagAtom, '')
     set(dwTagSidebarCollapsedAtom, false)

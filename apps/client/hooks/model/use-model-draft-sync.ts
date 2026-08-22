@@ -57,9 +57,31 @@ export interface UseModelDraftSyncResult {
    * be clicked before the 600ms PATCH debounce below has even run once.
    */
   ensureDraftId: () => Promise<string | null>
+  /**
+   * Writes the current config to the server NOW and resolves once it lands
+   * (MODEL-FLOW-010-T07). The debounce is 600ms, so a click that navigates
+   * away inside that window would otherwise leave the row stale — and unlike
+   * the debounced effect, this one does NOT swallow its failure: the caller
+   * is about to do something irreversible and must be able to abort.
+   */
+  flush: () => Promise<void>
 }
 
-export function useModelDraftSync(): UseModelDraftSyncResult {
+export interface UseModelDraftSyncOptions {
+  /**
+   * Keep the debounced PATCH effect running. Default true.
+   *
+   * The Dataset Review step (MODEL-FLOW-010) passes `false`: its contract is
+   * that it configures nothing and PATCHes nothing, so it takes `flush()` for
+   * the one user-confirmed hand-off and leaves the sync loop alone.
+   */
+  autoSync?: boolean
+}
+
+export function useModelDraftSync(
+  options: UseModelDraftSyncOptions = {},
+): UseModelDraftSyncResult {
+  const { autoSync = true } = options
   const workspaceId = useAtomValue(mpWorkspaceIdAtom)
   const plantId = useAtomValue(mpPlantIdAtom)
   const nodeId = useAtomValue(mpNodeIdAtom)
@@ -106,56 +128,68 @@ export function useModelDraftSync(): UseModelDraftSyncResult {
     [],
   )
 
-  useEffect(() => {
-    if (!workspaceId) return
-    if (timerRef.current) clearTimeout(timerRef.current)
+  /**
+   * One writer for the row, shared by the debounced effect and `flush()`.
+   * Throws on failure — each caller decides what that means, because they do
+   * not agree: the effect retries on the next edit, the hand-off must abort.
+   */
+  const syncNow = useCallback(async (): Promise<void> => {
+    const id = await ensureDraftId()
+    if (!id) return
 
-    timerRef.current = setTimeout(() => {
-      void (async () => {
-        try {
-          const id = await ensureDraftId()
-          if (!id) return
+    // One run predicts one Y — a multi-target selection maps to null, never
+    // to an arbitrary first entry (the exact trap MODEL-FLOW-003-T10 names),
+    // so a multi-target draft fails loudly at training-create rather than
+    // silently training on whichever target sorted first.
+    const targetY = targetVariables.length === 1 ? targetVariables[0] : null
 
-          // One run predicts one Y — a multi-target selection maps to
-          // null, never to an arbitrary first entry (the exact trap
-          // MODEL-FLOW-003-T10 names), so a multi-target draft fails
-          // loudly at training-create rather than silently training on
-          // whichever target sorted first.
-          const targetY =
-            targetVariables.length === 1 ? targetVariables[0] : null
-
-          await modelDraftService.patch(id, {
-            name: name || undefined,
-            plantId: plantId || null,
-            nodeId: nodeId || null,
-            datasetId: selectedDataset?.id ?? null,
-            targetY,
-            algorithm: algorithms[0] ?? null,
-            hyperparameters,
-            // FRACTION, never a percentage — converted once, here, at the
-            // client boundary (MODEL-FLOW-003-T10's own rule).
-            splitRatio: trainTestSplit / 100,
-          })
-        } catch {
-          // Best-effort sync — a failed PATCH here is not user-visible;
-          // the draft simply retains its last-synced config until the
-          // next debounced attempt fires. Training (MODEL-FLOW-003) is
-          // where a stale/missing draft becomes a real, surfaced error.
-        }
-      })()
-    }, PATCH_DEBOUNCE_MS)
+    await modelDraftService.patch(id, {
+      name: name || undefined,
+      plantId: plantId || null,
+      nodeId: nodeId || null,
+      datasetId: selectedDataset?.id ?? null,
+      targetY,
+      algorithm: algorithms[0] ?? null,
+      hyperparameters,
+      // FRACTION, never a percentage — converted once, here, at the client
+      // boundary (MODEL-FLOW-003-T10's own rule).
+      splitRatio: trainTestSplit / 100,
+    })
   }, [
-    workspaceId,
+    ensureDraftId,
+    name,
     plantId,
     nodeId,
-    name,
     selectedDataset?.id,
     targetVariables,
     algorithms,
     hyperparameters,
     trainTestSplit,
-    ensureDraftId,
   ])
 
-  return { draftId, ensureDraftId }
+  const flush = useCallback(async (): Promise<void> => {
+    // Cancel the pending debounce first: leaving it armed would re-send the
+    // same body a moment after the caller has already navigated away.
+    if (timerRef.current) {
+      clearTimeout(timerRef.current)
+      timerRef.current = null
+    }
+    await syncNow()
+  }, [syncNow])
+
+  useEffect(() => {
+    if (!autoSync) return
+    if (!workspaceId) return
+    if (timerRef.current) clearTimeout(timerRef.current)
+
+    timerRef.current = setTimeout(() => {
+      // Best-effort sync — a failed PATCH here is not user-visible; the draft
+      // simply retains its last-synced config until the next debounced attempt
+      // fires. Training (MODEL-FLOW-003) is where a stale/missing draft
+      // becomes a real, surfaced error.
+      void syncNow().catch(() => {})
+    }, PATCH_DEBOUNCE_MS)
+  }, [autoSync, workspaceId, syncNow])
+
+  return { draftId, ensureDraftId, flush }
 }

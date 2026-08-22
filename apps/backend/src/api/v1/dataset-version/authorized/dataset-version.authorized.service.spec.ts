@@ -359,3 +359,103 @@ describe('DatasetVersionAuthorizedService — getVersionLineageService (DS-LAKE-
     expect(res.data).not.toHaveProperty('rows');
   });
 });
+
+describe('DatasetVersionAuthorizedService — getArtifactHoldoutService (MODEL-FLOW-010-T06)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('returns the BRONZE siblings holdout window, rows, and missing rate', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst
+      .mockResolvedValueOnce({ runId: 'run-1' }) // the requested artifact
+      .mockResolvedValueOnce({
+        id: 'bronze-1',
+        validationRowCount: 42,
+        validationHoldoutFrom: new Date('2026-01-11T00:00:00.000Z'),
+        validationMissingPct: 12.5,
+      }); // the BRONZE sibling, resolved by runId
+    post.mockResolvedValue({
+      source_key: 'ds-1/artifacts/bronze-1/validate_data.parquet',
+      tags: ['TI-101'],
+      column_count: 3,
+      row_count: 42,
+      start_time: '2026-01-04T00:00:00.000Z',
+      end_time: '2026-01-13T00:00:00.000Z',
+    });
+    const { service } = makeService(prisma);
+
+    const res = await service.getArtifactHoldoutService(
+      USER,
+      'ds-1',
+      'artifact-2',
+    );
+
+    expect(res.data.holdout).toEqual({
+      holdoutFrom: '2026-01-11T00:00:00.000Z',
+      holdoutTo: '2026-01-13T00:00:00.000Z',
+      rowCount: 42,
+      missingPct: 12.5,
+    });
+  });
+
+  it('returns holdout: null when the BRONZE sibling has no validation split — the normal case, not an error', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst
+      .mockResolvedValueOnce({ runId: 'run-1' })
+      .mockResolvedValueOnce({
+        id: 'bronze-1',
+        validationRowCount: null,
+        validationHoldoutFrom: null,
+        validationMissingPct: null,
+      });
+    const { service } = makeService(prisma);
+
+    const res = await service.getArtifactHoldoutService(
+      USER,
+      'ds-1',
+      'artifact-2',
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(res.data).toEqual({ holdout: null });
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('a holdout captured before T06 comes back with missingPct: null, not 0', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst
+      .mockResolvedValueOnce({ runId: 'run-1' })
+      .mockResolvedValueOnce({
+        id: 'bronze-1',
+        validationRowCount: 10,
+        validationHoldoutFrom: new Date('2026-01-11T00:00:00.000Z'),
+        validationMissingPct: null,
+      });
+    post.mockResolvedValue({
+      source_key: 'ds-1/artifacts/bronze-1/validate_data.parquet',
+      tags: [],
+      column_count: 1,
+      row_count: 10,
+      start_time: '2026-01-04T00:00:00.000Z',
+      end_time: '2026-01-13T00:00:00.000Z',
+    });
+    const { service } = makeService(prisma);
+
+    const res = await service.getArtifactHoldoutService(
+      USER,
+      'ds-1',
+      'artifact-2',
+    );
+
+    expect(res.data.holdout?.missingPct).toBeNull();
+  });
+
+  it('404s when the requested artifact does not belong to the dataset', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst.mockResolvedValueOnce(null);
+    const { service } = makeService(prisma);
+
+    await expect(
+      service.getArtifactHoldoutService(USER, 'ds-1', 'ghost'),
+    ).rejects.toThrow(AppException);
+  });
+});

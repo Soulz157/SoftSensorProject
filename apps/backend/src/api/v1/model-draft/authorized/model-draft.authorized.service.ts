@@ -3,6 +3,7 @@ import { PrismaService, PrismaTypes } from '@softsensor/prisma';
 import { AppException } from '@softsensor/common';
 import {
   type CreateModelDraftDto,
+  type ListModelDraftQueryDto,
   type PatchModelDraftDto,
 } from './dto/model-draft.authorized.dto';
 
@@ -26,24 +27,33 @@ export class ModelDraftAuthorizedService {
 
   // ── access ───────────────────────────────────────────────────────────────
 
+  /**
+   * The one owner-or-member workspace filter every route here scopes by.
+   * Extracted so the list (MODEL-FLOW-010-T08) filters by exactly the clause
+   * the single-draft asserts already enforce — a second, hand-written copy is
+   * how a list ends up broader than the GET it links to.
+   */
+  private workspaceScope(user: Auth.UserPayload) {
+    const isAdmin = user.role === 'ADMIN';
+    return {
+      deletedAt: null,
+      ...(isAdmin
+        ? {}
+        : {
+            OR: [
+              { ownerId: user.id },
+              { members: { some: { userId: user.id } } },
+            ],
+          }),
+    };
+  }
+
   private async assertWorkspaceAccess(
     workspaceId: string,
     user: Auth.UserPayload,
   ) {
-    const isAdmin = user.role === 'ADMIN';
     const workspace = await this.prisma.workspace.findFirst({
-      where: {
-        id: workspaceId,
-        deletedAt: null,
-        ...(isAdmin
-          ? {}
-          : {
-              OR: [
-                { ownerId: user.id },
-                { members: { some: { userId: user.id } } },
-              ],
-            }),
-      },
+      where: { id: workspaceId, ...this.workspaceScope(user) },
       select: { id: true },
     });
     if (!workspace) {
@@ -57,22 +67,8 @@ export class ModelDraftAuthorizedService {
 
   /** Owner-or-member on the draft's workspace, matching assertDraftAccess. */
   private async assertDraftAccess(draftId: string, user: Auth.UserPayload) {
-    const isAdmin = user.role === 'ADMIN';
     const draft = await this.prisma.modelDraft.findFirst({
-      where: {
-        id: draftId,
-        workspace: {
-          deletedAt: null,
-          ...(isAdmin
-            ? {}
-            : {
-                OR: [
-                  { ownerId: user.id },
-                  { members: { some: { userId: user.id } } },
-                ],
-              }),
-        },
-      },
+      where: { id: draftId, workspace: this.workspaceScope(user) },
     });
     if (!draft) {
       throw new AppException({
@@ -104,6 +100,44 @@ export class ModelDraftAuthorizedService {
       message: 'Model draft created successfully',
       type: 'SUCCESS' as const,
       data: this.mapDraft(draft),
+    };
+  }
+
+  /**
+   * Drafts the user can reach, newest-touched first (MODEL-FLOW-010-T08) —
+   * the only way back into a wizard the user left to go and edit a dataset.
+   *
+   * Both filters are optional and neither widens access: the workspace scope
+   * is applied regardless, so an unfiltered call lists the caller's own
+   * drafts rather than everyone's. `updatedAt` orders it because that is what
+   * "the one I was just in" means to the user; `createdAt` would bury a
+   * long-running draft under fresher abandoned ones.
+   */
+  async listDraftsService(
+    user: Auth.UserPayload,
+    query: ListModelDraftQueryDto,
+  ) {
+    // Explicit 404 for an inaccessible workspace rather than an empty list:
+    // asking for a workspace that is not yours is a different fact from
+    // having no drafts in one that is.
+    if (query.workspaceId) {
+      await this.assertWorkspaceAccess(query.workspaceId, user);
+    }
+
+    const drafts = await this.prisma.modelDraft.findMany({
+      where: {
+        ...(query.workspaceId ? { workspaceId: query.workspaceId } : {}),
+        ...(query.status ? { status: query.status } : {}),
+        workspace: this.workspaceScope(user),
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+
+    return {
+      statusCode: 200,
+      message: 'Model drafts fetched successfully',
+      type: 'SUCCESS' as const,
+      data: drafts.map((draft) => this.mapDraft(draft)),
     };
   }
 

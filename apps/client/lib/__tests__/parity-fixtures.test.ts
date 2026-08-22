@@ -218,6 +218,36 @@ function buildFixtures(): Fixture[] {
       step('clip', 'outliers', { paramLow: 0, param: 100 }),
     ]),
     pipelineCase('clip_high_only', [step('clip', 'outliers', { param: 50 })]),
+    // crop/exclude share clip's Min/Max params and differ only in what they do
+    // to a matched reading: crop DROPS the rows outside the band, exclude
+    // marks what is inside Bad. Same bounds as clip_both_bounds on purpose, so
+    // the three fixtures are directly comparable.
+    // Scoped to ONE tag, like drop_single_tag_removes_whole_rows below and for
+    // the same reason: FI-404 leaves [0,100] on every row, so cropping all
+    // four tags empties the frame and the fixture then proves nothing. One tag
+    // drops a SUBSET — and still removes those whole rows for the others.
+    pipelineCase(
+      'crop_both_bounds',
+      [step('crop', 'outliers', { paramLow: 0, param: 100 })],
+      ['TI-101'],
+    ),
+    pipelineCase(
+      'crop_low_only',
+      [step('crop', 'outliers', { paramLow: 50 })],
+      ['TI-101'],
+    ),
+    // The guard that matters most: adding either step before typing a bound
+    // must change NOTHING. Unguarded, crop drops every row and exclude marks
+    // the whole tag Bad — a silent, total data loss on a step the user only
+    // just added.
+    pipelineCase('crop_no_bounds_is_noop', [step('crop', 'outliers')]),
+    pipelineCase('exclude_both_bounds', [
+      step('exclude', 'outliers', { paramLow: 0, param: 100 }),
+    ]),
+    pipelineCase('exclude_high_only', [
+      step('exclude', 'outliers', { param: 50 }),
+    ]),
+    pipelineCase('exclude_no_bounds_is_noop', [step('exclude', 'outliers')]),
 
     // ── smoothing ────────────────────────────────────────────────────────
     pipelineCase('smooth_moving_avg_default', [

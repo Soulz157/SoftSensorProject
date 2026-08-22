@@ -2,11 +2,13 @@ import { describe, it, expect } from 'vitest'
 import {
   buildRawDataset,
   preprocess,
+  preprocessPipelines,
   toModelReady,
   toScatterPoints,
   linearRegression,
   datasetStats,
   CORRELATED_PAIR,
+  type CleaningStep,
   type Dataset,
   type FillStrategyConfig,
 } from '@/lib/preprocessing'
@@ -190,5 +192,108 @@ describe('datasetStats — droppedRowsByTag', () => {
     const stats = datasetStats(raw, clean, model, strategies)
     expect(stats.droppedRowsByTag).toEqual({})
     expect(stats.droppedRows).toBe(0)
+  })
+})
+
+describe('preprocessPipelines — crop / exclude (value axis)', () => {
+  /** Values 0,10,…,50 on TI-101, all Good, plus a second untouched tag. */
+  function band(): Dataset {
+    return {
+      tags: ['TI-101', 'VI-202'],
+      rows: [0, 10, 20, 30, 40, 50].map((v, i) => ({
+        timestamp: `2026-01-0${i + 1}T00:00:00.000Z`,
+        cells: {
+          'TI-101': { value: v, status: 'Good' as const },
+          'VI-202': { value: 1, status: 'Good' as const },
+        },
+      })),
+    }
+  }
+
+  const stepOf = (
+    method: CleaningStep['method'],
+    extra: Partial<CleaningStep> = {},
+  ): CleaningStep => ({
+    uid: `u-${method}`,
+    category: 'outliers',
+    method,
+    ...extra,
+  })
+
+  function values(ds: Dataset, tag = 'TI-101'): number[] {
+    return ds.rows.map(r => r.cells[tag]!.value)
+  }
+
+  it('crop KEEPS the band and drops the rows outside it', () => {
+    const out = preprocessPipelines(band(), {
+      'TI-101': [stepOf('crop', { paramLow: 20, param: 40 })],
+    })
+    expect(values(out)).toEqual([20, 30, 40])
+  })
+
+  it('crop with only a low bound drops everything below it and nothing above', () => {
+    const out = preprocessPipelines(band(), {
+      'TI-101': [stepOf('crop', { paramLow: 30 })],
+    })
+    expect(values(out)).toEqual([30, 40, 50])
+  })
+
+  it('crop removes the whole row, so an untouched tag loses those timestamps too', () => {
+    const out = preprocessPipelines(band(), {
+      'TI-101': [stepOf('crop', { paramLow: 20, param: 40 })],
+    })
+    // VI-202 had no pipeline of its own but still shrinks — the documented
+    // trade `drop` already makes, made explicit here so it is not a surprise.
+    expect(values(out, 'VI-202')).toEqual([1, 1, 1])
+  })
+
+  it('exclude marks what is INSIDE the band Bad, keeping every row', () => {
+    const out = preprocessPipelines(band(), {
+      'TI-101': [stepOf('exclude', { paramLow: 20, param: 40 })],
+    })
+    expect(out.rows).toHaveLength(6)
+    expect(out.rows.map(r => r.cells['TI-101']!.status)).toEqual([
+      'Good',
+      'Good',
+      'Bad',
+      'Bad',
+      'Bad',
+      'Good',
+    ])
+    // Values are left alone — Bad is null-equivalent, so a later fill step
+    // decides what the number becomes, not this one.
+    expect(values(out)).toEqual([0, 10, 20, 30, 40, 50])
+  })
+
+  it('exclude touches only its own tag', () => {
+    const out = preprocessPipelines(band(), {
+      'TI-101': [stepOf('exclude', { paramLow: 0, param: 50 })],
+    })
+    expect(out.rows.every(r => r.cells['VI-202']!.status === 'Good')).toBe(true)
+  })
+
+  it('a later fill step can impute what exclude marked — the reason it marks rather than drops', () => {
+    const out = preprocessPipelines(band(), {
+      'TI-101': [
+        stepOf('exclude', { paramLow: 20, param: 40 }),
+        { uid: 'u-fill', category: 'missing', method: 'constant', param: -1 },
+      ],
+    })
+    expect(values(out)).toEqual([0, 10, -1, -1, -1, 50])
+  })
+
+  it('both are a no-op while neither bound is set', () => {
+    const cropped = preprocessPipelines(band(), {
+      'TI-101': [stepOf('crop')],
+    })
+    const excluded = preprocessPipelines(band(), {
+      'TI-101': [stepOf('exclude')],
+    })
+    // The guard that matters: unguarded, crop would empty the frame and
+    // exclude would mark the entire tag Bad the instant the step was added.
+    expect(values(cropped)).toEqual([0, 10, 20, 30, 40, 50])
+    expect(excluded.rows.every(r => r.cells['TI-101']!.status === 'Good')).toBe(
+      true,
+    )
   })
 })

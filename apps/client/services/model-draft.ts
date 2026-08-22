@@ -62,12 +62,31 @@ export interface PatchModelDraftInput {
   splitRatio?: number | null
 }
 
+/**
+ * Filters for the draft list (MODEL-FLOW-010-T08). Both optional and neither
+ * widens access — the server scopes to the caller's workspaces regardless.
+ */
+export interface ListModelDraftsQuery {
+  workspaceId?: string
+  status?: ModelDraftStatus
+}
+
 const base = '/api/v1/authorized/model-drafts'
 const one = (draftId: string) => `${base}/${encodeURIComponent(draftId)}`
 
 export const modelDraftService = {
   create: (body: CreateModelDraftInput): Promise<ApiResponse<ModelDraft>> =>
     fetchClient(base, { method: 'POST', body: JSON.stringify(body) }),
+
+  list: (
+    query: ListModelDraftsQuery = {},
+  ): Promise<ApiResponse<ModelDraft[]>> => {
+    const params = new URLSearchParams()
+    if (query.workspaceId) params.set('workspaceId', query.workspaceId)
+    if (query.status) params.set('status', query.status)
+    const qs = params.toString()
+    return fetchClient(qs ? `${base}?${qs}` : base, { method: 'GET' })
+  },
 
   get: (draftId: string): Promise<ApiResponse<ModelDraft>> =>
     fetchClient(one(draftId), { method: 'GET' }),

@@ -41,3 +41,21 @@ export const PatchModelDraftSchema = z.object({
 });
 
 export class PatchModelDraftDto extends createZodDto(PatchModelDraftSchema) {}
+
+/**
+ * Query for the draft list (MODEL-FLOW-010-T08) — how the wizard is reached
+ * again after leaving it to edit a dataset.
+ *
+ * `status` is deliberately the full enum rather than a hard-coded ACTIVE: a
+ * TRAINED draft is just as resumable (PATCH only refuses once SAVED), so the
+ * API stays general and the caller decides which it wants. The models list
+ * asks for ACTIVE only — see MODEL-FLOW-010's acceptance criterion 10.
+ */
+export const ListModelDraftQuerySchema = z.object({
+  workspaceId: z.string().uuid().optional(),
+  status: z.enum(['ACTIVE', 'TRAINED', 'SAVED', 'ABANDONED']).optional(),
+});
+
+export class ListModelDraftQueryDto extends createZodDto(
+  ListModelDraftQuerySchema,
+) {}

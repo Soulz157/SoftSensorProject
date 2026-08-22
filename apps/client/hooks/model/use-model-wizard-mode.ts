@@ -6,6 +6,7 @@ import { useSetAtom } from 'jotai'
 import { toast } from 'sonner'
 import { getModelById } from '@/services/model'
 import { datasetService } from '@/services/dataset'
+import { useModelDraftResume } from '@/hooks/model/use-model-draft-resume'
 import { readModelConfig, configTargets } from '@/lib/model-config'
 import { METRIC_KEYS, type MetricKey } from '@/lib/model-metrics'
 import type { AIModel } from '@/types'
@@ -52,6 +53,15 @@ export interface UseModelWizardModeResult {
  * metadata + Phase 2–4 config + a rebuilt raw dataset so charts/metrics render);
  * create dispatches a full reset so no state leaks from a prior session. Runs
  * exactly once per mount.
+ *
+ * A third entry, `?draftId=…` (MODEL-FLOW-010-T08), resumes an unfinished
+ * server-side `ModelDraft` — the way back after leaving the wizard to edit a
+ * dataset. It is a CREATE-mode continuation, not a mode of its own: no `Model`
+ * row exists yet, so nothing about the commit path changes. Restore is
+ * deliberately PARTIAL, because the row is: `ModelDraft` has no description,
+ * no `algorithms[]`, no loss function, no selected metrics and no deploy
+ * config, so those come back at their defaults and the toast says so rather
+ * than implying parity.
  */
 export function useModelWizardMode(): UseModelWizardModeResult {
   const params = useSearchParams()
@@ -84,6 +94,8 @@ export function useModelWizardMode(): UseModelWizardModeResult {
   const setDriftMonitor = useSetAtom(mpDriftMonitorAtom)
   const setDriftThresholdPct = useSetAtom(mpDriftThresholdPctAtom)
 
+  const { resume } = useModelDraftResume()
+
   const [mode, setModeState] = useState<WizardMode>('create')
   const [modelName, setModelName] = useState('')
   const [loading, setLoading] = useState(false)
@@ -96,10 +108,24 @@ export function useModelWizardMode(): UseModelWizardModeResult {
     const urlMode = params.get('mode')
     const modelId = params.get('modelId')
     const workspaceId = params.get('workspaceId')
+    const draftId = params.get('draftId')
 
     if (urlMode !== 'edit' || !modelId || !workspaceId) {
-      reset()
       setModeState('create')
+      if (draftId) {
+        // `resume` resets the wizard itself before hydrating, so the plain
+        // create branch below is the only one that needs its own reset.
+        // Unlike the in-wizard Resume button, a bad id in the URL leaves the
+        // user on an empty wizard they did not ask for — send them back.
+        setLoading(true)
+        void resume(draftId)
+          .then(ok => {
+            if (!ok) router.push('/models/views')
+          })
+          .finally(() => setLoading(false))
+      } else {
+        reset()
+      }
       return
     }
 

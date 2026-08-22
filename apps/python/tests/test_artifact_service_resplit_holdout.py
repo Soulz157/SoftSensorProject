@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pytest
 
+from intergrations.object_store import STATUS_BAD, missing_pct
 from schemas.preprocess import HoldoutSplitRequest, ResplitHoldoutRequest
 from services import artifact_service
 from tests.test_artifact_service import RecordingStore, _daily_frame
@@ -52,6 +53,34 @@ def test_resplit_cuts_the_window_from_train_and_builds_validate_with_lead_in() -
     assert result["row_count"] == len(train)
     assert result["validation_row_count"] == len(validate)
     assert result["validation_holdout_from"] == "2026-01-11 00:00:00"
+
+
+def test_resplit_captures_the_holdouts_missing_rate() -> None:
+    """MODEL-FLOW-010-T06: `validation_missing_pct` on the result must equal
+    `missing_pct(validate_frame)` — computed once, while the frame is still
+    in memory, not a compute-on-read scan against `validate_data.parquet`
+    later (the DS-LAKE-012 trap at wide tag counts)."""
+    src = _daily_frame(15)
+    # day10 and day11 sit inside the validate window (day3-day12) built by
+    # the same window as the test above — mark them Bad so the expected
+    # rate is checkable by value: 2 of 10 validate rows -> 20%.
+    src.loc[src["TI-101"].isin([10.0, 11.0]), "TI-101__status"] = STATUS_BAD
+    store = RecordingStore({"ds-1/artifacts/bronze-1/data.parquet": src})
+
+    result = artifact_service.resplit_holdout(
+        store,
+        ResplitHoldoutRequest(
+            source_key="ds-1/artifacts/bronze-1/data.parquet",
+            target_key="ds-1/artifacts/bronze-2/data.parquet",
+            holdout=HoldoutSplitRequest(
+                from_time="2026-01-11", to_time="2026-01-13"
+            ),
+        ),
+    )
+
+    validate = store.objects["ds-1/artifacts/bronze-2/validate_data.parquet"]
+    assert result["validation_missing_pct"] == missing_pct(validate)
+    assert result["validation_missing_pct"] == 20.0
 
 
 def test_resplit_train_plus_validate_accounts_for_every_original_row() -> None:

@@ -900,6 +900,34 @@ export function UnifiedTagTable({ nav }: Props) {
         />
       )}
 
+      {/* No target picked yet. Someone who has not built a soft sensor before
+          has no way to guess that one column must be singled out as the thing
+          being predicted, or that naming it REMOVES it from the inputs — the
+          Target button alone cannot say that, and its tooltip only appears if
+          you already suspected it was worth hovering.
+
+          Neutral surface + icon, never amber/red: not knowing yet is a normal
+          starting state, not a fault, and those colours are reserved for plant
+          operating state (DESIGN.md §2). Mutually exclusive with the warning
+          below — that one needs a target to already be set. */}
+      {rows.length > 0 && targetTag === null && (
+        <div className="flex items-start gap-2.5 rounded-xl border border-border bg-muted/40 p-3">
+          <Target className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+          <div className="space-y-0.5 text-xs">
+            <p className="font-medium text-foreground">
+              No target (Y) chosen yet
+            </p>
+            <p className="text-muted-foreground">
+              The target is the single tag the model learns to predict — usually
+              a lab result or quality number you want estimated live. Press the{' '}
+              <Target className="inline h-3 w-3 -translate-y-px text-muted-foreground" />{' '}
+              next to a tag&apos;s checkbox to name it. It is excluded from the
+              input features, and you can save this dataset without one.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* `selectedTagNames` IS the set that gets fetched — it already drops
           unselected and Bad-status rows and understands keys from pages that
           are not loaded, so this also covers a preset-set `.lab` target with
@@ -974,7 +1002,10 @@ export function UnifiedTagTable({ nav }: Props) {
           <Table>
             <TableHeader>
               <TableRow className="hover:bg-transparent">
-                <TableHead className="w-10 pl-4 text-center">
+                {/* Widened from w-10: this column now carries the target (Y)
+                    toggle beside the checkbox. Left-aligned rather than
+                    centred so the header checkbox lines up with the rows'. */}
+                <TableHead className="w-20 pl-4">
                   <input
                     ref={headerCheckboxRef}
                     type="checkbox"
@@ -1017,15 +1048,51 @@ export function UnifiedTagTable({ nav }: Props) {
                     // the replacement.
                     className={cn(isTarget && 'bg-primary/5')}
                   >
-                    {/* Row selection */}
-                    <TableCell className="pl-4 text-center">
-                      <input
-                        type="checkbox"
-                        checked={isSelected(row)}
-                        onChange={() => toggleRow(row)}
-                        aria-label={`Select ${row.tagName}`}
-                        className="h-3.5 w-3.5 cursor-pointer accent-primary"
-                      />
+                    {/* Row selection + target (Y). The two sit together on
+                        purpose: both answer the same question — what part does
+                        this tag play in the model — where the Actions column
+                        is for operations ON the row (rename, remove). Setting
+                        a target also ticks the checkbox (see toggleTarget), so
+                        keeping them adjacent makes that side effect visible
+                        instead of happening in a column two metres away. */}
+                    <TableCell className="pl-4">
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="checkbox"
+                          checked={isSelected(row)}
+                          onChange={() => toggleRow(row)}
+                          aria-label={`Select ${row.tagName}`}
+                          className="h-3.5 w-3.5 cursor-pointer accent-primary"
+                        />
+                        <button
+                          type="button"
+                          disabled={isEngineered}
+                          aria-pressed={isTarget}
+                          aria-label={
+                            isTarget
+                              ? `Clear ${row.tagName} as target`
+                              : `Set ${row.tagName} as target`
+                          }
+                          title={
+                            isEngineered
+                              ? `${row.tagName} is an engineered feature — it does not exist in the stored artifact until the feature job runs, so training cannot find the column. Choose a source tag as the target.`
+                              : isTarget
+                                ? 'Clear target (Y)'
+                                : 'Set as target (Y) — the tag the model predicts'
+                          }
+                          onClick={() => toggleTarget(row)}
+                          className={cn(
+                            'flex h-6 w-6 shrink-0 items-center justify-center rounded transition-colors',
+                            isEngineered
+                              ? 'cursor-not-allowed text-muted-foreground/40'
+                              : isTarget
+                                ? 'text-primary hover:bg-primary/10'
+                                : 'cursor-pointer text-muted-foreground/50 hover:bg-muted hover:text-primary',
+                          )}
+                        >
+                          <Target className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
                     </TableCell>
 
                     {/* Tag Name — inline editable */}
@@ -1155,30 +1222,9 @@ export function UnifiedTagTable({ nav }: Props) {
 
                     {/* Actions */}
                     <TableCell className="pr-4">
+                      {/* Target (Y) moved out of here to sit beside the row
+                          checkbox — this column is for operations ON the row. */}
                       <div className="flex items-center justify-end gap-1">
-                        <button
-                          type="button"
-                          disabled={isEngineered}
-                          aria-pressed={isTarget}
-                          title={
-                            isEngineered
-                              ? `${row.tagName} is an engineered feature — it does not exist in the stored artifact until the feature job runs, so training cannot find the column. Choose a source tag as the target.`
-                              : isTarget
-                                ? 'Clear target (Y)'
-                                : 'Set as target (Y)'
-                          }
-                          onClick={() => toggleTarget(row)}
-                          className={cn(
-                            'flex h-6 w-6 items-center justify-center rounded transition-colors',
-                            isEngineered
-                              ? 'cursor-not-allowed text-muted-foreground/40'
-                              : isTarget
-                                ? 'text-primary hover:bg-primary/10'
-                                : 'text-muted-foreground hover:bg-muted hover:text-primary',
-                          )}
-                        >
-                          <Target className="h-3 w-3" />
-                        </button>
                         <button
                           type="button"
                           title="Rename tag"

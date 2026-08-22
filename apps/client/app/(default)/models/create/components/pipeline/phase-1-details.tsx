@@ -7,6 +7,7 @@ import type { WizardMode } from '@/store/model-pipeline'
 import { useDatasets } from '@/hooks/dataset/use-datasets'
 import type { SavedDataset } from '@/store/datasets'
 import { ModelMetadataSection } from '../model-metadata-section'
+import { DraftResumeSection } from './draft-resume-section'
 import { PresetPicker } from './preset-picker'
 import { DatasetCard } from '../dataset-card'
 
@@ -46,7 +47,19 @@ export function Phase1Details({
           Name your model and choose where it lives.
         </p>
       </div>
-      {mode === 'create' && <PresetPicker workspaceId={props.workspaceId} />}
+      {mode === 'create' && (
+        <>
+          {/* Above the preset picker: picking up unfinished work is a
+              different intent from starting new, and it should be offered
+              before the choices that assume you are starting new. Edit mode
+              is editing a saved Model — there is no draft to resume. */}
+          <DraftResumeSection
+            workspaceId={props.workspaceId}
+            dirty={props.name.trim() !== '' || selectedDataset !== null}
+          />
+          <PresetPicker workspaceId={props.workspaceId} />
+        </>
+      )}
       <ModelMetadataSection {...props} disabled={false} />
 
       <div className="space-y-2">
