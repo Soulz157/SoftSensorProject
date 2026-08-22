@@ -36,6 +36,17 @@
       },
       {
         "step": 2,
+        "name": "Dataset Review",
+        "actions": [
+          "Review the selected dataset's source and identity",
+          "Review per-tag statistics",
+          "Explore distributions and correlations",
+          "Review the validation holdout window",
+          "Edit the dataset if it needs changing"
+        ]
+      },
+      {
+        "step": 3,
         "name": "Training Configuration",
         "actions": [
           "Select algorithm",
@@ -45,7 +56,7 @@
         ]
       },
       {
-        "step": 3,
+        "step": 4,
         "name": "Evaluation",
         "actions": [
           "Display evaluation metrics",
@@ -54,7 +65,7 @@
         ]
       },
       {
-        "step": 4,
+        "step": 5,
         "name": "Save Model",
         "actions": ["Review model result", "Save model"]
       }
@@ -62,19 +73,20 @@
   },
 
   "refactor_goals": [
-    "Keep the existing four-step Model Creation Flow unchanged from the user's perspective.",
+    "Keep the existing Model Creation Flow's step-by-step shape unchanged from the user's perspective, extended from four steps to five (see MODEL-FLOW-010).",
     "Training must not commit the model to the database.",
     "Evaluation must use the training result from the temporary Model Workspace.",
     "Fine-tuning must run as a background process.",
     "Fine-tuning must not commit the model to the database.",
     "Model configuration must be preserved independently from the final database commit.",
     "Model artifacts must be stored outside the relational database when appropriate.",
-    "The Save Model action in Step 4 is the only operation that commits the final model to the database."
+    "The Save Model action in Step 5 is the only operation that commits the final model to the database."
   ],
 
   "architecture": {
     "user_flow": [
       "MODEL_SETUP",
+      "DATASET_REVIEW",
       "TRAINING_CONFIGURATION",
       "TRAINING",
       "EVALUATION",
@@ -536,20 +548,20 @@
         {
           "id": "MODEL-FLOW-003-V01",
           "description": "Run training from Step 2 and verify SELECT count(*) FROM \"Model\" is unchanged, while a ModelTrainingRun row exists against the draft.",
-          "status": "pending",
-          "note": "Verified by code inspection only, 2026-08-18: createDraftRunService's $transaction writes ModelTrainingRun with modelDraftId set / modelId null and touches modelDraft only for currentRunId — no prisma.model.create/update call anywhere on this path. A live boot to run the actual SQL check was attempted (backend dev server) but apps/backend has no .env in this environment (JwtStrategy throws 'requires a secret or key' on startup) — not fabricating one. Needs a real DB query against a live backend to close out."
+          "status": "completed",
+          "note": "LIVE-VERIFIED 2026-08-19 against the real dev stack (Postgres, MinIO, nest --watch backend, real browser session). Envelope bug (see prior note in history) found and fixed same session: createDraftRunService/getDraftRunService/listDraftRunsService/cancelDraftRunService now return {statusCode,message,type,data} matching ModelDraftAuthorizedService's convention; client's created.data.id / res.data no longer read off undefined. Confirmed with two real runs against real plant data (draft 38048766-dd15-4e1d-9c5d-8969f1cf11fb, artifact S204FBP.lab target, algorithms ols and svm) both reaching ModelTrainingRun.status=SUCCEEDED with real metrics, 4 uploaded artifact keys each, and ModelDraft.status transitioning to TRAINED with currentRunId pointing at the latest run. `Model` table has 17 pre-existing rows unrelated to these runs; createDraftRunService's transaction has zero prisma.model.create/update calls (confirmed by direct code read, not just row-count diff) — the DB-level guarantee this criterion asks for. One orphaned run (562ec955, svm, stuck RUNNING, zero log lines, container since removed) was also observed — traced to a nest --watch hot-reload restart killing the in-memory watch() tracker mid-flight while this session was actively editing the backend file being verified; the container itself is independent of the Node process and either failed silently before its first log line or was removed outside watch()'s own reap() path. This is a pre-existing gap in watch()'s design (no reconciliation of orphaned RUNNING rows on backend boot) — not a defect in the envelope fix, and out of scope to fix here; noted for whoever picks up resilience work on the container-watch path."
         },
         {
           "id": "MODEL-FLOW-003-V02",
           "description": "Verify that the training result is available for Step 3 Evaluation.",
-          "status": "pending",
-          "note": "mpTrainingResultAtom is populated on SUCCEEDED (T05), but nothing reads it yet — Step 3's own wiring to real data is MODEL-FLOW-004's job, not this feature's. 'Available' is true structurally; 'consumed' isn't yet true anywhere."
+          "status": "completed",
+          "note": "LIVE-VERIFIED 2026-08-19: both real SUCCEEDED runs carry well-formed metrics ({r2,mae,rmse,test_rows,train_rows,feature_count}) in ModelTrainingRun.metrics, and the poll loop's SUCCEEDED branch (now unblocked by the V01 envelope fix) is what calls setTrainingResult(run.metrics) — reachable end-to-end since getDraftRunService's response now actually resolves to res.data instead of crashing. 'Consumed' by Step 3 UI remains MODEL-FLOW-004's job, unchanged from the prior note — this verification is about availability, which is now real, not simulated."
         },
         {
           "id": "MODEL-FLOW-003-V03",
           "description": "Verify that the trained artifact is associated with the Model Draft.",
-          "status": "pending",
-          "note": "mpArtifactRefAtom is populated from run.modelKey on SUCCEEDED (T06), and that key is written under drafts/{draftId}/runs/{runId}/ (T08, pytest-verified). Not yet exercised end-to-end with a real container run — same live-boot blocker as V01."
+          "status": "completed",
+          "note": "LIVE-VERIFIED 2026-08-19: both real SUCCEEDED runs have modelKey/metricsKey/manifestKey/predictionsKey all populated, correctly scoped under drafts/{draftId}/runs/{runId}/ (T08's design, confirmed live not just pytest). ModelDraft row itself shows status=TRAINED, currentRunId set to the latest run — the full T05/T06/T07 chain confirmed against real data, not code inspection."
         }
       ]
     },
@@ -938,7 +950,7 @@
       "progress": 0,
       "dependencies": ["MODEL-FLOW-007"],
 
-      "description": "Perform end-to-end verification while preserving the existing four-step Model Creation Flow.",
+      "description": "Perform end-to-end verification while preserving the existing five-step Model Creation Flow (renumbered from four by MODEL-FLOW-010).",
 
       "tasks": [
         {
@@ -980,13 +992,13 @@
       ],
 
       "acceptance_criteria": [
-        "The existing four-step user flow remains unchanged.",
+        "The existing five-step user flow remains unchanged (renumbered from four by MODEL-FLOW-010: Setup -> Dataset Review -> Training Configuration -> Evaluation -> Save Model).",
         "Step 1 creates or updates a Model Draft only.",
-        "Step 2 training does not commit a Model to the database.",
-        "Step 3 evaluation works without a persisted Model record.",
+        "Step 3 training does not commit a Model to the database.",
+        "Step 4 evaluation works without a persisted Model record.",
         "Fine-Tuning runs as a background process.",
         "Fine-Tuning does not commit a Model to the database.",
-        "Step 4 Save Model creates the persistent Model record.",
+        "Step 5 Save Model creates the persistent Model record.",
         "The final Model references the correct configuration and artifact.",
         "No database commit occurs before Save Model.",
         "The complete flow works from Model Setup to Save Model."
@@ -995,7 +1007,7 @@
       "verification": [
         {
           "id": "MODEL-FLOW-008-V01",
-          "description": "Run the complete existing four-step Model Creation Flow.",
+          "description": "Run the complete existing five-step Model Creation Flow.",
           "status": "pending"
         },
         {
@@ -1093,15 +1105,217 @@
           "note": "Verified 2026-08-19 as part of the tabular-algorithm extension: build_model raises a message naming the missing windowing step, the missing sequence_length hyperparameter, and the missing tensorflow/torch runtime, and suggests Random Forest/LightGBM/XGBoost instead."
         }
       ]
+    },
+    {
+      "id": "MODEL-FLOW-010",
+      "title": "New Step 2 — Dataset Review before Training Configuration",
+      "priority": 10,
+      "status": "in_progress",
+      "progress": 12,
+      "dependencies": ["MODEL-FLOW-002", "DS-LAKE-013", "DS-LAKE-018"],
+
+      "description": "A review step between Model Setup and Training Configuration. Shows which data source the selected dataset came from, its per-tag statistics, the same DataAnalysisCard the dataset wizard's Step 3.1 uses, and the held-out validation window — so an engineer sees WHAT they are about to train on before configuring HOW. Includes a route back into the dataset wizard for a dataset that needs changing.",
+
+      "userDecisions": [
+        "STEP COUNT (resolved): five steps. The flow becomes Setup -> Dataset Review -> Training Configuration -> Evaluation -> Save Model. This file's global_definition_of_done currently asserts four steps in four separate lines and MODEL-FLOW-008 verifies by step number; all of them are rewritten as part of T01 rather than left to contradict the feature that renumbered them.",
+        "EDIT DATASET RE-ENTRY (resolved): warn-and-navigate, NOT an overlay and NOT a full URL-addressable resume. An overlay would keep the model wizard mounted and make Back a close rather than a rehydration — genuinely smaller than a resume mechanism — but it rests on three unverified assumptions about the dataset wizard (mountable outside its route, no atom collision, no reset-on-mount). Three unknowns for one button is a poor trade against an honest dialog. The draft is PATCHed current before navigating and is resumable from the models list (T08)."
+      ],
+
+      "findings": [
+        "EVERY READ THIS STEP NEEDS ALREADY EXISTS AND IS ALREADY PROVEN. DS-LAKE-013 wired the dataset library to its committed artifact: useArtifactMetadata, useArtifactColumnStats, useArtifactRows and useArtifactCorrelation all take (datasetId, artifactId) and return bounded server responses, and DatasetDetailSheet already composes exactly this set. This step is a composition of working parts, not new capability — which is why its risk sits almost entirely in T07's navigation and reconciliation, not in its panels.",
+        "STALE CORRECTION (2026-08-20): the prior finding here claimed DataAnalysisCard is 'reusable but type-gated' — checked against the code and that is wrong on three counts, not one. (1) It reads dwDraftIdAtom/dwDraftArtifactIdAtom/dwDraftGoldArtifactIdAtom directly (data-studio create wizard's own store) — a dataset-review step in the MODEL wizard has none of those atoms populated. (2) Its histogram/boxplot/scatter tabs call useDatasetHistogram/useDatasetBoxplot/useDatasetScatter, which hit POST .../dataset-drafts/:draftId/artifacts/:artifactId/{histogram,boxplot,scatter} — DRAFT-scoped routes with no saved-dataset (datasetId-scoped) twin; only correlation has one (getArtifactCorrelationService). (3) It renders FeatureTransformDialog (feature-engineering/transformation-panel.tsx) behind a Transform tab and owns dwScalerConfigsAtom — a mutation surface, inside a step whose own contract (finding below) says it configures nothing. The BoundedSample brand gate is real but is not the blocker; the component's data source is. RESOLVED with the user 2026-08-20: T05 does NOT reuse DataAnalysisCard. It composes the review panel from the dataset-scoped hooks the finding above already names (useArtifactRows for a bounded preview + useArtifactCorrelation for top pairs), the same composition DatasetDetailSheet already proves. Acceptance criterion 5 and V02 are rewritten accordingly.",
+        "THE STEP HOLDS NO SERVER STATE OF ITS OWN. It reads the dataset's committed artifact and configures nothing. ModelDraft needs no new column and receives no PATCH from this step — stated up front so it is not given one by reflex.",
+        "EDITING A DATASET DOES NOT REMOVE IT. The Dataset row keeps its id; what changes is currentArtifactId, and possibly the tag list. So `datasetId` on the ModelDraft stays valid across an edit and must NOT be cleared. What can genuinely go stale is the selected TARGET, if the edit dropped that tag — a different field with a different consequence."
+      ],
+
+      "tasks": [
+        {
+          "id": "MODEL-FLOW-010-T01",
+          "title": "Rewrite the step contract: four steps become five",
+          "status": "completed",
+          "progress": 100,
+          "detail": "Four global_definition_of_done lines name the four-step flow or a numbered step's unchanged behaviour, and MODEL-FLOW-008 verifies by step number. Renumbering without rewriting them would leave this file asserting something false about itself — the failure mode every STALE correction already in this ledger exists to catch. Do this FIRST: a step inserted before its own contract is updated is a step nothing describes. Add one line stating that a dataset selected at Step 1 is reviewable before any training is configured, so the new step has a contract rather than only a position.",
+          "note": "Completed 2026-08-20. existing_flow/refactor_goals/architecture.user_flow/global_definition_of_done already said five steps from a prior session's partial pass; this pass finished the remaining stale four-step references: MODEL-FLOW-008's acceptance_criteria (four lines renumbered/reworded) and its V01 description, plus refactor_goals' 'Save Model action in Step 4' -> Step 5. Also corrected finding #2 above (DataAnalysisCard is draft-scoped, not a type-gate-only reuse) and rewrote MODEL-FLOW-010's own T05/T06/T07/T08 details, acceptance criterion 5, and V02 to match — verified by grepping the whole file for 'four-step'/'four step' with none remaining outside historical/decision-note prose that correctly describes the pre-refactor state."
+        },
+        {
+          "id": "MODEL-FLOW-010-T02",
+          "title": "Insert the step into the wizard shell without changing what any existing step does",
+          "status": "pending",
+          "progress": 0,
+          "detail": "MP_TOTAL_STEPS 4 -> 5, one new label, nav gating extended. Renumbering must change each existing step's NUMBER and nothing else. Grep for every numeric step reference rather than assuming the shell is the only one: useModelWizardMode's edit-mode hydration lands on setCurrentStep(1) and use-model-pipeline-nav's canAdvance chain both key on numbers, and either could silently land on the wrong step."
+        },
+        {
+          "id": "MODEL-FLOW-010-T03",
+          "title": "Source and identity panel",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Dataset name, description, workspace, the source badges DatasetDetailSheet already renders (SOURCE_META + useDataSources), artifact stage, row count and time span from useArtifactMetadata. Carry over DatasetDetailSheet's own loading discipline rather than re-deriving it: a skeleton while useDataSources() resolves instead of flashing 'Unknown source', and an honest empty state for a dataset with no committed artifact. Both were real DS-LAKE-013-T03 fixes, not polish."
+        },
+        {
+          "id": "MODEL-FLOW-010-T04",
+          "title": "Per-tag statistics from the column_stats sidecar",
+          "status": "pending",
+          "progress": 0,
+          "detail": "useArtifactColumnStats — one object download regardless of tag count, data.parquet never opened (DS-LAKE-005B-A-T07). Reuse DatasetDetailSheet's three-way state exactly: loading, `missing`, and error. `missing` is a 404 meaning the artifact predates the sidecar — a NORMAL state with its own copy, not an error and not 'this dataset has no tags'. Collapsing those three into two is precisely what DS-LAKE-013-T03 had to fix once already."
+        },
+        {
+          "id": "MODEL-FLOW-010-T05",
+          "title": "Distributions and correlations panel — composed, not DataAnalysisCard",
+          "status": "pending",
+          "progress": 0,
+          "detail": "REVISED 2026-08-20 (see the finding above): DataAnalysisCard is draft-scoped (dw* atoms, draft-only histogram/boxplot/scatter routes) and embeds a mutation UI (FeatureTransformDialog) — wrong data source and wrong contract for a step that configures nothing. Instead: a bounded data preview via useArtifactRows (already capped 200 rows x 50 tags) rendered through DataTableView, labeled as a bounded window the same way DatasetDetailSheet's own preview section is; and a top-correlated-pairs list via useArtifactCorrelation, using the same ranking derivation DatasetDetailSheet computes (moved to lib/dataset-stats.ts so both callers share one implementation). No histogram/boxplot/scatter tabs this pass — those hooks have no dataset-scoped (non-draft) twin; adding one is out of scope here."
+        },
+        {
+          "id": "MODEL-FLOW-010-T06",
+          "title": "Validation-holdout panel",
+          "status": "pending",
+          "progress": 0,
+          "detail": "CORRECTED SCOPE 2026-08-20: checked against the code and the holdout's missing/Bad rate exists NOWHERE — not on DatasetArtifact, not in ArtifactStatsSchema/ArtifactStats, not computed anywhere in artifact_service.py. The holdout window itself also has no client-facing read path: it lives on the BRONZE sibling of the run's GOLD/FINAL artifact, resolved by runId — the same lookup tryReplayHoldout (model-run.authorized.service.ts) already does server-side, never exposed to a browser. This is a real build, not a composition of existing reads:\n\n1. Python — artifact_service.py's materialize() holdout branch and resplit_holdout() both already hold validate_frame in memory; pass missing_pct(validate_frame) (object_store.py) into _stats_payload as a new validation_missing_pct field. ArtifactStatsResponse (schemas/preprocess.py) gains the field, nullable/optional like validation_row_count beside it.\n2. Prisma — DatasetArtifact.validationMissingPct Float?, migrated.\n3. Backend — ArtifactStatsSchema (dataset-version.authorized.dto.ts) gains validation_missing_pct; persisted in both places that already set validationRowCount (dataset-version.authorized.service.ts and dataset-draft.authorized.service.ts).\n4. New read endpoint GET /datasets/:id/artifacts/:artifactId/holdout: resolve the artifact's runId, find its BRONZE sibling, and if validationRowCount is set return {holdoutFrom, holdoutTo, rowCount, missingPct} — window bounds from Python /metadata against validateDataKey (footer-only, bounded), missingPct from the new column.\n\nTHE MISSING RATE IS NOT OPTIONAL for any holdout captured going forward. A holdout written before this change returns missingPct: null, and the panel says so plainly ('missing rate not recorded for this holdout') rather than omitting the field silently or inventing a compute-on-read scan (which would defeat the bounded-read discipline V03 checks). DS-LAKE-018's resolved no-imputation decision means the holdout stays raw, so a MISSING_VALUE hole reaches predict() and depresses the score with no trace of why; its own T05 already requires the rate be published beside every metric for that reason."
+        },
+        {
+          "id": "MODEL-FLOW-010-T07",
+          "title": "Edit Dataset hand-off — warn, persist, reconcile",
+          "status": "pending",
+          "progress": 0,
+          "detail": "DEFERRED 2026-08-20: out of scope for the T01-T06 pass (composition of the review step itself). Explicitly NOT started because its own dialog-copy rule below is coupled to T08 shipping, and T08 has not. When picked up: PATCH the draft to current BEFORE navigating. useModelDraftSync's PATCH is 600ms-debounced, so a click landing inside that window leaves the server row stale; ensureDraftId already exists for this class of 'the server must know before we do something irreversible' problem.\n\nDO NOT clear datasetId — see findings. Clearing it would discard a reference that stayed valid and force the user to re-pick something that never changed.\n\nRECONCILE ON RETURN, by whatever path: re-fetch the dataset, invalidate every artifact-keyed hook, and CHECK THE TARGET STILL EXISTS in the new artifact's tag list. A dropped target surviving in mpTargetVariableAtom fails at run creation with a pyarrow 'No match for FieldRef.Name' error that names a column and explains nothing — the same class of failure the Step 3.1 correlation tab already hit once.\n\nDIALOG COPY MUST MATCH WHAT SHIPS: it may claim the draft is saved and resumable only if T08 ships. If T08 is cut, the copy says the configuration is discarded. A dialog promising a resume nothing can honour is worse than one admitting the loss."
+        },
+        {
+          "id": "MODEL-FLOW-010-T08",
+          "title": "Resume an ACTIVE ModelDraft from the models list",
+          "status": "pending",
+          "progress": 0,
+          "detail": "DEFERRED 2026-08-20, out of scope for the T01-T06 pass. CORRECTED CLAIM: the prior detail here said 'the draft row already holds every field the wizard would restore' — checked against packages/prisma/prisma/schema.prisma's ModelDraft model and that is false. It has name/workspaceId/plantId/nodeId/datasetId/targetY/algorithm/hyperparameters/splitRatio/status/currentRunId — no description, no algorithms[] (multi-algorithm selection), no lossFunction, no selectedMetrics, no deploy config (autoRetrain/warnSd/criticalSd/driftMonitor/driftThresholdPct). Restore from this row is PARTIAL. The controller (model-draft.authorized.controller.ts) also has no list route yet — only POST, GET /:id, PATCH /:id, POST /:id/abandon; a GET /model-drafts?workspaceId=&status=ACTIVE is needed first. The step-position part of this task is still fine as originally scoped (derivable from status + currentRunId, no schema change) — only the 'every field' claim was wrong. When picked up, the resume dialog/toast must say what actually restores, not imply full parity."
+        }
+      ],
+
+      "acceptance_criteria": [
+        "The wizard has five steps, and this file's own definition of done says five rather than still claiming four.",
+        "No existing step's behaviour changes — only its number.",
+        "The review step reads the dataset's committed artifact and configures nothing; ModelDraft gains no column and receives no PATCH from it.",
+        "Per-tag statistics are served from the sidecar without opening data.parquet.",
+        "The review step's preview comes from a bounded server page (useArtifactRows: 200 rows x 50 tags) and top-correlated pairs from useArtifactCorrelation; the step reads no dw* atom and mounts no dataset-wizard mutation UI (revised 2026-08-20 — see the finding on DataAnalysisCard's actual data source).",
+        "A dataset with no committed artifact shows one honest empty state, not four independent ones.",
+        "The holdout panel publishes the holdout's missing/Bad rate beside every figure it shows.",
+        "Leaving to edit a dataset persists the draft first, and the dialog states exactly what survives.",
+        "Returning after an edit re-reads the dataset and clears a target the edit removed, saying so.",
+        "An ACTIVE ModelDraft is reachable from the models list."
+      ],
+
+      "verification": [
+        {
+          "id": "MODEL-FLOW-010-V01",
+          "description": "Walk the five-step wizard end to end and confirm each pre-existing step behaves exactly as before its renumbering — T01's contract rewrite tested rather than asserted.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-010-V02",
+          "description": "REVISED 2026-08-20 (T05 no longer uses DataAnalysisCard — see the finding above): prove the review step's preview goes through useArtifactRows with its bounded params (not an unbounded fetch), and that the step's source file imports no dw* atom from store/dataset-studio and no DataAnalysisCard.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-010-V03",
+          "description": "Open the step for a dataset with 8,000 tags and confirm every payload stays bounded — metadata from the footer, statistics from the sidecar, rows from a bounded page. DS-LAKE-012 found a real unbounded /rows fetch at exactly this width (76MB -> 489KB after the fix); a new consumer of the same hooks is where that regression reappears.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-010-V04",
+          "description": "PROVE RECONCILIATION, NOT JUST NAVIGATION: leave to edit, DELETE THE SELECTED TARGET TAG, save, return — and confirm the target is cleared and stated. Returning with an intact dataset would pass a weaker test while leaving the failure this task exists to prevent completely uncovered.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-010-V05",
+          "description": "Leave to edit, then reach the draft again from the models list and confirm Step 1's choices are restored — the claim T07's dialog makes, verified end to end rather than at the row level.",
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "MODEL-FLOW-011",
+      "title": "ModelDraft Lifecycle Reclaim",
+      "priority": 11,
+      "status": "pending",
+      "progress": 0,
+      "dependencies": ["MODEL-FLOW-002"],
+
+      "description": "DS-LAKE-014 gave DatasetDraft a sweeper and closed the never-abandoned-ACTIVE hole for datasets. ModelDraft is a separate table with no equivalent, so the identical leak exists here: a user who closes the tab leaves an ACTIVE ModelDraft forever, because nothing calls /abandon on their behalf.",
+
+      "findings": [
+        "DELIBERATELY NOT A TASK INSIDE MODEL-FLOW-002. That feature is completed at 100% with nine live-verified tasks; reopening it to add reclaim work would make its own completion claim false and mix verified history with unstarted work. The concerns are also independent — 002 gives the container a row to read, this decides when an unused row is released, and neither constrains the other. The DS-LAKE side already answered this question the same way: the DatasetDraft entity is DS-LAKE-005 and its sweeper is DS-LAKE-014, nine features apart.",
+        "THE STORAGE COST IS SMALLER THAN THE DATASET CASE BUT NOT ZERO. A ModelDraft owns no artifact of its own, so an abandoned one leaks a Postgres row rather than object bytes. Its ModelTrainingRuns DO write under drafts/{modelDraftId}/runs/{runId}/ (MODEL-FLOW-003-T08), and nothing reclaims those today — so the leak is real, just concentrated in the runs rather than the draft.",
+        "MODEL-FLOW-010-T07 MAKES THIS MORE FREQUENT, NOT MERELY MORE VISIBLE. Leaving the wizard to edit a dataset becomes a normal, encouraged action there; every user who does not come back leaves an ACTIVE draft behind. The leak predates that feature but its rate does not."
+      ],
+
+      "tasks": [
+        {
+          "id": "MODEL-FLOW-011-T01",
+          "title": "Tiered ACTIVE-draft eligibility for ModelDraft",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Mirror DS-LAKE-014's tiers rather than inventing a second policy: a draft owning ZERO runs releases on a short window (nothing was computed, nothing is expensive to lose); a draft owning runs releases on a long idle window (a real fit cost minutes of container time). Measure from updatedAt, the same convention DS-LAKE-014's branches use and the same one DS-LAKE-009B-T08 already had to fix once by moving OFF artifact.createdAt. A TRAINED draft is NOT eligible on either window — it holds a finished result the user may still be reviewing in Step 4, which is exactly the state Save Model consumes."
+        },
+        {
+          "id": "MODEL-FLOW-011-T02",
+          "title": "Reclaim the runs' object prefixes, not only the rows",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Abandoning a draft must also release drafts/{modelDraftId}/runs/{runId}/ for each of its runs — otherwise the row disappears and its bytes stay, which is the worse half of the leak and the half nothing currently addresses. is_draft_run_key (MODEL-FLOW-000-T09, MODEL-FLOW-003-T08) is the structural guard that makes a prefix delete safe here; use it rather than a string prefix match."
+        },
+        {
+          "id": "MODEL-FLOW-011-T03",
+          "title": "Periodic sweep caller",
+          "status": "pending",
+          "progress": 0,
+          "detail": "setInterval(...).unref() in onModuleInit, matching DS-LAKE-014's chosen mechanism and PreprocessingJobService.scheduleStragglerSweep's existing precedent — not @nestjs/schedule, which would introduce a second scheduling idiom for one interval. Env-configurable with <= 0 disabling it. Errors logged and swallowed: a failed sweep must never crash the app, and anything it would have reclaimed stays eligible for the next tick."
+        },
+        {
+          "id": "MODEL-FLOW-011-T04",
+          "title": "Reconcile orphaned RUNNING runs at boot",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Found during MODEL-FLOW-003-V01's live verification, not in the original scope: run 562ec955 sat at RUNNING with zero log lines after a nest --watch restart killed watch()'s in-memory tracker mid-flight. The container is independent of the Node process, so nothing reconciles a run whose watcher died. That row is now permanently RUNNING — never terminal, so never eligible under any window this feature adds. Reconcile at boot: for each RUNNING run, check whether its container still exists and mark it FAILED with a stated reason if not."
+        }
+      ],
+
+      "acceptance_criteria": [
+        "An ACTIVE ModelDraft with no runs becomes eligible after the short window and is reclaimed with no operator action.",
+        "An ACTIVE ModelDraft owning runs is not reclaimed on the short window.",
+        "A TRAINED draft is never reclaimed by either window.",
+        "Reclaiming a draft also releases its runs' object prefixes.",
+        "A RUNNING run whose container no longer exists reaches a terminal status at boot rather than staying RUNNING forever.",
+        "The sweep runs without any HTTP call, and disabling it via env leaves any admin path working unchanged."
+      ],
+
+      "verification": [
+        {
+          "id": "MODEL-FLOW-011-V01",
+          "description": "Seed an ACTIVE ModelDraft with zero runs past the short window; run the sweep against real Postgres and confirm it is reclaimed.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-011-V02",
+          "description": "PROVE THE TIER BITES BOTH WAYS: a draft WITH runs, past the short window but inside the long one, must survive the same sweep run that reclaims V01's draft. One run, two drafts, opposite outcomes — a test that only proves reclamation cannot distinguish a working tier from a blanket rule.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-011-V03",
+          "description": "Confirm a reclaimed draft's run prefixes are actually gone from MinIO, asserting a non-zero delete count. A prefix bug reports success having deleted nothing.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-011-V04",
+          "description": "Reproduce the V01-observed orphan: start a run, kill the backend mid-flight, restart, and confirm the RUNNING row reaches a terminal status.",
+          "status": "pending"
+        }
+      ]
     }
   ],
 
   "global_definition_of_done": [
-    "The existing four-step Model Creation Flow is preserved.",
-    "Step 1 Model Setup behavior remains unchanged.",
-    "Step 2 Training Configuration behavior remains unchanged.",
-    "Step 3 Evaluation behavior remains unchanged.",
-    "Step 4 Save Model behavior remains unchanged from the user's perspective.",
+    "The five-step Model Creation Flow is preserved.",
+    "A dataset selected at Step 1 is reviewable at Step 2 before any training is configured.",
+    "Step 3 Training Configuration behavior remains unchanged.",
+    "Step 4 Evaluation behavior remains unchanged.",
+    "Step 5 Save Model behavior remains unchanged...",
     "Training runs without committing the Model to the database.",
     "Evaluation works without a persistent Model database record.",
     "Fine-Tuning runs as a background process.",

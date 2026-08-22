@@ -7,11 +7,13 @@ import {
   dwWorkspaceIdAtom,
   dwSelectedSourcesAtom,
   dwCustomDateRangeAtom,
+  dwHoldoutRangeAtom,
   dwCustomIntervalAtom,
   dwFetchConfigAtom,
   dwTimeRangeAtom,
   dwDraftIdAtom,
   dwDraftArtifactIdAtom,
+  dwBronzeWarmStateAtom,
 } from '@/store/dataset-studio'
 
 /**
@@ -48,19 +50,28 @@ import {
  * is preventing two concurrent `materialize` calls (two server-side source
  * re-fetches, two BRONZE artifacts) for one logical fetch, not observability
  * — but it is also the only path a background failure has to the user.
+ *
+ * DS-LAKE-015-T01: also drives `dwBronzeWarmStateAtom` (idle -> materializing
+ * -> ready | failed) purely for PROGRESS display (Step 3.1's "preparing"
+ * banner, Step 2's "still preparing" note) — this is additive, not a
+ * reversal of the failure-invisibility design two paragraphs up.
+ * `dwDraftSyncStateAtom` is still never touched here.
  */
 export function useDatasetBronzeWarm(): (tags: string[]) => void {
   const workspaceId = useAtomValue(dwWorkspaceIdAtom)
   const selectedSources = useAtomValue(dwSelectedSourcesAtom)
   const customDateRange = useAtomValue(dwCustomDateRangeAtom)
+  const holdoutRange = useAtomValue(dwHoldoutRangeAtom)
   const customInterval = useAtomValue(dwCustomIntervalAtom)
   const fetchConfig = useAtomValue(dwFetchConfigAtom)
   const period = useAtomValue(dwTimeRangeAtom)
   const [draftId, setDraftId] = useAtom(dwDraftIdAtom)
   const [artifactId, setArtifactId] = useAtom(dwDraftArtifactIdAtom)
+  const [, setWarmState] = useAtom(dwBronzeWarmStateAtom)
 
   return useCallback(
     (tags: string[]) => {
+      setWarmState('materializing')
       void (async () => {
         try {
           const id = await ensureDraftId(
@@ -73,6 +84,7 @@ export function useDatasetBronzeWarm(): (tags: string[]) => void {
               workspaceId,
               selectedSources,
               customDateRange,
+              holdoutRange,
               customInterval,
               fetchConfig,
               period,
@@ -82,9 +94,11 @@ export function useDatasetBronzeWarm(): (tags: string[]) => void {
             tags,
           )
           if (artId !== artifactId) setArtifactId(artId)
+          setWarmState('ready')
         } catch {
           // Swallowed on purpose — see module doc. `ensureBronze` in
           // useDatasetDraftPipeline is the real, user-visible retry point.
+          setWarmState('failed')
         }
       })()
     },
@@ -92,6 +106,7 @@ export function useDatasetBronzeWarm(): (tags: string[]) => void {
       workspaceId,
       selectedSources,
       customDateRange,
+      holdoutRange,
       customInterval,
       fetchConfig,
       period,
@@ -99,6 +114,7 @@ export function useDatasetBronzeWarm(): (tags: string[]) => void {
       artifactId,
       setDraftId,
       setArtifactId,
+      setWarmState,
     ],
   )
 }

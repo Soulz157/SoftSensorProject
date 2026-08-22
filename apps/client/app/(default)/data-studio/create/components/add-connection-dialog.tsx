@@ -506,7 +506,7 @@ export function AddConnectionDialog({
               {testState === 'failed' && (
                 <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
               )}
-              <span className="break-words">
+              <span className="wrap-break-word">
                 {testState === 'testing'
                   ? 'Testing connection…'
                   : testMessage ||

@@ -518,17 +518,16 @@ function runPipeline(
     counts.valueCrop = before - rows.length
   }
 
-  const timeBands = (cfg.exclusions ?? [])
-    .map(e => e.time)
-    .filter((t): t is NonNullable<RangeExclusion['time']> => t !== null)
-  const excludeValues = (cfg.exclusions ?? [])
-    .map(e => e.value)
-    .filter((v): v is NonNullable<RangeExclusion['value']> => v !== null)
+  const exclusionBands = cfg.exclusions ?? []
 
-  if (timeBands.length > 0) {
+  const timeOnlyBands = exclusionBands.filter(e => e.time && !e.value)
+  if (timeOnlyBands.length > 0) {
     const before = rows.length
     rows = rows.filter(
-      r => !timeBands.some(b => r.timestamp >= b.from && r.timestamp <= b.to),
+      r =>
+        !timeOnlyBands.some(
+          b => r.timestamp >= b.time!.from && r.timestamp <= b.time!.to,
+        ),
     )
     counts.exclude = before - rows.length
   }
@@ -536,8 +535,19 @@ function runPipeline(
   const out: DataRow[] = new Array(rows.length)
   for (let i = 0; i < rows.length; i++) out[i] = cloneRow(rows[i]!)
 
-  for (const { tag, min, max } of excludeValues) {
+  for (const ex of exclusionBands) {
+    if (!ex.value) continue
+    const { tag, min, max } = ex.value
     for (const row of out) {
+      // The time half, when present, BOUNDS the value half — this is the
+      // line whose absence made a box delete matching values across the
+      // entire series.
+      if (
+        ex.time &&
+        (row.timestamp < ex.time.from || row.timestamp > ex.time.to)
+      ) {
+        continue
+      }
       const cell = row.cells[tag]
       if (!cell || cell.value < min || cell.value > max) continue
       if (cell.status === 'Good') counts.excludeCells++
@@ -545,9 +555,10 @@ function runPipeline(
     }
   }
 
+  const hasValueExclusion = exclusionBands.some(e => e.value)
   const beforeRules = !wantBeforeRules
     ? undefined
-    : excludeValues.length === 0
+    : !hasValueExclusion
       ? rows === raw.rows
         ? rows.slice()
         : rows
@@ -598,7 +609,6 @@ function runPipeline(
         if (!dropRows.has(i)) counts.conditionalRows++
         dropRows.add(i)
       } else {
-        if (cell.status === 'Good') counts.conditional++
         if (rule.action === 'drop') delete row.cells[rule.tag]
         else cell.status = 'Bad'
       }

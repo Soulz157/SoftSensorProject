@@ -16,6 +16,8 @@ import {
   topCorrelations,
   type TagPair,
 } from '@/lib/data-quality'
+import type { DraftCorrelationResult } from '@/services/dataset-draft'
+import type { ArtifactTagColumnStats } from '@/services/dataset-version'
 
 export interface DatasetKpis {
   /** Mean of each numeric tag's mean, averaged across tags. */
@@ -88,4 +90,59 @@ export function artifactTimeSpanLabel(
     : days >= 30
       ? `${Math.round(days / 30)} mo`
       : `${days} d`
+}
+
+/**
+ * Orders an artifact's `column_stats.json` sidecar entries by the DATASET's
+ * own tag list, not the sidecar's key order (JSON insertion order is an
+ * accident of the writer). Tags absent from the sidecar are dropped rather
+ * than rendered as an all-dash row — a legacy sidecar can legitimately
+ * predate a tag. Shared by `DatasetDetailSheet` and the Model wizard's Step 2
+ * Dataset Review (MODEL-FLOW-010) so both agree on row order for the same
+ * artifact.
+ */
+export function perTagStatsOrdered(
+  tags: string[],
+  stats: Record<string, ArtifactTagColumnStats> | null | undefined,
+): ArtifactTagColumnStats[] {
+  if (!stats) return []
+  return tags
+    .map(tag => stats[tag])
+    .filter((s): s is ArtifactTagColumnStats => Boolean(s))
+}
+
+export interface CorrelatedArtifactPair {
+  a: string
+  b: string
+  r: number
+}
+
+/**
+ * Ranks a server-resolved correlation matrix (`POST .../correlation`) into
+ * pairs by |r|, strongest first — the endpoint returns a resolved tag list +
+ * a full matrix (DS-LAKE-005B-D-T05b), NOT a ranked pair list, so the
+ * ranking happens client-side. Cheap by construction: the server already
+ * hard-caps the matrix at `topK` columns, so this is at most topK²/2
+ * iterations over data already in memory, not a client-side Pearson pass
+ * over a frame. Shared by `DatasetDetailSheet` and the Model wizard's Step 2
+ * Dataset Review (MODEL-FLOW-010).
+ */
+export function topCorrelatedArtifactPairs(
+  correlation: DraftCorrelationResult | null,
+  limit = 5,
+): CorrelatedArtifactPair[] {
+  if (!correlation) return []
+  const { tags: resolved, matrix } = correlation
+  const pairs: CorrelatedArtifactPair[] = []
+  for (let i = 0; i < resolved.length; i++) {
+    for (let j = i + 1; j < resolved.length; j++) {
+      const r = matrix[i]?.[j]
+      if (typeof r === 'number' && Number.isFinite(r)) {
+        pairs.push({ a: resolved[i]!, b: resolved[j]!, r })
+      }
+    }
+  }
+  // A strong negative relationship is exactly as interesting as a strong
+  // positive one to whoever opens this panel.
+  return pairs.sort((x, y) => Math.abs(y.r) - Math.abs(x.r)).slice(0, limit)
 }

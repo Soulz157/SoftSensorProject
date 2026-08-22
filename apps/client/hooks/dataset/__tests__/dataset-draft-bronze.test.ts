@@ -45,6 +45,7 @@ describe('dataset-draft-bronze in-flight dedup', () => {
       workspaceId: 'ws-1',
       selectedSources: [SOURCE],
       customDateRange: { from: '2026-01-01T00:00', to: '2026-01-02T00:00' },
+      holdoutRange: null,
       customInterval: null,
       fetchConfig: {
         summaryDuration: '',
@@ -78,6 +79,7 @@ describe('dataset-draft-bronze in-flight dedup', () => {
       workspaceId: 'ws-1',
       selectedSources: [SOURCE],
       customDateRange: { from: '2026-01-01T00:00', to: '2026-01-02T00:00' },
+      holdoutRange: null,
       customInterval: null,
       fetchConfig: {
         summaryDuration: '',
@@ -135,6 +137,7 @@ describe('dataset-draft-bronze in-flight dedup', () => {
       workspaceId: 'ws-1',
       selectedSources: [SOURCE],
       customDateRange: { from: '2026-01-01T00:00', to: '2026-01-02T00:00' },
+      holdoutRange: null,
       customInterval: null,
       fetchConfig: {
         summaryDuration: '',
@@ -153,5 +156,63 @@ describe('dataset-draft-bronze in-flight dedup', () => {
     expect(idA).toBe('artifact-a')
     expect(idB).toBe('artifact-b')
     expect(datasetDraftService.materialize).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('dataset-draft-bronze holdout wiring (DS-LAKE-018-T03)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  const baseCtx = {
+    workspaceId: 'ws-1',
+    selectedSources: [SOURCE],
+    customDateRange: { from: '2026-01-01T00:00', to: '2026-01-02T00:00' },
+    customInterval: null,
+    fetchConfig: {
+      summaryDuration: '',
+      calBasis: 'time',
+      summaryType: 'average',
+      batchSize: 50,
+    } as never,
+    period: '1min' as never,
+  }
+
+  it('sends holdout, toPiTime-formatted, when one is selected', async () => {
+    vi.mocked(datasetDraftService.materialize).mockResolvedValue({
+      data: { id: 'artifact-1' },
+    } as never)
+
+    await ensureBronzeArtifactId(
+      {
+        ...baseCtx,
+        holdoutRange: { from: '2026-01-01T12:00', to: '2026-01-01T18:00' },
+      },
+      'draft-1',
+      null,
+      ['TI-101'],
+    )
+
+    const call = vi.mocked(datasetDraftService.materialize).mock.calls[0]!
+    expect(call[1].holdout).toEqual({
+      from: '2026-01-01 12:00:00',
+      to: '2026-01-01 18:00:00',
+    })
+  })
+
+  it('omits holdout entirely when none is selected — behaves exactly as today', async () => {
+    vi.mocked(datasetDraftService.materialize).mockResolvedValue({
+      data: { id: 'artifact-2' },
+    } as never)
+
+    await ensureBronzeArtifactId(
+      { ...baseCtx, holdoutRange: null },
+      'draft-1',
+      null,
+      ['TI-102'],
+    )
+
+    const call = vi.mocked(datasetDraftService.materialize).mock.calls[0]!
+    expect(call[1]).not.toHaveProperty('holdout')
   })
 })

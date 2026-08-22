@@ -16,6 +16,7 @@ import { Users } from '@/common/decorators/user.decorator';
 import { DatasetDraftAuthorizedService } from './dataset-draft.authorized.service';
 import {
   CreateDraftDto,
+  ResplitDraftHoldoutDto,
   SaveDraftAsDatasetDto,
 } from './dto/dataset-draft.authorized.dto';
 import {
@@ -90,6 +91,23 @@ export class DatasetDraftAuthorizedController {
     return this.service.abandonDraftService(user, id);
   }
 
+  @Post('/:id/touch')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Heartbeat: keep an ACTIVE draft from idling out (DS-LAKE-014)',
+    description:
+      'Bumps updatedAt on an ACTIVE draft. No-op on a SAVED/ABANDONED one. ' +
+      'The wizard calls this periodically while the tab is visibly open so ' +
+      "DS-LAKE-014's ACTIVE-draft idle sweep measures real absence (tab " +
+      'closed/backgrounded), not silence (user reading, issuing no writes).',
+  })
+  async touchDraftController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+  ) {
+    return this.service.touchDraftService(user, id);
+  }
+
   @Post('/:id/artifacts')
   @HttpCode(201)
   @ApiOperation({
@@ -104,6 +122,27 @@ export class DatasetDraftAuthorizedController {
     @Body() body: CreateRawVersionDto,
   ) {
     return this.service.materializeDraftArtifactService(user, id, body);
+  }
+
+  @Post('/:id/holdout')
+  @HttpCode(201)
+  @ApiOperation({
+    summary: 'Re-split the draft holdout against its pristine BRONZE',
+    description:
+      'DS-LAKE-018-T06. Re-splits the existing artifact rather than ' +
+      're-fetching — the holdout picker now lives at Step 3.1, which ' +
+      'mounts after the bronze warm has already run once with no holdout. ' +
+      "Always reads the draft's pristine (never-split) root; refuses 422 " +
+      'if that root was already split at fetch time. `holdout: null` ' +
+      'clears the holdout by pointing the draft back at its pristine ' +
+      'artifact, without calling Python.',
+  })
+  async resplitDraftHoldoutController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Body() body: ResplitDraftHoldoutDto,
+  ) {
+    return this.service.resplitDraftHoldoutService(user, id, body);
   }
 
   @Post('/:id/artifacts/:artifactId/features')

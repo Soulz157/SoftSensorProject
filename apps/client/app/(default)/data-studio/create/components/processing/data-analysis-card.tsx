@@ -44,8 +44,15 @@ import {
   dwDraftArtifactIdAtom,
   dwDraftGoldArtifactIdAtom,
   dwScalerConfigsAtom,
+  dwEditingDatasetAtom,
+  dwModeAtom,
 } from '@/store/dataset-studio'
-import { useDatasetArtifactMetadata } from '@/hooks/dataset/use-dataset-artifact-metadata'
+import { useArtifactMetadata } from '@/hooks/dataset/artifact/use-dataset-artifact-metadata'
+import { useArtifactHistogram } from '@/hooks/dataset/artifact/use-artifact-histogram'
+import { useArtifactBoxplot } from '@/hooks/dataset/artifact/use-artifact-boxplot'
+import { useArtifactScatter } from '@/hooks/dataset/artifact/use-artifact-scatter'
+import { useArtifactCorrelation } from '@/hooks/dataset/artifact/use-artifact-correlation'
+import { useDatasetArtifactMetadata } from '@/hooks/dataset/artifact/use-dataset-artifact-metadata'
 import { useDatasetHistogram } from '@/hooks/dataset/use-dataset-histogram'
 import { useDatasetBoxplot } from '@/hooks/dataset/use-dataset-boxplot'
 import { useDatasetScatter } from '@/hooks/dataset/use-dataset-scatter'
@@ -78,7 +85,7 @@ interface Props {
   dataset: BoundedSample
   range: TimeRange
 }
-type TabStatus = 'no-tags' | 'pending' | 'loading' | 'ready'
+type TabStatus = 'no-tags' | 'pending' | 'loading' | 'ready' | 'unavailable'
 
 function fmt(n: number): string {
   return n.toLocaleString(undefined, { maximumFractionDigits: 2 })
@@ -111,7 +118,7 @@ function AxisSelect({
         {axis}
       </span>
       <Select value={value ?? undefined} onValueChange={onChange}>
-        <SelectTrigger className="h-8 w-55 c2ursor-pointer font-mono text-xs">
+        <SelectTrigger className="h-8 w-55 cursor-pointer font-mono text-xs">
           <SelectValue placeholder={`Select ${axis} tag`} />
         </SelectTrigger>
         <SelectContent>
@@ -159,14 +166,43 @@ export function DataAnalysisCard({ dataset, range }: Props) {
   // Shared across every server-backed tab (not `histogramArtifactId` —
   // T03 needs the identical id, so this is named for what it IS, not for
   // the first tab that happened to need it).
+
   const draftId = useAtomValue(dwDraftIdAtom)
   const draftArtifactId = useAtomValue(dwDraftArtifactIdAtom)
   const goldArtifactId = useAtomValue(dwDraftGoldArtifactIdAtom)
   const analysisArtifactId = goldArtifactId ?? draftArtifactId
-  const { metadata: analysisMetadata } = useDatasetArtifactMetadata(
-    draftId,
-    analysisArtifactId,
-  )
+  const editingDataset = useAtomValue(dwEditingDatasetAtom)
+
+  // Route every server-backed tab to whichever leg can actually READ the
+  // artifact in play. Edit mode's BRONZE is dataset-gated (adopted at Save,
+  // DS-LAKE-017-T01); the draft leg's `where: { id, draftId }` misses it,
+  // because that artifact's draftId belongs to the draft that originally
+  // created it, not to the fresh draft an edit session opens. That mismatch
+  // is why these tabs sat empty in edit mode while Step 3.2 showed BRONZE
+  // rows fine — that step reads the hydrated client frame
+  // (`useDatasetEditHydration` -> dwRawDatasetAtom), not an artifact id, and
+  // that hook deliberately fills only the row atoms.
+  //
+  // Falls back to the draft leg the moment `analysisArtifactId` appears:
+  // once the user Applies in edit mode a real SILVER exists in THIS draft,
+  // and staying pinned to the adopted BRONZE would show raw data for the
+  // rest of the session.
+  const useDatasetLeg =
+    !analysisArtifactId && !!editingDataset?.adoptedBronzeArtifactId
+
+  const dsId = useDatasetLeg ? editingDataset!.id : null
+  const dsArtifactId = useDatasetLeg
+    ? editingDataset!.adoptedBronzeArtifactId
+    : null
+  const dfId = useDatasetLeg ? null : draftId
+  const dfArtifactId = useDatasetLeg ? null : analysisArtifactId
+
+  // Both legs are called unconditionally, one disabled by null ids — hook
+  // order must not vary with mode, and a disabled hook fires no request.
+  const draftMeta = useDatasetArtifactMetadata(dfId, dfArtifactId)
+  const dsMeta = useArtifactMetadata(dsId, dsArtifactId)
+  const analysisMetadata = useDatasetLeg ? dsMeta.metadata : draftMeta.metadata
+
   const artifactTags = useMemo(() => {
     if (!analysisMetadata) return []
     const inArtifact = new Set(analysisMetadata.tags)
@@ -178,27 +214,32 @@ export function DataAnalysisCard({ dataset, range }: Props) {
   // first, that render fell through to 'ready' with zero tags and
   // rendered a false "not enough values" finding instead of the true
   // reason. Same status derivation for both server-backed tabs.
+  const mode = useAtomValue(dwModeAtom)
+  const hasArtifact = Boolean(analysisArtifactId || dsArtifactId)
+  const artifactUnavailable =
+    !hasArtifact && mode === 'edit' && !editingDataset?.adoptedBronzeArtifactId
+
   const statusFor = (hasTags: boolean, loading: boolean): TabStatus =>
     !hasTags
       ? 'no-tags'
-      : !analysisArtifactId
-        ? 'pending'
-        : loading
-          ? 'loading'
-          : 'ready'
+      : artifactUnavailable
+        ? 'unavailable'
+        : !hasArtifact
+          ? 'pending'
+          : loading
+            ? 'loading'
+            : 'ready'
 
-  const { histogram, loading: histogramLoading } = useDatasetHistogram(
-    draftId,
-    analysisArtifactId,
-    compareTags,
-  )
+  const draftHist = useDatasetHistogram(dfId, dfArtifactId, compareTags)
+  const dsHist = useArtifactHistogram(dsId, dsArtifactId, compareTags)
+  const { histogram, loading: histogramLoading } = useDatasetLeg
+    ? dsHist
+    : draftHist
   const histogramStatus = statusFor(compareTags.length > 0, histogramLoading)
 
-  const { boxplot, loading: boxplotLoading } = useDatasetBoxplot(
-    draftId,
-    analysisArtifactId,
-    compareTags,
-  )
+  const draftBox = useDatasetBoxplot(dfId, dfArtifactId, compareTags)
+  const dsBox = useArtifactBoxplot(dsId, dsArtifactId, compareTags)
+  const { boxplot, loading: boxplotLoading } = useDatasetLeg ? dsBox : draftBox
   const boxplotStatus = statusFor(compareTags.length > 0, boxplotLoading)
 
   // DS-LAKE-005B-D-T04. Scatter's Y follows the focused tag (same
@@ -235,12 +276,21 @@ export function DataAnalysisCard({ dataset, range }: Props) {
     setYPick(tag)
   }
 
-  const { scatter, loading: scatterLoading } = useDatasetScatter(
-    draftId,
-    analysisArtifactId,
+  const draftScatter = useDatasetScatter(
+    dfId,
+    dfArtifactId,
     scatterXTag,
     scatterYTag,
   )
+  const dsScatter = useArtifactScatter(
+    dsId,
+    dsArtifactId,
+    scatterXTag,
+    scatterYTag,
+  )
+  const { scatter, loading: scatterLoading } = useDatasetLeg
+    ? dsScatter
+    : draftScatter
   const scatterStatus = statusFor(
     Boolean(scatterXTag && scatterYTag),
     scatterLoading,
@@ -255,11 +305,11 @@ export function DataAnalysisCard({ dataset, range }: Props) {
   // + hard cap (DS-LAKE-005B-D-T05a/T05b) over whatever candidate list is
   // sent, so sending more than will be shown is by design, not waste.
 
-  const { correlation, loading: correlationLoading } = useDatasetCorrelation(
-    draftId,
-    analysisArtifactId,
-    artifactTags,
-  )
+  const draftCorr = useDatasetCorrelation(dfId, dfArtifactId, artifactTags)
+  const dsCorr = useArtifactCorrelation(dsId, dsArtifactId, artifactTags)
+  const { correlation, loading: correlationLoading } = useDatasetLeg
+    ? dsCorr
+    : draftCorr
   const correlationStatus = statusFor(
     artifactTags.length >= 2,
     correlationLoading,
@@ -327,6 +377,20 @@ export function DataAnalysisCard({ dataset, range }: Props) {
           Data Analysis &amp; Visualization
         </h2>
       </div>
+
+      {artifactUnavailable && (
+        <div className="rounded-lg border border-border bg-muted/40 px-3 py-2">
+          <p className="text-xs font-medium text-foreground">
+            Charts unavailable for this dataset
+          </p>
+          <p className="mt-0.5 text-[11px] text-muted-foreground">
+            Its raw artifact was reclaimed, or it was saved before raw artifacts
+            were kept for editing. The rows below are loaded and usable —
+            applying a cleaning rule creates a new artifact and restores the
+            charts.
+          </p>
+        </div>
+      )}
 
       <Tabs value={tab} onValueChange={setTab} className="flex w-full flex-col">
         <TabsList className="mb-4 inline-flex flex-wrap gap-4 border-b border-border">

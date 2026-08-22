@@ -47,10 +47,11 @@ export interface TrainState {
   lastLog?: string
 }
 
-export const MP_TOTAL_STEPS = 4
+export const MP_TOTAL_STEPS = 5
 
-// Lean wizard — Step 1: Select Dataset (+ model metadata), Step 2: Training
-// Configuration, Step 3: Results. Dataset ETL now lives entirely in Data Studio
+// Wizard — Step 1: Select Dataset (+ model metadata), Step 2: Dataset Review
+// (MODEL-FLOW-010), Step 3: Training Configuration, Step 4: Evaluation,
+// Step 5: Save Model. Dataset ETL now lives entirely in Data Studio
 // (`store/dataset-studio.ts`); the model wizard only references a saved
 // `Dataset` by id + its cached snapshot (avoids a refetch on every render).
 export const mpSelectedDatasetAtom = atom<SavedDataset | null>(null)

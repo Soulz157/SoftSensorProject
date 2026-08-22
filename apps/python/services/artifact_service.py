@@ -14,7 +14,7 @@ tmp objects.
 """
 
 from __future__ import annotations
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import asyncio
 import time
@@ -26,10 +26,10 @@ from fastapi import Response
 
 from intergrations.object_store import (
     COLUMN_STATS_FILENAME,
-    DATA_FILENAME,
     FEATURE_SPEC_FILENAME,
     MANIFEST_FILENAME,
     TIMESTAMP_COLUMN,
+    VALIDATE_DATA_FILENAME,
     VALIDATION_REPORT_FILENAME,
     ArtifactStats,
     ObjectStore,
@@ -46,16 +46,23 @@ from intergrations.object_store import (
     is_committed_artifact_key,
     is_draft_run_key,
     is_model_run_key,
+    missing_pct,
     model_run_key,
+    split_data_key,
 )
 from schemas.preprocess import (
     ArtifactReclaimRequest,
     CleanRequest,
     CleanupRequest,
     ColumnStatsRequest,
+    FeatureConfigRequest,
     FeaturesRequest,
+    HoldoutSplitRequest,
     MaterializeRequest,
     MetadataRequest,
+    ReplayHoldoutForRunRequest,
+    ReplayHoldoutRequest,
+    ResplitHoldoutRequest,
     RowsRequest,
     TagCatalogRequest,
     ValidateRequest,
@@ -70,7 +77,7 @@ from services.feature_service import (
     select_columns,
     to_model_ready,
 )
-from services.feature_spec_service import build_feature_spec
+from services.feature_spec_service import build_feature_spec, max_replay_lookback
 from services.frame_service import from_pi_response, from_sql_response
 from services.preview_service import sample_rows
 from services.validation_service import run_validation
@@ -89,6 +96,9 @@ def _stats_payload(
     column_stats_key: str | None = None,
     feature_spec_key: str | None = None,
     skipped_features: list[str] | None = None,
+    validation_row_count: int | None = None,
+    validation_holdout_from: str | None = None,
+    validation_missing_pct: float | None = None,
 ) -> dict[str, Any]:
     return {
         "object_key": stats.object_key,
@@ -106,6 +116,20 @@ def _stats_payload(
         # call apply_features at all. Only `features()` ever populates
         # this; every other caller passes nothing, defaulting it to [].
         "skipped_features": skipped_features or [],
+        # DS-LAKE-018-T03. Rows written to validate_data.parquet (holdout
+        # window + lead-in) — None means no holdout was requested; only
+        # `materialize()` ever sets this. `row_count` above keeps meaning
+        # "rows in data.parquet" unconditionally, per the task's own AC.
+        "validation_row_count": validation_row_count,
+        # DS-LAKE-018-T05. The resolved holdout boundary, same string
+        # convention `replay_holdout`'s own `holdout_from` expects.
+        "validation_holdout_from": validation_holdout_from,
+        # MODEL-FLOW-010-T06. Share of `validate_data.parquet` cells that are
+        # not Good — `missing_pct(validate_frame)`, computed while the frame
+        # is already in memory at write time rather than a compute-on-read
+        # scan later. None exactly when `validation_row_count` is None (no
+        # holdout requested / not yet re-captured for a legacy holdout).
+        "validation_missing_pct": validation_missing_pct,
     }
 
 
@@ -119,6 +143,9 @@ def _commit(
     column_stats: dict[str, Any] | None = None,
     feature_spec: dict[str, Any] | None = None,
     skipped_features: list[str] | None = None,
+    validation_row_count: int | None = None,
+    validation_holdout_from: str | None = None,
+    validation_missing_pct: float | None = None,
 ) -> dict[str, Any]:
     """Write the manifest (and, since DS-LAKE-005B-A-T07, the column-stats
     sidecar; since DS-LAKE-006-T05, the feature-spec sidecar) beside the
@@ -149,6 +176,9 @@ def _commit(
             else None
         ),
         skipped_features=skipped_features,
+        validation_row_count=validation_row_count,
+        validation_holdout_from=validation_holdout_from,
+        validation_missing_pct=validation_missing_pct,
     )
     store.put_json(
         sidecar_key(stats.object_key, MANIFEST_FILENAME),
@@ -194,12 +224,66 @@ def _as_mapping(response: Any) -> dict[str, Any]:
     return response.model_dump() if hasattr(response, "model_dump") else dict(response)
 
 
+# DS-LAKE-018-T02/T03: over-provisioned lead-in duration, mirrored from
+# `HOLDOUT_LEAD_IN_DURATION` in apps/client/lib/holdout.ts ({value:7,
+# unit:'day'}). Applied HERE rather than client-side — userDecisions[0]:
+# "the interval is already known at materialize time... so the duration
+# converts to rows there." A plain constant, not a config value: no env var
+# exists for this on either side (see the TS constant's own doc comment).
+HOLDOUT_LEAD_IN = timedelta(days=7)
+
+
+def _split_holdout(
+    frame: pd.DataFrame, holdout: HoldoutSplitRequest
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Split one materialized frame into (train, validate) at BRONZE.
+
+    `train` keeps every row OUTSIDE the holdout window — this is what lands
+    in `data.parquet`, so the holdout genuinely leaves the training path
+    (finding: "HOLDOUT ROWS MUST BE CUT FROM data.parquet TOO", the easiest
+    thing here to get wrong and the hardest to notice). `validate` is the
+    holdout window PLUS a lead-in margin ahead of it, so DS-LAKE-018-T04's
+    replay has real prior rows to compute lag/rolling features for the
+    holdout's own first rows (finding: "LAG AND ROLLING FEATURES NEED
+    LEAD-IN ROWS"). Lead-in rows are NOT removed from train — they were
+    already inside the fetch window and cost nothing extra to carry
+    (userDecisions[0]) — they are only ADDITIONALLY copied into `validate`.
+
+    Timestamps compare directly: both sides are the same "local wall-clock"
+    convention already used everywhere in this wizard (`HoldoutSplitRequest`'s
+    own doc comment) — no second timezone conversion here.
+    """
+    ts = frame[TIMESTAMP_COLUMN]
+    holdout_from = pd.Timestamp(holdout.from_time)
+    holdout_to = pd.Timestamp(holdout.to_time)
+    lead_in_from = holdout_from - HOLDOUT_LEAD_IN
+
+    holdout_mask = (ts >= holdout_from) & (ts <= holdout_to)
+    lead_in_mask = (ts >= lead_in_from) & (ts < holdout_from)
+
+    train = frame[~holdout_mask].reset_index(drop=True)
+    validate = (
+        frame[lead_in_mask | holdout_mask]
+        .sort_values(TIMESTAMP_COLUMN)
+        .reset_index(drop=True)
+    )
+    return train, validate
+
+
 def materialize(store: ObjectStore, request: MaterializeRequest) -> dict[str, Any]:
     """Fetch from the source, normalise, and write the raw artifact.
 
     The two source shapes are genuinely different and converge only here: PI is
     tag-major with no shared time axis, SQL is row-major and already aligned.
     `frame_service` reconciles them; this function only routes and writes.
+
+    DS-LAKE-018-T03: when `request.holdout` is set, this is ONE operation
+    with TWO outputs (scope_note — do not split into two calls): the holdout
+    window is cut from the frame BEFORE it is written as `data.parquet`, and
+    written SEPARATELY as `validate_data.parquet` beside it, with lead-in
+    rows included. `row_count` in the response keeps meaning "rows in
+    data.parquet" exactly as before; `validation_row_count` is the new,
+    separate field for the sidecar's own row count.
     """
     started = time.perf_counter()
 
@@ -222,6 +306,21 @@ def materialize(store: ObjectStore, request: MaterializeRequest) -> dict[str, An
         )
 
     assert_frame_is_usable(frame)
+
+    validate_frame: pd.DataFrame | None = None
+    if request.holdout is not None:
+        frame, validate_frame = _split_holdout(frame, request.holdout)
+        # Cutting the holdout can, in principle, leave nothing on either
+        # side (e.g. the whole fetch window picked as the holdout — T01's
+        # own guard 1 does not refuse that, only containment). Both must
+        # fail loud here, not commit a 0-row artifact silently.
+        assert_frame_is_usable(frame)
+        if len(validate_frame) == 0:
+            raise ValueError(
+                "The holdout window matched no rows in the fetched data — "
+                "check the holdout range against the fetch window."
+            )
+
     stats = store.put_frame(frame, request.target_key,
                             overwrite=request.overwrite)
     # No parent: a materialised artifact is a lineage root — it comes from the
@@ -229,7 +328,99 @@ def materialize(store: ObjectStore, request: MaterializeRequest) -> dict[str, An
     # None) reports drift=None for every tag, not 0 — there is nothing to
     # compare against, which is a different fact than "no drift occurred".
     column_stats = build_column_stats(frame, operations=[])
-    return _commit(store, stats, started, column_stats=column_stats)
+
+    validation_row_count = None
+    validation_holdout_from = None
+    validation_missing_pct = None
+    if validate_frame is not None:
+        validate_key = sidecar_key(stats.object_key, VALIDATE_DATA_FILENAME)
+        store.put_frame(validate_frame, validate_key, overwrite=request.overwrite)
+        validation_row_count = len(validate_frame)
+        # Canonicalised via `pd.Timestamp` (not the raw request string) so a
+        # later replay compares against the SAME parsed form `_split_holdout`
+        # itself compared against, never a second, independent parse.
+        assert request.holdout is not None  # validate_frame implies this
+        validation_holdout_from = str(pd.Timestamp(request.holdout.from_time))
+        # MODEL-FLOW-010-T06: captured now, while validate_frame is already
+        # in memory, instead of a compute-on-read scan against
+        # validate_data.parquet later.
+        validation_missing_pct = missing_pct(validate_frame)
+
+    return _commit(
+        store, stats, started,
+        column_stats=column_stats,
+        validation_row_count=validation_row_count,
+        validation_holdout_from=validation_holdout_from,
+        validation_missing_pct=validation_missing_pct,
+    )
+
+
+def resplit_holdout(
+    store: ObjectStore, request: ResplitHoldoutRequest
+) -> dict[str, Any]:
+    """Re-split an EXISTING, PRISTINE (never-split) BRONZE against a new
+    holdout window, without re-fetching from the source.
+
+    Companion to `materialize()`'s own holdout branch, used when the user
+    changes the holdout AFTER the artifact has already been materialized
+    (DS-LAKE-018-T06: the holdout picker moved from Step 2 to Step 3.1,
+    which mounts after the bronze warm has already run once with no
+    holdout).
+
+    `request.source_key` MUST be pristine — the caller (NestJS
+    `resplitDraftHoldoutService`) resolves the draft's root BRONZE
+    (`parentArtifactId: null`) and refuses one with a non-null
+    `validationRowCount`, since re-splitting an ALREADY-split frame would
+    permanently shed the rows the previous split cut into
+    `validate_data.parquet` — there is no reconstruction step here on
+    purpose (see this task's own decision note: the prior holdout boundary
+    needed to reconstruct is not persisted anywhere reachable). Splitting
+    fresh from the pristine source every time is what makes repeated
+    holdout edits lossless and idempotent.
+
+    Otherwise IDENTICAL to `materialize()`'s holdout branch — same
+    `_split_holdout`, same guards, same `_commit` shape — reused verbatim
+    rather than re-derived, so the lead-in math never drifts between the
+    two call sites.
+    """
+    started = time.perf_counter()
+
+    frame = store.get_frame(request.source_key)
+    assert_frame_is_usable(frame)
+
+    train, validate_frame = _split_holdout(frame, request.holdout)
+    # Same as materialize()'s own guard: cutting the holdout can leave
+    # nothing on either side, and both must fail loud here rather than
+    # commit a 0-row artifact silently.
+    assert_frame_is_usable(train)
+    if len(validate_frame) == 0:
+        raise ValueError(
+            "The holdout window matched no rows in the source data — "
+            "check the holdout range against the fetch window."
+        )
+
+    stats = store.put_frame(train, request.target_key, overwrite=request.overwrite)
+    # No parent-frame comparison: mirrors materialize()'s own reasoning —
+    # this is a fresh split of a pristine frame, so there is nothing else to
+    # diff drift against.
+    column_stats = build_column_stats(train, operations=[])
+
+    validate_key = sidecar_key(stats.object_key, VALIDATE_DATA_FILENAME)
+    store.put_frame(validate_frame, validate_key, overwrite=request.overwrite)
+
+    # Canonicalised via `pd.Timestamp`, same as materialize() — so a later
+    # replay compares against the SAME parsed form `_split_holdout` itself
+    # compared against, never a second, independent parse.
+    validation_holdout_from = str(pd.Timestamp(request.holdout.from_time))
+
+    return _commit(
+        store, stats, started,
+        parent_key=request.source_key,
+        column_stats=column_stats,
+        validation_row_count=len(validate_frame),
+        validation_holdout_from=validation_holdout_from,
+        validation_missing_pct=missing_pct(validate_frame),
+    )
 
 
 def clean(store: ObjectStore, request: CleanRequest) -> dict[str, Any]:
@@ -270,6 +461,131 @@ def clean(store: ObjectStore, request: CleanRequest) -> dict[str, Any]:
     )
 
 
+def replay_holdout(store: ObjectStore, request: ReplayHoldoutRequest) -> dict[str, Any]:
+    """DS-LAKE-018-T04. Raw holdout (`validate_data.parquet`) -> model-ready
+    frame, scaler params SUPPLIED, never re-fit. RESOLVED (user decision):
+    the holdout stays fully raw — no `apply_operations` call here at all,
+    unlike `clean()`; only feature/select/scale run, the same tail
+    `features()` runs.
+
+    Order matters and mirrors `features()` deliberately: the lead-in
+    sufficiency check runs BEFORE any transform, so a doomed replay fails
+    fast rather than after paying for feature computation it can't trust.
+    """
+    started = time.perf_counter()
+
+    source = store.get_frame(request.source_key)
+    step_configs = [f.to_step() for f in request.features]
+
+    # LEAD-IN CHECK IS A REFUSAL, NOT A WARNING (scope_note). Computed from
+    # the recipe's own compound lookback (DS-LAKE-018-T04's
+    # `max_replay_lookback` — a lag on a rolling column compounds), not
+    # re-derived from a duration/interval a caller would have to look up.
+    # The alternative is the silent failure this check exists to prevent:
+    # the holdout's first rows get null/wrong lag values, feed straight
+    # into predict(), and depress the metric with no trace of why.
+    required = max_replay_lookback(step_configs)
+    holdout_from = pd.Timestamp(request.holdout_from)
+    captured = int((source[TIMESTAMP_COLUMN] < holdout_from).sum())
+    if captured < required:
+        raise ValueError(
+            f"Lead-in is insufficient to replay this recipe: {captured} "
+            f"row(s) captured before the holdout boundary, but the deepest "
+            f"feature needs {required} (short by {required - captured}). "
+            "Re-materialize with a wider fetch window or a later holdout "
+            "start."
+        )
+
+    effective_selected = force_keep_target(
+        request.selected_columns, request.target_y)
+
+    skipped_columns: list[str] = []
+    result = apply_features(source, step_configs, skipped=skipped_columns)
+    result = select_columns(result, effective_selected)
+    # `scaling_params` is what T02 recorded on the ORIGINAL GOLD's own
+    # feature_spec.json — SUPPLIED here, never re-fit on the holdout's own
+    # statistics (T02's own finding: that would be a silently DIFFERENT,
+    # wrong transform).
+    result, _ = to_model_ready(
+        result, tag_columns(result), request.scalers,
+        fitted_params=request.scaling_params,
+    )
+
+    # Trim lead-in rows AFTER feature computation, before returning — they
+    # were scaffolding for lag/rolling, never rows to score (scope_note).
+    result = result[result[TIMESTAMP_COLUMN] >= holdout_from].reset_index(
+        drop=True)
+    assert_frame_is_usable(result)
+
+    stats = store.put_frame(
+        result, request.target_key, overwrite=request.overwrite)
+    return _commit(
+        store, stats, started,
+        parent_key=request.source_key,
+        operations=step_configs,
+    )
+
+
+def replay_holdout_for_run(
+    store: ObjectStore, request: ReplayHoldoutForRunRequest
+) -> dict[str, Any]:
+    """DS-LAKE-018-T05. `replay_holdout`, sourced from an EXISTING GOLD's own
+    recorded `feature_spec.json` instead of the caller re-supplying the
+    recipe by hand — this is the endpoint `claim()` (model-run.authorized.
+    service.ts) calls, since NestJS never re-derives a training run's recipe
+    itself; `feature_spec_key` is `ModelTrainingRun.featureSpecKey`, already
+    pinned on the run row at training-create time.
+
+    `feature_spec.json`'s own `features` entries are `{name, kind, config}`
+    (`feature_spec_service.build_feature_spec` strips only `id`/`name` —
+    `config` still carries `kind` redundantly alongside every other field)
+    — reshaped back into `FeatureConfigRequest`'s flat shape here via
+    `config` alone, which already has everything `FeatureConfigRequest`
+    needs. `id` is a synthesised placeholder: `apply_features` never reads
+    it (a client-side identity field only, confirmed against
+    `feature_service.py`), so any value round-trips safely.
+    """
+    spec = store.get_json(request.feature_spec_key)
+
+    target_y = spec.get("target_y")
+    if spec.get("target_scaled"):
+        # Mirrors train.py's own refusal (its `main()`, before the split):
+        # no inverse transform is recorded for a scaled target, so a score
+        # against it would be silently wrong. A run this applies to never
+        # reaches model.fit/predict either — this is a defensive mirror of
+        # that guard, not this run's only line of defense.
+        raise ValueError(
+            f"target_y '{target_y}' is scaled in this GOLD's "
+            "feature_spec.json — refusing holdout replay (no inverse "
+            "transform recorded)."
+        )
+
+    features_config = [
+        FeatureConfigRequest(
+            id=entry.get("name") or f"f{i}",
+            name=entry.get("name"),
+            **entry.get("config", {}),
+        )
+        for i, entry in enumerate(spec.get("features", []))
+    ]
+    scalers = {row["tag"]: row["method"] for row in spec.get("scaling", [])}
+
+    return replay_holdout(
+        store,
+        ReplayHoldoutRequest(
+            source_key=request.source_key,
+            target_key=request.target_key,
+            holdout_from=request.holdout_from,
+            features=features_config,
+            selected_columns=spec.get("selectedColumns"),
+            scalers=scalers,
+            scaling_params=spec.get("scalingParams") or {},
+            target_y=target_y,
+            overwrite=request.overwrite,
+        ),
+    )
+
+
 def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:
     """DS-LAKE-006-T05. `source_key` is the SILVER artifact; `target_key` is
     the GOLD artifact. `_commit`'s `parent_key=request.source_key` is what
@@ -301,7 +617,13 @@ def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:
     skipped_columns: list[str] = []
     result = apply_features(source, step_configs, skipped=skipped_columns)
     result = select_columns(result, effective_selected)
-    result = to_model_ready(result, tag_columns(result), request.scalers)
+    # DS-LAKE-018-T02: `scaling_params` is what each scaler actually FIT on
+    # these train rows — recorded below so a later holdout replay
+    # (DS-LAKE-018-T04) can scale with these exact numbers instead of
+    # re-fitting on itself (see finding: re-fitting is a silently DIFFERENT
+    # transform from the one the model learned).
+    result, scaling_params = to_model_ready(
+        result, tag_columns(result), request.scalers)
 
     assert_frame_is_usable(result)
 
@@ -318,7 +640,8 @@ def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:
         if feature_column_name(cfg) not in skipped_columns
     ]
     spec = build_feature_spec(
-        computed_configs, effective_selected, request.scalers, request.target_y)
+        computed_configs, effective_selected, request.scalers, request.target_y,
+        scaling_params=scaling_params)
     # `source` (the SILVER parent) is already in memory from the get_frame
     # above — same shape `clean()` uses, and the only place features() holds
     # both frames at once.
@@ -597,8 +920,19 @@ def reclaim_artifact(
     prefix, which is what makes a retried cleanup pass converge: calling this
     twice for the same artifact returns `deleted: 0` the second time instead
     of failing.
+
+    DS-LAKE-016-T02: prefix now comes from `split_data_key`, not a hardcoded
+    `object_key[: -len(DATA_FILENAME)]` slice. Against a stage-suffixed key
+    (e.g. `.../data_gold.parquet`, longer than legacy `data.parquet`), that
+    old slice left a filename FRAGMENT on the prefix (`.../data_`) —
+    `delete_prefix` would then silently match nothing and report success
+    having deleted zero objects. `ArtifactReclaimRequest`'s own validator
+    already guarantees `object_key` ends in an accepted data filename, so
+    `split_data_key` here cannot return `None` — unpacking it directly (no
+    `if`) makes that guarantee fail loudly, not silently, if it is ever
+    violated.
     """
-    prefix = request.object_key[: -len(DATA_FILENAME)]
+    prefix, _ = split_data_key(request.object_key)
     return {"prefix": prefix, "deleted": store.delete_prefix(prefix)}
 
 

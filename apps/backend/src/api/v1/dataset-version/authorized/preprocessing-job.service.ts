@@ -209,7 +209,8 @@ export class PreprocessingJobService
     //
     // Renamed off `versionKey`/`tmpPrefix` because those are now imported
     // helpers, and `tmpPrefix` is also a parameter name in `recordFailure`.
-    const committedKey = artifactKey(scope, artifactId);
+    const artifactType = isFeatureJob ? 'GOLD' : 'SILVER';
+    const committedKey = artifactKey(scope, artifactId, artifactType);
     const jobTmpPrefix = tmpPrefixFor(scope, jobId);
 
     // Read (and, for FEATURE, re-validate) the stored recipe BEFORE the
@@ -350,7 +351,7 @@ export class PreprocessingJobService
         isFeatureJob ? 1 : operations.length,
         startedAt,
         job.sourceArtifact?.runId ?? randomUUID(),
-        isFeatureJob ? 'GOLD' : 'SILVER',
+        artifactType,
         isFeatureJob ? (stats.feature_spec_key ?? null) : null,
       );
       await this.clearTmp(jobTmpPrefix);

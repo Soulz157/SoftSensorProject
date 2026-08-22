@@ -117,6 +117,14 @@ export const RunCompleteSchema = z
 
     metrics: MetricsSchema.optional(),
 
+    // DS-LAKE-018-T05. Same shape as `metrics`, scored on the replayed raw
+    // validation holdout instead of the chronological test split. A
+    // SEPARATE field, never merged into `metrics` — the report must keep a
+    // test score and a holdout score visibly distinct, not blend them into
+    // one number. Absent whenever the dataset has no holdout, or claim()'s
+    // own replay failed — both leave training itself unaffected.
+    holdoutMetrics: MetricsSchema.optional(),
+
     splitSpec: z
       .object({
         method: z.literal('chronological'),

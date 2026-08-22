@@ -14,6 +14,7 @@ import {
   dwWorkspaceIdAtom,
   dwSelectedSourcesAtom,
   dwCustomDateRangeAtom,
+  dwHoldoutRangeAtom,
   dwCustomIntervalAtom,
   dwFetchConfigAtom,
   dwTimeRangeAtom,
@@ -76,6 +77,7 @@ export function useDatasetDraftPipeline(): UseDatasetDraftPipelineResult {
   const workspaceId = useAtomValue(dwWorkspaceIdAtom)
   const selectedSources = useAtomValue(dwSelectedSourcesAtom)
   const customDateRange = useAtomValue(dwCustomDateRangeAtom)
+  const holdoutRange = useAtomValue(dwHoldoutRangeAtom)
   const customInterval = useAtomValue(dwCustomIntervalAtom)
   const fetchConfig = useAtomValue(dwFetchConfigAtom)
   const period = useAtomValue(dwTimeRangeAtom)
@@ -111,6 +113,7 @@ export function useDatasetDraftPipeline(): UseDatasetDraftPipelineResult {
           workspaceId,
           selectedSources,
           customDateRange,
+          holdoutRange,
           customInterval,
           fetchConfig,
           period,
@@ -127,6 +130,7 @@ export function useDatasetDraftPipeline(): UseDatasetDraftPipelineResult {
       workspaceId,
       selectedSources,
       customDateRange,
+      holdoutRange,
       customInterval,
       fetchConfig,
       period,

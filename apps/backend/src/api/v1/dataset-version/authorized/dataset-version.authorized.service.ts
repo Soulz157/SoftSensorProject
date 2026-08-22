@@ -7,20 +7,26 @@ import {
   postToPython,
   PYTHON_TIMEOUT,
 } from '@/lib/python-client';
-import { artifactKey } from '@/lib/artifact-keys';
+import { artifactKey, validateDataKey } from '@/lib/artifact-keys';
 import { buildSourceBlock } from '@/lib/source-block';
 import { isLegalTransition } from '@/lib/dataset-version-transitions';
 import { PreprocessingJobService } from './preprocessing-job.service';
 import { LoaderJobService } from '../../loader/loader-job.service';
 import {
   ArtifactStatsSchema,
+  BoxplotRequestDto,
   CorrelationRequestDto,
+  HistogramRequestDto,
+  PythonBoxplotSchema,
   PythonColumnStatsSchema,
   PythonCorrelationSchema,
+  PythonHistogramSchema,
   PythonMetadataSchema,
   PythonPreviewSchema,
   PythonRowsSchema,
+  PythonScatterSchema,
   PythonTagCatalogSchema,
+  ScatterRequestDto,
   type CreateRawVersionDto,
   type ListRowsDto,
   type PreviewVersionDto,
@@ -228,6 +234,9 @@ export class DatasetVersionAuthorizedService {
         // createdBy) was already here — checksum was the one gap.
         checksum: item.checksum,
         qualityScore: item.qualityScore,
+        // DS-LAKE-019-T05. Frozen at Save time, same as qualityScore right
+        // above — null on a version saved before this feature existed.
+        validationAdvisory: item.validationAdvisory,
         rowCount: item.rowCount,
         columnCount: item.columnCount,
         featureCount: item.featureCount,
@@ -443,8 +452,13 @@ export class DatasetVersionAuthorizedService {
       await postToPython(
         '/v1/preprocess/materialize',
         {
-          target_key: artifactKey(datasetId, artifactId),
+          target_key: artifactKey(datasetId, artifactId, 'BRONZE'),
           ...buildSourceBlock(source, dto),
+          // DS-LAKE-018-T03. Mirrors materializeDraftArtifactService exactly
+          // (this method's own doc comment).
+          ...(dto.holdout && {
+            holdout: { from_time: dto.holdout.from, to_time: dto.holdout.to },
+          }),
         },
         PYTHON_TIMEOUT.preprocess,
       ),
@@ -476,6 +490,11 @@ export class DatasetVersionAuthorizedService {
           // A bronze artifact is produced by a FETCH, not by operations.
           operations: [],
           columnStatsKey: stats.column_stats_key,
+          // DS-LAKE-018-T03. null when no holdout was requested — mirrors
+          // materializeDraftArtifactService.
+          validationRowCount: stats.validation_row_count ?? null,
+          // MODEL-FLOW-010-T06. Same null-when-no-holdout convention.
+          validationMissingPct: stats.validation_missing_pct ?? null,
           durationMs: Date.now() - startedAt,
           createdById: user.id,
         },
@@ -499,6 +518,7 @@ export class DatasetVersionAuthorizedService {
         rowCount: artifact.rowCount,
         columnCount: artifact.columnCount,
         missingPct: artifact.missingPct,
+        validationRowCount: artifact.validationRowCount,
       },
     };
   }
@@ -741,6 +761,94 @@ export class DatasetVersionAuthorizedService {
   }
 
   /**
+   * MODEL-FLOW-010-T06. The raw validation holdout window for the given
+   * artifact's run, read-only — no client-facing route exposed this before
+   * (only `model-run.authorized.service.ts::tryReplayHoldout` resolved it,
+   * server-side, at training-claim time). Mirrors that method's own
+   * BRONZE-sibling lookup: `artifactId` can be BRONZE/SILVER/GOLD/FINAL
+   * (`SavedDataset.currentArtifactId` is stage-polymorphic), so the holdout
+   * is resolved via the artifact's `runId`, not its own type.
+   *
+   * Returns `holdout: null` — NOT a 404 — when the dataset has no holdout
+   * (the overwhelming majority) or the artifact predates this feature. A
+   * missing holdout is a normal state with its own UI copy, the same
+   * discipline `getArtifactColumnStatsService`'s `missing` state already
+   * established for a missing column_stats.json sidecar.
+   */
+  async getArtifactHoldoutService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    artifactId: string,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+    const artifact = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, datasetId },
+      select: { runId: true },
+    });
+    if (!artifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Dataset artifact not found',
+        type: 'ERROR',
+      });
+    }
+
+    const bronze = await this.prisma.datasetArtifact.findFirst({
+      where: { runId: artifact.runId, type: 'BRONZE' },
+      select: {
+        id: true,
+        validationRowCount: true,
+        validationHoldoutFrom: true,
+        validationMissingPct: true,
+      },
+    });
+    if (
+      !bronze ||
+      bronze.validationRowCount == null ||
+      !bronze.validationHoldoutFrom
+    ) {
+      return {
+        statusCode: 200,
+        message: 'This dataset has no validation holdout',
+        type: 'SUCCESS' as const,
+        data: { holdout: null },
+      };
+    }
+
+    // Footer-only read (never data.parquet's rows) for the window's end —
+    // `validationHoldoutFrom` above is the exact persisted boundary, but
+    // `holdout_to` itself was never persisted (only used transiently at
+    // split time), so the last timestamp actually written to
+    // validate_data.parquet is the honest stand-in for "where the window
+    // ends" (DS-LAKE-018's own row_count precedent for a derived-not-
+    // requested figure).
+    const meta = PythonMetadataSchema.parse(
+      await postToPython(
+        '/v1/preprocess/metadata',
+        { source_key: validateDataKey(datasetId, bronze.id) },
+        PYTHON_TIMEOUT.metadata,
+      ),
+    );
+
+    return {
+      statusCode: 200,
+      message: 'Validation holdout fetched successfully',
+      type: 'SUCCESS' as const,
+      data: {
+        holdout: {
+          holdoutFrom: bronze.validationHoldoutFrom.toISOString(),
+          holdoutTo: meta.end_time,
+          rowCount: bronze.validationRowCount,
+          // Null for a holdout captured before MODEL-FLOW-010-T06 — the
+          // panel must say so plainly, never silently omit the figure or
+          // imply a clean 0%.
+          missingPct: bronze.validationMissingPct,
+        },
+      },
+    };
+  }
+
+  /**
    * DS-LAKE-005B-D-T05b (saved leg). Mirrors
    * `dataset-draft.authorized.service.ts::getDraftArtifactCorrelationService`
    * exactly — same Python call, same zod parse, response returned unmapped.
@@ -789,6 +897,140 @@ export class DatasetVersionAuthorizedService {
       message: 'Correlation matrix generated successfully',
       type: 'SUCCESS' as const,
       data: correlation,
+    };
+  }
+
+  async getArtifactHistogramService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    artifactId: string,
+    dto: HistogramRequestDto,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+    const artifact = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, datasetId },
+      select: { objectKey: true },
+    });
+    if (!artifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Artifact not found',
+        type: 'ERROR',
+      });
+    }
+
+    const histogram = PythonHistogramSchema.parse(
+      await postToPython(
+        '/v1/preprocess/histogram',
+        {
+          source_key: artifact.objectKey,
+          operations: dto.operations,
+          precision: dto.precision,
+          tags: dto.tags,
+          ...(dto.sampleRows && { sample_rows: dto.sampleRows }),
+          ...(dto.startTime && { start_time: dto.startTime }),
+          ...(dto.endTime && { end_time: dto.endTime }),
+          ...(dto.kdeSamples && { kde_samples: dto.kdeSamples }),
+          ...(dto.binCount && { bin_count: dto.binCount }),
+        },
+        PYTHON_TIMEOUT.metadata,
+      ),
+    );
+
+    return {
+      statusCode: 200,
+      message: 'Histogram generated successfully',
+      type: 'SUCCESS' as const,
+      data: histogram,
+    };
+  }
+
+  async getArtifactBoxplotService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    artifactId: string,
+    dto: BoxplotRequestDto,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+    const artifact = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, datasetId },
+      select: { objectKey: true },
+    });
+    if (!artifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Artifact not found',
+        type: 'ERROR',
+      });
+    }
+
+    const boxplot = PythonBoxplotSchema.parse(
+      await postToPython(
+        '/v1/preprocess/boxplot',
+        {
+          source_key: artifact.objectKey,
+          operations: dto.operations,
+          precision: dto.precision,
+          tags: dto.tags,
+          ...(dto.sampleRows && { sample_rows: dto.sampleRows }),
+          ...(dto.startTime && { start_time: dto.startTime }),
+          ...(dto.endTime && { end_time: dto.endTime }),
+          ...(dto.outlierCap && { outlier_cap: dto.outlierCap }),
+        },
+        PYTHON_TIMEOUT.metadata,
+      ),
+    );
+
+    return {
+      statusCode: 200,
+      message: 'Boxplot generated successfully',
+      type: 'SUCCESS' as const,
+      data: boxplot,
+    };
+  }
+
+  async getArtifactScatterService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    artifactId: string,
+    dto: ScatterRequestDto,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+    const artifact = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, datasetId },
+      select: { objectKey: true },
+    });
+    if (!artifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Artifact not found',
+        type: 'ERROR',
+      });
+    }
+
+    const scatter = PythonScatterSchema.parse(
+      await postToPython(
+        '/v1/preprocess/scatter',
+        {
+          source_key: artifact.objectKey,
+          operations: dto.operations,
+          precision: dto.precision,
+          x_tag: dto.xTag,
+          y_tag: dto.yTag,
+          ...(dto.sampleRows && { sample_rows: dto.sampleRows }),
+          ...(dto.startTime && { start_time: dto.startTime }),
+          ...(dto.endTime && { end_time: dto.endTime }),
+          ...(dto.maxPoints && { max_points: dto.maxPoints }),
+        },
+        PYTHON_TIMEOUT.metadata,
+      ),
+    );
+
+    return {
+      statusCode: 200,
+      message: 'Boxplot generated successfully',
+      type: 'SUCCESS' as const,
+      data: scatter,
     };
   }
 

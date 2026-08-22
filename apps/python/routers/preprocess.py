@@ -53,6 +53,9 @@ from schemas.preprocess import (
     PreviewResponse,
     CorrelationRequest,
     CorrelationResponse,
+    ReplayHoldoutForRunRequest,
+    ReplayHoldoutRequest,
+    ResplitHoldoutRequest,
     RowsRequest,
     RowsResponse,
     ScatterRequest,
@@ -281,6 +284,26 @@ async def materialize_version(
 
 
 @router.post(
+    "/resplit-holdout",
+    response_model=ArtifactStatsResponse,
+    summary="Re-split an existing pristine BRONZE against a new holdout window",
+    description=(
+        "DS-LAKE-018-T06: companion to `/materialize`'s own holdout branch, "
+        "used when the holdout is changed AFTER the artifact already exists. "
+        "`source_key` MUST be a PRISTINE (never-split) BRONZE — NestJS "
+        "resolves the draft's root artifact and refuses one that was already "
+        "split, since re-splitting a split result would permanently shed "
+        "rows. Writes a new artifact; the source is never modified in place."
+    ),
+)
+async def resplit_holdout(
+    body: ResplitHoldoutRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.resplit_holdout, store, body)
+
+
+@router.post(
     "/clean",
     response_model=ArtifactStatsResponse,
     summary="Apply cleaning operations from one artifact to another",
@@ -318,6 +341,47 @@ async def create_features(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(artifact_service.features, store, body)
+
+
+@router.post(
+    "/replay-holdout",
+    response_model=ArtifactStatsResponse,
+    summary="Replay a saved recipe over the raw validation holdout",
+    description=(
+        "DS-LAKE-018-T04. Reads `source_key` (validate_data.parquet — the "
+        "holdout window plus its lead-in), writes `target_key` (the "
+        "model-ready holdout, ready to score). Runs applyFeatures -> "
+        "selectColumns -> toModelReady only — the holdout stays raw, no "
+        "cleaning/imputation step. Scaler params come from `scaling_params` "
+        "and are SUPPLIED, never re-fit. Refuses with 422 when the captured "
+        "lead-in falls short of the recipe's own deepest lag/rolling "
+        "lookback, naming both numbers."
+    ),
+)
+async def replay_holdout(
+    body: ReplayHoldoutRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.replay_holdout, store, body)
+
+
+@router.post(
+    "/replay-holdout-for-run",
+    response_model=ArtifactStatsResponse,
+    summary="Replay a training run's own GOLD recipe over its raw holdout",
+    description=(
+        "DS-LAKE-018-T05. `replay_holdout`, sourced from `feature_spec_key`'s "
+        "own feature_spec.json instead of the caller re-supplying the recipe "
+        "— what claim() (model-run.authorized.service.ts) calls to build the "
+        "container's holdoutDataUrl. Refuses with 422 if the recipe's "
+        "target_y is scaled (no inverse transform recorded)."
+    ),
+)
+async def replay_holdout_for_run(
+    body: ReplayHoldoutForRunRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.replay_holdout_for_run, store, body)
 
 
 @router.post(

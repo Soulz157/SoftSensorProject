@@ -10,6 +10,7 @@ import { Step3Processing } from './step-3-eda'
 import { Step5ReviewSave } from './step-5-review-save'
 import { useDatasetPipelineNav } from '@/hooks/dataset/use-dataset-pipeline-nav'
 import { useDatasetEditHydration } from '@/hooks/dataset/use-dataset-edit-hydration'
+import { useDatasetDraftHeartbeat } from '@/hooks/dataset/use-dataset-draft-heartbeat'
 import {
   dwFetchRequiredAtom,
   dwModeAtom,
@@ -47,6 +48,11 @@ export function WizardShell() {
   // (or materialises one). No-op in create mode, where the live fetch owns the
   // same atom.
   useDatasetEditHydration()
+  // DS-LAKE-014-T04: keeps an ACTIVE draft's clock honest while this tab is
+  // visibly open, across both create and edit mode and all five steps. No-op
+  // until a draft id exists (dwDraftIdAtom starts null) and a no-op again
+  // once the draft is SAVED/ABANDONED (the backend route itself filters).
+  useDatasetDraftHeartbeat()
   const mode = useAtomValue(dwModeAtom)
   const rowSource = useAtomValue(dwRowSourceAtom)
   const syntheticReason = useAtomValue(dwSyntheticReasonAtom)

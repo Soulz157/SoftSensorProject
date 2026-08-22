@@ -664,6 +664,32 @@ def test_reclaim_is_idempotent() -> None:
     assert second["deleted"] == 0
 
 
+def test_reclaim_of_a_stage_suffixed_artifact_deletes_a_non_zero_count() -> None:
+    """DS-LAKE-016-T02/V02: the exact defect this task exists to close. A
+    hardcoded `object_key[: -len(DATA_FILENAME)]` slice against a longer,
+    stage-suffixed key leaves a filename FRAGMENT on the prefix
+    (`.../data_`), so `delete_prefix` silently matches nothing and this
+    would report `deleted: 0` while every sidecar stays orphaned. Asserting
+    ONLY "no error" would pass against that exact bug — `deleted` must be > 0
+    and the object must actually be gone."""
+    store = RecordingStore(
+        {
+            "ds-1/artifacts/art-7/data_gold.parquet": frame(),
+            "ds-1/artifacts/art-7/manifest.json": frame(),
+            "ds-1/artifacts/art-8/data_gold.parquet": frame(),
+        }
+    )
+    request = ArtifactReclaimRequest(
+        object_key="ds-1/artifacts/art-7/data_gold.parquet"
+    )
+
+    result = artifact_service.reclaim_artifact(store, request)
+
+    assert result["prefix"] == "ds-1/artifacts/art-7/"
+    assert result["deleted"] > 0
+    assert set(store.objects) == {"ds-1/artifacts/art-8/data_gold.parquet"}
+
+
 def test_reclaim_refuses_a_key_outside_artifacts() -> None:
     """The opposite guard from cleanup: this must never be pointed at tmp/."""
     with pytest.raises(ValueError, match="committed artifact's data key"):
@@ -718,6 +744,127 @@ def test_materialize_rejects_two_sources() -> None:
     }
     with pytest.raises(ValueError, match="exactly one"):
         MaterializeRequest(target_key="ds-1/v1.parquet", pi=pi, sql=sql)
+
+
+# ── DS-LAKE-018-T03: holdout split at BRONZE ─────────────────────────────
+#
+# `_split_holdout` is tested directly, not through `materialize()` — same
+# reasoning `test_a_lineage_root_gets_null_drift_not_zero` already states:
+# the fetch itself needs a live PI/SQL source to exercise meaningfully, but
+# the split is a pure function of a frame it already holds.
+
+
+def _daily_frame(days: int) -> pd.DataFrame:
+    """`days` rows, one per day starting 2026-01-01, TI-101 valued 0..days-1
+    so train/validate CONTENT (not just row counts) can be asserted exactly."""
+    ts = pd.Timestamp("2026-01-01") + pd.to_timedelta(range(days), unit="D")
+    return pd.DataFrame(
+        {
+            "timestamp": ts,
+            "TI-101": [float(i) for i in range(days)],
+            "TI-101__status": pd.array([STATUS_GOOD] * days, dtype="int8"),
+        }
+    )
+
+
+def test_split_holdout_cuts_the_window_from_train_and_builds_validate_with_lead_in() -> None:
+    from schemas.preprocess import HoldoutSplitRequest
+
+    src = _daily_frame(15)  # day0 (2026-01-01) .. day14 (2026-01-15)
+    # day10 (2026-01-11) .. day12 (2026-01-13).
+    holdout = HoldoutSplitRequest(from_time="2026-01-11", to_time="2026-01-13")
+
+    train, validate = artifact_service._split_holdout(src, holdout)
+
+    # Holdout rows (day10-12, values 10/11/12) are GONE from train — the
+    # whole point of the cut (finding: "HOLDOUT ROWS MUST BE CUT FROM
+    # data.parquet TOO").
+    assert set(train["TI-101"]) == {
+        0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 13.0, 14.0,
+    }
+    # validate = the 7-day lead-in (day3-day9, values 3-9) THEN the holdout
+    # itself (day10-day12, values 10-12), in timestamp order.
+    assert list(validate["TI-101"]) == [
+        3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+    ]
+    # Lead-in rows are COPIED into validate, not MOVED — they must still be
+    # in train too (userDecisions[0]: "cost nothing extra to carry").
+    assert {3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0}.issubset(set(train["TI-101"]))
+    # Same columns on both sides — a downstream reader must not see a
+    # different schema depending on which file it opened.
+    assert list(train.columns) == list(src.columns)
+    assert list(validate.columns) == list(src.columns)
+
+
+def test_split_holdout_excludes_rows_before_the_lead_in_window() -> None:
+    from schemas.preprocess import HoldoutSplitRequest
+
+    src = _daily_frame(15)
+    holdout = HoldoutSplitRequest(from_time="2026-01-11", to_time="2026-01-13")
+
+    _, validate = artifact_service._split_holdout(src, holdout)
+
+    # day0-day2 (values 0,1,2) precede the 7-day lead-in window (which starts
+    # at day3) — real exclusion, not merely "everything before holdout".
+    assert not {0.0, 1.0, 2.0} & set(validate["TI-101"])
+
+
+def test_split_holdout_excludes_rows_after_the_holdout_window() -> None:
+    from schemas.preprocess import HoldoutSplitRequest
+
+    src = _daily_frame(15)
+    holdout = HoldoutSplitRequest(from_time="2026-01-11", to_time="2026-01-13")
+
+    _, validate = artifact_service._split_holdout(src, holdout)
+
+    # day13/day14 (values 13, 14) are after the holdout — validate is not
+    # "everything from the lead-in start onward".
+    assert not {13.0, 14.0} & set(validate["TI-101"])
+
+
+def test_split_holdout_on_the_whole_fetch_window_leaves_train_empty() -> None:
+    """T01's own guard 1 refuses a holdout OUTSIDE the fetch window, but not
+    one that equals it exactly — `materialize()` itself is what turns this
+    into a loud refusal (via `assert_frame_is_usable`), not `_split_holdout`,
+    which stays a pure, unconditional split."""
+    from schemas.preprocess import HoldoutSplitRequest
+
+    src = _daily_frame(5)
+    holdout = HoldoutSplitRequest(from_time="2026-01-01", to_time="2026-01-05")
+
+    train, validate = artifact_service._split_holdout(src, holdout)
+
+    assert len(train) == 0
+    assert len(validate) == 5
+
+
+def test_stats_payload_survives_the_artifact_stats_response_model() -> None:
+    """BUGFIX regression, found during DS-LAKE-018-T05: `_stats_payload` has
+    put `validation_row_count` in the response dict since T03, but
+    `ArtifactStatsResponse` — the `response_model` FastAPI filters every real
+    `/materialize` HTTP reply through — never declared it, so it was silently
+    STRIPPED before reaching NestJS. A direct call to `artifact_service.
+    materialize()` (what the rest of this module exercises) never sees this
+    gap; only round-tripping through the pydantic response model does, which
+    is what this test does instead of hitting the router over HTTP."""
+    from schemas.preprocess import ArtifactStatsResponse
+
+    payload = artifact_service._stats_payload(
+        ArtifactStats(
+            object_key="ds-1/artifacts/a1/data.parquet",
+            row_count=10,
+            column_count=1,
+            size_bytes=100,
+            missing_pct=0.0,
+            checksum="deadbeef",
+        ),
+        started=0.0,
+        validation_row_count=3,
+        validation_holdout_from="2026-01-11 00:00:00",
+    )
+    reserialized = ArtifactStatsResponse(**payload).model_dump()
+    assert reserialized["validation_row_count"] == 3
+    assert reserialized["validation_holdout_from"] == "2026-01-11 00:00:00"
 
 
 # ── the empty-fetch guard, directly ──────────────────────────────────────

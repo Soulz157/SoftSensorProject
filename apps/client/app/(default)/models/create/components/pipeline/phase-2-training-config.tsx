@@ -26,10 +26,12 @@ export function Phase2TrainingConfig({ nav }: Props) {
     lossFunction,
     trainTestSplit,
   } = nav
-  // MODEL-FLOW-002: syncs Step 1 + Step 2 config to a server-side
-  // ModelDraft in the background. This component mounting IS "advancing
-  // Step 1 -> 2" — canAdvance(1) already validated workspace/plant/node/
-  // dataset/name before the wizard let the user get here.
+  // MODEL-FLOW-002: syncs Step 1 + Training Configuration (Step 3 as of
+  // MODEL-FLOW-010) config to a server-side ModelDraft in the background.
+  // This component mounting IS "advancing to Training Configuration" —
+  // canAdvance(1) already validated workspace/plant/node/dataset/name, and
+  // Step 2 (Dataset Review) configures nothing of its own to sync, before
+  // the wizard let the user get here.
   const { ensureDraftId } = useModelDraftSync()
   const training = useModelTraining({ ensureDraftId })
   const tags = selectedDataset?.tags ?? []

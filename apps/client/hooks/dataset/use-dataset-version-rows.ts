@@ -221,6 +221,21 @@ export function useDatasetVersionRows(
       id: string
       stage: DatasetArtifactStage | null
     } | null> => {
+      // DS-LAKE-017-T03: for RECIPE REPLAY (prefer === 'raw'), the adopted
+      // lineage-root BRONZE (T01/T02) is the one artifact that is both raw
+      // AND actually readable through the dataset routes — this is the fix
+      // for the double-apply DS-LAKE-013 could only diagnose (its own
+      // non-BRONZE banner), not close. Checked BEFORE `currentArtifactId`
+      // below, which is FINAL-only for any saved dataset and would replay
+      // Step 3's rules on top of an already-cleaned FINAL otherwise. Falls
+      // through to today's behaviour (case b/c: reclaimed or never
+      // backfilled) whenever `adoptedBronzeArtifactId` is null — that is
+      // three real states this field does not distinguish, and it does not
+      // need to: all three have no raw bytes left to read.
+      if (prefer === 'raw' && dataset.adoptedBronzeArtifactId) {
+        return { id: dataset.adoptedBronzeArtifactId, stage: 'BRONZE' }
+      }
+
       // DS-LAKE-004: new datasets carry `currentArtifactId` and get no
       // `currentVersionId` until Save Dataset. The bronze artifact IS the raw
       // one, so there is no lineage to walk and no version list to fetch —

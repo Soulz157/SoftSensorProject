@@ -4,11 +4,12 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '@softsensor/prisma';
-import { draftRunKey, modelRunKey } from '@/lib/artifact-keys';
+import { draftRunKey, modelRunKey, validateDataKey } from '@/lib/artifact-keys';
 import {
   presignArtifact,
   PresignedArtifact,
   presignModelRunUpload,
+  replayHoldoutForRun,
 } from '@/lib/python-preprocess-client';
 import { RunCompleteDto } from './dto/model-run.authorized.dto';
 
@@ -39,6 +40,105 @@ export class ModelRunAuthorizedService {
     throw new BadRequestException(
       `Run ${run.id} has neither modelId nor modelDraftId.`,
     );
+  }
+
+  /** Same key layout `complete()` writes run outputs to — `claim()` needs it
+   * too, to place the replayed holdout under this run's own prefix. */
+  private buildRunKey(
+    owner: RunOwner,
+    runId: string,
+    filename: string,
+  ): string {
+    return owner.scope === 'draft'
+      ? draftRunKey(owner.id, runId, filename)
+      : modelRunKey(owner.id, runId, filename);
+  }
+
+  /**
+   * DS-LAKE-018-T05. If this run's dataset has a raw validation holdout
+   * (a BRONZE sibling of the run's own GOLD artifact with a recorded
+   * `validationRowCount`), replay the GOLD's own recipe over it and presign
+   * the result — this is what wires T04's replay endpoint into a real
+   * training run, since nothing had called it before this task.
+   *
+   * Deliberately SOFT-FAIL: unlike the checksum-drift guard above, a
+   * holdout replay problem must never fail a run that has nothing to do
+   * with the holdout mechanism itself — a legacy/no-holdout dataset (the
+   * overwhelming majority) must train exactly as it does today. A failure
+   * here just means `claim()`'s response omits the holdout fields, and the
+   * container skips holdout scoring for this run.
+   */
+  private async tryReplayHoldout(
+    run: {
+      id: string;
+      datasetId: string;
+      goldArtifactId: string;
+      featureSpecKey: string | null;
+      modelId: string | null;
+      modelDraftId: string | null;
+    },
+    owner: RunOwner,
+  ): Promise<{
+    holdoutDataUrl: string;
+    holdoutArtifactChecksum: string;
+    holdoutRowCount: number;
+  } | null> {
+    if (!run.featureSpecKey) return null;
+
+    const gold = await this.prisma.datasetArtifact.findUnique({
+      where: { id: run.goldArtifactId },
+      select: { runId: true },
+    });
+    if (!gold) return null;
+
+    const bronze = await this.prisma.datasetArtifact.findFirst({
+      where: { runId: gold.runId, type: 'BRONZE' },
+      select: {
+        id: true,
+        validationRowCount: true,
+        validationHoldoutFrom: true,
+      },
+    });
+    if (
+      !bronze ||
+      bronze.validationRowCount == null ||
+      !bronze.validationHoldoutFrom
+    ) {
+      return null;
+    }
+
+    try {
+      const sourceKey = validateDataKey(run.datasetId, bronze.id);
+      const targetKey = this.buildRunKey(
+        owner,
+        run.id,
+        'validate_ready.parquet',
+      );
+
+      await replayHoldoutForRun({
+        feature_spec_key: run.featureSpecKey,
+        source_key: sourceKey,
+        target_key: targetKey,
+        holdout_from: bronze.validationHoldoutFrom.toISOString(),
+        // Deterministic per-run key, nothing else ever reads or writes it —
+        // unlike GOLD's data.parquet, a second claim() re-replaying is
+        // harmless, not a leakage risk.
+        overwrite: true,
+      });
+      const holdoutPresigned = await presignArtifact({ source_key: targetKey });
+
+      return {
+        holdoutDataUrl: holdoutPresigned.data_url,
+        holdoutArtifactChecksum: holdoutPresigned.checksum,
+        holdoutRowCount: holdoutPresigned.row_count,
+      };
+    } catch (err) {
+      await this.appendLog(run.id, {
+        level: 'warn',
+        message: `Holdout replay skipped: ${(err as Error).message}`,
+      });
+      return null;
+    }
   }
 
   /** Everything the container needs, in one round trip. */
@@ -83,6 +183,9 @@ export class ModelRunAuthorizedService {
       );
     }
 
+    const owner = this.resolveRunOwner(run);
+    const holdout = await this.tryReplayHoldout(run, owner);
+
     return {
       runId: run.id,
       targetY: run.targetY,
@@ -96,6 +199,7 @@ export class ModelRunAuthorizedService {
       dataUrl: presigned.data_url,
       featureSpecUrl: presigned.sidecar_urls['feature_spec.json'],
       rowCount: presigned.row_count,
+      ...(holdout ?? {}),
     };
   }
 
@@ -132,16 +236,16 @@ export class ModelRunAuthorizedService {
 
     const uploaded = new Set(dto.uploaded ?? []);
     const owner = this.resolveRunOwner(run);
-    const buildKey =
-      owner.scope === 'draft'
-        ? (f: string) => draftRunKey(owner.id, run.id, f)
-        : (f: string) => modelRunKey(owner.id, run.id, f);
-    const keyIf = (f: string) => (uploaded.has(f) ? buildKey(f) : null);
+    const keyIf = (f: string) =>
+      uploaded.has(f) ? this.buildRunKey(owner, run.id, f) : null;
 
     const data = {
       status: dto.status,
       failureReason: dto.failureReason ?? null,
       metrics: dto.metrics ?? undefined,
+      // DS-LAKE-018-T05. Same shape as metrics, scored on the replayed raw
+      // holdout — a SEPARATE column, never merged into metrics above.
+      holdoutMetrics: dto.holdoutMetrics ?? undefined,
       splitSpec: dto.splitSpec,
       modelKey: keyIf('model.joblib'),
       metricsKey: keyIf('metrics.json'),

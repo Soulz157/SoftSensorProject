@@ -163,11 +163,16 @@ def test_run_validation_passes_a_clean_artifact() -> None:
     assert report["quality_score"] == 100.0
 
 
-def test_run_validation_fails_when_any_single_check_fails() -> None:
+def test_run_validation_an_advisory_only_failure_still_passes() -> None:
+    """DS-LAKE-019-T01. `statistical` is advisory — a degenerate tag must
+    fail THAT check without flipping the overall report to FAIL. This is
+    the exact behaviour change the feature exists for: the motivating real
+    report (statistical FAILED, quality_score 90.0) used to be unsaveable."""
     df = frame({"TI-101": [72.0] * 6})  # degenerate -> statistical fails
     report = vs.run_validation(df)
-    assert report["status"] == "FAIL"
+    assert report["status"] == "PASS"
     assert "statistical" in report["failed_checks"]
+    assert report["advisory_failures"] == ["statistical"]
     # Every OTHER check still ran and reported its own honest result — not
     # a truncated report just because one check failed.
     assert len(report["checks"]) == 6
@@ -180,6 +185,53 @@ def test_run_validation_fails_when_any_single_check_fails() -> None:
         "statistical",
         "completeness",
     }
+
+
+def test_run_validation_a_blocking_failure_still_fails() -> None:
+    """The other half of T01: a BLOCKING check failing must still flip
+    `status` to FAIL — the narrowing only exempts the advisory set."""
+    df = frame({"TI-101": [1, 2, 3, 4, 5, 6]})
+    df.loc[1, "timestamp"] = df.loc[0, "timestamp"]  # duplicate_timestamps fails
+    report = vs.run_validation(df)
+    assert report["status"] == "FAIL"
+    assert "duplicate_timestamps" in report["failed_checks"]
+    assert "duplicate_timestamps" not in report["advisory_failures"]
+
+
+def test_run_validation_a_missing_timestamp_column_still_fails() -> None:
+    """DS-LAKE-019-T02's own hazard case. `check_duplicate_timestamps`
+    returns `skipped=True, passed=False` together when there is no
+    timestamp column — excluded from blocking by the `not c.skipped`
+    clause. Proves that exclusion opens no hole: `check_schema` (also
+    blocking) ALWAYS fails in this exact case, since `assert_frame_shape`
+    itself raises on a missing timestamp column."""
+    df = frame({"TI-101": [1, 2, 3, 4, 5, 6]}).drop(columns=["timestamp"])
+    report = vs.run_validation(df)
+    assert report["status"] == "FAIL"
+    assert "schema" in report["failed_checks"]
+    assert "schema" not in report["advisory_failures"]
+
+
+def test_run_validation_feature_consistency_skip_still_passes() -> None:
+    """DS-LAKE-019-T02, the no-spec side of the split: a skip must never
+    block, matching promoteDraftArtifactToFinalService's own doc comment
+    that a no-feature-engineering dataset must stay saveable."""
+    df = frame({"TI-101": [72.0, 71.5, 72.5, 71.8, 72.2, 71.9]})
+    report = vs.run_validation(df, feature_spec=None)
+    assert report["status"] == "PASS"
+    assert "feature_consistency" not in report["failed_checks"]
+
+
+def test_run_validation_feature_consistency_fail_still_blocks() -> None:
+    """DS-LAKE-019-T02, the mismatched-spec side: a spec that EXISTS and
+    whose columns do not match the artifact is a real inconsistency and
+    must block, not just warn."""
+    df = frame({"TI-101": [72.0, 71.5, 72.5, 71.8, 72.2, 71.9]})
+    spec = {"features": [{"name": "TI-101__lag1", "kind": "lag"}]}
+    report = vs.run_validation(df, feature_spec=spec)
+    assert report["status"] == "FAIL"
+    assert "feature_consistency" in report["failed_checks"]
+    assert "feature_consistency" not in report["advisory_failures"]
 
 
 def test_run_validation_never_mutates_the_input_frame() -> None:

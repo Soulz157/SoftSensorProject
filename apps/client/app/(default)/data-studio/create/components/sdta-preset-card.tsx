@@ -184,8 +184,8 @@ export function SdtaPresetCard({
         value={combine}
         onChange={setCombine}
         options={[
-          { value: 'all', label: 'All — union (strict)' },
-          { value: 'any', label: 'Any — overlap only' },
+          { value: 'all', label: 'And' },
+          { value: 'any', label: 'OR' },
         ]}
       />
       <p className="text-[11px] text-muted-foreground">

@@ -19,6 +19,23 @@ const QUALITY_DOT: Record<SensorQuality, string> = {
   Bad: 'bg-red-500',
 }
 
+/**
+ * Two sticky axes, so three z-layers are needed rather than two: the corner
+ * cell is sticky on BOTH and must sit above the header row and the timestamp
+ * column, or a horizontally-scrolled tag header slides over it.
+ *
+ * Every sticky cell needs an OPAQUE background of its own — a sticky element
+ * with a transparent background shows the scrolling content straight through
+ * it. `bg-card`/`bg-background` here are load-bearing, not decoration.
+ */
+const STICKY_CORNER = 'sticky left-0 top-0 z-30 bg-card'
+const STICKY_HEADER = 'sticky top-0 z-20 bg-card'
+const STICKY_FIRST_COL = cn(
+  'sticky left-0 z-10',
+  'before:absolute before:inset-0 before:-z-10 before:bg-background before:content-[""]',
+  'group-hover:bg-muted/50',
+)
+
 interface Props {
   dataset: Dataset
   showQuality?: boolean
@@ -34,15 +51,20 @@ export function DataTableView({ dataset, showQuality }: Props) {
   }
 
   return (
-    <ScrollArea className="h-90 rounded-lg border border-border">
+    <div className="h-90 w-full overflow-auto rounded-lg border border-border">
       <Table>
         <TableHeader>
-          <TableRow className="bg-card">
-            <TableHead className="sticky top-0 bg-card">Timestamp</TableHead>
+          <TableRow className="bg-card hover:bg-card">
+            <TableHead className={cn(STICKY_CORNER, 'border-r border-border')}>
+              Timestamp
+            </TableHead>
             {dataset.tags.map(t => {
               const m = tagMeta(t)
               return (
-                <TableHead key={t} className="sticky top-0 bg-card text-right">
+                <TableHead
+                  key={t}
+                  className={cn(STICKY_HEADER, 'whitespace-nowrap text-right')}
+                >
                   {m?.label ?? t}
                   {m?.unit && (
                     <span className="ml-1 text-muted-foreground">{m.unit}</span>
@@ -54,8 +76,17 @@ export function DataTableView({ dataset, showQuality }: Props) {
         </TableHeader>
         <TableBody>
           {dataset.rows.map(row => (
-            <TableRow key={row.timestamp}>
-              <TableCell className="whitespace-nowrap font-mono text-xs text-muted-foreground">
+            <TableRow key={row.timestamp} className="group">
+              {/* `group-hover:bg-muted/50` mirrors TableRow's own hover: a
+                  sticky cell with an opaque background would otherwise stay
+                  unhighlighted while the rest of its row changes colour. */}
+              <TableCell
+                className={cn(
+                  STICKY_FIRST_COL,
+                  'whitespace-nowrap border-r border-border font-mono text-xs text-muted-foreground',
+                  'group-hover:bg-muted/50',
+                )}
+              >
                 {new Date(row.timestamp).toLocaleString()}
               </TableCell>
               {dataset.tags.map(t => {
@@ -84,6 +115,6 @@ export function DataTableView({ dataset, showQuality }: Props) {
           ))}
         </TableBody>
       </Table>
-    </ScrollArea>
+    </div>
   )
 }

@@ -450,7 +450,7 @@ export function ImputationDetailPanel({
             />
           </div>
 
-          <div className="h-62.5 rounded-xl border border-border bg-card p-4">
+          <div className="rounded-xl border border-border bg-card p-4">
             <h3 className="mb-4 text-sm font-semibold text-foreground">
               Distribution Comparison
             </h3>

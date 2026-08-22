@@ -89,6 +89,10 @@ export interface ValidationCheck {
   measured: number | null
   threshold: number | null
   offenders: string[]
+  /** DS-LAKE-019-T03. A property of the check's NAME (validation_service
+   * .BLOCKING_CHECKS), not a per-result judgment — mirrored, never
+   * re-derived client-side. */
+  severity: 'blocking' | 'advisory'
 }
 
 /** Mirrors apps/python `schemas.preprocess.ValidationReportResponse`
@@ -98,6 +102,9 @@ export interface ValidationReport {
   quality_score: number
   checks: ValidationCheck[]
   failed_checks: string[]
+  /** DS-LAKE-019-T03. Failed checks that did NOT flip `status` to FAIL —
+   * a strict subset of `failed_checks`. */
+  advisory_failures: string[]
   validation_report_key: string
 }
 
@@ -328,12 +335,38 @@ export const datasetDraftService = {
   abandon: (draftId: string): Promise<ApiResponse<DatasetDraft>> =>
     fetchClient(`${one(draftId)}/abandon`, { method: 'POST' }),
 
+  /**
+   * DS-LAKE-014-T04: heartbeat. Bumps the draft's updatedAt while it is
+   * ACTIVE; a no-op once SAVED/ABANDONED. Called by
+   * `useDatasetDraftHeartbeat` — see that hook for the visibility-gated
+   * cadence.
+   */
+  touch: (draftId: string): Promise<ApiResponse<{ touched: boolean }>> =>
+    fetchClient(`${one(draftId)}/touch`, { method: 'POST' }),
+
   /** Materialize the draft's BRONZE artifact. Runs inline; can take minutes. */
   materialize: (
     draftId: string,
     body: CreateRawVersionInput,
   ): Promise<ApiResponse<DraftArtifact>> =>
     fetchClient(`${one(draftId)}/artifacts`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  /**
+   * DS-LAKE-018-T06. Re-splits the draft's PRISTINE (never-split) root
+   * BRONZE against a new holdout window, without re-fetching from the
+   * source. `holdout: null` clears a previously-picked holdout — the
+   * server points the draft back at its pristine artifact without calling
+   * Python. Refuses (422) if the draft's resolved root was already split
+   * at fetch time (a legacy artifact from before this task).
+   */
+  resplitHoldout: (
+    draftId: string,
+    body: { holdout: { from: string; to: string } | null },
+  ): Promise<ApiResponse<DraftArtifact>> =>
+    fetchClient(`${one(draftId)}/holdout`, {
       method: 'POST',
       body: JSON.stringify(body),
     }),

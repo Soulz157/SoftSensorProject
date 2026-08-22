@@ -47,6 +47,18 @@ export interface SavedDataset {
    * "has a RAW artifact" as the same fact — see `use-dataset-version-rows.ts`.
    */
   currentArtifactType: DatasetArtifactStage | null
+  /**
+   * DS-LAKE-017-T03: the lineage-root BRONZE, if Save has adopted one
+   * (T01/T02) AND its bytes have not been reclaimed. Separate from
+   * `currentArtifactId` on purpose — that pointer stays FINAL-only (ONE
+   * POINTER, NOT TWO, per T01) — so `useDatasetVersionRows` can prefer this
+   * for edit-mode hydration without double-applying Step 3's rules on top
+   * of an already-cleaned FINAL. Null covers three real cases this field
+   * cannot and does not need to distinguish: not yet backfilled, reclaimed,
+   * or a legacy dataset with no lineage — all three fall back to today's
+   * FINAL hydration.
+   */
+  adoptedBronzeArtifactId: string | null
   /** ISO 8601 */
   createdAt: string
   updatedAt: string

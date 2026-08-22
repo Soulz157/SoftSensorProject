@@ -70,6 +70,15 @@ export const dwFetchTagsAtom = atom<string[] | null>(null)
 export const dwTimeRangeAtom = atom<FetchPeriod>('1min')
 export const dwCustomDateRangeAtom = atom<CustomDateRange | null>(null)
 export const dwCustomIntervalAtom = atom<CustomInterval | null>(null)
+/**
+ * DS-LAKE-018-T01: the raw validation holdout window, selected beside the
+ * fetch range above. Null means no holdout — the dataset behaves exactly as
+ * today (acceptance criterion). Distinct atom rather than a field on the
+ * fetch range itself: the holdout is optional and independently editable,
+ * and `describeHoldoutSelection` (lib/holdout.ts) needs both ranges at once
+ * to run its guards.
+ */
+export const dwHoldoutRangeAtom = atom<CustomDateRange | null>(null)
 export const dwSourceFetchConfigsAtom = atom<Record<string, DataSourceConfig>>(
   {},
 )
@@ -169,6 +178,16 @@ export const dwStageSdtaPresetAtom = atom(
 export const dwFeaturePreviewSampleAtom = atom<BoundedSample>(
   brandBoundedSample({ tags: [], rows: [] }),
 )
+// DS-LAKE-015-T02: lets a caller tell "in flight" from "resolved empty" from
+// "failed" for the fetch above — today it cannot, since the hook swallows
+// failures and returns void. The swallow stays the ERROR-HANDLING policy (an
+// empty sample is not a broken state, per that hook's own doc comment); this
+// only adds the ABILITY to distinguish the three windows. 'ready' covers a
+// successfully resolved fetch whether or not `dwFeaturePreviewSampleAtom` ends
+// up with rows — Step 3.1 derives "ready but empty" itself by reading both.
+export type PreviewSampleFetchState = 'idle' | 'loading' | 'ready' | 'error'
+export const dwFeaturePreviewSampleStateAtom =
+  atom<PreviewSampleFetchState>('idle')
 
 // Feature-engineered preview for Step 4's own UI (panels, analysis card,
 // tag sidebar) — recomputed live from the recipe, but over the BOUNDED
@@ -223,6 +242,16 @@ export const dwProcessingSubStepAtom = atom<1 | 2>(1)
 // null until the first "Save Cleaned Tags" triggers the server sync.
 export const dwDraftIdAtom = atom<string | null>(null)
 export const dwDraftArtifactIdAtom = atom<string | null>(null)
+// DS-LAKE-015-T01: PROGRESS for `useDatasetBronzeWarm`'s background
+// materialize — separate from `dwDraftSyncStateAtom`, which stays the
+// user-facing FAILURE banner and is deliberately never touched by the warm
+// (DS-LAKE-005B-B-T01's Q2 decision; see that hook's own doc comment).
+// `failed` exists so the state machine stops reading "preparing" forever,
+// NOT to drive an error banner — the lazy retry on the user's first real
+// Apply (`ensureBronze` in `useDatasetDraftPipeline`) is still the only
+// recovery path. Reset to 'idle' alongside the other draft-scoped atoms.
+export type BronzeWarmState = 'idle' | 'materializing' | 'ready' | 'failed'
+export const dwBronzeWarmStateAtom = atom<BronzeWarmState>('idle')
 // DS-LAKE-006-T06. The GOLD artifact Step 4's background warm produces from
 // `dwDraftArtifactIdAtom` (normally SILVER) — kept SEPARATE from it on
 // purpose: overwriting `dwDraftArtifactIdAtom` with the GOLD result would
@@ -332,6 +361,7 @@ export const initDatasetWizardAtom = atom(
     set(dwFetchTagsAtom, null)
     set(dwTimeRangeAtom, '1min')
     set(dwCustomDateRangeAtom, null)
+    set(dwHoldoutRangeAtom, null)
     set(dwCustomIntervalAtom, null)
     set(dwSourceFetchConfigsAtom, {})
     set(dwFetchConfigAtom, { ...DEFAULT_FETCH_CONFIG })
@@ -376,6 +406,8 @@ export const resetDatasetWizardAtom = atom(null, (_get, set) => {
   set(dwDescriptionAtom, '')
   set(dwWorkspaceIdAtom, '')
   set(dwSelectedSourcesAtom, [])
+
+  // Step 1
   set(dwSelectedTagsAtom, [])
   set(dwRemovedTagsAtom, [])
   set(dwEditedTagsAtom, {})
@@ -385,48 +417,67 @@ export const resetDatasetWizardAtom = atom(null, (_get, set) => {
   set(dwCsvDatasetAtom, EMPTY_DATASET)
   set(dwCsvFileNameAtom, '')
   set(dwTagConstantsAtom, {})
+
+  // Step 2
   set(dwFetchTagsAtom, null)
   set(dwTimeRangeAtom, '1min')
   set(dwCustomDateRangeAtom, null)
+  set(dwHoldoutRangeAtom, null)
   set(dwCustomIntervalAtom, null)
   set(dwSourceFetchConfigsAtom, {})
   set(dwFetchConfigAtom, { ...DEFAULT_FETCH_CONFIG })
   set(dwFetchStateAtom, { status: 'idle', progress: 0 })
   set(dwFetchProgressAtom, { ...EMPTY_FETCH_PROGRESS })
   set(dwRawDatasetAtom, EMPTY_DATASET)
-  set(dwFeatureConfigsAtom, [])
-  set(dwFeaturePresetAtom, null)
-  set(dwTargetTagAtom, null)
-  set(dwSdtaPresetsAtom, [])
+
+  // Step 3
   set(dwCropRangeAtom, null)
+  set(dwValueCropAtom, {})
+  set(dwValueClipAtom, {})
+  set(dwExclusionsAtom, [])
   set(dwConditionalRulesAtom, [])
   set(dwStatisticalRulesAtom, [])
   set(dwCleaningPipelinesAtom, {})
   set(dwCleaningTagsAtom, [])
+  set(dwCleanedTagsAtom, [])
+  set(dwSelectedTagKeysAtom, new Set<string>())
+  set(dwProcessingSubStepAtom, 1)
+
+  // Step 4
+  set(dwFeatureConfigsAtom, [])
+  set(dwFeaturePresetAtom, null)
+  set(dwTargetTagAtom, null)
+  set(dwSdtaPresetsAtom, [])
   set(dwSelectedColumnsAtom, null)
   set(dwScalerConfigsAtom, {})
-  set(dwProcessingSubStepAtom, 1)
+
+  // Draft-first server state. THE GROUP THAT CAUSED THE DRIFT — a stale
+  // preview sample is what leaked the previous dataset's tags into a fresh
+  // create run, because the sidebar and every chart read their tag list from
+  // it, not from the atoms that WERE being cleared.
+  set(dwDraftIdAtom, null)
+  set(dwDraftArtifactIdAtom, null)
+  set(dwDraftGoldArtifactIdAtom, null)
+  set(dwBronzeWarmStateAtom, 'idle')
+  set(dwGoldWarmErrorAtom, null)
+  set(dwDraftSyncStateAtom, { status: 'idle' })
+  set(dwFeaturePreviewSampleAtom, brandBoundedSample({ tags: [], rows: [] }))
+  set(dwFeaturePreviewSampleStateAtom, 'idle')
+
+  // Analysis selection
   set(dwHiddenTagsAtom, [])
   set(dwFocusedTagAtom, '')
   set(dwTagSidebarCollapsedAtom, false)
+
+  // Nav + mode
   set(dwCurrentStepAtom, 1)
   set(dwHighestUnlockedAtom, 1)
   set(dwModeAtom, 'create')
   set(dwEditingDatasetIdAtom, '')
-  // Same reason as initDatasetWizardAtom: this runs right after Save, and the
-  // next wizard run must not inherit this one's provenance verdict.
   set(dwEditingDatasetAtom, null)
   set(dwRowSourceAtom, null)
   set(dwSyntheticReasonAtom, null)
   set(dwRowStageAtom, null)
-  // DS-LAKE-005B-B-T01 (Step 5 leg). Without this, a second wizard run in
-  // the same session would inherit the just-SAVED draft's id — every
-  // .../artifacts/:id/finalize and .../save call would target a draft
-  // DS-LAKE-009-T03's own guard now 409s on (already saved once).
-  set(dwDraftIdAtom, null)
-  set(dwDraftArtifactIdAtom, null)
-  set(dwDraftGoldArtifactIdAtom, null)
-  set(dwGoldWarmErrorAtom, null)
 })
 
 /**
@@ -479,6 +530,11 @@ export const initDatasetWizardForEditAtom = atom(
     set(dwFetchTagsAtom, baseTags)
     set(dwTimeRangeAtom, config.timeRange)
     set(dwCustomDateRangeAtom, config.customDateRange)
+    // Legacy recipes predate the holdout field — hydrate to null, same as
+    // valueCrop/exclusions above. Edit mode's own picker stays disabled
+    // (BRONZE is already split by the time a recipe is editable), so this
+    // is display-only provenance, not a re-openable control.
+    set(dwHoldoutRangeAtom, config.holdoutDateRange ?? null)
     set(dwCustomIntervalAtom, config.customInterval)
     set(dwSourceFetchConfigsAtom, config.sourceFetchConfigs)
     // Fetch is locked in edit mode (raw query is rebuilt deterministically, not

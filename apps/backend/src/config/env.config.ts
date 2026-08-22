@@ -17,23 +17,59 @@ export const env = {
   //   - CLEANUP_DRAFT_RECOVERY_HOURS: how long an ABANDONED draft's own
   //     artifacts (a wizard run that was never saved) stay recoverable after
   //     abandonment, measured from DatasetDraft.updatedAt at the ABANDONED
-  //     transition. Marking ABANDONED itself stays an explicit user action
-  //     (abandonDraftService) — this file does not add a second,
-  //     inactivity-based auto-abandon path; that is out of this feature's
-  //     acceptance criteria and would need its own decision if ever added.
+  //     transition. Marking ABANDONED is normally an explicit user action
+  //     (abandonDraftService), but DS-LAKE-014 also auto-abandons an ACTIVE
+  //     draft that owns zero live artifacts past CLEANUP_ACTIVE_EMPTY_MINUTES
+  //     — see below. Either path lands here on the same clock.
   //   - CLEANUP_INTERMEDIATE_RETENTION_HOURS: how long a SAVED draft's
   //     leftover BRONZE/SILVER/GOLD siblings (everything except the adopted
   //     FINAL) stay available for audit/retry after Save, measured from
-  //     DatasetArtifact.createdAt. Per decisions.reproducibility_anchor, a
-  //     BRONZE reachable through a non-ARCHIVED DatasetVersion's
-  //     parentArtifactId chain is pinned regardless of this value — the
-  //     window only ever releases SILVER/GOLD, or a BRONZE that is not (or
-  //     no longer) reachable that way.
+  //     DatasetDraft.updatedAt at Save time (NOT DatasetArtifact.createdAt —
+  //     using the artifact's own write time was a real bug caught before
+  //     ship, see artifact-cleanup-eligibility.ts's CleanupDraftInfo doc
+  //     comment). Per decisions.reproducibility_anchor, a BRONZE reachable
+  //     through a non-ARCHIVED DatasetVersion's parentArtifactId chain is
+  //     pinned regardless of this value — the window only ever releases
+  //     SILVER/GOLD, or a BRONZE that is not (or no longer) reachable that
+  //     way.
   // Both default to 7 days.
   CLEANUP_DRAFT_RECOVERY_HOURS: Number(
     process.env.CLEANUP_DRAFT_RECOVERY_HOURS ?? 168,
   ),
   CLEANUP_INTERMEDIATE_RETENTION_HOURS: Number(
     process.env.CLEANUP_INTERMEDIATE_RETENTION_HOURS ?? 168,
+  ),
+
+  // DS-LAKE-014: gives the DS-LAKE-009B cleanup mechanism a caller and closes
+  // the ACTIVE-draft hole (`selectCleanupEligibleArtifacts` used to skip
+  // every ACTIVE draft unconditionally, so a closed wizard tab leaked its
+  // artifacts forever). TIERED, not one blanket window, because the two
+  // cases have very different costs to get wrong:
+  //   - CLEANUP_ACTIVE_EMPTY_MINUTES: an ACTIVE draft owning ZERO live
+  //     artifacts — nothing was fetched, nothing is expensive to lose. This
+  //     is a DRAFT-LEVEL status transition to ABANDONED (no MinIO object,
+  //     nothing for the artifact-keyed predicate to act on), gated on
+  //     `updatedAt` past this window with no live artifact. Once ABANDONED
+  //     it rejoins CLEANUP_DRAFT_RECOVERY_HOURS above like any other
+  //     abandoned draft.
+  //   - CLEANUP_ACTIVE_IDLE_HOURS: an ACTIVE draft that DOES own a live
+  //     artifact — a real PI fetch cost minutes, and an engineer may return
+  //     to it after a meeting. Read by `selectCleanupEligibleArtifacts`'s
+  //     ACTIVE branch directly (reclaims the artifact's MinIO bytes once
+  //     past this window, same as the SAVED/ABANDONED branches).
+  //   - CLEANUP_SWEEP_INTERVAL_MS: how often ArtifactCleanupAdminService's
+  //     boot-registered setInterval calls run({ dryRun: false }) on its own.
+  //     `<= 0` disables the sweep entirely; the admin endpoint keeps working
+  //     unchanged either way.
+  // Both age windows measure from DatasetDraft.updatedAt, matching the
+  // SAVED/ABANDONED branches' own convention — see T04's wizard heartbeat
+  // (`POST /authorized/dataset-drafts/:id/touch`) for how that clock stays
+  // honest while a wizard tab is genuinely open but issuing no writes.
+  CLEANUP_ACTIVE_EMPTY_MINUTES: Number(
+    process.env.CLEANUP_ACTIVE_EMPTY_MINUTES ?? 15,
+  ),
+  CLEANUP_ACTIVE_IDLE_HOURS: Number(process.env.CLEANUP_ACTIVE_IDLE_HOURS ?? 6),
+  CLEANUP_SWEEP_INTERVAL_MS: Number(
+    process.env.CLEANUP_SWEEP_INTERVAL_MS ?? 300_000,
   ),
 };

@@ -480,7 +480,15 @@ model DatasetVersion {
   /// DS-LAKE-007's quality score (0-100) at Save time, frozen — re-running
   /// validation later never changes what a saved version already promised.
   qualityScore Float?
-  status       DatasetStatus @default(DRAFT)
+  /// DS-LAKE-019. The report's ADVISORY-failed checks at Save time, frozen
+  /// — same reasoning as qualityScore right above: the MinIO sidecar
+  /// (artifact.validationKey) is rewritten on every Step 5 revalidate, so
+  /// it cannot answer "what did Save actually promise". Array of
+  /// {name, detail, measured, threshold, offenders}, always [] when there
+  /// were none — null means only "saved before this feature existed".
+  /// BLOCKING failures are never here: a FAIL never reaches Save.
+  validationAdvisory Json?
+  status             DatasetStatus @default(DRAFT)
 
   /// Frozen BRONZE -> SILVER -> GOLD -> FINAL chain (ids/checksums/types) as
   /// of Save time — a point-in-time snapshot, not a live FK walk.
@@ -552,6 +560,33 @@ model DatasetArtifact {
   featureCount Int   @default(0)
   rowCount     Int   @default(0)
   missingPct   Float @default(0)
+
+  /// DS-LAKE-018-T03. Rows written to the `validate_data.parquet` sidecar
+  /// (holdout window + lead-in), on a BRONZE artifact whose materialize
+  /// request included a holdout selection. Null means no holdout — the
+  /// overwhelming majority of rows, and every artifact written before this
+  /// task. `rowCount` above keeps meaning "rows in data.parquet"
+  /// unconditionally; this is a deliberately SEPARATE field so that meaning
+  /// never has to be inferred from whether a holdout happened to be picked.
+  validationRowCount Int?
+
+  /// DS-LAKE-018-T05. The resolved holdout boundary (canonicalised by
+  /// `pd.Timestamp` at materialize time) — the exact cut used to derive
+  /// `validation_row_count` above. Null under the same condition. Persisted
+  /// here, not re-derived later, because nothing else stores the ORIGINAL
+  /// holdout request once materialize returns; a post-training replay
+  /// needs this exact value to know where the holdout window starts.
+  validationHoldoutFrom DateTime?
+
+  /// MODEL-FLOW-010-T06. Share of `validate_data.parquet` cells that are not
+  /// Good (`missing_pct(validate_frame)`), captured at write time alongside
+  /// `validationRowCount`/`validationHoldoutFrom` above. Null under the same
+  /// condition as those — no holdout, or a holdout written before this task.
+  /// DS-LAKE-018's resolved no-imputation decision means the holdout stays
+  /// raw, so a MISSING_VALUE hole reaches predict() with no other trace —
+  /// this is what lets the Model wizard's Dataset Review step (Step 2) say
+  /// so before training, not just after a depressed score.
+  validationMissingPct Float?
 
   /// 64-bit on purpose: DatasetVersion.sizeBytes is a 32-bit Int, and a 396 MB
   /// artifact is already documented (preview_service.py), so the old column
@@ -944,6 +979,16 @@ model ModelTrainingRun {
   /// Denormalised from metrics.json for list/sort without an object read —
   /// the same reasoning DatasetArtifact uses for rowCount and missingPct.
   metrics        Json?
+  /// DS-LAKE-018-T05. The SAME shape as `metrics` (r2/mae/rmse/row counts),
+  /// scored on the replayed RAW validation holdout instead of the
+  /// chronological test split. Deliberately a SEPARATE column, never merged
+  /// into `metrics` — the whole point is a test score and a holdout score
+  /// answer different questions, and blending them into one number would
+  /// hide the gap this feature exists to expose. Null when the dataset has
+  /// no holdout (validationRowCount was never set) or the replay failed —
+  /// both cases leave training itself unaffected (see model-run.authorized.
+  /// service.ts's claim()).
+  holdoutMetrics Json?
 
   createdAt  DateTime  @default(now())
   startedAt  DateTime?

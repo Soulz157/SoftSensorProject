@@ -1,5 +1,6 @@
 import {
   selectCleanupEligibleArtifacts,
+  reportCleanupEligibility,
   type CleanupCandidateArtifact,
   type CleanupDraftInfo,
 } from './artifact-cleanup-eligibility';
@@ -13,7 +14,11 @@ import {
  */
 
 const NOW = new Date('2026-08-12T00:00:00.000Z');
-const CONFIG = { draftRecoveryHours: 168, intermediateRetentionHours: 168 };
+const CONFIG = {
+  draftRecoveryHours: 168,
+  intermediateRetentionHours: 168,
+  activeIdleHours: 6,
+};
 
 function hoursAgo(hours: number): Date {
   return new Date(NOW.getTime() - hours * 60 * 60 * 1000);
@@ -119,7 +124,21 @@ describe('selectCleanupEligibleArtifacts', () => {
     expect(longAfterSave).toEqual(['silver-1']);
   });
 
-  it('never touches an ACTIVE draft, however old the draft row is', () => {
+  it('DS-LAKE-014: keeps an ACTIVE draft artifact ineligible before the idle window elapses', () => {
+    const result = selectCleanupEligibleArtifacts(
+      [artifact({ id: 'bronze-1' })],
+      new Set(),
+      drafts({ 'draft-1': { status: 'ACTIVE', updatedAt: hoursAgo(1) } }),
+      CONFIG,
+      NOW,
+    );
+    expect(result).toEqual([]);
+  });
+
+  it('DS-LAKE-014: reclaims an ACTIVE draft artifact once past the idle window (reversal of the old unconditional skip)', () => {
+    // Prior behaviour, deleted by this feature: `if (status === 'ACTIVE')
+    // continue;` unconditionally, however old the draft row was — the exact
+    // bug DS-LAKE-014-T01 recorded before changing it.
     const result = selectCleanupEligibleArtifacts(
       [artifact({ id: 'bronze-1' })],
       new Set(),
@@ -127,7 +146,7 @@ describe('selectCleanupEligibleArtifacts', () => {
       CONFIG,
       NOW,
     );
-    expect(result).toEqual([]);
+    expect(result).toEqual(['bronze-1']);
   });
 
   it('reclaims an ABANDONED draft artifact once past the recovery window', () => {
@@ -262,5 +281,78 @@ describe('selectCleanupEligibleArtifacts', () => {
       new Set(['gold-1']), // gold-2 is not in this set
     );
     expect(unrelatedGoldStillReleases).toEqual(['gold-2']);
+  });
+});
+
+describe('reportCleanupEligibility (DS-LAKE-014-T05)', () => {
+  it('attributes exactly one skip reason per non-eligible artifact, and the counts sum to the non-eligible total', () => {
+    // 'too-fresh' needs its own draft (draft-2) with a recent updatedAt so it
+    // lands in inside_window rather than sharing draft-1's already-elapsed one.
+    const reportWithFreshDraft = reportCleanupEligibility(
+      [
+        artifact({ id: 'bronze-pinned', type: 'BRONZE' }),
+        artifact({ id: 'gold-shared', type: 'GOLD' }),
+        artifact({ id: 'ghost', draftId: 'no-such-draft' }),
+        artifact({ id: 'no-draft-id', draftId: null }),
+        artifact({ id: 'too-fresh', type: 'SILVER', draftId: 'draft-2' }),
+        artifact({ id: 'releases', type: 'SILVER' }),
+      ],
+      new Set(['bronze-pinned']),
+      drafts({
+        'draft-1': { status: 'SAVED', updatedAt: hoursAgo(500) },
+        'draft-2': { status: 'SAVED', updatedAt: hoursAgo(1) },
+      }),
+      CONFIG,
+      NOW,
+      new Set(['gold-shared']),
+    );
+
+    expect(reportWithFreshDraft.eligible).toEqual(['releases']);
+    expect(reportWithFreshDraft.skipped).toEqual({
+      lineage_pinned: 1,
+      shared_final_object: 1,
+      no_draft: 2,
+      inside_window: 1,
+    });
+
+    // The invariant T05 exists to guarantee: every non-FINAL candidate is
+    // either eligible or attributed to exactly one skip reason.
+    const nonFinalCandidateCount = 6;
+    const totalSkipped = Object.values(reportWithFreshDraft.skipped).reduce(
+      (sum, n) => sum + n,
+      0,
+    );
+    expect(reportWithFreshDraft.eligible.length + totalSkipped).toBe(
+      nonFinalCandidateCount,
+    );
+  });
+
+  it('never attributes a skip reason to a FINAL artifact', () => {
+    const report = reportCleanupEligibility(
+      [artifact({ id: 'final-1', type: 'FINAL' })],
+      new Set(),
+      drafts({ 'draft-1': { status: 'SAVED', updatedAt: hoursAgo(10_000) } }),
+      CONFIG,
+      NOW,
+    );
+    expect(report.eligible).toEqual([]);
+    expect(Object.values(report.skipped).every((n) => n === 0)).toBe(true);
+  });
+
+  it('selectCleanupEligibleArtifacts and reportCleanupEligibility agree on the eligible set', () => {
+    const args = [
+      [
+        artifact({ id: 'bronze-1', type: 'BRONZE' }),
+        artifact({ id: 'silver-1', type: 'SILVER' }),
+      ],
+      new Set(['bronze-1']),
+      drafts({ 'draft-1': { status: 'SAVED', updatedAt: hoursAgo(500) } }),
+      CONFIG,
+      NOW,
+    ] as const;
+
+    expect(selectCleanupEligibleArtifacts(...args)).toEqual(
+      reportCleanupEligibility(...args).eligible,
+    );
   });
 });

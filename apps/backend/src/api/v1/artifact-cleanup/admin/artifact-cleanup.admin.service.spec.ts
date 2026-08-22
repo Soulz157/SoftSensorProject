@@ -1,5 +1,7 @@
+import { Logger } from '@nestjs/common';
 import { ArtifactCleanupAdminService } from './artifact-cleanup.admin.service';
 import { postToPython } from '@/lib/python-client';
+import { env } from '@/config/env.config';
 
 jest.mock('@/lib/python-client', () => ({
   postToPython: jest.fn(),
@@ -10,6 +12,11 @@ jest.mock('@/config/env.config', () => ({
   env: {
     CLEANUP_DRAFT_RECOVERY_HOURS: 168,
     CLEANUP_INTERMEDIATE_RETENTION_HOURS: 168,
+    CLEANUP_ACTIVE_EMPTY_MINUTES: 15,
+    CLEANUP_ACTIVE_IDLE_HOURS: 6,
+    // 0 by default so constructing the service in a test never starts a
+    // real timer; DS-LAKE-014's own scheduling tests override this per case.
+    CLEANUP_SWEEP_INTERVAL_MS: 0,
   },
 }));
 
@@ -31,6 +38,14 @@ interface ArtifactRow {
   draftId: string | null;
   objectKey: string;
   parentArtifactId?: string | null;
+  /**
+   * DS-LAKE-014-T05: a real `bigint`, matching what Prisma + `@prisma/
+   * adapter-pg` actually returns for an `int8` column (live-confirmed
+   * against real Postgres — not a `string`/`number` the driver could hand
+   * back instead). Defaults to `0n` so every pre-existing test, which never
+   * cared about byte counts, is unaffected.
+   */
+  sizeBytes?: bigint;
 }
 
 function buildPrismaMock(options: {
@@ -48,11 +63,12 @@ function buildPrismaMock(options: {
       findMany: jest.fn().mockResolvedValue(
         options.artifacts
           .filter((a) => a.type !== 'FINAL')
-          .map(({ id, type, draftId, objectKey }) => ({
+          .map(({ id, type, draftId, objectKey, sizeBytes }) => ({
             id,
             type,
             draftId,
             objectKey,
+            sizeBytes: sizeBytes ?? 0n,
           })),
       ),
       findUnique: jest.fn().mockImplementation(({ where: { id } }) => {
@@ -65,6 +81,11 @@ function buildPrismaMock(options: {
     },
     datasetDraft: {
       findMany: jest.fn().mockResolvedValue(options.drafts),
+      // DS-LAKE-014-T02: the draft-level auto-abandon pass. Defaults to "no
+      // empty ACTIVE drafts found" so every pre-existing test in this file
+      // — none of which seed one — is unaffected by run() now calling these.
+      count: jest.fn().mockResolvedValue(0),
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     datasetVersion: {
       findMany: jest.fn().mockResolvedValue(options.liveVersions),
@@ -212,6 +233,36 @@ describe('ArtifactCleanupAdminService', () => {
     const updateOrder =
       prisma.datasetArtifact.update.mock.invocationCallOrder[0];
     expect(postOrder).toBeLessThan(updateOrder);
+  });
+
+  it('DS-LAKE-014-T05: bytesReclaimed sums real bigint sizeBytes across multiple reclaimed artifacts (a zero that cannot fail proves nothing)', async () => {
+    post.mockResolvedValue({ prefix: 'x/', deleted: 1 });
+    const prisma = buildPrismaMock({
+      artifacts: [
+        {
+          id: 'silver-1',
+          type: 'SILVER',
+          draftId: 'draft-1',
+          objectKey: 'ds-1/artifacts/silver-1/data.parquet',
+          sizeBytes: 205_760n, // the exact live-observed value, not a round number
+        },
+        {
+          id: 'silver-2',
+          type: 'SILVER',
+          draftId: 'draft-1',
+          objectKey: 'ds-1/artifacts/silver-2/data.parquet',
+          sizeBytes: 1_024n,
+        },
+      ],
+      drafts: [{ id: 'draft-1', status: 'SAVED', updatedAt: OLD }],
+      liveVersions: [],
+    });
+    const service = makeService(prisma);
+
+    const result = await service.run({ dryRun: false });
+
+    expect(result.reclaimed).toBe(2);
+    expect(result.bytesReclaimed).toBe('206784'); // 205_760 + 1_024, as a string
   });
 
   it('one failed reclaim does not abort the rest of the batch', async () => {
@@ -387,5 +438,250 @@ describe('ArtifactCleanupAdminService', () => {
     const ids = result.artifacts.map((a) => a.id);
     expect(ids).toEqual(['silver-2']);
     expect(ids).not.toContain('silver-1');
+  });
+
+  it('DS-LAKE-014-T05: every run satisfies examined == reclaimed + failed + sum(skipped)', async () => {
+    post.mockResolvedValue({ prefix: 'x/', deleted: 1 });
+    const prisma = buildPrismaMock({
+      artifacts: [
+        {
+          id: 'bronze-pinned',
+          type: 'BRONZE',
+          draftId: 'draft-1',
+          objectKey: 'ds-1/artifacts/bronze-pinned/data.parquet',
+          parentArtifactId: null,
+        },
+        {
+          id: 'silver-1',
+          type: 'SILVER',
+          draftId: 'draft-1',
+          objectKey: 'ds-1/artifacts/silver-1/data.parquet',
+        },
+        {
+          id: 'silver-active-job',
+          type: 'SILVER',
+          draftId: 'draft-1',
+          objectKey: 'ds-1/artifacts/silver-active-job/data.parquet',
+        },
+      ],
+      drafts: [{ id: 'draft-1', status: 'SAVED', updatedAt: OLD }],
+      liveVersions: [{ artifactId: 'final-1' }],
+      activeJobs: [
+        { sourceArtifactId: 'silver-active-job', resultArtifactId: null },
+      ],
+    });
+    prisma.datasetArtifact.findUnique.mockImplementation(
+      ({ where: { id } }: { where: { id: string } }) => {
+        if (id === 'final-1') {
+          return Promise.resolve({ parentArtifactId: 'bronze-pinned' });
+        }
+        if (id === 'bronze-pinned') {
+          return Promise.resolve({ parentArtifactId: null });
+        }
+        return Promise.resolve(null);
+      },
+    );
+    const service = makeService(prisma);
+
+    const result = await service.run({ dryRun: false });
+
+    // bronze-pinned -> lineage_pinned; silver-active-job -> active_job;
+    // silver-1 -> reclaimed. Nothing left unattributed.
+    expect(result.scanned).toBe(3);
+    expect(result.reclaimed).toBe(1);
+    const totalSkipped = Object.values(result.skipped).reduce(
+      (sum, n) => sum + n,
+      0,
+    );
+    expect(totalSkipped).toBe(2);
+    expect(result.reclaimed + result.failed + totalSkipped).toBe(
+      result.scanned,
+    );
+  });
+});
+
+describe('DS-LAKE-014-T02: auto-abandon empty ACTIVE drafts', () => {
+  beforeEach(() => {
+    jest.useFakeTimers().setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('dryRun previews via count, without writing', async () => {
+    const prisma = buildPrismaMock({
+      artifacts: [],
+      drafts: [],
+      liveVersions: [],
+    });
+    prisma.datasetDraft.count.mockResolvedValue(2);
+    const service = makeService(prisma);
+
+    const result = await service.run({ dryRun: true });
+
+    expect(prisma.datasetDraft.count).toHaveBeenCalledWith({
+      where: {
+        status: 'ACTIVE',
+        updatedAt: { lt: expect.any(Date) },
+        artifacts: { none: { objectReclaimedAt: null } },
+      },
+    });
+    expect(prisma.datasetDraft.updateMany).not.toHaveBeenCalled();
+    expect(result.autoAbandoned).toBe(2);
+  });
+
+  it('a live run flips qualifying drafts to ABANDONED via updateMany, never count', async () => {
+    const prisma = buildPrismaMock({
+      artifacts: [],
+      drafts: [],
+      liveVersions: [],
+    });
+    prisma.datasetDraft.updateMany.mockResolvedValue({ count: 3 });
+    const service = makeService(prisma);
+
+    const result = await service.run({ dryRun: false });
+
+    expect(prisma.datasetDraft.updateMany).toHaveBeenCalledWith({
+      where: {
+        status: 'ACTIVE',
+        updatedAt: { lt: expect.any(Date) },
+        artifacts: { none: { objectReclaimedAt: null } },
+      },
+      data: { status: 'ABANDONED' },
+    });
+    expect(prisma.datasetDraft.count).not.toHaveBeenCalled();
+    expect(result.autoAbandoned).toBe(3);
+  });
+
+  it('the cutoff is exactly CLEANUP_ACTIVE_EMPTY_MINUTES before now', async () => {
+    const prisma = buildPrismaMock({
+      artifacts: [],
+      drafts: [],
+      liveVersions: [],
+    });
+    const service = makeService(prisma);
+
+    await service.run({ dryRun: true });
+
+    const call = prisma.datasetDraft.count.mock.calls[0][0] as {
+      where: { updatedAt: { lt: Date } };
+    };
+    const cutoff = call.where.updatedAt.lt;
+    expect(NOW.getTime() - cutoff.getTime()).toBe(
+      env.CLEANUP_ACTIVE_EMPTY_MINUTES * 60_000,
+    );
+  });
+});
+
+describe('DS-LAKE-014-T03: periodic sweep scheduling', () => {
+  beforeEach(() => {
+    jest.useFakeTimers().setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    env.CLEANUP_SWEEP_INTERVAL_MS = 0; // restore the mocked default
+    jest.useRealTimers();
+  });
+
+  it('does not schedule a timer when CLEANUP_SWEEP_INTERVAL_MS <= 0', () => {
+    env.CLEANUP_SWEEP_INTERVAL_MS = 0;
+    const prisma = buildPrismaMock({
+      artifacts: [],
+      drafts: [],
+      liveVersions: [],
+    });
+    const service = makeService(prisma);
+
+    service.onModuleInit();
+
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it('schedules exactly one timer when CLEANUP_SWEEP_INTERVAL_MS > 0, and onApplicationShutdown clears it', () => {
+    env.CLEANUP_SWEEP_INTERVAL_MS = 60_000;
+    const prisma = buildPrismaMock({
+      artifacts: [],
+      drafts: [],
+      liveVersions: [],
+    });
+    const service = makeService(prisma);
+
+    service.onModuleInit();
+    expect(jest.getTimerCount()).toBe(1);
+
+    service.onApplicationShutdown();
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it('the interval calls run({ dryRun: false, trigger: "interval" }) on its own, with no admin endpoint involved', async () => {
+    env.CLEANUP_SWEEP_INTERVAL_MS = 60_000;
+    post.mockResolvedValue({ prefix: 'ds-1/artifacts/silver-1/', deleted: 1 });
+    const prisma = buildPrismaMock({
+      artifacts: [
+        {
+          id: 'silver-1',
+          type: 'SILVER',
+          draftId: 'draft-1',
+          objectKey: 'ds-1/artifacts/silver-1/data.parquet',
+        },
+      ],
+      drafts: [{ id: 'draft-1', status: 'SAVED', updatedAt: OLD }],
+      liveVersions: [],
+    });
+    const service = makeService(prisma);
+    const runSpy = jest.spyOn(service, 'run');
+
+    service.onModuleInit();
+    await jest.advanceTimersByTimeAsync(60_000);
+
+    expect(runSpy).toHaveBeenCalledWith({ dryRun: false, trigger: 'interval' });
+    expect(prisma.datasetArtifact.update).toHaveBeenCalledWith({
+      where: { id: 'silver-1' },
+      data: { objectReclaimedAt: expect.any(Date) },
+    });
+
+    service.onApplicationShutdown();
+  });
+
+  it('a failing run() inside the interval is logged and swallowed — the app never crashes, the timer survives, and the NEXT tick actually runs (not just stays scheduled)', async () => {
+    env.CLEANUP_SWEEP_INTERVAL_MS = 60_000;
+    const prisma = buildPrismaMock({
+      artifacts: [],
+      drafts: [],
+      liveVersions: [],
+    });
+    // Only the first call rejects — buildPrismaMock's default resolves
+    // normally after that, so the second tick can genuinely succeed.
+    prisma.datasetArtifact.findMany.mockRejectedValueOnce(
+      new Error('db exploded'),
+    );
+    const service = makeService(prisma);
+    const runSpy = jest.spyOn(service, 'run');
+    const warnSpy = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+
+    service.onModuleInit();
+    await expect(jest.advanceTimersByTimeAsync(60_000)).resolves.not.toThrow();
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Cleanup sweep failed'),
+    );
+    expect(jest.getTimerCount()).toBe(1); // one throwing tick does not unschedule the interval
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    await expect(runSpy.mock.results[0].value).rejects.toThrow('db exploded');
+
+    // The acceptance criterion is "does not PREVENT the next tick" — proven
+    // by the next tick actually completing, not merely by the timer still
+    // being registered.
+    await expect(jest.advanceTimersByTimeAsync(60_000)).resolves.not.toThrow();
+    expect(runSpy).toHaveBeenCalledTimes(2);
+    await expect(runSpy.mock.results[1].value).resolves.toEqual(
+      expect.objectContaining({ scanned: 0, reclaimed: 0, failed: 0 }),
+    );
+
+    warnSpy.mockRestore();
+    service.onApplicationShutdown();
   });
 });

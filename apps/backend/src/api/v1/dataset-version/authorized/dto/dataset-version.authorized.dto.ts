@@ -123,6 +123,15 @@ export const CreateRawVersionSchema = z.object({
    * session can stay in the same run rather than orphaning the lineage.
    */
   runId: z.string().uuid().optional(),
+  /**
+   * DS-LAKE-018-T03. The raw validation holdout window, selected beside
+   * `startTime`/`endTime` at Step 2 (`dwHoldoutRangeAtom`,
+   * `describeHoldoutSelection` in lib/holdout.ts). Optional: absent means no
+   * holdout, the dataset behaves exactly as today (acceptance criterion).
+   */
+  holdout: z
+    .object({ from: z.string().min(1), to: z.string().min(1) })
+    .optional(),
 });
 
 export const StartCleanJobSchema = z.object({
@@ -397,6 +406,32 @@ export const ArtifactStatsSchema = z.object({
    * parses.
    */
   skipped_features: z.array(z.string()).optional(),
+  /**
+   * DS-LAKE-018-T03. Rows written to `validate_data.parquet` — set only by
+   * `materialize` when the request carried a `holdout`. Null/absent means
+   * no holdout (every non-materialize call, and every materialize call
+   * before this task) — persisted onto DatasetArtifact.validationRowCount.
+   */
+  validation_row_count: z.number().int().nonnegative().nullable().optional(),
+  /**
+   * DS-LAKE-018-T06. The resolved holdout boundary (canonicalised by
+   * `pd.Timestamp` at split time) — set by `materialize` and `resplit-
+   * holdout` alike whenever a holdout was applied. Persisted onto
+   * DatasetArtifact.validationHoldoutFrom, which `replay_holdout_for_run`'s
+   * caller (`model-run.authorized.service.ts`) reads to know where the
+   * holdout window starts. Optional/nullable so a pre-this-field response
+   * still parses.
+   */
+  validation_holdout_from: z.string().nullable().optional(),
+  /**
+   * MODEL-FLOW-010-T06. Share of `validate_data.parquet` cells that are not
+   * Good, captured at write time (`missing_pct(validate_frame)`) — set by
+   * `materialize` and `resplit-holdout` alike whenever a holdout was
+   * applied. Persisted onto DatasetArtifact.validationMissingPct. Null under
+   * the same condition as validation_row_count above; optional so a
+   * pre-this-field response still parses.
+   */
+  validation_missing_pct: z.number().nullable().optional(),
 });
 
 export type ArtifactStats = z.infer<typeof ArtifactStatsSchema>;
@@ -407,7 +442,7 @@ export type ArtifactStats = z.infer<typeof ArtifactStatsSchema>;
 // belong in this section, same convention as ArtifactStatsSchema above.
 
 /** Mirrors apps/python `schemas.preprocess.ValidationCheckResponse`. */
-const ValidationCheckSchema = z.object({
+export const ValidationCheckSchema = z.object({
   name: z.string(),
   passed: z.boolean(),
   skipped: z.boolean(),
@@ -415,6 +450,9 @@ const ValidationCheckSchema = z.object({
   measured: z.number().nullable().optional(),
   threshold: z.number().nullable().optional(),
   offenders: z.array(z.string()),
+  // DS-LAKE-019-T03. A property of the check's NAME, mirrored from
+  // validation_service.BLOCKING_CHECKS — never re-derived here.
+  severity: z.enum(['blocking', 'advisory']),
 });
 
 /** Mirrors apps/python `schemas.preprocess.ValidationReportResponse`. */
@@ -423,6 +461,12 @@ export const ValidationReportSchema = z.object({
   quality_score: z.number(),
   checks: z.array(ValidationCheckSchema),
   failed_checks: z.array(z.string()),
+  // DS-LAKE-019-T03. Failed checks that did NOT flip `status` to FAIL — a
+  // strict subset of `failed_checks`. zod strips unknown fields by default
+  // (no `.strict()`/`.passthrough()` here), so this MUST be declared or it
+  // is silently dropped past this boundary — same class of failure
+  // DS-LAKE-005B-B-T01's #7 percentile work already hit once.
+  advisory_failures: z.array(z.string()).default([]),
   validation_report_key: z.string(),
 });
 

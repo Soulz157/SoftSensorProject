@@ -421,7 +421,7 @@ export function Phase3Evaluation({ nav }: Props) {
 
       {/* Actions */}
       <div className="flex flex-wrap items-center gap-2 border-t border-border/60 pt-4">
-        <Button variant="outline" onClick={() => nav.goTo(2)}>
+        <Button variant="outline" onClick={() => nav.goTo(3)}>
           <RotateCw className="h-4 w-4" />
           Retrain
         </Button>

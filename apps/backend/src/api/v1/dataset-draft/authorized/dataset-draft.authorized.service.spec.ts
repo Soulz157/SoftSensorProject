@@ -93,6 +93,10 @@ function buildPrisma(overrides: Record<string, unknown> = {}) {
       findFirst: jest.fn().mockResolvedValue(DRAFT),
       create: jest.fn().mockResolvedValue(DRAFT),
       update: jest.fn().mockResolvedValue(DRAFT),
+      // DS-LAKE-014-T04: touchDraftService's own write. Defaults to "the
+      // filter matched" so tests that don't care about the heartbeat are
+      // unaffected by its presence.
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     dataSource: {
       findFirst: jest.fn().mockResolvedValue(SOURCE),
@@ -213,6 +217,184 @@ describe('DatasetDraftAuthorizedService — materialize source scoping', () => {
     expect((body as { target_key: string }).target_key).toContain(
       'drafts/draft-1/artifacts/',
     );
+  });
+});
+
+const BRONZE_ROOT = {
+  id: 'bronze-1',
+  draftId: 'draft-1',
+  runId: 'run-1',
+  parentArtifactId: null,
+  type: 'BRONZE',
+  objectKey: 'drafts/draft-1/artifacts/bronze-1/data.parquet',
+  checksum: 'c'.repeat(64),
+  rowCount: 100,
+  columnCount: 4,
+  missingPct: 0,
+  validationRowCount: null,
+};
+
+const SILVER_FOR_WALK = {
+  id: 'silver-1',
+  draftId: 'draft-1',
+  runId: 'run-1',
+  parentArtifactId: 'bronze-1',
+  type: 'SILVER',
+  objectKey: 'drafts/draft-1/artifacts/silver-1/data.parquet',
+  checksum: 'b'.repeat(64),
+  rowCount: 40,
+  columnCount: 4,
+  missingPct: 2.5,
+  validationRowCount: null,
+};
+
+describe('DatasetDraftAuthorizedService — resplit holdout (DS-LAKE-018-T06)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('refuses when the draft is not found, without ever resolving an artifact', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetDraft.findFirst.mockResolvedValueOnce(null);
+    const { service } = makeService(prisma);
+
+    await expect(
+      service.resplitDraftHoldoutService(USER, 'draft-missing', {
+        holdout: { from: '2026-01-01', to: '2026-01-02' },
+      }),
+    ).rejects.toThrow(AppException);
+
+    expect(prisma.datasetArtifact.findFirst).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the draft has no artifact yet', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetDraft.findFirst.mockResolvedValueOnce({
+      ...DRAFT,
+      currentArtifactId: null,
+    });
+    const { service } = makeService(prisma);
+
+    await expect(
+      service.resplitDraftHoldoutService(USER, 'draft-1', {
+        holdout: { from: '2026-01-01', to: '2026-01-02' },
+      }),
+    ).rejects.toThrow(AppException);
+
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('walks up from a non-root artifact to resolve the BRONZE root, and reads FROM it', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetDraft.findFirst.mockResolvedValueOnce({
+      ...DRAFT,
+      currentArtifactId: 'silver-1',
+    });
+    prisma.datasetArtifact.findFirst
+      .mockResolvedValueOnce(SILVER_FOR_WALK)
+      .mockResolvedValueOnce(BRONZE_ROOT);
+    post.mockResolvedValueOnce({
+      object_key: 'drafts/draft-1/artifacts/bronze-2/data.parquet',
+      row_count: 88,
+      column_count: 4,
+      size_bytes: 900,
+      missing_pct: 0,
+      checksum: 'd'.repeat(64),
+      duration_ms: 5,
+      validation_row_count: 12,
+      validation_holdout_from: '2026-01-11 00:00:00',
+    });
+    const { service } = makeService(prisma);
+
+    await service.resplitDraftHoldoutService(USER, 'draft-1', {
+      holdout: { from: '2026-01-11', to: '2026-01-13' },
+    });
+
+    const [, body] = post.mock.calls[0];
+    expect((body as { source_key: string }).source_key).toBe(
+      BRONZE_ROOT.objectKey,
+    );
+  });
+
+  it('refuses (422) to re-split a root that was already split at materialize time', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetDraft.findFirst.mockResolvedValueOnce({
+      ...DRAFT,
+      currentArtifactId: 'bronze-1',
+    });
+    prisma.datasetArtifact.findFirst.mockResolvedValueOnce({
+      ...BRONZE_ROOT,
+      validationRowCount: 30, // already split — a legacy/pre-task artifact
+    });
+    const { service } = makeService(prisma);
+
+    await expect(
+      service.resplitDraftHoldoutService(USER, 'draft-1', {
+        holdout: { from: '2026-01-11', to: '2026-01-13' },
+      }),
+    ).rejects.toThrow(AppException);
+
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('holdout: null clears the holdout by pointing the draft back at its pristine root, without calling Python', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetDraft.findFirst.mockResolvedValueOnce({
+      ...DRAFT,
+      currentArtifactId: 'bronze-1',
+    });
+    prisma.datasetArtifact.findFirst.mockResolvedValueOnce(BRONZE_ROOT);
+    const { service } = makeService(prisma);
+
+    const res = await service.resplitDraftHoldoutService(USER, 'draft-1', {
+      holdout: null,
+    });
+
+    expect(post).not.toHaveBeenCalled();
+    expect(res.data.id).toBe(BRONZE_ROOT.id);
+    expect(prisma.datasetDraft.update).toHaveBeenCalledWith({
+      where: { id: 'draft-1' },
+      data: { currentArtifactId: BRONZE_ROOT.id },
+    });
+  });
+
+  it('writes the new BRONZE with parentArtifactId set to the pristine root, and moves currentArtifactId to it', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetDraft.findFirst.mockResolvedValueOnce({
+      ...DRAFT,
+      currentArtifactId: 'bronze-1',
+    });
+    prisma.datasetArtifact.findFirst.mockResolvedValueOnce(BRONZE_ROOT);
+    post.mockResolvedValueOnce({
+      object_key: 'drafts/draft-1/artifacts/bronze-2/data.parquet',
+      row_count: 88,
+      column_count: 4,
+      size_bytes: 900,
+      missing_pct: 0,
+      checksum: 'd'.repeat(64),
+      duration_ms: 5,
+      validation_row_count: 12,
+      validation_holdout_from: '2026-01-11 00:00:00',
+    });
+    const { service } = makeService(prisma);
+
+    const res = await service.resplitDraftHoldoutService(USER, 'draft-1', {
+      holdout: { from: '2026-01-11', to: '2026-01-13' },
+    });
+
+    const created = firstCreateArg(prisma._tx.datasetArtifact.create).data;
+    expect(created.parentArtifactId).toBe(BRONZE_ROOT.id);
+    expect(created.runId).toBe(BRONZE_ROOT.runId);
+    expect(created.type).toBe('BRONZE');
+    expect(created.validationRowCount).toBe(12);
+    expect(created.validationHoldoutFrom).toEqual(
+      new Date('2026-01-11 00:00:00'),
+    );
+    expect(prisma._tx.datasetDraft.update).toHaveBeenCalledWith({
+      where: { id: 'draft-1' },
+      data: { currentArtifactId: created.id },
+    });
+    expect(res.statusCode).toBe(201);
+    expect(res.data.validationRowCount).toBe(12);
   });
 });
 
@@ -367,9 +549,11 @@ const VALIDATION_REPORT = {
       skipped: false,
       detail: 'ok',
       offenders: [],
+      severity: 'blocking' as const,
     },
   ],
   failed_checks: [],
+  advisory_failures: [] as string[],
   validation_report_key:
     'drafts/draft-1/artifacts/gold-1/validation_report.json',
 };
@@ -750,6 +934,49 @@ describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T
     expect(prisma._tx.dataset.create).not.toHaveBeenCalled();
   });
 
+  it('DS-LAKE-019-T05: freezes only the ADVISORY-failed checks onto the new DatasetVersion, and still saves', async () => {
+    const prisma = chainedPrisma();
+    post.mockResolvedValueOnce({
+      ...VALIDATION_REPORT,
+      // A PASS report whose only failure is advisory — the exact case
+      // this task exists for. Must save (status is still PASS) and must
+      // persist the advisory-failed check, not the passing blocking one.
+      checks: [
+        VALIDATION_REPORT.checks[0], // schema: passed, blocking
+        {
+          name: 'statistical',
+          passed: false,
+          skipped: false,
+          detail: '2 tag(s) over the outlier-fraction threshold.',
+          measured: 18.1,
+          threshold: 10,
+          offenders: ['TI-101', 'TI-207'],
+          severity: 'advisory' as const,
+        },
+      ],
+      failed_checks: ['statistical'],
+      advisory_failures: ['statistical'],
+    });
+    const { service } = makeService(prisma);
+
+    await service.saveDraftAsDatasetService(USER, 'draft-1', {
+      name: 'My Dataset',
+      tags: ['TI-101'],
+    } as never);
+
+    expect(prisma._tx.dataset.create).toHaveBeenCalledTimes(1);
+    const versionArg = firstCreateArg(prisma._tx.datasetVersion.create);
+    expect(versionArg.data.validationAdvisory).toEqual([
+      {
+        name: 'statistical',
+        detail: '2 tag(s) over the outlier-fraction threshold.',
+        measured: 18.1,
+        threshold: 10,
+        offenders: ['TI-101', 'TI-207'],
+      },
+    ]);
+  });
+
   it('creates exactly one Dataset and one DatasetVersion inside a single $transaction', async () => {
     const prisma = chainedPrisma();
     post.mockResolvedValueOnce(VALIDATION_REPORT);
@@ -825,6 +1052,27 @@ describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T
         data: { datasetId: 'dataset-1' },
       }),
     );
+  });
+
+  it('DS-LAKE-017-T01: adopts the lineage-root BRONZE too, by pointer, ONE POINTER NOT TWO — currentArtifactId still resolves to FINAL only', async () => {
+    const prisma = chainedPrisma();
+    post.mockResolvedValueOnce(VALIDATION_REPORT);
+    const { service } = makeService(prisma);
+
+    await service.saveDraftAsDatasetService(USER, 'draft-1', {
+      name: 'ds',
+      tags: ['TI-101'],
+    } as never);
+
+    expect(prisma._tx.datasetArtifact.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'bronze-1' },
+        data: { datasetId: 'dataset-1' },
+      }),
+    );
+    // The "one pointer, not two" half of AC1 — Dataset.currentArtifactId
+    // still resolves to FINAL only, never the adopted BRONZE — is asserted
+    // by the very next test below (currentArtifactId: FINAL_ARTIFACT.id).
   });
 
   it('sets Dataset.currentArtifactId/currentVersionId and DatasetDraft.savedDatasetId/status atomically', async () => {
@@ -1840,5 +2088,41 @@ describe('DatasetDraftAuthorizedService — draft-owned jobs', () => {
     expect(call.data.sourceArtifactId).toBe('artifact-1');
     expect(call.data.draftId).toBe('draft-1');
     expect(jobs.start).toHaveBeenCalledWith('job-1');
+  });
+});
+
+describe('DatasetDraftAuthorizedService — heartbeat (DS-LAKE-014-T04)', () => {
+  it('bumps updatedAt via a status-filtered updateMany, writing the status the row already has (not an empty data: {})', async () => {
+    const prisma = buildPrisma();
+    const { service } = makeService(prisma);
+
+    const result = await service.touchDraftService(USER, 'draft-1');
+
+    expect(prisma.datasetDraft.updateMany).toHaveBeenCalledWith({
+      where: { id: 'draft-1', status: 'ACTIVE' },
+      data: { status: 'ACTIVE' },
+    });
+    expect(result.data).toEqual({ touched: true });
+  });
+
+  it('is a no-op (touched: false) on a draft the filter does not match, e.g. already SAVED/ABANDONED', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetDraft.updateMany.mockResolvedValue({ count: 0 });
+    const { service } = makeService(prisma);
+
+    const result = await service.touchDraftService(USER, 'draft-1');
+
+    expect(result.data).toEqual({ touched: false });
+  });
+
+  it('still checks ownership first — a draft the caller cannot access 404s before any updateMany call', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetDraft.findFirst.mockResolvedValue(null);
+    const { service } = makeService(prisma);
+
+    await expect(service.touchDraftService(USER, 'not-mine')).rejects.toThrow(
+      AppException,
+    );
+    expect(prisma.datasetDraft.updateMany).not.toHaveBeenCalled();
   });
 });

@@ -106,14 +106,160 @@ export interface CleanupEligibilityConfig {
   /** Hours after creation before a SAVED draft's leftover BRONZE/SILVER/GOLD
    * siblings (everything except the adopted FINAL) are reclaim-eligible. */
   intermediateRetentionHours: number;
+  /**
+   * DS-LAKE-014-T02: hours of inactivity (measured from `draft.updatedAt`)
+   * before an ACTIVE draft's own artifacts become reclaim-eligible.
+   *
+   * Reaching the ACTIVE branch below always means the draft owns at least
+   * one LIVE artifact — the one currently being iterated — so this is
+   * unconditionally the artifact-BEARING tier (a real PI fetch cost minutes;
+   * an engineer may return to it). The artifact-LESS tier
+   * (`CLEANUP_ACTIVE_EMPTY_MINUTES`) is a separate, draft-level status
+   * transition to ABANDONED, handled by the sweep caller
+   * (`ArtifactCleanupAdminService`), never by this predicate — a draft with
+   * zero live artifacts produces zero candidate rows here and can never
+   * reach this function at all.
+   */
+  activeIdleHours: number;
 }
 
 function hoursSince(from: Date, now: Date): number {
   return (now.getTime() - from.getTime()) / (1000 * 60 * 60);
 }
 
+/** DS-LAKE-014-T05: why a non-eligible artifact was skipped, so a sweep that
+ * reclaims nothing is distinguishable from a sweep that found nothing.
+ * `active_job` is NOT one of these — it is a live-reference check the caller
+ * (`ArtifactCleanupAdminService`) makes on top of this predicate's eligible
+ * set, since an active `PreprocessingJob` reference has nothing to do with
+ * age or lineage. FINAL artifacts are filtered before this loop and are not
+ * attributed to any reason — they were never candidates to begin with. */
+export type CleanupSkipReason =
+  | 'lineage_pinned'
+  | 'shared_final_object'
+  | 'no_draft'
+  | 'inside_window';
+
+export interface CleanupEligibilityReport {
+  eligible: string[];
+  skipped: Record<CleanupSkipReason, number>;
+}
+
 /**
- * Returns the ids of artifacts eligible for reclaim right now.
+ * DS-LAKE-014-T05: the same decision as `selectCleanupEligibleArtifacts`
+ * below, but additionally attributing every non-eligible artifact to exactly
+ * one `CleanupSkipReason`. `selectCleanupEligibleArtifacts` is a thin
+ * delegate to this function that keeps its ORIGINAL signature and return
+ * type — this function is purely additive so DS-LAKE-009B-T08's existing
+ * unit tests keep passing unmodified.
+ *
+ * @param artifacts             non-FINAL candidates with `objectReclaimedAt`
+ *                              already null (the caller's query does this;
+ *                              not re-checked here — there is no field to
+ *                              re-check against on this narrowed shape).
+ * @param protectedArtifactIds  every artifact id reachable through the
+ *                              parentArtifactId chain of any non-ARCHIVED
+ *                              DatasetVersion's FINAL artifact.
+ * @param objectKeySharedWithFinalIds  the ONE artifact per live (non-ARCHIVED)
+ *                              DatasetVersion that was directly promoted to
+ *                              its FINAL — i.e. `version.artifact.parentArtifactId`.
+ *                              Reclaiming it deletes the FINAL's own bytes
+ *                              (see the module doc comment). Hard-pinned
+ *                              regardless of type, unlike `protectedArtifactIds`
+ *                              which only hard-pins BRONZE.
+ * @param drafts                every draft referenced by `artifacts`,
+ *                              keyed by id.
+ */
+export function reportCleanupEligibility(
+  artifacts: readonly CleanupCandidateArtifact[],
+  protectedArtifactIds: ReadonlySet<string>,
+  drafts: ReadonlyMap<string, CleanupDraftInfo>,
+  config: CleanupEligibilityConfig,
+  now: Date = new Date(),
+  objectKeySharedWithFinalIds: ReadonlySet<string> = new Set(),
+): CleanupEligibilityReport {
+  const eligible: string[] = [];
+  const skipped: Record<CleanupSkipReason, number> = {
+    lineage_pinned: 0,
+    shared_final_object: 0,
+    no_draft: 0,
+    inside_window: 0,
+  };
+
+  for (const artifact of artifacts) {
+    if (artifact.type === 'FINAL') continue;
+
+    // Hard pin — BRONZE reachable from a live (non-ARCHIVED) version can
+    // never be reclaimed by age, per decisions.reproducibility_anchor.
+    if (artifact.type === 'BRONZE' && protectedArtifactIds.has(artifact.id)) {
+      skipped.lineage_pinned += 1;
+      continue;
+    }
+
+    // Hard pin — this exact artifact's bytes ARE a live FINAL's bytes
+    // (shared objectKey, never copied). Type-agnostic on purpose: this can
+    // be a SILVER (features step skipped) or a GOLD (the common case), and
+    // either would otherwise fall through to the age-releasable branch
+    // below. See the module doc comment for the full incident.
+    if (objectKeySharedWithFinalIds.has(artifact.id)) {
+      skipped.shared_final_object += 1;
+      continue;
+    }
+
+    if (!artifact.draftId) {
+      skipped.no_draft += 1; // no window to measure — fail safe
+      continue;
+    }
+    const draft = drafts.get(artifact.draftId);
+    if (!draft) {
+      skipped.no_draft += 1; // fail safe: no draft row to read a window from
+      continue;
+    }
+
+    if (draft.status === 'ACTIVE') {
+      // DS-LAKE-014: deliberate reversal of DS-LAKE-009B's unconditional
+      // `continue` that used to sit here (recorded verbatim in this
+      // feature's T01 result). Reaching this branch means the draft owns at
+      // least one LIVE artifact — see `activeIdleHours`'s doc comment above
+      // for why that makes this unconditionally the expensive tier.
+      if (hoursSince(draft.updatedAt, now) >= config.activeIdleHours) {
+        eligible.push(artifact.id);
+      } else {
+        skipped.inside_window += 1;
+      }
+      continue;
+    }
+
+    if (draft.status === 'ABANDONED') {
+      if (hoursSince(draft.updatedAt, now) >= config.draftRecoveryHours) {
+        eligible.push(artifact.id);
+      } else {
+        skipped.inside_window += 1;
+      }
+      continue;
+    }
+
+    // draft.status === 'SAVED': a leftover sibling of the adopted FINAL.
+    // SILVER/GOLD release by age alone, even if still lineage-reachable —
+    // BRONZE reaches here only when NOT protected (the pin above already
+    // filtered the protected case out). Measured from Save time
+    // (draft.updatedAt), not artifact.createdAt — see CleanupDraftInfo's
+    // doc comment for why the wizard's own write time is the wrong clock.
+    if (hoursSince(draft.updatedAt, now) >= config.intermediateRetentionHours) {
+      eligible.push(artifact.id);
+    } else {
+      skipped.inside_window += 1;
+    }
+  }
+
+  return { eligible, skipped };
+}
+
+/**
+ * Returns the ids of artifacts eligible for reclaim right now. Thin delegate
+ * to `reportCleanupEligibility` — kept as a separate export with its
+ * original signature so existing callers and tests are unaffected by
+ * DS-LAKE-014-T05's per-reason reporting.
  *
  * @param artifacts             non-FINAL candidates with `objectReclaimedAt`
  *                              already null (the caller's query does this;
@@ -140,49 +286,12 @@ export function selectCleanupEligibleArtifacts(
   now: Date = new Date(),
   objectKeySharedWithFinalIds: ReadonlySet<string> = new Set(),
 ): string[] {
-  const eligible: string[] = [];
-
-  for (const artifact of artifacts) {
-    if (artifact.type === 'FINAL') continue;
-
-    // Hard pin — BRONZE reachable from a live (non-ARCHIVED) version can
-    // never be reclaimed by age, per decisions.reproducibility_anchor.
-    if (artifact.type === 'BRONZE' && protectedArtifactIds.has(artifact.id)) {
-      continue;
-    }
-
-    // Hard pin — this exact artifact's bytes ARE a live FINAL's bytes
-    // (shared objectKey, never copied). Type-agnostic on purpose: this can
-    // be a SILVER (features step skipped) or a GOLD (the common case), and
-    // either would otherwise fall through to the age-releasable branch
-    // below. See the module doc comment for the full incident.
-    if (objectKeySharedWithFinalIds.has(artifact.id)) {
-      continue;
-    }
-
-    if (!artifact.draftId) continue; // no window to measure — fail safe
-    const draft = drafts.get(artifact.draftId);
-    if (!draft) continue; // fail safe: no draft row to read a window from
-
-    if (draft.status === 'ACTIVE') continue; // wizard still in progress
-
-    if (draft.status === 'ABANDONED') {
-      if (hoursSince(draft.updatedAt, now) >= config.draftRecoveryHours) {
-        eligible.push(artifact.id);
-      }
-      continue;
-    }
-
-    // draft.status === 'SAVED': a leftover sibling of the adopted FINAL.
-    // SILVER/GOLD release by age alone, even if still lineage-reachable —
-    // BRONZE reaches here only when NOT protected (the pin above already
-    // filtered the protected case out). Measured from Save time
-    // (draft.updatedAt), not artifact.createdAt — see CleanupDraftInfo's
-    // doc comment for why the wizard's own write time is the wrong clock.
-    if (hoursSince(draft.updatedAt, now) >= config.intermediateRetentionHours) {
-      eligible.push(artifact.id);
-    }
-  }
-
-  return eligible;
+  return reportCleanupEligibility(
+    artifacts,
+    protectedArtifactIds,
+    drafts,
+    config,
+    now,
+    objectKeySharedWithFinalIds,
+  ).eligible;
 }

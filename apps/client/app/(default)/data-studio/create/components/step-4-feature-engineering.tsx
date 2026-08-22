@@ -123,7 +123,6 @@ export function Step4FeatureEngineering({ nav }: Props) {
 
   const selectedCount =
     selectedColumns === null ? allColumns.length : selectedColumns.length
-  const locked = nav.isEditLocked
 
   return (
     <div className="space-y-4">
@@ -149,12 +148,12 @@ export function Step4FeatureEngineering({ nav }: Props) {
         </Badge>
       </div>
 
-      {locked && (
+      {/* {locked && (
         <EditLockBanner>
           Features and column selection are locked while editing preprocessing —
           they define the schema downstream models depend on.
         </EditLockBanner>
-      )}
+      )} */}
 
       {goldWarmError && (
         <p className="text-xs text-muted-foreground">
@@ -167,7 +166,7 @@ export function Step4FeatureEngineering({ nav }: Props) {
         defaultValue="extraction"
         className={cn(
           'flex flex-col space-y-4',
-          locked && 'pointer-events-none opacity-60',
+          // locked && 'pointer-events-none opacity-60',
         )}
       >
         <TabsList className="flex h-11 items-center justify-start rounded-lg bg-muted/50 p-1 w-full max-w-2xl">

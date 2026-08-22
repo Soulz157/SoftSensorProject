@@ -94,3 +94,37 @@ export async function fetchArtifactMetadata(
   );
   return MetadataSchema.parse(res);
 }
+
+/** Subset of python's `ArtifactStatsResponse` — only what `claim()` needs to
+ * presign the freshly-written holdout artifact afterward. */
+const ReplayHoldoutForRunSchema = z.object({
+  object_key: z.string().min(1),
+  row_count: z.number().int().nonnegative(),
+  checksum: z.string().min(1),
+});
+
+export type ReplayHoldoutForRunResult = z.infer<
+  typeof ReplayHoldoutForRunSchema
+>;
+
+/**
+ * DS-LAKE-018-T05. Replays a training run's own GOLD recipe
+ * (`feature_spec_key`) over its raw validation holdout, writing the
+ * model-ready result to `target_key`. `claim()` is the only caller —
+ * `presignArtifact({source_key: target_key})` afterward is what actually
+ * hands the container a download URL for it.
+ */
+export async function replayHoldoutForRun(input: {
+  feature_spec_key: string;
+  source_key: string;
+  target_key: string;
+  holdout_from: string;
+  overwrite?: boolean;
+}): Promise<ReplayHoldoutForRunResult> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/replay-holdout-for-run',
+    input,
+    PYTHON_TIMEOUT.preprocess,
+  );
+  return ReplayHoldoutForRunSchema.parse(res);
+}

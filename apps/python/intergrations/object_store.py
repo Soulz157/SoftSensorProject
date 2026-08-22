@@ -79,6 +79,12 @@ VALIDATION_REPORT_FILENAME = "validation_report.json"
 #: and `/tags` do, rather than needing a separately-stored location.
 COLUMN_STATS_FILENAME = "column_stats.json"
 DATA_FILENAME = "data.parquet"
+#: DS-LAKE-018-T03. The raw validation-holdout sidecar, written beside a
+#: BRONZE's own data key via `sidecar_key()` — works for both the legacy
+#: `data.parquet` and DS-LAKE-016's stage-suffixed `data_bronze.parquet`,
+#: same as every other sidecar. Mirrored in artifact-keys.ts as
+#: `VALIDATE_DATA_FILENAME` — change both.
+VALIDATE_DATA_FILENAME = "validate_data.parquet"
 
 #: Root prefix for imported soft-sensor feature presets. A prefix inside the
 #: existing bucket rather than a bucket of its own: `ensure_bucket()` has no
@@ -759,13 +765,46 @@ class ObjectStore:
 # places, so a layout change had four independent chances to be missed. Change
 # both files together.
 
+#: DS-LAKE-016: stage-suffixed data filenames, for diagnosability — telling a
+#: BRONZE from a GOLD while browsing a MinIO console today requires a
+#: Postgres round trip. FINAL has NO entry here on purpose: it never gets a
+#: file of its own — `promoteDraftArtifactToFinalService` copies `objectKey`
+#: from its source verbatim (DS-LAKE-012-V03 proved live that GOLD and FINAL
+#: share one checksum, "promotion by pointer, not byte-copy"), and
+#: `global_definition_of_done` forbids copying bytes at promotion outright.
+DATA_FILENAME_BY_TYPE: dict[str, str] = {
+    "BRONZE": "data_bronze.parquet",
+    "SILVER": "data_silver.parquet",
+    "GOLD": "data_gold.parquet",
+}
+#: Every accepted data filename, legacy `data.parquet` included — the FULL
+#: set `split_data_key` recognises. A committed object is immutable
+#: (`put_frame` refuses an overwrite) and pre-existing objects can never be
+#: renamed, so this only ever WIDENS: old spellings must keep resolving
+#: forever, not be replaced.
+ALL_DATA_FILENAMES: tuple[str, ...] = (
+    DATA_FILENAME,
+    *DATA_FILENAME_BY_TYPE.values(),
+)
+
 
 def artifact_prefix(dataset_id: str, artifact_id: str) -> str:
     return f"{dataset_id}/artifacts/{artifact_id}/"
 
 
-def artifact_key(dataset_id: str, artifact_id: str) -> str:
-    return f"{artifact_prefix(dataset_id, artifact_id)}{DATA_FILENAME}"
+def artifact_key(
+    dataset_id: str, artifact_id: str, artifact_type: str | None = None
+) -> str:
+    """`artifact_type` is OPTIONAL and trailing (DS-LAKE-016-T01) so every
+    existing caller keeps compiling and keeps producing the legacy
+    `data.parquet` name until explicitly updated to pass one. Unknown/FINAL
+    types fall back to the legacy name too, rather than raising — this
+    function has no live Python caller today (NestJS's mirrored `artifactKey`
+    is what actually decides `target_key` for a write), so failing loud here
+    would only make CONTRACT PARITY brittle, not catch a real bug.
+    """
+    filename = DATA_FILENAME_BY_TYPE.get(artifact_type or "", DATA_FILENAME)
+    return f"{artifact_prefix(dataset_id, artifact_id)}{filename}"
 
 
 def manifest_key(dataset_id: str, artifact_id: str) -> str:
@@ -780,6 +819,27 @@ def validation_key(dataset_id: str, artifact_id: str) -> str:
     return f"{artifact_prefix(dataset_id, artifact_id)}{VALIDATION_REPORT_FILENAME}"
 
 
+def split_data_key(key: str) -> tuple[str, str] | None:
+    """DS-LAKE-016-T01: the ONE function that knows the full set of accepted
+    data filenames (`ALL_DATA_FILENAMES`), so `sidecar_key`,
+    `is_committed_artifact_key` and `reclaim_artifact` cannot drift on which
+    names count — the exact drift this key contract exists to prevent, now
+    with three more names to get wrong.
+
+    Returns `(prefix, data_filename)` — `prefix` is everything up to and
+    including the trailing `/` — if `key` ends in any accepted data
+    filename, else `None`. Checked longest-suffix-safe by construction: every
+    accepted filename is distinct and none is a suffix of another
+    (`data.parquet` vs `data_bronze.parquet` etc. differ before the `.`), so
+    at most one entry can ever match.
+    """
+    for filename in ALL_DATA_FILENAMES:
+        suffix = f"/{filename}"
+        if key.endswith(suffix):
+            return key[: -len(filename)], filename
+    return None
+
+
 def sidecar_key(data_key: str, filename: str) -> str:
     """Sidecar beside an arbitrary data key.
 
@@ -788,8 +848,10 @@ def sidecar_key(data_key: str, filename: str) -> str:
     when the key is not in the artifact layout, so a legacy or tmp key still
     gets a manifest instead of silently getting none.
     """
-    if data_key.endswith(f"/{DATA_FILENAME}"):
-        return data_key[: -len(DATA_FILENAME)] + filename
+    split = split_data_key(data_key)
+    if split is not None:
+        prefix, _ = split
+        return f"{prefix}{filename}"
     return f"{data_key}.{filename}"
 
 
@@ -900,8 +962,13 @@ def is_committed_artifact_key(key: str) -> bool:
     guard cannot drift from it. Deliberately NOT a check that the object
     exists — that is a separate question, and conflating the two would make
     "malformed key" and "missing artifact" indistinguishable to the caller.
+
+    DS-LAKE-016: routed through `split_data_key` so a stage-suffixed key
+    (e.g. `.../data_gold.parquet`) is recognised too — before this it was
+    legacy-`data.parquet`-only, which would have refused presigning or
+    reclaiming a real, freshly-written stage-suffixed artifact outright.
     """
-    return "/artifacts/" in key and key.endswith(f"/{DATA_FILENAME}")
+    return "/artifacts/" in key and split_data_key(key) is not None
 
 
 def is_model_run_key(key: str) -> bool:

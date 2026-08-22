@@ -31,7 +31,7 @@ import { datasetVersionService } from '@/services/dataset-version'
 import { datasetDraftService } from '@/services/dataset-draft'
 import { materializeBlocker } from '@/hooks/dataset/use-dataset-version-rows'
 import { useDatasetValidation } from '@/hooks/dataset/use-dataset-validation'
-import { useDatasetArtifactMetadata } from '@/hooks/dataset/use-dataset-artifact-metadata'
+import { useDatasetArtifactMetadata } from '@/hooks/dataset/artifact/use-dataset-artifact-metadata'
 import { toPiTime } from '@/lib/dataset-fetch'
 import {
   dwNameAtom,
@@ -43,6 +43,7 @@ import {
   dwCleaningPipelinesAtom,
   dwTimeRangeAtom,
   dwCustomDateRangeAtom,
+  dwHoldoutRangeAtom,
   dwCustomIntervalAtom,
   dwSourceFetchConfigsAtom,
   dwSelectedTagsAtom,
@@ -80,6 +81,7 @@ export function Step5ReviewSave({ nav }: Props) {
   const cleaningPipelines = useAtomValue(dwCleaningPipelinesAtom)
   const timeRange = useAtomValue(dwTimeRangeAtom)
   const customDateRange = useAtomValue(dwCustomDateRangeAtom)
+  const holdoutDateRange = useAtomValue(dwHoldoutRangeAtom)
   const customInterval = useAtomValue(dwCustomIntervalAtom)
   const sourceFetchConfigs = useAtomValue(dwSourceFetchConfigsAtom)
   const baseTags = useAtomValue(dwSelectedTagsAtom)
@@ -289,6 +291,7 @@ export function Step5ReviewSave({ nav }: Props) {
     const pipelineConfig: PipelineConfig = {
       timeRange,
       customDateRange,
+      holdoutDateRange,
       customInterval,
       sourceFetchConfigs,
       features,
@@ -553,6 +556,12 @@ export function Step5ReviewSave({ nav }: Props) {
         </div>
       </div>
 
+      {/* DS-LAKE-019-T04. Directly above Save, the point of decision — the
+          card above sits two blocks up, behind the scrollable sources list,
+          which is too easy to miss for a signal that no longer blocks
+          anything. */}
+      <ValidationAdvisoryBanner validation={validation} />
+
       <Button
         className="h-10 w-full gap-2"
         disabled={
@@ -648,12 +657,16 @@ function ValidationReportCard({
         <div className="space-y-0.5 text-xs">
           <p className="font-medium text-foreground">
             {passed
-              ? `Validation passed — quality score ${report.quality_score}/100`
+              ? report.advisory_failures.length > 0
+                ? `Validation passed with ${report.advisory_failures.length} advisory ${report.advisory_failures.length === 1 ? 'check' : 'checks'} — quality score ${report.quality_score}/100`
+                : `Validation passed — quality score ${report.quality_score}/100`
               : `Validation failed — quality score ${report.quality_score}/100`}
           </p>
           <p className="text-muted-foreground">
             {passed
-              ? 'All checks passed or were not applicable.'
+              ? report.advisory_failures.length > 0
+                ? 'See the advisory below.'
+                : 'All checks passed or were not applicable.'
               : `${report.failed_checks.length} check(s) failed: ${report.failed_checks
                   .map(name => CHECK_LABELS[name] ?? name)
                   .join(', ')}.`}
@@ -680,6 +693,71 @@ function ValidationReportCard({
             <span className="">{check.detail}</span>
           </div>
         ))}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * DS-LAKE-019-T04. The advisory verdict, harder to miss than the per-check
+ * row above it because it no longer stops anyone: placed directly above
+ * Save (the point of decision), named by check, with the measured value
+ * against its threshold and the offending tags — not just `detail`, which
+ * `ValidationReportCard` already shows and which is easy to skim past.
+ *
+ * Same neutral markup idiom as the pre-existing `targetMissing` banner
+ * (above, in the parent component) — red/amber are reserved for
+ * workspace/plant status (DESIGN.md §6); this is a data-workflow signal,
+ * not one. Renders nothing when there is nothing to warn about, or when
+ * the report is not a PASS — a FAIL is already loud via the disabled Save
+ * button and `validationBlockReason`, and showing both would duplicate the
+ * same information twice at the same decision point.
+ */
+function ValidationAdvisoryBanner({
+  validation,
+}: {
+  validation: ReturnType<typeof useDatasetValidation>
+}) {
+  const { status, report } = validation
+  if (status !== 'PASS' || !report || report.advisory_failures.length === 0) {
+    return null
+  }
+  const advisories = report.checks.filter(check =>
+    report.advisory_failures.includes(check.name),
+  )
+
+  return (
+    <div className="flex items-start gap-2.5 rounded-xl border border-border bg-muted/40 p-3">
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+      <div className="space-y-1.5 text-xs">
+        <p className="font-medium text-foreground">
+          Saved with {advisories.length} data-quality{' '}
+          {advisories.length === 1 ? 'advisory' : 'advisories'}
+        </p>
+        {advisories.map(check => (
+          <div key={check.name} className="space-y-0.5">
+            <p className="text-foreground">
+              <span className="font-medium">
+                {CHECK_LABELS[check.name] ?? check.name}
+              </span>
+              {check.measured != null && check.threshold != null && (
+                <span className="text-muted-foreground">
+                  {' '}
+                  — measured {check.measured}, threshold {check.threshold}
+                </span>
+              )}
+            </p>
+            {check.offenders.length > 0 && (
+              <p className="font-mono text-muted-foreground">
+                {check.offenders.join(', ')}
+              </p>
+            )}
+          </div>
+        ))}
+        <p className="text-muted-foreground">
+          These do not block saving. Review them before training a model on this
+          data.
+        </p>
       </div>
     </div>
   )

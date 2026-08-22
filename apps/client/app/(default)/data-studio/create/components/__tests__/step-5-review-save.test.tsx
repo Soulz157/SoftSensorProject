@@ -125,6 +125,7 @@ beforeEach(() => {
       quality_score: 100,
       checks: [],
       failed_checks: [],
+      advisory_failures: [],
       validation_report_key: 'k',
     },
   })
@@ -361,6 +362,7 @@ describe('Step5ReviewSave — validation gate (DS-LAKE-008-T02)', () => {
         quality_score: 100,
         checks: [],
         failed_checks: [],
+        advisory_failures: [],
         validation_report_key: 'k',
       },
     })
@@ -373,6 +375,7 @@ describe('Step5ReviewSave — validation gate (DS-LAKE-008-T02)', () => {
         quality_score: 80,
         checks: [],
         failed_checks: ['missing_values'],
+        advisory_failures: [],
         validation_report_key: 'k',
       },
     })
@@ -431,6 +434,79 @@ describe('Step5ReviewSave — validation gate (DS-LAKE-008-T02)', () => {
 
     expect(screen.getByRole('button', { name: /save dataset/i })).toBeEnabled()
     expect(validateArtifact).not.toHaveBeenCalled()
+  })
+})
+
+describe('Step5ReviewSave — advisory gate (DS-LAKE-019-T04)', () => {
+  const withGateArtifact = () => {
+    store.set(dwDraftIdAtom, 'draft-1')
+    store.set(dwDraftArtifactIdAtom, 'silver-1')
+  }
+
+  it('shows a prominent advisory banner naming the check and its tags, and leaves Save enabled', async () => {
+    validateArtifact.mockResolvedValue({
+      data: {
+        status: 'PASS',
+        quality_score: 90,
+        checks: [
+          {
+            name: 'statistical',
+            passed: false,
+            skipped: false,
+            detail: '2 tag(s) over the outlier-fraction threshold.',
+            measured: 18.1,
+            threshold: 10,
+            offenders: ['TI-101', 'TI-207'],
+            severity: 'advisory',
+          },
+        ],
+        failed_checks: ['statistical'],
+        advisory_failures: ['statistical'],
+        validation_report_key: 'k',
+      },
+    })
+    withGateArtifact()
+
+    render(
+      <Provider store={store}>
+        <Step5ReviewSave nav={nav} />
+      </Provider>,
+    )
+
+    // Save is NOT blocked by an advisory-only failure.
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: /save dataset/i }),
+      ).toBeEnabled(),
+    )
+
+    // The advisory is named, with its measured value, threshold and
+    // offending tags — not just a generic "1 check failed" line. The label
+    // legitimately appears twice (the existing per-check row AND the new
+    // banner), so this asserts at least one is visible rather than exactly
+    // one; the measured/threshold/tags line is unique to the banner.
+    expect(screen.getAllByText(/statistical outliers/i).length).toBeGreaterThan(
+      0,
+    )
+    expect(screen.getByText(/measured 18\.1, threshold 10/i)).toBeVisible()
+    expect(screen.getByText(/TI-101, TI-207/)).toBeVisible()
+  })
+
+  it('renders no advisory banner for a clean PASS with no advisory failures', async () => {
+    withGateArtifact() // beforeEach's default mock resolves PASS, advisory_failures: []
+
+    render(
+      <Provider store={store}>
+        <Step5ReviewSave nav={nav} />
+      </Provider>,
+    )
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: /save dataset/i }),
+      ).toBeEnabled(),
+    )
+    expect(screen.queryByText(/data-quality advisor/i)).not.toBeInTheDocument()
   })
 })
 
@@ -507,6 +583,7 @@ describe('Step5ReviewSave — recipe-change revalidation (DS-LAKE-008-T03)', () 
         quality_score: 100,
         checks: [],
         failed_checks: [],
+        advisory_failures: [],
         validation_report_key: 'k',
       },
     })

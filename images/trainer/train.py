@@ -476,6 +476,51 @@ def main() -> int:
     }
     log(f"r2={metrics['r2']:.4f} mae={metrics['mae']:.4f} rmse={metrics['rmse']:.4f}")
 
+    # ── 9b. score the raw validation holdout, BESIDE the test metrics ──────
+    # DS-LAKE-018-T05. `holdoutDataUrl` is present only when the dataset has
+    # one AND claim()'s replay succeeded — absent for the overwhelming
+    # majority of runs (no holdout) exactly like today. A holdout problem
+    # must never fail an otherwise-successful run, so this whole step is
+    # best-effort: any exception here is logged and swallowed, same
+    # soft-fail contract claim() itself already applies to the replay.
+    holdout_metrics: dict[str, Any] | None = None
+    if spec.get("holdoutDataUrl"):
+        try:
+            holdout_path = download(
+                spec["holdoutDataUrl"], SCRATCH / "holdout.parquet")
+            holdout_checksum = sha256_of(holdout_path)
+            if holdout_checksum != spec["holdoutArtifactChecksum"]:
+                raise RuntimeError(
+                    f"Holdout checksum mismatch: expected "
+                    f"{spec['holdoutArtifactChecksum']}, got {holdout_checksum}."
+                )
+            holdout_df = pd.read_parquet(holdout_path)
+            missing_cols = [c for c in feature_cols if c not in holdout_df.columns]
+            if missing_cols:
+                raise RuntimeError(
+                    f"Replayed holdout is missing feature column(s) "
+                    f"{missing_cols} the model was trained on."
+                )
+            if target_y not in holdout_df.columns:
+                raise RuntimeError(
+                    f"Replayed holdout has no '{target_y}' column to score against.")
+
+            holdout_predicted = model.predict(holdout_df[feature_cols])
+            holdout_metrics = {
+                "r2": float(r2_score(holdout_df[target_y], holdout_predicted)),
+                "mae": float(mean_absolute_error(holdout_df[target_y], holdout_predicted)),
+                "rmse": float(np.sqrt(mean_squared_error(holdout_df[target_y], holdout_predicted))),
+                "row_count": int(len(holdout_df)),
+            }
+            log(
+                f"holdout: r2={holdout_metrics['r2']:.4f} "
+                f"mae={holdout_metrics['mae']:.4f} rmse={holdout_metrics['rmse']:.4f} "
+                f"({holdout_metrics['row_count']} rows) — test r2 was {metrics['r2']:.4f}"
+            )
+        except Exception as exc:  # noqa: BLE001 - best-effort, see docstring above
+            log(f"Holdout scoring skipped: {exc}", "warn")
+            holdout_metrics = None
+
     import joblib
 
     model_path = SCRATCH / "model.joblib"
@@ -506,6 +551,10 @@ def main() -> int:
         "seed": spec["seed"],
         "split": split_spec,
         "metrics": metrics,
+        # DS-LAKE-018-T05. None whenever there was no holdout, or scoring it
+        # failed — see the best-effort block above. Deliberately a SEPARATE
+        # key, never merged into "metrics".
+        "holdout_metrics": holdout_metrics,
         # So a deployed binary can be proven to be this run's output.
         "model_sha256": sha256_of(model_path),
         "duration_ms": int((time.time() - started) * 1000),
@@ -549,6 +598,7 @@ def main() -> int:
         json={
             "status": "SUCCEEDED",
             "metrics": metrics,
+            **({"holdoutMetrics": holdout_metrics} if holdout_metrics else {}),
             "splitSpec": split_spec,
             "uploaded": uploaded,
         },

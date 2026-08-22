@@ -8,8 +8,11 @@ import {
 } from '@/lib/preprocessing'
 import {
   DraftArtifactMetadata,
+  DraftBoxplotResult,
   DraftCorrelationResult,
+  DraftHistogramResult,
   DraftRowsPage,
+  DraftScatterResult,
 } from './dataset-draft'
 
 /**
@@ -139,6 +142,11 @@ export interface CreateRawVersionInput {
   /** SQL sources only. */
   timestampColumn?: string
   table?: string
+  /**
+   * DS-LAKE-018-T03. Same `toPiTime`-formatted convention as
+   * `startTime`/`endTime`. Absent means no holdout selected.
+   */
+  holdout?: { from: string; to: string }
 }
 
 export interface CleaningOperationInput {
@@ -212,6 +220,63 @@ export const datasetArtifactService = {
       body: JSON.stringify({ operations: [], ...body }),
       signal,
     }),
+
+  histogram: (
+    datasetId: string,
+    artifactId: string,
+    body: { tags: string[]; kdeSamples?: number; binCount?: number },
+    signal?: AbortSignal,
+  ): Promise<ApiResponse<DraftHistogramResult>> =>
+    fetchClient(`${artifact(datasetId, artifactId)}/histogram`, {
+      method: 'POST',
+      body: JSON.stringify({ operations: [], ...body }),
+      signal,
+    }),
+
+  boxplot: (
+    datasetId: string,
+    artifactId: string,
+    body: { tags: string[]; outlierCap?: number },
+    signal?: AbortSignal,
+  ): Promise<ApiResponse<DraftBoxplotResult>> =>
+    fetchClient(`${artifact(datasetId, artifactId)}/boxplot`, {
+      method: 'POST',
+      body: JSON.stringify({ operations: [], ...body }),
+      signal,
+    }),
+
+  scatter: (
+    datasetId: string,
+    artifactId: string,
+    body: { xTag: string; yTag: string; maxPoints?: number },
+    signal?: AbortSignal,
+  ): Promise<ApiResponse<DraftScatterResult>> =>
+    fetchClient(`${artifact(datasetId, artifactId)}/scatter`, {
+      method: 'POST',
+      body: JSON.stringify({ operations: [], ...body }),
+      signal,
+    }),
+
+  /** MODEL-FLOW-010-T06. `data.holdout` is null — not a 404 — when this
+   * dataset has no validation holdout, or the artifact predates
+   * `validationMissingPct`. */
+  holdout: (
+    datasetId: string,
+    artifactId: string,
+  ): Promise<ApiResponse<{ holdout: ArtifactHoldout | null }>> =>
+    fetchClient(`${artifact(datasetId, artifactId)}/holdout`, {
+      method: 'GET',
+    }),
+}
+
+/** MODEL-FLOW-010-T06 response shape for `datasetArtifactService.holdout`. */
+export interface ArtifactHoldout {
+  holdoutFrom: string
+  holdoutTo: string | null
+  rowCount: number
+  /** Null for a holdout captured before this field existed — the caller
+   * must say so, never silently omit the figure or imply a clean 0%. */
+  missingPct: number | null
 }
 
 export const datasetVersionService = {

@@ -409,53 +409,80 @@ def _welford_population_std(values: list[float]) -> tuple[float, float]:
     return mean, std
 
 
-def _scale_column(values: np.ndarray, method: str) -> np.ndarray:
+def _scale_column(
+    values: np.ndarray,
+    method: str,
+    params: Mapping[str, float] | None = None,
+) -> tuple[np.ndarray, dict[str, float]]:
     """Transform one tag's dense values array (`scaleColumn`/`toModelReady` body).
 
     Every branch here already ran once for its own float; a caller that
     determines the whole column should be left untouched (the `robust`,
     zero-finite-values case) must check for that itself and skip calling
     this at all — this function unconditionally returns a transformed array.
+
+    DS-LAKE-018-T02: also returns the params the transform actually used, so
+    a caller (`to_model_ready`) can persist what was FIT (`feature_spec.json`
+    `scalingParams`) or, when `params` is given here, apply what was
+    RECORDED instead of re-fitting — the replay path DS-LAKE-018-T04 needs
+    for a holdout, which must be scaled with the train rows' own statistics,
+    never its own (finding: "scaling the holdout against its own statistics
+    is a DIFFERENT transform... and it fails silently").
     """
     finite_mask = np.isfinite(values)
 
     if method == "none":
-        return np.array([_round_to(v, 3) for v in values])
+        return np.array([_round_to(v, 3) for v in values]), {}
 
     if method == "minmax":
-        finite = values[finite_mask]
-        if finite.size == 0:
-            lo, span = 0.0, 0.0
+        if params is not None:
+            lo, hi = params["min"], params["max"]
         else:
-            lo = float(finite.min())
-            span = float(finite.max()) - lo
-        return np.array(
+            finite = values[finite_mask]
+            if finite.size == 0:
+                lo, hi = 0.0, 0.0
+            else:
+                lo = float(finite.min())
+                hi = float(finite.max())
+        span = hi - lo
+        scaled = np.array(
             [0.0 if span == 0 else _round_to(
                 (v - lo) / span, 3) for v in values]
         )
+        return scaled, {"min": lo, "max": hi}
 
     if method == "standard":
-        # Row order matters — see _welford_population_std's own docstring.
-        finite_in_order = [float(v) for v in values if np.isfinite(v)]
-        mean, std = _welford_population_std(finite_in_order)
-        return np.array(
+        if params is not None:
+            mean, std = params["mean"], params["std"]
+        else:
+            # Row order matters — see _welford_population_std's own docstring.
+            finite_in_order = [float(v) for v in values if np.isfinite(v)]
+            mean, std = _welford_population_std(finite_in_order)
+        scaled = np.array(
             [0.0 if std == 0 else _round_to(
                 (v - mean) / std, 3) for v in values]
         )
+        return scaled, {"mean": mean, "std": std}
 
     if method == "robust":
-        finite_sorted = sorted(float(v) for v in values if np.isfinite(v))
-        k = len(finite_sorted)
-        if k == 0:
-            return values.copy()  # caller: skip entirely, do not force Good
-        med = _median_sorted(finite_sorted)
-        upper = _median_sorted(finite_sorted[math.ceil(k / 2):])
-        lower = _median_sorted(finite_sorted[: math.floor(k / 2)])
-        iqr = upper - lower
-        return np.array(
+        if params is not None:
+            med, iqr = params["median"], params["iqr"]
+        else:
+            finite_sorted = sorted(float(v) for v in values if np.isfinite(v))
+            k = len(finite_sorted)
+            if k == 0:
+                # Fitting on zero finite values: nothing to compute — caller
+                # skips this tag entirely rather than force (0, Good).
+                return values.copy(), {}
+            med = _median_sorted(finite_sorted)
+            upper = _median_sorted(finite_sorted[math.ceil(k / 2):])
+            lower = _median_sorted(finite_sorted[: math.floor(k / 2)])
+            iqr = upper - lower
+        scaled = np.array(
             [0.0 if iqr == 0 else _round_to(
                 (v - med) / iqr, 3) for v in values]
         )
+        return scaled, {"median": med, "iqr": iqr}
 
     raise FeatureError(f"Unknown scaler {method!r}")
 
@@ -490,8 +517,11 @@ def force_keep_target(selected: list[str] | None, target_y: str | None) -> list[
 
 
 def to_model_ready(
-    df: pd.DataFrame, tags: list[str], scalers: Mapping[str, str]
-) -> pd.DataFrame:
+    df: pd.DataFrame,
+    tags: list[str],
+    scalers: Mapping[str, str],
+    fitted_params: Mapping[str, Mapping[str, float]] | None = None,
+) -> tuple[pd.DataFrame, dict[str, dict[str, float]]]:
     """Scale every tag column and force its status to Good (`toModelReady`).
 
     Every FINITE value is scaled regardless of its ORIGINAL status — a Bad
@@ -499,8 +529,17 @@ def to_model_ready(
     browser. `robust` is the one exception: a tag with zero finite values is
     left byte-identical (values AND status), matching the TS `if (k === 0)
     continue` that skips before the status-forcing loop even runs.
+
+    DS-LAKE-018-T02: returns `(frame, scaling_params)` — `scaling_params` is
+    what each tag's scaler actually FIT (or, when `fitted_params` supplies a
+    tag, what it was given instead of re-fitting — DS-LAKE-018-T04's holdout
+    replay). Only tags with real fit state are keys; "none"-scaled and
+    entirely-skipped (`robust`, zero finite values) tags are absent, same
+    "no comparison possible" convention `build_column_stats` already uses
+    elsewhere for a tag that has nothing to report.
     """
     out = df.copy()
+    scaling_params: dict[str, dict[str, float]] = {}
     for tag in tags:
         if tag not in out.columns:
             continue
@@ -510,12 +549,15 @@ def to_model_ready(
         if method == "robust" and not np.isfinite(values).any():
             continue  # column left exactly as-is, status untouched
 
-        scaled = _scale_column(values, method)
+        params = fitted_params.get(tag) if fitted_params else None
+        scaled, used_params = _scale_column(values, method, params)
         out[tag] = scaled
         out[status_column(tag)] = pd.array(
             np.full(len(out), STATUS_GOOD, dtype="int8"), dtype="int8"
         )
-    return out
+        if used_params:
+            scaling_params[tag] = used_params
+    return out, scaling_params
 
 
 # ── fixture replay (packages/parity-fixtures) ─────────────────────────────
@@ -530,7 +572,10 @@ def apply_fixture_case(
     if engine == "selectColumns":
         return select_columns(frame, config.get("kept"))
     if engine == "toModelReady":
-        return to_model_ready(frame, tag_columns(frame), config.get("scalers", {}))
+        # Fixture replay only checks the frame — the fitted params this
+        # returns are not part of any fixture's expected shape.
+        result, _ = to_model_ready(frame, tag_columns(frame), config.get("scalers", {}))
+        return result
 
     raise NotImplementedError(
         f"Engine {engine!r} is not implemented in feature_service — it "

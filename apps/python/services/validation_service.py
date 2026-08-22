@@ -61,6 +61,23 @@ DEFAULT_MAX_MISSING_PCT = 20.0
 DEFAULT_MAX_OUTLIER_FRACTION = 0.10
 
 
+# DS-LAKE-019-T01. A check's severity is a property of ITS NAME, not of the
+# individual result — a real field on the response (below), never a
+# client-side lookup table, so a client list cannot drift from the server's
+# own weighting the day a check is added.
+#
+# BLOCKING: an unusable artifact. schema/duplicate_timestamps break the
+# frame's own structural contract; feature_consistency-when-FAILED means
+# the recipe and the data have diverged (training against it predicts from
+# columns the model was never fitted on). ADVISORY (everything else):
+# missing_values/statistical/completeness mean the DATA is worth
+# questioning — a judgment the engineer should make, not have made for
+# them (DS-LAKE-019's own description).
+BLOCKING_CHECKS: frozenset[str] = frozenset(
+    {"schema", "duplicate_timestamps", "feature_consistency"}
+)
+
+
 @dataclass
 class CheckResult:
     """One named check's outcome.
@@ -80,6 +97,10 @@ class CheckResult:
     offenders: list[str] = field(default_factory=list)
     skipped: bool = False
 
+    @property
+    def severity(self) -> str:
+        return "blocking" if self.name in BLOCKING_CHECKS else "advisory"
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
@@ -89,6 +110,7 @@ class CheckResult:
             "measured": self.measured,
             "threshold": self.threshold,
             "offenders": self.offenders,
+            "severity": self.severity,
         }
 
 
@@ -320,9 +342,25 @@ def run_validation(
         check_completeness(df, expected_tags),
     ]
     failed = [c for c in checks if not c.passed]
+    # DS-LAKE-019-T01/T02. `status` is derived from BLOCKING failures only —
+    # the seam that leaves every existing gate (both server-side re-validate
+    # refusals, and the client's `validationBlocking`) working unedited, since
+    # all three read `status` and nothing else. `skipped` is excluded even
+    # for a name in BLOCKING_CHECKS: `check_duplicate_timestamps` can return
+    # `skipped=True, passed=False` together (no timestamp column) — but
+    # `check_schema` (also blocking) ALWAYS fails in that same case
+    # (`assert_frame_shape` raises on a missing timestamp column), so
+    # excluding a skip here opens no hole. `failed_checks` keeps its
+    # existing meaning — every failure, either class — so nothing reading
+    # it today changes meaning.
+    blocking_failed = [
+        c for c in failed if c.severity == "blocking" and not c.skipped
+    ]
+    advisory_failed = [c for c in failed if c not in blocking_failed]
     return {
-        "status": "PASS" if not failed else "FAIL",
+        "status": "PASS" if not blocking_failed else "FAIL",
         "quality_score": compute_quality_score(checks),
         "checks": [c.to_dict() for c in checks],
         "failed_checks": [c.name for c in failed],
+        "advisory_failures": [c.name for c in advisory_failed],
     }

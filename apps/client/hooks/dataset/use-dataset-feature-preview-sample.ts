@@ -3,68 +3,84 @@
 import { useEffect, useRef } from 'react'
 import { useAtom, useAtomValue } from 'jotai'
 import { datasetDraftService } from '@/services/dataset-draft'
+import { datasetArtifactService } from '@/services/dataset-version'
 import { brandBoundedSample } from '@/lib/preprocessing'
 import {
   dwDraftIdAtom,
   dwDraftArtifactIdAtom,
+  dwEditingDatasetAtom,
   dwFeaturePreviewSampleAtom,
+  dwFeaturePreviewSampleStateAtom,
 } from '@/store/dataset-studio'
 
-/**
- * Row cap for Step 4's local feature-engineering preview. Small on purpose —
- * unlike `useDatasetGoldWarm`'s server-side commit (which needs the real
- * artifact), this page is recomputed through `applyFeatures` on every recipe
- * edit in the browser, so it stays far under DS-LAKE-005B-A's 50,000-row
- * ceiling.
- */
 const FEATURE_PREVIEW_SAMPLE_ROWS = 1_000
 
 /**
- * DS-LAKE-006-AC5 / DS-LAKE-005B-B-T04: fetches ONE real bounded page (the
- * server's `/rows` endpoint, DS-LAKE-005B-A) of the draft's current source
- * artifact and brands it into `dwFeaturePreviewSampleAtom`.
+ * …(doc comment เดิม)…
  *
- * Runs once per draft/source-artifact — NOT once per recipe edit.
- * `dwFeaturedDatasetAtom` (store/dataset-studio.ts) is the thing that
- * recomputes `applyFeatures` on every recipe change, over this same fetched
- * page; re-fetching the page itself on every keystroke would be wasted
- * network traffic for data that has not changed.
+ * TWO LEGS. Create mode reads the draft's own source artifact, gated
+ * `where: { id, draftId }`. Edit mode has NO draft artifact until the user's
+ * first Apply — its rows live on the BRONZE adopted at Save
+ * (DS-LAKE-017-T01), gated `where: { id, datasetId }`, which the draft leg
+ * cannot see because that artifact's `draftId` belongs to the draft that
+ * originally created it.
  *
- * Call once near the top of `Step4FeatureEngineering` — mirrors
- * `useDatasetGoldWarm`'s call-site convention, but this hook takes no
- * arguments and returns nothing: it is a background sync, not a
- * caller-triggered action.
- *
- * NO-OP when the draft or its source artifact do not exist yet, same as
- * `useDatasetGoldWarm`. Failures are swallowed: this is a background
- * pre-warm with no dedicated failure UI, same reasoning as the gold-warm
- * hook's own doc comment — a stale/empty `dwFeaturePreviewSampleAtom` just
- * means Step 4's preview shows nothing yet, not a broken state.
+ * Without the second leg this hook no-op'd in edit mode and the sample
+ * stayed empty — and because every DataAnalysisCard tab checks `hasTags`
+ * before anything else, an empty sample pins all four to 'no-tags'
+ * regardless of which leg their own hooks were routed to. That is why
+ * routing the card's hooks alone was not enough.
  */
 export function useDatasetFeaturePreviewSample(): void {
   const draftId = useAtomValue(dwDraftIdAtom)
   const sourceArtifactId = useAtomValue(dwDraftArtifactIdAtom)
+  const editingDataset = useAtomValue(dwEditingDatasetAtom)
   const [, setSample] = useAtom(dwFeaturePreviewSampleAtom)
+  const [, setFetchState] = useAtom(dwFeaturePreviewSampleStateAtom)
   const tokenRef = useRef(0)
 
+  const datasetId = editingDataset?.id ?? null
+  const adoptedBronzeId = editingDataset?.adoptedBronzeArtifactId ?? null
+
   useEffect(() => {
-    if (!draftId || !sourceArtifactId) return
+    // Prefer the draft leg whenever a draft artifact exists — once Apply
+    // creates a real SILVER in THIS draft, staying on the adopted BRONZE
+    // would show raw rows for the rest of the session.
+    const useDatasetLeg = !sourceArtifactId && !!datasetId && !!adoptedBronzeId
+    const canFetch = useDatasetLeg || (!!draftId && !!sourceArtifactId)
+    if (!canFetch) return
+
     const token = ++tokenRef.current
+    setFetchState('loading')
 
     void (async () => {
       try {
-        const res = await datasetDraftService.rows(draftId, sourceArtifactId, {
-          offset: 0,
-          limit: FEATURE_PREVIEW_SAMPLE_ROWS,
-        })
+        const res = useDatasetLeg
+          ? await datasetArtifactService.rows(datasetId!, adoptedBronzeId!, {
+              offset: 0,
+              limit: FEATURE_PREVIEW_SAMPLE_ROWS,
+            })
+          : await datasetDraftService.rows(draftId!, sourceArtifactId!, {
+              offset: 0,
+              limit: FEATURE_PREVIEW_SAMPLE_ROWS,
+            })
         if (tokenRef.current === token) {
           setSample(
             brandBoundedSample({ tags: res.data.tags, rows: res.data.rows }),
           )
+          setFetchState('ready')
         }
       } catch {
         // Swallowed on purpose — see module doc.
+        if (tokenRef.current === token) setFetchState('error')
       }
     })()
-  }, [draftId, sourceArtifactId, setSample])
+  }, [
+    draftId,
+    sourceArtifactId,
+    datasetId,
+    adoptedBronzeId,
+    setSample,
+    setFetchState,
+  ])
 }

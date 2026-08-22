@@ -194,8 +194,10 @@ describe('PreprocessingJobService — chaining and commit', () => {
     // tmp may be rewritten by a retry; a committed version key may not.
     expect(first.overwrite).toBe(true);
     expect(last.overwrite).toBe(false);
+    // DS-LAKE-016: a fresh CLEAN-job commit writes a SILVER-suffixed key now,
+    // not legacy `data.parquet` — the whole point of this feature.
     expect(String(last.target_key)).toMatch(
-      /^ds-1\/artifacts\/[0-9a-f-]{36}\/data\.parquet$/,
+      /^ds-1\/artifacts\/[0-9a-f-]{36}\/data_silver\.parquet$/,
     );
     expect(String(last.target_key)).not.toContain('/tmp/');
   });
@@ -553,6 +555,12 @@ describe('PreprocessingJobService — FEATURE stage (DS-LAKE-006-T06 reversal)',
 
     const [, body] = featureCalls[0] as [string, Record<string, unknown>];
     expect(body.source_key).toBe('ds-1/artifacts/a-1/data.parquet');
+    // DS-LAKE-016: a FEATURE job commits GOLD, not SILVER — the two branches
+    // sharing one `committedKey`/`artifactType` variable must not collapse
+    // to the same suffix.
+    expect(String(body.target_key)).toMatch(
+      /^ds-1\/artifacts\/[0-9a-f-]{36}\/data_gold\.parquet$/,
+    );
     expect(body.features).toEqual([
       { id: 'f1', kind: 'lag', tag: 'TI-101', k: 1 },
     ]);

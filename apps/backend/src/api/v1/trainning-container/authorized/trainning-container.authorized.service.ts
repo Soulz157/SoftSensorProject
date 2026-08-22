@@ -29,7 +29,8 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
   // alongside any future build_model change that isn't purely additive.
   private readonly imageRef =
     process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.2';
-  private readonly network = process.env.TRAINING_NETWORK ?? 'dslake_default';
+  // private readonly network = process.env.TRAINING_NETWORK ?? 'dslake_default';
+  private readonly network = 'monorepo_network';
   private readonly memoryBytes = Number(
     process.env.TRAINING_MEMORY_BYTES ?? 8 * 1024 ** 3,
   );

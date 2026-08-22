@@ -46,7 +46,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
  */
 interface Props {
   data: DraftCorrelationResult | null
-  status: 'no-tags' | 'pending' | 'loading' | 'ready'
+  status: 'no-tags' | 'pending' | 'loading' | 'ready' | 'unavailable'
   /** |r| threshold for the "strong" highlight. Defaults to 0.8. */
   threshold?: number
 }
@@ -130,6 +130,19 @@ export function TagCorrelationChart({ data, status, threshold = 0.8 }: Props) {
         <GitCompareArrows className="h-8 w-8 text-muted-foreground/40" />
         <p className="text-sm text-muted-foreground">
           Save cleaned tags to build a correlation matrix.
+        </p>
+      </div>
+    )
+  }
+
+  if (status === 'unavailable') {
+    return (
+      <div className="flex h-80 flex-col items-center justify-center gap-2 px-6 text-center">
+        <GitCompareArrows className="h-8 w-8 text-muted-foreground/40" />
+        <p className="text-sm text-muted-foreground">
+          This dataset&apos;s raw artifact is no longer stored, so this chart
+          has nothing to read. Apply a cleaning rule to create a new artifact
+          from the loaded rows.
         </p>
       </div>
     )

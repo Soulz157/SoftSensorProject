@@ -36,6 +36,19 @@ const datasetSelect = {
   currentArtifact: {
     select: { type: true },
   },
+  // DS-LAKE-017-T03: the lineage-root BRONZE, if DS-LAKE-017-T01/T02 has
+  // adopted one AND its bytes have not been reclaimed. `currentArtifactId`
+  // above stays FINAL-only (ONE POINTER, NOT TWO — see T01) so the client
+  // needs this separate field to know whether edit-mode hydration has raw
+  // rows available at all, without a second round trip. `take: 1` is
+  // defensive, not load-bearing: exactly one row can ever match, since a
+  // dataset has one lineage-root per current version and T01/T02 only ever
+  // adopt that one.
+  artifacts: {
+    where: { type: 'BRONZE', objectReclaimedAt: null },
+    select: { id: true },
+    take: 1,
+  },
   createdAt: true,
   updatedAt: true,
   createdBy: {
@@ -74,6 +87,11 @@ export class DatasetAuthorizedService {
       // See the `currentArtifact` select comment above — null only when
       // `currentArtifactId` itself is null (no artifact select fires).
       currentArtifactType: item.currentArtifact?.type ?? null,
+      // DS-LAKE-017-T03. Null means exactly one of: not yet backfilled
+      // (T02), reclaimed (`objectReclaimedAt` set), or a legacy dataset with
+      // no lineage at all — the client cannot and does not need to tell
+      // those apart, all three fall back to today's FINAL hydration.
+      adoptedBronzeArtifactId: item.artifacts[0]?.id ?? null,
       createdAt: item.createdAt.toISOString(),
       updatedAt: item.updatedAt.toISOString(),
       createdBy:

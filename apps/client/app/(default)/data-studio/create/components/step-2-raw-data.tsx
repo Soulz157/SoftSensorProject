@@ -29,6 +29,7 @@ import { useDatasetStudioPreview } from '@/hooks/dataset/use-dataset-studio-prev
 import { useSourceConnectionVerify } from '@/hooks/dataset/use-source-connection-verify'
 import { ConnectionVerifyPanel } from './source-configs/connection-verify-panel'
 import {
+  dwBronzeWarmStateAtom,
   dwCustomIntervalAtom,
   dwFetchConfigAtom,
   dwNameAtom,
@@ -136,6 +137,12 @@ export function Step2RawData({ nav }: Props) {
   const locked = nav.isEditLocked
   const isFetching = fetch.status === 'fetching'
   const isDone = fetch.status === 'done'
+  // DS-LAKE-015-T04: `fetch.status === 'done'` only means the CLIENT-side
+  // batches landed — `useDatasetBronzeWarm`'s background materialize (fired
+  // from inside `useDatasetStudioFetch` right after this same 'done'
+  // transition) can still be running when this card renders. Say so, so
+  // "Dataset ready" doesn't read as "Step 3.1 is ready too".
+  const bronzeWarmState = useAtomValue(dwBronzeWarmStateAtom)
   // Edit mode freezes the raw query — disable every fetch control (but keep the
   // hydrated raw table visible, unlike an in-flight fetch).
   const controlsDisabled = isFetching || locked
@@ -601,6 +608,13 @@ export function Step2RawData({ nav }: Props) {
                 Download CSV
               </Button>
             </div>
+
+            {bronzeWarmState === 'materializing' && (
+              <p className="mt-2 text-[11px] text-muted-foreground">
+                Still preparing this dataset in the background — Step 3.1 will
+                show a loading state until it’s ready.
+              </p>
+            )}
 
             <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
               <div>

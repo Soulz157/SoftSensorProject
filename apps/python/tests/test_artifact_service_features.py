@@ -77,6 +77,28 @@ def test_features_writes_feature_spec_sidecar_and_returns_its_key() -> None:
     assert result["column_stats_key"] is None
 
 
+def test_features_writes_the_real_fitted_scaling_params() -> None:
+    """DS-LAKE-018-T02 end to end: `features()` -> `to_model_ready` ->
+    `build_feature_spec` must land the ACTUAL fitted min/max in the written
+    sidecar, not a placeholder. `frame()`'s TI-101 is [70, 71, 0, 73, 74,
+    75] — the 0.0 at a Bad-status row is still FINITE, so minmax fits it
+    too (module docstring: every finite value scales regardless of status),
+    making min=0.0, not 70.0."""
+    store = RecordingStore({"ds-1/artifacts/silver-id/data.parquet": frame()})
+    artifact_service.features(
+        store,
+        FeaturesRequest(
+            source_key="ds-1/artifacts/silver-id/data.parquet",
+            target_key="ds-1/artifacts/gold-id/data.parquet",
+            features=[],
+            selected_columns=None,
+            scalers={"TI-101": "minmax"},
+        ),
+    )
+    spec = store.documents["ds-1/artifacts/gold-id/feature_spec.json"]
+    assert spec["scalingParams"] == {"TI-101": {"min": 0.0, "max": 75.0}}
+
+
 def test_features_rejects_a_target_equal_to_its_source() -> None:
     with pytest.raises(ValueError, match="must differ"):
         FeaturesRequest(

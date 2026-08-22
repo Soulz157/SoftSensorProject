@@ -15,11 +15,14 @@ import { JwtAccessGuard } from '@/guards/jwt-access.guard';
 import { Users } from '@/common/decorators/user.decorator';
 import { DatasetVersionAuthorizedService } from './dataset-version.authorized.service';
 import {
+  BoxplotRequestDto,
   CorrelationRequestDto,
   CreateRawVersionDto,
+  HistogramRequestDto,
   ListRowsDto,
   PreviewVersionDto,
   PromoteVersionStatusDto,
+  ScatterRequestDto,
   StartCleanJobDto,
   TagCatalogDto,
 } from './dto/dataset-version.authorized.dto';
@@ -255,6 +258,24 @@ export class DatasetVersionAuthorizedController {
     return this.service.getArtifactColumnStatsService(user, id, artifactId);
   }
 
+  @Get('/:id/artifacts/:artifactId/holdout')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Raw validation holdout window, if this dataset has one',
+    description:
+      'Resolves the BRONZE sibling of the given artifact (by runId, same ' +
+      'lookup training claim() uses) and returns its holdout window, row ' +
+      'count, and missing rate. `data.holdout` is null — not a 404 — when ' +
+      'the dataset has no holdout or the artifact predates this field.',
+  })
+  async getArtifactHoldoutController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+  ) {
+    return this.service.getArtifactHoldoutService(user, id, artifactId);
+  }
+
   @Post('/:id/artifacts/:artifactId/correlation')
   @HttpCode(200)
   @ApiOperation({
@@ -280,6 +301,72 @@ export class DatasetVersionAuthorizedController {
       artifactId,
       body,
     );
+  }
+
+  @Post('/:id/artifacts/:artifactId/histogram')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Per-tag histogram and KDE over a committed artifact',
+    description:
+      'Saved-dataset leg of the draft endpoint, added so edit mode can read ' +
+      'the BRONZE adopted at Save (DS-LAKE-017-T01). The draft leg cannot: ' +
+      "that artifact's `draftId` belongs to the draft that originally " +
+      'created it, not to the fresh draft an edit session opens, so a ' +
+      '`where: { id, draftId }` lookup misses it entirely. Read-only. ' +
+      '`operations` is always empty here, same as /correlation above — a ' +
+      'committed artifact is immutable and carries its cleaning baked in.',
+  })
+  async getArtifactHistogramController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Body() body: HistogramRequestDto,
+  ) {
+    return this.service.getArtifactHistogramService(user, id, artifactId, body);
+  }
+
+  @Post('/:id/artifacts/:artifactId/boxplot')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Per-tag box plot over a committed artifact',
+    description:
+      'Saved-dataset leg of the draft endpoint, added so edit mode can read ' +
+      'the BRONZE adopted at Save (DS-LAKE-017-T01). The draft leg cannot: ' +
+      "that artifact's `draftId` belongs to the draft that originally " +
+      'created it, not to the fresh draft an edit session opens, so a ' +
+      '`where: { id, draftId }` lookup misses it entirely. Read-only. ' +
+      '`operations` is always empty here, same as /correlation above — a ' +
+      'committed artifact is immutable and carries its cleaning baked in.',
+  })
+  async getArtifactBoxplotController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Body() body: BoxplotRequestDto,
+  ) {
+    return this.service.getArtifactBoxplotService(user, id, artifactId, body);
+  }
+
+  @Post('/:id/artifacts/:artifactId/scatter')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Per-tag scatter plot over a committed artifact',
+    description:
+      'Saved-dataset leg of the draft endpoint, added so edit mode can read ' +
+      'the BRONZE adopted at Save (DS-LAKE-017-T01). The draft leg cannot: ' +
+      "that artifact's `draftId` belongs to the draft that originally " +
+      'created it, not to the fresh draft an edit session opens, so a ' +
+      '`where: { id, draftId }` lookup misses it entirely. Read-only. ' +
+      '`operations` is always empty here, same as /correlation above — a ' +
+      'committed artifact is immutable and carries its cleaning baked in.',
+  })
+  async getArtifactScatterController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Body() body: ScatterRequestDto,
+  ) {
+    return this.service.getArtifactScatterService(user, id, artifactId, body);
   }
 
   @Post('/:id/versions/:versionId/preview')

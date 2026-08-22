@@ -165,6 +165,15 @@ export class ModelRunLaunchAuthorizedService {
     });
   }
 
+  // NOTE: this method and its three siblings below (cancelRunService,
+  // listRunsService, getRunService — the Model-scoped twins of the
+  // draft-scoped methods further down) still return the raw Prisma row, not
+  // the {statusCode, message, type, data} envelope. Left as-is because
+  // nothing in apps/client calls authorized/model/.../runs today (confirmed
+  // by grep) — but the draft-scoped versions had this EXACT bug in
+  // production (client `.data.id` on an unwrapped response, throwing
+  // "Cannot read properties of undefined"), so wrap these the same way
+  // before wiring any real caller to this path.
   async createRunService(
     modelId: string,
     dto: CreateTrainingRunDto,
@@ -241,7 +250,20 @@ export class ModelRunLaunchAuthorizedService {
     });
 
     this.trackSpawn(run.id, token);
-    return run;
+    // Envelope matches ModelDraftAuthorizedService's — same
+    // authorized/model-drafts prefix, same client (services/model-draft.ts's
+    // modelDraftRunService) unwraps `.data` on every call, same as it
+    // already does for the draft CRUD methods next to this one. Returning
+    // the raw row here (as this used to) makes `created.data.id` throw
+    // "Cannot read properties of undefined (reading 'id')" client-side even
+    // though the container spawned fine — the DB row and the container are
+    // real, only the HTTP response shape was wrong.
+    return {
+      statusCode: 201,
+      message: 'Training run created',
+      type: 'SUCCESS' as const,
+      data: run,
+    };
   }
 
   async cancelRunService(
@@ -286,10 +308,20 @@ export class ModelRunLaunchAuthorizedService {
       omit: { tokenHash: true },
     });
     if (!run) throw new NotFoundException();
-    if (run.status !== 'QUEUED' && run.status !== 'RUNNING') return run;
+    // Same envelope as the rest of this draft-run resource — see
+    // createDraftRunService's comment for why. Two return points here
+    // (already-terminal vs. actually canceled) both need it.
+    if (run.status !== 'QUEUED' && run.status !== 'RUNNING') {
+      return {
+        statusCode: 200,
+        message: `Run already ${run.status.toLowerCase()}`,
+        type: 'SUCCESS' as const,
+        data: run,
+      };
+    }
 
     if (run.containerId) await this.runner.kill(run.containerId);
-    return this.prisma.modelTrainingRun.update({
+    const canceled = await this.prisma.modelTrainingRun.update({
       where: { id: runId },
       omit: { tokenHash: true },
       data: {
@@ -298,6 +330,12 @@ export class ModelRunLaunchAuthorizedService {
         tokenExpiresAt: new Date(0),
       },
     });
+    return {
+      statusCode: 200,
+      message: 'Training run canceled',
+      type: 'SUCCESS' as const,
+      data: canceled,
+    };
   }
 
   async listRunsService(modelId: string, userId: string, role: string) {
@@ -313,11 +351,19 @@ export class ModelRunLaunchAuthorizedService {
 
   async listDraftRunsService(draftId: string, userId: string, role: string) {
     await this.assertDraftAccess(draftId, userId, role);
-    return this.prisma.modelTrainingRun.findMany({
+    const runs = await this.prisma.modelTrainingRun.findMany({
       where: { modelDraftId: draftId },
       omit: { tokenHash: true },
       orderBy: { createdAt: 'desc' },
     });
+    // Same envelope as the rest of this draft-run resource — see
+    // createDraftRunService's comment for why.
+    return {
+      statusCode: 200,
+      message: 'Training runs fetched',
+      type: 'SUCCESS' as const,
+      data: runs,
+    };
   }
 
   async getRunService(
@@ -354,7 +400,17 @@ export class ModelRunLaunchAuthorizedService {
       include: { logs: { orderBy: { createdAt: 'asc' }, take: 500 } },
     });
     if (!run) throw new NotFoundException();
-    return run;
+    // Same envelope fix as createDraftRunService, and arguably the more
+    // load-bearing half of it: this is what the 2.5s poll loop
+    // (use-model-training.ts pollRun) calls on every tick, so an unwrapped
+    // response here breaks the SAME way even for a run that WAS created
+    // successfully by a caller that doesn't hit the create-time crash.
+    return {
+      statusCode: 200,
+      message: 'Training run fetched',
+      type: 'SUCCESS' as const,
+      data: run,
+    };
   }
 
   private async assertModelAccess(

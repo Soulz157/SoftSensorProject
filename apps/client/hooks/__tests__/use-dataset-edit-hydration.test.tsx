@@ -8,6 +8,7 @@ import {
   dwModeAtom,
   dwRawDatasetAtom,
   dwRowSourceAtom,
+  dwRowStageAtom,
   dwSyntheticReasonAtom,
 } from '@/store/dataset-studio'
 import { EMPTY_PIPELINE_CONFIG } from '@/lib/pipeline-config'
@@ -141,6 +142,49 @@ describe('useDatasetEditHydration', () => {
     await waitFor(() => expect(store.get(dwRowSourceAtom)).toBe('synthetic'))
     expect(store.get(dwSyntheticReasonAtom)).toMatch(/original tag list/i)
     expect(fetchDataset).not.toHaveBeenCalled()
+  })
+
+  it('DS-LAKE-017-T03: prefers the adopted BRONZE over currentArtifactId (FINAL) — no double-apply, and no version-list round trip', async () => {
+    store.set(
+      dwEditingDatasetAtom,
+      dataset({
+        currentArtifactId: 'final-1',
+        currentArtifactType: 'FINAL' as never,
+        adoptedBronzeArtifactId: 'bronze-1',
+      }),
+    )
+
+    renderHook(() => useDatasetEditHydration(), { wrapper })
+
+    await waitFor(() => expect(fetchDataset).toHaveBeenCalled())
+    // Read the BRONZE id, not the FINAL currentArtifactId — the whole point
+    // of T03: replaying Step 3's rules on FINAL is the double-apply DS-LAKE-013
+    // could only diagnose (its own banner), not close.
+    expect(fetchDataset.mock.calls[0]![1]).toBe('bronze-1')
+    expect(store.get(dwRowSourceAtom)).toBe('stored')
+    // DS-LAKE-017-T04: proves the fix at the "which stage" boundary.
+    // `dwRowStageAtom` is DS-LAKE-013's own banner input — it now reads
+    // BRONZE for this case, which is what makes the non-BRONZE banner
+    // correctly stay silent. No code change to the banner itself was
+    // needed, only a correct stage to read.
+    expect(store.get(dwRowStageAtom)).toBe('BRONZE')
+    expect(list).not.toHaveBeenCalled()
+  })
+
+  it('DS-LAKE-017-T03: falls back to currentArtifactId (FINAL) when no BRONZE has been adopted — case (b)/(c), unchanged from today', async () => {
+    store.set(
+      dwEditingDatasetAtom,
+      dataset({
+        currentArtifactId: 'final-1',
+        currentArtifactType: 'FINAL' as never,
+        adoptedBronzeArtifactId: null,
+      }),
+    )
+
+    renderHook(() => useDatasetEditHydration(), { wrapper })
+
+    await waitFor(() => expect(fetchDataset).toHaveBeenCalled())
+    expect(fetchDataset.mock.calls[0]![1]).toBe('final-1')
   })
 
   it('stays out of the way in create mode', async () => {

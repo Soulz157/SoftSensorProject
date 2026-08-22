@@ -24,6 +24,16 @@ before this task, grepped, confirmed empty):
   entry. Sorted by tag for readability; the HASH does not depend on this
   ordering (dict keys are canonicalised before hashing — see
   `_canonical_hash_payload`), only on the mapping's actual content.
+* `scalingParams` (DS-LAKE-018-T02) — `{tag: {...fitted params}}` for every
+  tag `to_model_ready` actually scaled with real fit state: `{min, max}`
+  for minmax, `{mean, std}` for standard, `{median, iqr}` for robust.
+  Absent for "none"-scaled tags and for a `robust` tag skipped entirely
+  (zero finite values) — nothing was fit for either. NOT part of
+  `featureHash` (see `build_feature_spec`'s own doc comment) — the same
+  recipe over the same rows always fits the same numbers, so including
+  them would churn the hash for a non-change. This is the field
+  DS-LAKE-018-T04 reads to scale a raw holdout with the TRAIN rows'
+  statistics instead of its own.
 * `encoding` — always `[]` today. No categorical encoding exists ANYWHERE
   in the ported transform set (`applyFeatures`/`selectColumns`/
   `toModelReady` — grepped feature-engineering.ts and preprocessing.ts,
@@ -63,7 +73,7 @@ from typing import Any, Mapping, Sequence
 
 from services.feature_service import feature_column_name
 
-FEATURE_SPEC_VERSION = 1
+FEATURE_SPEC_VERSION = 2  # DS-LAKE-018-T02: added `scalingParams`
 
 
 def _canonical_hash_payload(
@@ -116,11 +126,80 @@ def _derived_from_target(
     return sorted(derived)
 
 
+def _reads_tags(cfg: Mapping[str, Any]) -> list[str]:
+    """Which tag(s)/column(s) one FeatureConfig reads — same extraction
+    `_derived_from_target` above inlines, factored out so
+    `max_replay_lookback` can reuse it without re-deriving the per-kind
+    field names (`tag` vs `tags` vs `vars`) a second time.
+    """
+    if cfg.get("kind") == "datetime":
+        return []
+    reads: list[str] = []
+    tag = cfg.get("tag")
+    if tag is not None:
+        reads.append(tag)
+    reads.extend(cfg.get("tags") or [])
+    reads.extend((cfg.get("vars") or {}).values())
+    return reads
+
+
+def _own_lookback(cfg: Mapping[str, Any]) -> int:
+    """Rows BEFORE the current one this config's OWN computation reads —
+    ignoring whatever its source column itself may need (that is
+    `max_replay_lookback`'s job, via compounding).
+
+    `rolling(window)` uses `window` here, not `window-1` — one row more
+    than `_compute_feature_column`'s own `[i-window+1, i]` strictly needs.
+    Matches this task's own worked example (scope_note: "lag(5) of
+    rolling(60) needs 65") and is deliberately conservative: the lead-in
+    check this feeds is a REFUSAL, and refusing one row early is a cheap
+    UI-time widening away, where under-refusing is the silent, hard-to-trace
+    failure this whole check exists to prevent.
+    """
+    kind = cfg.get("kind")
+    if kind == "lag":
+        return int(cfg["k"])
+    if kind == "delta":
+        return 1
+    if kind == "rolling":
+        return int(cfg["window"])
+    return 0
+
+
+def max_replay_lookback(features: Sequence[Mapping[str, Any]]) -> int:
+    """DS-LAKE-018-T04. The deepest number of rows, before the holdout
+    boundary, ANY feature in this recipe needs to compute correctly —
+    compounding through chained configs exactly like `_derived_from_target`
+    does (a later config may read an earlier config's own derived column,
+    module docstring). `lag(5)` of a `rolling(60)` column needs the
+    rolling's own 60-row lookback PLUS the lag's 5, not just 5 — reading
+    only the outermost config's own window would silently under-count.
+
+    Used as a REFUSAL threshold (DS-LAKE-018-T04's replay endpoint), not a
+    warning: a holdout whose captured lead-in falls short of this produces
+    null/wrong lag-rolling values for its own first rows, which then feed
+    straight into `predict()` with no trace of why the metric moved.
+    """
+    lookback_by_output: dict[str, int] = {}
+    overall_max = 0
+    for cfg in features:
+        out = cfg.get("name") or feature_column_name(cfg)
+        source_lookback = max(
+            (lookback_by_output.get(tag, 0) for tag in _reads_tags(cfg)),
+            default=0,
+        )
+        total = _own_lookback(cfg) + source_lookback
+        lookback_by_output[out] = total
+        overall_max = max(overall_max, total)
+    return overall_max
+
+
 def build_feature_spec(
     features: Sequence[Mapping[str, Any]],
     selected_columns: list[str] | None,
     scalers: Mapping[str, str],
     target_y: str | None = None,
+    scaling_params: Mapping[str, Mapping[str, float]] | None = None,
 ) -> dict[str, Any]:
     """Build `feature_spec.json`'s content for one GOLD write.
 
@@ -130,6 +209,16 @@ def build_feature_spec(
     `toModelReady`/`to_model_ready` consumed. `target_y` — the tag a
     downstream training run predicts; optional because this sidecar is
     also written for artifacts nothing will ever train on.
+
+    `scaling_params` (DS-LAKE-018-T02) — the FITTED params each scaler
+    computed on these train rows (`to_model_ready`'s own second return
+    value), keyed by tag. Deliberately NOT part of `featureHash`: the hash
+    answers "was this the same recipe", and the same recipe over the same
+    rows always fits the same parameters — including them would churn the
+    hash for a non-change. Without this field nothing downstream can scale a
+    holdout the way the model was actually trained (see finding: re-fitting
+    on the holdout's own statistics is a silently DIFFERENT, wrong
+    transform).
     """
     scaling = [
         {"tag": tag, "method": method} for tag, method in sorted(scalers.items())
@@ -149,6 +238,7 @@ def build_feature_spec(
         ],
         "selectedColumns": selected_columns,
         "scaling": scaling,
+        "scalingParams": dict(scaling_params) if scaling_params else {},
         "encoding": [],
         "featureHash": feature_hash,
     }

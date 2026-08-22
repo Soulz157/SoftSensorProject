@@ -1,20 +1,15 @@
 'use client'
 
 import { useMemo } from 'react'
-import {
-  Cpu,
-  Database,
-  FileText,
-  LayoutGrid,
-  Tags as TagsIcon,
-  Plug,
-  type LucideIcon,
-} from 'lucide-react'
+import { LayoutGrid, Tags as TagsIcon, Database } from 'lucide-react'
 import type { SavedDataset } from '@/store/datasets'
 import type { DataSourceKind } from '@/lib/mock-data-sources'
-import type { ArtifactTagColumnStats } from '@/services/dataset-version'
-import type { DatasetArtifactStage } from '@/services/dataset-draft'
-import { artifactTimeSpanLabel } from '@/lib/dataset-stats'
+import {
+  artifactTimeSpanLabel,
+  perTagStatsOrdered,
+  topCorrelatedArtifactPairs,
+} from '@/lib/dataset-stats'
+import { SOURCE_META, STAGE_LABEL } from '@/lib/dataset-source-meta'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -35,28 +30,10 @@ import {
 } from '@/components/ui/sheet'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { DataTableView } from '@/app/(default)/data-visualize/components/data-table-view'
-import { useArtifactColumnStats } from '@/hooks/dataset/use-dataset-artifact-column-stats'
-import { useArtifactMetadata } from '@/hooks/dataset/use-dataset-artifact-metadata'
-import { useArtifactRows } from '@/hooks/dataset/use-artifact-rows'
-import { useArtifactCorrelation } from '@/hooks/dataset/use-artifact-correlation'
-
-const SOURCE_META: Record<DataSourceKind, { label: string; icon: LucideIcon }> =
-  {
-    aveva: { label: 'AVEVA PI', icon: Cpu },
-    sql: { label: 'SQL', icon: Database },
-    csv: { label: 'CSV', icon: FileText },
-    api: { label: 'API', icon: Plug },
-  }
-
-/** `currentArtifactId` is stage-polymorphic (see `SavedDataset.currentArtifactType`'s
- * doc comment) — every number in this sheet describes whichever stage this
- * badge names, so it has to be visible, not inferred. */
-const STAGE_LABEL: Record<DatasetArtifactStage, string> = {
-  BRONZE: 'Raw',
-  SILVER: 'Cleaned',
-  GOLD: 'Feature-engineered',
-  FINAL: 'Processed',
-}
+import { useArtifactColumnStats } from '@/hooks/dataset/artifact/use-dataset-artifact-column-stats'
+import { useArtifactMetadata } from '@/hooks/dataset/artifact/use-dataset-artifact-metadata'
+import { useArtifactRows } from '@/hooks/dataset/artifact/use-artifact-rows'
+import { useArtifactCorrelation } from '@/hooks/dataset/artifact/use-artifact-correlation'
 
 export interface DetailSource {
   name: string
@@ -173,45 +150,25 @@ export function DatasetDetailSheet({
   const hasArtifact = artifactId !== null
 
   // Ordered by the DATASET's own tag list, not the sidecar's key order: the
-  // sidecar is a dict (JSON insertion order is an accident of the writer),
-  // and the Tags section directly above renders `dataset.tags`. Two lists in
-  // one sheet disagreeing on order is a bug report waiting to happen. Tags
-  // absent from the sidecar are dropped rather than rendered as an all-dash
-  // row — a legacy sidecar can legitimately predate a tag.
-  const perTagStats = useMemo<ArtifactTagColumnStats[]>(() => {
-    if (!columnStats) return []
-    return tags
-      .map(tag => columnStats.stats[tag])
-      .filter((s): s is ArtifactTagColumnStats => Boolean(s))
-  }, [columnStats, tags])
+  // Tags section directly above renders `dataset.tags`, and two lists in one
+  // sheet disagreeing on order is a bug report waiting to happen. Shared with
+  // the Model wizard's Dataset Review step (MODEL-FLOW-010) via
+  // `lib/dataset-stats.ts` so both agree on row order for the same artifact.
+  const perTagStats = useMemo(
+    () => perTagStatsOrdered(tags, columnStats?.stats),
+    [columnStats, tags],
+  )
 
-  // The correlation endpoint returns a resolved tag list + a full matrix
-  // (DS-LAKE-005B-D-T05b), NOT a ranked pair list — the pairs are derived
-  // here. Cheap by construction: the server already hard-caps the matrix at
-  // `topK` columns, so this is at most topK²/2 iterations over data already
-  // in memory, not a client-side Pearson pass over a frame.
-  const topPairs = useMemo(() => {
-    if (!correlation) return []
-    const { tags: resolved, matrix } = correlation
-    const pairs: Array<{ a: string; b: string; r: number }> = []
-    for (let i = 0; i < resolved.length; i++) {
-      for (let j = i + 1; j < resolved.length; j++) {
-        const r = matrix[i]?.[j]
-        if (typeof r === 'number' && Number.isFinite(r)) {
-          pairs.push({ a: resolved[i]!, b: resolved[j]!, r })
-        }
-      }
-    }
-    // Ranked by |r| — a strong negative relationship is exactly as
-    // interesting as a strong positive one to whoever opens this panel.
-    return pairs.sort((x, y) => Math.abs(y.r) - Math.abs(x.r)).slice(0, 5)
-  }, [correlation])
+  const topPairs = useMemo(
+    () => topCorrelatedArtifactPairs(correlation),
+    [correlation],
+  )
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
-        className="w-full gap-0 overflow-y-auto p-0 data-[side=right]:sm:max-w-xl"
+        className="w-full gap-0 overflow-y-auto overflow-x-hidden p-0 data-[side=right]:sm:max-w-2xl"
       >
         {dataset && (
           <>
@@ -446,7 +403,7 @@ export function DatasetDetailSheet({
                   )}
 
                   {/* Data preview */}
-                  <section className="space-y-2">
+                  <section className="min-w-0 space-y-2">
                     <p className="text-sm font-semibold text-foreground">
                       Data preview
                     </p>

@@ -14,6 +14,8 @@ import pandas as pd
 import pytest
 
 from intergrations.object_store import (
+    DATA_FILENAME,
+    DATA_FILENAME_BY_TYPE,
     STATUS_BAD,
     STATUS_GOOD,
     STATUS_QUESTIONABLE,
@@ -22,13 +24,18 @@ from intergrations.object_store import (
     TMP_LIFECYCLE_RULE_ID,
     ObjectStore,
     ObjectStoreError,
+    artifact_key,
     assert_frame_shape,
     assert_tags_are_storable,
     draft_run_key,
+    is_committed_artifact_key,
     is_draft_run_key,
     is_model_run_key,
+    manifest_key,
     missing_pct,
     model_run_key,
+    sidecar_key,
+    split_data_key,
     tag_columns,
     tmp_key,
     tmp_prefix,
@@ -147,6 +154,70 @@ def test_status_codes_are_distinct() -> None:
     assert len({STATUS_GOOD, STATUS_BAD, STATUS_QUESTIONABLE}) == 3
 
 
+# ── stage-suffixed data filenames (DS-LAKE-016) ─────────────────────────
+
+
+def test_artifact_key_defaults_to_legacy_name_when_type_omitted() -> None:
+    """Every existing caller keeps compiling and keeps producing the OLD
+    name until explicitly updated — the widening's whole premise."""
+    assert artifact_key("ds1", "a1") == "ds1/artifacts/a1/data.parquet"
+
+
+def test_artifact_key_is_stage_suffixed_for_bronze_silver_gold() -> None:
+    assert artifact_key("ds1", "a1", "BRONZE") == "ds1/artifacts/a1/data_bronze.parquet"
+    assert artifact_key("ds1", "a1", "SILVER") == "ds1/artifacts/a1/data_silver.parquet"
+    assert artifact_key("ds1", "a1", "GOLD") == "ds1/artifacts/a1/data_gold.parquet"
+
+
+def test_artifact_key_final_falls_back_to_legacy_name() -> None:
+    """FINAL never gets a file of its own — DATA_FILENAME_BY_TYPE has no
+    FINAL entry, and this must not raise for an unknown/absent type."""
+    assert artifact_key("ds1", "a1", "FINAL") == artifact_key("ds1", "a1")
+
+
+def test_split_data_key_recognises_every_accepted_filename() -> None:
+    for filename in (DATA_FILENAME, *DATA_FILENAME_BY_TYPE.values()):
+        key = f"ds1/artifacts/a1/{filename}"
+        assert split_data_key(key) == ("ds1/artifacts/a1/", filename)
+
+
+def test_split_data_key_rejects_a_non_data_key() -> None:
+    assert split_data_key("ds1/artifacts/a1/manifest.json") is None
+    assert split_data_key("ds1/tmp/job1/1.parquet") is None
+
+
+def test_sidecar_key_resolves_to_the_same_location_for_every_accepted_data_filename() -> (
+    None
+):
+    """DS-LAKE-016-T05's own acceptance criterion, literally: sidecars must
+    not depend on WHICH spelling the data file carries."""
+    expected = "ds1/artifacts/a1/manifest.json"
+    for filename in (DATA_FILENAME, *DATA_FILENAME_BY_TYPE.values()):
+        data_key = f"ds1/artifacts/a1/{filename}"
+        assert sidecar_key(data_key, "manifest.json") == expected
+        assert sidecar_key(data_key, "manifest.json") == manifest_key("ds1", "a1")
+
+
+def test_sidecar_key_falls_back_to_a_dotted_suffix_for_a_non_artifact_key() -> None:
+    """Legacy/tmp keys are not in the artifact layout at all — must still
+    get a manifest, not silently none, per the function's own doc comment."""
+    assert (
+        sidecar_key("ds1/tmp/job1/1.parquet", "manifest.json")
+        == "ds1/tmp/job1/1.parquet.manifest.json"
+    )
+
+
+def test_is_committed_artifact_key_accepts_legacy_and_every_stage_suffix() -> None:
+    for filename in (DATA_FILENAME, *DATA_FILENAME_BY_TYPE.values()):
+        assert is_committed_artifact_key(f"ds1/artifacts/a1/{filename}")
+
+
+def test_is_committed_artifact_key_rejects_tmp_and_sidecar_keys() -> None:
+    assert not is_committed_artifact_key("ds1/tmp/job1/1.parquet")
+    assert not is_committed_artifact_key("ds1/artifacts/a1/manifest.json")
+    assert not is_committed_artifact_key("ds1/v1.parquet")  # legacy version key
+
+
 # ── model-run key guard (MODEL-FLOW-000-T09) ────────────────────────────────
 
 
@@ -242,6 +313,84 @@ def test_tmp_intermediates_may_be_overwritten(store: ObjectStore) -> None:
     store.put_frame(df, key, overwrite=True)
 
     assert store.delete_prefix(tmp_prefix("pytest-object-store", "job-1")) == 1
+
+
+def test_stage_suffixed_write_round_trips_data_and_sidecar(
+    store: ObjectStore,
+) -> None:
+    """DS-LAKE-016-T05/V01: write one real artifact per stage against real
+    MinIO, confirm the object name is actually stage-suffixed, then read the
+    data AND its manifest sidecar back through the derived key — the whole
+    point of naming the stage into the file is that a reader can still find
+    everything beside it."""
+    df = good_frame()
+    dataset_id = "pytest-object-store"
+
+    for artifact_type, filename in DATA_FILENAME_BY_TYPE.items():
+        artifact_id = f"stage-{artifact_type.lower()}"
+        key = artifact_key(dataset_id, artifact_id, artifact_type)
+        assert key == f"{dataset_id}/artifacts/{artifact_id}/{filename}"
+
+        store.put_frame(df, key, overwrite=True)
+        manifest = sidecar_key(key, "manifest.json")
+        assert manifest == manifest_key(dataset_id, artifact_id)
+        store.put_json(manifest, {"stage": artifact_type})
+
+        back = store.get_frame(key)
+        assert back.equals(df)
+        assert store.get_json(manifest) == {"stage": artifact_type}
+
+    store.delete_prefix(f"{dataset_id}/artifacts/")
+
+
+def test_reclaim_a_real_stage_suffixed_artifact_deletes_a_non_zero_count(
+    store: ObjectStore,
+) -> None:
+    """DS-LAKE-016-T05/V02: the live counterpart of the RecordingStore-based
+    unit test in test_artifact_service.py — a prefix bug here reports
+    success and deletes nothing, so `deleted > 0` plus a real `exists()`
+    check is asserted, not just "no error"."""
+    df = good_frame()
+    dataset_id = "pytest-object-store"
+    artifact_id = "reclaim-gold"
+    key = artifact_key(dataset_id, artifact_id, "GOLD")
+
+    store.put_frame(df, key, overwrite=True)
+    prefix, _ = split_data_key(key)
+    assert prefix == f"{dataset_id}/artifacts/{artifact_id}/"
+
+    deleted = store.delete_prefix(prefix)
+
+    assert deleted > 0
+    assert not store.exists(key)
+
+
+def test_pre_existing_legacy_named_artifact_still_reads_end_to_end(
+    store: ObjectStore,
+) -> None:
+    """DS-LAKE-016-V03: the WIDENING claim, tested rather than asserted. A
+    real object written the OLD way (no artifact_type — every artifact
+    committed before this feature) must still round-trip data + sidecar +
+    reclaim identically after the change. Pre-existing objects can never be
+    renamed (findings), so this path must never regress."""
+    df = good_frame()
+    dataset_id = "pytest-object-store"
+    artifact_id = "legacy-artifact"
+    key = artifact_key(dataset_id, artifact_id)  # no type -> legacy data.parquet
+    assert key == f"{dataset_id}/artifacts/{artifact_id}/data.parquet"
+
+    store.put_frame(df, key, overwrite=True)
+    manifest = sidecar_key(key, "manifest.json")
+    store.put_json(manifest, {"legacy": True})
+
+    assert is_committed_artifact_key(key)
+    back = store.get_frame(key)
+    assert back.equals(df)
+    assert store.get_json(manifest) == {"legacy": True}
+
+    prefix, _ = split_data_key(key)
+    assert store.delete_prefix(prefix) > 0
+    assert not store.exists(key)
 
 
 def test_get_frame_slice_windows_rows(store: ObjectStore) -> None:

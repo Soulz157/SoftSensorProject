@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import copy
 
-from services.feature_spec_service import build_feature_spec
+from services.feature_spec_service import build_feature_spec, max_replay_lookback
 
 BASE_FEATURES = [
     {"id": "f1", "kind": "lag", "tag": "TI-101", "k": 3},
@@ -104,6 +104,7 @@ def test_spec_content_matches_the_ac_fields() -> None:
         "features",
         "selectedColumns",
         "scaling",
+        "scalingParams",
         "encoding",
         "featureHash",
     }
@@ -135,8 +136,8 @@ def test_target_fields_present_when_target_given() -> None:
     )
     assert set(spec) == {
         "featureVersion", "features", "selectedColumns", "scaling",
-        "encoding", "featureHash", "target_y", "target_scaled",
-        "derived_from_target",
+        "scalingParams", "encoding", "featureHash", "target_y",
+        "target_scaled", "derived_from_target",
     }
     assert spec["target_y"] == "TI-101"
     assert spec["target_scaled"] is True  # TI-101 has a minmax scaler in BASE_SCALERS
@@ -190,3 +191,70 @@ def test_target_fields_are_excluded_from_the_hash() -> None:
     )
     assert no_target["featureHash"] == with_target_a["featureHash"]
     assert with_target_a["featureHash"] == with_target_b["featureHash"]
+
+
+# ── DS-LAKE-018-T04: max_replay_lookback ──────────────────────────────────
+
+
+def test_max_replay_lookback_is_zero_for_features_with_no_lookback() -> None:
+    assert max_replay_lookback([]) == 0
+    assert max_replay_lookback(
+        [{"id": "f1", "kind": "log", "tag": "TI-101"}]) == 0
+
+
+def test_max_replay_lookback_reads_lag_k_and_rolling_window_directly() -> None:
+    assert max_replay_lookback(
+        [{"id": "f1", "kind": "lag", "tag": "TI-101", "k": 3}]) == 3
+    assert max_replay_lookback(
+        [{"id": "f1", "kind": "rolling", "tag": "TI-101", "window": 60,
+          "agg": "mean"}]
+    ) == 60
+    assert max_replay_lookback(
+        [{"id": "f1", "kind": "delta", "tag": "TI-101"}]) == 1
+
+
+def test_max_replay_lookback_compounds_a_lag_of_a_rolling_column() -> None:
+    """The scope_note's own worked example: lag(5) of rolling(60) needs 65,
+    not 5 — reading only the outermost config would silently under-count."""
+    chained = [
+        {"id": "f1", "kind": "rolling", "tag": "TI-101", "window": 60,
+         "agg": "mean"},
+        {"id": "f2", "kind": "lag", "tag": "TI-101__roll60_mean", "k": 5},
+    ]
+    assert max_replay_lookback(chained) == 65
+
+
+def test_max_replay_lookback_compounds_through_a_formula_var() -> None:
+    """A `formula` config's `vars` mapping can ALSO read a derived column —
+    must compound exactly like `tag`/`tags` do, not be treated as
+    lookback-free just because `formula` itself has none."""
+    chained = [
+        {"id": "f1", "kind": "lag", "tag": "TI-101", "k": 10},
+        {
+            "id": "f2", "kind": "formula", "expr": "c0 * 2",
+            "vars": {"c0": "TI-101__lag10"},
+        },
+    ]
+    assert max_replay_lookback(chained) == 10
+
+
+def test_max_replay_lookback_takes_the_deeper_of_several_independent_chains() -> None:
+    chains = [
+        {"id": "f1", "kind": "lag", "tag": "TI-101", "k": 3},
+        {"id": "f2", "kind": "rolling", "tag": "VI-202", "window": 20,
+         "agg": "mean"},
+        {"id": "f3", "kind": "delta", "tag": "FI-404"},
+    ]
+    assert max_replay_lookback(chains) == 20
+
+
+def test_max_replay_lookback_does_not_compound_across_independent_tags() -> None:
+    """A rolling(60) on ONE tag must not inflate the lookback of an
+    unrelated lag(3) on a DIFFERENT tag — compounding only follows an
+    actual tag-name match through `_reads_tags`."""
+    independent = [
+        {"id": "f1", "kind": "rolling", "tag": "TI-101", "window": 60,
+         "agg": "mean"},
+        {"id": "f2", "kind": "lag", "tag": "VI-202", "k": 3},
+    ]
+    assert max_replay_lookback(independent) == 60

@@ -36,13 +36,15 @@ class Settings(BaseSettings):
     CAL_BASIS: str = "TimeWeighted"
 
     PI_VERIFY_SSL: bool = True
-    PI_CA_BUNDLE: str | None = None   # path to corporate CA .pem; used when verify is on
+    # path to corporate CA .pem; used when verify is on
+    PI_CA_BUNDLE: str | None = None
 
     # MinIO / S3 — dataset version artifacts (Parquet). Defaults match the local
     # `minio-local` container; production supplies real values via the env.
     # Unlike SYS_USER / PI_NAME these are NOT required at import time, so a
     # machine with no object storage still imports and serves the PI endpoints.
     S3_ENDPOINT: str = "http://localhost:9000"
+    S3_PUBLIC_ENDPOINT: str = "http://host.docker.internal:9000"
     S3_ACCESS_KEY: str = ""
     S3_SECRET_KEY: str = ""
     S3_BUCKET: str = "datasets"

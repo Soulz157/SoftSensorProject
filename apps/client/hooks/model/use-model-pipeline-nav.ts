@@ -75,10 +75,12 @@ export interface UsePipelineNavResult {
 }
 
 /**
- * Wizard navigation + cascade invalidation for the lean 3-step Create Model
- * flow: 1 Select Dataset (+ metadata) · 2 Training Configuration · 3 Results.
- * All ETL (data source, tags, raw fetch, cleansing) now lives in Data Studio —
- * this hook only tracks which `Dataset` was picked and the training config.
+ * Wizard navigation + cascade invalidation for the 5-step Create Model flow:
+ * 1 Select Dataset (+ metadata) · 2 Dataset Review (MODEL-FLOW-010) ·
+ * 3 Training Configuration · 4 Evaluation · 5 Save Model. All ETL (data
+ * source, tags, raw fetch, cleansing) now lives in Data Studio — this hook
+ * only tracks which `Dataset` was picked, review having no config of its
+ * own, and the training config.
  */
 export function useModelPipelineNav(): UsePipelineNavResult {
   const [currentStep, setCurrentStep] = useAtom(mpCurrentStepAtom)
@@ -140,11 +142,15 @@ export function useModelPipelineNav(): UsePipelineNavResult {
             selectedDataset !== null
           )
         case 2:
-          return trainState.status === 'done'
+          // Dataset Review configures nothing of its own — it only requires
+          // that Step 1's own gate (dataset selected, above) already passed.
+          return selectedDataset !== null
         case 3:
+          return trainState.status === 'done'
+        case 4:
           // Results reached ⇒ may proceed to the Deploy step.
           return true
-        case 4:
+        case 5:
           return false
         default:
           return false
@@ -204,7 +210,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
       setAlgorithmAtom(value)
       setHyperparametersAtom(defaultHyperparams(value))
       resetTraining()
-      setHighestUnlocked(prev => Math.min(prev, 2))
+      setHighestUnlocked(prev => Math.min(prev, 3))
     },
     [
       setAlgorithmAtom,
@@ -224,7 +230,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
       setAlgorithmAtom(primary)
       setHyperparametersAtom(defaultHyperparams(primary))
       resetTraining()
-      setHighestUnlocked(prev => Math.min(prev, 2))
+      setHighestUnlocked(prev => Math.min(prev, 3))
     },
     [
       setAlgorithmsAtom,
@@ -241,7 +247,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
       // Step B requires Step A — turning A off cascades B off.
       if (!on) setFindBestParamsAtom(false)
       resetTraining()
-      setHighestUnlocked(prev => Math.min(prev, 2))
+      setHighestUnlocked(prev => Math.min(prev, 3))
     },
     [
       setFindBestModelAtom,
@@ -255,7 +261,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     (on: boolean) => {
       setFindBestParamsAtom(on)
       resetTraining()
-      setHighestUnlocked(prev => Math.min(prev, 2))
+      setHighestUnlocked(prev => Math.min(prev, 3))
     },
     [setFindBestParamsAtom, resetTraining, setHighestUnlocked],
   )
@@ -264,7 +270,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     (tag: string) => {
       setTargetVariableAtom([tag])
       resetTraining()
-      setHighestUnlocked(prev => Math.min(prev, 2))
+      setHighestUnlocked(prev => Math.min(prev, 3))
     },
     [setTargetVariableAtom, resetTraining, setHighestUnlocked],
   )
@@ -273,7 +279,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     (tags: string[]) => {
       setTargetVariableAtom(tags)
       resetTraining()
-      setHighestUnlocked(prev => Math.min(prev, 2))
+      setHighestUnlocked(prev => Math.min(prev, 3))
     },
     [setTargetVariableAtom, resetTraining, setHighestUnlocked],
   )
@@ -282,7 +288,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     (key: string, value: HyperparamValue) => {
       setHyperparametersAtom(prev => ({ ...prev, [key]: value }))
       resetTraining()
-      setHighestUnlocked(prev => Math.min(prev, 2))
+      setHighestUnlocked(prev => Math.min(prev, 3))
     },
     [setHyperparametersAtom, resetTraining, setHighestUnlocked],
   )
@@ -291,7 +297,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     (loss: string) => {
       setLossFunctionAtom(loss)
       resetTraining()
-      setHighestUnlocked(prev => Math.min(prev, 2))
+      setHighestUnlocked(prev => Math.min(prev, 3))
     },
     [setLossFunctionAtom, resetTraining, setHighestUnlocked],
   )
@@ -300,12 +306,12 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     (split: number) => {
       setTrainTestSplitAtom(split)
       resetTraining()
-      setHighestUnlocked(prev => Math.min(prev, 2))
+      setHighestUnlocked(prev => Math.min(prev, 3))
     },
     [setTrainTestSplitAtom, resetTraining, setHighestUnlocked],
   )
 
-  // Deploy step (Step 4) — last step, so no `highestUnlocked` relock.
+  // Deploy step (Step 5) — last step, so no `highestUnlocked` relock.
   const setAutoRetrain = useCallback(
     (on: boolean) => setAutoRetrainAtom(on),
     [setAutoRetrainAtom],

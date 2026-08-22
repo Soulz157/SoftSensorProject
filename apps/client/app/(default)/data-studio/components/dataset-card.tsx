@@ -17,7 +17,7 @@ import {
 } from 'lucide-react'
 import type { SavedDataset } from '@/store/datasets'
 import type { DataSourceKind } from '@/lib/mock-data-sources'
-import { useArtifactMetadata } from '@/hooks/dataset/use-dataset-artifact-metadata'
+import { useArtifactMetadata } from '@/hooks/dataset/artifact/use-dataset-artifact-metadata'
 import { artifactTimeSpanLabel } from '@/lib/dataset-stats'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'

@@ -34,15 +34,15 @@ import type { DraftHistogramResult } from '@/services/dataset-draft'
 interface Props {
   data: DraftHistogramResult | null
   tags: string[]
-  status: 'no-tags' | 'pending' | 'loading' | 'ready'
+  status: 'no-tags' | 'pending' | 'loading' | 'ready' | 'unavailable'
 }
 
 const W = 750
-const H = 350
+const H = 460
 const PAD_LEFT = 44
 const PAD_RIGHT = 12
 const PAD_TOP = 32
-const PAD_BOTTOM = 32
+const PAD_BOTTOM = 40
 const PLOT_W = W - PAD_LEFT - PAD_RIGHT
 const PLOT_H = H - PAD_TOP - PAD_BOTTOM
 const MAX_TAGS_FOR_INLINE_LABELS = 5
@@ -51,6 +51,8 @@ const ZOOM_MAX = 8
 const ZOOM_STEP = 1.4
 
 const TARGET_Y_TICKS = 5
+const TARGET_X_TICKS = 9
+const MIN_X_TICK_PX = 64
 const Y_ZOOM_MIN = 1
 const Y_ZOOM_MAX = 50
 const Y_ZOOM_STEP = 1.6
@@ -69,6 +71,17 @@ function fmtCount(n: number): string {
   if (abs >= 1_000_000) return `${fmt(n / 1_000_000)}M`
   if (abs >= 1_000) return `${fmt(n / 1_000)}k`
   return fmt(n)
+}
+
+function fmtValue(n: number, step: number): string {
+  const abs = Math.abs(n)
+  if (abs >= 1_000_000) return `${fmt(n / 1_000_000)}M`
+  if (abs >= 10_000) return `${fmt(n / 1_000)}k`
+  const decimals = step >= 1 ? 0 : Math.min(6, Math.ceil(-Math.log10(step)) + 1)
+  return n.toLocaleString(undefined, {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  })
 }
 
 function clamp01(n: number): number {
@@ -177,9 +190,22 @@ export function TagHistogramChart({ data, tags, status }: Props) {
 
   if (status === 'loading') {
     return (
-      <div className="flex h-80 flex-col items-center justify-center gap-2 text-center">
+      <div className="flex aspect-750/460 flex-col items-center justify-center gap-2 text-center">
         <BarChart3 className="h-8 w-8 animate-pulse text-muted-foreground/40" />
         <p className="text-sm text-muted-foreground">Loading histogram…</p>
+      </div>
+    )
+  }
+
+  if (status === 'unavailable') {
+    return (
+      <div className="flex h-80 flex-col items-center justify-center gap-2 px-6 text-center">
+        <BarChart3 className="h-8 w-8 animate-pulse text-muted-foreground/40" />
+        <p className="text-sm text-muted-foreground">
+          This dataset&apos;s raw artifact is no longer stored, so this chart
+          has nothing to read. Apply a cleaning rule to create a new artifact
+          from the loaded rows.
+        </p>
       </div>
     )
   }
@@ -239,6 +265,21 @@ export function TagHistogramChart({ data, tags, status }: Props) {
   const yTicks = Array.from(
     { length: Math.floor(yMaxView / yStep) + 2 },
     (_, i) => i * yStep,
+  )
+
+  const xTickTarget = Math.max(
+    2,
+    Math.min(TARGET_X_TICKS, Math.floor(PLOT_W / MIN_X_TICK_PX)),
+  )
+  const xStep = niceStep(xMax - xMin, xTickTarget)
+  const xFirst = Math.ceil(xMin / xStep) * xStep
+  const xTickCount = Math.max(
+    0,
+    Math.min(40, Math.floor((xMax - xFirst) / xStep) + 1),
+  )
+  const xTicks = Array.from(
+    { length: xTickCount },
+    (_, i) => xFirst + i * xStep,
   )
 
   const kdePath = (layer: TagLayer) =>
@@ -387,7 +428,7 @@ export function TagHistogramChart({ data, tags, status }: Props) {
 
         <svg
           viewBox={`0 0 ${W} ${H}`}
-          className="w-full max-h-50"
+          className="w-full max-h-300"
           role="img"
           aria-label={`KDE distribution of ${layers.map(l => l.tag).join(', ')}`}
         >
@@ -414,7 +455,7 @@ export function TagHistogramChart({ data, tags, status }: Props) {
                 fill="var(--muted-foreground)"
                 className="font-mono text-[10px]"
               >
-                {t}
+                {fmtCount(t)}
               </text>
             </g>
           ))}
@@ -519,27 +560,47 @@ export function TagHistogramChart({ data, tags, status }: Props) {
             })}
           </g>
 
-          {[
-            { v: xMin, x: PAD_LEFT, anchor: 'start' as const },
-            {
-              v: (xMin + xMax) / 2,
-              x: PAD_LEFT + PLOT_W / 2,
-              anchor: 'middle' as const,
-            },
-            { v: xMax, x: W - PAD_RIGHT, anchor: 'end' as const },
-          ].map(tick => (
-            <text
-              key={tick.anchor}
-              x={tick.x}
-              y={H - PAD_BOTTOM + 16}
-              textAnchor={tick.anchor}
-              fill="var(--muted-foreground)"
-              className="font-mono text-[10px]"
-            >
-              {fmtCount(tick.v)}
-            </text>
-          ))}
-
+          {xTicks.map(v => {
+            const x = xScale(v)
+            // Clamp the anchor at the edges so the first and last labels don't
+            // hang outside the viewBox and get clipped.
+            const anchor =
+              x < PAD_LEFT + 20
+                ? ('start' as const)
+                : x > W - PAD_RIGHT - 20
+                  ? ('end' as const)
+                  : ('middle' as const)
+            return (
+              <g key={v}>
+                <line
+                  x1={x}
+                  x2={x}
+                  y1={PAD_TOP}
+                  y2={PAD_TOP + PLOT_H}
+                  stroke="var(--border)"
+                  strokeWidth={1}
+                  opacity={0.45}
+                />
+                <line
+                  x1={x}
+                  x2={x}
+                  y1={PAD_TOP + PLOT_H}
+                  y2={PAD_TOP + PLOT_H + 5}
+                  stroke="var(--border)"
+                  strokeWidth={1}
+                />
+                <text
+                  x={x}
+                  y={H - PAD_BOTTOM + 18}
+                  textAnchor={anchor}
+                  fill="var(--muted-foreground)"
+                  className="font-mono text-[10px]"
+                >
+                  {fmtValue(v, xStep)}
+                </text>
+              </g>
+            )
+          })}
           {/* Transparent drag surface for panning (only meaningful when zoomed). */}
           <rect
             x={PAD_LEFT}

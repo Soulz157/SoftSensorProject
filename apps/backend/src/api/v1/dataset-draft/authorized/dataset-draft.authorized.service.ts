@@ -38,6 +38,7 @@ import {
 } from '../../dataset-version/authorized/dto/dataset-version.authorized.dto';
 import {
   type CreateDraftDto,
+  type ResplitDraftHoldoutDto,
   type SaveDraftAsDatasetDto,
 } from './dto/dataset-draft.authorized.dto';
 
@@ -178,6 +179,44 @@ export class DatasetDraftAuthorizedService {
     };
   }
 
+  /**
+   * DS-LAKE-014-T04: bumps `updatedAt` on an ACTIVE draft, no more. This is
+   * the wizard's own heartbeat — called periodically while a tab is visibly
+   * open — so DS-LAKE-014-T02's ACTIVE-draft idle sweep measures real
+   * absence (tab closed/backgrounded) rather than silence (a user reading
+   * Step 3.1's charts, issuing no other write for many minutes).
+   *
+   * `updateMany` with a `status: 'ACTIVE'` filter, writing the status the
+   * row already has, NOT an empty `data: {}` — two things depend on this:
+   *   1. `@updatedAt` needs a real SET clause to fire at all; an empty
+   *      `data` risks Prisma emitting none, which would make the heartbeat
+   *      a silent no-op — exactly the failure mode that would turn the
+   *      short idle tier into the hostile blanket rule this feature's own
+   *      userDecisions record rejecting.
+   *   2. Filtering on `status: 'ACTIVE'` makes this a no-op on a SAVED or
+   *      ABANDONED draft. Without it, a wizard tab left open after Save
+   *      would keep pushing `updatedAt` forward and silently extend
+   *      `CLEANUP_INTERMEDIATE_RETENTION_HOURS` for that dataset's
+   *      intermediates — a heartbeat meant to protect an in-progress wizard
+   *      has no business affecting a draft that has already been saved.
+   */
+  async touchDraftService(user: Auth.UserPayload, draftId: string) {
+    await this.assertDraftAccess(draftId, user);
+    const { count } = await this.prisma.datasetDraft.updateMany({
+      where: { id: draftId, status: 'ACTIVE' },
+      data: { status: 'ACTIVE' },
+    });
+    return {
+      statusCode: 200,
+      message:
+        count > 0
+          ? 'Dataset draft heartbeat recorded'
+          : 'Dataset draft is not ACTIVE — heartbeat ignored',
+      type: 'SUCCESS' as const,
+      data: { touched: count > 0 },
+    };
+  }
+
   private mapDraft(draft: {
     id: string;
     name: string | null;
@@ -240,8 +279,14 @@ export class DatasetDraftAuthorizedService {
       await postToPython(
         '/v1/preprocess/materialize',
         {
-          target_key: artifactKey(scope, artifactId),
+          target_key: artifactKey(scope, artifactId, 'BRONZE'),
           ...buildSourceBlock(source, dto),
+          // DS-LAKE-018-T03. Absent when no holdout was selected — python's
+          // own MaterializeRequest.holdout is optional and behaves exactly
+          // as today when omitted.
+          ...(dto.holdout && {
+            holdout: { from_time: dto.holdout.from, to_time: dto.holdout.to },
+          }),
         },
         PYTHON_TIMEOUT.preprocess,
       ),
@@ -267,6 +312,12 @@ export class DatasetDraftAuthorizedService {
           sizeBytes: BigInt(stats.size_bytes),
           operations: [],
           columnStatsKey: stats.column_stats_key,
+          // DS-LAKE-018-T03. null when no holdout was requested — matches
+          // Python's own None default, never defaulted to 0 (0 would claim
+          // an empty holdout was written, which is a different fact).
+          validationRowCount: stats.validation_row_count ?? null,
+          // MODEL-FLOW-010-T06. Same null-when-no-holdout convention.
+          validationMissingPct: stats.validation_missing_pct ?? null,
           durationMs: Date.now() - startedAt,
           createdById: user.id,
         },
@@ -290,6 +341,189 @@ export class DatasetDraftAuthorizedService {
         rowCount: artifact.rowCount,
         columnCount: artifact.columnCount,
         missingPct: artifact.missingPct,
+        validationRowCount: artifact.validationRowCount,
+      },
+    };
+  }
+
+  /**
+   * Walk up an artifact's `parentArtifactId` chain to its BRONZE root — the
+   * only artifact type with a null parent (schema's own invariant: "Null for
+   * a BRONZE root"). Starts from `currentArtifactId` rather than querying
+   * `{type: 'BRONZE', parentArtifactId: null}` directly: a draft can carry
+   * more than one BRONZE root across separate wizard runs (each re-fetch
+   * mints a new `runId` chain, per `DatasetArtifact.runId`'s own doc
+   * comment), and only the chain the draft is CURRENTLY on is the correct
+   * target for a holdout re-split.
+   */
+  private async resolvePristineBronzeRoot(
+    draftId: string,
+    currentArtifactId: string | null,
+  ) {
+    if (!currentArtifactId) {
+      throw new AppException({
+        statusCode: 404,
+        message:
+          'Draft has no artifact yet — fetch data before setting a holdout.',
+        type: 'ERROR',
+      });
+    }
+
+    const fetchArtifact = async (id: string) => {
+      const found = await this.prisma.datasetArtifact.findFirst({
+        where: { id, draftId },
+      });
+      if (!found) {
+        throw new AppException({
+          statusCode: 404,
+          message: 'Draft artifact not found',
+          type: 'ERROR',
+        });
+      }
+      return found;
+    };
+
+    let artifact = await fetchArtifact(currentArtifactId);
+    while (artifact.parentArtifactId) {
+      artifact = await fetchArtifact(artifact.parentArtifactId);
+    }
+    if (artifact.type !== 'BRONZE') {
+      throw new AppException({
+        statusCode: 422,
+        message: 'Could not resolve a BRONZE root for this draft artifact.',
+        type: 'ERROR',
+      });
+    }
+    return artifact;
+  }
+
+  /**
+   * DS-LAKE-018-T06. Re-split the draft's PRISTINE (never-split) root BRONZE
+   * against a new holdout window, without re-fetching from the source.
+   *
+   * Companion to `materializeDraftArtifactService`'s own holdout branch, for
+   * the case that branch cannot cover: the holdout picker now lives at Step
+   * 3.1 (`ValidationHoldoutSection`), which mounts AFTER the bronze warm has
+   * already materialized once with no holdout. Changing the holdout there
+   * must reach BRONZE some other way — this endpoint is that way.
+   *
+   * ALWAYS reads `resolvePristineBronzeRoot`'s root, never the artifact
+   * `currentArtifactId` happens to point at right now — re-splitting an
+   * ALREADY-split frame would permanently shed the rows the previous split
+   * cut into `validate_data.parquet`, with no way to reconstruct them (the
+   * previous holdout boundary is not recoverable). A root whose
+   * `validationRowCount` is already set means IT was split at materialize
+   * time (a legacy dataset, or one materialized before this task existed) —
+   * refused (422), not silently re-split.
+   *
+   * `holdout: null` clears a previously-picked holdout WITHOUT calling
+   * Python: the pristine root already IS the no-holdout artifact, so this
+   * just points the draft back at it.
+   */
+  async resplitDraftHoldoutService(
+    user: Auth.UserPayload,
+    draftId: string,
+    dto: ResplitDraftHoldoutDto,
+  ) {
+    const draft = await this.assertDraftAccess(draftId, user);
+    const root = await this.resolvePristineBronzeRoot(
+      draft.id,
+      draft.currentArtifactId,
+    );
+
+    if (dto.holdout === null) {
+      await this.prisma.datasetDraft.update({
+        where: { id: draftId },
+        data: { currentArtifactId: root.id },
+      });
+      return {
+        statusCode: 200,
+        message: 'Holdout cleared — draft points back at its pristine artifact',
+        type: 'SUCCESS' as const,
+        data: {
+          id: root.id,
+          runId: root.runId,
+          type: root.type,
+          checksum: root.checksum,
+          rowCount: root.rowCount,
+          columnCount: root.columnCount,
+          missingPct: root.missingPct,
+          validationRowCount: root.validationRowCount,
+        },
+      };
+    }
+
+    if (root.validationRowCount !== null) {
+      throw new AppException({
+        statusCode: 422,
+        message:
+          'This artifact was already split at fetch time and cannot be re-split — re-fetch the data to change its holdout.',
+        type: 'ERROR',
+      });
+    }
+
+    const artifactId = randomUUID();
+    const startedAt = Date.now();
+    const scope = `drafts/${draftId}`;
+
+    const stats = ArtifactStatsSchema.parse(
+      await postToPython(
+        '/v1/preprocess/resplit-holdout',
+        {
+          source_key: root.objectKey,
+          target_key: artifactKey(scope, artifactId, 'BRONZE'),
+          holdout: { from_time: dto.holdout.from, to_time: dto.holdout.to },
+        },
+        PYTHON_TIMEOUT.preprocess,
+      ),
+    );
+
+    const artifact = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.datasetArtifact.create({
+        data: {
+          id: artifactId,
+          draftId,
+          runId: root.runId,
+          parentArtifactId: root.id,
+          type: 'BRONZE',
+          objectKey: stats.object_key,
+          checksum: stats.checksum,
+          rowCount: stats.row_count,
+          columnCount: stats.column_count,
+          missingPct: stats.missing_pct,
+          sizeBytes: BigInt(stats.size_bytes),
+          operations: [],
+          columnStatsKey: stats.column_stats_key,
+          validationRowCount: stats.validation_row_count ?? null,
+          validationHoldoutFrom: stats.validation_holdout_from
+            ? new Date(stats.validation_holdout_from)
+            : null,
+          // MODEL-FLOW-010-T06. Same null-when-no-holdout convention.
+          validationMissingPct: stats.validation_missing_pct ?? null,
+          durationMs: Date.now() - startedAt,
+          createdById: user.id,
+        },
+      });
+      await tx.datasetDraft.update({
+        where: { id: draftId },
+        data: { currentArtifactId: created.id },
+      });
+      return created;
+    });
+
+    return {
+      statusCode: 201,
+      message: 'Draft bronze artifact re-split against the new holdout',
+      type: 'SUCCESS' as const,
+      data: {
+        id: artifact.id,
+        runId: artifact.runId,
+        type: artifact.type,
+        checksum: artifact.checksum,
+        rowCount: artifact.rowCount,
+        columnCount: artifact.columnCount,
+        missingPct: artifact.missingPct,
+        validationRowCount: artifact.validationRowCount,
       },
     };
   }
@@ -337,7 +571,7 @@ export class DatasetDraftAuthorizedService {
         '/v1/preprocess/features',
         {
           source_key: source.objectKey,
-          target_key: artifactKey(scope, newArtifactId),
+          target_key: artifactKey(scope, newArtifactId, 'GOLD'),
           features: dto.features,
           selectedColumns: dto.selectedColumns ?? null,
           scalers: dto.scalers,
@@ -696,6 +930,22 @@ export class DatasetDraftAuthorizedService {
       });
     }
 
+    // DS-LAKE-019-T05. Frozen at Save time, same reasoning as qualityScore
+    // below: the MinIO sidecar (artifact.validationKey) is rewritten on
+    // every Step 5 revalidate, so it cannot answer "what did Save actually
+    // promise". A status PASS here can only carry ADVISORY failures — a
+    // BLOCKING one would already have thrown above — so this is exactly
+    // report.checks filtered to the advisory-and-failed subset.
+    const validationAdvisory = report.checks
+      .filter((check) => check.severity === 'advisory' && !check.passed)
+      .map((check) => ({
+        name: check.name,
+        detail: check.detail,
+        measured: check.measured ?? null,
+        threshold: check.threshold ?? null,
+        offenders: check.offenders,
+      }));
+
     // Frozen lineage snapshot: walk parentArtifactId from FINAL back to the
     // BRONZE root, root-first. DatasetArtifact.parentArtifactId stays the
     // live, queryable chain — this is the point-in-time copy a saved
@@ -769,6 +1019,27 @@ export class DatasetDraftAuthorizedService {
         data: { datasetId: dataset.id },
       });
 
+      // DS-LAKE-017-T01: adopt the lineage ROOT (BRONZE) too, ONE POINTER
+      // NOT TWO — `Dataset.currentArtifactId` (set below via `version`,
+      // read by every "current" caller) still resolves to FINAL only. This
+      // only gives edit-mode hydration (T03) a `where: { id, datasetId }`
+      // path to the raw bytes that were always sitting in MinIO, hard-pinned
+      // by `artifact-cleanup-eligibility.ts` regardless of retention age —
+      // a pointer/access-guard fix, not a data-loss fix (see findings).
+      // `lineage[0]` is the root by construction (the walk above starts at
+      // FINAL and unshifts back via `parentArtifactId` to the one link that
+      // has none — BRONZE's own definition). Guarded against the
+      // FINAL-IS-the-root edge case (a draft promoted BRONZE straight to
+      // FINAL, zero intermediate stages) so that row is not update()'d
+      // twice for the same field.
+      const lineageRoot = lineage[0];
+      if (lineageRoot.id !== finalArtifact.id) {
+        await tx.datasetArtifact.update({
+          where: { id: lineageRoot.id },
+          data: { datasetId: dataset.id },
+        });
+      }
+
       // DS-LAKE-009-T03: read inside the transaction, via `tx` — see the
       // method doc comment for why this narrows but does not eliminate the
       // race, and why that gap is provably unreachable today.
@@ -793,6 +1064,7 @@ export class DatasetDraftAuthorizedService {
           missingPct: finalArtifact.missingPct,
           sizeBytes: finalArtifact.sizeBytes,
           qualityScore: report.quality_score,
+          validationAdvisory: validationAdvisory,
           status: 'DRAFT',
           lineage: lineage,
           createdById: user.id,
@@ -834,6 +1106,7 @@ export class DatasetDraftAuthorizedService {
         versionNumber: version.versionNumber,
         artifactId: finalArtifact.id,
         qualityScore: report.quality_score,
+        validationAdvisory,
         lineage,
       },
     };

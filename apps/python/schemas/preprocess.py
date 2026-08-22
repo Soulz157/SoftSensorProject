@@ -17,7 +17,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
-from intergrations.object_store import DATA_FILENAME
+from intergrations.object_store import DATA_FILENAME, is_committed_artifact_key
 from schemas.data_source import PIFetchRequest, SQLQueryRequest
 
 # Ceilings chosen so a preview always answers inside PYTHON_TIMEOUT.metadata
@@ -126,6 +126,30 @@ class ArtifactStatsResponse(BaseModel):
     #: from claiming an uncomputed feature ran). Always [] for materialize/
     #: clean, which never call apply_features.
     skipped_features: list[str] = []
+    #: DS-LAKE-018-T03. Rows written to `validate_data.parquet` — None means
+    #: no holdout was requested; only `materialize()` ever sets this.
+    #: BUGFIX (found during T05): `_stats_payload` has put this in the
+    #: response dict since T03, but it was never declared HERE — FastAPI's
+    #: `response_model=ArtifactStatsResponse` on `/materialize` was silently
+    #: stripping it from every real HTTP response, so NestJS has never
+    #: actually received a value (unit tests call `artifact_service.
+    #: materialize` directly and never saw the gap; only a real HTTP round
+    #: trip does).
+    validation_row_count: Optional[int] = None
+    #: DS-LAKE-018-T05. The resolved holdout boundary, same string
+    #: `replay_holdout`'s own `holdout_from` expects — so NestJS can persist
+    #: DatasetArtifact.validationHoldoutFrom and hand it straight back at
+    #: replay time without re-deriving it. None under the same condition as
+    #: validation_row_count above.
+    validation_holdout_from: Optional[str] = None
+    #: MODEL-FLOW-010-T06. Share of `validate_data.parquet` cells that are
+    #: not Good, captured at write time while the frame is already in
+    #: memory. None under the same condition as validation_row_count above.
+    #: Declared here deliberately, unlike the bug T05's own comment records
+    #: above — an undeclared field on this response_model is silently
+    #: stripped from the real HTTP response even though `_stats_payload`
+    #: puts it in the dict.
+    validation_missing_pct: Optional[float] = None
 
 
 class ArtifactPresignRequest(BaseModel):
@@ -194,6 +218,11 @@ class ValidationCheckResponse(BaseModel):
     measured: Optional[float] = None
     threshold: Optional[float] = None
     offenders: list[str] = Field(default_factory=list)
+    #: DS-LAKE-019-T01. Mirrors `CheckResult.severity` — a property of the
+    #: check's NAME (`validation_service.BLOCKING_CHECKS`), not a per-result
+    #: judgment call, so a client cannot drift from the server's own
+    #: weighting the day a check is added.
+    severity: Literal["blocking", "advisory"]
 
 
 class ValidationReportResponse(BaseModel):
@@ -208,6 +237,10 @@ class ValidationReportResponse(BaseModel):
     quality_score: float
     checks: list[ValidationCheckResponse]
     failed_checks: list[str]
+    #: DS-LAKE-019-T01. Failed checks that did NOT flip `status` to FAIL —
+    #: a strict subset of `failed_checks`. Surfaced separately so the UI can
+    #: show them prominently without implying the save was blocked.
+    advisory_failures: list[str] = Field(default_factory=list)
     validation_report_key: str
 
 
@@ -222,6 +255,20 @@ class SqlMaterializeSpec(BaseModel):
     timestamp_column: str = Field(..., examples=["ts"])
     #: Columns to keep as tags. Omitted means every column but the timestamp.
     tags: Optional[list[str]] = None
+
+
+class HoldoutSplitRequest(BaseModel):
+    """DS-LAKE-018-T03: the raw validation holdout window, selected at Step 2
+    (`describeHoldoutSelection`, apps/client/lib/holdout.ts). Same string
+    convention as `PIFetchRequest.start_time`/`end_time` — a local wall-clock
+    string, compared directly against the materialized frame's own
+    already-localised timestamps (`frame_service._normalise_timestamp`
+    converts to Bangkok-naive), never re-interpreted through a second
+    timezone.
+    """
+
+    from_time: str = Field(..., examples=["2026-08-01 00:00:00"])
+    to_time: str = Field(..., examples=["2026-08-10 00:00:00"])
 
 
 class MaterializeRequest(BaseModel):
@@ -242,6 +289,8 @@ class MaterializeRequest(BaseModel):
     sql: Optional[SqlMaterializeSpec] = None
     #: Committed keys are immutable; only a retry writing a tmp key sets this.
     overwrite: bool = False
+    #: DS-LAKE-018-T03. Absent means no holdout — behaves exactly as today.
+    holdout: Optional[HoldoutSplitRequest] = None
 
     @model_validator(mode="after")
     def exactly_one_source(self) -> "MaterializeRequest":
@@ -251,6 +300,28 @@ class MaterializeRequest(BaseModel):
                 "is ambiguous, and one with neither has nothing to read."
             )
         return self
+
+
+class ResplitHoldoutRequest(BaseModel):
+    """Re-split an EXISTING, PRISTINE (never-split) BRONZE against a holdout
+    window, without re-fetching from the source.
+
+    `source_key` MUST point at a frame `_split_holdout` has never run on —
+    the caller (NestJS `resplitDraftHoldoutService`) is responsible for
+    resolving the draft's pristine root and refusing an already-split one,
+    since a re-split OF a split result would silently shed the rows the
+    previous split already cut. `holdout` is required (not Optional, unlike
+    `MaterializeRequest.holdout`): clearing a holdout never reaches this
+    endpoint at all — NestJS moves the draft pointer back to the pristine
+    root directly, since the unsplit artifact already IS the no-holdout
+    state.
+    """
+
+    source_key: str
+    target_key: str
+    holdout: HoldoutSplitRequest
+    #: Committed keys are immutable; only a retry writing a tmp key sets this.
+    overwrite: bool = False
 
 
 class CleanRequest(BaseModel):
@@ -369,6 +440,63 @@ class FeaturesRequest(BaseModel):
                 "produces a new artifact and never edits its input in place."
             )
         return self
+
+
+class ReplayHoldoutRequest(BaseModel):
+    """DS-LAKE-018-T04. Replays a saved GOLD recipe over the RAW validation
+    holdout (`validate_data.parquet`, DS-LAKE-018-T03), producing a
+    model-ready frame the trained model can score.
+
+    RESOLVED (user decision, not a guess): the holdout stays fully raw —
+    `apply_features -> select_columns -> to_model_ready` only, the same
+    tail `FeaturesRequest` runs, no `apply_operations`/cleaning step at all.
+    Scaler params are SUPPLIED via `scaling_params` (DS-LAKE-018-T02's own
+    `feature_spec.json` field) and never re-fit — fitting fresh on the
+    holdout's own statistics is a silently DIFFERENT, wrong transform (see
+    that task's own finding).
+    """
+
+    source_key: str
+    target_key: str
+    #: The ORIGINAL holdout boundary (same string convention as
+    #: `HoldoutSplitRequest.from_time`) — rows in `source_key` before this
+    #: are lead-in scaffolding for lag/rolling, trimmed AFTER replay, never
+    #: scored.
+    holdout_from: str
+    features: list[FeatureConfigRequest] = Field(default_factory=list)
+    selected_columns: Optional[list[str]] = Field(
+        None, alias="selectedColumns")
+    scalers: dict[str, str] = Field(default_factory=dict)
+    scaling_params: dict[str, dict[str, float]] = Field(default_factory=dict)
+    target_y: Optional[str] = None
+    overwrite: bool = False
+
+    model_config = {"populate_by_name": True}
+
+    @model_validator(mode="after")
+    def target_differs_from_source(self) -> "ReplayHoldoutRequest":
+        if self.source_key == self.target_key:
+            raise ValueError(
+                "source_key and target_key must differ — a replay produces "
+                "a new artifact and never edits its input in place."
+            )
+        return self
+
+
+class ReplayHoldoutForRunRequest(BaseModel):
+    """DS-LAKE-018-T05. Same replay `ReplayHoldoutRequest` runs, but sourced
+    from an EXISTING GOLD's own recorded recipe instead of the caller
+    re-supplying features/scalers/scaling_params by hand — this is what
+    NestJS's `claim()` calls, since it never re-derives a training run's
+    recipe itself. `feature_spec_key` is `ModelTrainingRun.featureSpecKey`,
+    already pinned on the run row at training-create time.
+    """
+
+    feature_spec_key: str
+    source_key: str
+    target_key: str
+    holdout_from: str
+    overwrite: bool = False
 
 
 class ValidateRequest(BaseModel):
@@ -603,9 +731,13 @@ class ArtifactReclaimRequest(BaseModel):
 
     @model_validator(mode="after")
     def object_key_is_a_committed_artifact(self) -> "ArtifactReclaimRequest":
-        if "/artifacts/" not in self.object_key or not self.object_key.endswith(
-            f"/{DATA_FILENAME}"
-        ):
+        # DS-LAKE-016-T02: routed through `is_committed_artifact_key` instead
+        # of duplicating its check inline — this validator IS the guard
+        # `presign_artifact` shares that predicate with (see its own doc
+        # comment: "the presign guard cannot drift from it"). Before this fix
+        # it duplicated the OLD, legacy-`data.parquet`-only version of that
+        # check, which would have refused a real stage-suffixed artifact.
+        if not is_committed_artifact_key(self.object_key):
             raise ValueError(
                 "object_key must be a committed artifact's data key "
                 f"('.../artifacts/{{artifactId}}/{DATA_FILENAME}'). Refusing "

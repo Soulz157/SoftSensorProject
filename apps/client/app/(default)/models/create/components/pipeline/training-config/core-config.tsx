@@ -12,18 +12,22 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { LOSS_OPTIONS } from '@/lib/training-config'
-import { ChevronsUpDown } from 'lucide-react'
+import { Check, ChevronsUpDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '@/components/ui/dialog'
-import { Checkbox } from '@/components/ui/checkbox'
-import { Separator } from '@/components/ui/separator'
-import { ScrollArea } from '@/components/ui/scroll-area'
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover'
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command'
+import { cn } from '@/lib/utils'
 
 interface Props {
   tags: string[]
@@ -44,105 +48,74 @@ export function CoreConfig({
   trainTestSplit,
   onSplitChange,
 }: Props) {
-  const toggleTarget = (tag: string) => {
-    const isSelected = targetVariables.includes(tag)
-
-    if (isSelected) {
-      onTargetChange(targetVariables.filter(target => target !== tag))
-    } else {
-      onTargetChange([...targetVariables, tag])
-    }
-  }
-
-  const allSelected =
-    tags.length > 0 && tags.every(tag => targetVariables.includes(tag))
-  const toggleAll = () => onTargetChange(allSelected ? [] : [...tags])
-
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         {/* Target Variables */}
         <div className="space-y-1.5">
           <Label className="text-xs font-medium">
-            Target variables <span className="text-destructive">*</span>
+            Target variable <span className="text-destructive">*</span>
           </Label>
 
-          <Dialog>
-            <DialogTrigger asChild>
+          <Popover>
+            <PopoverTrigger asChild>
               <Button
                 variant="outline"
                 role="combobox"
                 className="h-9 w-full justify-between text-sm font-normal"
               >
                 <span className="truncate">
-                  {targetVariables.length === 0
-                    ? 'Select tags to predict'
-                    : targetVariables.length === 1
-                      ? targetVariables[0]
-                      : `${targetVariables.length} targets selected`}
+                  {targetVariables[0] ?? 'Select a tag to predict'}
                 </span>
 
                 <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
               </Button>
-            </DialogTrigger>
+            </PopoverTrigger>
 
-            <DialogContent className="sm:max-w-md">
-              <DialogHeader>
-                <DialogTitle className="font-medium text-foreground text-md">
-                  Select target variables
-                </DialogTitle>
-              </DialogHeader>
+            <PopoverContent
+              className="w-(--radix-popover-trigger-width) p-0"
+              align="start"
+            >
+              <Command>
+                <CommandInput placeholder="Search tags…" />
+                <CommandList>
+                  <CommandEmpty>
+                    {tags.length === 0
+                      ? 'No dataset tags available.'
+                      : 'No tags found.'}
+                  </CommandEmpty>
+                  <CommandGroup>
+                    {tags.map(tag => {
+                      const selected = targetVariables[0] === tag
 
-              <Button
-                variant="default"
-                size="sm"
-                onClick={toggleAll}
-                className="w-fit gap-2  cursor-pointer dark:bg-muted/10"
-              >
-                Select All ({tags.length})
-              </Button>
+                      return (
+                        <CommandItem
+                          key={tag}
+                          value={tag}
+                          onSelect={() => onTargetChange(selected ? [] : [tag])}
+                          className={cn(
+                            'rounded-md',
+                            selected
+                              ? 'border border-primary/20'
+                              : 'border border-transparent',
+                          )}
+                        >
+                          <Check
+                            className={cn(
+                              'text-primary transition-opacity',
+                              selected ? 'opacity-100' : 'opacity-0',
+                            )}
+                          />
 
-              <Separator className="my-2 h-px w-full bg-border" />
-
-              <ScrollArea className="h-[60vh] w-full rounded-md border border-border p-2 bg-primary/5 dark:bg-primary/10">
-                <div className="space-y-1">
-                  {tags.map(tag => {
-                    const checked = targetVariables.includes(tag)
-
-                    return (
-                      <label
-                        key={tag}
-                        className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-2 text-sm hover:bg-muted"
-                      >
-                        <Checkbox
-                          checked={checked}
-                          onCheckedChange={() => toggleTarget(tag)}
-                        />
-
-                        <span className="truncate text-sm font-medium">
-                          {tag}
-                        </span>
-                      </label>
-                    )
-                  })}
-                </div>
-              </ScrollArea>
-            </DialogContent>
-          </Dialog>
-
-          {/* Selected targets */}
-          {targetVariables.length > 0 && (
-            <div className="flex flex-wrap gap-1">
-              {targetVariables.map(tag => (
-                <span
-                  key={tag}
-                  className="rounded-md bg-muted px-2 py-1 text-[11px]"
-                >
-                  {tag}
-                </span>
-              ))}
-            </div>
-          )}
+                          <span className="truncate font-medium">{tag}</span>
+                        </CommandItem>
+                      )
+                    })}
+                  </CommandGroup>
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
         </div>
 
         {/* Loss Function */}

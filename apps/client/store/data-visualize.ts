@@ -18,6 +18,13 @@ export interface FetchState {
 /** Per-tag status returned by the PI tag-list (catalog) discovery call. */
 export type TagDiscoveryStatus = 'fetching' | 'complete' | 'error'
 
+export type TabStatus =
+  | 'no-tags'
+  | 'pending'
+  | 'loading'
+  | 'ready'
+  | 'unavailable'
+
 /** A tag discovered from the PI server, with its live discovery status. */
 export interface DiscoveredTag {
   piTag: string
