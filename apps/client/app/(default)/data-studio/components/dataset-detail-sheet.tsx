@@ -1,7 +1,13 @@
 'use client'
 
 import { useMemo } from 'react'
-import { LayoutGrid, Tags as TagsIcon, Database } from 'lucide-react'
+import {
+  LayoutGrid,
+  Tags as TagsIcon,
+  Database,
+  FileDown,
+  Loader2,
+} from 'lucide-react'
 import type { SavedDataset } from '@/store/datasets'
 import type { DataSourceKind } from '@/lib/mock-data-sources'
 import {
@@ -11,6 +17,7 @@ import {
 } from '@/lib/dataset-stats'
 import { SOURCE_META, STAGE_LABEL } from '@/lib/dataset-source-meta'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
@@ -34,6 +41,7 @@ import { useArtifactColumnStats } from '@/hooks/dataset/artifact/use-dataset-art
 import { useArtifactMetadata } from '@/hooks/dataset/artifact/use-dataset-artifact-metadata'
 import { useArtifactRows } from '@/hooks/dataset/artifact/use-artifact-rows'
 import { useArtifactCorrelation } from '@/hooks/dataset/artifact/use-artifact-correlation'
+import { useDatasetExport } from '@/hooks/dataset/use-dataset-export'
 
 export interface DetailSource {
   name: string
@@ -149,6 +157,13 @@ export function DatasetDetailSheet({
   const timeSpan = artifactTimeSpanLabel(metadata?.startTime, metadata?.endTime)
   const hasArtifact = artifactId !== null
 
+  // DS-LAKE-021-T03. `artifactId` here is `dataset.currentArtifactId`, the
+  // FINAL a saved dataset always points at — `hasArtifact` is therefore the
+  // same "FINAL exists" gate `startExportService` itself enforces
+  // server-side (404 otherwise), so a disabled/hidden control here never
+  // needs to render a 404 error state.
+  const exportHook = useDatasetExport(datasetId)
+
   // Ordered by the DATASET's own tag list, not the sidecar's key order: the
   // Tags section directly above renders `dataset.tags`, and two lists in one
   // sheet disagreeing on order is a bug report waiting to happen. Shared with
@@ -243,6 +258,76 @@ export function DatasetDetailSheet({
                   sub={metadataError ?? undefined}
                 />
               </div>
+
+              {/* DS-LAKE-021-T03. Only offered once a FINAL artifact
+                  exists — `startExportService` itself asserts this
+                  server-side. Status columns are dropped and a Bad-status
+                  cell exports as a blank field, never the numeric 0.0 the
+                  Parquet stores — the same fact the CSV's own reader
+                  needs, stated here before the click, not after. */}
+              {hasArtifact && (
+                <section className="space-y-2 rounded-lg border border-border p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-sm font-semibold text-foreground">
+                      Export
+                    </p>
+                    {exportHook.status === 'idle' && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="w-fit"
+                        onClick={() => void exportHook.start()}
+                      >
+                        <FileDown className="mr-2 h-3.5 w-3.5" />
+                        Export CSV
+                      </Button>
+                    )}
+                    {exportHook.status === 'running' && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="w-fit"
+                        disabled
+                      >
+                        <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                        Exporting…
+                      </Button>
+                    )}
+                    {exportHook.status === 'ready' && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="w-fit"
+                        onClick={() => void exportHook.download()}
+                      >
+                        <FileDown className="mr-2 h-3.5 w-3.5" />
+                        Download CSV
+                      </Button>
+                    )}
+                    {exportHook.status === 'error' && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="w-fit"
+                        onClick={() => void exportHook.start()}
+                      >
+                        <FileDown className="mr-2 h-3.5 w-3.5" />
+                        Retry export
+                      </Button>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {rowCount.toLocaleString()} rows, {tags.length} columns.
+                    Status columns are not included — a Bad reading exports as a
+                    blank cell.
+                  </p>
+                  {exportHook.status === 'error' && (
+                    <p className="text-xs text-destructive">
+                      {exportHook.error}
+                    </p>
+                  )}
+                </section>
+              )}
 
               {/* Tags scroll area */}
               <section className="space-y-2">

@@ -382,6 +382,22 @@ export const datasetVersionService = {
     fetchClient(`${base(datasetId)}/jobs/${encodeURIComponent(jobId)}/retry`, {
       method: 'POST',
     }),
+
+  /** DS-LAKE-021. Starts an EXPORT-stage job against the dataset's FINAL
+   * artifact — poll `job(datasetId, jobId)` for completion. */
+  startExport: (datasetId: string): Promise<ApiResponse<{ jobId: string }>> =>
+    fetchClient(`${base(datasetId)}/export`, { method: 'POST' }),
+
+  /** DS-LAKE-021. Presigns FRESH on every call — the URL expires, so it
+   * must never be cached from job-completion time. */
+  exportDownload: (
+    datasetId: string,
+    artifactId: string,
+  ): Promise<ApiResponse<{ downloadUrl: string; expiresAt: string }>> =>
+    fetchClient(
+      `${base(datasetId)}/export/${encodeURIComponent(artifactId)}/download`,
+      { method: 'GET' },
+    ),
 }
 
 /**
