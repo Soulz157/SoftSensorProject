@@ -216,15 +216,16 @@ export class PreprocessingJobService
       : isExportJob
         ? 'EXPORT'
         : 'SILVER';
-    // EXPORT never writes through `committedKey` — Python computes its own
-    // sidecar key from the SOURCE artifact's own data key (see
-    // EXPORT_CSV_FILENAME's doc comment in artifact-keys.ts) — so this stays
-    // narrowed to the two values `artifactKey()` actually accepts rather than
-    // widening that function's signature for a value it would never use.
+    // DS-LAKE-021-T04: EXPORT now writes through `committedKey` too, into
+    // its OWN artifact-id-keyed prefix — it used to derive a sidecar key
+    // from the SOURCE artifact's own data key, landing inside the source's
+    // own prefix, which made reclaiming an EXPORT row unsafe (it could
+    // delete the source's data.parquet too). Same key mechanism every
+    // other committed artifact type already uses.
     const committedKey = artifactKey(
       scope,
       artifactId,
-      isFeatureJob ? 'GOLD' : 'SILVER',
+      isFeatureJob ? 'GOLD' : isExportJob ? 'EXPORT' : 'SILVER',
     );
     const jobTmpPrefix = tmpPrefixFor(scope, jobId);
 
@@ -318,7 +319,7 @@ export class PreprocessingJobService
         const exportStats = ExportStatsSchema.parse(
           await postToPython(
             '/v1/preprocess/export',
-            { source_key: sourceObjectKey },
+            { source_key: sourceObjectKey, target_key: committedKey },
             PYTHON_TIMEOUT.preprocess,
             controller.signal,
           ),

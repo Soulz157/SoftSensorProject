@@ -676,7 +676,7 @@ describe('EXPORT stage', () => {
     expect(jobWrite).toMatchObject({ status: 'SUCCEEDED', completedSteps: 1 });
   });
 
-  it('EXP-02: calls /v1/preprocess/export with the source artifact objectKey', async () => {
+  it('EXP-02: calls /v1/preprocess/export with the source artifact objectKey and its own target_key', async () => {
     post.mockResolvedValue(EXPORT_ARTIFACT);
     const { service } = makeService(buildExportJob());
     await (service as unknown as Runnable).run('job-1');
@@ -685,9 +685,14 @@ describe('EXPORT stage', () => {
       ([path]) => path === '/v1/preprocess/export',
     );
     expect(exportCalls).toHaveLength(1);
-    expect(exportCalls[0]?.[1]).toMatchObject({
-      source_key: 'ds-1/artifacts/a-1/data.parquet',
-    });
+    const [, body] = exportCalls[0] as [string, Record<string, unknown>];
+    expect(body.source_key).toBe('ds-1/artifacts/a-1/data.parquet');
+    // DS-LAKE-021-T04: EXPORT writes into its OWN artifact-id-keyed prefix
+    // now, same mechanism FEATURE's GOLD target_key already uses — not a
+    // sidecar of the source's key.
+    expect(String(body.target_key)).toMatch(
+      /^ds-1\/artifacts\/[0-9a-f-]{36}\/export\.csv$/,
+    );
   });
 
   it('EXP-03: a CLEAN-shaped payload on an EXPORT-stage job FAILS rather than silently exporting nothing', async () => {

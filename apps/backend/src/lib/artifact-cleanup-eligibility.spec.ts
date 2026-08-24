@@ -30,6 +30,10 @@ function artifact(
   return {
     type: 'BRONZE',
     draftId: 'draft-1',
+    // Irrelevant to every BRONZE/SILVER/GOLD/FINAL case below — only the
+    // EXPORT branch reads this. A fixed default keeps those tests from
+    // having to supply a value they don't care about.
+    createdAt: NOW,
     ...overrides,
   };
 }
@@ -242,6 +246,45 @@ describe('selectCleanupEligibleArtifacts', () => {
     expect(after.sort()).toEqual(
       ['abandoned-bronze', 'bronze-1', 'gold-1', 'silver-1'].sort(),
     );
+  });
+
+  it('DS-LAKE-021-T04: reclaims an EXPORT artifact once past its retention window, with no draft involved at all', () => {
+    // EXPORT belongs to a SAVED dataset, never a draft — draftId is always
+    // null, and no draft entry is supplied here at all, proving the
+    // no_draft fail-safe never gets a chance to reject it.
+    const result = selectCleanupEligibleArtifacts(
+      [
+        artifact({
+          id: 'export-1',
+          type: 'EXPORT',
+          draftId: null,
+          createdAt: hoursAgo(200),
+        }),
+      ],
+      new Set(),
+      drafts({}),
+      CONFIG,
+      NOW,
+    );
+    expect(result).toEqual(['export-1']);
+  });
+
+  it('DS-LAKE-021-T04: keeps an EXPORT artifact ineligible before its retention window elapses', () => {
+    const result = selectCleanupEligibleArtifacts(
+      [
+        artifact({
+          id: 'export-1',
+          type: 'EXPORT',
+          draftId: null,
+          createdAt: hoursAgo(1),
+        }),
+      ],
+      new Set(),
+      drafts({}),
+      CONFIG,
+      NOW,
+    );
+    expect(result).toEqual([]);
   });
 
   it('regression (DS-LAKE-012): never reclaims the SILVER/GOLD artifact directly promoted to a live FINAL, even though it is normally age-releasable', () => {

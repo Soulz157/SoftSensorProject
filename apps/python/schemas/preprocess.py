@@ -155,9 +155,19 @@ class ArtifactStatsResponse(BaseModel):
 class ExportRequest(BaseModel):
     """DS-LAKE-021-T01. `source_key` is the committed FINAL artifact's
     data.parquet key — NestJS resolves which artifact is FINAL and passes
-    its objectKey verbatim, same convention every other *Request here uses."""
+    its objectKey verbatim, same convention every other *Request here uses.
+
+    DS-LAKE-021-T04: `target_key` is the EXPORT artifact's OWN key (its own
+    `/artifacts/{exportArtifactId}/export.csv`, minted by NestJS the same
+    way `FeaturesRequest.target_key` already is) — an export used to derive
+    its own key via `sidecar_key(source_key, ...)`, landing INSIDE the
+    source artifact's own prefix; reclaiming it then risked deleting the
+    source's own data.parquet too. Writing to a NestJS-chosen `target_key`
+    instead gives the export its own prefix, same as every other committed
+    artifact type."""
 
     source_key: str
+    target_key: str
 
 
 class ExportStatsResponse(BaseModel):

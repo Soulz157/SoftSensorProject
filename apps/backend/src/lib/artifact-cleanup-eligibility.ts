@@ -65,12 +65,22 @@ export interface CleanupCandidateArtifact {
    * kept for traceability). Null here means there is no basis to release
    * the artifact and it is treated as ineligible. */
   draftId: string | null;
-  // No `createdAt` here on purpose. Both branches below measure age from
-  // the DRAFT's `updatedAt`, never the artifact's own `createdAt` — see
-  // `CleanupDraftInfo.updatedAt`'s doc comment for why: the retention
-  // window is a promise made about time SINCE the draft's status changed
-  // (abandonment, or Save), not about how long ago the wizard happened to
-  // write the bytes.
+  // Every draft-owned type measures age from the DRAFT's `updatedAt`,
+  // never this — see `CleanupDraftInfo.updatedAt`'s doc comment for why:
+  // the retention window is a promise made about time SINCE the draft's
+  // status changed (abandonment, or Save), not about how long ago the
+  // wizard happened to write the bytes.
+  //
+  // DS-LAKE-021-T04: EXPORT is the one exception. It belongs to a SAVED
+  // (post-draft) dataset, never a draft — `draftId` is always null for it
+  // — so there is no draft window to read at all. Its own `createdAt` is
+  // the only clock available, and using it here carries none of the risk
+  // the comment above warns about: an export is a derived, freely
+  // re-creatable rendering of the FINAL it came from (unlike a draft's
+  // in-flight artifact), so a window measured from its own creation time
+  // cannot strand a user's still-needed work the way it could for
+  // BRONZE/SILVER/GOLD.
+  createdAt: Date;
 }
 
 export interface CleanupDraftInfo {
@@ -208,6 +218,23 @@ export function reportCleanupEligibility(
     // below. See the module doc comment for the full incident.
     if (objectKeySharedWithFinalIds.has(artifact.id)) {
       skipped.shared_final_object += 1;
+      continue;
+    }
+
+    // DS-LAKE-021-T04: EXPORT has no draft to read a window from — see
+    // `CleanupCandidateArtifact.createdAt`'s doc comment. Same retention
+    // tier SILVER/GOLD's own SAVED case below uses, aged off the
+    // artifact's own creation time instead. Handled here, before the
+    // `!artifact.draftId` fail-safe below, so EXPORT's always-null
+    // `draftId` never falls into that unconditional skip.
+    if (artifact.type === 'EXPORT') {
+      if (
+        hoursSince(artifact.createdAt, now) >= config.intermediateRetentionHours
+      ) {
+        eligible.push(artifact.id);
+      } else {
+        skipped.inside_window += 1;
+      }
       continue;
     }
 

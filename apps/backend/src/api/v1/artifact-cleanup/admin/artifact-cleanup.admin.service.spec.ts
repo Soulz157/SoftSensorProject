@@ -34,7 +34,7 @@ const OLD = new Date('2026-08-01T00:00:00.000Z'); // > 168h before NOW (draft.up
 
 interface ArtifactRow {
   id: string;
-  type: 'BRONZE' | 'SILVER' | 'GOLD' | 'FINAL';
+  type: 'BRONZE' | 'SILVER' | 'GOLD' | 'FINAL' | 'EXPORT';
   draftId: string | null;
   objectKey: string;
   parentArtifactId?: string | null;
@@ -46,6 +46,10 @@ interface ArtifactRow {
    * cared about byte counts, is unaffected.
    */
   sizeBytes?: bigint;
+  /** DS-LAKE-021-T04: only EXPORT's eligibility branch reads this — it has
+   * no draftId to measure a window from. Defaults to `OLD` so every
+   * pre-existing (non-EXPORT) test, which never cared, is unaffected. */
+  createdAt?: Date;
 }
 
 function buildPrismaMock(options: {
@@ -63,12 +67,13 @@ function buildPrismaMock(options: {
       findMany: jest.fn().mockResolvedValue(
         options.artifacts
           .filter((a) => a.type !== 'FINAL')
-          .map(({ id, type, draftId, objectKey, sizeBytes }) => ({
+          .map(({ id, type, draftId, objectKey, sizeBytes, createdAt }) => ({
             id,
             type,
             draftId,
             objectKey,
             sizeBytes: sizeBytes ?? 0n,
+            createdAt: createdAt ?? OLD,
           })),
       ),
       findUnique: jest.fn().mockImplementation(({ where: { id } }) => {
@@ -233,6 +238,46 @@ describe('ArtifactCleanupAdminService', () => {
     const updateOrder =
       prisma.datasetArtifact.update.mock.invocationCallOrder[0];
     expect(postOrder).toBeLessThan(updateOrder);
+  });
+
+  it('DS-LAKE-021-T04: a live run reclaims an EXPORT artifact via the same sweep, no draft involved', async () => {
+    // EXPORT belongs to a SAVED dataset (draftId: null, no draft row at
+    // all) and now owns its own artifact-id-keyed prefix — this is the
+    // plan's original Task 5, made meaningful now that reclaim actually
+    // works for EXPORT instead of always skipping it as no_draft.
+    post.mockResolvedValue({
+      prefix: 'ds-1/artifacts/export-1/',
+      deleted: 1,
+    });
+    const prisma = buildPrismaMock({
+      artifacts: [
+        {
+          id: 'export-1',
+          type: 'EXPORT',
+          draftId: null,
+          objectKey: 'ds-1/artifacts/export-1/export.csv',
+          createdAt: OLD,
+        },
+      ],
+      drafts: [],
+      liveVersions: [],
+    });
+    const service = makeService(prisma);
+
+    const result = await service.run({ dryRun: false });
+
+    expect(post).toHaveBeenCalledWith(
+      '/v1/preprocess/artifacts/reclaim',
+      { object_key: 'ds-1/artifacts/export-1/export.csv' },
+      expect.any(Number),
+    );
+    expect(prisma.datasetArtifact.update).toHaveBeenCalledWith({
+      where: { id: 'export-1' },
+      data: { objectReclaimedAt: expect.any(Date) },
+    });
+    expect(result.reclaimed).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(result.scanned).toBe(1);
   });
 
   it('DS-LAKE-014-T05: bytesReclaimed sums real bigint sizeBytes across multiple reclaimed artifacts (a zero that cannot fail proves nothing)', async () => {

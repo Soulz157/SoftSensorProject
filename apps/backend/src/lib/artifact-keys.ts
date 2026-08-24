@@ -50,14 +50,20 @@ export const EXPORT_CSV_FILENAME = 'export.csv';
  * checksum, "promotion by pointer, not byte-copy"), and
  * `global_definition_of_done` forbids copying bytes at promotion outright.
  * Mirrored from `DATA_FILENAME_BY_TYPE` in object_store.py — change both.
+ *
+ * DS-LAKE-021-T04: EXPORT gets its OWN entry (unlike FINAL) — an export is
+ * a real, independently-reclaimable object, not a promoted pointer. Reuses
+ * `EXPORT_CSV_FILENAME` rather than a second string literal for the same
+ * name.
  */
 export const DATA_FILENAME_BY_TYPE: Record<
-  'BRONZE' | 'SILVER' | 'GOLD',
+  'BRONZE' | 'SILVER' | 'GOLD' | 'EXPORT',
   string
 > = {
   BRONZE: 'data_bronze.parquet',
   SILVER: 'data_silver.parquet',
   GOLD: 'data_gold.parquet',
+  EXPORT: EXPORT_CSV_FILENAME,
 };
 
 /**
@@ -144,7 +150,7 @@ export function sidecarKey(dataKey: string, filename: string): string {
 export function artifactKey(
   datasetId: string,
   artifactId: string,
-  artifactType?: 'BRONZE' | 'SILVER' | 'GOLD',
+  artifactType?: 'BRONZE' | 'SILVER' | 'GOLD' | 'EXPORT',
 ): string {
   const filename = artifactType
     ? DATA_FILENAME_BY_TYPE[artifactType]

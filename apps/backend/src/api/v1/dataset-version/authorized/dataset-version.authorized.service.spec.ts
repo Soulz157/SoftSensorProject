@@ -574,21 +574,19 @@ describe('DatasetVersionAuthorizedService — startExportService / getExportDown
     );
   });
 
-  it('getExportDownloadService presigns the FINAL objectKey with the export sidecar, fresh every call', async () => {
+  it("getExportDownloadService presigns the EXPORT artifact's own objectKey, fresh every call", async () => {
+    // DS-LAKE-021-T04: the export now owns its own key directly (own
+    // artifact-id-keyed prefix) — one lookup, no parentArtifactId hop to a
+    // FINAL, no sidecars param. `data_url`, not `sidecar_urls[...]`.
     const prisma = buildPrisma();
-    prisma.datasetArtifact.findFirst
-      .mockResolvedValueOnce({
-        id: 'export-1',
-        type: 'EXPORT',
-        parentArtifactId: 'final-1',
-      })
-      .mockResolvedValueOnce({
-        id: 'final-1',
-        objectKey: 'ds-1/artifacts/final-1/data.parquet',
-      });
+    prisma.datasetArtifact.findFirst.mockResolvedValueOnce({
+      id: 'export-1',
+      type: 'EXPORT',
+      objectKey: 'ds-1/artifacts/export-1/export.csv',
+    });
     post.mockResolvedValue({
-      data_url: 'https://minio.example/gold-signed',
-      sidecar_urls: { 'export.csv': 'https://minio.example/export-signed' },
+      data_url: 'https://minio.example/export-signed',
+      sidecar_urls: {},
       checksum: 'c'.repeat(64),
       row_count: 500,
       expires_at: '2026-08-24T01:00:00Z',
@@ -605,21 +603,17 @@ describe('DatasetVersionAuthorizedService — startExportService / getExportDown
     expect(res.data.expiresAt).toBe('2026-08-24T01:00:00Z');
     expect(post).toHaveBeenCalledWith(
       '/v1/preprocess/artifacts/presign',
-      {
-        source_key: 'ds-1/artifacts/final-1/data.parquet',
-        sidecars: ['export.csv'],
-      },
+      { source_key: 'ds-1/artifacts/export-1/export.csv', sidecars: [] },
       expect.anything(),
     );
   });
 
-  it('getExportDownloadService 404s when the artifact is not type EXPORT', async () => {
+  it('getExportDownloadService 404s when no EXPORT artifact matches this id/dataset', async () => {
+    // A real Postgres query's `where: { id, datasetId, type: 'EXPORT' }`
+    // returns null for a wrong-type or wrong-dataset id alike — both
+    // collapse to the same "not found" case this mock represents.
     const prisma = buildPrisma();
-    prisma.datasetArtifact.findFirst.mockResolvedValueOnce({
-      id: 'silver-1',
-      type: 'SILVER',
-      parentArtifactId: null,
-    });
+    prisma.datasetArtifact.findFirst.mockResolvedValueOnce(null);
     const { service } = makeService(prisma);
 
     await expect(

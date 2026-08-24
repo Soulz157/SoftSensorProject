@@ -10,7 +10,6 @@ import {
 import { presignArtifact } from '@/lib/python-preprocess-client';
 import {
   artifactKey,
-  EXPORT_CSV_FILENAME,
   sidecarKey,
   VALIDATE_DATA_FILENAME,
 } from '@/lib/artifact-keys';
@@ -1419,6 +1418,15 @@ export class DatasetVersionAuthorizedService {
    * call rather than caching a value from job completion — presigned URLs
    * expire (`expires_at`), so a stale link served from an old job payload
    * would 403 client-side with no way to recover short of re-running export.
+   *
+   * DS-LAKE-021-T04: presigns the EXPORT artifact's OWN `objectKey`
+   * directly. It used to hop through `parentArtifactId` to the source
+   * FINAL and presign ITS key with `sidecars: [EXPORT_CSV_FILENAME]` —
+   * that was only ever necessary because the export object lived inside
+   * the FINAL's own prefix. Now that an EXPORT artifact owns its key the
+   * same way every other committed artifact type does, this is a single
+   * lookup and a plain (no-sidecar) presign, same as any other artifact
+   * download.
    */
   async getExportDownloadService(
     user: Auth.UserPayload,
@@ -1429,9 +1437,9 @@ export class DatasetVersionAuthorizedService {
 
     const exportArtifact = await this.prisma.datasetArtifact.findFirst({
       where: { id: artifactId, datasetId, type: 'EXPORT' },
-      select: { parentArtifactId: true },
+      select: { objectKey: true },
     });
-    if (!exportArtifact || !exportArtifact.parentArtifactId) {
+    if (!exportArtifact) {
       throw new AppException({
         statusCode: 404,
         message: 'Export artifact not found for this dataset.',
@@ -1439,36 +1447,25 @@ export class DatasetVersionAuthorizedService {
       });
     }
 
-    const final = await this.prisma.datasetArtifact.findFirst({
-      where: { id: exportArtifact.parentArtifactId },
-      select: { objectKey: true },
-    });
-    if (!final) {
-      throw new AppException({
-        statusCode: 404,
-        message: 'Source artifact for this export no longer exists.',
-        type: 'ERROR',
-      });
-    }
-
+    // `data_url` is non-nullable per PresignArtifactSchema — Python's
+    // presigned_get() signs a URL unconditionally, without checking the
+    // object exists (that's what `sidecar_urls`' nullability was for, back
+    // when the export lived as a sidecar). A genuinely missing export
+    // object surfaces as a Python-side failure from `presignArtifact`
+    // itself (it also reads the object's metadata/checksum), not a falsy
+    // `data_url` here — so there is no separate 404 branch to write.
     const presigned = await presignArtifact({
-      source_key: final.objectKey,
-      sidecars: [EXPORT_CSV_FILENAME],
+      source_key: exportArtifact.objectKey,
     });
-    const downloadUrl = presigned.sidecar_urls[EXPORT_CSV_FILENAME];
-    if (!downloadUrl) {
-      throw new AppException({
-        statusCode: 404,
-        message: 'Export file is missing from storage — re-run the export.',
-        type: 'ERROR',
-      });
-    }
 
     return {
       statusCode: 200,
       message: 'Export download link',
       type: 'SUCCESS' as const,
-      data: { downloadUrl, expiresAt: presigned.expires_at },
+      data: {
+        downloadUrl: presigned.data_url,
+        expiresAt: presigned.expires_at,
+      },
     };
   }
 }

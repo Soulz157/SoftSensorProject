@@ -164,6 +164,9 @@ export class ArtifactCleanupAdminService
         draftId: true,
         objectKey: true,
         sizeBytes: true,
+        // DS-LAKE-021-T04: the only field EXPORT's eligibility branch reads
+        // — it has no draftId, so this is its sole clock.
+        createdAt: true,
       },
     });
     const sizeByArtifactId = new Map(

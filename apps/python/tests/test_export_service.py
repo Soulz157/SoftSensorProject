@@ -19,6 +19,12 @@ from intergrations.object_store import ObjectStoreError, STATUS_BAD, STATUS_GOOD
 #: the real ObjectStore methods have.
 CHUNK_BYTES = 4096
 
+#: DS-LAKE-021-T04: the EXPORT artifact's OWN key, minted by NestJS the
+#: same way every other committed artifact's `target_key` is — deliberately
+#: a DIFFERENT artifact id than any source key used below, matching
+#: reality (a fresh randomUUID, never the source's own id).
+TARGET_KEY = "ds-1/artifacts/export-1/export.csv"
+
 
 class RecordingStore:
     """Minimal in-memory ObjectStore stand-in, mirroring the pattern already
@@ -133,10 +139,13 @@ def test_bad_cell_exports_as_empty_not_zero():
     store = RecordingStore({"ds-1/artifacts/a-1/data.parquet": _parquet_bytes(df)})
 
     result = export_artifact_csv(
-        store, ExportRequest(source_key="ds-1/artifacts/a-1/data.parquet")
+        store,
+        ExportRequest(
+            source_key="ds-1/artifacts/a-1/data.parquet", target_key=TARGET_KEY
+        ),
     )
 
-    csv_bytes = store.raw_objects["ds-1/artifacts/a-1/export.csv"]
+    csv_bytes = store.raw_objects[TARGET_KEY]
     csv_text = csv_bytes.decode("utf-8")
     rows = csv_text.strip().split("\n")
     assert rows[0] == "timestamp,TI-101"
@@ -144,7 +153,7 @@ def test_bad_cell_exports_as_empty_not_zero():
     assert rows[2] == "2026-01-01 00:01:00,"  # empty field, not "0.0"
     assert result.row_count == 2
     assert result.column_count == 1  # TI-101 only — __status dropped
-    assert result.object_key == "ds-1/artifacts/a-1/export.csv"
+    assert result.object_key == TARGET_KEY
 
 
 def test_questionable_cell_stays_numeric():
@@ -160,10 +169,13 @@ def test_questionable_cell_stays_numeric():
     store = RecordingStore({"ds-1/artifacts/a-1/data.parquet": _parquet_bytes(df)})
 
     export_artifact_csv(
-        store, ExportRequest(source_key="ds-1/artifacts/a-1/data.parquet")
+        store,
+        ExportRequest(
+            source_key="ds-1/artifacts/a-1/data.parquet", target_key=TARGET_KEY
+        ),
     )
 
-    csv_text = store.raw_objects["ds-1/artifacts/a-1/export.csv"].decode("utf-8")
+    csv_text = store.raw_objects[TARGET_KEY].decode("utf-8")
     assert "7.2" in csv_text
 
 
@@ -172,7 +184,11 @@ def test_missing_source_raises_object_store_error():
 
     with pytest.raises(ObjectStoreError):
         export_artifact_csv(
-            store, ExportRequest(source_key="ds-1/artifacts/missing/data.parquet")
+            store,
+            ExportRequest(
+                source_key="ds-1/artifacts/missing/data.parquet",
+                target_key=TARGET_KEY,
+            ),
         )
 
 
@@ -191,7 +207,9 @@ def test_export_leaves_source_untouched():
     original_bytes = _parquet_bytes(df)
     store = RecordingStore({source_key: original_bytes})
 
-    result = export_artifact_csv(store, ExportRequest(source_key=source_key))
+    result = export_artifact_csv(
+        store, ExportRequest(source_key=source_key, target_key=TARGET_KEY)
+    )
 
     assert store.raw_objects[source_key] == original_bytes
     assert store.writes == [result.object_key]  # exactly one write, not the source
@@ -211,10 +229,13 @@ def test_multi_batch_export_has_one_header_and_all_rows(monkeypatch):
     store = RecordingStore({"ds-1/artifacts/a-1/data.parquet": payload})
 
     result = export_artifact_csv(
-        store, ExportRequest(source_key="ds-1/artifacts/a-1/data.parquet")
+        store,
+        ExportRequest(
+            source_key="ds-1/artifacts/a-1/data.parquet", target_key=TARGET_KEY
+        ),
     )
 
-    csv_text = store.raw_objects["ds-1/artifacts/a-1/export.csv"].decode("utf-8")
+    csv_text = store.raw_objects[TARGET_KEY].decode("utf-8")
     lines = csv_text.strip().split("\n")
     header = "timestamp," + ",".join(f"TAG-{i}" for i in range(2))
     assert lines.count(header) == 1  # header written once, not once per batch
@@ -243,7 +264,9 @@ def test_peak_memory_does_not_scale_with_row_count(monkeypatch):
 
     def _peak_for(payload: bytes) -> int:
         store = DiscardingStore({"ds-1/artifacts/a-1/data.parquet": payload})
-        request = ExportRequest(source_key="ds-1/artifacts/a-1/data.parquet")
+        request = ExportRequest(
+            source_key="ds-1/artifacts/a-1/data.parquet", target_key=TARGET_KEY
+        )
         tracemalloc.start()
         try:
             export_artifact_csv(store, request)

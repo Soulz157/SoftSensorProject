@@ -24,12 +24,10 @@ import tempfile
 import pyarrow.parquet as pq
 
 from intergrations.object_store import (
-    EXPORT_CSV_FILENAME,
     ObjectStore,
     STATUS_BAD,
     STATUS_SUFFIX,
     TIMESTAMP_COLUMN,
-    sidecar_key,
 )
 from schemas.preprocess import ExportRequest, ExportStatsResponse
 
@@ -104,7 +102,12 @@ def export_artifact_csv(
             header_written = True
 
         dst.seek(0)
-        export_key = sidecar_key(request.source_key, EXPORT_CSV_FILENAME)
+        # DS-LAKE-021-T04: NestJS mints this — the EXPORT artifact's OWN
+        # key, not a sidecar of the SOURCE artifact's key. Writing a
+        # sidecar-derived key here used to land the export INSIDE the
+        # source artifact's own prefix, making it unsafe to reclaim
+        # independently (see this module's own docstring).
+        export_key = request.target_key
         store.put_object_stream(
             export_key, dst, size_bytes, content_type="text/csv"
         )

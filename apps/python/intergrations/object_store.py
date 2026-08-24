@@ -888,6 +888,9 @@ DATA_FILENAME_BY_TYPE: dict[str, str] = {
     "BRONZE": "data_bronze.parquet",
     "SILVER": "data_silver.parquet",
     "GOLD": "data_gold.parquet",
+    # DS-LAKE-021-T04: EXPORT gets its own entry (unlike FINAL) -- a real,
+    # independently-reclaimable object, not a promoted pointer.
+    "EXPORT": EXPORT_CSV_FILENAME,
 }
 #: Every accepted data filename, legacy `data.parquet` included — the FULL
 #: set `split_data_key` recognises. A committed object is immutable

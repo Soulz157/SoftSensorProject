@@ -218,6 +218,27 @@ def test_is_committed_artifact_key_rejects_tmp_and_sidecar_keys() -> None:
     assert not is_committed_artifact_key("ds1/v1.parquet")  # legacy version key
 
 
+def test_export_key_reclaims_only_its_own_artifact_directory() -> None:
+    """DS-LAKE-021-T04 regression. An EXPORT used to derive its key via
+    `sidecar_key(source_key, EXPORT_CSV_FILENAME)` — landing INSIDE the
+    SOURCE artifact's own directory. Reclaiming it then would have deleted
+    the source's own data.parquet too. An EXPORT now owns its own
+    artifact-id-keyed key, same as every other committed type —
+    `split_data_key`'s derived prefix (what `reclaim_artifact` deletes)
+    must stay scoped to ONLY the export's own directory, never a
+    different artifact's."""
+    export_key = "ds1/artifacts/export-1/export.csv"
+    source_prefix = "ds1/artifacts/final-1/"  # a DIFFERENT artifact
+
+    assert is_committed_artifact_key(export_key)
+    prefix, filename = split_data_key(export_key)
+    assert filename == "export.csv"
+    assert prefix == "ds1/artifacts/export-1/"
+    # The hazard this test exists to catch: the derived prefix must never
+    # equal a different artifact's own directory.
+    assert prefix != source_prefix
+
+
 # ── model-run key guard (MODEL-FLOW-000-T09) ────────────────────────────────
 
 
