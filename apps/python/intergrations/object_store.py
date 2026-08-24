@@ -40,7 +40,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import IO, Any
 
 import duckdb
 import pandas as pd
@@ -374,13 +374,42 @@ class ObjectStore:
         artifacts refuse an overwrite); a sidecar like `export.csv` is
         written via this method directly and is always free to be rewritten,
         same convention `put_json` already follows for its sidecars.
+
+        Delegates to `put_object_stream` below — a caller with bytes
+        already in hand wraps them in `io.BytesIO` rather than this method
+        growing a second, near-identical MinIO-call body.
+        """
+        self.put_object_stream(
+            key, io.BytesIO(data), len(data), content_type=content_type, tags=tags
+        )
+
+    def put_object_stream(
+        self,
+        key: str,
+        stream: IO[bytes],
+        length: int,
+        *,
+        content_type: str = "application/octet-stream",
+        tags: Tags | None = None,
+    ) -> None:
+        """Streaming write — `put_object_bytes` above is the bytes-in-hand
+        convenience wrapper atop this.
+
+        DS-LAKE-021-T01 final-review fix: `export_artifact_csv` builds its
+        CSV output into a `SpooledTemporaryFile` rather than an in-memory
+        `bytes` value, so it needs a PUT that accepts a file-like object
+        directly — wrapping the whole file back into `bytes` just to call
+        `put_object_bytes` would defeat the point. `self._client.put_object`
+        already accepts any file-like object with `.read()`, so this is a
+        thin, direct pass-through, same `S3Error` → `ObjectStoreError`
+        wrapping as `put_object_bytes` always had.
         """
         try:
             self._client.put_object(
                 self.bucket,
                 key,
-                io.BytesIO(data),
-                length=len(data),
+                stream,
+                length=length,
                 content_type=content_type,
                 tags=tags,
             )
@@ -444,17 +473,52 @@ class ObjectStore:
         so `get_frame` and this method share one GET path instead of two
         near-identical ones (`get_json`, `get_frame_metadata`, `checksum_of`
         and `get_frame_slice_duckdb` still call `self._client.get_object`
-        directly — out of scope here, not folded in). Exists because not
-        every caller wants a decoded DataFrame — `export_service.
-        export_artifact_csv` streams the Parquet bytes through
-        `pyarrow.ParquetFile.iter_batches` directly and writes CSV text,
-        neither of which fits `get_frame`/`put_frame`'s pandas-frame-shaped
-        contract.
+        directly — out of scope here, not folded in). Exists for callers
+        that want the whole object as one `bytes` value; `export_service.
+        export_artifact_csv` used to be one such caller but now streams via
+        `download_to_fileobj` below instead — see that method's own doc
+        comment for why.
         """
         response = None
         try:
             response = self._client.get_object(self.bucket, key)
             return response.read()
+        except S3Error as err:
+            raise ObjectStoreError(
+                f"Could not read '{key}': {err.code}") from err
+        finally:
+            if response is not None:
+                response.close()
+                response.release_conn()
+
+    def download_to_fileobj(
+        self, key: str, fileobj: IO[bytes], *, chunk_bytes: int = 8 * 1024 * 1024
+    ) -> int:
+        """Chunked GET into a caller-supplied file-like object — the
+        streaming counterpart to `get_object_bytes` above.
+
+        DS-LAKE-021-T01 final-review fix: `export_artifact_csv` originally
+        called `get_object_bytes`, which materialises the ENTIRE source
+        object as one `bytes` value before the caller can do anything with
+        it — for a wide numeric artifact this alone made peak memory scale
+        with artifact size despite the export loop itself using
+        `pq.ParquetFile.iter_batches`. This method never holds more than
+        `chunk_bytes` of the response in memory at once; the caller decides
+        where the chunks land (a `SpooledTemporaryFile`, typically), which
+        is what actually lets peak memory stay flat as row count grows.
+        Same `S3Error` → `ObjectStoreError` wrapping and same
+        `close()`/`release_conn()` `finally` block as `get_object_bytes` —
+        a missing key still raises from `get_object` itself, before any
+        chunk is read.
+        """
+        response = None
+        written = 0
+        try:
+            response = self._client.get_object(self.bucket, key)
+            for chunk in response.stream(chunk_bytes):
+                fileobj.write(chunk)
+                written += len(chunk)
+            return written
         except S3Error as err:
             raise ObjectStoreError(
                 f"Could not read '{key}': {err.code}") from err
