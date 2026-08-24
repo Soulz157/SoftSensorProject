@@ -207,6 +207,8 @@ export function planSdtaSelection(
   // AND this mode exists to avoid.
   const conditionDrops: DroppedSdtaCondition[] = rules.map(r => ({
     tag: r.tag,
+    op: r.op,
+    value: typeof r.value === 'number' ? r.value : 0,
     reason: 'Conditions cannot be combined across presets in Any mode',
   }))
 

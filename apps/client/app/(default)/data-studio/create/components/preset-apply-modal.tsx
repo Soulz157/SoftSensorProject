@@ -101,6 +101,12 @@ type StatusFilter = 'all' | 'matched' | 'attention'
  * comparison table). The sheet itself never scrolls, so the footer and the
  * verification summary stay put while a long tag list moves.
  *
+ * Width: driven entirely by classes. An inline `style` here would beat every
+ * Tailwind utility and silently pin the sheet at one size — the verification
+ * table needs room, so the cap lives in `sm:max-w-*` where it can be read.
+ * Both grid tracks use `minmax(0,…)`: a bare `1fr` resolves to `min-width:auto`
+ * and lets the table push the column wider than the sheet instead of scrolling.
+ *
  * Colour follows the tag table next door, not the status palette: `matched` is
  * NEUTRAL, never green. Green/amber/red are reserved for plant operating state
  * (DESIGN.md §2, The Status Contract), and a tag being present is data quality,
@@ -331,10 +337,13 @@ export function PresetApplyManager({
         </Button>
       </SheetTrigger>
 
+      {/* No inline `style`: it would outrank every max-w utility below. The
+          `min()` keeps the sheet off the viewport edge on narrow laptops while
+          still letting it reach 1400px on a wide monitor. */}
       <SheetContent
         side="right"
-        className="flex flex-col w-[90vw] sm:max-w-3xl"
-        style={{ maxWidth: '768px', width: '100%' }}
+        className="flex w-screen flex-col overflow-hidden sm:max-w-[min(96vw,1400px)]"
+        style={{ maxWidth: '900px', width: '100%' }}
       >
         <SheetHeader>
           <SheetTitle className="flex items-center gap-2">
@@ -347,9 +356,11 @@ export function PresetApplyManager({
           </SheetDescription>
         </SheetHeader>
 
-        <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 px-4 lg:grid-cols-[400px_1fr]">
+        {/* Both tracks are minmax(0,…): a bare `1fr` would take min-content from
+            the table and push the verification panel past the sheet edge. */}
+        <div className="grid min-h-0 min-w-0 flex-1 grid-cols-1 gap-4 px-4 lg:grid-cols-[minmax(0,360px)_minmax(0,1fr)]">
           {/* ── LEFT: source + preset ─────────────────────────────────── */}
-          <div className="flex min-h-0 flex-col gap-3 overflow-y-auto pr-1">
+          <div className="flex min-h-0 min-w-0 flex-col gap-3 overflow-y-auto pr-1">
             <PresetSource
               currentImport={currentImport}
               importing={importing}
@@ -441,7 +452,7 @@ export function PresetApplyManager({
           </div>
 
           {/* ── RIGHT: verification ───────────────────────────────────── */}
-          <div className="flex min-h-0 flex-col rounded-xl border border-border">
+          <div className="flex min-h-0 min-w-0 flex-col rounded-xl border border-border">
             {!comparison ? (
               <div className="flex flex-1 items-center justify-center p-6 text-center">
                 <p className="max-w-xs text-xs text-muted-foreground">
@@ -451,8 +462,10 @@ export function PresetApplyManager({
               </div>
             ) : (
               <>
-                <div className="shrink-0 space-y-3 border-b border-border p-3">
-                  <div className="grid grid-cols-4 gap-2">
+                <div className="w-full min-w-0 shrink-0 space-y-3 border-b border-border p-3">
+                  {/* Four across only once there is room — below that the
+                      "Needs attention" label clips rather than wraps. */}
+                  <div className="grid grid-cols-2 gap-2 xl:grid-cols-4">
                     <Stat label="Required" value={comparison.checks.length} />
                     <Stat label="Matched" value={comparison.matched} />
                     <Stat
@@ -463,8 +476,8 @@ export function PresetApplyManager({
                     <Stat label="Ready" value={`${comparison.readyPct}%`} />
                   </div>
 
-                  <div className="flex items-center gap-2">
-                    <div className="relative flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="relative min-w-48 flex-1">
                       <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
                       <Input
                         placeholder="Search tags or features…"
@@ -483,7 +496,7 @@ export function PresetApplyManager({
                       )}
                     </div>
 
-                    <div className="flex items-center rounded-md border border-border p-0.5">
+                    <div className="flex shrink-0 items-center rounded-md border border-border p-0.5">
                       {(
                         [
                           ['all', `All (${comparison.checks.length})`],
@@ -496,7 +509,7 @@ export function PresetApplyManager({
                           type="button"
                           onClick={() => setFilter(value)}
                           className={cn(
-                            'rounded px-2.5 py-1 text-xs font-medium transition-colors',
+                            'whitespace-nowrap rounded px-2.5 py-1 text-xs font-medium transition-colors',
                             filter === value
                               ? 'bg-primary text-primary-foreground'
                               : 'text-muted-foreground hover:text-foreground',
@@ -514,9 +527,12 @@ export function PresetApplyManager({
                 )}
                 {resolveError && <Notice tone="error">{resolveError}</Notice>}
 
-                <div className="min-h-0 flex-1 overflow-y-auto">
+                {/* overflow-auto, not overflow-y-auto: `min-w` on the table is
+                    the escape hatch for a narrow sheet, and it only works if
+                    the wrapper can scroll sideways too. */}
+                <div className="min-h-0 min-w-0 flex-1 overflow-auto">
                   {visibleChecks.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">
+                    <p className="p-3 text-xs text-muted-foreground">
                       {resolveLoading
                         ? 'Verifying tags against PI…'
                         : resolveError
@@ -530,7 +546,13 @@ export function PresetApplyManager({
                               : ''}
                     </p>
                   ) : (
-                    <table className="w-full text-xs">
+                    <table className="w-full min-w-[620px] table-fixed text-xs">
+                      <colgroup>
+                        <col className="w-24" />
+                        <col className="w-56" />
+                        <col />
+                        <col className="w-24" />
+                      </colgroup>
                       <thead className="sticky top-0 z-10 bg-card">
                         <tr className="border-b border-border text-left text-muted-foreground">
                           <th className="p-2 pl-3 font-medium">Status</th>
@@ -562,8 +584,8 @@ export function PresetApplyManager({
           </div>
         </div>
 
-        <SheetFooter className="flex-row items-center justify-between border-t border-border pt-4">
-          <p className="text-xs text-muted-foreground">
+        <SheetFooter className="flex-row items-center justify-between gap-3 border-t border-border pt-4">
+          <p className="min-w-0 truncate text-xs text-muted-foreground">
             {document && comparison && !applicable
               ? document.incomplete
                 ? 'This configuration lists no features in the workbook.'
@@ -572,7 +594,7 @@ export function PresetApplyManager({
                 ? 'All required tags are available.'
                 : ''}
           </p>
-          <div className="flex gap-2">
+          <div className="flex shrink-0 gap-2">
             <Button variant="ghost" onClick={() => setOpen(false)}>
               Cancel
             </Button>
@@ -598,7 +620,7 @@ function Field({
   children: React.ReactNode
 }) {
   return (
-    <div className="space-y-1">
+    <div className="min-w-0 space-y-1">
       <span className="text-xs font-medium text-muted-foreground">{label}</span>
       {children}
     </div>
@@ -615,7 +637,7 @@ function Stat({
   alert?: boolean
 }) {
   return (
-    <div className="rounded-lg bg-muted/50 p-2">
+    <div className="min-w-0 rounded-lg bg-muted/50 p-2">
       <p className="truncate text-[11px] text-muted-foreground">{label}</p>
       <p
         className={cn(
@@ -646,7 +668,7 @@ function Notice({
       )}
     >
       <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-      <span>{children}</span>
+      <span className="min-w-0 break-words">{children}</span>
     </div>
   )
 }
@@ -671,6 +693,26 @@ function EmptyState() {
   )
 }
 
+const SDTA_UTC_FMT = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'UTC',
+  dateStyle: 'medium',
+  timeStyle: 'short',
+})
+
+/** Fixed UTC so SSR and the browser agree. Mirrors `sdta-preset-card.tsx`'s
+ * identical helper — same formatting on both SD&TA surfaces. */
+function formatSdtaWindow(from: string, to: string): string {
+  const a = Date.parse(from)
+  const b = Date.parse(to)
+  // Show the raw value rather than "Invalid Date" — a malformed range is a
+  // parser bug worth seeing, not worth hiding behind a placeholder.
+  if (Number.isNaN(a) || Number.isNaN(b)) return `${from} → ${to}`
+  const hours = (b - a) / 3_600_000
+  const span =
+    hours >= 48 ? `${(hours / 24).toFixed(1)} d` : `${hours.toFixed(1)} h`
+  return `${SDTA_UTC_FMT.format(a)} → ${SDTA_UTC_FMT.format(b)} UTC · ${span}`
+}
+
 /**
  * Opt-in card for the SD&TA (shutdown/turnaround) cut config the workbook may
  * have carried. Independent of the unit/preset selectors above it — this
@@ -692,9 +734,9 @@ function SdtaCard({
   onApply: () => void
 }) {
   return (
-    <div className="rounded-xl border border-border p-3">
+    <div className="min-w-0 rounded-xl border border-border p-3">
       <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-        <CalendarOff className="h-3.5 w-3.5" />
+        <CalendarOff className="h-3.5 w-3.5 shrink-0" />
         Shutdown / turnaround cut config
       </div>
 
@@ -724,6 +766,45 @@ function SdtaCard({
             <Stat label="Windows" value={sdta.ranges.length} />
             <Stat label="Conditions" value={sdta.conditions.length} />
           </div>
+
+          {sdta.ranges.length > 0 && (
+            <Collapsible.Root>
+              <Collapsible.Trigger className="group mt-2 flex w-full items-center justify-between rounded-lg bg-muted/50 px-3 py-2 text-xs font-medium text-foreground">
+                <span>Windows ({sdta.ranges.length})</span>
+                <ChevronDown className="h-3.5 w-3.5 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+              </Collapsible.Trigger>
+              <Collapsible.Content className="space-y-1 pt-1.5">
+                {sdta.ranges.map(r => (
+                  <p
+                    key={`${r.from}|${r.to}`}
+                    className="rounded-lg bg-muted/40 p-2 font-mono text-[11px] break-words text-muted-foreground"
+                  >
+                    {formatSdtaWindow(r.from, r.to)}
+                  </p>
+                ))}
+              </Collapsible.Content>
+            </Collapsible.Root>
+          )}
+
+          {sdta.conditions.length > 0 && (
+            <Collapsible.Root>
+              <Collapsible.Trigger className="group mt-2 flex w-full items-center justify-between rounded-lg bg-muted/50 px-3 py-2 text-xs font-medium text-foreground">
+                <span>Conditions ({sdta.conditions.length})</span>
+                <ChevronDown className="h-3.5 w-3.5 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+              </Collapsible.Trigger>
+              <Collapsible.Content className="space-y-1 pt-1.5">
+                {sdta.conditions.map((c, i) => (
+                  <p
+                    key={`${c.tag}|${c.op}|${c.value}|${i}`}
+                    className="rounded-lg bg-muted/40 p-2 font-mono text-[11px] break-all text-muted-foreground"
+                  >
+                    {c.tag} {c.op} {c.value}
+                  </p>
+                ))}
+              </Collapsible.Content>
+            </Collapsible.Root>
+          )}
+
           <p className="mt-1.5 text-[11px] text-muted-foreground">
             Staging queues this cut config for Step 3.2, where it is combined
             with the fetched data and applied as time exclusions and conditional
@@ -760,7 +841,7 @@ function PresetSource({
   onFile: (file: File | undefined) => void
 }) {
   return (
-    <div className="space-y-2">
+    <div className="min-w-0 space-y-2">
       <input
         ref={fileRef}
         type="file"
@@ -808,12 +889,12 @@ function PresetSource({
       </button>
 
       {currentImport && (
-        <div className="rounded-lg bg-muted/50 px-3 py-2">
+        <div className="min-w-0 rounded-lg bg-muted/50 px-3 py-2">
           <p className="truncate font-mono text-xs text-foreground">
             {currentImport.fileName}
           </p>
           {currentImport.skippedSheets.length > 0 && (
-            <p className="mt-0.5 text-[11px] text-muted-foreground">
+            <p className="mt-0.5 text-[11px] break-words text-muted-foreground">
               Skipped (no No/Y/X header):{' '}
               {currentImport.skippedSheets.join(', ')}
             </p>
@@ -836,14 +917,14 @@ function PresetPreview({
   rawTags: PresetFeature[]
 }) {
   return (
-    <div className="space-y-3">
+    <div className="min-w-0 space-y-3">
       {/* Target — outside the tag gate on purpose, see canApply(). */}
-      <div className="rounded-xl border border-border p-3">
+      <div className="min-w-0 rounded-xl border border-border p-3">
         <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-          <Target className="h-3.5 w-3.5" />
+          <Target className="h-3.5 w-3.5 shrink-0" />
           Target variable (Y)
         </div>
-        <p className="mt-1.5 font-mono text-sm text-foreground">
+        <p className="mt-1.5 break-all font-mono text-sm text-foreground">
           {document.target_y}
         </p>
         {!targetPresent && (
@@ -869,15 +950,18 @@ function PresetPreview({
         <Collapsible.Content className="space-y-1.5 pt-1.5">
           {equations.map(eq => (
             <div key={eq.name} className="mt-1 rounded-lg bg-muted/40 p-2.5">
-              <p className=" break-all font-mono text-[11px] text-muted-foreground">
+              <p className="break-all font-mono text-[11px] text-muted-foreground">
                 {eq.formula}
               </p>
-              {eq.parse_warnings.length > 0 && (
-                <p className="mt-1 flex items-start gap-1 text-[11px] text-muted-foreground">
+              {eq.parse_warnings.map((warning, i) => (
+                <p
+                  key={i}
+                  className="mt-1 flex items-start gap-1 text-[11px] text-muted-foreground"
+                >
                   <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
-                  {eq.parse_warnings[0]}
+                  {warning}
                 </p>
-              )}
+              ))}
             </div>
           ))}
         </Collapsible.Content>
@@ -889,15 +973,28 @@ function PresetPreview({
             <span>Raw tags ({rawTags.length})</span>
             <ChevronDown className="h-3.5 w-3.5 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
           </Collapsible.Trigger>
-          <Collapsible.Content className="flex flex-wrap gap-1 pt-1.5">
-            {rawTags.map(tag => (
-              <span
-                key={tag.name}
-                className="mt-1 rounded bg-muted/60 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
-              >
-                {tag.name}
-              </span>
-            ))}
+          <Collapsible.Content className="space-y-1.5 pt-1.5">
+            <div className="flex flex-wrap gap-1">
+              {rawTags.map(tag => (
+                <span
+                  key={tag.name}
+                  className="mt-1 rounded bg-muted/60 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
+                >
+                  {tag.name}
+                </span>
+              ))}
+            </div>
+            {rawTags.map(tag =>
+              tag.parse_warnings.map((warning, i) => (
+                <p
+                  key={`${tag.name}-${i}`}
+                  className="mt-1 flex items-start gap-1 text-[11px] text-muted-foreground"
+                >
+                  <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+                  <span className="font-mono">{tag.name}:</span> {warning}
+                </p>
+              )),
+            )}
           </Collapsible.Content>
         </Collapsible.Root>
       )}
@@ -920,9 +1017,9 @@ function CheckRow({
         <StatusPill check={check} />
       </td>
       <td className="p-2 align-top">
-        <p className="font-mono text-foreground">{check.tag}</p>
+        <p className="break-all font-mono text-foreground">{check.tag}</p>
         {check.mappedTo && (
-          <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">
+          <p className="mt-0.5 break-all font-mono text-[11px] text-muted-foreground">
             → {check.mappedTo}
           </p>
         )}
@@ -954,10 +1051,17 @@ function CheckRow({
           </Select>
         )}
       </td>
+      {/* The widest column by far — a feature list of six names would otherwise
+          set the table's min-content width all on its own. */}
       <td className="p-2 align-top text-muted-foreground">
-        {check.usedIn.join(', ')}
+        <span
+          className="line-clamp-2 break-words"
+          title={check.usedIn.join(', ')}
+        >
+          {check.usedIn.join(', ')}
+        </span>
       </td>
-      <td className="p-2 pr-3 align-top text-muted-foreground">
+      <td className="whitespace-nowrap p-2 pr-3 align-top text-muted-foreground">
         {check.usedBy.includes('equation') ? 'Equation' : 'Raw tag'}
       </td>
     </tr>
@@ -976,7 +1080,7 @@ function StatusPill({ check }: { check: TagCheck }) {
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium',
+        'inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium',
         check.status === 'matched'
           ? 'bg-muted text-muted-foreground'
           : 'bg-rose-500/10 text-rose-600 dark:text-rose-400',

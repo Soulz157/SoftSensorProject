@@ -3,7 +3,7 @@ import { createStore } from 'jotai'
 import {
   dwFeaturePresetAtom,
   dwTargetTagAtom,
-  dwSdtaConfigAtom,
+  dwSdtaPresetsAtom,
   dwWorkspaceIdAtom,
   initDatasetWizardAtom,
   resetDatasetWizardAtom,
@@ -12,6 +12,7 @@ import {
 import { EMPTY_PIPELINE_CONFIG } from '@/lib/pipeline-config'
 import type { SavedDataset } from '@/store/datasets'
 import type { PresetSummary, SdtaConfig } from '@/lib/feature-preset'
+import { toSdtaPreset } from '@/lib/feature-preset-apply'
 
 /**
  * Pins the exact drift the FP-3 plan warned about: `resetDatasetWizardAtom`
@@ -43,7 +44,7 @@ const SDTA: SdtaConfig = {
 function seedAppliedPreset(store: ReturnType<typeof createStore>) {
   store.set(dwFeaturePresetAtom, SUMMARY)
   store.set(dwTargetTagAtom, 'U101FBP.lab')
-  store.set(dwSdtaConfigAtom, SDTA)
+  store.set(dwSdtaPresetsAtom, [toSdtaPreset(SDTA, 'templates.xlsx')])
 }
 
 describe('feature preset atoms survive a fresh entry into the wizard', () => {
@@ -60,7 +61,7 @@ describe('feature preset atoms survive a fresh entry into the wizard', () => {
 
     expect(store.get(dwFeaturePresetAtom)).toBeNull()
     expect(store.get(dwTargetTagAtom)).toBeNull()
-    expect(store.get(dwSdtaConfigAtom)).toBeNull()
+    expect(store.get(dwSdtaPresetsAtom)).toEqual([])
   })
 
   it('resetDatasetWizardAtom clears all three', () => {
@@ -73,7 +74,7 @@ describe('feature preset atoms survive a fresh entry into the wizard', () => {
 
     expect(store.get(dwFeaturePresetAtom)).toBeNull()
     expect(store.get(dwTargetTagAtom)).toBeNull()
-    expect(store.get(dwSdtaConfigAtom)).toBeNull()
+    expect(store.get(dwSdtaPresetsAtom)).toEqual([])
   })
 
   it('a subsequent create is not contaminated by a prior preset apply', () => {
@@ -144,6 +145,6 @@ describe('feature preset provenance round-trips through edit mode', () => {
       editSeed({ featurePreset: SUMMARY, targetTag: 'U101FBP.lab' }),
     )
 
-    expect(store.get(dwSdtaConfigAtom)).toBeNull()
+    expect(store.get(dwSdtaPresetsAtom)).toEqual([])
   })
 })

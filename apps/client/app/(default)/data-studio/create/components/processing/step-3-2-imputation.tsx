@@ -19,6 +19,10 @@ import {
   dwTimeRangeAtom,
   dwHighestUnlockedAtom,
   dwSdtaPresetsAtom,
+  dwPresetRangeAtom,
+  dwPresetRangeStaleAtom,
+  dwTagUnitsAtom,
+  dwTargetTagAtom,
 } from '@/store/dataset-studio'
 import { useImputationTagList } from '@/hooks/dataset/use-imputation-tag-list'
 import { useDatasetTagSelection } from '@/hooks/dataset/use-dataset-tag-selection'
@@ -149,6 +153,10 @@ export function Step32Imputation({ nav }: Props) {
   } = useDatasetDraftPipeline()
 
   const presets = useAtomValue(dwSdtaPresetsAtom)
+  const presetRangeCandidates = useAtomValue(dwPresetRangeAtom)
+  const presetRangeStale = useAtomValue(dwPresetRangeStaleAtom)
+  const tagUnits = useAtomValue(dwTagUnitsAtom)
+  const targetTag = useAtomValue(dwTargetTagAtom)
 
   const health = useMemo(() => datasetHealth(raw.tags), [raw.tags])
 
@@ -365,6 +373,10 @@ export function Step32Imputation({ nav }: Props) {
                 statisticalRules={statisticalRules}
                 onConditionalChange={nav.setConditionalRules}
                 onStatisticalChange={nav.setStatisticalRules}
+                presetRangeCandidates={presetRangeCandidates}
+                presetRangeStale={presetRangeStale}
+                tagUnits={tagUnits}
+                targetTag={targetTag}
               />
             </div>
           ) : (

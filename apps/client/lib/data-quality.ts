@@ -153,6 +153,14 @@ export interface TagDistribution {
   min: number
   max: number
   range: number
+  /**
+   * Good-cell count backing the numbers above. A zero-count row's other
+   * fields are all zeros, which is otherwise indistinguishable from a
+   * genuine zero reading — a caller that must tell "no data" apart from
+   * "0.00" (e.g. rendering `—`, matching `PerTagStatsPanel`'s convention for
+   * a null server stat) checks this instead of `mean === 0`.
+   */
+  count: number
 }
 
 /**
@@ -171,7 +179,16 @@ export function tagDistribution(ds: Dataset, tag: string): TagDistribution {
   }
   const n = values.length
   if (n === 0)
-    return { mean: 0, median: 0, mode: 0, std: 0, min: 0, max: 0, range: 0 }
+    return {
+      mean: 0,
+      median: 0,
+      mode: 0,
+      std: 0,
+      min: 0,
+      max: 0,
+      range: 0,
+      count: 0,
+    }
 
   const mean = values.reduce((a, b) => a + b, 0) / n
 
@@ -211,7 +228,7 @@ export function tagDistribution(ds: Dataset, tag: string): TagDistribution {
   const min = sorted[0] ?? 0
   const max = sorted[n - 1] ?? 0
 
-  return { mean, median, mode, std, min, max, range: max - min }
+  return { mean, median, mode, std, min, max, range: max - min, count: n }
 }
 
 export interface CorrelationMatrix {

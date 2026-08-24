@@ -212,6 +212,7 @@ export function Phase2DatasetReview({ nav }: Props) {
             datasetId={datasetId}
             artifactId={artifactId}
             showTransforms={false}
+            showTagSelector
           />
         </>
       ) : (

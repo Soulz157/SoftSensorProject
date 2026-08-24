@@ -308,8 +308,11 @@ export function SdtaPresetCard({
               </p>
             ))}
             {plan.droppedConditions.map(d => (
-              <p key={`${d.tag}|${d.reason}`} className="font-mono">
-                {d.tag} — {d.reason}
+              <p
+                key={`${d.tag}|${d.op}|${d.value}|${d.reason}`}
+                className="font-mono"
+              >
+                {d.tag} {d.op} {d.value} — {d.reason}
               </p>
             ))}
           </div>

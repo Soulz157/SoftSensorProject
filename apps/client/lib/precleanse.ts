@@ -83,7 +83,21 @@ export interface ConditionalRule {
   action: OutlierAction
   enabled: boolean
   /** Who authored this rule. Absent = added by hand in the Cut-Off sidebar. */
-  source?: 'sdta'
+  source?: 'sdta' | 'preset-range'
+  /**
+   * Provenance for a `source: 'preset-range'` rule (DS-LAKE-020-T07). The
+   * RESOLVED bound is what `value` above already carries — this is only the
+   * audit trail: which preset config quoted it, and in what unit, so
+   * re-importing an updated Excel cannot retroactively change what a saved
+   * dataset meant. Absent for a hand-authored or SD&TA rule.
+   */
+  presetRange?: {
+    presetId: string
+    configNo: number
+    /** The range string exactly as the sheet quoted it, e.g. "105-120 C". */
+    quoted: string
+    unit: string | null
+  }
 }
 
 export type StatisticalMethod = 'zscore' | 'stddev'

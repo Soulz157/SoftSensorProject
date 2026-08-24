@@ -104,6 +104,16 @@ interface Props {
    * badges are suppressed with it. Defaults to true for the existing callers.
    */
   showTransforms?: boolean
+  /**
+   * Shows `RawTrendChart`'s built-in tag selector on the Line tab. OFF by
+   * default (`hideTagSelector` stays true) — Data Studio's two callers
+   * (`step-3-1-EDA.tsx`, `step-4-feature-engineering.tsx`) already drive tag
+   * visibility from the wizard's own sidebar (`useDatasetTagSelection` →
+   * `dwHiddenTagsAtom`), so a second selector on the chart itself would
+   * fight it. The model wizard's Dataset Review step has no such sidebar and
+   * opts in explicitly.
+   */
+  showTagSelector?: boolean
 }
 type TabStatus = 'no-tags' | 'pending' | 'loading' | 'ready' | 'unavailable'
 
@@ -172,6 +182,7 @@ export function DataAnalysisCard({
   datasetId,
   artifactId,
   showTransforms = true,
+  showTagSelector = false,
 }: Props) {
   const { activeTags, focusedTag, colorForTag, selectAll } =
     useDatasetTagSelection(dataset)
@@ -553,7 +564,7 @@ export function DataAnalysisCard({
               rows={chartRows}
               tags={activeTags}
               range={range}
-              hideTagSelector
+              hideTagSelector={!showTagSelector}
               focusedTag={focusedTag}
               isViewAll={isViewAll}
             />
@@ -632,78 +643,94 @@ export function DataAnalysisCard({
       </Tabs>
 
       {statRows.length > 0 && (
-        <div className="rounded-lg border border-border overflow-hidden">
-          <ScrollArea className="h-90 w-full overflow-auto">
-            <Table>
-              <TableHeader className="sticky top-0 z-10 bg-background shadow-sm">
-                <TableRow className="hover:bg-transparent">
-                  <TableHead className="pl-3">Tag</TableHead>
-                  <TableHead className="text-right">Mean</TableHead>
-                  <TableHead className="text-right">Median</TableHead>
-                  <TableHead className="text-right">Max</TableHead>
-                  <TableHead className="text-right">Min</TableHead>
-                  <TableHead className="text-right">
-                    Range
-                    <span className="text-xs text-muted-foreground">
-                      {' '}
-                      (Max-Min)
-                    </span>
-                  </TableHead>
-                  <TableHead className="pr-3 text-right items-center">
-                    SD
-                  </TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {statRows.map(row => (
-                  <TableRow
-                    key={row.tag}
-                    className={cn(row.tag === focusedTag[0] && 'bg-muted/50')}
-                  >
-                    <TableCell className="pl-3">
-                      <span className="flex items-center gap-2">
-                        <span
-                          className="h-2 w-2 shrink-0 rounded-full"
-                          style={{ backgroundColor: colorForTag(row.tag) }}
-                        />
-                        <span className="truncate font-mono text-xs">
-                          {row.tag}
-                        </span>
-                        {activeScalers[row.tag] &&
-                          activeScalers[row.tag] !== 'none' && (
-                            <span
-                              title={`Feature transform: ${activeScalers[row.tag]} scaler`}
-                              className="inline-flex items-center gap-1 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium text-primary"
-                            >
-                              <WandSparkles className="h-3 w-3 shrink-0" />
-                              {activeScalers[row.tag]}
-                            </span>
-                          )}
+        <div className="space-y-2">
+          <p className="text-[11px] text-muted-foreground">
+            Computed over the preview window shown above — a bounded sample, not
+            the full artifact. Per-tag statistics elsewhere on this page may
+            differ; those are computed over the entire artifact.
+          </p>
+          <div className="rounded-lg border border-border overflow-hidden">
+            <ScrollArea className="h-90 w-full overflow-auto">
+              <Table>
+                <TableHeader className="sticky top-0 z-10 bg-background shadow-sm">
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead className="pl-3">Tag</TableHead>
+                    <TableHead className="text-right">Mean</TableHead>
+                    <TableHead className="text-right">Median</TableHead>
+                    <TableHead className="text-right">Max</TableHead>
+                    <TableHead className="text-right">Min</TableHead>
+                    <TableHead className="text-right">
+                      Range
+                      <span className="text-xs text-muted-foreground">
+                        {' '}
+                        (Max-Min)
                       </span>
-                    </TableCell>
-                    <TableCell className="text-right font-mono text-xs tabular-nums">
-                      {fmt(row.mean)}
-                    </TableCell>
-                    <TableCell className="text-right font-mono text-xs tabular-nums">
-                      {fmt(row.median)}
-                    </TableCell>
-                    <TableCell className="text-right font-mono text-xs tabular-nums">
-                      {fmt(row.max)}
-                    </TableCell>
-                    <TableCell className="text-right font-mono text-xs tabular-nums">
-                      {fmt(row.min)}
-                    </TableCell>
-                    <TableCell className="text-right font-mono text-xs tabular-nums">
-                      {fmt(row.range)}
-                    </TableCell>
-                    <TableCell className="pr-3 text-right font-mono text-xs tabular-nums">
-                      {fmt(row.std)}
-                    </TableCell>
+                    </TableHead>
+                    <TableHead className="pr-3 text-right items-center">
+                      SD
+                    </TableHead>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </ScrollArea>
+                </TableHeader>
+                <TableBody>
+                  {statRows.map(row => {
+                    // Every field is 0 when a tag has zero Good cells in the
+                    // preview — indistinguishable from a genuine 0.00 reading
+                    // without checking `count`. `—` matches how
+                    // `PerTagStatsPanel` renders its own null server stat.
+                    const empty = row.count === 0
+                    return (
+                      <TableRow
+                        key={row.tag}
+                        className={cn(
+                          row.tag === focusedTag[0] && 'bg-muted/50',
+                        )}
+                      >
+                        <TableCell className="pl-3">
+                          <span className="flex items-center gap-2">
+                            <span
+                              className="h-2 w-2 shrink-0 rounded-full"
+                              style={{ backgroundColor: colorForTag(row.tag) }}
+                            />
+                            <span className="truncate font-mono text-xs">
+                              {row.tag}
+                            </span>
+                            {activeScalers[row.tag] &&
+                              activeScalers[row.tag] !== 'none' && (
+                                <span
+                                  title={`Feature transform: ${activeScalers[row.tag]} scaler`}
+                                  className="inline-flex items-center gap-1 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium text-primary"
+                                >
+                                  <WandSparkles className="h-3 w-3 shrink-0" />
+                                  {activeScalers[row.tag]}
+                                </span>
+                              )}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right font-mono text-xs tabular-nums">
+                          {empty ? '—' : fmt(row.mean)}
+                        </TableCell>
+                        <TableCell className="text-right font-mono text-xs tabular-nums">
+                          {empty ? '—' : fmt(row.median)}
+                        </TableCell>
+                        <TableCell className="text-right font-mono text-xs tabular-nums">
+                          {empty ? '—' : fmt(row.max)}
+                        </TableCell>
+                        <TableCell className="text-right font-mono text-xs tabular-nums">
+                          {empty ? '—' : fmt(row.min)}
+                        </TableCell>
+                        <TableCell className="text-right font-mono text-xs tabular-nums">
+                          {empty ? '—' : fmt(row.range)}
+                        </TableCell>
+                        <TableCell className="pr-3 text-right font-mono text-xs tabular-nums">
+                          {empty ? '—' : fmt(row.std)}
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
+                </TableBody>
+              </Table>
+            </ScrollArea>
+          </div>
         </div>
       )}
     </div>

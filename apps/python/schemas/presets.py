@@ -98,6 +98,17 @@ class PresetDocumentRequest(BaseModel):
         return self
 
 
+class ParsedRangeDocument(BaseModel):
+    """`range` resolved to a numeric bound. Absent on a schema_version 1
+    document (predates DS-LAKE-020-T02)."""
+
+    kind: Literal["none", "closed", "lower", "upper"] = "none"
+    min: Optional[float] = None
+    max: Optional[float] = None
+    unit: Optional[str] = None
+    raw: str = ""
+
+
 class PresetFeatureDocument(BaseModel):
     """One X row of a stored preset."""
 
@@ -109,10 +120,13 @@ class PresetFeatureDocument(BaseModel):
     formula: Optional[str] = None
     description: str = ""
     range: str = ""
+    #: Absent on a pre-T02 (schema_version 1) document.
+    range_parsed: Optional[ParsedRangeDocument] = None
     relation: str = ""
     required_base_tags: list[str] = Field(default_factory=list)
-    #: Ambiguities a human should confirm — currently a tag whose own name
-    #: contains a slash, which is indistinguishable from division in text.
+    #: Ambiguities a human should confirm — a tag whose own name contains a
+    #: slash (indistinguishable from division in text), or a `range` cell
+    #: that looked like an attempted bound but could not be parsed.
     parse_warnings: list[str] = Field(default_factory=list)
 
 

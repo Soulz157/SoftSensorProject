@@ -21,6 +21,19 @@ import { TagResolution } from '@/hooks/dataset/use-tag-resolution'
 // Document shapes (mirror apps/python/services/preset_parser.py)
 // ---------------------------------------------------------------------------
 
+/**
+ * `range` resolved to a numeric bound (DS-LAKE-020-T02, parsed server-side at
+ * import time). `null` on a preset imported before this field existed
+ * (schema_version 1) — re-import to enable range cutoffs for it.
+ */
+export interface ParsedRange {
+  kind: 'none' | 'closed' | 'lower' | 'upper'
+  min: number | null
+  max: number | null
+  unit: string | null
+  raw: string
+}
+
 export interface PresetFeature {
   /** `raw_tag` names an existing column; `equation` derives a new one. */
   type: 'equation' | 'raw_tag'
@@ -30,9 +43,14 @@ export interface PresetFeature {
   formula: string | null
   description: string
   range: string
+  range_parsed: ParsedRange | null
   relation: string
   required_base_tags: string[]
-  /** Ambiguities a human should confirm (a tag whose name contains a slash). */
+  /**
+   * Ambiguities a human should confirm: a tag whose name contains a slash,
+   * or a `range` cell that looked like an attempted bound but could not be
+   * parsed.
+   */
   parse_warnings: string[]
 }
 
@@ -417,9 +435,16 @@ export function toFeatureConfigs(
 // SD&TA (shutdown/turnaround) cut config -> Step-3 cleaning rules
 // ---------------------------------------------------------------------------
 
-/** One condition the parser produced but this plan could not carry through. */
+/**
+ * One condition the parser produced but this plan could not carry through.
+ * Carries `op`/`value` (not just `tag`) so the UI can show the FULL
+ * condition — "GG203.PV < 1700, not applied: tag not in this dataset" — not
+ * just the bare tag name a user has no way to recognise on its own.
+ */
 export interface DroppedSdtaCondition {
   tag: string
+  op: string
+  value: number
   reason: string
 }
 
@@ -482,18 +507,27 @@ export function planSdtaApplication(
     if (!isCutoffOp(condition.op)) {
       droppedConditions.push({
         tag: condition.tag,
+        op: condition.op,
+        value: condition.value,
         reason: `Unsupported operator "${condition.op}"`,
       })
       continue
     }
     const status = healthOf(condition.tag)
     if (status === 'bad') {
-      droppedConditions.push({ tag: condition.tag, reason: 'Tag is in error' })
+      droppedConditions.push({
+        tag: condition.tag,
+        op: condition.op,
+        value: condition.value,
+        reason: 'Tag is in error',
+      })
       continue
     }
     if (status === 'unknown') {
       droppedConditions.push({
         tag: condition.tag,
+        op: condition.op,
+        value: condition.value,
         reason: 'Tag not in the selected dataset',
       })
       continue

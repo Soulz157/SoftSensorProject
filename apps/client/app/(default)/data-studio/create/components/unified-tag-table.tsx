@@ -59,9 +59,14 @@ import {
 import { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipeline-nav'
 import {
   dwFeaturePresetAtom,
+  dwPresetRangeAtom,
+  dwPresetRangeStaleAtom,
   dwSelectedSourcesAtom,
   dwSelectedTagKeysAtom,
+  dwTagUnitOverridesAtom,
+  dwTagUnitsAtom,
   dwTargetTagAtom,
+  presetRangeCandidatesFromDocument,
 } from '@/store/dataset-studio'
 import { planPresetApplication } from '@/lib/feature-preset'
 import { useStageSdtaPreset } from '@/hooks/use-sdta-preset'
@@ -240,6 +245,40 @@ function ConstantValueInput({
   )
 }
 
+/**
+ * Fills the Unit cell only for a tag Step 1 can't auto-detect one for
+ * (CSV/manual, or a PI tag whose metadata omits it) — see `dwTagUnitOverridesAtom`.
+ * A PI-reported unit stays a plain read-only span; this never renders for it.
+ */
+function UnitOverrideInput({
+  value,
+  onCommit,
+}: {
+  value: string | undefined
+  onCommit: (v: string | null) => void
+}) {
+  const [draft, setDraft] = useState(value ?? '')
+
+  useEffect(() => {
+    setDraft(value ?? '')
+  }, [value])
+
+  return (
+    <Input
+      type="text"
+      value={draft}
+      placeholder="Set unit"
+      onChange={e => {
+        const raw = e.target.value
+        setDraft(raw)
+        const trimmed = raw.trim()
+        onCommit(trimmed === '' ? null : trimmed)
+      }}
+      className="h-7 w-16 bg-transparent font-mono text-xs text-foreground outline-none"
+    />
+  )
+}
+
 function useDebounced<T>(value: T, ms: number): T {
   const [v, setV] = useState(value)
   useEffect(() => {
@@ -302,6 +341,26 @@ export function UnifiedTagTable({ nav }: Props) {
   const piSourceIdsKey = JSON.stringify(piSources.map(s => s.id))
 
   const setFeaturePreset = useSetAtom(dwFeaturePresetAtom)
+  const setTagUnits = useSetAtom(dwTagUnitsAtom)
+  const [tagUnitOverrides, setTagUnitOverrides] = useAtom(
+    dwTagUnitOverridesAtom,
+  )
+  const setUnitOverride = useCallback(
+    (tagName: string, unit: string | null) => {
+      setTagUnitOverrides(prev => {
+        if (unit === null) {
+          if (!(tagName in prev)) return prev
+          const { [tagName]: _omit, ...rest } = prev
+          return rest
+        }
+        if (prev[tagName] === unit) return prev
+        return { ...prev, [tagName]: unit }
+      })
+    },
+    [setTagUnitOverrides],
+  )
+  const setPresetRange = useSetAtom(dwPresetRangeAtom)
+  const setPresetRangeStale = useSetAtom(dwPresetRangeStaleAtom)
   // Read as well as write: the same atom the preset path below writes is what
   // marks the row here, so the two entry points cannot disagree on which tag
   // is Y. It stores a bare tag NAME, never a selection key — every reader
@@ -450,6 +509,57 @@ export function UnifiedTagTable({ nav }: Props) {
     // setSelectedTags resets the downstream fetch — only call on a real change.
     if (!same) setSelectedTags(selectedTagNames)
   }, [selectedTagNames, nav.selectedTags, setSelectedTags])
+
+  /**
+   * DS-LAKE-020-T03: snapshot each selected tag's engineering unit while
+   * `metaByTag` (hook-local, dies with this component) is still populated —
+   * otherwise Step 3.2's range-cutoff unit gate has no unit to reconcile
+   * against. A tag not on the currently loaded page, or with no PI record at
+   * all (manual/CSV), snapshots as `null` — a real absence, not a stale
+   * value, since a later resolve only ever adds entries.
+   *
+   * `tagUnitOverrides` fills that gap for a tag with no PI-reported unit — a
+   * user-entered unit from the Unit cell's editable fallback. The
+   * PI-reported value always wins when both exist; the override only ever
+   * covers a `null`.
+   */
+  const selectedTagUnits = useMemo(() => {
+    const byKey = new Map(rows.map(r => [rowKey(r), r]))
+    const units: Record<string, string | null> = {}
+    for (const key of selectedKeys) {
+      const row = byKey.get(key)
+      if (row) {
+        if (getEffectiveStatus(row) !== 'good') continue
+        const meta = row.sourceId
+          ? metaByTag.get(tagKey(row.sourceId, row.originalName))
+          : undefined
+        units[row.tagName] = meta?.unit ?? tagUnitOverrides[row.tagName] ?? null
+        continue
+      }
+      if (sourceIdOf(key) !== 'manual') {
+        units[tagNameOf(key)] = tagUnitOverrides[tagNameOf(key)] ?? null
+      }
+    }
+    return units
+  }, [
+    selectedKeys,
+    rows,
+    rowKey,
+    getEffectiveStatus,
+    metaByTag,
+    tagUnitOverrides,
+  ])
+
+  useEffect(() => {
+    setTagUnits(prev => {
+      const prevKeys = Object.keys(prev)
+      const nextKeys = Object.keys(selectedTagUnits)
+      const same =
+        prevKeys.length === nextKeys.length &&
+        nextKeys.every(k => prev[k] === selectedTagUnits[k])
+      return same ? prev : selectedTagUnits
+    })
+  }, [selectedTagUnits, setTagUnits])
 
   useEffect(() => {
     setHasInvalidTags(
@@ -775,6 +885,25 @@ export function UnifiedTagTable({ nav }: Props) {
             })
             setTargetTag(plan.targetTag)
             setFeaturePreset(summary)
+
+            // DS-LAKE-020-T05: snapshot per-tag range proposals now — `document`
+            // (the only thing carrying `range_parsed`) is otherwise discarded the
+            // instant this callback returns; only `summary` above survives.
+            // `equation` features are excluded: the derived column does not
+            // exist until Step 4, so their range cannot be applied here.
+            // Mapping lives in `presetRangeCandidatesFromDocument` — Step
+            // 3.1's edit-mode-only Apply Preset button needs the identical
+            // logic and shares this one implementation.
+            const rangeCandidates = presetRangeCandidatesFromDocument(document)
+            setPresetRange(prev => [
+              ...prev.filter(c => c.presetId !== document.preset_id),
+              ...rangeCandidates,
+            ])
+            // A genuinely fresh (schema_version 2) document always populates
+            // range_parsed on every feature — the worst case is kind:'none',
+            // never null. So this bit distinguishes "predates range-cutoff
+            // support" from "nothing to propose" for Step 3.2's own message.
+            setPresetRangeStale(document.schema_version < 2)
 
             if (plan.unselectable.length > 0) {
               toast.warning(
@@ -1169,9 +1298,17 @@ export function UnifiedTagTable({ nav }: Props) {
                       {meta?.value ?? '—'}
                     </TableCell>
 
-                    {/* Unit */}
+                    {/* Unit — read-only when PI reports one, otherwise an
+                        editable fallback so a CSV/manual tag (or a PI tag
+                        with no unit in its metadata) can still feed the
+                        Step 3.2 range-cutoff unit gate. */}
                     <TableCell className="text-xs text-muted-foreground">
-                      {meta?.unit ?? '—'}
+                      {meta?.unit ?? (
+                        <UnitOverrideInput
+                          value={tagUnitOverrides[row.tagName]}
+                          onCommit={unit => setUnitOverride(row.tagName, unit)}
+                        />
+                      )}
                     </TableCell>
 
                     {/* Questionable */}
@@ -1229,7 +1366,7 @@ export function UnifiedTagTable({ nav }: Props) {
                           type="button"
                           title="Rename tag"
                           onClick={() => startEdit(row)}
-                          className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                          className="cursor-pointer flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                         >
                           <Pencil className="h-3 w-3" />
                         </button>
@@ -1240,7 +1377,7 @@ export function UnifiedTagTable({ nav }: Props) {
                             if (isTarget) setTargetTag(null)
                             deleteRow(row)
                           }}
-                          className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                          className="cursor-pointerflex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
                         >
                           <Trash2 className="h-3 w-3" />
                         </button>

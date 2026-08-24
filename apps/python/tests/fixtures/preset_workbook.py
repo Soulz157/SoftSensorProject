@@ -93,8 +93,12 @@ def drifted_sheet_rows() -> list[list[object]]:
         ["Sampling Point: RU-202 Process Water", BLANK, BLANK, BLANK, BLANK, BLANK],
         [BLANK, BLANK, BLANK, BLANK, BLANK, BLANK],
         ["No", "Y", "X", "Description", "Range", "Relation"],
-        ["1", "U202OIL.lab", "PP226.PV", "pH analyzer", "7-10", "note"],
-        [BLANK, BLANK, "PP227.PV/PP226.PV", "Ratio", "-", "note"],
+        # Open-ended (DS-LAKE-020-T02): an operating window, not a closed
+        # validity band — the grammar case the ledger calls out separately.
+        ["1", "U202OIL.lab", "PP226.PV", "pH analyzer", ">21500 kg/hr", "note"],
+        # Closed, negative lower bound: the hyphen is both separator and minus
+        # sign here, which a naive `split('-')` would mangle silently.
+        [BLANK, BLANK, "PP227.PV/PP226.PV", "Ratio", "-5-10", "note"],
     ]
 
 

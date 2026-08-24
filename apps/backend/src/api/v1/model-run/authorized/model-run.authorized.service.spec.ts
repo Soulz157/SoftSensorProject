@@ -33,7 +33,7 @@ function makePrisma(
   const bronze =
     overrides.bronze === undefined
       ? {
-          id: 'bronze-1',
+          objectKey: 'ds-1/artifacts/bronze-1/data.parquet',
           validationRowCount: 3,
           validationHoldoutFrom: new Date('2026-01-08T00:00:00.000Z'),
         }
@@ -119,6 +119,54 @@ describe('ModelRunAuthorizedService', () => {
       );
       expect(result.holdoutArtifactChecksum).toBe('holdout-checksum');
       expect(result.holdoutRowCount).toBe(3);
+    });
+
+    it('derives source_key from the BRONZE objectKey, not run.datasetId — a draft-scoped BRONZE resolves under drafts/, the bug this test locks in', async () => {
+      const prisma = makePrisma({
+        bronze: {
+          // run.datasetId is 'ds-1' (RUN_BASE), but this run's dataset was
+          // adopted from a draft — the BRONZE's real objectKey still starts
+          // with drafts/. Before the fix,
+          // `validateDataKey(run.datasetId, bronze.id)` would have rebuilt
+          // `ds-1/artifacts/bronze-1/validate_data.parquet` — a key nothing
+          // ever wrote — so this replay silently no-opped (soft-fail) for
+          // every such run.
+          objectKey: 'drafts/draft-9/artifacts/bronze-1/data_bronze.parquet',
+          validationRowCount: 3,
+          validationHoldoutFrom: new Date('2026-01-08T00:00:00.000Z'),
+        },
+      });
+      mockedReplayHoldoutForRun.mockResolvedValue({
+        object_key: 'drafts/draft-1/runs/run-1/validate_ready.parquet',
+        row_count: 3,
+        checksum: 'replay-checksum',
+      });
+      mockedPresignArtifact
+        .mockResolvedValueOnce({
+          data_url: 'https://minio.example/gold-signed',
+          sidecar_urls: {
+            'feature_spec.json': 'https://minio.example/spec-signed',
+          },
+          checksum: 'gold-checksum',
+          row_count: 100,
+          expires_at: '2026-01-01T00:00:00Z',
+        })
+        .mockResolvedValueOnce({
+          data_url: 'https://minio.example/holdout-signed',
+          sidecar_urls: {},
+          checksum: 'holdout-checksum',
+          row_count: 3,
+          expires_at: '2026-01-01T00:00:00Z',
+        });
+
+      const service = new ModelRunAuthorizedService(prisma as never);
+      await service.claim('run-1');
+
+      expect(mockedReplayHoldoutForRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source_key: 'drafts/draft-9/artifacts/bronze-1/validate_data.parquet',
+        }),
+      );
     });
 
     it('omits holdout fields and never replays when the dataset has no holdout', async () => {

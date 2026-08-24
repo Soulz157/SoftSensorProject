@@ -32,7 +32,12 @@ import {
   DEFAULT_FETCH_CONFIG,
   type HistoricalFetchConfig,
 } from '@/lib/fetch-config'
-import type { PresetSummary, SdtaConfig } from '@/lib/feature-preset'
+import type {
+  ParsedRange,
+  PresetDocument,
+  PresetSummary,
+  SdtaConfig,
+} from '@/lib/feature-preset'
 import {
   SdtaPreset,
   isEmptySdta,
@@ -65,6 +70,113 @@ export const dwCsvDatasetAtom = atom<Dataset>(EMPTY_DATASET)
 /** Name of the uploaded CSV — display only (the "CSV Dataset Ready" card). */
 export const dwCsvFileNameAtom = atom<string>('')
 export const dwTagConstantsAtom = atom<Record<string, number>>({})
+/**
+ * Per-tag engineering unit, snapshotted from `useDatasetTagMetadata`'s
+ * `metaByTag` while Step 1 is mounted (DS-LAKE-020-T03) — that hook's state
+ * is hook-local and dies with the component, so a later step (Step 3.2's
+ * range-cutoff unit gate) would otherwise see no unit at all. `null` for a
+ * tag with no known unit (CSV-uploaded, manually inserted, or not yet
+ * resolved) — a real absence, not a loading state.
+ */
+export const dwTagUnitsAtom = atom<Record<string, string | null>>({})
+
+/**
+ * User-entered unit for a tag with no PI-reported unit (CSV/manual, or a PI
+ * tag whose metadata omits it) — fills the gap `dwTagUnitsAtom` alone leaves
+ * as `null`, so the T03 range-cutoff unit gate isn't permanently refused for
+ * those tags. Session-scoped, same lifetime as `dwTagUnitsAtom` itself (not
+ * restored on edit hydration — matches that atom's own documented limit).
+ */
+export const dwTagUnitOverridesAtom = atom<Record<string, string>>({})
+
+/**
+ * One proposed range cutoff per `raw_tag` preset feature with a parseable,
+ * non-`'none'` range, snapshotted at Apply Preset time (DS-LAKE-020-T05) —
+ * `dwFeaturePresetAtom` only keeps the metadata `PresetSummary`, and the full
+ * `PresetDocument.features[].range_parsed` is otherwise discarded once the
+ * apply-preset modal closes (DS-LAKE-020-T01 finding). Ephemeral proposal
+ * scaffolding, not the persisted truth: once a candidate is toggled on, its
+ * RESOLVED bound is baked into a `ConditionalRule.presetRange` (T07), which
+ * is what actually survives Save / reopen. Ranges on `equation` features are
+ * never candidates here — the derived column does not exist until Step 4.
+ */
+export interface PresetRangeCandidate {
+  tag: string
+  /** The feature's generated name — may carry a `_2` suffix when the same
+   * physical tag appears twice in one config; kept for row provenance. */
+  rowLabel: string
+  quotedRange: string
+  parsed: ParsedRange
+  presetId: string
+  configNo: number
+  /** Process unit / sheet the config came from (`document.unit`). */
+  sheet: string
+}
+/**
+ * DS-LAKE-020-T05, extracted. Every "Apply Preset" entry point (Step 1's
+ * `unified-tag-table.tsx` in create mode, Step 3.1's edit-mode-only button)
+ * needs the same range-candidate mapping — kept in one place so a schema
+ * change to `PresetFeature` only needs fixing here, not per caller. Lives
+ * beside `PresetRangeCandidate` rather than in `lib/feature-preset.ts`: that
+ * module holds pure preset types this file already imports, and this
+ * function returns a type (`PresetRangeCandidate`) that lives here instead —
+ * putting the function in `feature-preset.ts` would need it importing back
+ * from this file, a circular import neither module has today.
+ */
+export function presetRangeCandidatesFromDocument(
+  document: PresetDocument,
+): PresetRangeCandidate[] {
+  return document.features
+    .filter(
+      f =>
+        f.type === 'raw_tag' &&
+        f.range_parsed !== null &&
+        f.range_parsed.kind !== 'none',
+    )
+    .map(f => ({
+      tag: f.required_base_tags[0] ?? f.name,
+      rowLabel: f.name,
+      quotedRange: f.range,
+      parsed: f.range_parsed!,
+      presetId: document.preset_id,
+      configNo: document.config_no,
+      sheet: document.unit,
+    }))
+}
+
+/**
+ * DS-LAKE-020-T05 sibling, for the edit-mode-only Apply Preset button
+ * (Step 3.1, "Feature apply preset"). Tags are locked once a dataset exists
+ * (`step-1-tags.tsx`'s edit-mode lock — changing them would break downstream
+ * model schemas), so unlike Step 1's own apply path this never adds a tag:
+ * a preset's range candidate for a tag the dataset doesn't already have is
+ * dropped, not staged. Pure so the filtering is unit-testable without
+ * rendering the step.
+ */
+export interface LockedPresetRangeResult {
+  candidates: PresetRangeCandidate[]
+  /** Candidates dropped because their tag isn't in `lockedTags`. */
+  skippedCount: number
+}
+
+export function lockedPresetRangeCandidates(
+  document: PresetDocument,
+  lockedTags: ReadonlySet<string> | readonly string[],
+): LockedPresetRangeResult {
+  const locked = lockedTags instanceof Set ? lockedTags : new Set(lockedTags)
+  const all = presetRangeCandidatesFromDocument(document)
+  const candidates = all.filter(c => locked.has(c.tag))
+  return { candidates, skippedCount: all.length - candidates.length }
+}
+
+export const dwPresetRangeAtom = atom<PresetRangeCandidate[]>([])
+/**
+ * True when the applied preset predates range-cutoff support
+ * (`schema_version < 2`, DS-LAKE-020-T02) — the document genuinely has no
+ * `range_parsed` on any feature, not merely none worth proposing. Lets Step
+ * 3.2 tell "nothing to propose" apart from "re-import to enable this".
+ */
+export const dwPresetRangeStaleAtom = atom<boolean>(false)
 
 export const dwFetchTagsAtom = atom<string[] | null>(null)
 export const dwTimeRangeAtom = atom<FetchPeriod>('1min')
@@ -358,6 +470,10 @@ export const initDatasetWizardAtom = atom(
     set(dwCsvDatasetAtom, EMPTY_DATASET)
     set(dwCsvFileNameAtom, '')
     set(dwTagConstantsAtom, {})
+    set(dwTagUnitsAtom, {})
+    set(dwTagUnitOverridesAtom, {})
+    set(dwPresetRangeAtom, [])
+    set(dwPresetRangeStaleAtom, false)
     set(dwFetchTagsAtom, null)
     set(dwTimeRangeAtom, '1min')
     set(dwCustomDateRangeAtom, null)
@@ -432,6 +548,10 @@ export const resetDatasetWizardAtom = atom(null, (_get, set) => {
   set(dwCsvDatasetAtom, EMPTY_DATASET)
   set(dwCsvFileNameAtom, '')
   set(dwTagConstantsAtom, {})
+  set(dwTagUnitsAtom, {})
+  set(dwTagUnitOverridesAtom, {})
+  set(dwPresetRangeAtom, [])
+  set(dwPresetRangeStaleAtom, false)
 
   // Step 2
   set(dwFetchTagsAtom, null)

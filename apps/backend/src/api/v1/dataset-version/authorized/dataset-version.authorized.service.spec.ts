@@ -368,7 +368,7 @@ describe('DatasetVersionAuthorizedService — getArtifactHoldoutService (MODEL-F
     prisma.datasetArtifact.findFirst
       .mockResolvedValueOnce({ runId: 'run-1' }) // the requested artifact
       .mockResolvedValueOnce({
-        id: 'bronze-1',
+        objectKey: 'ds-1/artifacts/bronze-1/data.parquet',
         validationRowCount: 42,
         validationHoldoutFrom: new Date('2026-01-11T00:00:00.000Z'),
         validationMissingPct: 12.5,
@@ -395,6 +395,77 @@ describe('DatasetVersionAuthorizedService — getArtifactHoldoutService (MODEL-F
       rowCount: 42,
       missingPct: 12.5,
     });
+    expect(post).toHaveBeenCalledWith(
+      '/v1/preprocess/metadata',
+      { source_key: 'ds-1/artifacts/bronze-1/validate_data.parquet' },
+      2,
+    );
+  });
+
+  it('derives source_key from the BRONZE objectKey, not datasetId — a draft-scoped BRONZE resolves under drafts/, the bug this test locks in', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst
+      .mockResolvedValueOnce({ runId: 'run-1' })
+      .mockResolvedValueOnce({
+        // datasetId is 'ds-1' below, but this dataset was adopted from a
+        // draft — the BRONZE's real objectKey still starts with drafts/.
+        // Before the fix, `validateDataKey('ds-1', bronze.id)` would have
+        // rebuilt `ds-1/artifacts/bronze-1/validate_data.parquet` — a key
+        // nothing ever wrote — instead of the key asserted below.
+        objectKey: 'drafts/draft-9/artifacts/bronze-1/data_bronze.parquet',
+        validationRowCount: 7,
+        validationHoldoutFrom: new Date('2026-01-11T00:00:00.000Z'),
+        validationMissingPct: 0,
+      });
+    post.mockResolvedValue({
+      source_key: 'drafts/draft-9/artifacts/bronze-1/validate_data.parquet',
+      tags: [],
+      column_count: 1,
+      row_count: 7,
+      start_time: '2026-01-04T00:00:00.000Z',
+      end_time: '2026-01-13T00:00:00.000Z',
+    });
+    const { service } = makeService(prisma);
+
+    await service.getArtifactHoldoutService(USER, 'ds-1', 'artifact-2');
+
+    expect(post).toHaveBeenCalledWith(
+      '/v1/preprocess/metadata',
+      {
+        source_key: 'drafts/draft-9/artifacts/bronze-1/validate_data.parquet',
+      },
+      2,
+    );
+  });
+
+  it('maps a 422 from a missing validate_data.parquet to a 404 AppException, never leaking the raw object key to the caller', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst
+      .mockResolvedValueOnce({ runId: 'run-1' })
+      .mockResolvedValueOnce({
+        objectKey: 'ds-1/artifacts/bronze-1/data.parquet',
+        validationRowCount: 42,
+        validationHoldoutFrom: new Date('2026-01-11T00:00:00.000Z'),
+        validationMissingPct: 12.5,
+      });
+    post.mockRejectedValue(
+      Object.assign(
+        new Error(
+          "Could not read 'ds-1/artifacts/bronze-1/validate_data.parquet': NoSuchKey",
+        ),
+        { statusCode: 422 },
+      ),
+    );
+    const { service } = makeService(prisma);
+
+    try {
+      await service.getArtifactHoldoutService(USER, 'ds-1', 'artifact-2');
+      throw new Error('expected rejection');
+    } catch (err) {
+      expect(err).toBeInstanceOf(AppException);
+      expect((err as AppException).message).not.toContain('validate_data');
+      expect((err as { statusCode?: number }).statusCode).toBe(404);
+    }
   });
 
   it('returns holdout: null when the BRONZE sibling has no validation split — the normal case, not an error', async () => {
@@ -425,7 +496,7 @@ describe('DatasetVersionAuthorizedService — getArtifactHoldoutService (MODEL-F
     prisma.datasetArtifact.findFirst
       .mockResolvedValueOnce({ runId: 'run-1' })
       .mockResolvedValueOnce({
-        id: 'bronze-1',
+        objectKey: 'ds-1/artifacts/bronze-1/data.parquet',
         validationRowCount: 10,
         validationHoldoutFrom: new Date('2026-01-11T00:00:00.000Z'),
         validationMissingPct: null,

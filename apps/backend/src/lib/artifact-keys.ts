@@ -70,8 +70,60 @@ export const RUN_UPLOAD_FILENAMES = [
   'predictions.parquet',
 ] as const;
 
+/**
+ * DS-LAKE-016. Every accepted data filename, legacy `data.parquet` included —
+ * the FULL set `splitDataKey` recognises. Mirrored from `ALL_DATA_FILENAMES`
+ * in object_store.py — change both. Only ever WIDENS: a committed object is
+ * immutable and pre-existing objects can never be renamed, so old spellings
+ * must keep resolving forever, not be replaced.
+ */
+export const ALL_DATA_FILENAMES: readonly string[] = [
+  DATA_FILENAME,
+  ...Object.values(DATA_FILENAME_BY_TYPE),
+];
+
 export function artifactPrefix(datasetId: string, artifactId: string): string {
   return `${datasetId}/artifacts/${artifactId}/`;
+}
+
+/**
+ * DS-LAKE-018/MODEL-FLOW-010-T06 fix. Mirrored from `split_data_key` in
+ * object_store.py — change both. Returns `[prefix, dataFilename]` (`prefix`
+ * is everything up to and including the trailing `/`) if `key` ends in any
+ * accepted data filename, else `null`.
+ */
+export function splitDataKey(key: string): [string, string] | null {
+  for (const filename of ALL_DATA_FILENAMES) {
+    const suffix = `/${filename}`;
+    if (key.endsWith(suffix)) {
+      return [key.slice(0, -filename.length), filename];
+    }
+  }
+  return null;
+}
+
+/**
+ * DS-LAKE-018/MODEL-FLOW-010-T06 fix. Sidecar beside an ARBITRARY data key —
+ * mirrored from `sidecar_key` in object_store.py — change both.
+ *
+ * Needed because the caller is handed a stored `objectKey` and does not
+ * always know the dataset/artifact ids that produced it (a draft-scoped
+ * artifact's `objectKey` starts with `drafts/{draftId}/…`, not a real
+ * `datasetId` — rebuilding the prefix from `datasetId` instead of reading
+ * `objectKey` is exactly the bug this function exists to stop reintroducing:
+ * a validate_data.parquet written beside a draft-scoped BRONZE was
+ * unreachable at read time via `validateDataKey(datasetId, bronze.id)`).
+ * Falls back to appending a suffix when the key is not in the artifact
+ * layout, so a legacy or tmp key still gets a sidecar instead of silently
+ * getting none.
+ */
+export function sidecarKey(dataKey: string, filename: string): string {
+  const split = splitDataKey(dataKey);
+  if (split !== null) {
+    const [prefix] = split;
+    return `${prefix}${filename}`;
+  }
+  return `${dataKey}.${filename}`;
 }
 
 /**
@@ -105,9 +157,16 @@ export function validationKey(datasetId: string, artifactId: string): string {
   return `${artifactPrefix(datasetId, artifactId)}${VALIDATION_REPORT_FILENAME}`;
 }
 
-/** DS-LAKE-018-T03. `datasetId` here is really "the scope" — same generic
- * usage every other key builder in this file already accepts (a real
- * datasetId or a `drafts/{draftId}` scope string). */
+/**
+ * DS-LAKE-018-T03.
+ *
+ * @deprecated Rebuilds the prefix from `datasetId`, which is wrong for a
+ * draft-scoped artifact — its `validate_data.parquet` was written beside
+ * `objectKey` (e.g. `drafts/{draftId}/artifacts/{artifactId}/…`), not beside
+ * `{datasetId}/artifacts/{artifactId}/…`. Both former call sites now use
+ * `sidecarKey(bronze.objectKey, VALIDATE_DATA_FILENAME)` instead. Kept only
+ * for any caller not yet migrated — do not add new callers.
+ */
 export function validateDataKey(datasetId: string, artifactId: string): string {
   return `${artifactPrefix(datasetId, artifactId)}${VALIDATE_DATA_FILENAME}`;
 }

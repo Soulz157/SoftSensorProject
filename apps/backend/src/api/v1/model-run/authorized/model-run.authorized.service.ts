@@ -4,7 +4,12 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '@softsensor/prisma';
-import { draftRunKey, modelRunKey, validateDataKey } from '@/lib/artifact-keys';
+import {
+  draftRunKey,
+  modelRunKey,
+  sidecarKey,
+  VALIDATE_DATA_FILENAME,
+} from '@/lib/artifact-keys';
 import {
   presignArtifact,
   PresignedArtifact,
@@ -94,7 +99,7 @@ export class ModelRunAuthorizedService {
     const bronze = await this.prisma.datasetArtifact.findFirst({
       where: { runId: gold.runId, type: 'BRONZE' },
       select: {
-        id: true,
+        objectKey: true,
         validationRowCount: true,
         validationHoldoutFrom: true,
       },
@@ -108,7 +113,12 @@ export class ModelRunAuthorizedService {
     }
 
     try {
-      const sourceKey = validateDataKey(run.datasetId, bronze.id);
+      // Derived from `bronze.objectKey` (the key actually written), not
+      // rebuilt from `run.datasetId` — a draft-built dataset's BRONZE lives
+      // under `drafts/{draftId}/…`, so the old `validateDataKey(datasetId,
+      // bronze.id)` produced a key nothing ever wrote and this replay
+      // silently skipped (soft-fail below) for every such run.
+      const sourceKey = sidecarKey(bronze.objectKey, VALIDATE_DATA_FILENAME);
       const targetKey = this.buildRunKey(
         owner,
         run.id,

@@ -275,7 +275,6 @@ class DataService:
         interval_td = parse_interval(interval)
         start = parse_timestamp(body.start_time, "start_time")
         end = parse_timestamp(body.end_time, "end_time")
-        # print(f"fetch:  {start} → {end}, interval={interval_td}")
         if end <= start:
             raise ValueError("end_time must be after start_time.")
 

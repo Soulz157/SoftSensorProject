@@ -339,6 +339,7 @@ enum DatasetVersionStage {
   RAW
   CLEAN
   FEATURE
+  EXPORT
 }
 
 enum DatasetDraftStatus {
@@ -398,6 +399,7 @@ enum DatasetArtifactType {
   SILVER
   GOLD
   FINAL
+  EXPORT
 }
 
 /// Registry lifecycle of a saved dataset version. Promotion moves a row through

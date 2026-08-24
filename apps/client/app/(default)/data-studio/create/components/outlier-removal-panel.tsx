@@ -1,7 +1,8 @@
 'use client'
 
+import { useMemo } from 'react'
 import { nanoid } from 'nanoid'
-import { Filter, Plus, Sigma, Trash2 } from 'lucide-react'
+import { Filter, Plus, Sigma, Trash2, TriangleAlert } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -20,6 +21,7 @@ import { cn } from '@/lib/utils'
 import type { CutoffOp } from '@/types/cutoff'
 import type { Dataset } from '@/lib/preprocessing'
 import {
+  clipImpact,
   nearestTimestampIndex,
   statisticalMatchCount,
   type ConditionalRule,
@@ -28,6 +30,11 @@ import {
   type StatisticalMethod,
   type StatisticalRule,
 } from '@/lib/precleanse'
+import {
+  describeRangeCutoffSelection,
+  reconcileRangeUnit,
+} from '@/lib/range-cutoff'
+import type { PresetRangeCandidate } from '@/store/dataset-studio'
 
 const OPS: CutoffOp[] = ['>', '>=', '<', '<=', '==', '!=']
 const METHODS: { value: StatisticalMethod; label: string }[] = [
@@ -55,6 +62,327 @@ interface Props {
    * tags stay in the underlying arrays untouched (persist across tag switches).
    */
   scopeTag?: string
+  /** DS-LAKE-020: proposed range cutoffs from the applied feature preset. */
+  presetRangeCandidates?: PresetRangeCandidate[]
+  /** True when the applied preset predates range-cutoff support. */
+  presetRangeStale?: boolean
+  /** Per-tag engineering unit, for the T03 unit-reconciliation gate. */
+  tagUnits?: Record<string, string | null>
+  /** Null until Step 4 — the T06 labelled-row guard cannot run without it. */
+  targetTag?: string | null
+}
+
+// ---------------------------------------------------------------------------
+// Preset range cutoff (DS-LAKE-020-T05)
+// ---------------------------------------------------------------------------
+
+const PRESET_RANGE_PREFIX = 'preset-range'
+
+function presetRangeRuleId(tag: string, bound: 'min' | 'max'): string {
+  return `${PRESET_RANGE_PREFIX}:${tag}:${bound}`
+}
+
+function isPresetRangeRuleForTag(rule: ConditionalRule, tag: string): boolean {
+  return (
+    rule.source === 'preset-range' &&
+    rule.id.startsWith(`${PRESET_RANGE_PREFIX}:${tag}:`)
+  )
+}
+
+/**
+ * The ConditionalRule(s) a candidate's reconciled bound adds — strict `<`/`>`
+ * so a value exactly ON the bound (common with per-tag precision rounding)
+ * stays Good, matching the closed-range grammar `[min, max]`. Empty when the
+ * unit gate refuses (`applied === null`): never a rule with a guessed number.
+ * Rule ids are keyed by TAG ONLY, not by candidate — enabling one candidate
+ * for a tag structurally replaces any other candidate's rule for the same
+ * tag, which is what makes the intra-config duplicate-row case (T08) resolve
+ * to "engineer picks" for free, with no separate picker UI.
+ */
+function presetRangeRules(
+  candidate: PresetRangeCandidate,
+  applied: { min: number | null; max: number | null },
+  quotedUnit: string | null,
+): ConditionalRule[] {
+  const provenance = {
+    presetId: candidate.presetId,
+    configNo: candidate.configNo,
+    quoted: candidate.quotedRange,
+    unit: quotedUnit,
+  }
+  const rules: ConditionalRule[] = []
+  if (applied.min !== null) {
+    rules.push({
+      id: presetRangeRuleId(candidate.tag, 'min'),
+      tag: candidate.tag,
+      op: '<',
+      value: applied.min,
+      action: 'mark',
+      enabled: true,
+      source: 'preset-range',
+      presetRange: provenance,
+    })
+  }
+  if (applied.max !== null) {
+    rules.push({
+      id: presetRangeRuleId(candidate.tag, 'max'),
+      tag: candidate.tag,
+      op: '>',
+      value: applied.max,
+      action: 'mark',
+      enabled: true,
+      source: 'preset-range',
+      presetRange: provenance,
+    })
+  }
+  return rules
+}
+
+/**
+ * One tag's preset-range proposal row. Toggling reads/writes `conditionalRules`
+ * directly — there is no separate "applied" state to keep in sync, so a rule
+ * deleted by hand in the Conditional tab below correctly reads back here as
+ * toggled off.
+ */
+function PresetRangeRow({
+  candidate,
+  tagUnit,
+  previewDataset,
+  conditionalRules,
+  onConditionalChange,
+}: {
+  candidate: PresetRangeCandidate
+  tagUnit: string | null
+  previewDataset: Dataset
+  conditionalRules: ConditionalRule[]
+  onConditionalChange: (rules: ConditionalRule[]) => void
+}) {
+  const reconciliation = useMemo(
+    () => reconcileRangeUnit(candidate.parsed, tagUnit),
+    [candidate.parsed, tagUnit],
+  )
+  const activeRule = conditionalRules.find(r =>
+    isPresetRangeRuleForTag(r, candidate.tag),
+  )
+  const isActive = activeRule?.presetRange?.quoted === candidate.quotedRange
+
+  const impact = useMemo(() => {
+    if (!reconciliation.applied) return null
+    return clipImpact(
+      previewDataset,
+      candidate.tag,
+      reconciliation.applied.min ?? -Infinity,
+      reconciliation.applied.max ?? Infinity,
+    )
+  }, [previewDataset, candidate.tag, reconciliation.applied])
+
+  const toggle = (checked: boolean) => {
+    const withoutExisting = conditionalRules.filter(
+      r => !isPresetRangeRuleForTag(r, candidate.tag),
+    )
+    if (!checked || !reconciliation.applied) {
+      onConditionalChange(withoutExisting)
+      return
+    }
+    onConditionalChange([
+      ...withoutExisting,
+      ...presetRangeRules(
+        candidate,
+        reconciliation.applied,
+        reconciliation.quotedUnit,
+      ),
+    ])
+  }
+
+  const refused =
+    reconciliation.verdict === 'unknown-unit' ||
+    reconciliation.verdict === 'tag-unit-unknown'
+  const openEnded =
+    candidate.parsed.kind === 'lower' || candidate.parsed.kind === 'upper'
+
+  return (
+    <div className="space-y-1 rounded-md bg-muted/40 px-2.5 py-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="w-36 truncate font-mono text-xs text-foreground">
+          {candidate.tag}
+        </span>
+        <span className="font-mono text-[11px] text-muted-foreground">
+          {candidate.quotedRange}
+        </span>
+        {reconciliation.verdict === 'converted' && reconciliation.applied && (
+          <span className="text-[11px] text-muted-foreground">
+            → applied {reconciliation.applied.min ?? '−∞'} to{' '}
+            {reconciliation.applied.max ?? '+∞'} {tagUnit}
+          </span>
+        )}
+        <span className="font-mono text-[10px] text-muted-foreground">
+          {candidate.presetId} · config {candidate.configNo} · {candidate.sheet}
+        </span>
+        {impact && (
+          <span className="font-mono text-[11px] text-muted-foreground">
+            {impact.total} / {impact.points} pts
+          </span>
+        )}
+        <div className="ml-auto">
+          <Switch
+            checked={isActive}
+            onCheckedChange={toggle}
+            disabled={refused}
+            aria-label={`Toggle preset range cutoff for ${candidate.tag}`}
+          />
+        </div>
+      </div>
+      {refused && (
+        <p className="flex items-start gap-1 text-[11px] text-muted-foreground">
+          <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" />
+          {reconciliation.verdict === 'tag-unit-unknown'
+            ? 'No unit recorded for this tag, so a kg/hr bound and a t/h bound are indistinguishable here — the quoted number is not applied.'
+            : `No known conversion from "${reconciliation.quotedUnit}" to "${tagUnit}" — refusing to apply.`}
+        </p>
+      )}
+      {openEnded && (
+        <p className="flex items-start gap-1 text-[11px] text-muted-foreground">
+          <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" />
+          Operating window, not a sensor-validity range — marking values Bad
+          here can fabricate normal-flow data during a real shutdown or
+          turndown. Confirm before enabling.
+        </p>
+      )}
+    </div>
+  )
+}
+
+function PresetRangeSection({
+  candidates,
+  tags,
+  scopeTag,
+  tagUnits,
+  previewDataset,
+  conditionalRules,
+  onConditionalChange,
+  targetTag,
+  presetRangeStale,
+}: {
+  candidates: PresetRangeCandidate[]
+  tags: string[]
+  scopeTag: string | undefined
+  tagUnits: Record<string, string | null>
+  previewDataset: Dataset
+  conditionalRules: ConditionalRule[]
+  onConditionalChange: (rules: ConditionalRule[]) => void
+  targetTag: string | null
+  presetRangeStale: boolean
+}) {
+  const relevant = useMemo(
+    () =>
+      candidates.filter(
+        c => tags.includes(c.tag) && (!scopeTag || c.tag === scopeTag),
+      ),
+    [candidates, tags, scopeTag],
+  )
+
+  // Cumulative impact: rows with >=1 ENABLED bound violated, not the sum of
+  // the per-tag numbers (an AND of several bounds sheds more than any one
+  // suggests). Recomputed only when the active set or the frame changes.
+  const activeBounds = useMemo(() => {
+    const bounds: { tag: string; min: number; max: number }[] = []
+    for (const rule of conditionalRules) {
+      if (!rule.enabled || rule.source !== 'preset-range') continue
+      const existing = bounds.find(b => b.tag === rule.tag)
+      const target = existing ?? {
+        tag: rule.tag,
+        min: -Infinity,
+        max: Infinity,
+      }
+      if (rule.op === '<' && rule.value !== '') target.min = rule.value
+      if (rule.op === '>' && rule.value !== '') target.max = rule.value
+      if (!existing) bounds.push(target)
+    }
+    return bounds
+  }, [conditionalRules])
+
+  // DS-LAKE-020-T06: remaining-row / remaining-labelled-row guards, fired
+  // while the toggles are being flipped — cheap to change here, unlike at
+  // Save or at training.
+  const guard = useMemo(
+    () =>
+      describeRangeCutoffSelection({
+        dataset: previewDataset,
+        activeBounds,
+        targetTag,
+      }),
+    [previewDataset, activeBounds, targetTag],
+  )
+  const cumulativeImpact = previewDataset.rows.length - guard.remainingRows
+
+  if (relevant.length === 0) {
+    // A stale (pre-range-cutoff) preset genuinely has no `range_parsed` on
+    // any feature, so `candidates` is empty for a reason the engineer has no
+    // other way to see — say so, rather than rendering nothing and looking
+    // identical to "this preset has no ranges to propose".
+    if (!presetRangeStale) return null
+    return (
+      <div className="space-y-1 rounded-md bg-muted/40 px-2.5 py-2.5">
+        <span className="text-xs font-medium text-foreground">
+          Preset range cutoff
+        </span>
+        <p className="text-[11px] text-muted-foreground">
+          This preset was imported before range-cutoff support existed, so it
+          carries no parsed ranges. Re-import the same Excel workbook from Step
+          1 to enable per-tag range proposals here.
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-2 rounded-md bg-muted/40 px-2.5 py-2.5">
+      <div className="flex items-center gap-2">
+        <span className="text-xs font-medium text-foreground">
+          Preset range cutoff
+        </span>
+        {activeBounds.length > 0 && (
+          <span className="font-mono text-[11px] text-muted-foreground">
+            {cumulativeImpact} rows affected (cumulative)
+          </span>
+        )}
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Proposed from the applied Excel preset&apos;s Range column. Off by
+        default — review before enabling.
+      </p>
+      <div className="space-y-1.5">
+        {relevant.map(candidate => (
+          <PresetRangeRow
+            key={`${candidate.presetId}:${candidate.rowLabel}`}
+            candidate={candidate}
+            tagUnit={tagUnits[candidate.tag] ?? null}
+            previewDataset={previewDataset}
+            conditionalRules={conditionalRules}
+            onConditionalChange={onConditionalChange}
+          />
+        ))}
+      </div>
+      {guard.refusals.map((text, i) => (
+        <p
+          key={`refusal-${i}`}
+          className="flex items-start gap-1 text-[11px] font-medium text-foreground"
+        >
+          <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" />
+          {text}
+        </p>
+      ))}
+      {guard.warnings.map((text, i) => (
+        <p
+          key={`warning-${i}`}
+          className="flex items-start gap-1 text-[11px] text-muted-foreground"
+        >
+          <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" />
+          {text}
+        </p>
+      ))}
+    </div>
+  )
 }
 
 /** mark cell Bad (fillable in 5.2) vs drop just this tag's matched cell. */
@@ -188,6 +516,10 @@ export function OutlierRemovalPanel({
   onConditionalChange,
   onStatisticalChange,
   scopeTag,
+  presetRangeCandidates = [],
+  presetRangeStale = false,
+  tagUnits = {},
+  targetTag = null,
 }: Props) {
   const firstTag = scopeTag ?? tags[0] ?? ''
 
@@ -249,6 +581,18 @@ export function OutlierRemovalPanel({
         rawTimestamps={rawTimestamps}
         cropRange={cropRange}
         onCropChange={onCropChange}
+      />
+
+      <PresetRangeSection
+        candidates={presetRangeCandidates}
+        tags={tags}
+        scopeTag={scopeTag}
+        tagUnits={tagUnits}
+        previewDataset={previewDataset}
+        conditionalRules={conditionalRules}
+        onConditionalChange={onConditionalChange}
+        targetTag={targetTag}
+        presetRangeStale={presetRangeStale}
       />
 
       <Tabs defaultValue="conditional" className="flex w-full flex-col">
@@ -351,6 +695,18 @@ export function OutlierRemovalPanel({
                   className="h-5 gap-1 px-1.5 text-[10px] font-normal text-muted-foreground"
                 >
                   SD&amp;TA
+                </Badge>
+              )}
+              {/* Same editable-on-purpose reasoning as the SD&TA badge above:
+                  deleting or editing this row here is what makes the "Preset
+                  range" toggle above read back as off — there is no separate
+                  lock, the toggle IS this row's presence. */}
+              {rule.source === 'preset-range' && (
+                <Badge
+                  variant="outline"
+                  className="h-5 gap-1 px-1.5 text-[10px] font-normal text-muted-foreground"
+                >
+                  Preset range
                 </Badge>
               )}
               <div className="ml-auto flex items-center gap-2">

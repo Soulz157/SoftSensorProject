@@ -278,13 +278,28 @@ def test_document_reads_are_confined_to_preset_json(key):
 
 
 def test_the_stored_document_matches_the_response_model():
-    """The one test that stops the parser and the wire schema drifting apart."""
+    """The one test that stops the parser and the wire schema drifting apart.
+
+    `range`/`range_parsed` are asserted by CONTENT, not just presence: both
+    default to falsy values (`range: str = ""`, `range_parsed: None`), so a
+    parser that stopped emitting either would still satisfy a presence-only
+    check. Comparing every feature's `.range`/`.range_parsed` against the
+    model's is what actually catches that drift (DS-LAKE-020-T01 gap).
+    """
     parsed = parse_workbook(sheets(), "synthetic.xlsx")
 
     for preset in parsed.presets:
         model = PresetDocumentResponse.model_validate(preset_document(preset, parsed))
         assert model.preset_id == preset.preset_id
         assert len(model.features) == len(preset.features)
+        for feature, feature_model in zip(preset.features, model.features):
+            assert feature_model.range == feature.range
+            assert feature_model.range_parsed is not None
+            assert feature_model.range_parsed.kind == feature.range_parsed.kind
+            assert feature_model.range_parsed.min == feature.range_parsed.min
+            assert feature_model.range_parsed.max == feature.range_parsed.max
+            assert feature_model.range_parsed.unit == feature.range_parsed.unit
+            assert feature_model.range_parsed.raw == feature.range_parsed.raw
 
 
 # --------------------------------------------------------------------------

@@ -130,7 +130,7 @@ describe('useDatasetBoxplot (DS-LAKE-005B-D-T03)', () => {
     const { rerender } = renderHook(
       ({ cap }: { cap?: number }) =>
         useDatasetBoxplot('draft-1', 'artifact-1', ['TI-101'], [], cap),
-      { initialProps: { cap: undefined } },
+      { initialProps: { cap: undefined } as { cap?: number } },
     )
     await act(async () => {
       await vi.advanceTimersByTimeAsync(600)

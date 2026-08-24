@@ -68,6 +68,7 @@ const DOCUMENT: PresetDocument = {
       formula: '(QQ001A2.PV*GG001.PV)/GG001.PV',
       description: 'Spgr in feed',
       range: '-',
+      range_parsed: null,
       relation: '+',
       required_base_tags: ['QQ001A2.PV', 'GG001.PV'],
       parse_warnings: [],
@@ -119,8 +120,9 @@ function row(
     tagName,
     originalName: tagName,
     dataSource: 'PI',
-    status,
+    status: status === 'error' ? 'bad' : 'good',
     errorReason,
+    sourceId: 'src-1',
   }
 }
 

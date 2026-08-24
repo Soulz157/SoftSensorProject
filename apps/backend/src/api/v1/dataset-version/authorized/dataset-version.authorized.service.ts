@@ -7,7 +7,11 @@ import {
   postToPython,
   PYTHON_TIMEOUT,
 } from '@/lib/python-client';
-import { artifactKey, validateDataKey } from '@/lib/artifact-keys';
+import {
+  artifactKey,
+  sidecarKey,
+  VALIDATE_DATA_FILENAME,
+} from '@/lib/artifact-keys';
 import { buildSourceBlock } from '@/lib/source-block';
 import { isLegalTransition } from '@/lib/dataset-version-transitions';
 import { PreprocessingJobService } from './preprocessing-job.service';
@@ -796,7 +800,7 @@ export class DatasetVersionAuthorizedService {
     const bronze = await this.prisma.datasetArtifact.findFirst({
       where: { runId: artifact.runId, type: 'BRONZE' },
       select: {
-        id: true,
+        objectKey: true,
         validationRowCount: true,
         validationHoldoutFrom: true,
         validationMissingPct: true,
@@ -822,13 +826,40 @@ export class DatasetVersionAuthorizedService {
     // validate_data.parquet is the honest stand-in for "where the window
     // ends" (DS-LAKE-018's own row_count precedent for a derived-not-
     // requested figure).
-    const meta = PythonMetadataSchema.parse(
-      await postToPython(
-        '/v1/preprocess/metadata',
-        { source_key: validateDataKey(datasetId, bronze.id) },
-        PYTHON_TIMEOUT.metadata,
-      ),
-    );
+    //
+    // Derived from `bronze.objectKey` (the key actually written), not
+    // rebuilt from `datasetId` — a draft-built dataset's BRONZE lives under
+    // `drafts/{draftId}/…`, not `{datasetId}/…`, and `validate_data.parquet`
+    // was written beside that real key (bug fixed here: the old
+    // `validateDataKey(datasetId, bronze.id)` call 404'd/NoSuchKey'd for
+    // every such dataset).
+    let meta: ReturnType<typeof PythonMetadataSchema.parse>;
+    try {
+      meta = PythonMetadataSchema.parse(
+        await postToPython(
+          '/v1/preprocess/metadata',
+          {
+            source_key: sidecarKey(bronze.objectKey, VALIDATE_DATA_FILENAME),
+          },
+          PYTHON_TIMEOUT.metadata,
+        ),
+      );
+    } catch (err) {
+      if ((err as { statusCode?: number })?.statusCode === 422) {
+        // Same `missing` discipline as `getArtifactColumnStatsService`: the
+        // row says a holdout was recorded, but its sidecar object is gone
+        // from storage — do not let the raw object key in Python's error
+        // text reach the browser console (that leak is what originally
+        // surfaced this bug's symptom).
+        throw new AppException({
+          statusCode: 404,
+          message:
+            'Validation holdout is recorded but its data is missing from storage.',
+          type: 'ERROR',
+        });
+      }
+      throw err;
+    }
 
     return {
       statusCode: 200,

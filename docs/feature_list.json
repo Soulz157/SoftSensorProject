@@ -23,6 +23,20 @@
     },
     "fine_tuning_undefined": {
       "note": "MODEL-FLOW-005 is BLOCKED on a definition, not on engineering. train.py fits once and exits; HistGradientBoostingRegressor has no incremental warm start. 'Fine-tuning' here most likely means 'retrain with a different hyperparameter set, reusing the same split', which is a search loop, not fine-tuning in the transfer-learning sense. Naming it correctly changes what T01-T08 are."
+    },
+    "serving_is_a_separate_ledger": {
+      "chosen": "A sibling ledger (MODEL-SERVE), not MODEL-FLOW-012+",
+      "date": "2026-08-24",
+      "rationale": "This file's project is 'Model Creation Flow Refactor' and its global_definition_of_done is written entirely in terms of the five-step wizard and the Save Model persistence boundary. Serving is downstream of that boundary, has a different lifecycle (a long-running service, not a job that exits), a different failure model, and a different audience. Folding it in would move progress from 3/10 to 3/16 with no work regressing, and would leave MODEL-FLOW-008's end-to-end criterion looking incomplete for reasons unrelated to the flow it verifies. Same precedent this ledger already set twice: MODEL-FLOW-011 was kept out of MODEL-FLOW-002 for the same reason, and DS-LAKE put the DatasetDraft entity and its sweeper nine features apart.",
+      "coupling": "Four hooks remain in THIS file and are added below: MODEL-FLOW-007-T11 (record what serving needs at adoption time), MODEL-FLOW-011-T05 (do not delete an adopted prefix), the note on MODEL-FLOW-005 that /retrain is the SAME undefined operation, and one new global_definition_of_done line. Everything else lives in MODEL-SERVE."
+    },
+
+    "retrain_and_fine_tuning_are_one_question": {
+      "note": "A serving-plane POST /retrain and MODEL-FLOW-005's Fine-Tuning are not two features that happen to be similar — they are the same unanswered question wearing two names, and answering it once answers both. decisions.fine_tuning_undefined already states why: train.py fits once and exits, and HistGradientBoostingRegressor has no incremental warm start. Whatever /retrain turns out to mean (a fresh fit on a widened window, a hyperparameter search reusing the split, or a genuine warm start on a framework that supports one) is the same thing MODEL-FLOW-005 is blocked on. MODEL-SERVE-004 is therefore recorded as blocked on the identical decision rather than as independent work, so that resolving it cannot be double-counted."
+    },
+
+    "serving_artifacts_stay_under_the_draft_prefix": {
+      "note": "MODEL-FLOW-007-T10 adopts run artifacts BY POINTER and never copies bytes, which is correct and matches DatasetArtifact. The consequence for serving, which nothing in this file states yet: the object a production model loads lives at drafts/{modelDraftId}/runs/{runId}/, permanently, under a prefix whose name says 'draft'. That is acceptable — renaming it would mean copying bytes, which the adoption rule exists to avoid — but it makes MODEL-FLOW-011-T02 (reclaim the runs' object prefixes) capable of deleting the bytes a live model is serving. See MODEL-FLOW-011-T05."
     }
   },
 
@@ -898,6 +912,13 @@
           "status": "pending",
           "progress": 0,
           "detail": "Save Model sets modelId on the winning ModelTrainingRun and keeps its object keys as they are — never copies bytes, never re-uploads, exactly what DatasetArtifact.datasetId's own schema comment prescribes for the dataset side. modelDraftId is kept for traceability. Refuse (409) a draft already SAVED: without that guard a second save creates a second Model, repoints the same run away from the first, and leaves the first dangling — the identical hole saveDraftAsDatasetService closes for datasets."
+        },
+        {
+          "id": "MODEL-FLOW-007-T11",
+          "title": "Record, at adoption time, everything serving will need to load the artifact later",
+          "status": "pending",
+          "progress": 0,
+          "detail": "UNVERIFIED PREMISE — confirm against images/trainer/train.py and the /complete payload before building: the run row is known to carry modelKey/metricsKey/manifestKey/predictionsKey (MODEL-FLOW-003-V03, live-verified), but what manifest.json actually CONTAINS is not recorded anywhere in this ledger, and no checksum of the model object is mentioned on any read path. Save Model is the last moment the full training context is in scope; a serving process opening the object months later has only what was written down here.\n\nAt minimum the saved Model must be able to answer, without re-deriving anything: which object holds the model, its checksum, which feature_spec.json it was fitted against, the framework and its exact version, and the trainTestSplit/targetY it was fitted with. The framework version is not bureaucracy — a joblib pickled by sklearn 1.3 and unpickled by 1.5 can load with a warning and predict subtly differently, which is the same class of failure as MODEL-FLOW-000-T02: it LOOKS LIKE SUCCESS.\n\nIf manifest.json already carries these, this task is a read path and a checksum, not a write. Establish which before scoping it — the MODEL-FLOW-000 re-audit found five of seven tasks describing code that was already correct."
         }
       ],
 
@@ -1122,11 +1143,17 @@
       ],
 
       "findings": [
-        "EVERY READ THIS STEP NEEDS ALREADY EXISTS AND IS ALREADY PROVEN. DS-LAKE-013 wired the dataset library to its committed artifact: useArtifactMetadata, useArtifactColumnStats, useArtifactRows and useArtifactCorrelation all take (datasetId, artifactId) and return bounded server responses, and DatasetDetailSheet already composes exactly this set. This step is a composition of working parts, not new capability — which is why its risk sits almost entirely in T07's navigation and reconciliation, not in its panels.",
-        "STALE CORRECTION (2026-08-20): the prior finding here claimed DataAnalysisCard is 'reusable but type-gated' — checked against the code and that is wrong on three counts, not one. (1) It reads dwDraftIdAtom/dwDraftArtifactIdAtom/dwDraftGoldArtifactIdAtom directly (data-studio create wizard's own store) — a dataset-review step in the MODEL wizard has none of those atoms populated. (2) Its histogram/boxplot/scatter tabs call useDatasetHistogram/useDatasetBoxplot/useDatasetScatter, which hit POST .../dataset-drafts/:draftId/artifacts/:artifactId/{histogram,boxplot,scatter} — DRAFT-scoped routes with no saved-dataset (datasetId-scoped) twin; only correlation has one (getArtifactCorrelationService). (3) It renders FeatureTransformDialog (feature-engineering/transformation-panel.tsx) behind a Transform tab and owns dwScalerConfigsAtom — a mutation surface, inside a step whose own contract (finding below) says it configures nothing. The BoundedSample brand gate is real but is not the blocker; the component's data source is. RESOLVED with the user 2026-08-20: T05 does NOT reuse DataAnalysisCard. It composes the review panel from the dataset-scoped hooks the finding above already names (useArtifactRows for a bounded preview + useArtifactCorrelation for top pairs), the same composition DatasetDetailSheet already proves. Acceptance criterion 5 and V02 are rewritten accordingly. REVERSED 2026-08-21 ON EXPLICIT USER REQUEST: the step mounts DataAnalysisCard after all. The three defects above were NOT waved away — they were fixed at the source, because every one of them was a property of how the card RESOLVED its artifact rather than of the card itself. It gained optional datasetId/artifactId props that short-circuit the dw* routing entirely (the dataset-scoped legs it already had for edit mode now serve any caller), and a showTransforms flag that suppresses FeatureTransformDialog and stops it INHERITING dwScalerConfigsAtom as well as writing it. Both data-studio callers pass neither prop and are unchanged. What genuinely remains shared is dwHiddenTagsAtom/dwFocusedTagAtom via useDatasetTagSelection — chart visibility and focus, view state rather than data, accepted knowingly. Had the card been dropped in unmodified, four of its six tabs (histogram/boxplot/scatter/correlation) would have shown 'pending' forever in the model wizard, which is exactly what the original finding predicted.",
-        "THE STEP HOLDS NO SERVER STATE OF ITS OWN. It reads the dataset's committed artifact and configures nothing. ModelDraft needs no new column and receives no PATCH from this step — stated up front so it is not given one by reflex.",
-        "EDITING A DATASET DOES NOT REMOVE IT. The Dataset row keeps its id; what changes is currentArtifactId, and possibly the tag list. So `datasetId` on the ModelDraft stays valid across an edit and must NOT be cleared. What can genuinely go stale is the selected TARGET, if the edit dropped that tag — a different field with a different consequence.",
-        "RESUME IS THE ONLY RETURN PATH THAT PRESERVES ANYTHING (2026-08-21, T07/T08). The browser Back button re-mounts the wizard with no ?draftId=, and useModelWizardMode's create branch calls reset() unconditionally — so Back wipes the jotai atoms even though the server row survives. This is why the hand-off dialog says so in as many words instead of leaving the user to discover it, and why reconciliation lives in the resume branch rather than in some general on-return hook: there is no other return."
+        "CORRECTED 2026-08-24 FROM A MINIO SCREENSHOT OF A REAL RUN (bucket `datasets`, key drafts/1ce30923-394b-4135-b324-0e913606dcf9/runs/61f9aa28-0c31-4e99-bd52-4674200f72f6/, timestamps 2026-08-19 11:44 — one of the two runs MODEL-FLOW-003-V01 live-verified). The prior finding called the run's descriptor `manifest.json`; the object is `run_manifest.json`. The rename is not cosmetic: the name scopes it to the RUN, and a run descriptor and a serving descriptor are not the same document. A run manifest records what happened during a fit; serving needs what is required to LOAD the result. They may overlap, but assuming they are identical is exactly the kind of assumption MODEL-SERVE-000 exists to stop. Contents remain UNVERIFIED — the screenshot shows names and sizes only.",
+
+        "NEW AND HIGHEST SEVERITY IN THIS LEDGER — THE RUN DIRECTORY IS NOT A SELF-CONTAINED SERVING BUNDLE, CONFIRMED BY OBSERVATION. The directory holds exactly four objects: metrics.json (155 B), model.joblib (1.1 KiB), predictions.parquet (24.9 KiB), run_manifest.json (1.2 KiB). There is NO feature_spec.json and NO scaler or preprocessor object. model.joblib at 1.1 KiB is corroborating evidence rather than proof, but it is strong: a fitted sklearn Pipeline carrying a scaler's own state does not serialise to a kilobyte — this is an estimator alone.\n\nSo a serving process cannot open this prefix and predict. It must resolve Model -> ModelTrainingRun -> DatasetArtifact.featureSpecKey -> feature_spec.json, three hops across two entities, and the transform state (scalers, the effective column list from select_columns + force_keep_target) lives at the far end of that chain on an entity the USER CAN EDIT.\n\nThis upgrades, not merely confirms, the train/serve skew finding. The prior finding treated skew as a risk of REIMPLEMENTING the transform. The real exposure is that the transform's inputs are not co-located with the model at all, so a correct implementation can still be fed the wrong spec — a failure that produces a plausible number, which is the MODEL-FLOW-000-T02 shape again.",
+
+        "NEW — NOTHING PINS OR PROTECTS THE ARTIFACT A MODEL WAS FITTED AGAINST. MODEL-FLOW-010's own finding states that editing a dataset keeps the Dataset id and moves currentArtifactId, and correctly concludes that ModelDraft.datasetId stays valid. That conclusion is right for the WIZARD and wrong to inherit here: a served model needs the SPECIFIC artifact it was fitted against, not the dataset's current one, and neither ledger says that artifact is retained for as long as a model references it. Two separate objects can therefore be reclaimed out from under one production model — its bytes (guarded upstream by MODEL-FLOW-011-T05) and its feature spec (guarded by nothing). Losing either is the same outage.",
+
+        "NEW — ONE BUCKET HOLDS EVERYTHING. Model run outputs live in the `datasets` bucket (17.4 MiB / 138 objects at the time of the screenshot). That is fine today and cheap to leave alone, but it means no bucket-scoped lifecycle rule, retention policy or access grant can distinguish a production model's bytes from an abandoned dataset draft's. Anyone who later writes a lifecycle rule intending it for datasets writes it for models too. Record it now so that decision is made deliberately rather than discovered.",
+
+        "NEW AND USEFUL — MODEL-SERVE-002-V01 IS RUNNABLE TODAY. predictions.parquet exists in the run directory (24.9 KiB), so the no-skew test — score a row from the model's own test split through the live endpoint and assert it matches the recorded prediction — has real reference data against a real fitted model, with no live wizard and no MODEL-FLOW-007 required. This is the one verification in this ledger that can be built before its own dependencies land, and it is also the most load-bearing.",
+
+        "NEW — NO CHECKSUM SIDECAR EXISTS. There is no .sha256 or equivalent object beside model.joblib, so a checksum either lives inside run_manifest.json or is not computed at all. MODEL-SERVE-000-T01 must distinguish those two, because they lead to different work: reading a field, versus adding a write to the trainer AND accepting that every artifact predating that change has no checksum and needs a stated policy."
       ],
 
       "tasks": [
@@ -1286,10 +1313,18 @@
           "status": "pending",
           "progress": 0,
           "detail": "Found during MODEL-FLOW-003-V01's live verification, not in the original scope: run 562ec955 sat at RUNNING with zero log lines after a nest --watch restart killed watch()'s in-memory tracker mid-flight. The container is independent of the Node process, so nothing reconciles a run whose watcher died. That row is now permanently RUNNING — never terminal, so never eligible under any window this feature adds. Reconcile at boot: for each RUNNING run, check whether its container still exists and mark it FAILED with a stated reason if not."
+        },
+        {
+          "id": "MODEL-FLOW-011-T05",
+          "title": "Never reclaim a prefix an adopted run points at",
+          "status": "pending",
+          "progress": 0,
+          "detail": "T01's eligibility tiers exclude a TRAINED draft and say nothing about a SAVED one; T02 deletes drafts/{modelDraftId}/runs/{runId}/ 'for each of its runs'. Read together with MODEL-FLOW-007-T10 — which adopts the winning run BY POINTER and leaves its bytes under the draft prefix forever — those two sentences describe a sweep that can delete the object a saved, possibly deployed, model loads from.\n\nTHE OBVIOUS FIX IS THE WEAK ONE. Excluding status=SAVED is necessary and not sufficient: a draft owns MULTIPLE runs (MODEL-FLOW-003-V01 observed two against one draft, plus a third orphan), Save Model adopts ONE, and the losing runs' prefixes are genuinely reclaimable. So the unit of the decision is the RUN, not the draft. Filter on the run: a run with modelId set has been adopted and its prefix is off limits, whatever its draft's status says. That also survives a future feature that adopts a second run from the same draft, which a draft-level guard would not.\n\nT01 must additionally exclude SAVED from both windows, for the plain reason that a SAVED draft is not abandoned work — it is the provenance record of a model that exists.\n\nVERIFY BY DELETION, NOT BY EXCLUSION: assert the adopted object is still readable AFTER a sweep that reclaimed its siblings in the same tick. A test that only proves the sweep skipped the draft cannot tell a working run-level guard from a sweep that happened to find nothing eligible."
         }
       ],
 
       "acceptance_criteria": [
+        "A run that Save Model adopted is never reclaimed, and its object prefix survives a sweep that reclaims its unadopted siblings in the same tick.",
         "An ACTIVE ModelDraft with no runs becomes eligible after the short window and is reclaimed with no operator action.",
         "An ACTIVE ModelDraft owning runs is not reclaimed on the short window.",
         "A TRAINED draft is never reclaimed by either window.",
@@ -1324,6 +1359,7 @@
   ],
 
   "global_definition_of_done": [
+    "Serving, promotion and retraining are OUT of this ledger's scope and live in MODEL-SERVE; what this ledger owes them is a saved Model that records its artifact, checksum, feature spec and framework version — nothing downstream re-derives those.",
     "The five-step Model Creation Flow is preserved.",
     "A dataset selected at Step 1 is reviewable at Step 2 before any training is configured.",
     "Step 3 Training Configuration behavior remains unchanged.",
@@ -1343,4 +1379,3 @@
     "Every metric shown in Step 3 comes from a run whose target-leakage guard actually executed."
   ]
 }
-

@@ -1,0 +1,511 @@
+{
+  "project": "Model Serving & Deployment",
+  "version": "0.1.0",
+  "description": "Serve a saved Model over HTTP for synchronous and batch prediction, promote and roll back versions without rebuilding an image, and trigger retraining as a job. Begins where MODEL-FLOW ends: at a committed Model row. This ledger owns nothing before Save Model.",
+  "status": "not_started",
+  "progress": 0,
+  "progress_note": "Written 2026-08-24 from the MODEL-FLOW ledger alone, NOT from a code read. Every finding below is marked UNVERIFIED unless stated otherwise, and MODEL-SERVE-000 exists to replace them with facts before anything is built. Precedent for taking that seriously: MODEL-FLOW-000's own re-audit found five of its seven tasks describing code that was already correct, and one task (T03) whose premise was inverted against the tree.",
+  "upstream": "MODEL-FLOW ledger — this one assumes MODEL-FLOW-007 (Save Model) has landed. It has NOT: MODEL-FLOW-007 is pending, behind -004 (pending), -005 (blocked) and -006 (pending). Nothing here can be verified end to end until a Model row can be created by the wizard at all.",
+
+  "decisions": {
+    "training_and_serving_are_separate_planes": {
+      "chosen": "Separate images, separate lifecycles",
+      "date": "2026-08-24",
+      "rationale": "Training is a job that exits; serving is a process that must stay up. They differ in resource shape (a fit spikes memory, an inference does not), in scaling (train scales to zero, serving needs a warm replica), and in failure handling (a job retries, a service must stay available). Running a fit inside the serving process couples them at the worst point: the fit's memory spike is charged to the same cgroup as the live model cache, so a retrain can OOM-kill the endpoint that is currently answering. The trainer image also carries fit-time dependencies a serving process never calls, which is dead weight on every cold start.",
+      "consequence": "POST /retrain never fits anything itself. It records intent and returns; the existing trainer image does the work, spawned the same way MODEL-FLOW-003-T04 already spawns it."
+    },
+    "deploy_is_a_row_change_not_an_image_build": {
+      "chosen": "One generic serving image; the production pointer lives in Postgres",
+      "date": "2026-08-24",
+      "rationale": "The alternative — one image per model — makes every retrain a CI run and every rollback a redeploy, and turns N models into N deployments to operate. Since the model is data the process loads, not code it links against, the version in production is a fact about a row. Promotion becomes an UPDATE and rollback becomes the same UPDATE in reverse, which is what makes rollback fast enough to actually use during an incident.",
+      "rejected": {
+        "One container per model": "Isolates dependencies perfectly and keeps the blast radius to one model, which is the right call ONLY if models genuinely disagree about their dependencies. Revisit per FRAMEWORK, not per model: if MODEL-FLOW-009 lands and brings torch or tensorflow into the picture, a second serving image for sequence models is justified where a second image per tabular model is not.",
+        "A mutable latest/ key in MinIO": "Rejected for the reason MODEL-FLOW-007-T10 already gives on the training side: overwriting an object destroys the thing you roll back TO. It also cannot be read consistently — two replicas can observe different bytes behind one key with no way to tell."
+      }
+    },
+    "retrain_is_blocked_on_the_same_definition_as_fine_tuning": {
+      "note": "See MODEL-FLOW decisions.fine_tuning_undefined and retrain_and_fine_tuning_are_one_question. MODEL-SERVE-004 is blocked on that decision, not on engineering. Recording it as its own blocked feature rather than as work is deliberate: sizing it as buildable would understate it exactly the way sizing lstm/gru as a build_model branch would have (MODEL-FLOW-009's own blocked_on says so)."
+    },
+    "serving_host_undecided": {
+      "open": true,
+      "note": "Training today spawns containers against a Docker daemon and tracks them with an in-memory watch() (trainning-container.authorized.service.ts). That mechanism is known-unsuitable for a long-running service — MODEL-FLOW-003-V01 observed a run stranded at RUNNING forever because a nest --watch restart killed the tracker, and MODEL-FLOW-011-T04 was opened to reconcile it. A serving process outliving the Node process that spawned it is the NORMAL case, not the exception, so the same design would be permanently wrong rather than occasionally.\n\nOPTIONS, not yet chosen: (a) keep the Docker-daemon spawn and give serving its own supervisor with boot reconciliation; (b) run serving as an ordinary long-lived service in the same compose/orchestrator as the backend, spawned by nothing; (c) an external orchestrator. (b) is the smallest and is the default unless someone needs per-model isolation. DECIDE BEFORE MODEL-SERVE-002 — the answer changes what that feature builds, not just where it runs."
+    }
+  },
+
+  "findings": [
+    "CORRECTED 2026-08-24 FROM A MINIO SCREENSHOT OF A REAL RUN (bucket `datasets`, key drafts/1ce30923-394b-4135-b324-0e913606dcf9/runs/61f9aa28-0c31-4e99-bd52-4674200f72f6/, timestamps 2026-08-19 11:44 — one of the two runs MODEL-FLOW-003-V01 live-verified). The prior finding called the run's descriptor `manifest.json`; the object is `run_manifest.json`. The rename is not cosmetic: the name scopes it to the RUN, and a run descriptor and a serving descriptor are not the same document. A run manifest records what happened during a fit; serving needs what is required to LOAD the result. They may overlap, but assuming they are identical is exactly the kind of assumption MODEL-SERVE-000 exists to stop. Contents remain UNVERIFIED — the screenshot shows names and sizes only.",
+
+    "NEW AND HIGHEST SEVERITY IN THIS LEDGER — THE RUN DIRECTORY IS NOT A SELF-CONTAINED SERVING BUNDLE, CONFIRMED BY OBSERVATION. The directory holds exactly four objects: metrics.json (155 B), model.joblib (1.1 KiB), predictions.parquet (24.9 KiB), run_manifest.json (1.2 KiB). There is NO feature_spec.json and NO scaler or preprocessor object. model.joblib at 1.1 KiB is corroborating evidence rather than proof, but it is strong: a fitted sklearn Pipeline carrying a scaler's own state does not serialise to a kilobyte — this is an estimator alone.\n\nSo a serving process cannot open this prefix and predict. It must resolve Model -> ModelTrainingRun -> DatasetArtifact.featureSpecKey -> feature_spec.json, three hops across two entities, and the transform state (scalers, the effective column list from select_columns + force_keep_target) lives at the far end of that chain on an entity the USER CAN EDIT.\n\nThis upgrades, not merely confirms, the train/serve skew finding. The prior finding treated skew as a risk of REIMPLEMENTING the transform. The real exposure is that the transform's inputs are not co-located with the model at all, so a correct implementation can still be fed the wrong spec — a failure that produces a plausible number, which is the MODEL-FLOW-000-T02 shape again.",
+
+    "NEW — NOTHING PINS OR PROTECTS THE ARTIFACT A MODEL WAS FITTED AGAINST. MODEL-FLOW-010's own finding states that editing a dataset keeps the Dataset id and moves currentArtifactId, and correctly concludes that ModelDraft.datasetId stays valid. That conclusion is right for the WIZARD and wrong to inherit here: a served model needs the SPECIFIC artifact it was fitted against, not the dataset's current one, and neither ledger says that artifact is retained for as long as a model references it. Two separate objects can therefore be reclaimed out from under one production model — its bytes (guarded upstream by MODEL-FLOW-011-T05) and its feature spec (guarded by nothing). Losing either is the same outage.",
+
+    "NEW — ONE BUCKET HOLDS EVERYTHING. Model run outputs live in the `datasets` bucket (17.4 MiB / 138 objects at the time of the screenshot). That is fine today and cheap to leave alone, but it means no bucket-scoped lifecycle rule, retention policy or access grant can distinguish a production model's bytes from an abandoned dataset draft's. Anyone who later writes a lifecycle rule intending it for datasets writes it for models too. Record it now so that decision is made deliberately rather than discovered.",
+
+    "NEW AND USEFUL — MODEL-SERVE-002-V01 IS RUNNABLE TODAY. predictions.parquet exists in the run directory (24.9 KiB), so the no-skew test — score a row from the model's own test split through the live endpoint and assert it matches the recorded prediction — has real reference data against a real fitted model, with no live wizard and no MODEL-FLOW-007 required. This is the one verification in this ledger that can be built before its own dependencies land, and it is also the most load-bearing.",
+
+    "NEW — NO CHECKSUM SIDECAR EXISTS. There is no .sha256 or equivalent object beside model.joblib, so a checksum either lives inside run_manifest.json or is not computed at all. MODEL-SERVE-000-T01 must distinguish those two, because they lead to different work: reading a field, versus adding a write to the trainer AND accepting that every artifact predating that change has no checksum and needs a stated policy.",
+    "CONFIRMED 2026-08-24 by reading run_manifest.json from the run in the screenshot. The prior finding, and MODEL-SERVE-000-T01's three questions, are now answered and the finding is REPLACED rather than deleted so the audit trail survives: (1) a checksum EXISTS — model_sha256, plus artifact_checksum for the GOLD parquet; (2) provenance is pinned by image_digest (scgc/soft-sensor-trainer@sha256:…), which is STRONGER than the sklearn/joblib version string this ledger asked for, because it pins the whole runtime rather than one library; (3) the manifest does NOT carry a featureSpecKey, but it DOES inline feature_columns, target_y, target_scaled and derived_from_target — four of the fields serving would otherwise have walked to the spec for. seed and the full split record (method, ratio, cut_timestamp, labelled/train/test rows) are also present. This manifest is materially better than this ledger assumed, and the earlier UNVERIFIED framing overstated the gap.",
+
+    "NARROWED 2026-08-24 — THE ONLY MISSING SERVING INPUT IS SCALER STATE. With feature_columns inlined, the three-hop chain to feature_spec.json collapses to one open question rather than a general dependency: where does a run's SCALER configuration live, and is it recoverable at serve time? The manifest records target_scaled: false, which proves the system tracks scaling on the target side, and records nothing about the feature side. model.joblib at 1.1 KiB for a bare 8-feature OLS is consistent with this particular run having no scalers at all — which is why it cannot answer the question. MODEL-SERVE-000-T03 must therefore be run against a run that DID scale, not this one; the smallest, cleanest artifact is the least informative one here.",
+
+    "IMAGE_DIGEST CREATES A NEW RETENTION DEPENDENCY. Pinning by digest is the right call, but a digest pins nothing once the image is garbage-collected from the registry — at which point the ONLY record of the runtime a production model was fitted under is a string that resolves to nothing. Whatever retains the model object and its artifact must extend to the trainer image any live ModelVersion names. This dependency did not exist under the version-string approach this ledger originally proposed; it is a consequence of the better mechanism, not a defect in it.",
+
+    "NEW — `drafts/` IS A SHARED ROOT FOR TWO UNRELATED ENTITIES IN ONE BUCKET. Observed directly: the run lives at drafts/1ce30923-…/runs/… (a ModelDraft) while its gold_object_key reads drafts/c47bfa69-…/artifacts/… (a DatasetDraft). Same bucket, same first segment, different tables, different lifecycles, different sweepers. UUIDs will not collide, so this is not a correctness bug today. The exposure is in the SWEEPERS: MODEL-FLOW-011-T02 already specifies is_draft_run_key rather than a string prefix match, which is correct — but DS-LAKE-014's DatasetDraft sweeper predates that guidance and it is UNVERIFIED whether it reclaims by structural predicate or by a drafts/{id}/ prefix. If the latter, a dataset sweep can reach a model draft's prefix. Hand to MODEL-SERVE-000-T06's read; the fix, if needed, is upstream.",
+
+    "NEW — NOTHING GATES PROMOTION ON WHETHER THE MODEL IS ANY GOOD. The observed run has r2 = -2.4068: worse than predicting the mean, i.e. no predictive value. Every claim made about it is nonetheless true — MODEL-FLOW-003-V01 correctly recorded it as SUCCEEDED with real metrics, and the leakage guard correctly found nothing to check (derived_from_target is empty, so there is no leakage; the model is simply bad). MODEL-FLOW-000-T02 hardened this codebase against an implausibly HIGH R², and this is the opposite direction, which no criterion in either ledger covers. MODEL-SERVE-001-T05 refuses a version whose artifact cannot be LOADED; it says nothing about one that loads fine and is useless. See MODEL-SERVE-001-T06."
+  ],
+
+  "features": [
+    {
+      "id": "MODEL-SERVE-000",
+      "title": "Audit — Replace Every UNVERIFIED Finding With a Fact",
+      "priority": 0,
+      "status": "pending",
+      "progress": 0,
+      "dependencies": [],
+      "description": "This ledger was written from another ledger, not from the tree. Nothing below MODEL-SERVE-000 should be scoped, estimated or started until these reads are done, because the shape of each downstream feature depends on what is already there. The precedent is direct: MODEL-FLOW-000's re-audit found five of seven tasks describing already-correct code and one whose premise was inverted, and the cost of that was a task list nobody could trust.",
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-000-T01",
+          "title": "Read run_manifest.json's contents",
+          "status": "pending",
+          "progress": 0,
+          "detail": "NARROWED 2026-08-24 by the MinIO observation — the object exists, is named run_manifest.json, and is 1.2 KiB, so this is no longer 'find out what the trainer uploads' but 'read one known 1.2 KiB file'. Download it and record its literal schema here. The three questions that decide downstream scope: (1) is there a checksum of model.joblib? (2) is the framework and its exact version recorded? (3) does it carry the featureSpecKey of the artifact it was fitted against, or must that be resolved through the run row? If (3) is yes, the three-hop chain collapses to two and MODEL-SERVE-000-T07 shrinks."
+        },
+        {
+          "id": "MODEL-SERVE-000-T02",
+          "title": "Establish whether Model has any notion of version",
+          "status": "pending",
+          "progress": 0,
+          "detail": "packages/prisma/prisma/schema.prisma. MODEL-FLOW-010-T08 already caught this ledger's sibling asserting a row held fields it did not, so read the model, do not infer it from MODEL-FLOW-007's task titles. If Model is single-artifact with no version, MODEL-SERVE-001 is an additive entity; if it already versions, that feature shrinks to a stage column and a constraint."
+        },
+        {
+          "id": "MODEL-SERVE-000-T03",
+          "title": "Trace the preprocessing path end to end and decide how serving reuses it",
+          "status": "pending",
+          "progress": 0,
+          "detail_addendum": "REVISED 2026-08-24: no longer 'trace the whole preprocessing path' — feature_columns is inlined in run_manifest.json, so column selection and order are already recoverable. Scope narrows to scalers alone. CHOOSE THE RUN DELIBERATELY: the observed OLS run has no scalers (target_scaled: false, and a 1.1 KiB model.joblib consistent with a bare estimator), so it cannot answer the question no matter how carefully it is read. Find a run whose dataset applied a scaler and start there.",
+          "detail": "apps/python artifact_service.py (select_columns, force_keep_target, the scalers path) and feature_spec_service.py. Answer one question: can a serving process apply the identical transform to raw input by calling the same code, or does something in that path assume a whole parquet frame rather than a handful of rows? The answer decides whether serving is a thin loader or needs an extracted, shared transform module — a difference in kind, not degree. Do NOT plan to reimplement it either way; see the findings."
+        },
+        {
+          "id": "MODEL-SERVE-000-T04",
+          "title": "Determine which existing models are servable at all",
+          "status": "pending",
+          "progress": 0,
+          "detail": "For the artifacts that exist, read feature_spec.json and check derived_from_target. Any model with a non-empty closure needs target history at inference and has a different request contract from one without. This is a fact-finding task, not a design one — but if it turns out MOST real soft-sensor models are in that set, /predict's shape changes and it is much cheaper to know now."
+        },
+        {
+          "id": "MODEL-SERVE-000-T05",
+          "title": "Decide the serving host",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Resolve decisions.serving_host_undecided. Read trainning-container.authorized.service.ts's watch() and confirm the reasoning in that decision against the actual code rather than against MODEL-FLOW-003-V01's incident note. Output is a chosen option with its reason, recorded in the decision — not a prototype."
+        },
+        {
+          "id": "MODEL-SERVE-000-T06",
+          "title": "Confirm the draft-prefix reclaim collision is real, then hand it upstream",
+          "status": "pending",
+          "progress": 0,
+          "detail": "MODEL-FLOW-011 is unstarted, so this is a paper check against its T01/T02 details plus MODEL-FLOW-007-T10's. If confirmed, MODEL-FLOW-011-T05 (already drafted upstream) is the fix and it belongs in THAT ledger, not this one — this task's deliverable is the confirmation, not a guard."
+        },
+        {
+          "id": "MODEL-SERVE-000-T07",
+          "title": "Establish what retains the fitted artifact, and pin it if nothing does",
+          "status": "pending",
+          "progress": 0,
+          "detail": "OPENED 2026-08-24 from the observation that feature_spec.json is not in the run directory. Read DatasetArtifact's lifecycle: is there any path — a dataset edit, a version supersession, MODEL-FLOW-011's sweep, an admin delete — that can remove or orphan an artifact a ModelTrainingRun points at? Check the artifact's own retention alongside the draft-prefix question MODEL-SERVE-000-T06 asks; they are two objects with one consequence and it is cheaper to answer them in one read.\n\nIF NOTHING RETAINS IT: the fix is upstream at Save Model, not here — MODEL-FLOW-007-T11 should record the artifact id and featureSpecKey on the saved Model so the reference is explicit and greppable, and whatever guards artifact deletion must treat a referencing ModelVersion the way MODEL-FLOW-011-T05 treats an adopted run. Deliverable of THIS task is the finding plus the upstream ticket, not a guard written in the wrong ledger.\n\nDO NOT 'FIX' THIS BY COPYING feature_spec.json INTO THE RUN PREFIX. That trades a reference problem for a divergence problem and contradicts the adopt-by-pointer rule MODEL-FLOW-007-T10 states, for the same reason it states it."
+        }
+      ],
+      "acceptance_criteria": [
+        "Every finding in this ledger marked UNVERIFIED is either confirmed with a file reference or corrected in place, with the correction stated rather than the original quietly edited.",
+        "manifest.json's contents are written down.",
+        "The serving host is chosen and the reason recorded.",
+        "It is known whether serving can call the existing preprocessing or must have it extracted."
+      ],
+      "verification": [
+        {
+          "id": "MODEL-SERVE-000-V01",
+          "description": "Re-read this ledger and confirm no UNVERIFIED marker remains. A finding that was checked and turned out WRONG must appear as a correction with both versions visible, the way MODEL-FLOW-010's findings record their reversals — silently deleting a wrong finding loses the evidence that the audit ran.",
+          "status": "pending"
+        }
+      ]
+    },
+
+    {
+      "id": "MODEL-SERVE-001",
+      "title": "Model Version Registry — One Row Decides What Is In Production",
+      "priority": 1,
+      "status": "pending",
+      "progress": 0,
+      "dependencies": ["MODEL-SERVE-000", "MODEL-FLOW-007"],
+      "description": "Give a Model a versioned, staged history so that promotion and rollback are row changes. Nothing here serves anything; this is the pointer everything downstream reads.",
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-001-T01",
+          "title": "ModelVersion entity",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Shape depends on MODEL-SERVE-000-T02. Fields: modelId, version, the artifact pointer and checksum, feature spec reference, framework + version, sourceRunId, sourceDatasetId, metrics, stage, timestamps, promotedById. A version row is IMMUTABLE except for stage — same discipline as MODEL-FLOW-007-T10's adopt-by-pointer: the row records what happened, it is not a workspace.",
+          "detail_addendum": "REVISED 2026-08-24: the artifact reference is NOT optional and NOT derivable later. Because the run directory holds no feature spec (see findings), ModelVersion must record the fitted DatasetArtifact's id and its featureSpecKey explicitly, alongside the model object pointer. Resolving it at serve time by walking to the dataset's CURRENT artifact would be silently wrong for any model whose dataset was edited after training — and it would be wrong in the direction that still returns a number."
+        },
+        {
+          "id": "MODEL-SERVE-001-T02",
+          "title": "Stage machine and the single-production constraint",
+          "status": "pending",
+          "progress": 0,
+          "detail": "STAGING -> PRODUCTION -> ARCHIVED. Enforce at most one PRODUCTION per modelId AT THE DATABASE, with a partial unique index, not in service code. Application-level uniqueness under concurrent promotes is the same class of hole MODEL-FLOW-007-T10's 409 guard closes for double-save, and the same reason MODEL-FLOW-002-T07 used a CHECK constraint rather than a service check."
+        },
+        {
+          "id": "MODEL-SERVE-001-T03",
+          "title": "Save Model creates version 1 in STAGING, never PRODUCTION",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Saving is not deploying. A wizard whose last click puts a model in front of live traffic has no step at which someone decides it should be. This is additive to MODEL-FLOW-007-T04's transaction, inside the same transaction — a Model with no version row is a state nothing downstream can interpret."
+        },
+        {
+          "id": "MODEL-SERVE-001-T04",
+          "title": "Promote and rollback endpoints",
+          "status": "pending",
+          "progress": 0,
+          "detail": "POST .../versions/:v/promote and POST .../rollback, both recording who and when. Rollback is promote pointed at the previous PRODUCTION — not a distinct mechanism, so it cannot rot separately. Envelope per the findings."
+        },
+        {
+          "id": "MODEL-SERVE-001-T05",
+          "title": "Refuse to promote a version whose artifact cannot be loaded",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Verify object existence and checksum BEFORE flipping the stage. A promote that succeeds against a missing or altered object turns a deploy into an outage discovered by the first request, and the rollback path is then also untested. This is the one place a slow check is worth it."
+        },
+        {
+          "id": "MODEL-SERVE-001-T06",
+          "title": "Refuse to promote a version whose metrics fail a floor, unless overridden on the record",
+          "status": "pending",
+          "progress": 0,
+          "detail": "OPENED 2026-08-24 after observing r2 = -2.4068 on a run this project's own live verification recorded as successful. A negative R² is not a marginal model, it is a model with no predictive value, and there is currently no boundary at which anyone is asked whether it should go to production.\n\nThe floor must be a REFUSAL, not a warning. A warning at promote time is read once by the person who already decided to promote, which is the moment it has least effect. Make r2 <= 0 a hard block; anything above that is a judgement call and belongs to the human, not to a threshold this task invents.\n\nAn override must be possible — a deliberately weak model has legitimate uses (a baseline to beat, a smoke test of the serving path) — but it must be RECORDED on the ModelVersion with an actor and a reason, so that 'why is this in production' has an answer six months later. An override that leaves no trace is the same as no floor.\n\nDO NOT PUT THIS IN THE WIZARD INSTEAD. Step 4 Evaluation showing a negative R² prominently is good and separate; MODEL-FLOW-004 owns it. The promote boundary needs its own gate because promotion is reachable without the wizard — see MODEL-SERVE-001-T04's endpoints."
+        },
+
+        {
+          "id": "MODEL-SERVE-001-T07",
+          "title": "Retain the trainer image digest a live version names",
+          "status": "pending",
+          "progress": 0,
+          "detail": "OPENED 2026-08-24. run_manifest.json pins provenance by image_digest, which is the strongest form available — and worthless once that image leaves the registry. Establish whether the registry has any GC or tag-expiry policy, and if so, exclude digests named by a non-ARCHIVED ModelVersion. This is the same class of problem as MODEL-FLOW-011-T05 and MODEL-SERVE-000-T07: a reference held in one system to an object another system is free to delete. Third instance of the pattern in this project, which is the argument for stating it as a rule rather than fixing it three times."
+        }
+      ],
+      "acceptance_criteria": [
+        "Save Model produces exactly one ModelVersion at STAGING and no PRODUCTION version.",
+        "Two concurrent promotes against one model cannot both leave a PRODUCTION row — enforced by the database, proven by a concurrent test rather than by reading the service.",
+        "Rollback restores the previous PRODUCTION version and is recorded with an actor.",
+        "Promoting a version whose object is missing or whose checksum does not match fails and leaves the current PRODUCTION untouched.",
+        "A ModelVersion row's artifact pointer, checksum and metrics are never updated after creation."
+      ],
+      "verification": [
+        {
+          "id": "MODEL-SERVE-001-V01",
+          "description": "Fire two promotes concurrently against different versions of one model and confirm exactly one PRODUCTION row survives. Sequential promotes would pass a weaker test while leaving the race entirely uncovered — the constraint this feature adds exists for the concurrent case.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-SERVE-001-V02",
+          "description": "Delete the object behind a STAGING version, attempt to promote it, and confirm both the refusal AND that the previously live version is still PRODUCTION and still loadable.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-SERVE-001-V03",
+          "description": "Complete Save Model and assert zero PRODUCTION rows exist for that model. The mirror of MODEL-FLOW-007-V01, one boundary later.",
+          "status": "pending"
+        }
+      ]
+    },
+
+    {
+      "id": "MODEL-SERVE-002",
+      "title": "Serving Runtime and Synchronous /predict",
+      "priority": 2,
+      "status": "pending",
+      "progress": 0,
+      "dependencies": ["MODEL-SERVE-000", "MODEL-SERVE-001"],
+      "description": "A long-running process that loads PRODUCTION versions from object storage and answers bounded synchronous prediction requests. One image, many models.",
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-002-T01",
+          "title": "Serving image, without the trainer's fit-time dependencies",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Note the deployment-currency trap MODEL-FLOW-000-T04's verification_note already recorded for the trainer: nothing in CI builds images/trainer/Dockerfile, so repo source being correct proves nothing about what is deployed. Do not inherit that. The serving image gets a CI build from the first commit, or it acquires the same untraceable drift."
+        },
+        {
+          "id": "MODEL-SERVE-002-T02",
+          "title": "Multi-model loader with a bounded cache",
+          "status": "pending",
+          "progress": 0,
+          "detail_addendum": "REVISED 2026-08-24: verify model_sha256 (the field name is now known, not hypothesised) and verify image_digest against the serving runtime — noting that a digest match is not achievable if serving runs a DIFFERENT image from the trainer, which decisions.training_and_serving_are_separate_planes deliberately requires. So the digest is a provenance record to CHECK FOR PRESENCE and log, not a value to match. What must actually be validated at load is that the serving runtime's own library versions are compatible with the pickle; the digest tells you what to go and look up when they are not.",
+          "detail": "Resolve model_id -> PRODUCTION version -> object; verify checksum; verify the recorded framework version against the runtime and REFUSE on a mismatch rather than warn (see findings — a silently-loaded mismatch produces plausible wrong numbers). Cache bounded by memory, not by entry count: models differ in size by orders of magnitude and a count-based cap sizes for the smallest one."
+        },
+        {
+          "id": "MODEL-SERVE-002-T03",
+          "title": "Warm the production set before reporting ready",
+          "status": "pending",
+          "progress": 0,
+          "detail": "/healthz answers without touching MinIO or Postgres (a liveness probe that depends on them turns a dependency blip into a restart loop); /readyz answers only after the production set is loaded. Getting this backwards means traffic arrives during cold load and the first caller pays for everyone."
+        },
+        {
+          "id": "MODEL-SERVE-002-T04",
+          "title": "POST /predict, bounded and validated against feature_spec.json",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Validate presence, dtype and column ORDER against the spec, and cap rows per request. Reject with a message naming the offending column. sklearn's own error on a mismatched frame names a column and explains nothing — the same complaint MODEL-FLOW-010-T07 makes about pyarrow's 'No match for FieldRef.Name' reaching a user who cannot act on it. The range checks the dataset wizard's feature presets already express are the natural source for a range warning here; reuse rather than restate."
+        },
+        {
+          "id": "MODEL-SERVE-002-T05",
+          "title": "Apply the training-time preprocessing, by calling it",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Per MODEL-SERVE-000-T03's answer. If the path is callable, call it. If it is not, extract it into a module BOTH the trainer and the server import, and make the trainer use the extracted copy in the same change — leaving the trainer on the original and the server on a copy is precisely the drift this task exists to prevent, and it would pass every test written against either side alone."
+        },
+        {
+          "id": "MODEL-SERVE-002-T06",
+          "title": "Refuse target-derived models that are not given target history",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Read derived_from_target at LOAD time and fix the request contract from it, rather than discovering the gap per-request. Also validate the submitted history's sampling interval against the spec. A model in this class served without history does not error — it predicts from imputed or absent lags and returns a number, which is the failure mode with no symptom."
+        },
+        {
+          "id": "MODEL-SERVE-002-T07",
+          "title": "Invalidate the cache on promote",
+          "status": "pending",
+          "progress": 0,
+          "detail": "After a promote, replicas holding the old version keep serving it until something tells them. Whatever the mechanism (a short TTL on the version lookup is the cheapest and is probably enough), the CONTRACT is what matters: state the maximum time a promoted version can take to become live, and make it a number someone chose rather than an emergent property. Silent divergence between two replicas answering the same request differently is very hard to diagnose from the outside."
+        }
+      ],
+      "acceptance_criteria": [
+        "A promoted model answers /predict with no image rebuild and no redeploy.",
+        "A request missing a required column is refused with that column named — not a 500 from the estimator.",
+        "A model whose feature spec is target-derived cannot be served without target history, and the refusal states why.",
+        "The transform applied at inference is the SAME CODE as the one applied at training, not an equivalent one.",
+        "A checksum or framework-version mismatch prevents a load; it never degrades to a warning.",
+        "/healthz does not depend on MinIO or Postgres; /readyz does.",
+        "After a promote, every replica serves the new version within the stated bound."
+      ],
+      "verification": [
+        {
+          "id": "MODEL-SERVE-002-V01",
+          "description": "PROVE NO SKEW, WHICH IS THE WHOLE POINT: take a row from the model's own test split, send it through /predict, and assert the prediction matches the value in that run's predictions artifact to numerical tolerance. Any test using synthetic input proves the endpoint returns a float, which is not the claim. This is the V02-of-MODEL-FLOW-000 of this ledger — the one verification whose absence would make everything else look fine.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-SERVE-002-V02",
+          "description": "Promote a new version while /predict is under continuous load and confirm every response is answerable by SOME valid version, with the switchover inside the stated bound and no request failing at the boundary.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-SERVE-002-V03",
+          "description": "Load a model whose feature spec declares a non-empty derived_from_target and confirm a history-less request is refused. Then submit history at the WRONG sampling interval and confirm it is also refused — a serving process that accepts the second has not implemented this task, only half of it.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-SERVE-002-V04",
+          "description": "Point the loader at an object whose bytes have been altered and confirm the load fails on checksum rather than succeeding.",
+          "status": "pending"
+        }
+      ]
+    },
+
+    {
+      "id": "MODEL-SERVE-003",
+      "title": "Batch Prediction and Job Results",
+      "priority": 3,
+      "status": "pending",
+      "progress": 0,
+      "dependencies": ["MODEL-SERVE-002"],
+      "description": "Score a parquet input in object storage as an asynchronous job, and return the result by reference. This is the '/predict + /result' pair from the original question, split because they are two different operations.",
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-003-T01",
+          "title": "PredictionJob entity and its state machine",
+          "status": "pending",
+          "progress": 0,
+          "detail": "QUEUED/RUNNING/SUCCEEDED/FAILED/CANCELED, mirroring ModelTrainingRun's vocabulary rather than inventing a parallel one. State in Postgres, never in process memory — MODEL-FLOW-003-V01's stranded run is the demonstration of what in-memory job tracking does across a restart, and a result endpoint answering 404 for a job that finished is the same bug with a friendlier face."
+        },
+        {
+          "id": "MODEL-SERVE-003-T02",
+          "title": "POST /predict:batch with an idempotency key",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Returns a job id immediately. The idempotency key is not optional: MODEL-FLOW-003-T09 had to add poll-failure tolerance specifically because a transient error pushed users toward a retry that would spawn a SECOND container against the same draft. A batch endpoint without a key has the identical hole and the same trigger."
+        },
+        {
+          "id": "MODEL-SERVE-003-T03",
+          "title": "Batch worker, chunked",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Stream the input rather than loading it whole. MODEL-FLOW-010-V03 exists because a single unbounded read at 8,000 tags produced 76MB where 489KB was needed; a batch scorer is the most likely place for that to reappear, and it will reappear on someone else's data, not in a test."
+        },
+        {
+          "id": "MODEL-SERVE-003-T04",
+          "title": "GET /jobs/:id — status, and the output by presigned reference",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Never stream result bytes through the API. Reuse the existing presign path (artifact_service.presign_artifact) rather than writing a second one, and honour MODEL-FLOW-000-T06's rule: neither the presign request nor the URL reaches a log, because the URL IS the capability."
+        },
+        {
+          "id": "MODEL-SERVE-003-T05",
+          "title": "Record which version scored the batch",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Pin the version at job START and store it on the job. A long batch spanning a promote must not silently score its first half on one model and its second on another — and a result whose model is 'whatever was production at some point' cannot be reproduced or defended later."
+        }
+      ],
+      "acceptance_criteria": [
+        "The batch endpoint returns a job id without waiting for the work.",
+        "Job state survives a restart of the process that created it.",
+        "Results are delivered by presigned reference; no result bytes traverse the API.",
+        "The same idempotency key cannot produce two jobs.",
+        "Every job records the exact model version that scored it, pinned at start.",
+        "A batch over a wide input keeps memory bounded — no unbounded read of the input frame."
+      ],
+      "verification": [
+        {
+          "id": "MODEL-SERVE-003-V01",
+          "description": "Submit a batch, restart the serving process mid-flight, and confirm GET /jobs/:id still reports truthfully — either a completed job or a job that reached a terminal FAILED with a stated reason. Permanently RUNNING is the failure this checks for, and it is the exact state MODEL-FLOW-003-V01 observed on the training side.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-SERVE-003-V02",
+          "description": "Submit the same idempotency key twice concurrently and confirm one job. Sequential submission is a weaker test that a naive check would also pass.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-SERVE-003-V03",
+          "description": "Promote a new version DURING a running batch and confirm the output was scored end to end by the pinned version, asserted from the job row and the output's own recorded version — not inferred from timing.",
+          "status": "pending"
+        }
+      ]
+    },
+
+    {
+      "id": "MODEL-SERVE-004",
+      "title": "POST /retrain — Trigger Only",
+      "priority": 4,
+      "status": "blocked",
+      "progress": 0,
+      "blocked_on": "The same decision MODEL-FLOW-005 is blocked on — see MODEL-FLOW decisions.fine_tuning_undefined and this ledger's decisions.retrain_and_fine_tuning_are_one_question. Until 'retrain' is defined (a fresh fit on a widened window? a hyperparameter search reusing the split? a warm start on a framework that supports one?), the tasks below describe a job whose work is unspecified. Note this blocker is shared, not duplicated: resolving it unblocks both features at once and must not be counted twice.",
+      "dependencies": ["MODEL-SERVE-001", "MODEL-FLOW-005"],
+      "description": "An endpoint that records the intent to retrain and returns. The work is done by the existing trainer image, spawned the way MODEL-FLOW-003-T04 already spawns it. A successful retrain produces a new ModelVersion at STAGING and promotes nothing.",
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-004-T01",
+          "title": "Define what retrain means, and write it in the shared decision",
+          "status": "blocked",
+          "progress": 0,
+          "detail": "This is the whole blocker and it is a product decision, not an engineering one. Everything below is unscopeable until it lands. Write the answer into MODEL-FLOW decisions.fine_tuning_undefined so both ledgers read one definition."
+        },
+        {
+          "id": "MODEL-SERVE-004-T02",
+          "title": "Trigger endpoint with idempotency and a per-model lock",
+          "status": "blocked",
+          "progress": 0,
+          "detail": "Three clicks must not become three containers competing for the same 8 GiB. MODEL-FLOW-000-T03 established that /scratch's tmpfs shares the container's memory cgroup, so concurrent fits are not merely slow, they are a plausible OOM."
+        },
+        {
+          "id": "MODEL-SERVE-004-T03",
+          "title": "Spawn the existing trainer; never fit in the serving process",
+          "status": "blocked",
+          "progress": 0,
+          "detail": "Per decisions.training_and_serving_are_separate_planes."
+        },
+        {
+          "id": "MODEL-SERVE-004-T04",
+          "title": "On success, create a STAGING version — promote nothing",
+          "status": "blocked",
+          "progress": 0,
+          "detail": "Auto-promotion would put an unreviewed model in front of live traffic on a schedule, which is a decision no one made. MODEL-SERVE-001-T03 takes the same position for Save Model, for the same reason."
+        },
+        {
+          "id": "MODEL-SERVE-004-T05",
+          "title": "Compare the candidate against the incumbent, and publish the comparison",
+          "status": "blocked",
+          "progress": 0,
+          "detail": "The comparison is only meaningful on a common evaluation basis; a retrain on a widened window has a different test split, so a raw R² delta is not a like-for-like number. State the basis alongside the numbers rather than presenting a delta that reads as one and is not — the same discipline MODEL-FLOW-010-T06 applies to publishing the holdout's missing rate beside every metric."
+        }
+      ],
+      "acceptance_criteria": [
+        "The endpoint returns immediately with a job id and never fits in-process.",
+        "Concurrent triggers for one model produce one job.",
+        "A successful retrain creates a STAGING version and changes no PRODUCTION pointer.",
+        "The candidate-versus-incumbent comparison states its evaluation basis, and refuses to present a delta across incomparable bases as if it were one."
+      ],
+      "verification": [
+        {
+          "id": "MODEL-SERVE-004-V01",
+          "description": "Trigger a retrain and confirm PRODUCTION is unchanged after it succeeds. The point of the feature is what it does NOT do.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-SERVE-004-V02",
+          "description": "Fire three concurrent triggers and confirm one container. Count containers, not jobs — a service that dedupes the row but spawns three is the failure this guards.",
+          "status": "pending"
+        }
+      ]
+    },
+
+    {
+      "id": "MODEL-SERVE-005",
+      "title": "Prediction Logging and Drift Signal",
+      "priority": 5,
+      "status": "pending",
+      "progress": 0,
+      "dependencies": ["MODEL-SERVE-002"],
+      "description": "Record inputs and predictions so that a model going wrong is observable, and so that a future automatic retrain has a trigger that is a measurement rather than a calendar.",
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-005-T01",
+          "title": "Log request features, prediction and version to the time-series store",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Sampled, not every request — full-fidelity logging of a high-rate soft sensor is a second data pipeline nobody planned for. State the sampling rate; a rate chosen by accident makes every downstream statistic uninterpretable."
+        },
+        {
+          "id": "MODEL-SERVE-005-T02",
+          "title": "Compare live input distributions against the training distribution",
+          "status": "pending",
+          "progress": 0,
+          "detail": "The training distribution is already characterised — column_stats is the sidecar the dataset wizard writes and MODEL-FLOW-010-T04 reads. Compare against it rather than recomputing a baseline, so both surfaces agree on what 'normal' was."
+        },
+        {
+          "id": "MODEL-SERVE-005-T03",
+          "title": "Join late-arriving ground truth and track live error",
+          "status": "pending",
+          "progress": 0,
+          "detail": "For a lab-sampled target the truth arrives hours or days later, so this is a delayed join, not a live metric. Publish the missing/Bad rate of the joined window beside the error, for the reason MODEL-FLOW-010-T06 gives: with no imputation, a hole depresses the score with no trace of why."
+        }
+      ],
+      "acceptance_criteria": [
+        "A version whose r2 is at or below zero cannot be promoted without an override recorded with an actor and a reason.",
+        "The trainer image digest a live version names is retained for as long as that version is not ARCHIVED.",
+        "Predictions are logged with their model version and the logging is sampled at a stated, deliberate rate.",
+        "Drift is measured against the artifact's own column_stats, not a separately-computed baseline.",
+        "Live error is reported only for windows where ground truth has actually arrived, with the joined window's missing rate published beside it."
+      ],
+      "verification": [
+        {
+          "id": "MODEL-SERVE-005-V01",
+          "description": "Feed input shifted well outside the training distribution and confirm the drift signal fires. Feeding in-distribution data proves only that nothing crashed.",
+          "status": "pending"
+        }
+      ]
+    }
+  ],
+
+  "global_definition_of_done": [
+    "A production model's fitted artifact and feature spec are retained and pinned for as long as any version references them — the model object and the spec it needs are two objects in different places, and losing either is the same outage.",
+    "A saved Model can be promoted to production and rolled back without building or deploying an image.",
+    "At most one PRODUCTION version exists per model, enforced by the database.",
+    "The transform applied at inference is the same code as the one applied at training — proven by scoring a training-set row through the live endpoint, not by inspection.",
+    "A model that cannot be served correctly (target-derived features without history, framework mismatch, bad checksum) is refused at load or at request, never served with a plausible wrong answer.",
+    "Batch results are delivered by reference; no result bytes and no presigned URLs pass through a log.",
+    "Job state survives a process restart.",
+    "Retrain produces a candidate; a human promotes it.",
+    "No feature in this ledger writes to any MODEL-FLOW wizard path, and no MODEL-FLOW feature is reopened to accommodate one."
+  ]
+}
