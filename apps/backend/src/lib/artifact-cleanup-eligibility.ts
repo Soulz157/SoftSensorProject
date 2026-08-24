@@ -49,7 +49,12 @@
  * safer default for an operation that cannot be undone.
  */
 
-export type CleanupArtifactType = 'BRONZE' | 'SILVER' | 'GOLD' | 'FINAL';
+export type CleanupArtifactType =
+  | 'BRONZE'
+  | 'SILVER'
+  | 'GOLD'
+  | 'FINAL'
+  | 'EXPORT';
 export type CleanupDraftStatus = 'ACTIVE' | 'SAVED' | 'ABANDONED';
 
 export interface CleanupCandidateArtifact {
