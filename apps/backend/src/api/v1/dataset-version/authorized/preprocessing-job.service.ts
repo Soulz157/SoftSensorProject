@@ -16,6 +16,7 @@ import {
 import {
   ArtifactStatsSchema,
   CreateFeaturesSchema,
+  ExportStatsSchema,
   PythonCleanupSchema,
   type ArtifactStats,
   type CleaningOperation,
@@ -197,6 +198,7 @@ export class PreprocessingJobService
     // from 0% to 100% in one tick is what "one call" actually looks like,
     // not a stall to hide.
     const isFeatureJob = job.stage === 'FEATURE';
+    const isExportJob = job.stage === 'EXPORT';
 
     const controller = new AbortController();
     this.running.set(jobId, controller);
@@ -209,8 +211,21 @@ export class PreprocessingJobService
     //
     // Renamed off `versionKey`/`tmpPrefix` because those are now imported
     // helpers, and `tmpPrefix` is also a parameter name in `recordFailure`.
-    const artifactType = isFeatureJob ? 'GOLD' : 'SILVER';
-    const committedKey = artifactKey(scope, artifactId, artifactType);
+    const artifactType = isFeatureJob
+      ? 'GOLD'
+      : isExportJob
+        ? 'EXPORT'
+        : 'SILVER';
+    // EXPORT never writes through `committedKey` — Python computes its own
+    // sidecar key from the SOURCE artifact's own data key (see
+    // EXPORT_CSV_FILENAME's doc comment in artifact-keys.ts) — so this stays
+    // narrowed to the two values `artifactKey()` actually accepts rather than
+    // widening that function's signature for a value it would never use.
+    const committedKey = artifactKey(
+      scope,
+      artifactId,
+      isFeatureJob ? 'GOLD' : 'SILVER',
+    );
     const jobTmpPrefix = tmpPrefixFor(scope, jobId);
 
     // Read (and, for FEATURE, re-validate) the stored recipe BEFORE the
@@ -233,6 +248,8 @@ export class PreprocessingJobService
     try {
       if (isFeatureJob) {
         featureRecipe = this.readFeatureRecipe(job.operations);
+      } else if (isExportJob) {
+        this.readExportRequest(job.operations);
       } else {
         operations = this.readOperations(job.operations);
         precision = this.readPrecision(job.operations);
@@ -242,7 +259,7 @@ export class PreprocessingJobService
       await this.recordFailure(jobId, jobTmpPrefix, controller, err);
       return;
     }
-    const totalSteps = isFeatureJob ? 1 : operations.length;
+    const totalSteps = isFeatureJob || isExportJob ? 1 : operations.length;
 
     await this.prisma.preprocessingJob.update({
       where: { id: jobId },
@@ -289,6 +306,37 @@ export class PreprocessingJobService
             controller.signal,
           ),
         );
+      } else if (isExportJob) {
+        this.assertNotCanceled(controller);
+        await this.reportStep(jobId, {
+          completedSteps: 0,
+          totalSteps: 1,
+          currentStep: 'export',
+          startedAt,
+        });
+
+        const exportStats = ExportStatsSchema.parse(
+          await postToPython(
+            '/v1/preprocess/export',
+            { source_key: sourceObjectKey },
+            PYTHON_TIMEOUT.preprocess,
+            controller.signal,
+          ),
+        );
+        // Reused as ArtifactStats below (commit() takes one shape) —
+        // missing_pct/column_stats_key have no export equivalent, so
+        // they're filled with the same "not applicable" defaults every
+        // other optional field with nothing to report already uses.
+        stats = {
+          object_key: exportStats.object_key,
+          row_count: exportStats.row_count,
+          column_count: exportStats.column_count,
+          size_bytes: exportStats.size_bytes,
+          missing_pct: 0,
+          checksum: exportStats.checksum,
+          duration_ms: Date.now() - startedAt,
+          column_stats_key: null,
+        };
       } else {
         let sourceKey = sourceObjectKey;
 
@@ -335,7 +383,9 @@ export class PreprocessingJobService
           statusCode: 400,
           message: isFeatureJob
             ? 'Feature engineering produced no result.'
-            : 'A cleaning job needs at least one operation.',
+            : isExportJob
+              ? 'Export produced no result.'
+              : 'A cleaning job needs at least one operation.',
           type: 'ERROR',
         });
       }
@@ -348,7 +398,7 @@ export class PreprocessingJobService
         artifactId,
         stats,
         isFeatureJob ? featureRecipe!.features : operations,
-        isFeatureJob ? 1 : operations.length,
+        isFeatureJob || isExportJob ? 1 : operations.length,
         startedAt,
         job.sourceArtifact?.runId ?? randomUUID(),
         artifactType,
@@ -381,7 +431,7 @@ export class PreprocessingJobService
     completedSteps: number,
     startedAt: number,
     runId: string,
-    artifactType: 'SILVER' | 'GOLD',
+    artifactType: 'SILVER' | 'GOLD' | 'EXPORT',
     featureSpecKey: string | null,
   ): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
@@ -434,16 +484,24 @@ export class PreprocessingJobService
 
       // The pointer follows the owner. A draft-time run advances the DRAFT so
       // the wizard hydrates from it; only a post-save run touches the Dataset.
-      if (job.datasetId) {
-        await tx.dataset.update({
-          where: { id: job.datasetId },
-          data: { currentArtifactId: artifact.id },
-        });
-      } else if (job.draftId) {
-        await tx.datasetDraft.update({
-          where: { id: job.draftId },
-          data: { currentArtifactId: artifact.id },
-        });
+      //
+      // EXPORT is excluded: it is a read-only CSV rendering of an
+      // already-committed artifact, not a new stage in the lineage chain —
+      // advancing the live pointer to it would point wizard hydration,
+      // the next job's source, and model training at a CSV rather than the
+      // artifact that was actually current before this job ran.
+      if (artifactType !== 'EXPORT') {
+        if (job.datasetId) {
+          await tx.dataset.update({
+            where: { id: job.datasetId },
+            data: { currentArtifactId: artifact.id },
+          });
+        } else if (job.draftId) {
+          await tx.datasetDraft.update({
+            where: { id: job.draftId },
+            data: { currentArtifactId: artifact.id },
+          });
+        }
       }
     });
   }
@@ -674,6 +732,28 @@ export class PreprocessingJobService
       scalers: parsed.data.scalers,
       targetY: parsed.data.targetY ?? null,
     };
+  }
+
+  /**
+   * `PreprocessingJob.operations` stores `{ kind: 'export' }` for an
+   * EXPORT-stage job — nothing else to configure, unlike CLEAN/FEATURE.
+   * Never called for a CLEAN or FEATURE job — `run()` branches on
+   * `job.stage` before any reader runs — but still actively refuses any
+   * other shape rather than coercing, mirroring `readOperations`/
+   * `readFeatureRecipe`'s own refusal discipline.
+   */
+  private readExportRequest(raw: PrismaTypes.JsonValue): void {
+    const payload = Array.isArray(raw)
+      ? null
+      : (raw as { kind?: unknown } | null);
+    if (!payload || payload.kind !== 'export') {
+      throw new AppException({
+        statusCode: 500,
+        message:
+          'Stored job payload is not an export request — refusing to run as EXPORT.',
+        type: 'ERROR',
+      });
+    }
   }
 
   /**

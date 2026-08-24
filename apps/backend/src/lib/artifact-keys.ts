@@ -35,6 +35,13 @@ export const VALIDATION_REPORT_FILENAME = 'validation_report.json';
 export const VALIDATE_DATA_FILENAME = 'validate_data.parquet';
 
 /**
+ * DS-LAKE-021-T01. The CSV export sidecar, beside a committed artifact's own
+ * data key. Mirrored from `EXPORT_CSV_FILENAME` in object_store.py — change
+ * both.
+ */
+export const EXPORT_CSV_FILENAME = 'export.csv';
+
+/**
  * DS-LAKE-016: stage-suffixed data filenames, for diagnosability — telling a
  * BRONZE from a GOLD while browsing a MinIO console today requires a
  * Postgres round trip. No FINAL entry on purpose: it never gets a file of

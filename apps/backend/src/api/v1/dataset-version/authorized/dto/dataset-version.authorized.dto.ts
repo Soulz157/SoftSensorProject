@@ -436,6 +436,16 @@ export const ArtifactStatsSchema = z.object({
 
 export type ArtifactStats = z.infer<typeof ArtifactStatsSchema>;
 
+/** Mirrors apps/python `schemas.preprocess.ExportStatsResponse`. */
+export const ExportStatsSchema = z.object({
+  object_key: z.string().min(1),
+  row_count: z.number().int().nonnegative(),
+  column_count: z.number().int().nonnegative(),
+  size_bytes: z.number().int().nonnegative(),
+  checksum: z.string().length(64),
+});
+export type ExportStats = z.infer<typeof ExportStatsSchema>;
+
 // ── validation (DS-LAKE-007) ────────────────────────────────────────────
 // ValidateArtifactSchema itself lives earlier, alongside the other request
 // schemas (CreateFeaturesSchema etc.) — only the PYTHON RESPONSE shapes

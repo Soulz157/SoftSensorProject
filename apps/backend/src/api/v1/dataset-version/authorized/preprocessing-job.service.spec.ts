@@ -640,3 +640,86 @@ describe('PreprocessingJobService — FEATURE stage (DS-LAKE-006-T06 reversal)',
     expect(final.data.error).toContain('cleaning pipeline');
   });
 });
+
+const EXPORT_ARTIFACT = {
+  object_key: 'ds-1/artifacts/a-1/export.csv',
+  row_count: 500,
+  column_count: 3,
+  size_bytes: 20480,
+  checksum: 'b'.repeat(64),
+};
+
+function buildExportJob(overrides: Record<string, unknown> = {}) {
+  return buildJob({
+    stage: 'EXPORT',
+    operations: { kind: 'export' },
+    ...overrides,
+  });
+}
+
+describe('EXPORT stage', () => {
+  it('EXP-01: commits an EXPORT artifact with parentArtifactId set to the source', async () => {
+    post.mockResolvedValue(EXPORT_ARTIFACT);
+    const { service, tx } = makeService(buildExportJob());
+    await (service as unknown as Runnable).run('job-1');
+
+    const artifact = firstWrite(tx.datasetArtifact.create);
+    expect(artifact.type).toBe('EXPORT');
+    expect(artifact.parentArtifactId).toBe('a-1');
+    expect(artifact.objectKey).toBe(EXPORT_ARTIFACT.object_key);
+    expect(artifact.rowCount).toBe(500);
+
+    const jobWrite = firstWrite(tx.preprocessingJob.update);
+    expect(jobWrite).toMatchObject({ status: 'SUCCEEDED', completedSteps: 1 });
+  });
+
+  it('EXP-02: calls /v1/preprocess/export with the source artifact objectKey', async () => {
+    post.mockResolvedValue(EXPORT_ARTIFACT);
+    const { service } = makeService(buildExportJob());
+    await (service as unknown as Runnable).run('job-1');
+
+    const exportCalls = post.mock.calls.filter(
+      ([path]) => path === '/v1/preprocess/export',
+    );
+    expect(exportCalls).toHaveLength(1);
+    expect(exportCalls[0]?.[1]).toMatchObject({
+      source_key: 'ds-1/artifacts/a-1/data.parquet',
+    });
+  });
+
+  it('EXP-03: a CLEAN-shaped payload on an EXPORT-stage job FAILS rather than silently exporting nothing', async () => {
+    const { service, prisma, tx } = makeService(
+      buildExportJob({
+        operations: { operations: [{ type: 'drop_missing' }], precision: {} },
+      }),
+    );
+    await (service as unknown as Runnable).run('job-1');
+
+    expect(post).not.toHaveBeenCalled();
+    expect(tx.datasetArtifact.create).not.toHaveBeenCalled();
+    const final = { data: lastWrite(prisma.preprocessingJob.update) };
+    expect(final.data.status).toBe('FAILED');
+    expect(final.data.error).toContain('export');
+  });
+
+  it('EXP-04: an EXPORT-shaped payload on a CLEAN-stage job FAILS rather than running zero operations', async () => {
+    const { service, prisma, tx } = makeService(
+      buildJob({ stage: 'CLEAN', operations: { kind: 'export' } }),
+    );
+    await (service as unknown as Runnable).run('job-1');
+
+    expect(post).not.toHaveBeenCalled();
+    expect(tx.datasetArtifact.create).not.toHaveBeenCalled();
+    const final = { data: lastWrite(prisma.preprocessingJob.update) };
+    expect(final.data.status).toBe('FAILED');
+  });
+
+  it('EXP-05: does NOT advance the dataset/draft currentArtifactId pointer — an export is a read-only rendering, not a new lineage stage', async () => {
+    post.mockResolvedValue(EXPORT_ARTIFACT);
+    const { service, tx } = makeService(buildExportJob());
+    await (service as unknown as Runnable).run('job-1');
+
+    expect(tx.dataset.update).not.toHaveBeenCalled();
+    expect(tx.datasetDraft.update).not.toHaveBeenCalled();
+  });
+});
