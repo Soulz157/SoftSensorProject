@@ -119,6 +119,12 @@ export interface PreprocessingJob {
   attempts: number
   sourceVersionId: string | null
   resultVersionId: string | null
+  /** DS-LAKE-021. Set for an EXPORT-stage job's terminal SUCCEEDED row —
+   * the id `GET /:id/export/:artifactId/download` needs. Mirrors
+   * `DraftPreprocessingJob.resultArtifactId` (dataset-draft.ts), which
+   * already had this field; backend added it here in the same fix that
+   * made the download route reachable (getJobService, commit cb0c945). */
+  resultArtifactId: string | null
   startedAt: string | null
   finishedAt: string | null
 }
