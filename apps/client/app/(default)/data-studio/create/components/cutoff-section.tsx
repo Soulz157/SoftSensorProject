@@ -1,8 +1,9 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useTransition } from 'react'
 import { CheckCheck, Eye, Plus, X } from 'lucide-react'
 import { toChartRows, type Dataset } from '@/lib/preprocessing'
+import { useDelayedFlag } from '@/hooks/use-delayed-flag'
 import type {
   ConditionalRule,
   CropRange,
@@ -107,6 +108,15 @@ export function CutOffSection({
   const [preview, setPreview] = useState<Preview>('cleaned')
   const [isCutoffOpen, setIsCutoffOpen] = useState(true)
 
+  /**
+   * Nothing below fetches — swapping Before/After or the tag set re-derives
+   * the chart rows and re-renders recharts synchronously, which on a wide
+   * dataset blocks the frame long enough that the toggle looks dead. Deferring
+   * those updates keeps the controls responsive and gives the chart a render
+   * it can report as in-flight.
+   */
+  const [isPending, startTransition] = useTransition()
+
   const rawTimestamps = useMemo(() => raw.rows.map(r => r.timestamp), [raw])
 
   const afterDataset = stepPreviewDataset ?? precleansed
@@ -114,10 +124,15 @@ export function CutOffSection({
 
   const selectableTags = raw.tags
   const addable = selectableTags.filter(t => !previewTags.includes(t))
-  const addTag = (tag: string) => onPreviewTagsChange([...previewTags, tag])
+  const addTag = (tag: string) =>
+    startTransition(() => onPreviewTagsChange([...previewTags, tag]))
   const removeTag = (tag: string) =>
-    onPreviewTagsChange(previewTags.filter(t => t !== tag))
-  const selectAll = () => onPreviewTagsChange([...selectableTags])
+    startTransition(() =>
+      onPreviewTagsChange(previewTags.filter(t => t !== tag)),
+    )
+  // The slowest case in the section: every line re-enters the chart at once.
+  const selectAll = () =>
+    startTransition(() => onPreviewTagsChange([...selectableTags]))
 
   const chartRaw = scopeTag ? pickTag(raw, scopeTag) : raw
   const chartCleaned = scopeTag ? pickTag(precleansed, scopeTag) : precleansed
@@ -135,7 +150,20 @@ export function CutOffSection({
     ? [...tagsToRender.filter(t => t !== focus), focus]
     : tagsToRender
 
-  const clearTags = () => onPreviewTagsChange(scopeTag ? [scopeTag] : [])
+  const clearTags = () =>
+    startTransition(() => onPreviewTagsChange(scopeTag ? [scopeTag] : []))
+
+  // Memoized: this was computed inline in the JSX below, so it re-ran on every
+  // unrelated re-render (hover, popover, cut-off panel toggle). Keyed on the
+  // dataset alone, it now recomputes only when the preview actually changes —
+  // inside the transition above, which is what makes the pending state real.
+  // Mirrors what `data-analysis-card.tsx` already does for its own chartRows.
+  const chartRows = useMemo(() => toChartRows(previewDataset), [previewDataset])
+
+  // Anti-flicker: a spinner that shows for one frame is worse than none, so it
+  // only appears once the deferred render has genuinely taken 150ms.
+  const chartLoading = useDelayedFlag(isPending, 150)
+
   return (
     <div className="space-y-4 rounded-xl bg-card p-4 ring-1 ring-foreground/10">
       <div className="space-y-6">
@@ -199,7 +227,9 @@ export function CutOffSection({
             <SegmentedToggle
               ariaLabel="Preview dataset"
               value={preview}
-              onChange={setPreview}
+              // Deferred so the toggle itself flips immediately while the
+              // chart catches up behind its spinner.
+              onChange={next => startTransition(() => setPreview(next))}
               options={[
                 { value: 'raw', label: 'Before Clean' },
                 { value: 'cleaned', label: 'After Clean' },
@@ -303,11 +333,12 @@ export function CutOffSection({
             )}
           </div>
           <RawTrendChart
-            rows={toChartRows(previewDataset)}
+            rows={chartRows}
             tags={orderedTags}
             focusedTag={focus ? [focus] : []}
             range={range}
             hideTagSelector
+            loading={chartLoading}
           />
         </div>
       </div>

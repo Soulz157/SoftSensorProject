@@ -6,6 +6,7 @@ import {
   ChevronLeft,
   ChevronRight,
   LineChart as LineChartIcon,
+  Loader2,
   RotateCcw,
   ZoomIn,
   ZoomOut,
@@ -37,6 +38,13 @@ interface Props {
   focusedTag?: string[]
   /** Master override: when true, every line renders at full opacity. */
   isViewAll?: boolean
+  /**
+   * Covers the plot with a spinner while the caller prepares a different
+   * `rows`/`tags` set. Nothing here is async — this marks a render the caller
+   * has deferred (see `CutOffSection`'s Before/After transition), so the chart
+   * says it is working instead of freezing on the previous data.
+   */
+  loading?: boolean
 }
 
 const X_ZOOM_STEP = 1.6
@@ -95,6 +103,7 @@ export function RawTrendChart({
   hideTagSelector = false,
   focusedTag,
   isViewAll = false,
+  loading = false,
 }: Props) {
   const reducedMotion = usePrefersReducedMotion()
   const { tickFormat } = rangeConfig(range)
@@ -316,71 +325,85 @@ export function RawTrendChart({
         />
       </div>
 
-      {/* ── Main chart ── */}
-      <ChartContainer config={config} className="h-100 w-full">
-        <LineChart
-          accessibilityLayer
-          data={visibleRows}
-          margin={{ left: 12, right: 12 }}
-        >
-          <CartesianGrid vertical={false} />
-          <XAxis
-            dataKey="timestamp"
-            tickLine={false}
-            axisLine={false}
-            tickMargin={8}
-            minTickGap={32}
-            tickFormatter={value => tickFormat(String(value))}
-          />
-          <YAxis
-            tickLine={false}
-            axisLine={false}
-            width={56}
-            tickMargin={8}
-            domain={autoscaleY || !lockedYDomain ? undefined : lockedYDomain}
-            tickFormatter={v =>
-              isNum(v)
-                ? v.toLocaleString(undefined, { maximumFractionDigits: 2 })
-                : ''
-            }
-          />
-          <ChartTooltip
-            content={
-              <ChartTooltipContent
-                labelFormatter={value =>
-                  new Date(String(value)).toLocaleString()
-                }
-              />
-            }
-          />
-          {visibleTags.map(piTag => {
-            const opacity = getLineOpacity(piTag, focusedTag, isViewAll)
-            const isFocused = !isViewAll && !!focusedTag?.includes(piTag)
-            const heavy = visibleRows.length > 200
+      {/* ── Main chart ──
+          The chart stays MOUNTED under the overlay rather than being swapped
+          for a spinner: unmounting would discard `zoomWindow`, `hidden` and
+          `autoscaleY`, so every Before/After flip would silently reset the
+          user's zoom. */}
+      <div className="relative">
+        {loading && (
+          <div
+            className="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-background/60"
+            role="status"
+            aria-label="Loading chart data"
+          >
+            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+          </div>
+        )}
+        <ChartContainer config={config} className="h-100 w-full">
+          <LineChart
+            accessibilityLayer
+            data={visibleRows}
+            margin={{ left: 12, right: 12 }}
+          >
+            <CartesianGrid vertical={false} />
+            <XAxis
+              dataKey="timestamp"
+              tickLine={false}
+              axisLine={false}
+              tickMargin={8}
+              minTickGap={32}
+              tickFormatter={value => tickFormat(String(value))}
+            />
+            <YAxis
+              tickLine={false}
+              axisLine={false}
+              width={56}
+              tickMargin={8}
+              domain={autoscaleY || !lockedYDomain ? undefined : lockedYDomain}
+              tickFormatter={v =>
+                isNum(v)
+                  ? v.toLocaleString(undefined, { maximumFractionDigits: 2 })
+                  : ''
+              }
+            />
+            <ChartTooltip
+              content={
+                <ChartTooltipContent
+                  labelFormatter={value =>
+                    new Date(String(value)).toLocaleString()
+                  }
+                />
+              }
+            />
+            {visibleTags.map(piTag => {
+              const opacity = getLineOpacity(piTag, focusedTag, isViewAll)
+              const isFocused = !isViewAll && !!focusedTag?.includes(piTag)
+              const heavy = visibleRows.length > 200
 
-            return (
-              <Line
-                key={piTag}
-                dataKey={(row: SensorChartRow) => row[piTag]}
-                name={piTag}
-                type={visibleRows.length > 200 ? 'linear' : 'natural'}
-                stroke={colorByTag[piTag]}
-                strokeOpacity={opacity}
-                strokeWidth={isFocused ? 3 : 2}
-                fill={colorByTag[piTag]}
-                fillOpacity={opacity < 1 ? 0 : 0.12}
-                dot={
-                  visibleRows.length > MAX_POINTS_FOR_DOTS
-                    ? false
-                    : { r: 3, fill: colorByTag[piTag] }
-                }
-                activeDot={{ r: 6 }}
-                connectNulls
-                isAnimationActive={!reducedMotion && !heavy}
-              />
-            )
-          })}
-          {/* {rows.length > 2 && (
+              return (
+                <Line
+                  key={piTag}
+                  dataKey={(row: SensorChartRow) => row[piTag]}
+                  name={piTag}
+                  type={visibleRows.length > 200 ? 'linear' : 'natural'}
+                  stroke={colorByTag[piTag]}
+                  strokeOpacity={opacity}
+                  strokeWidth={isFocused ? 3 : 2}
+                  fill={colorByTag[piTag]}
+                  fillOpacity={opacity < 1 ? 0 : 0.12}
+                  dot={
+                    visibleRows.length > MAX_POINTS_FOR_DOTS
+                      ? false
+                      : { r: 3, fill: colorByTag[piTag] }
+                  }
+                  activeDot={{ r: 6 }}
+                  connectNulls
+                  isAnimationActive={!reducedMotion && !heavy}
+                />
+              )
+            })}
+            {/* {rows.length > 2 && (
             <Brush
               dataKey="timestamp"
               height={28}
@@ -409,8 +432,9 @@ export function RawTrendChart({
               }}
             />
           )} */}
-        </LineChart>
-      </ChartContainer>
+          </LineChart>
+        </ChartContainer>
+      </div>
     </div>
   )
 }

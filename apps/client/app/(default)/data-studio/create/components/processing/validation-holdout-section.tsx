@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import { useAtom, useAtomValue } from 'jotai'
+import { Check, Loader2 } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { DateTimePicker, toDateTimeLocal } from '@/components/date-time-picker'
@@ -50,6 +52,11 @@ function deriveRawWindow(raw: Dataset): CustomDateRange | null {
  * that used to be Step 2 local state (`customFrom`/`customTo`/
  * `effectiveInterval`) — those are gone by the time this component mounts
  * at Step 3.1, so it reads the same underlying atoms directly instead.
+ *
+ * Committing is behind an explicit Apply button, not the date inputs: a
+ * commit re-splits the draft's BRONZE server-side, so auto-committing made
+ * editing Start-then-End fire two re-splits, the first against a window the
+ * user never chose.
  *
  * A commit here does not merely update `dwHoldoutRangeAtom` (which
  * `useDatasetBronzeWarm` only reads at MATERIALIZE time, already past by
@@ -107,20 +114,26 @@ export function ValidationHoldoutSection({
 
   // Commits only a VALID selection — a refusal is shown inline but never
   // written to the atom, so a mid-edit typo can't silently discard an
-  // otherwise-good holdout that was already saved there. A valid commit is
-  // the ONE place this component calls `resplit` — the actual user action
-  // that must reach the server.
-  const commit = (from: string, to: string) => {
-    if (!from || !to) return
+  // otherwise-good holdout that was already saved there. This is the ONE
+  // place this component calls `resplit` — the actual user action that must
+  // reach the server.
+  //
+  // Behind an explicit Apply rather than firing on each date change: a commit
+  // re-splits the draft's pristine BRONZE server-side, and editing Start then
+  // End auto-committed TWICE — the first time against a window pairing the new
+  // Start with the OLD End, which the user never asked for and which is often
+  // valid enough to pass the guard and be persisted.
+  const applyHoldout = () => {
+    if (!draftFrom || !draftTo) return
     const result = describeHoldoutSelection({
       fetchRange: { from: fetchFrom, to: fetchTo },
-      holdoutRange: { from, to },
+      holdoutRange: { from: draftFrom, to: draftTo },
       interval,
       targetChosen: targetTag !== null,
     })
     if (result.refusals.length === 0) {
-      setHoldoutRange({ from, to })
-      void resplit({ from, to })
+      setHoldoutRange({ from: draftFrom, to: draftTo })
+      void resplit({ from: draftFrom, to: draftTo })
     }
   }
 
@@ -136,6 +149,19 @@ export function ValidationHoldoutSection({
 
   const resplitPending = resplitStatus === 'pending'
 
+  // Both halves chosen, the guard content, and actually different from what is
+  // already committed — re-applying an unchanged window would re-split the
+  // dataset for no change at all.
+  const dirty =
+    draftFrom !== (holdoutRange?.from ?? '') ||
+    draftTo !== (holdoutRange?.to ?? '')
+  const canApply =
+    !disabled &&
+    !resplitPending &&
+    Boolean(draftFrom && draftTo) &&
+    guard.refusals.length === 0 &&
+    dirty
+
   return (
     <div className="mt-1 space-y-2 border-t border-border/60 pt-3">
       <label className="flex items-center gap-2">
@@ -150,10 +176,10 @@ export function ValidationHoldoutSection({
         <span className="text-sm font-medium text-foreground">
           Split Validation data (optional)
         </span>
-        {resplitPending && (
-          <span className="text-[11px] text-muted-foreground">
-            Applying…
-          </span>
+        {/* Only for the toggle-OFF re-split, which has no Apply button of its
+            own; while the section is open the button below owns this state. */}
+        {resplitPending && !enabled && (
+          <span className="text-[11px] text-muted-foreground">Applying…</span>
         )}
       </label>
       {enabled && (
@@ -169,10 +195,7 @@ export function ValidationHoldoutSection({
                 min={fetchFrom}
                 max={fetchTo}
                 disabled={disabled || resplitPending}
-                onChange={v => {
-                  setDraftFrom(v)
-                  commit(v, draftTo)
-                }}
+                onChange={setDraftFrom}
               />
             </div>
             <div className="grid gap-1.5">
@@ -185,10 +208,7 @@ export function ValidationHoldoutSection({
                 min={fetchFrom}
                 max={fetchTo}
                 disabled={disabled || resplitPending}
-                onChange={v => {
-                  setDraftTo(v)
-                  commit(draftFrom, v)
-                }}
+                onChange={setDraftTo}
               />
             </div>
           </div>
@@ -205,6 +225,35 @@ export function ValidationHoldoutSection({
           {resplitError && (
             <p className="text-[11px] text-destructive">{resplitError}</p>
           )}
+
+          <div className="flex items-center justify-end gap-2 pt-1">
+            {dirty && guard.refusals.length === 0 && !resplitPending && (
+              // Says why the button is lit. Without it a user who edited a
+              // date and walked away has no signal that the split on the
+              // server is still the previous one.
+              <span className="text-[11px] text-muted-foreground">
+                Not applied yet
+              </span>
+            )}
+            <Button
+              size="sm"
+              className="h-7 gap-1.5 text-xs"
+              disabled={!canApply}
+              onClick={applyHoldout}
+            >
+              {resplitPending ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Applying…
+                </>
+              ) : (
+                <>
+                  <Check className="h-3.5 w-3.5" />
+                  Apply
+                </>
+              )}
+            </Button>
+          </div>
         </>
       )}
     </div>
