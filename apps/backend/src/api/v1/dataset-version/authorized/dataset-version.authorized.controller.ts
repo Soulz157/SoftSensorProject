@@ -403,6 +403,37 @@ export class DatasetVersionAuthorizedController {
     return this.service.startCleanJobService(user, id, versionId, body);
   }
 
+  @Post('/:id/export')
+  @HttpCode(202)
+  @ApiOperation({
+    summary: 'Start an export job (202 + jobId)',
+    description:
+      'Returns immediately with a job id; poll `GET /:id/jobs/:jobId` for ' +
+      "progress. Exports the dataset's FINAL artifact only.",
+  })
+  async startExportController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+  ) {
+    return this.service.startExportService(user, id);
+  }
+
+  @Get('/:id/export/:artifactId/download')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Presigned download link for a completed export artifact',
+    description:
+      'Presigns fresh on every call — the link expires, so this must not ' +
+      'be cached from job-completion time.',
+  })
+  async getExportDownloadController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+  ) {
+    return this.service.getExportDownloadService(user, id, artifactId);
+  }
+
   @Get('/:id/jobs/:jobId')
   @HttpCode(200)
   @ApiOperation({ summary: 'Job status, progress and current step' })

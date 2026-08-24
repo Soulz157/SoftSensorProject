@@ -46,6 +46,10 @@ function buildPrisma(overrides: Record<string, unknown> = {}) {
       findMany: jest.fn().mockResolvedValue([]),
       update: jest.fn(),
     },
+    // DS-LAKE-021-T03: startExportService creates a PreprocessingJob row.
+    preprocessingJob: {
+      create: jest.fn(),
+    },
     $transaction: jest.fn(),
     ...overrides,
   };
@@ -527,6 +531,95 @@ describe('DatasetVersionAuthorizedService — getArtifactHoldoutService (MODEL-F
 
     await expect(
       service.getArtifactHoldoutService(USER, 'ds-1', 'ghost'),
+    ).rejects.toThrow(AppException);
+  });
+});
+
+describe('DatasetVersionAuthorizedService — startExportService / getExportDownloadService (DS-LAKE-021)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it("creates an EXPORT-stage job against the dataset's FINAL artifact", async () => {
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst.mockResolvedValueOnce({
+      id: 'final-1',
+      type: 'FINAL',
+      objectKey: 'ds-1/artifacts/final-1/data.parquet',
+      runId: 'run-1',
+    });
+    prisma.preprocessingJob.create.mockResolvedValueOnce({ id: 'job-9' });
+    const { service } = makeService(prisma);
+
+    const res = await service.startExportService(USER, 'ds-1');
+
+    expect(res.data.jobId).toBe('job-9');
+    const createArgs = prisma.preprocessingJob.create.mock.calls[0][0];
+    expect(createArgs.data).toMatchObject({
+      stage: 'EXPORT',
+      sourceArtifactId: 'final-1',
+      operations: { kind: 'export' },
+    });
+  });
+
+  it('404s when the dataset has no FINAL artifact', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst.mockResolvedValueOnce(null);
+    const { service } = makeService(prisma);
+
+    await expect(service.startExportService(USER, 'ds-1')).rejects.toThrow(
+      AppException,
+    );
+  });
+
+  it('getExportDownloadService presigns the FINAL objectKey with the export sidecar, fresh every call', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst
+      .mockResolvedValueOnce({
+        id: 'export-1',
+        type: 'EXPORT',
+        parentArtifactId: 'final-1',
+      })
+      .mockResolvedValueOnce({
+        id: 'final-1',
+        objectKey: 'ds-1/artifacts/final-1/data.parquet',
+      });
+    post.mockResolvedValue({
+      data_url: 'https://minio.example/gold-signed',
+      sidecar_urls: { 'export.csv': 'https://minio.example/export-signed' },
+      checksum: 'c'.repeat(64),
+      row_count: 500,
+      expires_at: '2026-08-24T01:00:00Z',
+    });
+    const { service } = makeService(prisma);
+
+    const res = await service.getExportDownloadService(
+      USER,
+      'ds-1',
+      'export-1',
+    );
+
+    expect(res.data.downloadUrl).toBe('https://minio.example/export-signed');
+    expect(res.data.expiresAt).toBe('2026-08-24T01:00:00Z');
+    expect(post).toHaveBeenCalledWith(
+      '/v1/preprocess/artifacts/presign',
+      {
+        source_key: 'ds-1/artifacts/final-1/data.parquet',
+        sidecars: ['export.csv'],
+      },
+      expect.anything(),
+    );
+  });
+
+  it('getExportDownloadService 404s when the artifact is not type EXPORT', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst.mockResolvedValueOnce({
+      id: 'silver-1',
+      type: 'SILVER',
+      parentArtifactId: null,
+    });
+    const { service } = makeService(prisma);
+
+    await expect(
+      service.getExportDownloadService(USER, 'ds-1', 'silver-1'),
     ).rejects.toThrow(AppException);
   });
 });

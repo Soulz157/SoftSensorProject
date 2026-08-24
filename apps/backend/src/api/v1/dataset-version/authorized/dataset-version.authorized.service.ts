@@ -7,8 +7,10 @@ import {
   postToPython,
   PYTHON_TIMEOUT,
 } from '@/lib/python-client';
+import { presignArtifact } from '@/lib/python-preprocess-client';
 import {
   artifactKey,
+  EXPORT_CSV_FILENAME,
   sidecarKey,
   VALIDATE_DATA_FILENAME,
 } from '@/lib/artifact-keys';
@@ -1359,6 +1361,113 @@ export class DatasetVersionAuthorizedService {
       message: 'Retry accepted',
       type: 'SUCCESS' as const,
       data: { jobId: job.id, status: job.status, retryOf: previous.id },
+    };
+  }
+
+  // ── export ───────────────────────────────────────────────────────────────
+
+  /**
+   * DS-LAKE-021-T02. The dataset's `currentArtifactId` is stage-polymorphic
+   * (per its own doc comment elsewhere in this file) — it is FINAL only once
+   * the dataset is fully saved. This looks up the FINAL row explicitly rather
+   * than trusting `currentArtifactId`, same discipline
+   * `saveDraftAsDatasetService` already uses on the draft side, so an export
+   * started against a dataset with no FINAL commit fails loudly instead of
+   * exporting the wrong stage.
+   */
+  async startExportService(user: Auth.UserPayload, datasetId: string) {
+    await this.assertDatasetAccess(datasetId, user);
+
+    const final = await this.prisma.datasetArtifact.findFirst({
+      where: { datasetId, type: 'FINAL' },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!final) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Dataset has no FINAL artifact to export.',
+        type: 'ERROR',
+      });
+    }
+
+    const job = await this.prisma.preprocessingJob.create({
+      data: {
+        datasetId,
+        sourceArtifactId: final.id,
+        stage: 'EXPORT',
+        operations: { kind: 'export' },
+        createdById: user.id,
+      },
+    });
+
+    this.jobs.start(job.id);
+
+    return {
+      statusCode: 202,
+      message: 'Export job started',
+      type: 'SUCCESS' as const,
+      data: { jobId: job.id },
+    };
+  }
+
+  /**
+   * DS-LAKE-021-T03. First NestJS method that hands a presigned URL to the
+   * browser — every existing `presignArtifact` caller is server-to-server
+   * (e.g. `ModelRunAuthorizedService.claim()` embeds one in its response to
+   * the training container, not a browser tab). Presigns FRESH on every
+   * call rather than caching a value from job completion — presigned URLs
+   * expire (`expires_at`), so a stale link served from an old job payload
+   * would 403 client-side with no way to recover short of re-running export.
+   */
+  async getExportDownloadService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    artifactId: string,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+
+    const exportArtifact = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, datasetId, type: 'EXPORT' },
+      select: { parentArtifactId: true },
+    });
+    if (!exportArtifact || !exportArtifact.parentArtifactId) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Export artifact not found for this dataset.',
+        type: 'ERROR',
+      });
+    }
+
+    const final = await this.prisma.datasetArtifact.findFirst({
+      where: { id: exportArtifact.parentArtifactId },
+      select: { objectKey: true },
+    });
+    if (!final) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Source artifact for this export no longer exists.',
+        type: 'ERROR',
+      });
+    }
+
+    const presigned = await presignArtifact({
+      source_key: final.objectKey,
+      sidecars: [EXPORT_CSV_FILENAME],
+    });
+    const downloadUrl = presigned.sidecar_urls[EXPORT_CSV_FILENAME];
+    if (!downloadUrl) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Export file is missing from storage — re-run the export.',
+        type: 'ERROR',
+      });
+    }
+
+    return {
+      statusCode: 200,
+      message: 'Export download link',
+      type: 'SUCCESS' as const,
+      data: { downloadUrl, expiresAt: presigned.expires_at },
     };
   }
 }
