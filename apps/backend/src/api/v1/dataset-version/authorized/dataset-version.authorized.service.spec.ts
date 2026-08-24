@@ -546,12 +546,16 @@ describe('DatasetVersionAuthorizedService — startExportService / getExportDown
       objectKey: 'ds-1/artifacts/final-1/data.parquet',
       runId: 'run-1',
     });
-    prisma.preprocessingJob.create.mockResolvedValueOnce({ id: 'job-9' });
+    prisma.preprocessingJob.create.mockResolvedValueOnce({
+      id: 'job-9',
+      status: 'QUEUED',
+    });
     const { service } = makeService(prisma);
 
     const res = await service.startExportService(USER, 'ds-1');
 
     expect(res.data.jobId).toBe('job-9');
+    expect(res.data.status).toBe('QUEUED');
     const createArgs = prisma.preprocessingJob.create.mock.calls[0][0];
     expect(createArgs.data).toMatchObject({
       stage: 'EXPORT',
@@ -621,5 +625,37 @@ describe('DatasetVersionAuthorizedService — startExportService / getExportDown
     await expect(
       service.getExportDownloadService(USER, 'ds-1', 'silver-1'),
     ).rejects.toThrow(AppException);
+  });
+
+  // DS-LAKE-021 final-review fix: getJobService must surface resultArtifactId
+  // so a client can learn which artifact id to call the download route with.
+  it('getJobService returns resultArtifactId from the job row', async () => {
+    const prisma = buildPrisma({
+      preprocessingJob: {
+        create: jest.fn(),
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'job-9',
+          status: 'SUCCEEDED',
+          stage: 'EXPORT',
+          progress: 100,
+          currentStep: 1,
+          totalSteps: 1,
+          completedSteps: 1,
+          estimatedRemainingMs: 0,
+          error: null,
+          attempts: 1,
+          sourceVersionId: null,
+          resultVersionId: null,
+          resultArtifactId: 'export-1',
+          startedAt: null,
+          finishedAt: null,
+        }),
+      },
+    });
+    const { service } = makeService(prisma);
+
+    const res = await service.getJobService(USER, 'ds-1', 'job-9');
+
+    expect(res.data.resultArtifactId).toBe('export-1');
   });
 });

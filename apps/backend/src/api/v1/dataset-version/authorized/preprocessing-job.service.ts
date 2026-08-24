@@ -452,6 +452,7 @@ export class PreprocessingJobService
           parentArtifactId: job.sourceArtifactId,
           type: artifactType,
           objectKey: stats.object_key,
+          format: artifactType === 'EXPORT' ? 'csv' : 'parquet',
           checksum: stats.checksum,
           rowCount: stats.row_count,
           columnCount: stats.column_count,

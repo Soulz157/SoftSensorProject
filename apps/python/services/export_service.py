@@ -21,6 +21,7 @@ from intergrations.object_store import (
     STATUS_BAD,
     STATUS_SUFFIX,
     TIMESTAMP_COLUMN,
+    sha256_hex,
     sidecar_key,
 )
 from schemas.preprocess import ExportRequest, ExportStatsResponse
@@ -73,12 +74,12 @@ def export_artifact_csv(
 
     csv_bytes = out.getvalue().encode("utf-8")
     export_key = sidecar_key(request.source_key, EXPORT_CSV_FILENAME)
-    store.put_object_bytes(export_key, csv_bytes)
+    store.put_object_bytes(export_key, csv_bytes, content_type="text/csv")
 
     return ExportStatsResponse(
         object_key=export_key,
         row_count=total_rows,
         column_count=len(value_columns),
         size_bytes=len(csv_bytes),
-        checksum=store.checksum_of(export_key),
+        checksum=sha256_hex(csv_bytes),
     )

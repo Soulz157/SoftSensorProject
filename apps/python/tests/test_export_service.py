@@ -23,7 +23,9 @@ class RecordingStore:
             raise ObjectStoreError(f"Could not read '{key}': NoSuchKey")
         return self.raw_objects[key]
 
-    def put_object_bytes(self, key: str, data: bytes) -> None:
+    def put_object_bytes(
+        self, key: str, data: bytes, *, content_type: str = "application/octet-stream"
+    ) -> None:
         self.writes.append(key)
         self.raw_objects[key] = data
 

@@ -1197,6 +1197,7 @@ export class DatasetVersionAuthorizedService {
         attempts: job.attempts,
         sourceVersionId: job.sourceVersionId,
         resultVersionId: job.resultVersionId,
+        resultArtifactId: job.resultArtifactId,
         startedAt: job.startedAt?.toISOString() ?? null,
         finishedAt: job.finishedAt?.toISOString() ?? null,
       },
@@ -1406,7 +1407,7 @@ export class DatasetVersionAuthorizedService {
       statusCode: 202,
       message: 'Export job started',
       type: 'SUCCESS' as const,
-      data: { jobId: job.id },
+      data: { jobId: job.id, status: job.status },
     };
   }
 

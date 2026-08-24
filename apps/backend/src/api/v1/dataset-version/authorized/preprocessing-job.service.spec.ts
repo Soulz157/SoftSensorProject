@@ -668,6 +668,9 @@ describe('EXPORT stage', () => {
     expect(artifact.parentArtifactId).toBe('a-1');
     expect(artifact.objectKey).toBe(EXPORT_ARTIFACT.object_key);
     expect(artifact.rowCount).toBe(500);
+    // DS-LAKE-021 final-review fix: an EXPORT row holds a CSV, not a parquet
+    // file, so it must not silently take the schema's "parquet" default.
+    expect(artifact.format).toBe('csv');
 
     const jobWrite = firstWrite(tx.preprocessingJob.update);
     expect(jobWrite).toMatchObject({ status: 'SUCCEEDED', completedSteps: 1 });
