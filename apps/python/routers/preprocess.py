@@ -43,6 +43,8 @@ from schemas.preprocess import (
     CleanupResponse,
     ColumnStatsRequest,
     ColumnStatsResponse,
+    ExportRequest,
+    ExportStatsResponse,
     FeaturesRequest,
     HistogramRequest,
     HistogramResponse,
@@ -69,6 +71,7 @@ from services import artifact_service
 from services.boxplot_service import build_boxplot
 from services.cleaning_service import CleaningError
 from services.correlation_matrix_service import build_correlation_matrix
+from services.export_service import export_artifact_csv
 from services.histogram_service import build_histogram
 from services.preview_service import build_preview
 from services.scatter_service import build_scatter
@@ -574,3 +577,21 @@ async def presign_model_run_upload(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(artifact_service.presign_model_run_upload, store, body)
+
+
+@router.post(
+    "/export",
+    response_model=ExportStatsResponse,
+    summary="Export a committed artifact as CSV",
+    description=(
+        "DS-LAKE-021. Streams the source artifact's data.parquet into a "
+        "sidecar CSV, row-group by row-group. __status columns are "
+        "dropped; a Bad-status cell exports as an empty field, never the "
+        "raw 0.0 the Parquet stores."
+    ),
+)
+async def export_pipeline(
+    body: ExportRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(export_artifact_csv, store, body)

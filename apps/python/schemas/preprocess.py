@@ -152,6 +152,26 @@ class ArtifactStatsResponse(BaseModel):
     validation_missing_pct: Optional[float] = None
 
 
+class ExportRequest(BaseModel):
+    """DS-LAKE-021-T01. `source_key` is the committed FINAL artifact's
+    data.parquet key — NestJS resolves which artifact is FINAL and passes
+    its objectKey verbatim, same convention every other *Request here uses."""
+
+    source_key: str
+
+
+class ExportStatsResponse(BaseModel):
+    """What NestJS persists on the new EXPORT DatasetArtifact row."""
+
+    object_key: str
+    row_count: int
+    #: LOGICAL tag count — __status columns are dropped, so this is the
+    #: same count FINAL's own columnCount already records, not 2N+1.
+    column_count: int
+    size_bytes: int
+    checksum: str
+
+
 class ArtifactPresignRequest(BaseModel):
     model_config = {"extra": "forbid"}
 

@@ -86,6 +86,12 @@ DATA_FILENAME = "data.parquet"
 #: `VALIDATE_DATA_FILENAME` — change both.
 VALIDATE_DATA_FILENAME = "validate_data.parquet"
 
+#: DS-LAKE-021-T01. The CSV export sidecar, written beside a committed
+#: artifact's data key via `sidecar_key()` — same mechanism as
+#: VALIDATE_DATA_FILENAME above. Mirrored in artifact-keys.ts as
+#: `EXPORT_CSV_FILENAME` — change both.
+EXPORT_CSV_FILENAME = "export.csv"
+
 #: Root prefix for imported soft-sensor feature presets. A prefix inside the
 #: existing bucket rather than a bucket of its own: `ensure_bucket()` has no
 #: runtime caller in this service, so a second bucket would need new bootstrap
@@ -334,18 +340,12 @@ class ObjectStore:
             object_tags = Tags.new_object_tags()
             object_tags[TMP_LIFECYCLE_TAG_KEY] = TMP_LIFECYCLE_TAG_VALUE
 
-        try:
-            self._client.put_object(
-                self.bucket,
-                key,
-                io.BytesIO(payload),
-                length=len(payload),
-                content_type="application/vnd.apache.parquet",
-                tags=object_tags,
-            )
-        except S3Error as err:
-            raise ObjectStoreError(
-                f"Could not write '{key}': {err.code}") from err
+        self.put_object_bytes(
+            key,
+            payload,
+            content_type="application/vnd.apache.parquet",
+            tags=object_tags,
+        )
 
         return ArtifactStats(
             object_key=key,
@@ -355,6 +355,38 @@ class ObjectStore:
             missing_pct=missing_pct(df),
             checksum=sha256_hex(payload),
         )
+
+    def put_object_bytes(
+        self,
+        key: str,
+        data: bytes,
+        *,
+        content_type: str = "application/octet-stream",
+        tags: Tags | None = None,
+    ) -> None:
+        """Raw bytes write — the low-level primitive `put_frame` writes atop.
+
+        DS-LAKE-021-T01: factored out of `put_frame`'s own MinIO-call body
+        so `put_frame` and this method share one PUT path instead of two
+        near-identical ones (`put_json` still calls `self._client.put_object`
+        directly — out of scope here, not folded in). No immutability check
+        here — that is `put_frame`'s own concern (committed Parquet
+        artifacts refuse an overwrite); a sidecar like `export.csv` is
+        written via this method directly and is always free to be rewritten,
+        same convention `put_json` already follows for its sidecars.
+        """
+        try:
+            self._client.put_object(
+                self.bucket,
+                key,
+                io.BytesIO(data),
+                length=len(data),
+                content_type=content_type,
+                tags=tags,
+            )
+        except S3Error as err:
+            raise ObjectStoreError(
+                f"Could not write '{key}': {err.code}") from err
 
     def put_json(self, key: str, document: Any, *, overwrite: bool = True) -> int:
         """Write a JSON sidecar (manifest, feature spec, validation report).
@@ -385,7 +417,6 @@ class ObjectStore:
     # ── read ─────────────────────────────────────────────────────────────
 
     def get_frame(self, key: str, columns: list[str] | None = None) -> pd.DataFrame:
-        response = None
         # DS-LAKE-005B-C-T07 (large-dataset observability, server-side
         # slice): `get_frame` is the one real read choke point most other
         # reads funnel through (`get_frame_slice` calls this directly) — the
@@ -395,18 +426,35 @@ class ObjectStore:
         # (routers/preprocess.py) — that measures the WHOLE request
         # including pandas/pyarrow decode; this isolates the storage GET.
         started = time.perf_counter()
+        raw = self.get_object_bytes(key)
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        logger.info(
+            "object_store_read key=%s bytes_read=%d elapsed_ms=%.1f",
+            key,
+            len(raw),
+            elapsed_ms,
+        )
+        table = pq.read_table(io.BytesIO(raw), columns=columns)
+        return table.to_pandas()
+
+    def get_object_bytes(self, key: str) -> bytes:
+        """Raw bytes read — the low-level primitive `get_frame` decodes atop.
+
+        DS-LAKE-021-T01: factored out of `get_frame`'s own MinIO-call body
+        so `get_frame` and this method share one GET path instead of two
+        near-identical ones (`get_json`, `get_frame_metadata`, `checksum_of`
+        and `get_frame_slice_duckdb` still call `self._client.get_object`
+        directly — out of scope here, not folded in). Exists because not
+        every caller wants a decoded DataFrame — `export_service.
+        export_artifact_csv` streams the Parquet bytes through
+        `pyarrow.ParquetFile.iter_batches` directly and writes CSV text,
+        neither of which fits `get_frame`/`put_frame`'s pandas-frame-shaped
+        contract.
+        """
+        response = None
         try:
             response = self._client.get_object(self.bucket, key)
-            raw = response.read()
-            elapsed_ms = (time.perf_counter() - started) * 1000
-            logger.info(
-                "object_store_read key=%s bytes_read=%d elapsed_ms=%.1f",
-                key,
-                len(raw),
-                elapsed_ms,
-            )
-            table = pq.read_table(io.BytesIO(raw), columns=columns)
-            return table.to_pandas()
+            return response.read()
         except S3Error as err:
             raise ObjectStoreError(
                 f"Could not read '{key}': {err.code}") from err
