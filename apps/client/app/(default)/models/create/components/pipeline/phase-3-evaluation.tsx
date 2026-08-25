@@ -1,8 +1,9 @@
 'use client'
 
 import { useMemo, useState } from 'react'
-import { useAtom } from 'jotai'
+import { useAtom, useAtomValue } from 'jotai'
 import {
+  AlertTriangle,
   CheckCircle2,
   GitCompareArrows,
   Pencil,
@@ -10,35 +11,31 @@ import {
   SlidersHorizontal,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { cn } from '@/lib/utils'
-import { toModelReady } from '@/lib/preprocessing'
-import {
-  materializeDataset,
-  materializeFromVersion,
-} from '@/lib/pipeline-config'
-import { useDatasetVersionRows } from '@/hooks/dataset/use-dataset-version-rows'
-import { SyntheticDataBanner } from '@/components/synthetic-data-banner'
-import type { PipelineConfig } from '@/lib/pipeline-config'
 import {
   buildFitRows,
-  computeFit,
   METRIC_KEYS,
   METRIC_META,
   type MetricKey,
-  type FitPoint,
 } from '@/lib/model-metrics'
 import { pickTimeFormat, type BrushWindow } from '@/lib/monitoring'
-import { mpSelectedMetricsAtom } from '@/store/model-pipeline'
-import { useAllModels } from '@/hooks/use-all-models'
+import {
+  mpSelectedMetricsAtom,
+  mpServerDraftIdAtom,
+  mpTrainingResultAtom,
+  ALGORITHM_LABELS,
+  type Algorithm,
+} from '@/store/model-pipeline'
+import { useDraftRunEvaluation } from '@/hooks/model/use-draft-run-evaluation'
 import { ChartZoomControls } from '@/components/charts/chart-zoom-controls'
 import { residualHistogram, qqPoints } from '@/lib/model-evaluation'
 import { StatTile } from '../stat-tile'
@@ -50,17 +47,6 @@ import type { UsePipelineNavResult } from '@/hooks/model/use-model-pipeline-nav'
 
 interface Props {
   nav: UsePipelineNavResult
-}
-
-/** Deterministic [-1,1) noise from a string seed + index (stable across renders). */
-function seededNoise(seed: string, i: number): number {
-  let h = 2166136261
-  const s = `${seed}:${i}`
-  for (let k = 0; k < s.length; k++) {
-    h ^= s.charCodeAt(k)
-    h = Math.imul(h, 16777619)
-  }
-  return ((h >>> 0) / 0xffffffff) * 2 - 1
 }
 
 function LegendItem({ color, label }: { color: string; label: string }) {
@@ -75,92 +61,43 @@ function LegendItem({ color, label }: { color: string; label: string }) {
   )
 }
 
+function EmptyPanel({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="rounded-xl border border-border p-4 text-center text-sm text-muted-foreground">
+      {children}
+    </div>
+  )
+}
+
+/**
+ * MODEL-FLOW-004. Reads the Model Draft's own training run — no persistent
+ * Model record, no client-side fit. `r2`/`rmse` come from the run's own
+ * metrics.json; the per-sample actual/predicted series and residual SD are
+ * computed server-side over the run's FULL test split (no decimation
+ * branch — see `useDraftRunEvaluation`), so the metric cards, both charts
+ * and the diagnostics below always agree on sample count.
+ */
 export function Phase3Evaluation({ nav }: Props) {
-  const { selectedDataset, targetVariables } = nav
   const [selectedMetrics, setSelectedMetrics] = useAtom(mpSelectedMetricsAtom)
-  const [compareId, setCompareId] = useState<string | null>(null)
-  const models = useAllModels().models ?? []
+  const serverDraftId = useAtomValue(mpServerDraftIdAtom)
+  const trainingResult = useAtomValue(mpTrainingResultAtom)
 
-  // Real rows from the dataset's committed RAW artifact when one exists; falls
-  // back to synthetic rows for legacy recipes, with `rowSource` saying which.
-  const { dataset: storedRaw, source: rowSource } = useDatasetVersionRows(
-    selectedDataset,
-    { materialize: false },
+  const { run, fit, manifest, loading, error } = useDraftRunEvaluation(
+    serverDraftId,
+    trainingResult?.runId ?? null,
   )
-
-  const modelReady = useMemo(() => {
-    if (!selectedDataset) return { tags: [], rows: [] }
-    const config = selectedDataset.pipelineConfig as PipelineConfig
-    // Same recipe either way — only the raw rows it runs over differ. While the
-    // stored rows load, `storedRaw` is null and this falls through to the
-    // synthetic path, so the step renders immediately and swaps to real data
-    // when it arrives. That keeps the four-step flow free of a loading screen
-    // it never had (CLAUDE.md §7).
-    return toModelReady(
-      storedRaw
-        ? materializeFromVersion(storedRaw, config)
-        : materializeDataset(selectedDataset.tags, config),
-    )
-  }, [selectedDataset, storedRaw])
-
-  const pair = useMemo(() => {
-    const target = targetVariables[0]
-    if (!target) return null
-    const xTag = modelReady.tags.find(t => t !== target)
-    return xTag ? { xTag, yTag: target } : null
-  }, [modelReady.tags, targetVariables])
-
-  const fit = useMemo(
-    () => (pair ? computeFit(modelReady, pair.xTag, pair.yTag) : null),
-    [modelReady, pair],
-  )
-
-  const compareModel = models.find(m => m.id === compareId) ?? null
-
-  // Compared model's series — deterministic mock proxy derived from the current
-  // fit + the model id (real per-model predictions arrive with the training
-  // backend, Phase 6). Predicted is nudged within the residual SD.
-  const comparePoints = useMemo<FitPoint[] | null>(() => {
-    if (!fit || !compareModel || fit.points.length === 0) return null
-    return fit.points.map((p, i) => {
-      const predicted = p.predicted + seededNoise(compareModel.id, i) * fit.sd
-      return {
-        timestamp: p.timestamp,
-        actual: p.actual,
-        predicted,
-        residual: p.actual - predicted,
-      }
-    })
-  }, [fit, compareModel])
-
-  const compareFit = useMemo(() => {
-    if (!comparePoints) return null
-    const n = comparePoints.length
-    const res = comparePoints.map(p => p.residual)
-    const mean = res.reduce((a, b) => a + b, 0) / n
-    const rmse = Math.sqrt(res.reduce((a, b) => a + b * b, 0) / n)
-    const sd = Math.sqrt(
-      res.reduce((a, b) => a + (b - mean) * (b - mean), 0) / n,
-    )
-    const ssRes = res.reduce((a, b) => a + b * b, 0)
-    const meanY = comparePoints.reduce((a, b) => a + b.actual, 0) / n
-    const ssTot = comparePoints.reduce(
-      (a, b) => a + (b.actual - meanY) * (b.actual - meanY),
-      0,
-    )
-    const r2 = ssTot === 0 ? 0 : 1 - ssRes / ssTot
-    return { r2, rmse, sd }
-  }, [comparePoints])
 
   // Chart rows: one per timestamp, carrying the ±1/±2/±3 SD bands (true
-  // residual SD) plus the compared model's series on the same rows.
+  // residual SD). No compared series — MODEL-FLOW-007 has not landed, so no
+  // saved Model can supply a real predicted series to compare against (see
+  // the disabled control below).
   const rows = useMemo(
-    () => (fit ? buildFitRows(fit.points, fit.sd, comparePoints) : []),
-    [fit, comparePoints],
+    () => (fit ? buildFitRows(fit.points, fit.sd) : []),
+    [fit],
   )
 
-  // Residual diagnostics (histogram + Q-Q) — computed over the full fit, not the
-  // zoom window, so the distribution reflects every validation sample.
+  // Residual diagnostics (histogram + Q-Q) — computed over the full run, not
+  // the zoom window, so the distribution reflects every test-split sample.
   const residuals = useMemo(
     () => (fit ? fit.points.map(p => p.residual) : []),
     [fit],
@@ -200,19 +137,75 @@ export function Phase3Evaluation({ nav }: Props) {
   }
 
   const visible = METRIC_KEYS.filter(k => selectedMetrics.includes(k))
-  const otherModels = models.filter(m => m.id !== compareId)
-  const hasFit = Boolean(pair && fit && fit.n >= 2)
+  const hasFit = Boolean(fit && fit.points.length >= 2)
+
+  if (loading) {
+    return (
+      <div className="grid gap-4 sm:grid-cols-3">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <Skeleton key={i} className="h-20 w-full rounded-xl" />
+        ))}
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="flex items-center gap-3 rounded-xl border border-border p-4 text-sm text-muted-foreground">
+        <AlertTriangle className="h-4 w-4 shrink-0 text-amber-500" />
+        <span>Could not load the evaluation — {error}</span>
+      </div>
+    )
+  }
+
+  // No run at all — the draft has not trained yet. Includes edit mode
+  // (MODEL-FLOW-007-T11 unblocks it): editing an existing Model unlocks this
+  // step with no ModelDraft/run behind it, so this is the honest state
+  // rather than a stale client-computed placeholder.
+  if (!run) {
+    return (
+      <div className="space-y-4">
+        <EmptyPanel>
+          No training run yet — start training in Step 3 to see evaluation
+          results here.
+        </EmptyPanel>
+        <div className="flex flex-wrap items-center gap-2 border-t border-border/60 pt-4">
+          <Button variant="outline" onClick={() => nav.goTo(3)}>
+            <RotateCw className="h-4 w-4" />
+            Go to Training Configuration
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  if (run.status !== 'SUCCEEDED' || !fit) {
+    const terminal = run.status === 'FAILED' || run.status === 'CANCELED'
+    return (
+      <div className="space-y-4">
+        <EmptyPanel>
+          {terminal
+            ? `Training ${run.status.toLowerCase()}${
+                run.failureReason ? ` — ${run.failureReason}` : '.'
+              }`
+            : 'Training is still running — evaluation will appear once it finishes.'}
+        </EmptyPanel>
+        <div className="flex flex-wrap items-center gap-2 border-t border-border/60 pt-4">
+          <Button variant="outline" onClick={() => nav.goTo(3)}>
+            <RotateCw className="h-4 w-4" />
+            Retrain
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  const algorithmLabel =
+    ALGORITHM_LABELS[run.algorithm as Algorithm] ?? run.algorithm
 
   return (
     <div className="space-y-5">
-      {/* Ahead of the metrics, deliberately: this is the screen where believing
-          simulated numbers is most costly — someone could judge a model on
-          them. */}
-      {rowSource === 'synthetic' && (
-        <SyntheticDataBanner reason="This dataset has no stored rows to evaluate against." />
-      )}
-
-      {/* Success banner */}
+      {/* Success banner — the run's own record, not a client-side count. */}
       <div className="flex items-center gap-3 rounded-xl bg-emerald-500/10 px-4 py-3 ring-1 ring-emerald-500/20">
         <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-500" />
         <div>
@@ -220,12 +213,19 @@ export function Phase3Evaluation({ nav }: Props) {
             Training complete
           </p>
           <p className="text-xs text-muted-foreground">
-            {pair
-              ? `Fit on ${pair.yTag} vs ${pair.xTag} · ${fit?.n ?? 0} samples`
-              : 'Select a target variable to evaluate a fit.'}
+            {algorithmLabel} on {run.targetY} · {fit.n} test sample
+            {fit.n === 1 ? '' : 's'}
           </p>
         </div>
       </div>
+
+      {manifest?.derivedFromTarget && manifest.derivedFromTarget.length > 0 && (
+        <p className="text-xs text-muted-foreground">
+          Uses {manifest.derivedFromTarget.length} target-derived feature
+          {manifest.derivedFromTarget.length === 1 ? '' : 's'} not shown here —
+          serving this model will need target history at inference time.
+        </p>
+      )}
 
       {/* Toolbar: compare + metric selector */}
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -233,43 +233,21 @@ export function Phase3Evaluation({ nav }: Props) {
           <h2 className="text-sm font-medium text-foreground">
             Evaluation metrics
           </h2>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="w-fit gap-2">
-                <GitCompareArrows className="h-3.5 w-3.5" />
-                {compareModel ? `vs ${compareModel.name}` : 'Compare with…'}
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              align="start"
-              className="max-h-72 w-full overflow-y-auto"
-            >
-              <DropdownMenuLabel>Compare with another model</DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              {compareModel && (
-                <DropdownMenuItem onClick={() => setCompareId(null)}>
-                  Clear comparison
-                </DropdownMenuItem>
-              )}
-              {otherModels.length === 0 ? (
-                <DropdownMenuItem disabled>No other models</DropdownMenuItem>
-              ) : (
-                otherModels.map(m => (
-                  <DropdownMenuItem
-                    key={m.id}
-                    onClick={() => setCompareId(m.id)}
-                    className="flex items-start justify-between gap-4"
-                  >
-                    <span className="flex-1 wrap-break-word">{m.name}</span>
-
-                    <span className="w-20 shrink-0 text-left text-xs text-muted-foreground mt-0.5">
-                      {m.workspaceName}
-                    </span>
-                  </DropdownMenuItem>
-                ))
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
+          {/* Disabled, not removed: no saved Model can supply a real
+              predicted series to compare against yet — MODEL-FLOW-007
+              adopts a run's predictions by pointer, which is what this
+              needs. Same disable-with-reason precedent as AlgorithmSelector's
+              lstm/gru entries. */}
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-fit gap-2"
+            disabled
+            title="Compares against another model's real predictions — available once Save Model can adopt a run (MODEL-FLOW-007)."
+          >
+            <GitCompareArrows className="h-3.5 w-3.5" />
+            Compare with…
+          </Button>
         </div>
 
         <DropdownMenu>
@@ -310,18 +288,14 @@ export function Phase3Evaluation({ nav }: Props) {
             key={key}
             label={METRIC_META[key].label}
             value={valueFor(key)}
-            sub={
-              compareFit
-                ? `vs ${METRIC_META[key].format(compareFit[key])}`
-                : METRIC_META[key].hint
-            }
+            sub={METRIC_META[key].hint}
             toneClassName={accentFor(key)}
           />
         ))}
       </div>
 
       {/* Charts */}
-      {hasFit && fit && (
+      {hasFit && (
         <div className="space-y-5">
           <section className="space-y-3 rounded-xl border border-border/60 p-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -344,14 +318,10 @@ export function Phase3Evaluation({ nav }: Props) {
               <LegendItem color="var(--foreground)" label="Actual" />
               <LegendItem color="var(--chart-1)" label="Predicted" />
               <LegendItem color="var(--chart-2)" label="±1 SD" />
-              {compareModel && (
-                <LegendItem color="var(--chart-4)" label={compareModel.name} />
-              )}
             </div>
             <ActualVsPredictedChart
               rows={visibleRows}
               tickFormatter={tickFormatter}
-              compareName={compareModel?.name}
             />
           </section>
 
@@ -377,28 +347,27 @@ export function Phase3Evaluation({ nav }: Props) {
               <LegendItem color="var(--chart-2)" label="±1 SD" />
               <LegendItem color="var(--chart-3)" label="±2 SD" />
               <LegendItem color="var(--destructive)" label="±3 SD" />
-              {compareModel && (
-                <LegendItem color="var(--chart-4)" label={compareModel.name} />
-              )}
             </div>
             <ResidualChart
               rows={visibleRows}
               sd={fit.sd}
               tickFormatter={tickFormatter}
-              compareName={compareModel?.name}
             />
           </section>
 
-          {/* Validation residual diagnostics — distribution + normality */}
+          {/* Distribution + normality over the run's TEST split — not the
+              validation holdout, which is a separate object with its own
+              (currently null) metrics; see Step 2's Holdout panel for that. */}
           <section className="space-y-3 rounded-xl border border-border/60 p-4">
             <div className="space-y-1">
               <h3 className="text-sm font-medium text-foreground">
-                Validation residual diagnostics
+                Test-split residual diagnostics
               </h3>
               <p className="text-xs text-muted-foreground">
-                Residuals should be centred on 0 and roughly normal — a
-                symmetric histogram and points hugging the Q-Q diagonal indicate
-                an unbiased, well-behaved fit.
+                Residuals from the run&apos;s held-out test rows should be
+                centred on 0 and roughly normal — a symmetric histogram and
+                points hugging the Q-Q diagonal indicate an unbiased,
+                well-behaved fit.
               </p>
             </div>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">

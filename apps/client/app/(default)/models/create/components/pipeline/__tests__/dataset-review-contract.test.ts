@@ -46,6 +46,20 @@ function read(file: string): string {
   return readFileSync(path.join(STEP_DIR, file), 'utf-8')
 }
 
+/**
+ * The card lives in the data-studio tree but is a step file in every sense
+ * that matters here: the assertion below is about what IT does with the ids
+ * this step hands it, which is not observable from this directory.
+ */
+const CARD = path.resolve(
+  __dirname,
+  '../../../../../data-studio/create/components/processing/data-analysis-card.tsx',
+)
+
+function readCard(): string {
+  return readFileSync(CARD, 'utf-8')
+}
+
 describe('Dataset Review step contract (MODEL-FLOW-010-V02)', () => {
   it.each(STEP_FILES)(
     '%s imports no dw* atom from store/dataset-studio',
@@ -70,6 +84,23 @@ describe('Dataset Review step contract (MODEL-FLOW-010-V02)', () => {
     // 'pending' permanently rather than failing visibly.
     expect(src).toMatch(/datasetId=\{datasetId\}/)
     expect(src).toMatch(/artifactId=\{artifactId\}/)
+  })
+
+  it('the card owns its tag selection here — no dw* visibility atom leaks in', () => {
+    // The step passes both ids; the card turns that into `isolated`, which
+    // moves the hidden/focused tag set off `dwHiddenTagsAtom`/`dwFocusedTagAtom`
+    // and into local state. Dropped, a data-studio session that had hidden
+    // tags leaves this step's Line tab on "Select one or more PI tags to
+    // plot" — and the chart's own selector never renders to undo it, because
+    // `RawTrendChart` early-returns that placeholder first. This step has no
+    // tag sidebar, so nothing else can clear the inherited set.
+    expect(readCard()).toMatch(/isolated:\s*explicit/)
+  })
+
+  it('the card shows its own tag selector here — the step has no sidebar', () => {
+    // The only visibility control this step offers. Without it the reviewer
+    // sees every tag at once with no way to narrow the chart.
+    expect(read('phase-2-dataset-review.tsx')).toMatch(/showTagSelector/)
   })
 
   it('DataAnalysisCard mounts with transforms disabled — this step configures nothing', () => {

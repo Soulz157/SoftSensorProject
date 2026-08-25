@@ -51,6 +51,8 @@ from schemas.preprocess import (
     MaterializeRequest,
     MetadataRequest,
     MetadataResponse,
+    ModelRunPredictionsRequest,
+    ModelRunPredictionsResponse,
     PreviewRequest,
     PreviewResponse,
     CorrelationRequest,
@@ -577,6 +579,30 @@ async def presign_model_run_upload(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(artifact_service.presign_model_run_upload, store, body)
+
+
+@router.post(
+    "/models/runs/predictions",
+    response_model=ModelRunPredictionsResponse,
+    summary="Parsed actual/predicted series for one training run's test split",
+    description=(
+        "MODEL-FLOW-004. `predictions.parquet` is exactly "
+        "{timestamp, y_true, y_pred} over the run's TEST split, not the "
+        "wide {timestamp, tag, tag__status, ...} shape /rows assumes, so it "
+        "cannot go through that endpoint. `source_key` is guarded "
+        "structurally (a well-formed drafts/ or models/ run key naming "
+        "predictions.parquet) rather than by an id pair — the caller "
+        "already resolved which run's key this is. Every scalar is computed "
+        "over the FULL frame; there is no decimation branch, so a test "
+        "split over the point cap is refused by name rather than silently "
+        "sampled."
+    ),
+)
+async def run_predictions(
+    body: ModelRunPredictionsRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.run_predictions, store, body)
 
 
 @router.post(

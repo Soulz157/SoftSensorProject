@@ -128,3 +128,47 @@ export async function replayHoldoutForRun(input: {
   );
   return ReplayHoldoutForRunSchema.parse(res);
 }
+
+/** MODEL-FLOW-004. Snake_case on the wire, matching every other schema here. */
+const RunPredictionsSchema = z.object({
+  source_key: z.string().min(1),
+  row_count: z.number().int().nonnegative(),
+  residual_sd: z.number(),
+  residual_rmse_check: z.number(),
+  y_true_min: z.number(),
+  y_true_max: z.number(),
+  y_pred_min: z.number(),
+  y_pred_max: z.number(),
+  points: z.array(
+    z.object({
+      timestamp: z.string(),
+      y_true: z.number(),
+      y_pred: z.number(),
+    }),
+  ),
+  derived_from_target: z.array(z.string()).nullable(),
+  target_scaled: z.boolean().nullable(),
+});
+
+export type RunPredictions = z.infer<typeof RunPredictionsSchema>;
+
+/**
+ * MODEL-FLOW-004. Parsed actual/predicted series for one training run's test
+ * split. `source_key`/`manifest_key` are resolved by the caller off the
+ * `ModelTrainingRun` row (`predictionsKey`/`manifestKey`) — never accepted
+ * from a browser request, the same discipline `presignModelRunUpload`'s ids
+ * apply on the write side. `PYTHON_TIMEOUT.metadata`: like `presignArtifact`,
+ * this reads and decodes the whole object, so it is bounded by object size,
+ * not by a pipeline.
+ */
+export async function runPredictions(input: {
+  source_key: string;
+  manifest_key?: string | null;
+}): Promise<RunPredictions> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/models/runs/predictions',
+    { source_key: input.source_key, manifest_key: input.manifest_key ?? null },
+    PYTHON_TIMEOUT.metadata,
+  );
+  return RunPredictionsSchema.parse(res);
+}

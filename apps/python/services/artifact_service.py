@@ -59,6 +59,7 @@ from schemas.preprocess import (
     FeaturesRequest,
     HoldoutSplitRequest,
     MaterializeRequest,
+    MAX_PREDICTION_POINTS,
     MetadataRequest,
     ReplayHoldoutForRunRequest,
     ReplayHoldoutRequest,
@@ -79,7 +80,7 @@ from services.feature_service import (
 )
 from services.feature_spec_service import build_feature_spec, max_replay_lookback
 from services.frame_service import from_pi_response, from_sql_response
-from services.preview_service import sample_rows
+from services.preview_service import _finite, sample_rows
 from services.validation_service import run_validation
 
 _pi = PIDataSourceService()
@@ -1008,4 +1009,115 @@ def presign_model_run_upload(store: ObjectStore, body) -> dict:
         "expires_at": (
             datetime.now(timezone.utc) + store.PRESIGN_WRITE_TTL
         ).isoformat(),
+    }
+
+
+def run_predictions(store: ObjectStore, body) -> dict[str, Any]:
+    """A training run's test-split predictions, parsed — MODEL-FLOW-004.
+
+    `predictions.parquet` is exactly `{timestamp, y_true, y_pred}` over the
+    TEST split (`images/trainer/train.py`'s own write) — not the wide
+    `{timestamp, tag, tag__status, ...}` shape `rows()`/`sample_rows` assume,
+    which is why this is its own reader rather than a call to `rows()`.
+
+    Guarded structurally, not by an id pair: NestJS already resolved which
+    run's key this is off the `ModelTrainingRun` row before calling here —
+    the same division of labour `presign_artifact` uses for a committed
+    artifact's `source_key`. Both roots are accepted (`is_draft_run_key` OR
+    `is_model_run_key`) because an adopted run's objects stay under
+    `drafts/` permanently — Save Model adopts by pointer, never copies bytes.
+
+    Every scalar here (`row_count`, `residual_sd`, the rmse cross-check, the
+    y ranges) is computed over the FULL frame, before any point-count cap is
+    applied — there is no cap to apply, since this endpoint has no
+    decimation branch (`MAX_PREDICTION_POINTS`). A run whose test split
+    exceeds it is refused by name rather than silently decimated.
+    """
+    key = body.source_key
+    if key.rsplit("/", 1)[-1] != PREDICTIONS_FILENAME:
+        raise ValueError(
+            f"'{key}' does not name {PREDICTIONS_FILENAME}."
+        )
+    if not (is_draft_run_key(key) or is_model_run_key(key)):
+        raise ValueError(
+            f"'{key}' is not a well-formed training-run output key. Only "
+            "drafts/{draftId}/runs/{runId}/... or "
+            "models/{modelId}/runs/{runId}/... can be read here."
+        )
+
+    frame = store.get_frame(key)
+
+    expected = {TIMESTAMP_COLUMN, "y_true", "y_pred"}
+    actual = set(frame.columns)
+    if actual != expected:
+        problems = []
+        missing = sorted(expected - actual)
+        unexpected = sorted(actual - expected)
+        if missing:
+            problems.append(f"missing {missing}")
+        if unexpected:
+            problems.append(f"unexpected {unexpected}")
+        raise ValueError(
+            f"'{key}' is not a predictions frame ({', '.join(problems)}). "
+            "Expected exactly timestamp/y_true/y_pred."
+        )
+    for column in ("y_true", "y_pred"):
+        if not pd.api.types.is_numeric_dtype(frame[column]):
+            raise ValueError(
+                f"Column '{column}' in '{key}' is not numeric "
+                f"(dtype={frame[column].dtype})."
+            )
+
+    row_count = int(len(frame))
+    if row_count > MAX_PREDICTION_POINTS:
+        raise ValueError(
+            f"'{key}' has {row_count} rows, over the {MAX_PREDICTION_POINTS} "
+            "this endpoint serves without decimation. See MODEL-FLOW-004's "
+            "stated deferral for a run this large."
+        )
+
+    frame = frame.sort_values(TIMESTAMP_COLUMN).reset_index(drop=True)
+    residual = frame["y_true"] - frame["y_pred"]
+    sd = float(residual.std(ddof=0)) if row_count > 1 else 0.0
+    rmse = float((residual ** 2).mean()) ** 0.5 if row_count else 0.0
+
+    points = [
+        {
+            "timestamp": (
+                ts.isoformat(sep=" ") if hasattr(ts, "isoformat") else str(ts)
+            ),
+            "y_true": _finite(y_true) or 0.0,
+            "y_pred": _finite(y_pred) or 0.0,
+        }
+        for ts, y_true, y_pred in zip(
+            frame[TIMESTAMP_COLUMN], frame["y_true"], frame["y_pred"]
+        )
+    ]
+
+    # A missing manifest is null, not a failure — same "missing sidecar"
+    # convention `presign_artifact` applies, expressed as a catch rather than
+    # an `exists()` probe: with the manifest usually present (both objects
+    # come from the same trainer upload), the catch is the cheaper path —
+    # one round trip, not two — for the common case.
+    manifest: dict[str, Any] | None = None
+    if body.manifest_key:
+        try:
+            manifest = store.get_json(body.manifest_key)
+        except ObjectStoreError:
+            manifest = None
+
+    return {
+        "source_key": key,
+        "row_count": row_count,
+        "residual_sd": round(sd, 6),
+        "residual_rmse_check": round(rmse, 6),
+        "y_true_min": _finite(frame["y_true"].min()) or 0.0,
+        "y_true_max": _finite(frame["y_true"].max()) or 0.0,
+        "y_pred_min": _finite(frame["y_pred"].min()) or 0.0,
+        "y_pred_max": _finite(frame["y_pred"].max()) or 0.0,
+        "points": points,
+        "derived_from_target": (
+            manifest.get("derived_from_target") if manifest else None
+        ),
+        "target_scaled": manifest.get("target_scaled") if manifest else None,
     }

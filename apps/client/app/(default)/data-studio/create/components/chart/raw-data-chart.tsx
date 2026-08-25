@@ -114,6 +114,20 @@ export function RawTrendChart({
       next === null ? new Set() : new Set(tags.filter(t => !next.includes(t))),
     )
 
+  // Visibility has two owners: the caller's tag set (`tags`, already pruned
+  // upstream) and this chart's own selector. "View all" only clears the
+  // caller's half, so without this a tag hidden through the selector stayed
+  // hidden after clicking it — a control that visibly did nothing.
+  //
+  // Adjusted during render rather than in an effect: this is state derived
+  // from a prop CHANGE, so React re-runs this component before committing and
+  // the user never sees the stale frame an effect would paint first.
+  const [viewAllSeen, setViewAllSeen] = useState(isViewAll)
+  if (viewAllSeen !== isViewAll) {
+    setViewAllSeen(isViewAll)
+    if (isViewAll) setHidden(new Set())
+  }
+
   const [zoomWindow, setZoomWindow] = useState<[number, number] | null>(null)
   useEffect(() => {
     setZoomWindow(null)

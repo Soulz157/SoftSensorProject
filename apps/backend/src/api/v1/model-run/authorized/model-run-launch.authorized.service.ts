@@ -8,7 +8,10 @@ import {
 import { createHash, randomBytes, randomInt } from 'node:crypto';
 import { PrismaService } from '@softsensor/prisma';
 import { CreateTrainingRunDto } from './dto/model-run.authorized.dto';
-import { fetchArtifactMetadata } from '@/lib/python-preprocess-client';
+import {
+  fetchArtifactMetadata,
+  runPredictions,
+} from '@/lib/python-preprocess-client';
 import { AppException } from '@softsensor/common';
 import { TrainningContainerAuthorizedService } from '../../trainning-container/authorized/trainning-container.authorized.service';
 
@@ -410,6 +413,55 @@ export class ModelRunLaunchAuthorizedService {
       message: 'Training run fetched',
       type: 'SUCCESS' as const,
       data: run,
+    };
+  }
+
+  /**
+   * MODEL-FLOW-004. Actual/predicted series for one draft-scoped run's test
+   * split, for Step 4 Evaluation. `predictionsKey`/`manifestKey` are read
+   * off the run row, never accepted from the request — the same discipline
+   * `mintUploadUrls` applies on the write side. Refuses (404) a run that
+   * has not SUCCEEDED or has no `predictionsKey`, naming which: a run still
+   * training or one that FAILED has nothing to show, and the caller needs
+   * to know which case it is to render the right empty state.
+   */
+  async getDraftRunPredictionsService(
+    draftId: string,
+    runId: string,
+    userId: string,
+    role: string,
+  ) {
+    await this.assertDraftAccess(draftId, userId, role);
+    const run = await this.prisma.modelTrainingRun.findFirst({
+      where: { id: runId, modelDraftId: draftId },
+      select: { status: true, predictionsKey: true, manifestKey: true },
+    });
+    if (!run) throw new NotFoundException('Training run not found');
+    if (run.status !== 'SUCCEEDED') {
+      throw new AppException({
+        statusCode: 404,
+        message: `Training run has not succeeded (status: ${run.status}); no predictions to show.`,
+        type: 'ERROR',
+      });
+    }
+    if (!run.predictionsKey) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Training run succeeded but recorded no predictions artifact.',
+        type: 'ERROR',
+      });
+    }
+
+    const predictions = await runPredictions({
+      source_key: run.predictionsKey,
+      manifest_key: run.manifestKey,
+    });
+
+    return {
+      statusCode: 200,
+      message: 'Training run predictions fetched',
+      type: 'SUCCESS' as const,
+      data: predictions,
     };
   }
 

@@ -1,12 +1,29 @@
 'use client'
 
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useAtom } from 'jotai'
 import { badDataByTag, badDataDetailByTag } from '@/lib/data-quality'
 import { chartColorVar, resolveTagMeta } from '@/lib/mock-readings'
 import type { Dataset } from '@/lib/preprocessing'
 import type { BadDataDetail } from '@/app/(default)/data-studio/create/components/bad-data-breakdown'
 import { dwFocusedTagAtom, dwHiddenTagsAtom } from '@/store/dataset-studio'
+
+export interface UseDatasetTagSelectionOptions {
+  /**
+   * Keep the selection in component state instead of the `dw*` atoms.
+   *
+   * The atoms are wizard-scoped view state that nothing resets on leaving Data
+   * Studio, so a caller OUTSIDE that wizard inherits whatever the tag sidebar
+   * last hid. When that leftover covers every tag the caller has, `activeTags`
+   * is empty and `RawTrendChart` early-returns its "Select one or more PI tags
+   * to plot" placeholder — with no sidebar present to un-hide anything. That
+   * is the model wizard's Dataset Review step, live.
+   *
+   * Isolated callers get the same API over local state: nothing leaks in, and
+   * nothing they do leaks back out into a Data Studio draft.
+   */
+  isolated?: boolean
+}
 
 export interface UseDatasetTagSelectionResult {
   /** Every tag in the dataset (full membership — never mutated here). */
@@ -39,13 +56,28 @@ export interface UseDatasetTagSelectionResult {
  * persistent Tag Sidebar and the Step-3.1 Data Analysis card. Backed by
  * `dwHiddenTagsAtom` (visibility) + `dwFocusedTagAtom` (emphasis) — NOT the
  * dataset-membership atom, so toggling here never resets the fetch.
+ *
+ * Callers outside the Data Studio wizard must pass `{ isolated: true }` — see
+ * `UseDatasetTagSelectionOptions.isolated` for what sharing those atoms costs.
  */
 export function useDatasetTagSelection(
   dataset: Dataset,
+  options: UseDatasetTagSelectionOptions = {},
 ): UseDatasetTagSelectionResult {
+  const isolated = options.isolated ?? false
   const tags = dataset.tags
-  const [hiddenList, setHiddenList] = useAtom(dwHiddenTagsAtom)
-  const [rawFocused, setRawFocused] = useAtom(dwFocusedTagAtom)
+
+  // Both stores are subscribed unconditionally — hook order must not vary with
+  // the mode — and only one of the two pairs is ever handed back.
+  const [atomHidden, setAtomHidden] = useAtom(dwHiddenTagsAtom)
+  const [atomFocused, setAtomFocused] = useAtom(dwFocusedTagAtom)
+  const [localHidden, setLocalHidden] = useState<string[]>([])
+  const [localFocused, setLocalFocused] = useState<string>('')
+
+  const hiddenList = isolated ? localHidden : atomHidden
+  const setHiddenList = isolated ? setLocalHidden : setAtomHidden
+  const rawFocused = isolated ? localFocused : atomFocused
+  const setRawFocused = isolated ? setLocalFocused : setAtomFocused
 
   const hidden = useMemo(
     () => new Set(hiddenList.filter(t => tags.includes(t))),

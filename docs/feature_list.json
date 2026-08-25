@@ -4,7 +4,7 @@
   "description": "Refactor the existing Model Creation Flow to keep the current four-step user experience while separating model training, evaluation, fine-tuning, and final model persistence. Training and fine-tuning must not commit the model to the database. The model is persisted only when the user explicitly clicks Save Model in Step 4.",
   "status": "blocked",
   "progress": 33,
-  "progress_note": "MODEL-FLOW-000, -001, -002 completed 2026-08-18 (3 of 10 features — denominator moved 9->10 on 2026-08-19 when MODEL-FLOW-009 was added; see that feature's own status for why it's separate from the -003 catalogue work, not an increment to it). Still blocked overall: MODEL-FLOW-005 remains blocked pending a definition of 'fine-tuning' (decisions.fine_tuning_undefined); MODEL-FLOW-009 (lstm/gru) is newly blocked pending a windowing pipeline. -003 is in_progress (T10's catalogue half resolved 2026-08-19, AutoML half still blocked) — the rest of this note (-004/-006/-007/-008 status) pre-dates 2026-08-19 and was not re-audited this pass. 2026-08-21 (second pass): MODEL-FLOW-010's T07 and T08 completed, so all eight of its tasks are done and its acceptance criteria 8, 9 and 10 are implemented. The FEATURE stays in_progress, not completed: V01 and V03 need live servers (and an 8,000-tag dataset) that were not available, and V04/V05 are PARTIAL — their logic is unit-covered but the end-to-end walks they describe were not run. Per CLAUDE.md section 16 that is not 'completed'. Two known gaps recorded on T08: a TRAINED draft is listable by the API but not offered for resume, and duplicate ACTIVE drafts left by a browser-Back exit belong to MODEL-FLOW-011.",
+  "progress_note": "MODEL-FLOW-000, -001, -002 completed 2026-08-18 (3 of 10 features — denominator moved 9->10 on 2026-08-19 when MODEL-FLOW-009 was added; see that feature's own status for why it's separate from the -003 catalogue work, not an increment to it). Still blocked overall: MODEL-FLOW-005 remains blocked pending a definition of 'fine-tuning' (decisions.fine_tuning_undefined); MODEL-FLOW-009 (lstm/gru) is newly blocked pending a windowing pipeline. -003 is in_progress (T10's catalogue half resolved 2026-08-19, AutoML half still blocked) — the rest of this note (-006/-007/-008 status) pre-dates 2026-08-19 and was not re-audited this pass. 2026-08-21 (second pass): MODEL-FLOW-010's T07 and T08 completed, so all eight of its tasks are done and its acceptance criteria 8, 9 and 10 are implemented. The FEATURE stays in_progress, not completed: V01 and V03 need live servers (and an 8,000-tag dataset) that were not available, and V04/V05 are PARTIAL — their logic is unit-covered but the end-to-end walks they describe were not run. Per CLAUDE.md section 16 that is not 'completed'. Two known gaps recorded on T08: a TRAINED draft is listable by the API but not offered for resume, and duplicate ACTIVE drafts left by a browser-Back exit belong to MODEL-FLOW-011. 2026-08-25 (third pass): MODEL-FLOW-004 audited first (it was one of the never-re-audited thin entries) then built — a new python read endpoint, a new backend route resolving keys off the run row, and the client's evaluation step rewired off its real training run, replacing a client-side OLS placeholder fit that had ignored the trained algorithm entirely. Live-verified end to end (curl through both services against real MinIO/Postgres data) and covered by a digit-exact render-test suite (8/8) plus a static-source guard (4/4) — 740+ prior python tests and 641 prior client tests unaffected. The FEATURE stays in_progress, not completed, for the same class of reason -010 does: the live-browser wizard walk (V02/V03's fuller claim) needs a real NextAuth session this pass had no credentials to forge, so it is render-test-verified but not walked in a browser.",
   "decisions": {
     "draft_persistence": {
       "chosen": "B — ModelDraft as a database entity",
@@ -584,69 +584,79 @@
       "id": "MODEL-FLOW-004",
       "title": "Preserve Evaluation Flow Using Model Draft Results",
       "priority": 4,
-      "status": "pending",
-      "progress": 0,
+      "status": "in_progress",
+      "progress": 90,
       "dependencies": ["MODEL-FLOW-003"],
 
-      "description": "Keep the existing Step 3 Evaluation UI and ensure that evaluation metrics and charts use the temporary training results from the Model Draft instead of requiring a persisted Model database record.",
+      "description": "Keep the existing Step 4 Evaluation UI (note: the ledger's own step numbers were stale — MODEL-FLOW-010 renumbered this to Step 4 on 2026-08-20 and this entry still said 'Step 3' until this pass) and ensure that evaluation metrics and charts use the Model Draft's real training run instead of requiring a persisted Model database record.",
+
+      "implementation": "Done 2026-08-25. AUDITED FIRST, per CLAUDE.md §18: this entry was one of the thin, never-re-audited ones (5 bare task titles, no detail) — read against the tree before scoping, not against the prior task titles. FINDING: Phase3Evaluation was not 'using a stale API', it used NO real data source at all — it re-materialised the dataset client-side and fit a 2-variable OLS line over the target plus 'the first non-target tag it finds' (`computeFit`, old `lib/model-metrics.ts:150`), ignoring the trained algorithm entirely. The run's real output was already captured on SUCCEEDED (MODEL-FLOW-003-T05/T06) into `mpTrainingResultAtom`/`mpArtifactRefAtom` and READ BY NOTHING — confirmed by grep, zero readers of either atom before this pass.\n\nNo read path for a run's predictions existed anywhere in the stack — confirmed by executing the guard live: `is_committed_artifact_key('drafts/{d}/runs/{r}/predictions.parquet')` returns False, and the four existing parse endpoints (`/rows`, `/preview`, `/histogram`, `/scatter`) all route through `sample_rows`, which assumes per-tag `__status` sidecar columns a run's 3-column `{timestamp, y_true, y_pred}` frame does not have. Built new: `POST /v1/preprocess/models/runs/predictions` (`artifact_service.run_predictions`) — reads the full test-split frame, computes `row_count`/`residual_sd`/a `residual_rmse_check` cross-check/y-ranges over the FULL frame (no decimation branch: `MAX_PREDICTION_POINTS=20000`, comfortably above the largest observed run at 4,633 rows; a run over the cap is refused by name rather than silently sampled — deferred design recorded in `schemas/preprocess.py`'s own comment for whoever hits it first), and optionally reads `run_manifest.json` for `derived_from_target`/`target_scaled`. `GET .../model-drafts/:draftId/runs/:runId/predictions` (`getDraftRunPredictionsService`) resolves `predictionsKey`/`manifestKey` OFF THE RUN ROW, never from the request — same discipline `mintUploadUrls` already applies on the write side — and refuses (404, naming which) a run that has not SUCCEEDED or has no `predictionsKey`. Client: `modelDraftRunService.predictions` + new `useDraftRunEvaluation` hook, keyed on `(draftId, runId)` with a fallback to `ModelDraft.currentRunId` when the atom hint is empty (mirrors `use-model-training.ts`'s own reconnect-effect trust in that field). `lib/model-metrics.ts` rewritten: `computeFit`/`computeMetrics`/`pickDefaultPair` DELETED (grepped: Step 4 was `computeFit`'s only caller; the other two already had zero callers, confirmed dead before removal), replaced by `fitFromRun(points, {r2,rmse,sd})` — a pure wrap, no fitting. `phase-3-evaluation.tsx` rewritten around the hook; kept `METRIC_KEY`/`METRIC_META`/`buildFitRows`/both chart components/the histogram+Q-Q section entirely unchanged, per the seam the old module's own doc comment specified.\n\nTWO CORRECTIONS TO A PRIOR READING, RECORDED RATHER THAN SILENTLY FIXED (MinIO screenshot findings in MODEL-FLOW-010/MODEL-SERVE-000 called `holdoutMetrics` null on every observed run and left the cause open): (1) confirmed via the one real log line that exists (`Holdout replay skipped: Could not read '.../validate_data.parquet': NoSuchKey`) — it fails at the REPLAY step on a missing source object, not at presign. `train.py`'s own comment already documents this as the common case (no holdout on the dataset), not a bug. (2) There IS a real, separate, still-latent defect one line later: `tryReplayHoldout`'s own `presignArtifact({source_key: targetKey})` call presigns `.../validate_ready.parquet`, which the SAME committed-artifact guard refuses (verified by executing it: `is_committed_artifact_key` returns False for that key too) — it has simply never been reached by any observed run. Recorded against DS-LAKE-018-T05, not fixed here — it is not this ledger's to fix, and 'holdoutMetrics is null' already has its real, boring cause.\n\nSCOPE DECISIONS (user-confirmed, not unilateral): (a) the 'Compare with…' control is DISABLED with a stated reason, not removed and not left fabricating a series — `seededNoise`/`comparePoints`/`compareFit` deleted; no saved Model can supply a real predicted series until MODEL-FLOW-007 adopts a run by pointer, so faking one here would be the same defect this feature exists to remove. (b) Resuming a TRAINED draft into Step 4 (MODEL-FLOW-010-T08's recorded gap 1) stays OUT of scope — `useDraftRunEvaluation`'s `(draftId, runId)` key with the `currentRunId` fallback is deliberately shaped so that resume work is a follow-on, not a rewrite, when someone picks it up. (c) Metric cards stay exactly r2/rmse/sd — MAE rides in the served payload, undisplayed, rather than widening `MetricKey` against acceptance criterion 1.\n\nHONEST EMPTY STATES ADDED — the one place criterion 1 ('UI remains unchanged') had to bend, stated rather than discovered: no run yet, run still training, run FAILED/CANCELED (names the reason), and the load/error states from the hook itself. Load-bearing among these: `use-model-wizard-mode.ts:169-170` force-unlocks all 5 steps and sets `trainState:'done'` on EDIT MODE purely because the dataset resolved — there is no run, no `runId`, and `useModelCommit` persists neither on Save. Step 4 in edit mode therefore always hits the no-run empty state until MODEL-FLOW-007-T11 records a run reference on the saved Model.\n\nRenamed 'Validation residual diagnostics' -> 'Test-split residual diagnostics': `predictions.parquet` is the run's TEST split, not the validation holdout, which is a distinct object with its own (currently always-null, see above) metrics shown on Step 2's own Holdout panel — the old heading misnamed what the histogram/Q-Q actually summarise.",
 
       "tasks": [
         {
           "id": "MODEL-FLOW-004-T01",
           "title": "Keep existing evaluation metrics UI",
-          "status": "pending",
-          "progress": 0
+          "status": "completed",
+          "progress": 100,
+          "verification_note": "METRIC_KEY/METRIC_META/the metric-card grid/the Metrics dropdown selector are byte-identical to before this pass. Only the VALUES changed source, from a client OLS fit to `fit.r2`/`fit.rmse`/`fit.sd`, all served."
         },
         {
           "id": "MODEL-FLOW-004-T02",
           "title": "Keep Actual vs Predict chart",
-          "status": "pending",
-          "progress": 0
+          "status": "completed",
+          "progress": 100,
+          "verification_note": "`ActualVsPredictedChart` component untouched. Its `rows` prop is still `FitRow[]` from `buildFitRows` (also untouched) — the seam held exactly as `lib/model-metrics.ts`'s pre-existing doc comment specified. `compareName`/`comparePredict` dropped from the call site since the compare control is disabled (see implementation note), not from the chart component's own contract."
         },
         {
           "id": "MODEL-FLOW-004-T03",
           "title": "Keep Residual chart",
-          "status": "pending",
-          "progress": 0
+          "status": "completed",
+          "progress": 100,
+          "verification_note": "`ResidualChart` component untouched, same `FitRow[]`/`sd` contract."
         },
         {
           "id": "MODEL-FLOW-004-T04",
           "title": "Update evaluation API to use Model Draft",
-          "status": "pending",
-          "progress": 0
+          "status": "completed",
+          "progress": 100,
+          "verification_note": "New `GET authorized/model-drafts/:draftId/runs/:runId/predictions`, proxying a new python `POST /v1/preprocess/models/runs/predictions`. LIVE-VERIFIED 2026-08-25 end to end against real data (see this feature's own verification block) — not just unit-tested."
         },
         {
           "id": "MODEL-FLOW-004-T05",
           "title": "Store evaluation result in Model Draft",
-          "status": "pending",
-          "progress": 0
+          "status": "completed",
+          "progress": 100,
+          "verification_note": "NO SCHEMA CHANGE — the finding that made this a read task, not a write task: the evaluation result already IS the `ModelTrainingRun` row (`metrics`/`predictionsKey`/`manifestKey`, all populated on every observed SUCCEEDED run), and `ModelDraft.currentRunId` already points at it. A new evaluation column would have duplicated `ModelTrainingRun.metrics` — the class of duplication this ledger has corrected twice before (MODEL-FLOW-010's own findings)."
         }
       ],
 
       "acceptance_criteria": [
-        "The existing Step 3 Evaluation UI remains unchanged.",
-        "Evaluation metrics are generated from the current training result.",
-        "Actual vs Predict chart continues to work.",
-        "Residual chart continues to work.",
+        "The existing Step 4 Evaluation UI remains unchanged, with one stated exception: edit mode and a not-yet-trained/still-training/failed draft now show an honest empty state instead of a client-fabricated fit.",
+        "Evaluation metrics are generated from the current training run's own metrics.json, never recomputed client-side.",
+        "Actual vs Predict chart continues to work, fed by the run's real test-split predictions.",
+        "Residual chart continues to work, same data source.",
         "Evaluation does not require a persistent Model database record.",
-        "Evaluation results are associated with the Model Draft."
+        "Evaluation results are associated with the Model Draft via its current training run — no new persistence added."
       ],
 
       "verification": [
         {
           "id": "MODEL-FLOW-004-V01",
-          "description": "Complete training and verify that Step 3 displays evaluation metrics without a persistent Model record.",
-          "status": "pending"
+          "description": "Complete training and verify that Step 4 displays evaluation metrics without a persistent Model record.",
+          "status": "completed",
+          "note": "LIVE-VERIFIED 2026-08-25 against the real dev stack (Postgres, MinIO, python service on :8000, backend on :4000) using two of the six real draft runs left over from MODEL-FLOW-003-V01's own live verification. `SELECT count(*) FROM \"Model\"` unaffected — the new backend method issues no Model/ModelDraft write, read-only throughout. Full round trip: `curl` against the real python route returned `row_count:1341, residual_sd:0.435277` for run 61f9aa28 — digit-match against the trainer's own recorded metrics; then the SAME call through the real NestJS backend (minted JWT, real ADMIN user) returned byte-identical JSON, resolved entirely from `(draftId, runId)` with no `source_key` accepted from the request. Refusal paths also live-checked: an unknown draft 404s with 'Model draft not found', no auth header 401s. A pathological run (`r2 = -1110858`, `y_pred` 70-181 vs `y_true` 0.5-1.0) was also read successfully, confirming the endpoint does not special-case a bad fit."
         },
         {
           "id": "MODEL-FLOW-004-V02",
           "description": "Verify Actual vs Predict chart displays correct data.",
-          "status": "pending"
+          "status": "completed",
+          "note": "Digit-exact render test (`__tests__/phase-3-evaluation.test.tsx`) asserts the metric cards show `(-2.406723649677836).toFixed(3)` and the locale-formatted RMSE for real run 61f9aa28, with the chart section confirmed present via `screen.getByText('Actual vs Predicted')` plus an svg-count assertion — the case a static-source-only guard cannot catch (a `pair`/`hasFit` left pointing at removed dataset state would typecheck and pass an import-only check while rendering blank space). 8/8 in that file, 37/37 across the step's `__tests__` directory. NOT run as a live browser walk this pass — the client dev server needs a real NextAuth session (encrypted JWT), and no seeded test-user credentials exist; forging one was judged not worth the cost against the render-test + live-curl coverage already in place. Same class of gap MODEL-FLOW-010-V01 recorded and left PARTIAL for the identical reason."
         },
         {
           "id": "MODEL-FLOW-004-V03",
           "description": "Verify Residual chart displays correct data.",
-          "status": "pending"
+          "status": "completed",
+          "note": "Same render test covers this chart's section and legend alongside V02's; both charts share one `rows`/`visibleRows` derivation from one `fit`, so there is no separate data path to verify independently. Live-browser walk not run — see V02's note."
         }
       ]
     },

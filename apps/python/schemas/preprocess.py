@@ -30,6 +30,15 @@ DEFAULT_PREVIEW_ROWS = 20
 # DS-LAKE-005B-A-T06. A chart never needs more points than it has pixels for;
 # 10,000 is generous headroom above any realistic viewport width.
 MAX_DOWNSAMPLE_POINTS = 10_000
+
+# MODEL-FLOW-004. `run_predictions` serves a training run's ENTIRE test split
+# with no decimation branch — the largest observed run is 4,633 rows, and a
+# decimated series must never feed a distribution plot (LTTB preserves a time
+# series' visual shape, not its value distribution), so histogram/Q-Q would
+# need a second, server-side implementation the day this cap is exceeded.
+# Comfortably under MAX_SAMPLE_ROWS; a run this large is refused by name
+# rather than silently decimated, so the refusal is legible when it happens.
+MAX_PREDICTION_POINTS = 20_000
 # When max_points is set, build_preview runs operations over the FULL
 # tag/time-filtered window instead of sample_rows' head cut (V05's "local
 # extrema of the source series" cannot be reachable if the series was
@@ -236,6 +245,68 @@ class ModelRunUploadPresignRequest(BaseModel):
 class ModelRunUploadPresignResponse(BaseModel):
     upload_urls: dict[str, str]
     expires_at: str
+
+
+class ModelRunPredictionsRequest(BaseModel):
+    """MODEL-FLOW-004. Reads a training run's `predictions.parquet` and
+    parses it — unlike `/artifacts/presign`, which only mints a URL, this
+    endpoint exists because a run's test-split predictions have no `__status`
+    sidecar columns and so cannot go through `/rows`' `sample_rows` path
+    (`services/preview_service.sample_rows` assumes one).
+
+    `source_key` is guarded structurally (`is_draft_run_key` or
+    `is_model_run_key`, filename `PREDICTIONS_FILENAME`) rather than by an
+    id pair — NestJS already resolved which run's key this is from the
+    `ModelTrainingRun` row before calling here, the same division of labour
+    `/artifacts/presign` uses for a committed artifact's `source_key`.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    source_key: str = Field(
+        ..., description="The run's predictions.parquet key."
+    )
+    #: Absent means no manifest read — `derived_from_target`/`target_scaled`
+    #: come back null, same "missing sidecar is null, not a failure"
+    #: convention `presign_artifact`'s `sidecars` uses.
+    manifest_key: str | None = None
+
+
+class RunPredictionPoint(BaseModel):
+    #: ISO 8601, `sep=" "` — same convention `sample_rows`/
+    #: `get_frame_metadata` already use for a parsed timestamp.
+    timestamp: str
+    y_true: float
+    y_pred: float
+
+
+class ModelRunPredictionsResponse(BaseModel):
+    source_key: str
+    #: Rows in the FULL frame — always `len(points)` here, because this
+    #: endpoint has no decimation branch (see `MAX_PREDICTION_POINTS`). Named
+    #: explicitly anyway so a caller never has to assume the two agree.
+    row_count: int
+    #: Residual population SD, computed over the full frame — the number the
+    #: Actual-vs-Predicted and Residual charts draw their ±k·SD bands around.
+    residual_sd: float
+    #: Cross-check only. The run's own `metrics.json` (`r2`/`rmse`, already
+    #: on the `ModelTrainingRun` row) are the numbers the UI displays; this
+    #: is recomputed from `predictions.parquet` so a divergence between the
+    #: two files is detectable, not so a caller has a second RMSE to choose
+    #: between.
+    residual_rmse_check: float
+    y_true_min: float
+    y_true_max: float
+    y_pred_min: float
+    y_pred_max: float
+    points: list[RunPredictionPoint]
+    #: From `run_manifest.json` when `manifest_key` was given and the object
+    #: exists. `derived_from_target` is the MODEL-FLOW-000-T02 leakage
+    #: guard's own record — non-empty means the request contract at serve
+    #: time differs (MODEL-SERVE-002-T06), which this feature does not build
+    #: but must not misrepresent by omitting. Both null if no manifest.
+    derived_from_target: list[str] | None = None
+    target_scaled: bool | None = None
 
 
 class ValidationCheckResponse(BaseModel):

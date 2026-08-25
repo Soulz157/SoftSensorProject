@@ -12,7 +12,8 @@
       "chosen": "Separate images, separate lifecycles",
       "date": "2026-08-24",
       "rationale": "Training is a job that exits; serving is a process that must stay up. They differ in resource shape (a fit spikes memory, an inference does not), in scaling (train scales to zero, serving needs a warm replica), and in failure handling (a job retries, a service must stay available). Running a fit inside the serving process couples them at the worst point: the fit's memory spike is charged to the same cgroup as the live model cache, so a retrain can OOM-kill the endpoint that is currently answering. The trainer image also carries fit-time dependencies a serving process never calls, which is dead weight on every cold start.",
-      "consequence": "POST /retrain never fits anything itself. It records intent and returns; the existing trainer image does the work, spawned the same way MODEL-FLOW-003-T04 already spawns it."
+      "consequence": "POST /retrain never fits anything itself. It records intent and returns; the existing trainer image does the work, spawned the same way MODEL-FLOW-003-T04 already spawns it.",
+      "scope_correction": "NARROWED 2026-08-25. This decision remains right for a long-running synchronous serving process (MODEL-SERVE-002) and for never fitting inside one. It was over-applied when written: it was read as 'inference always needs its own image', and scheduled batch inference is a counterexample its own rationale does not cover. See short_lived_containers_for_scheduled_inference. MODEL-SERVE-002-T01 (a separate serving image) is unaffected and stays."
     },
     "deploy_is_a_row_change_not_an_image_build": {
       "chosen": "One generic serving image; the production pointer lives in Postgres",
@@ -29,6 +30,24 @@
     "serving_host_undecided": {
       "open": true,
       "note": "Training today spawns containers against a Docker daemon and tracks them with an in-memory watch() (trainning-container.authorized.service.ts). That mechanism is known-unsuitable for a long-running service — MODEL-FLOW-003-V01 observed a run stranded at RUNNING forever because a nest --watch restart killed the tracker, and MODEL-FLOW-011-T04 was opened to reconcile it. A serving process outliving the Node process that spawned it is the NORMAL case, not the exception, so the same design would be permanently wrong rather than occasionally.\n\nOPTIONS, not yet chosen: (a) keep the Docker-daemon spawn and give serving its own supervisor with boot reconciliation; (b) run serving as an ordinary long-lived service in the same compose/orchestrator as the backend, spawned by nothing; (c) an external orchestrator. (b) is the smallest and is the default unless someone needs per-model isolation. DECIDE BEFORE MODEL-SERVE-002 — the answer changes what that feature builds, not just where it runs."
+    },
+    "short_lived_containers_for_scheduled_inference": {
+      "chosen": "Short-lived containers on the existing trainer image, second entrypoint",
+      "date": "2026-08-25",
+      "rationale": "REVISES the scope of training_and_serving_are_separate_planes rather than contradicting it. That decision's reason is specific: a FIT spikes memory and, sharing a cgroup with a long-running cache, can OOM-kill the endpoint currently answering. Hourly batch inference is not a long-running process and holds no cache, so that reason does not apply to it. What is left is a comparison the existing code wins outright — trainning-container.authorized.service.ts already spawns, resource-limits and reaps containers; ModelTrainingRunLog and the /log callback already give per-run logs; image_digest provenance already comes for free. A second entrypoint (infer.py) beside train.py in images/trainer/ reuses all of it. Cold start is a python import, 3-5s, which is noise at a one-hour cadence.",
+      "consequence": "MODEL-SERVE-006 needs no serving process, no cache-invalidation-on-promote, and no readiness protocol. Those belong to MODEL-SERVE-002 (synchronous /predict) alone, which is a SEPARATE requirement arriving later — do not build a serving service in order to get an hourly run.",
+      "also": "One image, not two, additionally removes a divergence risk the two-image plan created: both entrypoints unpickle the same model.joblib, so they cannot disagree about the library that wrote it."
+    },
+
+    "metrics_are_derived_from_predictions_not_computed_at_fit": {
+      "chosen": "predictions.parquet is the source of truth; metrics.json is a cache",
+      "date": "2026-08-25",
+      "rationale": "The alternative — the client sends a metric set and the container computes exactly those — has one failure that gets worse over time: adding a metric next month leaves every existing run without it, so a comparison table shows a column of em-dashes, and the only way to fill it is to RETRAIN models in order to compute a number that never needed a fit. Deriving from the stored predictions instead means a new metric is recomputable across all history, and the same definitions serve both evaluation (test-split predictions) and monitoring (inference predictions) — one implementation, so 'r2 at training' and 'r2 in monitoring' cannot drift into two numbers that look comparable and are not.",
+      "constraint": "STATE THE BOUNDARY EXPLICITLY IN THE REGISTRY. Only metrics computable from (actual, predicted) plus scalars already in run_manifest.json (e.g. feature_count for adjusted R²) are backfillable. Anything needing feature values, residual-vs-feature structure or model internals is NOT, and must be marked so — otherwise the registry mixes metrics that can be added retroactively with metrics that cannot, in one table, and nobody can tell which is which."
+    },
+
+    "deploy_status_currently_asserts_something_untrue": {
+      "note": "OBSERVED 2026-08-25 in phase-4-deploy.tsx. Save & Deploy performs `updateModel(modelId, { deployStatus: 'running' })` and nothing else: no container, no schedule, no inference. The component is internally honest — its own comment explains why deploy is a second write and why the retrain/drift atoms are deliberately NOT rendered ('nothing persists them, so rendering them would collect settings that go nowhere'), which is the correct call and anticipated this ledger. The problem is the WORD: anyone reading the models list sees 'running' and concludes predictions are being produced.\n\nThis is therefore not a new feature to add but an existing claim to make true, which changes MODEL-SERVE-006's framing: deployStatus must become DERIVED from the last successful InferenceWindow, not a column any caller can set. Two writable sources of truth for 'is this deployed' is the same class of problem as a mutable latest/ key, rejected above for the same reason.\n\nThe atoms the comment names (mpAutoRetrainAtom and the drift/SD siblings) are the config a scheduler needs. They already exist client-side and are unpersisted — MODEL-SERVE-006-T09 is where they acquire a home."
     }
   },
 
@@ -52,7 +71,15 @@
 
     "NEW — `drafts/` IS A SHARED ROOT FOR TWO UNRELATED ENTITIES IN ONE BUCKET. Observed directly: the run lives at drafts/1ce30923-…/runs/… (a ModelDraft) while its gold_object_key reads drafts/c47bfa69-…/artifacts/… (a DatasetDraft). Same bucket, same first segment, different tables, different lifecycles, different sweepers. UUIDs will not collide, so this is not a correctness bug today. The exposure is in the SWEEPERS: MODEL-FLOW-011-T02 already specifies is_draft_run_key rather than a string prefix match, which is correct — but DS-LAKE-014's DatasetDraft sweeper predates that guidance and it is UNVERIFIED whether it reclaims by structural predicate or by a drafts/{id}/ prefix. If the latter, a dataset sweep can reach a model draft's prefix. Hand to MODEL-SERVE-000-T06's read; the fix, if needed, is upstream.",
 
-    "NEW — NOTHING GATES PROMOTION ON WHETHER THE MODEL IS ANY GOOD. The observed run has r2 = -2.4068: worse than predicting the mean, i.e. no predictive value. Every claim made about it is nonetheless true — MODEL-FLOW-003-V01 correctly recorded it as SUCCEEDED with real metrics, and the leakage guard correctly found nothing to check (derived_from_target is empty, so there is no leakage; the model is simply bad). MODEL-FLOW-000-T02 hardened this codebase against an implausibly HIGH R², and this is the opposite direction, which no criterion in either ledger covers. MODEL-SERVE-001-T05 refuses a version whose artifact cannot be LOADED; it says nothing about one that loads fine and is useless. See MODEL-SERVE-001-T06."
+    "NEW — NOTHING GATES PROMOTION ON WHETHER THE MODEL IS ANY GOOD. The observed run has r2 = -2.4068: worse than predicting the mean, i.e. no predictive value. Every claim made about it is nonetheless true — MODEL-FLOW-003-V01 correctly recorded it as SUCCEEDED with real metrics, and the leakage guard correctly found nothing to check (derived_from_target is empty, so there is no leakage; the model is simply bad). MODEL-FLOW-000-T02 hardened this codebase against an implausibly HIGH R², and this is the opposite direction, which no criterion in either ledger covers. MODEL-SERVE-001-T05 refuses a version whose artifact cannot be LOADED; it says nothing about one that loads fine and is useless. See MODEL-SERVE-001-T06.",
+
+    "NEW 2026-08-25, READ FROM SOURCE — STEP 4 EVALUATION DOES NOT DISPLAY THE CONTAINER'S METRICS AT ALL. phase-3-evaluation.tsx computes every figure client-side: it picks `const xTag = modelReady.tags.find(t => t !== target)` — the first tag that is not the target — and runs computeFit(modelReady, xTag, target), a single-feature fit in the browser. The 8-feature fit the container actually performed is never read; mpTrainingResultAtom is not imported by this file. The compared-model series is explicitly mock (seededNoise + a comment saying real per-model predictions arrive later). mpSelectedMetricsAtom is a DISPLAY FILTER over these locally-computed values.\n\nCONSEQUENCE, AND IT EXPLAINS AN EARLIER FINDING: r2 = -2.4068 is invisible in the product. The screen shows a plausible chart from a different fit, which is why a model with no predictive value passed through the wizard without anyone stumbling. The MODEL-FLOW ledger is not wrong about this — MODEL-FLOW-003-V02 claims metrics are 'available', not consumed, and says so in as many words, and every MODEL-FLOW-004 task is still pending. The gap is real, correctly recorded upstream, and it is a HARD PREREQUISITE for anything in this ledger that touches metrics: a metric registry wired to a screen that computes its own numbers changes which locally-computed values are shown and nothing else.",
+
+    "NEW 2026-08-25 — 'CHANGE THE EVALUATION METRICS FROM THE UI' IS NOT REACHABLE FROM WHERE THE UI IS TODAY. The request is well-formed and the design answer is in decisions.metrics_are_derived_from_predictions_not_computed_at_fit, but ordering matters: mpSelectedMetricsAtom currently filters browser-computed values, so pointing it at a registry while phase-3-evaluation.tsx still calls computeFit produces a prettier filter over the wrong numbers. MODEL-FLOW-004 first, registry second. Recorded as a sequencing constraint rather than a defect.",
+
+    "NEW 2026-08-25 — THE WIZARD'S OWN GATE IS LOOSER THAN THE RUN-CREATION GUARD BEHIND IT. phase-2-training-config.tsx computes `canTrain = targetVariables.length > 0 && training.status !== 'training' && tags.length > 0`, and renders AutoMlToggles as freely operable. MODEL-FLOW-003-T10 established that use-model-training refuses anything other than exactly one target, exactly one algorithm, and AutoML off. So the button is enabled for states the layer beneath it will reject: the user clicks, waits, and gets an error for a condition that was knowable before the click. Not a correctness bug — the refusal holds — and not this ledger's to fix, but it will be hit on every manual test of MODEL-SERVE-006, so it is recorded rather than rediscovered.",
+
+    "NEW 2026-08-25 — THE UNPERSISTED DEPLOY ATOMS ARE THE SCHEDULER'S CONFIG. phase-4-deploy.tsx's comment names mpAutoRetrainAtom 'and friends' (per MODEL-FLOW-010-T08's field list: autoRetrain, warnSd, criticalSd, driftMonitor, driftThresholdPct) as surviving in the store with nothing persisting them, and declines to render them for exactly that reason. That was the right call and it is also a ready-made requirement: those five fields are what a schedule and a drift alarm need. MODEL-SERVE-006 should adopt them rather than invent a parallel set of names, and the wizard step can then render them honestly."
   ],
 
   "features": [
@@ -480,6 +507,8 @@
           "detail": "For a lab-sampled target the truth arrives hours or days later, so this is a delayed join, not a live metric. Publish the missing/Bad rate of the joined window beside the error, for the reason MODEL-FLOW-010-T06 gives: with no imputation, a hole depresses the score with no trace of why."
         }
       ],
+      "scope_correction": "REVISED 2026-08-25. This feature was written assuming prediction logging is a sampled by-product of synchronous requests. With MODEL-SERVE-006, the primary prediction stream is the hourly window record, which is complete rather than sampled and already carries version and missing rate. So T01's sampling concern applies to MODEL-SERVE-002's sync path only, and T02 (drift vs column_stats) and T03 (late ground-truth join) now read from InferenceWindow. They stay here rather than moving into 006 because they are analysis over the record, not production of it.",
+      "acceptance_criteria_correction": "The first two criteria listed here ('r2 at or below zero cannot be promoted' and 'the image digest is retained') were misfiled — they belong to MODEL-SERVE-001-T06 and -T07 respectively and are removed from this feature. Recorded rather than silently deleted, per MODEL-SERVE-000-V01's rule.",
       "acceptance_criteria": [
         "A version whose r2 is at or below zero cannot be promoted without an override recorded with an actor and a reason.",
         "The trainer image digest a live version names is retained for as long as that version is not ARCHIVED.",
@@ -494,10 +523,177 @@
           "status": "pending"
         }
       ]
+    },
+    {
+      "id": "MODEL-SERVE-006",
+      "title": "Scheduled Hourly Inference — Windows, Logs, and the Monitoring Record",
+      "priority": 6,
+      "status": "pending",
+      "progress": 0,
+      "dependencies": ["MODEL-SERVE-001", "MODEL-FLOW-004", "MODEL-FLOW-011"],
+      "description": "Run a promoted model on a fixed cadence, writing one predictions parquet and one metrics document per time window, with per-run logs readable afterwards. This is the feature that makes 'deployed' mean something. It needs no serving process — see decisions.short_lived_containers_for_scheduled_inference.",
+
+      "dependency_notes": {
+        "MODEL-FLOW-004": "HARD, not conventional. Step 4 currently computes its own metrics client-side (see findings), so until it reads the run's real metrics there is no surface on which a metric registry or a monitoring series means anything. Building the schedule first would produce a correct monitoring record beside a screen showing unrelated numbers.",
+        "MODEL-FLOW-011": "Specifically T04, orphaned-RUNNING reconciliation. MODEL-FLOW-003-V01 observed ONE stranded RUNNING row from ONE nest restart. At 24 windows a day that stops being an incident and becomes a background rate, and every stranded row is a permanent hole in the monitoring record. Reconciliation must exist before the cadence does, not after.",
+        "MODEL-SERVE-002": "NOT a dependency, deliberately. Synchronous /predict is a different requirement; this feature must not wait on it and must not build a serving process to get a scheduled run."
+      },
+
+      "findings": [
+        "THE UNIT IS A TIME WINDOW, NOT A TICK. A scheduler written as 'every hour, read the latest values, predict' loses data permanently on every miss, cannot say which hours are missing, and has no backfill path. A scheduler written as 'ensure a row exists for every window' gets gap detection, backfill and idempotency from one UNIQUE constraint. This is the single decision the whole feature rests on.",
+        "SCHEDULED WORK HAS NO CALLER, WHICH CHANGES WHAT FAILURE MEANS. A sync request that fails returns an error to someone who is waiting. A window that fails is observed by nobody. So the feature is not complete when windows succeed — it is complete when a window that DOESN'T run is visible. Hence T10, which is the one task here that must not be cut.",
+        "setInterval().unref() IS ADEQUATE HERE, BUT FOR A DIFFERENT REASON THAN IT WAS ADEQUATE FOR THE SWEEPER. MODEL-FLOW-011-T03 chose it because a missed sweep costs nothing — next tick does the work. A missed inference window is a permanent gap. It is still adequate, but ONLY because the tick's job is an idempotent insert keyed on window_start, so a later tick recovers what an earlier one missed. If the tick ever predicts directly, this mechanism becomes wrong.",
+        "PI TAGS DO NOT ARRIVE TOGETHER AND THE LAB TARGET ARRIVES MUCH LATER. window_end = now() yields a frame that is structurally complete and factually empty in places — and the model will score it without error, because the columns exist. This is the same mechanism MODEL-FLOW-010-T06 records for the holdout (no imputation, so a hole reaches predict() and depresses the result with no trace), except it recurs every hour instead of once. Hence a deliberate lag (T04) and a per-window missing rate (T05).",
+        "A PROMOTE MID-SERIES IS INDISTINGUISHABLE FROM A PROCESS CHANGE UNLESS THE VERSION IS PINNED PER WINDOW. Two adjacent points from different model versions render as a step change on the same axis as a real process shift, and someone will spend days on the wrong hypothesis. Pinning also yields shadow evaluation for free: two rows, same window, different versions."
+      ],
+
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-006-T01",
+          "title": "InferenceWindow entity, keyed on (modelVersionId, windowStart)",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Fields: modelId, modelVersionId, windowStart, windowEnd, status (PENDING|RUNNING|SUCCEEDED|FAILED|SKIPPED), predictionsKey, metricsKey, inputRows, missingPct, imageDigest, runId, startedAt, finishedAt, failureReason.\n\nUNIQUE (modelVersionId, windowStart) IS THE WHOLE DESIGN. It is the idempotency mechanism, so this feature needs no idempotency key of the kind MODEL-SERVE-003-T02 requires — windowStart is the natural key and a repeated insert is a no-op. It also makes gaps queryable (status != 'SUCCEEDED') and makes backfill an insert rather than a code path.\n\nSKIPPED is a real terminal status, not a synonym for FAILED: a window with too few input rows to score was correctly not attempted, and conflating it with a failure would make the staleness alarm cry wolf on a quiet plant."
+        },
+        {
+          "id": "MODEL-SERVE-006-T02",
+          "title": "The tick inserts windows and nothing else",
+          "status": "pending",
+          "progress": 0,
+          "detail": "setInterval(...).unref() in onModuleInit, matching MODEL-FLOW-011-T03's mechanism and PreprocessingJobService.scheduleStragglerSweep's precedent. Env-configurable, <= 0 disables.\n\nThe tick does exactly two things: insert PENDING rows for windows that have none, and reconcile rows stuck in RUNNING past a timeout. IT MUST NOT SCORE ANYTHING. Scoring in the tick reintroduces every property this design exists to avoid — a missed tick becomes a lost window, the interval becomes load-bearing, and a slow run delays the next one. Errors logged and swallowed; anything the tick missed is still eligible next time, which is only true because of T01's key."
+        },
+        {
+          "id": "MODEL-SERVE-006-T03",
+          "title": "infer.py as a second entrypoint on the existing trainer image",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Reads its window spec from a /claim-style callback exactly as train.py does, resolves the model object and scaler state (MODEL-SERVE-000-T03 must have answered where scalers live — this task is blocked in practice until it has), scores, writes predictions.parquet and metrics.json, reports through /log and /complete.\n\nSame image as the trainer so both entrypoints unpickle with the same library versions, and so image_digest provenance works identically. HEED MODEL-FLOW-000-T04's warning: nothing in CI builds images/trainer/Dockerfile, so a correct repo and a stale deployed image are indistinguishable today. Adding an entrypoint makes that worse, because a deployed image without infer.py fails in a way that looks like a scheduler bug. Add the CI build in this task, not later."
+        },
+        {
+          "id": "MODEL-SERVE-006-T04",
+          "title": "Window boundaries from a chosen ingestion lag",
+          "status": "pending",
+          "progress": 0,
+          "detail": "windowEnd = now() - lag, where lag is a configured value someone decided, per model. Do NOT default it to zero and do not derive it from the cadence — freshness and completeness genuinely trade against each other here and the trade must be made deliberately.\n\nMeasure before choosing: the 8 tags in the observed run's feature_columns (AI001A2.PV, AI206.PV, TI202/203/205/206/207.PV, Spgr_in_feed_Header_1) against RYGPDH01, worst-case arrival. The lab target's own latency is a different and much longer number and belongs to T08, not here — inference needs features only."
+        },
+        {
+          "id": "MODEL-SERVE-006-T05",
+          "title": "Record inputRows and missingPct per window",
+          "status": "pending",
+          "progress": 0,
+          "detail": "On the row, not only inside the output object, so a series query can join them without opening parquet. Without this, a prediction series that starts wandering is indistinguishable between real process drift and a sensor that stopped reporting — and the second is far more common. Same rule and same reason as MODEL-FLOW-010-T06's insistence that the holdout's missing rate be published beside every figure."
+        },
+        {
+          "id": "MODEL-SERVE-006-T06",
+          "title": "Partitioned output layout for the monitoring record",
+          "status": "pending",
+          "progress": 0,
+          "detail": "inference/{modelId}/{modelVersionId}/dt=YYYY-MM-DD/hour=HH/predictions.parquet, plus metrics.json alongside. Hive-style so a date range reads without listing everything.\n\nKEPT SEPARATE FROM drafts/{draftId}/runs/{runId}/predictions.parquet ON PURPOSE: that object is the test-split prediction, immutable and backward-looking; this one is an append-only operational record with different retention and a different access pattern. Also a different root from drafts/, which the findings note is already shared by two entities.\n\nDo not couple the read path to one-file-per-hour. 8,760 objects per model-year is fine for MinIO and slow to scan; daily compaction is not needed on day one but becomes needed, and a reader that assumes hourly files has to be rewritten then."
+        },
+        {
+          "id": "MODEL-SERVE-006-T07",
+          "title": "Pin modelVersionId at window creation, and expose version boundaries",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Already in T01's key; this task is the read side. Any series rendering must be able to say where a version changed, because the alternative is a step change attributed to the process. Falls out for free: two rows for one windowStart under different versions is a shadow comparison, which is the safe way to exercise a candidate — including the current r2 = -2.4068 model — without promoting it."
+        },
+        {
+          "id": "MODEL-SERVE-006-T08",
+          "title": "Metric registry — derived from predictions, recomputable, selectable from the UI",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Per decisions.metrics_are_derived_from_predictions_not_computed_at_fit. One definition set, applied to test-split predictions for evaluation and to window predictions for monitoring, so the two are the same number computed the same way.\n\nEach registry entry declares whether it is BACKFILLABLE from (actual, predicted) plus run_manifest scalars, or requires inputs not retained. That flag is not documentation — it is what stops a comparison table silently mixing metrics that exist for all history with metrics that exist only for new runs.\n\nmpSelectedMetricsAtom becomes a real selection over this registry instead of a filter over browser-computed values. THAT SUBSTITUTION IS ONLY MEANINGFUL AFTER MODEL-FLOW-004 (see findings): applied to today's phase-3-evaluation.tsx it would change which locally-computed numbers are displayed and nothing else."
+        },
+        {
+          "id": "MODEL-SERVE-006-T09",
+          "title": "Persist the schedule, and adopt the existing deploy atoms rather than new ones",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Per-model schedule config: enabled, cadence, lag (T04), and the five fields phase-4-deploy.tsx already holds unpersisted in the store — autoRetrain, warnSd, criticalSd, driftMonitor, driftThresholdPct (per MODEL-FLOW-010-T08's field list). USE THOSE NAMES. A parallel set means the wizard and the scheduler describe the same setting in two vocabularies, and reconciling them later is worse than adopting them now.\n\nThis is the change that lets phase-4-deploy.tsx render those controls honestly, which its own comment declines to do today for the stated reason that nothing persists them."
+        },
+        {
+          "id": "MODEL-SERVE-006-T10",
+          "title": "Staleness alarm on the absence of successful windows",
+          "status": "pending",
+          "progress": 0,
+          "detail": "If no window has reached SUCCEEDED for longer than a configured multiple of the cadence, raise it. DO NOT CUT THIS TASK. Every other task in this feature makes the monitoring record trustworthy; this is the only one that reveals when the record has stopped being written. A drift dashboard with no incoming data looks calm, and calm is exactly the wrong signal.\n\nSKIPPED windows must not silence the alarm and must not trigger it either — they are a legitimate quiet plant, and treating them as either extreme makes the alarm useless in one direction or the other."
+        },
+        {
+          "id": "MODEL-SERVE-006-T11",
+          "title": "Backfill by inserting windows, with no separate code path",
+          "status": "pending",
+          "progress": 0,
+          "detail": "A range request inserts PENDING rows for windows that have none. The worker cannot distinguish backfill from live, which is the point — a second code path is a second set of bugs, and it would be exercised only during incidents. T01's UNIQUE constraint means over-requesting a range is harmless."
+        },
+        {
+          "id": "MODEL-SERVE-006-T12",
+          "title": "Derive deployStatus from the last successful window",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Per decisions.deploy_status_currently_asserts_something_untrue. Today `updateModel(modelId, { deployStatus: 'running' })` writes a claim nothing backs. Once windows exist, that claim has a real referent and must be READ from it, not written beside it. Leaving both means two sources of truth for 'is this deployed', and the stale one wins whenever someone forgets to update it.\n\nPhase-4-deploy.tsx's own structure survives this change unharmed: deploy stays a second write after save, and a failed deploy still leaves a saved model. What changes is that the second write enables a schedule instead of setting a string."
+        }
+      ],
+
+      "acceptance_criteria": [
+        "A promoted model produces one predictions object and one metrics document per window, on the configured cadence, with no manual action.",
+        "Every window is queryable by its own boundaries, and windows that did not succeed are listable as gaps.",
+        "A missed or failed window can be backfilled by requesting its range, through the same worker that runs live windows.",
+        "Requesting an already-present window is a no-op — enforced by a unique constraint, not by a service check.",
+        "Each window records the model version that scored it, pinned at creation, and a series can show where the version changed.",
+        "Each window records its input row count and missing rate on the row itself.",
+        "Window boundaries respect a configured ingestion lag; the lag is a chosen value, not a default of zero.",
+        "Per-window logs are readable after the container exits, through the same path training logs already use.",
+        "The absence of successful windows raises an alarm; SKIPPED windows neither raise nor suppress it.",
+        "Evaluation and monitoring metrics come from one registry applied to stored predictions, and each entry states whether it is backfillable.",
+        "Adding a metric to the registry requires no retraining and no refit to populate it for past runs — for backfillable entries.",
+        "deployStatus is derived from the last successful window; no caller sets it directly.",
+        "The schedule reuses the field names the wizard's existing deploy atoms already use."
+      ],
+
+      "verification": [
+        {
+          "id": "MODEL-SERVE-006-V01",
+          "description": "THE ONLY TEST THAT DISTINGUISHES A WORKING SCHEDULER FROM ONE THAT HAS NOT YET MISSED: stop the scheduler for three cadence periods, restart it, and confirm all three absent windows are (a) visible as gaps, (b) backfillable, and (c) that backfilling them produces output indistinguishable from live windows. A test that only asserts normal windows succeed cannot tell these apart.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-SERVE-006-V02",
+          "description": "Kill the backend mid-window, restart, and confirm the row reaches a terminal status rather than staying RUNNING. This is MODEL-FLOW-003-V01's observed orphan, reproduced deliberately at a cadence where it will recur. If MODEL-FLOW-011-T04 has not landed, this verification fails by design and is the evidence that the dependency is real.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-SERVE-006-V03",
+          "description": "Run a window against data with a KNOWN hole in one feature tag, and confirm both that missingPct records it and that the prediction is not silently produced as if the frame were complete. Running against clean data proves only that the happy path works, which is not what T05 exists for.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-SERVE-006-V04",
+          "description": "Promote a new version between two windows and confirm the series exposes the boundary — asserted from the pinned modelVersionId on each row, not inferred from timestamps.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-SERVE-006-V05",
+          "description": "Add a backfillable metric to the registry and confirm it populates for a run that predates the addition, with NO retraining. Then attempt the same with an entry marked not-backfillable and confirm it is reported as unavailable for that run rather than computed from something it should not use.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-SERVE-006-V06",
+          "description": "Enable a schedule, let one window succeed, then disable the model's schedule and confirm deployStatus changes with the record rather than remaining whatever was last written. A status that can only be set forward is the bug this checks for.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-SERVE-006-V07",
+          "description": "Insert two windows for one windowStart under two different versions and confirm both score and store independently — the shadow-evaluation path T07 claims comes for free, verified rather than assumed.",
+          "status": "pending"
+        }
+      ]
     }
   ],
 
   "global_definition_of_done": [
+    "A scheduled model produces one record per time window; a window that did not run is visible as a gap and backfillable through the same path a live window uses.",
+    "Evaluation and monitoring read one metric registry over stored predictions — adding a backfillable metric never requires a refit.",
+    "'Deployed' is derived from the monitoring record, never asserted by a caller.",
     "A production model's fitted artifact and feature spec are retained and pinned for as long as any version references them — the model object and the spec it needs are two objects in different places, and losing either is the same outage.",
     "A saved Model can be promoted to production and rolled back without building or deploying an image.",
     "At most one PRODUCTION version exists per model, enforced by the database.",

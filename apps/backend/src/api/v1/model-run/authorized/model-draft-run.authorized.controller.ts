@@ -77,4 +77,24 @@ export class ModelDraftRunAuthorizedController {
   ) {
     return this.runs.cancelDraftRunService(draftId, runId, user.id, user.role);
   }
+
+  @Get('/:draftId/runs/:runId/predictions')
+  @ApiOperation({
+    summary: "Parsed actual/predicted series for one run's test split",
+    description:
+      'MODEL-FLOW-004 — Step 4 Evaluation. Refuses (404) a run that has ' +
+      'not SUCCEEDED or recorded no predictions artifact, naming which.',
+  })
+  getDraftRunPredictionsController(
+    @Param('draftId') draftId: string,
+    @Param('runId') runId: string,
+    @Users() user: Auth.UserPayload,
+  ) {
+    return this.runs.getDraftRunPredictionsService(
+      draftId,
+      runId,
+      user.id,
+      user.role,
+    );
+  }
 }

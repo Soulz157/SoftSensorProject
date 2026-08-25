@@ -111,7 +111,9 @@ interface Props {
    * visibility from the wizard's own sidebar (`useDatasetTagSelection` →
    * `dwHiddenTagsAtom`), so a second selector on the chart itself would
    * fight it. The model wizard's Dataset Review step has no such sidebar and
-   * opts in explicitly.
+   * opts in explicitly — that selector is the ONLY visibility control it has,
+   * which is why an inherited hidden-tag set was unrecoverable there before
+   * `isolated` (see `explicit` below).
    */
   showTagSelector?: boolean
 }
@@ -184,8 +186,24 @@ export function DataAnalysisCard({
   showTransforms = true,
   showTagSelector = false,
 }: Props) {
+  // Declared before the tag-selection hook because it also decides WHERE that
+  // selection lives, not just which artifact routes are read: a caller naming
+  // its own dataset/artifact is by definition outside the Data Studio wizard,
+  // so it must not inherit that wizard's hidden-tag set. It did — leftover
+  // hidden tags covering the whole list left the Line tab stuck on "Select one
+  // or more PI tags to plot", with no tag sidebar in reach to undo it.
+  //
+  // This makes one flag mean two things — WHICH routes to read, and WHERE the
+  // tag selection lives — and that only holds while no id-supplying caller
+  // renders alongside a `DatasetTagSidebar`. One that did would keep its
+  // sidebar wired to the atoms while the card quietly stopped listening, and
+  // the two would disagree with nothing to show for it. If that caller ever
+  // appears, split this: isolation tracks `showTagSelector` (the card shows
+  // its own selector exactly when no sidebar is present), not the ids.
+  const explicit = Boolean(datasetId && artifactId)
+
   const { activeTags, focusedTag, colorForTag, selectAll } =
-    useDatasetTagSelection(dataset)
+    useDatasetTagSelection(dataset, { isolated: explicit })
   const { compareTags, toggle, atCap } = useCompareTags(activeTags)
 
   // DS-LAKE-005B-D-T01/T03. Histogram and boxplot tabs read the SERVER
@@ -232,7 +250,6 @@ export function DataAnalysisCard({
   // gets a say. Without this the model wizard — where every `dw*` atom is
   // null — resolves to no artifact at all and the four server-backed tabs sit
   // on 'pending' forever.
-  const explicit = Boolean(datasetId && artifactId)
   const adoptedBronzeId = editingDataset?.adoptedBronzeArtifactId ?? null
   const useDatasetLeg = explicit || (!analysisArtifactId && !!adoptedBronzeId)
 
@@ -565,7 +582,13 @@ export function DataAnalysisCard({
               tags={activeTags}
               range={range}
               hideTagSelector={!showTagSelector}
-              focusedTag={focusedTag}
+              // Emphasis is only meaningful where something can change it.
+              // `focusedTag` never returns empty — it falls back to the first
+              // active tag — so handing it over in isolated mode would dim
+              // every other line to 0.2 permanently, with no sidebar row to
+              // click. The scatter axes below still use the same fallback as
+              // a sensible default; there it picks a series, not an opacity.
+              focusedTag={explicit ? undefined : focusedTag}
               isViewAll={isViewAll}
             />
           </TabsContent>

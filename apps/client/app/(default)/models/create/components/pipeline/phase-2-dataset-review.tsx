@@ -51,9 +51,12 @@ interface Props {
  * routes every server-backed tab through the dataset-scoped artifact routes
  * with no `dw*` atom involved, and `showTransforms={false}` keeps its scaler
  * dialog (a WRITE to `dwScalerConfigsAtom`) out of a step whose contract is
- * that it configures nothing. What remains shared is chart view state only —
- * `dwHiddenTagsAtom`/`dwFocusedTagAtom` via `useDatasetTagSelection`, which
- * is visibility, not data.
+ * that it configures nothing. Nothing is shared with the data-studio store any
+ * more: supplying both ids also puts the card's tag selection in local state
+ * (`useDatasetTagSelection({ isolated: true })`). It previously read
+ * `dwHiddenTagsAtom`/`dwFocusedTagAtom` — visibility, not data, but a
+ * data-studio session that had hidden tags left this step's Line tab stuck on
+ * "Select one or more PI tags to plot", with no sidebar here to undo it.
  */
 export function Phase2DatasetReview({ nav }: Props) {
   const dataset = nav.selectedDataset
@@ -172,7 +175,7 @@ export function Phase2DatasetReview({ nav }: Props) {
 
       {hasArtifact ? (
         <>
-          <section className="space-y-2">
+          {/* <section className="space-y-2">
             <p className="text-sm font-semibold text-foreground">
               Per-tag statistics
             </p>
@@ -182,7 +185,7 @@ export function Phase2DatasetReview({ nav }: Props) {
               missing={statsMissing}
               error={statsError}
             />
-          </section>
+          </section> */}
 
           <section className="space-y-2">
             <p className="text-sm font-semibold text-foreground">

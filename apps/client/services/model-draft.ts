@@ -168,6 +168,73 @@ const runsBase = (draftId: string) => `${one(draftId)}/runs`
 const oneRun = (draftId: string, runId: string) =>
   `${runsBase(draftId)}/${encodeURIComponent(runId)}`
 
+/**
+ * A training run's test-split predictions, parsed (MODEL-FLOW-004). Every
+ * scalar (`rowCount`, `residualSd`, the y ranges) is computed server-side
+ * over the FULL frame — this endpoint has no decimation branch, so
+ * `rowCount === points.length` always. `residualRmseCheck` is a cross-check
+ * against the run's own `metrics.rmse`, not a second source of truth to
+ * display — Step 4 shows `ModelTrainingRun.metrics`.
+ */
+export interface RunPredictionPoint {
+  timestamp: string
+  yTrue: number
+  yPred: number
+}
+
+export interface RunPredictions {
+  sourceKey: string
+  rowCount: number
+  residualSd: number
+  residualRmseCheck: number
+  yTrueMin: number
+  yTrueMax: number
+  yPredMin: number
+  yPredMax: number
+  points: RunPredictionPoint[]
+  /** From the run's manifest — the leakage guard's own record. Null when no
+   *  manifest was recorded (predates MODEL-FLOW-003-T08 or `manifestKey` is
+   *  unset). */
+  derivedFromTarget: string[] | null
+  targetScaled: boolean | null
+}
+
+/** Wire shape is snake_case (the python service's own convention) — mapped
+ *  once here so every other caller works in the client's camelCase. */
+interface RunPredictionsWire {
+  source_key: string
+  row_count: number
+  residual_sd: number
+  residual_rmse_check: number
+  y_true_min: number
+  y_true_max: number
+  y_pred_min: number
+  y_pred_max: number
+  points: { timestamp: string; y_true: number; y_pred: number }[]
+  derived_from_target: string[] | null
+  target_scaled: boolean | null
+}
+
+function toRunPredictions(wire: RunPredictionsWire): RunPredictions {
+  return {
+    sourceKey: wire.source_key,
+    rowCount: wire.row_count,
+    residualSd: wire.residual_sd,
+    residualRmseCheck: wire.residual_rmse_check,
+    yTrueMin: wire.y_true_min,
+    yTrueMax: wire.y_true_max,
+    yPredMin: wire.y_pred_min,
+    yPredMax: wire.y_pred_max,
+    points: wire.points.map(p => ({
+      timestamp: p.timestamp,
+      yTrue: p.y_true,
+      yPred: p.y_pred,
+    })),
+    derivedFromTarget: wire.derived_from_target,
+    targetScaled: wire.target_scaled,
+  }
+}
+
 export const modelDraftRunService = {
   create: (
     draftId: string,
@@ -183,4 +250,15 @@ export const modelDraftRunService = {
     runId: string,
   ): Promise<ApiResponse<ModelTrainingRun>> =>
     fetchClient(oneRun(draftId, runId), { method: 'GET' }),
+
+  predictions: async (
+    draftId: string,
+    runId: string,
+  ): Promise<ApiResponse<RunPredictions>> => {
+    const res: ApiResponse<RunPredictionsWire> = await fetchClient(
+      `${oneRun(draftId, runId)}/predictions`,
+      { method: 'GET' },
+    )
+    return { ...res, data: toRunPredictions(res.data) }
+  },
 }
