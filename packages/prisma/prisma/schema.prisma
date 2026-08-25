@@ -74,6 +74,7 @@ model User {
   datasetArtifacts    DatasetArtifact[]
   datasetDrafts       DatasetDraft[]
   modelDrafts         ModelDraft[]
+  modelFineTuningJobs ModelFineTuningJob[]
   preprocessingJobs   PreprocessingJob[]
   presetImports       FeaturePresetImport[]
   loaderJobs          LoaderJob[]
@@ -613,6 +614,31 @@ model DatasetArtifact {
   validationKey  String?
   durationMs     Int?
 
+  /// DS-LAKE-022-T03. Which pipeline ORDER produced this artifact — NOT a
+  /// schema/format version. Null means pre-reorder (cleaning ran before
+  /// features, SILVER meant "cleaned"); 2 means post-reorder (features run
+  /// before cleaning, SILVER means "feature-engineered", GOLD means
+  /// "cleaned+scaled"). DatasetArtifactType itself is unchanged and gets no
+  /// new members — it is positional, and this column is what makes that
+  /// position's MEANING legible instead of an unmarked shift: the same
+  /// `data_silver.parquet` filename (DS-LAKE-016) means two different things
+  /// on either side of the reorder, and a committed object can never be
+  /// renamed to say which.
+  ///
+  /// DELIBERATELY HAS NO COLUMN DEFAULT, and that is the point. This value is
+  /// a function of WHICH CODE PATH RAN, not of when the row was created. Both
+  /// orders are live simultaneously — a client that sends the new-order
+  /// fields gets the new order, every existing client keeps the old one (see
+  /// DS-LAKE-022 decisions.both_orders_coexist_server_side) — so a
+  /// `@default(2)` would stamp "post-reorder" onto artifacts the OLD order
+  /// produced. That was this column's first shipped form and it was wrong: it
+  /// would have turned the one field meant to make the shift readable into a
+  /// second, more confident lie than the filename it exists to explain.
+  /// Written explicitly by the two stage-decision sites
+  /// (preprocessing-job.service.ts and dataset-draft.authorized.service.ts)
+  /// and carried onto FINAL by the finalize path.
+  pipelineVersion Int?
+
   createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
   createdById String
   createdAt   DateTime @default(now())
@@ -901,7 +927,8 @@ model ModelDraft {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  trainingRuns ModelTrainingRun[]
+  trainingRuns    ModelTrainingRun[]
+  fineTuningJobs  ModelFineTuningJob[]
 
   @@index([workspaceId])
   @@index([createdById])
@@ -998,9 +1025,18 @@ model ModelTrainingRun {
 
   logs ModelTrainingRunLog[]
 
+  /// MODEL-FLOW-005. Set only for a run that is one hyperparameter set of a
+  /// fine-tuning search — null for every ordinary run. The job groups these;
+  /// this run row is otherwise identical to any other and goes through the
+  /// SAME create/claim/complete path, so training never has a second code
+  /// path to drift from the first.
+  fineTuningJobId String?
+  fineTuningJob   ModelFineTuningJob? @relation(fields: [fineTuningJobId], references: [id], onDelete: SetNull)
+
   @@index([modelId, createdAt])
   @@index([modelDraftId])
   @@index([status])
+  @@index([fineTuningJobId])
 }
 
 /// Per-run, not per-model: concurrent runs on one model would otherwise
@@ -1015,4 +1051,65 @@ model ModelTrainingRunLog {
   createdAt DateTime @default(now())
 
   @@index([runId, createdAt])
+}
+
+enum ModelFineTuningJobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELED
+}
+
+/// MODEL-FLOW-005. "Fine-tuning" is defined (2026-08-25,
+/// decisions.fine_tuning_undefined) as a HYPERPARAMETER SEARCH: one
+/// algorithm, one artifact, one train/test split, N hyperparameter sets tried
+/// in sequence, the best kept — NOT a retrain on different data or a
+/// warm-start (train.py fits once and exits; no algorithm here supports one).
+/// A search is orchestrated ABOVE the container, not inside it: each
+/// hyperparameter set is one ordinary ModelTrainingRun, chained by this row.
+/// No new spawn/claim/complete path exists — every child run goes through
+/// the exact machinery MODEL-FLOW-003 already built and live-verified.
+model ModelFineTuningJob {
+  id           String     @id @default(uuid())
+  modelDraftId String
+  modelDraft   ModelDraft @relation(fields: [modelDraftId], references: [id], onDelete: Cascade)
+
+  /// The fixed spec every child run shares — validated once, the same way
+  /// buildRunData validates a single run's spec.
+  algorithm      String
+  targetY        String
+  goldArtifactId String
+  trainTestSplit Float?
+
+  /// Ordered array of hyperparameter dicts. Index `completedRuns` is the
+  /// set currently in flight or about to launch.
+  hyperparameterSets Json
+  totalRuns          Int
+  completedRuns      Int @default(0)
+
+  status        ModelFineTuningJobStatus @default(QUEUED)
+  failureReason String?
+
+  /// The run for the CURRENTLY in-flight (or just-finished, not yet
+  /// advanced) hyperparameter set.
+  currentRunId String?
+  /// The lowest-RMSE run seen so far. RMSE, not R² — always present and
+  /// well-behaved even for a degenerate fit (an observed real run scored
+  /// R² = -1,110,858; RMSE stayed a sane, comparable number). Selection
+  /// metric is intentionally not configurable in this pass — see
+  /// MODEL-FLOW-005-T01's own note on why.
+  bestRunId String?
+  bestRmse  Float?
+
+  createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  createdById String
+  createdAt   DateTime @default(now())
+  startedAt   DateTime?
+  finishedAt  DateTime?
+
+  runs ModelTrainingRun[]
+
+  @@index([modelDraftId])
+  @@index([status])
 }

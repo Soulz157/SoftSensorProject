@@ -38,7 +38,6 @@ import {
   dwSelectedTagsAtom,
   dwTagSidebarCollapsedAtom,
   dwCurrentStepAtom,
-  dwProcessingSubStepAtom,
   dwCleaningTagsAtom,
   dwCleanedTagsAtom,
   dwHighestUnlockedAtom,
@@ -100,15 +99,16 @@ export function DatasetTagSidebar() {
   const [collapsed, setCollapsed] = useAtom(dwTagSidebarCollapsedAtom)
   const targetTag = useAtomValue(dwTargetTagAtom)
   const currentStep = useAtomValue(dwCurrentStepAtom)
-  const subStep = useAtomValue(dwProcessingSubStepAtom)
   const [cleaningTags, setCleaningTags] = useAtom(dwCleaningTagsAtom)
   const cleanedTags = useAtomValue(dwCleanedTagsAtom)
   const setHighestUnlocked = useSetAtom(dwHighestUnlockedAtom)
-  const isCleaning = currentStep === 3 && subStep === 2
+  // DS-LAKE-022-T04..T07: Step 3's EDA/Cleaning sub-step switch died —
+  // cleaning is now its own whole step (5), not a sub-step of 3.
+  const isCleaning = currentStep === 5
   const cleaningSet = useMemo(() => new Set(cleaningTags), [cleaningTags])
   const cleanedSet = useMemo(() => new Set(cleanedTags), [cleanedTags])
 
-  const relock = () => setHighestUnlocked(prev => Math.min(prev, 4))
+  const relock = () => setHighestUnlocked(prev => Math.min(prev, 5))
   const toggleCleaning = (tag: string) => {
     setCleaningTags(prev =>
       prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag],

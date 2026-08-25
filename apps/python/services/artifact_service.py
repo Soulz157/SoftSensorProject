@@ -65,6 +65,7 @@ from schemas.preprocess import (
     ReplayHoldoutRequest,
     ResplitHoldoutRequest,
     RowsRequest,
+    ScaleRequest,
     TagCatalogRequest,
     ValidateRequest,
 )
@@ -601,6 +602,15 @@ def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:
     `applyFeatures -> precleanse -> ... -> selectColumns -> toModelReady`) —
     cleaning already happened to produce the SILVER source, so only the
     feature/select/scale stages run here.
+
+    DS-LAKE-022-T02: `request.scale` (default True) gates the toModelReady
+    tail. False stops after selectColumns — no scaling, no
+    feature_spec.json — for a caller that will run `scale()` separately
+    once cleaning has run BETWEEN feature computation and scaling (the
+    precondition the whole DS-LAKE-022 reorder depends on: `to_model_ready`
+    forces every finite cell Good, so a cleaning stage placed after the OLD
+    combined write would see nothing left to clean). Default True keeps
+    every existing caller's behaviour byte-identical.
     """
     started = time.perf_counter()
 
@@ -618,31 +628,35 @@ def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:
     skipped_columns: list[str] = []
     result = apply_features(source, step_configs, skipped=skipped_columns)
     result = select_columns(result, effective_selected)
-    # DS-LAKE-018-T02: `scaling_params` is what each scaler actually FIT on
-    # these train rows — recorded below so a later holdout replay
-    # (DS-LAKE-018-T04) can scale with these exact numbers instead of
-    # re-fitting on itself (see finding: re-fitting is a silently DIFFERENT
-    # transform from the one the model learned).
-    result, scaling_params = to_model_ready(
-        result, tag_columns(result), request.scalers)
+
+    spec: dict[str, Any] | None = None
+    if request.scale:
+        # DS-LAKE-018-T02: `scaling_params` is what each scaler actually FIT
+        # on these train rows — recorded below so a later holdout replay
+        # (DS-LAKE-018-T04) can scale with these exact numbers instead of
+        # re-fitting on itself (see finding: re-fitting is a silently
+        # DIFFERENT transform from the one the model learned).
+        result, scaling_params = to_model_ready(
+            result, tag_columns(result), request.scalers)
+
+        # Exclude collided configs from the sidecar — feature_spec.json must
+        # only claim features that were actually computed, not merely
+        # requested. `feature_column_name` is cheap enough to recompute per
+        # config here (config lists are short) rather than have
+        # `apply_features` return column names paired with configs.
+        computed_configs = [
+            cfg for cfg in step_configs
+            if feature_column_name(cfg) not in skipped_columns
+        ]
+        spec = build_feature_spec(
+            computed_configs, effective_selected, request.scalers,
+            request.target_y, scaling_params=scaling_params)
 
     assert_frame_is_usable(result)
 
     stats = store.put_frame(
         result, request.target_key, overwrite=request.overwrite)
 
-    # Exclude collided configs from the sidecar — feature_spec.json must
-    # only claim features that were actually computed, not merely
-    # requested. `feature_column_name` is cheap enough to recompute per
-    # config here (config lists are short) rather than have
-    # `apply_features` return column names paired with configs.
-    computed_configs = [
-        cfg for cfg in step_configs
-        if feature_column_name(cfg) not in skipped_columns
-    ]
-    spec = build_feature_spec(
-        computed_configs, effective_selected, request.scalers, request.target_y,
-        scaling_params=scaling_params)
     # `source` (the SILVER parent) is already in memory from the get_frame
     # above — same shape `clean()` uses, and the only place features() holds
     # both frames at once.
@@ -674,6 +688,77 @@ def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:
         column_stats=column_stats,
         feature_spec=spec,
         skipped_features=skipped_columns,
+    )
+
+
+def scale(store: ObjectStore, request: ScaleRequest) -> dict[str, Any]:
+    """DS-LAKE-022-T02. The trailing half of the old combined `/features`
+    write (`toModelReady` + `feature_spec.json`), split out so a caller can
+    run cleaning between feature computation (`features(scale=False)`,
+    producing the feature-stage/SILVER artifact) and scaling. `source_key`
+    is that feature-stage artifact — cleaned or not, this function does not
+    care — and `target_key` is the GOLD (cleaned+scaled) artifact.
+
+    `request.features`/`selected_columns`/`target_y` are the SAME recipe
+    `features()` was called with — needed here only to build
+    `feature_spec.json` (DS-LAKE-022 decision D2: the sidecar's ownership
+    moves whole to this stage), not to recompute anything: `source` already
+    carries the engineered/selected columns.
+
+    DEFAULT_SCALER is "minmax" (`feature_service.DEFAULT_SCALER`), so an
+    empty `scalers` dict still scales every column — there is no "pass
+    scalers={} to skip scaling" shortcut. A caller with nothing to scale
+    still gets every column min-max scaled, exactly like `features()`
+    always did with `scale=True`.
+
+    CALLER OBLIGATION, NOT YET ENFORCED HERE: `request.features` must be the
+    list of configs that were ACTUALLY computed into `source`, not the
+    originally-requested list — `features(scale=False)`'s own
+    `skipped_features` (name-collision skips) must be filtered out before
+    the recipe reaches this call, the same filtering `features()` used to do
+    internally via `computed_configs` before this split. This function
+    trusts its caller rather than re-deriving skips itself, because it never
+    calls `apply_features` and so cannot recompute which configs landed.
+    Unenforced because no caller exists yet this session (DS-LAKE-022-T02 is
+    additive-only); the wizard integration in T04-T07 must thread
+    `skipped_features` through or `feature_spec.json` will claim a feature
+    that was never actually computed.
+    """
+    started = time.perf_counter()
+
+    source = store.get_frame(request.source_key)
+    step_configs = [f.to_step() for f in request.features]
+    effective_selected = force_keep_target(
+        request.selected_columns, request.target_y)
+
+    result, scaling_params = to_model_ready(
+        source, tag_columns(source), request.scalers)
+
+    assert_frame_is_usable(result)
+
+    stats = store.put_frame(
+        result, request.target_key, overwrite=request.overwrite)
+
+    spec = build_feature_spec(
+        step_configs, effective_selected, request.scalers, request.target_y,
+        scaling_params=scaling_params)
+    # `source` here is already the feature-stage frame (post applyFeatures/
+    # selectColumns) — no columns are minted by scaling, so `operations=[]`
+    # is correct the same way `features()`'s own `column_stats` call already
+    # documents for a derived column: "no comparison possible" where nothing
+    # changed shape, `drift` where a value did.
+    column_stats = build_column_stats(
+        result, operations=[], parent_frame=source
+    )
+
+    return _commit(
+        store,
+        stats,
+        started,
+        parent_key=request.source_key,
+        operations=step_configs,
+        column_stats=column_stats,
+        feature_spec=spec,
     )
 
 

@@ -7,7 +7,8 @@ import { Button } from '@/components/ui/button'
 import { Step1Tags } from './step-1-tags'
 import { Step2RawData } from './step-2-raw-data'
 import { Step3Processing } from './step-3-eda'
-import { Step5ReviewSave } from './step-5-review-save'
+import { Step6ReviewSave } from './step-6-review-save'
+import { Step5DataCleaning } from './step-5-data-cleaning'
 import { useDatasetPipelineNav } from '@/hooks/dataset/use-dataset-pipeline-nav'
 import { useDatasetEditHydration } from '@/hooks/dataset/use-dataset-edit-hydration'
 import { useDatasetDraftHeartbeat } from '@/hooks/dataset/use-dataset-draft-heartbeat'
@@ -26,8 +27,9 @@ function stepLabels(fetchRequired: boolean): string[] {
   return [
     'Verified Tags',
     fetchRequired ? 'Fetch Data' : 'Source Validation',
-    'Data Processing',
+    'EDA',
     'Feature Engineering',
+    'Data Cleaning',
     'Review & Save',
   ]
 }
@@ -35,8 +37,9 @@ function stepLabels(fetchRequired: boolean): string[] {
 const NEXT_LABELS: Record<number, string> = {
   1: 'Continue',
   2: 'Continue',
-  3: 'Data Cleaning',
+  3: 'Continue',
   4: 'Continue',
+  5: 'Continue',
 }
 
 export function WizardShell() {
@@ -70,11 +73,15 @@ export function WizardShell() {
     rowStage !== null &&
     rowStage !== 'BRONZE'
 
-  const hideFooterNext = nav.currentStep === 5
+  const hideFooterNext = nav.currentStep === 6
   // ตรวจสอบว่าเป็น Step 1 หรือ 2 เพื่อจัด Layout ปุ่มไว้ด้านบน
   const isTopControlStep = nav.currentStep === 1 || nav.currentStep === 2
-  // ซ่อน Footer ด้านล่างหากเป็น Step 1, 2 (เพราะย้ายไปไว้บนแล้ว) หรือ 3 (อาจจะซ่อนตาม Logic เดิม)
-  const hideFooter = nav.currentStep === 3 || isTopControlStep
+  // ซ่อน Footer ด้านล่างหากเป็น Step 1, 2 (เพราะย้ายไปไว้บนแล้ว), 3 (มี footer
+  // ของตัวเอง — EDA), หรือ 5 (มี footer ของตัวเอง — Data Cleaning, ย้ายมาจาก
+  // เดิมที่เคยเป็น sub-step ของ Step 3; ต้องซ่อน shared footer ที่นี่ด้วย
+  // ไม่งั้นจะมีปุ่ม Next สองอันซ้อนกัน)
+  const hideFooter =
+    nav.currentStep === 3 || nav.currentStep === 5 || isTopControlStep
 
   let body
   switch (nav.currentStep) {
@@ -91,7 +98,10 @@ export function WizardShell() {
       body = <Step4FeatureEngineering nav={nav} />
       break
     case 5:
-      body = <Step5ReviewSave nav={nav} />
+      body = <Step5DataCleaning nav={nav} />
+      break
+    case 6:
+      body = <Step6ReviewSave nav={nav} />
       break
     default:
       body = null
@@ -181,7 +191,7 @@ export function WizardShell() {
               <SyntheticDataBanner
                 reason=""
                 title="These rows are already processed"
-                message={`Hydrated from a ${rowStage} artifact, not the original raw fetch. Cropping, cleaning, and imputation here apply on top of that processing -- they do not replace it.`}
+                message={`Hydrated from a ${rowStage} artifact, not the original raw fetch. Cropping and cleaning here apply on top of that processing -- they do not replace it.`}
               />
             )}
             {body}

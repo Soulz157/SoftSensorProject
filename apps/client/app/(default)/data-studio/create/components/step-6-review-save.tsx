@@ -70,7 +70,7 @@ interface Props {
 // is not exported.
 const EMPTY_DATASET: Dataset = { tags: [], rows: [] }
 
-export function Step5ReviewSave({ nav }: Props) {
+export function Step6ReviewSave({ nav }: Props) {
   const router = useRouter()
   const [name, setName] = useAtom(dwNameAtom)
   const [description, setDescription] = useAtom(dwDescriptionAtom)

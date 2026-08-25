@@ -510,8 +510,6 @@
       "scope_correction": "REVISED 2026-08-25. This feature was written assuming prediction logging is a sampled by-product of synchronous requests. With MODEL-SERVE-006, the primary prediction stream is the hourly window record, which is complete rather than sampled and already carries version and missing rate. So T01's sampling concern applies to MODEL-SERVE-002's sync path only, and T02 (drift vs column_stats) and T03 (late ground-truth join) now read from InferenceWindow. They stay here rather than moving into 006 because they are analysis over the record, not production of it.",
       "acceptance_criteria_correction": "The first two criteria listed here ('r2 at or below zero cannot be promoted' and 'the image digest is retained') were misfiled — they belong to MODEL-SERVE-001-T06 and -T07 respectively and are removed from this feature. Recorded rather than silently deleted, per MODEL-SERVE-000-V01's rule.",
       "acceptance_criteria": [
-        "A version whose r2 is at or below zero cannot be promoted without an override recorded with an actor and a reason.",
-        "The trainer image digest a live version names is retained for as long as that version is not ARCHIVED.",
         "Predictions are logged with their model version and the logging is sampled at a stated, deliberate rate.",
         "Drift is measured against the artifact's own column_stats, not a separately-computed baseline.",
         "Live error is reported only for windows where ground truth has actually arrived, with the joined window's missing rate published beside it."
@@ -687,7 +685,128 @@
           "status": "pending"
         }
       ]
+    },
+    {
+  "id": "MODEL-SERVE-007",
+  "title": "Retention Classes in Object Storage — the Storage Foundation",
+  "priority": 7,
+  "status": "pending",
+  "progress": 0,
+  "dependencies": ["MODEL-SERVE-000"],
+  "must_land_before": "MODEL-SERVE-006-T06. That task writes the first inference/ object; whichever layout is chosen, deciding after it lands turns a free choice into a migration.",
+
+  "description": "Make an object's RETENTION CLASS legible to storage tooling, so that 'may be reclaimed' is not knowable only from application code. Moves no existing bytes.",
+
+  "audit_note": "REVISED 2026-08-25 after reading apps/python/.../object_store.py. Three claims made when this feature was first drafted were wrong and are corrected in the findings below, not silently edited: the key layout (a), the cost of multi-bucket (b), and what a bucket lifecycle rule can actually express (c). The correction to (c) weakens this feature's original headline rationale, which is why T01 is now a decision to be made rather than a layout to implement.",
+
+  "findings": [
+    "CORRECTED (a) — `datasets/` IS THE BUCKET NAME, NOT A PREFIX. The module docstring renders the layout as `datasets/{datasetId}/artifacts/{artifactId}/data.parquet`, which reads as a prefixed key and is what an earlier draft of this feature assumed. The key helpers disagree: artifact_prefix returns f\"{dataset_id}/artifacts/{artifact_id}/\", version_key returns f\"{dataset_id}/{version_id}.parquet\", tmp_key returns f\"{dataset_id}/tmp/...\". Dataset keys begin with a BARE UUID and have no named root at all. The only named roots in the store are models/, drafts/ and feature-presets/.\n\nCONSEQUENCE: a key-to-bucket resolver cannot dispatch on the first segment, because dataset keys have nothing there to dispatch on. It must dispatch on the roots that DO exist and treat rootless keys as the dataset default. The docstring should also be fixed to say `bucket / key` — it is the direct cause of this misreading and will cause it again.",
+
+    "CONFIRMED — `drafts/` IS SHARED, AND THE DISCRIMINATOR IS THE THIRD SEGMENT. Previously inferred from one observed gold_object_key; now confirmed against the code. drafts/{id}/runs/{id}/… is a model run output (draft_run_key, MODEL-FLOW-003-T08) and drafts/{id}/artifacts/{id}/… is a dataset draft artifact (the observed gold_object_key). is_draft_run_key already tests exactly this shape — 4 segments after the root with parts[1] == 'runs' — so the discriminator a resolver needs is a predicate that already exists and is already tested.",
+
+    "CORRECTED (b) — THERE ARE NO HARDCODED BUCKET LITERALS, AND THE CONSTRUCTOR ALREADY TAKES A BUCKET. An earlier draft budgeted an audit for scattered literals. There are none: self.bucket is set once in __init__ from settings.S3_BUCKET and every method reads that one attribute (~15 sites, all reads). ObjectStore.__init__ already accepts an explicit `bucket` argument.\n\nSo multi-bucket is NOT a signature change threaded through fifteen methods — it is a FACTORY returning a per-bucket instance, plus a change at the few places that construct or hold an ObjectStore. _presign_minio is already an instance-level cache, which fits per-bucket instances rather than fighting them. This is materially cheaper than the earlier estimate and is the single biggest correction in this pass.",
+
+    "CORRECTED (c) — A BUCKET LIFECYCLE RULE CANNOT EXPRESS THE `models` RETENTION RULE, AND THE CODEBASE ALREADY SAYS SO. ensure_tmp_lifecycle_rule's own docstring: committed artifact prefixes are never expressed there because they need a reference check 'which a bucket lifecycle rule cannot do — only application-level cleanup is authoritative'. 'Retained while referenced' is exactly that kind of check.\n\nThis feature's original rationale — separation makes retention expressible at the bucket level — is therefore HALF WRONG and is restated: separation does not express the right rule, it prevents a wrong rule from REACHING the wrong objects. That is still worth having, and it is a narrower claim than the one first made.",
+
+    "THE TAG MECHANISM FOR THIS PROBLEM ALREADY EXISTS AND WAS BUILT FOR THE SAME REASON. TMP_LIFECYCLE_TAG_KEY's doc comment explains that S3/MinIO Prefix filters are literal and anchored, never wildcards, so 'tmp/ under any dataset' is not expressible as a prefix rule — hence an object TAG plus one bucket-wide rule. The identical constraint applies to a models bucket holding BOTH models/… and drafts/…/runs/… : two roots, so no single Prefix rule covers it, so a tag is needed there too. Any option chosen in T01 should reuse this mechanism rather than invent a second one.",
+
+    "PRIOR DECISION AGAINST A SECOND BUCKET, WITH A STATED REASON. PRESET_ROOT's comment: a prefix inside the existing bucket 'rather than a bucket of its own: ensure_bucket() has no runtime caller in this service, so a second bucket would need new bootstrap while a prefix needs none.' Confirmed: ensure_bucket has no automatic caller, and ensure_tmp_lifecycle_rule's comment records that docker-compose.yml does not declare MinIO at all — it runs as an uncommitted minio-local container. So every bucket is a manual, undocumented per-environment ops step.\n\nThis feature must engage with that decision rather than step around it. What presets did not have, and inference does, is a DIFFERENT RETENTION CLASS — presets and datasets are both reclaimable-with-a-reference-check, whereas an inference record is never reclaimable. That is a reason the earlier decision did not weigh, not a reason to overrule it.",
+
+    "`models/` MAY HAVE NO LIVE OBJECTS AT ALL. MODEL_ROOT, model_run_prefix and model_run_key all exist, but MODEL-FLOW-003-T08 routed live writes to draft_run_key, and MODEL-FLOW-007-T10 adopts by pointer without moving bytes — so nothing may ever write under models/. UNVERIFIED (needs a bucket listing), but if true, a 'models' bucket would hold only drafts/…/runs/… keys, which is confusing enough to be worth knowing before naming anything."
+  ],
+
+  "tasks": [
+    {
+      "id": "MODEL-SERVE-007-T01",
+      "title": "DECIDE the retention-class mechanism — three options, one recommendation",
+      "status": "pending",
+      "progress": 0,
+      "detail": "This was drafted as 'define three buckets'. Findings (c) and the PRESET_ROOT precedent make that a choice rather than a conclusion, so it is recorded as one.\n\nOPTION A — three buckets (datasets / models / inference). Strongest isolation: a lifecycle rule or access grant scoped to a bucket cannot reach another class even if authored carelessly. Costs what PRESET_ROOT's comment names: two more manual bucket-creation steps in an environment where MinIO is not even in docker-compose, plus the factory from T02.\n\nOPTION B — one bucket, retention-class OBJECT TAG on every write, lifecycle rules keyed on tag. Matches the mechanism already proven here for tmp/, needs no bootstrap, no factory, no resolver. Weaker: nothing stops a rule authored against a prefix or against no filter at all from reaching every class, and the tag is only as good as the writer that sets it.\n\nOPTION C (RECOMMENDED) — tag everything by retention class per Option B, AND give `inference` its own bucket. inference is the one class that is never reclaimable, grows without bound, and has zero existing objects — so its bucket is free, needs no migration, and is the one place where 'an operator cannot accidentally point a rule at this' is worth a manual bootstrap step. datasets and models stay co-located under tags, which keeps faith with the PRESET_ROOT decision instead of quietly reversing it.\n\nWHICHEVER IS CHOSEN, RECORD IT AS A DECISION WITH ITS REJECTED ALTERNATIVES. The next person to face 'new bucket or new prefix' will read whatever is written here, the way this task read PRESET_ROOT's comment."
+    },
+    {
+      "id": "MODEL-SERVE-007-T02",
+      "title": "Tag every write with its retention class",
+      "status": "pending",
+      "progress": 0,
+      "detail": "Required under all three options in T01 — it is what makes the class legible to tooling at all, and under Option B it is the entire mechanism.\n\nput_frame already sets an object tag conditionally (`if \"/tmp/\" in key`). Generalise that: derive the retention class from the key and tag every write, in put_object_stream so it covers put_frame and put_object_bytes together. put_json goes DIRECTLY to self._client.put_object and bypasses that path — the module's own comments flag it as un-refactored — so it needs the tag added too, or every JSON sidecar (including run_manifest.json) is written untagged.\n\nClasses: SWEEPABLE (dataset drafts/artifacts, tmp, presets), REFERENCED (model run outputs), PERMANENT (inference records). Note that REFERENCED still cannot be enforced by a lifecycle rule — finding (c) — so its tag is a label for humans and audits, not an enforcement point. Say so where the constant is defined, or someone will write a rule against it and believe it works."
+    },
+    {
+      "id": "MODEL-SERVE-007-T03",
+      "title": "One key-to-class resolver, built on the predicates that exist",
+      "status": "pending",
+      "progress": 0,
+      "detail": "class_for_key(key) in object_store.py with its TS twin in artifact-keys.ts. Dispatch on the roots that actually exist, per finding (a) — NOT on the first segment, which is a bare UUID for dataset keys:\n\n  inference/…                    → PERMANENT\n  models/…                       → REFERENCED\n  drafts/… + is_draft_run_key    → REFERENCED\n  drafts/… + /artifacts/         → SWEEPABLE\n  feature-presets/…              → SWEEPABLE\n  anything else (rootless)       → SWEEPABLE\n\nThe drafts/ branch MUST call is_draft_run_key rather than re-deriving the segment test — the two would otherwise disagree about the same key and only one of them is under test.\n\nThe rootless default is not a fallback: it is the historically correct answer for every dataset object ever written, all of which are bucket-less and root-less by construction."
+    },
+    {
+      "id": "MODEL-SERVE-007-T04",
+      "title": "Per-bucket ObjectStore factory — only if T01 chooses A or C",
+      "status": "pending",
+      "progress": 0,
+      "detail": "Per finding (b) this is a factory, not a refactor: ObjectStore.__init__ already accepts `bucket`, and no method holds a literal. store_for(bucket) caching one instance per bucket name, plus store_for_key(key) composing it with T03's resolver.\n\nTHE REAL WORK IS AT THE CONSTRUCTION SITES, NOT IN THIS CLASS. artifact_service and its siblings hold a single ObjectStore today; a flow spanning classes (infer.py reads a model, reads the gold parquet, writes an inference record — three classes) needs the store resolved per key rather than per service. Audit who constructs one before changing anything.\n\nUnder Option C only `inference` is separate, so the factory has two entries and the blast radius is small. Under Option A every dataset read moves too, which is the expensive half."
+    },
+    {
+      "id": "MODEL-SERVE-007-T05",
+      "title": "Write inference/ into its chosen home from the very first object",
+      "status": "pending",
+      "progress": 0,
+      "detail": "Free today, a migration after MODEL-SERVE-006-T06 lands. Nothing has written an inference object yet.\n\nUnder Option A or C this means the bucket exists and is bootstrapped BEFORE the first scheduled window runs — and since ensure_bucket has no runtime caller (finding: PRESET_ROOT precedent), 'exists' means someone did it by hand and wrote down that they did. A scheduler whose first window fails on NoSuchBucket at 02:00 is the predictable version of this."
+    },
+    {
+      "id": "MODEL-SERVE-007-T06",
+      "title": "Add bucket and gold_artifact_id to run_manifest.json",
+      "status": "pending",
+      "progress": 0,
+      "detail": "gold_bucket makes the manifest self-describing — a reader years later needs no resolver to find the object. gold_artifact_id (b9e25f8d in the observed run) is the durable reference: it is ALREADY IN the key as a path segment, so this promotes a substring to a field. A reference parsed out of a path breaks when the path shape changes; a field does not.\n\nBoth, not either. A manifest lacking gold_bucket resolves via T03's default, which is correct for every manifest written so far.\n\nNOTE the naming trap finding (a) created: gold_object_key's value is a KEY relative to a bucket, and the docstring's rendering of it as `datasets/...` is what made an earlier reading treat the bucket as part of the path. Fix that docstring in this task."
+    },
+    {
+      "id": "MODEL-SERVE-007-T07",
+      "title": "Write down each class's rule where an operator will see it",
+      "status": "pending",
+      "progress": 0,
+      "detail": "Per finding (c), state plainly what tooling CAN and CANNOT enforce: SWEEPABLE is expressible as a tag-filtered lifecycle rule (the tmp/ rule already proves the mechanism); PERMANENT is expressible as the absence of any rule; REFERENCED IS NOT EXPRESSIBLE and depends on MODEL-FLOW-011-T05's run-level guard plus ArtifactCleanupService.\n\nRecording the limit is the point. A retention scheme that looks fully enforced but has one class enforced only by application code is more dangerous than one that admits it, because the next person will trust the appearance.\n\nAlso record the bootstrap steps T05 needs, since ensure_bucket has no automatic caller and MinIO is not in docker-compose."
     }
+  ],
+
+  "acceptance_criteria": [
+    "T01's mechanism is chosen and recorded as a decision with its rejected alternatives, engaging with PRESET_ROOT's prior 'prefix not bucket' reasoning rather than bypassing it.",
+    "No existing object is moved; no persisted key column and no already-written manifest is rewritten.",
+    "Every write carries a retention-class tag — including put_json's, which bypasses the shared PUT path today.",
+    "One resolver per language maps key to retention class, calling is_draft_run_key rather than re-deriving its segment test.",
+    "A rootless key resolves to the dataset class, documented as historically correct rather than as a fallback.",
+    "The first inference object is written to its chosen home, with any bootstrap step recorded.",
+    "run_manifest.json records both gold_bucket and gold_artifact_id; a manifest lacking gold_bucket still resolves.",
+    "The written retention rules state which classes tooling can enforce and which one it cannot.",
+    "A model saved before this feature and one saved after load by the same code path."
+  ],
+
+  "verification": [
+    {
+      "id": "MODEL-SERVE-007-V01",
+      "description": "THE MIGRATION-SAFETY TEST: load a model whose run predates this feature (run 61f9aa28 is real) and confirm it resolves correctly AND that model_sha256 verifies via checksum_of. A test using only post-change objects proves the new path works and says nothing about the objects that can actually break.",
+      "status": "pending"
+    },
+    {
+      "id": "MODEL-SERVE-007-V02",
+      "description": "PROVE THE SHARED ROOT IS DISAMBIGUATED: resolve drafts/{id}/runs/{id}/model.joblib and drafts/{id}/artifacts/{id}/data_gold.parquet and confirm DIFFERENT classes. A resolver dispatching on the first segment sends both to the same place and passes any test that checks only one.",
+      "status": "pending"
+    },
+    {
+      "id": "MODEL-SERVE-007-V03",
+      "description": "Resolve a rootless legacy key ({datasetId}/{versionId}.parquet, the version_key layout) and confirm the dataset class. Finding (a) exists because this shape was mis-assumed once already.",
+      "status": "pending"
+    },
+    {
+      "id": "MODEL-SERVE-007-V04",
+      "description": "Write a JSON sidecar via put_json and assert the retention tag is present on the stored object. put_json bypasses the shared PUT path, so a tag added only to put_object_stream leaves every manifest and metrics document untagged — and passes any test that writes a parquet.",
+      "status": "pending"
+    },
+    {
+      "id": "MODEL-SERVE-007-V05",
+      "description": "If T01 chose A or C: place the same key in two buckets with different bytes, confirm the loader lands on the intended one, and confirm checksum verification catches it when it does not. The guards are key-structural and bucket-blind, so the checksum is the only discriminator.",
+      "status": "pending"
+    }
+  ]
+}
   ],
 
   "global_definition_of_done": [

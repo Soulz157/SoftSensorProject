@@ -158,6 +158,25 @@ export function artifactKey(
   return `${artifactPrefix(datasetId, artifactId)}${filename}`;
 }
 
+/**
+ * DS-LAKE-022-T03. The value written to `DatasetArtifact.pipelineVersion` by
+ * a stage that ran the REORDERED pipeline (features -> clean -> scale).
+ *
+ * There is deliberately no `PIPELINE_VERSION_LEGACY` counterpart: the legacy
+ * order writes NULL, which is the same value every artifact created before
+ * this column existed already carries. Those two really are the same claim —
+ * "this came out of the pre-reorder order" — and inventing a `1` would split
+ * one meaning across two values, forcing every future reader to check for
+ * both.
+ *
+ * Lives here, beside `artifactKey`, because the stage decision and the object
+ * key are made together at both write sites and must never disagree: a row
+ * typed GOLD whose key says silver, or a pipelineVersion 2 on a legacy-order
+ * artifact, are the exact unmarked lies DS-LAKE-016's stage-suffixed
+ * filenames and this column respectively exist to prevent.
+ */
+export const PIPELINE_VERSION_REORDERED = 2;
+
 export function manifestKey(datasetId: string, artifactId: string): string {
   return `${artifactPrefix(datasetId, artifactId)}${MANIFEST_FILENAME}`;
 }

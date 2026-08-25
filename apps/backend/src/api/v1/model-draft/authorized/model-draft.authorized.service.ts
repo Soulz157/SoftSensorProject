@@ -180,9 +180,7 @@ export class ModelDraftAuthorizedService {
         datasetId: dto.datasetId,
         targetY: dto.targetY,
         algorithm: dto.algorithm,
-        hyperparameters: dto.hyperparameters as
-          | PrismaTypes.InputJsonValue
-          | undefined,
+        hyperparameters: dto.hyperparameters,
         splitRatio: dto.splitRatio,
       },
     });

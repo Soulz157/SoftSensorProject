@@ -184,7 +184,7 @@ export function Step31EDA({ nav }: Props) {
 
   return (
     <div className="space-y-4">
-      <h3>Step 3.1: Exploratory Data Analysis (EDA)</h3>
+      <h3>Exploratory Data Analysis (EDA)</h3>
       <p className="text-sm text-muted-foreground">
         Inspect data quality, crop the time range, and remove outliers before
         imputing missing values.
@@ -250,9 +250,9 @@ export function Step31EDA({ nav }: Props) {
 
       <ProcessingActionFooter
         backLabel="Back"
-        nextLabel="Data Cleaning"
+        nextLabel="Continue"
         onBack={nav.back}
-        onNext={() => nav.setProcessingSubStep(2)}
+        onNext={nav.next}
         nextDisabled={
           precleansed.rows.length === 0 ||
           isBusy ||

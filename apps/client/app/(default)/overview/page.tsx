@@ -13,9 +13,12 @@ import { OverviewSearch } from './components/overview-search'
 import { OverviewDetailPanel } from './components/overview-detail-panel'
 import { OverviewSkeleton } from './components/overview-skeleton'
 import { CreateWorkspaceForm } from '@/components/auth/create-workspace-form'
+import { useSearchParams } from 'next/navigation'
 
 export default function PlantsPage() {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const wsFromUrl = searchParams.get('ws')
   const { workspaces, nodesByWorkspace, loading, error } = usePlantsData()
   const { models } = useAllModels()
 
@@ -49,7 +52,17 @@ export default function PlantsPage() {
     selectedNodes,
     panelRef,
     handleDismiss,
-  } = useWorkspaceSelection(workspaces, nodesByWorkspace)
+  } = useWorkspaceSelection(workspaces, nodesByWorkspace, wsFromUrl)
+
+  const selectWorkspace = (id: string | null) => {
+    setSelectedId(id)
+    router.replace(id ? `/plants?ws=${id}` : '/plants', { scroll: false })
+  }
+
+  const dismiss = () => {
+    handleDismiss()
+    router.replace('/plants', { scroll: false })
+  }
 
   if (loading) return <OverviewSkeleton />
   if (error) throw new Error(error)
@@ -64,7 +77,7 @@ export default function PlantsPage() {
   return (
     <div className="flex h-full w-full overflow-hidden">
       <div className="relative flex-1 overflow-hidden">
-        <div className="pointer-events-none absolute left-0 right-0 top-0 z-10 bg-linear-to-b from-black/70 to-black/55 px-4 pb-6 pt-3">
+        <div className="pointer-events-none absolute left-0 right-0 top-0 z-10 bg-linear-to-b dark:from-black/70 dark:to-black/55  px-4 pb-6 pt-3">
           <h1 className="text-sm font-semibold tracking-wide text-muted-foreground dark:text-white drop-shadow">
             Workspaces Overview
           </h1>
@@ -87,7 +100,9 @@ export default function PlantsPage() {
           workspaces={workspaces}
           nodesByWorkspace={nodesByWorkspace}
           selectedWorkspaceId={selectedId}
-          onWorkspaceClick={id => setSelectedId(id === selectedId ? null : id)}
+          onWorkspaceClick={id =>
+            selectWorkspace(id === selectedId ? null : id)
+          }
           onWorkspaceDoubleClick={id => router.push(`/plants/${id}`)}
           highlightedIds={highlightedIds}
           failedDeploysByWorkspace={failedDeploysByWorkspace}
@@ -99,7 +114,7 @@ export default function PlantsPage() {
         <>
           <div
             className="fixed inset-0 z-10 bg-black/30 sm:hidden"
-            onClick={handleDismiss}
+            onClick={dismiss}
             aria-hidden="true"
           />
           <div
@@ -113,7 +128,7 @@ export default function PlantsPage() {
             <OverviewDetailPanel
               workspace={selectedWorkspace}
               nodes={selectedNodes}
-              onClose={handleDismiss}
+              onClose={dismiss}
               onViewWorkspace={id => router.push(`/plants/${id}`)}
               onOpenPipeEditor={id => router.push(`/workspaces/${id}/canvas`)}
               onViewAlerts={() => router.push('/alerts')}

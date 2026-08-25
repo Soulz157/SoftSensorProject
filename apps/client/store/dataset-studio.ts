@@ -44,7 +44,11 @@ import {
   upsertSdtaPreset,
 } from '@/lib/feature-preset-apply'
 
-export const DW_TOTAL_STEPS = 5
+// DS-LAKE-022-T04..T07: 5 -> 6. Data Cleaning moves off Step 3 (sub-step 3.2)
+// onto its own Step 5, after Feature Engineering (now Step 4); Review & Save
+// becomes Step 6. See dwDraftFeatureArtifactIdAtom below for the artifact-id
+// plumbing this reorder needs.
+export const DW_TOTAL_STEPS = 6
 
 const EMPTY_DATASET: Dataset = { tags: [], rows: [] }
 
@@ -345,9 +349,6 @@ export const dwSelectedColumnsAtom = atom<string[] | null>(null)
 // Per-column model-ready scaler; missing key defaults to min-max.
 export const dwScalerConfigsAtom = atom<Record<string, ScalerMethod>>({})
 
-// Step 3 — Processing sub-step (3.1 preprocessing / 3.2 imputation)
-export const dwProcessingSubStepAtom = atom<1 | 2>(1)
-
 // Draft-first architecture (DS-LAKE-005/DS-LAKE-004B) — the wizard's
 // server-side owner while no Dataset row exists yet. `dwDraftArtifactIdAtom`
 // is the BRONZE (or latest SILVER) artifact a clean job reads from; both stay
@@ -375,6 +376,27 @@ export const dwBronzeWarmStateAtom = atom<BronzeWarmState>('idle')
 // so Step 4 itself satisfies its own AC ("drives the transform server-side"),
 // not because Save reads it yet.
 export const dwDraftGoldArtifactIdAtom = atom<string | null>(null)
+/**
+ * DS-LAKE-022-T04..T07. The features-only SILVER a reordered-order Step 4
+ * warm produces (`useDatasetGoldWarm` sending `scale: false`) — CREATE MODE
+ * ONLY. Named distinctly from `dwDraftArtifactIdAtom` (which stays the
+ * cleaning chain's own source/output in both modes) because the two must
+ * never collide: under the reorder, Step 5's clean+scale job reads FROM
+ * this atom and writes its GOLD result into `dwDraftGoldArtifactIdAtom`,
+ * while `dwDraftArtifactIdAtom` (BRONZE) stays untouched as the fixed
+ * source every "Save Cleaned Tags" batch replays against (D4 — cleaning
+ * sources the SILVER, it does not chain onto itself).
+ *
+ * Stays null in EDIT mode on purpose. Editing a saved dataset only allows
+ * changing the preprocessing pipeline (features/tags/time-range are
+ * locked and hydrated for display only), so edit mode keeps the legacy
+ * combined write untouched: Step 4's warm there still writes the final
+ * GOLD straight into `dwDraftGoldArtifactIdAtom`, exactly as before this
+ * feature. Every reader that falls back through
+ * `goldArtifactId ?? featureArtifactId ?? draftArtifactId` therefore still
+ * resolves correctly in edit mode — the middle term is just always null.
+ */
+export const dwDraftFeatureArtifactIdAtom = atom<string | null>(null)
 // Surfaces `useDatasetGoldWarm`'s own failures (formula-kind 422s chief among
 // them — feature presets emit ONLY `kind: 'formula'`, unimplemented server-
 // side). Previously swallowed silently; now read by Step 4 and folded into
@@ -498,7 +520,6 @@ export const initDatasetWizardAtom = atom(
     set(dwCleanedTagsAtom, [])
     set(dwSelectedColumnsAtom, null)
     set(dwScalerConfigsAtom, {})
-    set(dwProcessingSubStepAtom, 1)
     set(dwValueClipAtom, {})
     set(dwSelectedTagKeysAtom, new Set<string>())
     // Draft-first server state. Mirrors resetDatasetWizardAtom's own fix for
@@ -508,6 +529,7 @@ export const initDatasetWizardAtom = atom(
     // EDIT session's tags into a fresh create run.
     set(dwDraftIdAtom, null)
     set(dwDraftArtifactIdAtom, null)
+    set(dwDraftFeatureArtifactIdAtom, null)
     set(dwDraftGoldArtifactIdAtom, null)
     set(dwBronzeWarmStateAtom, 'idle')
     set(dwGoldWarmErrorAtom, null)
@@ -576,7 +598,6 @@ export const resetDatasetWizardAtom = atom(null, (_get, set) => {
   set(dwCleaningTagsAtom, [])
   set(dwCleanedTagsAtom, [])
   set(dwSelectedTagKeysAtom, new Set<string>())
-  set(dwProcessingSubStepAtom, 1)
 
   // Step 4
   set(dwFeatureConfigsAtom, [])
@@ -592,6 +613,7 @@ export const resetDatasetWizardAtom = atom(null, (_get, set) => {
   // it, not from the atoms that WERE being cleared.
   set(dwDraftIdAtom, null)
   set(dwDraftArtifactIdAtom, null)
+  set(dwDraftFeatureArtifactIdAtom, null)
   set(dwDraftGoldArtifactIdAtom, null)
   set(dwBronzeWarmStateAtom, 'idle')
   set(dwGoldWarmErrorAtom, null)
@@ -716,13 +738,20 @@ export const initDatasetWizardForEditAtom = atom(
     // Not persisted (see the atom's own comment) — nothing to hydrate.
     set(dwSdtaPresetsAtom, [])
 
-    set(dwProcessingSubStepAtom, 1)
     set(dwHiddenTagsAtom, [])
     set(dwFocusedTagAtom, '')
     set(dwTagSidebarCollapsedAtom, false)
+    // Hygiene only — this atom is never SET in edit mode (see its own doc
+    // comment), but a prior create-mode session could leave it populated
+    // before the user switches into editing a different dataset.
+    set(dwDraftFeatureArtifactIdAtom, null)
 
-    // Land on Data Processing with every step unlocked for review.
-    set(dwCurrentStepAtom, 3)
+    // DS-LAKE-022-T04..T07: edit mode's only editable surface is the
+    // cleaning pipeline, which now lives at Step 5 (previously Step 3's
+    // sub-step 2 — dwProcessingSubStepAtom died with that sub-step switch).
+    // Land there directly rather than on Step 3's EDA, which edit mode
+    // cannot change. Every step still unlocked for review/back-navigation.
+    set(dwCurrentStepAtom, 5)
     set(dwHighestUnlockedAtom, DW_TOTAL_STEPS)
   },
 )

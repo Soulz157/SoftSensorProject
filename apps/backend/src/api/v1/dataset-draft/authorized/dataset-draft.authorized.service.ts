@@ -7,7 +7,7 @@ import {
   postToPython,
   PYTHON_TIMEOUT,
 } from '@/lib/python-client';
-import { artifactKey } from '@/lib/artifact-keys';
+import { artifactKey, PIPELINE_VERSION_REORDERED } from '@/lib/artifact-keys';
 import { buildSourceBlock } from '@/lib/source-block';
 import { PreprocessingJobService } from '../../dataset-version/authorized/preprocessing-job.service';
 import { LoaderJobService } from '../../loader/loader-job.service';
@@ -566,17 +566,31 @@ export class DatasetDraftAuthorizedService {
     const startedAt = Date.now();
     const scope = `drafts/${draftId}`;
 
+    // DS-LAKE-022-T03. The same recipe-driven stage decision the job runner
+    // makes, mirrored here because this inline route is the OTHER of the only
+    // two places an artifact's stage is chosen (verified by grepping every
+    // `type: 'GOLD'` and `artifactKey(...)` call site in the backend).
+    // `scale: false` means this write is the FEATURE stage alone, so it
+    // commits SILVER with pipelineVersion 2; anything else is the legacy
+    // combined write and commits GOLD with pipelineVersion null.
+    const isReorderedFeatureCall = dto.scale === false;
+    const artifactType = isReorderedFeatureCall ? 'SILVER' : 'GOLD';
+
     const stats = ArtifactStatsSchema.parse(
       await postToPython(
         '/v1/preprocess/features',
         {
           source_key: source.objectKey,
-          target_key: artifactKey(scope, newArtifactId, 'GOLD'),
+          target_key: artifactKey(scope, newArtifactId, artifactType),
           features: dto.features,
           selectedColumns: dto.selectedColumns ?? null,
           scalers: dto.scalers,
           overwrite: dto.overwrite ?? false,
           target_y: dto.targetY ?? null,
+          // Omitted when the caller omitted it, so Python's own
+          // `FeaturesRequest.scale` default owns the legacy behaviour rather
+          // than a second copy of it living here.
+          ...(dto.scale !== undefined && { scale: dto.scale }),
         },
         PYTHON_TIMEOUT.preprocess,
       ),
@@ -592,7 +606,13 @@ export class DatasetDraftAuthorizedService {
           // lineage root, so it does not mint its own runId.
           runId: source.runId,
           parentArtifactId: source.id,
-          type: 'GOLD',
+          type: artifactType,
+          // DS-LAKE-022-T03. Null for the legacy combined write — the same
+          // value every pre-reorder artifact carries, because it is the same
+          // claim. See PIPELINE_VERSION_REORDERED.
+          pipelineVersion: isReorderedFeatureCall
+            ? PIPELINE_VERSION_REORDERED
+            : null,
           objectKey: stats.object_key,
           checksum: stats.checksum,
           rowCount: stats.row_count,
@@ -783,6 +803,15 @@ export class DatasetDraftAuthorizedService {
           runId: source.runId,
           parentArtifactId: source.id,
           type: 'FINAL',
+          // DS-LAKE-022-T03. Carried from the promoted artifact, never
+          // re-derived: a FINAL is a pointer promotion (same objectKey, same
+          // checksum — DS-LAKE-012-V03), so it was produced by whichever
+          // order produced its source. This is the field DS-LAKE-022-T08
+          // reads to decide which ORDER to replay a recorded recipe in, and a
+          // FINAL that dropped it would send a pre-reorder dataset down the
+          // post-reorder replay path and break the byte-identical checksum
+          // reproducibility DS-LAKE-012-T10 proved.
+          pipelineVersion: source.pipelineVersion,
           objectKey: source.objectKey,
           checksum: source.checksum,
           rowCount: source.rowCount,
@@ -1626,12 +1655,33 @@ export class DatasetDraftAuthorizedService {
     await this.assertDraftAccess(draftId, user);
     const source = await this.prisma.datasetArtifact.findFirst({
       where: { id: artifactId, draftId },
-      select: { id: true },
+      select: { id: true, pipelineVersion: true },
     });
     if (!source) {
       throw new AppException({
         statusCode: 404,
         message: 'Draft artifact not found',
+        type: 'ERROR',
+      });
+    }
+
+    // D4 (DS-LAKE-022 wizard reorder): a scaling tail only makes sense
+    // against a SILVER that features produced WITHOUT scaling — i.e. one
+    // stamped pipelineVersion 2 by a reordered FEATURE job (`scale: false`).
+    // Sourcing it from anything else (a legacy combined-write GOLD, a
+    // plain BRONZE, or a legacy SILVER that was never meant to carry a
+    // trailing scale) would either scale an already-scaled frame or scale
+    // raw/unfiltered data the reordered wizard never intended to hand this
+    // stage. Refuse loudly rather than silently mis-scaling.
+    if (
+      dto.scaleRecipe !== undefined &&
+      source.pipelineVersion !== PIPELINE_VERSION_REORDERED
+    ) {
+      throw new AppException({
+        statusCode: 422,
+        message:
+          'A scaling tail requires a source artifact produced by the ' +
+          'reordered feature stage (pipelineVersion 2); this artifact was not.',
         type: 'ERROR',
       });
     }
@@ -1646,6 +1696,14 @@ export class DatasetDraftAuthorizedService {
         operations: {
           operations: dto.operations,
           precision: dto.precision,
+          // DS-LAKE-022 activation: forward the reordered wizard's scaling
+          // tail. Without this the runner's `readScaleRecipe` always reads
+          // `raw.scaleRecipe` as absent, `isReorderedCleanJob` is always
+          // false, and no draft-scoped clean job could ever take the
+          // reordered path regardless of what the client sent.
+          ...(dto.scaleRecipe !== undefined && {
+            scaleRecipe: dto.scaleRecipe,
+          }),
         },
         createdById: user.id,
       },
@@ -1711,6 +1769,13 @@ export class DatasetDraftAuthorizedService {
           selectedColumns: dto.selectedColumns ?? null,
           scalers: dto.scalers,
           targetY: dto.targetY ?? null,
+          // DS-LAKE-022 activation: forward the reordered wizard's opt-out
+          // of the combined scale write. Without this the runner's
+          // `readFeatureRecipe` always reads `raw.scale` as absent,
+          // `isReorderedFeatureJob` is always false, and no draft-scoped
+          // features job could ever take the reordered path regardless of
+          // what the client sent.
+          ...(dto.scale !== undefined && { scale: dto.scale }),
         },
         createdById: user.id,
       },

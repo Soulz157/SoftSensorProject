@@ -34,7 +34,7 @@ export default function WorkspaceSettingsPage({
         <div className="mx-auto max-w-8xl space-y-8">
           <Skeleton className="h-6 w-48" />
           <Skeleton className="h-4 w-64" />
-          <Skeleton className="h-[400px] w-full" />
+          <Skeleton className="h-100 w-full" />
         </div>
       </div>
     )
@@ -74,7 +74,7 @@ px-4 py-2 rounded-md bg-primary text-white hover:bg-primary/90"
             <BreadcrumbSeparator />
             <BreadcrumbItem>
               <BreadcrumbLink asChild>
-                <Link href={`/workspaces/${id}`}>
+                <Link href={`/plants?ws=${workspace.id}`}>
                   {wsLoading ? (
                     <Skeleton className="inline-block h-4 w-24" />
                   ) : (
@@ -103,7 +103,11 @@ px-4 py-2 rounded-md bg-primary text-white hover:bg-primary/90"
         {/* Layout: Sidebar + Content */}
         <div className="flex flex-col gap-8 md:flex-row ">
           {/* Sidebar Component */}
-          <SettingsSidebar activeTab={activeTab} onTabChange={setActiveTab} />
+          <SettingsSidebar
+            activeTab={activeTab}
+            onTabChange={setActiveTab}
+            workspaceId={id}
+          />
 
           <div className="flex-1">
             {activeTab === 'info' && (

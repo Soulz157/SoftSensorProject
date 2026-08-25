@@ -2068,6 +2068,118 @@ describe('DatasetDraftAuthorizedService — draft-owned jobs', () => {
     ).rejects.toThrow(AppException);
   });
 
+  it('forwards scaleRecipe onto the stored job payload when the source is pipelineVersion 2', async () => {
+    // DS-LAKE-022 activation bug: the create-site dropped dto.scaleRecipe on
+    // the floor, so the runner's readScaleRecipe always read it as absent
+    // and no draft-scoped clean job could ever reach the reordered branch.
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst.mockResolvedValue({
+      id: 'artifact-1',
+      pipelineVersion: 2,
+    });
+    const { service } = makeService(prisma);
+
+    const scaleRecipe = {
+      features: [],
+      selectedColumns: null,
+      scalers: { 'TI-101': 'minmax' },
+      targetY: 'TI-101',
+    };
+    await service.startDraftCleanJobService(USER, 'draft-1', 'artifact-1', {
+      operations: [],
+      precision: {},
+      scaleRecipe,
+    });
+
+    const call = firstCreateArg(prisma.preprocessingJob.create);
+    expect(
+      (call.data.operations as { scaleRecipe?: unknown }).scaleRecipe,
+    ).toEqual(scaleRecipe);
+  });
+
+  it('omits scaleRecipe from the stored payload entirely when the DTO has none (legacy shape unchanged)', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst.mockResolvedValue({
+      id: 'artifact-1',
+      pipelineVersion: null,
+    });
+    const { service } = makeService(prisma);
+
+    await service.startDraftCleanJobService(USER, 'draft-1', 'artifact-1', {
+      operations: [{ type: 'drop_missing' }],
+      precision: {},
+    });
+
+    const call = firstCreateArg(prisma.preprocessingJob.create);
+    expect(
+      'scaleRecipe' in (call.data.operations as Record<string, unknown>),
+    ).toBe(false);
+  });
+
+  it('refuses (422) a scaleRecipe against a source that is not pipelineVersion 2', async () => {
+    // D4: a scaling tail only makes sense against the reordered feature
+    // stage's un-scaled SILVER. Sourcing it from a legacy GOLD or a plain
+    // BRONZE would scale already-scaled data or raw data the reordered
+    // wizard never intended this stage to receive.
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst.mockResolvedValue({
+      id: 'artifact-1',
+      pipelineVersion: null,
+    });
+    const { service } = makeService(prisma);
+
+    await expect(
+      service.startDraftCleanJobService(USER, 'draft-1', 'artifact-1', {
+        operations: [],
+        precision: {},
+        scaleRecipe: {
+          features: [],
+          selectedColumns: null,
+          scalers: {},
+          targetY: null,
+        },
+      }),
+    ).rejects.toThrow(AppException);
+    expect(prisma.preprocessingJob.create).not.toHaveBeenCalled();
+  });
+
+  it('forwards scale:false onto the stored FEATURE job payload', async () => {
+    // Same class of bug as scaleRecipe above, on the FEATURE job's own
+    // create site — readFeatureRecipe would always see scale as absent.
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst.mockResolvedValue({ id: 'artifact-1' });
+    const { service } = makeService(prisma);
+
+    await service.startDraftFeaturesJobService(USER, 'draft-1', 'artifact-1', {
+      features: [],
+      selectedColumns: null,
+      scalers: {},
+      targetY: null,
+      scale: false,
+    });
+
+    const call = firstCreateArg(prisma.preprocessingJob.create);
+    expect((call.data.operations as { scale?: boolean }).scale).toBe(false);
+  });
+
+  it('omits scale from the stored FEATURE payload when the DTO has none (legacy shape unchanged)', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst.mockResolvedValue({ id: 'artifact-1' });
+    const { service } = makeService(prisma);
+
+    await service.startDraftFeaturesJobService(USER, 'draft-1', 'artifact-1', {
+      features: [],
+      selectedColumns: null,
+      scalers: {},
+      targetY: null,
+    });
+
+    const call = firstCreateArg(prisma.preprocessingJob.create);
+    expect('scale' in (call.data.operations as Record<string, unknown>)).toBe(
+      false,
+    );
+  });
+
   it('retry carries sourceArtifactId forward, not just sourceVersionId', async () => {
     const prisma = buildPrisma();
     prisma.preprocessingJob.findFirst.mockResolvedValue({

@@ -12,6 +12,7 @@ import {
   tmpKey,
   tmpPrefix as tmpPrefixFor,
   artifactKey,
+  PIPELINE_VERSION_REORDERED,
 } from '@/lib/artifact-keys';
 import {
   ArtifactStatsSchema,
@@ -22,6 +23,27 @@ import {
   type CleaningOperation,
   type FeatureConfig,
 } from './dto/dataset-version.authorized.dto';
+
+/**
+ * The feature recipe as the runner uses it, in both of the places it now
+ * appears: a FEATURE job's own stored payload, and the OPTIONAL scaling tail
+ * carried on a reordered CLEAN job (DS-LAKE-022-T03). One type rather than
+ * two identical inline shapes, because `readFeatureRecipe` and
+ * `readScaleRecipe` must stay interchangeable at the `/features` and
+ * `/scale` call sites — they forward the same four fields to Python.
+ *
+ * `scale` is `undefined` when the stored payload omitted it, and that is
+ * meaningful rather than sloppy: it is forwarded as an omitted field so
+ * Python's `FeaturesRequest.scale` default (True) remains the single
+ * definition of the legacy behaviour.
+ */
+interface FeatureJobRecipe {
+  features: FeatureConfig[];
+  selectedColumns: string[] | null;
+  scalers: Record<string, string>;
+  targetY: string | null;
+  scale?: boolean;
+}
 
 /**
  * In-process runner for preprocessing jobs.
@@ -206,27 +228,6 @@ export class PreprocessingJobService
     const startedAt = Date.now();
     // Minted up front so the final step can write directly to its key.
     const artifactId = randomUUID();
-    // DS-LAKE-005 writes the committed SILVER (or, for a FEATURE job, GOLD)
-    // output into the artifact layout.
-    //
-    // Renamed off `versionKey`/`tmpPrefix` because those are now imported
-    // helpers, and `tmpPrefix` is also a parameter name in `recordFailure`.
-    const artifactType = isFeatureJob
-      ? 'GOLD'
-      : isExportJob
-        ? 'EXPORT'
-        : 'SILVER';
-    // DS-LAKE-021-T04: EXPORT now writes through `committedKey` too, into
-    // its OWN artifact-id-keyed prefix — it used to derive a sidecar key
-    // from the SOURCE artifact's own data key, landing inside the source's
-    // own prefix, which made reclaiming an EXPORT row unsafe (it could
-    // delete the source's data.parquet too). Same key mechanism every
-    // other committed artifact type already uses.
-    const committedKey = artifactKey(
-      scope,
-      artifactId,
-      isFeatureJob ? 'GOLD' : isExportJob ? 'EXPORT' : 'SILVER',
-    );
     const jobTmpPrefix = tmpPrefixFor(scope, jobId);
 
     // Read (and, for FEATURE, re-validate) the stored recipe BEFORE the
@@ -240,12 +241,8 @@ export class PreprocessingJobService
     // state, not a silent stall.
     let operations: CleaningOperation[] = [];
     let precision: Record<string, number> = {};
-    let featureRecipe: {
-      features: FeatureConfig[];
-      selectedColumns: string[] | null;
-      scalers: Record<string, string>;
-      targetY: string | null;
-    } | null = null;
+    let featureRecipe: FeatureJobRecipe | null = null;
+    let scaleRecipe: FeatureJobRecipe | null = null;
     try {
       if (isFeatureJob) {
         featureRecipe = this.readFeatureRecipe(job.operations);
@@ -254,13 +251,71 @@ export class PreprocessingJobService
       } else {
         operations = this.readOperations(job.operations);
         precision = this.readPrecision(job.operations);
+        scaleRecipe = this.readScaleRecipe(job.operations);
       }
     } catch (err) {
       this.running.delete(jobId);
       await this.recordFailure(jobId, jobTmpPrefix, controller, err);
       return;
     }
-    const totalSteps = isFeatureJob || isExportJob ? 1 : operations.length;
+
+    // DS-LAKE-022-T03 — THE STAGE DECISION, and the only one in this service.
+    //
+    // Which stage a job commits is now a property of the RECIPE it was given,
+    // not of `job.stage` alone, because both pipeline orders are live at once:
+    //
+    //   legacy  BRONZE -> clean(SILVER) -> features+scale(GOLD) -> FINAL
+    //   reorder BRONZE -> features(SILVER) -> clean+scale(GOLD) -> FINAL
+    //
+    // A client opts into the reordered order per job — a FEATURE job that
+    // sends `scale: false` (it will scale later), or a CLEAN job that sends a
+    // `scaleRecipe` (it wants the scaling tail here). Every client that
+    // exists today sends neither and keeps the legacy order byte for byte.
+    // This is what lets T03 land WITHOUT the wizard renumber (T04..T07): the
+    // reordered path is fully reachable and testable server-side, but nothing
+    // takes it until a client asks.
+    //
+    // Deliberately computed AFTER the recipe read above, not before it: the
+    // decision needs the recipe, and a stage chosen before the payload was
+    // even parsed is how the old duplicated ternary (one for `artifactType`,
+    // a second inline for `committedKey`) was able to exist at all. There is
+    // exactly one expression now, and `committedKey` is derived FROM it, so
+    // the row's `type` and its object key cannot drift apart.
+    const isReorderedFeatureJob =
+      isFeatureJob && featureRecipe?.scale === false;
+    const isReorderedCleanJob =
+      !isFeatureJob && !isExportJob && scaleRecipe !== null;
+
+    const artifactType: 'SILVER' | 'GOLD' | 'EXPORT' = isExportJob
+      ? 'EXPORT'
+      : isFeatureJob
+        ? isReorderedFeatureJob
+          ? 'SILVER'
+          : 'GOLD'
+        : isReorderedCleanJob
+          ? 'GOLD'
+          : 'SILVER';
+
+    // NULL for the legacy order, on purpose — same value every artifact
+    // written before this column existed carries, because it is the same
+    // claim. See PIPELINE_VERSION_REORDERED's own doc comment.
+    const pipelineVersion =
+      isReorderedFeatureJob || isReorderedCleanJob
+        ? PIPELINE_VERSION_REORDERED
+        : null;
+
+    // DS-LAKE-021-T04: EXPORT writes through `committedKey` too, into its OWN
+    // artifact-id-keyed prefix — it used to derive a sidecar key from the
+    // SOURCE artifact's own data key, landing inside the source's own prefix,
+    // which made reclaiming an EXPORT row unsafe (it could delete the
+    // source's data.parquet too).
+    const committedKey = artifactKey(scope, artifactId, artifactType);
+
+    // The trailing scale is a real step the user waits on, so it is counted.
+    const totalSteps =
+      isFeatureJob || isExportJob
+        ? 1
+        : operations.length + (isReorderedCleanJob ? 1 : 0);
 
     await this.prisma.preprocessingJob.update({
       where: { id: jobId },
@@ -302,6 +357,18 @@ export class PreprocessingJobService
               scalers: recipe.scalers,
               overwrite: false,
               target_y: recipe.targetY,
+              // DS-LAKE-022-T02/T03. Genuinely OMITTED by every legacy
+              // caller — spread, not `scale: recipe.scale`, which would put
+              // the key on the object holding `undefined`. That happens to
+              // survive `JSON.stringify` today, but it makes the body's
+              // shape depend on a serializer detail rather than on this
+              // line, and it reads as "we sent scale" to anyone inspecting
+              // the object. Absent means Python's own `FeaturesRequest.scale`
+              // default (True) keeps the combined applyFeatures ->
+              // selectColumns -> toModelReady write, in ONE place. `false`
+              // stops after selectColumns, leaving Bad cells un-laundered
+              // for the CLEAN job's own scaling tail to act on.
+              ...(recipe.scale !== undefined && { scale: recipe.scale }),
             },
             PYTHON_TIMEOUT.preprocess,
             controller.signal,
@@ -344,7 +411,16 @@ export class PreprocessingJobService
         for (const [index, operation] of operations.entries()) {
           this.assertNotCanceled(controller);
 
-          const isLast = index === operations.length - 1;
+          // Under the REORDERED order the committed key belongs to the
+          // trailing scale call below, so every cleaning step here is an
+          // intermediate — including the last one, which is the single
+          // behavioural difference in this loop. Getting this wrong would
+          // write the committed GOLD key twice: once unscaled by the final
+          // clean, then again by the scale, and `put_frame` refuses to
+          // overwrite a committed key, so the job would fail after doing
+          // all of the work.
+          const isLast =
+            !isReorderedCleanJob && index === operations.length - 1;
           // Only the final step writes the committed key; earlier ones go to
           // tmp so a failure leaves each stage intact and inspectable.
           const targetKey = isLast
@@ -353,7 +429,7 @@ export class PreprocessingJobService
 
           await this.reportStep(jobId, {
             completedSteps: index,
-            totalSteps: operations.length,
+            totalSteps,
             currentStep: this.describe(operation),
             startedAt,
           });
@@ -375,6 +451,50 @@ export class PreprocessingJobService
           );
 
           sourceKey = targetKey;
+        }
+
+        // DS-LAKE-022-T03. The scaling tail, under the reordered order only.
+        //
+        // This is the call that makes GOLD mean "cleaned AND scaled": every
+        // cleaning operation above has run on a frame whose Bad cells are
+        // still Bad (the feature stage left them alone, `scale: false`), so
+        // drop/fill rules acted on real holes rather than on values
+        // `to_model_ready` had already laundered to Good. Scaling last also
+        // means the fitted scaler params in feature_spec.json are fit on
+        // CLEANED rows — the exact difference DS-LAKE-022-V04 asserts, and
+        // the params a holdout replay is later scaled with.
+        //
+        // Runs even when `operations` is empty: a draft with features but no
+        // cleaning rules still needs its GOLD written, and `sourceKey` is
+        // then just the untouched feature-stage artifact.
+        if (isReorderedCleanJob) {
+          this.assertNotCanceled(controller);
+          await this.reportStep(jobId, {
+            completedSteps: operations.length,
+            totalSteps,
+            currentStep: 'scale',
+            startedAt,
+          });
+
+          stats = ArtifactStatsSchema.parse(
+            await postToPython(
+              '/v1/preprocess/scale',
+              {
+                source_key: sourceKey,
+                target_key: committedKey,
+                // Carried so Python can write feature_spec.json here — the
+                // stage that now owns it. NOT re-applied: `sourceKey`
+                // already holds the engineered and selected columns.
+                features: scaleRecipe!.features,
+                selectedColumns: scaleRecipe!.selectedColumns,
+                scalers: scaleRecipe!.scalers,
+                target_y: scaleRecipe!.targetY,
+                overwrite: false,
+              },
+              PYTHON_TIMEOUT.preprocess,
+              controller.signal,
+            ),
+          );
         }
       }
 
@@ -399,11 +519,19 @@ export class PreprocessingJobService
         artifactId,
         stats,
         isFeatureJob ? featureRecipe!.features : operations,
-        isFeatureJob || isExportJob ? 1 : operations.length,
+        totalSteps,
         startedAt,
         job.sourceArtifact?.runId ?? randomUUID(),
         artifactType,
-        isFeatureJob ? (stats.feature_spec_key ?? null) : null,
+        // Read off whichever call actually wrote the committed artifact,
+        // rather than off `isFeatureJob`. Under the reordered order the
+        // sidecar is written by the trailing SCALE call on a CLEAN job, so
+        // the old `isFeatureJob ? ... : null` would have discarded it and
+        // left the GOLD row with featureSpecKey null — which /finalize then
+        // copies onto FINAL, and which `replay_holdout_for_run` needs to
+        // score a holdout at all.
+        isExportJob ? null : (stats.feature_spec_key ?? null),
+        pipelineVersion,
       );
       await this.clearTmp(jobTmpPrefix);
     } catch (err) {
@@ -434,6 +562,9 @@ export class PreprocessingJobService
     runId: string,
     artifactType: 'SILVER' | 'GOLD' | 'EXPORT',
     featureSpecKey: string | null,
+    /** DS-LAKE-022-T03. `PIPELINE_VERSION_REORDERED` when this stage ran the
+     *  features -> clean -> scale order; null for the legacy order. */
+    pipelineVersion: number | null,
   ): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
       // DS-LAKE-005: this commits a SILVER (or, since the FEATURE-job
@@ -452,6 +583,10 @@ export class PreprocessingJobService
           runId,
           parentArtifactId: job.sourceArtifactId,
           type: artifactType,
+          // DS-LAKE-022-T03. Null for the legacy order — see
+          // PIPELINE_VERSION_REORDERED. Passed in rather than derived here:
+          // `commit` cannot see the recipe that decided it.
+          pipelineVersion,
           objectKey: stats.object_key,
           format: artifactType === 'EXPORT' ? 'csv' : 'parquet',
           checksum: stats.checksum,
@@ -460,10 +595,19 @@ export class PreprocessingJobService
           missingPct: stats.missing_pct,
           sizeBytes: BigInt(stats.size_bytes),
           operations,
-          // /clean always writes column_stats.json; /features does not (a
-          // cleaning-op concern it has nothing to compute — same reasoning
-          // the inline features route already documents), so this is null
-          // for every GOLD row exactly as it is for the inline path today.
+          // Read off whichever Python call wrote the committed artifact, so
+          // this needs no per-stage branch: /clean, /features and (since
+          // DS-LAKE-022-T03) /scale all write column_stats.json beside the
+          // data and return its key.
+          //
+          // The comment that stood here claimed /features does NOT write one
+          // ("a cleaning-op concern it has nothing to compute"). That was
+          // already untrue before this task — artifact_service.features has
+          // called build_column_stats unconditionally since DS-LAKE-006-T05,
+          // which is exactly what the stale assertion in
+          // test_features_writes_feature_spec_sidecar_and_returns_its_key
+          // still fails on. Corrected here rather than left to mislead the
+          // next reader into thinking a GOLD row's null was intentional.
           columnStatsKey: stats.column_stats_key,
           featureSpecKey,
           durationMs: Date.now() - startedAt,
@@ -686,12 +830,7 @@ export class PreprocessingJobService
    * looks fine and is not — worse than today's inline 422, because nothing
    * about it looks like a failure.
    */
-  private readFeatureRecipe(raw: PrismaTypes.JsonValue): {
-    features: FeatureConfig[];
-    selectedColumns: string[] | null;
-    scalers: Record<string, string>;
-    targetY: string | null;
-  } {
+  private readFeatureRecipe(raw: PrismaTypes.JsonValue): FeatureJobRecipe {
     if (Array.isArray(raw) || !raw || typeof raw !== 'object') {
       throw new AppException({
         statusCode: 500,
@@ -706,6 +845,7 @@ export class PreprocessingJobService
       selectedColumns?: unknown;
       scalers?: unknown;
       targetY?: unknown;
+      scale?: unknown;
     };
     if (payload.operations !== undefined && payload.features === undefined) {
       throw new AppException({
@@ -720,6 +860,11 @@ export class PreprocessingJobService
       selectedColumns: payload.selectedColumns ?? null,
       scalers: payload.scalers ?? {},
       targetY: payload.targetY ?? null,
+      // Left `undefined` when absent rather than defaulted to `true` here —
+      // `undefined` is forwarded as an omitted field, letting Python's own
+      // `FeaturesRequest.scale` default own the legacy behaviour in one
+      // place instead of two that could drift (DS-LAKE-022-T03).
+      ...(payload.scale !== undefined && { scale: payload.scale }),
     });
     if (!parsed.success) {
       throw new AppException({
@@ -733,6 +878,58 @@ export class PreprocessingJobService
       selectedColumns: parsed.data.selectedColumns ?? null,
       scalers: parsed.data.scalers,
       targetY: parsed.data.targetY ?? null,
+      scale: parsed.data.scale,
+    };
+  }
+
+  /**
+   * DS-LAKE-022-T03. The OPTIONAL scaling tail on a CLEAN-stage job.
+   *
+   * Absent (every client today) -> null -> the job keeps the legacy order and
+   * commits SILVER. Present -> the job runs clean-then-scale and commits
+   * GOLD. That is the whole opt-in: there is no server-side flag, no
+   * migration state, and no deploy ordering to get right — a job is
+   * reordered iff its own stored payload says so.
+   *
+   * Reads `scaleRecipe`, NOT `features`, and that is not cosmetic:
+   * `readOperations` refuses any payload carrying a top-level `features` key
+   * without `operations` ("this is a feature recipe, refusing to run as
+   * CLEAN"), and `readFeatureRecipe` refuses the mirror image. Those two
+   * guards make `features` mean "this row is a FEATURE job" — reusing it here
+   * would either trip them or force loosening them, and loosening a guard
+   * whose stated purpose is catching a mis-routed payload is exactly the
+   * trade this codebase keeps refusing to make. A distinct key leaves both
+   * guards saying precisely what they say today.
+   *
+   * Returns null rather than throwing on absence: unlike the readers above,
+   * "no scale recipe" is a legitimate, common payload, not a corrupt one. A
+   * PRESENT-but-malformed recipe still throws, so a hand-edited row cannot
+   * silently degrade a reordered job back to the legacy order — which would
+   * commit SILVER bytes under a pipelineVersion the row does not carry, the
+   * one confusion this whole column exists to prevent.
+   */
+  private readScaleRecipe(raw: PrismaTypes.JsonValue): FeatureJobRecipe | null {
+    if (Array.isArray(raw) || !raw || typeof raw !== 'object') return null;
+    const payload = raw as { scaleRecipe?: unknown };
+    if (payload.scaleRecipe === undefined || payload.scaleRecipe === null) {
+      return null;
+    }
+
+    const parsed = CreateFeaturesSchema.safeParse(payload.scaleRecipe);
+    if (!parsed.success) {
+      throw new AppException({
+        statusCode: 500,
+        message:
+          'Stored clean job carries a malformed scale recipe — refusing to run.',
+        type: 'ERROR',
+      });
+    }
+    return {
+      features: parsed.data.features,
+      selectedColumns: parsed.data.selectedColumns ?? null,
+      scalers: parsed.data.scalers,
+      targetY: parsed.data.targetY ?? null,
+      scale: parsed.data.scale,
     };
   }
 

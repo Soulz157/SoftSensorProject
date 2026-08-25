@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { createZodDto } from 'nestjs-zod';
+import { HyperparametersSchema } from '@/api/v1/model-run/authorized/dto/model-run.authorized.dto';
 
 /**
  * Contracts for `ModelDraft` — the Model Creation wizard's server-side
@@ -28,6 +29,14 @@ export class CreateModelDraftDto extends createZodDto(CreateModelDraftSchema) {}
  * anything outside that range so a percentage that leaked through the
  * client boundary (e.g. 80 instead of 0.8) fails loudly here rather than
  * slicing chronological_split at 80x the intended length.
+ *
+ * `hyperparameters` (MODEL-FLOW-006) is the SAME scalar constraint the run
+ * path enforces (`HyperparametersSchema`), not the wider `z.unknown()` this
+ * accepted before — a draft could otherwise hold a value
+ * `CreateTrainingRunSchema`/`ModelConfigSchema` would both refuse, discovered
+ * only when Start Training rejects it. The client's own `HyperparamValue`
+ * type (`store/model-pipeline.ts`) is already `string | number | boolean |
+ * null`, so no legitimate payload is affected.
  */
 export const PatchModelDraftSchema = z.object({
   name: z.string().min(1).optional(),
@@ -36,7 +45,7 @@ export const PatchModelDraftSchema = z.object({
   datasetId: z.string().uuid().nullable().optional(),
   targetY: z.string().nullable().optional(),
   algorithm: z.string().nullable().optional(),
-  hyperparameters: z.record(z.string(), z.unknown()).optional(),
+  hyperparameters: HyperparametersSchema.optional(),
   splitRatio: z.number().min(0.5).max(0.95).nullable().optional(),
 });
 

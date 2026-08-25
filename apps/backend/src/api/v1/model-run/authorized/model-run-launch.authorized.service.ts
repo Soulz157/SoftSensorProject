@@ -203,6 +203,44 @@ export class ModelRunLaunchAuthorizedService {
     return run;
   }
 
+  /** Draft lifecycle gate shared by every write path below — a draft that is
+   *  SAVED or ABANDONED must refuse a new run, whether that run is the
+   *  user's own POST (`createDraftRunService`) or one launched by the
+   *  fine-tuning chain (`launchDraftRun`, MODEL-FLOW-005), well after the
+   *  user's own request has finished. */
+  private assertDraftWritableStatus(draftId: string, status: string): void {
+    if (status === 'SAVED') {
+      throw new BadRequestException(
+        `Draft ${draftId} has already been saved as a Model — its runs are ` +
+          `frozen. Start a new draft to train again.`,
+      );
+    }
+    if (status === 'ABANDONED') {
+      throw new BadRequestException(`Draft ${draftId} has been abandoned.`);
+    }
+  }
+
+  /**
+   * PUBLIC: the access+lifecycle gate `ModelFineTuningAuthorizedService.
+   * createJob` (MODEL-FLOW-005) needs before creating a job's first run —
+   * the same check `createDraftRunService` runs for a single run, exposed
+   * once rather than reimplemented. `assertDraftAccess` stays private
+   * (still only meaningful within a request that HAS a user/role to check);
+   * this is the one door into it from outside this class.
+   */
+  async assertDraftWritable(draftId: string, userId: string, role: string) {
+    const draft = await this.assertDraftAccess(draftId, userId, role);
+    this.assertDraftWritableStatus(draftId, draft.status);
+    return draft;
+  }
+
+  /** PUBLIC read-only counterpart to `assertDraftWritable` — access only, no
+   *  lifecycle refusal. A SAVED or ABANDONED draft's fine-tuning history is
+   *  still legitimately readable; only NEW writes are refused for those. */
+  async assertDraftReadable(draftId: string, userId: string, role: string) {
+    return this.assertDraftAccess(draftId, userId, role);
+  }
+
   /**
    * Same run-creation path as `createRunService`, keyed by a ModelDraft
    * instead of a Model (MODEL-FLOW-003) — the whole point of the refactor:
@@ -215,16 +253,50 @@ export class ModelRunLaunchAuthorizedService {
     userId: string,
     role: string,
   ) {
-    const draft = await this.assertDraftAccess(draftId, userId, role);
-    if (draft.status === 'SAVED') {
-      throw new BadRequestException(
-        `Draft ${draftId} has already been saved as a Model — its runs are ` +
-          `frozen. Start a new draft to train again.`,
-      );
-    }
-    if (draft.status === 'ABANDONED') {
-      throw new BadRequestException(`Draft ${draftId} has been abandoned.`);
-    }
+    await this.assertDraftWritable(draftId, userId, role);
+    const run = await this.launchDraftRun(draftId, dto);
+    // Envelope matches ModelDraftAuthorizedService's — same
+    // authorized/model-drafts prefix, same client (services/model-draft.ts's
+    // modelDraftRunService) unwraps `.data` on every call, same as it
+    // already does for the draft CRUD methods next to this one. Returning
+    // the raw row here (as this used to) makes `created.data.id` throw
+    // "Cannot read properties of undefined (reading 'id')" client-side even
+    // though the container spawned fine — the DB row and the container are
+    // real, only the HTTP response shape was wrong.
+    return {
+      statusCode: 201,
+      message: 'Training run created',
+      type: 'SUCCESS' as const,
+      data: run,
+    };
+  }
+
+  /**
+   * The actual run-creation write, with NO user/role parameter — the raw
+   * row, not the envelope. Split out of `createDraftRunService` for
+   * MODEL-FLOW-005: a fine-tuning job's SECOND and later runs are launched
+   * by the run-COMPLETION webhook (container -> backend via RunTokenGuard),
+   * a request with no user session in it at all. Authorization for the
+   * whole search happens ONCE, when the job itself is created
+   * (`assertDraftWritable` above) — re-checking it on every chained run
+   * would be re-authorizing a decision the user already made, against a
+   * request that has nothing to check it with.
+   *
+   * The lifecycle guard is re-checked here regardless: a user can abandon a
+   * draft mid-search, and the chain must not keep spawning containers
+   * against one that no longer wants them.
+   */
+  async launchDraftRun(
+    draftId: string,
+    dto: CreateTrainingRunDto,
+    fineTuningJobId?: string,
+  ) {
+    const draft = await this.prisma.modelDraft.findUnique({
+      where: { id: draftId },
+      select: { status: true },
+    });
+    if (!draft) throw new NotFoundException('Model draft not found');
+    this.assertDraftWritableStatus(draftId, draft.status);
 
     const runData = await this.buildRunData(dto);
     const { token, tokenHash } = this.mintToken();
@@ -238,6 +310,7 @@ export class ModelRunLaunchAuthorizedService {
         data: {
           ...runData,
           modelDraftId: draftId,
+          fineTuningJobId: fineTuningJobId ?? null,
           imageDigest: this.runner.imageDigest,
           tokenHash,
           tokenExpiresAt: new Date(Date.now() + RUN_TOKEN_TTL_MS),
@@ -253,20 +326,7 @@ export class ModelRunLaunchAuthorizedService {
     });
 
     this.trackSpawn(run.id, token);
-    // Envelope matches ModelDraftAuthorizedService's — same
-    // authorized/model-drafts prefix, same client (services/model-draft.ts's
-    // modelDraftRunService) unwraps `.data` on every call, same as it
-    // already does for the draft CRUD methods next to this one. Returning
-    // the raw row here (as this used to) makes `created.data.id` throw
-    // "Cannot read properties of undefined (reading 'id')" client-side even
-    // though the container spawned fine — the DB row and the container are
-    // real, only the HTTP response shape was wrong.
-    return {
-      statusCode: 201,
-      message: 'Training run created',
-      type: 'SUCCESS' as const,
-      data: run,
-    };
+    return run;
   }
 
   async cancelRunService(

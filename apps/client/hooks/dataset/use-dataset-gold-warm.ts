@@ -9,8 +9,10 @@ import type { ScalerMethod } from '@/lib/preprocessing'
 import {
   dwDraftIdAtom,
   dwDraftArtifactIdAtom,
+  dwDraftFeatureArtifactIdAtom,
   dwDraftGoldArtifactIdAtom,
   dwGoldWarmErrorAtom,
+  dwModeAtom,
 } from '@/store/dataset-studio'
 
 const GOLD_WARM_DEBOUNCE_MS = 800
@@ -54,6 +56,17 @@ const GOLD_WARM_DEBOUNCE_MS = 800
  * The inline `POST .../features` route (`createFeatures`) is UNTOUCHED and
  * still works — this hook is the only caller being switched over.
  *
+ * DS-LAKE-022-T04..T07 split: CREATE MODE ONLY takes the reordered order —
+ * sends `scale: false`, so the job stops after applyFeatures/selectColumns
+ * and writes a features-only SILVER into `dwDraftFeatureArtifactIdAtom`
+ * rather than `dwDraftGoldArtifactIdAtom`. Step 5's clean+scale job is what
+ * produces the real GOLD from that SILVER afterwards. EDIT MODE is
+ * deliberately excluded — its only editable surface is the preprocessing
+ * pipeline (features/tags/time-range stay locked and hydrated for display
+ * only), so it keeps the legacy combined write byte-for-byte: `scale`
+ * omitted, result written straight to `dwDraftGoldArtifactIdAtom`, exactly
+ * as before this feature.
+ *
  * Failures are surfaced via `dwGoldWarmErrorAtom`, not swallowed — the
  * dominant real-world failure used to be a feature preset whose equations
  * compile to `kind: 'formula'`, which `feature_service.py` now DOES
@@ -73,7 +86,10 @@ export function useDatasetGoldWarm(): (
 ) => void {
   const draftId = useAtomValue(dwDraftIdAtom)
   const sourceArtifactId = useAtomValue(dwDraftArtifactIdAtom)
+  const mode = useAtomValue(dwModeAtom)
+  const isReordered = mode === 'create'
   const [, setGoldArtifactId] = useAtom(dwDraftGoldArtifactIdAtom)
+  const [, setFeatureArtifactId] = useAtom(dwDraftFeatureArtifactIdAtom)
   const [, setGoldWarmError] = useAtom(dwGoldWarmErrorAtom)
 
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -110,7 +126,13 @@ export function useDatasetGoldWarm(): (
             const started = await datasetDraftService.startFeaturesJob(
               draftId,
               sourceArtifactId,
-              { features, selectedColumns, scalers, targetY },
+              {
+                features,
+                selectedColumns,
+                scalers,
+                targetY,
+                ...(isReordered && { scale: false }),
+              },
             )
             // A newer edit superseded this attempt before the job even
             // started polling — stop here, same as the post-poll check
@@ -126,7 +148,17 @@ export function useDatasetGoldWarm(): (
             if (tokenRef.current !== token || !job) return
 
             if (job.status === 'SUCCEEDED') {
-              if (job.resultArtifactId) setGoldArtifactId(job.resultArtifactId)
+              if (job.resultArtifactId) {
+                // Create mode: this SILVER (features-only) is Step 5's clean
+                // job SOURCE, not the final GOLD — see dwDraftFeatureArtifactIdAtom's
+                // own doc comment on why the two must stay separate. Edit
+                // mode keeps writing the legacy combined GOLD unchanged.
+                if (isReordered) {
+                  setFeatureArtifactId(job.resultArtifactId)
+                } else {
+                  setGoldArtifactId(job.resultArtifactId)
+                }
+              }
               setGoldWarmError(null)
             } else if (job.status === 'FAILED') {
               // No longer swallowed — see module doc. `job.error` carries
@@ -153,6 +185,13 @@ export function useDatasetGoldWarm(): (
         })()
       }, GOLD_WARM_DEBOUNCE_MS)
     },
-    [draftId, sourceArtifactId, setGoldArtifactId, setGoldWarmError],
+    [
+      draftId,
+      sourceArtifactId,
+      isReordered,
+      setGoldArtifactId,
+      setFeatureArtifactId,
+      setGoldWarmError,
+    ],
   )
 }

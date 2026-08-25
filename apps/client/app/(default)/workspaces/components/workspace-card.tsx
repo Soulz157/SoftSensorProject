@@ -303,7 +303,7 @@ export function WorkspaceCard({
             })}
           </span>
           <div className="flex items-center gap-2">
-            <Link href={`/workspaces/${workspace.id}/details`}>
+            <Link href={`/workspaces/${workspace.id}/settings`}>
               <Button
                 variant="ghost"
                 size="sm"

@@ -12,10 +12,12 @@ import {
   type CleaningStep,
   type TagPipeline,
 } from '@/lib/preprocessing'
-import { precleanse, precleanseBreakdown } from '@/lib/precleanse'
+import { precleanseBreakdown } from '@/lib/precleanse'
+import { applyFeatures } from '@/lib/feature-engineering'
 import { PERIOD_TO_RANGE } from '@/store/model-pipeline'
 import {
   dwRawDatasetAtom,
+  dwFeatureConfigsAtom,
   dwTimeRangeAtom,
   dwHighestUnlockedAtom,
   dwSdtaPresetsAtom,
@@ -27,13 +29,14 @@ import {
 import { useImputationTagList } from '@/hooks/dataset/use-imputation-tag-list'
 import { useDatasetTagSelection } from '@/hooks/dataset/use-dataset-tag-selection'
 import { useDatasetDraftPipeline } from '@/hooks/dataset/use-dataset-draft-pipeline'
-import { ImputationDetailPanel } from './imputation/imputation-detail-panel'
-import { CleaningTagBadges } from './imputation/cleaning-tag-badges'
-import { ProcessingActionFooter } from './processing-action-footer'
+import { useDatasetCleaningScaleCommit } from '@/hooks/dataset/use-dataset-cleaning-scale-commit'
+import { ImputationDetailPanel } from './processing/imputation/imputation-detail-panel'
+import { CleaningTagBadges } from './processing/imputation/cleaning-tag-badges'
+import { ProcessingActionFooter } from './processing/processing-action-footer'
 import { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipeline-nav'
-import { CutOffSection } from '../cutoff-section'
+import { CutOffSection } from './cutoff-section'
 import { datasetHealth } from '@/lib/feature-preset'
-import { SdtaPresetCard } from '../sdta-preset-card'
+import { SdtaPresetCard } from './sdta-preset-card'
 
 interface Props {
   nav: UseDatasetPipelineNavResult
@@ -44,12 +47,34 @@ function pipelineEq(a: TagPipeline, b: TagPipeline): boolean {
   return JSON.stringify(a) === JSON.stringify(b)
 }
 
-export function Step32Imputation({ nav }: Props) {
+/**
+ * Step 5 — Data Cleaning (DS-LAKE-022-T04..T07, relocated from the old Step
+ * 3.2 sub-step). Now runs AFTER Feature Engineering, not before — `base`
+ * below is built from `applyFeatures(raw, featureConfigs)`, not raw
+ * directly, so a cleaning rule can target a derived column (the concrete
+ * gap DS-LAKE-020-T03 flagged: an equation feature's range cutoff has no
+ * column to apply to until features run). This is unconditional, not
+ * mode-branched: edit mode's `featureConfigs` is the hydrated, locked
+ * recipe from the saved dataset, so re-applying it here reproduces the same
+ * featured frame `step-6-review-save.tsx`'s own legacy path already
+ * computes the identical way.
+ *
+ * CREATE MODE Save routes through `useDatasetCleaningScaleCommit` — D4
+ * (feature_list.preprocessing.json): the server job must source the fixed
+ * features-only SILVER and replay the FULL accumulated recipe, not chain
+ * batch-by-batch. EDIT MODE keeps `useDatasetDraftPipeline.applyClean`
+ * exactly as before this feature — its only editable surface is this
+ * pipeline, sourced from BRONZE, chaining per save, matching the legacy
+ * combined write `useDatasetGoldWarm` still does for edit mode.
+ */
+export function Step5DataCleaning({ nav }: Props) {
   const raw = useAtomValue(dwRawDatasetAtom)
+  const featureConfigs = useAtomValue(dwFeatureConfigsAtom)
   const period = useAtomValue(dwTimeRangeAtom)
   const range = PERIOD_TO_RANGE[period]
 
   const {
+    isEditLocked,
     cropRange,
     valueCrop,
     valueClip,
@@ -61,11 +86,18 @@ export function Step32Imputation({ nav }: Props) {
     cleaningPipelines,
     cleanedTags,
     saveCleanedTags,
+    selectedColumns,
+    scalerConfigs,
   } = nav
+
+  const featured = useMemo(
+    () => applyFeatures(raw, featureConfigs),
+    [raw, featureConfigs],
+  )
 
   const breakdown = useMemo(
     () =>
-      precleanseBreakdown(raw, {
+      precleanseBreakdown(featured, {
         crop: cropRange,
         valueCrop,
         valueClip,
@@ -74,7 +106,7 @@ export function Step32Imputation({ nav }: Props) {
         statistical: statisticalRules,
       }),
     [
-      raw,
+      featured,
       cropRange,
       valueCrop,
       valueClip,
@@ -90,7 +122,7 @@ export function Step32Imputation({ nav }: Props) {
   useDatasetTagSelection(base)
 
   const setHighestUnlocked = useSetAtom(dwHighestUnlockedAtom)
-  const relock = () => setHighestUnlocked(prev => Math.min(prev, 4))
+  const relock = () => setHighestUnlocked(prev => Math.min(prev, 5))
 
   const [draft, setDraft] = useState<CleaningStep[]>([])
   const [previewTags, setPreviewTags] = useState<string[]>([])
@@ -143,6 +175,7 @@ export function Step32Imputation({ nav }: Props) {
     cleaningTags.length > 0 && cleaningTags.every(t => cleanedSet.has(t))
   const canSave = cleaningTags.length > 0 && (dirty || !allCleaned)
 
+  // EDIT MODE — legacy, unchanged: chains onto BRONZE, one job per save.
   const {
     syncState,
     applyClean,
@@ -151,6 +184,12 @@ export function Step32Imputation({ nav }: Props) {
     finalPreview,
     requestFinalPreview,
   } = useDatasetDraftPipeline()
+
+  // CREATE MODE — reordered: sources the fixed features-only SILVER, one
+  // job replays the FULL accumulated recipe, fired on advancing past this
+  // step (see `handleNext` below), not per-batch save.
+  const { state: commitState, commit: commitCleaningScale } =
+    useDatasetCleaningScaleCommit()
 
   const presets = useAtomValue(dwSdtaPresetsAtom)
   const presetRangeCandidates = useAtomValue(dwPresetRangeAtom)
@@ -163,12 +202,12 @@ export function Step32Imputation({ nav }: Props) {
   const handleSave = () => {
     if (cleaningTags.length === 0) return
     saveCleanedTags(cleaningTags, draft)
-    // DS-LAKE-012-T01 fix: `applyClean` silently no-ops when `draft` is empty
-    // (use-dataset-draft-pipeline.ts) — no job is started, no SILVER artifact
-    // is ever produced. The toast must say so rather than claiming "Cleaned",
-    // which previously fired unconditionally and was indistinguishable from a
-    // real server-synced clean. Marking tags clean with an empty pipeline is
-    // still a legitimate action (accept raw), just not a cleaning one.
+    // DS-LAKE-012-T01 fix: a server sync silently no-ops when `draft` is
+    // empty — no job is started, no artifact is ever produced. The toast
+    // must say so rather than claiming "Cleaned", which previously fired
+    // unconditionally and was indistinguishable from a real server-synced
+    // clean. Marking tags clean with an empty pipeline is still a
+    // legitimate action (accept raw), just not a cleaning one.
     const count = cleaningTags.length
     const plural = count === 1 ? '' : 's'
     toast.success(
@@ -176,13 +215,13 @@ export function Step32Imputation({ nav }: Props) {
         ? `Marked ${count} tag${plural} as clean (no cleaning step added)`
         : `Cleaned ${count} tag${plural}`,
     )
-    // "Local preview, server on Apply": the toast above and every control on
-    // this page are the SAME as before this hook existed — this call only
-    // adds a real SILVER artifact behind the save. A failure lands in
-    // `syncState`, not in a dialog, so it cannot block the local flow that
-    // already happened above. Skipped entirely when `draft` is empty — there
-    // is no cleaning pipeline to sync, and `applyClean` would no-op anyway.
-    if (draft.length > 0) void applyClean(cleaningTags, draft)
+    // EDIT MODE ONLY: "local preview, server on Apply" — the toast above and
+    // every control on this page are the SAME as before this hook existed;
+    // this call only adds a real SILVER artifact behind the save. A failure
+    // lands in `syncState`, not in a dialog, so it cannot block the local
+    // flow that already happened above. CREATE MODE does not sync per
+    // batch — see `handleNext`, D4 forbids chaining batch-by-batch.
+    if (isEditLocked && draft.length > 0) void applyClean(cleaningTags, draft)
   }
   const preprocessed = useMemo(
     () => preprocessPipelines(base, cleaningPipelines).rows.length,
@@ -205,8 +244,10 @@ export function Step32Imputation({ nav }: Props) {
   // sitting on the final step (every draft step applied) — every intermediate
   // scrub position stays purely local (`previewRows` above), unchanged. Any
   // other scrubber position resets to idle so a stale server preview can
-  // never be shown next to a local preview of an earlier step.
+  // never be shown next to a local preview of an earlier step. EDIT MODE
+  // ONLY — create mode's server verification happens once, on advance.
   useEffect(() => {
+    if (!isEditLocked) return
     const atFinalStep =
       previewIndex === draft.length &&
       draft.length > 0 &&
@@ -216,7 +257,7 @@ export function Step32Imputation({ nav }: Props) {
     } else {
       requestFinalPreview([], [])
     }
-  }, [previewIndex, draft, cleaningTags, requestFinalPreview])
+  }, [isEditLocked, previewIndex, draft, cleaningTags, requestFinalPreview])
 
   // Live full-draft dataset (all selected tags) for the Cut Off section, so
   // cropping always operates on the filled data.
@@ -233,37 +274,53 @@ export function Step32Imputation({ nav }: Props) {
   }
   const reset = () => updateDraft([])
 
+  // CREATE MODE ONLY: fires the real clean+scale commit on advancing past
+  // this step, sending the FULL accumulated `cleaningPipelines` (every
+  // saved batch, not just this one) alongside the feature recipe so the
+  // server can write feature_spec.json at the stage that now owns it.
+  const handleNext = async () => {
+    if (isEditLocked) {
+      nav.next()
+      return
+    }
+    const ok = await commitCleaningScale(cleaningPipelines, {
+      features: featureConfigs,
+      selectedColumns,
+      scalers: scalerConfigs,
+      targetY: targetTag,
+    })
+    if (ok) nav.next()
+  }
+
   return (
     <div className="space-y-4">
-      <h3>Step 3.2: Data Cleaning</h3>
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div>
+        <h2 className="text-sm font-medium text-foreground">Data Cleaning</h2>
         <p className="text-sm text-muted-foreground">
           Select tags in the sidebar, build a cleaning pipeline, then save the
           batch. Saved tags are marked Cleaned.
         </p>
-        <div className="flex items-center gap-2">
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={reset}
-            disabled={draft.length === 0}
-          >
-            <RotateCcw className="h-3.5 w-3.5" />
-            Reset pipeline
-          </Button>
-          <Button size="sm" onClick={handleSave} disabled={!canSave}>
-            <Save className="h-3.5 w-3.5" />
-            Save Cleaned Tags
-          </Button>
-        </div>
+      </div>
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={reset}
+          disabled={draft.length === 0}
+        >
+          <RotateCcw className="h-3.5 w-3.5" />
+          Reset pipeline
+        </Button>
+        <Button size="sm" onClick={handleSave} disabled={!canSave}>
+          <Save className="h-3.5 w-3.5" />
+          Save Cleaned Tags
+        </Button>
       </div>
 
-      {/* Server sync status — read-only, never gates Save. The interactive
-          panel's preview stays local; this just reports whether the last
-          saved batch also produced a SILVER artifact server-side. Cancel and
-          Retry only appear for the state they apply to — neither is a new
-          control on the ALWAYS-visible surface (DS-LAKE-005-T04). */}
-      {syncState.status !== 'idle' && (
+      {/* Server sync status — read-only, never gates Save. EDIT MODE ONLY:
+          create mode's own commit status renders on the footer below,
+          since it fires once on advance rather than per batch. */}
+      {isEditLocked && syncState.status !== 'idle' && (
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <p>
             {syncState.status === 'syncing' &&
@@ -327,10 +384,8 @@ export function Step32Imputation({ nav }: Props) {
               />
 
               {/* T01 hybrid: server-verified check, ONLY visible when the
-                  scrubber is on the final step. The chart above stays purely
-                  local at every position — this is a supplementary number,
-                  never a replacement for it. */}
-              {finalPreview.status !== 'idle' && (
+                  scrubber is on the final step. EDIT MODE ONLY. */}
+              {isEditLocked && finalPreview.status !== 'idle' && (
                 <p className="text-xs text-muted-foreground">
                   {finalPreview.status === 'loading' &&
                     'Verifying the final pipeline against the server…'}
@@ -350,7 +405,7 @@ export function Step32Imputation({ nav }: Props) {
               )}
 
               <CutOffSection
-                raw={raw}
+                raw={featured}
                 precleansed={processedDataset}
                 range={range}
                 cropRange={cropRange}
@@ -396,12 +451,26 @@ export function Step32Imputation({ nav }: Props) {
         </Alert>
       )}
 
+      {!isEditLocked && commitState.status === 'error' && (
+        <Alert variant="destructive">
+          <AlertTitle>Could not finish cleaning on the server</AlertTitle>
+          <AlertDescription>{commitState.error}</AlertDescription>
+        </Alert>
+      )}
+
       <ProcessingActionFooter
-        backLabel="Back to Preprocessing"
-        nextLabel="Continue"
-        onBack={() => nav.setProcessingSubStep(1)}
-        onNext={nav.next}
-        nextDisabled={preprocessed === 0}
+        backLabel="Back"
+        nextLabel={
+          !isEditLocked && commitState.status === 'committing'
+            ? 'Finishing…'
+            : 'Continue'
+        }
+        onBack={nav.back}
+        onNext={() => void handleNext()}
+        nextDisabled={
+          preprocessed === 0 ||
+          (!isEditLocked && commitState.status === 'committing')
+        }
       />
     </div>
   )

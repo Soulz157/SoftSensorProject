@@ -7,8 +7,11 @@ import { datasetDraftService } from '@/services/dataset-draft'
 import {
   dwDraftIdAtom,
   dwDraftArtifactIdAtom,
+  dwDraftFeatureArtifactIdAtom,
   dwDraftGoldArtifactIdAtom,
   dwGoldWarmErrorAtom,
+  dwModeAtom,
+  type DwWizardMode,
 } from '@/store/dataset-studio'
 
 vi.mock('@/services/dataset-draft', () => ({
@@ -18,13 +21,22 @@ vi.mock('@/services/dataset-draft', () => ({
   },
 }))
 
+/**
+ * DS-LAKE-022-T04..T07 split: defaults to EDIT mode so every pre-existing
+ * test below keeps validating the untouched legacy combined write it was
+ * written for, unaffected by `dwModeAtom`'s own default ('create') — see
+ * the dedicated "create mode" describe block further down for the
+ * reordered path's own coverage.
+ */
 function renderWithStore(
   draftId: string | null = 'draft-1',
   artifactId: string | null = 'silver-1',
+  mode: DwWizardMode = 'edit',
 ) {
   const store = createStore()
   store.set(dwDraftIdAtom, draftId)
   store.set(dwDraftArtifactIdAtom, artifactId)
+  store.set(dwModeAtom, mode)
   const wrapper = ({ children }: { children: ReactNode }) =>
     Provider({ store, children })
   const rendered = renderHook(() => useDatasetGoldWarm(), { wrapper })
@@ -248,5 +260,53 @@ describe('useDatasetGoldWarm (DS-LAKE-006-T06, async job since DS-LAKE-006-T06 r
     })
 
     expect(store.get(dwDraftGoldArtifactIdAtom)).toBe('gold-2')
+  })
+})
+
+describe('useDatasetGoldWarm — DS-LAKE-022-T04..T07 create-mode split', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('CREATE mode sends scale:false and writes the result to dwDraftFeatureArtifactIdAtom, not dwDraftGoldArtifactIdAtom', async () => {
+    mockSucceeds('silver-2')
+    const { result, store } = renderWithStore('draft-1', 'silver-1', 'create')
+
+    act(() => {
+      result.current([{ id: 'f1', kind: 'lag', tag: 'TI-101', k: 1 }], null, {})
+    })
+    await act(async () => {
+      await vi.runAllTimersAsync()
+    })
+
+    expect(datasetDraftService.startFeaturesJob).toHaveBeenCalledWith(
+      'draft-1',
+      'silver-1',
+      expect.objectContaining({ scale: false }),
+    )
+    expect(store.get(dwDraftFeatureArtifactIdAtom)).toBe('silver-2')
+    expect(store.get(dwDraftGoldArtifactIdAtom)).toBeNull()
+  })
+
+  it('EDIT mode omits scale entirely and writes the result to dwDraftGoldArtifactIdAtom, not dwDraftFeatureArtifactIdAtom', async () => {
+    mockSucceeds('gold-1')
+    const { result, store } = renderWithStore('draft-1', 'silver-1', 'edit')
+
+    act(() => {
+      result.current([{ id: 'f1', kind: 'lag', tag: 'TI-101', k: 1 }], null, {})
+    })
+    await act(async () => {
+      await vi.runAllTimersAsync()
+    })
+
+    const [, , body] = vi.mocked(datasetDraftService.startFeaturesJob).mock
+      .calls[0]!
+    expect('scale' in body).toBe(false)
+    expect(store.get(dwDraftGoldArtifactIdAtom)).toBe('gold-1')
+    expect(store.get(dwDraftFeatureArtifactIdAtom)).toBeNull()
   })
 })

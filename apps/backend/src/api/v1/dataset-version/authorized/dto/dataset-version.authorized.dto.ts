@@ -96,6 +96,25 @@ export const CreateFeaturesSchema = z.object({
   // train on. Forwarded to python as target_y, never scaled, force-kept
   // through column selection — see FeaturesRequest.target_y.
   targetY: z.string().nullable().optional(),
+  /**
+   * DS-LAKE-022-T03. Which pipeline ORDER this job belongs to, expressed as
+   * "does this stage also scale?" rather than a version number the client
+   * would have to know.
+   *
+   * Omitted / true (every client that exists today): legacy combined write —
+   * applyFeatures -> selectColumns -> toModelReady, feature_spec.json written
+   * here, committed as GOLD. Unchanged in every observable way.
+   *
+   * false (the reordered wizard, DS-LAKE-022-T04..T07): feature stage only —
+   * applyFeatures -> selectColumns, NO scaling and NO feature_spec.json,
+   * committed as SILVER with pipelineVersion 2. The scaling tail runs at the
+   * end of the CLEAN job instead (StartCleanJobSchema.scaleRecipe), which is
+   * what lets cleaning act on un-laundered Bad cells — the whole point of the
+   * reorder (DS-LAKE-022-T02's own finding: to_model_ready forces every
+   * finite cell Good, so cleaning after the combined write has nothing left
+   * to clean).
+   */
+  scale: z.boolean().optional(),
 });
 
 // ── requests ───────────────────────────────────────────────────────────────
@@ -135,9 +154,42 @@ export const CreateRawVersionSchema = z.object({
 });
 
 export const StartCleanJobSchema = z.object({
-  operations: z.array(CleaningOperationSchema).min(1),
+  /**
+   * No `.min(1)` since DS-LAKE-022-T03: a reordered-wizard clean job may
+   * legitimately carry ZERO operations — a draft with features but no
+   * cleaning rules still needs its GOLD written, and under the new order the
+   * scaling tail that writes it lives here (`scaleRecipe` below).
+   *
+   * An empty array with NO `scaleRecipe` is still refused, just one layer
+   * later: the runner's own `if (!stats)` guard fails the job with "A
+   * cleaning job needs at least one operation" rather than committing an
+   * artifact nothing was applied to. Kept there rather than re-added here as
+   * a cross-field `.refine`, which would turn this schema into a ZodEffects
+   * and change what `createZodDto` generates for the whole endpoint.
+   */
+  operations: z.array(CleaningOperationSchema),
   /** Per-tag decimal places; Python cannot see the client's tagMeta. */
   precision: z.record(z.string(), z.number().int()).default({}),
+  /**
+   * DS-LAKE-022-T03. Present ONLY from the reordered wizard: the feature
+   * recipe whose scaling tail runs after this job's cleaning operations,
+   * turning `clean` into clean-then-scale and committing GOLD (pipelineVersion
+   * 2) instead of SILVER.
+   *
+   * Deliberately NOT named `features`, and that is load-bearing. Both
+   * `readOperations` and `readFeatureRecipe` disambiguate a stored job payload
+   * by asking whether a top-level `features` key is present — a CLEAN payload
+   * carrying `features` would trip `readOperations`' "this is a feature
+   * recipe, refusing to run as CLEAN" guard and fail every reordered clean
+   * job. A distinct key keeps both guards meaning exactly what they mean
+   * today.
+   *
+   * The recipe is carried, not re-applied: the source artifact already holds
+   * the engineered and selected columns. Python needs it only to write
+   * feature_spec.json at the stage that now owns it (DS-LAKE-022 decision
+   * feature_spec_ownership_moves_to_scale_stage).
+   */
+  scaleRecipe: CreateFeaturesSchema.optional(),
 });
 
 export const ListRowsSchema = z.object({

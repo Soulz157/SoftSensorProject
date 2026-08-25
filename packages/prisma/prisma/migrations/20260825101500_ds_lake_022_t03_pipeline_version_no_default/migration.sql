@@ -1,0 +1,23 @@
+-- DS-LAKE-022-T03, correcting 20260825090840_ds_lake_022_t03_pipeline_version.
+--
+-- That migration set DEFAULT 2 on the reasoning that a column default is
+-- safer than N hand-edited create sites (no path can forget it). That
+-- reasoning was wrong here, because it assumed the reorder would be a clean
+-- cutover: one deploy, after which every new artifact is post-reorder.
+--
+-- It is not a cutover. Both pipeline orders run side by side -- a client that
+-- sends the new-order fields (a features job with scale:false, then a clean
+-- job carrying a scaleRecipe) gets features->clean->scale; every existing
+-- client keeps clean->features+scale. A column default cannot know which of
+-- those produced a given row, so DEFAULT 2 would stamp "post-reorder" onto
+-- old-order artifacts -- making the one column meant to disambiguate the
+-- stage shift assert something false about the majority of rows.
+--
+-- pipelineVersion is now written explicitly by the two stage-decision sites
+-- that actually know which order ran. NULL keeps its documented meaning:
+-- produced by the pre-reorder order (or written before the column existed).
+--
+-- No backfill: every existing row is already NULL and correctly so. Verified
+-- before writing this migration -- 96 rows, 96 NULL, zero stamped 2 (no
+-- artifact was created between the two migrations).
+ALTER TABLE "DatasetArtifact" ALTER COLUMN "pipelineVersion" DROP DEFAULT;

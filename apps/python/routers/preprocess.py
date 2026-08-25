@@ -62,6 +62,7 @@ from schemas.preprocess import (
     ResplitHoldoutRequest,
     RowsRequest,
     RowsResponse,
+    ScaleRequest,
     ScatterRequest,
     ScatterResponse,
     TagCatalogRequest,
@@ -346,6 +347,28 @@ async def create_features(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(artifact_service.features, store, body)
+
+
+@router.post(
+    "/scale",
+    response_model=ArtifactStatsResponse,
+    summary="Scale a feature-stage artifact and write feature_spec.json",
+    description=(
+        "DS-LAKE-022-T02. The trailing half of the old combined `/features` "
+        "write, split out so a caller can clean BETWEEN feature computation "
+        "and scaling. Reads `source_key` (a feature-stage artifact — "
+        "typically `/features` called with `scale: false`, optionally "
+        "cleaned since), writes `target_key` (the GOLD artifact) — "
+        "toModelReady only. Writes feature_spec.json beside the data; "
+        "`feature_spec_key` in the response is what NestJS persists as "
+        "DatasetArtifact.featureSpecKey."
+    ),
+)
+async def create_scale(
+    body: ScaleRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.scale, store, body)
 
 
 @router.post(

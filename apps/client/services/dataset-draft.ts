@@ -518,6 +518,17 @@ export const datasetDraftService = {
     body: {
       operations: CleaningOperationInput[]
       precision?: Record<string, number>
+      /** DS-LAKE-022-T04..T07. Present ONLY from the reordered wizard: the
+       * feature recipe whose scaling tail runs after these cleaning ops,
+       * committing GOLD (pipelineVersion 2) instead of SILVER. The server
+       * refuses (422) unless `artifactId` was produced by a reordered
+       * FEATURE job (pipelineVersion 2). */
+      scaleRecipe?: {
+        features: FeatureConfig[]
+        selectedColumns?: string[] | null
+        scalers?: Record<string, ScalerMethod>
+        targetY?: string | null
+      }
     },
   ): Promise<ApiResponse<{ jobId: string; status: PreprocessingJobStatus }>> =>
     fetchClient(
@@ -555,6 +566,10 @@ export const datasetDraftService = {
       selectedColumns?: string[] | null
       scalers?: Record<string, ScalerMethod>
       targetY?: string | null
+      /** DS-LAKE-022-T04..T07. `false` = reordered wizard's feature-only
+       * stage (no scaling, no feature_spec.json — commits SILVER). Omitted
+       * = legacy combined write, unchanged. */
+      scale?: boolean
     },
   ): Promise<ApiResponse<{ jobId: string; status: PreprocessingJobStatus }>> =>
     fetchClient(

@@ -74,7 +74,12 @@ describe('ModelRunAuthorizedService', () => {
 
   it('should be defined', () => {
     const prisma = makePrisma();
-    const service = new ModelRunAuthorizedService(prisma as never);
+    const service = new ModelRunAuthorizedService(
+      prisma as never,
+      {
+        advanceJobForRun: jest.fn(),
+      } as never,
+    );
     expect(service).toBeDefined();
   });
 
@@ -104,7 +109,12 @@ describe('ModelRunAuthorizedService', () => {
           expires_at: '2026-01-01T00:00:00Z',
         });
 
-      const service = new ModelRunAuthorizedService(prisma as never);
+      const service = new ModelRunAuthorizedService(
+        prisma as never,
+        {
+          advanceJobForRun: jest.fn(),
+        } as never,
+      );
       const result = await service.claim('run-1');
 
       expect(mockedReplayHoldoutForRun).toHaveBeenCalledWith({
@@ -159,7 +169,12 @@ describe('ModelRunAuthorizedService', () => {
           expires_at: '2026-01-01T00:00:00Z',
         });
 
-      const service = new ModelRunAuthorizedService(prisma as never);
+      const service = new ModelRunAuthorizedService(
+        prisma as never,
+        {
+          advanceJobForRun: jest.fn(),
+        } as never,
+      );
       await service.claim('run-1');
 
       expect(mockedReplayHoldoutForRun).toHaveBeenCalledWith(
@@ -177,7 +192,12 @@ describe('ModelRunAuthorizedService', () => {
           validationHoldoutFrom: null,
         },
       });
-      const service = new ModelRunAuthorizedService(prisma as never);
+      const service = new ModelRunAuthorizedService(
+        prisma as never,
+        {
+          advanceJobForRun: jest.fn(),
+        } as never,
+      );
 
       const result = await service.claim('run-1');
 
@@ -189,7 +209,12 @@ describe('ModelRunAuthorizedService', () => {
 
     it('omits holdout fields without querying artifacts when the run has no featureSpecKey', async () => {
       const prisma = makePrisma({ run: { featureSpecKey: null } });
-      const service = new ModelRunAuthorizedService(prisma as never);
+      const service = new ModelRunAuthorizedService(
+        prisma as never,
+        {
+          advanceJobForRun: jest.fn(),
+        } as never,
+      );
 
       const result = await service.claim('run-1');
 
@@ -203,7 +228,12 @@ describe('ModelRunAuthorizedService', () => {
       mockedReplayHoldoutForRun.mockRejectedValue(
         new Error('Lead-in is insufficient to replay this recipe'),
       );
-      const service = new ModelRunAuthorizedService(prisma as never);
+      const service = new ModelRunAuthorizedService(
+        prisma as never,
+        {
+          advanceJobForRun: jest.fn(),
+        } as never,
+      );
 
       const result = await service.claim('run-1');
 
@@ -227,7 +257,12 @@ describe('ModelRunAuthorizedService', () => {
   describe('complete()', () => {
     it('persists holdoutMetrics as a field separate from metrics', async () => {
       const prisma = makePrisma();
-      const service = new ModelRunAuthorizedService(prisma as never);
+      const service = new ModelRunAuthorizedService(
+        prisma as never,
+        {
+          advanceJobForRun: jest.fn(),
+        } as never,
+      );
 
       await service.complete('run-1', {
         status: 'SUCCEEDED',

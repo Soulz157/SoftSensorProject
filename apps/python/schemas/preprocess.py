@@ -514,6 +514,64 @@ class FeaturesRequest(BaseModel):
     pipeline: `applyFeatures -> precleanse -> ... -> selectColumns ->
     toModelReady`; this endpoint covers the feature/select/scale tail, not
     cleaning, which already happened to produce the SILVER source).
+
+    DS-LAKE-022-T02: `scale` (default True, so every existing caller keeps
+    today's byte-identical combined write) splits the scaling tail out.
+    `scale=False` produces the feature-stage artifact alone — applyFeatures
+    -> selectColumns, no toModelReady, no feature_spec.json — for a caller
+    that will run `ScaleRequest`/`scale()` separately afterward. Both modes
+    stay live side by side; DS-LAKE-022-T04..T07 is what switches the wizard
+    over and eventually retires the `scale=True` path.
+    """
+
+    source_key: str
+    target_key: str
+    features: list[FeatureConfigRequest] = Field(default_factory=list)
+    selected_columns: Optional[list[str]] = Field(
+        None, alias="selectedColumns")
+    scalers: dict[str, str] = Field(default_factory=dict)
+    overwrite: bool = False
+    target_y: str | None = Field(
+        default=None,
+        description=(
+            "The tag the model predicts. Recorded in feature_spec.json and "
+            "force-kept through select_columns. Never scaled."
+        ),
+    )
+    scale: bool = Field(
+        default=True,
+        description=(
+            "DS-LAKE-022-T02. True (default): legacy combined behaviour — "
+            "applyFeatures -> selectColumns -> toModelReady, feature_spec.json "
+            "written here. False: applyFeatures -> selectColumns only, no "
+            "scaling, no feature_spec.json — pair with a later ScaleRequest."
+        ),
+    )
+
+    model_config = {"populate_by_name": True}
+
+    @model_validator(mode="after")
+    def target_differs_from_source(self) -> "FeaturesRequest":
+        if self.source_key == self.target_key:
+            raise ValueError(
+                "source_key and target_key must differ — a features write "
+                "produces a new artifact and never edits its input in place."
+            )
+        return self
+
+
+class ScaleRequest(BaseModel):
+    """DS-LAKE-022-T02. The trailing half of the old combined `/features`
+    write, split out so a caller can run cleaning BETWEEN feature computation
+    and scaling — see `services.artifact_service.scale`'s own docstring for
+    why order matters here (DEFAULT_SCALER is "minmax", so an empty
+    `scalers` dict still scales every column; this is never a safe no-op to
+    skip calling).
+
+    Carries the full recipe (`features`/`selected_columns`/`scalers`/
+    `target_y`), not just `source_key`/`target_key`, because
+    `build_feature_spec` needs all of it and this is the one call that writes
+    `feature_spec.json` post-split (DS-LAKE-022 decision D2).
     """
 
     source_key: str
@@ -534,10 +592,10 @@ class FeaturesRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
     @model_validator(mode="after")
-    def target_differs_from_source(self) -> "FeaturesRequest":
+    def target_differs_from_source(self) -> "ScaleRequest":
         if self.source_key == self.target_key:
             raise ValueError(
-                "source_key and target_key must differ — a features write "
+                "source_key and target_key must differ — a scale write "
                 "produces a new artifact and never edits its input in place."
             )
         return self

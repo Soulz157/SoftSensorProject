@@ -731,3 +731,258 @@ describe('EXPORT stage', () => {
     expect(tx.datasetDraft.update).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * DS-LAKE-022-T03 — the stage remap.
+ *
+ * The reorder swaps what SILVER and GOLD mean:
+ *
+ *   legacy  BRONZE -> clean(SILVER) -> features+scale(GOLD) -> FINAL
+ *   reorder BRONZE -> features(SILVER) -> clean+scale(GOLD) -> FINAL
+ *
+ * Both are live at once, chosen per job by the recipe the client stored, so
+ * every test here comes in pairs: the legacy shape must be untouched, and the
+ * reordered shape must take the new path. A test that only exercised the new
+ * path would not notice the old one breaking, which is the whole risk of
+ * landing this before the wizard renumber (T04..T07).
+ */
+describe('PreprocessingJobService — DS-LAKE-022 stage remap', () => {
+  const SCALE_RECIPE = {
+    features: [{ id: 'f1', kind: 'lag', tag: 'TI-101', k: 1 }],
+    selectedColumns: ['TI-101'],
+    scalers: { 'TI-101': 'minmax' },
+    targetY: 'TI-101',
+  };
+  const SCALED_ARTIFACT = {
+    ...ARTIFACT,
+    feature_spec_key: 'ds-1/artifacts/g-1/feature_spec.json',
+    // /scale writes column_stats.json too — every write path does. RMP-10
+    // pins that it reaches the row rather than being dropped by a branch.
+    column_stats_key: 'ds-1/artifacts/g-1/column_stats.json',
+  };
+
+  function buildReorderedCleanJob(overrides: Record<string, unknown> = {}) {
+    return buildJob({
+      stage: 'CLEAN',
+      operations: {
+        operations: [{ type: 'drop_missing', tags: ['TI-101'] }],
+        precision: {},
+        scaleRecipe: SCALE_RECIPE,
+        ...(overrides.operations as Record<string, unknown>),
+      },
+    });
+  }
+
+  it('RMP-01: a legacy CLEAN job (no scaleRecipe) still commits SILVER with pipelineVersion null', async () => {
+    post.mockResolvedValue(ARTIFACT);
+    const { service, tx } = makeService(
+      buildJob({
+        stage: 'CLEAN',
+        operations: {
+          operations: [{ type: 'drop_missing', tags: ['TI-101'] }],
+          precision: {},
+        },
+      }),
+    );
+    await (service as unknown as Runnable).run('job-1');
+
+    const artifact = firstWrite(tx.datasetArtifact.create);
+    expect(artifact.type).toBe('SILVER');
+    // NULL, not 1 — the same value every pre-reorder artifact carries.
+    expect(artifact.pipelineVersion).toBeNull();
+    // No scale call at all: the legacy order scales inside /features later.
+    expect(
+      post.mock.calls.filter(([path]) => path === '/v1/preprocess/scale'),
+    ).toHaveLength(0);
+  });
+
+  it('RMP-02: a reordered CLEAN job commits GOLD with pipelineVersion 2 and calls /scale last', async () => {
+    post.mockResolvedValue(SCALED_ARTIFACT);
+    const { service, tx } = makeService(buildReorderedCleanJob());
+    await (service as unknown as Runnable).run('job-1');
+
+    const artifact = firstWrite(tx.datasetArtifact.create);
+    expect(artifact.type).toBe('GOLD');
+    expect(artifact.pipelineVersion).toBe(2);
+
+    // Filtered to the transform calls: the runner also posts /cleanup to
+    // clear its tmp prefix on success, which is not part of the ordering
+    // under test.
+    const paths = post.mock.calls
+      .map(([path]) => path)
+      .filter((p) => p !== '/v1/preprocess/cleanup');
+    expect(paths).toEqual(['/v1/preprocess/clean', '/v1/preprocess/scale']);
+  });
+
+  it('RMP-03: under the reorder the cleaning step writes tmp, and only /scale writes the committed GOLD key', async () => {
+    post.mockResolvedValue(SCALED_ARTIFACT);
+    const { service } = makeService(buildReorderedCleanJob());
+    await (service as unknown as Runnable).run('job-1');
+
+    const [, cleanBody] = post.mock.calls.find(
+      ([path]) => path === '/v1/preprocess/clean',
+    ) as [string, Record<string, unknown>];
+    const [, scaleBody] = post.mock.calls.find(
+      ([path]) => path === '/v1/preprocess/scale',
+    ) as [string, Record<string, unknown>];
+
+    // The regression this pins: if the final clean kept writing the committed
+    // key, /scale would then try to write it a second time and put_frame
+    // refuses to overwrite a committed key — the job fails AFTER doing all
+    // the work. So the last clean must be a tmp write, overwrite:true.
+    expect(String(cleanBody.target_key)).toContain('/tmp/');
+    expect(cleanBody.overwrite).toBe(true);
+
+    expect(String(scaleBody.target_key)).toMatch(
+      /^ds-1\/artifacts\/[0-9a-f-]{36}\/data_gold\.parquet$/,
+    );
+    expect(scaleBody.overwrite).toBe(false);
+    // /scale reads what the cleaning chain produced, not the original source.
+    expect(scaleBody.source_key).toBe(cleanBody.target_key);
+  });
+
+  it('RMP-04: the scale call carries the recipe so feature_spec.json is written at the stage that now owns it', async () => {
+    post.mockResolvedValue(SCALED_ARTIFACT);
+    const { service, tx } = makeService(buildReorderedCleanJob());
+    await (service as unknown as Runnable).run('job-1');
+
+    const [, scaleBody] = post.mock.calls.find(
+      ([path]) => path === '/v1/preprocess/scale',
+    ) as [string, Record<string, unknown>];
+    expect(scaleBody.features).toEqual(SCALE_RECIPE.features);
+    expect(scaleBody.selectedColumns).toEqual(['TI-101']);
+    expect(scaleBody.scalers).toEqual({ 'TI-101': 'minmax' });
+    expect(scaleBody.target_y).toBe('TI-101');
+
+    // And the key it returns must land on the row. The old code read
+    // featureSpecKey only when isFeatureJob, which would have discarded this
+    // and left the GOLD (and the FINAL that copies it) with none.
+    const artifact = firstWrite(tx.datasetArtifact.create);
+    expect(artifact.featureSpecKey).toBe(SCALED_ARTIFACT.feature_spec_key);
+  });
+
+  it('RMP-05: a reordered CLEAN job with ZERO operations still produces GOLD via /scale', async () => {
+    post.mockResolvedValue(SCALED_ARTIFACT);
+    const { service, tx } = makeService(
+      buildReorderedCleanJob({ operations: { operations: [] } }),
+    );
+    await (service as unknown as Runnable).run('job-1');
+
+    // A draft with features but no cleaning rules is a real case; it must not
+    // fail the "needs at least one operation" guard, because under the new
+    // order the scale call is what produces the artifact.
+    const paths = post.mock.calls
+      .map(([path]) => path)
+      .filter((p) => p !== '/v1/preprocess/cleanup');
+    expect(paths).toEqual(['/v1/preprocess/scale']);
+    const artifact = firstWrite(tx.datasetArtifact.create);
+    expect(artifact.type).toBe('GOLD');
+    // /scale reads the source artifact directly when nothing was cleaned.
+    const [, scaleBody] = post.mock.calls.find(
+      ([path]) => path === '/v1/preprocess/scale',
+    ) as [string, Record<string, unknown>];
+    expect(scaleBody.source_key).toBe('ds-1/artifacts/a-1/data.parquet');
+  });
+
+  it('RMP-06: a CLEAN job with zero operations AND no scaleRecipe still FAILS rather than committing an empty artifact', async () => {
+    const { service, prisma, tx } = makeService(
+      buildJob({
+        stage: 'CLEAN',
+        operations: { operations: [], precision: {} },
+      }),
+    );
+    await (service as unknown as Runnable).run('job-1');
+
+    // Relaxing `.min(1)` on the DTO moved this refusal one layer later; it
+    // must still refuse, or a caller that sends nothing gets a SUCCEEDED job
+    // and an artifact nothing was applied to.
+    expect(tx.datasetArtifact.create).not.toHaveBeenCalled();
+    const final = lastWrite(prisma.preprocessingJob.update);
+    expect(final.status).toBe('FAILED');
+  });
+
+  it('RMP-07: a reordered FEATURE job (scale:false) commits SILVER with pipelineVersion 2 and forwards scale', async () => {
+    post.mockResolvedValue(ARTIFACT);
+    const { service, tx } = makeService(
+      buildJob({
+        stage: 'FEATURE',
+        operations: {
+          features: [{ id: 'f1', kind: 'lag', tag: 'TI-101', k: 1 }],
+          selectedColumns: null,
+          scalers: {},
+          scale: false,
+        },
+      }),
+    );
+    await (service as unknown as Runnable).run('job-1');
+
+    const artifact = firstWrite(tx.datasetArtifact.create);
+    expect(artifact.type).toBe('SILVER');
+    expect(artifact.pipelineVersion).toBe(2);
+
+    const [, body] = post.mock.calls.find(
+      ([path]) => path === '/v1/preprocess/features',
+    ) as [string, Record<string, unknown>];
+    expect(body.scale).toBe(false);
+    // The object key must follow the row's type, not stay on the old suffix.
+    expect(String(body.target_key)).toMatch(/data_silver\.parquet$/);
+  });
+
+  it('RMP-08: a legacy FEATURE job omits `scale` entirely so Python owns the default', async () => {
+    post.mockResolvedValue(ARTIFACT);
+    const { service, tx } = makeService(
+      buildJob({
+        stage: 'FEATURE',
+        operations: {
+          features: [{ id: 'f1', kind: 'lag', tag: 'TI-101', k: 1 }],
+          selectedColumns: null,
+          scalers: {},
+        },
+      }),
+    );
+    await (service as unknown as Runnable).run('job-1');
+
+    const [, body] = post.mock.calls.find(
+      ([path]) => path === '/v1/preprocess/features',
+    ) as [string, Record<string, unknown>];
+    // Not `false`, not `true` — ABSENT. Sending an explicit true would put a
+    // second copy of the legacy default in the backend, free to drift.
+    expect('scale' in body).toBe(false);
+
+    const artifact = firstWrite(tx.datasetArtifact.create);
+    expect(artifact.type).toBe('GOLD');
+    expect(artifact.pipelineVersion).toBeNull();
+  });
+
+  it('RMP-10: the reordered GOLD keeps the SOURCE artifact as its parent and joins its run', async () => {
+    post.mockResolvedValue(SCALED_ARTIFACT);
+    const { service, tx } = makeService(buildReorderedCleanJob());
+    await (service as unknown as Runnable).run('job-1');
+
+    const artifact = firstWrite(tx.datasetArtifact.create);
+    // The chain is BRONZE -> features(SILVER) -> clean+scale(GOLD). The tmp
+    // keys the cleaning steps wrote are scaffolding, not lineage: the GOLD's
+    // parent must still be the artifact the job was given, or the lineage
+    // walk skips the feature stage entirely.
+    expect(artifact.parentArtifactId).toBe('a-1');
+    expect(artifact.columnStatsKey).toBe(SCALED_ARTIFACT.column_stats_key);
+  });
+
+  it('RMP-09: a malformed scaleRecipe FAILS the job rather than silently degrading to the legacy order', async () => {
+    const { service, prisma, tx } = makeService(
+      buildReorderedCleanJob({
+        // `features` must be an array of valid configs; a string is not.
+        operations: { scaleRecipe: { features: 'not-an-array' } },
+      }),
+    );
+    await (service as unknown as Runnable).run('job-1');
+
+    // Degrading silently would commit SILVER bytes while the caller believed
+    // it asked for a scaled GOLD — the exact confusion pipelineVersion exists
+    // to prevent, reintroduced one layer down.
+    expect(post).not.toHaveBeenCalled();
+    expect(tx.datasetArtifact.create).not.toHaveBeenCalled();
+    const final = lastWrite(prisma.preprocessingJob.update);
+    expect(final.status).toBe('FAILED');
+  });
+});

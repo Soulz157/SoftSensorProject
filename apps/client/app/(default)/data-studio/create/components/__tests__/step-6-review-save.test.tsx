@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createStore, Provider } from 'jotai'
-import { Step5ReviewSave } from '../step-5-review-save'
+import { Step6ReviewSave } from '../step-6-review-save'
 import {
   dwNameAtom,
   dwWorkspaceIdAtom,
@@ -74,7 +74,7 @@ vi.mock('sonner', () => ({
   },
 }))
 
-/** Only the fields `Step5ReviewSave` destructures are needed. */
+/** Only the fields `Step6ReviewSave` destructures are needed. */
 const nav = {
   cropRange: null,
   valueCrop: {},
@@ -168,13 +168,13 @@ beforeEach(() => {
 const clickSave = async () => {
   render(
     <Provider store={store}>
-      <Step5ReviewSave nav={nav} />
+      <Step6ReviewSave nav={nav} />
     </Provider>,
   )
   await userEvent.click(screen.getByRole('button', { name: /save dataset/i }))
 }
 
-describe('Step5ReviewSave — storing rows on save', () => {
+describe('Step6ReviewSave — storing rows on save', () => {
   it('materialises the artifact after creating a dataset', async () => {
     createDataset.mockResolvedValue(saved(null))
 
@@ -242,13 +242,13 @@ const SUMMARY: PresetSummary = {
   incomplete: false,
 }
 
-describe('Step5ReviewSave — feature preset provenance', () => {
+describe('Step6ReviewSave — feature preset provenance', () => {
   it('shows which preset the dataset was built from', () => {
     store.set(dwFeaturePresetAtom, SUMMARY)
 
     render(
       <Provider store={store}>
-        <Step5ReviewSave nav={nav} />
+        <Step6ReviewSave nav={nav} />
       </Provider>,
     )
 
@@ -259,7 +259,7 @@ describe('Step5ReviewSave — feature preset provenance', () => {
   it('renders nothing about a preset when none was applied', () => {
     render(
       <Provider store={store}>
-        <Step5ReviewSave nav={nav} />
+        <Step6ReviewSave nav={nav} />
       </Provider>,
     )
 
@@ -276,7 +276,7 @@ describe('Step5ReviewSave — feature preset provenance', () => {
 
     render(
       <Provider store={store}>
-        <Step5ReviewSave nav={nav} />
+        <Step6ReviewSave nav={nav} />
       </Provider>,
     )
 
@@ -293,7 +293,7 @@ describe('Step5ReviewSave — feature preset provenance', () => {
 
     render(
       <Provider store={store}>
-        <Step5ReviewSave nav={nav} />
+        <Step6ReviewSave nav={nav} />
       </Provider>,
     )
 
@@ -331,7 +331,7 @@ describe('Step5ReviewSave — feature preset provenance', () => {
   })
 })
 
-describe('Step5ReviewSave — validation gate (DS-LAKE-008-T02)', () => {
+describe('Step6ReviewSave — validation gate (DS-LAKE-008-T02)', () => {
   const withGateArtifact = () => {
     store.set(dwDraftIdAtom, 'draft-1')
     store.set(dwDraftArtifactIdAtom, 'silver-1')
@@ -348,7 +348,7 @@ describe('Step5ReviewSave — validation gate (DS-LAKE-008-T02)', () => {
 
     render(
       <Provider store={store}>
-        <Step5ReviewSave nav={nav} />
+        <Step6ReviewSave nav={nav} />
       </Provider>,
     )
 
@@ -384,7 +384,7 @@ describe('Step5ReviewSave — validation gate (DS-LAKE-008-T02)', () => {
 
     render(
       <Provider store={store}>
-        <Step5ReviewSave nav={nav} />
+        <Step6ReviewSave nav={nav} />
       </Provider>,
     )
 
@@ -408,7 +408,7 @@ describe('Step5ReviewSave — validation gate (DS-LAKE-008-T02)', () => {
 
     render(
       <Provider store={store}>
-        <Step5ReviewSave nav={nav} />
+        <Step6ReviewSave nav={nav} />
       </Provider>,
     )
 
@@ -428,7 +428,7 @@ describe('Step5ReviewSave — validation gate (DS-LAKE-008-T02)', () => {
     // permanent state (use-dataset-edit-hydration.ts never sets these).
     render(
       <Provider store={store}>
-        <Step5ReviewSave nav={nav} />
+        <Step6ReviewSave nav={nav} />
       </Provider>,
     )
 
@@ -437,7 +437,7 @@ describe('Step5ReviewSave — validation gate (DS-LAKE-008-T02)', () => {
   })
 })
 
-describe('Step5ReviewSave — advisory gate (DS-LAKE-019-T04)', () => {
+describe('Step6ReviewSave — advisory gate (DS-LAKE-019-T04)', () => {
   const withGateArtifact = () => {
     store.set(dwDraftIdAtom, 'draft-1')
     store.set(dwDraftArtifactIdAtom, 'silver-1')
@@ -469,7 +469,7 @@ describe('Step5ReviewSave — advisory gate (DS-LAKE-019-T04)', () => {
 
     render(
       <Provider store={store}>
-        <Step5ReviewSave nav={nav} />
+        <Step6ReviewSave nav={nav} />
       </Provider>,
     )
 
@@ -497,7 +497,7 @@ describe('Step5ReviewSave — advisory gate (DS-LAKE-019-T04)', () => {
 
     render(
       <Provider store={store}>
-        <Step5ReviewSave nav={nav} />
+        <Step6ReviewSave nav={nav} />
       </Provider>,
     )
 
@@ -510,7 +510,7 @@ describe('Step5ReviewSave — advisory gate (DS-LAKE-019-T04)', () => {
   })
 })
 
-describe('Step5ReviewSave — recipe-change revalidation (DS-LAKE-008-T03)', () => {
+describe('Step6ReviewSave — recipe-change revalidation (DS-LAKE-008-T03)', () => {
   const withGateArtifact = () => {
     store.set(dwDraftIdAtom, 'draft-1')
     store.set(dwDraftArtifactIdAtom, 'silver-1')
@@ -521,7 +521,7 @@ describe('Step5ReviewSave — recipe-change revalidation (DS-LAKE-008-T03)', () 
 
     render(
       <Provider store={store}>
-        <Step5ReviewSave nav={nav} />
+        <Step6ReviewSave nav={nav} />
       </Provider>,
     )
     await waitFor(() => expect(validateArtifact).toHaveBeenCalledTimes(1))
@@ -554,7 +554,7 @@ describe('Step5ReviewSave — recipe-change revalidation (DS-LAKE-008-T03)', () 
 
     render(
       <Provider store={store}>
-        <Step5ReviewSave nav={nav} />
+        <Step6ReviewSave nav={nav} />
       </Provider>,
     )
     const button = await screen.findByRole('button', { name: /save dataset/i })
@@ -595,7 +595,7 @@ describe('Step5ReviewSave — recipe-change revalidation (DS-LAKE-008-T03)', () 
 
     render(
       <Provider store={store}>
-        <Step5ReviewSave nav={nav} />
+        <Step6ReviewSave nav={nav} />
       </Provider>,
     )
     await waitFor(() => expect(validateArtifact).toHaveBeenCalledTimes(1))
@@ -611,7 +611,7 @@ describe('Step5ReviewSave — recipe-change revalidation (DS-LAKE-008-T03)', () 
     // Unavailable stays unavailable — nothing to revalidate against.
     render(
       <Provider store={store}>
-        <Step5ReviewSave nav={nav} />
+        <Step6ReviewSave nav={nav} />
       </Provider>,
     )
 
@@ -625,7 +625,7 @@ describe('Step5ReviewSave — recipe-change revalidation (DS-LAKE-008-T03)', () 
   })
 })
 
-describe('Step5ReviewSave — artifact-adoption save (DS-LAKE-005B-B-T01, Step 5 leg)', () => {
+describe('Step6ReviewSave — artifact-adoption save (DS-LAKE-005B-B-T01, Step 5 leg)', () => {
   const withGateArtifact = () => {
     store.set(dwDraftIdAtom, 'draft-1')
     store.set(dwDraftArtifactIdAtom, 'silver-1')
@@ -655,7 +655,7 @@ describe('Step5ReviewSave — artifact-adoption save (DS-LAKE-005B-B-T01, Step 5
 
     render(
       <Provider store={store}>
-        <Step5ReviewSave nav={nav} />
+        <Step6ReviewSave nav={nav} />
       </Provider>,
     )
     const button = await screen.findByRole('button', { name: /save dataset/i })
@@ -682,7 +682,7 @@ describe('Step5ReviewSave — artifact-adoption save (DS-LAKE-005B-B-T01, Step 5
 
     render(
       <Provider store={store}>
-        <Step5ReviewSave nav={nav} />
+        <Step6ReviewSave nav={nav} />
       </Provider>,
     )
     await userEvent.click(screen.getByRole('button', { name: /save changes/i }))
@@ -709,7 +709,7 @@ describe('Step5ReviewSave — artifact-adoption save (DS-LAKE-005B-B-T01, Step 5
 
     render(
       <Provider store={store}>
-        <Step5ReviewSave nav={nav} />
+        <Step6ReviewSave nav={nav} />
       </Provider>,
     )
     await userEvent.click(screen.getByRole('button', { name: /save dataset/i }))
@@ -733,7 +733,7 @@ describe('Step5ReviewSave — artifact-adoption save (DS-LAKE-005B-B-T01, Step 5
 
     render(
       <Provider store={store}>
-        <Step5ReviewSave nav={nav} />
+        <Step6ReviewSave nav={nav} />
       </Provider>,
     )
 
@@ -768,7 +768,7 @@ describe('Step5ReviewSave — artifact-adoption save (DS-LAKE-005B-B-T01, Step 5
 
     render(
       <Provider store={store}>
-        <Step5ReviewSave nav={nav} />
+        <Step6ReviewSave nav={nav} />
       </Provider>,
     )
 
@@ -796,7 +796,7 @@ describe('Step5ReviewSave — artifact-adoption save (DS-LAKE-005B-B-T01, Step 5
     store.set(dwTargetTagAtom, 'LAB-999') // absent from the default fetchMetadata fixture's tags
     render(
       <Provider store={store}>
-        <Step5ReviewSave nav={nav} />
+        <Step6ReviewSave nav={nav} />
       </Provider>,
     )
 
@@ -808,7 +808,7 @@ describe('Step5ReviewSave — artifact-adoption save (DS-LAKE-005B-B-T01, Step 5
     store.set(dwTargetTagAtom, 'TI-101') // present in the default fetchMetadata fixture's tags
     render(
       <Provider store={store}>
-        <Step5ReviewSave nav={nav} />
+        <Step6ReviewSave nav={nav} />
       </Provider>,
     )
 

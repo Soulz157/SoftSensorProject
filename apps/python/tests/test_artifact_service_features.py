@@ -10,8 +10,14 @@ from __future__ import annotations
 
 import pytest
 
-from intergrations.object_store import ObjectStoreError, tag_columns
-from schemas.preprocess import FeatureConfigRequest, FeaturesRequest
+from intergrations.object_store import STATUS_BAD, STATUS_GOOD, ObjectStoreError, tag_columns
+from schemas.preprocess import (
+    CleanRequest,
+    CleaningOperation,
+    FeatureConfigRequest,
+    FeaturesRequest,
+    ScaleRequest,
+)
 from services import artifact_service
 from tests.test_artifact_service import RecordingStore, frame, wide_frame
 
@@ -72,9 +78,15 @@ def test_features_writes_feature_spec_sidecar_and_returns_its_key() -> None:
     assert spec["features"][0]["name"] == "TI-101__lag1"
     assert spec["scaling"] == [{"tag": "TI-101", "method": "minmax"}]
     assert isinstance(spec["featureHash"], str)
-    # column_stats is a cleaning-op concern only — features() has nothing to
-    # compute drift/coverage against, so it must stay unset.
-    assert result["column_stats_key"] is None
+    # CORRECTED (DS-LAKE-022-T03): this asserted `column_stats_key is None` on
+    # the reading that "column_stats is a cleaning-op concern only". That
+    # stopped being true at DS-LAKE-006-T05, which made features() call
+    # build_column_stats unconditionally and documented why: coverage/min/max/
+    # mean/median/std describe the COLUMN, and this is the one stage that
+    # MINTS columns, so a derived feature has no stats computed anywhere
+    # upstream. The assertion had been failing ever since; it was the stale
+    # half, not the code.
+    assert result["column_stats_key"] == "ds-1/artifacts/gold-id/column_stats.json"
 
 
 def test_features_writes_the_real_fitted_scaling_params() -> None:
@@ -279,3 +291,183 @@ def test_features_applies_select_columns_before_returning() -> None:
     )
     written = store.objects["ds-1/artifacts/gold-id/data.parquet"]
     assert tag_columns(written) == ["TI-101"]
+
+
+# --- DS-LAKE-022-T02: the split, and what it makes provable -----------------
+
+
+def test_features_scale_false_skips_scaling_and_leaves_bad_cells_bad() -> None:
+    """The precondition itself: with `scale=False`, `features()` must stop
+    after selectColumns. frame()'s Bad row (index 2, TI-101=0.0) must survive
+    AS Bad — under the old always-scale behaviour `to_model_ready` would force
+    it Good, which is exactly the laundering that makes cleaning-after-features
+    a no-op."""
+    store = RecordingStore({"ds-1/artifacts/silver-id/data.parquet": frame()})
+    result = artifact_service.features(
+        store,
+        FeaturesRequest(
+            source_key="ds-1/artifacts/silver-id/data.parquet",
+            target_key="ds-1/artifacts/silver2-id/data.parquet",
+            features=[],
+            scalers={"TI-101": "minmax"},
+            scale=False,
+        ),
+    )
+
+    assert result["feature_spec_key"] is None
+    written = store.objects["ds-1/artifacts/silver2-id/data.parquet"]
+    assert list(written["TI-101"]) == [70.0, 71.0, 0.0, 73.0, 74.0, 75.0]
+    assert list(written["TI-101__status"]) == [
+        STATUS_GOOD, STATUS_GOOD, STATUS_BAD, STATUS_GOOD, STATUS_GOOD, STATUS_GOOD,
+    ]
+    assert "ds-1/artifacts/silver2-id/feature_spec.json" not in store.documents
+
+
+def test_features_scale_true_default_is_byte_identical_to_before_the_split() -> None:
+    """Every existing caller passes no `scale` field at all — the default
+    must reproduce today's combined write exactly, or this split silently
+    changes production behaviour on day one."""
+    store = RecordingStore({"ds-1/artifacts/silver-id/data.parquet": frame()})
+    result = artifact_service.features(
+        store,
+        FeaturesRequest(
+            source_key="ds-1/artifacts/silver-id/data.parquet",
+            target_key="ds-1/artifacts/gold-id/data.parquet",
+            features=[],
+            scalers={"TI-101": "minmax"},
+        ),
+    )
+    written = store.objects["ds-1/artifacts/gold-id/data.parquet"]
+    assert list(written["TI-101__status"]) == [STATUS_GOOD] * 6
+    assert result["feature_spec_key"] == "ds-1/artifacts/gold-id/feature_spec.json"
+
+
+def test_scale_writes_feature_spec_and_forces_good() -> None:
+    """`scale()` is the new home for the toModelReady tail: it must scale and
+    write feature_spec.json exactly as the old combined `features()` did."""
+    store = RecordingStore({"ds-1/artifacts/silver-id/data.parquet": frame()})
+    result = artifact_service.scale(
+        store,
+        ScaleRequest(
+            source_key="ds-1/artifacts/silver-id/data.parquet",
+            target_key="ds-1/artifacts/gold-id/data.parquet",
+            scalers={"TI-101": "minmax"},
+        ),
+    )
+
+    assert result["feature_spec_key"] == "ds-1/artifacts/gold-id/feature_spec.json"
+    written = store.objects["ds-1/artifacts/gold-id/data.parquet"]
+    assert list(written["TI-101__status"]) == [STATUS_GOOD] * 6
+    spec = store.documents["ds-1/artifacts/gold-id/feature_spec.json"]
+    # Same fitted min as the old combined write on this same frame
+    # (test_features_writes_the_real_fitted_scaling_params) — the Bad cell's
+    # 0.0 is still finite and still enters the scaler's own statistics here;
+    # that pre-existing defect is unrelated to this split and is fixed only
+    # once cleaning actually runs before this call, not by this test.
+    assert spec["scalingParams"] == {"TI-101": {"min": 0.0, "max": 75.0}}
+
+
+def test_reorder_v01_cleaning_between_features_and_scale_actually_removes_bad_rows() -> None:
+    """DS-LAKE-022-V01. Under the OLD order (features() with scale=True, the
+    only path that existed before this task) the Bad row is laundered to Good
+    before any cleaning could run, so a drop_missing op downstream would have
+    nothing left to drop. Under the NEW order — features(scale=False) ->
+    clean() -> scale() — the Bad row is still Bad when clean() sees it and is
+    actually removed. A test that only asserted 'scale() succeeded' would pass
+    against the exact defect this feature exists to remove; this asserts the
+    row count.
+    """
+    store = RecordingStore({"ds-1/artifacts/silver-id/data.parquet": frame()})
+
+    # New order, step 1: feature stage only, Bad cell survives (proven above).
+    artifact_service.features(
+        store,
+        FeaturesRequest(
+            source_key="ds-1/artifacts/silver-id/data.parquet",
+            target_key="ds-1/artifacts/silver2-id/data.parquet",
+            features=[],
+            scale=False,
+        ),
+    )
+    assert len(store.objects["ds-1/artifacts/silver2-id/data.parquet"]) == 6
+
+    # New order, step 2: clean drops the still-Bad row.
+    clean_result = artifact_service.clean(
+        store,
+        CleanRequest(
+            source_key="ds-1/artifacts/silver2-id/data.parquet",
+            target_key="ds-1/artifacts/cleaned-id/data.parquet",
+            operations=[CleaningOperation(type="drop_missing", tags=["TI-101"])],
+        ),
+    )
+    assert clean_result["row_count"] == 5
+    cleaned = store.objects["ds-1/artifacts/cleaned-id/data.parquet"]
+    assert list(cleaned["TI-101"]) == [70.0, 71.0, 73.0, 74.0, 75.0]
+
+    # New order, step 3: scale the cleaned frame.
+    artifact_service.scale(
+        store,
+        ScaleRequest(
+            source_key="ds-1/artifacts/cleaned-id/data.parquet",
+            target_key="ds-1/artifacts/gold-id/data.parquet",
+            scalers={"TI-101": "minmax"},
+        ),
+    )
+    gold = store.objects["ds-1/artifacts/gold-id/data.parquet"]
+    assert len(gold) == 5
+    assert list(gold["TI-101__status"]) == [STATUS_GOOD] * 5
+
+
+def test_reorder_v04_scaling_params_differ_between_old_and_new_order() -> None:
+    """DS-LAKE-022-V04, the unfalsifiability check. Same recipe, same source
+    frame — old order scales BEFORE cleaning ever could, new order cleans
+    first. If the fitted min/max agree, cleaning did not actually run before
+    scaling and the split accomplished nothing.
+    """
+    old_store = RecordingStore({"ds-1/artifacts/silver-id/data.parquet": frame()})
+    old = artifact_service.features(
+        old_store,
+        FeaturesRequest(
+            source_key="ds-1/artifacts/silver-id/data.parquet",
+            target_key="ds-1/artifacts/gold-id/data.parquet",
+            features=[],
+            scalers={"TI-101": "minmax"},
+        ),
+    )
+    old_spec = old_store.documents["ds-1/artifacts/gold-id/feature_spec.json"]
+    # The Bad row's 0.0 (a real hole, not a real reading) drags the fitted
+    # min down to 0.0 — this IS today's pre-existing defect, asserted here
+    # only as the baseline the new order must differ from.
+    assert old_spec["scalingParams"]["TI-101"]["min"] == 0.0
+
+    new_store = RecordingStore({"ds-1/artifacts/silver-id/data.parquet": frame()})
+    artifact_service.features(
+        new_store,
+        FeaturesRequest(
+            source_key="ds-1/artifacts/silver-id/data.parquet",
+            target_key="ds-1/artifacts/silver2-id/data.parquet",
+            features=[],
+            scale=False,
+        ),
+    )
+    artifact_service.clean(
+        new_store,
+        CleanRequest(
+            source_key="ds-1/artifacts/silver2-id/data.parquet",
+            target_key="ds-1/artifacts/cleaned-id/data.parquet",
+            operations=[CleaningOperation(type="drop_missing", tags=["TI-101"])],
+        ),
+    )
+    new_result = artifact_service.scale(
+        new_store,
+        ScaleRequest(
+            source_key="ds-1/artifacts/cleaned-id/data.parquet",
+            target_key="ds-1/artifacts/gold-id/data.parquet",
+            scalers={"TI-101": "minmax"},
+        ),
+    )
+    new_spec = new_store.documents[new_result["feature_spec_key"]]
+
+    assert new_spec["scalingParams"]["TI-101"] != old_spec["scalingParams"]["TI-101"]
+    # Concretely: the real min (70.0), not the hole's 0.0.
+    assert new_spec["scalingParams"]["TI-101"] == {"min": 70.0, "max": 75.0}

@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '@softsensor/prisma';
@@ -17,12 +18,18 @@ import {
   replayHoldoutForRun,
 } from '@/lib/python-preprocess-client';
 import { RunCompleteDto } from './dto/model-run.authorized.dto';
+import { ModelFineTuningAuthorizedService } from './model-fine-tuning.authorized.service';
 
 type RunOwner = { scope: 'model'; id: string } | { scope: 'draft'; id: string };
 
 @Injectable()
 export class ModelRunAuthorizedService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly log = new Logger(ModelRunAuthorizedService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly fineTuning: ModelFineTuningAuthorizedService,
+  ) {}
 
   /**
    * EXACTLY ONE of modelId / modelDraftId is set, enforced by a DB CHECK
@@ -270,26 +277,53 @@ export class ModelRunAuthorizedService {
     // A successful draft-scoped run flips its owning draft to TRAINED
     // (MODEL-FLOW-003-T07) in the same transaction as the run update — a
     // reader must never observe a SUCCEEDED run against a still-ACTIVE
-    // draft.
-    if (owner.scope === 'draft' && dto.status === 'SUCCEEDED') {
-      const [updatedRun] = await this.prisma.$transaction([
-        this.prisma.modelTrainingRun.update({
-          where: { id: runId },
-          data,
-          omit: { tokenHash: true },
-        }),
-        this.prisma.modelDraft.update({
-          where: { id: owner.id },
-          data: { status: 'TRAINED', currentRunId: runId },
-        }),
-      ]);
-      return updatedRun;
+    // draft. NOT for a fine-tuning child run (MODEL-FLOW-005): an
+    // intermediate hyperparameter set finishing must not overwrite
+    // currentRunId with itself — only the SEARCH'S winner should ever end up
+    // there, and only `advanceJobForRun` (below) decides which run that is,
+    // once every set has been tried.
+    const updatedRun =
+      owner.scope === 'draft' &&
+      dto.status === 'SUCCEEDED' &&
+      !run.fineTuningJobId
+        ? (
+            await this.prisma.$transaction([
+              this.prisma.modelTrainingRun.update({
+                where: { id: runId },
+                data,
+                omit: { tokenHash: true },
+              }),
+              this.prisma.modelDraft.update({
+                where: { id: owner.id },
+                data: { status: 'TRAINED', currentRunId: runId },
+              }),
+            ])
+          )[0]
+        : await this.prisma.modelTrainingRun.update({
+            where: { id: runId },
+            data,
+            omit: { tokenHash: true },
+          });
+
+    // MODEL-FLOW-005: best-effort nudge — a fine-tuning child run that just
+    // reached a terminal status advances (or fails) its job immediately,
+    // rather than waiting for the next read to reconcile it
+    // (`getJobService`'s own doc comment covers that slower path). Never
+    // allowed to fail the container's response: the run row above is
+    // already durable regardless of what happens here, and
+    // `advanceJobForRun` is idempotent, so a failure here just means the
+    // reconcile-on-read path picks it up instead.
+    if (run.fineTuningJobId) {
+      try {
+        await this.fineTuning.advanceJobForRun(runId, run.fineTuningJobId);
+      } catch (err) {
+        this.log.error(
+          `fine-tuning nudge failed for run ${runId} (job ${run.fineTuningJobId})`,
+          err,
+        );
+      }
     }
 
-    return this.prisma.modelTrainingRun.update({
-      where: { id: runId },
-      data,
-      omit: { tokenHash: true },
-    });
+    return updatedRun;
   }
 }
