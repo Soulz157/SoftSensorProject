@@ -76,6 +76,24 @@ export class DatasetDraftAuthorizedController {
     return this.service.getDraftService(user, id);
   }
 
+  @Post('/for-dataset/:datasetId')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Resolve or create the edit-mode draft for a saved dataset',
+    description:
+      'DS-LAKE-024. Idempotent: returns the existing ACTIVE draft for this ' +
+      'dataset if one exists, otherwise creates one seeded from the ' +
+      "dataset's adopted lineage-root BRONZE — never a fresh source fetch. " +
+      '200 either way; the response does not distinguish resolved from ' +
+      'created, since a re-entrant caller should not need to.',
+  })
+  async resolveOrCreateEditDraftController(
+    @Users() user: Auth.UserPayload,
+    @Param('datasetId') datasetId: string,
+  ) {
+    return this.service.resolveOrCreateEditDraftService(user, datasetId);
+  }
+
   @Post('/:id/abandon')
   @HttpCode(200)
   @ApiOperation({

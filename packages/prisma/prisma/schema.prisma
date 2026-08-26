@@ -377,6 +377,19 @@ model DatasetDraft {
   /// the run that produced it.
   savedDatasetId String?
 
+  /// DS-LAKE-024. Set at CREATION for a draft opened by editing an existing
+  /// saved Dataset — the origin half of the story `savedDatasetId` (above)
+  /// tells the outcome half of. Null for a create-mode draft. Deliberately
+  /// its OWN column rather than overloading `savedDatasetId`: that field
+  /// means "this draft BECAME that Dataset" (written at Save), this one
+  /// means "this draft is EDITING that Dataset" (written at creation) — the
+  /// two are different facts about different moments, and one column
+  /// cannot hold both without making "is this draft saved?" unanswerable
+  /// from the row alone. A partial unique index (hand-written in the
+  /// migration, since Prisma cannot express a WHERE clause on an index)
+  /// enforces at most one ACTIVE draft per edited Dataset.
+  editingDatasetId String?
+
   createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
   createdById String
   createdAt   DateTime @default(now())
@@ -388,6 +401,12 @@ model DatasetDraft {
   @@index([workspaceId])
   @@index([createdById])
   @@index([status])
+  /// Ordinary (non-unique) lookup index — the AT-MOST-ONE-ACTIVE guarantee
+  /// is the partial UNIQUE index hand-written in the migration
+  /// (`DatasetDraft_one_active_edit_per_dataset`), because a plain
+  /// `@@unique` here would also forbid a SECOND edit session opened after
+  /// the first was abandoned or saved, which is legal.
+  @@index([editingDatasetId])
 }
 
 /// Which Lakehouse layer produced an artifact.
@@ -526,12 +545,20 @@ model DatasetVersion {
 model DatasetArtifact {
   id String @id @default(uuid())
 
-  /// EXACTLY ONE of datasetId / draftId is set — enforced by a CHECK
-  /// constraint in the migration, because Prisma cannot express it. Both
-  /// columns are nullable at the column level so that a draft artifact can
-  /// exist before any Dataset does; the CHECK is what makes "never neither"
-  /// true. An artifact starts owned by a draft and is ADOPTED (datasetId set,
-  /// draftId kept for traceability) at Save — never copied, never rewritten.
+  /// AT LEAST ONE of datasetId / draftId is set — "never neither", enforced
+  /// by a CHECK constraint in the migration (`DatasetArtifact_owner_present`,
+  /// `datasetId IS NOT NULL OR draftId IS NOT NULL`), because Prisma cannot
+  /// express it. Both columns are nullable at the column level so that a
+  /// draft artifact can exist before any Dataset does.
+  ///
+  /// BOTH IS LEGAL ON PURPOSE, not just tolerated — the migration's own
+  /// comment says so. An artifact starts owned by a draft and is ADOPTED
+  /// (datasetId set, draftId KEPT for traceability) at Save — never copied,
+  /// never rewritten — so an adopted artifact carries both. A prior version
+  /// of this comment said "EXACTLY ONE", which the very next sentence about
+  /// adoption already contradicted; corrected while designing DS-LAKE-024's
+  /// edit-mode draft, which relies on "both" being legal to share a
+  /// dataset-owned artifact's objectKey with a second, draft-owned row.
   datasetId String?
   dataset   Dataset?      @relation(fields: [datasetId], references: [id], onDelete: Cascade)
   draftId   String?

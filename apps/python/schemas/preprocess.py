@@ -947,6 +947,70 @@ class ArtifactReclaimResponse(BaseModel):
     deleted: int
 
 
+class ArtifactAdoptRequest(BaseModel):
+    """Copy one committed artifact's objects into a dataset's own namespace.
+
+    DS-LAKE-025. The counterpart to `ArtifactReclaimRequest`: that one
+    removes an artifact's bytes, this one gives them a permanent home.
+
+    Called ONLY by `saveDraftAsDatasetService`, once per artifact it is
+    adopting (the FINAL, and the lineage-root BRONZE the recipe replays
+    from). Until this existed, Save adopted a draft artifact BY POINTER —
+    the saved dataset's `objectKey` still read `drafts/{draftId}/...` for
+    the rest of its life, which made a registry dataset's readability
+    depend on draft-space bytes surviving forever. Two saved datasets were
+    found in exactly that state with their objects already gone: Postgres
+    rows live, MinIO 404. Promotion itself stays pointer-only
+    (ADR-DS-LAKE-005B-B-006, `global_definition_of_done`: "Promotion
+    changes metadata only; no artifact is copied or regenerated") — this
+    runs at Save, a different boundary.
+
+    Same guard as `/artifacts/reclaim`: the source must be a committed
+    artifact data key, so this cannot be pointed at `tmp/`, a preset or a
+    legacy version object.
+    """
+
+    object_key: str = Field(
+        ...,
+        description="Source artifact data key, typically under drafts/",
+        examples=["drafts/draft-1/artifacts/art-7/data_gold.parquet"],
+    )
+    dataset_id: str = Field(..., examples=["ds-1"])
+    #: The artifact row being repointed. NOT necessarily the id embedded in
+    #: `object_key`: a FINAL promoted by pointer carries its parent GOLD's
+    #: key, and Save adopts it under the FINAL's OWN id so the destination
+    #: prefix matches the row that will name it.
+    artifact_id: str = Field(..., examples=["art-9"])
+
+    @model_validator(mode="after")
+    def object_key_is_a_committed_artifact(self) -> "ArtifactAdoptRequest":
+        if not is_committed_artifact_key(self.object_key):
+            raise ValueError(
+                "object_key must be a committed artifact's data key "
+                f"('.../artifacts/{{artifactId}}/{DATA_FILENAME}'). Refusing "
+                "to adopt a tmp/, preset or legacy object through this "
+                "endpoint."
+            )
+        return self
+
+
+class ArtifactAdoptResponse(BaseModel):
+    source_prefix: str
+    destination_prefix: str
+    #: The new data key. Written back onto `DatasetArtifact.objectKey`.
+    object_key: str
+    #: Sidecar pointers, null when that sidecar does not exist for this
+    #: artifact — the same three nullable columns the artifact row carries.
+    feature_spec_key: str | None = None
+    validation_key: str | None = None
+    column_stats_key: str | None = None
+    #: Every destination key now present, sidecars included. Counts objects
+    #: already there from an earlier attempt as well as ones copied now,
+    #: because the endpoint is idempotent and the caller cares that the
+    #: destination is COMPLETE, not that this particular call did the work.
+    keys: list[str] = Field(default_factory=list)
+
+
 class PreviewRequest(BaseModel):
     source_key: str = Field(
         ...,

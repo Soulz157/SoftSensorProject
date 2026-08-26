@@ -192,6 +192,31 @@ async function fetchOk(
     } catch {
       // non-JSON error body — keep the generic message
     }
+    // DS-LAKE-025. Python answers 404 for exactly one condition: the object's
+    // BYTES ARE GONE (`ObjectNotFoundError`, i.e. a NoSuchKey from MinIO), as
+    // opposed to the 422 it uses when storage refuses an otherwise-valid
+    // operation. Kept as a 404 here rather than folded into the blanket 4xx
+    // -> 400 below, because the two mean different things to whoever reads
+    // the response: a 400 says "your request was wrong", and nothing about
+    // the request can be corrected — the artifact has to be re-materialized
+    // from the upstream source.
+    //
+    // This is the branch that used to hand the browser a bare
+    // "Could not read '<key>': NoSuchKey" as a 400, which is how a saved
+    // dataset with reclaimed bytes presented itself: a raw storage string,
+    // with no indication of what had happened or what to do next. The
+    // original detail is kept in parentheses so the key stays greppable.
+    if (res.status === 404) {
+      throw new AppException({
+        statusCode: 404,
+        message:
+          "This dataset's stored rows are no longer available in object " +
+          'storage. Re-fetch them from the source to continue. ' +
+          `(${detail})`,
+        type: 'ERROR',
+      });
+    }
+
     // Map upstream 4xx (bad connection config / auth) through as a 400 so the
     // caller can relay it; 5xx stays a 502 (connector fault, not client).
     throw new AppException({

@@ -26,6 +26,7 @@ from intergrations.object_store import (
     tag_columns,
 )
 from schemas.preprocess import (
+    ArtifactAdoptRequest,
     ArtifactReclaimRequest,
     CleaningOperation,
     CleanRequest,
@@ -163,6 +164,28 @@ class RecordingStore:
             del self.objects[key]
         self.deleted_prefixes.append(prefix)
         return len(hits)
+
+    def copy_prefix(self, src_prefix: str, dst_prefix: str) -> list[str]:
+        """DS-LAKE-025. Mirrors the real `ObjectStore.copy_prefix`.
+
+        Unlike `delete_prefix` above, this DOES span both dicts: sidecars
+        live in `.documents`, and an adoption that moved only `.objects`
+        would leave the copied data file with sidecars still resolving to
+        the source prefix — precisely the half-copy the real method exists
+        to avoid. Skips a destination that already exists, so a repeated
+        call converges the same way the real one does.
+        """
+        if not src_prefix.endswith("/") or not dst_prefix.endswith("/"):
+            raise ValueError("copy_prefix needs directory-style prefixes")
+
+        copied: list[str] = []
+        for store in (self.objects, self.documents):
+            for src_key in [k for k in store if k.startswith(src_prefix)]:
+                dst_key = f"{dst_prefix}{src_key[len(src_prefix):]}"
+                if dst_key not in store:
+                    store[dst_key] = store[src_key]
+                copied.append(dst_key)
+        return copied
 
     def get_frame_metadata(self, key: str) -> dict[str, object]:
         if key not in self.objects:
@@ -1122,3 +1145,140 @@ def test_rows_route_still_returns_json_when_format_is_omitted(client) -> None:
     assert response.headers["content-type"].startswith("application/json")
     body = response.json()
     assert "rows" in body and "total_row_count" in body
+
+
+# ── DS-LAKE-025: adopt_artifact ─────────────────────────────────────────────
+#
+# Save Dataset's counterpart to reclaim: instead of removing an artifact's
+# bytes, it gives them a permanent home under the dataset's own prefix. Before
+# this, a saved dataset's FINAL kept pointing at `drafts/{draftId}/...` for the
+# rest of its life, so the registry's readability depended on draft-space bytes
+# surviving. Two saved datasets were found with theirs gone.
+
+
+def _draft_artifact_store() -> RecordingStore:
+    src = "drafts/draft-1/artifacts/gold-1/"
+    store = RecordingStore({f"{src}data_gold.parquet": frame()})
+    store.documents[f"{src}manifest.json"] = {"n": 1}
+    store.documents[f"{src}feature_spec.json"] = {"features": []}
+    store.documents[f"{src}column_stats.json"] = {"TI-101": {}}
+    return store
+
+
+def test_adopt_artifact_copies_out_of_draft_space_under_the_row_id() -> None:
+    store = _draft_artifact_store()
+
+    result = artifact_service.adopt_artifact(
+        store,
+        ArtifactAdoptRequest(
+            object_key="drafts/draft-1/artifacts/gold-1/data_gold.parquet",
+            dataset_id="ds-1",
+            artifact_id="final-9",
+        ),
+    )
+
+    # Destination is keyed by the ROW being repointed (`final-9`), not by the
+    # id in the source key: a FINAL promoted by pointer carries its parent
+    # GOLD's key, and it has to land under its own id.
+    assert result["destination_prefix"] == "ds-1/artifacts/final-9/"
+    assert result["object_key"] == "ds-1/artifacts/final-9/data_gold.parquet"
+    assert "drafts/" not in result["object_key"]
+    # The copied object keeps the source stage's filename, so a FINAL's key
+    # still says which stage produced it.
+    assert result["object_key"].endswith("data_gold.parquet")
+
+
+def test_adopt_artifact_returns_every_sidecar_pointer() -> None:
+    store = _draft_artifact_store()
+
+    result = artifact_service.adopt_artifact(
+        store,
+        ArtifactAdoptRequest(
+            object_key="drafts/draft-1/artifacts/gold-1/data_gold.parquet",
+            dataset_id="ds-1",
+            artifact_id="final-9",
+        ),
+    )
+
+    # These three are literally the artifact row's nullable key columns —
+    # repointing the data file without them would leave the row's sidecars
+    # resolving into draft space.
+    assert result["feature_spec_key"] == "ds-1/artifacts/final-9/feature_spec.json"
+    assert result["column_stats_key"] == "ds-1/artifacts/final-9/column_stats.json"
+    assert "ds-1/artifacts/final-9/manifest.json" in result["keys"]
+    # Absent sidecars report null rather than a key to a nonexistent object.
+    assert result["validation_key"] is None
+
+
+def test_adopt_artifact_leaves_the_source_alone() -> None:
+    """Save is never destructive. Deleting the draft's objects is cleanup's
+    job — doing it here would mean a half-failed Save takes the draft's bytes
+    down with it."""
+    store = _draft_artifact_store()
+
+    artifact_service.adopt_artifact(
+        store,
+        ArtifactAdoptRequest(
+            object_key="drafts/draft-1/artifacts/gold-1/data_gold.parquet",
+            dataset_id="ds-1",
+            artifact_id="final-9",
+        ),
+    )
+
+    assert "drafts/draft-1/artifacts/gold-1/data_gold.parquet" in store.objects
+    assert store.deleted_prefixes == []
+
+
+def test_adopt_artifact_is_idempotent() -> None:
+    """A retried Save converges instead of failing the second time."""
+    store = _draft_artifact_store()
+    request = ArtifactAdoptRequest(
+        object_key="drafts/draft-1/artifacts/gold-1/data_gold.parquet",
+        dataset_id="ds-1",
+        artifact_id="final-9",
+    )
+
+    first = artifact_service.adopt_artifact(store, request)
+    second = artifact_service.adopt_artifact(store, request)
+
+    assert sorted(first["keys"]) == sorted(second["keys"])
+    assert first["object_key"] == second["object_key"]
+
+
+def test_adopt_artifact_on_an_already_owned_artifact_is_a_no_op() -> None:
+    """Source == destination degenerates to a listing, no branch needed."""
+    owned = "ds-1/artifacts/final-9/"
+    store = RecordingStore({f"{owned}data.parquet": frame()})
+
+    result = artifact_service.adopt_artifact(
+        store,
+        ArtifactAdoptRequest(
+            object_key=f"{owned}data.parquet",
+            dataset_id="ds-1",
+            artifact_id="final-9",
+        ),
+    )
+
+    assert result["source_prefix"] == result["destination_prefix"] == owned
+    assert result["object_key"] == f"{owned}data.parquet"
+    assert list(store.objects) == [f"{owned}data.parquet"]
+
+
+@pytest.mark.parametrize(
+    "bad_key",
+    [
+        "ds-1/tmp/job-1/0.parquet",
+        "feature-presets/ws-1/import-1/preset.json",
+        "ds-1/v1.parquet",
+        "drafts/draft-1/artifacts/gold-1/manifest.json",
+    ],
+)
+def test_adopt_artifact_refuses_anything_but_a_committed_artifact_key(
+    bad_key: str,
+) -> None:
+    """Same guard as /artifacts/reclaim, in the opposite direction: this
+    endpoint must not be pointable at tmp/, a preset, or a legacy object."""
+    with pytest.raises(ValueError, match="committed artifact"):
+        ArtifactAdoptRequest(
+            object_key=bad_key, dataset_id="ds-1", artifact_id="final-9"
+        )

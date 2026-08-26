@@ -49,6 +49,7 @@ import {
   dwSelectedTagsAtom,
   dwTagConstantsAtom,
   dwModeAtom,
+  dwSyntheticCauseAtom,
   dwEditingDatasetIdAtom,
   dwFeaturePresetAtom,
   dwTargetTagAtom,
@@ -87,6 +88,7 @@ export function Step6ReviewSave({ nav }: Props) {
   const baseTags = useAtomValue(dwSelectedTagsAtom)
   const tagConstants = useAtomValue(dwTagConstantsAtom)
   const mode = useAtomValue(dwModeAtom)
+  const syntheticCause = useAtomValue(dwSyntheticCauseAtom)
   const editingDatasetId = useAtomValue(dwEditingDatasetIdAtom)
   const featurePreset = useAtomValue(dwFeaturePresetAtom)
   const targetTag = useAtomValue(dwTargetTagAtom)
@@ -270,19 +272,40 @@ export function Step6ReviewSave({ nav }: Props) {
   // this task's own title. Checked both here (so a click cannot slip
   // through the disabled attribute — V03's no-write-on-FAIL guarantee
   // needs a real guard, not just a UI affordance) and on the Button below.
+  // DS-LAKE-025. Editing a dataset whose stored object has been reclaimed
+  // hydrates the wizard with SYNTHETIC rows — `useDatasetVersionRows` falls
+  // back so the wizard has something to render, which is right for viewing
+  // and wrong for saving. The legacy edit path computes `tags`, `rowCount`
+  // and `missingPct` from `finalDataset`, i.e. from those stand-in rows, and
+  // writes them over the dataset's real values. A dataset that has lost its
+  // bytes is recoverable (re-fetch from source); one whose recorded shape has
+  // been overwritten with figures derived from a seed is not, because nothing
+  // afterwards can tell the invented numbers from the measured ones. So Save
+  // refuses, and the banner says how to fix it.
+  //
+  // Scoped to `'bytes-missing'` on purpose: the other synthetic causes
+  // ('not-materialized', 'unreadable') mean no artifact was ever read, which
+  // is the ordinary legacy-dataset case Save has always allowed.
+  const bytesMissing = syntheticCause === 'bytes-missing'
   const validationBlocking =
     validation.status === 'pending' ||
     validation.status === 'FAIL' ||
-    goldNotReady
-  const validationBlockReason = goldNotReady
-    ? goldWarmError
-      ? `Feature engineering failed: ${goldWarmError}`
-      : 'Waiting for feature engineering to finish…'
-    : validation.status === 'pending'
-      ? 'Waiting for validation to finish…'
-      : validation.status === 'FAIL'
-        ? 'Fix the failed check(s) above before saving.'
-        : null
+    goldNotReady ||
+    bytesMissing
+  const validationBlockReason = bytesMissing
+    ? "This dataset's stored rows are no longer in object storage, so the " +
+      'values on screen are stand-ins. Re-fetch the rows from the source ' +
+      'before saving — saving now would overwrite the real tag list and row ' +
+      'count with generated ones.'
+    : goldNotReady
+      ? goldWarmError
+        ? `Feature engineering failed: ${goldWarmError}`
+        : 'Waiting for feature engineering to finish…'
+      : validation.status === 'pending'
+        ? 'Waiting for validation to finish…'
+        : validation.status === 'FAIL'
+          ? 'Fix the failed check(s) above before saving.'
+          : null
 
   const handleSave = async () => {
     if (!name.trim() || !workspaceId || validationBlocking) return

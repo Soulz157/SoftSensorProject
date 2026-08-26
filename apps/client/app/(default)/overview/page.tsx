@@ -76,11 +76,12 @@ export default function PlantsPage() {
         )
         const allOffline =
           nodes.length > 0 && nodes.every(n => n.data.status === 'offline')
-        const status: 'alarm' | 'offline' | 'normal' = hasAlarm
+        const status: 'alarm' | 'offline' | 'normal' | 'warning' = hasAlarm
           ? 'alarm'
           : allOffline
             ? 'offline'
             : 'normal'
+
         return { ...ws, status }
       }),
     [workspaces, nodesByWorkspace, abnormalNodeIds],
@@ -157,6 +158,7 @@ export default function PlantsPage() {
           highlightedIds={highlightedIds}
           failedDeploysByWorkspace={failedDeploysByWorkspace}
           failedByNodeId={failedByNodeId}
+          abnormalNodeIds={abnormalNodeIds}
         />
       </div>
 

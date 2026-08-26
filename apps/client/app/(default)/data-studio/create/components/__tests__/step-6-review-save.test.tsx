@@ -18,6 +18,8 @@ import {
   dwDraftArtifactIdAtom,
   dwDraftGoldArtifactIdAtom,
   dwFeatureConfigsAtom,
+  dwEditingDatasetIdAtom,
+  dwSyntheticCauseAtom,
 } from '@/store/dataset-studio'
 import type { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipeline-nav'
 import type { PresetSummary } from '@/lib/feature-preset'
@@ -818,5 +820,77 @@ describe('Step6ReviewSave — artifact-adoption save (DS-LAKE-005B-B-T01, Step 5
         screen.queryByText(/is not in this dataset/i),
       ).not.toBeInTheDocument(),
     )
+  })
+})
+
+/**
+ * DS-LAKE-025. Editing a dataset whose committed object has been reclaimed
+ * hydrates the wizard with synthetic rows — right for viewing, wrong for
+ * saving. The legacy edit path derives `tags`, `rowCount` and `missingPct`
+ * from those stand-in rows and writes them over the dataset's real values,
+ * turning a dataset that had merely lost its bytes into one that also
+ * misreports what it holds.
+ */
+describe('Step6ReviewSave — reclaimed-bytes save guard (DS-LAKE-025)', () => {
+  const inEditModeWithMissingBytes = () => {
+    store.set(dwModeAtom, 'edit')
+    store.set(dwEditingDatasetIdAtom, 'ds-1')
+    store.set(dwSyntheticCauseAtom, 'bytes-missing')
+  }
+
+  it('disables Save and names the remedy when the stored bytes are gone', async () => {
+    inEditModeWithMissingBytes()
+
+    render(
+      <Provider store={store}>
+        <Step6ReviewSave nav={nav} />
+      </Provider>,
+    )
+
+    const button = await screen.findByRole('button', { name: /save|update/i })
+    await waitFor(() => expect(button).toBeDisabled())
+    expect(screen.getByText(/no longer in object storage/i)).toBeVisible()
+    expect(screen.getByText(/re-fetch the rows from the source/i)).toBeVisible()
+  })
+
+  it('writes nothing even if handleSave is reached with the button bypassed', async () => {
+    inEditModeWithMissingBytes()
+    updateDataset.mockResolvedValue(saved(null))
+
+    render(
+      <Provider store={store}>
+        <Step6ReviewSave nav={nav} />
+      </Provider>,
+    )
+
+    const button = await screen.findByRole('button', { name: /save|update/i })
+    await waitFor(() => expect(button).toBeDisabled())
+    // The guard lives in handleSave itself, not only in the disabled
+    // attribute — same discipline as the validation-FAIL test above.
+    await userEvent.click(button, { pointerEventsCheck: 0 }).catch(() => {})
+
+    expect(updateDataset).not.toHaveBeenCalled()
+    expect(createDataset).not.toHaveBeenCalled()
+    expect(createRaw).not.toHaveBeenCalled()
+  })
+
+  it('leaves Save enabled for the ordinary synthetic causes', async () => {
+    store.set(dwModeAtom, 'edit')
+    store.set(dwEditingDatasetIdAtom, 'ds-1')
+    // A legacy dataset that never had an artifact is the case Save has
+    // always allowed — blocking it would be a regression, not a fix.
+    store.set(dwSyntheticCauseAtom, 'not-materialized')
+
+    render(
+      <Provider store={store}>
+        <Step6ReviewSave nav={nav} />
+      </Provider>,
+    )
+
+    const button = await screen.findByRole('button', { name: /save|update/i })
+    await waitFor(() => expect(button).toBeEnabled())
+    expect(
+      screen.queryByText(/no longer in object storage/i),
+    ).not.toBeInTheDocument()
   })
 })

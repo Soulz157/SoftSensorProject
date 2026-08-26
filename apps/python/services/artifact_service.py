@@ -34,6 +34,7 @@ from intergrations.object_store import (
     ArtifactStats,
     ObjectStore,
     ObjectStoreError,
+    artifact_prefix,
     build_manifest,
     sidecar_key,
     status_column,
@@ -51,6 +52,7 @@ from intergrations.object_store import (
     split_data_key,
 )
 from schemas.preprocess import (
+    ArtifactAdoptRequest,
     ArtifactReclaimRequest,
     CleanRequest,
     CleanupRequest,
@@ -1200,6 +1202,64 @@ def reclaim_artifact(
     """
     prefix, _ = split_data_key(request.object_key)
     return {"prefix": prefix, "deleted": store.delete_prefix(prefix)}
+
+
+def adopt_artifact(
+    store: ObjectStore, request: ArtifactAdoptRequest
+) -> dict[str, Any]:
+    """Copy one artifact's objects into the dataset's own prefix — DS-LAKE-025.
+
+    Save Dataset calls this for the FINAL it is adopting and for that
+    FINAL's lineage-root BRONZE, so the saved dataset owns its bytes
+    outright instead of borrowing the draft's. See `ArtifactAdoptRequest`
+    for the incident this closes.
+
+    Both prefixes come from the shared helpers — `split_data_key` for the
+    source (never a hand-rolled suffix slice: against a stage-suffixed key
+    like `data_gold.parquet` such a slice leaves a filename FRAGMENT, the
+    DS-LAKE-016-T02 defect that made `reclaim_artifact` silently match
+    nothing) and `artifact_prefix` for the destination, the same
+    `{datasetId}/artifacts/{artifactId}/` layout EXPORT already writes to.
+    The request validator guarantees `split_data_key` cannot return None,
+    so it is unpacked directly — a violation fails loudly, not silently.
+
+    Copies EVERY object under the source prefix, not just the data file:
+    `manifest.json`, `column_stats.json`, `feature_spec.json` and
+    `validation_report.json` are all read back later through keys derived
+    from the data key, so leaving any of them behind would repoint the row
+    at a data file whose sidecars still 404.
+
+    Idempotent in both directions, so a retried Save converges rather than
+    failing the second time: objects already at the destination are counted
+    and skipped (`ObjectStore.copy_prefix`), and an artifact that is
+    ALREADY dataset-owned degenerates to `copy_prefix(p, p)` — every object
+    exists at its own destination, so nothing is copied and the call
+    reduces to a listing of what is there.
+
+    The source objects are deliberately left in place. Deleting them is
+    cleanup's job and cleanup's alone (`global_definition_of_done`:
+    "Cleanup reclaims MinIO objects only"); doing it here would make Save
+    destructive, and a Save that half-failed would take the draft's own
+    bytes down with it.
+    """
+    src_prefix, data_filename = split_data_key(request.object_key)
+    dst_prefix = artifact_prefix(request.dataset_id, request.artifact_id)
+    keys = store.copy_prefix(src_prefix, dst_prefix)
+    present = set(keys)
+
+    def sidecar_if_present(filename: str) -> str | None:
+        key = f"{dst_prefix}{filename}"
+        return key if key in present else None
+
+    return {
+        "source_prefix": src_prefix,
+        "destination_prefix": dst_prefix,
+        "object_key": f"{dst_prefix}{data_filename}",
+        "feature_spec_key": sidecar_if_present(FEATURE_SPEC_FILENAME),
+        "validation_key": sidecar_if_present(VALIDATION_REPORT_FILENAME),
+        "column_stats_key": sidecar_if_present(COLUMN_STATS_FILENAME),
+        "keys": keys,
+    }
 
 
 def presign_artifact(store: ObjectStore, body) -> dict:

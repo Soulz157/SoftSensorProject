@@ -11,6 +11,7 @@ import { Step6ReviewSave } from './step-6-review-save'
 import { Step5DataCleaning } from './step-5-data-cleaning'
 import { useDatasetPipelineNav } from '@/hooks/dataset/use-dataset-pipeline-nav'
 import { useDatasetEditHydration } from '@/hooks/dataset/use-dataset-edit-hydration'
+import { useDatasetRowsRefetch } from '@/hooks/dataset/use-dataset-rows-refetch'
 import { useDatasetDraftHeartbeat } from '@/hooks/dataset/use-dataset-draft-heartbeat'
 import {
   dwFetchRequiredAtom,
@@ -50,7 +51,12 @@ export function WizardShell() {
   // Edit mode opens with no rows; this loads them from the committed artifact
   // (or materialises one). No-op in create mode, where the live fetch owns the
   // same atom.
-  useDatasetEditHydration()
+  const { reload: reloadEditRows } = useDatasetEditHydration()
+  // DS-LAKE-025. The remedy for the one recoverable synthetic cause. Lives
+  // here rather than on Step 6 because the banner it attaches to renders on
+  // EVERY step — someone who notices the stand-in rows at Step 2 should be
+  // able to fix it there, not only once Save has already refused.
+  const rowsRefetch = useDatasetRowsRefetch(reloadEditRows)
   useDatasetDraftHeartbeat()
   const mode = useAtomValue(dwModeAtom)
   const rowSource = useAtomValue(dwRowSourceAtom)
@@ -171,7 +177,19 @@ export function WizardShell() {
                 statistics and cleaning previews throughout, so the disclosure
                 cannot live on one screen the user might skip past. */}
             {rowSource === 'synthetic' && syntheticReason && (
-              <SyntheticDataBanner reason={syntheticReason} />
+              <SyntheticDataBanner
+                reason={syntheticReason}
+                action={
+                  rowsRefetch.available
+                    ? {
+                        label: 'Re-fetch from source',
+                        pendingLabel: 'Re-fetching…',
+                        pending: rowsRefetch.pending,
+                        onClick: rowsRefetch.refetch,
+                      }
+                    : undefined
+                }
+              />
             )}
             {showStageWarning && (
               <SyntheticDataBanner

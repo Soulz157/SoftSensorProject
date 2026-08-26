@@ -444,21 +444,36 @@ export class ArtifactCleanupAdminService
     const objectKeySharedWithFinalIds = new Set<string>();
     for (const version of liveVersions) {
       let cursor = version.artifactId;
-      let isDirectFinalParent = true;
+      // FINAL's own objectKey, filled on the first hop and compared against
+      // on the second — see the `hop === 1` branch below.
+      let finalObjectKey: string | null = null;
+      let hop = 0;
       while (cursor && !protectedIds.has(cursor)) {
         protectedIds.add(cursor);
-        const parent = await this.prisma.datasetArtifact.findUnique({
+        const node = await this.prisma.datasetArtifact.findUnique({
           where: { id: cursor },
-          select: { parentArtifactId: true },
+          select: { parentArtifactId: true, objectKey: true },
         });
-        cursor = parent?.parentArtifactId ?? null;
-        // First hop from FINAL (version.artifactId) lands on the artifact
-        // FINAL was promoted from — exactly the one sharing FINAL's bytes.
-        // Every subsequent hop is a genuine ancestor, re-derivable as usual.
-        if (isDirectFinalParent && cursor) {
+        if (hop === 0) {
+          finalObjectKey = node?.objectKey ?? null;
+        } else if (hop === 1 && node && node.objectKey === finalObjectKey) {
+          // The first hop from FINAL lands on the artifact it was promoted
+          // from. DS-LAKE-025: that no longer implies shared bytes. Save now
+          // COPIES the FINAL into the dataset's own prefix, so for anything
+          // saved after that change the parent keeps its own draft object and
+          // reclaiming it costs the FINAL nothing.
+          //
+          // Comparing the keys rather than assuming them equal keeps this pin
+          // exactly as strong as it was for pre-DS-LAKE-025 datasets (whose
+          // FINAL genuinely does share its parent's key — the incident
+          // `artifact-cleanup-eligibility.ts` documents) while letting a
+          // post-change draft's GOLD age out normally. Assuming equality here
+          // would pin one GOLD per saved dataset forever: storage nothing can
+          // ever reclaim and nothing reads.
           objectKeySharedWithFinalIds.add(cursor);
         }
-        isDirectFinalParent = false;
+        cursor = node?.parentArtifactId ?? null;
+        hop += 1;
       }
     }
     return { protectedArtifactIds: protectedIds, objectKeySharedWithFinalIds };

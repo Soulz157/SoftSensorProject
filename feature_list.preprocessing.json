@@ -117,9 +117,7 @@
     "version_axis": "DatasetVersion.versionNumber + semanticVersion — the save-time registry only",
     "key_decision": "Today DatasetVersion.stage IS the artifact-type axis and versionNumber is the version axis, conflated on one table. That conflation is precisely why intermediate stages create versions. The refactor splits them: DatasetArtifact is the freely-created stage ledger, DatasetVersion is the save-time registry pointing at one FINAL artifact.",
     "persistence_boundary": {
-      "dataset_version_commit_allowed": [
-        "SAVE_DATASET"
-      ],
+      "dataset_version_commit_allowed": ["SAVE_DATASET"],
       "dataset_version_commit_not_allowed": [
         "FETCH_RAW",
         "CLEANING",
@@ -266,9 +264,7 @@
       "priority": 2,
       "status": "completed",
       "progress": 100,
-      "dependencies": [
-        "DS-LAKE-001"
-      ],
+      "dependencies": ["DS-LAKE-001"],
       "description": "Introduce DatasetArtifact as the stage ledger and reduce DatasetVersion to a save-time registry, so that 'an artifact per stage' and 'a version only at Save' can both be true. Fix the missing currentVersionId foreign key in the same migration set.",
       "scope_correction": "SEQUENCING CHANGE MADE DURING IMPLEMENTATION, recorded rather than absorbed silently. This feature ships MIGRATION 1 (additive) ONLY. Migration 2 (the DatasetVersion reshape) moves to DS-LAKE-009, because the columns it drops — stage, objectKey, parentVersionId, operations — are still written by live code at dataset-version.authorized.service.ts:187 and preprocessing-job.service.ts:290, and read at :85, :102, :182, :284. Dropping them now regenerates a Prisma client without those fields and breaks `pnpm check-types` with NO feature in scope able to repair it until DS-LAKE-004/005 repoint the writers and DS-LAKE-009 moves the save boundary. CLAUDE.md §16 forbids completing a feature with a failing build, so the alternative was a knowingly-broken repo across four features. The two-migration ordering itself is unchanged; only migration 2's owning feature moved.",
       "baseline_correction": "The dev-DB baseline written into DS-LAKE-001 was carried over from Slice 1 and is STALE. Measured directly before touching the schema: 2 Datasets (not 1), 1 DatasetVersion stage=RAW (not 0), 0 PreprocessingJobs, 1 Dataset with a non-null currentVersionId, and 0 orphan currentVersionId pointers — so the new foreign key applies cleanly with no data repair. Confirmed the defect too: pg_constraint lists only Dataset_workspaceId_fkey and Dataset_createdById_fkey, so currentVersionId genuinely has no FK.",
@@ -353,9 +349,7 @@
       "priority": 3,
       "status": "completed",
       "progress": 100,
-      "dependencies": [
-        "DS-LAKE-002"
-      ],
+      "dependencies": ["DS-LAKE-002"],
       "description": "One authoritative key builder, a sha256 checksum captured at write time, and a manifest written beside every artifact. Kills the three-way template-literal drift between NestJS and Python.",
       "tasks": [
         {
@@ -433,9 +427,7 @@
       "priority": 4,
       "status": "completed",
       "progress": 100,
-      "dependencies": [
-        "DS-LAKE-003"
-      ],
+      "dependencies": ["DS-LAKE-003"],
       "description": "Repoint the existing materialize path at the artifact ledger. Fetching raw data produces a BRONZE artifact and nothing else — no DatasetVersion, no Dataset.currentVersionId write.",
       "tasks": [
         {
@@ -506,9 +498,7 @@
       "priority": 4.5,
       "status": "completed",
       "progress": 100,
-      "dependencies": [
-        "DS-LAKE-004"
-      ],
+      "dependencies": ["DS-LAKE-004"],
       "description": "Introduce DatasetDraft so Bronze/Silver/Gold/Validation can run as real async jobs during the wizard without creating a Dataset row that would be orphaned when the user closes the tab. Artifacts and jobs are owned by a draft until Save adopts them.",
       "tasks": [
         {
@@ -581,9 +571,7 @@
       "priority": 5,
       "status": "completed",
       "progress": 100,
-      "dependencies": [
-        "DS-LAKE-004"
-      ],
+      "dependencies": ["DS-LAKE-004"],
       "description": "The server cleaning pipeline is fully built, parity-tested and has zero client callers. Give it callers. Step 3 stops computing the cleaned frame in the browser and starts driving a preprocessing job that produces a SILVER artifact.",
       "tasks": [
         {
@@ -674,9 +662,7 @@
       "priority": 5.5,
       "status": "completed",
       "progress": 100,
-      "dependencies": [
-        "DS-LAKE-005"
-      ],
+      "dependencies": ["DS-LAKE-005"],
       "description": "The blocking half of the old DS-LAKE-005B. Establish the server-side access contract that makes the browser a viewport consumer: metadata, paginated tag catalog, cursor-paginated rows and bounded preview -- carried over a wire format and a sampling rule that bound cost, not merely count. Nothing downstream needs the query-engine benchmark, so nothing downstream waits for it.",
       "tasks": [
         {
@@ -848,9 +834,7 @@
       "status": "in_progress",
       "progress": 90,
       "progress_note": "2026-08-17: V01 closed live (DS-LAKE-012 session). AC5/V05 (browser memory does not grow proportionally with dataset size) remain open -- no live-browser heap measurement was run at any width this session, same scope decision recorded in DS-LAKE-012-T08/V06. The DS-LAKE-005B-D-T07 gate this feature was waiting on IS completed, so this is no longer blocked -- it is in_progress on its own last item.",
-      "dependencies": [
-        "DS-LAKE-005B-A"
-      ],
+      "dependencies": ["DS-LAKE-005B-A"],
       "description": "Move the browser from owner to viewport consumer, and close the contradiction v3.0.0 left open between keeping the client transform libraries as a fast local preview and forbidding client-side full-dataset work. Does not block DS-LAKE-006.",
       "dependency_correction": "DISCOVERED DURING T01, NOT ASSUMED AT PLANNING TIME -- the description's own 'Does not block DS-LAKE-006' claim has the edge backwards. Reading Step 3.1's DataAnalysisCard and Step 5's save pipeline directly (not inferring from titles) shows T01's Step 4/5 legs, T03's Step 4 half, and T05 all require a server-side feature-engineering path that only DS-LAKE-006 (feature_service.py) will ship, and DS-LAKE-006 is itself unstarted (all tasks pending). So the real edge is DS-LAKE-006 BLOCKS finishing three of this feature's five tasks, not the reverse. This does not stop DS-LAKE-006 from starting -- its own declared dependency is DS-LAKE-005 + DS-LAKE-005B-A, both task-complete -- but it means this feature cannot reach 'completed' without DS-LAKE-006 landing first, which is worth knowing before picking the next task here. STALE AS OF DS-LAKE-005B-B-T01's Step 5 leg (this session): DS-LAKE-006 shipped (flipped to completed the same session AC5 was fixed) and DS-LAKE-009 also shipped since this correction was written. Re-checked directly rather than assumed: the Step 5 leg's blocker was never really the Gold layer's existence, it was that Save had nothing artifact-derived to adopt yet -- DS-LAKE-009 gave it exactly that (Save now adopts the FINAL artifact by pointer), which is what actually unblocked the Step 5 leg, closed this session. The Step 4 leg was separately closed by DS-LAKE-005B-B-T04. Step 3.1 (DataAnalysisCard) remains a REAL capability gap, not a stale claim -- no chart endpoint exists today; re-check before assuming it too is stale.",
       "tasks": [
@@ -984,9 +968,7 @@
       "priority": 5.7,
       "status": "in_progress",
       "progress": 90,
-      "dependencies": [
-        "DS-LAKE-005B-A"
-      ],
+      "dependencies": ["DS-LAKE-005B-A"],
       "description": "The measurement half of the old DS-LAKE-005B. Introduce a Parquet-native reader behind a benchmark gate and decide the physical layout from numbers rather than from taste. Blocks nothing: it runs in parallel with DS-LAKE-006 onward and its output is a decision record, not an API.",
       "tasks": [
         {
@@ -1088,9 +1070,7 @@
       "status": "in_progress",
       "progress": 76,
       "progress_note": "Average of per-task progress across all 10 tasks ([80, 100, 80, 100, 100, 100, 100, 100, 0, 0]) = 76. T02/T04/T05a/T05b/T06/T07 closed this session (0->100 each). T01/T03 remain at 80 (server halves built and live-verified against real MinIO; live-browser-check + dedicated hook/component tests + Step-3.1-rule reactivity remain, gated on the separately-scoped precleanse-engine port). T08 was split this session into T08a (blocked -- scrubber-gating fork found in its own 'no new endpoint' premise, needs a user decision) and T08b (pending, independent new clipImpact endpoint).",
-      "dependencies": [
-        "DS-LAKE-005B-A"
-      ],
+      "dependencies": ["DS-LAKE-005B-A"],
       "description": "The capability gap DS-LAKE-005B-B-T01 and -T03 both hit independently and both recorded as REAL, not stale: Step 3.1's DataAnalysisCard renders a histogram, a boxplot, a scatter/regression chart and a correlation heatmap, and no endpoint in apps/backend or apps/python can supply any of them (re-grepped for histogram/boxplot/scatter/correlation across both, zero hits, three separate sessions). This feature builds that capability. It is a SERVER CAPABILITY BUILD, not a frontend migration -- filed as its own feature rather than as tasks under DS-LAKE-005B-B specifically because putting a new Python stats service inside a feature titled 'Frontend viewport migration' is the same mis-scoping that feature's own dependency_correction already caught once.",
       "blocking_edge": "THIS FEATURE BLOCKS DS-LAKE-005B-B. Same direction the DS-LAKE-006 edge ran for 005B-B's Step 4/5 legs, and stated up front here rather than discovered mid-task. DS-LAKE-005B-B-T01 (4 of 5 legs closed, Step 3.1 open) and DS-LAKE-005B-B-T03 (2 of 3 legs closed, Step 3.1 open) each have exactly ONE remaining leg, and it is the same leg, and it is this feature's T07. Neither can reach 'completed' until T07 lands. This feature does not depend on 005B-B in return.\n\nSTALE (this session) -- CORRECTED, NOT REPLACED SILENTLY. The claim about T01/T03 no longer holds: both were put to the user directly (the tension this field itself created was surfaced, not hidden) and formally RE-SCOPED -- their own titles now explicitly EXCLUDE Step 3.1, and under that narrower wording both are `completed`, 100%, ledger-only, zero code changed. This feature no longer blocks either TASK. What this field's underlying claim was actually tracking still stands one level up: DS-LAKE-005B-B's own FEATURE-level AC5 ('Browser memory does not grow proportionally with total dataset size') and V01's still-open 'complete artifact in React state' clause remain unmet, and DS-LAKE-005B-D-T07 is still what closes them -- see DS-LAKE-005B-B's own feature entry. Corrected relationship: THIS FEATURE IS A FOLLOW-ON to DS-LAKE-005B-B, not a blocker of its now-closed T01/T03 -- it still blocks DS-LAKE-005B-B's own FEATURE-level completion (AC5, V01), which is a different, narrower claim than 'blocks T01/T03.'",
       "acceptance_criteria_note": "DS-LAKE-005B-B's own AC5 ('Browser memory does not grow proportionally with total dataset size while the viewport is held constant') is FALSE TODAY and this feature is what makes it true -- not merely a leg of a task. DS-LAKE-005B-B-T04 deliberately left DataAnalysisCard reading a separately-computed, fully-unbounded analysisDataset rather than silently truncating its input to a HEAD-1000 page (see that task's own result for why that was the right call). So the unbounded full-frame read is still live in the tree, by design, until T07 removes it. DS-LAKE-005B-B-V01's still-open clause ('stores the complete artifact in React state') is the same object.\n\nUPDATE (DS-LAKE-005B-D-T07, this session): AC0 ('All four visuals in DataAnalysisCard render from bounded server responses, with no full-frame read anywhere in the component') now CLOSES -- histogram/boxplot (T01/T03), scatter (T04), and correlation (T07, this session) are all server-backed, and the `dataset` prop feeding the card's own tag-selection/classification/scaling/chart-row/stat-table work is BoundedSample-typed. AC5 and V05 are BOTH two-file criteria (DataAnalysisCard AND data-cropping-chart) -- T07 closes the DataAnalysisCard half of each (BoundedSample brand, sabotage-probed @ts-expect-error fixture) but data-cropping-chart is untouched and stays open for DS-LAKE-005B-D-T08. DS-LAKE-005B-B's mirrored AC5/V01 clause is the same object and is updated there directly.",
@@ -1250,10 +1230,7 @@
       "priority": 6,
       "status": "completed",
       "progress": 100,
-      "dependencies": [
-        "DS-LAKE-005",
-        "DS-LAKE-005B-A"
-      ],
+      "dependencies": ["DS-LAKE-005", "DS-LAKE-005B-A"],
       "description": "Port applyFeatures, selectColumns and toModelReady from the browser to Python behind a golden-fixture gate, then produce a GOLD artifact with its feature specification stored beside it. The full transform runs server-side against the SILVER artifact; the browser receives only bounded preview results and configuration state. This is the one genuinely new compute stage. Depends on the DS-LAKE-005B-A access contract only: the query-engine benchmark in DS-LAKE-005B-C is a measurement and does not gate this port.",
       "tasks": [
         {
@@ -1341,9 +1318,7 @@
       "priority": 7,
       "status": "completed",
       "progress": 100,
-      "dependencies": [
-        "DS-LAKE-006"
-      ],
+      "dependencies": ["DS-LAKE-006"],
       "description": "The mandatory gate before a dataset may become official. Builds on assert_frame_shape, which is already the frame contract's enforcement primitive.",
       "tasks": [
         {
@@ -1424,9 +1399,7 @@
       "priority": 8,
       "status": "completed",
       "progress": 100,
-      "dependencies": [
-        "DS-LAKE-007"
-      ],
+      "dependencies": ["DS-LAKE-007"],
       "description": "Surface the validation result inside the existing Review & Save step and block the Save button on FAIL. No step is added — this is the user-confirmed placement.",
       "tasks": [
         {
@@ -1492,9 +1465,7 @@
       "priority": 9,
       "status": "completed",
       "progress": 100,
-      "dependencies": [
-        "DS-LAKE-008"
-      ],
+      "dependencies": ["DS-LAKE-008"],
       "description": "Save Dataset becomes the only operation that creates a DatasetVersion. It promotes the validated GOLD artifact into a FINAL artifact and commits the registry row atomically.",
       "tasks": [
         {
@@ -1595,9 +1566,7 @@
       "priority": 9.5,
       "status": "completed",
       "progress": 100,
-      "dependencies": [
-        "DS-LAKE-009"
-      ],
+      "dependencies": ["DS-LAKE-009"],
       "description": "Keep Bronze/Silver/Gold artifacts available long enough for recovery, audit and retry, then reclaim them after the Final artifact and registry are safely committed. Cleanup must never run before Save has established the final persistence boundary. Draft abandonment and temporary object retention are handled explicitly rather than through ad-hoc deletion.",
       "tasks": [
         {
@@ -1727,9 +1696,7 @@
       "priority": 10,
       "status": "completed",
       "progress": 100,
-      "dependencies": [
-        "DS-LAKE-009"
-      ],
+      "dependencies": ["DS-LAKE-009"],
       "description": "Status transitions and a promotion path that moves metadata only. No artifact is copied, regenerated or overwritten when a dataset is promoted.",
       "tasks": [
         {
@@ -1803,9 +1770,7 @@
       "priority": 11,
       "status": "completed",
       "progress": 100,
-      "dependencies": [
-        "DS-LAKE-009"
-      ],
+      "dependencies": ["DS-LAKE-009"],
       "description": "The asynchronous hand-off from a committed dataset to a serving layer. Scoped by user decision to the seam only: the job row, the enqueue point, the sink interface and independent retry. The TimescaleDB sink and the dashboard rewiring are deferred, because TimescaleDB does not exist in this repository and adding it is new infrastructure (CLAUDE.md §3).",
       "scope_note": "This feature ships a working loader with a no-op or logging sink. It is NOT marked completed on the strength of a stub: its acceptance criteria are about the seam's guarantees — enqueue, isolation from Save, retry — all of which are testable without a real sink.",
       "tasks": [
@@ -2051,11 +2016,7 @@
       "priority": 13,
       "status": "completed",
       "progress": 100,
-      "dependencies": [
-        "DS-LAKE-004",
-        "DS-LAKE-005B-A",
-        "DS-LAKE-009"
-      ],
+      "dependencies": ["DS-LAKE-004", "DS-LAKE-005B-A", "DS-LAKE-009"],
       "description": "The dataset detail sheet was already written against the real artifact endpoints (per-tag stats, correlation, metadata, bounded rows) but every one of them was dead: `DatasetAuthorizedService.mapToResponse` selected `currentArtifactId` and never returned it, so every hook received `artifactId = null`. Connects the library page (detail sheet, grid cards, edit-mode hydration) to the artifact it already committed, in place of synthetic/wizard-computed numbers.",
       "findings_driving_this_slice": [
         "dataset.authorized.service.ts: `currentArtifactId` selected but dropped in `mapToResponse` -- absent from every dataset CRUD response, so the sheet's four artifact hooks always no-op.",
@@ -2132,9 +2093,7 @@
       "priority": 14,
       "status": "completed",
       "progress": 100,
-      "dependencies": [
-        "DS-LAKE-009B"
-      ],
+      "dependencies": ["DS-LAKE-009B"],
       "description": "DS-LAKE-009B built the whole cleanup mechanism — eligibility predicate, lineage pinning, idempotent reclaim, objectReclaimedAt stamping, all live-verified — and then never wired anything to CALL it. This feature gives it a caller, and closes the ACTIVE-draft hole that makes a closed browser tab leak its artifacts forever. No new eligibility logic beyond the ACTIVE branch; no new reclaim path.",
       "userDecisions": [
         "SCHEDULER MECHANISM (resolved): option C — `setInterval(...).unref()` in `onModuleInit`, NOT `@nestjs/schedule`. Rejected A (new dependency for one interval, CLAUDE.md §3) and B (external cron: token management, invisible to the repo, launchd on macOS). This codebase already uses exactly this pattern for the same class of work — `PreprocessingJobService.scheduleStragglerSweep` — so C reuses an established precedent instead of introducing a second scheduling idiom.",
@@ -2236,9 +2195,7 @@
       "status": "in_progress",
       "progress": 95,
       "progress_note": "All 4 tasks completed and unit-tested (100% each). Held at 95, not 100, and status at in_progress, not completed, ON PURPOSE: V01 (the live-browser Step 2 -> Step 3.1 walkthrough) is explicitly deferred, not verified — see V01's own result. Per CLAUDE.md, a feature is not marked completed while a verification item remains unperformed.",
-      "dependencies": [
-        "DS-LAKE-005B-D"
-      ],
+      "dependencies": ["DS-LAKE-005B-D"],
       "dependency_correction": "DS-LAKE-005B-D is itself only 76% (T01/T03 live-browser-check, T08a/T08b open) — but the ONLY part of it this feature's own findings actually cite is T07 (DataAnalysisCard retyped to BoundedSample, the `return null` guard removed, making the fetch-swallow window user-visible for the first time), which is CLOSED (100%, this session per 005B-D's own progress_note). The remaining open 005B-D work (histogram/boxplot live-browser-check, a new clipImpact endpoint) is unrelated to bronze-warm/preview-sample state surfacing. Proceeding on the user's explicit instruction, with this correction recorded rather than silently ignoring the formal dependency gate.",
       "description": "Between Step 2's fetch completing and Step 3.1's charts having anything to draw, three async things happen with no user-visible state: `useDatasetBronzeWarm`'s background materialize, then `useDatasetFeaturePreviewSample`'s /rows call, then each tab's own server request. The tabs handle their own window ('pending'/'loading'), but the two BEFORE them are silent by design, so Step 3.1 renders empty states that look like 'no data' rather than 'not ready yet'.",
       "findings": [
@@ -2309,9 +2266,7 @@
       "status": "completed",
       "progress": 100,
       "progress_note": "All 5 tasks completed, all 5 acceptance criteria satisfied, all 3 verification items completed LIVE against real MinIO (V01/V02/V03) or a real fake-store unit test (T02's own regression). Also closes with one correction the task list did not originally have: `createRawVersionService` is a 5th real BRONZE write site (found during T01's inspection, not enumerated in T04's own scope_note) — included rather than silently left on legacy naming forever. Also found DURING inspection, not in the original task list: `createRawVersionService` (dataset-version.authorized.service.ts) is a 5th live BRONZE write site (edit-mode re-fetch) T04's own scope_note did not enumerate — flagged for the user rather than silently included or silently skipped.",
-      "dependencies": [
-        "DS-LAKE-003"
-      ],
+      "dependencies": ["DS-LAKE-003"],
       "description": "Every artifact's data object is `data.parquet` under a UUID prefix, so telling a BRONZE from a GOLD while browsing a MinIO console requires a Postgres round trip. Name the stage into the file. Purely a diagnosability change — no layout, no lineage, no contract change.",
       "findings": [
         "FINAL WILL HAVE NO FILE OF ITS OWN, and this is correct, not a gap. `promoteDraftArtifactToFinalService` copies `objectKey`/`checksum` from its source verbatim and writes zero bytes — DS-LAKE-012-V03 proved live that GOLD and FINAL share one checksum ('promotion-by-pointer not byte-copy'). A `data_final.parquet` would require copying bytes, which `global_definition_of_done` forbids outright ('Promotion changes metadata only; no artifact is copied or regenerated'). So the map has three entries, and FINAL points at whatever its parent wrote.",
@@ -2394,10 +2349,7 @@
       "status": "completed",
       "progress": 100,
       "progress_note": "All 4 tasks completed (T01/T02 write+backfill the adoption, T03/T04 make edit mode actually read it and the banner correctly fall silent) and all 3 verification items completed, V01/V02 live against real Postgres+MinIO+FastAPI, V03 live against real Postgres. The user-observable half (T03/T04) is done, not merely the write-side plumbing (T01/T02).",
-      "dependencies": [
-        "DS-LAKE-009",
-        "DS-LAKE-013"
-      ],
+      "dependencies": ["DS-LAKE-009", "DS-LAKE-013"],
       "description": "Promoted from DS-LAKE-013's own deferred[] ('Edit-mode double-apply fix'). Save adopts FINAL only, so the dataset routes — gated `where: { id, datasetId }` — cannot read the BRONZE that is still sitting in MinIO, hard-pinned. Edit mode therefore hydrates FINAL, which is already cleaned and feature-engineered, and Step 3 replays its rules on top of it.",
       "findings": [
         "The bytes are all there. `artifact-cleanup-eligibility.ts` hard-pins a BRONZE reachable through a non-ARCHIVED DatasetVersion's parentArtifactId chain regardless of retention age, and DS-LAKE-012-T10 replayed exactly that BRONZE to a byte-identical FINAL checksum after a real cleanup run. This is a POINTER problem (datasetId is null on BRONZE) and an ACCESS-GUARD problem, not a data-loss problem.",
@@ -2472,10 +2424,7 @@
       "status": "completed",
       "progress": 100,
       "progress_note": "All 5 tasks and all 5 verification items completed (2026-08-19). T01-T04 built the holdout selection/split/persistence/replay mechanism; T05 wired it into a real training run (claim()/complete(), train.pys holdout-scoring block), finding and fixing two real bugs along the way (a response-model field silently stripped since T03; a feature_spec.json reshape collision on kind). V02/V03/V04 were proven in T05s own pass; V01 (holdout absence traced live through BRONZE/SILVER/GOLD, with FINAL confirmed structurally via a fresh code read) and V05 (a real scikit-learn model trained and scored on both a real test split and a real replayed holdout, using train.pys own functions directly) were proven live in a follow-up pass after being left honestly pending. Not covered anywhere this session: an actual Docker training-container spawn end to end (trainning-container.authorized.service.ts) -- the orchestration boundary is unit-tested (claim() exact call args) and the training/scoring mechanism itself is live-proven (this V05 pass), but the two have not been exercised together through a real container. T06 (added later): the holdout picker moved from Step 2 to Step 3.1 (EDA) -- see that task's own result for the reversal of userDecisions[0]'s original 'picked at Step 2' framing and the new server-side re-split endpoint this required.",
-      "dependencies": [
-        "DS-LAKE-016",
-        "DS-LAKE-017"
-      ],
+      "dependencies": ["DS-LAKE-016", "DS-LAKE-017"],
       "description": "A held-out slice of RAW rows, split at BRONZE and stored as a sidecar, used to validate a trained model against data that never touched the cleaning or feature pipeline. USER DECISION: split at BRONZE, not FINAL — the point is to ask 'does this model work on data as it actually arrives', which is a stronger and different question than a test-set score.",
       "userDecisions": [
         "HOLDOUT WINDOW AND LEAD-IN (resolved): the user picks the holdout as a DATE RANGE at Step 2, beside the existing fetch range — not a row count, not a percentage. Lead-in is NOT a user choice: it is inferred, because the rows before the holdout boundary are already inside the fetch window and cost nothing extra to carry. Lead-in is configured as a DURATION (`HOLDOUT_LEAD_IN_DURATION`, default 7d), never a row count: `rolling(60)` spans one hour at a 1-minute interval and 60 hours at a 1-hour one, so a fixed row count means something different for every interval while a duration means the same thing. The interval is already known at materialize time (Step 2 sets it), so the duration converts to rows there.",
@@ -2600,11 +2549,7 @@
       "priority": 19,
       "status": "completed",
       "progress": 100,
-      "dependencies": [
-        "DS-LAKE-007",
-        "DS-LAKE-008",
-        "DS-LAKE-009"
-      ],
+      "dependencies": ["DS-LAKE-007", "DS-LAKE-008", "DS-LAKE-009"],
       "description": "Validation is currently all-or-nothing: any failed check sets status FAILED and Save is refused in three places. In practice the checks are not equally serious — a duplicate timestamp or a broken frame shape means the artifact is unusable, while zero-variance tags and a high outlier fraction mean the DATA is worth questioning, which is a judgment the engineer should make rather than have made for them. Split the checks by severity so the first class blocks and the second warns prominently.",
       "userDecisions": [
         "BLOCKING SET (resolved): schema, duplicate_timestamps, and feature_consistency-when-failed. Advisory: missing_values, statistical, completeness — surfaced prominently, never blocking. missing_values was confirmed as advisory explicitly rather than assumed from 'the rest': a 20% missing rate is a bigger finding than an outlier fraction, so it was put back to the user separately and confirmed.",
@@ -2700,10 +2645,7 @@
       "priority": 20,
       "status": "in_progress",
       "progress": 90,
-      "dependencies": [
-        "DS-LAKE-005",
-        "DS-LAKE-005B-D"
-      ],
+      "dependencies": ["DS-LAKE-005", "DS-LAKE-005B-D"],
       "description": "Each Excel sheet carries several numbered configs (config_no), each with its own features[] and its own per-feature `range` string. That range is currently imported into the preset JSON and then dropped — nothing downstream reads it. Surface it in Step 3.2's CutOffSection as a per-tag cutoff proposal, sourced from the preset rather than hand-typed, with provenance back to the config it came from.",
       "findings": [
         "RANGE IS FREE TEXT, NOT A NUMBER PAIR, and one real preset already exercises five distinct shapes: `\"-\"` (no range, 2 features), `\"105-120 C\"` / `\"132-140 C\"` / `\"138-150 C\"` / `\"145-157 C\"` / `\"155-165 C\"` (closed, integer, unit C), `\">21500 kg/hr\"` x5 and `\">13000 kg/hr\"` (lower-open), `\"230-300 tph\"` (closed, different unit), `\"2.5-10 cP\"` (decimal min), `\"0.85-1.2\"` (decimal both, NO unit). Any parser must be written against this observed grammar, not an assumed one.",
@@ -2856,10 +2798,7 @@
       "status": "in_progress",
       "progress": 100,
       "progress_note": "2026-08-24 session: ALL FOUR TASKS (T01-T04) now COMPLETE -- mean of task progress (100+100+100+100)/4 = 100. Left at feature-level status 'in_progress' rather than 'completed' per CLAUDE.md's own rule against marking complete when verification hasn't been performed: V04 (holdout reconciliation) is still pending, deliberately out of scope all session (needs a live end-to-end fixture, not a code gap), and T03's own progress_note carries forward one unfixed gap (getExportDownloadService's presignArtifact call does redundant full-artifact reads on every download click). T01: streaming rewrite fixed a real memory-scaling regression (V02 verified via tracemalloc, 3.65x vs the old code's 18.2x growth for a 100x row-count increase), V03 verified. T02: NestJS job stage + client poller reuse. T03: presigned download route + UI control -- placed on DatasetDetailSheet, not Step 5 as originally planned (handleSave navigates away immediately on save success; confirmed the placement with the user before building). T04: EXPORT now owns its own object-prefix (like every other artifact type) and rides the real reclaim sweep, verified live end-to-end plus a permanent regression test pinning the exact safety property (a reclaimed EXPORT's derived prefix never touches its source artifact's own directory) that made the naive fix unsafe in the first place; the independent no_draft eligibility gap got its own fix (EXPORT ages off its own createdAt, the one documented exception to this predicate's 'never the artifact's own createdAt' rule). This feature's own title ('...at Step 5') is imprecise since T03 -- left as-is, cross-referenced elsewhere in this file. Commits: 5c10a0e+36a9cc8 (T01), 0f2533f+b7e2b87 (T02), 85d2b95+5254dc1+cb0c945+1943db8 (T03), 47a8477 (T04). Not merged, not pushed -- local commits on Dev only, per explicit instruction this session.",
-      "dependencies": [
-        "DS-LAKE-009",
-        "DS-LAKE-016"
-      ],
+      "dependencies": ["DS-LAKE-009", "DS-LAKE-016"],
       "description": "Export the committed dataset as CSV from the final step. No export path exists anywhere today: /rows is capped at 50,000 by an unconditional zod ceiling enforced in the pipe phase, /preview at 200. Neither can produce a full export, and accumulating pages client-side is forbidden outright by frontend_data_contract and is the exact defect DS-LAKE-012 already fixed once (76MB -> 489KB).",
       "findings": [
         "THERE IS NO EXPORT ENDPOINT AT ANY LAYER. Grepped intent, not assumed: the artifact read surface is /metadata, /tags, /column-stats, /rows, /preview, /histogram, /boxplot, /scatter, /correlation. Every one is bounded by design. Export is the first read path in this slice whose whole point is to be unbounded, so it cannot be a variant of an existing endpoint.",
@@ -3147,12 +3086,9 @@
       "id": "DS-LAKE-023",
       "title": "Split the validation holdout AFTER feature engineering — one feature-bearing validate_data.parquet, no replay",
       "priority": 23,
-      "status": "in_progress",
-      "progress": 88,
-      "dependencies": [
-        "DS-LAKE-018",
-        "DS-LAKE-022"
-      ],
+      "status": "completed",
+      "progress": 100,
+      "dependencies": ["DS-LAKE-018", "DS-LAKE-022"],
       "description": "The holdout is picked and cut at the Feature Engineering step, after Apply Feature, so validate_data.parquet carries the derived columns and their computed values — not raw rows a replay has to reconstruct. One file, not two. Cleaning then runs at the next step on the train side only; the holdout is never cleaned.",
       "why_not_reopening_ds_lake_018": "DS-LAKE-018 is completed at 100% with five live-verified verification items, including two (V01, V05) proven against real Postgres/MinIO/FastAPI. Reopening it to change its own split point would make its own completion claim false and mix verified history with unstarted work — the same reasoning MODEL-FLOW-011's first finding gives for staying out of MODEL-FLOW-002, and the same reasoning DS-LAKE-014 gives for being a separate feature from DS-LAKE-009B's cleanup mechanism. This feature supersedes specific parts of DS-LAKE-018 and says which; DS-LAKE-018's own entry gains a superseded_by note and nothing else.",
       "reversal_note": "REVERSES DS-LAKE-022's decisions.holdout_ui_moves_split_does_not, with both versions kept visible per DS-LAKE-005B-D's own correction convention. That decision refused to move the split on leakage grounds ('a rolling(60) window would straddle the boundary'). It was WRONG, and the reason it was wrong is in the code, not in the ledger: every kind in _compute_feature_column reads its own row or earlier rows only — lag reads i-k, delta reads i-1, rolling reads max(0, i-window+1)..i, and ratio/arith/log/formula/datetime read row i alone. Nothing reads forward. So computing features on the continuous frame and splitting afterwards yields exactly the values production would produce, because production's own new rows also read backwards into training-era history. DS-LAKE-018's HOLDOUT_LEAD_IN already conceded this point structurally: it COPIES seven days of training rows into the holdout sidecar specifically so the holdout's features can be computed. If a holdout's features seeing training rows were leakage, lead-in was leakage from the start. It is not.",
@@ -3168,7 +3104,7 @@
         "IMPLEMENTATION (2026-08-25), T01-T04+T06. Found and fixed the same class of 'DTO field never forwarded onto the stored job payload' bug DS-LAKE-022 hit twice — this time on the NEW `holdout` field on `CreateFeaturesSchema`, at `startDraftFeaturesJobService`'s create site. Found (not previously known): `validationHoldoutFrom` was written by only 1 of 3 legacy holdout writers — both materialize paths set `validationRowCount`/`validationMissingPct` but omit `validationHoldoutFrom`, and both consumers (`tryReplayHoldout`, `getArtifactHoldoutService`) hard-bail on that null — meaning a holdout picked at fetch time was invisible to replay/the holdout panel even before this feature. Not fixed here (legacy writers untouched, out of this feature's scope) — noted so it is not mistaken for new breakage. Found and fixed: `tryReplayHoldout`'s BRONZE-sibling resolver used an unordered `findFirst` — a draft resplit more than once can leave two artifacts sharing one `runId`; the rewritten resolver orders by `createdAt: 'desc'`.",
         "EDIT-MODE RE-SPLIT AUDIT (2026-08-26), SESSION FOLLOWING T06's OWN COMPLETION CLAIM. T06 marked the edit-mode holdout picker wired via the legacy BRONZE-resplit path (`useDatasetHoldoutResplit`). It was never actually reachable: the picker's own `disabled` gate (`previewFetchState !== 'ready'`) becomes true, in a fresh edit session, ONLY via `useDatasetFeaturePreviewSample`'s DATASET LEG (`adoptedBronzeArtifactId` present, `dwDraftArtifactIdAtom` NULL) — and `useDatasetHoldoutResplit`'s own guard (`if (!draftId) return`, before `setStatus('pending')`) requires `dwDraftIdAtom` NON-null. Enabled implies the resplit call returns before doing anything; the resplit call being real implies the section is still disabled. Apply wrote the atom, rendered no error, and contacted the server never. This was true in every edit session, unconditionally — not an edge case.",
         "TWO ADDITIONAL BUGS FOUND ALONGSIDE THE DEAD RESPLIT, ALL FIXED THIS SESSION EXCEPT WHERE NOTED. (a) `useDatasetGoldWarm` returned `void` — no pending/settled signal existed for a consumer to render \"Applying…\", gate navigation, or gate what Step 5 commits. FIXED: now returns `{warm, status, error}`, publishing `dwFeatureWarmStateAtom`/`dwFeatureArtifactStampAtom`. (b) `goTo` (the step indicator) never called `canAdvance` — a holdout Applied on Step 4 then immediately followed by a step-indicator jump to Step 5 could let `useDatasetCleaningScaleCommit` clean+scale the STALE pre-holdout feature artifact (AC3 violation). FIXED: `commit()` itself now refuses unless `dwFeatureWarmStateAtom==='ready'` AND the current recipe's `featureRecipeStamp` matches what the committed artifact was actually built from — the load-bearing gate, since it survives every navigation path including the indicator; `canAdvance`'s own Next-button gate is secondary. (c) `dwHoldoutRangeAtom` still fed `materialize`'s own BRONZE-stage holdout in BOTH `useDatasetBronzeWarm` and `useDatasetDraftPipeline`'s `ensureBronze` — after any BRONZE re-materialize, the feature-stage split ran a SECOND time: same window raised a hard 0-row refusal from Python's `features()`, a changed window silently wrote two `validate_data.parquet` objects with two rows carrying `validationRowCount`. FIXED: both call sites now pass `holdoutRange: null` unconditionally; the holdout is cut at the features stage only, in both modes, so BRONZE stays pristine.",
-        "UNIFYING EDIT MODE ONTO THE FEATURE-BEARING SPLIT WAS ATTEMPTED AND REVERTED MID-SESSION — NOT SHIPPED. The natural-looking fix (seed `dwDraftArtifactIdAtom` with a fresh BRONZE via `ensureDraft`/`ensureBronze` at Step 4 mount, matching what Step 5's own edit-mode cleaning already does) is WRONG: in edit mode that atom is the pipeline's CHAINED source — `useDatasetDraftPipeline.applyClean` advances it to the CLEANED SILVER once Step 5 runs, not a pinned BRONZE the way create mode keeps it. Seeding it with raw BRONZE at Step 4 makes the features+scale warm run on UNCLEANED rows the instant it fires, silently skipping cleaning for any edit-mode holdout — a real regression, caught before shipping via a second-opinion review, not by a test. There is also no stored pointer to the pre-features CLEANED artifact of a dataset's original run to adopt instead: `adoptedBronzeArtifactId` (`dataset.authorized.service.ts`'s own `artifacts` select, `where: {type:'BRONZE', objectReclaimedAt:null}`) names only the RAW lineage root. See DS-LAKE-023-T08 for the two real remaining options, neither built this session."
+        "UNIFYING EDIT MODE ONTO THE FEATURE-BEARING SPLIT WAS ATTEMPTED AND REVERTED MID-SESSION — NOT SHIPPED. The natural-looking fix (seed `dwDraftArtifactIdAtom` with a fresh BRONZE via `ensureDraft`/`ensureBronze` at Step 4 mount, matching what Step 5's own edit-mode cleaning already does) is WRONG: in edit mode that atom is the pipeline's CHAINED source — `useDatasetDraftPipeline.applyClean` advances it to the CLEANED SILVER once Step 5 runs, not a pinned BRONZE the way create mode keeps it. Seeding it with raw BRONZE at Step 4 makes the features+scale warm run on UNCLEANED rows the instant it fires, silently skipping cleaning for any edit-mode holdout — a real regression, caught before shipping via a second-opinion review, not by a test. There is also no stored pointer to the pre-features CLEANED artifact of a dataset's original run to adopt instead: `adoptedBronzeArtifactId` (`dataset.authorized.service.ts`'s own `artifacts` select, `where: {type:'BRONZE', objectReclaimedAt:null}`) names only the RAW lineage root. See DS-LAKE-023-T08 for the two real remaining options, neither built this session. RESOLUTION (2026-08-26): the revert was correct and stays reverted — seeding dwDraftArtifactIdAtom with a fresh BRONZE at Step 4 mount is still wrong for the reason stated above. T08 is closed as superseded by DS-LAKE-024 instead: giving edit mode its OWN real draft (rooted at the adopted BRONZE, not a client-side atom seed) makes the chained-source behavior applyClean already relies on become correct by construction, because the draft then follows create mode's own step order rather than trying to retrofit one atom to mean two different things."
       ],
       "decisions": {
         "discriminator_is_row_type_not_pipeline_version": "D1. See DS-LAKE-023-T04's own completion note above.",
@@ -3236,9 +3172,11 @@
         {
           "id": "DS-LAKE-023-T08",
           "title": "Edit-mode holdout re-split: give the features job a correctly-cleaned source",
-          "status": "blocked",
-          "progress": 0,
-          "scope_note": "BLOCKED on a real architectural question, not on effort. Edit mode's legacy pipeline order is BRONZE -> clean(SILVER) -> features+scale(GOLD) — cleaning must run before any features-job warm sources `dwDraftArtifactIdAtom`, or the resulting GOLD silently skips cleaning (see this feature's own findings, 'UNIFYING EDIT MODE... REVERTED MID-SESSION'). Two ways to close this, neither attempted:\n\n(a) BUILD A REAL ADOPT ROUTE. Walk the saved dataset's `currentArtifact.parentArtifactId` chain back to the pre-features CLEANED SILVER of its original run, and adopt THAT into a fresh draft (not `adoptedBronzeArtifactId`, which is raw). Genuinely new backend work: the intermediate SILVER may already be reclaimed by the ACTIVE-draft retention window, so this needs a documented fallback (force a re-clean? refuse the re-split with a clear message?) for that case, not just the happy path.\n\n(b) ACCEPT A STEP-5-FIRST REQUIREMENT. Leave `dwDraftArtifactIdAtom` to become the cleaned SILVER the way it already does today — via the user visiting Step 5 and running \"Save Cleaned Tags\" at least once this session, even with zero new cleaning rules (the existing hook already covers that case for free). The Step 4 holdout section's `disabled` gate already requires this (`mode==='edit' && !sourceArtifactId`, landed this session) — so (b) needs NO further code, only a decision that this UX (visit 5 once, then 4 becomes live) is acceptable, plus a visible message on Step 4 saying so (not yet added).\n\nUntil one of these lands, edit mode's holdout section is HONESTLY disabled rather than silently broken (D6's fix), but does not yet satisfy the user's own request that edit mode be re-splittable independent of a Step 5 visit."
+          "status": "superseded",
+          "progress": 100,
+          "superseded_by": "DS-LAKE-024",
+          "scope_note": "[unchanged — kept verbatim as the record of what was believed at the time]",
+          "result": "SUPERSEDED BY DS-LAKE-024, NOT BUILT. DS-LAKE-023's decision D2 (create_mode_only) carries an explicit escape clause — 'until/unless a future feature unlocks edit-mode feature editing, at which point this decision should be revisited'. DS-LAKE-024 ('Edit mode gets a DatasetDraft') is that feature.\n\nWHY OPTION (a) BECOMES UNNECESSARY, STATED CORRECTLY. This task's premise was that features must NOT source BRONZE, because edit mode's order was BRONZE -> clean -> features+scale and sourcing BRONZE would silently skip cleaning. That premise was true under the pre-DS-LAKE-022 order and is FALSE under it: 022 moves cleaning to operate on the FEATURE artifact, so the shared order becomes BRONZE -> features -> clean -> scale. features-from-BRONZE is therefore correct because THE ORDER CHANGED, not because edit mode now matches the old order. Do not read this closure as endorsing the order quoted in the scope_note above — implementing to that string reproduces the exact regression this task's own findings caught mid-session ('UNIFYING EDIT MODE... REVERTED MID-SESSION').\n\nSo option (a) — walk currentArtifact.parentArtifactId back to the pre-features cleaned intermediate of the original run and adopt it into a fresh draft — is not needed: the edit draft is rooted at the adopted BRONZE (DS-LAKE-024 decisions.seeded_from_the_adopted_bronze_never_a_refetch) and produces its own cleaned artifact in-session through the existing draft-scoped clean path. No adoption of an artifact belonging to an older run's pipeline stage, and no fallback needed for the reclaimed-intermediate case that made (a) genuinely new backend work.\n\nOPEN QUESTION THIS CLOSURE DOES NOT SETTLE: under the 022 order, cleaning is DOWNSTREAM of features, so the holdout section may no longer need a cleaned source at all — in which case this task is not superseded but DISSOLVED, its premise gone rather than satisfied elsewhere. The distinction matters for whether DS-LAKE-024-T04 inherits a cleaned-source precondition or none. Recorded here, decided in 022.\n\nCORRECTION TO OPTION (b), WITH THE DEFECT SPUN OUT. The scope_note claimed (b) needs 'NO further code, only a decision', because visiting Step 5 and running Save Cleaned Tags once — even with zero rules — would advance dwDraftArtifactIdAtom 'for free'. FALSE, and verified: dataset-draft-pipeline.ts:198 early-returns from applyClean when steps.length === 0, and step-5-data-cleaning.tsx:226 only calls applyClean when draft.length > 0. A user who wants zero cleaning rules can never advance the atom past null through Step 5 at all. (b) was never free.\n\nThat defect is NOT DS-LAKE-024's to fix — none of its seven tasks touch the clean pipeline, and the boundary belongs to use-dataset-draft-pipeline.ts. Spun out as DS-LAKE-022-T0N (see below) rather than left as a sentence in a closed task's result.\n\nTHE ORIGINAL REQUEST REMAINS PARTLY OPEN. The scope_note's own closing line — edit mode should be re-splittable independent of a Step 5 visit — is satisfied by DS-LAKE-024 only for datasets whose adopted root BRONZE is pristine. Per DS-LAKE-024-T04 and decisions.resplit_is_offered_only_when_it_can_succeed, a pre-DS-LAKE-018-T06 dataset gets a DISABLED picker naming re-fetch as the way forward. So 'edit mode is re-splittable' is true for post-T06 datasets and false for older ones, and DS-LAKE-024-T01's second read is what says how many datasets fall on each side. This task closes; that gap does not.\n\nTERMINOLOGY HAZARD, FLAGGED NOT FIXED: 'SILVER' means the CLEANED artifact in this ledger and the FEATURE artifact in DS-LAKE-022/024. One of the two must be renamed before either ledger is read by anyone who did not write it. Not done here — a rename touching two ledgers is its own change, not a footnote in a closure."
         }
       ],
       "acceptance_criteria": [
@@ -3295,6 +3233,284 @@
           "description": "Change a feature config after cutting a holdout and confirm the holdout cannot remain stale — either it re-splits or the edit is refused. A holdout whose bytes describe a recipe that no longer exists is the one failure mode this design introduces that the old one could not have.",
           "status": "completed",
           "note": "SATISFIED BY DESIGN, not a dedicated test (2026-08-25): D3 makes a stale holdout structurally impossible in create mode rather than something to detect after the fact — `dwHoldoutRangeAtom` is a dependency of the SAME debounced warm effect the feature recipe already re-fires on, so a feature-config edit and a holdout edit are the same code path, not two that could get out of sync. Editing the recipe re-derives Step 4's SILVER AND (if a holdout is set) re-splits it in one job call — there is no separate 'stale holdout' state to reach.\n\nCOMPLETED BY A SEPARATE GUARANTEE (2026-08-26), same status kept (this claim was true, just incomplete): the paragraph above proves a stale holdout cannot exist at the JOB-CALL level (one warm call, one bundled recipe). It does not by itself prove Step 5 can never CONSUME an artifact from a call that predates the user's latest edit — `goTo` (the step indicator) never called `canAdvance`, so a holdout Applied then immediately followed by a jump to Step 5 could reach `useDatasetCleaningScaleCommit` before the warm this Apply scheduled had landed, committing the PREVIOUS artifact with no error. Closed by a second, independent check inside `commit()` itself: it refuses unless `dwFeatureWarmStateAtom==='ready'` AND `dwFeatureArtifactStampAtom` (the committed artifact's own recipe signature) matches the CURRENT recipe's signature, computed the same way (`featureRecipeStamp`). This is what makes V07's own claim true of what Step 5 actually commits, not only of what Step 4 calls."
+        }
+      ]
+    },
+    {
+      "id": "DS-LAKE-024",
+      "title": "Edit mode gets a DatasetDraft, and Save writes a new VERSION of the existing Dataset",
+      "priority": 24,
+      "status": "pending",
+      "progress": 0,
+      "dependencies": [
+        "DS-LAKE-004B",
+        "DS-LAKE-009",
+        "DS-LAKE-013",
+        "DS-LAKE-017",
+        "DS-LAKE-018"
+      ],
+      "description": "Opening a saved dataset in Edit seeds a DatasetDraft from its adopted BRONZE, so every draft-scoped endpoint the wizard already has works unchanged — features, holdout resplit, cleaning jobs, chart tabs. Save from edit mode then writes a NEW DatasetVersion of the SAME Dataset instead of a new Dataset row.",
+      "findings": [
+        "EVERY PROCESSING ENDPOINT IS DRAFT-SCOPED, AND TWO HAVE NO DATASET-SCOPED TWIN AT ALL. createDraftFeaturesArtifactService and resplitDraftHoldoutService exist only on authorized/dataset-drafts. /clean, /job, /retry, /rows, /metadata, /tags and /column-stats each have a dataset-scoped sibling; /features and /holdout do not. GREP TO CONFIRM before building — this is inferred from the ledger's own silence, and silence is not evidence. DS-LAKE-005B-D-T05 recorded the identical shape once already for the chart endpoints ('have no dataset-scoped (non-draft) twin; adding one is out of scope here'), so the pattern is established, not novel.",
+        "EDIT MODE IS A RECIPE-METADATA EDITOR TODAY, NOT A RE-PROCESSING FLOW — WHICH IS WHY THE TWO SYMPTOMS ARE ONE CAUSE. DS-LAKE-009-V01 grepped every prisma.datasetVersion.create call site and found exactly ONE, inside saveDraftAsDatasetService. So edit mode cannot produce a new version, therefore cannot produce a new artifact, therefore cannot add a feature or re-split a holdout. 'Add a feature' and 'resplit the holdout' are not two bugs; they are one missing capability seen from two angles.",
+        "HALF OF THIS IS A RECORDED DECISION, BUT ITS STATED REASON MAY NO LONGER HOLD. DS-LAKE-018-T01 says: 'edit mode's picker is disabled since BRONZE is already split by the time a recipe is editable.' That was true when the picker lived at Step 2 and materialize() cut the holdout inline. DS-LAKE-018-T06 then moved the picker to Step 3.1, so dwHoldoutRangeAtom is null during Step 2's background warm, materialize runs WITHOUT a holdout, and resplit writes a split CHILD of a pristine root. DS-LAKE-017-T01 adopts lineage[0] — the parentArtifactId: null root — so for a post-T06 dataset the adopted BRONZE is PRISTINE and re-splittable. For a pre-T06 dataset it is not. The same feature therefore has two different truths depending on when the dataset was created, and neither the UI nor the ledger currently distinguishes them.",
+        "PRE-T06 DATASETS ALSO HYDRATE AN INCOMPLETE FRAME, AND NOTHING SAYS SO. Where materialize() cut the holdout inline, the adopted BRONZE's data.parquet is the TRAIN side only. Edit mode hydrating it shows fewer rows than the user fetched at Step 2, with no explanation — and wizard-shell's showStageWarning stays silent, because the stage genuinely IS BRONZE. The user reads 'normal'. Not introduced by this feature; made visible by it, because a draft seeded from that artifact inherits the gap.",
+        "GIVING EDIT MODE A DRAFT ALSO ARMS CONTROLS THAT WERE DELIBERATELY INERT. dwHoldoutRangeAtom already has an edit-mode hydration branch (config.holdoutDateRange ?? null) written as display-only. With a draft present the picker becomes live — and on a pre-T06 dataset resplit_holdout refuses with 422 ('re-splitting an ALREADY-split frame would permanently shed rows'). A clickable control that fails is worse than a disabled one, which is DS-LAKE-010-T08's own reasoning about a Resume button that typechecked and did nothing.",
+        "savedDatasetId CANNOT SIMPLY BE REUSED — IT WOULD CARRY TWO MEANINGS ON ONE COLUMN. Today it is written at Save and means 'this draft BECAME that Dataset' (an outcome). Edit mode needs 'this draft is EDITING that Dataset' (an origin), written at creation. Overloading it makes 'is this draft saved?' unanswerable from the row alone, and DatasetDraft.status already carries SAVED — so the two would have to be read together to mean anything. An earlier framing of this feature claimed the column could be reused as-is; that was wrong and is corrected here.",
+        "SAVE-AS-NEW-VERSION IS A DECOMPOSITION, NOT A REUSE. saveDraftAsDatasetService does five things in one transaction: create the Dataset, adopt FINAL, adopt the lineage-root BRONZE (DS-LAKE-017-T01), create the DatasetVersion, and flip the draft to SAVED. Edit mode needs the last four with the first replaced by 'resolve the existing Dataset'. The versionNumber allocation is genuinely reusable (DS-LAKE-009-T03 reads max inside the transaction so concurrent saves cannot collide on @@unique([datasetId, versionNumber])), as is the LoaderJob enqueue-after-transaction ordering (DS-LAKE-011-T03). An earlier framing called this 'the only new thing, and the mechanism already exists' — the mechanism exists, the decomposition does not.",
+        "DS-LAKE-022 AND -023 WIDEN THIS GAP RATHER THAN NARROWING IT. Under 022 cleaning operates on the SILVER (feature) artifact — an edit-mode session with no draft has no SILVER, so the new Step 5 would have nothing to clean. Under 023 the holdout is cut after apply_features, so 'cannot add a feature' becomes 'cannot resplit' by construction. And pipelineVersion means an edited dataset must know which pipeline order produced it before replaying anything. All three land on the same missing piece.",
+        "THE PRECEDENT FOR THIS FEATURE IS THE PROJECT'S OWN draft_first DECISION, APPLIED ONE CASE FURTHER. decisions.draft_first: 'A dedicated DatasetDraft entity owns wizard-time artifacts and jobs... the draft is what makes that possible without an orphan Dataset row.' An edit session IS a wizard run — same five (soon six) steps, same async jobs, same need for artifacts that must not become the live dataset until Save. It was left out because at the time edit mode changed nothing but metadata.",
+        "UPDATE (T00): zero instances today. All 5 adopted root BRONZE rows are pristine (validationRowCount null), so every existing dataset falls on the post-T06 side. The two-truths problem is real and producible (939862b0's lineage carries a resplit child) but no current dataset is on the pre-T06 side of it.",
+        "UPDATE (T00): zero instances today, same census as finding 3 — no adopted root is a train-side-only frame. Retained because the shape is producible, not because a dataset exhibits it."
+      ],
+      "decisions": {
+        "edit_mode_gets_a_draft": {
+          "chosen": "Seed a DatasetDraft on entering edit mode, rather than building dataset-scoped twins of /features and /holdout",
+          "date": "2026-08-26",
+          "rationale": "Four endpoints, both chart-tab surfaces, the readiness caption and the whole job-polling path already work against a draft and need no change. The twin approach duplicates that surface and still leaves the real gap open — an artifact produced by a dataset-scoped /features would have no DatasetVersion pointing at it, which is the same orphan shape draft_first exists to prevent.",
+          "rejected": {
+            "Dataset-scoped /features and /holdout twins": "Duplicates a working surface, and does not produce a version. Two implementations of the same processing step is how they diverge — the reason DS-LAKE-003 killed the three-way key-template drift and DS-LAKE-021-T02's poller was generalised rather than copied.",
+            "Reuse savedDatasetId for the origin pointer": "See findings — two meanings on one column, and status already carries the outcome half."
+          }
+        },
+        "origin_is_its_own_column": {
+          "chosen": "DatasetDraft.editingDatasetId String? — null for a create-mode draft",
+          "date": "2026-08-26",
+          "rationale": "Origin and outcome are different facts about different moments, exactly as DatasetArtifact keeps draftId (origin) alongside datasetId (adoption) rather than moving one into the other — DS-LAKE-004B's both_set_is_legal is the same shape. Nullable and additive, so every existing draft row and every existing reader is unaffected.",
+          "consequence": "Save branches on it: null takes today's create-a-Dataset path unchanged, non-null takes the new version path. One branch, read from a row, rather than a client-supplied mode flag the server would have to trust."
+        },
+        "seeded_from_the_adopted_bronze_never_a_refetch": {
+          "chosen": "The edit draft points at the existing adopted BRONZE artifact; it does not re-materialize from the source",
+          "date": "2026-08-26",
+          "revised": "2026-08-26 (T00 read 4)",
+          "rationale": "DS-LAKE-017 exists so edit mode reads raw instead of re-cleaning FINAL. Re-fetching would cost minutes, could return different rows (a PI archive absorbs backfills, per decisions.reproducibility_anchor), and would make an edit session non-reproducible against the version it started from. T00 read 4 adds a second, stronger reason: the intermediate artifacts a re-processing edit mode might otherwise root at are NOT retained — 0 of 7 SILVER and 0 of 33 GOLD are adopted, 3 SILVER and 28 GOLD already carry objectReclaimedAt, and 2 of 5 saved lineages contain no SILVER link at all. The adopted BRONZE is the only root that exists for every saved dataset.",
+          "correction": "THIS DECISION'S ORIGINAL RATIONALE WAS WRONG ABOUT WHY THE BYTES SURVIVE. It claimed artifact-cleanup-eligibility 'hard-pins a BRONZE reachable through a non-ARCHIVED DatasetVersion's parentArtifactId chain regardless of age'. T00 read 4 found :275 releases SILVER/GOLD BY AGE ALONE WHILE STILL LINEAGE-REACHABLE — so lineage-reachability is not the retention mechanism for intermediates. The 5 adopted BRONZE rows are intact, but the audit did not establish WHY: adoption (datasetId non-null) is the likely mechanism, not reachability. Whether adoption actually exempts a row from age-release is UNVERIFIED and is T01's third read. The conclusion stands on the census; the mechanism does not stand on anything yet.",
+          "consequence": "The draft's own artifact chain starts from an artifact whose draftId belongs to a DIFFERENT, older draft. Legal (DatasetArtifact carries both owners and the CHECK only forbids neither) but the edit draft does not OWN its root — cleanup must not treat that root as this draft's to reclaim (T05). If T01's third read finds adoption does NOT exempt from age-release, this decision does not merely need a new rationale: it needs re-deciding, because there would be no retention guarantee for any root at all.",
+          "blocked_on": "DS-LAKE-024-T01 read 3"
+        },
+        "resplit_is_offered_only_when_it_can_succeed": {
+          "chosen": "The holdout picker is enabled in edit mode only when the adopted root BRONZE is pristine; otherwise it is disabled with the reason stated",
+          "date": "2026-08-26",
+          "rationale": "resplit_holdout's 422 is correct and must not be softened — re-splitting an already-split frame permanently sheds rows. What must change is offering the action at all. The row already carries the answer: validationRowCount non-null means the root was split at materialize time. Same discipline as DS-LAKE-020-T05's unit-gate, which disables a toggle and states why rather than letting it fail on click.",
+          "consequence": "A pre-DS-LAKE-018-T06 dataset gets a disabled picker naming re-fetch as the way forward. A post-T06 dataset gets a working one. The UI states which case it is in rather than leaving the user to discover it."
+        }
+      },
+      "openDecisions": [
+        "WHAT HAPPENS TO A PREVIOUS VERSION'S ARTIFACTS WHEN A NEW ONE IS SAVED. The old FINAL is still referenced by the old DatasetVersion, so it is lineage-pinned and must survive (DS-LAKE-009B-T08). But Dataset.currentArtifactId and currentVersionId move to the new one, and the old version's status is untouched — so a dataset accumulates ACTIVE-eligible versions with no supersession. DS-LAKE-010-T05 enforces at most one ACTIVE version and deliberately does NOT auto-demote ('the caller demotes the old version first, as its own separate, auditable step'). Whether an edit-save should demote, or leave both at DRAFT, or refuse until the caller demotes, is not decided.",
+        "WHETHER AN ABANDONED EDIT DRAFT IS RECLAIMED ON THE SAME WINDOW AS A CREATE DRAFT. DS-LAKE-014's tiers measure from draft.updatedAt and branch on whether the draft owns artifacts. An edit draft owns none at creation (its root belongs to an older draft), so it looks exactly like an empty ACTIVE draft and would be auto-ABANDONED after CLEANUP_ACTIVE_EMPTY_MINUTES (15). That may be right — nothing was computed — but it means opening Edit and leaving the tab for twenty minutes silently abandons the session. Not decided; T05 must at minimum not reclaim the borrowed root either way.",
+        "WHETHER EDIT MODE MAY CHANGE THE TAG SET OR ONLY THE RECIPE. Adding a tag needs rows that were never fetched, so it needs a re-materialize — which decisions.seeded_from_the_adopted_bronze_never_a_refetch rules out for this feature. Removing a tag is just column selection and works today. The boundary should be stated in the UI rather than discovered as a failure.",
+        "OPENING EDIT ON A DATASET WITH NO ADOPTED BRONZE. `asd` (8b1c1d53) has currentArtifactId null and zero versions, so T02's 'point currentArtifactId at the adopted BRONZE' has nothing to point at. And T00 read 2 found a second minting path already live: step-6-review-save.tsx:417 calls storeRows(res.data.id, pipelineConfig) when !res.data.currentArtifactId, so an edit-SAVE already mints a BRONZE for exactly this case. Two paths would then mint a root for the same dataset — create-on-enter and save. Decide which owns it: refuse Edit until the dataset has an artifact, have create-on-enter materialize one, or keep the save-time path and have the draft start rootless. Not decided.",
+
+        "THE TAG SET IS ALREADY EDITABLE, AND ALREADY DIVERGES. T00 read 2: updateDatasetService persists `tags` without touching any artifact, so dataset.tags can already name a column no artifact contains — visible today as an all-em-dash row in the detail sheet's per-tag table, because perTagStatsOrdered orders by the DATASET's tag list and finds no sidecar entry. openDecisions[2] and T07 both frame this as a risk this feature would introduce; it is a current-state defect this feature makes reachable from a second surface. Decide whether 024 states the boundary (T07), fixes the divergence, or refuses tag edits outright."
+      ],
+      "tasks": [
+        {
+          "id": "DS-LAKE-024-T00",
+          "title": "Audit what edit mode already does before rescoping anything",
+          "status": "completed",
+          "progress": 100,
+          "blocks": ["DS-LAKE-024-T01", "DS-LAKE-024-T02"],
+          "scope_note": "PREMISE UNDER TEST: that a clean-only edit mode was already built once, worked, and was only abandoned because features could not be added. If true, rescoping 024 to clean-only is a restoration. If false, it is a NEW design that happens to resemble an earlier intention — and must be built, not restored. The ledger's own finding 2 predicts FALSE (one datasetVersion.create call site, inside saveDraftAsDatasetService), so this audit is expected to disconfirm the premise, not confirm it. Report what is found either way.\n\nSEVEN READS, all cheap:\n\n(1) DID EDIT MODE EVER PRODUCE A VERSION? Grep every prisma.datasetVersion.create call site and every caller of saveDraftAsDatasetService. If the only path runs through create-mode Save, then edit mode has never written a version and 'rollback' restores a metadata editor, not a clean-only pipeline. This single read decides whether the rest of this rescope is restoration or construction.\n\n(2) WHAT DOES EDIT MODE PERSIST TODAY? Read use-dataset-edit-hydration and whatever handles edit-mode Save. Enumerate exactly which fields a saved edit writes — name, description, tags, cleaning rules, recipe JSON — and whether any of it touches an artifact. 'Recipe-metadata editor' is the ledger's claim; confirm the boundary rather than inheriting the phrase.\n\n(3) WHAT LANDED IN 023-T08's SESSION, AND IS IT STILL THERE? T08's scope_note says a disabled gate `mode==='edit' && !sourceArtifactId` landed on Step 4's holdout section (D6's fix). Confirm it exists. Under a clean-only rescope the holdout section should not render in edit mode at all, so this gate becomes dead code — note it for removal rather than leaving a disabled control explaining a capability that no longer exists.\n\n(4) IS THE FEATURE ARTIFACT PINNED? saveDraftAsDatasetService adopts FINAL and the lineage-root BRONZE (DS-LAKE-017-T01). Check whether the intermediate feature artifact is adopted, or left owned by the draft and therefore reclaimable. A clean-only edit mode needs that artifact as its ROOT, so if it is unpinned, clean-only edit is impossible without either pinning it or replaying features from BRONZE. This is the same reclaimed-intermediate problem 023-T08 option (a) hit; a clean-only rescope inherits it rather than escaping it.\n\n(5) DOES CLEANING SEE ACROSS THE HOLDOUT BOUNDARY? Under DS-LAKE-023 the holdout is cut after apply_features, so the feature artifact holds train and validation in one frame. Read the imputation and scaling code paths and determine whether either fits statistics on the whole frame. If yes, validation leaks into train — and under a clean-only rescope that leak is present in EVERY edit session rather than some, because cleaning becomes the only thing edit mode does. Highest-severity read here; report the answer explicitly even if it is 'no leak'.\n\n(6) WHAT DOES 'SILVER' MEAN IN THE CODE, not in the ledgers? DS-LAKE-023 uses SILVER for the CLEANED artifact; 022/024 use it for the FEATURE artifact. Grep the enum or string literals and report which the code actually stores. 'Edit from SILVER' is unactionable until this is settled — under one reading it means re-cleaning already-cleaned data.\n\n(7) DOES ANY PRE-022 DATASET HAVE A FEATURES-BEFORE-CLEAN ARTIFACT AT ALL? If the pre-022 order was BRONZE -> clean -> features, then no such artifact exists in that lineage and clean-only edit is UNDEFINED for those datasets — they would need a features replay from BRONZE under the new order. Query how many existing datasets fall on each side of the 022 pipelineVersion boundary; that count decides whether this is an edge case or the majority.\n\nWrite all seven answers into this task's result. MODEL-FLOW-000's re-audit found five of seven tasks describing already-correct code; a rescope built on an unverified memory of what was built before is the same failure with a different cause.",
+          "result": "PREMISE DISCONFIRMED, AS PREDICTED. Edit mode has never produced a DatasetVersion, so rescoping 024 to clean-only is CONSTRUCTION, not restoration. All seven reads are answered below; reads 1, 3, 4, 6 and 7 are backed by grep plus a live query against local Postgres (soft_sensor_db, 2026-08-26).\n\n(1) DID EDIT MODE EVER PRODUCE A VERSION? NO. Exactly one `prisma.datasetVersion.create` call site outside the generated client and specs: `dataset-draft.authorized.service.ts:1393`, inside `saveDraftAsDatasetService`, whose only caller is `saveDraftAsDatasetController` (`dataset-draft.authorized.controller.ts:284`). No `datasetVersion.upsert`, no `createMany`, no `$executeRaw` anywhere in `apps/backend/src`. Client-side, `datasetDraftService.save` is reached only inside `step-6-review-save.tsx`'s `mode === 'create' && validation.draftId && validation.gateArtifactId` branch. DS-LAKE-009-V01's guarantee holds and finding 2 is confirmed.\n\n(2) WHAT DOES EDIT MODE PERSIST TODAY? `step-6-review-save.tsx:402` calls `datasetService.update(editingDatasetId, body)`. Server-side that is `updateDatasetService` (`dataset.authorized.service.ts:193-231`), a single `prisma.dataset.update` persisting — each only when the DTO carries it — name, description, sourceIds, tags, pipelineConfig, fileUrl, rowCount, missingPct. NOTE the client sends `workspaceId` in the body and the server SILENTLY IGNORES it; no branch for it exists. It writes no artifact and no version, and never touches `currentArtifactId`/`currentVersionId`. Hydration is read-only in the same sense: `use-dataset-edit-hydration.ts` sets dwRawDataset / dwRowSource / dwRowStage / dwSyntheticReason / dwSyntheticCause from `useDatasetVersionRows` and sets NO draft atom. 'Recipe-metadata editor' is confirmed, with one correction: `step-6-review-save.tsx:417` calls `storeRows(res.data.id, pipelineConfig)` when `!res.data.currentArtifactId`, so an edit-save DOES mint a BRONZE for a dataset that has no current artifact. Exactly one such row exists today (`asd`, 8b1c1d53, currentArtifactId null, 0 versions); for the other four saved datasets the branch cannot fire.\n\n(3) IS 023-T08's GATE STILL THERE? YES, and there are TWO edit-mode gates, not one. `step-4-feature-engineering.tsx:303-311` — `disabled={previewFetchState !== 'ready' || warmState === 'pending' || (mode === 'edit' && !sourceArtifactId)}` and, on the same `<ValidationHoldoutSection>`, `featureBearing={mode !== 'edit'}`. Both become dead code under a clean-only rescope and must be removed together: deleting only the `disabled` term would leave a LIVE but non-feature-bearing picker, which is worse than either end state.\n\n(4) IS THE FEATURE ARTIFACT PINNED? NO — and for most of them the bytes are already gone. `saveDraftAsDatasetService` adopts exactly TWO artifacts (`dataset-draft.authorized.service.ts` ~1305-1400): FINAL, and `lineage[0]`, the BRONZE root (DS-LAKE-017-T01). Every intermediate SILVER/GOLD keeps `datasetId: null`, stays under `drafts/`, and `artifact-cleanup-eligibility.ts:13,275` releases SILVER/GOLD BY AGE ALONE even while still lineage-reachable — only the one promoted directly to a live FINAL is spared (:290). Live query, adopted (datasetId non-null) counts: BRONZE 5, FINAL 5, EXPORT 2, SILVER 0, GOLD 0. Of the unadopted, 3 of 7 SILVER and 28 of 33 GOLD already carry `objectReclaimedAt`. A clean-only edit mode rooted at the existing feature artifact is therefore IMPOSSIBLE for existing datasets without either pinning SILVER at Save (a new adoption plus a new cleanup tier) or replaying features from the adopted BRONZE. 023-T08 option (a)'s reclaimed-intermediate problem is inherited in full, not escaped.\n\n(5) DOES CLEANING SEE ACROSS THE HOLDOUT BOUNDARY? NO LEAK — and the read's stated premise is FALSE. The premise says the feature artifact 'holds train and validation in one frame'; it does not. `features()` (`artifact_service.py:698-830`) splits via `_split_holdout(result, request.holdout, lead_in=timedelta(0))` AFTER apply_features/select_columns and BEFORE the scale tail, commits the TRAIN side to `request.target_key`, and writes the validate side to a SEPARATE sidecar (`sidecar_key(..., VALIDATE_DATA_FILENAME)`). The SILVER bytes are train-only. Every fitting site consequently fits on train rows alone: `to_model_ready` (`feature_service.py:519`) runs on the post-split `result` and returns `scaling_params`, which `build_feature_spec` persists; the holdout side is scaled later by `prepare_holdout_for_run` using `fitted_params=` and REFUSES with 422 rather than re-fitting (`artifact_service.py:619-690`, `routers/preprocess.py:438-455`). `clean()` (`artifact_service.py:456-490`) takes no holdout at all — `CleanRequest` (`schemas/preprocess.py:434`) carries only source_key/target_key/operations/precision — so it can only ever see what its source already contains. The cleaning ops that DO fit statistics (`cleaning_service.py`: `_fill` mean/median :155-157, `_op_zscore` :198-212, `_op_outlier_median` :268-283) fit over the array handed to them, and under BOTH pipeline orders the cut is strictly upstream: the legacy order cuts in `materialize()`, the reordered one cuts in `features()`, and `resplit_holdout()` (:388) re-cuts a PRISTINE BRONZE, never a cleaned frame. No path exists in which a holdout is cut downstream of `clean()`. Stated explicitly as the read demands: no validation leak, by construction of where the cut sits — not by accident of the current recipe.\n\n(6) WHAT DOES 'SILVER' MEAN IN THE CODE? BOTH meanings, discriminated by `pipelineVersion`. The enum (`schema.prisma:417-423`) is BRONZE/SILVER/GOLD/FINAL/EXPORT and the filename is fixed (`artifact-keys.ts:64`, `object_store.py:963` — `data_silver.parquet`). What varies is which STAGE commits it: `preprocessing-job.service.spec.ts:776` — 'a legacy CLEAN job (no scaleRecipe) still commits SILVER with pipelineVersion null'; :904 — 'a reordered FEATURE job (scale:false) commits SILVER with pipelineVersion 2'. So SILVER + pipelineVersion null = the CLEANED artifact (DS-LAKE-023's usage), SILVER + pipelineVersion 2 = the FEATURE artifact (DS-LAKE-022/024's usage). Neither ledger is wrong; they describe different rows. CONSEQUENCE: 'edit from SILVER' is unactionable unless it names the pipelineVersion, and any code branching on `type === 'SILVER'` alone is ambiguous TODAY. The terminology hazard flagged in 023-T08's closure is a CODE property, not merely a documentation one, and cannot be fixed by renaming a ledger.\n\n(7) HOW MANY DATASETS FALL ON EACH SIDE OF THE 022 BOUNDARY? The legacy side is the MAJORITY, so clean-only edit is undefined for most existing data. Live census: 6 Dataset, 5 DatasetVersion, 51 DatasetDraft (5 SAVED, 46 ABANDONED, 0 ACTIVE), 103 DatasetArtifact. Reading each dataset's current FINAL: exactly ONE is post-022 (`DatasetM1`, 8a101c61, pipelineVersion 2); four carry pipelineVersion null; one (`asd`, 8b1c1d53) has no current artifact and no version at all. Saved lineage chains: 4f27443e BRONZE>GOLD>FINAL; d3acec46 BRONZE>SILVER>GOLD>FINAL; 797aa76a BRONZE>GOLD>FINAL; 939862b0 BRONZE>BRONZE>GOLD>FINAL (a resplit child); 8a101c61 BRONZE>SILVER>GOLD>FINAL. TWO of five saved lineages contain no SILVER link whatsoever, and of the three that do, none of those SILVER rows is adopted or guaranteed to still hold bytes (read 4). A features replay from the adopted BRONZE is required for the majority — precisely what a clean-only rescope was meant to avoid.\n\nWHAT THIS MEANS FOR THE RESCOPE. Reads 4 and 7 together kill 'clean-only edit rooted at the existing feature artifact' as a cheap option: 0 of 33 GOLD and 0 of 7 SILVER are adopted, 28 GOLD and 3 SILVER are already reclaimed, and 2 of 5 saved lineages never had a SILVER at all. Any edit mode that re-processes must root at the adopted BRONZE and replay — which is what DS-LAKE-024's own `seeded_from_the_adopted_bronze_never_a_refetch` decision already chose. This audit therefore CONFIRMS 024's existing shape rather than supporting a rescope away from it. Read 5 removes the leakage objection entirely. Read 6 says any implementation must carry pipelineVersion alongside the type wherever it names SILVER.\n\nTWO READS RECORDED EARLY FOR T01 — they came free with this pass, and T01 is NOT thereby complete: its first read (does a dataset-scoped /features or /holdout twin already exist) is untouched here. (a) Every adopted root BRONZE has `validationRowCount` null, so all 5 are PRISTINE and re-splittable and T04's disabled branch has ZERO instances in this database today; the 8 BRONZE rows that DO carry a count are all unadopted draft-space rows. (b) The ledger's live contradiction is real and has exactly one instance: 8 artifacts carry `validationHoldoutFrom` against 9 carrying `validationRowCount`, so one artifact records a count with no boundary.\n\nWORK THAT LANDED BEFORE THIS AUDIT, AND WHETHER IT SURVIVES. Uncommitted in the tree: `packages/prisma/prisma/migrations/20260826120000_ds_lake_024_editing_dataset_id/` (adds `DatasetDraft.editingDatasetId`, a lookup index, and a hand-written PARTIAL unique index `WHERE status = 'ACTIVE' AND editingDatasetId IS NOT NULL`), the matching `schema.prisma` change, and `dwEditingDatasetIdAtom` (`store/dataset-studio.ts:468`, read at `step-6-review-save.tsx:92`, covered by two tests). NOTHING in this audit invalidates any of it — `origin_is_its_own_column` still holds and the partial unique index is the correct race guard for T02's resolve-or-create. The discrepancy is bookkeeping only: T02 still reads `pending` while its migration exists on disk. Left for T02 to claim.\n\nWHAT THIS COMPLETION RELEASES. T00 blocks T01 and T02. T02 is now UNBLOCKED and its migration is already on disk (see above), so T02 is the next task to claim. T01 is unblocked but NOT satisfied by this pass \u2014 only its second and third reads are recorded here; its first read (does a dataset-scoped /features or /holdout twin already exist) is still open and can change 024's scope.\n\nLEDGER DEFECT FOUND AND FIXED DURING THIS PASS. A duplicate copy of this task's entire entry was misfiled inside DS-LAKE-023's `tasks` array, immediately before DS-LAKE-023-T01, with identical id, title and scope_note. Completing one would have left the other `pending` and the ledger self-contradicting about whether the audit had run. The misfiled copy was removed; this entry, inside DS-LAKE-024, is now the only DS-LAKE-024-T00."
+        },
+        {
+          "id": "DS-LAKE-024-T01",
+          "title": "Confirm the gap by grep before building anything",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "Three reads, all cheap, all capable of changing this feature's scope. (1) Grep authorized/dataset-version for a features or holdout route — if a dataset-scoped twin already exists, half this feature is unnecessary. (2) Query, across existing datasets, whether lineage[0]'s validationRowCount is null or set: that number is exactly how many datasets get a working holdout picker versus a disabled one, and it decides whether T04 is a common path or an edge case. (3) Verify whether materialize() writes validationHoldoutFrom at all — DS-LAKE-018-T06 says it was 'not backfilled onto materialize' while T05 added the field to the response model, which is a live contradiction in the ledger and matters because a pre-T06 root with a row count but no boundary cannot be reasoned about at all.\n\nWrite all three answers into this task's result. MODEL-FLOW-000's re-audit found five of seven tasks describing already-correct code; the cost of skipping this read is a task list nobody can trust.",
+          "result": "ALL THREE READS ANSWERED. FIRST READ IS NEW; SECOND AND THIRD WERE RECORDED EARLY DURING T00 and are restated here for completeness.\n\n(1) NO DATASET-SCOPED /features OR WRITE-holdout ROUTE EXISTS. Dataset-version's authorized controller (dataset-version.authorized.controller.ts) has GET /:id/artifacts/:artifactId/holdout (:261) but it is READ-ONLY — 'Raw validation holdout window, if this dataset has one', resolving the BRONZE sibling and returning window/rowCount/missingRate, never writing a new split. No route named features anywhere in that controller or its service. The draft-scoped twins this compares against are POST /:id/holdout (dataset-draft.authorized.controller.ts:145, resplit) and POST /:id/artifacts/:artifactId/features + .../features/job (:171, :196). So half this feature is NOT unnecessary — the ledger's own predicted gap is confirmed as a gap, not a false alarm.\n\n(2) LINEAGE[0].validationRowCount ACROSS EXISTING DATASETS: all 5 adopted root BRONZEs are NULL (pristine). The only BRONZE rows carrying a non-null validationRowCount (8 of them) are unadopted, draft-space rows. So T04's disabled branch has ZERO live instances today — every existing dataset would get the WORKING picker. This is empirical for the current 6-dataset database, not a guarantee about future datasets; T04 still needs the check, it just won't visibly fire yet.\n\n(3) materialize() AND validationHoldoutFrom: the field is written inconsistently, confirming the ledger's contradiction rather than resolving it in either direction. Live count: 8 artifacts carry validationHoldoutFrom, 9 carry validationRowCount — one artifact has a row count with no recorded boundary. A root BRONZE with a count but no boundary cannot be reasoned about by any caller that needs the boundary (e.g. a future reconstruction path), so this gap is real and unresolved, not just a documentation mismatch.\n\nSCOPE CONCLUSION: T01 does not shrink DS-LAKE-024. Read 1 confirms the four-endpoint draft-scoped surface (features, features/job, holdout-resplit, plus the read path) has no dataset-scoped twin, which is exactly the gap decisions.edit_mode_gets_a_draft chose to close rather than duplicate. Reads 2-3 mean T04's gate is correct to build but will not visibly disable anything against today's data — acceptance criteria and V03 should still exercise the disabled branch synthetically (a test-seeded BRONZE with validationRowCount set), since no real dataset currently demonstrates it."
+        },
+        {
+          "id": "DS-LAKE-024-T02",
+          "title": "DatasetDraft.editingDatasetId, and the create-on-enter path",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "Additive nullable column (decisions.origin_is_its_own_column), plus a service that creates a draft from a saved dataset: name, workspaceId, sourceIds carried over from the Dataset row (the source-scoping guard draft_architecture.source_scoping requires depends on it — an unconstrained lookup would let a caller name any source id and have the server connect with that source's credentials), currentArtifactId pointed at the adopted BRONZE, editingDatasetId set.\n\nIDEMPOTENT ON RE-ENTRY. Opening Edit twice must not mint a second draft — DS-LAKE-010-T08 recorded duplicate ACTIVE drafts left by a browser-Back exit as a real defect on the model side, and this path makes them trivially easy to produce. Resolve an existing ACTIVE draft for the same editingDatasetId and return it rather than creating; dataset-draft-bronze.ts's own in-flight promise dedup is the client-side half of the same problem and its precedent for the shape.\n\nDO NOT re-materialize. The BRONZE already exists and is lineage-pinned.",
+          "result": "ALREADY IMPLEMENTED PRIOR TO THIS PASS — schema, migration, and the resolve-or-create service all existed on disk (uncommitted) before this task was picked up: schema.prisma:391 editingDatasetId with the partial unique index applied and confirmed live in the dev DB (20260826120000_ds_lake_024_editing_dataset_id, in _prisma_migrations), resolveOrCreateEditDraftService (dataset-draft.authorized.service.ts:199-321) and its controller route POST /dataset-draft/for-dataset/:datasetId (dataset-draft.authorized.controller.ts:79-95). What was actually missing, and what this pass added, is test coverage — the service had ZERO tests despite being fully wired to a live route.\n\nIMPLEMENTATION MATCHES THE SCOPE NOTE, WITH ONE IMPROVEMENT ON THE BORROWED-ROOT PROBLEM NOT ANTICIPATED IN THE SCOPE NOTE ITSELF. Rather than pointing the new draft's currentArtifactId at the original draft's BRONZE row directly (which every OTHER draft-scoped query, written `where: { id, draftId }`, would then 404 against), the service mints a SECOND DatasetArtifact row owned by the new draft (draftId set, datasetId null, fresh runId, parentArtifactId null) that shares the root's objectKey and every descriptive field verbatim — no bytes copied, no object written. This is the same share-by-pointer shape promoteDraftArtifactToFinalService already uses for FINAL. DatasetArtifact_owner_present's CHECK is 'at least one owner', not 'exactly one', so two rows sharing one objectKey is legal.\n\nSIX TESTS ADDED to dataset-draft.authorized.service.spec.ts (all passing, 88/88 in the file, 158/158 across dataset-draft + dataset-version): (1) resolves an existing ACTIVE edit draft without creating a second one; (2) creates a new edit draft on first entry, asserting the dataset lookup is scoped by createdById (never workspace membership), the root-BRONZE lookup is type:'BRONZE'+objectReclaimedAt:null (never a re-fetch), the shared artifact clones the root's fields with a fresh runId and null parentArtifactId, and currentArtifactId is pointed at the shared row; (3) 404 when the dataset does not exist or is not owned, before any artifact lookup; (4) 422 when the root BRONZE is reclaimed/absent, before any draft is created; (5) a P2002 race on the partial unique index falls back to reading the winner rather than throwing; (6) a non-P2002 transaction failure re-throws rather than being swallowed. Added a `dataset: { findFirst }` default to the file's buildPrisma test helper (previously absent — this service is the first caller of prisma.dataset.findFirst at the top level in this spec file) so the mock shape is typed correctly rather than smuggled in through an untyped override.\n\nLEDGER CORRUPTION FOUND AND FIXED DURING THIS TASK, UNRELATED TO THE CODE CHANGE. The JSON file itself was invalid on disk before this write — four missing commas between sibling object entries inside DS-LAKE-024's own decisions map and tasks array (after seeded_from_the_adopted_bronze_never_a_refetch, and between T03/T04, T04/T05, T05/T06), left behind by an earlier, abandoned editing pass that had already rewritten T03's scope_note and the seeded_from_the_adopted_bronze_never_a_refetch decision to reference this session's own T00 findings (\"T00 read 2\", \"T00 read 4\", \"T00 read 6\") before being interrupted without closing the braces correctly. All four were repaired by inserting the missing comma at the parser's exact error position (the unambiguous fix for this error class); no content was altered, added, or removed — verified by re-parsing and diffing task/verification/decision id lists before and after (8 tasks, 7 verification items, 4 decisions, all present, same order).\n\nNOT IN THIS TASK'S SCOPE, LEFT OPEN: no client-side call site exists yet — dwEditingDatasetIdAtom (store/dataset-studio.ts:468) is set locally by the wizard's own init path but nothing calls POST /for-dataset/:datasetId yet to actually mint or resolve the draft; wiring that, plus pointing dwDraftIdAtom/dwDraftArtifactIdAtom at its result, is DS-LAKE-024-T03's job (whose scope_note, per the corruption note above, already reflects T00's findings and additionally now covers arming the two edit-mode gates found in T00 read 3 — not touched here). A pre-existing, unrelated TS2345 type error at line ~1176 of the same spec file (a DS-LAKE-025 test's $transaction.mockImplementationOnce typing) predates this pass and was left untouched — out of this task's scope."
+        },
+        {
+          "id": "DS-LAKE-024-T03",
+          "title": "Point edit-mode hydration at the draft, and arm the two edit-mode gates together",
+          "status": "pending",
+          "progress": 0,
+          "scope_note": "use-dataset-edit-hydration sets dwDraftIdAtom / dwDraftArtifactIdAtom, and every draft-scoped hook then works with no change — useDatasetGoldWarm, useDatasetHoldoutResplit, useDatasetDraftPipeline, the four chart tabs, useDatasetFeaturePreviewSample, the readiness caption. That is the whole point of the approach and it should be verified rather than assumed: grep each of those hooks for its draftId source and confirm none reads a create-mode-only atom.\n\nT00 read 2 confirms hydration is read-only today: use-dataset-edit-hydration sets dwRawDataset / dwRowSource / dwRowStage / dwSyntheticReason / dwSyntheticCause from useDatasetVersionRows and sets NO draft atom. This task adds the two draft atoms; it does not restructure what is there.\n\nDS-LAKE-017-T03's adoptedBronzeArtifactId branch in resolveVersionId already resolves the right artifact for prefer:'raw'; thread that same id into the draft rather than adding a second resolution path.\n\nTWO GATES, ARMED TOGETHER OR NEITHER — NEW IN THIS TASK, from T00 read 3. step-4-feature-engineering.tsx:303-311 carries BOTH `disabled={previewFetchState !== 'ready' || warmState === 'pending' || (mode === 'edit' && !sourceArtifactId)}` and, on the same <ValidationHoldoutSection>, `featureBearing={mode !== 'edit'}`. No other task in this feature touches either line. Arming only the disabled term leaves a picker that is clickable but NOT feature-bearing — a control that responds and does nothing, which is exactly DS-LAKE-010-T08's Resume-button defect. T00 framed these as dead code to delete under a clean-only rescope; that rescope was disconfirmed, so they are to be ARMED, not removed.\n\nThe `!sourceArtifactId` term becomes satisfiable for the first time here, because dwDraftArtifactIdAtom now advances in edit mode. Note DS-LAKE-022-T0N (spun out of 023-T08): applyClean early-returns at steps.length === 0, so a zero-rule clean still cannot advance that atom. If the holdout gate is meant to be reachable without cleaning rules, this task depends on that fix; if it is meant to require cleaning, say so in the disabled copy.\n\nFIX THE STAGE BANNER WHILE HERE, or it becomes wrong in a new way. wizard-shell's showStageWarning fires when rowStage !== 'BRONZE' and its copy says cropping/cleaning/imputation apply on top of that processing. With a draft present the user can genuinely re-process, so the warning's premise changes; DS-LAKE-022-T04 also has to touch this string for the SILVER remap. Coordinate rather than editing it twice — and per T00 read 6 the remap must key on pipelineVersion, not on type === 'SILVER' alone."
+        },
+        {
+          "id": "DS-LAKE-024-T04",
+          "title": "Gate the holdout picker on whether the root is pristine",
+          "status": "pending",
+          "progress": 0,
+          "scope_note": "Per decisions.resplit_is_offered_only_when_it_can_succeed. The discriminator is the adopted root BRONZE's own validationRowCount: null means pristine and re-splittable, non-null means it was split at materialize time and resplit_holdout will refuse.\n\nZERO INSTANCES TODAY — T00 read 2 (recorded in T00, not T01). All 5 adopted root BRONZE rows have validationRowCount null, so every existing dataset gets the WORKING picker and the disabled branch has no instance in this database. The 8 BRONZE rows that do carry a count are unadopted draft-space rows and are never a draft root.\n\nSO KEEP THE GATE, BUT SPEND ALMOST NO UI ON IT. This task's original note said T01's second read decides how much copy the disabled state deserves; the answer is one line. The branch is not dead — 939862b0's lineage is BRONZE>BRONZE>GOLD>FINAL, a resplit child, which proves the split-root shape is producible — but it is not a path any current user is on. One sentence naming re-fetch as the way forward, no explanatory panel.\n\nDo NOT soften resplit_holdout's 422 — it protects against permanent row loss.\n\nV03 MUST BUILD ITS OWN SPLIT-ROOT FIXTURE. There is no dataset in the database whose adopted root is split, so V03 cannot be run against real data as currently worded."
+        },
+        {
+          "id": "DS-LAKE-024-T05",
+          "title": "Establish what pins the borrowed root, and decide the edit draft's own window",
+          "status": "pending",
+          "progress": 0,
+          "blocked_on": "DS-LAKE-024-T01 read 2",
+          "scope_note": "THIS TASK'S ORIGINAL PREMISE WAS DISPROVED BY T00 AND IS REPLACED. It read: the root BRONZE 'is already lineage-pinned by artifact-cleanup-eligibility (DS-LAKE-009B-T08) — CONFIRM that pin covers this case'. T00 read 4 found artifact-cleanup-eligibility.ts:275 releases SILVER/GOLD BY AGE ALONE while still lineage-reachable, so reachability is not a pin. The word 'already' cannot stand. This task's first job is no longer to confirm a known pin covers a new case; it is to establish WHICH mechanism retains an adopted BRONZE at all, then confirm that mechanism survives a second live reference from an edit draft. T01 read 2 supplies the predicate.\n\nSECOND, THE EDIT DRAFT'S OWN WINDOW (openDecisions[1]). An edit draft owns no artifacts at creation, so DS-LAKE-014's empty-ACTIVE tier would auto-ABANDON it after CLEANUP_ACTIVE_EMPTY_MINUTES (15). Decide whether that is correct (nothing was computed) or whether editingDatasetId exempts it, and state which. The heartbeat (DS-LAKE-014-T04) covers a genuinely open tab so the exposure is narrower than it looks, but it is not zero.\n\nTHIRD, NEW FROM T00 READ 4 AND NOT PREVIOUSLY IN THIS FEATURE: :275 releases SILVER/GOLD by age WITHOUT regard to whether the owning draft is still ACTIVE. A long edit session that runs features, then sits, can have its own freshly-created intermediates reclaimed mid-session — the artifact id remains in the draft's chain while the object is gone, so every non-null guard passes and the failure lands at file-open. This is not introduced by edit mode (create mode has the same exposure) but edit mode is where it will be seen, because an edit session is entered from a list rather than driven straight through. Determine whether the ACTIVE-draft case is genuinely unguarded and, if so, whether it belongs here or in DS-LAKE-014.\n\nVERIFY BY DELETION, not by exclusion: assert the borrowed root is still readable after a sweep that reclaimed the edit draft's own siblings in the same tick. Same standard MODEL-FLOW-011-T05 sets for an adopted run's prefix."
+        },
+        {
+          "id": "DS-LAKE-024-T06",
+          "title": "Save as a new VERSION of the existing Dataset",
+          "status": "pending",
+          "progress": 0,
+          "scope_note": "THE LARGEST TASK, and per the findings it is a decomposition of saveDraftAsDatasetService, not a reuse of it. That method creates the Dataset, adopts FINAL, adopts the lineage-root BRONZE, creates the DatasetVersion, and flips the draft to SAVED — all in one transaction. Extract the last four so both paths share them, with only the first differing (create versus resolve). Two copies of the version-creation logic is how DS-LAKE-009-V01's 'exactly one datasetVersion.create call site' guarantee dies, and that guarantee is an acceptance criterion of DS-LAKE-009.\n\nREUSABLE AS-IS, verify each: versionNumber allocation read inside the transaction (DS-LAKE-009-T03, concurrency-safe against @@unique([datasetId, versionNumber])); the server-side validation gate (DS-LAKE-009-T04 — never trust a client-supplied report); the frozen lineage snapshot (DS-LAKE-009, root-first walk); validationAdvisory (DS-LAKE-019-T05); the LoaderJob enqueue strictly AFTER the transaction resolves (DS-LAKE-011-T03).\n\nFAILURE BEHAVIOUR IS THE SAME RULE, ONE LEVEL UP: a failed edit-save must leave the ORIGINAL version intact and the draft re-saveable, exactly as ADR-DS-LAKE-005B-B-006's failureBehavior states for the create path. Never a Dataset whose currentVersionId points at a half-written row.\n\nopenDecisions[0] (what happens to the previous version) blocks the pointer-move half of this task, not the version-creation half."
+        },
+        {
+          "id": "DS-LAKE-024-T07",
+          "title": "State the tag-set boundary in the UI",
+          "status": "pending",
+          "progress": 0,
+          "scope_note": "Per openDecisions[2]: removing a tag is column selection and works; adding one needs rows that were never fetched, which this feature does not do. Say so where tags are edited, rather than letting an added tag produce a feature that silently computes all-Bad (source() returns None for a column that is not in the frame, so _compute_feature_column writes 0.0/STATUS_BAD for every row — a plausible-looking column of zeros, which after to_model_ready becomes a plausible-looking column of scaled zeros marked Good).\n\nThat failure mode is the reason this task is not cosmetic."
+        }
+      ],
+      "acceptance_criteria": [
+        "Opening a saved dataset in Edit creates at most one ACTIVE draft for it, however many times it is opened.",
+        "The draft's root is the existing adopted BRONZE; no re-materialize and no source fetch occurs on entering Edit.",
+        "A feature can be added in edit mode and produces a real artifact through the existing draft-scoped path.",
+        "The holdout picker is live in edit mode when the adopted root is pristine, and disabled with a stated reason when it is not.",
+        "Save from edit mode creates a new DatasetVersion of the SAME Dataset and no new Dataset row.",
+        "prisma.datasetVersion.create still has exactly one call site — DS-LAKE-009-V01's own guarantee survives the decomposition.",
+        "A failed edit-save leaves the original version intact, its pointers unmoved, and the draft re-saveable.",
+        "The borrowed root BRONZE survives every cleanup sweep for as long as any non-ARCHIVED version references it.",
+        "An added tag is refused or explained; it never produces a silently all-Bad feature column.",
+        "A create-mode save behaves byte-identically to today — editingDatasetId null takes the unchanged path."
+      ],
+      "verification": [
+        {
+          "id": "DS-LAKE-024-V01",
+          "description": "PROVE THE ENDPOINTS WORK UNCHANGED, WHICH IS THE ENTIRE PREMISE: in edit mode, add a feature and assert a real artifact row was created through createDraftFeaturesArtifactService with no new service written for it. If a twin had to be built after all, the chosen approach did not deliver what it was chosen for.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-024-V02",
+          "description": "Open Edit twice on the same dataset and assert exactly one ACTIVE draft exists. Sequential opens are the cheap case; also open concurrently, because the create-on-enter path is exactly where MODEL-FLOW-010-T08's duplicate-ACTIVE-drafts defect reappears and a sequential test cannot see it.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-024-V03",
+          "description": "BOTH SIDES OF THE PRISTINE GATE, in one pass: a dataset whose root BRONZE is pristine gets a working picker and a real resplit; one whose root was split at materialize time gets a disabled picker and no 422 is ever reached. Testing only the working side cannot distinguish a correct gate from no gate.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-024-V04",
+          "description": "Save from edit mode and assert: one new DatasetVersion, versionNumber incremented, SAME datasetId, zero new Dataset rows, and the previous version's row still present and readable. Then run two edit-saves concurrently and confirm they cannot collide on @@unique([datasetId, versionNumber]) — the guarantee DS-LAKE-009-T03 built and this decomposition must not lose.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-024-V05",
+          "description": "Force a mid-transaction failure on an edit-save and confirm the original version, Dataset.currentVersionId and Dataset.currentArtifactId are all unchanged, and the draft is still ACTIVE and re-saveable. DS-LAKE-009-V02 proved this for the create path against real Postgres; the edit path moves pointers that already have values, which is the case rollback has never been tested on.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-024-V06",
+          "description": "Run the cleanup sweep against an edit draft and assert the borrowed root BRONZE is still READABLE afterwards, in the same tick that reclaimed the draft's own new artifacts. Asserting only that the sweep skipped the draft cannot distinguish a working pin from a sweep that found nothing eligible.",
+          "status": "pending"
+        },
+        {
+          "id": "DS-LAKE-024-V07",
+          "description": "Confirm a create-mode save is byte-identical to today — same Dataset creation, same lineage snapshot, same LoaderJob enqueue ordering. The decomposition in T06 touches the one method every saved dataset in this system goes through; a regression there is worse than the gap this feature closes.",
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "DS-LAKE-025",
+      "title": "Saved dataset owns its bytes — Save copies FINAL+BRONZE out of drafts/",
+      "priority": 25,
+      "status": "completed",
+      "progress": 100,
+      "dependencies": ["DS-LAKE-017", "DS-LAKE-009B"],
+      "description": "A saved dataset's FINAL was adopted from its draft BY POINTER (objectKey: source.objectKey, ADR-DS-LAKE-005B-B-006) and Save kept that pointer as-is, so a persisted dataset's canonical bytes lived under drafts/{draftId}/artifacts/{artifactId}/ forever. Found live in this environment: datasets 4f27443e and d3acec46 had DatasetArtifact rows with objectReclaimedAt NULL while MinIO answered NoSuchKey — Postgres said the artifact was live, storage said it was gone. Root cause of the reported error: 'Could not read 'drafts/4283b2c3-.../data.parquet': NoSuchKey' surfacing as a bare 400 on edit-mode Save.",
+      "findings": [
+        "PROMOTION-BY-POINTER IS CORRECT AND MUST STAY. promoteDraftArtifactToFinalService writing FINAL.objectKey = source.objectKey verbatim is ADR-DS-LAKE-005B-B-006 and global_definition_of_done's own rule ('Promotion changes metadata only; no artifact is copied or regenerated'). The defect is not there — it is that Save treats the POINTER as permanent storage instead of copying at the one boundary meant to be permanent.",
+        "TWO SAVED DATASETS WERE ALREADY BROKEN, WITH NO RECOVERY PATH. MinIO bucket versioning is off, so the reclaimed objects are unrecoverable. 4f27443e ('dfasdf') has a real recipe (baseTags + customDateRange) and can be re-materialized from PI; d3acec46 ('DS-LAKE-012 verification run') has an empty pipelineConfig and cannot be repaired at all — it is a stale verification artifact.",
+        "THE SAME INCIDENT HID TWO MORE DEFECTS. (1) A read failure on edit-open was caught and silently replaced with SYNTHETIC rows (useDatasetVersionRows' fallback), indistinguishable in the UI from 'source temporarily unreachable'. (2) Nothing blocked Save while showing synthetic rows — step-6-review-save.tsx would derive tags/rowCount/missingPct from fabricated data and write them onto the real dataset row, permanently overwriting the recorded shape with invented numbers.",
+        "THE CLEANUP PIN THAT PROTECTED draft-space BYTES WAS A SINGLE POINT OF FAILURE, AND STILL IS FOR PRE-025 DATASETS. artifact-cleanup-eligibility.ts's objectKeySharedWithFinalIds pin is the only thing stopping a FINAL's bytes from being reclaimed as an ordinary GOLD sibling. It worked as designed; the incident's dead objects were found with objectReclaimedAt NULL, meaning they were deleted outside that ledger entirely (unattributed, no MinIO versioning to trace it)."
+      ],
+      "decisions": {
+        "copy_at_save_not_at_promotion": {
+          "chosen": "Add POST /v1/preprocess/artifacts/adopt (server-side copy_object) and call it from saveDraftAsDatasetService for the FINAL and the lineage-root BRONZE, before opening $transaction, writing the new keys inside it.",
+          "rationale": "Save is the final persistence boundary (global_definition_of_done); promotion is not. Copying at Save, not promotion, keeps ADR-DS-LAKE-005B-B-006 intact and makes 'MinIO is the single source of truth' actually hold for a registry dataset rather than for a draft.",
+          "consequence": "A FINAL saved after this change DOES get a file of its own under {datasetId}/artifacts/{artifactId}/ — the source stage's filename is kept (e.g. data_gold.parquet), so its key still names which stage produced it. object_store.py's DATA_FILENAME_BY_TYPE comment ('FINAL never gets a file of its own') describes promotion and is still true there; it does not describe what Save does one step later."
+        },
+        "cleanup_pin_compares_keys_not_position": {
+          "chosen": "computeProtectedArtifactIds pins the direct FINAL parent only when its objectKey literally equals FINAL's, not unconditionally by lineage position.",
+          "rationale": "After this change a dataset's GOLD parent no longer shares FINAL's bytes (FINAL has its own copy) — assuming shared-by-position would hard-pin one GOLD per saved dataset forever, storage nothing can ever reclaim and nothing reads. The pre-025 case (genuinely shared bytes) still needs the pin, so the predicate now checks the fact directly."
+        },
+        "no_backfill_this_session": {
+          "chosen": "Datasets saved BEFORE this change keep their drafts/-prefixed objectKey; no migration copies their bytes forward.",
+          "rationale": [
+            "Out of scope for the reported bug fix; the two broken datasets are handled individually (re-materialize one, leave the other, see acceptance criteria) rather than via a blanket backfill job."
+          ],
+          "consequence": "Every dataset saved before 2026-08-26 still depends on its drafts/{draftId}/ prefix surviving. See project_saved_dataset_owns_its_bytes.md memory — treat that prefix as load-bearing for old datasets."
+        }
+      },
+      "tasks": [
+        {
+          "id": "DS-LAKE-025-T01",
+          "title": "Typed missing-object error: ObjectNotFoundError -> 404",
+          "status": "completed",
+          "progress": 100,
+          "result": "object_store.py: ObjectNotFoundError(ObjectStoreError) + _read_failure() helper, applied at all 6 read-path raise sites (message text unchanged, byte-for-byte). routers/preprocess.py: _run maps ObjectNotFoundError to 404, checked BEFORE the existing ObjectStoreError->422 branch (subclass ordering). apps/backend/src/lib/python-client.ts: upstream 404 now throws AppException{statusCode:404} with an actionable message instead of falling into the blanket 4xx->400 mapping. Live-verified against the exact key from the reported error: now returns 404, not 400."
+        },
+        {
+          "id": "DS-LAKE-025-T02",
+          "title": "ObjectStore.copy_prefix + adopt_artifact service",
+          "status": "completed",
+          "progress": 100,
+          "result": "object_store.py: copy_prefix(src_prefix, dst_prefix) via server-side minio copy_object; idempotent (skips an existing destination object), refuses non-directory-style prefixes (guards the DS-LAKE-016-T02 relative-name-split defect one level up). artifact_service.py: adopt_artifact using the existing split_data_key/artifact_prefix helpers, copies data + every sidecar, degenerates to a listing when source == destination. New schemas ArtifactAdoptRequest/Response (same is_committed_artifact_key guard as /artifacts/reclaim). New route POST /v1/preprocess/artifacts/adopt. Live-verified against minio-local: 5 objects copied, checksums identical, idempotent, source left untouched."
+        },
+        {
+          "id": "DS-LAKE-025-T03",
+          "title": "saveDraftAsDatasetService copies FINAL + lineage-root BRONZE",
+          "status": "completed",
+          "progress": 100,
+          "result": "Dataset id minted via randomUUID() before the transaction (the copy calls need it and are I/O, so they run before $transaction opens, matching the discipline the existing validate/metadata calls already follow). Both adoptions run, then the FINAL and lineage-root DatasetArtifact rows are updated with the new objectKey/featureSpecKey/validationKey/columnStatsKey inside the transaction. The frozen DatasetVersion.lineage snapshot is repointed to the adopted keys, not the draft ones. A copy failure creates no Dataset row — Save stays all-or-nothing."
+        },
+        {
+          "id": "DS-LAKE-025-T04",
+          "title": "Cleanup pin generalized to compare objectKey, not position",
+          "status": "completed",
+          "progress": 100,
+          "result": "artifact-cleanup.admin.service.ts's computeProtectedArtifactIds walk now records FINAL's own objectKey on the first hop and only adds the direct parent to objectKeySharedWithFinalIds when the parent's objectKey equals it — never assumed by lineage position alone."
+        },
+        {
+          "id": "DS-LAKE-025-T05",
+          "title": "Block edit-mode Save on reclaimed-bytes synthetic rows",
+          "status": "completed",
+          "progress": 100,
+          "result": "use-dataset-version-rows.ts: new SyntheticCause type ('bytes-missing' | 'not-materialized' | 'unreadable'), set from an ApiError with status 404 (new ApiError class added to lib/fetcher.ts, carries .status). dwSyntheticCauseAtom in the store, threaded through use-dataset-edit-hydration.ts. step-6-review-save.tsx blocks Save when syntheticCause === 'bytes-missing' (scoped to that cause only — the other causes are the ordinary legacy-dataset case Save has always allowed) with a stated reason. synthetic-data-banner.tsx gained an optional action button; wizard-shell.tsx wires a new useDatasetRowsRefetch hook (reuses the existing datasetVersionService.createRaw path) so the banner offers a working 'Re-fetch from source' button rather than an instruction with nowhere to act on it."
+        }
+      ],
+      "acceptance_criteria": [
+        "Save Dataset never leaves a persisted dataset's FINAL objectKey under drafts/{draftId}/.",
+        "Promotion (promoteDraftArtifactToFinalService) is unchanged and remains pointer-only.",
+        "A missing object surfaces as a 404 with an actionable message, never a raw storage string.",
+        "Edit-mode Save is blocked while showing rows derived from a reclaimed FINAL, with a working re-fetch action offered.",
+        "The cleanup pin never permanently retains a GOLD sibling of a post-025 FINAL (their bytes no longer overlap).",
+        "No existing test regresses; lint/type-check hold at their pre-change baselines."
+      ],
+      "verification": [
+        {
+          "id": "DS-LAKE-025-V01",
+          "description": "Live copy_prefix round-trip against minio-local: copy an artifact prefix, assert data + every sidecar landed under {datasetId}/artifacts/{id}/, assert checksums match, assert a second call is a no-op, assert the source is untouched.",
+          "status": "completed",
+          "note": "PROVEN live: 5 objects copied (data + 4 sidecars), checksum_of(dst) == checksum_of(src), idempotent re-call returned the same key set, source object still exists()."
+        },
+        {
+          "id": "DS-LAKE-025-V02",
+          "description": "Live 404 check: request the exact key from the reported error and confirm the response is now 404 with an actionable message, not the original 400.",
+          "status": "completed",
+          "note": "PROVEN live against the running python service: the exact key drafts/4283b2c3-.../9a540274-.../data.parquet now returns HTTP 404."
+        },
+        {
+          "id": "DS-LAKE-025-V03",
+          "description": "Full regression: python pytest suite, backend jest suite, client vitest suite, pnpm lint, pnpm check-types, each compared against a stashed baseline of the working tree before this change.",
+          "status": "completed",
+          "note": "python: 772 passed, 74 skipped (baseline 771/74, +1 net new assertion widening). backend: 314 passed vs baseline 310 passed, same 10 pre-existing auth-spec failures in both. client: 652 passed vs baseline 649 passed, same 16 pre-existing failures in both. lint: 86 problems in both (0 added). check-types: client clean, backend only the 4 pre-existing auth.*.spec.ts errors in both."
         }
       ]
     }

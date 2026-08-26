@@ -27,8 +27,14 @@ import traceback
 from fastapi import APIRouter, Depends, HTTPException
 
 from dependencies import get_object_store
-from intergrations.object_store import ObjectStore, ObjectStoreError
+from intergrations.object_store import (
+    ObjectNotFoundError,
+    ObjectStore,
+    ObjectStoreError,
+)
 from schemas.preprocess import (
+    ArtifactAdoptRequest,
+    ArtifactAdoptResponse,
     ArtifactReclaimRequest,
     ArtifactReclaimResponse,
     ArtifactStatsResponse,
@@ -125,8 +131,23 @@ async def _run(handler, *args):
     except CleaningError as e:
         # Unsupported operation or unknown column — the caller can fix it.
         raise HTTPException(status_code=422, detail=str(e))
+    except ObjectNotFoundError as e:
+        # DS-LAKE-025. The artifact's BYTES ARE GONE — distinct from the
+        # 422 below, which means storage refused an otherwise-valid
+        # operation. Must sit ABOVE that branch: `ObjectNotFoundError`
+        # subclasses `ObjectStoreError`, so the broader `except` would
+        # swallow it if it came first.
+        #
+        # 404 rather than 422 because the caller's request was well-formed
+        # and the remedy is different in kind: nothing about the body can
+        # be corrected, the object has to be re-materialized from the
+        # upstream source. NestJS keys the recovery affordance it shows the
+        # user off this status, so collapsing the two back together would
+        # put a raw MinIO string in front of the user again with no action
+        # attached — the exact failure DS-LAKE-025 was opened for.
+        raise HTTPException(status_code=404, detail=str(e))
     except ObjectStoreError as e:
-        # Missing artifact, or storage refused the read/write.
+        # Storage refused the read/write — transient or misconfigured.
         raise HTTPException(status_code=422, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -577,6 +598,31 @@ async def reclaim_artifact(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(artifact_service.reclaim_artifact, store, body)
+
+
+@router.post(
+    "/artifacts/adopt",
+    response_model=ArtifactAdoptResponse,
+    summary="Copy one artifact's objects into a dataset's own prefix",
+    description=(
+        "DS-LAKE-025. Called by saveDraftAsDatasetService for the FINAL it "
+        "is adopting and that FINAL's lineage-root BRONZE, so a saved "
+        "dataset owns its bytes instead of borrowing the draft's. Copies "
+        "data + every sidecar server-side from "
+        "drafts/{draftId}/artifacts/{artifactId}/ to "
+        "{datasetId}/artifacts/{artifactId}/ and returns the new keys. "
+        "The source objects are left in place — removing them is cleanup's "
+        "job, never Save's. Idempotent: objects already at the destination "
+        "are reported, not re-copied, so a retried Save converges. Same "
+        "guard as /artifacts/reclaim — anything that is not a committed "
+        "artifact data key is refused."
+    ),
+)
+async def adopt_artifact(
+    body: ArtifactAdoptRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.adopt_artifact, store, body)
 
 
 @router.post(

@@ -13,6 +13,7 @@ import { PreprocessingJobService } from '../../dataset-version/authorized/prepro
 import { LoaderJobService } from '../../loader/loader-job.service';
 import {
   ArtifactStatsSchema,
+  PythonArtifactAdoptSchema,
   PythonBoxplotSchema,
   PythonColumnStatsSchema,
   PythonCorrelationSchema,
@@ -149,6 +150,178 @@ export class DatasetDraftAuthorizedService {
     };
   }
 
+  private isUniqueViolation(err: unknown): boolean {
+    return (
+      err instanceof PrismaTypes.PrismaClientKnownRequestError &&
+      err.code === 'P2002'
+    );
+  }
+
+  /**
+   * DS-LAKE-024-T02. Resolve-or-create the edit-mode draft for a saved
+   * Dataset — idempotent on re-entry, per DS-LAKE-010-T08's own recorded
+   * incident (duplicate ACTIVE drafts left by a browser-Back exit).
+   *
+   * NEVER re-materializes from the source. `decisions.
+   * seeded_from_the_adopted_bronze_never_a_refetch`: the dataset's own
+   * lineage-root BRONZE is already lineage-pinned by
+   * `artifact-cleanup-eligibility.ts` for as long as any non-ARCHIVED
+   * `DatasetVersion` references it, so its bytes are guaranteed present —
+   * re-fetching would cost minutes, could return DIFFERENT rows (a PI
+   * archive absorbs backfills), and would make the edit session
+   * non-reproducible against the version it started from.
+   *
+   * THE BORROWED-ROOT PROBLEM: every draft-scoped lookup in this service is
+   * written `where: { id, draftId }` (`resolvePristineBronzeRoot` above,
+   * `createDraftFeaturesArtifactService`, `startDraftCleanJobService`, …).
+   * An artifact owned by the ORIGINAL draft would 404 against the new edit
+   * draft's id. Rather than point `currentArtifactId` at a foreign row (no
+   * FK enforces that column, but every OTHER draft-scoped query would still
+   * refuse it), this mints a SECOND `DatasetArtifact` row — owned by the new
+   * draft (`draftId` set, `datasetId` null), sharing the root's `objectKey`
+   * (and every other descriptive field) VERBATIM. No bytes are copied and no
+   * object is written — this is the same share-by-pointer shape
+   * `promoteDraftArtifactToFinalService` already uses for FINAL, one layer
+   * over. `DatasetArtifact_owner_present`'s CHECK constraint is `datasetId
+   * IS NOT NULL OR draftId IS NOT NULL` — "at least one", not "exactly
+   * one" — so two rows sharing one `objectKey` is legal; there is no
+   * uniqueness constraint on `objectKey` either (the FINAL/GOLD pair already
+   * did this before DS-LAKE-025 gave FINAL its own copy).
+   *
+   * Race safety: the partial unique index
+   * `DatasetDraft_one_active_edit_per_dataset` (hand-written migration,
+   * `editingDatasetId` WHERE `status = 'ACTIVE'`) makes concurrent creates
+   * for the same dataset race on ONE index — the loser's insert throws P2002,
+   * caught below, and falls back to reading the winner's row rather than
+   * producing a second ACTIVE draft.
+   */
+  async resolveOrCreateEditDraftService(
+    user: Auth.UserPayload,
+    datasetId: string,
+  ) {
+    const existing = await this.prisma.datasetDraft.findFirst({
+      where: { editingDatasetId: datasetId, status: 'ACTIVE' },
+    });
+    if (existing) {
+      return {
+        statusCode: 200,
+        message: 'Edit draft resolved',
+        type: 'SUCCESS' as const,
+        data: this.mapDraft(existing),
+      };
+    }
+
+    // Ownership-scoped the same way `getDatasetService` scopes a read —
+    // `createdById`, not workspace membership (drafts use workspace
+    // membership because no Dataset exists yet to check ownership through;
+    // here one already does).
+    const dataset = await this.prisma.dataset.findFirst({
+      where: { id: datasetId, createdById: user.id },
+      select: { id: true, name: true, workspaceId: true, sourceIds: true },
+    });
+    if (!dataset) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Dataset not found',
+        type: 'ERROR',
+      });
+    }
+
+    // The dataset's adopted lineage-root BRONZE (DS-LAKE-017-T01/T02) — the
+    // SAME row `adoptedBronzeArtifactId` resolves
+    // (`dataset.authorized.service.ts`'s own `artifacts` select). Read
+    // directly here rather than through that select because this service
+    // needs the FULL row (to clone its descriptive fields onto the shared
+    // artifact below), not just its id.
+    const root = await this.prisma.datasetArtifact.findFirst({
+      where: { datasetId, type: 'BRONZE', objectReclaimedAt: null },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!root) {
+      throw new AppException({
+        statusCode: 422,
+        message:
+          'This dataset has no readable raw artifact to edit from — its ' +
+          'stored bytes may have been reclaimed. Re-fetch the dataset from ' +
+          'its source before editing.',
+        type: 'ERROR',
+      });
+    }
+
+    try {
+      const draft = await this.prisma.$transaction(async (tx) => {
+        const draft = await tx.datasetDraft.create({
+          data: {
+            workspaceId: dataset.workspaceId,
+            sourceIds: dataset.sourceIds,
+            name: dataset.name,
+            editingDatasetId: dataset.id,
+            createdById: user.id,
+          },
+        });
+
+        // Fresh runId: this is the START of the edit draft's OWN chain, a
+        // different run from whichever fetch originally produced `root`'s
+        // bytes (`resolvePristineBronzeRoot`'s own doc comment: "each
+        // re-fetch mints a new runId chain"). Every validation* field is
+        // copied verbatim — T04's pristine-root gate reads this shared row's
+        // `validationRowCount`, and it must describe the TRUE state of the
+        // underlying object, which `root` already recorded.
+        const sharedRoot = await tx.datasetArtifact.create({
+          data: {
+            draftId: draft.id,
+            runId: randomUUID(),
+            parentArtifactId: null,
+            type: 'BRONZE',
+            objectKey: root.objectKey,
+            format: root.format,
+            checksum: root.checksum,
+            schemaVersion: root.schemaVersion,
+            columnCount: root.columnCount,
+            featureCount: root.featureCount,
+            rowCount: root.rowCount,
+            missingPct: root.missingPct,
+            sizeBytes: root.sizeBytes,
+            operations: root.operations as PrismaTypes.InputJsonValue,
+            validationRowCount: root.validationRowCount,
+            validationHoldoutFrom: root.validationHoldoutFrom,
+            validationMissingPct: root.validationMissingPct,
+            createdById: user.id,
+          },
+        });
+
+        await tx.datasetDraft.update({
+          where: { id: draft.id },
+          data: { currentArtifactId: sharedRoot.id },
+        });
+
+        return draft;
+      });
+
+      return {
+        statusCode: 201,
+        message: 'Edit draft created',
+        type: 'SUCCESS' as const,
+        data: this.mapDraft(draft),
+      };
+    } catch (err) {
+      if (this.isUniqueViolation(err)) {
+        const winner = await this.prisma.datasetDraft.findFirst({
+          where: { editingDatasetId: datasetId, status: 'ACTIVE' },
+        });
+        if (winner) {
+          return {
+            statusCode: 200,
+            message: 'Edit draft resolved',
+            type: 'SUCCESS' as const,
+            data: this.mapDraft(winner),
+          };
+        }
+      }
+      throw err;
+    }
+  }
+
   async getDraftService(user: Auth.UserPayload, draftId: string) {
     const draft = await this.assertDraftAccess(draftId, user);
     return {
@@ -225,6 +398,7 @@ export class DatasetDraftAuthorizedService {
     status: string;
     currentArtifactId: string | null;
     savedDatasetId: string | null;
+    editingDatasetId: string | null;
     createdAt: Date;
     updatedAt: Date;
   }) {
@@ -236,6 +410,10 @@ export class DatasetDraftAuthorizedService {
       status: draft.status,
       currentArtifactId: draft.currentArtifactId,
       savedDatasetId: draft.savedDatasetId,
+      // DS-LAKE-024. Null for a create-mode draft — see
+      // DatasetDraft.editingDatasetId's own doc comment for why this is a
+      // separate column from savedDatasetId, not the same one read twice.
+      editingDatasetId: draft.editingDatasetId,
       createdAt: draft.createdAt.toISOString(),
       updatedAt: draft.updatedAt.toISOString(),
     };
@@ -1061,9 +1239,100 @@ export class DatasetDraftAuthorizedService {
         ),
       ).tags;
 
+    // DS-LAKE-025. Minted here rather than let Prisma default it inside the
+    // transaction, because the adoption calls below need the dataset id to
+    // build their destination prefix and they must run BEFORE the
+    // transaction opens — they are network I/O, and holding a Postgres
+    // transaction open across a multi-object MinIO copy is exactly the kind
+    // of long-running write this codebase keeps outside `$transaction`
+    // everywhere else (see the validate/metadata calls above).
+    const datasetId = randomUUID();
+
+    /**
+     * Copy one artifact's objects out of draft space and into the dataset's
+     * own prefix, returning the row updates that repoint it there.
+     *
+     * Until this existed, Save adopted the draft's artifact BY POINTER: the
+     * saved dataset's `objectKey` still read `drafts/{draftId}/...`
+     * permanently, so a registry dataset stayed readable only for as long as
+     * draft-space bytes survived. Two saved datasets were found with theirs
+     * already gone — `DatasetArtifact` rows live and `objectReclaimedAt`
+     * null, MinIO returning NoSuchKey — which is the failure this whole
+     * change exists to close.
+     *
+     * Promotion itself is untouched and stays pointer-only
+     * (ADR-DS-LAKE-005B-B-006, `global_definition_of_done`: "Promotion
+     * changes metadata only; no artifact is copied or regenerated"). The
+     * copy happens HERE, at Save, which is a different boundary: the point
+     * where the artifact stops being a draft's scratch output and becomes
+     * the registry's permanent record.
+     *
+     * One consequence worth naming: a FINAL adopted this way DOES get a file
+     * of its own, which `DATA_FILENAME_BY_TYPE`'s comment in object_store.py
+     * says it never does. That comment describes promotion, and still holds
+     * there. The copied object keeps its source stage's filename
+     * (`data_gold.parquet`), so a FINAL's own key still says which stage it
+     * came from.
+     */
+    const adopt = async (artifact: {
+      id: string;
+      objectKey: string;
+    }): Promise<{
+      objectKey: string;
+      featureSpecKey: string | null;
+      validationKey: string | null;
+      columnStatsKey: string | null;
+    }> => {
+      const adopted = PythonArtifactAdoptSchema.parse(
+        await postToPython(
+          '/v1/preprocess/artifacts/adopt',
+          {
+            object_key: artifact.objectKey,
+            dataset_id: datasetId,
+            artifact_id: artifact.id,
+          },
+          PYTHON_TIMEOUT.preprocess,
+        ),
+      );
+      return {
+        objectKey: adopted.object_key,
+        featureSpecKey: adopted.feature_spec_key,
+        validationKey: adopted.validation_key,
+        columnStatsKey: adopted.column_stats_key,
+      };
+    };
+
+    // Runs before the transaction, so a copy failure throws with NO dataset
+    // row created — Save stays all-or-nothing. `postToPython` already
+    // surfaces a python error as an AppException.
+    const lineageRoot = lineage[0];
+    const adoptedFinal = await adopt(finalArtifact);
+    // The FINAL-IS-the-root edge case (a draft promoted BRONZE straight to
+    // FINAL): one artifact, one adoption, and the same guard the pointer
+    // update below already applies.
+    const adoptedRoot =
+      lineageRoot.id === finalArtifact.id
+        ? adoptedFinal
+        : await adopt(lineageRoot);
+
+    // The frozen snapshot must record where the bytes ACTUALLY live now. A
+    // lineage entry still naming the draft key would point every later
+    // reader — audit, reproduction, `computeProtectedArtifactIds` — at an
+    // object cleanup is free to reclaim, re-creating the dangling pointer
+    // this change removes.
+    const adoptedKeyById = new Map<string, string>([
+      [finalArtifact.id, adoptedFinal.objectKey],
+      [lineageRoot.id, adoptedRoot.objectKey],
+    ]);
+    for (const link of lineage) {
+      const adoptedKey = adoptedKeyById.get(link.id);
+      if (adoptedKey) link.objectKey = adoptedKey;
+    }
+
     const { dataset, version } = await this.prisma.$transaction(async (tx) => {
       const dataset = await tx.dataset.create({
         data: {
+          id: datasetId,
           name: dto.name,
           description: dto.description ?? null,
           workspaceId: draft.workspaceId,
@@ -1081,7 +1350,7 @@ export class DatasetDraftAuthorizedService {
       // never copied/rewritten (DatasetArtifact.datasetId's own comment).
       await tx.datasetArtifact.update({
         where: { id: finalArtifact.id },
-        data: { datasetId: dataset.id },
+        data: { datasetId: dataset.id, ...adoptedFinal },
       });
 
       // DS-LAKE-017-T01: adopt the lineage ROOT (BRONZE) too, ONE POINTER
@@ -1097,11 +1366,17 @@ export class DatasetDraftAuthorizedService {
       // FINAL-IS-the-root edge case (a draft promoted BRONZE straight to
       // FINAL, zero intermediate stages) so that row is not update()'d
       // twice for the same field.
-      const lineageRoot = lineage[0];
+      //
+      // DS-LAKE-025: `lineageRoot` is now hoisted above the transaction (it
+      // is needed to build the adoption call), and the update carries
+      // `adoptedRoot`'s new keys alongside the pointer. The BRONZE hard pin
+      // in `artifact-cleanup-eligibility.ts` still exists and still matters
+      // for datasets saved BEFORE this change; for one saved after it, the
+      // root's bytes are no longer in draft space for that pin to protect.
       if (lineageRoot.id !== finalArtifact.id) {
         await tx.datasetArtifact.update({
           where: { id: lineageRoot.id },
-          data: { datasetId: dataset.id },
+          data: { datasetId: dataset.id, ...adoptedRoot },
         });
       }
 

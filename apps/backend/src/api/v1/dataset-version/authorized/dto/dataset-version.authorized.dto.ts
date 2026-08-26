@@ -741,6 +741,25 @@ export const PythonMetadataSchema = z.object({
 });
 
 /**
+ * apps/python `schemas.preprocess.ArtifactAdoptResponse` (DS-LAKE-025).
+ *
+ * The keys Save writes back onto the adopted `DatasetArtifact` rows, so a
+ * saved dataset stops pointing at `drafts/{draftId}/...` for the rest of its
+ * life. The three sidecar fields are nullable for the same reason their
+ * columns are: an artifact that never had a feature spec or a validation
+ * report has no key to record.
+ */
+export const PythonArtifactAdoptSchema = z.object({
+  source_prefix: z.string(),
+  destination_prefix: z.string(),
+  object_key: z.string(),
+  feature_spec_key: z.string().nullable(),
+  validation_key: z.string().nullable(),
+  column_stats_key: z.string().nullable(),
+  keys: z.array(z.string()),
+});
+
+/**
  * apps/python `schemas.preprocess.HistogramResponse` (DS-LAKE-005B-D-T01).
  * `domain_min`/`domain_max` are `null` together when no requested tag
  * qualifies (fewer than 2 Good values) — never independently null, since the

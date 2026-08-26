@@ -48,7 +48,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from minio import Minio
-from minio.commonconfig import ENABLED, Filter, Tag
+from minio.commonconfig import ENABLED, CopySource, Filter, Tag
 from minio.datatypes import Tags
 from minio.error import S3Error
 from minio.lifecycleconfig import Expiration, LifecycleConfig, Rule
@@ -121,6 +121,33 @@ TMP_LIFECYCLE_EXPIRY_DAYS = 7
 
 class ObjectStoreError(RuntimeError):
     """Storage failure with a message safe to surface to the caller."""
+
+
+class ObjectNotFoundError(ObjectStoreError):
+    """The object is not there — as distinct from storage refusing the read.
+
+    A subclass, not a sibling, so every existing `except ObjectStoreError`
+    keeps catching it exactly as before; only a caller that WANTS to tell
+    the two apart has to change. That distinction matters because the two
+    have different remedies: a missing object is gone for good (the bucket
+    is not versioned) and the caller's only recovery is to re-materialize
+    from the upstream source, while any other storage fault is transient or
+    a misconfiguration, where re-fetching would be the wrong response.
+    """
+
+
+def _read_failure(key: str, err: S3Error) -> ObjectStoreError:
+    """Pick the failure type for a GET that raised — see `ObjectNotFoundError`.
+
+    One helper rather than the same `if err.code == ...` inline at each of
+    the read paths below, which is exactly how those six sites would drift.
+    The message text is byte-for-byte what each site raised before this
+    split, so nothing matching on it needs updating.
+    """
+    message = f"Could not read '{key}': {err.code}"
+    if err.code == "NoSuchKey":
+        return ObjectNotFoundError(message)
+    return ObjectStoreError(message)
 
 
 @dataclass(frozen=True)
@@ -484,8 +511,7 @@ class ObjectStore:
             response = self._client.get_object(self.bucket, key)
             return response.read()
         except S3Error as err:
-            raise ObjectStoreError(
-                f"Could not read '{key}': {err.code}") from err
+            raise _read_failure(key, err) from err
         finally:
             if response is not None:
                 response.close()
@@ -520,8 +546,7 @@ class ObjectStore:
                 written += len(chunk)
             return written
         except S3Error as err:
-            raise ObjectStoreError(
-                f"Could not read '{key}': {err.code}") from err
+            raise _read_failure(key, err) from err
         finally:
             if response is not None:
                 response.close()
@@ -549,8 +574,7 @@ class ObjectStore:
             response = self._client.get_object(self.bucket, key)
             payload = response.read()
         except S3Error as err:
-            raise ObjectStoreError(
-                f"Could not read '{key}': {err.code}") from err
+            raise _read_failure(key, err) from err
         finally:
             if response is not None:
                 response.close()
@@ -594,8 +618,7 @@ class ObjectStore:
             response = self._client.get_object(self.bucket, key)
             return json.loads(response.read())
         except S3Error as err:
-            raise ObjectStoreError(
-                f"Could not read '{key}': {err.code}") from err
+            raise _read_failure(key, err) from err
         finally:
             if response is not None:
                 response.close()
@@ -613,8 +636,7 @@ class ObjectStore:
             response = self._client.get_object(self.bucket, key)
             return sha256_hex(response.read())
         except S3Error as err:
-            raise ObjectStoreError(
-                f"Could not read '{key}': {err.code}") from err
+            raise _read_failure(key, err) from err
         finally:
             if response is not None:
                 response.close()
@@ -678,8 +700,7 @@ class ObjectStore:
             response = self._client.get_object(self.bucket, key)
             payload = response.read()
         except S3Error as err:
-            raise ObjectStoreError(
-                f"Could not read '{key}': {err.code}") from err
+            raise _read_failure(key, err) from err
         finally:
             if response is not None:
                 response.close()
@@ -721,6 +742,59 @@ class ObjectStore:
                 f"Could not clear prefix '{prefix}': {err.code}"
             ) from err
         return removed
+
+    # ── copy ─────────────────────────────────────────────────────────────
+
+    def copy_prefix(self, src_prefix: str, dst_prefix: str) -> list[str]:
+        """Copy every object under `src_prefix` to the same name under
+        `dst_prefix`. Returns the destination keys, in listing order.
+
+        DS-LAKE-025: the mechanism behind `artifact_service.adopt_artifact`.
+        Save Dataset uses it to bring a draft's committed artifact objects
+        into the dataset's OWN namespace, so a persisted dataset never
+        depends on a `drafts/` object it does not own — the failure this
+        exists to close (a saved dataset whose FINAL 404s from MinIO while
+        its Postgres row still reads live) was found in production data,
+        not hypothesised.
+
+        Server-side (`copy_object`): the bytes never travel through this
+        process, so a wide artifact costs the same here as a small one.
+        Single-part server-side copy tops out at 5 GiB per object; nothing
+        this service writes is near that, and a source past it would
+        surface as a loud `S3Error` rather than a silent truncation.
+
+        An object whose destination already exists is counted and skipped,
+        not re-copied. That is what makes a retried Save converge instead
+        of failing the second time — the same idempotency `delete_prefix`
+        above provides by returning 0 for an absent prefix.
+        """
+        if not src_prefix.endswith("/") or not dst_prefix.endswith("/"):
+            raise ValueError(
+                "copy_prefix needs directory-style prefixes ending in '/' — "
+                f"got src='{src_prefix}', dst='{dst_prefix}'. Without the "
+                "trailing slash the relative-name split below would cut a "
+                "filename fragment, the same defect DS-LAKE-016-T02 fixed "
+                "in reclaim_artifact."
+            )
+
+        copied: list[str] = []
+        try:
+            for obj in self._client.list_objects(
+                self.bucket, prefix=src_prefix, recursive=True
+            ):
+                src_key = obj.object_name
+                dst_key = f"{dst_prefix}{src_key[len(src_prefix):]}"
+                if not self.exists(dst_key):
+                    self._client.copy_object(
+                        self.bucket, dst_key, CopySource(
+                            self.bucket, src_key)
+                    )
+                copied.append(dst_key)
+        except S3Error as err:
+            raise ObjectStoreError(
+                f"Could not copy '{src_prefix}' to '{dst_prefix}': {err.code}"
+            ) from err
+        return copied
 
     # ── lifecycle ────────────────────────────────────────────────────────
 

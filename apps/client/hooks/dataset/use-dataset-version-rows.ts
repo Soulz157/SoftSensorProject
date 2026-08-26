@@ -7,6 +7,7 @@ import { MATERIALIZE_EPOCH } from '@/lib/pipeline-config'
 import type { PipelineConfig } from '@/lib/pipeline-config'
 import { PERIOD_TO_RANGE } from '@/store/model-pipeline'
 import { toPiTime } from '@/lib/dataset-fetch'
+import { ApiError } from '@/lib/fetcher'
 import {
   datasetVersionService,
   fetchVersionDataset,
@@ -63,7 +64,31 @@ export interface VersionRowsState {
   error: string | null
   /** Why branch 3 was taken. Null unless `source === 'synthetic'`. */
   syntheticReason: string | null
+  /**
+   * DS-LAKE-025. The MACHINE-readable half of `syntheticReason`, so callers
+   * can branch on the cause instead of matching on its prose. Null unless
+   * `source === 'synthetic'`.
+   *
+   * `'bytes-missing'` is the one that matters: the dataset HAS a committed
+   * artifact, its row still says so, and object storage no longer holds the
+   * object. It is the only cause where the rows on screen stand in for data
+   * that genuinely existed, which is why Save blocks on it
+   * (`step-6-review-save.tsx`) rather than letting an edit overwrite the
+   * dataset's real `tags`/`rowCount`/`missingPct` with numbers derived from
+   * a seed.
+   */
+  syntheticCause: SyntheticCause | null
 }
+
+/**
+ * Why synthetic rows are standing in for real ones.
+ *
+ * - `bytes-missing`    — the artifact's object is gone from storage (API 404).
+ * - `not-materialized` — no artifact exists yet and this caller may not make
+ *   one (`materialize: false`, or `materializeBlocker` refused the recipe).
+ * - `unreadable`       — anything else: source unreachable, fetch failed.
+ */
+export type SyntheticCause = 'bytes-missing' | 'not-materialized' | 'unreadable'
 
 const IDLE: VersionRowsState = {
   dataset: null,
@@ -74,6 +99,7 @@ const IDLE: VersionRowsState = {
   total: 0,
   error: null,
   syntheticReason: null,
+  syntheticCause: null,
 }
 
 /**
@@ -169,7 +195,7 @@ export function useDatasetVersionRows(
 
     // NOT named `use*`: it is a plain closure, and the `use` prefix would make
     // the linter police it as a React hook.
-    const fallBackToSynthetic = (reason: string) => {
+    const fallBackToSynthetic = (reason: string, cause: SyntheticCause) => {
       if (signal.aborted) return
       setState({
         dataset: buildRawDataset(
@@ -185,6 +211,7 @@ export function useDatasetVersionRows(
         total: 0,
         error: null,
         syntheticReason: reason,
+        syntheticCause: cause,
       })
     }
 
@@ -209,6 +236,7 @@ export function useDatasetVersionRows(
         total: rows.rows.length,
         error: null,
         syntheticReason: null,
+        syntheticCause: null,
       })
     }
 
@@ -285,13 +313,14 @@ export function useDatasetVersionRows(
       if (!materialize) {
         fallBackToSynthetic(
           'This dataset has no stored rows yet. Open it in Data Studio to fetch them from the source.',
+          'not-materialized',
         )
         return
       }
 
       const blocker = materializeBlocker(config)
       if (blocker) {
-        fallBackToSynthetic(blocker)
+        fallBackToSynthetic(blocker, 'not-materialized')
         return
       }
 
@@ -314,10 +343,19 @@ export function useDatasetVersionRows(
       // ── 3. source gone, unreachable, or the fetch failed ────────────────
       // Showing something beats showing nothing, but never silently: the
       // banner carries this reason verbatim.
+      //
+      // DS-LAKE-025: a 404 is singled out because it is not "the fetch
+      // failed" at all — it is the API saying this dataset's committed
+      // object is no longer in storage. Same fallback (the wizard still has
+      // to render something), but a different `cause`, which is what lets
+      // Step 6 refuse to overwrite a real dataset's stats with figures
+      // derived from these stand-in rows.
+      const bytesMissing = err instanceof ApiError && err.status === 404
       fallBackToSynthetic(
         err instanceof Error
           ? `Could not load stored rows: ${err.message}`
           : 'Could not load stored rows from the server.',
+        bytesMissing ? 'bytes-missing' : 'unreadable',
       )
     })
 

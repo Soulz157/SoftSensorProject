@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 
 from intergrations.object_store import (
+    COLUMN_STATS_FILENAME,
     DATA_FILENAME,
     DATA_FILENAME_BY_TYPE,
     STATUS_BAD,
@@ -22,9 +23,11 @@ from intergrations.object_store import (
     STATUS_SUFFIX,
     TMP_LIFECYCLE_EXPIRY_DAYS,
     TMP_LIFECYCLE_RULE_ID,
+    ObjectNotFoundError,
     ObjectStore,
     ObjectStoreError,
     artifact_key,
+    artifact_prefix,
     assert_frame_shape,
     assert_tags_are_storable,
     draft_run_key,
@@ -32,6 +35,7 @@ from intergrations.object_store import (
     is_draft_run_key,
     is_model_run_key,
     manifest_key,
+    MANIFEST_FILENAME,
     missing_pct,
     model_run_key,
     sidecar_key,
@@ -559,3 +563,107 @@ def test_ensure_tmp_lifecycle_rule_is_idempotent(store: ObjectStore) -> None:
     assert len(matching) == 1
     assert matching[0].expiration.days == TMP_LIFECYCLE_EXPIRY_DAYS
     assert len(second.rules) == len(first.rules)
+
+
+# ── DS-LAKE-025: copy_prefix + the typed missing-object error ────────────────
+#
+# Save Dataset copies a draft's committed artifact into the dataset's own
+# prefix so a saved dataset never depends on a `drafts/` object it does not
+# own. Two saved datasets were found with their draft objects already gone —
+# DatasetArtifact rows live, `objectReclaimedAt` null, MinIO answering
+# NoSuchKey — which is the failure these tests pin closed.
+
+
+def test_missing_object_raises_the_typed_subclass(store: ObjectStore) -> None:
+    """A NoSuchKey is distinguishable, and still an ObjectStoreError.
+
+    The subclass is what lets `routers/preprocess._run` answer 404 for "the
+    bytes are gone" while keeping 422 for "storage refused the read" — two
+    failures with different remedies that used to be one 400 carrying a raw
+    MinIO string.
+    """
+    missing = "pytest-object-store/definitely-absent/data.parquet"
+
+    with pytest.raises(ObjectNotFoundError) as excinfo:
+        store.get_object_bytes(missing)
+
+    assert isinstance(excinfo.value, ObjectStoreError)
+    # Message text is unchanged from before the split, on purpose.
+    assert str(excinfo.value) == f"Could not read '{missing}': NoSuchKey"
+
+
+def test_copy_prefix_moves_data_and_every_sidecar(store: ObjectStore) -> None:
+    src = "pytest-object-store/src-artifact/"
+    dst = "pytest-object-store/dst-artifact/"
+    store.put_frame(good_frame(), f"{src}{DATA_FILENAME}", overwrite=True)
+    store.put_json(f"{src}{MANIFEST_FILENAME}", {"n": 1})
+    store.put_json(f"{src}{COLUMN_STATS_FILENAME}", {"TI-101": {}})
+
+    copied = store.copy_prefix(src, dst)
+
+    # Sidecars travel too: readers derive their keys FROM the data key, so a
+    # copy that moved only the parquet would repoint the row at a data file
+    # whose sidecars still 404.
+    assert sorted(copied) == [
+        f"{dst}{COLUMN_STATS_FILENAME}",
+        f"{dst}{DATA_FILENAME}",
+        f"{dst}{MANIFEST_FILENAME}",
+    ]
+    assert store.get_frame(f"{dst}{DATA_FILENAME}").equals(good_frame())
+    assert store.get_json(f"{dst}{MANIFEST_FILENAME}") == {"n": 1}
+    # Byte-identical, not re-encoded — the artifact row's recorded checksum
+    # has to keep matching the object it now points at.
+    assert store.checksum_of(f"{dst}{DATA_FILENAME}") == store.checksum_of(
+        f"{src}{DATA_FILENAME}"
+    )
+    # The source is left alone: removing it is cleanup's job, never Save's.
+    assert store.exists(f"{src}{DATA_FILENAME}")
+
+    store.delete_prefix("pytest-object-store/")
+
+
+def test_copy_prefix_is_idempotent(store: ObjectStore) -> None:
+    """A retried Save converges instead of failing on the second attempt."""
+    src = "pytest-object-store/src-idem/"
+    dst = "pytest-object-store/dst-idem/"
+    store.put_frame(good_frame(), f"{src}{DATA_FILENAME}", overwrite=True)
+
+    first = store.copy_prefix(src, dst)
+    second = store.copy_prefix(src, dst)
+
+    assert first == second == [f"{dst}{DATA_FILENAME}"]
+
+    store.delete_prefix("pytest-object-store/")
+
+
+def test_copy_prefix_onto_itself_is_a_listing(store: ObjectStore) -> None:
+    """An already-dataset-owned artifact degenerates to a no-op.
+
+    `adopt_artifact` relies on this instead of branching: every object
+    already exists at its own destination, so nothing is copied and the call
+    reduces to reporting what is there.
+    """
+    prefix = artifact_prefix("pytest-object-store", "self-adopt")
+    store.put_frame(good_frame(), f"{prefix}{DATA_FILENAME}", overwrite=True)
+
+    assert store.copy_prefix(prefix, prefix) == [f"{prefix}{DATA_FILENAME}"]
+    assert store.exists(f"{prefix}{DATA_FILENAME}")
+
+    store.delete_prefix("pytest-object-store/")
+
+
+def test_copy_prefix_refuses_prefixes_without_a_trailing_slash() -> None:
+    """Guards the relative-name split.
+
+    Without the trailing slash the `src_key[len(src_prefix):]` split cuts a
+    filename FRAGMENT — the same shape of defect DS-LAKE-016-T02 fixed in
+    `reclaim_artifact`, where a stage-suffixed key left `.../data_` behind
+    and silently matched nothing. Refusing loudly beats copying to a
+    plausible-looking wrong key.
+    """
+    s = ObjectStore.__new__(ObjectStore)  # no transport needed to hit the guard
+
+    with pytest.raises(ValueError, match="trailing slash|directory-style"):
+        ObjectStore.copy_prefix(s, "a/b", "c/d/")
+    with pytest.raises(ValueError, match="trailing slash|directory-style"):
+        ObjectStore.copy_prefix(s, "a/b/", "c/d")

@@ -1,4 +1,5 @@
 import { AppException } from '@softsensor/common';
+import { PrismaTypes } from '@softsensor/prisma';
 import {
   postBinaryToPython,
   postToPython,
@@ -100,6 +101,12 @@ function buildPrisma(overrides: Record<string, unknown> = {}) {
     },
     dataSource: {
       findFirst: jest.fn().mockResolvedValue(SOURCE),
+    },
+    // DS-LAKE-024-T02: resolveOrCreateEditDraftService's own lookup of the
+    // Dataset being edited. Defaults to not-found so a test that doesn't
+    // care about the edit-draft path is unaffected by its presence.
+    dataset: {
+      findFirst: jest.fn().mockResolvedValue(null),
     },
     datasetArtifact: {
       findFirst: jest.fn(),
@@ -871,8 +878,47 @@ const PYTHON_METADATA_FOR_SAVE = {
   end_time: '2026-01-02T00:00:00Z',
 };
 
+/**
+ * DS-LAKE-025. What Python answers for `/v1/preprocess/artifacts/adopt`,
+ * derived from the request body so the destination prefix matches the
+ * artifact actually being adopted — the same `{datasetId}/artifacts/
+ * {artifactId}/` layout `artifact_prefix` builds on the Python side.
+ */
+function adoptResponseFor(body: unknown) {
+  const { dataset_id: datasetId, artifact_id: artifactId } = body as {
+    dataset_id: string;
+    artifact_id: string;
+  };
+  const destination = `${datasetId}/artifacts/${artifactId}/`;
+  return {
+    source_prefix: `drafts/draft-1/artifacts/${artifactId}/`,
+    destination_prefix: destination,
+    object_key: `${destination}data.parquet`,
+    feature_spec_key: `${destination}feature_spec.json`,
+    validation_key: null,
+    column_stats_key: null,
+    keys: [`${destination}data.parquet`, `${destination}feature_spec.json`],
+  };
+}
+
 describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T02)', () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.clearAllMocks();
+    // DS-LAKE-025: Save now copies the FINAL (and its lineage root) into the
+    // dataset's own prefix before opening the transaction, so EVERY test in
+    // this block makes two extra Python calls. Stubbed as a default
+    // implementation rather than a `mockResolvedValueOnce` repeated across
+    // fifteen tests: jest drains the once-queue first, so each test's own
+    // validate/metadata queueing still takes precedence and reads exactly as
+    // it did before this change.
+    post.mockImplementation((path: string, body?: unknown) =>
+      Promise.resolve(
+        path === '/v1/preprocess/artifacts/adopt'
+          ? adoptResponseFor(body)
+          : PYTHON_METADATA_FOR_SAVE,
+      ),
+    );
+  });
 
   function chainedPrisma() {
     const prisma = buildPrisma();
@@ -883,6 +929,39 @@ describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T
     );
     return prisma;
   }
+
+  /**
+   * DS-LAKE-025: the dataset id is now minted by the service (`randomUUID`)
+   * and passed explicitly to `dataset.create`, because the adoption calls
+   * that run BEFORE the transaction need it to build their destination
+   * prefix. Read it back from the create args rather than hardcoding
+   * `'dataset-1'` — the Prisma mock echoes back whatever id it is handed,
+   * so a literal here would assert what the mock invented, not what the
+   * service decided.
+   */
+  const mintedDatasetId = (prisma: ReturnType<typeof buildPrisma>): string =>
+    firstCreateArg(prisma._tx.dataset.create).data.id as string;
+
+  /**
+   * The `data` payload of the `datasetArtifact.update` call for one artifact.
+   *
+   * Assertions read fields off this instead of nesting
+   * `expect.objectContaining` in the `data` position: that helper is typed
+   * `any`, which `@typescript-eslint/no-unsafe-assignment` rejects, and
+   * spelling `data` out in full would force every pointer-only test to
+   * restate all four DS-LAKE-025 key fields it does not care about.
+   */
+  const artifactUpdateData = (
+    prisma: ReturnType<typeof buildPrisma>,
+    id: string,
+  ): Record<string, unknown> => {
+    const calls = prisma._tx.datasetArtifact.update.mock.calls as Array<
+      [{ where: { id: string }; data: Record<string, unknown> }]
+    >;
+    const call = calls.find(([args]) => args.where.id === id);
+    if (!call) throw new Error(`no datasetArtifact.update call for '${id}'`);
+    return call[0].data;
+  };
 
   it('422s when the draft has no FINAL artifact, before calling Python or opening a transaction', async () => {
     const prisma = buildPrisma();
@@ -1029,7 +1108,7 @@ describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T
     } as never);
 
     expect(loaderJobs.enqueue).toHaveBeenCalledWith(
-      'dataset-1',
+      mintedDatasetId(prisma),
       'version-1',
       USER.id,
     );
@@ -1046,11 +1125,11 @@ describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T
       tags: ['TI-101'],
     } as never);
 
-    expect(prisma._tx.datasetArtifact.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: FINAL_ARTIFACT.id },
-        data: { datasetId: 'dataset-1' },
-      }),
+    // Reads one field off the recorded call because DS-LAKE-025 also rewrites
+    // the artifact's object keys here. The pointer half is this test's
+    // subject; the key half has its own test below.
+    expect(artifactUpdateData(prisma, FINAL_ARTIFACT.id).datasetId).toBe(
+      mintedDatasetId(prisma),
     );
   });
 
@@ -1064,15 +1143,147 @@ describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T
       tags: ['TI-101'],
     } as never);
 
-    expect(prisma._tx.datasetArtifact.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: 'bronze-1' },
-        data: { datasetId: 'dataset-1' },
-      }),
+    expect(artifactUpdateData(prisma, 'bronze-1').datasetId).toBe(
+      mintedDatasetId(prisma),
     );
     // The "one pointer, not two" half of AC1 — Dataset.currentArtifactId
     // still resolves to FINAL only, never the adopted BRONZE — is asserted
     // by the very next test below (currentArtifactId: FINAL_ARTIFACT.id).
+  });
+
+  // ── DS-LAKE-025: Save owns its bytes ───────────────────────────────────
+  //
+  // The incident: a saved dataset's FINAL kept pointing at
+  // `drafts/{draftId}/artifacts/{artifactId}/...` forever, because promotion
+  // adopts by pointer and Save adopted that pointer as-is. Draft-space bytes
+  // then went away — two saved datasets were found with their objects gone,
+  // rows live and `objectReclaimedAt` still null, MinIO answering NoSuchKey.
+  // Save now copies into the dataset's own prefix first.
+
+  it('DS-LAKE-025: adopts the FINAL into the dataset prefix BEFORE opening the transaction', async () => {
+    const prisma = chainedPrisma();
+    const callOrder: string[] = [];
+    post.mockImplementationOnce(() => Promise.resolve(VALIDATION_REPORT));
+    post.mockImplementation((path: string, body?: unknown) => {
+      if (path === '/v1/preprocess/artifacts/adopt') callOrder.push('adopt');
+      return Promise.resolve(
+        path === '/v1/preprocess/artifacts/adopt'
+          ? adoptResponseFor(body)
+          : PYTHON_METADATA_FOR_SAVE,
+      );
+    });
+    prisma.$transaction.mockImplementationOnce(
+      (fn: (tx: unknown) => unknown) => {
+        callOrder.push('transaction');
+        return fn(prisma._tx);
+      },
+    );
+    const { service } = makeService(prisma);
+
+    await service.saveDraftAsDatasetService(USER, 'draft-1', {
+      name: 'ds',
+      tags: ['TI-101'],
+    } as never);
+
+    // Both adoptions complete before the transaction opens: copying is
+    // network I/O, and a Postgres transaction held open across a multi-object
+    // MinIO copy is exactly what this codebase keeps outside `$transaction`.
+    expect(callOrder).toEqual(['adopt', 'adopt', 'transaction']);
+    expect(post).toHaveBeenCalledWith(
+      '/v1/preprocess/artifacts/adopt',
+      {
+        object_key: FINAL_ARTIFACT.objectKey,
+        dataset_id: mintedDatasetId(prisma),
+        artifact_id: FINAL_ARTIFACT.id,
+      },
+      PYTHON_TIMEOUT.preprocess,
+    );
+  });
+
+  it('DS-LAKE-025: repoints the adopted rows off drafts/ onto the returned keys', async () => {
+    const prisma = chainedPrisma();
+    post.mockResolvedValueOnce(VALIDATION_REPORT);
+    const { service } = makeService(prisma);
+
+    await service.saveDraftAsDatasetService(USER, 'draft-1', {
+      name: 'ds',
+      tags: ['TI-101'],
+    } as never);
+
+    const datasetId = mintedDatasetId(prisma);
+    const finalData = artifactUpdateData(prisma, FINAL_ARTIFACT.id);
+    expect(finalData.objectKey).toBe(
+      `${datasetId}/artifacts/final-1/data.parquet`,
+    );
+    expect(finalData.featureSpecKey).toBe(
+      `${datasetId}/artifacts/final-1/feature_spec.json`,
+    );
+    expect(finalData.validationKey).toBeNull();
+    expect(finalData.columnStatsKey).toBeNull();
+    // Not one row left naming draft space — that is the whole point.
+    for (const [args] of prisma._tx.datasetArtifact.update.mock.calls) {
+      expect(
+        (args as { data: { objectKey?: string } }).data.objectKey,
+      ).not.toContain('drafts/');
+    }
+  });
+
+  it('DS-LAKE-025: freezes the ADOPTED keys into the version lineage, not the draft ones', async () => {
+    const prisma = chainedPrisma();
+    post.mockResolvedValueOnce(VALIDATION_REPORT);
+    const { service } = makeService(prisma);
+
+    await service.saveDraftAsDatasetService(USER, 'draft-1', {
+      name: 'ds',
+      tags: ['TI-101'],
+    } as never);
+
+    const datasetId = mintedDatasetId(prisma);
+    const versionArg = firstCreateArg(prisma._tx.datasetVersion.create);
+    const lineage = versionArg.data.lineage as Array<{
+      id: string;
+      objectKey: string;
+    }>;
+
+    // Root (BRONZE) and tip (FINAL) are the two Save adopts, so those two
+    // entries must name the new home. A lineage entry still pointing at the
+    // draft key would send audit, reproduction and
+    // `computeProtectedArtifactIds` back at an object cleanup may reclaim —
+    // re-creating the dangling pointer this change removes.
+    const byId = new Map(lineage.map((link) => [link.id, link.objectKey]));
+    expect(byId.get('bronze-1')).toBe(
+      `${datasetId}/artifacts/bronze-1/data.parquet`,
+    );
+    expect(byId.get(FINAL_ARTIFACT.id)).toBe(
+      `${datasetId}/artifacts/final-1/data.parquet`,
+    );
+    // Intermediates are NOT adopted (they stay re-derivable draft scratch),
+    // so they keep their draft keys — asserted so a future change that starts
+    // copying them has to say so here.
+    expect(byId.get('silver-1')).toContain('drafts/');
+  });
+
+  it('DS-LAKE-025: a failed adoption creates no Dataset row at all', async () => {
+    const prisma = chainedPrisma();
+    post.mockResolvedValueOnce(VALIDATION_REPORT);
+    post.mockImplementation((path: string) =>
+      path === '/v1/preprocess/artifacts/adopt'
+        ? Promise.reject(new Error('copy failed'))
+        : Promise.resolve(PYTHON_METADATA_FOR_SAVE),
+    );
+    const { service } = makeService(prisma);
+
+    await expect(
+      service.saveDraftAsDatasetService(USER, 'draft-1', {
+        name: 'ds',
+        tags: ['TI-101'],
+      } as never),
+    ).rejects.toThrow('copy failed');
+
+    // Save stays all-or-nothing: the copy runs before the transaction, so a
+    // storage failure cannot leave a half-built dataset behind.
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(prisma._tx.dataset.create).not.toHaveBeenCalled();
   });
 
   it('sets Dataset.currentArtifactId/currentVersionId and DatasetDraft.savedDatasetId/status atomically', async () => {
@@ -1087,7 +1298,7 @@ describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T
 
     expect(prisma._tx.dataset.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'dataset-1' },
+        where: { id: mintedDatasetId(prisma) },
         data: {
           currentArtifactId: FINAL_ARTIFACT.id,
           currentVersionId: 'version-1',
@@ -1097,7 +1308,7 @@ describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T
     expect(prisma._tx.datasetDraft.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: 'draft-1' },
-        data: { savedDatasetId: 'dataset-1', status: 'SAVED' },
+        data: { savedDatasetId: mintedDatasetId(prisma), status: 'SAVED' },
       }),
     );
   });
@@ -1180,7 +1391,7 @@ describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T
 
     expect(prisma._tx.datasetVersion.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { datasetId: 'dataset-1' },
+        where: { datasetId: mintedDatasetId(prisma) },
         orderBy: { versionNumber: 'desc' },
       }),
     );
@@ -1275,7 +1486,15 @@ describe('DatasetDraftAuthorizedService — save draft as Dataset (DS-LAKE-009-T
       tags: ['TI-999'],
     } as never);
 
-    expect(post).toHaveBeenCalledTimes(1);
+    // Asserted by PATH, not by call count. DS-LAKE-025 added two adoption
+    // calls to this path, and a bare count would now fail for a reason that
+    // has nothing to do with what this test is about — whether Save went
+    // looking for the tag list it was already handed.
+    expect(post).not.toHaveBeenCalledWith(
+      '/v1/preprocess/metadata',
+      expect.anything(),
+      expect.anything(),
+    );
     const datasetArg = firstCreateArg(prisma._tx.dataset.create);
     expect(datasetArg.data.tags).toEqual(['TI-999']);
   });
@@ -2278,5 +2497,263 @@ describe('DatasetDraftAuthorizedService — heartbeat (DS-LAKE-014-T04)', () => 
       AppException,
     );
     expect(prisma.datasetDraft.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('DatasetDraftAuthorizedService — resolve-or-create edit draft (DS-LAKE-024-T02)', () => {
+  const DATASET_ROW = {
+    id: 'dataset-1',
+    name: 'My Dataset',
+    workspaceId: 'ws-1',
+    sourceIds: ['src-allowed'],
+  };
+
+  const ROOT_BRONZE = {
+    id: 'bronze-root-1',
+    objectKey: 'ds1/artifacts/bronze-root-1/data.parquet',
+    format: 'parquet',
+    checksum: 'a'.repeat(64),
+    schemaVersion: 1,
+    columnCount: 4,
+    featureCount: null,
+    rowCount: 1000,
+    missingPct: 0.1,
+    sizeBytes: 5000,
+    operations: [],
+    validationRowCount: null,
+    validationHoldoutFrom: null,
+    validationMissingPct: null,
+  };
+
+  const EXISTING_EDIT_DRAFT = {
+    id: 'edit-draft-1',
+    name: 'My Dataset',
+    workspaceId: 'ws-1',
+    sourceIds: ['src-allowed'],
+    status: 'ACTIVE',
+    currentArtifactId: 'shared-bronze-1',
+    savedDatasetId: null,
+    editingDatasetId: 'dataset-1',
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+    updatedAt: new Date('2026-01-01T00:00:00Z'),
+  };
+
+  function uniqueViolationError(): Error {
+    const err = new Error(
+      'Unique constraint failed on the fields: (`editingDatasetId`)',
+    );
+    Object.setPrototypeOf(
+      err,
+      PrismaTypes.PrismaClientKnownRequestError.prototype,
+    );
+    (err as unknown as { code: string }).code = 'P2002';
+    return err;
+  }
+
+  function buildEditDraftTx() {
+    return {
+      datasetDraft: {
+        create: jest
+          .fn()
+          .mockImplementation(({ data }: { data: Record<string, unknown> }) =>
+            Promise.resolve({
+              id: 'edit-draft-1',
+              status: 'ACTIVE',
+              currentArtifactId: null,
+              savedDatasetId: null,
+              createdAt: new Date('2026-01-01T00:00:00Z'),
+              updatedAt: new Date('2026-01-01T00:00:00Z'),
+              ...data,
+            }),
+          ),
+        update: jest
+          .fn()
+          .mockImplementation(({ data }: { data: Record<string, unknown> }) =>
+            Promise.resolve({
+              id: 'edit-draft-1',
+              status: 'ACTIVE',
+              savedDatasetId: null,
+              editingDatasetId: 'dataset-1',
+              createdAt: new Date('2026-01-01T00:00:00Z'),
+              updatedAt: new Date('2026-01-01T00:00:00Z'),
+              ...data,
+            }),
+          ),
+      },
+      datasetArtifact: {
+        create: jest
+          .fn()
+          .mockImplementation(({ data }: { data: Record<string, unknown> }) =>
+            Promise.resolve({ id: 'shared-bronze-1', ...data }),
+          ),
+      },
+    };
+  }
+
+  it('resolves the existing ACTIVE edit draft without creating a second one — idempotent re-entry', async () => {
+    const prisma = buildPrisma({
+      datasetDraft: {
+        findFirst: jest.fn().mockResolvedValue(EXISTING_EDIT_DRAFT),
+        create: jest.fn(),
+        update: jest.fn(),
+        updateMany: jest.fn(),
+      },
+    });
+    const { service } = makeService(prisma);
+
+    const result = await service.resolveOrCreateEditDraftService(
+      USER,
+      'dataset-1',
+    );
+
+    expect(prisma.datasetDraft.findFirst).toHaveBeenCalledWith({
+      where: { editingDatasetId: 'dataset-1', status: 'ACTIVE' },
+    });
+    expect(prisma.datasetDraft.create).not.toHaveBeenCalled();
+    expect(result.statusCode).toBe(200);
+    expect(result.data.id).toBe('edit-draft-1');
+    expect(result.data.editingDatasetId).toBe('dataset-1');
+  });
+
+  it('creates a new edit draft seeded from the adopted root BRONZE when none is ACTIVE', async () => {
+    const tx = buildEditDraftTx();
+    const prisma = buildPrisma({
+      datasetDraft: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+        update: jest.fn(),
+        updateMany: jest.fn(),
+      },
+      datasetArtifact: { findFirst: jest.fn().mockResolvedValue(ROOT_BRONZE) },
+      $transaction: jest.fn((cb: (t: typeof tx) => Promise<unknown>) => cb(tx)),
+    });
+    prisma.dataset.findFirst.mockResolvedValue(DATASET_ROW);
+    const { service } = makeService(prisma);
+
+    const result = await service.resolveOrCreateEditDraftService(
+      USER,
+      'dataset-1',
+    );
+
+    // Ownership-scoped by createdById, per getDatasetService's own read —
+    // never a workspace-membership check, since this caller must OWN the
+    // dataset being edited.
+    expect(prisma.dataset.findFirst).toHaveBeenCalledWith({
+      where: { id: 'dataset-1', createdById: USER.id },
+      select: { id: true, name: true, workspaceId: true, sourceIds: true },
+    });
+
+    // Never re-materialized: the only BRONZE lookup is the dataset's own
+    // adopted, non-reclaimed root.
+    expect(prisma.datasetArtifact.findFirst).toHaveBeenCalledWith({
+      where: {
+        datasetId: 'dataset-1',
+        type: 'BRONZE',
+        objectReclaimedAt: null,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const draftArg = firstCreateArg(tx.datasetDraft.create).data;
+    expect(draftArg).toMatchObject({
+      workspaceId: 'ws-1',
+      sourceIds: ['src-allowed'],
+      name: 'My Dataset',
+      editingDatasetId: 'dataset-1',
+      createdById: USER.id,
+    });
+
+    // The shared artifact clones the root's descriptive fields VERBATIM but
+    // is owned by the new draft and starts its OWN lineage (parentArtifactId
+    // null, a fresh runId) rather than pointing at the original draft's row.
+    const artifactArg = firstCreateArg(tx.datasetArtifact.create).data;
+    expect(artifactArg).toMatchObject({
+      draftId: 'edit-draft-1',
+      parentArtifactId: null,
+      type: 'BRONZE',
+      objectKey: ROOT_BRONZE.objectKey,
+      checksum: ROOT_BRONZE.checksum,
+      rowCount: ROOT_BRONZE.rowCount,
+      validationRowCount: ROOT_BRONZE.validationRowCount,
+    });
+    expect(typeof artifactArg.runId).toBe('string');
+    expect(artifactArg.runId).not.toBe('');
+
+    expect(tx.datasetDraft.update).toHaveBeenCalledWith({
+      where: { id: 'edit-draft-1' },
+      data: { currentArtifactId: 'shared-bronze-1' },
+    });
+
+    expect(result.statusCode).toBe(201);
+  });
+
+  it('404s when the dataset does not exist or is not owned by the caller, without touching any artifact', async () => {
+    const prisma = buildPrisma({
+      datasetDraft: { findFirst: jest.fn().mockResolvedValue(null) },
+    });
+    // buildPrisma's default: prisma.dataset.findFirst resolves null already.
+    const { service } = makeService(prisma);
+
+    await expect(
+      service.resolveOrCreateEditDraftService(USER, 'not-mine'),
+    ).rejects.toThrow(AppException);
+    expect(prisma.datasetArtifact.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('422s when the dataset has no readable (non-reclaimed) root BRONZE, without creating a draft', async () => {
+    const tx = buildEditDraftTx();
+    const prisma = buildPrisma({
+      datasetDraft: { findFirst: jest.fn().mockResolvedValue(null) },
+      datasetArtifact: { findFirst: jest.fn().mockResolvedValue(null) },
+      $transaction: jest.fn((cb: (t: typeof tx) => Promise<unknown>) => cb(tx)),
+    });
+    prisma.dataset.findFirst.mockResolvedValue(DATASET_ROW);
+    const { service } = makeService(prisma);
+
+    await expect(
+      service.resolveOrCreateEditDraftService(USER, 'dataset-1'),
+    ).rejects.toThrow(AppException);
+    expect(tx.datasetDraft.create).not.toHaveBeenCalled();
+  });
+
+  it('a concurrent create race (P2002 on the partial unique index) falls back to reading the winner instead of throwing', async () => {
+    const tx = buildEditDraftTx();
+    tx.datasetDraft.create.mockRejectedValue(uniqueViolationError());
+    const findFirst = jest
+      .fn()
+      .mockResolvedValueOnce(null) // initial check: no ACTIVE draft yet
+      .mockResolvedValueOnce(EXISTING_EDIT_DRAFT); // post-P2002 fallback read
+    const prisma = buildPrisma({
+      datasetDraft: { findFirst },
+      datasetArtifact: { findFirst: jest.fn().mockResolvedValue(ROOT_BRONZE) },
+      $transaction: jest.fn((cb: (t: typeof tx) => Promise<unknown>) => cb(tx)),
+    });
+    prisma.dataset.findFirst.mockResolvedValue(DATASET_ROW);
+    const { service } = makeService(prisma);
+
+    const result = await service.resolveOrCreateEditDraftService(
+      USER,
+      'dataset-1',
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(result.data.id).toBe('edit-draft-1');
+    expect(findFirst).toHaveBeenCalledTimes(2);
+  });
+
+  it('re-throws a transaction failure that is not the P2002 race', async () => {
+    const tx = buildEditDraftTx();
+    tx.datasetDraft.create.mockRejectedValue(new Error('connection reset'));
+    const prisma = buildPrisma({
+      datasetDraft: { findFirst: jest.fn().mockResolvedValue(null) },
+      datasetArtifact: { findFirst: jest.fn().mockResolvedValue(ROOT_BRONZE) },
+      $transaction: jest.fn((cb: (t: typeof tx) => Promise<unknown>) => cb(tx)),
+    });
+    prisma.dataset.findFirst.mockResolvedValue(DATASET_ROW);
+    const { service } = makeService(prisma);
+
+    await expect(
+      service.resolveOrCreateEditDraftService(USER, 'dataset-1'),
+    ).rejects.toThrow('connection reset');
   });
 });

@@ -14,6 +14,7 @@ import {
 import { EMPTY_PIPELINE_CONFIG } from '@/lib/pipeline-config'
 import type { SavedDataset } from '@/store/datasets'
 import type { DatasetArtifactStage } from '@/services/dataset-draft'
+import type { SyntheticCause } from '@/hooks/dataset/use-dataset-version-rows'
 import type {
   ConditionalRule,
   CropRange,
@@ -488,6 +489,20 @@ export const dwRowSourceAtom = atom<'stored' | 'synthetic' | null>(null)
 export const dwSyntheticReasonAtom = atom<string | null>(null)
 
 /**
+ * DS-LAKE-025. The edit-mode twin of `VersionRowsState.syntheticCause` — the
+ * machine-readable cause behind `dwSyntheticReasonAtom`'s prose, written by
+ * `useDatasetEditHydration`. Null unless synthetic.
+ *
+ * Step 6 blocks Save on `'bytes-missing'`. Editing a dataset whose stored
+ * object had been reclaimed used to fall back to generated rows with only a
+ * banner to show for it, and Save would then write `tags`, `rowCount` and
+ * `missingPct` computed from those invented numbers straight onto the real
+ * dataset row — turning a dataset that had merely lost its bytes into one
+ * that also lies about what it contains.
+ */
+export const dwSyntheticCauseAtom = atom<SyntheticCause | null>(null)
+
+/**
  * Pipeline stage of the artifact `dwRawDatasetAtom` was hydrated from — the
  * edit-mode twin of `VersionRowsState.stage`
  * (`hooks/dataset/use-dataset-version-rows.ts`), written by
@@ -585,6 +600,7 @@ export const initDatasetWizardAtom = atom(
     set(dwEditingDatasetAtom, null)
     set(dwRowSourceAtom, null)
     set(dwSyntheticReasonAtom, null)
+    set(dwSyntheticCauseAtom, null)
     set(dwRowStageAtom, null)
   },
 )
@@ -672,6 +688,7 @@ export const resetDatasetWizardAtom = atom(null, (_get, set) => {
   set(dwEditingDatasetAtom, null)
   set(dwRowSourceAtom, null)
   set(dwSyntheticReasonAtom, null)
+  set(dwSyntheticCauseAtom, null)
   set(dwRowStageAtom, null)
 })
 
@@ -769,6 +786,7 @@ export const initDatasetWizardForEditAtom = atom(
     set(dwEditingDatasetAtom, dataset)
     set(dwRowSourceAtom, null)
     set(dwSyntheticReasonAtom, null)
+    set(dwSyntheticCauseAtom, null)
     set(dwRowStageAtom, null)
 
     // Step 3 — Preprocessing (EDITABLE surface).
