@@ -4,7 +4,10 @@ import { useCallback, useEffect, useRef } from 'react'
 import { useAtom, useAtomValue } from 'jotai'
 import { datasetDraftService } from '@/services/dataset-draft'
 import { pollDraftJobUntilTerminal } from '@/lib/poll-preprocessing-job'
-import type { FeatureConfig } from '@/lib/feature-engineering'
+import {
+  featureRecipeStamp,
+  type FeatureConfig,
+} from '@/lib/feature-engineering'
 import type { ScalerMethod } from '@/lib/preprocessing'
 import {
   dwDraftIdAtom,
@@ -12,7 +15,10 @@ import {
   dwDraftFeatureArtifactIdAtom,
   dwDraftGoldArtifactIdAtom,
   dwGoldWarmErrorAtom,
+  dwFeatureWarmStateAtom,
+  dwFeatureArtifactStampAtom,
   dwModeAtom,
+  type FeatureWarmState,
 } from '@/store/dataset-studio'
 
 const GOLD_WARM_DEBOUNCE_MS = 800
@@ -60,12 +66,39 @@ const GOLD_WARM_DEBOUNCE_MS = 800
  * sends `scale: false`, so the job stops after applyFeatures/selectColumns
  * and writes a features-only SILVER into `dwDraftFeatureArtifactIdAtom`
  * rather than `dwDraftGoldArtifactIdAtom`. Step 5's clean+scale job is what
- * produces the real GOLD from that SILVER afterwards. EDIT MODE is
- * deliberately excluded — its only editable surface is the preprocessing
- * pipeline (features/tags/time-range stay locked and hydrated for display
- * only), so it keeps the legacy combined write byte-for-byte: `scale`
- * omitted, result written straight to `dwDraftGoldArtifactIdAtom`, exactly
- * as before this feature.
+ * produces the real GOLD from that SILVER afterwards. EDIT MODE keeps the
+ * legacy combined write byte-for-byte: `scale` omitted, result written
+ * straight to `dwDraftGoldArtifactIdAtom` — its only editable surface is
+ * still the preprocessing pipeline (features/tags/time-range stay locked
+ * and hydrated for display only), so THAT part of the DS-LAKE-022 split is
+ * unchanged.
+ *
+ * DS-LAKE-023 (edit-mode re-split pass): `holdout`, the 5th arg, is
+ * forwarded UNCONDITIONALLY by this hook — the caller
+ * (`Step4FeatureEngineering`) passes `dwHoldoutRangeAtom`'s current value on
+ * every warm, same as the feature recipe itself. Present, it makes THIS job
+ * split the holdout AFTER applyFeatures/selectColumns (T01), writing a
+ * feature-bearing `validate_data.parquet` beside the committed artifact —
+ * SILVER in create mode, GOLD in edit mode (Python's `features()` splits
+ * BEFORE its own optional scale tail, so edit mode's sidecar is unscaled
+ * either way, exactly what `prepare_holdout_for_run` expects).
+ *
+ * EDIT MODE IS CURRENTLY GATED AT THE CALLER, NOT HERE, AND THAT GATING IS
+ * LOAD-BEARING FOR CORRECTNESS, not just UX. `sourceArtifactId`
+ * (`dwDraftArtifactIdAtom`) is edit mode's CHAINED pipeline source —
+ * `useDatasetDraftPipeline.applyClean` advances it to the CLEANED SILVER
+ * once Step 5 runs — not a pinned BRONZE the way create mode keeps it. An
+ * in-progress version of `Step4FeatureEngineering` used to proactively seed
+ * this atom with a fresh RAW BRONZE on Step 4 mount so a holdout could be
+ * applied immediately; that was reverted (2026-08-25) because it would have
+ * made this warm run features+scale on UNCLEANED rows whenever it fired
+ * before Step 5 had ever run. `ValidationHoldoutSection`'s own `disabled`
+ * prop at the Step 4 call site now requires `sourceArtifactId` truthy in
+ * edit mode specifically so this hook is NEVER reachable there until that
+ * atom already holds the cleaned SILVER — see that call site's own comment.
+ * The legacy `useDatasetHoldoutResplit`/BRONZE-resplit path is no longer
+ * used by this wizard in either mode (see that hook's own doc comment) —
+ * every NEW holdout, once reachable, is feature-bearing in both modes.
  *
  * Failures are surfaced via `dwGoldWarmErrorAtom`, not swallowed — the
  * dominant real-world failure used to be a feature preset whose equations
@@ -74,23 +107,42 @@ const GOLD_WARM_DEBOUNCE_MS = 800
  * is a genuine 422 (an out-of-grammar formula) or a job landing FAILED,
  * whose `error` field is now what populates this atom, not a caught
  * exception. Three readers of `dwDraftGoldArtifactIdAtom` exist today
- * (`DataAnalysisCard`, `step-5-review-save.tsx`, `useDatasetValidation`),
+ * (`DataAnalysisCard`, `step-6-review-save.tsx`, `useDatasetValidation`),
  * so a silent failure here is no longer harmless — it used to leave Step 5
  * refusing to save with no visible reason.
+ *
+ * DS-LAKE-023: also publishes `dwFeatureWarmStateAtom` (idle/pending/ready/
+ * error) and `dwFeatureArtifactStampAtom` (the committed artifact's own
+ * recipe signature, `featureRecipeStamp`) — this used to return `void` with
+ * no way for a sibling component or a later commit step to know whether a
+ * warm was in flight or which recipe its result actually reflects. That gap
+ * was the root cause of three real defects: no "Applying…" feedback for a
+ * holdout Apply, no navigation gate while a warm was in flight, and Step
+ * 5's clean+scale job silently committing a STALE feature artifact when the
+ * user advanced before the warm this call scheduled had landed.
  */
-export function useDatasetGoldWarm(): (
-  features: FeatureConfig[],
-  selectedColumns: string[] | null,
-  scalers: Record<string, ScalerMethod>,
-  targetY?: string | null,
-) => void {
+export interface DatasetGoldWarmResult {
+  warm: (
+    features: FeatureConfig[],
+    selectedColumns: string[] | null,
+    scalers: Record<string, ScalerMethod>,
+    targetY?: string | null,
+    holdout?: { from: string; to: string } | null,
+  ) => void
+  status: FeatureWarmState
+  error: string | null
+}
+
+export function useDatasetGoldWarm(): DatasetGoldWarmResult {
   const draftId = useAtomValue(dwDraftIdAtom)
   const sourceArtifactId = useAtomValue(dwDraftArtifactIdAtom)
   const mode = useAtomValue(dwModeAtom)
   const isReordered = mode === 'create'
   const [, setGoldArtifactId] = useAtom(dwDraftGoldArtifactIdAtom)
   const [, setFeatureArtifactId] = useAtom(dwDraftFeatureArtifactIdAtom)
-  const [, setGoldWarmError] = useAtom(dwGoldWarmErrorAtom)
+  const [goldWarmError, setGoldWarmError] = useAtom(dwGoldWarmErrorAtom)
+  const [warmState, setWarmState] = useAtom(dwFeatureWarmStateAtom)
+  const [, setArtifactStamp] = useAtom(dwFeatureArtifactStampAtom)
 
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const tokenRef = useRef(0)
@@ -102,8 +154,8 @@ export function useDatasetGoldWarm(): (
     [],
   )
 
-  return useCallback(
-    (features, selectedColumns, scalers, targetY) => {
+  const warm: DatasetGoldWarmResult['warm'] = useCallback(
+    (features, selectedColumns, scalers, targetY, holdout) => {
       // Guard BEFORE cancel/token-bump, not after: `sourceArtifactId` flips
       // through null during a BRONZE re-fetch, which busts this callback's
       // memoization (it's a dep below) and re-fires the outer effect even
@@ -117,8 +169,21 @@ export function useDatasetGoldWarm(): (
       const token = ++tokenRef.current
       // Clear any stale error from a prior attempt as soon as a new one is
       // scheduled — an old "formula not implemented" message must not
-      // outlive the recipe edit that was meant to fix it.
+      // outlive the recipe edit that was meant to fix it. `pending` flips
+      // HERE, synchronously, before the debounce elapses — a consumer
+      // (`ValidationHoldoutSection`'s "Applying…") needs to see the request
+      // as in flight the instant Apply is clicked, not 800ms later once the
+      // network call actually starts.
       setGoldWarmError(null)
+      setWarmState('pending')
+      const holdoutForRecipe = holdout ?? null
+      const recipeStamp = featureRecipeStamp({
+        features,
+        selectedColumns,
+        scalers,
+        targetY,
+        holdout: holdoutForRecipe,
+      })
 
       timerRef.current = setTimeout(() => {
         void (async () => {
@@ -132,6 +197,7 @@ export function useDatasetGoldWarm(): (
                 scalers,
                 targetY,
                 ...(isReordered && { scale: false }),
+                ...(holdoutForRecipe && { holdout: holdoutForRecipe }),
               },
             )
             // A newer edit superseded this attempt before the job even
@@ -159,7 +225,13 @@ export function useDatasetGoldWarm(): (
                   setGoldArtifactId(job.resultArtifactId)
                 }
               }
+              // Stamped with the EXACT recipe this specific call sent to the
+              // server (captured above, before the debounce) — not
+              // recomputed from whatever the atoms hold by the time the job
+              // lands, which could already be a newer, still-unwarmed edit.
+              setArtifactStamp(recipeStamp)
               setGoldWarmError(null)
+              setWarmState('ready')
             } else if (job.status === 'FAILED') {
               // No longer swallowed — see module doc. `job.error` carries
               // the runner's own recorded message (`readMessage` on the
@@ -167,6 +239,7 @@ export function useDatasetGoldWarm(): (
               // formula's `FormulaError` text for the dominant real case: a
               // feature preset's equations.
               setGoldWarmError(job.error ?? 'Feature engineering failed.')
+              setWarmState('error')
             }
             // CANCELED: nothing to show — the job's own cancel flow (not
             // reachable from this hook today) already reset relevant state.
@@ -180,6 +253,7 @@ export function useDatasetGoldWarm(): (
                   ? err.message
                   : 'Feature engineering failed.',
               )
+              setWarmState('error')
             }
           }
         })()
@@ -192,6 +266,10 @@ export function useDatasetGoldWarm(): (
       setGoldArtifactId,
       setFeatureArtifactId,
       setGoldWarmError,
+      setWarmState,
+      setArtifactStamp,
     ],
   )
+
+  return { warm, status: warmState, error: goldWarmError }
 }

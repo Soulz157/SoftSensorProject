@@ -14,7 +14,6 @@ import {
   dwWorkspaceIdAtom,
   dwSelectedSourcesAtom,
   dwCustomDateRangeAtom,
-  dwHoldoutRangeAtom,
   dwCustomIntervalAtom,
   dwFetchConfigAtom,
   dwTimeRangeAtom,
@@ -56,6 +55,27 @@ export interface UseDatasetDraftPipelineResult {
    * be shown next to a local preview of an earlier step.
    */
   requestFinalPreview: (tags: string[], steps: CleaningStep[]) => void
+  /**
+   * DS-LAKE-023 (edit-mode re-split pass). Exposed so a caller other than
+   * `applyClean`/`requestFinalPreview` can lazily ensure a draft + BRONZE
+   * exist without also needing a non-empty cleaning batch — both of those
+   * early-return on `tags.length === 0 || steps.length === 0`, which makes
+   * them unusable for "just get me a draft" call sites.
+   *
+   * NO PRODUCTION CALLER YET. `Step4FeatureEngineering` was meant to be the
+   * first — an in-progress edit found (2026-08-25) that calling this from
+   * Step 4 seeds `dwDraftArtifactIdAtom` with a fresh RAW BRONZE, but in
+   * edit mode that atom is the pipeline's CHAINED source (`applyClean`
+   * below advances it to the CLEANED SILVER once cleaning runs), not a
+   * pinned BRONZE the way create mode keeps it — seeding it here would make
+   * a Step 4 holdout warm run features+scale on uncleaned rows. Left
+   * exposed, not reverted, because the underlying capability (ensure a
+   * draft+BRONZE outside a cleaning batch) is still correct and likely
+   * still useful once edit mode's holdout source question is resolved.
+   */
+  ensureDraft: () => Promise<string>
+  /** See `ensureDraft`'s own doc comment. */
+  ensureBronze: (id: string, tags: string[]) => Promise<string>
 }
 
 /**
@@ -77,7 +97,6 @@ export function useDatasetDraftPipeline(): UseDatasetDraftPipelineResult {
   const workspaceId = useAtomValue(dwWorkspaceIdAtom)
   const selectedSources = useAtomValue(dwSelectedSourcesAtom)
   const customDateRange = useAtomValue(dwCustomDateRangeAtom)
-  const holdoutRange = useAtomValue(dwHoldoutRangeAtom)
   const customInterval = useAtomValue(dwCustomIntervalAtom)
   const fetchConfig = useAtomValue(dwFetchConfigAtom)
   const period = useAtomValue(dwTimeRangeAtom)
@@ -113,7 +132,16 @@ export function useDatasetDraftPipeline(): UseDatasetDraftPipelineResult {
           workspaceId,
           selectedSources,
           customDateRange,
-          holdoutRange,
+          // DS-LAKE-023 (edit-mode re-split pass): the holdout is cut at
+          // the FEATURES stage now, in both modes — never here. Forwarding
+          // `dwHoldoutRangeAtom` into `materialize` used to double-split
+          // whenever this ensure ran again with the same window still set
+          // (a hard 0-row refusal from Python's own features() call — see
+          // Part B's own note) or a changed one (silent: two
+          // `validate_data.parquet` objects, two rows carrying
+          // `validationRowCount`, train missing both windows). BRONZE must
+          // stay pristine so every later feature-stage split is lossless.
+          holdoutRange: null,
           customInterval,
           fetchConfig,
           period,
@@ -130,7 +158,6 @@ export function useDatasetDraftPipeline(): UseDatasetDraftPipelineResult {
       workspaceId,
       selectedSources,
       customDateRange,
-      holdoutRange,
       customInterval,
       fetchConfig,
       period,
@@ -255,5 +282,7 @@ export function useDatasetDraftPipeline(): UseDatasetDraftPipelineResult {
     retry,
     finalPreview,
     requestFinalPreview,
+    ensureDraft,
+    ensureBronze,
   }
 }

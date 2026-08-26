@@ -115,6 +115,21 @@ export const CreateFeaturesSchema = z.object({
    * to clean).
    */
   scale: z.boolean().optional(),
+  /**
+   * DS-LAKE-023-T01. The validation holdout window, selected AFTER feature
+   * engineering rather than at fetch time (`CreateRawVersionSchema`'s own
+   * `holdout` field, DS-LAKE-018-T03) — same shape, different pipeline
+   * stage. Absent means no holdout, exactly as today. Present means this
+   * job's Python call splits AFTER applyFeatures/selectColumns: the
+   * committed SILVER becomes the train side, and `validate_data.parquet`
+   * (written beside it) carries the holdout window WITH its derived
+   * columns already computed — no lead-in, no later replay for this
+   * artifact. Forwarded to Python as `FeaturesRequest.holdout`, same
+   * `{from_time, to_time}` field names as `MaterializeRequest.holdout`.
+   */
+  holdout: z
+    .object({ from: z.string().min(1), to: z.string().min(1) })
+    .optional(),
 });
 
 // ── requests ───────────────────────────────────────────────────────────────
@@ -484,6 +499,14 @@ export const ArtifactStatsSchema = z.object({
    * pre-this-field response still parses.
    */
   validation_missing_pct: z.number().nullable().optional(),
+  /**
+   * DS-LAKE-023-T05. Rows `drop_bad_feature_rows` removed before
+   * `to_model_ready` ran on THIS write — set only by `scale` and
+   * `features` (when it scales). Null/absent means either no scaling
+   * happened on this write, or a pre-this-field response — persisted onto
+   * DatasetArtifact.droppedBadRows.
+   */
+  dropped_bad_rows: z.number().int().nonnegative().nullable().optional(),
 });
 
 export type ArtifactStats = z.infer<typeof ArtifactStatsSchema>;

@@ -2,9 +2,15 @@ import type { CustomDateRange } from '@/store/data-visualize'
 import type { CustomInterval } from '@/store/model-pipeline'
 
 /**
- * Guards for selecting a raw validation holdout window at Step 2
- * (DS-LAKE-018-T01). Four checks, all pure — no atoms, no React — so the
- * step component only renders what this returns.
+ * Guards for selecting a validation holdout window (DS-LAKE-018-T01). Four
+ * checks, all pure — no atoms, no React — so the step component only
+ * renders what this returns.
+ *
+ * DS-LAKE-023-T06: the picker itself moved to Step 4, and now drives TWO
+ * different server splits depending on wizard mode — a raw, BRONZE-stage
+ * split (edit mode, unchanged since T01) or a feature-bearing, post-features
+ * split (create mode, DS-LAKE-023). `featureBearing` on `HoldoutGuardInput`
+ * selects which one these guards check against; see its own doc comment.
  *
  * DS-LAKE-018 corrections, recorded here rather than left for whoever
  * implements T03/T04 to re-derive:
@@ -98,14 +104,37 @@ export interface HoldoutGuardInput {
    */
   interval: string
   /**
-   * Whether a target tag has already been chosen. Always false at Step 2
-   * today — `dwTargetTagAtom` is not set until Step 4 — but kept as a real
-   * parameter (not hard-coded) so guard 2 does not silently go stale if
-   * that ever changes.
+   * Whether a target tag has already been chosen. DS-LAKE-023-T06 CORRECTION:
+   * the doc comment here previously claimed this was "always false" because
+   * the picker sat at Step 2/3.1, before `dwTargetTagAtom` could be set. That
+   * was already stale when written — the target is set at STEP 1
+   * (`unified-tag-table.tsx`), not Step 4 as the old comment also claimed —
+   * and is doubly moot now that the picker itself mounts at Step 4, after
+   * both. Kept as a real parameter, not hard-coded, so this guard cannot go
+   * stale the same way twice.
    */
   targetChosen: boolean
   /** Overridable for tests; defaults to `HOLDOUT_LEAD_IN_DURATION`. */
   leadIn?: CustomInterval
+  /**
+   * DS-LAKE-023-T06. True for a holdout cut AFTER feature engineering
+   * (create mode's path, mounted at Step 4) — that split trims lead-in to
+   * zero at the server (T01: `_split_holdout(..., lead_in=timedelta(0))`),
+   * since the sidecar already carries its derived columns computed on the
+   * continuous frame before the cut. Guard 3 (lead-in availability) is
+   * skipped entirely for this kind — checking it would refuse a perfectly
+   * valid selection for a shortfall that no longer has any effect. Guard
+   * 4's warning also changes: DS-LAKE-023 reverses the leakage concern
+   * `decisions.holdout_ui_moves_split_does_not` (DS-LAKE-022) was built on
+   * — a derived value never spans the cut any more (features run on the
+   * continuous frame first), so the warning is reworded to name the
+   * training DISTRIBUTION rather than a feature-value defect that no
+   * longer exists.
+   *
+   * Defaults to false — edit mode's legacy, BRONZE-stage split keeps both
+   * guards exactly as they read before this feature.
+   */
+  featureBearing?: boolean
 }
 
 export interface HoldoutGuardResult {
@@ -135,6 +164,7 @@ export function describeHoldoutSelection({
   interval,
   targetChosen,
   leadIn = HOLDOUT_LEAD_IN_DURATION,
+  featureBearing = false,
 }: HoldoutGuardInput): HoldoutGuardResult {
   if (!holdoutRange) return NO_HOLDOUT
 
@@ -167,46 +197,65 @@ export function describeHoldoutSelection({
   }
 
   // Guard 2 — TRAIN REMAINDER SUFFICIENT. The real check needs the LABELLED
-  // row count, which needs a target tag — not chosen until Step 4. Warn
-  // about the gap rather than claim a check that cannot run here.
+  // row count, which needs a target tag. Warn about the gap rather than
+  // claim a check that cannot run here.
   if (!targetChosen) {
     warnings.push(
       `Target tag isn't chosen yet, so the training remainder can't be ` +
         `checked from here — training refuses runs with fewer than ` +
         `${MIN_LABELLED_ROWS} labelled rows after the holdout is removed. ` +
-        'Revisit this once a target is set in Step 4.',
+        'Revisit this once a target is set.',
     )
   }
 
-  // Guard 3 — LEAD-IN ACTUALLY AVAILABLE. State how much was actually
-  // captured rather than silently writing less than configured.
-  const stepMs = intervalMs(interval)
-  const configuredLeadInMs = durationMs(leadIn)
-  const availableLeadInMs = Math.max(0, holdoutFrom - fetchFrom)
-  const cappedLeadInMs = Math.min(configuredLeadInMs, availableLeadInMs)
-  const resolvedLeadInRows =
-    stepMs !== null && stepMs > 0 ? Math.floor(cappedLeadInMs / stepMs) : null
+  // Guard 3 — LEAD-IN ACTUALLY AVAILABLE. RAW-holdout only (see
+  // `featureBearing`'s own doc comment): a feature-bearing split trims
+  // lead-in to zero at the server, so there is nothing to be short of, and
+  // checking anyway would refuse a valid selection for a shortfall with no
+  // effect.
+  let resolvedLeadInRows: number | null = null
+  if (!featureBearing) {
+    const stepMs = intervalMs(interval)
+    const configuredLeadInMs = durationMs(leadIn)
+    const availableLeadInMs = Math.max(0, holdoutFrom - fetchFrom)
+    const cappedLeadInMs = Math.min(configuredLeadInMs, availableLeadInMs)
+    resolvedLeadInRows =
+      stepMs !== null && stepMs > 0 ? Math.floor(cappedLeadInMs / stepMs) : null
 
-  if (availableLeadInMs < configuredLeadInMs) {
-    warnings.push(
-      `Only ${formatMs(availableLeadInMs)} of lead-in is available before ` +
-        `the holdout starts (${formatDuration(leadIn)} configured) — lag/` +
-        "rolling features on the holdout's first rows may fall short. " +
-        'Move the holdout later, or widen the fetch window, to capture the ' +
-        'full lead-in.',
-    )
+    if (availableLeadInMs < configuredLeadInMs) {
+      warnings.push(
+        `Only ${formatMs(availableLeadInMs)} of lead-in is available before ` +
+          `the holdout starts (${formatDuration(leadIn)} configured) — lag/` +
+          "rolling features on the holdout's first rows may fall short. " +
+          'Move the holdout later, or widen the fetch window, to capture the ' +
+          'full lead-in.',
+      )
+    }
   }
 
   // Guard 4 — TRAILING IS RECOMMENDED, NOT REQUIRED. Warn, do not block:
   // holding out a specific mid-window period is a legitimate reason to
-  // accept the gap this creates.
+  // accept the gap this creates. Wording branches on `featureBearing`
+  // (DS-LAKE-023): the OLD claim ("read rows from the wrong side of it")
+  // described a real defect only the RAW/BRONZE-stage split still has —
+  // a feature-bearing split computes on the continuous frame first, so no
+  // derived value ever spans the cut. The training-distribution concern
+  // (two discontinuous pieces) is real either way.
   if (holdoutTo < fetchTo) {
     warnings.push(
-      'This holdout is not at the end of the fetch window, which splits ' +
-        'the training set into two pieces — lag/rolling features computed ' +
-        'across that gap read rows from the wrong side of it. Fine for ' +
-        'deliberately holding out a specific period; a trailing holdout ' +
-        'avoids the gap entirely.',
+      featureBearing
+        ? 'This holdout is not at the end of the fetch window, which splits ' +
+            'the training set into two pieces. Features are computed BEFORE ' +
+            'the split, so no derived value spans the gap — but the training ' +
+            'data itself is still discontinuous, which can matter for a model ' +
+            'that assumes a continuous time series. Fine for deliberately ' +
+            'holding out a specific period; a trailing holdout avoids the ' +
+            'split entirely.'
+        : 'This holdout is not at the end of the fetch window, which splits ' +
+            'the training set into two pieces — lag/rolling features computed ' +
+            'across that gap read rows from the wrong side of it. Fine for ' +
+            'deliberately holding out a specific period; a trailing holdout ' +
+            'avoids the gap entirely.',
     )
   }
 

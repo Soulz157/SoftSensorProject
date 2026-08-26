@@ -10,9 +10,12 @@ import {
   type FeatureConfig,
 } from '@/lib/feature-engineering'
 import {
+  dwDraftArtifactIdAtom,
   dwFeaturedDatasetAtom,
   dwFeaturePresetAtom,
-  dwGoldWarmErrorAtom,
+  dwFeaturePreviewSampleStateAtom,
+  dwHoldoutRangeAtom,
+  dwModeAtom,
   dwRawDatasetAtom,
   dwTargetTagAtom,
   dwTimeRangeAtom,
@@ -24,6 +27,7 @@ import { ExtractionPanel } from './feature-engineering/extraction-panel'
 import { CreationPanel } from './feature-engineering/creation-panel'
 import { SelectionPanel } from './feature-engineering/selection-panel'
 import { DataAnalysisCard } from './processing/data-analysis-card'
+import { ValidationHoldoutSection } from './processing/validation-holdout-section'
 import { PERIOD_TO_RANGE } from '@/store/model-pipeline'
 import { cn } from '@/lib/utils'
 import { EditLockBanner } from './step-1-tags'
@@ -43,8 +47,11 @@ interface Props {
 export function Step4FeatureEngineering({ nav }: Props) {
   const raw = useAtomValue(dwRawDatasetAtom)
   const featurePreset = useAtomValue(dwFeaturePresetAtom)
-  const goldWarmError = useAtomValue(dwGoldWarmErrorAtom)
   const targetTag = useAtomValue(dwTargetTagAtom)
+  const holdoutRange = useAtomValue(dwHoldoutRangeAtom)
+  const previewFetchState = useAtomValue(dwFeaturePreviewSampleStateAtom)
+  const mode = useAtomValue(dwModeAtom)
+  const sourceArtifactId = useAtomValue(dwDraftArtifactIdAtom)
   useDatasetFeaturePreviewSample()
   const {
     featureConfigs,
@@ -57,6 +64,22 @@ export function Step4FeatureEngineering({ nav }: Props) {
   const period = useAtomValue(dwTimeRangeAtom)
   const range = PERIOD_TO_RANGE[period]
 
+  // HOLD — DS-LAKE-023 edit-mode re-split pass, in progress. The earlier
+  // version of this block called `ensureDraft`/`ensureBronze` here to seed
+  // `dwDraftArtifactIdAtom` with a fresh raw BRONZE on Step 4 mount. Found
+  // (2026-08-25) to be WRONG before it shipped: in edit mode this atom is
+  // the pipeline's CHAINED source — `useDatasetDraftPipeline.applyClean`
+  // advances it to the CLEANED SILVER once Step 5 runs — not a pinned
+  // BRONZE the way create mode keeps it. Seeding it with raw BRONZE here
+  // would make the warm below run features+scale on UNCLEANED rows,
+  // silently skipping cleaning for any edit-mode holdout re-split. There is
+  // also no stored pointer to the pre-features cleaned artifact of the
+  // original run to adopt instead (`adoptedBronzeArtifactId` names only the
+  // RAW lineage root). Reverted pending a decision on how edit mode should
+  // source this job — see this session's own findings for the two real
+  // options. `sourceArtifactId`/`mode` stay read above for
+  // `ValidationHoldoutSection`'s gating below.
+
   // DS-LAKE-006-T06: "Step 4 drives the full feature-engineering transform
   // server-side." No new UI — this fires in the background whenever the
   // recipe settles (debounced inside the hook itself). `featured` below
@@ -64,10 +87,36 @@ export function Step4FeatureEngineering({ nav }: Props) {
   // sidebar) is untouched and stays the bounded interactive preview —
   // genuinely bounded as of DS-LAKE-006-AC5's fix, via
   // `useDatasetFeaturePreviewSample` above, not just in name.
-  const warmGold = useDatasetGoldWarm()
+  //
+  // DS-LAKE-023 (edit-mode re-split pass): `holdoutRange` joins the recipe
+  // as a 5th dependency, in BOTH modes now — picking/clearing a holdout
+  // below re-fires this SAME debounced warm, exactly like editing a
+  // feature config does, so a holdout edit and a recipe edit can never
+  // race into two competing job calls. `warmState`/`warmError` drive
+  // `ValidationHoldoutSection`'s "Applying…" and, via
+  // `dwFeatureArtifactStampAtom`, `useDatasetCleaningScaleCommit`'s
+  // stale-artifact refusal at Step 5.
+  const {
+    warm: warmGold,
+    status: warmState,
+    error: warmError,
+  } = useDatasetGoldWarm()
   useEffect(() => {
-    warmGold(featureConfigs, selectedColumns, scalerConfigs, targetTag)
-  }, [warmGold, featureConfigs, selectedColumns, scalerConfigs, targetTag])
+    warmGold(
+      featureConfigs,
+      selectedColumns,
+      scalerConfigs,
+      targetTag,
+      holdoutRange,
+    )
+  }, [
+    warmGold,
+    featureConfigs,
+    selectedColumns,
+    scalerConfigs,
+    targetTag,
+    holdoutRange,
+  ])
 
   const originalColumns = raw.tags
   const featured = useAtomValue(dwFeaturedDatasetAtom)
@@ -155,10 +204,10 @@ export function Step4FeatureEngineering({ nav }: Props) {
         </EditLockBanner>
       )} */}
 
-      {goldWarmError && (
+      {warmError && (
         <p className="text-xs text-muted-foreground">
           Feature engineering failed to run server-side:{' '}
-          <span className="text-foreground">{goldWarmError}</span>
+          <span className="text-foreground">{warmError}</span>
         </p>
       )}
 
@@ -237,6 +286,32 @@ export function Step4FeatureEngineering({ nav }: Props) {
 
         <DataAnalysisCard dataset={featured} range={range} />
       </Tabs>
+
+      <ValidationHoldoutSection
+        // DS-LAKE-023 (edit-mode re-split pass): also gated on the warm
+        // itself being pending. `previewFetchState` reflects a bounded
+        // HEAD-page preview fetch, which can read 'ready' while the
+        // CURRENT recipe's own features job is still in flight — without
+        // this, Apply could fire against a source artifact that is about
+        // to be replaced by that in-flight job.
+        //
+        // Edit mode additionally requires `sourceArtifactId` (see the HOLD
+        // comment above `warmGold`): without it, `warmGold` would silently
+        // no-op on Apply — the atom write would land but nothing would ever
+        // reach the server, the exact D6 bug this pass exists to fix, just
+        // reintroduced from a different angle. Left disabled rather than
+        // silently broken until edit mode's source question is resolved.
+        disabled={
+          previewFetchState !== 'ready' ||
+          warmState === 'pending' ||
+          (mode === 'edit' && !sourceArtifactId)
+        }
+        // Edit mode's holdout is NOT feature-bearing yet — see the HOLD
+        // comment above `warmGold`. Stays conditional until that's settled.
+        featureBearing={mode !== 'edit'}
+        status={warmState}
+        error={warmError}
+      />
     </div>
   )
 }

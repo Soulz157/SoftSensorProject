@@ -20,6 +20,7 @@ import {
   dwFeatureConfigsAtom,
   dwTimeRangeAtom,
   dwHighestUnlockedAtom,
+  dwHoldoutRangeAtom,
   dwSdtaPresetsAtom,
   dwPresetRangeAtom,
   dwPresetRangeStaleAtom,
@@ -129,9 +130,6 @@ export function Step5DataCleaning({ nav }: Props) {
   const [previewIndex, setPreviewIndex] = useState(0)
   const [rawIsolated, setRawIsolated] = useState('')
 
-  // Re-seed the draft from the batch's saved pipeline only when a FRESH batch
-  // starts (0 → N selected). Growing/shrinking an in-progress batch keeps the
-  // draft so the user doesn't lose work mid-edit.
   const prevCountRef = useRef(0)
   useEffect(() => {
     const prev = prevCountRef.current
@@ -196,6 +194,10 @@ export function Step5DataCleaning({ nav }: Props) {
   const presetRangeStale = useAtomValue(dwPresetRangeStaleAtom)
   const tagUnits = useAtomValue(dwTagUnitsAtom)
   const targetTag = useAtomValue(dwTargetTagAtom)
+  // DS-LAKE-023: part of the recipe signature `commitCleaningScale` checks
+  // against `dwFeatureArtifactStampAtom` before committing — see that
+  // hook's own doc comment for why the holdout must be included.
+  const holdoutRange = useAtomValue(dwHoldoutRangeAtom)
 
   const health = useMemo(() => datasetHealth(raw.tags), [raw.tags])
 
@@ -288,6 +290,7 @@ export function Step5DataCleaning({ nav }: Props) {
       selectedColumns,
       scalers: scalerConfigs,
       targetY: targetTag,
+      holdout: holdoutRange,
     })
     if (ok) nav.next()
   }

@@ -2180,6 +2180,48 @@ describe('DatasetDraftAuthorizedService — draft-owned jobs', () => {
     );
   });
 
+  it('forwards holdout onto the stored FEATURE job payload', async () => {
+    // DS-LAKE-023-T01: same class of bug DS-LAKE-022 found twice already
+    // (scaleRecipe, scale) — a DTO field built and never carried onto the
+    // stored payload leaves the runner's read side permanently unreachable.
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst.mockResolvedValue({ id: 'artifact-1' });
+    const { service } = makeService(prisma);
+
+    await service.startDraftFeaturesJobService(USER, 'draft-1', 'artifact-1', {
+      features: [],
+      selectedColumns: null,
+      scalers: {},
+      targetY: null,
+      scale: false,
+      holdout: { from: '2026-01-16', to: '2026-01-20' },
+    });
+
+    const call = firstCreateArg(prisma.preprocessingJob.create);
+    expect((call.data.operations as { holdout?: unknown }).holdout).toEqual({
+      from: '2026-01-16',
+      to: '2026-01-20',
+    });
+  });
+
+  it('omits holdout from the stored FEATURE payload when the DTO has none', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst.mockResolvedValue({ id: 'artifact-1' });
+    const { service } = makeService(prisma);
+
+    await service.startDraftFeaturesJobService(USER, 'draft-1', 'artifact-1', {
+      features: [],
+      selectedColumns: null,
+      scalers: {},
+      targetY: null,
+    });
+
+    const call = firstCreateArg(prisma.preprocessingJob.create);
+    expect('holdout' in (call.data.operations as Record<string, unknown>)).toBe(
+      false,
+    );
+  });
+
   it('retry carries sourceArtifactId forward, not just sourceVersionId', async () => {
     const prisma = buildPrisma();
     prisma.preprocessingJob.findFirst.mockResolvedValue({

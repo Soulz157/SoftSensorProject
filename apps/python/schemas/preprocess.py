@@ -159,6 +159,12 @@ class ArtifactStatsResponse(BaseModel):
     #: stripped from the real HTTP response even though `_stats_payload`
     #: puts it in the dict.
     validation_missing_pct: Optional[float] = None
+    #: DS-LAKE-023-T05. Rows `drop_bad_feature_rows` removed before
+    #: `to_model_ready` ran on THIS write — None for a caller that never
+    #: scales (materialize/clean). Declared here for the SAME reason
+    #: validation_missing_pct is, per the comment directly above: an
+    #: undeclared field is silently stripped from the real HTTP response.
+    dropped_bad_rows: Optional[int] = None
 
 
 class ExportRequest(BaseModel):
@@ -547,6 +553,16 @@ class FeaturesRequest(BaseModel):
             "scaling, no feature_spec.json — pair with a later ScaleRequest."
         ),
     )
+    #: DS-LAKE-023-T01. The validation holdout window, selected AFTER feature
+    #: engineering rather than at materialize time (`MaterializeRequest`'s own
+    #: `holdout` field, DS-LAKE-018-T03) — same request shape, different
+    #: pipeline stage. Absent means no holdout, exactly as today. Present
+    #: means this call splits AFTER applyFeatures/selectColumns and BEFORE
+    #: `target_key` is written: `target_key` becomes the train side,
+    #: `validate_data.parquet` (written beside it via `sidecar_key`) carries
+    #: the holdout window WITH its derived columns already computed — no
+    #: lead-in, no later replay needed for this artifact.
+    holdout: Optional[HoldoutSplitRequest] = None
 
     model_config = {"populate_by_name": True}
 
@@ -655,6 +671,26 @@ class ReplayHoldoutForRunRequest(BaseModel):
     source_key: str
     target_key: str
     holdout_from: str
+    overwrite: bool = False
+
+
+class PrepareHoldoutForRunRequest(BaseModel):
+    """DS-LAKE-023-T03. The SILVER-branch counterpart to
+    `ReplayHoldoutForRunRequest` — for a holdout produced by the reordered
+    features-stage split (`FeaturesRequest.holdout`, T01), which already
+    carries its derived columns and has no lead-in rows to trim. No
+    `holdout_from` field: unlike a raw BRONZE-stage holdout, there is
+    nothing to trim after the fact — `_split_holdout` already wrote this
+    sidecar with `lead_in=timedelta(0)`.
+
+    Same `feature_spec_key`-sourced recipe-hydration pattern as
+    `ReplayHoldoutForRunRequest` — NestJS's `claim()` never re-derives a
+    training run's recipe itself.
+    """
+
+    feature_spec_key: str
+    source_key: str
+    target_key: str
     overwrite: bool = False
 
 

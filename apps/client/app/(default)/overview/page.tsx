@@ -14,6 +14,7 @@ import { OverviewDetailPanel } from './components/overview-detail-panel'
 import { OverviewSkeleton } from './components/overview-skeleton'
 import { CreateWorkspaceForm } from '@/components/auth/create-workspace-form'
 import { useSearchParams } from 'next/navigation'
+import { useAlerts } from '@/hooks/alerts/use-alerts'
 
 export default function PlantsPage() {
   const router = useRouter()
@@ -21,6 +22,7 @@ export default function PlantsPage() {
   const wsFromUrl = searchParams.get('ws')
   const { workspaces, nodesByWorkspace, loading, error } = usePlantsData()
   const { models } = useAllModels()
+  const { alerts, loading: alertsLoading } = useAlerts()
 
   const failedDeploysByWorkspace = useMemo(() => {
     if (!models) return {}
@@ -36,6 +38,54 @@ export default function PlantsPage() {
     [models],
   )
 
+  // Same two signals the navbar's alert count is built from (buildAlerts:
+  // node hardware status in {alarm,offline,warning} + failed model
+  // deploys) — BUG FIX: `AlertRow` has no `nodeId` field (node-kind rows
+  // carry the node id as `id`), and `CanvasNode` has no top-level `status`
+  // (it's `data.status`). Both were always `undefined`, so this Set was
+  // always empty and every workspace/tower rendered 'normal' regardless of
+  // real alerts — the mismatch against the navbar/sidebar alert counts.
+  const abnormalNodeIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const a of alerts) {
+      if (a.kind === 'node') ids.add(a.id)
+    }
+    for (const nodeId of Object.keys(failedByNodeId)) {
+      ids.add(nodeId)
+    }
+    return ids
+  }, [alerts, failedByNodeId])
+
+  // roll up จาก nodes ที่ reconcile แล้ว — dot ใหญ่ + StatusIcon บน tower
+  // อ่านจาก workspace.status ไม่ใช่จาก nodeStatuses จึงต้องคำนวณใหม่ด้วย
+  //
+  // Reads raw `nodesByWorkspace` directly (not a reconciled copy) — the map
+  // and detail panel already read `node.data.status` themselves
+  // (overview-map.tsx, overview-detail-panel.tsx), so a per-node
+  // `{...n, status}` copy was dead weight nothing consumed, and its
+  // mismatched shape is what produced the CanvasNode type errors.
+  const workspacesReconciled = useMemo(
+    () =>
+      workspaces.map(ws => {
+        const nodes = nodesByWorkspace[ws.id] ?? []
+        const hasAlarm = nodes.some(
+          n =>
+            n.data.status === 'alarm' ||
+            n.data.status === 'warning' ||
+            abnormalNodeIds.has(n.id),
+        )
+        const allOffline =
+          nodes.length > 0 && nodes.every(n => n.data.status === 'offline')
+        const status: 'alarm' | 'offline' | 'normal' = hasAlarm
+          ? 'alarm'
+          : allOffline
+            ? 'offline'
+            : 'normal'
+        return { ...ws, status }
+      }),
+    [workspaces, nodesByWorkspace, abnormalNodeIds],
+  )
+
   const {
     filterQuery,
     setFilterQuery,
@@ -43,7 +93,7 @@ export default function PlantsPage() {
     handleStatusToggle,
     handleClearAllStatuses,
     highlightedIds,
-  } = useWorkspaceFilter(workspaces)
+  } = useWorkspaceFilter(workspacesReconciled)
 
   const {
     selectedId,
@@ -52,11 +102,10 @@ export default function PlantsPage() {
     selectedNodes,
     panelRef,
     handleDismiss,
-  } = useWorkspaceSelection(workspaces, nodesByWorkspace, wsFromUrl)
+  } = useWorkspaceSelection(workspacesReconciled, nodesByWorkspace, wsFromUrl)
 
   const selectWorkspace = (id: string | null) => {
     setSelectedId(id)
-    router.replace(id ? `/plants?ws=${id}` : '/plants', { scroll: false })
   }
 
   const dismiss = () => {
@@ -64,7 +113,8 @@ export default function PlantsPage() {
     router.replace('/plants', { scroll: false })
   }
 
-  if (loading) return <OverviewSkeleton />
+  // gate รวม alertsLoading ด้วย ไม่งั้น tower paint เขียวหมดแล้วกระพริบเป็นแดง
+  if (loading || alertsLoading) return <OverviewSkeleton />
   if (error) throw new Error(error)
 
   if (workspaces.length === 0)
@@ -97,7 +147,7 @@ export default function PlantsPage() {
         </div>
 
         <PlantsMap
-          workspaces={workspaces}
+          workspaces={workspacesReconciled}
           nodesByWorkspace={nodesByWorkspace}
           selectedWorkspaceId={selectedId}
           onWorkspaceClick={id =>

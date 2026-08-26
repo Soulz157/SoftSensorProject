@@ -22,13 +22,11 @@ import {
   lockedPresetRangeCandidates,
 } from '@/store/dataset-studio'
 import { useDatasetFeaturePreviewSample } from '@/hooks/dataset/use-dataset-feature-preview-sample'
-import { useDatasetHoldoutResplit } from '@/hooks/dataset/use-dataset-holdout-resplit'
 import { useDelayedFlag } from '@/hooks/use-delayed-flag'
 import { useStageSdtaPreset } from '@/hooks/use-sdta-preset'
 import type { DatasetTagRow } from '@/hooks/dataset/use-dataset-tag-table'
 import { DataAnalysisCard } from './data-analysis-card'
 import { DataAnalysisCardSkeleton } from './data-analysis-card-skeleton'
-import { ValidationHoldoutSection } from './validation-holdout-section'
 import { ProcessingActionFooter } from './processing-action-footer'
 import { PresetApplyManager, type AppliedPreset } from '../preset-apply-modal'
 import { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipeline-nav'
@@ -75,11 +73,6 @@ export function Step31EDA({ nav }: Props) {
   // a sub-150ms resolution should never flash a skeleton at all.
   const showSkeleton = useDelayedFlag(isBusy, 150)
 
-  // DS-LAKE-018-T06. Lifted here (not owned inside `ValidationHoldoutSection`)
-  // because Next must stay disabled while a re-split is in flight — same
-  // reasoning as gating Next on `isBusy` above: advancing mid-split would
-  // take Step 3.2 to an artifact that is about to be replaced.
-  const holdoutResplit = useDatasetHoldoutResplit()
   const precleansed = useMemo(
     () =>
       precleanse(raw, {
@@ -243,21 +236,12 @@ export function Step31EDA({ nav }: Props) {
         </Alert>
       )}
 
-      <ValidationHoldoutSection
-        disabled={isBusy || readiness.phase !== 'ready'}
-        {...holdoutResplit}
-      />
-
       <ProcessingActionFooter
         backLabel="Back"
         nextLabel="Continue"
         onBack={nav.back}
         onNext={nav.next}
-        nextDisabled={
-          precleansed.rows.length === 0 ||
-          isBusy ||
-          holdoutResplit.status === 'pending'
-        }
+        nextDisabled={precleansed.rows.length === 0 || isBusy}
       />
     </div>
   )

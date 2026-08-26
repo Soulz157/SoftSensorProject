@@ -51,6 +51,7 @@ import {
   dwFocusedTagAtom,
   dwModeAtom,
   dwValueClipAtom,
+  dwFeatureWarmStateAtom,
 } from '@/store/dataset-studio'
 import {
   mpSelectedSavedSourceIdAtom,
@@ -201,6 +202,13 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
     dwSelectedColumnsAtom,
   )
   const [scalerConfigs, setScalerConfigsAtom] = useAtom(dwScalerConfigsAtom)
+  // DS-LAKE-023: secondary gate for canAdvance case 4 below — disables the
+  // Next BUTTON while Step 4's background warm is in flight. The load-
+  // bearing gate is `useDatasetCleaningScaleCommit`'s own stamp check
+  // (survives every navigation path, including the step indicator, which
+  // never calls this function at all); this one only improves the common
+  // Next-button case by not letting it look clickable mid-warm.
+  const featureWarmState = useAtomValue(dwFeatureWarmStateAtom)
 
   const canAdvance = useCallback(
     (step: number): boolean => {
@@ -231,6 +239,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
         // applyFeatures -> selectColumns, no `cleaningPipelines` in this
         // gate any more.
         case 4: {
+          if (featureWarmState === 'pending') return false
           const featured = applyFeatures(rawDataset, featureConfigs)
           const selected = selectColumns(featured, selectedColumns)
           return selected.rows.length > 0 && selected.tags.length > 0
@@ -275,6 +284,7 @@ export function useDatasetPipelineNav(): UseDatasetPipelineNavResult {
       cleaningPipelines,
       featureConfigs,
       selectedColumns,
+      featureWarmState,
     ],
   )
 

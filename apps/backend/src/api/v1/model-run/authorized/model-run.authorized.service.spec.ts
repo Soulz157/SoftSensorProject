@@ -5,6 +5,8 @@ jest.mock('@/lib/python-preprocess-client');
 
 const mockedPresignArtifact = pythonClient.presignArtifact as jest.Mock;
 const mockedReplayHoldoutForRun = pythonClient.replayHoldoutForRun as jest.Mock;
+const mockedPrepareHoldoutForRun =
+  pythonClient.prepareHoldoutForRun as jest.Mock;
 
 const RUN_BASE = {
   id: 'run-1',
@@ -33,6 +35,7 @@ function makePrisma(
   const bronze =
     overrides.bronze === undefined
       ? {
+          type: 'BRONZE',
           objectKey: 'ds-1/artifacts/bronze-1/data.parquet',
           validationRowCount: 3,
           validationHoldoutFrom: new Date('2026-01-08T00:00:00.000Z'),
@@ -141,6 +144,7 @@ describe('ModelRunAuthorizedService', () => {
           // `ds-1/artifacts/bronze-1/validate_data.parquet` — a key nothing
           // ever wrote — so this replay silently no-opped (soft-fail) for
           // every such run.
+          type: 'BRONZE',
           objectKey: 'drafts/draft-9/artifacts/bronze-1/data_bronze.parquet',
           validationRowCount: 3,
           validationHoldoutFrom: new Date('2026-01-08T00:00:00.000Z'),
@@ -221,6 +225,150 @@ describe('ModelRunAuthorizedService', () => {
       expect(prisma.datasetArtifact.findUnique).not.toHaveBeenCalled();
       expect(mockedReplayHoldoutForRun).not.toHaveBeenCalled();
       expect(result).not.toHaveProperty('holdoutDataUrl');
+    });
+
+    it('DS-LAKE-023-T03/D1: a SILVER-type holdout artifact routes to prepareHoldoutForRun, not replayHoldoutForRun, and needs no validationHoldoutFrom', async () => {
+      const prisma = makePrisma({
+        bronze: {
+          type: 'SILVER',
+          objectKey: 'ds-1/artifacts/silver-1/data_silver.parquet',
+          validationRowCount: 5,
+          // Deliberately null — a SILVER-produced (feature-bearing) holdout
+          // has no lead-in to trim, so prepareHoldoutForRun needs no
+          // holdout_from at all, unlike the BRONZE/replay branch.
+          validationHoldoutFrom: null,
+        },
+      });
+      mockedPrepareHoldoutForRun.mockResolvedValue({
+        object_key: 'drafts/draft-1/runs/run-1/validate_ready.parquet',
+        row_count: 5,
+        checksum: 'prepare-checksum',
+      });
+      mockedPresignArtifact
+        .mockResolvedValueOnce({
+          data_url: 'https://minio.example/gold-signed',
+          sidecar_urls: {
+            'feature_spec.json': 'https://minio.example/spec-signed',
+          },
+          checksum: 'gold-checksum',
+          row_count: 100,
+          expires_at: '2026-01-01T00:00:00Z',
+        })
+        .mockResolvedValueOnce({
+          data_url: 'https://minio.example/holdout-signed',
+          sidecar_urls: {},
+          checksum: 'holdout-checksum',
+          row_count: 5,
+          expires_at: '2026-01-01T00:00:00Z',
+        });
+
+      const service = new ModelRunAuthorizedService(
+        prisma as never,
+        {
+          advanceJobForRun: jest.fn(),
+        } as never,
+      );
+      const result = await service.claim('run-1');
+
+      expect(mockedReplayHoldoutForRun).not.toHaveBeenCalled();
+      expect(mockedPrepareHoldoutForRun).toHaveBeenCalledWith({
+        feature_spec_key: 'ds-1/artifacts/gold-1/feature_spec.json',
+        source_key: 'ds-1/artifacts/silver-1/validate_data.parquet',
+        target_key: 'drafts/draft-1/runs/run-1/validate_ready.parquet',
+        overwrite: true,
+      });
+      expect(result.holdoutDataUrl).toBe(
+        'https://minio.example/holdout-signed',
+      );
+      expect(result.holdoutRowCount).toBe(5);
+    });
+
+    it("DS-LAKE-023 edit-mode re-split pass: a GOLD-type holdout artifact ALSO routes to prepareHoldoutForRun, not replayHoldoutForRun — edit mode's combined FEATURE job writes GOLD, not SILVER", async () => {
+      const prisma = makePrisma({
+        bronze: {
+          type: 'GOLD',
+          objectKey: 'ds-1/artifacts/gold-2/data_gold.parquet',
+          validationRowCount: 7,
+          // Same reasoning as the SILVER case above — a feature-bearing
+          // holdout has no lead-in to trim.
+          validationHoldoutFrom: null,
+        },
+      });
+      mockedPrepareHoldoutForRun.mockResolvedValue({
+        object_key: 'drafts/draft-1/runs/run-1/validate_ready.parquet',
+        row_count: 7,
+        checksum: 'prepare-checksum',
+      });
+      mockedPresignArtifact
+        .mockResolvedValueOnce({
+          data_url: 'https://minio.example/gold-signed',
+          sidecar_urls: {
+            'feature_spec.json': 'https://minio.example/spec-signed',
+          },
+          checksum: 'gold-checksum',
+          row_count: 100,
+          expires_at: '2026-01-01T00:00:00Z',
+        })
+        .mockResolvedValueOnce({
+          data_url: 'https://minio.example/holdout-signed',
+          sidecar_urls: {},
+          checksum: 'holdout-checksum',
+          row_count: 7,
+          expires_at: '2026-01-01T00:00:00Z',
+        });
+
+      const service = new ModelRunAuthorizedService(
+        prisma as never,
+        {
+          advanceJobForRun: jest.fn(),
+        } as never,
+      );
+      const result = await service.claim('run-1');
+
+      expect(mockedReplayHoldoutForRun).not.toHaveBeenCalled();
+      expect(mockedPrepareHoldoutForRun).toHaveBeenCalledWith({
+        feature_spec_key: 'ds-1/artifacts/gold-1/feature_spec.json',
+        source_key: 'ds-1/artifacts/gold-2/validate_data.parquet',
+        target_key: 'drafts/draft-1/runs/run-1/validate_ready.parquet',
+        overwrite: true,
+      });
+      expect(result.holdoutDataUrl).toBe(
+        'https://minio.example/holdout-signed',
+      );
+      expect(result.holdoutRowCount).toBe(7);
+    });
+
+    it('DS-LAKE-023 finding 4: resolves the holdout artifact deterministically (newest first), guarding against two artifacts sharing one runId', async () => {
+      const prisma = makePrisma();
+      mockedReplayHoldoutForRun.mockResolvedValue({
+        object_key: 'drafts/draft-1/runs/run-1/validate_ready.parquet',
+        row_count: 3,
+        checksum: 'replay-checksum',
+      });
+      mockedPresignArtifact.mockResolvedValueOnce({
+        data_url: 'https://minio.example/gold-signed',
+        sidecar_urls: {
+          'feature_spec.json': 'https://minio.example/spec-signed',
+        },
+        checksum: 'gold-checksum',
+        row_count: 100,
+        expires_at: '2026-01-01T00:00:00Z',
+      });
+
+      const service = new ModelRunAuthorizedService(
+        prisma as never,
+        {
+          advanceJobForRun: jest.fn(),
+        } as never,
+      );
+      await service.claim('run-1');
+
+      const call = prisma.datasetArtifact.findFirst.mock.calls[0][0] as {
+        where: { validationRowCount?: unknown };
+        orderBy?: { createdAt?: string };
+      };
+      expect(call.orderBy).toEqual({ createdAt: 'desc' });
+      expect(call.where.validationRowCount).toEqual({ not: null });
     });
 
     it('soft-fails a replay error: logs it, omits holdout fields, still returns the claim', async () => {

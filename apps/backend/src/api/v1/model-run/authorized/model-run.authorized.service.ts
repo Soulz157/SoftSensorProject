@@ -15,6 +15,7 @@ import {
   presignArtifact,
   PresignedArtifact,
   presignModelRunUpload,
+  prepareHoldoutForRun,
   replayHoldoutForRun,
 } from '@/lib/python-preprocess-client';
 import { RunCompleteDto } from './dto/model-run.authorized.dto';
@@ -67,14 +68,22 @@ export class ModelRunAuthorizedService {
   }
 
   /**
-   * DS-LAKE-018-T05. If this run's dataset has a raw validation holdout
-   * (a BRONZE sibling of the run's own GOLD artifact with a recorded
-   * `validationRowCount`), replay the GOLD's own recipe over it and presign
-   * the result — this is what wires T04's replay endpoint into a real
-   * training run, since nothing had called it before this task.
+   * DS-LAKE-018-T05 / DS-LAKE-023-T03/T04. If this run's dataset has a
+   * validation holdout, score it and presign the result — this is what
+   * wires the replay/prepare endpoints into a real training run.
+   *
+   * TWO holdout shapes can exist on the same `runId` chain, and they are
+   * mutually exclusive per D1 (feature_list.preprocessing.json): a legacy
+   * RAW holdout, cut at BRONZE before features ever ran (needs a full
+   * recipe REPLAY), or a DS-LAKE-023 FEATURE-BEARING holdout, cut after
+   * features ran (needs only the recorded scaler PREPARED, no replay).
+   * `pipelineVersion` cannot discriminate these — DS-LAKE-022 already
+   * stamps every create-mode SILVER with it regardless of whether a
+   * holdout was ever picked. The only reliable signal is WHICH ARTIFACT
+   * ROW actually carries a non-null `validationRowCount`.
    *
    * Deliberately SOFT-FAIL: unlike the checksum-drift guard above, a
-   * holdout replay problem must never fail a run that has nothing to do
+   * holdout scoring problem must never fail a run that has nothing to do
    * with the holdout mechanism itself — a legacy/no-holdout dataset (the
    * overwhelming majority) must train exactly as it does today. A failure
    * here just means `claim()`'s response omits the holdout fields, and the
@@ -94,6 +103,7 @@ export class ModelRunAuthorizedService {
     holdoutDataUrl: string;
     holdoutArtifactChecksum: string;
     holdoutRowCount: number;
+    holdoutDroppedBadRows: number | null;
   } | null> {
     if (!run.featureSpecKey) return null;
 
@@ -103,56 +113,99 @@ export class ModelRunAuthorizedService {
     });
     if (!gold) return null;
 
-    const bronze = await this.prisma.datasetArtifact.findFirst({
-      where: { runId: gold.runId, type: 'BRONZE' },
+    // Deterministically ordered (finding: DS-LAKE-023's own audit found the
+    // legacy resolver used an unordered `findFirst` — a draft resplit more
+    // than once can leave two artifacts sharing one `runId`, and picking
+    // the wrong one silently replays/prepares the WRONG holdout, or none).
+    // Newest first: a later split always supersedes an earlier one for
+    // scoring purposes, matching resplit's own "always write a NEW
+    // artifact" contract.
+    //
+    // `GOLD` joins `BRONZE`/`SILVER` here as of DS-LAKE-023's edit-mode
+    // re-split pass: edit mode's FEATURE job writes a combined, already-
+    // scaled GOLD (`preprocessing-job.service.ts`'s own `artifactType`
+    // decision — a FEATURE job commits SILVER only when `scale === false`,
+    // which edit mode never sends), so an edit-mode holdout's
+    // `validationRowCount` lands on a GOLD row, not a SILVER one. Without
+    // this, an edit-mode holdout would be invisible to this resolver and
+    // scoring would silently soft-fail for every such run.
+    const holdoutArtifact = await this.prisma.datasetArtifact.findFirst({
+      where: {
+        runId: gold.runId,
+        type: { in: ['BRONZE', 'SILVER', 'GOLD'] },
+        validationRowCount: { not: null },
+      },
+      orderBy: { createdAt: 'desc' },
       select: {
+        type: true,
         objectKey: true,
         validationRowCount: true,
         validationHoldoutFrom: true,
       },
     });
-    if (
-      !bronze ||
-      bronze.validationRowCount == null ||
-      !bronze.validationHoldoutFrom
-    ) {
+    if (!holdoutArtifact || holdoutArtifact.validationRowCount == null) {
       return null;
     }
 
     try {
-      // Derived from `bronze.objectKey` (the key actually written), not
-      // rebuilt from `run.datasetId` — a draft-built dataset's BRONZE lives
-      // under `drafts/{draftId}/…`, so the old `validateDataKey(datasetId,
-      // bronze.id)` produced a key nothing ever wrote and this replay
-      // silently skipped (soft-fail below) for every such run.
-      const sourceKey = sidecarKey(bronze.objectKey, VALIDATE_DATA_FILENAME);
+      // Derived from the artifact's own `objectKey` (the key actually
+      // written), not rebuilt from `run.datasetId` — a draft-built
+      // dataset's artifact lives under `drafts/{draftId}/…`, so rebuilding
+      // the prefix from `datasetId` alone produced a key nothing ever
+      // wrote and this replay silently skipped (soft-fail below) for
+      // every such run.
+      const sourceKey = sidecarKey(
+        holdoutArtifact.objectKey,
+        VALIDATE_DATA_FILENAME,
+      );
       const targetKey = this.buildRunKey(
         owner,
         run.id,
         'validate_ready.parquet',
       );
-
-      await replayHoldoutForRun({
+      const commonInput = {
         feature_spec_key: run.featureSpecKey,
         source_key: sourceKey,
         target_key: targetKey,
-        holdout_from: bronze.validationHoldoutFrom.toISOString(),
         // Deterministic per-run key, nothing else ever reads or writes it —
-        // unlike GOLD's data.parquet, a second claim() re-replaying is
+        // unlike GOLD's data.parquet, a second claim() re-scoring is
         // harmless, not a leakage risk.
         overwrite: true,
-      });
+      };
+
+      // DS-LAKE-023-T05. Only `prepareHoldoutForRun` ever populates
+      // `dropped_bad_rows` — the legacy `replayHoldoutForRun` path does not
+      // run `drop_bad_feature_rows` (out of this task's scope; see that
+      // function's own module doc). Null for a BRONZE (legacy) holdout.
+      let holdoutDroppedBadRows: number | null = null;
+      if (holdoutArtifact.type === 'BRONZE') {
+        // Legacy raw holdout — needs the full recipe replayed, and the
+        // resolved boundary to trim lead-in rows afterward.
+        if (!holdoutArtifact.validationHoldoutFrom) return null;
+        await replayHoldoutForRun({
+          ...commonInput,
+          holdout_from: holdoutArtifact.validationHoldoutFrom.toISOString(),
+        });
+      } else {
+        // DS-LAKE-023: feature-bearing holdout (SILVER in create mode,
+        // GOLD in edit mode — both non-BRONZE) — already has its derived
+        // columns and no lead-in to trim, so only the recorded scaler
+        // needs applying.
+        const prepared = await prepareHoldoutForRun(commonInput);
+        holdoutDroppedBadRows = prepared.dropped_bad_rows ?? null;
+      }
       const holdoutPresigned = await presignArtifact({ source_key: targetKey });
 
       return {
         holdoutDataUrl: holdoutPresigned.data_url,
         holdoutArtifactChecksum: holdoutPresigned.checksum,
         holdoutRowCount: holdoutPresigned.row_count,
+        holdoutDroppedBadRows,
       };
     } catch (err) {
       await this.appendLog(run.id, {
         level: 'warn',
-        message: `Holdout replay skipped: ${(err as Error).message}`,
+        message: `Holdout scoring skipped: ${(err as Error).message}`,
       });
       return null;
     }

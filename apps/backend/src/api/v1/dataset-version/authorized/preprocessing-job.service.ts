@@ -43,6 +43,14 @@ interface FeatureJobRecipe {
   scalers: Record<string, string>;
   targetY: string | null;
   scale?: boolean;
+  /**
+   * DS-LAKE-023-T01. FEATURE-job-only — `readScaleRecipe` never populates
+   * this, since a CLEAN job's scaling tail runs on an already-split SILVER
+   * and has no holdout decision of its own to carry. `undefined` when the
+   * stored payload omitted it, forwarded as an omitted field to Python for
+   * the same reason `scale` is (see this interface's own doc comment).
+   */
+  holdout?: { from: string; to: string };
 }
 
 /**
@@ -369,6 +377,18 @@ export class PreprocessingJobService
               // stops after selectColumns, leaving Bad cells un-laundered
               // for the CLEAN job's own scaling tail to act on.
               ...(recipe.scale !== undefined && { scale: recipe.scale }),
+              // DS-LAKE-023-T01. Same spread discipline as `scale` above —
+              // omitted, not a key holding `undefined`. Present means
+              // Python's `features()` splits AFTER applyFeatures/
+              // selectColumns and writes `validate_data.parquet` beside
+              // `committedKey`, carrying the derived columns already
+              // computed.
+              ...(recipe.holdout !== undefined && {
+                holdout: {
+                  from_time: recipe.holdout.from,
+                  to_time: recipe.holdout.to,
+                },
+              }),
             },
             PYTHON_TIMEOUT.preprocess,
             controller.signal,
@@ -610,6 +630,26 @@ export class PreprocessingJobService
           // next reader into thinking a GOLD row's null was intentional.
           columnStatsKey: stats.column_stats_key,
           featureSpecKey,
+          // DS-LAKE-023-T01. Set only when THIS stage's own Python call
+          // carried a holdout — i.e. only on a FEATURE job whose recipe
+          // requested one. Null for every other stage, same convention
+          // `materialize`/`resplit-holdout` already use for the legacy
+          // BRONZE-stage split. Writing all three together here (unlike
+          // those two writers, which historically split the writes and
+          // left `validationHoldoutFrom` null — see this feature's own
+          // findings) is deliberate: a row with `validationRowCount` set
+          // but `validationHoldoutFrom` null is unusable by either scoring
+          // path.
+          validationRowCount: stats.validation_row_count ?? null,
+          validationHoldoutFrom: stats.validation_holdout_from
+            ? new Date(stats.validation_holdout_from)
+            : null,
+          validationMissingPct: stats.validation_missing_pct ?? null,
+          // DS-LAKE-023-T05. Read off whichever Python call wrote this
+          // artifact, same convention as columnStatsKey above — only
+          // /scale and /features (when it scales) ever populate this;
+          // /clean never does, since it never runs to_model_ready.
+          droppedBadRows: stats.dropped_bad_rows ?? null,
           durationMs: Date.now() - startedAt,
           createdById: job.createdById,
         },
@@ -846,6 +886,7 @@ export class PreprocessingJobService
       scalers?: unknown;
       targetY?: unknown;
       scale?: unknown;
+      holdout?: unknown;
     };
     if (payload.operations !== undefined && payload.features === undefined) {
       throw new AppException({
@@ -865,6 +906,9 @@ export class PreprocessingJobService
       // `FeaturesRequest.scale` default own the legacy behaviour in one
       // place instead of two that could drift (DS-LAKE-022-T03).
       ...(payload.scale !== undefined && { scale: payload.scale }),
+      // DS-LAKE-023-T01. Same undefined-vs-omitted discipline as `scale`
+      // above.
+      ...(payload.holdout !== undefined && { holdout: payload.holdout }),
     });
     if (!parsed.success) {
       throw new AppException({
@@ -879,6 +923,7 @@ export class PreprocessingJobService
       scalers: parsed.data.scalers,
       targetY: parsed.data.targetY ?? null,
       scale: parsed.data.scale,
+      holdout: parsed.data.holdout,
     };
   }
 

@@ -71,12 +71,38 @@ export function PlantTower({
     nodeStatuses && nodeStatuses.length > MAX_DOTS
       ? nodeStatuses.length - MAX_DOTS
       : 0
-  const totalDotsW =
-    sortedStatuses.length > 0
-      ? (sortedStatuses.length - 1) * DOT_SPACING + (extraDots > 0 ? 14 : 0)
-      : 0
-  const dotsStartX = cx - totalDotsW / 2
+  // ── Name badge layout: [status dot] [name] [equipment dots] [icon] ──
+  const displayName = name.length > 10 ? `${name.slice(0, 8)}…` : name
 
+  const BADGE_PAD = 8
+  const BADGE_H = 28
+  const GAP = 7
+  const STATUS_R = 5
+  const ICON = 12
+
+  const nameW = 78
+  const dotsW =
+    sortedStatuses.length > 0
+      ? (sortedStatuses.length - 1) * DOT_SPACING + 5 + (extraDots > 0 ? 15 : 0)
+      : 0
+
+  const badgeW =
+    BADGE_PAD * 2 +
+    STATUS_R * 2 +
+    GAP +
+    nameW +
+    (dotsW > 0 ? GAP + dotsW : 0) +
+    GAP +
+    ICON
+
+  const badgeX = cx - badgeW / 2
+  const badgeY = cy + tw * 0.5 + 10
+  const badgeMidY = badgeY + BADGE_H / 2
+
+  const statusDotX = badgeX + BADGE_PAD + STATUS_R
+  const nameX = statusDotX + STATUS_R + GAP
+  const dotsX = nameX + nameW + GAP + 2.5 // center ของ dot ตัวแรก
+  const iconX = badgeX + badgeW - BADGE_PAD - ICON
   const topFacePoints = [
     `${cx},${cy - towerH - tw * 0.5}`,
     `${cx + tw},${cy - towerH}`,
@@ -344,58 +370,45 @@ export function PlantTower({
 
         {/* Name Badge */}
         <rect
-          x={cx - 60}
-          y={cy + tw * 0.5 + 10}
-          width={140}
-          height={28}
+          x={badgeX}
+          y={badgeY}
+          width={badgeW}
+          height={BADGE_H}
           rx={6}
-          fill={isDark ? 'rgba(10,13,20,0.92)' : 'rgba(240,244,248,0.92)'}
+          fill={isDark ? 'rgba(10,13,20,0.96)' : 'rgba(240,244,248,0.96)'}
           stroke={strokeColor}
           strokeWidth={0.6}
         />
 
         {/* Status Circle (ซ้าย) */}
-        <circle cx={cx - 46} cy={cy + tw * 0.5 + 24} r={5} fill={statusColor} />
+        <circle
+          cx={statusDotX}
+          cy={badgeMidY}
+          r={STATUS_R}
+          fill={statusColor}
+        />
 
         {/* Name Text */}
         <text
-          x={cx - 34}
-          y={cy + tw * 0.5 + 29}
+          x={nameX}
+          y={badgeMidY + 4.5}
           textAnchor="start"
           fontSize={13}
           fontFamily="Geist Sans, ui-sans-serif, system-ui, sans-serif"
           fontWeight={600}
           fill={isDark ? '#f8fafc' : '#1e293b'}
         >
-          {name.length > 10 ? `${name.slice(0, 8)}…` : name}
+          {displayName}
         </text>
 
-        {/* Status Icon (ขวา) */}
-        <StatusIcon
-          x={cx + 50}
-          y={cy + tw * 0.5 + 18}
-          width={12}
-          height={12}
-          color={statusColor}
-        />
-        {/* Equipment status dots */}
+        {/* Equipment status dots — inline หลังชื่อ */}
         {sortedStatuses.length > 0 && (
           <g aria-hidden="true">
-            <rect
-              x={dotsStartX - 4}
-              y={cy + tw * 0.5 + 40}
-              width={totalDotsW + 8}
-              height={10}
-              rx={5}
-              fill={isDark ? 'rgba(6,8,15,0.75)' : 'rgba(240,244,248,0.85)'}
-              stroke={isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)'}
-              strokeWidth={0.5}
-            />
             {sortedStatuses.map((st, i) => (
               <circle
                 key={`s-${i}`}
-                cx={dotsStartX + i * DOT_SPACING}
-                cy={cy + tw * 0.5 + 45}
+                cx={dotsX + i * DOT_SPACING}
+                cy={badgeMidY}
                 r={2.5}
                 fill={BINARY_STATUS_META[toBinaryStatus(st)].color}
                 opacity={0.95}
@@ -403,9 +416,9 @@ export function PlantTower({
             ))}
             {extraDots > 0 && (
               <text
-                x={dotsStartX + sortedStatuses.length * DOT_SPACING}
-                y={cy + tw * 0.5 + 48}
-                fontSize={5.5}
+                x={dotsX + sortedStatuses.length * DOT_SPACING}
+                y={badgeMidY + 2.5}
+                fontSize={7}
                 fontFamily="Geist Sans, ui-sans-serif, sans-serif"
                 fontWeight={600}
                 fill={isDark ? '#94a3b8' : '#475569'}
@@ -415,6 +428,15 @@ export function PlantTower({
             )}
           </g>
         )}
+
+        {/* Status Icon (ขวา) */}
+        <StatusIcon
+          x={iconX}
+          y={badgeMidY - ICON / 2}
+          width={ICON}
+          height={ICON}
+          color={statusColor}
+        />
       </g>
     </g>
   )

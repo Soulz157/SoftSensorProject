@@ -51,21 +51,12 @@ export function WizardShell() {
   // (or materialises one). No-op in create mode, where the live fetch owns the
   // same atom.
   useDatasetEditHydration()
-  // DS-LAKE-014-T04: keeps an ACTIVE draft's clock honest while this tab is
-  // visibly open, across both create and edit mode and all five steps. No-op
-  // until a draft id exists (dwDraftIdAtom starts null) and a no-op again
-  // once the draft is SAVED/ABANDONED (the backend route itself filters).
   useDatasetDraftHeartbeat()
   const mode = useAtomValue(dwModeAtom)
   const rowSource = useAtomValue(dwRowSourceAtom)
   const syntheticReason = useAtomValue(dwSyntheticReasonAtom)
   const rowStage = useAtomValue(dwRowStageAtom)
-  // Edit mode only, and only once real rows resolve: `currentArtifactId` is
-  // stage-polymorphic (`SavedDataset.currentArtifactType`'s doc comment), so
-  // a dataset saved past BRONZE (cleaned/feature-engineered/finalized)
-  // hydrates already-processed rows here -- Step 3's crop/clean/impute would
-  // then double-apply on top of them. Known limitation (DS-LAKE-013): the
-  // fix here is surfacing the condition, not yet reading the true BRONZE
+
   // artifact.
   const showStageWarning =
     mode === 'edit' &&
@@ -74,12 +65,7 @@ export function WizardShell() {
     rowStage !== 'BRONZE'
 
   const hideFooterNext = nav.currentStep === 6
-  // ตรวจสอบว่าเป็น Step 1 หรือ 2 เพื่อจัด Layout ปุ่มไว้ด้านบน
   const isTopControlStep = nav.currentStep === 1 || nav.currentStep === 2
-  // ซ่อน Footer ด้านล่างหากเป็น Step 1, 2 (เพราะย้ายไปไว้บนแล้ว), 3 (มี footer
-  // ของตัวเอง — EDA), หรือ 5 (มี footer ของตัวเอง — Data Cleaning, ย้ายมาจาก
-  // เดิมที่เคยเป็น sub-step ของ Step 3; ต้องซ่อน shared footer ที่นี่ด้วย
-  // ไม่งั้นจะมีปุ่ม Next สองอันซ้อนกัน)
   const hideFooter =
     nav.currentStep === 3 || nav.currentStep === 5 || isTopControlStep
 
@@ -152,7 +138,7 @@ export function WizardShell() {
           <div className="flex flex-wrap items-center gap-2">
             <Layers className="h-6 w-6 text-primary" />
             <h1 className="text-2xl font-semibold text-foreground">
-              {nav.isEditLocked ? 'Edit Preprocessing' : 'Create Dataset'}
+              {nav.isEditLocked ? 'Edit Dataset' : 'Create Dataset'}
             </h1>
           </div>
           <p className="pl-8 text-sm text-muted-foreground">

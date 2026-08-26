@@ -127,15 +127,20 @@ export class DatasetDraftAuthorizedController {
   @Post('/:id/holdout')
   @HttpCode(201)
   @ApiOperation({
-    summary: 'Re-split the draft holdout against its pristine BRONZE',
+    summary:
+      'Re-split the draft holdout against its pristine BRONZE (legacy — unreachable from the wizard)',
     description:
       'DS-LAKE-018-T06. Re-splits the existing artifact rather than ' +
-      're-fetching — the holdout picker now lives at Step 3.1, which ' +
-      'mounts after the bronze warm has already run once with no holdout. ' +
+      're-fetching. As of DS-LAKE-023, no wizard UI calls this route — ' +
+      'every holdout, in both create and edit mode, is now cut at the ' +
+      'features stage instead, which the same recipe carries a ' +
+      '`holdout` field for. Retained for API compatibility only. ' +
       "Always reads the draft's pristine (never-split) root; refuses 422 " +
-      'if that root was already split at fetch time. `holdout: null` ' +
-      'clears the holdout by pointing the draft back at its pristine ' +
-      'artifact, without calling Python.',
+      'if that root was already split at fetch time — a state no wizard ' +
+      'call can produce any more, since `POST /:id/artifacts` no longer ' +
+      'sends a holdout either. `holdout: null` clears the holdout by ' +
+      'pointing the draft back at its pristine artifact, without calling ' +
+      'Python.',
   })
   async resplitDraftHoldoutController(
     @Users() user: Auth.UserPayload,

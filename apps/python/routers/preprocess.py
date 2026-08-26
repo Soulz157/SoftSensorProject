@@ -57,6 +57,7 @@ from schemas.preprocess import (
     PreviewResponse,
     CorrelationRequest,
     CorrelationResponse,
+    PrepareHoldoutForRunRequest,
     ReplayHoldoutForRunRequest,
     ReplayHoldoutRequest,
     ResplitHoldoutRequest,
@@ -410,6 +411,28 @@ async def replay_holdout_for_run(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(artifact_service.replay_holdout_for_run, store, body)
+
+
+@router.post(
+    "/prepare-holdout-for-run",
+    response_model=ArtifactStatsResponse,
+    summary="Scale a training run's already feature-bearing holdout",
+    description=(
+        "DS-LAKE-023-T03. The SILVER-branch counterpart to "
+        "replay-holdout-for-run — for a holdout produced by the reordered "
+        "features-stage split (FeaturesRequest.holdout), which already "
+        "carries its derived columns and has no lead-in rows. Only the "
+        "FITTED scaler transform runs, never re-fit. Refuses with 422 if "
+        "the recipe's target_y is scaled, or if a scaled tag has no "
+        "recorded scalingParams entry (would silently re-fit on the "
+        "holdout's own statistics)."
+    ),
+)
+async def prepare_holdout_for_run(
+    body: PrepareHoldoutForRunRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.prepare_holdout_for_run, store, body)
 
 
 @router.post(

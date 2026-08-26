@@ -89,6 +89,20 @@ function isPresetRangeRuleForTag(rule: ConditionalRule, tag: string): boolean {
   )
 }
 
+function UnitPair({
+  quotedUnit,
+  tagUnit,
+}: {
+  quotedUnit: string | null
+  tagUnit: string | null
+}) {
+  return (
+    <span className="font-mono text-[11px] text-muted-foreground">
+      preset: {quotedUnit ?? '(none)'} · tag: {tagUnit ?? '(none)'}
+    </span>
+  )
+}
+
 /**
  * The ConditionalRule(s) a candidate's reconciled bound adds — strict `<`/`>`
  * so a value exactly ON the bound (common with per-tag precision rounding)
@@ -194,9 +208,10 @@ function PresetRangeRow({
     ])
   }
 
-  const refused =
+ const refused =
     reconciliation.verdict === 'unknown-unit' ||
     reconciliation.verdict === 'tag-unit-unknown'
+  const unitMismatch = refused || reconciliation.verdict === 'converted'
   const openEnded =
     candidate.parsed.kind === 'lower' || candidate.parsed.kind === 'upper'
 
@@ -209,11 +224,18 @@ function PresetRangeRow({
         <span className="font-mono text-[11px] text-muted-foreground">
           {candidate.quotedRange}
         </span>
-        {reconciliation.verdict === 'converted' && reconciliation.applied && (
+               {reconciliation.verdict === 'converted' && reconciliation.applied && (
           <span className="text-[11px] text-muted-foreground">
             → applied {reconciliation.applied.min ?? '−∞'} to{' '}
             {reconciliation.applied.max ?? '+∞'} {tagUnit}
+            {reconciliation.factor !== null && ` (×${reconciliation.factor})`}
           </span>
+        )}
+        {unitMismatch && (
+          <UnitPair
+            quotedUnit={reconciliation.quotedUnit}
+            tagUnit={reconciliation.tagUnit}
+          />
         )}
         <span className="font-mono text-[10px] text-muted-foreground">
           {candidate.presetId} · config {candidate.configNo} · {candidate.sheet}
@@ -232,12 +254,12 @@ function PresetRangeRow({
           />
         </div>
       </div>
-      {refused && (
+          {refused && (
         <p className="flex items-start gap-1 text-[11px] text-muted-foreground">
           <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" />
           {reconciliation.verdict === 'tag-unit-unknown'
-            ? 'No unit recorded for this tag, so a kg/hr bound and a t/h bound are indistinguishable here — the quoted number is not applied.'
-            : `No known conversion from "${reconciliation.quotedUnit}" to "${tagUnit}" — refusing to apply.`}
+            ? `Preset quotes this range in "${reconciliation.quotedUnit}", but no unit is recorded for this tag — a kg/hr bound and a t/h bound are indistinguishable here, so the quoted number is not applied.`
+            : `No known conversion from preset unit "${reconciliation.quotedUnit}" to tag unit "${reconciliation.tagUnit}" — refusing to apply.`}
         </p>
       )}
       {openEnded && (

@@ -560,6 +560,50 @@ def to_model_ready(
     return out, scaling_params
 
 
+def drop_bad_feature_rows(
+    df: pd.DataFrame,
+    tags: list[str],
+    *,
+    exclude: str | None = None,
+) -> tuple[pd.DataFrame, int]:
+    """DS-LAKE-023-T05. Row-level exclusion, meant to run BEFORE
+    `to_model_ready` — never after.
+
+    `to_model_ready`'s own docstring already states the trap: it scales
+    every FINITE value regardless of its ORIGINAL status and always forces
+    Good afterward, so "a Bad cell holding a real (non-hole) number is
+    silently laundered to Good by scaling." A rolling(60) column with one
+    short sensor dropout in its window produces up to 60 Bad derived cells
+    (`_compute_feature_column`'s own "rolling needs a FULL window" rule);
+    left in place, `to_model_ready` turns every one of them into a scaled,
+    Good-stamped 0.0 that `predict()`/training treat as a real observation
+    with no trace of the substitution. There is no later point this can be
+    caught — once `to_model_ready` has run, the evidence (the Bad status)
+    is gone.
+
+    Drops any row where at least one KEPT tag's OWN status column reads
+    other than `STATUS_GOOD`. `exclude` (normally `target_y`) is skipped
+    deliberately — a non-Good TARGET row is a DIFFERENT failure mode
+    (`train.py`'s `labelled_mask`, D4/DS-LAKE-023-T03) already excluded on
+    the scoring side; checking it again here would double-count the same
+    row under two different reasons, and this function is never even told
+    whether the target is scaled — it has no business deciding its fate.
+    Tags with no status column (a legacy artifact, or a column this frame
+    never carried) are silently skipped, matching `to_model_ready`'s own
+    `if tag not in out.columns: continue`.
+    """
+    mask = pd.Series(True, index=df.index)
+    for tag in tags:
+        if tag == exclude:
+            continue
+        status_col = status_column(tag)
+        if status_col not in df.columns:
+            continue
+        mask &= df[status_col] == STATUS_GOOD
+    dropped = int((~mask).sum())
+    return df.loc[mask].reset_index(drop=True), dropped
+
+
 # ── fixture replay (packages/parity-fixtures) ─────────────────────────────
 
 

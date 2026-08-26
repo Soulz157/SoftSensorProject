@@ -88,6 +88,32 @@ def status_column(tag: str) -> str:
     return f"{tag}{STATUS_SUFFIX}"
 
 
+def labelled_mask(frame: pd.DataFrame, target_y: str, log_fn=None) -> pd.Series:
+    """DS-LAKE-023-T03/D4. The SAME non-Good-target mask the train/test split
+    (steps 6-7) already applies, extracted so the holdout scoring block can
+    apply it too. Before this fix, nothing dropped an unlabelled row from the
+    holdout: for a lab target sampled far sparser than the PI grid, the
+    holdout window is mostly unlabelled, `r2_score` raises on NaN, and the
+    best-effort `except Exception` around holdout scoring swallowed it —
+    meaning holdout metrics likely never rendered at all for exactly the
+    dataset shape this feature (DS-LAKE-023) exists to improve.
+
+    `log_fn` is optional so this stays callable from a context (or a test)
+    with no `log()` of its own; the train/test call site passes the real one.
+    """
+    target_status = status_column(target_y)
+    if target_status in frame.columns:
+        mask = frame[target_status] == STATUS_GOOD
+    else:
+        if log_fn:
+            log_fn(
+                f"'{target_status}' absent — falling back to non-null target",
+                "warn",
+            )
+        mask = frame[target_y].notna()
+    return mask & frame[target_y].notna()
+
+
 def median_gap_minutes(series: pd.Series) -> float | None:
     """Median spacing between consecutive entries, in minutes."""
     if len(series) < 3:
@@ -412,16 +438,7 @@ def main() -> int:
             "No feature columns left after removing the target.")
 
     # ── 6-7. drop non-Good target, BEFORE any split ──────────────────────
-    target_status = status_column(target_y)
-    if target_status in frame.columns:
-        label_mask = frame[target_status] == STATUS_GOOD
-    else:
-        # No sidecar (a legacy or hand-built artifact) — fall back to
-        # non-null, and say so rather than silently treating every row as
-        # labelled.
-        log(f"'{target_status}' absent — falling back to non-null target", "warn")
-        label_mask = frame[target_y].notna()
-    label_mask = label_mask & frame[target_y].notna()
+    label_mask = labelled_mask(frame, target_y, log_fn=log)
 
     assert_no_target_leakage(frame, target_y, derived, label_mask)
 
@@ -505,17 +522,52 @@ def main() -> int:
                 raise RuntimeError(
                     f"Replayed holdout has no '{target_y}' column to score against.")
 
+            # DS-LAKE-023-T03/D4. Nothing dropped an unlabelled holdout row
+            # before this fix — for a lab target sampled far sparser than
+            # the PI grid, most of the holdout window has no target value,
+            # `r2_score` raises on the resulting NaNs, and the surrounding
+            # `except Exception` swallowed it silently. Same mask steps 6-7
+            # already apply to train/test, applied here too so the two
+            # scores are comparable (both computed over labelled rows only).
+            holdout_source_rows = len(holdout_df)
+            holdout_labelled = labelled_mask(holdout_df, target_y, log_fn=log)
+            dropped_unlabelled = int((~holdout_labelled).sum())
+            holdout_df = holdout_df.loc[holdout_labelled].reset_index(drop=True)
+            if len(holdout_df) == 0:
+                raise RuntimeError(
+                    f"Holdout has no labelled '{target_y}' rows after "
+                    f"excluding {dropped_unlabelled} unlabelled row(s) of "
+                    f"{holdout_source_rows} — nothing to score."
+                )
+
             holdout_predicted = model.predict(holdout_df[feature_cols])
+            # DS-LAKE-023-T05. Rows already dropped server-side (`prepare_
+            # holdout_for_run`'s own `drop_bad_feature_rows`, BEFORE it
+            # scaled the holdout) — this container never sees those rows at
+            # all, so there is nothing to re-derive here; `claim()`'s own
+            # response is the only place this count is known. None for a
+            # legacy (BRONZE/replay) holdout, which does not run that
+            # exclusion.
+            dropped_bad_features = spec.get("holdoutDroppedBadRows")
             holdout_metrics = {
                 "r2": float(r2_score(holdout_df[target_y], holdout_predicted)),
                 "mae": float(mean_absolute_error(holdout_df[target_y], holdout_predicted)),
                 "rmse": float(np.sqrt(mean_squared_error(holdout_df[target_y], holdout_predicted))),
                 "row_count": int(len(holdout_df)),
+                # Reported beside the metrics, not just logged — a score
+                # computed over an unstated subset is not comparable to
+                # anything (same reasoning MODEL-FLOW-010-T06 and
+                # DS-LAKE-018 already apply to the holdout's missing rate).
+                "dropped_unlabelled": dropped_unlabelled,
+                "dropped_bad_features": dropped_bad_features,
             }
             log(
                 f"holdout: r2={holdout_metrics['r2']:.4f} "
                 f"mae={holdout_metrics['mae']:.4f} rmse={holdout_metrics['rmse']:.4f} "
-                f"({holdout_metrics['row_count']} rows) — test r2 was {metrics['r2']:.4f}"
+                f"({holdout_metrics['row_count']} rows, "
+                f"{dropped_unlabelled} unlabelled dropped, "
+                f"{dropped_bad_features} bad-feature dropped) — "
+                f"test r2 was {metrics['r2']:.4f}"
             )
         except Exception as exc:  # noqa: BLE001 - best-effort, see docstring above
             log(f"Holdout scoring skipped: {exc}", "warn")

@@ -404,6 +404,40 @@ export const dwDraftFeatureArtifactIdAtom = atom<string | null>(null)
 // finish…" states the real reason instead of nothing. Cleared on a fresh
 // warm attempt, on success, and on wizard reset alongside the other two.
 export const dwGoldWarmErrorAtom = atom<string | null>(null)
+
+/**
+ * DS-LAKE-023 (edit-mode re-split pass). `useDatasetGoldWarm`'s own
+ * pending/settled state, published here (not just returned from the hook)
+ * so a sibling component — `ValidationHoldoutSection`, mounted alongside
+ * the recipe editors rather than inside them — can read it without a prop
+ * drilled through `Step4FeatureEngineering`. 'idle' before the first warm;
+ * 'pending' while the debounced job is scheduled or in flight; 'ready' on
+ * the last SUCCEEDED response; 'error' mirrors `dwGoldWarmErrorAtom` being
+ * non-null (kept as a separate atom, not derived, so a consumer that only
+ * cares about "is it safe to commit" doesn't have to also branch on the
+ * error atom's null-ness).
+ */
+export type FeatureWarmState = 'idle' | 'pending' | 'ready' | 'error'
+export const dwFeatureWarmStateAtom = atom<FeatureWarmState>('idle')
+
+/**
+ * DS-LAKE-023. A stable signature of the recipe
+ * `{features, selectedColumns, scalers, targetY, holdout}` that the LAST
+ * successfully committed feature artifact was actually built from —
+ * written by `useDatasetGoldWarm` alongside the artifact id, on the same
+ * SUCCEEDED branch. `useDatasetCleaningScaleCommit` compares this against
+ * the CURRENT recipe's own signature before committing Step 5's clean+scale
+ * job: a mismatch means the artifact in `dwDraftFeatureArtifactIdAtom` (or
+ * `dwDraftGoldArtifactIdAtom` in edit mode) describes a recipe the user has
+ * since changed — most concretely, a holdout applied and then navigated
+ * away from before its warm landed (D4/AC3: `goTo` unlocks Step 5 the
+ * instant `highestUnlocked` allows it, with no wait on this hook's own
+ * pending state). Comparing the FULL recipe, not just the holdout, is
+ * deliberate — see this atom's own consumer for why trimming it to
+ * `holdout` alone would silently under-gate create mode.
+ */
+export const dwFeatureArtifactStampAtom = atom<string | null>(null)
+
 export interface DraftSyncState {
   status: 'idle' | 'syncing' | 'synced' | 'error'
   error?: string
@@ -533,6 +567,8 @@ export const initDatasetWizardAtom = atom(
     set(dwDraftGoldArtifactIdAtom, null)
     set(dwBronzeWarmStateAtom, 'idle')
     set(dwGoldWarmErrorAtom, null)
+    set(dwFeatureWarmStateAtom, 'idle')
+    set(dwFeatureArtifactStampAtom, null)
     set(dwDraftSyncStateAtom, { status: 'idle' })
     set(dwFeaturePreviewSampleAtom, brandBoundedSample({ tags: [], rows: [] }))
     set(dwFeaturePreviewSampleStateAtom, 'idle')
@@ -617,6 +653,8 @@ export const resetDatasetWizardAtom = atom(null, (_get, set) => {
   set(dwDraftGoldArtifactIdAtom, null)
   set(dwBronzeWarmStateAtom, 'idle')
   set(dwGoldWarmErrorAtom, null)
+  set(dwFeatureWarmStateAtom, 'idle')
+  set(dwFeatureArtifactStampAtom, null)
   set(dwDraftSyncStateAtom, { status: 'idle' })
   set(dwFeaturePreviewSampleAtom, brandBoundedSample({ tags: [], rows: [] }))
   set(dwFeaturePreviewSampleStateAtom, 'idle')
@@ -665,6 +703,16 @@ export const initDatasetWizardForEditAtom = atom(
 
     set(dwModeAtom, 'edit')
     set(dwEditingDatasetIdAtom, dataset.id)
+    // DS-LAKE-023 fix: this init never used to touch these two, unlike
+    // `initDatasetWizardAtom`/`resetDatasetWizardAtom` which both null them.
+    // A create session that switches into editing a different dataset in the
+    // same tab (no route-level remount — this is an SPA nav, not a fresh
+    // page load) left a FOREIGN draft id live; every draft-scoped call
+    // (bronze warm, features job, holdout resplit) then fired against
+    // someone else's draft instead of no-opping the way a truly fresh edit
+    // session does.
+    set(dwDraftIdAtom, null)
+    set(dwDraftArtifactIdAtom, null)
 
     set(dwNameAtom, dataset.name)
     set(dwDescriptionAtom, dataset.description ?? '')
@@ -688,9 +736,19 @@ export const initDatasetWizardForEditAtom = atom(
     set(dwTimeRangeAtom, config.timeRange)
     set(dwCustomDateRangeAtom, config.customDateRange)
     // Legacy recipes predate the holdout field — hydrate to null, same as
-    // valueCrop/exclusions above. Edit mode's own picker stays disabled
-    // (BRONZE is already split by the time a recipe is editable), so this
-    // is display-only provenance, not a re-openable control.
+    // valueCrop/exclusions above. CORRECTED (DS-LAKE-023 edit-mode pass):
+    // this used to say edit mode's picker "stays disabled... display-only
+    // provenance, not a re-openable control" — that was true only in the
+    // sense that it never actually worked (the picker's own enabled state
+    // and the resplit hook's own no-op guard could never both hold at
+    // once, see that hook's doc comment). IN PROGRESS as of 2026-08-25:
+    // edit mode's picker is now HONESTLY gated instead — it stays disabled
+    // until the draft's current source artifact is the cleaned SILVER
+    // (i.e. until the user has run Step 5's "Save Cleaned Tags" at least
+    // once this session), because seeding a fresh raw BRONZE at Step 4
+    // mount was found to skip cleaning entirely (see
+    // `useDatasetGoldWarm`'s own doc comment). Once unlocked, it uses the
+    // SAME feature-bearing split Step 4 uses for create mode.
     set(dwHoldoutRangeAtom, config.holdoutDateRange ?? null)
     set(dwCustomIntervalAtom, config.customInterval)
     set(dwSourceFetchConfigsAtom, config.sourceFetchConfigs)
@@ -741,17 +799,26 @@ export const initDatasetWizardForEditAtom = atom(
     set(dwHiddenTagsAtom, [])
     set(dwFocusedTagAtom, '')
     set(dwTagSidebarCollapsedAtom, false)
-    // Hygiene only — this atom is never SET in edit mode (see its own doc
-    // comment), but a prior create-mode session could leave it populated
-    // before the user switches into editing a different dataset.
+    // Hygiene only — these atoms are never SET by a fresh edit-mode session
+    // before Step 4 mounts (see dwDraftFeatureArtifactIdAtom's own doc
+    // comment), but a prior create-mode session in the same tab could leave
+    // them populated before the user switches into editing a different
+    // dataset.
     set(dwDraftFeatureArtifactIdAtom, null)
+    set(dwFeatureWarmStateAtom, 'idle')
+    set(dwFeatureArtifactStampAtom, null)
 
-    // DS-LAKE-022-T04..T07: edit mode's only editable surface is the
-    // cleaning pipeline, which now lives at Step 5 (previously Step 3's
-    // sub-step 2 — dwProcessingSubStepAtom died with that sub-step switch).
-    // Land there directly rather than on Step 3's EDA, which edit mode
-    // cannot change. Every step still unlocked for review/back-navigation.
-    set(dwCurrentStepAtom, 5)
+    // DS-LAKE-022-T04..T07 landed edit mode on Step 5 directly, reasoning
+    // that its only editable surface (cleaning) lives there and Step 3's
+    // EDA is nothing edit mode can change. DS-LAKE-023 changes that
+    // reasoning: Step 4 is now ALSO editable in edit mode (the holdout
+    // window, recipe still locked — see A4's `ensureDraft`/`ensureBronze`
+    // call at Step 4 mount), so landing straight on Step 5 skipped past a
+    // step worth seeing on the way in. Land on Step 3 instead and let the
+    // wizard's own forward nav carry the user through Step 4 naturally.
+    // `dwHighestUnlockedAtom` stays every step — this only moves where
+    // edit mode FIRST lands, not what is reachable via the step indicator.
+    set(dwCurrentStepAtom, 3)
     set(dwHighestUnlockedAtom, DW_TOTAL_STEPS)
   },
 )

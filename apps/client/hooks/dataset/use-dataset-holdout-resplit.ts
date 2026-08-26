@@ -20,6 +20,22 @@ export interface UseDatasetHoldoutResplitResult {
  * holdout window — and points `dwDraftArtifactIdAtom` at whatever artifact
  * the server responds with.
  *
+ * UNREACHABLE FROM THE WIZARD as of DS-LAKE-023's edit-mode re-split pass.
+ * `Step4FeatureEngineering` was this hook's only caller; it now sends every
+ * holdout (both modes) through the features-stage split instead (see
+ * `useDatasetGoldWarm`'s own doc comment) and no longer calls this hook at
+ * all. Retained, with the backend `POST /:id/holdout` route it drives, for
+ * API compatibility only — nothing in the wizard reaches either path.
+ * `resplitDraftHoldoutService`'s own guards (`dataset-draft.authorized.service.ts`)
+ * go unreachable alongside it for the same reason: no draft BRONZE will
+ * ever carry `validationRowCount` again (Part B nulls the holdout on every
+ * `materialize` call from the wizard), so its 422-on-already-split refusal
+ * can no longer trigger, and the draft-scoped `type === 'BRONZE'` root
+ * requirement has no caller left to satisfy it.
+ *
+ * Everything below this line describes behaviour that is still CORRECT,
+ * just no longer exercised by any UI:
+ *
  * Setting that one atom is sufficient to refresh everything Step 3.1 shows:
  * `useDatasetFeaturePreviewSample` keys its fetch effect on it and refetches
  * automatically, and `DataAnalysisCard`'s server-backed tabs

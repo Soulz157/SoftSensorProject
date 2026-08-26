@@ -101,6 +101,13 @@ const ReplayHoldoutForRunSchema = z.object({
   object_key: z.string().min(1),
   row_count: z.number().int().nonnegative(),
   checksum: z.string().min(1),
+  /**
+   * DS-LAKE-023-T05. Rows `prepare_holdout_for_run` dropped before scaling
+   * because a kept feature tag was Bad — null/absent for the legacy
+   * `replay_holdout_for_run` path, which this schema is also shared with
+   * and which does not populate this field.
+   */
+  dropped_bad_rows: z.number().int().nonnegative().nullable().optional(),
 });
 
 export type ReplayHoldoutForRunResult = z.infer<
@@ -123,6 +130,28 @@ export async function replayHoldoutForRun(input: {
 }): Promise<ReplayHoldoutForRunResult> {
   const res = await postToPython<unknown>(
     '/v1/preprocess/replay-holdout-for-run',
+    input,
+    PYTHON_TIMEOUT.preprocess,
+  );
+  return ReplayHoldoutForRunSchema.parse(res);
+}
+
+/**
+ * DS-LAKE-023-T03. The SILVER-branch counterpart to `replayHoldoutForRun` —
+ * for a holdout produced by the reordered features-stage split, which
+ * already carries its derived columns and needs no `holdout_from` (there is
+ * no lead-in to trim after the fact). `claim()` is the only caller, same as
+ * `replayHoldoutForRun`; the two are mutually exclusive per run, chosen by
+ * which artifact row carries `validationRowCount`.
+ */
+export async function prepareHoldoutForRun(input: {
+  feature_spec_key: string;
+  source_key: string;
+  target_key: string;
+  overwrite?: boolean;
+}): Promise<ReplayHoldoutForRunResult> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/prepare-holdout-for-run',
     input,
     PYTHON_TIMEOUT.preprocess,
   );

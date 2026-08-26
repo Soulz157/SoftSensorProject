@@ -401,11 +401,27 @@ export class DatasetDraftAuthorizedService {
    * DS-LAKE-018-T06. Re-split the draft's PRISTINE (never-split) root BRONZE
    * against a new holdout window, without re-fetching from the source.
    *
+   * UNREACHABLE FROM THE WIZARD as of DS-LAKE-023's edit-mode re-split pass
+   * — `use-dataset-holdout-resplit.ts` (the client's only caller of this
+   * route) is no longer called by any UI; every new holdout, in both
+   * modes, is now cut at the FEATURES stage instead, never here. Retained
+   * for API compatibility only. Its own guards are effectively dead code as
+   * a result, though left correct rather than removed: `dto.holdout ===
+   * null` (below) stays reachable in principle, but the 422 branch on
+   * `root.validationRowCount !== null` can no longer trigger — no draft
+   * BRONZE materialized by this wizard will ever carry that column again,
+   * since the client no longer sends a holdout to
+   * `materializeDraftArtifactService` either.
+   *
+   * Original doc, still accurate about the mechanism itself:
+   *
    * Companion to `materializeDraftArtifactService`'s own holdout branch, for
-   * the case that branch cannot cover: the holdout picker now lives at Step
-   * 3.1 (`ValidationHoldoutSection`), which mounts AFTER the bronze warm has
-   * already materialized once with no holdout. Changing the holdout there
-   * must reach BRONZE some other way — this endpoint is that way.
+   * the case that branch cannot cover: the holdout picker used to live at
+   * Step 3.1 (`ValidationHoldoutSection`, since moved to Step 4 and, per the
+   * paragraph above, off this endpoint entirely), which mounted AFTER the
+   * bronze warm had already materialized once with no holdout. Changing the
+   * holdout there had to reach BRONZE some other way — this endpoint was
+   * that way.
    *
    * ALWAYS reads `resolvePristineBronzeRoot`'s root, never the artifact
    * `currentArtifactId` happens to point at right now — re-splitting an
@@ -591,6 +607,13 @@ export class DatasetDraftAuthorizedService {
           // `FeaturesRequest.scale` default owns the legacy behaviour rather
           // than a second copy of it living here.
           ...(dto.scale !== undefined && { scale: dto.scale }),
+          // DS-LAKE-023-T01. Mirrors the job runner's own forwarding — this
+          // inline route is the OTHER stage-decision site (comment above),
+          // so it must not drift from what `startDraftFeaturesJobService`
+          // now does.
+          ...(dto.holdout && {
+            holdout: { from_time: dto.holdout.from, to_time: dto.holdout.to },
+          }),
         },
         PYTHON_TIMEOUT.preprocess,
       ),
@@ -625,6 +648,19 @@ export class DatasetDraftAuthorizedService {
           // endpoint has nothing to compute.
           columnStatsKey: stats.column_stats_key ?? null,
           featureSpecKey: stats.feature_spec_key ?? null,
+          // DS-LAKE-023-T01. Set only when this call's own `dto.holdout`
+          // requested one. See preprocessing-job.service.ts's `commit()`
+          // for why all three are written together here.
+          validationRowCount: stats.validation_row_count ?? null,
+          validationHoldoutFrom: stats.validation_holdout_from
+            ? new Date(stats.validation_holdout_from)
+            : null,
+          validationMissingPct: stats.validation_missing_pct ?? null,
+          // DS-LAKE-023-T05. Set only when this call's own `dto.scale`
+          // (defaulting True, same as Python) actually ran `to_model_ready`
+          // — the FEATURE-only write (`scale: false`) never scales, so
+          // Python never populates this field for it.
+          droppedBadRows: stats.dropped_bad_rows ?? null,
           durationMs: Date.now() - startedAt,
           createdById: user.id,
         },
@@ -1776,6 +1812,13 @@ export class DatasetDraftAuthorizedService {
           // features job could ever take the reordered path regardless of
           // what the client sent.
           ...(dto.scale !== undefined && { scale: dto.scale }),
+          // DS-LAKE-023-T01: same class of forwarding bug DS-LAKE-022 found
+          // twice already (scaleRecipe, scale) — a DTO field built and
+          // never carried onto the stored job payload leaves the runner's
+          // read side permanently unreachable regardless of what Python
+          // supports. Forwarded verbatim; the runner reads it back and
+          // passes it to Python's `FeaturesRequest.holdout` unchanged.
+          ...(dto.holdout !== undefined && { holdout: dto.holdout }),
         },
         createdById: user.id,
       },

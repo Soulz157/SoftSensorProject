@@ -61,6 +61,7 @@ from schemas.preprocess import (
     MaterializeRequest,
     MAX_PREDICTION_POINTS,
     MetadataRequest,
+    PrepareHoldoutForRunRequest,
     ReplayHoldoutForRunRequest,
     ReplayHoldoutRequest,
     ResplitHoldoutRequest,
@@ -73,7 +74,9 @@ from services.cleaning_service import apply_operations
 from services.column_stats_service import build_column_stats
 from services.data_source_service import PIDataSourceService, SQLDataSourceService
 from services.feature_service import (
+    DEFAULT_SCALER,
     apply_features,
+    drop_bad_feature_rows,
     feature_column_name,
     force_keep_target,
     select_columns,
@@ -101,6 +104,7 @@ def _stats_payload(
     validation_row_count: int | None = None,
     validation_holdout_from: str | None = None,
     validation_missing_pct: float | None = None,
+    dropped_bad_rows: int | None = None,
 ) -> dict[str, Any]:
     return {
         "object_key": stats.object_key,
@@ -132,6 +136,13 @@ def _stats_payload(
         # scan later. None exactly when `validation_row_count` is None (no
         # holdout requested / not yet re-captured for a legacy holdout).
         "validation_missing_pct": validation_missing_pct,
+        # DS-LAKE-023-T05. Rows `drop_bad_feature_rows` removed before
+        # `to_model_ready` ran on THIS write — None for every caller that
+        # never calls it (materialize/clean, which never scale). Reported
+        # beside the metric it affects for the same reason
+        # `validation_missing_pct` is: a row count computed over an
+        # unstated subset is not comparable to anything.
+        "dropped_bad_rows": dropped_bad_rows,
     }
 
 
@@ -148,6 +159,7 @@ def _commit(
     validation_row_count: int | None = None,
     validation_holdout_from: str | None = None,
     validation_missing_pct: float | None = None,
+    dropped_bad_rows: int | None = None,
 ) -> dict[str, Any]:
     """Write the manifest (and, since DS-LAKE-005B-A-T07, the column-stats
     sidecar; since DS-LAKE-006-T05, the feature-spec sidecar) beside the
@@ -181,6 +193,7 @@ def _commit(
         validation_row_count=validation_row_count,
         validation_holdout_from=validation_holdout_from,
         validation_missing_pct=validation_missing_pct,
+        dropped_bad_rows=dropped_bad_rows,
     )
     store.put_json(
         sidecar_key(stats.object_key, MANIFEST_FILENAME),
@@ -236,12 +249,15 @@ HOLDOUT_LEAD_IN = timedelta(days=7)
 
 
 def _split_holdout(
-    frame: pd.DataFrame, holdout: HoldoutSplitRequest
+    frame: pd.DataFrame,
+    holdout: HoldoutSplitRequest,
+    lead_in: timedelta = HOLDOUT_LEAD_IN,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Split one materialized frame into (train, validate) at BRONZE.
+    """Split one materialized frame into (train, validate).
 
     `train` keeps every row OUTSIDE the holdout window — this is what lands
-    in `data.parquet`, so the holdout genuinely leaves the training path
+    in `data.parquet` (or, for the DS-LAKE-023 features-stage split, in the
+    committed SILVER), so the holdout genuinely leaves the training path
     (finding: "HOLDOUT ROWS MUST BE CUT FROM data.parquet TOO", the easiest
     thing here to get wrong and the hardest to notice). `validate` is the
     holdout window PLUS a lead-in margin ahead of it, so DS-LAKE-018-T04's
@@ -251,6 +267,16 @@ def _split_holdout(
     already inside the fetch window and cost nothing extra to carry
     (userDecisions[0]) — they are only ADDITIONALLY copied into `validate`.
 
+    `lead_in` DEFAULTS to `HOLDOUT_LEAD_IN` so both existing callers
+    (`materialize`, `resplit_holdout`) are byte-identical to before this
+    parameter existed. DS-LAKE-023's features-stage split passes
+    `timedelta(0)` explicitly: a feature-bearing holdout already carries its
+    own computed lag/rolling values, so lead-in rows there would be TRAINING
+    rows sitting in the holdout file with no purpose — and they would be
+    SCORED, silently inflating the holdout row count with rows the model
+    trained on. Getting this parameter's value wrong at a NEW call site is
+    exactly the failure DS-LAKE-023-V02 exists to catch.
+
     Timestamps compare directly: both sides are the same "local wall-clock"
     convention already used everywhere in this wizard (`HoldoutSplitRequest`'s
     own doc comment) — no second timezone conversion here.
@@ -258,7 +284,7 @@ def _split_holdout(
     ts = frame[TIMESTAMP_COLUMN]
     holdout_from = pd.Timestamp(holdout.from_time)
     holdout_to = pd.Timestamp(holdout.to_time)
-    lead_in_from = holdout_from - HOLDOUT_LEAD_IN
+    lead_in_from = holdout_from - lead_in
 
     holdout_mask = (ts >= holdout_from) & (ts <= holdout_to)
     lead_in_mask = (ts >= lead_in_from) & (ts < holdout_from)
@@ -588,6 +614,85 @@ def replay_holdout_for_run(
     )
 
 
+def prepare_holdout_for_run(
+    store: ObjectStore, request: PrepareHoldoutForRunRequest
+) -> dict[str, Any]:
+    """DS-LAKE-023-T03. The SILVER-branch counterpart to
+    `replay_holdout_for_run` — for a holdout produced by the reordered
+    features-stage split (T01). `source_key`'s `validate_data.parquet`
+    already carries its derived columns AND has no lead-in rows (written
+    with `lead_in=timedelta(0)`), so there is no `apply_features`, no
+    `select_columns`, and nothing to trim. Only the FITTED scaler
+    transform runs — never re-fit, same as `replay_holdout`'s own
+    `to_model_ready(..., fitted_params=...)` call, and the same
+    `target_scaled` refusal `replay_holdout_for_run` already uses.
+
+    Discriminating a SILVER-produced holdout from a legacy BRONZE-produced
+    one is NOT this function's job: `model-run.authorized.service.ts`'s
+    `tryReplayHoldout` makes that call by inspecting WHICH ARTIFACT ROW
+    carries `validationRowCount` before choosing which of these two
+    endpoints to call at all.
+    """
+    started = time.perf_counter()
+    spec = store.get_json(request.feature_spec_key)
+
+    target_y = spec.get("target_y")
+    if spec.get("target_scaled"):
+        # Mirrors `replay_holdout_for_run`'s own refusal, for the same
+        # reason: no inverse transform is recorded for a scaled target, so
+        # a score against it would be silently wrong.
+        raise ValueError(
+            f"target_y '{target_y}' is scaled in this GOLD's "
+            "feature_spec.json — refusing holdout scoring (no inverse "
+            "transform recorded)."
+        )
+
+    scalers = {row["tag"]: row["method"] for row in spec.get("scaling", [])}
+    scaling_params = spec.get("scalingParams") or {}
+
+    frame = store.get_frame(request.source_key)
+
+    # Coverage guard, not just presence: `to_model_ready`'s lookup is
+    # per-tag (`fitted_params.get(tag) if fitted_params else None`), so a
+    # PARTIAL `scaling_params` dict would silently re-fit the missing tags
+    # on the holdout's own statistics — the exact wrongness this whole
+    # design exists to prevent (finding: "scaling the holdout against its
+    # own statistics is a DIFFERENT transform... and it fails silently").
+    # `method == "none"` is exempt: it never fits anything to begin with
+    # (`_scale_column`'s own early return).
+    unrecorded = [
+        tag
+        for tag in tag_columns(frame)
+        if scalers.get(tag, DEFAULT_SCALER) != "none" and tag not in scaling_params
+    ]
+    if unrecorded:
+        raise ValueError(
+            f"Holdout scoring refused: {sorted(unrecorded)} would scale "
+            "without a recorded scalingParams entry, which would silently "
+            "re-fit on the holdout's own statistics instead of the "
+            "train's."
+        )
+
+    # DS-LAKE-023-T05. BEFORE `to_model_ready` — see `drop_bad_feature_rows`'s
+    # own docstring for why this must run here, not after. `target_y` is
+    # excluded: a non-Good TARGET row is `train.py`'s own `labelled_mask`
+    # concern (D4), not this function's.
+    frame, dropped_bad_rows = drop_bad_feature_rows(
+        frame, tag_columns(frame), exclude=target_y)
+
+    result, _ = to_model_ready(
+        frame, tag_columns(frame), scalers, fitted_params=scaling_params,
+    )
+    assert_frame_is_usable(result)
+
+    stats = store.put_frame(
+        result, request.target_key, overwrite=request.overwrite)
+    return _commit(
+        store, stats, started, parent_key=request.source_key,
+        dropped_bad_rows=dropped_bad_rows,
+    )
+
+
 def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:
     """DS-LAKE-006-T05. `source_key` is the SILVER artifact; `target_key` is
     the GOLD artifact. `_commit`'s `parent_key=request.source_key` is what
@@ -611,6 +716,28 @@ def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:
     forces every finite cell Good, so a cleaning stage placed after the OLD
     combined write would see nothing left to clean). Default True keeps
     every existing caller's behaviour byte-identical.
+
+    DS-LAKE-023-T01: `request.holdout`, when present, splits AFTER
+    apply_features/select_columns and BEFORE the (optional) scale tail and
+    BEFORE `put_frame` — the whole point of this feature. A holdout cut
+    here carries its own already-computed derived columns, unlike the old
+    BRONZE-stage split (`materialize`'s `request.holdout`), which is why
+    `lead_in=timedelta(0)` is passed explicitly: lead-in rows exist only to
+    let a RAW holdout compute lag/rolling later (DS-LAKE-018-T04's
+    `replay_holdout`), and this holdout already has those values. Every
+    kind in `_compute_feature_column` reads its own row or an EARLIER one
+    only (verified directly — `lag` reads `i-k`, `rolling` reads
+    `[i-window+1, i]`, everything else reads `i` alone), so splitting AFTER
+    computing features yields exactly the values production would produce;
+    nothing here reads across the cut. Committed as the TRAIN side under
+    `request.target_key`; the validate frame writes to
+    `sidecar_key(stats.object_key, VALIDATE_DATA_FILENAME)`, the same
+    sidecar name and placement `materialize`/`resplit_holdout` already use
+    — one filename, two possible provenances, discriminated at the
+    NestJS layer by WHICH ARTIFACT ROW carries `validationRowCount`
+    (BRONZE = legacy raw holdout, SILVER = this path), not by
+    `pipelineVersion` (DS-LAKE-022 already stamps that on every
+    create-mode SILVER regardless of whether a holdout was ever picked).
     """
     started = time.perf_counter()
 
@@ -629,8 +756,33 @@ def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:
     result = apply_features(source, step_configs, skipped=skipped_columns)
     result = select_columns(result, effective_selected)
 
+    validate_frame: pd.DataFrame | None = None
+    if request.holdout is not None:
+        result, validate_frame = _split_holdout(
+            result, request.holdout, lead_in=timedelta(0))
+        # Same double-sided guard `materialize`'s own holdout branch uses —
+        # cutting the holdout can leave nothing on either side, and both
+        # must fail loud here rather than commit a 0-row artifact silently.
+        assert_frame_is_usable(result)
+        if len(validate_frame) == 0:
+            raise ValueError(
+                "The holdout window matched no rows in the feature-engineered "
+                "data — check the holdout range against the fetch window."
+            )
+
     spec: dict[str, Any] | None = None
+    dropped_bad_rows: int | None = None
     if request.scale:
+        # DS-LAKE-023-T05. BEFORE `to_model_ready` — see
+        # `drop_bad_feature_rows`'s own docstring. TRAIN side only
+        # (`result`, post-holdout-split if any) — `validate_frame`, if
+        # present, is untouched here: it stays raw/unscaled until
+        # `prepare_holdout_for_run` runs its OWN `drop_bad_feature_rows`
+        # immediately before ITS `to_model_ready` call, which is the actual
+        # "before scaling" point for the holdout side.
+        result, dropped_bad_rows = drop_bad_feature_rows(
+            result, tag_columns(result), exclude=request.target_y)
+
         # DS-LAKE-018-T02: `scaling_params` is what each scaler actually FIT
         # on these train rows — recorded below so a later holdout replay
         # (DS-LAKE-018-T04) can scale with these exact numbers instead of
@@ -679,6 +831,20 @@ def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:
         result, operations=[], parent_frame=source
     )
 
+    # DS-LAKE-023-T01. Written AFTER the train side (`stats` above) so the
+    # sidecar key derives from the ACTUAL committed key, same convention
+    # `materialize`/`resplit_holdout` already use via `sidecar_key`.
+    validation_row_count: int | None = None
+    validation_holdout_from: str | None = None
+    validation_missing_pct: float | None = None
+    if validate_frame is not None:
+        validate_key = sidecar_key(stats.object_key, VALIDATE_DATA_FILENAME)
+        store.put_frame(validate_frame, validate_key, overwrite=request.overwrite)
+        validation_row_count = len(validate_frame)
+        assert request.holdout is not None  # validate_frame implies this
+        validation_holdout_from = str(pd.Timestamp(request.holdout.from_time))
+        validation_missing_pct = missing_pct(validate_frame)
+
     return _commit(
         store,
         stats,
@@ -688,6 +854,10 @@ def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:
         column_stats=column_stats,
         feature_spec=spec,
         skipped_features=skipped_columns,
+        validation_row_count=validation_row_count,
+        validation_holdout_from=validation_holdout_from,
+        validation_missing_pct=validation_missing_pct,
+        dropped_bad_rows=dropped_bad_rows,
     )
 
 
@@ -731,6 +901,15 @@ def scale(store: ObjectStore, request: ScaleRequest) -> dict[str, Any]:
     effective_selected = force_keep_target(
         request.selected_columns, request.target_y)
 
+    # DS-LAKE-023-T05. BEFORE `to_model_ready` — see `drop_bad_feature_rows`'s
+    # own docstring for why. Reassigned onto `source` itself (not a separate
+    # variable) so `column_stats` below compares the SAME row set before and
+    # after scaling — its own `parent_frame=source` drift comparison would
+    # otherwise straddle a row-count change with no dropped rows on the
+    # "before" side.
+    source, dropped_bad_rows = drop_bad_feature_rows(
+        source, tag_columns(source), exclude=request.target_y)
+
     result, scaling_params = to_model_ready(
         source, tag_columns(source), request.scalers)
 
@@ -759,6 +938,7 @@ def scale(store: ObjectStore, request: ScaleRequest) -> dict[str, Any]:
         operations=step_configs,
         column_stats=column_stats,
         feature_spec=spec,
+        dropped_bad_rows=dropped_bad_rows,
     )
 
 

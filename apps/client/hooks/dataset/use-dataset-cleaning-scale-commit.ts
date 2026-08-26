@@ -6,12 +6,17 @@ import { datasetDraftService } from '@/services/dataset-draft'
 import { pollDraftJobUntilTerminal } from '@/lib/poll-preprocessing-job'
 import { toCleaningOperationsFromRecord } from '@/lib/cleaning-op-mapper'
 import type { TagPipeline } from '@/lib/preprocessing'
-import type { FeatureConfig } from '@/lib/feature-engineering'
+import {
+  featureRecipeStamp,
+  type FeatureConfig,
+} from '@/lib/feature-engineering'
 import type { ScalerMethod } from '@/lib/preprocessing'
 import {
   dwDraftIdAtom,
   dwDraftFeatureArtifactIdAtom,
   dwDraftGoldArtifactIdAtom,
+  dwFeatureWarmStateAtom,
+  dwFeatureArtifactStampAtom,
 } from '@/store/dataset-studio'
 
 export interface CleaningScaleCommitState {
@@ -49,6 +54,22 @@ export interface CleaningScaleCommitState {
  * GOLD) — never `dwDraftArtifactIdAtom`, which stays the fixed BRONZE every
  * batch replays against, and never `dwDraftFeatureArtifactIdAtom`, which
  * stays Step 4's own fixed source.
+ *
+ * DS-LAKE-023 (edit-mode re-split pass) ADDS a stale-artifact refusal
+ * (AC3/D4, feature_list.preprocessing.json): `goTo` (the step indicator's
+ * own navigation) never calls `canAdvance`, so a user who Applies a holdout
+ * on Step 4 and immediately jumps to Step 5 via the indicator — not Next —
+ * can reach this commit before Step 4's debounced warm has actually landed.
+ * Without a check HERE, this hook would silently clean+scale the artifact
+ * `dwDraftFeatureArtifactIdAtom` held BEFORE that holdout was applied,
+ * producing a saved dataset that looks like it has the new holdout but
+ * doesn't. Refusing INSIDE `commit()` (not just disabling the Next button)
+ * is what makes this survive every navigation path, including the
+ * indicator — `useDatasetGoldWarm` publishes `dwFeatureWarmStateAtom`
+ * (pending until the artifact for THIS exact recipe lands) and
+ * `dwFeatureArtifactStampAtom` (that artifact's own recipe signature); this
+ * hook recomputes the CURRENT recipe's signature the same way
+ * (`featureRecipeStamp`) and refuses unless both match.
  */
 export function useDatasetCleaningScaleCommit(): {
   state: CleaningScaleCommitState
@@ -59,11 +80,14 @@ export function useDatasetCleaningScaleCommit(): {
       selectedColumns: string[] | null
       scalers: Record<string, ScalerMethod>
       targetY: string | null
+      holdout?: { from: string; to: string } | null
     },
   ) => Promise<boolean>
 } {
   const draftId = useAtomValue(dwDraftIdAtom)
   const sourceArtifactId = useAtomValue(dwDraftFeatureArtifactIdAtom)
+  const featureWarmState = useAtomValue(dwFeatureWarmStateAtom)
+  const featureArtifactStamp = useAtomValue(dwFeatureArtifactStampAtom)
   const [, setGoldArtifactId] = useAtom(dwDraftGoldArtifactIdAtom)
   const [state, setState] = useState<CleaningScaleCommitState>({
     status: 'idle',
@@ -78,12 +102,36 @@ export function useDatasetCleaningScaleCommit(): {
         selectedColumns: string[] | null
         scalers: Record<string, ScalerMethod>
         targetY: string | null
+        holdout?: { from: string; to: string } | null
       },
     ): Promise<boolean> => {
       if (!draftId || !sourceArtifactId) {
         setState({
           status: 'error',
           error: 'Feature engineering has not produced a source artifact yet.',
+        })
+        return false
+      }
+      if (featureWarmState === 'pending') {
+        setState({
+          status: 'error',
+          error:
+            'Feature engineering is still catching up with your latest change.',
+        })
+        return false
+      }
+      const currentStamp = featureRecipeStamp({
+        features: recipe.features,
+        selectedColumns: recipe.selectedColumns,
+        scalers: recipe.scalers,
+        targetY: recipe.targetY,
+        holdout: recipe.holdout ?? null,
+      })
+      if (featureArtifactStamp !== currentStamp) {
+        setState({
+          status: 'error',
+          error:
+            'Feature engineering is still catching up with your latest change.',
         })
         return false
       }
@@ -124,7 +172,13 @@ export function useDatasetCleaningScaleCommit(): {
         return false
       }
     },
-    [draftId, sourceArtifactId, setGoldArtifactId],
+    [
+      draftId,
+      sourceArtifactId,
+      featureWarmState,
+      featureArtifactStamp,
+      setGoldArtifactId,
+    ],
   )
 
   return { state, commit }

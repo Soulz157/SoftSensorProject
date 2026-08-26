@@ -954,6 +954,69 @@ describe('PreprocessingJobService — DS-LAKE-022 stage remap', () => {
     expect(artifact.pipelineVersion).toBeNull();
   });
 
+  it('RMP-11: a FEATURE job with a holdout forwards it to Python and writes all three validation_* columns onto the SILVER row', async () => {
+    post.mockResolvedValue({
+      ...ARTIFACT,
+      validation_row_count: 5,
+      validation_holdout_from: '2026-01-16 00:00:00',
+      validation_missing_pct: 0,
+    });
+    const { service, tx } = makeService(
+      buildJob({
+        stage: 'FEATURE',
+        operations: {
+          features: [{ id: 'f1', kind: 'lag', tag: 'TI-101', k: 1 }],
+          selectedColumns: null,
+          scalers: {},
+          scale: false,
+          holdout: { from: '2026-01-16', to: '2026-01-20' },
+        },
+      }),
+    );
+    await (service as unknown as Runnable).run('job-1');
+
+    const [, body] = post.mock.calls.find(
+      ([path]) => path === '/v1/preprocess/features',
+    ) as [string, Record<string, unknown>];
+    expect(body.holdout).toEqual({
+      from_time: '2026-01-16',
+      to_time: '2026-01-20',
+    });
+
+    const artifact = firstWrite(tx.datasetArtifact.create);
+    expect(artifact.validationRowCount).toBe(5);
+    expect(artifact.validationHoldoutFrom).toEqual(
+      new Date('2026-01-16 00:00:00'),
+    );
+    expect(artifact.validationMissingPct).toBe(0);
+  });
+
+  it('RMP-12: a FEATURE job with no holdout omits it from the Python body and writes null validation_* columns', async () => {
+    post.mockResolvedValue(ARTIFACT);
+    const { service, tx } = makeService(
+      buildJob({
+        stage: 'FEATURE',
+        operations: {
+          features: [{ id: 'f1', kind: 'lag', tag: 'TI-101', k: 1 }],
+          selectedColumns: null,
+          scalers: {},
+          scale: false,
+        },
+      }),
+    );
+    await (service as unknown as Runnable).run('job-1');
+
+    const [, body] = post.mock.calls.find(
+      ([path]) => path === '/v1/preprocess/features',
+    ) as [string, Record<string, unknown>];
+    expect('holdout' in body).toBe(false);
+
+    const artifact = firstWrite(tx.datasetArtifact.create);
+    expect(artifact.validationRowCount).toBeNull();
+    expect(artifact.validationHoldoutFrom).toBeNull();
+    expect(artifact.validationMissingPct).toBeNull();
+  });
+
   it('RMP-10: the reordered GOLD keeps the SOURCE artifact as its parent and joins its run', async () => {
     post.mockResolvedValue(SCALED_ARTIFACT);
     const { service, tx } = makeService(buildReorderedCleanJob());

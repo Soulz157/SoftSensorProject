@@ -591,6 +591,17 @@ model DatasetArtifact {
   /// so before training, not just after a depressed score.
   validationMissingPct Float?
 
+  /// DS-LAKE-023-T05. Rows the Python write path dropped (`drop_bad_feature_rows`)
+  /// because at least one kept feature tag was Bad, BEFORE scaling ran —
+  /// `to_model_ready` scales every finite value regardless of status and
+  /// always forces Good afterward, so this is the row's only remaining
+  /// trace once written. Null on any artifact that never scales
+  /// (BRONZE/materialize, SILVER/clean) or predates this column; set on a
+  /// GOLD row from `scale`/`features(scale=True)` and on a scored holdout
+  /// artifact from `prepare_holdout_for_run`. Reported beside the metric it
+  /// affects, same convention `validationMissingPct` above already uses.
+  droppedBadRows Int?
+
   /// 64-bit on purpose: DatasetVersion.sizeBytes is a 32-bit Int, and a 396 MB
   /// artifact is already documented (preview_service.py), so the old column
   /// tops out around 2.1 GB.
