@@ -77,11 +77,19 @@ function deriveRawWindow(raw: Dataset): CustomDateRange | null {
  */
 export function ValidationHoldoutSection({
   disabled,
+  disabledReason,
   featureBearing = false,
   status: warmStatus,
   error: warmError,
 }: {
   disabled: boolean
+  /**
+   * DS-LAKE-024-T04. One sentence naming WHY the picker is disabled — shown
+   * only while `disabled` is also true. Not a full explanatory panel: the
+   * one live reason today (an already-split edit-mode root) has exactly one
+   * remedy (re-fetch), so one line covers it.
+   */
+  disabledReason?: string
   featureBearing?: boolean
   status: FeatureWarmState
   error: string | null
@@ -193,6 +201,9 @@ export function ValidationHoldoutSection({
           <span className="text-[11px] text-muted-foreground">Applying…</span>
         )}
       </label>
+      {disabled && disabledReason && (
+        <p className="text-[11px] text-muted-foreground">{disabledReason}</p>
+      )}
       {enabled && (
         <>
           <div className="grid grid-cols-2 gap-3">

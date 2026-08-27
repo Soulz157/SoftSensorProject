@@ -8,14 +8,16 @@ import { useModelWizardMode } from '@/hooks/model/use-model-wizard-mode'
 import { WizardStepIndicator } from './wizard-step-indicator'
 import { Phase1Details } from './pipeline/phase-1-details'
 import { Phase2DatasetReview } from './pipeline/phase-2-dataset-review'
-import { Phase2TrainingConfig } from './pipeline/phase-2-training-config'
-import { Phase3Evaluation } from './pipeline/phase-3-evaluation'
-import { Phase4Deploy } from './pipeline/phase-4-deploy'
+import { Phase3TrainingConfig } from './pipeline/phase-3-training-config'
+import { Phase5Evaluation } from './pipeline/phase-5-evaluation'
+import { Phase6Deploy } from './pipeline/phase-6-deploy'
+import { Phase4ModelSelection } from './pipeline/phase-4-model-selection'
 
 const STEP_LABELS = [
   'Select Dataset',
   'Dataset Review',
   'Training Config',
+  'Model Selection',
   'Evaluation',
   'Save Model',
 ]
@@ -24,7 +26,8 @@ const NEXT_LABELS: Record<number, string> = {
   1: 'Continue',
   2: 'Continue',
   3: 'View Results',
-  4: 'Save Model',
+  4: 'Continue',
+  5: 'Save Model',
 }
 
 export function CreateModelForm() {
@@ -77,13 +80,16 @@ export function CreateModelForm() {
       body = <Phase2DatasetReview nav={nav} />
       break
     case 3:
-      body = <Phase2TrainingConfig nav={nav} />
+      body = <Phase3TrainingConfig nav={nav} />
       break
     case 4:
-      body = <Phase3Evaluation nav={nav} />
+      body = <Phase4ModelSelection nav={nav} />
       break
     case 5:
-      body = <Phase4Deploy nav={nav} />
+      body = <Phase5Evaluation nav={nav} />
+      break
+    case 6:
+      body = <Phase6Deploy nav={nav} />
       break
     default:
       body = null

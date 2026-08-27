@@ -8,6 +8,9 @@ import {
   dwWorkspaceIdAtom,
   dwSelectedSourcesAtom,
   dwCustomDateRangeAtom,
+  dwModeAtom,
+  dwDraftIdAtom,
+  type DwWizardMode,
 } from '@/store/dataset-studio'
 import type { SavedDataSource } from '@/lib/mock-data-sources'
 import type { CleaningStep } from '@/lib/preprocessing'
@@ -38,7 +41,7 @@ const STEPS: CleaningStep[] = [
   { uid: 's1', category: 'missing', method: 'drop' },
 ]
 
-function renderWithStore() {
+function renderWithStore(opts: { mode?: DwWizardMode; draftId?: string } = {}) {
   const store = createStore()
   store.set(dwWorkspaceIdAtom, 'ws-1')
   store.set(dwSelectedSourcesAtom, [SOURCE])
@@ -46,9 +49,11 @@ function renderWithStore() {
     from: '2026-01-01T00:00',
     to: '2026-01-02T00:00',
   })
+  if (opts.mode) store.set(dwModeAtom, opts.mode)
+  if (opts.draftId) store.set(dwDraftIdAtom, opts.draftId)
   const wrapper = ({ children }: { children: ReactNode }) =>
     Provider({ store, children })
-  return renderHook(() => useDatasetDraftPipeline(), { wrapper })
+  return { store, ...renderHook(() => useDatasetDraftPipeline(), { wrapper }) }
 }
 
 describe('useDatasetDraftPipeline', () => {
@@ -199,5 +204,55 @@ describe('useDatasetDraftPipeline — requestFinalPreview (T01 hybrid)', () => {
 
     expect(datasetDraftService.preview).not.toHaveBeenCalled()
     expect(result.current.finalPreview.status).toBe('idle')
+  })
+})
+
+describe('DS-LAKE-024-T03: ensureDraft refuses to mint a create-mode draft in edit mode', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('never calls datasetDraftService.create — surfaces a syncState error instead', async () => {
+    const { result } = renderWithStore({ mode: 'edit' })
+
+    await act(async () => {
+      await result.current.applyClean(['TI-101'], STEPS)
+    })
+
+    expect(datasetDraftService.create).not.toHaveBeenCalled()
+    expect(datasetDraftService.materialize).not.toHaveBeenCalled()
+    expect(result.current.syncState.status).toBe('error')
+    expect(result.current.syncState.error).toMatch(/not ready to edit/i)
+  })
+
+  it('proceeds normally once the edit draft has already resolved (dwDraftIdAtom set)', async () => {
+    vi.mocked(datasetDraftService.materialize).mockResolvedValue({
+      data: { id: 'shared-bronze-1' },
+    } as never)
+    vi.mocked(datasetDraftService.clean).mockResolvedValue({
+      data: { jobId: 'job-1', status: 'QUEUED' },
+    } as never)
+    vi.mocked(datasetDraftService.job).mockResolvedValue({
+      data: { status: 'SUCCEEDED', resultArtifactId: null, error: null },
+    } as never)
+
+    const { result } = renderWithStore({
+      mode: 'edit',
+      draftId: 'edit-draft-1',
+    })
+
+    await act(async () => {
+      await result.current.applyClean(['TI-101'], STEPS)
+    })
+
+    // The already-resolved id is used as-is — no create call, and the
+    // materialize/clean calls are scoped to the SAME draft id the edit
+    // hydration hook resolved, not a freshly minted one.
+    expect(datasetDraftService.create).not.toHaveBeenCalled()
+    expect(datasetDraftService.materialize).toHaveBeenCalledWith(
+      'edit-draft-1',
+      expect.anything(),
+    )
+    await waitFor(() => expect(result.current.syncState.status).toBe('synced'))
   })
 })

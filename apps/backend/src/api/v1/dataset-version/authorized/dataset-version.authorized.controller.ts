@@ -152,6 +152,29 @@ export class DatasetVersionAuthorizedController {
     return this.sendRowsResult(reply, result);
   }
 
+  @Get('/:id/artifacts/:artifactId/validation-rows')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: "Read a page of an artifact's run's validation holdout rows",
+    description:
+      'Compare view (train vs. validation). JSON only — no `format=arrow` ' +
+      'branch, unlike `/rows`. 404s when the run has no holdout, or when one ' +
+      'was recorded but its sidecar is gone from storage.',
+  })
+  async listArtifactValidationRowsController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Query() query: ListRowsDto,
+  ) {
+    return this.service.getArtifactValidationRowsService(
+      user,
+      id,
+      artifactId,
+      query,
+    );
+  }
+
   @Get('/:id/versions/:versionId/rows')
   @HttpCode(200)
   @ApiOperation({

@@ -54,13 +54,10 @@ export default function AdvancedModelMonitoring() {
     [points, start, end],
   )
   const stats = useMemo(() => windowStats(visible), [visible])
-  const SD_SCALE = 5.0
-
-  const bandSd = stats.sd * SD_SCALE
 
   const rows = useMemo(
-    () => buildMonitoringRows(points, bandSd),
-    [points, bandSd],
+    () => buildMonitoringRows(points, stats.sd),
+    [points, stats.sd],
   )
   const tickFormatter = useMemo(() => {
     const first = visible[0]
@@ -71,6 +68,29 @@ export default function AdvancedModelMonitoring() {
         : 0
     return pickTimeFormat(spanMs)
   }, [visible])
+
+  const yDomain = useMemo<[number, number]>(() => {
+    const values = rows.flatMap(r =>
+      [r.actual, r.predict].filter(
+        (v): v is number => typeof v === 'number' && Number.isFinite(v),
+      ),
+    )
+    if (values.length === 0) return [0, 1]
+
+    const lo = Math.min(...values)
+    const hi = Math.max(...values)
+
+    // Guarantee the band is on screen even when actual and predict track each
+    // other almost exactly — otherwise a very good model produces a
+    // zero-height domain and nothing renders at all.
+    const bandSpan = stats.sd * 2
+    const dataSpan = hi - lo
+    const span = Math.max(dataSpan, bandSpan * 3)
+    const pad = span * 0.12
+    const mid = (lo + hi) / 2
+
+    return [mid - span / 2 - pad, mid + span / 2 + pad]
+  }, [rows, stats.sd])
 
   const changeRange = (r: TimeRange) => {
     setRange(r)
@@ -109,7 +129,7 @@ export default function AdvancedModelMonitoring() {
         tag={tag}
       />
       {/* Top chart — Actual vs Predict */}
-      <div className="flex h-105 flex-col rounded-xl border border-border bg-card p-4">
+      <div className="flex min-h-0 flex-col rounded-xl border border-border bg-card p-4">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <h2 className="text-sm font-semibold text-foreground">
             Actual vs. Predict (3-Layer SD Guardrails)
@@ -129,12 +149,13 @@ export default function AdvancedModelMonitoring() {
           />
         </div>
 
-        <div className="max-h-full flex-1 ">
+        <div className="max-h-full flex-1">
           <ActualVsPredictChart
             rows={rows}
             brush={brush}
             onBrush={setBrush}
             tickFormatter={tickFormatter}
+            yDomain={yDomain}
           />
         </div>
       </div>

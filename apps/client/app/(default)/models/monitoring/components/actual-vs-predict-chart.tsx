@@ -22,6 +22,7 @@ interface Props {
   onBrush: (w: BrushWindow) => void
   tickFormatter: (t: number) => string
   actualAsLine?: boolean
+  yDomain?: [number, number] | undefined
 }
 
 const SYNC_ID = 'monitoring'
@@ -33,13 +34,14 @@ export function ActualVsPredictChart({
   onBrush,
   tickFormatter,
   actualAsLine = true,
+  yDomain,
 }: Props) {
   const startIndex = brush.startIndex ?? 0
   const endIndex = brush.endIndex ?? Math.max(0, rows.length - 1)
 
   return (
     <div className="w-full overflow-x-auto overflow-y-hidden">
-      <div className="min-w-375 h-175">
+      <div className="min-w-375 ">
         <ResponsiveContainer className="w-full" height={500}>
           <ComposedChart
             data={rows}
@@ -62,7 +64,7 @@ export function ActualVsPredictChart({
               minTickGap={40}
             />
             <YAxis
-              domain={['auto', 'auto']}
+              domain={yDomain ?? ['auto', 'auto']}
               tick={AXIS_TICK}
               stroke="var(--border)"
               width={44}

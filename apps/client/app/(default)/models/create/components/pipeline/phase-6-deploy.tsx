@@ -30,7 +30,7 @@ interface Props {
  * survive in the store from the old 4-step flow but nothing persists them, so
  * rendering them would collect settings that go nowhere.
  */
-export function Phase4Deploy({ nav }: Props) {
+export function Phase6Deploy({ nav }: Props) {
   const router = useRouter()
   const mode = useAtomValue(mpModeAtom)
   const commit = useModelCommit()

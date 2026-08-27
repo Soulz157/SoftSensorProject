@@ -11,6 +11,7 @@ import {
 } from '@/lib/feature-engineering'
 import {
   dwDraftArtifactIdAtom,
+  dwEditRootValidationRowCountAtom,
   dwFeaturedDatasetAtom,
   dwFeaturePresetAtom,
   dwFeaturePreviewSampleStateAtom,
@@ -52,6 +53,27 @@ export function Step4FeatureEngineering({ nav }: Props) {
   const previewFetchState = useAtomValue(dwFeaturePreviewSampleStateAtom)
   const mode = useAtomValue(dwModeAtom)
   const sourceArtifactId = useAtomValue(dwDraftArtifactIdAtom)
+  // DS-LAKE-024-T03: create mode has no equivalent gate at all (it always
+  // had a pinned BRONZE source), so this is true there unconditionally.
+  // Edit mode arms once `useDatasetEditHydration` resolves the edit draft's
+  // BRONZE into `sourceArtifactId` — see the comment above
+  // `ValidationHoldoutSection` below for why this and `featureBearing` move
+  // together.
+  const editModeArmed = mode !== 'edit' || Boolean(sourceArtifactId)
+  // DS-LAKE-024-T04. A DIFFERENT condition from `editModeArmed`, layered on
+  // top of it: even once the edit draft's root has resolved, the picker
+  // must stay disabled if THAT root was already split at materialize time
+  // — re-splitting it would silently double-cut rows, since
+  // `startFeaturesJob` (this section's live apply path) has no guard of
+  // its own (see `dwEditRootValidationRowCountAtom`'s doc comment). Zero
+  // instances in production data today (every adopted root is pristine),
+  // but the branch is real — a resplit child's own root is not.
+  const rootValidationRowCount = useAtomValue(dwEditRootValidationRowCountAtom)
+  const editRootIsPristine = mode !== 'edit' || rootValidationRowCount === null
+  const holdoutDisabledReason =
+    editModeArmed && !editRootIsPristine
+      ? 'This dataset was already split into a validation holdout when it was fetched — re-fetch it from source to choose a new one.'
+      : undefined
   useDatasetFeaturePreviewSample()
   const {
     featureConfigs,
@@ -64,21 +86,20 @@ export function Step4FeatureEngineering({ nav }: Props) {
   const period = useAtomValue(dwTimeRangeAtom)
   const range = PERIOD_TO_RANGE[period]
 
-  // HOLD — DS-LAKE-023 edit-mode re-split pass, in progress. The earlier
-  // version of this block called `ensureDraft`/`ensureBronze` here to seed
-  // `dwDraftArtifactIdAtom` with a fresh raw BRONZE on Step 4 mount. Found
-  // (2026-08-25) to be WRONG before it shipped: in edit mode this atom is
-  // the pipeline's CHAINED source — `useDatasetDraftPipeline.applyClean`
-  // advances it to the CLEANED SILVER once Step 5 runs — not a pinned
-  // BRONZE the way create mode keeps it. Seeding it with raw BRONZE here
-  // would make the warm below run features+scale on UNCLEANED rows,
-  // silently skipping cleaning for any edit-mode holdout re-split. There is
-  // also no stored pointer to the pre-features cleaned artifact of the
-  // original run to adopt instead (`adoptedBronzeArtifactId` names only the
-  // RAW lineage root). Reverted pending a decision on how edit mode should
-  // source this job — see this session's own findings for the two real
-  // options. `sourceArtifactId`/`mode` stay read above for
-  // `ValidationHoldoutSection`'s gating below.
+  // RESOLVED (DS-LAKE-024): an earlier version of this block called
+  // `ensureDraft`/`ensureBronze` here to seed `dwDraftArtifactIdAtom` with a
+  // FRESH raw BRONZE on Step 4 mount — a NEW source fetch, silently
+  // discarding whatever cleaning the saved recipe already described. That
+  // was reverted (2026-08-25) before it shipped. DS-LAKE-024 answers "how
+  // should edit mode source this job" properly instead of seeding it here:
+  // `useDatasetEditHydration` resolves (or creates) a real edit draft as
+  // soon as the wizard mounts, pointing `dwDraftArtifactIdAtom` at the
+  // dataset's own already-adopted, lineage-pinned BRONZE — same bytes, no
+  // new fetch. `sourceArtifactId` below is therefore non-null as soon as
+  // that resolves, which is what arms `ValidationHoldoutSection` below: the
+  // reordered pipeline (DS-LAKE-022/023) cuts the holdout at THIS stage,
+  // before cleaning runs, in both modes — so waiting for a clean pass first
+  // would be waiting for a stage that comes later, not earlier.
 
   // DS-LAKE-006-T06: "Step 4 drives the full feature-engineering transform
   // server-side." No new UI — this fires in the background whenever the
@@ -197,12 +218,27 @@ export function Step4FeatureEngineering({ nav }: Props) {
         </Badge>
       </div>
 
-      {/* {locked && (
+      {/* DS-LAKE-024-T07. Was: "Features and column selection are locked
+          while editing preprocessing" — commented out, not corrected, when
+          T02 gave edit mode a real draft and made adding a feature here
+          actually work (that banner's own claim went false the moment it
+          did). Restated instead of restored: features/column-selection are
+          NOT locked in edit mode, but the underlying TAG SET is (Step 1) —
+          openDecisions[2]'s boundary, stated here because this is where a
+          user would naturally try to reference a tag that was never
+          fetched. Every panel below already REFUSES that reference
+          (ExtractionPanel/CreationPanel/FormulaPanel's source-column
+          pickers and free-text validators are all bounded to
+          `originalColumns` = `raw.tags`) — this banner explains the refusal
+          instead of leaving it to be discovered as a disabled Add button. */}
+      {mode === 'edit' && (
         <EditLockBanner>
-          Features and column selection are locked while editing preprocessing —
-          they define the schema downstream models depend on.
+          You can create features from this dataset&apos;s existing tags and
+          choose which columns to keep — but you can&apos;t add a tag that
+          wasn&apos;t originally fetched (Step 1 is locked). An expression
+          referencing one is refused, not silently computed.
         </EditLockBanner>
-      )} */}
+      )}
 
       {warmError && (
         <p className="text-xs text-muted-foreground">
@@ -284,34 +320,36 @@ export function Step4FeatureEngineering({ nav }: Props) {
           </TabsContent>
         </div>
 
+        <ValidationHoldoutSection
+          // DS-LAKE-023 (edit-mode re-split pass): also gated on the warm
+          // itself being pending. `previewFetchState` reflects a bounded
+          // HEAD-page preview fetch, which can read 'ready' while the
+          // CURRENT recipe's own features job is still in flight — without
+          // this, Apply could fire against a source artifact that is about
+          // to be replaced by that in-flight job.
+          //
+          // DS-LAKE-024-T03: edit mode additionally requires `sourceArtifactId`
+          // — without it, `warmGold` would silently no-op on Apply, the exact
+          // D6 bug this pass exists to fix. `editModeArmed` below is the SAME
+          // condition `featureBearing` uses: the two are armed together or
+          // neither, because a picker that is clickable but not feature-bearing
+          // just routes Apply through the legacy, non-feature-bearing resplit
+          // path instead of silently doing nothing — a different-looking
+          // version of the same defect.
+          disabled={
+            previewFetchState !== 'ready' ||
+            warmState === 'pending' ||
+            !editModeArmed ||
+            !editRootIsPristine
+          }
+          disabledReason={holdoutDisabledReason}
+          featureBearing={editModeArmed}
+          status={warmState}
+          error={warmError}
+        />
+
         <DataAnalysisCard dataset={featured} range={range} />
       </Tabs>
-
-      <ValidationHoldoutSection
-        // DS-LAKE-023 (edit-mode re-split pass): also gated on the warm
-        // itself being pending. `previewFetchState` reflects a bounded
-        // HEAD-page preview fetch, which can read 'ready' while the
-        // CURRENT recipe's own features job is still in flight — without
-        // this, Apply could fire against a source artifact that is about
-        // to be replaced by that in-flight job.
-        //
-        // Edit mode additionally requires `sourceArtifactId` (see the HOLD
-        // comment above `warmGold`): without it, `warmGold` would silently
-        // no-op on Apply — the atom write would land but nothing would ever
-        // reach the server, the exact D6 bug this pass exists to fix, just
-        // reintroduced from a different angle. Left disabled rather than
-        // silently broken until edit mode's source question is resolved.
-        disabled={
-          previewFetchState !== 'ready' ||
-          warmState === 'pending' ||
-          (mode === 'edit' && !sourceArtifactId)
-        }
-        // Edit mode's holdout is NOT feature-bearing yet — see the HOLD
-        // comment above `warmGold`. Stays conditional until that's settled.
-        featureBearing={mode !== 'edit'}
-        status={warmState}
-        error={warmError}
-      />
     </div>
   )
 }

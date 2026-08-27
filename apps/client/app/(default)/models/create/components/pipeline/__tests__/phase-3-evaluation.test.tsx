@@ -5,7 +5,7 @@ import {
   mpServerDraftIdAtom,
   mpTrainingResultAtom,
 } from '@/store/model-pipeline'
-import { Phase3Evaluation } from '../phase-3-evaluation'
+import { Phase3Evaluation } from '../phase-5-evaluation'
 import type { UsePipelineNavResult } from '@/hooks/model/use-model-pipeline-nav'
 
 /**

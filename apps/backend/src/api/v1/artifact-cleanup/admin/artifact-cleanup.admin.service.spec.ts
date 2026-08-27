@@ -454,6 +454,88 @@ describe('ArtifactCleanupAdminService', () => {
     expect(result.artifacts).toEqual([]);
   });
 
+  it("DS-LAKE-024-T05: never reclaims an edit draft's borrowed root BRONZE, even when its own ACTIVE draft is long idle", async () => {
+    // resolveOrCreateEditDraftService mints 'borrowed-root' for an edit
+    // draft (draft-2) — a fresh id, never on any DatasetVersion's
+    // parentArtifactId chain, sharing 'bronze-1' 's exact objectKey (the
+    // live dataset's own adopted root, borrowed by pointer). draft-2 is
+    // ACTIVE and long past CLEANUP_ACTIVE_IDLE_HOURS (6h): without the
+    // DS-LAKE-024-T05 objectKey pin, 'borrowed-root' would look like an
+    // ordinary idle-ACTIVE artifact and get reclaimed, physically deleting
+    // the bytes 'bronze-1' — the correctly-unreclaimed row — still needs.
+    // VERIFY BY DELETION, not by exclusion (T05's own scope note): also
+    // gives draft-2 a genuine, unshared intermediate ('own-silver') old
+    // enough to reclaim in the SAME sweep — proving the pin is selective
+    // (this borrowed root specifically), not the sweep skipping the whole
+    // draft or failing open.
+    post.mockResolvedValue({ prefix: 'x/', deleted: 1 });
+    const SHARED_KEY = 'ds-1/artifacts/bronze-1/data.parquet';
+    const prisma = buildPrismaMock({
+      artifacts: [
+        {
+          id: 'bronze-1',
+          type: 'BRONZE',
+          draftId: 'draft-1',
+          objectKey: SHARED_KEY,
+          parentArtifactId: null,
+        },
+        {
+          id: 'borrowed-root',
+          type: 'BRONZE',
+          draftId: 'draft-2',
+          objectKey: SHARED_KEY,
+          parentArtifactId: null,
+        },
+        {
+          id: 'own-silver',
+          type: 'SILVER',
+          draftId: 'draft-2',
+          objectKey: 'drafts/draft-2/artifacts/own-silver/data.parquet',
+        },
+      ],
+      drafts: [
+        { id: 'draft-1', status: 'SAVED', updatedAt: OLD },
+        { id: 'draft-2', status: 'ACTIVE', updatedAt: OLD },
+      ],
+      liveVersions: [{ artifactId: 'final-1' }],
+    });
+    prisma.datasetArtifact.findUnique.mockImplementation(
+      ({ where: { id } }: { where: { id: string } }) => {
+        if (id === 'final-1') {
+          return Promise.resolve({
+            parentArtifactId: 'bronze-1',
+            objectKey: SHARED_KEY,
+          });
+        }
+        if (id === 'bronze-1') {
+          return Promise.resolve({
+            parentArtifactId: null,
+            objectKey: SHARED_KEY,
+          });
+        }
+        return Promise.resolve(null);
+      },
+    );
+    const service = makeService(prisma);
+
+    const result = await service.run({ dryRun: false });
+
+    const reclaimedIds = result.artifacts
+      .filter((a) => a.deletedObjects !== undefined)
+      .map((a) => a.id);
+    expect(reclaimedIds).toEqual(['own-silver']);
+    // The pin worked because the reclaim call for the borrowed root's
+    // shared key never fired at all — asserting on Python's own call args,
+    // not just the result summary, so a would-be duplicate call before the
+    // stamp write can't hide behind an idempotent 0-deleted response.
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(post).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ object_key: SHARED_KEY }),
+      expect.anything(),
+    );
+  });
+
   it('refuses an artifact referenced by an active (QUEUED/RUNNING) job (V02)', async () => {
     const prisma = buildPrismaMock({
       artifacts: [

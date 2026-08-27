@@ -20,6 +20,7 @@ import {
   dwDraftIdAtom,
   dwDraftArtifactIdAtom,
   dwDraftSyncStateAtom,
+  dwModeAtom,
 } from '@/store/dataset-studio'
 
 /**
@@ -100,6 +101,7 @@ export function useDatasetDraftPipeline(): UseDatasetDraftPipelineResult {
   const customInterval = useAtomValue(dwCustomIntervalAtom)
   const fetchConfig = useAtomValue(dwFetchConfigAtom)
   const period = useAtomValue(dwTimeRangeAtom)
+  const mode = useAtomValue(dwModeAtom)
 
   const [draftId, setDraftId] = useAtom(dwDraftIdAtom)
   const [artifactId, setArtifactId] = useAtom(dwDraftArtifactIdAtom)
@@ -119,11 +121,26 @@ export function useDatasetDraftPipeline(): UseDatasetDraftPipelineResult {
   // these callbacks just wire it to THIS hook's atoms and to `syncState`,
   // which is what makes a failure here (unlike the background warm's) show
   // the "Server sync failed" banner in Step 3.2.
+  //
+  // DS-LAKE-024-T03 HARD BACKSTOP: `ensureDraftId` has no mode of its own —
+  // left to fall through, it would mint a CREATE-mode draft and then
+  // `ensureBronze` would materialize a FRESH FETCH from the live source for
+  // a dataset the user is editing historically (the exact "reverted
+  // mistake" this feature exists to avoid, reached from a different angle).
+  // `useDatasetEditHydration` resolves the real edit draft as early as the
+  // wizard mounts specifically to keep this branch unreachable; this throw
+  // is what happens if that resolution is still in flight or failed, rather
+  // than silently doing the wrong thing.
   const ensureDraft = useCallback(async (): Promise<string> => {
+    if (mode === 'edit' && !draftId) {
+      throw new Error(
+        'This dataset is not ready to edit yet — its draft is still being prepared. Try again in a moment.',
+      )
+    }
     const id = await ensureDraftId({ workspaceId, selectedSources }, draftId)
     if (id !== draftId) setDraftId(id)
     return id
-  }, [draftId, workspaceId, selectedSources, setDraftId])
+  }, [mode, draftId, workspaceId, selectedSources, setDraftId])
 
   const ensureBronze = useCallback(
     async (id: string, tags: string[]): Promise<string> => {

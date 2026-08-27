@@ -43,8 +43,24 @@ export interface DatasetDraft {
   status: DatasetDraftStatus
   currentArtifactId: string | null
   savedDatasetId: string | null
+  // DS-LAKE-024. Set for a draft opened by editing an existing saved
+  // Dataset (`resolveOrCreateForDataset`'s own response); null for a
+  // create-mode draft.
+  editingDatasetId: string | null
   createdAt: string
   updatedAt: string
+}
+
+/**
+ * DS-LAKE-024-T04. `resolveOrCreateForDataset`'s own response shape —
+ * `rootValidationRowCount` is the edit draft's root BRONZE's own
+ * `validationRowCount` (null = pristine, safe to re-split; non-null =
+ * already split at materialize time). Not on `DatasetDraft` itself: the
+ * other four endpoints that return one (create/get/abandon/touch) have no
+ * edit-draft root to report this about.
+ */
+export interface EditDraftResolution extends DatasetDraft {
+  rootValidationRowCount: number | null
 }
 
 export interface DraftArtifact {
@@ -331,6 +347,19 @@ export const datasetDraftService = {
 
   get: (draftId: string): Promise<ApiResponse<DatasetDraft>> =>
     fetchClient(one(draftId), { method: 'GET' }),
+
+  /**
+   * DS-LAKE-024-T02. Resolve-or-create the edit-mode draft for a saved
+   * Dataset — idempotent on re-entry (200 if an ACTIVE draft already
+   * exists, 201 if one was just minted from the dataset's adopted BRONZE).
+   * Never re-materializes from the source.
+   */
+  resolveOrCreateForDataset: (
+    datasetId: string,
+  ): Promise<ApiResponse<EditDraftResolution>> =>
+    fetchClient(`${base}/for-dataset/${encodeURIComponent(datasetId)}`, {
+      method: 'POST',
+    }),
 
   abandon: (draftId: string): Promise<ApiResponse<DatasetDraft>> =>
     fetchClient(`${one(draftId)}/abandon`, { method: 'POST' }),

@@ -1,12 +1,13 @@
 'use client'
 
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import {
   LayoutGrid,
   Tags as TagsIcon,
   Database,
   FileDown,
   Loader2,
+  GitCompare,
 } from 'lucide-react'
 import type { SavedDataset } from '@/store/datasets'
 import type { DataSourceKind } from '@/lib/mock-data-sources'
@@ -41,7 +42,9 @@ import { useArtifactColumnStats } from '@/hooks/dataset/artifact/use-dataset-art
 import { useArtifactMetadata } from '@/hooks/dataset/artifact/use-dataset-artifact-metadata'
 import { useArtifactRows } from '@/hooks/dataset/artifact/use-artifact-rows'
 import { useArtifactCorrelation } from '@/hooks/dataset/artifact/use-artifact-correlation'
+import { useArtifactHoldout } from '@/hooks/dataset/artifact/use-artifact-holdout'
 import { useDatasetExport } from '@/hooks/dataset/use-dataset-export'
+import { DatasetCompareModal } from './dataset-compare-modal'
 
 export interface DetailSource {
   name: string
@@ -152,6 +155,17 @@ export function DatasetDetailSheet({
     loading: sampleLoading,
     error: sampleError,
   } = useArtifactRows(datasetId, artifactId, tags)
+
+  // MODEL-FLOW-010-T06 (widened lookup). `holdout: null` with no `missing`/
+  // `error` is the normal "no split" case — most datasets have none.
+  const {
+    holdout,
+    loading: holdoutLoading,
+    missing: holdoutMissing,
+    error: holdoutError,
+  } = useArtifactHoldout(datasetId, artifactId)
+
+  const [compareOpen, setCompareOpen] = useState(false)
 
   const rowCount = metadata?.rowCount ?? dataset?.rowCount ?? 0
   const timeSpan = artifactTimeSpanLabel(metadata?.startTime, metadata?.endTime)
@@ -325,6 +339,95 @@ export function DatasetDetailSheet({
                     <p className="text-xs text-destructive">
                       {exportHook.error}
                     </p>
+                  )}
+                </section>
+              )}
+
+              {/* Validation holdout. The Compare button stays disabled in
+                  every branch — there is no route yet that serves the
+                  holdout's rows for a chart, only its footer (window, row
+                  count, missing %). "No holdout was split" and "the holdout
+                  data is no longer retained" are different facts and must
+                  not share a message, the same discipline the stats section
+                  below already applies to statsMissing vs statsError. */}
+              {hasArtifact && (
+                <section className="space-y-2 rounded-lg border border-border p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-sm font-semibold text-foreground">
+                      Validation Data
+                    </p>
+                  </div>
+                  {holdoutLoading ? (
+                    <Skeleton className="h-14 w-full rounded-lg" />
+                  ) : holdoutMissing ? (
+                    <>
+                      <p className="text-xs text-muted-foreground">
+                        A validation data was split, but its data is no longer
+                        retained.
+                      </p>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="w-fit"
+                        disabled
+                      >
+                        <GitCompare className="mr-2 h-3.5 w-3.5" />
+                        Compare
+                      </Button>
+                    </>
+                  ) : holdoutError ? (
+                    <>
+                      <p className="text-xs text-muted-foreground">
+                        Could not load the validation data — {holdoutError}
+                      </p>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="w-fit"
+                        disabled
+                      >
+                        <GitCompare className="mr-2 h-3.5 w-3.5" />
+                        Compare
+                      </Button>
+                    </>
+                  ) : holdout === null ? (
+                    <>
+                      <p className="text-xs text-muted-foreground">
+                        No validation data was split from this dataset.
+                      </p>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="w-fit"
+                        disabled
+                      >
+                        <GitCompare className="mr-2 h-3.5 w-3.5" />
+                        Compare
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-xs text-muted-foreground">
+                        {rowCount.toLocaleString()} rows in the current artifact
+                        (train, approximate — cleaning can drop rows after the
+                        split) · {holdout.rowCount.toLocaleString()} validation
+                        rows ·{' '}
+                        {new Date(holdout.holdoutFrom).toLocaleDateString()}
+                        {holdout.holdoutTo
+                          ? ` – ${new Date(holdout.holdoutTo).toLocaleDateString()}`
+                          : ''}{' '}
+                        · {fmt(holdout.missingPct)}% missing
+                      </p>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="w-fit"
+                        onClick={() => setCompareOpen(true)}
+                      >
+                        <GitCompare className="mr-2 h-3.5 w-3.5" />
+                        Compare
+                      </Button>
+                    </>
                   )}
                 </section>
               )}
@@ -526,6 +629,15 @@ export function DatasetDetailSheet({
           </>
         )}
       </SheetContent>
+
+      <DatasetCompareModal
+        open={compareOpen}
+        onOpenChange={setCompareOpen}
+        datasetId={datasetId}
+        artifactId={artifactId}
+        availableTags={tags}
+        holdout={holdout}
+      />
     </Sheet>
   )
 }

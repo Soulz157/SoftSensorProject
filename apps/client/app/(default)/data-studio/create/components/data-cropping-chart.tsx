@@ -272,7 +272,7 @@ export function DataCroppingChart({
     const m = new Map<string, number>()
     for (let i = timestamps.length - 1; i >= 0; i--) m.set(timestamps[i]!, i)
     return m
-  }, [timestamps])
+  }, [timestamps, cropRange])
 
   const yDomain = useMemo<[number, number]>(() => {
     if (!tag) return [0, 1]
@@ -775,8 +775,6 @@ export function DataCroppingChart({
               tickLine={false}
               axisLine={false}
               width={75}
-              // ยึด rawDataset โดยเจตนา — ถ้ายึด chartDataset แกนจะหุบตาม clip
-              // แล้ว user มองไม่เห็นว่าอะไรถูกพับเข้ามา
               domain={yDomain}
               tickFormatter={value =>
                 Number(value).toLocaleString(undefined, {

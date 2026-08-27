@@ -367,7 +367,7 @@ describe('DatasetVersionAuthorizedService — getVersionLineageService (DS-LAKE-
 describe('DatasetVersionAuthorizedService — getArtifactHoldoutService (MODEL-FLOW-010-T06)', () => {
   beforeEach(() => jest.clearAllMocks());
 
-  it('returns the BRONZE siblings holdout window, rows, and missing rate', async () => {
+  it('returns the run siblings holdout window, rows, and missing rate', async () => {
     const prisma = buildPrisma();
     prisma.datasetArtifact.findFirst
       .mockResolvedValueOnce({ runId: 'run-1' }) // the requested artifact
@@ -376,7 +376,7 @@ describe('DatasetVersionAuthorizedService — getArtifactHoldoutService (MODEL-F
         validationRowCount: 42,
         validationHoldoutFrom: new Date('2026-01-11T00:00:00.000Z'),
         validationMissingPct: 12.5,
-      }); // the BRONZE sibling, resolved by runId
+      }); // the run sibling carrying the validation columns
     post.mockResolvedValue({
       source_key: 'ds-1/artifacts/bronze-1/validate_data.parquet',
       tags: ['TI-101'],
@@ -406,16 +406,103 @@ describe('DatasetVersionAuthorizedService — getArtifactHoldoutService (MODEL-F
     );
   });
 
-  it('derives source_key from the BRONZE objectKey, not datasetId — a draft-scoped BRONZE resolves under drafts/, the bug this test locks in', async () => {
+  it('looks up the holdout sibling by the validation columns, not by type — a SILVER-only holdout (DS-LAKE-022 reordered pipeline) resolves, not just BRONZE', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst
+      .mockResolvedValueOnce({ runId: 'run-1' }) // the requested artifact
+      .mockResolvedValueOnce({
+        objectKey: 'ds-1/artifacts/silver-1/data_silver.parquet',
+        validationRowCount: 576,
+        validationHoldoutFrom: new Date('2026-01-27T17:00:00.000Z'),
+        validationMissingPct: 0,
+      }); // the SILVER sibling — reordered pipeline writes the split here
+    post.mockResolvedValue({
+      source_key: 'ds-1/artifacts/silver-1/validate_data.parquet',
+      tags: ['TI-101'],
+      column_count: 3,
+      row_count: 576,
+      start_time: '2026-01-27T17:00:00.000Z',
+      end_time: '2026-01-28T00:00:00.000Z',
+    });
+    const { service } = makeService(prisma);
+
+    const res = await service.getArtifactHoldoutService(
+      USER,
+      'ds-1',
+      'artifact-final',
+    );
+
+    expect(res.data.holdout?.rowCount).toBe(576);
+    expect(prisma.datasetArtifact.findFirst).toHaveBeenNthCalledWith(2, {
+      where: {
+        runId: 'run-1',
+        validationRowCount: { not: null },
+        validationHoldoutFrom: { not: null },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        objectKey: true,
+        validationRowCount: true,
+        validationHoldoutFrom: true,
+        validationMissingPct: true,
+      },
+    });
+  });
+
+  it('breaks a tie between two candidates in the same run by createdAt desc — a re-materialized run with two BRONZE rows resolves the newer one deterministically', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst
+      .mockResolvedValueOnce({ runId: 'run-1' })
+      .mockResolvedValueOnce({
+        objectKey: 'ds-1/artifacts/bronze-2/data_bronze.parquet',
+        validationRowCount: 3167,
+        validationHoldoutFrom: new Date('2026-01-25T17:00:00.000Z'),
+        validationMissingPct: 0,
+      }); // Prisma's own orderBy: createdAt desc picks this row; the mock
+    // stands in for that ordering rather than re-implementing it.
+    post.mockResolvedValue({
+      source_key: 'ds-1/artifacts/bronze-2/validate_data.parquet',
+      tags: [],
+      column_count: 1,
+      row_count: 3167,
+      start_time: '2026-01-25T17:00:00.000Z',
+      end_time: '2026-01-28T00:00:00.000Z',
+    });
+    const { service } = makeService(prisma);
+
+    const res = await service.getArtifactHoldoutService(
+      USER,
+      'ds-1',
+      'artifact-final',
+    );
+
+    expect(res.data.holdout?.rowCount).toBe(3167);
+    expect(prisma.datasetArtifact.findFirst).toHaveBeenNthCalledWith(2, {
+      where: {
+        runId: 'run-1',
+        validationRowCount: { not: null },
+        validationHoldoutFrom: { not: null },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        objectKey: true,
+        validationRowCount: true,
+        validationHoldoutFrom: true,
+        validationMissingPct: true,
+      },
+    });
+  });
+
+  it('derives source_key from the resolved artifacts objectKey, not datasetId — a draft-scoped artifact resolves under drafts/, the bug this test locks in', async () => {
     const prisma = buildPrisma();
     prisma.datasetArtifact.findFirst
       .mockResolvedValueOnce({ runId: 'run-1' })
       .mockResolvedValueOnce({
         // datasetId is 'ds-1' below, but this dataset was adopted from a
-        // draft — the BRONZE's real objectKey still starts with drafts/.
-        // Before the fix, `validateDataKey('ds-1', bronze.id)` would have
-        // rebuilt `ds-1/artifacts/bronze-1/validate_data.parquet` — a key
-        // nothing ever wrote — instead of the key asserted below.
+        // draft — the resolved artifact's real objectKey still starts with
+        // drafts/. Before the fix, `validateDataKey('ds-1', artifact.id)`
+        // would have rebuilt `ds-1/artifacts/bronze-1/validate_data.parquet`
+        // — a key nothing ever wrote — instead of the key asserted below.
         objectKey: 'drafts/draft-9/artifacts/bronze-1/data_bronze.parquet',
         validationRowCount: 7,
         validationHoldoutFrom: new Date('2026-01-11T00:00:00.000Z'),
@@ -472,16 +559,14 @@ describe('DatasetVersionAuthorizedService — getArtifactHoldoutService (MODEL-F
     }
   });
 
-  it('returns holdout: null when the BRONZE sibling has no validation split — the normal case, not an error', async () => {
+  it('returns holdout: null when no run sibling has a validation split — the normal case, not an error', async () => {
     const prisma = buildPrisma();
     prisma.datasetArtifact.findFirst
       .mockResolvedValueOnce({ runId: 'run-1' })
-      .mockResolvedValueOnce({
-        id: 'bronze-1',
-        validationRowCount: null,
-        validationHoldoutFrom: null,
-        validationMissingPct: null,
-      });
+      // Prisma's `where: { validationRowCount: { not: null }, ... }`
+      // matches nothing for a run with no holdout — findFirst resolves
+      // null, not a row with null fields.
+      .mockResolvedValueOnce(null);
     const { service } = makeService(prisma);
 
     const res = await service.getArtifactHoldoutService(
@@ -532,6 +617,109 @@ describe('DatasetVersionAuthorizedService — getArtifactHoldoutService (MODEL-F
     await expect(
       service.getArtifactHoldoutService(USER, 'ds-1', 'ghost'),
     ).rejects.toThrow(AppException);
+  });
+});
+
+describe('DatasetVersionAuthorizedService — getArtifactValidationRowsService (compare view)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  const ROW_PAGE = {
+    source_key: 'ds-1/artifacts/silver-1/validate_data.parquet',
+    total_row_count: 2,
+    offset: 0,
+    tags: ['TI-101'],
+    filtered: true,
+    start_time: '2026-01-27T17:00:00.000Z',
+    end_time: '2026-01-28T00:00:00.000Z',
+    rows: [
+      {
+        timestamp: '2026-01-27T17:00:00.000Z',
+        cells: { 'TI-101': { value: 42, status: 'Good' } },
+      },
+      {
+        timestamp: '2026-01-27T18:00:00.000Z',
+        cells: { 'TI-101': { value: 0, status: 'Bad' } },
+      },
+    ],
+  };
+
+  it('reads validate_data.parquet via the same run-sibling lookup getArtifactHoldoutService uses', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst
+      .mockResolvedValueOnce({ runId: 'run-1' }) // the requested artifact
+      .mockResolvedValueOnce({
+        objectKey: 'ds-1/artifacts/silver-1/data_silver.parquet',
+        validationRowCount: 576,
+        validationHoldoutFrom: new Date('2026-01-27T17:00:00.000Z'),
+        validationMissingPct: 0,
+      }); // the holdout sibling
+    post.mockResolvedValue(ROW_PAGE);
+    const { service } = makeService(prisma);
+
+    const res = await service.getArtifactValidationRowsService(
+      USER,
+      'ds-1',
+      'artifact-final',
+      { offset: 0, limit: 1000, tags: ['TI-101'] } as never,
+    );
+
+    expect(res.data.rows).toHaveLength(2);
+    expect(res.data.totalRowCount).toBe(2);
+    expect(post).toHaveBeenCalledWith(
+      '/v1/preprocess/rows',
+      {
+        source_key: 'ds-1/artifacts/silver-1/validate_data.parquet',
+        offset: 0,
+        limit: 1000,
+        tags: ['TI-101'],
+      },
+      expect.any(Number),
+    );
+  });
+
+  it('404s when the run has no validation holdout, never returning rows: null', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst
+      .mockResolvedValueOnce({ runId: 'run-1' })
+      .mockResolvedValueOnce(null);
+    const { service } = makeService(prisma);
+
+    await expect(
+      service.getArtifactValidationRowsService(USER, 'ds-1', 'artifact-final', {
+        offset: 0,
+        limit: 1000,
+      } as never),
+    ).rejects.toThrow(AppException);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('maps a 422 from a reclaimed validate_data.parquet to a 404, same discipline as getArtifactHoldoutService', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst
+      .mockResolvedValueOnce({ runId: 'run-1' })
+      .mockResolvedValueOnce({
+        objectKey: 'ds-1/artifacts/silver-1/data_silver.parquet',
+        validationRowCount: 576,
+        validationHoldoutFrom: new Date('2026-01-27T17:00:00.000Z'),
+        validationMissingPct: 0,
+      });
+    post.mockRejectedValue(
+      Object.assign(new Error('NoSuchKey'), { statusCode: 422 }),
+    );
+    const { service } = makeService(prisma);
+
+    try {
+      await service.getArtifactValidationRowsService(
+        USER,
+        'ds-1',
+        'artifact-final',
+        { offset: 0, limit: 1000 } as never,
+      );
+      throw new Error('expected rejection');
+    } catch (err) {
+      expect(err).toBeInstanceOf(AppException);
+      expect((err as { statusCode?: number }).statusCode).toBe(404);
+    }
   });
 });
 

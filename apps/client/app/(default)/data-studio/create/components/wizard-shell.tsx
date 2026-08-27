@@ -51,7 +51,11 @@ export function WizardShell() {
   // Edit mode opens with no rows; this loads them from the committed artifact
   // (or materialises one). No-op in create mode, where the live fetch owns the
   // same atom.
-  const { reload: reloadEditRows } = useDatasetEditHydration()
+  const {
+    reload: reloadEditRows,
+    draftError,
+    rawDataAbsent,
+  } = useDatasetEditHydration()
   // DS-LAKE-025. The remedy for the one recoverable synthetic cause. Lives
   // here rather than on Step 6 because the banner it attaches to renders on
   // EVERY step — someone who notices the stand-in rows at Step 2 should be
@@ -149,7 +153,12 @@ export function WizardShell() {
           </div>
           <p className="pl-8 text-sm text-muted-foreground">
             {nav.isEditLocked
-              ? 'Raw query is locked — adjust only the preprocessing pipeline (cropping, cleaning, imputation). Tags, time range, and features cannot change.'
+              ? // DS-LAKE-024-T07: was "...Tags, time range, and features
+                // cannot change" — wrong since T02 let edit mode add
+                // features from the dataset's existing tags. Restated to
+                // name the ACTUAL locked surface (the raw tag set / fetch
+                // window), not "features" generally.
+                'Raw query is locked — adjust the preprocessing pipeline (cropping, cleaning, imputation) and add features from the tags already fetched. The tag set and time range cannot change.'
               : 'Select tags, fetch, clean, and fill missing values from your selected data sources.'}
           </p>
         </div>
@@ -191,11 +200,45 @@ export function WizardShell() {
                 }
               />
             )}
+            {/* DS-LAKE-024-T08 (openDecisions[3]). Says outright that this
+                dataset has no raw data, instead of leaving it to be inferred
+                from an empty table plus a draft error that used to blame
+                reclaimed bytes for rows that never existed. Rendered ABOVE
+                the draft-error banner and suppressing it (below), because
+                when both fire they are two statements of one fact and this
+                is the accurate one. */}
+            {rawDataAbsent && (
+              <SyntheticDataBanner
+                reason=""
+                title={
+                  rawDataAbsent.materializing
+                    ? 'No raw data stored yet — fetching it now'
+                    : 'This dataset has no raw data'
+                }
+                message={
+                  rawDataAbsent.materializing
+                    ? 'This dataset was saved without its rows. They are being ' +
+                      'fetched from the source now — editing becomes available ' +
+                      'once they arrive.'
+                    : `This dataset has no rows stored, and they cannot be fetched automatically: ${
+                        rawDataAbsent.reason ??
+                        'its saved recipe does not describe a re-readable source.'
+                      } Until it has raw data, editing cannot produce a new version.`
+                }
+              />
+            )}
+            {mode === 'edit' && draftError && !rawDataAbsent && (
+              <SyntheticDataBanner
+                reason=""
+                title="Couldn't prepare this dataset for editing"
+                message={draftError}
+              />
+            )}
             {showStageWarning && (
               <SyntheticDataBanner
                 reason=""
-                title="These rows are already processed"
-                message={`Hydrated from a ${rowStage} artifact, not the original raw fetch. Cropping and cleaning here apply on top of that processing -- they do not replace it.`}
+                title="Editing re-runs from the original raw fetch"
+                message={`These rows are shown from a ${rowStage} artifact for reference. Cropping and cleaning here re-run from the original raw fetch and replace that prior processing -- they do not build on top of it.`}
               />
             )}
             {body}

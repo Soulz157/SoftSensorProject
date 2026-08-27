@@ -111,10 +111,8 @@ export default function PlantsPage() {
 
   const dismiss = () => {
     handleDismiss()
-    router.replace('/plants', { scroll: false })
   }
 
-  // gate รวม alertsLoading ด้วย ไม่งั้น tower paint เขียวหมดแล้วกระพริบเป็นแดง
   if (loading || alertsLoading) return <OverviewSkeleton />
   if (error) throw new Error(error)
 

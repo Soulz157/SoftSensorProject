@@ -15,7 +15,7 @@ interface Props {
   nav: UsePipelineNavResult
 }
 
-export function Phase2TrainingConfig({ nav }: Props) {
+export function Phase3TrainingConfig({ nav }: Props) {
   const {
     selectedDataset,
     algorithms,

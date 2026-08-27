@@ -153,8 +153,11 @@ export class ArtifactCleanupAdminService
     trigger?: 'admin' | 'interval';
   }): Promise<ArtifactCleanupRunResult> {
     const trigger = options.trigger ?? 'admin';
-    const { protectedArtifactIds, objectKeySharedWithFinalIds } =
-      await this.computeProtectedArtifactIds();
+    const {
+      protectedArtifactIds,
+      objectKeySharedWithFinalIds,
+      protectedObjectKeys,
+    } = await this.computeProtectedArtifactIds();
 
     const candidates = await this.prisma.datasetArtifact.findMany({
       where: { type: { not: 'FINAL' }, objectReclaimedAt: null },
@@ -219,6 +222,7 @@ export class ArtifactCleanupAdminService
       },
       new Date(),
       objectKeySharedWithFinalIds,
+      protectedObjectKeys,
     );
     const eligibleIds = new Set(report.eligible);
 
@@ -430,10 +434,18 @@ export class ArtifactCleanupAdminService
    * copies bytes), so it needs its own type-agnostic hard pin in
    * `selectCleanupEligibleArtifacts` — see that module's doc comment for the
    * incident this fixes.
+   *
+   * DS-LAKE-024-T05. Also returns `protectedObjectKeys` — every `objectKey`
+   * seen at any hop of this same walk, not just FINAL's own. This is the
+   * general form `objectKeySharedWithFinalIds` did not need until an edit
+   * draft could mint a SECOND row (a different id, in a different draft's
+   * chain) pointing at a protected row's bytes. Free to collect here: the
+   * walk already fetches `objectKey` on every hop.
    */
   private async computeProtectedArtifactIds(): Promise<{
     protectedArtifactIds: Set<string>;
     objectKeySharedWithFinalIds: Set<string>;
+    protectedObjectKeys: Set<string>;
   }> {
     const liveVersions = await this.prisma.datasetVersion.findMany({
       where: { status: { not: 'ARCHIVED' }, artifactId: { not: null } },
@@ -442,6 +454,7 @@ export class ArtifactCleanupAdminService
 
     const protectedIds = new Set<string>();
     const objectKeySharedWithFinalIds = new Set<string>();
+    const protectedObjectKeys = new Set<string>();
     for (const version of liveVersions) {
       let cursor = version.artifactId;
       // FINAL's own objectKey, filled on the first hop and compared against
@@ -454,6 +467,7 @@ export class ArtifactCleanupAdminService
           where: { id: cursor },
           select: { parentArtifactId: true, objectKey: true },
         });
+        if (node?.objectKey) protectedObjectKeys.add(node.objectKey);
         if (hop === 0) {
           finalObjectKey = node?.objectKey ?? null;
         } else if (hop === 1 && node && node.objectKey === finalObjectKey) {
@@ -476,6 +490,10 @@ export class ArtifactCleanupAdminService
         hop += 1;
       }
     }
-    return { protectedArtifactIds: protectedIds, objectKeySharedWithFinalIds };
+    return {
+      protectedArtifactIds: protectedIds,
+      objectKeySharedWithFinalIds,
+      protectedObjectKeys,
+    };
   }
 }

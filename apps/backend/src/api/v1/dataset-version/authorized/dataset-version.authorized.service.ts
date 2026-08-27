@@ -766,13 +766,45 @@ export class DatasetVersionAuthorizedService {
   }
 
   /**
+   * MODEL-FLOW-010-T06 (widened lookup). Shared by `getArtifactHoldoutService`
+   * and `getArtifactValidationRowsService` — both need "which artifact in
+   * this run actually carries the validation split", and a single query
+   * means the two can never disagree on which sibling that is.
+   *
+   * `artifactId` can be BRONZE/SILVER/GOLD/FINAL (`SavedDataset.currentArtifactId`
+   * is stage-polymorphic), so the holdout is resolved via the artifact's
+   * `runId`, not its own type — and NOT via a fixed BRONZE-sibling lookup
+   * either. DS-LAKE-022's reordered pipeline (features before cleaning) moved
+   * where the split is written: `validate_data.parquet` is now sidecar'd
+   * beside SILVER, not BRONZE, on any run using the reordered order. This
+   * finds whichever sibling in the run actually carries the validation
+   * columns, by those columns rather than by a stage assumption —
+   * `orderBy: createdAt desc` breaks the tie deterministically on a run with
+   * more than one candidate (e.g. two BRONZE rows from a re-materialize,
+   * only one of which split a holdout).
+   */
+  private async findHoldoutArtifact(runId: string) {
+    return this.prisma.datasetArtifact.findFirst({
+      where: {
+        runId,
+        validationRowCount: { not: null },
+        validationHoldoutFrom: { not: null },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        objectKey: true,
+        validationRowCount: true,
+        validationHoldoutFrom: true,
+        validationMissingPct: true,
+      },
+    });
+  }
+
+  /**
    * MODEL-FLOW-010-T06. The raw validation holdout window for the given
    * artifact's run, read-only — no client-facing route exposed this before
    * (only `model-run.authorized.service.ts::tryReplayHoldout` resolved it,
-   * server-side, at training-claim time). Mirrors that method's own
-   * BRONZE-sibling lookup: `artifactId` can be BRONZE/SILVER/GOLD/FINAL
-   * (`SavedDataset.currentArtifactId` is stage-polymorphic), so the holdout
-   * is resolved via the artifact's `runId`, not its own type.
+   * server-side, at training-claim time).
    *
    * Returns `holdout: null` — NOT a 404 — when the dataset has no holdout
    * (the overwhelming majority) or the artifact predates this feature. A
@@ -798,20 +830,8 @@ export class DatasetVersionAuthorizedService {
       });
     }
 
-    const bronze = await this.prisma.datasetArtifact.findFirst({
-      where: { runId: artifact.runId, type: 'BRONZE' },
-      select: {
-        objectKey: true,
-        validationRowCount: true,
-        validationHoldoutFrom: true,
-        validationMissingPct: true,
-      },
-    });
-    if (
-      !bronze ||
-      bronze.validationRowCount == null ||
-      !bronze.validationHoldoutFrom
-    ) {
+    const holdoutArtifact = await this.findHoldoutArtifact(artifact.runId);
+    if (!holdoutArtifact) {
       return {
         statusCode: 200,
         message: 'This dataset has no validation holdout',
@@ -828,19 +848,22 @@ export class DatasetVersionAuthorizedService {
     // ends" (DS-LAKE-018's own row_count precedent for a derived-not-
     // requested figure).
     //
-    // Derived from `bronze.objectKey` (the key actually written), not
-    // rebuilt from `datasetId` — a draft-built dataset's BRONZE lives under
-    // `drafts/{draftId}/…`, not `{datasetId}/…`, and `validate_data.parquet`
-    // was written beside that real key (bug fixed here: the old
-    // `validateDataKey(datasetId, bronze.id)` call 404'd/NoSuchKey'd for
-    // every such dataset).
+    // Derived from `holdoutArtifact.objectKey` (the key actually written),
+    // not rebuilt from `datasetId` — a draft-built dataset's artifact lives
+    // under `drafts/{draftId}/…`, not `{datasetId}/…`, and
+    // `validate_data.parquet` was written beside that real key (bug fixed
+    // here: the old `validateDataKey(datasetId, bronze.id)` call
+    // 404'd/NoSuchKey'd for every such dataset).
     let meta: ReturnType<typeof PythonMetadataSchema.parse>;
     try {
       meta = PythonMetadataSchema.parse(
         await postToPython(
           '/v1/preprocess/metadata',
           {
-            source_key: sidecarKey(bronze.objectKey, VALIDATE_DATA_FILENAME),
+            source_key: sidecarKey(
+              holdoutArtifact.objectKey,
+              VALIDATE_DATA_FILENAME,
+            ),
           },
           PYTHON_TIMEOUT.metadata,
         ),
@@ -868,14 +891,106 @@ export class DatasetVersionAuthorizedService {
       type: 'SUCCESS' as const,
       data: {
         holdout: {
-          holdoutFrom: bronze.validationHoldoutFrom.toISOString(),
+          holdoutFrom: holdoutArtifact.validationHoldoutFrom!.toISOString(),
           holdoutTo: meta.end_time,
-          rowCount: bronze.validationRowCount,
+          rowCount: holdoutArtifact.validationRowCount!,
           // Null for a holdout captured before MODEL-FLOW-010-T06 — the
           // panel must say so plainly, never silently omit the figure or
           // imply a clean 0%.
-          missingPct: bronze.validationMissingPct,
+          missingPct: holdoutArtifact.validationMissingPct,
         },
+      },
+    };
+  }
+
+  /**
+   * Compare view (train vs. validation). Reads a bounded page of
+   * `validate_data.parquet` for the artifact's run, via the same
+   * `findHoldoutArtifact` lookup `getArtifactHoldoutService` uses — so the
+   * two can never resolve a different sibling for the same artifact.
+   *
+   * Reuses `ListRowsDto`/`PythonRowsSchema` and the JSON branch of
+   * `listRowsService` exactly: same bound (`ListRowsSchema.limit`, default
+   * 1,000, ceiling `MAX_SAMPLE_ROWS`), same tag-projection query shape. No
+   * `format: 'arrow'` branch — no current caller needs it, and adding one
+   * unused is dead code (CLAUDE.md "Minimal Changes").
+   *
+   * 404s — never `rows: null` — both when there is no holdout to read and
+   * when one was recorded but its sidecar is gone from storage, matching
+   * `getArtifactHoldoutService`'s own two-reasons-are-different discipline.
+   * A caller only reaches this route after that endpoint already reported
+   * `holdout !== null`, so either 404 here means state changed between the
+   * two calls (e.g. cleanup ran in between) — worth surfacing as an error,
+   * not silently swallowing into an empty chart.
+   */
+  async getArtifactValidationRowsService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    artifactId: string,
+    query: ListRowsDto,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+    const artifact = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, datasetId },
+      select: { runId: true },
+    });
+    if (!artifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Dataset artifact not found',
+        type: 'ERROR',
+      });
+    }
+
+    const holdoutArtifact = await this.findHoldoutArtifact(artifact.runId);
+    if (!holdoutArtifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'This dataset has no validation holdout',
+        type: 'ERROR',
+      });
+    }
+
+    const pythonBody = {
+      source_key: sidecarKey(holdoutArtifact.objectKey, VALIDATE_DATA_FILENAME),
+      offset: query.offset,
+      limit: query.limit,
+      ...(query.tags && { tags: query.tags }),
+    };
+
+    let page: ReturnType<typeof PythonRowsSchema.parse>;
+    try {
+      page = PythonRowsSchema.parse(
+        await postToPython(
+          '/v1/preprocess/rows',
+          pythonBody,
+          PYTHON_TIMEOUT.fetch,
+        ),
+      );
+    } catch (err) {
+      if ((err as { statusCode?: number })?.statusCode === 422) {
+        throw new AppException({
+          statusCode: 404,
+          message:
+            'Validation holdout is recorded but its data is missing from storage.',
+          type: 'ERROR',
+        });
+      }
+      throw err;
+    }
+
+    return {
+      statusCode: 200,
+      message: 'Validation rows fetched successfully',
+      type: 'SUCCESS' as const,
+      data: {
+        totalRowCount: page.total_row_count,
+        offset: page.offset,
+        tags: page.tags,
+        filtered: page.filtered,
+        startTime: page.start_time,
+        endTime: page.end_time,
+        rows: page.rows,
       },
     };
   }

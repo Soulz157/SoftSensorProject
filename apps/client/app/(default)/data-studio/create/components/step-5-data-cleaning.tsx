@@ -43,7 +43,6 @@ interface Props {
   nav: UseDatasetPipelineNavResult
 }
 
-/** Deep-ish equality for two pipelines (stable JSON of their steps). */
 function pipelineEq(a: TagPipeline, b: TagPipeline): boolean {
   return JSON.stringify(a) === JSON.stringify(b)
 }
@@ -204,12 +203,7 @@ export function Step5DataCleaning({ nav }: Props) {
   const handleSave = () => {
     if (cleaningTags.length === 0) return
     saveCleanedTags(cleaningTags, draft)
-    // DS-LAKE-012-T01 fix: a server sync silently no-ops when `draft` is
-    // empty — no job is started, no artifact is ever produced. The toast
-    // must say so rather than claiming "Cleaned", which previously fired
-    // unconditionally and was indistinguishable from a real server-synced
-    // clean. Marking tags clean with an empty pipeline is still a
-    // legitimate action (accept raw), just not a cleaning one.
+
     const count = cleaningTags.length
     const plural = count === 1 ? '' : 's'
     toast.success(

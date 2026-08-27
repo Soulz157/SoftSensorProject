@@ -60,6 +60,17 @@ export type CleanupDraftStatus = 'ACTIVE' | 'SAVED' | 'ABANDONED';
 export interface CleanupCandidateArtifact {
   id: string;
   type: CleanupArtifactType;
+  /**
+   * DS-LAKE-024-T05. The MinIO object this row points at. Needed because a
+   * row's OWN id being unprotected no longer implies its BYTES are safe to
+   * delete — `resolveOrCreateEditDraftService` mints a second DatasetArtifact
+   * row for an edit draft's borrowed root, sharing the adopted dataset's own
+   * `objectKey` byte-for-byte rather than copying it (same "share by
+   * pointer, never copy" pattern `promoteDraftArtifactToFinalService` uses
+   * for FINAL). `protectedObjectKeys` below is the general form of that
+   * check.
+   */
+  objectKey: string;
   /** Every non-FINAL artifact is draft-owned for its whole life — only
    * FINAL ever gets `datasetId` set (adopted by pointer at Save, `draftId`
    * kept for traceability). Null here means there is no basis to release
@@ -152,6 +163,7 @@ function hoursSince(from: Date, now: Date): number {
 export type CleanupSkipReason =
   | 'lineage_pinned'
   | 'shared_final_object'
+  | 'shared_protected_object'
   | 'no_draft'
   | 'inside_window';
 
@@ -184,6 +196,23 @@ export interface CleanupEligibilityReport {
  *                              which only hard-pins BRONZE.
  * @param drafts                every draft referenced by `artifacts`,
  *                              keyed by id.
+ * @param protectedObjectKeys   DS-LAKE-024-T05. Every `objectKey` appearing
+ *                              anywhere in the walk that produced
+ *                              `protectedArtifactIds` — not just the ids
+ *                              themselves. Closes the gap `lineage_pinned`
+ *                              leaves open: that check is keyed on the
+ *                              PROTECTED ROW's own id, so a SECOND row that
+ *                              points at the same bytes under a different id
+ *                              (an edit draft's borrowed root, minted by
+ *                              `resolveOrCreateEditDraftService` with a fresh
+ *                              id but the adopted root's own `objectKey`)
+ *                              would fall through to the ordinary
+ *                              draft-status/age branches below and could be
+ *                              reclaimed — physically deleting a live
+ *                              dataset's own bytes out from under a row that
+ *                              itself remains correctly un-reclaimed.
+ *                              Type-agnostic, same reasoning as
+ *                              `objectKeySharedWithFinalIds`.
  */
 export function reportCleanupEligibility(
   artifacts: readonly CleanupCandidateArtifact[],
@@ -192,11 +221,13 @@ export function reportCleanupEligibility(
   config: CleanupEligibilityConfig,
   now: Date = new Date(),
   objectKeySharedWithFinalIds: ReadonlySet<string> = new Set(),
+  protectedObjectKeys: ReadonlySet<string> = new Set(),
 ): CleanupEligibilityReport {
   const eligible: string[] = [];
   const skipped: Record<CleanupSkipReason, number> = {
     lineage_pinned: 0,
     shared_final_object: 0,
+    shared_protected_object: 0,
     no_draft: 0,
     inside_window: 0,
   };
@@ -218,6 +249,15 @@ export function reportCleanupEligibility(
     // below. See the module doc comment for the full incident.
     if (objectKeySharedWithFinalIds.has(artifact.id)) {
       skipped.shared_final_object += 1;
+      continue;
+    }
+
+    // DS-LAKE-024-T05. General form of the pin above: THIS row's id need not
+    // be reachable for its BYTES to be someone else's live lineage. See
+    // `protectedObjectKeys`'s own doc comment for the borrowed-root incident
+    // this closes.
+    if (protectedObjectKeys.has(artifact.objectKey)) {
+      skipped.shared_protected_object += 1;
       continue;
     }
 
@@ -309,6 +349,8 @@ export function reportCleanupEligibility(
  *                              which only hard-pins BRONZE.
  * @param drafts                every draft referenced by `artifacts`,
  *                              keyed by id.
+ * @param protectedObjectKeys   DS-LAKE-024-T05. See
+ *                              `reportCleanupEligibility`'s own doc comment.
  */
 export function selectCleanupEligibleArtifacts(
   artifacts: readonly CleanupCandidateArtifact[],
@@ -317,6 +359,7 @@ export function selectCleanupEligibleArtifacts(
   config: CleanupEligibilityConfig,
   now: Date = new Date(),
   objectKeySharedWithFinalIds: ReadonlySet<string> = new Set(),
+  protectedObjectKeys: ReadonlySet<string> = new Set(),
 ): string[] {
   return reportCleanupEligibility(
     artifacts,
@@ -325,5 +368,6 @@ export function selectCleanupEligibleArtifacts(
     config,
     now,
     objectKeySharedWithFinalIds,
+    protectedObjectKeys,
   ).eligible;
 }

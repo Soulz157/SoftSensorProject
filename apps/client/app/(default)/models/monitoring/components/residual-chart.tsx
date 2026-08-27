@@ -14,6 +14,7 @@ import {
 } from 'recharts'
 import type { BrushWindow, MonitoringRow } from '@/lib/monitoring'
 import { MonitoringTooltip } from './monitoring-tooltip'
+import { useMemo } from 'react'
 
 export type ResidualMode = 'abs' | 'pct'
 
@@ -30,35 +31,83 @@ interface Props {
 const SYNC_ID = 'monitoring'
 const AXIS_TICK = { fill: 'var(--muted-foreground)', fontSize: 11 }
 
+function sdCoverage(
+  rows: MonitoringRow[],
+  sd: number,
+): Record<number, { up: number; down: number }> | null {
+  if (!Number.isFinite(sd) || sd <= 0) return null
+
+  const residuals = rows
+    .map(r => r.residual)
+    .filter((v): v is number => typeof v === 'number' && Number.isFinite(v))
+  if (residuals.length === 0) return null
+
+  const n = residuals.length
+  const out: Record<number, { up: number; down: number }> = {}
+  for (const k of [1, 2, 3]) {
+    const limit = k * sd
+    // Counted from zero OUTWARD to the line, so each figure describes the
+    // region its own label sits in rather than everything inside it.
+    const inner = (k - 1) * sd
+    let up = 0
+    let down = 0
+    for (const r of residuals) {
+      if (r > inner && r <= limit) up++
+      else if (r < -inner && r >= -limit) down++
+    }
+    out[k] = { up: (up / n) * 100, down: (down / n) * 100 }
+  }
+  return out
+}
+
 /** A ±k·SD guardline pair (absolute-error mode only). */
-function SdGuard({ sd, k, color }: { sd: number; k: number; color: string }) {
+/** A ±k·SD guardline pair (absolute-error mode only). */
+function SdGuard({
+  sd,
+  k,
+  color,
+  pct,
+}: {
+  sd: number
+  k: number
+  color: string
+  pct?: { up: number; down: number }
+}) {
   const y = sd * k
+  const dx = (k - 2) * 90
+
   return (
     <>
       <ReferenceLine
         y={y}
         stroke={color}
         strokeDasharray="3 3"
-        strokeOpacity={0.5}
+        strokeOpacity={0.6}
         ifOverflow="extendDomain"
         label={{
-          value: `+${k} SD`,
-          position: 'insideTopRight',
+          value: pct ? `+${k} SD  ${pct.up.toFixed(1)}%` : `+${k} SD`,
+          position: 'insideTop',
+          offset: 6,
+          dx,
           fill: color,
           fontSize: 12,
+          fontWeight: 600,
         }}
       />
       <ReferenceLine
         y={-y}
         stroke={color}
         strokeDasharray="3 3"
-        strokeOpacity={0.5}
+        strokeOpacity={0.6}
         ifOverflow="extendDomain"
         label={{
-          value: `-${k} SD`,
-          position: 'insideBottomRight',
+          value: pct ? `-${k} SD  ${pct.down.toFixed(1)}%` : `-${k} SD`,
+          position: 'insideBottom',
+          offset: 6,
+          dx,
           fill: color,
           fontSize: 12,
+          fontWeight: 600,
         }}
       />
     </>
@@ -121,8 +170,13 @@ export function ResidualChart({
   const isPct = mode === 'pct'
   const dataKey = isPct ? 'percentageError' : 'residual'
 
+  const coverage = useMemo(
+    () => (isPct ? null : sdCoverage(rows, sd)),
+    [isPct, rows, sd],
+  )
+
   return (
-    <ResponsiveContainer className="w-full" height={500}>
+    <ResponsiveContainer className="w-full " height={500}>
       <ComposedChart
         data={rows}
         syncId={SYNC_ID}
@@ -172,9 +226,14 @@ export function ResidualChart({
           <>
             <SdBackground sd={sd} />
 
-            <SdGuard sd={sd} k={1} color="var(--chart-2)" />
-            <SdGuard sd={sd} k={2} color="var(--chart-3)" />
-            <SdGuard sd={sd} k={3} color="var(--destructive)" />
+            <SdGuard sd={sd} k={1} color="var(--chart-2)" pct={coverage?.[1]} />
+            <SdGuard sd={sd} k={2} color="var(--chart-3)" pct={coverage?.[2]} />
+            <SdGuard
+              sd={sd}
+              k={3}
+              color="var(--destructive)"
+              pct={coverage?.[3]}
+            />
           </>
         )}
 

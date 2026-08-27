@@ -77,7 +77,7 @@ function EmptyPanel({ children }: { children: React.ReactNode }) {
  * branch — see `useDraftRunEvaluation`), so the metric cards, both charts
  * and the diagnostics below always agree on sample count.
  */
-export function Phase3Evaluation({ nav }: Props) {
+export function Phase5Evaluation({ nav }: Props) {
   const [selectedMetrics, setSelectedMetrics] = useAtom(mpSelectedMetricsAtom)
   const serverDraftId = useAtomValue(mpServerDraftIdAtom)
   const trainingResult = useAtomValue(mpTrainingResultAtom)

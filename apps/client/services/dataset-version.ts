@@ -273,6 +273,24 @@ export const datasetArtifactService = {
     fetchClient(`${artifact(datasetId, artifactId)}/holdout`, {
       method: 'GET',
     }),
+
+  /** Compare view (train vs. validation). Same bounded-page contract as
+   * `rows` above — `tags` is not decorative here either, same reason. 404s
+   * (not an empty page) when the run has no holdout or its sidecar is gone
+   * from storage — see `useArtifactValidationRows`'s `missing` state. */
+  validationRows: (
+    datasetId: string,
+    artifactId: string,
+    params: { offset: number; limit: number; tags?: string[] },
+  ): Promise<ApiResponse<DraftRowsPage>> =>
+    fetchClient(
+      `${artifact(datasetId, artifactId)}/validation-rows` +
+        `?offset=${params.offset}&limit=${params.limit}` +
+        (params.tags?.length
+          ? `&tags=${params.tags.map(encodeURIComponent).join(',')}`
+          : ''),
+      { method: 'GET' },
+    ),
 }
 
 /** MODEL-FLOW-010-T06 response shape for `datasetArtifactService.holdout`. */

@@ -123,8 +123,18 @@ export function Step6ReviewSave({ nav }: Props) {
   // DS-LAKE-005B-B-T01 (Step 5 leg). Same condition `handleSave` already
   // branches on below — computed once here so the pipeline gate and the
   // save body agree by construction, never independently.
+  //
+  // DS-LAKE-024-T06: no longer restricted to `mode === 'create'`.
+  // `use-dataset-edit-hydration.ts` (T03) now sets `dwDraftIdAtom`/
+  // `dwDraftArtifactIdAtom` in edit mode too, so an edit session with a real
+  // draft + gate artifact takes this SAME path — `.../finalize` then
+  // `datasetDraftService.save`, which `saveDraftAsDatasetService` now
+  // resolves onto the existing Dataset as a new version when the draft's
+  // `editingDatasetId` is set. Edit mode with no draft (a pre-DS-LAKE-024
+  // dataset, or one whose draft never bootstrapped) still falls through to
+  // the legacy branch below.
   const isDraftSavePath = Boolean(
-    mode === 'create' && validation.draftId && validation.gateArtifactId,
+    validation.draftId && validation.gateArtifactId,
   )
 
   // DS-LAKE-005B-B-T01 (Step 5 leg, moved up from below `goldNotReady` so it
@@ -262,8 +272,23 @@ export function Step6ReviewSave({ nav }: Props) {
   // catches up, rather than silently finalizing SILVER for a feature recipe.
   // (`featuresRequested` itself is computed earlier, above the pipeline gate
   // — reused here as-is, not redeclared.)
+  //
+  // DS-LAKE-024-T06: scoped to `mode === 'create'`. In edit mode, features
+  // are hydrated from the saved recipe and LOCKED (not editable — only the
+  // preprocessing pipeline is), so `featuresRequested` reads true on open
+  // for any dataset that already has features, whether or not the user ever
+  // visits Step 4 this session. Before T03 gave edit mode a `draftId`, this
+  // guard was unreachable there (`validation.draftId` was always null) and
+  // so never blocked anything; now that it can fire, requiring a FRESH gold
+  // warm before an edit-only-cleaning save would make Save unreachable for
+  // the common case of a user who only touches Step 5. Which artifact an
+  // edit-save actually finalizes onto is a separate, pre-existing question
+  // this task does not decide (see the ledger's T06 result).
   const goldNotReady = Boolean(
-    validation.draftId && featuresRequested && !goldArtifactId,
+    mode === 'create' &&
+    validation.draftId &&
+    featuresRequested &&
+    !goldArtifactId,
   )
 
   // DS-LAKE-008-T02. Blocks on the SAME status ValidationReportCard (T01)
@@ -339,18 +364,19 @@ export function Step6ReviewSave({ nav }: Props) {
     try {
       // DS-LAKE-005B-B-T01 (Step 5 leg, ADR-DS-LAKE-005B-B-006). Adopts the
       // draft's completed artifact by pointer — no raw re-fetch, no recipe
-      // replay server-side. Only reachable in create mode with a real draft
-      // + gate artifact; edit mode and any create-mode flow with no draft
-      // (e.g. CSV-only) keep the legacy path below untouched. Same condition
-      // as `isDraftSavePath` above — checked again here (not just
-      // `if (isDraftSavePath)`) so TypeScript narrows `validation.draftId`/
-      // `gateArtifactId` from `string | null` to `string` directly, without
-      // a non-null assertion.
-      if (
-        mode === 'create' &&
-        validation.draftId &&
-        validation.gateArtifactId
-      ) {
+      // replay server-side. A create-mode flow with no draft (e.g. CSV-only)
+      // or an edit-mode dataset whose draft never bootstrapped keep the
+      // legacy path below untouched. Same condition as `isDraftSavePath`
+      // above — checked again here (not just `if (isDraftSavePath)`) so
+      // TypeScript narrows `validation.draftId`/`gateArtifactId` from
+      // `string | null` to `string` directly, without a non-null assertion.
+      //
+      // DS-LAKE-024-T06: no longer gated on `mode === 'create'` — see
+      // `isDraftSavePath`'s own comment above. `saveDraftAsDatasetService`
+      // itself branches on the draft's `editingDatasetId` to decide whether
+      // this call creates a Dataset or writes a new version onto the
+      // existing one; the client does not need to know which.
+      if (validation.draftId && validation.gateArtifactId) {
         const draftId = validation.draftId
         const gateArtifactId = validation.gateArtifactId
 
@@ -382,7 +408,11 @@ export function Step6ReviewSave({ nav }: Props) {
           pipelineConfig,
           fileUrl: null,
         })
-        toast.success(`Dataset "${name.trim()}" created`)
+        toast.success(
+          mode === 'edit'
+            ? `Dataset "${name.trim()}" updated`
+            : `Dataset "${name.trim()}" created`,
+        )
       } else {
         const body = {
           name: name.trim(),

@@ -34,6 +34,11 @@ function artifact(
     // EXPORT branch reads this. A fixed default keeps those tests from
     // having to supply a value they don't care about.
     createdAt: NOW,
+    // DS-LAKE-024-T05. Derived from `id` so every existing test keeps a
+    // UNIQUE key by default (no accidental protectedObjectKeys collision
+    // between unrelated artifacts) — a test asserting a real shared-key
+    // pin passes an explicit `objectKey` override to force the collision.
+    objectKey: `${overrides.id}/data.parquet`,
     ...overrides,
   };
 }
@@ -325,6 +330,69 @@ describe('selectCleanupEligibleArtifacts', () => {
     );
     expect(unrelatedGoldStillReleases).toEqual(['gold-2']);
   });
+
+  it("DS-LAKE-024-T05: never reclaims an edit draft's borrowed root BRONZE, which shares the adopted dataset's objectKey under a DIFFERENT id", () => {
+    // resolveOrCreateEditDraftService mints a second DatasetArtifact row for
+    // the edit draft (draft-2) — a fresh id ('borrowed-root'), never
+    // reachable via ANY DatasetVersion's parentArtifactId chain, so
+    // protectedArtifactIds correctly does NOT contain it. What it DOES share
+    // with the live dataset's own adopted root ('bronze-1') is the exact
+    // same objectKey — the same MinIO object, borrowed by pointer, not
+    // copied. Without protectedObjectKeys, this row looks like an ordinary,
+    // long-idle ACTIVE draft's BRONZE and reclaiming it would physically
+    // delete the live dataset's own root bytes out from under 'bronze-1',
+    // which itself remains correctly un-reclaimed in Postgres.
+    const SHARED_KEY = 'dataset-1/artifacts/bronze-1/data.parquet';
+    const result = selectCleanupEligibleArtifacts(
+      [
+        artifact({ id: 'bronze-1', type: 'BRONZE', objectKey: SHARED_KEY }),
+        artifact({
+          id: 'borrowed-root',
+          type: 'BRONZE',
+          draftId: 'draft-2',
+          objectKey: SHARED_KEY,
+        }),
+      ],
+      new Set(['bronze-1']), // only the ORIGINAL row is lineage-reachable
+      drafts({
+        'draft-1': { status: 'SAVED', updatedAt: hoursAgo(500) },
+        // Long-idle ACTIVE — would ordinarily clear activeIdleHours (6) and
+        // release without the new pin.
+        'draft-2': { status: 'ACTIVE', updatedAt: hoursAgo(500) },
+      }),
+      CONFIG,
+      NOW,
+      new Set(), // no FINAL-promotion sharing here — a different mechanism
+      new Set([SHARED_KEY]), // protectedObjectKeys, as computeProtectedArtifactIds would build it
+    );
+    expect(result).toEqual([]);
+
+    // Same setup, but the edit draft's row points at a DIFFERENT object —
+    // proves the pin is keyed on the actual bytes, not on type/draft status
+    // alone, so an edit draft's OWN genuinely-unshared intermediates still
+    // release normally.
+    const unrelatedStillReleases = selectCleanupEligibleArtifacts(
+      [
+        artifact({ id: 'bronze-1', type: 'BRONZE', objectKey: SHARED_KEY }),
+        artifact({
+          id: 'own-silver',
+          type: 'SILVER',
+          draftId: 'draft-2',
+          objectKey: 'draft-2/artifacts/own-silver/data.parquet',
+        }),
+      ],
+      new Set(['bronze-1']),
+      drafts({
+        'draft-1': { status: 'SAVED', updatedAt: hoursAgo(500) },
+        'draft-2': { status: 'ACTIVE', updatedAt: hoursAgo(500) },
+      }),
+      CONFIG,
+      NOW,
+      new Set(),
+      new Set([SHARED_KEY]),
+    );
+    expect(unrelatedStillReleases).toEqual(['own-silver']);
+  });
 });
 
 describe('reportCleanupEligibility (DS-LAKE-014-T05)', () => {
@@ -354,6 +422,7 @@ describe('reportCleanupEligibility (DS-LAKE-014-T05)', () => {
     expect(reportWithFreshDraft.skipped).toEqual({
       lineage_pinned: 1,
       shared_final_object: 1,
+      shared_protected_object: 0,
       no_draft: 2,
       inside_window: 1,
     });

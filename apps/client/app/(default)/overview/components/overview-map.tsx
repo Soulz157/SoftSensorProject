@@ -30,7 +30,7 @@ const CY = VIEWPORT_H / 2 - 20
 
 const FLOOR_EDGE_LAYERS = 10
 const ZONE_SPREAD = 1
-const FLOOR_SCALE = 0.8
+const FLOOR_SCALE = 0.69
 
 function pathSquash(d: string | undefined): number | null {
   if (!d) return null

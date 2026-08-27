@@ -477,6 +477,24 @@ export const dwEditingDatasetIdAtom = atom<string>('')
 export const dwEditingDatasetAtom = atom<SavedDataset | null>(null)
 
 /**
+ * DS-LAKE-024-T04. The edit draft's own root BRONZE's `validationRowCount`,
+ * copied from `resolveOrCreateForDataset`'s response
+ * (`use-dataset-edit-hydration.ts`) alongside `dwDraftArtifactIdAtom` —
+ * both set together, so by the time a consumer sees `dwDraftArtifactIdAtom`
+ * non-null in edit mode this atom already reflects ground truth. `null`
+ * means the underlying dataset was never split (pristine, re-splittable);
+ * non-null means it was split at materialize time. `startFeaturesJob`
+ * (edit mode's live holdout-apply path, `useDatasetGoldWarm`) has NO guard
+ * of its own against re-splitting an already-split source — unlike the
+ * legacy `resplitHoldout`/`resplitDraftHoldoutService` 422, which this
+ * wizard no longer calls (see `useDatasetHoldoutResplit`'s own doc
+ * comment) — so this atom is the ONLY thing standing between a user and a
+ * silent second split. Always null in create mode, where the source is
+ * always a fresh, never-split fetch.
+ */
+export const dwEditRootValidationRowCountAtom = atom<number | null>(null)
+
+/**
  * Where the rows in `dwRawDatasetAtom` actually came from.
  *
  * `'synthetic'` means GENERATED, not read from the source. The UI is required
@@ -602,6 +620,7 @@ export const initDatasetWizardAtom = atom(
     set(dwSyntheticReasonAtom, null)
     set(dwSyntheticCauseAtom, null)
     set(dwRowStageAtom, null)
+    set(dwEditRootValidationRowCountAtom, null)
   },
 )
 
@@ -690,6 +709,7 @@ export const resetDatasetWizardAtom = atom(null, (_get, set) => {
   set(dwSyntheticReasonAtom, null)
   set(dwSyntheticCauseAtom, null)
   set(dwRowStageAtom, null)
+  set(dwEditRootValidationRowCountAtom, null)
 })
 
 /**
@@ -730,6 +750,7 @@ export const initDatasetWizardForEditAtom = atom(
     // session does.
     set(dwDraftIdAtom, null)
     set(dwDraftArtifactIdAtom, null)
+    set(dwEditRootValidationRowCountAtom, null)
 
     set(dwNameAtom, dataset.name)
     set(dwDescriptionAtom, dataset.description ?? '')
@@ -753,19 +774,16 @@ export const initDatasetWizardForEditAtom = atom(
     set(dwTimeRangeAtom, config.timeRange)
     set(dwCustomDateRangeAtom, config.customDateRange)
     // Legacy recipes predate the holdout field — hydrate to null, same as
-    // valueCrop/exclusions above. CORRECTED (DS-LAKE-023 edit-mode pass):
-    // this used to say edit mode's picker "stays disabled... display-only
-    // provenance, not a re-openable control" — that was true only in the
-    // sense that it never actually worked (the picker's own enabled state
-    // and the resplit hook's own no-op guard could never both hold at
-    // once, see that hook's doc comment). IN PROGRESS as of 2026-08-25:
-    // edit mode's picker is now HONESTLY gated instead — it stays disabled
-    // until the draft's current source artifact is the cleaned SILVER
-    // (i.e. until the user has run Step 5's "Save Cleaned Tags" at least
-    // once this session), because seeding a fresh raw BRONZE at Step 4
-    // mount was found to skip cleaning entirely (see
-    // `useDatasetGoldWarm`'s own doc comment). Once unlocked, it uses the
-    // SAME feature-bearing split Step 4 uses for create mode.
+    // valueCrop/exclusions above. RESOLVED (DS-LAKE-024): edit mode's picker
+    // arms as soon as `useDatasetEditHydration` resolves the edit draft's
+    // own root BRONZE into `dwDraftArtifactIdAtom` — not gated on a prior
+    // clean pass, since the reordered pipeline (DS-LAKE-022/023) cuts the
+    // holdout at the FEATURES stage, before cleaning runs, in both modes.
+    // A SEPARATE gate, layered on top, disables it when that root's own
+    // `dwEditRootValidationRowCountAtom` is non-null — i.e. the underlying
+    // dataset was already split at materialize time and splitting it again
+    // would silently double-cut rows (`startFeaturesJob` has no guard of
+    // its own; see that atom's own doc comment).
     set(dwHoldoutRangeAtom, config.holdoutDateRange ?? null)
     set(dwCustomIntervalAtom, config.customInterval)
     set(dwSourceFetchConfigsAtom, config.sourceFetchConfigs)

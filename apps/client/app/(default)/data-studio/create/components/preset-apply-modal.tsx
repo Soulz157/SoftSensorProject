@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useMemo, useRef, useState } from 'react'
-import { useAtom, useAtomValue } from 'jotai'
+import { useAtomValue } from 'jotai'
 import * as Collapsible from '@radix-ui/react-collapsible'
 import {
   AlertCircle,
