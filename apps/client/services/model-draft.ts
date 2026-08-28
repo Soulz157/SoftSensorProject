@@ -33,6 +33,11 @@ export interface ModelDraft {
   splitRatio: number | null
   status: ModelDraftStatus
   currentRunId: string | null
+  /** MODEL-FLOW-013-T08. `selectedRunId ?? bestRunId` from the draft's most
+   *  recent terminal candidate job, else `currentRunId` — the one field
+   *  Evaluation/Save-Model-adoption should read, never `currentRunId`
+   *  directly, so a user's selection can override what they see. */
+  resolvedRunId: string | null
   savedModelId: string | null
   createdAt: string
   updatedAt: string
@@ -123,19 +128,58 @@ export interface ModelTrainingRunLog {
   createdAt: string
 }
 
+/**
+ * The run's split spec (MODEL-FLOW-012 audit). `{method, ratio}` is written
+ * at launch time; the remaining keys arrive only via the container's own
+ * POST /complete, so a FAILED run (which never reaches /complete) keeps the
+ * 2-key shape forever. Treat everything past `ratio` as absent, not zero.
+ */
+export interface ModelRunSplitSpec {
+  method: 'chronological'
+  ratio: number
+  cut_timestamp?: string
+  train_rows?: number
+  test_rows?: number
+  source_rows?: number
+  labelled_rows?: number
+}
+
+/**
+ * Widened by MODEL-FLOW-012 to match what the backend already returns —
+ * listDraftRunsService/getDraftRunService only ever omit `tokenHash`; every
+ * other run column reaches the browser. This interface was the narrow part,
+ * not the API (see that feature's T01/T03 notes in docs/feature_list.json).
+ */
 export interface ModelTrainingRun {
   id: string
   status: ModelRunStatus
   failureReason: string | null
+  datasetId: string
+  goldArtifactId: string
+  artifactChecksum: string
+  featureSpecKey: string | null
   targetY: string
   algorithm: string
+  hyperparameters: Record<string, unknown>
+  seed: number
+  splitSpec: ModelRunSplitSpec
+  imageDigest: string
   modelKey: string | null
   metrics: Record<string, unknown> | null
+  holdoutMetrics: Record<string, unknown> | null
+  /** MODEL-FLOW-013-T05a. Present only for the algorithms train.py can
+   *  extract a real loss trajectory from — mode A/B render selection reads
+   *  this, never the algorithm name. */
+  lossHistoryKey: string | null
+  candidateJobId: string | null
   createdAt: string
   startedAt: string | null
   finishedAt: string | null
   logs: ModelTrainingRunLog[]
 }
+
+/** The list endpoint sends no `logs` — only `get` for a single run does. */
+export type ModelTrainingRunListItem = Omit<ModelTrainingRun, 'logs'>
 
 /**
  * `algorithm` is deliberately narrower than `store/model-pipeline.ts`'s full
@@ -235,6 +279,117 @@ function toRunPredictions(wire: RunPredictionsWire): RunPredictions {
   }
 }
 
+// ── Candidate jobs (MODEL-FLOW-005, generalized by MODEL-FLOW-013) ─────────
+// Algorithm sweep ("Find Best Model") or hyperparameter search over
+// draft-scoped runs, mirroring modelDraftRunService's shape one level up —
+// same `authorized/model-drafts` prefix, same envelope.
+
+export type ModelCandidateJobStatus = ModelRunStatus
+export type ModelCandidateJobKind =
+  | 'HYPERPARAMETER_SEARCH'
+  | 'ALGORITHM_SWEEP'
+  /** MODEL-FLOW-013-T11. Phase 1 sweeps the selected algorithms; phase 2
+   *  (appended server-side once phase 1 exhausts) tunes phase 1's winner via
+   *  a curated shortlist — see `CandidateResult.phase` below. */
+  | 'SWEEP_THEN_TUNE'
+
+export interface CandidateInput {
+  algorithm: CreateDraftRunInput['algorithm']
+  hyperparameters: Record<string, unknown>
+}
+
+export interface CreateCandidateJobInput {
+  goldArtifactId: string
+  targetY: string
+  trainTestSplit?: number
+  kind: ModelCandidateJobKind
+  candidates: CandidateInput[]
+}
+
+/** One candidate's own outcome, resolved against its run row server-side
+ *  (MODEL-FLOW-013-T06) — `runId` is null until this candidate's turn to
+ *  launch, `status` is `'PENDING'` for that same case. */
+export interface CandidateResult {
+  runId: string | null
+  algorithm: string
+  hyperparameters: Record<string, unknown>
+  /** MODEL-FLOW-013-T11. 1 (the sweep) or 2 (SWEEP_THEN_TUNE's tune-the-
+   *  winner phase). Always present in the server response (defaults to 1
+   *  server-side for a candidate written before this field existed). */
+  phase: number
+  status: ModelRunStatus | 'PENDING'
+  failureReason: string | null
+  metrics: { r2: number | null; rmse: number | null; mae: number | null } | null
+  trainMetrics: {
+    r2: number | null
+    rmse: number | null
+    mae: number | null
+  } | null
+  lossHistoryKey: string | null
+  /** MODEL-FLOW-013-T05a/T07. The render mode is a property of the RUN —
+   *  present iff `lossHistoryKey` is, never keyed off `algorithm`. Null
+   *  means mode B (paired train/test marks), regardless of algorithm. */
+  lossHistory: {
+    algorithm: string
+    metric: string
+    series: Record<string, number[]>
+  } | null
+}
+
+export interface ModelCandidateJob {
+  id: string
+  modelDraftId: string
+  targetY: string
+  goldArtifactId: string
+  trainTestSplit: number | null
+  kind: ModelCandidateJobKind
+  totalRuns: number
+  completedRuns: number
+  status: ModelCandidateJobStatus
+  failureReason: string | null
+  currentRunId: string | null
+  bestRunId: string | null
+  bestRmse: number | null
+  selectedRunId: string | null
+  createdAt: string
+  startedAt: string | null
+  finishedAt: string | null
+  candidates: CandidateResult[]
+}
+
+const candidateJobsBase = (draftId: string) => `${one(draftId)}/candidate-jobs`
+const oneCandidateJob = (draftId: string, jobId: string) =>
+  `${candidateJobsBase(draftId)}/${encodeURIComponent(jobId)}`
+
+export const modelDraftCandidateJobService = {
+  create: (
+    draftId: string,
+    body: CreateCandidateJobInput,
+  ): Promise<ApiResponse<ModelCandidateJob>> =>
+    fetchClient(candidateJobsBase(draftId), {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  get: (
+    draftId: string,
+    jobId: string,
+  ): Promise<ApiResponse<ModelCandidateJob>> =>
+    fetchClient(oneCandidateJob(draftId, jobId), { method: 'GET' }),
+
+  /** MODEL-FLOW-013-T08. Refused server-side unless the job is terminal and
+   *  runId names one of its own SUCCEEDED candidates. */
+  select: (
+    draftId: string,
+    jobId: string,
+    runId: string,
+  ): Promise<ApiResponse<ModelCandidateJob>> =>
+    fetchClient(`${oneCandidateJob(draftId, jobId)}/select`, {
+      method: 'POST',
+      body: JSON.stringify({ runId }),
+    }),
+}
+
 export const modelDraftRunService = {
   create: (
     draftId: string,
@@ -244,6 +399,10 @@ export const modelDraftRunService = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+
+  /** MODEL-FLOW-012 — every run for the run picker, most-recent-first (server order). */
+  list: (draftId: string): Promise<ApiResponse<ModelTrainingRunListItem[]>> =>
+    fetchClient(runsBase(draftId), { method: 'GET' }),
 
   get: (
     draftId: string,

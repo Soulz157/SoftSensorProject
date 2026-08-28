@@ -94,9 +94,9 @@ export function TagsSelector({ available, active, onChange, disabled }: Props) {
           </DialogTrigger>
           <DialogContent className="sm:max-w-lg">
             <DialogHeader>
-              <DialogTitle>Select signals</DialogTitle>
+              <DialogTitle>Select Tags</DialogTitle>
               <DialogDescription>
-                Choose which signals to display on the chart.
+                Choose which tags to display on the chart.
               </DialogDescription>
             </DialogHeader>
 

@@ -12,22 +12,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { LOSS_OPTIONS } from '@/lib/training-config'
-import { Check, ChevronsUpDown } from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/components/ui/popover'
-import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from '@/components/ui/command'
-import { cn } from '@/lib/utils'
+import { TargetVariableSelector } from './tag-variable-select'
 
 interface Props {
   tags: string[]
@@ -57,65 +42,12 @@ export function CoreConfig({
             Target variable <span className="text-destructive">*</span>
           </Label>
 
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button
-                variant="outline"
-                role="combobox"
-                className="h-9 w-full justify-between text-sm font-normal"
-              >
-                <span className="truncate">
-                  {targetVariables[0] ?? 'Select a tag to predict'}
-                </span>
-
-                <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-              </Button>
-            </PopoverTrigger>
-
-            <PopoverContent
-              className="w-(--radix-popover-trigger-width) p-0"
-              align="start"
-            >
-              <Command>
-                <CommandInput placeholder="Search tags…" />
-                <CommandList>
-                  <CommandEmpty>
-                    {tags.length === 0
-                      ? 'No dataset tags available.'
-                      : 'No tags found.'}
-                  </CommandEmpty>
-                  <CommandGroup>
-                    {tags.map(tag => {
-                      const selected = targetVariables[0] === tag
-
-                      return (
-                        <CommandItem
-                          key={tag}
-                          value={tag}
-                          onSelect={() => onTargetChange(selected ? [] : [tag])}
-                          className={cn(
-                            'rounded-md',
-                            selected
-                              ? 'border border-primary/20'
-                              : 'border border-transparent',
-                          )}
-                        >
-                          <Check
-                            className={cn(
-                              'text-primary transition-opacity',
-                              selected ? 'opacity-100' : 'opacity-0',
-                            )}
-                          />
-
-                          <span className="truncate font-medium">{tag}</span>
-                        </CommandItem>
-                      )
-                    })}
-                  </CommandGroup>
-                </CommandList>
-              </Command>
-            </PopoverContent>
-          </Popover>
+          <TargetVariableSelector
+            tags={tags}
+            targetVariables={targetVariables}
+            onTargetChange={onTargetChange}
+            disabled={tags.length === 0}
+          />
         </div>
 
         {/* Loss Function */}
@@ -135,6 +67,12 @@ export function CoreConfig({
               ))}
             </SelectContent>
           </Select>
+          {/* MODEL-FLOW-012: recorded on the saved model, not sent to the
+              trainer — see LOSS_OPTIONS' own doc comment. */}
+          <p className="text-[11px] text-muted-foreground">
+            Recorded on the saved model. Not sent to the trainer — the
+            estimator&apos;s own objective is used.
+          </p>
         </div>
       </div>
 

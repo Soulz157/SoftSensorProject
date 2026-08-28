@@ -1,5 +1,5 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { PrismaService, PrismaTypes } from '@softsensor/prisma';
+import { PrismaService, PrismaTypes, PrismaModels } from '@softsensor/prisma';
 import { AppException } from '@softsensor/common';
 import {
   CreateCandidateJobDto,
@@ -23,6 +23,18 @@ interface Candidate {
    */
   phase?: number;
 }
+
+/**
+ * `ModelRunLaunchAuthorizedService.launchDraftRun`'s actual return shape
+ * (it `omit`s `tokenHash`). Every `let X;` below that this type annotates
+ * is assigned exactly once, inside a `try { X = await ... } catch { return;
+ * }` — `@typescript-eslint`'s type-aware checker does not narrow an
+ * unannotated `let` through that shape, so a bare `let job;`/`let nextRun;`
+ * resolves as `any` at every later use (`job.id`, `nextRun.id`, …), even
+ * though `tsc` itself infers the real type fine. An explicit annotation
+ * here is what makes the difference, not a behavior change.
+ */
+type LaunchedRun = Omit<PrismaModels.ModelTrainingRunModel, 'tokenHash'>;
 
 /**
  * MODEL-FLOW-005, generalized by MODEL-FLOW-013-T03. Originally "fine-tuning"
@@ -111,7 +123,21 @@ export class ModelCandidateJobAuthorizedService {
       phase: 1,
     }));
 
-    let job;
+    // Cast in its OWN declaration, not inline inside `.create()`'s `data`
+    // literal: an inline `as unknown as X` on one field of that literal was
+    // observed to collapse Prisma's generic return-type inference for the
+    // WHOLE call to `any` (silent under `tsc`, caught by
+    // `@typescript-eslint/no-unsafe-*` at every later use of the result).
+    // Not a schema mismatch: `Candidate.hyperparameters` is typed
+    // `Record<string, unknown>` for READ-side flexibility (`job.candidates
+    // as unknown as Candidate[]` elsewhere in this file), which Prisma's
+    // recursive Json input type cannot verify structurally on write. Every
+    // value in it already came from `HyperparametersSchema`
+    // (string/number/boolean/null only).
+    const candidatesJson =
+      phase1Candidates as unknown as PrismaTypes.InputJsonValue;
+
+    let job: PrismaModels.ModelCandidateJobModel;
     try {
       job = await this.prisma.modelCandidateJob.create({
         data: {
@@ -120,13 +146,7 @@ export class ModelCandidateJobAuthorizedService {
           goldArtifactId: dto.goldArtifactId,
           trainTestSplit: dto.trainTestSplit ?? null,
           kind: dto.kind,
-          // Cast, not a schema mismatch: `Candidate.hyperparameters` is
-          // typed `Record<string, unknown>` for READ-side flexibility
-          // (`job.candidates as unknown as Candidate[]` elsewhere in this
-          // file), which Prisma's recursive Json input type cannot verify
-          // structurally on write. Every value in it already came from
-          // `HyperparametersSchema` (string/number/boolean/null only).
-          candidates: phase1Candidates as unknown as PrismaTypes.InputJsonValue,
+          candidates: candidatesJson,
           totalRuns: phase1Candidates.length,
           createdById: userId,
           status: 'QUEUED',
@@ -256,7 +276,7 @@ export class ModelCandidateJobAuthorizedService {
     const candidates = job.candidates as unknown as Candidate[];
 
     if (completedRuns < candidates.length) {
-      let nextRun;
+      let nextRun: LaunchedRun;
       try {
         nextRun = await this.runLaunch.launchDraftRun(
           job.modelDraftId,
@@ -337,7 +357,7 @@ export class ModelCandidateJobAuthorizedService {
         }));
         const appendedCandidates = [...candidates, ...phase2Candidates];
 
-        let tuneRun;
+        let tuneRun: LaunchedRun;
         try {
           tuneRun = await this.runLaunch.launchDraftRun(
             job.modelDraftId,
@@ -367,6 +387,10 @@ export class ModelCandidateJobAuthorizedService {
           return;
         }
 
+        // Same reason `candidatesJson` above is its own declaration, not an
+        // inline cast in the `data` literal.
+        const appendedCandidatesJson =
+          appendedCandidates as unknown as PrismaTypes.InputJsonValue;
         await this.prisma.modelCandidateJob.updateMany({
           where: {
             id: jobId,
@@ -375,8 +399,7 @@ export class ModelCandidateJobAuthorizedService {
           },
           data: {
             status: 'RUNNING',
-            candidates:
-              appendedCandidates as unknown as PrismaTypes.InputJsonValue,
+            candidates: appendedCandidatesJson,
             totalRuns: appendedCandidates.length,
             completedRuns,
             currentRunId: tuneRun.id,
@@ -586,7 +609,7 @@ export class ModelCandidateJobAuthorizedService {
       });
     }
 
-    let newRun;
+    let newRun: LaunchedRun;
     try {
       newRun = await this.runLaunch.launchDraftRun(
         draftId,

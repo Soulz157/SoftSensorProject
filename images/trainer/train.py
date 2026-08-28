@@ -226,6 +226,96 @@ def chronological_split(
 # is there to absorb that, not measured at d >> 10 directly.
 GPR_MAX_TRAIN_ROWS = 10_000
 
+# MODEL-FLOW-013-T05. A run with many thousands of boosting iterations must
+# not ship an unbounded loss-history array. Refused BY NAME — soft-skipped
+# (no artifact, no placeholder, logged as a warning) rather than silently
+# truncated or sampled, same discipline apps/python's MAX_PREDICTION_POINTS
+# applies to a training run's other array-shaped artifact. Never fails the
+# run: model.joblib/metrics.json are what matters, and this is best-effort
+# alongside them. Deferred design for whoever hits this cap first: aggregate
+# by evenly-spaced index rather than truncate from either end, so the SHAPE
+# of a long run's curve stays visible instead of being cut off mid-descent.
+MAX_LOSS_HISTORY_POINTS = 5_000
+
+
+def extract_loss_history(algorithm: str, model: Any) -> dict[str, Any] | None:
+    """Per-iteration loss trajectory for the algorithms that genuinely have
+    one. Returns None for a closed-form algorithm (ols/ridge/pls/grp/svm/
+    random_forest) — no artifact, no placeholder, per this feature's own
+    instruction: a curve cannot be produced for these, not merely "has not
+    been produced yet."
+
+    `metric` names exactly what is plotted, never assumed comparable across
+    algorithms: "rmse" for lightgbm/xgboost, because `main()` explicitly
+    requests that eval_metric so it IS the same number metrics.json reports;
+    "loss" for mlp/hist_gradient_boosting, whose native trajectory is in the
+    estimator's own loss units — forcing an RMSE label on those would be
+    false, the exact failure class this feature's findings name.
+    """
+    try:
+        if algorithm == "mlp":
+            # MLPRegressor exposes no validation curve without
+            # early_stopping=True (not configured — forcing it on would
+            # carve a held-out slice out of every mlp run's training data,
+            # changing model quality outside this feature's scope). Train
+            # series only, honestly.
+            series = {"train": [float(v) for v in model.loss_curve_]}
+            metric = "loss"
+        elif algorithm in ("hgb", "hist_gradient_boosting"):
+            # LIVE-VERIFIED against the pinned scikit-learn (1.5.2): both
+            # train_score_ and validation_score_ ALWAYS exist as attributes,
+            # but are EMPTY arrays (not absent) whenever `early_stopping`
+            # resolves to False — the unconfigured default ('auto') for any
+            # dataset at or under 10,000 training rows, which is the common
+            # case in this trainer's domain (see GPR_MAX_TRAIN_ROWS). `len()
+            # == 0`, not `hasattr`/`is None`, is what actually distinguishes
+            # "no trajectory this run" from a real one. Never forced on —
+            # forcing early_stopping=True would carve a held-out slice out
+            # of every hgb run's training data, changing model quality
+            # outside this feature's scope, the same reason mlp's branch
+            # above does not force it either.
+            train_score = model.train_score_
+            if len(train_score) == 0:
+                return None
+            series = {"train": [float(v) for v in train_score]}
+            validation_score = getattr(model, "validation_score_", None)
+            if validation_score is not None and len(validation_score) > 0:
+                series["validation"] = [float(v) for v in validation_score]
+            metric = "loss"
+        elif algorithm == "lightgbm":
+            evals = model.evals_result_
+            series = {
+                "train": [float(v) for v in evals["train"]["rmse"]],
+                "validation": [float(v) for v in evals["validation"]["rmse"]],
+            }
+            metric = "rmse"
+        elif algorithm == "xgboost":
+            evals = model.evals_result()
+            # eval_set order in main() is [train, test] -> xgboost's own
+            # "validation_0"/"validation_1" keys, in that order.
+            series = {
+                "train": [float(v) for v in evals["validation_0"]["rmse"]],
+                "validation": [float(v) for v in evals["validation_1"]["rmse"]],
+            }
+            metric = "rmse"
+        else:
+            return None
+    except Exception as exc:  # noqa: BLE001 - best-effort, must never fail the run
+        log(f"loss history extraction failed for {algorithm}: {exc}", "warn")
+        return None
+
+    longest = max(len(s) for s in series.values())
+    if longest > MAX_LOSS_HISTORY_POINTS:
+        log(
+            f"loss history for {algorithm} has {longest} points, over "
+            f"MAX_LOSS_HISTORY_POINTS ({MAX_LOSS_HISTORY_POINTS}) — skipped, "
+            "not truncated.",
+            "warn",
+        )
+        return None
+
+    return {"algorithm": algorithm, "metric": metric, "series": series}
+
 
 def build_model(
     algorithm: str,
@@ -349,11 +439,18 @@ def build_model(
     if algorithm == "xgboost":
         import xgboost
 
+        # eval_metric set HERE, not at .fit() time: xgboost's sklearn API
+        # (pinned 2.1.2) deprecates passing eval_metric to .fit(), warning
+        # to set it in the constructor instead — this is purely for
+        # MODEL-FLOW-013-T05's loss-history recording, never consulted for
+        # early stopping (none is configured, so it never changes when
+        # training stops or what the fitted model is).
         return xgboost.XGBRegressor(
             n_estimators=int(hyperparameters.get("n_estimators", 100)),
             learning_rate=float(hyperparameters.get("learning_rate", 0.1)),
             max_depth=int(hyperparameters.get("max_depth", 6)),
             random_state=seed,
+            eval_metric="rmse",
         )
     if algorithm in ("lstm", "gru"):
         # Backstop only: the API rejects lstm/gru before a container is ever
@@ -480,18 +577,60 @@ def main() -> int:
         len(train),
         feature_spec,
     )
-    model.fit(train[feature_cols], train[target_y])
+    # MODEL-FLOW-013-T05. eval_set is passed ONLY to RECORD a loss
+    # trajectory (extract_loss_history, above) — no early_stopping_rounds
+    # anywhere, so this never changes when training stops or what the
+    # fitted model is, for any algorithm. Every other algorithm's fit call
+    # is untouched.
+    if spec["algorithm"] == "lightgbm":
+        model.fit(
+            train[feature_cols],
+            train[target_y],
+            eval_set=[
+                (train[feature_cols], train[target_y]),
+                (test[feature_cols], test[target_y]),
+            ],
+            eval_names=["train", "validation"],
+            eval_metric="rmse",
+        )
+    elif spec["algorithm"] == "xgboost":
+        # eval_metric lives on the constructor for xgboost (see build_model)
+        # — only eval_set belongs here.
+        model.fit(
+            train[feature_cols],
+            train[target_y],
+            eval_set=[
+                (train[feature_cols], train[target_y]),
+                (test[feature_cols], test[target_y]),
+            ],
+            verbose=False,
+        )
+    else:
+        model.fit(train[feature_cols], train[target_y])
     predicted = model.predict(test[feature_cols])
+    predicted_train = model.predict(train[feature_cols])
 
     metrics = {
         "r2": float(r2_score(test[target_y], predicted)),
         "mae": float(mean_absolute_error(test[target_y], predicted)),
         "rmse": float(np.sqrt(mean_squared_error(test[target_y], predicted))),
+        # MODEL-FLOW-013-T04. Named train_* so nothing later mistakes these
+        # for holdout figures, which are a distinct object with their own
+        # currently-always-null metrics (see 9b below) — MODEL-FLOW-004
+        # already had to rename a heading for exactly that confusion.
+        "train_r2": float(r2_score(train[target_y], predicted_train)),
+        "train_mae": float(mean_absolute_error(train[target_y], predicted_train)),
+        "train_rmse": float(np.sqrt(mean_squared_error(train[target_y], predicted_train))),
         "train_rows": int(len(train)),
         "test_rows": int(len(test)),
         "feature_count": len(feature_cols),
     }
     log(f"r2={metrics['r2']:.4f} mae={metrics['mae']:.4f} rmse={metrics['rmse']:.4f}")
+
+    # MODEL-FLOW-013-T05a. Written unconditionally here (None for a
+    # closed-form algorithm) — the CLIENT decides render mode from whether
+    # a run has a lossHistoryKey, never from a switch on the algorithm name.
+    loss_history = extract_loss_history(spec["algorithm"], model)
 
     # ── 9b. score the raw validation holdout, BESIDE the test metrics ──────
     # DS-LAKE-018-T05. `holdoutDataUrl` is present only when the dataset has
@@ -622,6 +761,16 @@ def main() -> int:
         "predictions.parquet": (predictions_path, "application/vnd.apache.parquet"),
     }
     (SCRATCH / "metrics.json").write_text(json.dumps(metrics, indent=2, sort_keys=True))
+
+    # MODEL-FLOW-013-T05. Only added to `outputs` when a series was actually
+    # extracted — an estimator with no iterations (or one that exceeded
+    # MAX_LOSS_HISTORY_POINTS) writes no artifact and no placeholder.
+    if loss_history is not None:
+        loss_history_path = SCRATCH / "loss_history.json"
+        loss_history_path.write_text(
+            json.dumps(loss_history, indent=2, sort_keys=True)
+        )
+        outputs["loss_history.json"] = (loss_history_path, "application/json")
 
     # Write URLs are requested HERE, not at claim time — the fit may have
     # taken hours, and a capability minted to survive that would be far

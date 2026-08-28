@@ -39,6 +39,7 @@ from intergrations.object_store import (
     sidecar_key,
     status_column,
     tag_columns,
+    LOSS_HISTORY_FILENAME,
     METRICS_FILENAME,
     MODEL_FILENAME,
     PREDICTIONS_FILENAME,
@@ -58,6 +59,7 @@ from schemas.preprocess import (
     CleanupRequest,
     ColumnStatsRequest,
     FeatureConfigRequest,
+    FeatureSpecRequest,
     FeaturesRequest,
     HoldoutSplitRequest,
     MaterializeRequest,
@@ -93,7 +95,13 @@ _pi = PIDataSourceService()
 _sql = SQLDataSourceService()
 
 _ALLOWED_RUN_UPLOADS = frozenset(
-    {MODEL_FILENAME, METRICS_FILENAME, RUN_MANIFEST_FILENAME, PREDICTIONS_FILENAME}
+    {
+        MODEL_FILENAME,
+        METRICS_FILENAME,
+        RUN_MANIFEST_FILENAME,
+        PREDICTIONS_FILENAME,
+        LOSS_HISTORY_FILENAME,
+    }
 )
 
 
@@ -1168,6 +1176,29 @@ def column_stats(store: ObjectStore, request: ColumnStatsRequest) -> dict[str, A
     }
 
 
+def feature_spec(store: ObjectStore, request: FeatureSpecRequest) -> dict[str, Any]:
+    """DS-LAKE-025-T06. Serve `feature_spec.json` — the exact shape
+    `column_stats` above serves its own sidecar, for the same reasons.
+
+    The key is DERIVED from `source_key` via the same `sidecar_key()` the
+    write path used, never looked up elsewhere, so read and write cannot
+    disagree about where it lives. A missing sidecar surfaces as
+    `ObjectStoreError` -> 422 through `routers/preprocess._run`, with no
+    separate handling here.
+
+    T06 read 3 is why this endpoint exists: `scalingParams` records what each
+    scaler actually FIT, so a display surface can present engineering units
+    from the scaled bytes without a pipeline change. This reads the sidecar
+    ONLY — the data object is never opened.
+    """
+    key = sidecar_key(request.source_key, FEATURE_SPEC_FILENAME)
+    return {
+        "source_key": request.source_key,
+        "feature_spec_key": key,
+        "spec": store.get_json(key),
+    }
+
+
 def cleanup(store: ObjectStore, request: CleanupRequest) -> dict[str, Any]:
     """Clear a tmp prefix. `CleanupRequest` already refuses anything outside tmp/."""
     return {
@@ -1445,4 +1476,40 @@ def run_predictions(store: ObjectStore, body) -> dict[str, Any]:
             manifest.get("derived_from_target") if manifest else None
         ),
         "target_scaled": manifest.get("target_scaled") if manifest else None,
+    }
+
+
+def get_run_loss_history(store: ObjectStore, body) -> dict[str, Any]:
+    """A training run's `loss_history.json`, read and shape-checked —
+    MODEL-FLOW-013-T05/T07.
+
+    Unlike `run_predictions`, this is a read-and-validate, not a
+    parse-and-reshape: `loss_history.json` is already exactly the response
+    shape (`extract_loss_history` in `images/trainer/train.py` writes it
+    that way on purpose). Guarded the same structural way `run_predictions`
+    guards its own key.
+    """
+    key = body.source_key
+    if key.rsplit("/", 1)[-1] != LOSS_HISTORY_FILENAME:
+        raise ValueError(f"'{key}' does not name {LOSS_HISTORY_FILENAME}.")
+    if not (is_draft_run_key(key) or is_model_run_key(key)):
+        raise ValueError(
+            f"'{key}' is not a well-formed training-run output key. Only "
+            "drafts/{draftId}/runs/{runId}/... or "
+            "models/{modelId}/runs/{runId}/... can be read here."
+        )
+
+    data = store.get_json(key)
+    if (
+        not isinstance(data, dict)
+        or not isinstance(data.get("algorithm"), str)
+        or not isinstance(data.get("metric"), str)
+        or not isinstance(data.get("series"), dict)
+    ):
+        raise ValueError(f"'{key}' is not a well-formed loss_history.json.")
+
+    return {
+        "algorithm": data["algorithm"],
+        "metric": data["metric"],
+        "series": data["series"],
     }

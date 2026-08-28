@@ -106,6 +106,29 @@ export interface ArtifactColumnStatsResult {
   stats: Record<string, ArtifactTagColumnStats>
 }
 
+/**
+ * DS-LAKE-025-T06. What one scaler FIT on the train rows. Which keys are
+ * present depends on the method recorded in `spec.scaling`: `{min,max}` for
+ * minmax, `{mean,std}` for standard, `{median,iqr}` for robust. Deliberately
+ * a loose record rather than a three-way union — pairing params with their
+ * method is `inverseScale`'s job, and a union here would force every reader
+ * to narrow before it could even log the value.
+ */
+export type ArtifactScalingParams = Record<string, number>
+
+export interface ArtifactFeatureSpecResult {
+  featureSpecKey: string
+  /**
+   * Keyed by tag. NULL — not `{}` — when the sidecar predates
+   * DS-LAKE-018-T02: "the fit was never recorded" is not "nothing was
+   * scaled", and a caller must say so rather than render a scaled number as
+   * though it were an engineering value.
+   */
+  scalingParams: Record<string, ArtifactScalingParams> | null
+  /** The whole sidecar, unmodelled — it is versioned and widens over time. */
+  spec: Record<string, unknown>
+}
+
 export interface PreprocessingJob {
   id: string
   status: PreprocessingJobStatus
@@ -189,6 +212,20 @@ export const datasetArtifactService = {
     artifactId: string,
   ): Promise<ApiResponse<ArtifactColumnStatsResult>> =>
     fetchClient(`${artifact(datasetId, artifactId)}/column-stats`, {
+      method: 'GET',
+    }),
+
+  /** DS-LAKE-025-T06. `feature_spec.json`, for `scalingParams` — what each
+   * scaler actually FIT. Lets a display surface present engineering units
+   * from a model-ready artifact's scaled bytes; the artifact itself is never
+   * unscaled (T06 read 6: the trainer consumes the scaled bytes and re-fits
+   * nothing). 404s when the stage produces no spec (BRONZE) or the sidecar
+   * is gone. */
+  featureSpec: (
+    datasetId: string,
+    artifactId: string,
+  ): Promise<ApiResponse<ArtifactFeatureSpecResult>> =>
+    fetchClient(`${artifact(datasetId, artifactId)}/feature-spec`, {
       method: 'GET',
     }),
 

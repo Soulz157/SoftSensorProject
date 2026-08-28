@@ -201,3 +201,29 @@ export async function runPredictions(input: {
   );
   return RunPredictionsSchema.parse(res);
 }
+
+/** MODEL-FLOW-013-T05/T07. Already the exact shape train.py wrote — no
+ *  snake_case/camelCase mapping needed beyond the outer keys. */
+const RunLossHistorySchema = z.object({
+  algorithm: z.string().min(1),
+  metric: z.string().min(1),
+  series: z.record(z.string(), z.array(z.number())),
+});
+
+export type RunLossHistory = z.infer<typeof RunLossHistorySchema>;
+
+/**
+ * MODEL-FLOW-013-T05/T07. `source_key` is resolved by the caller off the
+ * `ModelTrainingRun` row (`lossHistoryKey`) — never accepted from a browser
+ * request, same discipline `runPredictions` applies to its own key.
+ */
+export async function getRunLossHistory(
+  sourceKey: string,
+): Promise<RunLossHistory> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/models/runs/loss-history',
+    { source_key: sourceKey },
+    PYTHON_TIMEOUT.metadata,
+  );
+  return RunLossHistorySchema.parse(res);
+}

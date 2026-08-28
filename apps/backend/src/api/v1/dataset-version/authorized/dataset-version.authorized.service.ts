@@ -25,6 +25,7 @@ import {
   PythonBoxplotSchema,
   PythonColumnStatsSchema,
   PythonCorrelationSchema,
+  PythonFeatureSpecSchema,
   PythonHistogramSchema,
   PythonMetadataSchema,
   PythonPreviewSchema,
@@ -766,6 +767,80 @@ export class DatasetVersionAuthorizedService {
   }
 
   /**
+   * DS-LAKE-025-T06. Serves `feature_spec.json` for a committed artifact.
+   * Mirrors `getArtifactColumnStatsService` directly above, including its
+   * short-circuit: `featureSpecKey` being null is knowable from Postgres
+   * alone, so a legacy artifact gets a clear 404 here rather than a
+   * round-trip to Python for its own 422 about the same missing object.
+   *
+   * Exists so a display surface can present ENGINEERING UNITS from a
+   * model-ready artifact's scaled bytes, using the `scalingParams` each
+   * scaler actually fit. It never unscales the artifact: T06 read 6
+   * established that `images/trainer/train.py` consumes the scaled bytes
+   * directly and re-fits nothing, so FINAL being scaled is load-bearing and
+   * changing it would break training.
+   */
+  async getArtifactFeatureSpecService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    artifactId: string,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+    const artifact = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, datasetId },
+      select: { objectKey: true, featureSpecKey: true },
+    });
+    if (!artifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Dataset artifact not found',
+        type: 'ERROR',
+      });
+    }
+    if (!artifact.featureSpecKey) {
+      throw new AppException({
+        statusCode: 404,
+        message:
+          'No feature specification available for this artifact (written by a stage that produces none, such as BRONZE, or before this sidecar existed).',
+        type: 'ERROR',
+      });
+    }
+    try {
+      const result = PythonFeatureSpecSchema.parse(
+        await postToPython(
+          '/v1/preprocess/feature-spec',
+          { source_key: artifact.objectKey },
+          PYTHON_TIMEOUT.metadata,
+        ),
+      );
+      return {
+        statusCode: 200,
+        message: 'Feature specification fetched successfully',
+        type: 'SUCCESS' as const,
+        data: {
+          featureSpecKey: result.feature_spec_key,
+          // `scalingParams` absent (pre-DS-LAKE-018-T02) is NOT the same as
+          // "nothing was scaled" — it means the fit was never recorded, so a
+          // caller cannot invert and must say so rather than render the
+          // scaled number as if it were an engineering value.
+          scalingParams: result.spec.scalingParams ?? null,
+          spec: result.spec,
+        },
+      };
+    } catch (err) {
+      if ((err as { statusCode?: number })?.statusCode === 422) {
+        throw new AppException({
+          statusCode: 404,
+          message:
+            'Feature specification is recorded but missing from storage.',
+          type: 'ERROR',
+        });
+      }
+      throw err;
+    }
+  }
+
+  /**
    * MODEL-FLOW-010-T06 (widened lookup). Shared by `getArtifactHoldoutService`
    * and `getArtifactValidationRowsService` — both need "which artifact in
    * this run actually carries the validation split", and a single query
@@ -969,10 +1044,24 @@ export class DatasetVersionAuthorizedService {
       );
     } catch (err) {
       if ((err as { statusCode?: number })?.statusCode === 422) {
+        // DS-LAKE-025-T06 read 2. Python answers 422 for BOTH "the object is
+        // gone" and "that column is not in this frame" (an unknown tag is
+        // `pyarrow.ArrowInvalid`, a ValueError, which `routers/preprocess._run`
+        // maps to 422 — see `RowsRequest.tags`' own doc comment). Those are
+        // different facts and must not share a message: a holdout split at the
+        // BRONZE stage is PRE-FEATURES, so asking it for a derived feature
+        // column fails while the sidecar itself is perfectly intact. Reporting
+        // that as "no longer retained" sends someone hunting for a storage
+        // problem that does not exist.
+        const detail = (err as { message?: string })?.message ?? '';
+        const isUnknownColumn = /No match for FieldRef|ArrowInvalid/i.test(
+          detail,
+        );
         throw new AppException({
-          statusCode: 404,
-          message:
-            'Validation holdout is recorded but its data is missing from storage.',
+          statusCode: isUnknownColumn ? 422 : 404,
+          message: isUnknownColumn
+            ? 'One or more requested tags do not exist in the validation holdout. A holdout split before feature engineering contains the raw tags only, not derived feature columns.'
+            : 'Validation holdout is recorded but its data is missing from storage.',
           type: 'ERROR',
         });
       }

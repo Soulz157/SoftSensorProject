@@ -304,12 +304,21 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
   ],
 }
 
-/** Available loss / evaluation functions. Wire value ↔ display label. */
+/**
+ * Available loss / evaluation functions. Wire value ↔ display label.
+ *
+ * Recorded on the saved Model's config (Model.data.config.lossFunction) —
+ * MODEL-FLOW-012's audit found this is NEVER sent to the trainer:
+ * images/trainer/train.py has no loss/objective/criterion read anywhere, and
+ * CreateTrainingRunSchema is `.strict()` so a client that tried would be
+ * rejected. `cross_entropy` was dropped here for the same reason it was
+ * already dead: build_model has no classifier branch — this pipeline is
+ * regression-only.
+ */
 export const LOSS_OPTIONS: { value: string; label: string }[] = [
   { value: 'mse', label: 'MSE' },
   { value: 'rmse', label: 'RMSE' },
   { value: 'mae', label: 'MAE' },
-  { value: 'cross_entropy', label: 'Cross-Entropy' },
 ]
 
 /** Build the clean default hyperparameter record for an algorithm (no leftover keys). */

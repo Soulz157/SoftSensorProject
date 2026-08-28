@@ -315,6 +315,32 @@ class ModelRunPredictionsResponse(BaseModel):
     target_scaled: bool | None = None
 
 
+class RunLossHistoryRequest(BaseModel):
+    """MODEL-FLOW-013-T05/T07. Reads a training run's `loss_history.json`
+    verbatim — it is already the exact shape the client renders (see
+    `extract_loss_history` in `images/trainer/train.py`), so this is a
+    read-and-validate, not a parse-and-reshape like `run_predictions`.
+
+    `source_key` is guarded the same structural way `run_predictions`
+    guards its own — NestJS already resolved which run's key this is off
+    the `ModelTrainingRun` row before calling here.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    source_key: str = Field(..., description="The run's loss_history.json key.")
+
+
+class RunLossHistoryResponse(BaseModel):
+    algorithm: str
+    #: "rmse" for lightgbm/xgboost (the same number metrics.json reports);
+    #: "loss" for mlp/hist_gradient_boosting, whose native trajectory is in
+    #: the estimator's own loss units — never assumed comparable across
+    #: algorithms.
+    metric: str
+    series: dict[str, list[float]]
+
+
 class ValidationCheckResponse(BaseModel):
     """Mirrors `validation_service.CheckResult.to_dict()` field for field."""
 
@@ -859,6 +885,33 @@ class ColumnStatsResponse(BaseModel):
     #: scanning a list, and this is a single-page response by design (see
     #: ColumnStatsRequest).
     stats: dict[str, TagColumnStats]
+
+
+class FeatureSpecRequest(BaseModel):
+    """DS-LAKE-025-T06. Read feature_spec.json beside a committed artifact.
+
+    Exactly `ColumnStatsRequest`'s shape and for the same reason — the
+    sidecar is whole-artifact, so there is nothing to page or filter.
+    """
+
+    source_key: str
+
+
+class FeatureSpecResponse(BaseModel):
+    """DS-LAKE-025-T06.
+
+    `spec` is returned UNVALIDATED (`dict[str, Any]`, not a typed model) on
+    purpose. `build_feature_spec` writes a versioned document whose shape
+    widens over time (`featureVersion`, and fields like `target_scaled` /
+    `derived_from_target` that are absent on older artifacts). A strict model
+    here would 500 on a legacy sidecar that reads perfectly well — the same
+    "only WIDENS" discipline `ALL_DATA_FILENAMES` already documents. Callers
+    read the one field they need and tolerate its absence.
+    """
+
+    source_key: str
+    feature_spec_key: str
+    spec: dict[str, Any]
 
 
 class RowsResponse(BaseModel):

@@ -17,7 +17,7 @@ import { describe, it, expect } from 'vitest'
  * could fabricate them is gone, for every case.
  */
 
-const STEP_FILE = path.resolve(__dirname, '../phase-3-evaluation.tsx')
+const STEP_FILE = path.resolve(__dirname, '../phase-5-evaluation.tsx')
 
 function read(): string {
   return readFileSync(STEP_FILE, 'utf-8')

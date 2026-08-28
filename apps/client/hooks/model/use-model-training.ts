@@ -4,9 +4,12 @@ import { useCallback, useEffect, useRef } from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import {
   modelDraftRunService,
+  modelDraftCandidateJobService,
   modelDraftService,
   type CreateDraftRunInput,
+  type ModelCandidateJob,
 } from '@/services/model-draft'
+import { defaultHyperparams } from '@/lib/training-config'
 import {
   mpTrainStateAtom,
   mpServerDraftIdAtom,
@@ -18,6 +21,7 @@ import {
   mpTrainTestSplitAtom,
   mpSelectedDatasetAtom,
   mpTrainingResultAtom,
+  mpCandidateJobIdAtom,
   mpArtifactRefAtom,
   ALGORITHM_LABELS,
   type TrainState,
@@ -72,6 +76,7 @@ export function useModelTraining({
   const selectedDataset = useAtomValue(mpSelectedDatasetAtom)
   const setTrainingResult = useSetAtom(mpTrainingResultAtom)
   const setArtifactRef = useSetAtom(mpArtifactRefAtom)
+  const [candidateJobId, setCandidateJobId] = useAtom(mpCandidateJobIdAtom)
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const runningRef = useRef(false)
@@ -159,9 +164,117 @@ export function useModelTraining({
     [setArtifactRef, setTrainState, setTrainingResult, stopPolling],
   )
 
+  /**
+   * MODEL-FLOW-013-T07/T11. Polls a candidate job (an algorithm sweep, a
+   * sweep-then-tune job, or a bare hyperparameter search) to completion —
+   * same shape as `pollRun`, different endpoint. `trainState`/the rest of
+   * Step 3's UI (progress text, Retrain button) is reused UNCHANGED:
+   * QUEUED/RUNNING still maps to 'training', SUCCEEDED to 'done',
+   * FAILED/CANCELED to 'error'. On success, `mpTrainingResultAtom` is
+   * populated from the WINNING candidate (`job.bestRunId`) — the metric's
+   * own answer (a phase-2 tuning run if one beat phase 1, else phase 1's
+   * own winner), before any user selection at Step 4 (T08) can override
+   * what Evaluation resolves.
+   *
+   * `totalRuns` can GROW mid-poll for a SWEEP_THEN_TUNE job — the server
+   * appends phase 2 once phase 1 exhausts (see
+   * `model-candidate-job.authorized.service.ts`'s `advanceJobForRun`) — so
+   * the progress text always reads the job's CURRENT `totalRuns`, never a
+   * value captured once at job creation.
+   */
+  const pollJob = useCallback(
+    (draftId: string, jobId: string) => {
+      stopPolling()
+      failCountRef.current = 0
+
+      const tick = async () => {
+        try {
+          const res = await modelDraftCandidateJobService.get(draftId, jobId)
+          failCountRef.current = 0
+          const job: ModelCandidateJob = res.data
+
+          if (job.status === 'QUEUED' || job.status === 'RUNNING') {
+            const inFlight = job.candidates[job.completedRuns]
+            const position = `${Math.min(job.completedRuns + 1, job.totalRuns)} of ${job.totalRuns}`
+            setTrainState({
+              status: 'training',
+              progress: 0,
+              lastLog:
+                inFlight?.phase === 2
+                  ? `Tuning ${ALGORITHM_LABELS[inFlight.algorithm as Algorithm] ?? inFlight.algorithm} — ${position}…`
+                  : `Candidate ${position}…`,
+            })
+            return
+          }
+
+          stopPolling()
+          runningRef.current = false
+
+          if (job.status === 'SUCCEEDED') {
+            const winner = job.candidates.find(c => c.runId === job.bestRunId)
+            if (!winner || !winner.runId) {
+              setTrainState({
+                status: 'error',
+                progress: 0,
+                error:
+                  'The sweep finished but recorded no winning candidate — this should not happen.',
+              })
+              return
+            }
+            setTrainingResult({
+              runId: winner.runId,
+              algorithm: winner.algorithm as Algorithm,
+              metrics: winner.metrics,
+              trainedAt: job.finishedAt ?? job.createdAt,
+            })
+            setCandidateJobId(job.id)
+            setArtifactRef(null)
+            setTrainState({ status: 'done', progress: 100 })
+          } else {
+            setTrainState({
+              status: 'error',
+              progress: 0,
+              error:
+                job.failureReason ??
+                `Sweep ${job.status.toLowerCase()} with no reason recorded.`,
+            })
+          }
+        } catch (err) {
+          failCountRef.current += 1
+          if (failCountRef.current < MAX_CONSECUTIVE_POLL_FAILURES) return
+
+          stopPolling()
+          runningRef.current = false
+          setTrainState({
+            status: 'error',
+            progress: 0,
+            error:
+              err instanceof Error && err.message
+                ? err.message
+                : 'Lost connection while checking on the sweep.',
+          })
+        }
+      }
+
+      void tick()
+      pollRef.current = setInterval(() => void tick(), POLL_MS)
+    },
+    [
+      setArtifactRef,
+      setCandidateJobId,
+      setTrainState,
+      setTrainingResult,
+      stopPolling,
+    ],
+  )
+
   // Resume polling after a remount (Step 2 -> elsewhere -> Step 2) while a
-  // run is still in flight server-side. Runs once on mount only — this is a
-  // one-shot reconnect, not a subscription to every dependency change.
+  // run or job is still in flight server-side. Runs once on mount only —
+  // this is a one-shot reconnect, not a subscription to every dependency
+  // change. mpCandidateJobIdAtom is checked FIRST: it and trainState are
+  // both in-memory jotai atoms in the same store, so if one survived a
+  // remount the other did too, and a job in flight has no useful
+  // ModelDraft.currentRunId yet (that field is only written at completion).
   useEffect(() => {
     if (trainState.status !== 'training') return
     if (pollRef.current) return
@@ -169,6 +282,11 @@ export function useModelTraining({
     let cancelled = false
     void (async () => {
       try {
+        if (candidateJobId) {
+          runningRef.current = true
+          pollJob(serverDraftId, candidateJobId)
+          return
+        }
         const draftRes = await modelDraftService.get(serverDraftId)
         const runId = draftRes.data.currentRunId
         if (!runId || cancelled) return
@@ -213,11 +331,61 @@ export function useModelTraining({
             : 'Select exactly one target — a run fits one target per model.',
         )
       }
-      if (findBestModel || findBestParams) {
+      // MODEL-FLOW-013-T11. Find Best Parameters TUNES the sweep's winner —
+      // it has no meaning without a sweep to tune. The UI already disables
+      // its toggle unless Find Best Model is on (automl-toggles.tsx); this
+      // is defense in depth against stale draft state from before that
+      // dependency existed.
+      if (findBestParams && !findBestModel) {
         throw new Error(
-          "AutoML (Find Best Model / Find Best Parameters) isn't wired to a real training run yet — turn both off and pick a single algorithm.",
+          'Find Best Parameters tunes the sweep’s winner — turn on Find Best Model too.',
         )
       }
+
+      const draftId = await ensureDraftId()
+      if (!draftId) {
+        throw new Error("Model draft isn't ready yet — check Step 1.")
+      }
+
+      if (findBestModel) {
+        // MODEL-FLOW-013-T07/T11. Algorithm sweep — one candidate per
+        // selected algorithm, its own clean defaults, RMSE decides the
+        // winner. The job schema's own floor (.min(2)) is why 2 is required
+        // here, not 1: a single-candidate "sweep" is just a normal run,
+        // which createDraftRunService already exists for. Both toggles on
+        // (SWEEP_THEN_TUNE) launches the SAME phase-1 candidates — phase 2
+        // (tuning phase 1's winner) is appended server-side once phase 1
+        // exhausts, never built client-side.
+        if (algorithms.length < 2) {
+          throw new Error(
+            'Select at least 2 algorithms to sweep, or turn off Find Best Model.',
+          )
+        }
+        const candidates = algorithms.map(a => {
+          const backendAlgorithm = toBackendAlgorithm(a)
+          if (!backendAlgorithm) {
+            throw new Error(
+              `"${ALGORITHM_LABELS[a]}" isn't supported by the training service yet — remove it from the sweep.`,
+            )
+          }
+          return {
+            algorithm: backendAlgorithm,
+            hyperparameters: defaultHyperparams(a),
+          }
+        })
+
+        const created = await modelDraftCandidateJobService.create(draftId, {
+          goldArtifactId: selectedDataset.currentArtifactId,
+          targetY,
+          kind: findBestParams ? 'SWEEP_THEN_TUNE' : 'ALGORITHM_SWEEP',
+          trainTestSplit: trainTestSplit / 100,
+          candidates,
+        })
+
+        pollJob(draftId, created.data.id)
+        return
+      }
+
       const [algorithm] = algorithms
       if (algorithms.length !== 1 || !algorithm) {
         throw new Error(
@@ -231,10 +399,9 @@ export function useModelTraining({
         )
       }
 
-      const draftId = await ensureDraftId()
-      if (!draftId) {
-        throw new Error("Model draft isn't ready yet — check Step 1.")
-      }
+      // A single-run launch — clear any PREVIOUS sweep's job id so Step 4
+      // doesn't show a stale candidate table for this new, unrelated run.
+      setCandidateJobId(null)
 
       const created = await modelDraftRunService.create(draftId, {
         goldArtifactId: selectedDataset.currentArtifactId,
@@ -269,6 +436,8 @@ export function useModelTraining({
     trainTestSplit,
     ensureDraftId,
     pollRun,
+    pollJob,
+    setCandidateJobId,
     setTrainState,
   ])
 

@@ -30,6 +30,7 @@ import { DataAnalysisCardSkeleton } from './data-analysis-card-skeleton'
 import { ProcessingActionFooter } from './processing-action-footer'
 import { PresetApplyManager, type AppliedPreset } from '../preset-apply-modal'
 import { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipeline-nav'
+import { Loader2 } from 'lucide-react'
 
 interface Props {
   nav: UseDatasetPipelineNavResult
@@ -201,7 +202,13 @@ export function Step31EDA({ nav }: Props) {
       )}
 
       {isBusy && (
-        <div role="status" aria-live="polite" aria-busy="true">
+        <div
+          className="flex items-center justify-center gap-2"
+          role="status"
+          aria-live="polite"
+          aria-busy="true"
+        >
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
           <p aria-hidden="true" className="text-[11px] text-muted-foreground">
             {readiness.caption}
           </p>

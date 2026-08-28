@@ -6,8 +6,8 @@ import { TrainningContainerModule } from '../trainning-container/trainning-conta
 import { ModelRunLaunchAuthorizedController } from './authorized/model-run-launch.authorized.controller';
 import { ModelDraftRunAuthorizedController } from './authorized/model-draft-run.authorized.controller';
 import { ModelRunLaunchAuthorizedService } from './authorized/model-run-launch.authorized.service';
-import { ModelFineTuningAuthorizedController } from './authorized/model-fine-tuning.authorized.controller';
-import { ModelFineTuningAuthorizedService } from './authorized/model-fine-tuning.authorized.service';
+import { ModelCandidateJobAuthorizedController } from './authorized/model-candidate-job.authorized.controller';
+import { ModelCandidateJobAuthorizedService } from './authorized/model-candidate-job.authorized.service';
 
 @Module({
   imports: [TrainningContainerModule],
@@ -16,13 +16,14 @@ import { ModelFineTuningAuthorizedService } from './authorized/model-fine-tuning
     ModelRunLaunchAuthorizedController,
     // Draft-scoped twin (MODEL-FLOW-003) — training before a Model exists.
     ModelDraftRunAuthorizedController,
-    // Hyperparameter search over draft-scoped runs (MODEL-FLOW-005).
-    ModelFineTuningAuthorizedController,
+    // Hyperparameter search / algorithm sweep over draft-scoped runs
+    // (MODEL-FLOW-005, generalized by MODEL-FLOW-013).
+    ModelCandidateJobAuthorizedController,
   ],
   providers: [
     ModelRunLaunchAuthorizedService,
     ModelRunAuthorizedService,
-    ModelFineTuningAuthorizedService,
+    ModelCandidateJobAuthorizedService,
     RunTokenGuard,
   ],
 })

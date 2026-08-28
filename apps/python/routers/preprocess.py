@@ -49,6 +49,8 @@ from schemas.preprocess import (
     CleanupResponse,
     ColumnStatsRequest,
     ColumnStatsResponse,
+    FeatureSpecRequest,
+    FeatureSpecResponse,
     ExportRequest,
     ExportStatsResponse,
     FeaturesRequest,
@@ -67,6 +69,8 @@ from schemas.preprocess import (
     ReplayHoldoutForRunRequest,
     ReplayHoldoutRequest,
     ResplitHoldoutRequest,
+    RunLossHistoryRequest,
+    RunLossHistoryResponse,
     RowsRequest,
     RowsResponse,
     ScaleRequest,
@@ -561,6 +565,27 @@ async def read_column_stats(
 
 
 @router.post(
+    "/feature-spec",
+    response_model=FeatureSpecResponse,
+    summary="feature_spec.json sidecar for a committed artifact",
+    description=(
+        "DS-LAKE-025-T06. Reads ONLY feature_spec.json — the data object is "
+        "never opened, exactly like /column-stats above. Exists so a display "
+        "surface can read `scalingParams` (what each scaler actually FIT) and "
+        "present engineering units from a model-ready artifact's scaled "
+        "bytes, without unscaling anything: T06 read 6 established that FINAL "
+        "being scaled is load-bearing for training. A missing sidecar is a "
+        "422, same as /column-stats."
+    ),
+)
+async def read_feature_spec(
+    body: FeatureSpecRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.feature_spec, store, body)
+
+
+@router.post(
     "/cleanup",
     response_model=CleanupResponse,
     summary="Delete every object under a tmp prefix",
@@ -695,6 +720,25 @@ async def run_predictions(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(artifact_service.run_predictions, store, body)
+
+
+@router.post(
+    "/models/runs/loss-history",
+    response_model=RunLossHistoryResponse,
+    summary="A training run's loss_history.json, read and shape-checked",
+    description=(
+        "MODEL-FLOW-013-T05/T07. `loss_history.json` is already exactly the "
+        "response shape (extract_loss_history in images/trainer/train.py "
+        "writes it that way on purpose) — this is a read-and-validate, not "
+        "a parse-and-reshape like /models/runs/predictions. `source_key` is "
+        "guarded the same structural way that endpoint guards its own."
+    ),
+)
+async def run_loss_history(
+    body: RunLossHistoryRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.get_run_loss_history, store, body)
 
 
 @router.post(

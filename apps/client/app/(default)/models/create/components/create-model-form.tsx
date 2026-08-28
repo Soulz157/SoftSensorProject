@@ -27,7 +27,7 @@ const NEXT_LABELS: Record<number, string> = {
   2: 'Continue',
   3: 'View Results',
   4: 'Continue',
-  5: 'Save Model',
+  5: 'Continue',
 }
 
 export function CreateModelForm() {
@@ -47,8 +47,8 @@ export function CreateModelForm() {
   const { mode, modelName } = useModelWizardMode()
   const isEdit = mode === 'edit'
 
-  // Deploy (5) is terminal with its own Save & Finish action.
-  const hideFooterNext = nav.currentStep === 5
+  // Deploy (6) is terminal with its own Save & Finish action.
+  const hideFooterNext = nav.currentStep === 6
   const nextLabel = NEXT_LABELS[nav.currentStep] ?? 'Next'
 
   let body

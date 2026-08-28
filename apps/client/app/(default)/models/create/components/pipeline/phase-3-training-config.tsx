@@ -10,6 +10,7 @@ import { AlgorithmSelector } from './training-config/algorithm-selector'
 import { AutoMlToggles } from './training-config/automl-toggles'
 import { DynamicHyperparameters } from './training-config/dynamic-hyperparameters'
 import { RuntimeEstimate } from './training-config/runtime-estimate'
+import { RunParamsPanel } from './training-config/run-params-panel'
 
 interface Props {
   nav: UsePipelineNavResult
@@ -197,6 +198,7 @@ export function Phase3TrainingConfig({ nav }: Props) {
                 status={training.status}
                 progress={training.progress}
               />
+              <RunParamsPanel />
             </div>
           </section>
         </div>

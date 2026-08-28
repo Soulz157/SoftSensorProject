@@ -38,11 +38,14 @@ import {
 } from '@/components/ui/sheet'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { DataTableView } from '@/app/(default)/data-visualize/components/data-table-view'
+import type { Dataset } from '@/lib/preprocessing'
+import { inverseScale } from '@/lib/inverse-scale'
 import { useArtifactColumnStats } from '@/hooks/dataset/artifact/use-dataset-artifact-column-stats'
 import { useArtifactMetadata } from '@/hooks/dataset/artifact/use-dataset-artifact-metadata'
 import { useArtifactRows } from '@/hooks/dataset/artifact/use-artifact-rows'
 import { useArtifactCorrelation } from '@/hooks/dataset/artifact/use-artifact-correlation'
 import { useArtifactHoldout } from '@/hooks/dataset/artifact/use-artifact-holdout'
+import { useArtifactFeatureSpec } from '@/hooks/dataset/artifact/use-artifact-feature-spec'
 import { useDatasetExport } from '@/hooks/dataset/use-dataset-export'
 import { DatasetCompareModal } from './dataset-compare-modal'
 
@@ -155,6 +158,36 @@ export function DatasetDetailSheet({
     loading: sampleLoading,
     error: sampleError,
   } = useArtifactRows(datasetId, artifactId, tags)
+
+  // DS-LAKE-025-T06. A saved dataset's FINAL is model-ready (scaled), not the
+  // engineering-unit values its flow produced — same fact the Compare modal's
+  // train side had to correct for. `scalingParams` is what each scaler
+  // actually FIT; `null` (spec missing, or this tag never got recorded) means
+  // this preview cannot state that tag honestly, so it is left scaled rather
+  // than shown with an invented value.
+  const { featureSpec } = useArtifactFeatureSpec(datasetId, artifactId)
+  const scalingParams = featureSpec?.scalingParams ?? null
+
+  const previewSample = useMemo<Dataset | null>(() => {
+    if (!sample) return null
+    if (!scalingParams) return sample
+    return {
+      tags: sample.tags,
+      rows: sample.rows.map(row => {
+        const cells = { ...row.cells }
+        for (const tag of sample.tags) {
+          const cell = cells[tag]
+          if (!cell) continue
+          const inverted = inverseScale(cell.value, scalingParams[tag])
+          // Leave the cell exactly as-is when it cannot be inverted — never
+          // substitute a guessed value, and never drop the cell (Bad/
+          // Questionable status must stay visible either way).
+          if (inverted !== null) cells[tag] = { ...cell, value: inverted }
+        }
+        return { ...row, cells }
+      }),
+    }
+  }, [sample, scalingParams])
 
   // MODEL-FLOW-010-T06 (widened lookup). `holdout: null` with no `missing`/
   // `error` is the normal "no split" case — most datasets have none.
@@ -597,6 +630,8 @@ export function DatasetDetailSheet({
                     </p>
                     <p className="text-[11px] text-muted-foreground">
                       Preview window — a bounded sample, not the full artifact.
+                      {scalingParams &&
+                        ' Values are converted back to engineering units from the dataset’s recorded scaler fit — the stored artifact is scaled, this view is not.'}
                     </p>
                     {sampleLoading ? (
                       <Skeleton className="h-64 w-full rounded-lg" />
@@ -604,8 +639,8 @@ export function DatasetDetailSheet({
                       <p className="rounded-lg border border-border p-4 text-center text-xs text-muted-foreground">
                         Could not load a preview — {sampleError}
                       </p>
-                    ) : sample ? (
-                      <DataTableView dataset={sample} />
+                    ) : previewSample ? (
+                      <DataTableView dataset={previewSample} />
                     ) : (
                       <p className="rounded-lg border border-border p-4 text-center text-xs text-muted-foreground">
                         Could not load a preview for this artifact.

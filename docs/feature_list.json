@@ -4,7 +4,7 @@
   "description": "Refactor the existing Model Creation Flow to keep the current four-step user experience while separating model training, evaluation, fine-tuning, and final model persistence. Training and fine-tuning must not commit the model to the database. The model is persisted only when the user explicitly clicks Save Model in Step 4.",
   "status": "blocked",
   "progress": 33,
-  "progress_note": "MODEL-FLOW-000, -001, -002 completed 2026-08-18 (3 of 10 features — denominator moved 9->10 on 2026-08-19 when MODEL-FLOW-009 was added; see that feature's own status for why it's separate from the -003 catalogue work, not an increment to it). Still blocked overall: MODEL-FLOW-005 remains blocked pending a definition of 'fine-tuning' (decisions.fine_tuning_undefined); MODEL-FLOW-009 (lstm/gru) is newly blocked pending a windowing pipeline. -003 is in_progress (T10's catalogue half resolved 2026-08-19, AutoML half still blocked) — the rest of this note (-006/-007/-008 status) pre-dates 2026-08-19 and was not re-audited this pass. 2026-08-21 (second pass): MODEL-FLOW-010's T07 and T08 completed, so all eight of its tasks are done and its acceptance criteria 8, 9 and 10 are implemented. The FEATURE stays in_progress, not completed: V01 and V03 need live servers (and an 8,000-tag dataset) that were not available, and V04/V05 are PARTIAL — their logic is unit-covered but the end-to-end walks they describe were not run. Per CLAUDE.md section 16 that is not 'completed'. Two known gaps recorded on T08: a TRAINED draft is listable by the API but not offered for resume, and duplicate ACTIVE drafts left by a browser-Back exit belong to MODEL-FLOW-011. 2026-08-25 (third pass): MODEL-FLOW-004 audited first (it was one of the never-re-audited thin entries) then built — a new python read endpoint, a new backend route resolving keys off the run row, and the client's evaluation step rewired off its real training run, replacing a client-side OLS placeholder fit that had ignored the trained algorithm entirely. Live-verified end to end (curl through both services against real MinIO/Postgres data) and covered by a digit-exact render-test suite (8/8) plus a static-source guard (4/4) — 740+ prior python tests and 641 prior client tests unaffected. The FEATURE stays in_progress, not completed, for the same class of reason -010 does: the live-browser wizard walk (V02/V03's fuller claim) needs a real NextAuth session this pass had no credentials to forge, so it is render-test-verified but not walked in a browser. Same pass, MODEL-FLOW-005: user resolved decisions.fine_tuning_undefined (hyperparameter search, RMSE-best), unblocking it; built backend-only (Prisma entity + migration incl. a hand-added partial unique index, orchestration service reusing MODEL-FLOW-003's exact run-launch machinery, 3 routes) and live-verified with three real hyperparameter searches against real trainer containers — including catching and fixing a real bug in the process (a fine-tuning child run finishing would have overwritten ModelDraft.currentRunId with itself rather than leaving it for the eventual winner). CONCURRENT-EDIT NOTE: this file was found mid-session with a JSON syntax error from what appears to be a DIFFERENT session editing MODEL-FLOW-010's findings and adding a MODEL-SERVE-007 decision at the same time as this one — fixed (one missing comma, no content altered) so the ledger stays parseable; flagged here since two sessions writing this file concurrently is worth knowing about, not something this pass caused. Immediately after, MODEL-FLOW-006: audited first, same pattern as -004/-005 (thin entry, most tasks already satisfied by landed work). Five of six tasks were already done by ModelDraft/ModelTrainingRun/ModelFineTuningJob; the one real defect was `ModelConfigSchema`'s `.passthrough()` letting the saved-Model config blob drift — a live query of all 16 existing rows found 6 dead pre-Data-Studio ETL keys and a declared-vs-actually-used singular/plural targetVariable split, neither ever validated. Rewrote the schema to `.strict()`, declaring every field actually seen (including the dead ones, explicitly @deprecated) so legacy rows keep round-tripping — the trap this design had to avoid (updateModelService replaces config wholesale, and edit mode re-sends an existing row's config on every save) was live-verified closed against a REAL legacy Model through the running backend: re-sending its own config returns 200 and is DB-level byte-identical, an unknown key returns 400 naming it. Also tightened PatchModelDraftSchema.hyperparameters to the same scalar constraint the run path already enforces. 12 new unit tests, 40/41 model-related backend tests pass (the one failure is the same pre-existing RunTokenGuard DI-shell gap -004/-005 already documented). Recorded for -007, not fixed here: 0/18 runs and 0/24 drafts have ever linked to a Model — the draft-to-Model bridge (adopt-by-pointer) is entirely -007-T10's to build.",
+  "progress_note": "MODEL-FLOW-000, -001, -002 completed 2026-08-18 (3 of 10 features — denominator moved 9->10 on 2026-08-19 when MODEL-FLOW-009 was added; see that feature's own status for why it's separate from the -003 catalogue work, not an increment to it). Still blocked overall: MODEL-FLOW-005 remains blocked pending a definition of 'fine-tuning' (decisions.fine_tuning_undefined); MODEL-FLOW-009 (lstm/gru) is newly blocked pending a windowing pipeline. -003 is in_progress (T10's catalogue half resolved 2026-08-19, AutoML half still blocked) — the rest of this note (-006/-007/-008 status) pre-dates 2026-08-19 and was not re-audited this pass. 2026-08-21 (second pass): MODEL-FLOW-010's T07 and T08 completed, so all eight of its tasks are done and its acceptance criteria 8, 9 and 10 are implemented. The FEATURE stays in_progress, not completed: V01 and V03 need live servers (and an 8,000-tag dataset) that were not available, and V04/V05 are PARTIAL — their logic is unit-covered but the end-to-end walks they describe were not run. Per CLAUDE.md section 16 that is not 'completed'. Two known gaps recorded on T08: a TRAINED draft is listable by the API but not offered for resume, and duplicate ACTIVE drafts left by a browser-Back exit belong to MODEL-FLOW-011. 2026-08-25 (third pass): MODEL-FLOW-004 audited first (it was one of the never-re-audited thin entries) then built — a new python read endpoint, a new backend route resolving keys off the run row, and the client's evaluation step rewired off its real training run, replacing a client-side OLS placeholder fit that had ignored the trained algorithm entirely. Live-verified end to end (curl through both services against real MinIO/Postgres data) and covered by a digit-exact render-test suite (8/8) plus a static-source guard (4/4) — 740+ prior python tests and 641 prior client tests unaffected. The FEATURE stays in_progress, not completed, for the same class of reason -010 does: the live-browser wizard walk (V02/V03's fuller claim) needs a real NextAuth session this pass had no credentials to forge, so it is render-test-verified but not walked in a browser. Same pass, MODEL-FLOW-005: user resolved decisions.fine_tuning_undefined (hyperparameter search, RMSE-best), unblocking it; built backend-only (Prisma entity + migration incl. a hand-added partial unique index, orchestration service reusing MODEL-FLOW-003's exact run-launch machinery, 3 routes) and live-verified with three real hyperparameter searches against real trainer containers — including catching and fixing a real bug in the process (a fine-tuning child run finishing would have overwritten ModelDraft.currentRunId with itself rather than leaving it for the eventual winner). CONCURRENT-EDIT NOTE: this file was found mid-session with a JSON syntax error from what appears to be a DIFFERENT session editing MODEL-FLOW-010's findings and adding a MODEL-SERVE-007 decision at the same time as this one — fixed (one missing comma, no content altered) so the ledger stays parseable; flagged here since two sessions writing this file concurrently is worth knowing about, not something this pass caused. Immediately after, MODEL-FLOW-006: audited first, same pattern as -004/-005 (thin entry, most tasks already satisfied by landed work). Five of six tasks were already done by ModelDraft/ModelTrainingRun/ModelFineTuningJob; the one real defect was `ModelConfigSchema`'s `.passthrough()` letting the saved-Model config blob drift — a live query of all 16 existing rows found 6 dead pre-Data-Studio ETL keys and a declared-vs-actually-used singular/plural targetVariable split, neither ever validated. Rewrote the schema to `.strict()`, declaring every field actually seen (including the dead ones, explicitly @deprecated) so legacy rows keep round-tripping — the trap this design had to avoid (updateModelService replaces config wholesale, and edit mode re-sends an existing row's config on every save) was live-verified closed against a REAL legacy Model through the running backend: re-sending its own config returns 200 and is DB-level byte-identical, an unknown key returns 400 naming it. Also tightened PatchModelDraftSchema.hyperparameters to the same scalar constraint the run path already enforces. 12 new unit tests, 40/41 model-related backend tests pass (the one failure is the same pre-existing RunTokenGuard DI-shell gap -004/-005 already documented). Recorded for -007, not fixed here: 0/18 runs and 0/24 drafts have ever linked to a Model — the draft-to-Model bridge (adopt-by-pointer) is entirely -007-T10's to build. 2026-08-27 (fourth pass, MODEL-FLOW-013): the '3 of 10' denominator two sentences into this note was itself stale before this pass touched it — the file already held twelve features by the time this session started (MODEL-FLOW-009 through -013), so 10 was never re-derived after being written. Not corrected retroactively in the sentence itself, per this file's own established practice of appending rather than rewriting superseded claims — noted here instead. This pass: audited MODEL-FLOW-013 (Model Selection step) and found the wizard ITSELF broken, independent of that feature's own scope — STEP_LABELS/the switch in create-model-form.tsx already shipped six cases, but MP_TOTAL_STEPS and every step-count-driven mechanism in use-model-pipeline-nav.ts (goTo/next/canAdvance/all nine relock calls/edit-mode's setHighestUnlocked(MP_TOTAL_STEPS)) still enforced five, so the real Save Model screen (case 6, Phase6Deploy) was unreachable through any navigation path and Phase4ModelSelection was a one-line stub. Fixed MP_TOTAL_STEPS to 6, canAdvance's cases renumbered (new case 4 for Model Selection mirrors case 3's trainState gate; case 5 is the old unconditional-true Evaluation gate; case 6 is the old terminal false), all nine Training-Config relock calls confirmed still correct at Math.min(prev,3) since the inserted step sits AFTER what they invalidate. existing_flow/architecture/refactor_goals/global_definition_of_done updated for six steps; MODEL-FLOW-004/-008/-010's stale five-step claims corrected or dated rather than silently rewritten.",
   "decisions": {
     "draft_persistence": {
       "chosen": "B — ModelDraft as a database entity",
@@ -30,26 +30,22 @@
       "rationale": "This file's project is 'Model Creation Flow Refactor' and its global_definition_of_done is written entirely in terms of the five-step wizard and the Save Model persistence boundary. Serving is downstream of that boundary, has a different lifecycle (a long-running service, not a job that exits), a different failure model, and a different audience. Folding it in would move progress from 3/10 to 3/16 with no work regressing, and would leave MODEL-FLOW-008's end-to-end criterion looking incomplete for reasons unrelated to the flow it verifies. Same precedent this ledger already set twice: MODEL-FLOW-011 was kept out of MODEL-FLOW-002 for the same reason, and DS-LAKE put the DatasetDraft entity and its sweeper nine features apart.",
       "coupling": "Four hooks remain in THIS file and are added below: MODEL-FLOW-007-T11 (record what serving needs at adoption time), MODEL-FLOW-011-T05 (do not delete an adopted prefix), the note on MODEL-FLOW-005 that /retrain is the SAME undefined operation, and one new global_definition_of_done line. Everything else lives in MODEL-SERVE."
     },
-
     "retrain_and_fine_tuning_are_one_question": {
       "note": "A serving-plane POST /retrain and MODEL-FLOW-005's Fine-Tuning are not two features that happen to be similar — they are the same unanswered question wearing two names, and answering it once answers both. decisions.fine_tuning_undefined already states why: train.py fits once and exits, and HistGradientBoostingRegressor has no incremental warm start. Whatever /retrain turns out to mean (a fresh fit on a widened window, a hyperparameter search reusing the split, or a genuine warm start on a framework that supports one) is the same thing MODEL-FLOW-005 is blocked on. MODEL-SERVE-004 is therefore recorded as blocked on the identical decision rather than as independent work, so that resolving it cannot be double-counted."
     },
-
     "serving_artifacts_stay_under_the_draft_prefix": {
       "note": "MODEL-FLOW-007-T10 adopts run artifacts BY POINTER and never copies bytes, which is correct and matches DatasetArtifact. The consequence for serving, which nothing in this file states yet: the object a production model loads lives at drafts/{modelDraftId}/runs/{runId}/, permanently, under a prefix whose name says 'draft'. That is acceptable — renaming it would mean copying bytes, which the adoption rule exists to avoid — but it makes MODEL-FLOW-011-T02 (reclaim the runs' object prefixes) capable of deleting the bytes a live model is serving. See MODEL-FLOW-011-T05."
     },
-
     "bucket_layout_is_downstream": {
       "note": "MODEL-SERVE-007 separates object storage into buckets by retention class. TWO CONSEQUENCES FOR THIS LEDGER, neither reopening a completed task. (1) MODEL-FLOW-003-T08's key shapes are UNCHANGED — every guard it built is key-structural and bucket-blind, confirmed by MODEL-FLOW-004's live execution of is_committed_artifact_key, so drafts/{draftId}/runs/{runId}/ keeps its exact string in whichever bucket holds it. Nothing to redo. (2) MODEL-FLOW-011-T02's prefix reclaim will run against a bucket, so it must resolve the bucket rather than assume one; and once `models` is its own bucket, T05's run-level guard is additionally expressible as a bucket-scoped rule an operator can see — which is strictly better than a predicate only this repo knows about. Recorded here so whoever picks up 011 does not hardcode `datasets` into a sweep."
     }
   },
-
   "existing_flow": {
     "preserve": true,
     "steps": [
       {
         "step": 1,
-        "name": "Model Setup",
+        "name": "Select Dataset",
         "actions": ["Set model name", "Select model location", "Select dataset"]
       },
       {
@@ -75,6 +71,15 @@
       },
       {
         "step": 4,
+        "name": "Model Selection",
+        "actions": [
+          "MODEL-FLOW-013. Compare each candidate run trained by Find Best Model",
+          "View each candidate's train/test metrics and loss chart",
+          "Select which candidate carries forward to Evaluation and Save Model"
+        ]
+      },
+      {
+        "step": 5,
         "name": "Evaluation",
         "actions": [
           "Display evaluation metrics",
@@ -83,34 +88,32 @@
         ]
       },
       {
-        "step": 5,
+        "step": 6,
         "name": "Save Model",
         "actions": ["Review model result", "Save model"]
       }
     ]
   },
-
   "refactor_goals": [
-    "Keep the existing Model Creation Flow's step-by-step shape unchanged from the user's perspective, extended from four steps to five (see MODEL-FLOW-010).",
+    "Keep the existing Model Creation Flow's step-by-step shape unchanged from the user's perspective, extended from four steps to six (see MODEL-FLOW-010, then MODEL-FLOW-013's Model Selection insertion).",
     "Training must not commit the model to the database.",
     "Evaluation must use the training result from the temporary Model Workspace.",
     "Fine-tuning must run as a background process.",
     "Fine-tuning must not commit the model to the database.",
     "Model configuration must be preserved independently from the final database commit.",
     "Model artifacts must be stored outside the relational database when appropriate.",
-    "The Save Model action in Step 5 is the only operation that commits the final model to the database."
+    "The Save Model action in Step 6 is the only operation that commits the final model to the database."
   ],
-
   "architecture": {
     "user_flow": [
       "MODEL_SETUP",
       "DATASET_REVIEW",
       "TRAINING_CONFIGURATION",
       "TRAINING",
+      "MODEL_SELECTION",
       "EVALUATION",
       "SAVE_MODEL"
     ],
-
     "runtime_flow": [
       "MODEL_DRAFT",
       "TRAINING_JOB",
@@ -121,18 +124,17 @@
       "READY_TO_SAVE",
       "MODEL_COMMIT"
     ],
-
     "persistence_boundary": {
       "database_commit_allowed": ["SAVE_MODEL"],
       "database_commit_not_allowed": [
         "MODEL_SETUP",
         "TRAINING",
         "EVALUATION",
-        "FINE_TUNING"
+        "FINE_TUNING",
+        "MODEL_SELECTION"
       ]
     }
   },
-
   "features": [
     {
       "id": "MODEL-FLOW-000",
@@ -141,10 +143,8 @@
       "status": "completed",
       "progress": 100,
       "dependencies": [],
-
       "description": "Four defects that make the existing training path either impossible to start or unsafe to trust. None is a refactor; every one is a correctness fix that MODEL-FLOW-003 onward depend on. T02 in particular gates every metric Step 3 displays.",
       "reaudit_note": "Re-audited 2026-08-18 before implementation, by reading each named file directly (not by report). Five of the seven original tasks (T01, T03, T04, T05, T07) described code that was ALREADY CORRECT at commit 1df3c53 — the audit that produced this feature had drifted from the tree. T03's premise was inverted (memory 8 GiB > tmpfs 2 GiB, already consistent, not the reverse). Only T02 and T06 were live defects; both are now fixed. The likely cause of the drift: images/trainer/train.py:180-203 held a half-applied T02 patch (a broken orphan build_feature_spec with an undefined _reads_tag and an unimportable `spec = {...}` set-of-Ellipsis) — evidence someone started T02 before, landed the Pydantic field and helper functions, and left the wiring. See T08-T10 for defects found during re-audit that were NOT in the original task list.",
-
       "tasks": [
         {
           "id": "MODEL-FLOW-000-T01",
@@ -227,7 +227,6 @@
           "verification_note": "Fixed 2026-08-18: collapsed to a plain `status: 'FAILED'`. The two distinct failureReason strings are unchanged."
         }
       ],
-
       "acceptance_criteria": [
         "POST /:modelId/runs succeeds for a dataset saved through the wizard.",
         "feature_spec.json for a GOLD artifact records target_y, target_scaled and derived_from_target.",
@@ -238,7 +237,6 @@
         "No read path returns tokenHash.",
         "The connector service imports cleanly and no endpoint duplicates /column-stats."
       ],
-
       "verification": [
         {
           "id": "MODEL-FLOW-000-V01",
@@ -274,9 +272,7 @@
       "progress": 100,
       "dependencies": [],
       "audit_document": "docs/MODEL_FLOW_AUDIT.md",
-
       "description": "Audit the existing Model Creation Flow and identify all database commit operations that occur during Step 1, Step 2 training, Step 3 evaluation, and Step 4 Save Model.",
-
       "tasks": [
         {
           "id": "MODEL-FLOW-001-T01",
@@ -321,7 +317,6 @@
           "progress": 100
         }
       ],
-
       "acceptance_criteria": [
         "The existing four-step user flow is fully documented.",
         "All database write operations during training are identified.",
@@ -329,7 +324,6 @@
         "The current Save Model database commit flow is identified.",
         "The exact persistence boundary that needs to be moved to Step 4 is documented."
       ],
-
       "verification": [
         {
           "id": "MODEL-FLOW-001-V01",
@@ -343,7 +337,6 @@
         }
       ]
     },
-
     {
       "id": "MODEL-FLOW-002",
       "title": "Model Draft Workspace as a Database Entity",
@@ -354,7 +347,6 @@
       "implementation": "SUPERSEDED-then-REWORKED. The first pass built a client-only jotai draft (apps/client/store/model-pipeline.ts: DraftState + mpDraftIdAtom/mpDraftStateAtom/mpTrainingResultAtom/mpEvaluationResultAtom/mpArtifactRefAtom, wired into resetWizardAtom). That state is still useful as wizard UI state and was NOT deleted — but it could not serve as the draft MODEL-FLOW-003 needs: a training container has no browser and reads its spec from an HTTP endpoint backed by a row. See decisions.draft_persistence. T06-T09 (2026-08-18) added the server-side ModelDraft beneath it: Prisma entity + migration, ModelTrainingRun repointed with a CHECK constraint, a new authorized/model-draft module (create/get/patch/abandon), and a client sync hook (mpServerDraftIdAtom + useModelDraftSync) wired into Phase2TrainingConfig.",
       "rework_note": "The jotai atoms stay as the wizard's local mirror. What was added is the server-side owner beneath them — done.",
       "description": "Introduce a temporary Model Draft Workspace that stores the current model configuration, training result, evaluation result, and artifacts before the user clicks Save Model.",
-
       "tasks": [
         {
           "id": "MODEL-FLOW-002-T01",
@@ -419,7 +411,6 @@
           "verification_note": "Implemented 2026-08-18: services/model-draft.ts (object-literal service) + hooks/model/use-model-draft-sync.ts (create-on-first-edit with in-flight dedup, mirroring dataset-draft-bronze.ts; 600ms debounced PATCH). Wired into Phase2TrainingConfig — that component only mounts once canAdvance(1) has validated workspace/plant/node/dataset/name, which is the 'advancing Step 1 -> 2' trigger. New mpServerDraftIdAtom cleared in BOTH resetWizardAtom and resetPipeline (the two reset writers previously disagreed on which mp* atoms they touched). targetY is written null unless exactly one target is selected (never targetVariables[0]) — the MODEL-FLOW-003-T10 trap named in decisions. splitRatio converted from percentage to fraction at the client boundary. pnpm --filter=client check-types and build both clean (pre-existing unrelated test-file errors only, confirmed identical with/without this branch's changes via git stash)."
         }
       ],
-
       "draft_data": [
         "model_name",
         "model_location",
@@ -435,7 +426,6 @@
         "fine_tuning_result",
         "model_config_reference"
       ],
-
       "acceptance_criteria": [
         "The existing four-step UI remains unchanged.",
         "A ModelDraft row exists and holds Step 1 and Step 2 configuration.",
@@ -443,7 +433,6 @@
         "A training run can be created against a ModelDraft with no Model in existence.",
         "Abandoning a draft leaves its runs and artifacts in place."
       ],
-
       "verification": [
         {
           "id": "MODEL-FLOW-002-V01",
@@ -465,7 +454,6 @@
         }
       ]
     },
-
     {
       "id": "MODEL-FLOW-003",
       "title": "Training Against a Draft, With No Model Commit",
@@ -473,7 +461,6 @@
       "status": "in_progress",
       "progress": 90,
       "dependencies": ["MODEL-FLOW-000", "MODEL-FLOW-002"],
-
       "implementation": "Backend done 2026-08-18 (T02/T04/T07/T08) — see each task's verification_note. Client done same day (T01/T03/T04/T05/T06/T09): use-model-training.ts rewritten — no longer calls useModelCommit(); instead validates (single target, single algorithm, algorithm in the training container's supported set, AutoML toggles off, dataset has a FINAL artifact), calls the new modelDraftRunService.create via authorized/model-drafts/:draftId/runs, and polls modelDraftRunService.get on a 2.5s interval until the run reaches a terminal status, resuming the poll on remount from ModelDraft.currentRunId if a run is still in flight. useModelDraftSync now exposes ensureDraftId so Start Training can guarantee a draft exists even if the 600ms PATCH debounce hasn't fired yet. TrainState gained lastLog (shown as text in place of the old fake progress bar — T09); mpTrainingResultAtom/mpArtifactRefAtom are populated from the completed run's metrics/modelKey on SUCCEEDED (T05/T06). T10 is the one open item, and its catalogue half was resolved 2026-08-19: validation now enforces exactly one target and one algorithm before a run is created; the wizard's algorithm catalogue (now 12 entries: ols/ridge/hist_gradient_boosting/svm/mlp/grp/pls/random_forest/lightgbm/xgboost/lstm/gru) is intentional per product decision, and train.py's build_model was extended to implement 10 of the 12 (images/trainer/train.py) — lstm/gru remain deferred to MODEL-FLOW-009 and disabled inline in the wizard. STILL OPEN: AutoML toggles (Find Best Model/Params) still have no training-container counterpart — that half of T10 stays blocked; see MODEL-FLOW-003-T10's blocked_reason for why it is not a build_model change.",
       "description": "Keep Step 2's experience unchanged while training runs against a ModelDraft. Training writes job rows (ModelTrainingRun, ModelTrainingRunLog) — it must, the container authenticates against one and reports into the other — but creates no Model. See decisions.persistence_boundary_clarified.",
       "tasks": [
@@ -551,7 +538,6 @@
           "blocked_reason": "CATALOGUE HALF RESOLVED 2026-08-19: product decision made — the wizard's Algorithm catalogue (12 entries: ols/ridge/hist_gradient_boosting/svm/mlp/grp/pls/random_forest/lightgbm/xgboost/lstm/gru) is intentional; every algorithm is meant to run against real plant data and be compared before anything is narrowed. train.py's build_model was extended to cover 10 of the 12 (images/trainer/train.py); the bare 'hgb' string was dropped from the client-facing enum (kept as a build_model branch alongside 'hist_gradient_boosting' for backend compatibility only — one algorithm, one client-facing id); lstm/gru are deferred to MODEL-FLOW-009 (a data-shape/pipeline change, not a build_model branch) and disabled inline in AlgorithmSelector with a stated reason so a user cannot select a run that will always fail. STILL BLOCKED — AUTOML HALF: Find Best Model / Find Best Params have no training-container counterpart, and this task does not resolve that — one run fits one algorithm; AutoML is N runs orchestrated ABOVE the container (a client/backend loop calling create-run repeatedly and comparing results), not a flag passed into train.py. Sizing that as a build_model change would understate it the same way sizing lstm/gru as one would have. T10's client-side AutoML refusal (use-model-training.ts, \"AutoML ... isn't wired to a real training run yet\") stays in place unchanged. Decision needed before this task can close: define the AutoML orchestration loop, or formally drop the two toggles from the UI."
         }
       ],
-
       "acceptance_criteria": [
         "The Step 2 user interface remains unchanged.",
         "Clicking Training starts a real container.",
@@ -561,7 +547,6 @@
         "Run artifacts are written under the draft's own object prefix.",
         "Training completion sets the draft state to TRAINED."
       ],
-
       "verification": [
         {
           "id": "MODEL-FLOW-003-V01",
@@ -583,7 +568,6 @@
         }
       ]
     },
-
     {
       "id": "MODEL-FLOW-004",
       "title": "Preserve Evaluation Flow Using Model Draft Results",
@@ -591,11 +575,8 @@
       "status": "in_progress",
       "progress": 90,
       "dependencies": ["MODEL-FLOW-003"],
-
-      "description": "Keep the existing Step 4 Evaluation UI (note: the ledger's own step numbers were stale — MODEL-FLOW-010 renumbered this to Step 4 on 2026-08-20 and this entry still said 'Step 3' until this pass) and ensure that evaluation metrics and charts use the Model Draft's real training run instead of requiring a persisted Model database record.",
-
+      "description": "Keep the existing Step 5 Evaluation UI (renumbering history: MODEL-FLOW-010 moved this to Step 4 on 2026-08-20; MODEL-FLOW-013 inserted Model Selection at Step 4 on 2026-08-27, shifting this entry to Step 5 — this description named 'Step 3' before MODEL-FLOW-010's own pass) and ensure that evaluation metrics and charts use the Model Draft's real training run instead of requiring a persisted Model database record.",
       "implementation": "Done 2026-08-25. AUDITED FIRST, per CLAUDE.md §18: this entry was one of the thin, never-re-audited ones (5 bare task titles, no detail) — read against the tree before scoping, not against the prior task titles. FINDING: Phase3Evaluation was not 'using a stale API', it used NO real data source at all — it re-materialised the dataset client-side and fit a 2-variable OLS line over the target plus 'the first non-target tag it finds' (`computeFit`, old `lib/model-metrics.ts:150`), ignoring the trained algorithm entirely. The run's real output was already captured on SUCCEEDED (MODEL-FLOW-003-T05/T06) into `mpTrainingResultAtom`/`mpArtifactRefAtom` and READ BY NOTHING — confirmed by grep, zero readers of either atom before this pass.\n\nNo read path for a run's predictions existed anywhere in the stack — confirmed by executing the guard live: `is_committed_artifact_key('drafts/{d}/runs/{r}/predictions.parquet')` returns False, and the four existing parse endpoints (`/rows`, `/preview`, `/histogram`, `/scatter`) all route through `sample_rows`, which assumes per-tag `__status` sidecar columns a run's 3-column `{timestamp, y_true, y_pred}` frame does not have. Built new: `POST /v1/preprocess/models/runs/predictions` (`artifact_service.run_predictions`) — reads the full test-split frame, computes `row_count`/`residual_sd`/a `residual_rmse_check` cross-check/y-ranges over the FULL frame (no decimation branch: `MAX_PREDICTION_POINTS=20000`, comfortably above the largest observed run at 4,633 rows; a run over the cap is refused by name rather than silently sampled — deferred design recorded in `schemas/preprocess.py`'s own comment for whoever hits it first), and optionally reads `run_manifest.json` for `derived_from_target`/`target_scaled`. `GET .../model-drafts/:draftId/runs/:runId/predictions` (`getDraftRunPredictionsService`) resolves `predictionsKey`/`manifestKey` OFF THE RUN ROW, never from the request — same discipline `mintUploadUrls` already applies on the write side — and refuses (404, naming which) a run that has not SUCCEEDED or has no `predictionsKey`. Client: `modelDraftRunService.predictions` + new `useDraftRunEvaluation` hook, keyed on `(draftId, runId)` with a fallback to `ModelDraft.currentRunId` when the atom hint is empty (mirrors `use-model-training.ts`'s own reconnect-effect trust in that field). `lib/model-metrics.ts` rewritten: `computeFit`/`computeMetrics`/`pickDefaultPair` DELETED (grepped: Step 4 was `computeFit`'s only caller; the other two already had zero callers, confirmed dead before removal), replaced by `fitFromRun(points, {r2,rmse,sd})` — a pure wrap, no fitting. `phase-3-evaluation.tsx` rewritten around the hook; kept `METRIC_KEY`/`METRIC_META`/`buildFitRows`/both chart components/the histogram+Q-Q section entirely unchanged, per the seam the old module's own doc comment specified.\n\nTWO CORRECTIONS TO A PRIOR READING, RECORDED RATHER THAN SILENTLY FIXED (MinIO screenshot findings in MODEL-FLOW-010/MODEL-SERVE-000 called `holdoutMetrics` null on every observed run and left the cause open): (1) confirmed via the one real log line that exists (`Holdout replay skipped: Could not read '.../validate_data.parquet': NoSuchKey`) — it fails at the REPLAY step on a missing source object, not at presign. `train.py`'s own comment already documents this as the common case (no holdout on the dataset), not a bug. (2) There IS a real, separate, still-latent defect one line later: `tryReplayHoldout`'s own `presignArtifact({source_key: targetKey})` call presigns `.../validate_ready.parquet`, which the SAME committed-artifact guard refuses (verified by executing it: `is_committed_artifact_key` returns False for that key too) — it has simply never been reached by any observed run. Recorded against DS-LAKE-018-T05, not fixed here — it is not this ledger's to fix, and 'holdoutMetrics is null' already has its real, boring cause.\n\nSCOPE DECISIONS (user-confirmed, not unilateral): (a) the 'Compare with…' control is DISABLED with a stated reason, not removed and not left fabricating a series — `seededNoise`/`comparePoints`/`compareFit` deleted; no saved Model can supply a real predicted series until MODEL-FLOW-007 adopts a run by pointer, so faking one here would be the same defect this feature exists to remove. (b) Resuming a TRAINED draft into Step 4 (MODEL-FLOW-010-T08's recorded gap 1) stays OUT of scope — `useDraftRunEvaluation`'s `(draftId, runId)` key with the `currentRunId` fallback is deliberately shaped so that resume work is a follow-on, not a rewrite, when someone picks it up. (c) Metric cards stay exactly r2/rmse/sd — MAE rides in the served payload, undisplayed, rather than widening `MetricKey` against acceptance criterion 1.\n\nHONEST EMPTY STATES ADDED — the one place criterion 1 ('UI remains unchanged') had to bend, stated rather than discovered: no run yet, run still training, run FAILED/CANCELED (names the reason), and the load/error states from the hook itself. Load-bearing among these: `use-model-wizard-mode.ts:169-170` force-unlocks all 5 steps and sets `trainState:'done'` on EDIT MODE purely because the dataset resolved — there is no run, no `runId`, and `useModelCommit` persists neither on Save. Step 4 in edit mode therefore always hits the no-run empty state until MODEL-FLOW-007-T11 records a run reference on the saved Model.\n\nRenamed 'Validation residual diagnostics' -> 'Test-split residual diagnostics': `predictions.parquet` is the run's TEST split, not the validation holdout, which is a distinct object with its own (currently always-null, see above) metrics shown on Step 2's own Holdout panel — the old heading misnamed what the histogram/Q-Q actually summarise.",
-
       "tasks": [
         {
           "id": "MODEL-FLOW-004-T01",
@@ -633,16 +614,14 @@
           "verification_note": "NO SCHEMA CHANGE — the finding that made this a read task, not a write task: the evaluation result already IS the `ModelTrainingRun` row (`metrics`/`predictionsKey`/`manifestKey`, all populated on every observed SUCCEEDED run), and `ModelDraft.currentRunId` already points at it. A new evaluation column would have duplicated `ModelTrainingRun.metrics` — the class of duplication this ledger has corrected twice before (MODEL-FLOW-010's own findings)."
         }
       ],
-
       "acceptance_criteria": [
-        "The existing Step 4 Evaluation UI remains unchanged, with one stated exception: edit mode and a not-yet-trained/still-training/failed draft now show an honest empty state instead of a client-fabricated fit.",
+        "The existing Step 5 Evaluation UI remains unchanged, with one stated exception: edit mode and a not-yet-trained/still-training/failed draft now show an honest empty state instead of a client-fabricated fit.",
         "Evaluation metrics are generated from the current training run's own metrics.json, never recomputed client-side.",
         "Actual vs Predict chart continues to work, fed by the run's real test-split predictions.",
         "Residual chart continues to work, same data source.",
         "Evaluation does not require a persistent Model database record.",
         "Evaluation results are associated with the Model Draft via its current training run — no new persistence added."
       ],
-
       "verification": [
         {
           "id": "MODEL-FLOW-004-V01",
@@ -664,7 +643,6 @@
         }
       ]
     },
-
     {
       "id": "MODEL-FLOW-005",
       "title": "Implement Background Fine-Tuning Process",
@@ -672,13 +650,9 @@
       "status": "in_progress",
       "progress": 85,
       "dependencies": ["MODEL-FLOW-003", "MODEL-FLOW-004"],
-
       "description": "Add an asynchronous background fine-tuning process that operates on the trained Model Draft and does not commit the model to the database.",
-
       "unblocked": "2026-08-25, user decision: fine-tuning = a HYPERPARAMETER SEARCH over one algorithm/artifact/split, N hyperparameter sets tried in sequence, best kept by RMSE. Recorded in decisions.fine_tuning_undefined (this file) — MODEL-SERVE's decisions.retrain_and_fine_tuning_are_one_question names the same question for /retrain; that ledger still needs its own note updated when someone picks up MODEL-SERVE-004, not duplicated here.",
-
       "implementation": "Built 2026-08-25, backend only — no client wiring in this pass (not asked for; the wizard's existing AutoML/Find-Best-Params toggles stay disabled, MODEL-FLOW-003-T10's own note still applies). No new spawn/claim/complete/queue infrastructure: a fine-tuning job is a ModelFineTuningJob row that GROUPS ordinary ModelTrainingRun rows (new nullable fineTuningJobId FK), each one launched through the EXACT MODEL-FLOW-003 machinery, live-verified end to end. This is the direct build-out of MODEL-FLOW-003-T10's own blocked_reason: 'AutoML is N runs orchestrated ABOVE the container ... not a flag passed into train.py.'\n\nExtraction, not duplication: `ModelRunLaunchAuthorizedService.createDraftRunService` was split into `assertDraftWritable` (access+lifecycle gate, now public) + `launchDraftRun` (the actual write, now takes an optional `fineTuningJobId`, no user/role param). `createDraftRunService` itself is unchanged in behaviour — it calls both in sequence — verified by its own pre-existing 7-test suite passing unmodified. `launchDraftRun` is what both the job's first run (`ModelFineTuningAuthorizedService.createJob`) and every chained run (`advanceJobForRun`) call — a fine-tuning child run goes through the SAME buildRunData validation, the SAME transaction shape, the SAME trackSpawn fire-and-forget spawn as a normal single run.\n\nAdvancing a job (`advanceJobForRun`) is IDEMPOTENT, keyed by a compare-and-swap `updateMany` WHERE `(id, currentRunId, status IN (QUEUED,RUNNING))` — calling it twice for the same terminated run is a no-op the second time, unit-tested directly. Two call sites, both wired: `ModelRunAuthorizedService.complete()` calls it as a best-effort nudge (wrapped so it can NEVER fail the container's webhook response — a training container has no way to retry a 500), and `getJobService` calls it opportunistically on every read, so a job whose nudge was lost (the exact class of gap MODEL-FLOW-011-T04 already tracks for a single orphaned run) still advances the next time anyone looks at it. No cron, no queue, no BullMQ/Redis — CLAUDE.md §11's instruction to reuse or justify before introducing one.\n\nREAL BUG CAUGHT WHILE WIRING, not by review: `complete()`'s existing SUCCEEDED-draft branch unconditionally set `ModelDraft.currentRunId = runId` — correct for a normal run, WRONG for a fine-tuning child run finishing mid-search, which would have pointed the draft at whichever INTERMEDIATE hyperparameter set happened to finish, not the eventual winner (and MODEL-FLOW-004's `useDraftRunEvaluation` would have shown that intermediate run in Step 4 for the whole search's duration). Fixed by excluding `!!run.fineTuningJobId` from that branch — only `advanceJobForRun`'s own completion branch may now set `ModelDraft.currentRunId`, and only to the true best run. Live-verified this fix works: `bestRunId` was correctly `86728c46...` (rmse 0.659) not `f8c1c1e0...` (the run that finished LAST, rmse 0.677, worse) — see V01's note.\n\nSelection metric is RMSE, minimized, not configurable — R² was explicitly rejected: a real observed run scored r2 = -1,110,858 (MODEL-FLOW-004's own finding) while rmse stayed a sane, comparable number. Concurrency: a partial unique index (`ModelFineTuningJob_one_live_per_draft`, hand-added to the migration same precedent as 20260818021900_model_flow_002_owner_check) refuses a second QUEUED/RUNNING job per draft at the database — live-verified with a real concurrent-POST 409, not just a service-level check.",
-
       "tasks": [
         {
           "id": "MODEL-FLOW-005-T01",
@@ -737,9 +711,7 @@
           "verification_note": "Only a FAILED job retries, relaunching the EXACT hyperparameter set that failed (`completedRuns` deliberately not incremented on failure, so `sets[completedRuns]` is always that set) and resuming the sequence from there. Live-verified against a real (deliberately-triggered) FAILED job: relaunch succeeded, job returned to RUNNING with a fresh currentRunId. NOT covered, stated explicitly: a job stuck RUNNING because its current run is itself orphaned (a nest --watch restart killing the in-memory container tracker mid-flight, MODEL-FLOW-003-V01's own observed incident) — retry only fires on FAILED; that gap is MODEL-FLOW-011-T04's, not duplicated here."
         }
       ],
-
       "job_states": ["QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "CANCELED"],
-
       "acceptance_criteria": [
         "Fine-Tuning runs as a background process. — satisfied by the reconcile-on-webhook-or-read design, not a scheduler.",
         "The API does not block while Fine-Tuning is running. — POST returns 201 immediately with the job id; live-verified.",
@@ -751,7 +723,6 @@
         "Fine-Tuning can be retried. — POST .../retry, FAILED jobs only.",
         "A successful Fine-Tuning run produces a new model artifact that can be used by Save Model. — the winning run's modelKey, same as any other run."
       ],
-
       "verification": [
         {
           "id": "MODEL-FLOW-005-V01",
@@ -785,7 +756,6 @@
         }
       ]
     },
-
     {
       "id": "MODEL-FLOW-006",
       "title": "Persist Model Configuration and Artifacts Before Final Save",
@@ -793,11 +763,8 @@
       "status": "in_progress",
       "progress": 95,
       "dependencies": ["MODEL-FLOW-003", "MODEL-FLOW-005"],
-
       "description": "Store model configuration, training configuration, evaluation results, and model artifacts in temporary or external storage while keeping the final Model database record uncommitted.",
-
       "implementation": "AUDITED FIRST 2026-08-25, per CLAUDE.md §18 — another thin, never-re-audited entry (6 bare task titles). FIVE OF SIX TASKS WERE ALREADY SATISFIED by work already landed: training config lives on ModelDraft (8 PATCHable fields) + the authoritative reproducible spec on ModelTrainingRun (checksum, imageDigest, featureSpecKey, seed, computed cut_timestamp — strictly more than the draft holds); fine-tuning config on ModelFineTuningJob (built in -005, same session); evaluation on ModelTrainingRun.metrics/.holdoutMetrics (read path built in -004); artifact references are the run's own modelKey/metricsKey/manifestKey/predictionsKey; 'latest valid' is ModelDraft.currentRunId (+ ModelFineTuningJob.bestRunId). This is architecturally the SAME shape the ledger's own precedent already uses for datasets: DatasetDraft holds identity + currentArtifactId, the recipe lives on DatasetArtifact.operations — ModelDraft holds identity + currentRunId, the spec lives on the run row.\n\nTHE ONE REAL DEFECT, found by querying the live dev DB rather than reading code alone: `ModelConfigSchema` (model.authorized.dto.ts) was `.passthrough()` and declared only 6 of the ~18 keys the client actually sends, with its own comment stating 'the canonical shape lives in the client type; the backend only stores it round-trip.' A live audit of all 16 existing Model rows found the drift that allowed: 6 dead pre-Data-Studio ETL keys (dataSource, fillStrategies, timeRange, selectedTags, customDateRange, savedSourceId) persisted verbatim, and BOTH targetVariable (declared, singular) and targetVariables (used, undeclared, plural) present across rows — the field real data mostly uses survived only because nothing validated it. Also found: trainTestSplit is a PERCENTAGE in Model.data.config (70/80/85 observed) but a FRACTION on ModelDraft.splitRatio and ModelTrainingRun.splitSpec.ratio — three homes, two units, unvalidated on the one that matters here.\n\nFIXED: ModelConfigSchema rewritten from .passthrough() to .strict(), declaring every field actually seen in production — live fields typed properly (targetVariables[], algorithms[], findBestModel/findBestParams, lossFunction, deployment, etc.), the 6 dead ETL keys and the singular targetVariable kept as explicitly @deprecated z.unknown()/string fields so legacy rows keep validating. trainTestSplit validated as a percentage (.min(50).max(95)) with a comment naming all three homes and their units — unifying the unit is -007's job, when Save Model can derive it from the adopted run's own splitSpec instead of trusting the browser. New DeploymentConfigSchema declared (autoRetrain/warnSd/criticalSd/driftMonitor/driftThresholdPct) even though 0 of 16 rows carry it and no UI currently writes it (phase-4-deploy.tsx's own docblock says so) — -007 decides whether to wire the UI or delete the field and its 5 client atoms, not decided here.\n\nTHE TRAP THIS DESIGN HAD TO AVOID, LIVE-VERIFIED CLOSED: updateModelService replaces config WHOLESALE, not by merge, and edit mode loads an existing Model's config then sends it back on save — a naively strict schema would have broken every edit of the 16 legacy rows. Verified against a REAL legacy row (5848c20f-..., carrying all 6 dead ETL keys) through the RUNNING backend: PATCH with its own config re-sent returned 200, and a direct DB equality check (`data->'config' = <original>::jsonb`) confirmed the stored blob is byte-identical, not merely 'still valid'. The refusal half was verified the same way: PATCHing an unknown key against the same live row returned 400 naming the exact key.\n\nAlso tightened: PatchModelDraftSchema.hyperparameters (model-draft.authorized.dto.ts) went from z.unknown() to the same HyperparametersSchema scalar constraint the run path already enforces — a draft could otherwise hold a hyperparameter value CreateTrainingRunSchema would refuse at Start Training, discovered only then. Confirmed compatible with the client's own HyperparamValue type (string|number|boolean|null) before tightening.\n\nSTILL RECORDED, NOT FIXED HERE (handed to -007, which is where they actually belong): 0 of 18 training runs have ever had modelId set; 0 of 24 drafts have ever had savedModelId set — the draft-to-Model bridge has never been exercised, confirming -007-T11's own 'UNVERIFIED PREMISE' framing was right to doubt itself. Save Model's commit payload (use-model-commit.ts:56-68) sends no runId/modelKey/metrics at all — this is why a saved Model today cannot be traced to what produced it, and it is exactly what -007-T10's adopt-by-pointer is for. Also recorded for whoever next touches these areas: two dead client inconsistencies (lossFunction default disagrees between resetWizardAtom 'mse' and resetPipeline 'rmse'; resetPipeline hardcodes the metric array instead of importing METRIC_KEYS), ~29 dead client atoms/hooks from the pre-Data-Studio wizard, and CreateModelRunSchema (model-run.authorized.dto.ts) confirmed dead code via grep with a harmless bound mismatch against the live schema.",
-
       "tasks": [
         {
           "id": "MODEL-FLOW-006-T01",
@@ -842,7 +809,6 @@
           "verification_note": "Already satisfied — ModelDraft.currentRunId (set transactionally on every successful run, MODEL-FLOW-003-T07/T04) and ModelFineTuningJob.bestRunId (set only after every hyperparameter set completes, pointed at the true best by RMSE — MODEL-FLOW-005, live-verified). 'Valid' = SUCCEEDED status AND non-null modelKey; both already enforced by the existing code paths, not newly added here."
         }
       ],
-
       "recommended_storage": {
         "model_metadata": "Database after Save Model",
         "model_config": "Object Storage or File Storage",
@@ -851,7 +817,6 @@
         "evaluation_result": "Model Draft Workspace or Object Storage",
         "model_artifact": "Object Storage"
       },
-
       "acceptance_criteria": [
         "Training configuration is preserved. — ModelDraft + ModelTrainingRun, pre-existing.",
         "Fine-Tuning configuration is preserved. — ModelFineTuningJob, built in -005.",
@@ -860,7 +825,6 @@
         "The latest valid artifact can be identified. — ModelDraft.currentRunId / ModelFineTuningJob.bestRunId.",
         "No persistent Model database record is created before Save Model. — unaffected by this feature; re-checked, still true (0 Model writes anywhere in the touched code)."
       ],
-
       "verification": [
         {
           "id": "MODEL-FLOW-006-V01",
@@ -882,7 +846,6 @@
         }
       ]
     },
-
     {
       "id": "MODEL-FLOW-007",
       "title": "Commit Model Only on Step 4 Save Model",
@@ -890,9 +853,7 @@
       "status": "pending",
       "progress": 0,
       "dependencies": ["MODEL-FLOW-006"],
-
       "description": "Keep the existing Step 4 Save Model UI but make it the only persistence boundary where the Model Draft becomes a persistent Model record.",
-
       "tasks": [
         {
           "id": "MODEL-FLOW-007-T01",
@@ -963,7 +924,6 @@
           "detail": "UNVERIFIED PREMISE — confirm against images/trainer/train.py and the /complete payload before building: the run row is known to carry modelKey/metricsKey/manifestKey/predictionsKey (MODEL-FLOW-003-V03, live-verified), but what manifest.json actually CONTAINS is not recorded anywhere in this ledger, and no checksum of the model object is mentioned on any read path. Save Model is the last moment the full training context is in scope; a serving process opening the object months later has only what was written down here.\n\nAt minimum the saved Model must be able to answer, without re-deriving anything: which object holds the model, its checksum, which feature_spec.json it was fitted against, the framework and its exact version, and the trainTestSplit/targetY it was fitted with. The framework version is not bureaucracy — a joblib pickled by sklearn 1.3 and unpickled by 1.5 can load with a warning and predict subtly differently, which is the same class of failure as MODEL-FLOW-000-T02: it LOOKS LIKE SUCCESS.\n\nIf manifest.json already carries these, this task is a read path and a checksum, not a write. Establish which before scoping it — the MODEL-FLOW-000 re-audit found five of seven tasks describing code that was already correct."
         }
       ],
-
       "acceptance_criteria": [
         "The Step 4 UI remains unchanged.",
         "No persistent Model database record exists before Save Model.",
@@ -975,7 +935,6 @@
         "A failed Save Model operation does not leave a partially persisted Model record.",
         "A successful Save Model operation changes the Model Draft state to SAVED."
       ],
-
       "verification": [
         {
           "id": "MODEL-FLOW-007-V01",
@@ -1004,7 +963,6 @@
         }
       ]
     },
-
     {
       "id": "MODEL-FLOW-008",
       "title": "Verify Complete Model Creation Lifecycle",
@@ -1012,9 +970,7 @@
       "status": "pending",
       "progress": 0,
       "dependencies": ["MODEL-FLOW-007"],
-
-      "description": "Perform end-to-end verification while preserving the existing five-step Model Creation Flow (renumbered from four by MODEL-FLOW-010).",
-
+      "description": "Perform end-to-end verification while preserving the existing six-step Model Creation Flow (renumbered from four to five by MODEL-FLOW-010, then five to six by MODEL-FLOW-013's Model Selection insertion).",
       "tasks": [
         {
           "id": "MODEL-FLOW-008-T01",
@@ -1053,20 +1009,19 @@
           "progress": 0
         }
       ],
-
       "acceptance_criteria": [
-        "The existing five-step user flow remains unchanged (renumbered from four by MODEL-FLOW-010: Setup -> Dataset Review -> Training Configuration -> Evaluation -> Save Model).",
+        "The existing six-step user flow remains unchanged (renumbered four->five by MODEL-FLOW-010, five->six by MODEL-FLOW-013: Select Dataset -> Dataset Review -> Training Configuration -> Model Selection -> Evaluation -> Save Model).",
         "Step 1 creates or updates a Model Draft only.",
         "Step 3 training does not commit a Model to the database.",
-        "Step 4 evaluation works without a persisted Model record.",
+        "Step 5 evaluation works without a persisted Model record.",
         "Fine-Tuning runs as a background process.",
         "Fine-Tuning does not commit a Model to the database.",
-        "Step 5 Save Model creates the persistent Model record.",
+        "Step 6 Save Model creates the persistent Model record.",
         "The final Model references the correct configuration and artifact.",
         "No database commit occurs before Save Model.",
-        "The complete flow works from Model Setup to Save Model."
+        "The complete flow works from Model Setup to Save Model.",
+        "Model Selection (Step 4) creates no Model row and adds no ModelDraft column."
       ],
-
       "verification": [
         {
           "id": "MODEL-FLOW-008-V01",
@@ -1100,7 +1055,6 @@
         }
       ]
     },
-
     {
       "id": "MODEL-FLOW-009",
       "title": "Sequence Model Training (LSTM/GRU) — Deferred, Needs a Windowing Pipeline",
@@ -1108,9 +1062,7 @@
       "status": "blocked",
       "blocked_on": "lstm/gru need a data-SHAPE change (2D samples x features -> 3D samples x timesteps x features) upstream of the split, plus a sequence_length hyperparameter and a deep-learning runtime this image doesn't carry. This is not a build_model branch — recorded separately per CLAUDE.md 17 (missing infrastructure, unclear contract) rather than left as an omission when MODEL-FLOW-003-T10's catalogue half was resolved (images/trainer/train.py; apps/client/store/model-pipeline.ts Algorithm catalogue).",
       "dependencies": ["MODEL-FLOW-003"],
-
       "description": "The wizard's Algorithm catalogue includes lstm and gru; train.py's build_model raises a named error for both rather than the generic 'Unsupported algorithm' message, and the wizard disables both inline (AlgorithmSelector) so a user cannot select a run that will always fail. This feature is what it would take to actually run them — not scoped or estimated as part of the 10-algorithm tabular extension, because the shape of the work is different in kind, not degree.",
-
       "tasks": [
         {
           "id": "MODEL-FLOW-009-T01",
@@ -1141,7 +1093,6 @@
           "detail": "Needs tensorflow or torch (+~1.5-2 GB), which changes build time and the memory/tmpfs sizing MODEL-FLOW-000-T03 already audited and closed (8 GiB Memory, no swap; 2 GiB tmpfs /scratch sharing the same cgroup — trainning-container.authorized.service.ts). That audit's 'not a defect to fix' conclusion was reached against the current sklearn-only image; it does not automatically extend to an image carrying a full DL framework and this needs its own pass, not an inherited one."
         }
       ],
-
       "acceptance_criteria": [
         "A windowing step exists and runs strictly before chronological_split, never after.",
         "A window cannot straddle the train/test cut — verified by a leakage-style guard, not by convention.",
@@ -1149,7 +1100,6 @@
         "The trainer image's memory/tmpfs sizing is re-verified against the DL runtime it now carries, not assumed unchanged from the sklearn-only audit.",
         "Until all of the above land, lstm/gru remain refused — at the API (TrainingAlgorithmEnum), in the wizard (AlgorithmSelector, disabled with a reason), and in build_model (named backstop error) — never silently mapped to a tabular algorithm."
       ],
-
       "verification": [
         {
           "id": "MODEL-FLOW-009-V01",
@@ -1176,26 +1126,19 @@
       "status": "in_progress",
       "progress": 90,
       "dependencies": ["MODEL-FLOW-002", "DS-LAKE-013", "DS-LAKE-018"],
-
       "description": "A review step between Model Setup and Training Configuration. Shows which data source the selected dataset came from, its per-tag statistics, the same DataAnalysisCard the dataset wizard's Step 3.1 uses, and the held-out validation window — so an engineer sees WHAT they are about to train on before configuring HOW. Includes a route back into the dataset wizard for a dataset that needs changing.",
-
       "userDecisions": [
         "STEP COUNT (resolved): five steps. The flow becomes Setup -> Dataset Review -> Training Configuration -> Evaluation -> Save Model. This file's global_definition_of_done currently asserts four steps in four separate lines and MODEL-FLOW-008 verifies by step number; all of them are rewritten as part of T01 rather than left to contradict the feature that renumbered them.",
         "EDIT DATASET RE-ENTRY (resolved): warn-and-navigate, NOT an overlay and NOT a full URL-addressable resume. An overlay would keep the model wizard mounted and make Back a close rather than a rehydration — genuinely smaller than a resume mechanism — but it rests on three unverified assumptions about the dataset wizard (mountable outside its route, no atom collision, no reset-on-mount). Three unknowns for one button is a poor trade against an honest dialog. The draft is PATCHed current before navigating and is resumable from the models list (T08)."
       ],
-
       "findings": [
         "RESTORED 2026-08-25. This array was found holding six MODEL-SERVE findings (run_manifest.json / serving bundle / artifact pinning / one bucket / MODEL-SERVE-002-V01 / checksum sidecar) — verbatim duplicates of MODEL-SERVE.findings, and this feature's own five findings were gone. Six pointers in this same feature (T05, T07's detail AND its note, V02, and acceptance criteria 3 and 5) resolve to them, so every one of those was reading a finding about serving. The serving findings live in MODEL-SERVE and are removed here. The originals are restored below from what those six pointers assert about them; wording is reconstructed, the claims are not.",
-
         "DATAANALYSISCARD WAS DRAFT-SCOPED, THEN MADE STORE-AGNOSTIC (two reversals, both kept visible). Originally judged 'reusable but type-gated' — wrong on three counts: it read dwDraftIdAtom/dwDraftArtifactIdAtom/dwDraftGoldArtifactIdAtom directly; its histogram/boxplot/scatter tabs hit DRAFT-scoped routes with no datasetId-scoped twin (only correlation had one); and it rendered FeatureTransformDialog, a write to dwScalerConfigsAtom, inside a step that configures nothing. RESOLVED 2026-08-20: compose instead of reuse. REVERSED 2026-08-21 on explicit user request: the card is mounted after all, but only after all three defects were fixed at source — optional datasetId/artifactId props short-circuit the dw* routing, showTransforms={false} suppresses the dialog and stops it inheriting dwScalerConfigsAtom. What remains shared is dwHiddenTagsAtom/dwFocusedTagAtom via useDatasetTagSelection — view state, accepted knowingly. Dropped in unmodified, four of six tabs would have shown 'pending' forever.",
-
         "THE STEP HOLDS NO SERVER STATE OF ITS OWN. It reads the dataset's committed artifact and configures nothing. ModelDraft needs no new column and receives no PATCH from this step — stated up front so it is not given one by reflex. (T07 later carved out ONE exception, the user-confirmed Edit Dataset flush; see acceptance criterion 3.)",
-
         "EDITING A DATASET DOES NOT REMOVE IT. The Dataset row keeps its id; what changes is currentArtifactId, and possibly the tag list. So datasetId on the ModelDraft stays valid across an edit and must NOT be cleared. What genuinely goes stale is the selected TARGET, if the edit dropped that tag — a different field with a different consequence.",
-
-        "RESUME IS THE ONLY RETURN PATH THAT PRESERVES ANYTHING (T07/T08). Browser Back re-mounts the wizard with no ?draftId=, and useModelWizardMode's create branch calls reset() unconditionally — so Back wipes the jotai atoms even though the server row survives. That is why the hand-off dialog says so outright, and why reconciliation lives in the resume branch rather than a general on-return hook: there is no other return."
+        "RESUME IS THE ONLY RETURN PATH THAT PRESERVES ANYTHING (T07/T08). Browser Back re-mounts the wizard with no ?draftId=, and useModelWizardMode's create branch calls reset() unconditionally — so Back wipes the jotai atoms even though the server row survives. That is why the hand-off dialog says so outright, and why reconciliation lives in the resume branch rather than a general on-return hook: there is no other return.",
+        "STALE 2026-08-27 (MODEL-FLOW-013): this feature's own claims of a five-step flow (findings above, task details, its V01/V03/V04/V05 descriptions) were true when written on 2026-08-20 and are left as-is per this file's practice of not rewriting superseded claims. MODEL-FLOW-013 inserted a sixth step, Model Selection, at position 4 on 2026-08-27 — Training Configuration stays 3, Evaluation and Save Model shift from 4/5 to 5/6. Nothing in this feature's own completed work (T01-T08) needed code changes for that shift; the nine Training-Config relock calls this feature's own T02 set to Math.min(prev,3) are unaffected, since the inserted step sits after what they invalidate."
       ],
-
       "tasks": [
         {
           "id": "MODEL-FLOW-010-T01",
@@ -1262,7 +1205,6 @@
           "note": "Completed 2026-08-21. Backend: GET /authorized/model-drafts, declared BEFORE @Get('/:id') because Nest matches in declaration order and a bare GET would otherwise never be reached; ListModelDraftQueryDto {workspaceId?, status?}. The owner-or-member workspace clause was extracted into a private workspaceScope(user) now shared by assertWorkspaceAccess, assertDraftAccess and the list — a second hand-written copy is how a list ends up broader than the GET it links to. An inaccessible workspaceId 404s rather than returning [] ('not yours' is a different fact from 'none here'). `status` accepts the full enum deliberately and the UI asks for ACTIVE. New spec model-draft.authorized.service.spec.ts (the module had none), 7/7 passing: scope-applied-with-no-filters, both filters, the 404, the ADMIN bypass keeping deletedAt, ISO dates + splitRatio still a FRACTION, and — because workspaceScope now backs the other three routes too — a direct comparison proving the list's WHERE.workspace is the SAME object shape assertDraftAccess builds, plus a 404 for a draft that clause filters out. Two clauses that merely agree today would pass a per-method test and diverge later.\n\nClient: modelDraftService.list; useModelDrafts (plain local state, not useAllModels' shared-atom + module-dedup shape — one consumer, one request; a failed load hides the panel instead of erroring the page); DraftResumePanel, which renders NOTHING when there are no drafts. REVISED 2026-08-21 ON USER REQUEST: it now carries THREE ways to clear drafts as well as Resume — a per-row X, Remove selected (a checkbox per row, shown only once something is ticked), and Remove all. The remove had been withheld as MODEL-FLOW-011's, which was the wrong call for this surface — a list that only ever grows is a list people stop reading, and it sits in the wizard now, not on an admin page. It ABANDONS (POST /:id/abandon, already built): status ACTIVE -> ABANDONED, training runs untouched, so the copy says 'removed from this list', never 'deleted'. All three share ONE confirm, differing only in which drafts they hand it — three dialogs would be three copies of the same wording to keep in step — and it is confirmed rather than immediate, matching how ModelTable guards its own row-level destructive action: the X sits one mis-click from Resume, Remove all is one click from everything, and there is no undo anywhere in the UI. The dialog is held open until the server confirms, so a failed remove cannot close over rows that stayed.\n\nNo bulk endpoint was invented for this: the confirm fans out one abandon per draft and settles them all, because a bulk route that abandons some rows and fails on others has the SAME partial outcome to report — it would just hide it behind one status code. Partial failure is therefore a real state and is handled as one: all-failed keeps the dialog open and says so, some-failed closes, refetches and names the count that did not go. Selection is held by id and resolved against the current list each render, so an id whose draft has since left the list (resumed, or removed in another tab) cannot produce a 'Remove selected (1)' that removes nothing. Reclaiming the ABANDONED rows themselves is still MODEL-FLOW-011.\n\nThe list caps at 5 rows and scrolls past that (ScrollArea, fixed height): unbounded, it would push the preset picker and the dataset grid off a laptop screen, which is the opposite of what a 'pick up where you left off' affordance should do. Nothing is truncated — every draft stays reachable. The icon-only X takes an aria-label naming its draft, or a screen reader hears five identical 'remove' buttons.\n\nRELOCATED 2026-08-21 ON USER REQUEST: the panel now sits at the TOP OF STEP 1, directly above the preset picker, not on /models/views — picking up unfinished work is a different intent from starting new, and it belongs before the choices that assume you are starting new. That move broke the mechanism, not just the placement: Resume used to push /models/create?draftId=..., which is INERT from inside the wizard (already mounted on that route, so useModelWizardMode's run-once effect never sees the changed query) — a dead button that typechecks. So the restore logic was extracted out of that effect into hooks/model/use-model-draft-resume.ts, which both entries now share: the URL keeps working on a cold mount, and Step 1 hydrates IN PLACE. Failure no longer navigates from inside the hook — the URL caller sends the user back to /models/views, the in-wizard caller leaves them where they are, because nothing was lost. Either way it is a CREATE-mode continuation, not a mode of its own, since no Model row exists yet.\n\nTwo consequences of living inside the wizard, both handled: resuming now REPLACES work the user may already have typed (impossible on the models list), so DraftResumeSection confirms first when the wizard is dirty — a name typed or a dataset chosen — and the draft already open is filtered out of its own list. New test pipeline/__tests__/draft-resume-section.test.tsx, 16/16: in-place hydrate on a clean wizard, the confirm on a dirty one, dismissal leaving it alone, the current draft not offered, nothing rendered when there are no drafts, remove confirming-then-abandoning and refetching, cancel and failure leaving the draft in place, the per-draft aria-label, the 5-row cap (no scroll container at 5, one at 6, with all 6 still reachable), Remove all abandoning every listed draft, Remove selected abandoning ONLY the ticked ones (the unticked row must survive), unticking shrinking the count, a partial failure reported rather than passed off as success, and an all-failed batch keeping the dialog open without refetching.\n\nRESTORE IS PARTIAL AND SAYS SO, per this task's own corrected claim: the row has no description, algorithms[], lossFunction, selectedMetrics or deploy config, so the toast states exactly what came back rather than implying parity. Hydration uses RAW atom setters, never useModelPipelineNav's — every one of those calls resetTraining() and relocks highestUnlocked, and setAlgorithm additionally overwrites hyperparameters with that algorithm's defaults, which would have discarded the draft's stored set moments after restoring it. Step position: land on Step 1 so the restored choices are confirmed, unlock to 2 once the dataset resolves and NO FURTHER, because no training result is restored and an empty Evaluation step would be a lie. splitRatio fraction -> percent, and algorithm/hyperparameters are narrowed by type guard in lib/model-draft-hydration.ts rather than cast.\n\nTHREE GAPS, STATED NOT HIDDEN. (1) A TRAINED draft is reachable through the API but is not offered in the panel, because its run result is not rebuilt on resume. (2) Leaving via browser Back and starting over can leave an extra ACTIVE draft behind; reclaiming those is MODEL-FLOW-011, not this task. (3) resumeDraft does not check status: a hand-edited ?draftId= or a panel rendered before another tab saved that draft can resume a SAVED row, whose every later PATCH 409s into the debounced sync's silent catch — so the user would configure against a row that refuses updates. Narrow (the panel refetches on mount and nothing in the UI abandons a draft) and it is lifecycle territory, so it is recorded here for MODEL-FLOW-011 rather than guarded now."
         }
       ],
-
       "acceptance_criteria": [
         "The wizard has five steps, and this file's own definition of done says five rather than still claiming four.",
         "No existing step's behaviour changes — only its number.",
@@ -1275,7 +1217,6 @@
         "Returning after an edit re-reads the dataset and clears a target the edit removed, saying so.",
         "An ACTIVE ModelDraft is reachable from the models list."
       ],
-
       "verification": [
         {
           "id": "MODEL-FLOW-010-V01",
@@ -1316,15 +1257,13 @@
       "status": "pending",
       "progress": 0,
       "dependencies": ["MODEL-FLOW-002"],
-
       "description": "DS-LAKE-014 gave DatasetDraft a sweeper and closed the never-abandoned-ACTIVE hole for datasets. ModelDraft is a separate table with no equivalent, so the identical leak exists here: a user who closes the tab leaves an ACTIVE ModelDraft forever, because nothing calls /abandon on their behalf.",
-
       "findings": [
         "DELIBERATELY NOT A TASK INSIDE MODEL-FLOW-002. That feature is completed at 100% with nine live-verified tasks; reopening it to add reclaim work would make its own completion claim false and mix verified history with unstarted work. The concerns are also independent — 002 gives the container a row to read, this decides when an unused row is released, and neither constrains the other. The DS-LAKE side already answered this question the same way: the DatasetDraft entity is DS-LAKE-005 and its sweeper is DS-LAKE-014, nine features apart.",
         "THE STORAGE COST IS SMALLER THAN THE DATASET CASE BUT NOT ZERO. A ModelDraft owns no artifact of its own, so an abandoned one leaks a Postgres row rather than object bytes. Its ModelTrainingRuns DO write under drafts/{modelDraftId}/runs/{runId}/ (MODEL-FLOW-003-T08), and nothing reclaims those today — so the leak is real, just concentrated in the runs rather than the draft.",
-        "MODEL-FLOW-010-T07 MAKES THIS MORE FREQUENT, NOT MERELY MORE VISIBLE. Leaving the wizard to edit a dataset becomes a normal, encouraged action there; every user who does not come back leaves an ACTIVE draft behind. The leak predates that feature but its rate does not."
+        "MODEL-FLOW-010-T07 MAKES THIS MORE FREQUENT, NOT MERELY MORE VISIBLE. Leaving the wizard to edit a dataset becomes a normal, encouraged action there; every user who does not come back leaves an ACTIVE draft behind. The leak predates that feature but its rate does not.",
+        "MODEL-FLOW-013 MULTIPLIES THIS FEATURE'S LEAK RATE, IT DOES NOT CREATE IT (2026-08-28). A candidate job (algorithm sweep or hyperparameter search) with N candidates now writes N run prefixes under drafts/{draftId}/runs/{runId}/ where the flow previously wrote one per draft. This feature's own T02 finding (the reclaim unit is the RUN, not the draft) already anticipated the multi-run case and needs no change for it — what changes is that N-runs-per-draft becomes the COMMON case (any 'Find Best Model' sweep) rather than an observed accident. T05's own instruction (never reclaim a prefix an adopted run points at) also already covers a candidate job's bestRunId/selectedRunId correctly, since those are just ModelTrainingRun ids like any other."
       ],
-
       "tasks": [
         {
           "id": "MODEL-FLOW-011-T01",
@@ -1362,7 +1301,6 @@
           "detail": "T01's eligibility tiers exclude a TRAINED draft and say nothing about a SAVED one; T02 deletes drafts/{modelDraftId}/runs/{runId}/ 'for each of its runs'. Read together with MODEL-FLOW-007-T10 — which adopts the winning run BY POINTER and leaves its bytes under the draft prefix forever — those two sentences describe a sweep that can delete the object a saved, possibly deployed, model loads from.\n\nTHE OBVIOUS FIX IS THE WEAK ONE. Excluding status=SAVED is necessary and not sufficient: a draft owns MULTIPLE runs (MODEL-FLOW-003-V01 observed two against one draft, plus a third orphan), Save Model adopts ONE, and the losing runs' prefixes are genuinely reclaimable. So the unit of the decision is the RUN, not the draft. Filter on the run: a run with modelId set has been adopted and its prefix is off limits, whatever its draft's status says. That also survives a future feature that adopts a second run from the same draft, which a draft-level guard would not.\n\nT01 must additionally exclude SAVED from both windows, for the plain reason that a SAVED draft is not abandoned work — it is the provenance record of a model that exists.\n\nVERIFY BY DELETION, NOT BY EXCLUSION: assert the adopted object is still readable AFTER a sweep that reclaimed its siblings in the same tick. A test that only proves the sweep skipped the draft cannot tell a working run-level guard from a sweep that happened to find nothing eligible."
         }
       ],
-
       "acceptance_criteria": [
         "A run that Save Model adopted is never reclaimed, and its object prefix survives a sweep that reclaims its unadopted siblings in the same tick.",
         "An ACTIVE ModelDraft with no runs becomes eligible after the short window and is reclaimed with no operator action.",
@@ -1372,7 +1310,6 @@
         "A RUNNING run whose container no longer exists reaches a terminal status at boot rather than staying RUNNING forever.",
         "The sweep runs without any HTTP call, and disabling it via env leaves any admin path working unchanged."
       ],
-
       "verification": [
         {
           "id": "MODEL-FLOW-011-V01",
@@ -1395,16 +1332,339 @@
           "status": "pending"
         }
       ]
+    },
+    {
+      "id": "MODEL-FLOW-012",
+      "title": "Run Parameter Recall Panel with Apply",
+      "priority": 12,
+      "status": "in_progress",
+      "progress": 92,
+      "dependencies": ["MODEL-FLOW-003", "MODEL-FLOW-004", "MODEL-FLOW-006"],
+      "blocked_on": null,
+      "description": "After a run reaches a terminal state, list everything that produced that result in the right-hand column beneath Algorithm Insights: algorithm, every hyperparameter and its value, target, train/test split, seed, loss function, image digest, feature spec, plus the resulting metrics including RMSE. An Apply button loads those settings back into the Training Config form, where they can be edited before the next run.",
+      "findings": [
+        "THE RUN ROW AND THE BROWSER DISAGREE THE MOMENT ANYTHING IS EDITED. An engineer comparing runs today has no record of what distinguished them — the run row holds the spec, the wizard holds a mutable draft, and useModelDraftSync's 600ms debounced PATCH means even the server draft is not reliably current. Rendering the DRAFT's values beside a finished run's metrics would read as provenance while being a live form. That is why T01 is task one and why acceptance criterion 1 is about the data SOURCE, not the layout.",
+        "LOSS FUNCTION IS ONE QUESTION, NOT TWO -- SUPERSEDES the earlier framing. T01's audit confirms the trainer never reads a loss field: images/trainer/train.py has zero occurrences of loss/objective/criterion. It is not that most algorithms can't consume it -- NONE of them receive it. The client never sends it, CreateTrainingRunSchema is .strict() so it would be rejected if it tried, and no run or draft column exists to hold it. It stops at the saved Model.data.config blob (ModelConfigSchema.lossFunction, model.authorized.dto.ts:72) and never enters the training path. The per-estimator objective analysis in the old framing (LinearRegression/Ridge take no loss param, MLPRegressor is fixed to squared error, etc.) is correct as sklearn trivia but moot here -- there is no case where a loss value reaches an estimator that can't use it, because no loss value reaches any estimator.",
+        "THE TRAINER DOES NOT SWALLOW VIA A KWARGS SPLAT -- CORRECTED MECHANISM. build_model (train.py:230-376) has no **hyperparameters splat anywhere; every branch is an explicit, named hyperparameters.get(key, default) call per constructor kwarg. An unrecognized key is silently ignored not because the trainer catches and drops it, but because nothing ever reads it. This makes 'sent but not consumed' a FIXED, enumerable key set per algorithm (verified key-for-key against lib/training-config.ts's HYPERPARAMS catalog: they agree exactly for all ten runnable algorithms), not a runtime introspection question. For UI-launched runs today this case is empty -- every hyperparameter the form can send is a key some branch of build_model reads. The label still ships, pinned by a static source test, because legacy rows, fine-tuning-job rows, and future catalog drift are real cases. seed is a separate, real instance of this same class: it is generated and recorded on EVERY run but is only forwarded as random_state to 6 of the 10 estimators (not ridge/ols/svm/pls) -- the panel must label it per-algorithm the same way.",
+        "SPLIT RATIO HAS THREE HOMES AND TWO UNITS. MODEL-FLOW-006 recorded it live: Model.data.config.trainTestSplit is a PERCENTAGE (70/80/85 observed), ModelDraft.splitRatio is a FRACTION, ModelTrainingRun.splitSpec.ratio is a FRACTION. This panel reads a run and writes a draft, so it crosses that boundary in both directions.",
+        "SPLIT RATIO HAS A FOURTH HOME. T01 found the same fraction/percentage split MODEL-FLOW-006 recorded, plus one more: request body trainTestSplit (fraction, model-run.authorized.dto.ts:68) -> run.splitSpec.ratio (fraction) -> ModelDraft.splitRatio (fraction) -> ModelConfigSchema.trainTestSplit on the SAVED Model (PERCENTAGE, 50-95, model.authorized.dto.ts:73-82). This panel reads the run (fraction) and Apply writes the draft (fraction); the Step 3 control itself is a percentage. Convert once at the client boundary, per MODEL-FLOW-002-T09's rule -- do not touch the fourth home, that's MODEL-FLOW-007's unification."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-FLOW-012-T01",
+          "title": "Audit: establish the authoritative source of 'the parameters this run actually used'",
+          "status": "completed",
+          "progress": 100,
+          "detail": "Read, do not infer: packages/prisma/prisma/schema.prisma's ModelTrainingRun; model-run-launch.authorized.service.ts's buildRunData; the /claim payload train.py reads; and CreateTrainingRunSchema. Write down, field by field, where each of algorithm / hyperparameters / targetY / split / seed / lossFunction / imageDigest / featureSpecKey lives, and which of them the container actually receives. Record the answer in this entry before writing any code. Precedent for why this is task one rather than a formality: MODEL-FLOW-000's re-audit found five of seven tasks describing code that was already correct, and -004, -005 and -006 each opened with an audit that changed their own scope.",
+          "note": "Completed 2026-08-27. Answer recorded in this feature's notes[] above. Unblocks the feature; no backend change needed."
+        },
+        {
+          "id": "MODEL-FLOW-012-T02",
+          "title": "Persist the launched hyperparameter set on the run row, if T01 finds it absent",
+          "status": "completed",
+          "progress": 100,
+          "detail": "Prisma column + migration, written in the same transaction that already creates the run (launchDraftRun), so a run can never exist without the set that produced it. Existing rows backfill to null and the panel says 'not recorded for this run' — the same honest-legacy-null pattern MODEL-FLOW-010-T06 used for validationMissingPct, rather than inventing a compute-on-read reconstruction. If T01 finds the set already persisted, this task becomes a no-op and says so explicitly rather than being quietly marked done.",
+          "note": "NO-OP, explicit per this task's own instruction. T01 found hyperparameters Json already required (no default) on ModelTrainingRun, written inside launchDraftRun's single transaction (model-run-launch.authorized.service.ts:308-326) alongside algorithm/targetY/seed/splitSpec/imageDigest. No migration, no Prisma column, no code change."
+        },
+        {
+          "id": "MODEL-FLOW-012-T03",
+          "title": "Widen the run read path to carry the full spec",
+          "status": "completed",
+          "progress": 100,
+          "detail": "listDraftRunsService and getDraftRunService already exist — their envelope shape was fixed during MODEL-FLOW-003-V01. Check whether they return the spec or only status/metrics/logs. Resolve every field from the run row and never accept a key or identifier from the request, the discipline getDraftRunPredictionsService applies in MODEL-FLOW-004 and mintUploadUrls applies on the write side.",
+          "note": "Completed 2026-08-27. services/model-draft.ts's ModelTrainingRun widened with hyperparameters/seed/splitSpec/imageDigest/featureSpecKey/artifactChecksum/goldArtifactId/datasetId/holdoutMetrics/fineTuningJobId, plus new ModelRunSplitSpec (ratio required, the 5 /complete-only fields optional) and ModelTrainingRunListItem = Omit<..., 'logs'>. modelDraftRunService.list(draftId) added for GET .../runs. Zero backend changes, as T01 found."
+        },
+        {
+          "id": "MODEL-FLOW-012-T04",
+          "title": "RunParamsPanel — read-only list under Algorithm Insights",
+          "status": "completed",
+          "progress": 100,
+          "detail": "No new persistence: the run row IS the record, the same finding that made MODEL-FLOW-004-T05 a read task rather than a write task. ModelDraft gains no column. Honest empty states, not blanks: no run yet, still training, FAILED or CANCELED with the reason named, and a legacy run whose hyperparameters were never recorded. MODEL-FLOW-004 added four such states for the same column of the same wizard — reuse that vocabulary rather than inventing a second one.",
+          "note": "Completed 2026-08-27. RunParamsPanel (training-config/run-params-panel.tsx), mounted under RuntimeEstimate in Step 3's right column. useDraftRuns (hooks/model/use-draft-runs.ts, mirrors useModelDrafts' plain-local-state shape) supplies the run picker; deliberately has NO Loss function row — see the component's own doc comment: the run row has no such column (T01), so rendering one would mean reading mpLossFunctionAtom next to run-sourced fields, the exact provenance-theatre mixing acceptance criterion 1 forbids. Empty states reuse phase-5-evaluation.tsx's vocabulary (no run yet / composed status string) rather than inventing a second one. Render-tested in run-params-panel.test.tsx (7/7). CORRECTED 2026-08-27, caught before commit: the first pass called useDraftRuns' refetch nowhere, so the panel fetched once on mount (getting []) and never again — Phase3TrainingConfig stays mounted through the whole training cycle (the poll loop lives in the same component), so nothing else remounts the panel when a run finishes. Fixed by watching mpTrainStateAtom.status and calling refetch() on every transition, not just 'done' — that also makes the QUEUED/RUNNING Apply-disabled branch reachable for a run just started, which it wasn't before. Also added: a target/dataset-mismatch note (a run outlives the dataset selection that produced it — Step 2 can change the draft's dataset after a run trained against a different one; Apply still writes the target, Start Training would 400 on it, so the panel names the mismatch rather than either silently omitting the write or leaving the failure unexplained). Both caught by an advisor pass before declaring done, both covered by new tests in run-params-panel.test.tsx (9/9)."
+        },
+        {
+          "id": "MODEL-FLOW-012-T05",
+          "title": "Recheck lossFunction end to end, and show what is TRUE of it per algorithm",
+          "status": "completed",
+          "progress": 100,
+          "detail": "Two traces, not one. (a) Does it reach the container: follow the client atom through CreateTrainingRunSchema to the run row to /claim. (b) Does the estimator consume it: see this feature's second finding for why most of the catalogue cannot.\n\nBecause the trainer swallows unknown kwargs silently, a loss value that lands nowhere is invisible. The panel must therefore show one of three states per run — used by the estimator / sent but not consumed by this estimator / not sent — and must not print a bare 'MSE' that a reader will take for the objective that was optimised.\n\nIf (b) comes back 'not consumed for most algorithms', that is a real finding about the shipped UI and belongs in this ledger's findings, not buried in a panel label. Whether to then hide, disable or annotate the Loss function control in Step 3 is a product decision — recorded here, not taken here.\n\nAlso recheck the client inconsistency MODEL-FLOW-006 recorded but did not fix: resetWizardAtom defaults lossFunction to 'mse' while resetPipeline defaults it to 'rmse'. Whichever is right, two reset writers disagreeing means the displayed value depends on how the wizard was entered.",
+          "note": "DECIDED 2026-08-27 (user): keep the Loss function control, annotate honestly rather than remove or disable. It continues to write only Model.data.config (ModelConfigSchema.lossFunction) on Save Model; the Step 3 control gains a note that it records intent on the saved model and is not sent to the trainer. Drop cross_entropy from LOSS_OPTIONS -- this is a regression-only pipeline (build_model has no classifier branch). The panel shows the run's lossFunction state as 'not sent to training' rather than a bare value, per T01's finding-2 rewrite. Also fixes the resetPipeline vs resetWizardAtom/atom-default divergence ('rmse' vs 'mse') found during this audit -- resetPipeline fires on every workspace/plant change, so it was silently flipping the displayed loss function on a workspace switch. Implemented 2026-08-27: LOSS_OPTIONS (lib/training-config.ts) dropped cross_entropy and gained a doc comment stating the audited fact; core-config.tsx's Loss function control gained a one-line note ('Recorded on the saved model. Not sent to the trainer...'); resetPipeline's setLossFunctionAtom('rmse') corrected to 'mse', matching mpLossFunctionAtom's own default and resetWizardAtom. The panel itself carries no Loss-function row at all — see T04's note for why that is correct, not an omission."
+        },
+        {
+          "id": "MODEL-FLOW-012-T06",
+          "title": "Apply writes through RAW atom setters, never useModelPipelineNav",
+          "status": "completed",
+          "progress": 100,
+          "detail": "THE TRAP, WITH PRECEDENT: useModelPipelineNav.setAlgorithm OVERWRITES hyperparameters with that algorithm's defaults and relocks highestUnlocked, and every setter in that hook calls resetTraining(). MODEL-FLOW-010-T08 hit this exact wall building draft resume; its note states the resolution (hydrate with raw setters) and its fixture deliberately stores a hyperparameter set that is NOT the algorithm's defaults so that a later refactor routing through the nav hook fails loudly instead of silently applying defaults. Copy that fixture discipline here — an Apply routed through the nav hook typechecks, renders, and applies the wrong values.",
+          "note": "Completed 2026-08-27. use-apply-run-params.ts writes ONLY raw atom setters imported from store/model-pipeline.ts — no import of useModelPipelineNav. Pinned by V01's fixture (ridge alpha:0.037, not ridge's 1.0 default): use-apply-run-params.test.tsx asserts the atom holds 0.037 after Apply, which would fail if Apply were routed through setAlgorithm."
+        },
+        {
+          "id": "MODEL-FLOW-012-T07",
+          "title": "Decide and implement Apply's relock semantics",
+          "status": "completed",
+          "progress": 100,
+          "detail": "Apply changes the training configuration, so the evaluation on screen no longer corresponds to it. Two defensible options; the wrong outcome is picking neither. (a) Relock to Training Config, consistent with the nine relock sites MODEL-FLOW-010-T02 already maintains for every other training-config edit. (b) Keep the evaluation visible behind a banner stating it belongs to a previous run. Silently leaving Step 5 showing a stale run's charts beside freshly-applied parameters is the failure class this ledger keeps naming: it looks like success. Record the choice and the reason.",
+          "note": "Completed 2026-08-27, per the decision recorded above: useApplyRunParams explicitly calls setTrainState({status:'idle', progress:0}) and setHighestUnlocked(prev => Math.min(prev, 3)) after every raw-atom write, replicating what resetTraining()/the nav setters' relock would have done. Tested: relocks 5 -> 3, and never RAISES a lower value (2 stays 2)."
+        },
+        {
+          "id": "MODEL-FLOW-012-T08",
+          "title": "Cross-algorithm Apply must be refused or must switch the algorithm — never silently pass",
+          "status": "completed",
+          "progress": 100,
+          "detail": "Applying ridge's hyperparameters into an SVR form produces no error anywhere: the client has no cross-check and the trainer accepts unknown kwargs silently. The run would train on SVR defaults while the form displays ridge's values. Apply must either switch the algorithm to the source run's — in which case T06's raw-setter rule is what stops the switch from wiping the very values being applied — or refuse and name the mismatch.",
+          "note": "Completed 2026-08-27, per the decision recorded above: applyRun always sets mpAlgorithmsAtom = [run.algorithm] and mirrors mpAlgorithmAtom, plus forces both AutoML atoms false so showHyperparams reveals the applied values. Tested with a form pre-set to ['svm','xgboost'] applying a ridge run — atoms end at exactly ['ridge']."
+        },
+        {
+          "id": "MODEL-FLOW-012-T09",
+          "title": "Applied hyperparameters must satisfy the existing scalar constraint",
+          "status": "completed",
+          "progress": 100,
+          "detail": "MODEL-FLOW-006 tightened PatchModelDraftSchema.hyperparameters from z.unknown() to the same HyperparametersSchema scalar constraint the run path enforces. A legacy run may hold a value that schema now refuses, so Apply's PATCH would 400 — and useModelDraftSync's debounced writer swallows failures, so the user would go on configuring against a draft that silently stopped accepting updates. That is the same silent-failure mechanism MODEL-FLOW-010-T08's third recorded gap describes for a SAVED draft. Validate before applying and state what was dropped.",
+          "note": "NO-OP ON THE WIRE, explicit per this task's own instruction. T01 traced both write paths that can put hyperparameters on a run row: CreateTrainingRunSchema.hyperparameters (UI path) and CreateFineTuningJobSchema.hyperparameterSets: z.array(HyperparametersSchema) (job path, model-fine-tuning.authorized.dto.ts:27) -- both the SAME HyperparametersSchema scalar constraint PatchModelDraftSchema.hyperparameters already enforces. runDtoFor (model-fine-tuning.authorized.service.ts:52-68) hand-builds the run DTO from an already-validated set, not from unchecked input. A legacy run predating MODEL-FLOW-006's tightening could in principle still hold a non-scalar value, so the client-side Apply path (toApplyPatch in lib/run-params.ts) filters defensively and states what it dropped -- but no backend change is needed to prevent the PATCH from 400ing on data this system itself wrote. Client-side belt-and-suspenders added 2026-08-27: lib/run-params.ts's toApplyPatch scalar-filters the run's hyperparameters before they reach setHyperparameters, returning `dropped` for the panel to name — covers a legacy row this system itself never wrote, since T01 confirmed both write paths already prevent one."
+        },
+        {
+          "id": "MODEL-FLOW-012-T10",
+          "title": "splitRatio: convert once, at the client boundary",
+          "status": "completed",
+          "progress": 100,
+          "detail": "The panel displays what the run used (fraction, from splitSpec.ratio) and Apply writes the draft (fraction) while the Step 3 control is a percentage. Convert at the client boundary, the convention MODEL-FLOW-002-T09 established and MODEL-FLOW-010-T08's hydration follows (0.8 -> 80). Unifying the unit itself is MODEL-FLOW-007's job, once Save Model can derive it from the adopted run's own splitSpec instead of trusting the browser — do not attempt it here.",
+          "note": "Completed 2026-08-27. lib/run-params.ts's splitPercentFromRun(splitSpec) = Math.round(ratio * 100), the single conversion point Apply and the panel's display both call — never touches ModelConfigSchema.trainTestSplit's percentage (that's MODEL-FLOW-007's unification, per this feature's rewritten finding 4)."
+        },
+        {
+          "id": "MODEL-FLOW-012-T11",
+          "title": "Apply from inside a candidate set",
+          "status": "completed",
+          "progress": 100,
+          "detail": "Coupling with MODEL-FLOW-013: once candidate jobs exist, most Apply clicks will land on a run belonging to a job rather than a standalone run. Decide and record: refuse while the job is still QUEUED or RUNNING, since a config edit mid-sweep has no coherent meaning; and on a terminated job treat Apply as seeding a NEW configuration not attached to the old job. The one-live-job-per-draft index means a second job cannot start until the first terminates anyway, so the refusal is consistent with the rest of the system rather than a special case.",
+          "note": "DECIDED 2026-08-27: refuse Apply while the source run itself is QUEUED/RUNNING -- run.status alone is sufficient data for this, already on every row this panel reads. The job-level rule (refuse mid-sweep, treat post-terminal Apply as seeding a new unattached configuration) is DEFERRED, not built: there is no stable job-status read to bind to until MODEL-FLOW-013-T03 generalizes ModelFineTuningJob into a candidate job. Recorded here so it isn't silently dropped when 013 lands. Implemented 2026-08-27: RunParamsPanel disables Apply whenever run.status is QUEUED or RUNNING ('Available once this run finishes.'), reading only the selected run's own status — no job fetch."
+        }
+      ],
+      "acceptance_criteria": [
+        "Every value in the panel comes from the run row. No value is read from the current draft or from a wizard atom — proven by a test, not by inspection.",
+        "Every hyperparameter the container actually received is shown; anything sent but not consumed by the estimator is labelled as such rather than displayed as though it took effect.",
+        "Apply loads the settings into the form, they remain editable, and the edited values are what the next run uses.",
+        "Apply never replaces hyperparameters with the algorithm's defaults.",
+        "Applying a run from a different algorithm cannot produce a run that silently trains on defaults.",
+        "No Model row is created, and ModelDraft gains no column.",
+        "The panel behaves honestly for a draft with no run, a run in flight, a failed run, and a legacy run with no recorded hyperparameters."
+      ],
+      "verification": [
+        {
+          "id": "MODEL-FLOW-012-V01",
+          "description": "Apply a run whose stored hyperparameters are DELIBERATELY not that algorithm's defaults, and assert the atoms hold the run's values. A fixture built from default values would pass even if Apply were routed through setAlgorithm and overwrote everything — the exact fixture design MODEL-FLOW-010-V05 used to pin this same trap.",
+          "status": "completed",
+          "note": "Completed 2026-08-27 — hooks/model/__tests__/use-apply-run-params.test.tsx, ridge alpha:0.037 fixture."
+        },
+        {
+          "id": "MODEL-FLOW-012-V02",
+          "description": "Apply, then Start Training against a real container, then compare the new run's recorded parameters against the source run's byte for byte.",
+          "status": "pending",
+          "note": "NOT RUN — needs a live training container (pnpm dev + real Start Training), unavailable in this session. Every unit-level guarantee it would exercise (raw-setter Apply, no algorithm-default overwrite, split-fraction round-trip) is covered by V01/V03; this item specifically verifies the live HTTP/container round-trip and remains open until run against a real environment."
+        },
+        {
+          "id": "MODEL-FLOW-012-V03",
+          "description": "Apply a run of algorithm A into a form set to algorithm B and confirm either a refusal naming the mismatch or a switch to A — never a 201 that trains on B's defaults.",
+          "status": "completed",
+          "note": "Completed 2026-08-27 — same test file, cross-algorithm case: form pre-set to ['svm','xgboost'], applying a ridge run leaves the atoms at exactly ['ridge'] with ridge's own hyperparameters, never a form showing one algorithm's label with another's values."
+        },
+        {
+          "id": "MODEL-FLOW-012-V04",
+          "description": "Open the panel for a FAILED and for a CANCELED run and confirm the reason is named and Apply behaves as T07 and T08 decided.",
+          "status": "completed",
+          "note": "Completed 2026-08-27 — training-config/__tests__/run-params-panel.test.tsx: FAILED run names its failureReason and leaves Apply enabled (terminal); CANCELED with no reason renders no fabricated dash; QUEUED/RUNNING still shows the full parameter list (known since launch time) but disables Apply."
+        },
+        {
+          "id": "MODEL-FLOW-012-V05",
+          "description": "PROVE THE LOSS-FUNCTION LABEL IS TRUE, PER ALGORITHM: for one estimator that accepts an objective and one that cannot, confirm the panel's state matches what T05's trace established. A single 'MSE' string rendered for both would pass any weaker test while telling the user something false about one of them.",
+          "status": "completed",
+          "note": "SCOPE CORRECTED 2026-08-27: the original wording ('one estimator that accepts an objective and one that cannot') is stale — T05's finding-1 rewrite established NO estimator receives lossFunction at all, so that framing no longer applies and the panel has no Loss function row to prove (see T04's note). What V05 actually verifies now: CONSUMED_HYPERPARAM_KEYS and SEED_CONSUMING_ALGORITHMS are true per algorithm. lib/run-params.test.ts's source guard reads images/trainer/train.py LIVE via regex over build_model's actual .get() calls (not a hand-copied table) and asserts every algorithm's key set matches; a render test confirms an unconsumed key renders a 'not used' badge."
+        }
+      ],
+      "notes": [
+        "T01 ANSWERED 2026-08-27, from source (schema.prisma:984-1078 ModelTrainingRun; model-run-launch.authorized.service.ts's buildRunData:119-137 and launchDraftRun:308-326; model-run.authorized.service.ts's claim():259-273; images/trainer/train.py's build_model:230-376). Field by field: algorithm -> run.algorithm (required column) -> sent in /claim -> read by build_model. hyperparameters -> run.hyperparameters (Json, required, NO default) -> sent in /claim -> read per-algorithm via explicit .get(key, default) calls, never a **kwargs splat. targetY -> run.targetY (required) -> sent -> read. seed -> run.seed (Int, server-generated via randomInt when the request omits it) -> sent -> forwarded as random_state to 6 of 10 estimators only (hist_gradient_boosting, mlp, grp, random_forest, lightgbm, xgboost; NOT ridge/ols/svm/pls). split -> run.splitSpec (Json; {method, ratio} at claim time, widens to the full 7-key shape only after the container's own /complete post) -> sent -> read as splitSpec.ratio. imageDigest -> run.imageDigest (required) -> sent -> provenance only, not consumed by the estimator. featureSpecKey -> run.featureSpecKey (nullable) -> sent as a presigned featureSpecUrl, not the key itself -> not consumed by the estimator. lossFunction -> NO COLUMN ON ModelTrainingRun OR ModelDraft. The only occurrence anywhere in apps/backend is ModelConfigSchema.lossFunction on the SAVED Model's config blob (model.authorized.dto.ts:72) -- never read by the run-launch or claim path. Confirmed dead end client-side too: CreateTrainingRunSchema (model-run.authorized.dto.ts:58-72) is .strict(), so a client sending lossFunction in the run-create body gets a 400, not a silent drop -- and the client never sends it (use-model-training.ts:239-247 sends exactly goldArtifactId/targetY/algorithm/hyperparameters/trainTestSplit). images/trainer/train.py has ZERO occurrences of loss/objective/criterion (grep confirmed). CONCLUSION: every value this feature needs except lossFunction is already persisted on the run row and already returned by both read endpoints (listDraftRunsService/getDraftRunService omit only tokenHash -- no select, no response DTO narrows the shape). lossFunction is not a hyperparameter that's 'sent but not consumed' -- it is never sent at all. Unblocking this feature needs zero backend/schema changes; it is a client-side read + Apply surface over data that already exists.",
+        "IMPLEMENTATION COMPLETE 2026-08-27: T01-T11 all done (T02/T03(backend half)/T09(wire half) as no-ops per their own audited reasoning). Client-only change set: services/model-draft.ts widened; new lib/run-params.ts (+ live-source-guard test), hooks/model/use-draft-runs.ts, hooks/model/use-apply-run-params.ts, training-config/run-params-panel.tsx; small fixes to LOSS_OPTIONS (dropped cross_entropy, added honesty note), resetPipeline's lossFunction default ('rmse'->'mse', matching the atom default and resetWizardAtom), and two MODEL-FLOW-010-era test files whose imports still named the pre-renumbering Phase3Evaluation/phase-3-evaluation.tsx. 473 client tests pass (37 files) covering hooks/model, lib, and the pipeline; `pnpm --filter=client check-types` and `lint` are clean for every file this feature touched (the remaining check-types/lint failures are pre-existing, in files this feature never opened: dataset-compare-modal.tsx's in-progress edits and the set-state-in-effect lint rule already failing on 8+ committed hooks including useModelDrafts, the very hook use-draft-runs.ts mirrors). Progress held at 92, not 100: V02 (live container round-trip) is the one item that needs a real environment this session doesn't have — every other acceptance criterion and verification item is met and tested."
+      ]
+    },
+    {
+      "id": "MODEL-FLOW-013",
+      "title": "Step 4 — Model Selection: compare candidate runs before Evaluation",
+      "priority": 13,
+      "status": "in_progress",
+      "progress": 96,
+      "dependencies": ["MODEL-FLOW-003", "MODEL-FLOW-005", "MODEL-FLOW-010"],
+      "description": "A step between Training Configuration and Evaluation that shows each candidate model's result — a per-epoch loss curve where the algorithm has iterations, a train-vs-test loss value chart where it does not — and lets the user choose which model carries forward to Evaluation and Save Model. The step exists in shipped code as of 2026-08-27; this feature is what it takes to make it real and to make this ledger stop describing a five-step flow.",
+      "userDecisions": [
+        "STEP COUNT (resolved 2026-08-27): six steps, and the shipped UI already has them — Select Dataset -> Dataset Review -> Training Config -> Model Selection -> Evaluation -> Save Model. This file is the stale artefact, not the product. T01 owns the reconcile.",
+        "LOSS VISUALISATION (resolved 2026-08-27): a per-epoch curve where the estimator genuinely iterates; a loss-function VALUE chart (train vs test, paired marks) for everything else. Two modes, never one faked into the other.",
+        "CANDIDATE ORCHESTRATION (resolved 2026-08-27): generalize ModelFineTuningJob to carry N algorithms rather than build a third orchestrator table. This is the direct build-out of MODEL-FLOW-003-T10's own blocked_reason.",
+        "ONE LIVE JOB PER DRAFT (resolved 2026-08-27): the partial unique index keeps its (draftId) key, not (draftId, kind). Sweep and tune cannot overlap — which is what forces T11.",
+        "SELECTION OVERRIDE (resolved 2026-08-27): the user may override the metric's winner, and the override is recorded in its own field. bestRunId is NOT overwritten — see T08 for why that matters beyond bookkeeping."
+      ],
+      "findings": [
+        "THE STEP IS ALREADY IN THE WIZARD; THIS LEDGER IS THE THING THAT IS WRONG. MODEL-FLOW-010-T01 did a four-to-five reconcile on 2026-08-20 and verified it by grepping for 'four-step' — a method that cannot detect a sixth step arriving later, which is why the same drift recurred within a week. T01 enumerates every step-numbered assertion against MP_TOTAL_STEPS and STEP_LABELS instead of grepping for a number. Step 1's NAME is stale too: the contract says 'Model Setup', the product says 'Select Dataset', and no number-based check would ever surface that.",
+        "N CANDIDATES DO NOT EXIST YET. MODEL-FLOW-003-T10 enforces exactly one target and one algorithm per run and its client-side AutoML refusal is still in place. The Find Best Model and Find Best Parameters toggles have no training-container counterpart. So a comparison step ships today with at most one thing to compare — T03 is what supplies the rest, and until it lands this step is a frame around a single row.",
+        "THERE IS NO TRAIN-SIDE LOSS ANYWHERE IN THE SYSTEM. Observed metrics are {r2, mae, rmse, test_rows, train_rows, feature_count} — test split only. holdoutMetrics is null on every run observed, cause confirmed in MODEL-FLOW-004 (the holdout SOURCE object is absent; train.py's own comment documents this as the common case, not a bug). So 'loss vs validation loss' has no data behind it today in either mode, which makes T04 a prerequisite rather than a refinement.",
+        "MOST OF THE CATALOGUE HAS NO ITERATIONS TO PLOT. OLS and Ridge are closed-form; PLS, GRP, SVR and RandomForest have no loss trajectory. For those a curve cannot be produced — not 'has not been produced yet'. Drawing a line between a train point and a test point would imply a trajectory that does not exist and would be indistinguishable from a real curve to a reader, which is the MODEL-FLOW-000-T02 failure shape: it looks like success. The gap between two paired marks is what an engineer actually reads off a learning curve, and it survives the honest rendering.",
+        "EVEN WHERE A CURVE IS POSSIBLE, THE VALIDATION SERIES IS NOT. train.py passes no eval_set, so LightGBM and XGBoost produce no validation history and MLPRegressor's loss_curve_ is training-only. Mode A therefore needs a fit-time change, not just a new read endpoint. And the second series is the TEST split, not a holdout — label it that way, or repeat the misnomer MODEL-FLOW-004 had to rename ('Validation residual diagnostics' -> 'Test-split residual diagnostics') one feature after it was fixed.",
+        "THE STEP HOLDS ONE PIECE OF SERVER STATE AND ONLY ONE: selectedRunId on the job. Stated up front the way MODEL-FLOW-010's third finding was, so the step is not handed a column by reflex. ModelDraft gains nothing."
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-FLOW-013-T01",
+          "title": "Reconcile the ledger with the shipped six-step wizard — enumerate, do not grep",
+          "status": "completed",
+          "progress": 100,
+          "detail": "DO THIS FIRST: a step whose contract still says it does not exist is a step nothing describes. Verify each of the following against the tree rather than trusting this list — MODEL-FLOW-000's re-audit found five of seven such items already correct.\n\nexisting_flow.steps (five entries, step 1 misnamed 'Model Setup', no Model Selection); architecture.user_flow (no MODEL_SELECTION token — and note its length was never a reliable proxy for the step count, since it already held six entries while the flow had five steps); architecture.persistence_boundary.database_commit_not_allowed (add MODEL_SELECTION, so its absence does not read as unconsidered); refactor_goals ('extended from four steps to five', and 'Save Model action in Step 5' -> 6); global_definition_of_done (the five-step line plus the three numbered step lines, and the stray trailing '...' on the Save Model line); MODEL-FLOW-004's title/description/criteria (Evaluation is now Step 5 — keep its renumbering history, it is the record of why this entry has been renamed twice); MODEL-FLOW-008 entire (description, four acceptance criteria, V01), plus one new criterion that Model Selection commits no Model row; and progress_note's denominator, which reads 3 of 10 while the file already held twelve features — state that the 10 was itself stale rather than moving it silently.\n\nDo NOT rewrite MODEL-FLOW-010's five-step claims. They were true when written. Append a dated STALE correction in its own established style, which is how every other superseded claim in this file is handled.",
+          "note": "Completed 2026-08-27. Enumerated against the tree, not grepped: MP_TOTAL_STEPS was 5 while STEP_LABELS/the switch in create-model-form.tsx already shipped 6 cases (Phase4ModelSelection a one-line stub), and every step-count-driven mechanism in use-model-pipeline-nav.ts (goTo, next, canAdvance, all nine Math.min(prev,3) relock calls, edit-mode's setHighestUnlocked(MP_TOTAL_STEPS)) still enforced 5 — the real Save Model screen (case 6, Phase6Deploy) was unreachable through any navigation path, not merely missing business logic. Fixed: MP_TOTAL_STEPS -> 6; canAdvance's case 4 (Model Selection) mirrors case 3's trainState==='done' gate (documented reason: stops a re-triggered failure after the step was already unlocked from advancing further); new case 5 (Evaluation) is the old case 4's unconditional true; case 6 (Save Model) is the old case 5's unconditional false. The nine relock calls confirmed correct unchanged at Math.min(prev,3) — the inserted step sits after what they invalidate. create-model-form.tsx's hideFooterNext/NEXT_LABELS corrected to 6; this ALSO fixed a second latent bug: hideFooterNext was ===5, so the footer's Next button was hidden at old-Evaluation and never shown again — with it now ===6 and case 5 (Evaluation) canAdvance unconditionally true, the wizard footer alone provides Evaluation->Save Model with no extra button needed (the plan's proposed in-page 'Continue to Save Model' button turned out to be redundant once the footer fix landed, so it was not added). use-model-wizard-mode.ts's stale 'Step 4' Deploy comment corrected to Step 6. Ledger: existing_flow.steps gained Model Selection at position 4, step 1 renamed Model Setup->Select Dataset; architecture.user_flow/persistence_boundary gained MODEL_SELECTION; refactor_goals/global_definition_of_done's step-count lines updated; MODEL-FLOW-004/-008 titles/descriptions/acceptance_criteria corrected (dated append, not silent rewrite, matching this file's own practice); MODEL-FLOW-010's five-step claims left AS-IS with a dated STALE finding appended, per instruction not to rewrite them. Precedent test hooks/model/__tests__/use-model-pipeline-nav.test.tsx updated for the renumbering (11/11 passing, including a new case-4-mirrors-case-3 assertion and a corrected MP_TOTAL_STEPS boundary test) rather than left broken."
+        },
+        {
+          "id": "MODEL-FLOW-013-T02",
+          "title": "Audit what the merged Model Selection step actually contains",
+          "status": "completed",
+          "progress": 100,
+          "detail": "Before scoping any build: is the shipped step a label and a placeholder, or does it already carry a panel, a hook, a route? Read create-model-form.tsx's switch and STEP_LABELS, the step component itself, use-model-pipeline-nav.ts's canAdvance cases, and every relock site. The answer decides whether T06 through T09 are a build or a fill-in — the distinction that changed the scope of -004, -005 and -006 when each was audited first.\n\nRe-check specifically, do not assume: whether the nine Math.min(prev, 3) relock sites MODEL-FLOW-010-T02 established are still correct with a step inserted AFTER Training Config; whether canAdvance has a case 4 and what it gates on; and whether phase-3-evaluation.tsx's nav.goTo(3) still points at Training Config. -010-T02's own note calls use-model-pipeline-nav.ts 'the real trap' for exactly this class of edit.",
+          "note": "Completed 2026-08-27, folded into T01 per this task's own instruction (the two audits are one read). Answer: the shipped step was a frame around nothing — Phase4ModelSelection's entire body was `<div className=\"space-y-6\">asd</div>`, no hooks called beyond a type import, no data-fetching, no comparison UI. T06/T07 below are therefore a full build, not a fill-in. Also confirmed: canAdvance had a case 4 (unconditionally true, stale 'Results reached -> Deploy' comment) with no gate of its own, and phase-5-evaluation.tsx's three nav.goTo calls (targeting 1 and 3) were already correct and needed no change under the new numbering."
+        },
+        {
+          "id": "MODEL-FLOW-013-T03",
+          "title": "Generalize ModelFineTuningJob into a candidate job that varies algorithm as well as hyperparameters",
+          "status": "completed",
+          "progress": 100,
+          "detail": "hyperparameterSets becomes candidates, an ordered array of {algorithm, hyperparameters}; the job's own algorithm field moves down into each element. targetY, goldArtifactId and trainTestSplit STAY on the job — they are what makes the candidates comparable at all, and varying them would make the comparison meaningless. Rename the entity and ModelTrainingRun.fineTuningJobId, and backfill existing jobs with kind = 'HYPERPARAMETER_SEARCH'.\n\nWHY GENERALIZE RATHER THAN ADD: MODEL-FLOW-005 already built this orchestrator and live-verified it with three real hyperparameter searches, catching a real currentRunId bug in the process. An algorithm sweep is the same loop with a different thing varying per element. A second table would duplicate advanceJobForRun's compare-and-swap, its idempotency, its failure semantics and its reconcile-on-read path — four things that took a live session to get right once.\n\nWHAT MUST NOT CHANGE: the compare-and-swap idempotency; both call sites (the container webhook as a best-effort nudge that can never fail the response, since a training container has no way to retry a 500; and getJobService reconciling on read); fail-whole-job semantics with the set index named; and retry-the-failed-set behaviour. The existing 9-test spec must pass unmodified wherever behaviour is unchanged — a test that needed editing to keep passing is the signal that behaviour moved.\n\nRMSE remains the selection metric and this task does not reopen it: comparing RMSE across algorithms on one artifact, target and split is sound, and is the same reason MODEL-FLOW-005 chose it over R² after a real run scored r2 = -1,110,858 while its rmse stayed readable.\n\nThe partial unique index keeps its (draftId) key. One live job per draft.",
+          "note": "Completed 2026-08-28. ModelFineTuningJob -> ModelCandidateJob, ModelFineTuningJobStatus -> ModelCandidateJobStatus (same 5 values), new ModelCandidateJobKind enum {HYPERPARAMETER_SEARCH, ALGORITHM_SWEEP}. algorithm removed from the job root; hyperparameterSets -> candidates Json (ordered {algorithm, hyperparameters}[]); selectedRunId added (T08); ModelTrainingRun.fineTuningJobId -> candidateJobId; ModelTrainingRun.lossHistoryKey added in the same pass (T05's column, bundled to avoid a second migration cycle). targetY/goldArtifactId/trainTestSplit stayed on the job root, unchanged. Hand-written migration (20260827120000_model_flow_013_candidate_job/migration.sql, following the two existing hand-added-SQL precedents in this schema) rather than `prisma migrate dev`-generated: existing rows' hyperparameterSets had no embedded algorithm, so this is a data migration (add nullable -> backfill via jsonb_agg(elem || jsonb_build_object('algorithm', algorithm)) -> tighten NOT NULL -> drop the old columns -> rename table/enum/FK/indexes -> recreate the partial unique index under its new name). BLOCKER FOUND AND WORKED AROUND, NOT FIXED: `prisma migrate dev` itself could not be run cleanly in this session — the dev DB already had unrelated, undocumented drift (DatasetArtifact.droppedBadRows exists in the live schema with no migration file anywhere in migrations/, from separate concurrent work visible in this session's initial git status) that makes `prisma migrate dev` demand a full `migrate reset`, which would destroy the shared dev database's other data. Did NOT run that reset. Applied this migration instead via `prisma db execute --file`, which bypasses migration-state bookkeeping entirely — `_prisma_migrations` was NOT updated for this migration, so a future clean `prisma migrate dev` run will need to reconcile both this gap and the pre-existing droppedBadRows one together. Took a `pg_dump` of ModelFineTuningJob/ModelTrainingRun before applying, as a rollback net; verified post-migration that the one real pre-existing job row (dba5a971-..., algorithm ols, 2 hyperparameter sets, FAILED) backfilled correctly into candidates: [{\"algorithm\":\"ols\",\"fit_intercept\":true},{\"algorithm\":\"ols\",\"fit_intercept\":false}]. Backend: model-fine-tuning.authorized.{controller,service,service.spec}.ts and dto/model-fine-tuning.authorized.dto.ts renamed to model-candidate-job.* (git mv, history preserved); runDtoFor now reads algorithm from the candidate, not the job; createJob/advanceJobForRun/getJobService/retryJobService field-renamed only — the CAS shape, idempotency guard, fail-whole-job semantics and retry-the-failed-candidate behavior are byte-for-byte unchanged. Confirmed by the existing 9-test spec: every original `it(...)` passes with field-name-only edits, no assertion-logic changes (15/15 including 6 new tests added for T06/T08 below). model-run-launch.authorized.service.ts's launchDraftRun(draftId, dto, candidateJobId?) and model-run.authorized.service.ts's complete() (run.candidateJobId, this.candidateJobs) updated to match; the ModelDraft.currentRunId single-writer invariant in advanceJobForRun's completion branch is untouched. Route renamed /:draftId/fine-tuning* -> /:draftId/candidate-jobs* (zero client callers existed, confirmed by T02's own audit, so free). `pnpm --filter=backend check-types`: zero new errors (5 pre-existing failures in auth/dataset-draft spec files, unrelated, confirmed already present before this session). `npx jest src/api/v1/model-run`: 30/31 (1 pre-existing RunTokenGuard DI-shell gap, already documented by MODEL-FLOW-004/-005)."
+        },
+        {
+          "id": "MODEL-FLOW-013-T04",
+          "title": "Emit train-split metrics from train.py",
+          "status": "completed",
+          "progress": 100,
+          "detail": "Prerequisite for BOTH render modes: metrics.json carries test-split figures only, so mode B has nothing to pair and mode A has no baseline. Add train rmse/r2/mae. Name them so nothing later mistakes them for holdout figures, which are a distinct object with their own currently-always-null metrics — MODEL-FLOW-004 already had to rename a heading for exactly that confusion.",
+          "note": "Completed 2026-08-28. train.py's metrics dict gains train_r2/train_mae/train_rmse (computed from model.predict(train[feature_cols]) against train[target_y], right beside the existing test-split r2/mae/rmse). No schema change needed — MetricsSchema is a bare z.record(string, scalar) on the backend, so new scalar keys validate as-is; ModelTrainingRun.metrics stays untyped Json. Named train_* specifically so nothing confuses these with holdoutMetrics, a distinct object with its own keys."
+        },
+        {
+          "id": "MODEL-FLOW-013-T05",
+          "title": "Write a loss history artifact for the estimators that have one, and pass an eval_set so the validation series exists",
+          "status": "completed",
+          "progress": 100,
+          "detail": "MLPRegressor's loss_curve_; LightGBM and XGBoost's evals_result_, which requires passing eval_set at fit time and is currently not passed, so there is no second series to read; HistGradientBoosting's train_score_ and validation_score_. Write loss_history.json under drafts/{draftId}/runs/{runId}/, alongside the keys already produced there.\n\nBound it: a run with many thousands of iterations must not ship an unbounded array. Refuse or aggregate BY NAME, the discipline MODEL-FLOW-004 applied with MAX_PREDICTION_POINTS rather than silently sampling — and record the deferred design in the schema's own comment for whoever hits the cap first, as that feature did. An estimator with no iterations writes no artifact and no placeholder.",
+          "note": "Completed 2026-08-28. New extract_loss_history(algorithm, model) in train.py, called right after .fit(). eval_set added to the lightgbm/xgboost .fit() calls ONLY (no early_stopping_rounds anywhere, so this never changes when training stops or what the fitted model is); xgboost's eval_metric moved to the CONSTRUCTOR (build_model) since its sklearn API deprecates passing it to .fit(). loss_history.json written only when a series was extracted; registered in the three places the existing four run-artifact filenames are (train.py's outputs dict, Python's _ALLOWED_RUN_UPLOADS via new LOSS_HISTORY_FILENAME constant in object_store.py, TS RUN_UPLOAD_FILENAMES in artifact-keys.ts — RunUploadFilenameEnum/RunUploadUrlsSchema derive from that array automatically, no separate edit needed). Backend: ModelTrainingRun.lossHistoryKey (added in T03's migration), written in complete() via the same keyIf('loss_history.json') pattern the other four keys already use. LIVE-VERIFIED against the pinned library versions (scikit-learn 1.5.2, lightgbm 4.5.0, xgboost 2.1.2) with real fits on synthetic data across all 10 runnable algorithms, not just the fake-object unit tests — this caught a real bug before it shipped: HistGradientBoostingRegressor.train_score_ and validation_score_ are NOT absent when early_stopping resolves False (the unconfigured 'auto' default for any dataset at or under 10,000 rows — the common case in this trainer's domain, see GPR_MAX_TRAIN_ROWS) — they are EMPTY ARRAYS, always present as attributes. The first implementation checked hasattr()/is None and would have shipped a technically-present-but-empty series, which is worse than no artifact — it looks like a real (empty) curve rather than an honest 'no data' state. Fixed to check len()==0. Net real-world effect: hist_gradient_boosting has NO loss history for most datasets in this system today and correctly falls to mode B (T05a/T07) — an accurate finding about this trainer, not a bug to route around. Confirmed via the same live-fit script: ols/ridge/pls/grp/svm/random_forest -> None; mlp -> train-only, metric=loss; hist_gradient_boosting -> None (small dataset, as expected); lightgbm/xgboost -> train+validation, metric=rmse, lengths matching n_estimators. images/trainer/test_train.py: 12/12 (7 new for extract_loss_history, including a dedicated regression test for the exact bug found). MAX_LOSS_HISTORY_POINTS=5000, soft-skip (log + omit, never fails the run) when exceeded, same discipline as apps/python's MAX_PREDICTION_POINTS. apps/python/tests/: 772 passed, 74 skipped (pre-existing skip set, unaffected). pnpm --filter=backend check-types/jest: unchanged from T03 (5 pre-existing unrelated errors, 30/31 with the same pre-existing RunTokenGuard DI gap)."
+        },
+        {
+          "id": "MODEL-FLOW-013-T05a",
+          "title": "The render mode is a property of the run, not a hardcoded algorithm list in the client",
+          "status": "completed",
+          "progress": 100,
+          "detail": "The client must choose mode A or mode B from whether the run has a lossHistoryKey, never from a switch on the algorithm name. The catalogue holds 12 entries, build_model implements 10, and lstm/gru are still blocked in MODEL-FLOW-009 — a hardcoded membership list in the client is a second source of truth that will drift the first time an algorithm is added, and it will drift in the direction of showing an empty curve rather than an honest mode-B chart.",
+          "note": "Completed 2026-08-28. run-selection.ts's renderModeFor(candidate) is the ONLY branch site in the client: `candidate.lossHistory ? 'A' : 'B'` — no algorithm name anywhere in the condition. phase-4-model-selection.tsx's CandidateChart calls renderModeFor once (line ~94) and has no second branch — there is no membership list to drift when lstm/gru unblock in MODEL-FLOW-009 or the catalogue otherwise grows. Verified structurally (one call site, grepped) and by test: run-selection.test.ts's renderModeFor describe block asserts mode A for a CLOSED-FORM algorithm (ols) given a real lossHistory, and mode B for a MODE-A-CAPABLE algorithm (xgboost) given lossHistory: null — both directions of the cross case V06 asks for, so V06 is satisfied by an existing unit test rather than needing a new one."
+        },
+        {
+          "id": "MODEL-FLOW-013-T06",
+          "title": "Read endpoint for a candidate set",
+          "status": "completed",
+          "progress": 100,
+          "detail": "Per candidate return: algorithm, hyperparameters, train and test metrics, status, failure reason where present, and lossHistoryKey when the run has one. Resolve every key off the job and run rows and never from the request — the discipline getDraftRunPredictionsService established in MODEL-FLOW-004. Bounded payload; a set larger than the cap is refused by name rather than truncated silently.",
+          "note": "Completed 2026-08-28, built alongside T03 rather than as a separate pass — widening getJobService's query and response shape WAS the natural place for this, not a second edit to the same function. Query widened to include: {runs: {orderBy: {createdAt: 'asc'}}}. Response now shapes job.candidates[i] against runs[i] (matched by launch order, which is array order — one candidate in flight at a time), producing {runId, algorithm, hyperparameters, status: run?.status ?? 'PENDING', failureReason, metrics: {r2,rmse,mae} (test split), trainMetrics: {r2,rmse,mae} (T04's train_* keys), lossHistoryKey}. Every value resolved off the job/run rows, never the request. The existing 20-candidate cap (CreateCandidateJobSchema) makes an oversized response unreachable by construction. Test coverage: 2 new tests in model-candidate-job.authorized.service.spec.ts (candidate shaping in launch order incl. a FAILED candidate; a not-yet-launched candidate marked PENDING with runId null rather than dropped)."
+        },
+        {
+          "id": "MODEL-FLOW-013-T07",
+          "title": "Comparison chart and selection UI, with two honest render modes",
+          "status": "completed",
+          "progress": 100,
+          "detail": "One row per candidate showing its algorithm, hyperparameters and metrics, plus the chart. Mode A: train and validation series over iterations, the second series labelled TEST SPLIT because that is what it is. Mode B: the loss value as PAIRED MARKS, train beside test — never a two-point line, for the reason this feature's fourth finding states.\n\nNO FABRICATED SERIES, EVER. MODEL-FLOW-004 deleted seededNoise, comparePoints and compareFit from this same wizard for exactly this reason, and disabled its 'Compare with...' control rather than let it invent a series to fill the space. A candidate with no history shows mode B and says why; a FAILED candidate shows its reason and stays in the list rather than disappearing.",
+          "note": "Completed 2026-08-28. Step 3 wiring (use-model-training.ts): start() now branches three ways — findBestParams true still refuses client-side (defense in depth; the toggle itself is disabled, see below) with trainState.status 'error'; findBestModel true with algorithms.length < 2 refuses with 'error' before any request; findBestModel true with >=2 algorithms calls modelDraftCandidateJobService.create with kind: 'ALGORITHM_SWEEP' and one candidate per selected algorithm, then polls the JOB (new pollJob(), mirrors pollRun's 2500ms interval) rather than a single run — QUEUED/RUNNING maps to trainState 'training', SUCCEEDED/FAILED to 'done'/'error'. On SUCCEEDED, mpTrainingResultAtom is set from the job's bestRunId candidate (the pre-selection default a user can override in Step 4) and the new mpCandidateJobIdAtom records the job id; a single-run (non-sweep) launch explicitly clears mpCandidateJobIdAtom so a stale sweep id from a prior attempt can never leak into Step 4. The reconnect-on-remount effect checks mpCandidateJobIdAtom first, mirroring the existing run-reconnect path. automl-toggles.tsx: Find Best Parameters' row is unconditionally disabled with a stated reason (no existing search-strategy precedent in this codebase to reuse — see T11's note for the actual gap), same disable-with-reason discipline as lstm/gru and Evaluation's 'Compare with...' control. use-candidate-job.ts (new): thin fetch hook mirroring useDraftRuns' shape exactly — one request, local state, a refetch() the Select action calls after a successful choice. phase-4-model-selection.tsx (real implementation, replacing the `<div>asd</div>` stub): three states — no training result yet (honest empty state, 'Go to Training Configuration' action); mpCandidateJobIdAtom null (an ordinary single-run launch — single-candidate pass-through, no comparison table, no Select button, satisfying the single-run acceptance criterion); a job id present (fetches via T06's widened endpoint, renders one CandidateRow per candidate — algorithm label via the existing catalogue map, classifyHyperparams reused verbatim from MODEL-FLOW-012's lib/run-params.ts, train/test metrics, a FAILED candidate's status and failureReason stay listed rather than being filtered out, a RUNNING/QUEUED job shows 'N of M' progress text instead of an empty or partial table). CandidateChart renders mode A (recharts LineChart, ResponsiveContainer, train series always present, a second series only when modeAHasValidationSeries is true and explicitly labelled 'Test split' — never 'Validation' — Y-axis labelled with the run's own metric name via modeAMetricLabel, never assumed RMSE) or mode B (two paired marks via modeBMarks, rendered as plain divs — no <Line>, no path element, no .recharts-wrapper at all — with explanatory text, never a two-point line faked into a curve) purely from run-selection.ts's renderModeFor. The resolved winner (job.bestRunId) shows a 'Selected' badge; every other terminal candidate gets a Select button that POSTs via modelDraftCandidateJobService.select(draftId, jobId, runId) and calls refetch() on success. Bugs found and fixed while building this: (1) a recharts Tooltip formatter type error — `(value: number) => string` doesn't satisfy recharts' Formatter type (ValueType | undefined); fixed with a typeof-narrowing formatter. (2) a dead pollingJobRef in use-model-training.ts, declared and written twice but never read once the reconnect effect was rewritten to check mpCandidateJobIdAtom directly — removed. (3) The SAME stale-closure test-authoring bug MODEL-FLOW-012 already hit: store.set(atom, value) called AFTER render()/renderHook() is not itself wrapped in act(), so a subsequent assertion can read a pre-set render — hit independently in both use-model-training.test.tsx and phase-4-model-selection.test.tsx, fixed both times with the same pattern (a configure(store) callback applied BEFORE render/renderHook, not a bare store.set after). Tests: run-selection.test.ts 10/10 (renderModeFor cross-algorithm both directions, modeARows pairing and null-validation handling, modeAHasValidationSeries, modeAMetricLabel's RMSE-vs-Loss distinction, modeBMarks' exactly-two-marks-never-fabricated shape); use-model-training.test.tsx 5/5 (refuses findBestParams even if the UI-disable were bypassed by stale state, refuses a sweep under 2 algorithms, creates an ALGORITHM_SWEEP job with one candidate per algorithm, sets mpTrainingResultAtom from the WINNING candidate and records the job id on success, a single-run launch clears a stale mpCandidateJobIdAtom); phase-4-model-selection.test.tsx 8/8 (empty state; single-run pass-through with no comparison table and no Select button; a FAILED candidate stays listed with its reason; the resolved winner shows Selected and exactly one other Select button exists; mode B shows explanatory text and renders zero .recharts-wrapper elements; mode A shows 'Test split' — never 'Validation' — and renders a real chart; clicking Select calls the service with the right draftId/jobId/runId and triggers refetch; a RUNNING sweep shows 'N of M' rather than an empty table). pnpm --filter=client check-types and lint both clean on every file this task touched or added (the pipeline's set-state-in-effect lint finding in use-candidate-job.ts matches use-draft-runs.ts's identical, already-accepted pattern from MODEL-FLOW-012 and a dozen other pre-existing hooks — not a new class of issue)."
+        },
+        {
+          "id": "MODEL-FLOW-013-T08",
+          "title": "Record the user's choice in selectedRunId; leave bestRunId alone",
+          "status": "completed",
+          "progress": 100,
+          "detail": "Add ModelCandidateJob.selectedRunId, nullable, where null means 'accept the metric's answer'. bestRunId becomes immutable once the job terminates. One resolver returns selectedRunId ?? bestRunId, and Evaluation, Save Model and the ModelDraft.currentRunId write all read through it.\n\nWHY NOT JUST OVERWRITE bestRunId: it is the record of what the metric chose, so overwriting destroys the only evidence that a human chose differently — the fact an audit would actually want. It also reopens a bug MODEL-FLOW-005 closed live: before that fix, a child run finishing mid-search set ModelDraft.currentRunId to itself rather than leaving it for the eventual winner, and Step Evaluation showed that intermediate run for the whole search's duration. The fix works by narrowing the writers of that field to exactly one, advanceJobForRun's completion branch. A user-selection writer would be a third, racing the same field.\n\nTHE INVARIANT: ModelDraft.currentRunId keeps ONE writer. Selection writes selectedRunId; the resolver is a read. Any implementation that ends up with a second writer to currentRunId has not implemented this task, whatever it returns.\n\nRefuse a selection while the job is not terminal, and refuse a runId that is not a candidate of this job or did not SUCCEED. A client-only selection is not an option: Save Model runs server-side and adopts by pointer, so a browser-held choice would fall back to bestRunId at the one moment it matters — the same reason decisions.draft_persistence rejected a client-only draft.",
+          "note": "Completed 2026-08-28. Backend: POST /:draftId/candidate-jobs/:jobId/select {runId} (selectCandidateService) — refuses a non-terminal job, a runId that is not one of this job's own runs, and a runId whose run did not SUCCEED. Writes ONLY ModelCandidateJob.selectedRunId — never touches ModelDraft.currentRunId. Resolver: ModelDraftAuthorizedService.getDraftService gained resolveActiveRunId (private), computing resolvedRunId = the draft's most recent TERMINAL candidate job's selectedRunId ?? bestRunId, falling back to the draft's own currentRunId when no such job exists or the most recent one is non-terminal — added to the GET /model-drafts/:id response, ONE resolver, currentRunId's single writer (advanceJobForRun's completion branch) untouched. REAL BUG FOUND AND FIXED before this could have shipped broken: use-draft-run-evaluation.ts's resolveRunId originally short-circuited on the client-side runIdHint (`if (runIdHint) return runIdHint`) BEFORE ever calling the server — since mpTrainingResultAtom's poll loop always sets that hint the moment training finishes, well before a user could reach Step 4 and make a selection, the server's resolvedRunId would NEVER have been consulted and T08's whole point (a user's selection overrides what Evaluation shows) would have silently done nothing. Fixed: resolveRunId now always calls modelDraftService.get(draftId) and reads resolvedRunId, falling back to runIdHint only when the server resolves nothing (a defensive remount-race case). Client: services/model-draft.ts's ModelDraft gained resolvedRunId: string | null. Tests: 5 new in model-draft.authorized.service.spec.ts (falls back to currentRunId with no job; prefers selectedRunId over bestRunId; falls back to bestRunId when unselected; ignores a non-terminal job; never writes ModelDraft.currentRunId) — 12/12 total. Client-side selection UI (the Select button a user actually clicks) ships with T07 below, which is where the comparison table itself is built."
+        },
+        {
+          "id": "MODEL-FLOW-013-T09",
+          "title": "Save Model adopts the resolved run",
+          "status": "completed",
+          "progress": 100,
+          "detail": "MODEL-FLOW-007-T10 adopts by pointer from ModelDraft.currentRunId. If T08's resolver is the single write path into that field this is a no-op — but it is recorded so that -007 is not built on the assumption of one run per draft. MODEL-FLOW-006's live audit found 0 of 18 runs and 0 of 24 drafts have ever linked to a Model, so this bridge has never been exercised at all: there is no behaviour to preserve, only a design to get right the first time.",
+          "note": "Completed 2026-08-28 as a NO-OP, per this task's own instruction — MODEL-FLOW-007-T10 adopts by pointer from ModelDraft.currentRunId, and T08's resolver above IS the single write path into that field's effective meaning (a read-time resolution, currentRunId's own writer untouched). Confirmed MODEL-FLOW-007 is entirely pending (0/11 tasks started) — useModelCommit (apps/client/hooks/model/use-model-commit.ts) persists only wizard-form config today and never reads currentRunId/resolvedRunId at all, so there is no existing behavior to preserve, only a design to get right the first time when -007 is built. Recorded here so -007 is not designed on the false assumption of one run per draft: when it builds T10 (adopt by pointer), it should read ModelDraft.resolvedRunId (this feature's field), not currentRunId directly."
+        },
+        {
+          "id": "MODEL-FLOW-013-T10",
+          "title": "Tell MODEL-FLOW-011 that N runs per draft is now normal",
+          "status": "completed",
+          "progress": 100,
+          "detail": "Add a finding to MODEL-FLOW-011 in the shape its third finding already uses for MODEL-FLOW-010-T07: this feature does not create the leak, it multiplies its rate — a candidate job writes N run prefixes under drafts/{draftId}/runs/{runId}/ where the flow previously wrote one, and -011-T02 reclaims prefixes. -011-T05's reasoning that the unit of the reclaim decision is the RUN and not the draft was already right and needs no change; what changes is that the multi-run case it anticipated becomes the common one rather than an observed accident.",
+          "note": "Completed 2026-08-28 — ledger cross-note only, no code (MODEL-FLOW-011 is entirely pending, 0/5 tasks started, nothing to build against yet)."
+        },
+        {
+          "id": "MODEL-FLOW-013-T11",
+          "title": "Find Best Model and Find Best Parameters are two PHASES of one job, not two jobs",
+          "status": "completed",
+          "progress": 100,
+          "detail": "Forced by the (draftId)-scoped one-live-job index together with the shipped UI's own copy: 'Find Best Parameters — Hyperparameter-tune the best model. Requires Find Best Model.' Two concurrent jobs are impossible under that index, so a sweep-then-tune request is ONE job with an algorithm phase followed by a hyperparameter phase over the phase-1 winner. advanceJobForRun's compare-and-swap already sequences runs within a job; extending it to advance a PHASE when a phase's candidates are exhausted is the same mechanism one level up.\n\nScoped as its own task rather than folded into T03 because building the sweep first and discovering the phase requirement afterwards would mean reopening the job entity a second time — the cost this ledger has already paid twice, on ModelTrainingRun's owner column and on ModelConfigSchema.",
+          "note": "SCOPE REVERSAL 2026-08-28: the user asked to continue T11 after the initial deferral (recorded below, kept for history). Design settled via AskUserQuestion before building: (1) phase-2 candidate SOURCE — a curated hyperparameter shortlist PER ALGORITHM, declared as data (apps/backend/src/lib/tuning-grid.ts's TUNING_GRID), not a search strategy — deterministic, reviewable, no invented heuristic; (2) TUNE BUDGET — 4 variants per job (TUNE_VARIANTS_PER_JOB), so a 5-algorithm sweep becomes 9 total runs; (3) THIN SURFACE — run whatever variants exist even if only 1 (OLS has one: fit_intercept flipped), never silently skip the phase the user asked for.\n\nBuilt: Prisma — ModelCandidateJobKind gained SWEEP_THEN_TUNE (hand-written migration 20260828140000_model_flow_013_t11_sweep_then_tune, a single ALTER TYPE ADD VALUE, applied via prisma db execute --file per the same DB-drift constraint T03's migration already documented — prisma migrate dev still cannot run cleanly here). tuning-grid.ts: TUNING_GRID covers all 10 algorithms build_model implements (no lstm/gru entries — both are refused before a container spawns); tuningCandidatesFor(algorithm, alreadyTried) excludes the winner's own setting and caps at 4, returning [] for an unrecognized algorithm rather than throwing. Every key in every variant is LIVE-VERIFIED against images/trainer/train.py's build_model via a new static-source guard (tuning-grid.spec.ts, mirrors run-params.test.ts's existing precedent) — 15/15 passing, so the grid cannot silently drift from what the trainer actually reads. model-candidate-job.authorized.service.ts: Candidate gained an optional phase (1 or 2), stamped server-side ONLY — createJob stamps phase 1 on every incoming candidate, CandidateSchema has no phase field so a client can never author one. advanceJobForRun's completion branch gained ONE new branch, inserted between 'launch the next candidate' and 'job complete': when a SWEEP_THEN_TUNE job's currently-known candidates are exhausted and no phase-2 group exists yet, it reads the resolved winner's own run (reusing the in-hand run when it IS the winner, else one findUnique), calls tuningCandidatesFor, and — if any variants survive — appends them stamped phase 2, launches the first, and writes candidates/totalRuns/currentRunId/bestRunId/bestRmse inside the SAME compare-and-swap updateMany (id + currentRunId + status IN QUEUED/RUNNING) the other two branches already use, so a double-advance for one run appends exactly once; a launch failure fails the whole job, mirroring the existing next-candidate failure path. If tuningCandidatesFor returns [], or the job is ALGORITHM_SWEEP/HYPERPARAMETER_SEARCH, or a phase-2 group already exists, execution falls straight through to the unchanged completion branch — verified explicitly, not assumed. getJobService's shaped candidate gained phase: candidate.phase ?? 1. Client: ModelCandidateJobKind and CandidateResult.phase (services/model-draft.ts); use-model-training.ts's start() now refuses findBestParams only when findBestModel is off (previously refused unconditionally), and picks kind: SWEEP_THEN_TUNE vs ALGORITHM_SWEEP from both toggles; pollJob's progress text reads the in-flight candidate's own phase and shows 'Tuning <algorithm> — N of M…' once phase 2 starts, tolerating totalRuns GROWING mid-poll (the server appends phase 2 only once phase 1 exhausts, so the total is not known at job creation). automl-toggles.tsx: Find Best Parameters is no longer hardcoded disabled — checked={findBestParams}, disabled={!findBestModel}, description states the dependency; the A-off-cascades-B-off behavior already existed in use-model-pipeline-nav.ts and needed no change. phase-4-model-selection.tsx: candidates render as two headed groups ('Sweep' / 'Tuning <winner>') ONLY once a phase-2 group exists — an ALGORITHM_SWEEP job, or a SWEEP_THEN_TUNE job still mid-phase-1, renders the exact same flat ungrouped grid as before, verified by a dedicated test asserting no 'Tuning' header appears. REAL BUG FOUND AND FIXED while verifying: the phase-2 append branch's `let job`/`let nextRun`/`let tuneRun`/`let newRun` (all `let X; try { X = await ...create()/launchDraftRun() } catch { return; }`) resolved as `any` under @typescript-eslint's type-aware checker despite `tsc --noEmit` staying completely clean on the same code — confirmed via an isolated single-file eslint run (13 findings, all `no-unsafe-*` on later `.id` access), and confirmed the SAME pattern already existed on the pre-existing `nextRun`/`newRun` variables untouched by this task, not something T11's new code introduced structurally. Root-caused to `@typescript-eslint`'s type-aware analysis not narrowing an unannotated `let` declared-then-assigned-once across a try/catch boundary the way `tsc` itself does. Fixed by explicitly annotating all four (`PrismaModels.ModelCandidateJobModel`, and a new local `LaunchedRun = Omit<PrismaModels.ModelTrainingRunModel, 'tokenHash'>` matching `launchDraftRun`'s actual omit) — isolated single-file eslint run now clean (0 findings), confirmed with tests still 21/21 (later 36/36 with new tests) and full-suite passing counts unchanged from before the fix. Tests: 4 new cases in model-candidate-job.authorized.service.spec.ts (appends phase-2 and launches the first when phase 1 exhausts; completes normally when the winner has nothing left to tune — grid mocked via jest.mock to return []; never attempts a phase-2 append for an ALGORITHM_SWEEP job; does not append a second phase-2 group once one already exists, and a worse phase-2 run leaves bestRunId alone) — 21/21 total in that file, 36/36 combined with tuning-grid.spec.ts. Client: 2 new use-model-training.test.tsx cases (creates SWEEP_THEN_TUNE when both toggles are on; shows a 'Tuning …' progress label once the in-flight candidate is phase 2) — 7/7. 2 new phase-4-model-selection.test.tsx cases (both groups render, headed and named after the winner; a one-phase job shows no Tuning header) — 10/10. Full-suite verification after this task: pnpm --filter=backend test 373 passed (same 10 pre-existing failing suites as before this task, confirmed via isolated single-file runs plus the file-scoped diagnosis above, not re-litigated via a full stash comparison this time since the isolated evidence was already conclusive); pnpm --filter=client test:run 740 passed (same 8 pre-existing failing files as MODEL-FLOW-013's own T07 verification pass found and stash-confirmed). Both check-types clean of new errors (same pre-existing backend auth/dataset-draft-spec and client dataset-compare-modal.tsx errors, unrelated to this task, present before T11 started). Both lint passes clean on every file this task touched or added.\n\n--- SUPERSEDED, kept for history — the original 2026-08-28 deferral note ---\nSCOPE DECISION 2026-08-28, made explicitly by the user during planning for this session (AskUserQuestion: 'Ship Find Best Model only this pass' over building the phase-1-then-phase-2 sequencing this task actually specifies): this task's real ask — extending advanceJobForRun to advance a PHASE (an algorithm-sweep phase followed by a hyperparameter-search phase over the phase-1 winner, both inside ONE job so the (draftId)-scoped one-live-job index is never violated) — is NOT built. What IS in place, laid down in T03 specifically so this remains a follow-up rather than a second migration: the kind enum (HYPERPARAMETER_SEARCH / ALGORITHM_SWEEP) and the flat, ordered candidates Json array (not two separate columns) mean a future phase-2 can append candidates to the SAME array and reuse createJob/advanceJobForRun's existing compare-and-swap unchanged — no new table, no new relation, no second schema migration. Find Best Parameters' toggle is disabled in the UI with a stated reason (automl-toggles.tsx, built under T07) rather than left silently half-wired, and use-model-training.ts's start() refuses it server-side too as defense in depth against stale draft state bypassing the disabled toggle. Reason for the deferral, stated plainly rather than left implicit: a hyperparameter-search STRATEGY (grid, random, bayesian — something has to choose the next candidate's hyperparameters from the phase-1 winner's algorithm) has no existing precedent anywhere in this codebase to build against, unlike ALGORITHM_SWEEP which only needed to iterate a fixed, user-chosen list. Building one blind, under this session's existing scope, risked exactly the kind of invented heuristic this ledger's own discipline (T07's 'NO FABRICATED SERIES, EVER', MODEL-FLOW-000-T02) argues against in spirit. Left status: pending, not blocked — this is a deliberate, already-decided scope cut, not a missing-information stall."
+        }
+      ],
+      "acceptance_criteria": [
+        "The wizard has six steps and this file says six, including step 1's real name.",
+        "No pre-existing step's behaviour changes — only its number.",
+        "Every figure in every chart comes from a run's own metrics or loss-history artifact. Nothing is fitted client-side and nothing is synthesized. MODEL-FLOW-004 found Step Evaluation fitting a 2-variable OLS line client-side and ignoring the trained algorithm entirely; this step must not reintroduce that class of defect in a new place.",
+        "An algorithm with no iterations shows a train-vs-test loss value chart and says so — never a line drawn through two points.",
+        "The validation series is labelled as the test split, not as a holdout.",
+        "The user's selection determines what Evaluation shows and what Save Model adopts, and bestRunId still records what the metric chose.",
+        "ModelDraft.currentRunId has exactly one writer.",
+        "Model Selection creates no Model row and adds no ModelDraft column.",
+        "A draft with a single run passes through the step without stalling, and edit mode shows an honest empty state for the same reason Step Evaluation does there."
+      ],
+      "verification": [
+        {
+          "id": "MODEL-FLOW-013-V01",
+          "description": "Launch a candidate set of at least three algorithms against real containers; confirm every candidate has a row and that its displayed figures are digit-exact against its own metrics.json.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-013-V02",
+          "description": "PROVE SELECTION BITES: choose the candidate that is NOT best-by-RMSE, then assert Evaluation shows that run, Save Model would adopt that run, AND bestRunId still points at the metric's winner. Choosing the best candidate would pass even if selection did nothing at all.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-013-V03",
+          "description": "A candidate set containing one FAILED run: the step still works, the failed candidate is listed with its reason, and it is not silently dropped.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-013-V04",
+          "description": "Walk all six steps in a real browser.",
+          "status": "pending",
+          "note": "This lands on an existing debt pile, not a clean slate: MODEL-FLOW-010-V01, -V03, -V04 and -V05 are all pending for one shared reason (no dev server and no NextAuth session in those passes), and MODEL-FLOW-004-V02/V03 recorded the same gap. Either clear the pile in one session with real credentials, or state plainly that this is the sixth item deferred for the same cause — the one thing not to do is defer it silently as though it were incidental."
+        },
+        {
+          "id": "MODEL-FLOW-013-V05",
+          "description": "PROVE MODE B RENDERS NO LINE: assert that a closed-form algorithm's candidate renders paired marks and no line series. A mode-A component falling back to plotting two points would look like a working curve — the failure class MODEL-FLOW-000-T02 exists to name.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-013-V06",
+          "description": "Assert the render mode follows the run's lossHistoryKey and not the algorithm name: give a mode-A algorithm a run with no history artifact and confirm it falls to mode B honestly rather than rendering an empty chart.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-FLOW-013-V07",
+          "description": "Confirm the (draftId) index still bites after the rename: attempt two concurrent candidate jobs on one draft and expect a 409, the same way MODEL-FLOW-005 live-verified it before the generalization.",
+          "status": "pending"
+        }
+      ],
+      "note": "STATUS 2026-08-28: ALL ELEVEN TASKS (T01-T11) now built and unit/integration-tested this session. T11 was initially deferred as a scope cut, then reversed on user request the same session — see T11's own note for its full build and the design decisions (curated per-algorithm tuning grid, 4-variant budget, run-whatever-exists-even-one) settled before building it. All of V01-V07 remain pending: every one needs a live dev stack (real containers for a real sweep, a real browser for the six-step walk) that was not reachable this session, the same gap MODEL-FLOW-010's and MODEL-FLOW-004's own V-items already recorded and left honestly pending rather than silently deferred. V05 and V06 in particular are ALSO covered by passing unit tests (run-selection.test.ts, phase-4-model-selection.test.tsx) even though their live-environment counterparts stay unchecked — noted here so a future pass does not read 'pending' as 'untested'. Progress held at 96, not 100, precisely because these seven verification items are the only thing between 'built' and 'proven' — CLAUDE.md's own rule against marking a feature completed while known verification is outstanding."
     }
   ],
-
   "global_definition_of_done": [
     "Serving, promotion and retraining are OUT of this ledger's scope and live in MODEL-SERVE; what this ledger owes them is a saved Model that records its artifact, checksum, feature spec and framework version — nothing downstream re-derives those.",
-    "The five-step Model Creation Flow is preserved.",
+    "The six-step Model Creation Flow is preserved (MODEL-FLOW-010 went four to five; MODEL-FLOW-013 inserted Model Selection, five to six).",
     "A dataset selected at Step 1 is reviewable at Step 2 before any training is configured.",
     "Step 3 Training Configuration behavior remains unchanged.",
-    "Step 4 Evaluation behavior remains unchanged.",
-    "Step 5 Save Model behavior remains unchanged...",
+    "Step 5 Evaluation behavior remains unchanged.",
+    "Step 6 Save Model behavior remains unchanged.",
     "Training runs without committing the Model to the database.",
     "Evaluation works without a persistent Model database record.",
     "Fine-Tuning runs as a background process.",

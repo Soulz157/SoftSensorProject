@@ -585,6 +585,36 @@ export const PythonColumnStatsSchema = z.object({
 });
 
 /**
+ * apps/python `schemas.preprocess.FeatureSpecResponse` (DS-LAKE-025-T06).
+ * No request DTO, same reasoning as `PythonColumnStatsSchema` directly above.
+ *
+ * `spec` is `passthrough()` rather than a modelled shape, mirroring Python's
+ * own decision to type it `dict[str, Any]`: `feature_spec.json` is a
+ * VERSIONED document (`featureVersion`) whose fields widen over time, and a
+ * strict schema here would reject a legacy sidecar that reads perfectly
+ * well. Only `scalingParams` is pinned, because that is the one field this
+ * endpoint exists to serve (T06 read 3) — and it is `.optional()` because an
+ * artifact written before DS-LAKE-018-T02 has none.
+ *
+ * Each entry is the params its scaler actually FIT: `{min,max}` for minmax,
+ * `{mean,std}` for standard, `{median,iqr}` for robust. Kept as a loose
+ * record of numbers rather than a union of those three — the method lives in
+ * `spec.scaling`, and pairing them is the CALLER's job (`inverseScale`),
+ * not this parse's.
+ */
+export const PythonFeatureSpecSchema = z.object({
+  source_key: z.string(),
+  feature_spec_key: z.string(),
+  spec: z
+    .object({
+      scalingParams: z
+        .record(z.string(), z.record(z.string(), z.number()))
+        .optional(),
+    })
+    .passthrough(),
+});
+
+/**
  * apps/python `schemas.preprocess.CorrelationResponse` (DS-LAKE-005B-D-T05b).
  * CORRECTED (this session, live-caught): the prior version of this schema
  * (`correlation_matrix`/`resolved_tags`/`sample_rows`/`start_time`/

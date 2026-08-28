@@ -106,7 +106,7 @@ export function DataTableView({ dataset, showQuality }: Props) {
                           )}
                         />
                       )}
-                      {cell ? cell.value : '—'}
+                      {cell ? cell.value.toFixed(2) : '—'}
                     </span>
                   </TableCell>
                 )

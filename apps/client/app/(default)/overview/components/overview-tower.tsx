@@ -142,7 +142,7 @@ export function PlantNameBadge({
 
   const baseHalfH = 2 * GRID * U * squash
   const badgeX = cx - badgeW / 2
-  const badgeY = cy + baseHalfH + SLAB + 10
+  const badgeY = cy + baseHalfH + SLAB + 15
   const badgeMidY = badgeY + BADGE_H / 2
 
   const statusDotX = badgeX + BADGE_PAD + STATUS_R

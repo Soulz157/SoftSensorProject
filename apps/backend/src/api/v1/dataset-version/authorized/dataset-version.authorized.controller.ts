@@ -281,6 +281,24 @@ export class DatasetVersionAuthorizedController {
     return this.service.getArtifactColumnStatsService(user, id, artifactId);
   }
 
+  @Get('/:id/artifacts/:artifactId/feature-spec')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: "The artifact's feature_spec.json sidecar",
+    description:
+      'DS-LAKE-025-T06. Serves `scalingParams` — what each scaler actually ' +
+      'fit — so a display surface can present engineering units from a ' +
+      'model-ready artifact without unscaling it. 404s when the artifact ' +
+      'produces no spec (e.g. BRONZE) or the sidecar is gone from storage.',
+  })
+  async getArtifactFeatureSpecController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+  ) {
+    return this.service.getArtifactFeatureSpecService(user, id, artifactId);
+  }
+
   @Get('/:id/artifacts/:artifactId/holdout')
   @HttpCode(200)
   @ApiOperation({

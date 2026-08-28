@@ -51,6 +51,11 @@ function buildPrisma(overrides: Record<string, unknown> = {}) {
       create: jest.fn(),
       update: jest.fn(),
     },
+    // MODEL-FLOW-013-T08. No candidate job by default — resolveActiveRunId
+    // falls back to draft.currentRunId, DRAFT_ROW's own null.
+    modelCandidateJob: {
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
     ...overrides,
   };
 }
@@ -172,5 +177,101 @@ describe('ModelDraftAuthorizedService — draft access and listing', () => {
       splitRatio: 0.8,
       updatedAt: '2026-08-21T11:00:00.000Z',
     });
+  });
+});
+
+describe('ModelDraftAuthorizedService — resolveActiveRunId (MODEL-FLOW-013-T08)', () => {
+  it('falls back to currentRunId when the draft has no candidate job', async () => {
+    const prisma = buildPrisma({
+      modelDraft: {
+        findMany: jest.fn(),
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ ...DRAFT_ROW, currentRunId: 'run-legacy' }),
+        create: jest.fn(),
+        update: jest.fn(),
+      },
+    });
+    const service = makeService(prisma);
+
+    const res = await service.getDraftService(USER, 'draft-1');
+
+    expect(res.data).toMatchObject({ resolvedRunId: 'run-legacy' });
+  });
+
+  it('prefers selectedRunId over bestRunId once the job is terminal', async () => {
+    const prisma = buildPrisma({
+      modelCandidateJob: {
+        findFirst: jest.fn().mockResolvedValue({
+          status: 'SUCCEEDED',
+          selectedRunId: 'run-user-picked',
+          bestRunId: 'run-metric-winner',
+        }),
+      },
+    });
+    const service = makeService(prisma);
+
+    const res = await service.getDraftService(USER, 'draft-1');
+
+    expect(res.data).toMatchObject({ resolvedRunId: 'run-user-picked' });
+  });
+
+  it('falls back to bestRunId when no selection was made', async () => {
+    const prisma = buildPrisma({
+      modelCandidateJob: {
+        findFirst: jest.fn().mockResolvedValue({
+          status: 'SUCCEEDED',
+          selectedRunId: null,
+          bestRunId: 'run-metric-winner',
+        }),
+      },
+    });
+    const service = makeService(prisma);
+
+    const res = await service.getDraftService(USER, 'draft-1');
+
+    expect(res.data).toMatchObject({ resolvedRunId: 'run-metric-winner' });
+  });
+
+  it('ignores a non-terminal job and falls back to currentRunId — a mid-sweep job has no coherent answer yet', async () => {
+    const prisma = buildPrisma({
+      modelDraft: {
+        findMany: jest.fn(),
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ ...DRAFT_ROW, currentRunId: 'run-in-flight' }),
+        create: jest.fn(),
+        update: jest.fn(),
+      },
+      modelCandidateJob: {
+        findFirst: jest.fn().mockResolvedValue({
+          status: 'RUNNING',
+          selectedRunId: null,
+          bestRunId: 'run-partial-best',
+        }),
+      },
+    });
+    const service = makeService(prisma);
+
+    const res = await service.getDraftService(USER, 'draft-1');
+
+    expect(res.data).toMatchObject({ resolvedRunId: 'run-in-flight' });
+  });
+
+  it('never writes ModelDraft.currentRunId — this is a read-only resolver', async () => {
+    const prisma = buildPrisma({
+      modelCandidateJob: {
+        findFirst: jest.fn().mockResolvedValue({
+          status: 'SUCCEEDED',
+          selectedRunId: 'run-user-picked',
+          bestRunId: 'run-metric-winner',
+        }),
+      },
+    });
+    const service = makeService(prisma);
+
+    await service.getDraftService(USER, 'draft-1');
+
+    expect(prisma.modelDraft.update).not.toHaveBeenCalled();
   });
 });

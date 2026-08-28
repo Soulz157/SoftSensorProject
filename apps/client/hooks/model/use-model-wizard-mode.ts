@@ -152,7 +152,7 @@ export function useModelWizardMode(): UseModelWizardModeResult {
           config.selectedMetrics ?? ([...METRIC_KEYS] as MetricKey[]),
         )
 
-        // Deploy step (Step 4) — fall back to defaults for legacy configs.
+        // Deploy step (Step 6) — fall back to defaults for legacy configs.
         const deploy = config.deployment
         setAutoRetrain(deploy?.autoRetrain ?? false)
         setWarnSd(deploy?.warnSd ?? 1.5)

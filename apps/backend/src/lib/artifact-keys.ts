@@ -81,6 +81,11 @@ export const RUN_UPLOAD_FILENAMES = [
   'metrics.json',
   'run_manifest.json',
   'predictions.parquet',
+  // MODEL-FLOW-013-T05. Only present for the algorithms train.py can
+  // extract a real loss trajectory from — absent, not empty, for a
+  // closed-form fit. Mirrored from LOSS_HISTORY_FILENAME in
+  // object_store.py — change both.
+  'loss_history.json',
 ] as const;
 
 /**

@@ -19,7 +19,7 @@ import {
   replayHoldoutForRun,
 } from '@/lib/python-preprocess-client';
 import { RunCompleteDto } from './dto/model-run.authorized.dto';
-import { ModelFineTuningAuthorizedService } from './model-fine-tuning.authorized.service';
+import { ModelCandidateJobAuthorizedService } from './model-candidate-job.authorized.service';
 
 type RunOwner = { scope: 'model'; id: string } | { scope: 'draft'; id: string };
 
@@ -29,7 +29,7 @@ export class ModelRunAuthorizedService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly fineTuning: ModelFineTuningAuthorizedService,
+    private readonly candidateJobs: ModelCandidateJobAuthorizedService,
   ) {}
 
   /**
@@ -321,6 +321,11 @@ export class ModelRunAuthorizedService {
       metricsKey: keyIf('metrics.json'),
       manifestKey: keyIf('run_manifest.json'),
       predictionsKey: keyIf('predictions.parquet'),
+      // MODEL-FLOW-013-T05. null (not undefined) when absent from
+      // `uploaded` — a closed-form algorithm's run never uploads this file,
+      // and the client's render-mode choice (T05a) keys off this column
+      // being null vs. set, never off the algorithm name.
+      lossHistoryKey: keyIf('loss_history.json'),
       finishedAt: new Date(),
       // Close the token with the run. Nothing legitimate needs it after
       // this point.
@@ -330,15 +335,15 @@ export class ModelRunAuthorizedService {
     // A successful draft-scoped run flips its owning draft to TRAINED
     // (MODEL-FLOW-003-T07) in the same transaction as the run update — a
     // reader must never observe a SUCCEEDED run against a still-ACTIVE
-    // draft. NOT for a fine-tuning child run (MODEL-FLOW-005): an
-    // intermediate hyperparameter set finishing must not overwrite
-    // currentRunId with itself — only the SEARCH'S winner should ever end up
-    // there, and only `advanceJobForRun` (below) decides which run that is,
-    // once every set has been tried.
+    // draft. NOT for a candidate-job run (MODEL-FLOW-005, generalized by
+    // MODEL-FLOW-013): an intermediate candidate finishing must not
+    // overwrite currentRunId with itself — only the JOB'S winner should
+    // ever end up there, and only `advanceJobForRun` (below) decides which
+    // run that is, once every candidate has been tried.
     const updatedRun =
       owner.scope === 'draft' &&
       dto.status === 'SUCCEEDED' &&
-      !run.fineTuningJobId
+      !run.candidateJobId
         ? (
             await this.prisma.$transaction([
               this.prisma.modelTrainingRun.update({
@@ -358,20 +363,20 @@ export class ModelRunAuthorizedService {
             omit: { tokenHash: true },
           });
 
-    // MODEL-FLOW-005: best-effort nudge — a fine-tuning child run that just
-    // reached a terminal status advances (or fails) its job immediately,
-    // rather than waiting for the next read to reconcile it
-    // (`getJobService`'s own doc comment covers that slower path). Never
-    // allowed to fail the container's response: the run row above is
-    // already durable regardless of what happens here, and
+    // MODEL-FLOW-005, generalized by MODEL-FLOW-013: best-effort nudge — a
+    // candidate-job run that just reached a terminal status advances (or
+    // fails) its job immediately, rather than waiting for the next read to
+    // reconcile it (`getJobService`'s own doc comment covers that slower
+    // path). Never allowed to fail the container's response: the run row
+    // above is already durable regardless of what happens here, and
     // `advanceJobForRun` is idempotent, so a failure here just means the
     // reconcile-on-read path picks it up instead.
-    if (run.fineTuningJobId) {
+    if (run.candidateJobId) {
       try {
-        await this.fineTuning.advanceJobForRun(runId, run.fineTuningJobId);
+        await this.candidateJobs.advanceJobForRun(runId, run.candidateJobId);
       } catch (err) {
         this.log.error(
-          `fine-tuning nudge failed for run ${runId} (job ${run.fineTuningJobId})`,
+          `candidate-job nudge failed for run ${runId} (job ${run.candidateJobId})`,
           err,
         );
       }

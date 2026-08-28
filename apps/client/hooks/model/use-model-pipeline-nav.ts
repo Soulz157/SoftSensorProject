@@ -75,12 +75,14 @@ export interface UsePipelineNavResult {
 }
 
 /**
- * Wizard navigation + cascade invalidation for the 5-step Create Model flow:
- * 1 Select Dataset (+ metadata) · 2 Dataset Review (MODEL-FLOW-010) ·
- * 3 Training Configuration · 4 Evaluation · 5 Save Model. All ETL (data
- * source, tags, raw fetch, cleansing) now lives in Data Studio — this hook
- * only tracks which `Dataset` was picked, review having no config of its
- * own, and the training config.
+ * Wizard navigation + cascade invalidation for the 6-step Create Model flow
+ * (MODEL-FLOW-013 renumbering — was 5 steps before Model Selection was
+ * inserted): 1 Select Dataset (+ metadata) · 2 Dataset Review
+ * (MODEL-FLOW-010) · 3 Training Configuration · 4 Model Selection
+ * (MODEL-FLOW-013) · 5 Evaluation · 6 Save Model. All ETL (data source,
+ * tags, raw fetch, cleansing) now lives in Data Studio — this hook only
+ * tracks which `Dataset` was picked, review having no config of its own,
+ * and the training config.
  */
 export function useModelPipelineNav(): UsePipelineNavResult {
   const [currentStep, setCurrentStep] = useAtom(mpCurrentStepAtom)
@@ -148,9 +150,20 @@ export function useModelPipelineNav(): UsePipelineNavResult {
         case 3:
           return trainState.status === 'done'
         case 4:
-          // Results reached ⇒ may proceed to the Deploy step.
-          return true
+          // Model Selection (MODEL-FLOW-013): same gate as case 3 by
+          // design — canAdvance(3) already required trainState 'done' to
+          // REACH this step, and re-checking it here is what stops a user
+          // who went back and retriggered a training/sweep that then
+          // FAILED from advancing past a step that's now showing a failed
+          // run. What differs candidate-by-candidate (a sweep vs. a single
+          // run, a selection vs. the metric's default) is Step 4's own
+          // content, not this gate.
+          return trainState.status === 'done'
         case 5:
+          // Evaluation — configures nothing of its own, same as the old
+          // (pre-MODEL-FLOW-013) case 4.
+          return true
+        case 6:
           return false
         default:
           return false
@@ -311,7 +324,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     [setTrainTestSplitAtom, resetTraining, setHighestUnlocked],
   )
 
-  // Deploy step (Step 5) — last step, so no `highestUnlocked` relock.
+  // Deploy step (Step 6) — last step, so no `highestUnlocked` relock.
   const setAutoRetrain = useCallback(
     (on: boolean) => setAutoRetrainAtom(on),
     [setAutoRetrainAtom],
@@ -345,7 +358,11 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     setFindBestParamsAtom(false)
     setTargetVariableAtom([])
     setHyperparametersAtom(defaultHyperparams('ols'))
-    setLossFunctionAtom('rmse')
+    // MODEL-FLOW-012: was 'rmse', diverging from mpLossFunctionAtom's own
+    // default and resetWizardAtom's 'mse' — this fired on every
+    // workspace/plant change (use-create-model.ts) and silently flipped the
+    // displayed loss function.
+    setLossFunctionAtom('mse')
     setTrainTestSplitAtom(80)
     setTrainState({ status: 'idle', progress: 0 })
     setCreatedModelId('')

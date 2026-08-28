@@ -721,6 +721,140 @@ describe('DatasetVersionAuthorizedService — getArtifactValidationRowsService (
       expect((err as { statusCode?: number }).statusCode).toBe(404);
     }
   });
+
+  // DS-LAKE-025-T06 read 2. Python answers 422 for BOTH "object gone" and
+  // "unknown column"; a BRONZE-borne holdout is pre-features, so asking it
+  // for a derived column fails while the sidecar is perfectly intact.
+  // Reporting that as "no longer retained" is the exact copy-conflation this
+  // file's other states exist to prevent.
+  it('does NOT report a missing derived column as a reclaimed holdout — an unknown-tag 422 stays a 422 with its own message', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst
+      .mockResolvedValueOnce({ runId: 'run-1' })
+      .mockResolvedValueOnce({
+        // A BRONZE-borne holdout: raw tags only, no engineered columns.
+        objectKey: 'ds-1/artifacts/bronze-2/data_bronze.parquet',
+        validationRowCount: 3167,
+        validationHoldoutFrom: new Date('2026-01-25T17:00:00.000Z'),
+        validationMissingPct: 0,
+      });
+    post.mockRejectedValue(
+      Object.assign(
+        new Error("No match for FieldRef.Name('TI-101_rolling_60') in schema"),
+        { statusCode: 422 },
+      ),
+    );
+    const { service } = makeService(prisma);
+
+    try {
+      await service.getArtifactValidationRowsService(
+        USER,
+        'ds-1',
+        'artifact-final',
+        { offset: 0, limit: 1000, tags: ['TI-101_rolling_60'] } as never,
+      );
+      throw new Error('expected rejection');
+    } catch (err) {
+      expect(err).toBeInstanceOf(AppException);
+      expect((err as { statusCode?: number }).statusCode).toBe(422);
+      expect((err as AppException).message).toContain('do not exist');
+      // The storage claim must be absent — that is the whole point.
+      expect((err as AppException).message).not.toContain(
+        'missing from storage',
+      );
+    }
+  });
+});
+
+describe('DatasetVersionAuthorizedService — getArtifactFeatureSpecService (DS-LAKE-025-T06)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('serves scalingParams from the sidecar without opening the data object', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst.mockResolvedValueOnce({
+      objectKey: 'ds-1/artifacts/gold-1/data_gold.parquet',
+      featureSpecKey: 'ds-1/artifacts/gold-1/feature_spec.json',
+    });
+    post.mockResolvedValue({
+      source_key: 'ds-1/artifacts/gold-1/data_gold.parquet',
+      feature_spec_key: 'ds-1/artifacts/gold-1/feature_spec.json',
+      spec: {
+        featureVersion: 1,
+        scaling: [],
+        scalingParams: { 'TI-101': { min: 70, max: 75 } },
+      },
+    });
+    const { service } = makeService(prisma);
+
+    const res = await service.getArtifactFeatureSpecService(
+      USER,
+      'ds-1',
+      'gold-1',
+    );
+
+    expect(res.data.scalingParams).toEqual({ 'TI-101': { min: 70, max: 75 } });
+    expect(post).toHaveBeenCalledWith(
+      '/v1/preprocess/feature-spec',
+      { source_key: 'ds-1/artifacts/gold-1/data_gold.parquet' },
+      expect.any(Number),
+    );
+  });
+
+  it('404s WITHOUT calling Python when featureSpecKey is null — a BRONZE produces no spec, and Postgres alone knows that', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst.mockResolvedValueOnce({
+      objectKey: 'ds-1/artifacts/bronze-1/data_bronze.parquet',
+      featureSpecKey: null,
+    });
+    const { service } = makeService(prisma);
+
+    await expect(
+      service.getArtifactFeatureSpecService(USER, 'ds-1', 'bronze-1'),
+    ).rejects.toThrow(AppException);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('maps a 422 from a missing sidecar to a 404, same discipline as getArtifactColumnStatsService', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst.mockResolvedValueOnce({
+      objectKey: 'ds-1/artifacts/gold-1/data_gold.parquet',
+      featureSpecKey: 'ds-1/artifacts/gold-1/feature_spec.json',
+    });
+    post.mockRejectedValue(
+      Object.assign(new Error('NoSuchKey'), { statusCode: 422 }),
+    );
+    const { service } = makeService(prisma);
+
+    try {
+      await service.getArtifactFeatureSpecService(USER, 'ds-1', 'gold-1');
+      throw new Error('expected rejection');
+    } catch (err) {
+      expect(err).toBeInstanceOf(AppException);
+      expect((err as { statusCode?: number }).statusCode).toBe(404);
+    }
+  });
+
+  it('returns scalingParams: null rather than {} when the sidecar predates the field — "not recorded" is not "nothing was scaled"', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst.mockResolvedValueOnce({
+      objectKey: 'ds-1/artifacts/gold-1/data_gold.parquet',
+      featureSpecKey: 'ds-1/artifacts/gold-1/feature_spec.json',
+    });
+    post.mockResolvedValue({
+      source_key: 'ds-1/artifacts/gold-1/data_gold.parquet',
+      feature_spec_key: 'ds-1/artifacts/gold-1/feature_spec.json',
+      spec: { featureVersion: 1, scaling: [] },
+    });
+    const { service } = makeService(prisma);
+
+    const res = await service.getArtifactFeatureSpecService(
+      USER,
+      'ds-1',
+      'gold-1',
+    );
+
+    expect(res.data.scalingParams).toBeNull();
+  });
 });
 
 describe('DatasetVersionAuthorizedService — startExportService / getExportDownloadService (DS-LAKE-021)', () => {

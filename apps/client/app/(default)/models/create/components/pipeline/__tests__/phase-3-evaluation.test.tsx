@@ -5,7 +5,7 @@ import {
   mpServerDraftIdAtom,
   mpTrainingResultAtom,
 } from '@/store/model-pipeline'
-import { Phase3Evaluation } from '../phase-5-evaluation'
+import { Phase5Evaluation } from '../phase-5-evaluation'
 import type { UsePipelineNavResult } from '@/hooks/model/use-model-pipeline-nav'
 
 /**
@@ -86,7 +86,7 @@ function renderStep(overrides: Partial<typeof h.result> = {}) {
   })
   return render(
     <Provider store={store}>
-      <Phase3Evaluation nav={NAV} />
+      <Phase5Evaluation nav={NAV} />
     </Provider>,
   )
 }
@@ -95,7 +95,7 @@ beforeEach(() => {
   NAV.goTo = vi.fn()
 })
 
-describe('Phase3Evaluation (MODEL-FLOW-004)', () => {
+describe('Phase5Evaluation (MODEL-FLOW-004)', () => {
   it('shows the run metrics.json values, digit-exact — not a client-side fit', () => {
     renderStep({
       run: RUN,

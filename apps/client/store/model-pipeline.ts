@@ -47,13 +47,14 @@ export interface TrainState {
   lastLog?: string
 }
 
-export const MP_TOTAL_STEPS = 5
+export const MP_TOTAL_STEPS = 6
 
 // Wizard — Step 1: Select Dataset (+ model metadata), Step 2: Dataset Review
-// (MODEL-FLOW-010), Step 3: Training Configuration, Step 4: Evaluation,
-// Step 5: Save Model. Dataset ETL now lives entirely in Data Studio
-// (`store/dataset-studio.ts`); the model wizard only references a saved
-// `Dataset` by id + its cached snapshot (avoids a refetch on every render).
+// (MODEL-FLOW-010), Step 3: Training Configuration, Step 4: Model Selection
+// (MODEL-FLOW-013), Step 5: Evaluation, Step 6: Save Model. Dataset ETL now
+// lives entirely in Data Studio (`store/dataset-studio.ts`); the model
+// wizard only references a saved `Dataset` by id + its cached snapshot
+// (avoids a refetch on every render).
 export const mpSelectedDatasetAtom = atom<SavedDataset | null>(null)
 
 export type Algorithm =
@@ -222,6 +223,15 @@ export interface DraftTrainingResult {
 }
 export const mpTrainingResultAtom = atom<DraftTrainingResult | null>(null)
 
+/**
+ * MODEL-FLOW-013. Set when Start Training launches an algorithm-sweep
+ * candidate job (Find Best Model) rather than a single run — Step 4 (Model
+ * Selection) reads this to fetch the job's candidates; null means an
+ * ordinary single-run launch, which Step 4 passes through honestly with no
+ * comparison table. Reset everywhere `mpTrainingResultAtom` already is.
+ */
+export const mpCandidateJobIdAtom = atom<string | null>(null)
+
 /** Mock evaluation summary produced in Step 3 (client-computed metrics). */
 export interface DraftEvaluationResult {
   metrics: Partial<Record<MetricKey, number>>
@@ -236,9 +246,11 @@ export const mpEvaluationResultAtom = atom<DraftEvaluationResult | null>(null)
  */
 export const mpArtifactRefAtom = atom<string | null>(null)
 
-// TODO(MODEL-FLOW-005): Fine-tuning is skipped by scope decision (client-only
-// draft, no background worker/queue). Reintroduce mpFineTuningStatus/Result
-// atoms here if a real fine-tuning stage is added later.
+// MODEL-FLOW-005/013: candidate-job orchestration (algorithm sweep) lives
+// server-side on ModelCandidateJob; the client only tracks its id
+// (mpCandidateJobIdAtom, above) and polls it the same way it polls a single
+// run. Hyperparameter search over a sweep's winner ("Find Best Parameters")
+// remains unbuilt — see automl-toggles.tsx's disabled state.
 
 // Step 4 — Deploy (advanced MLOps guardrails). Captured config only; persisted
 // to `Model.data.config.deployment`. No runtime retrain/drift engine yet.
@@ -327,6 +339,7 @@ export const resetWizardAtom = atom(null, (_get, set) => {
   set(mpDraftIdAtom, nanoid())
   set(mpDraftStateAtom, 'draft')
   set(mpTrainingResultAtom, null)
+  set(mpCandidateJobIdAtom, null)
   set(mpEvaluationResultAtom, null)
   set(mpArtifactRefAtom, null)
   // Server-side ModelDraft id — a fresh wizard run must not inherit a

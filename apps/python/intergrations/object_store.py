@@ -1126,6 +1126,9 @@ MODEL_FILENAME = "model.joblib"
 METRICS_FILENAME = "metrics.json"
 RUN_MANIFEST_FILENAME = "run_manifest.json"
 PREDICTIONS_FILENAME = "predictions.parquet"
+# MODEL-FLOW-013-T05. Only present for the algorithms train.py can extract a
+# real loss trajectory from — absent, not empty, for a closed-form fit.
+LOSS_HISTORY_FILENAME = "loss_history.json"
 
 
 def model_run_prefix(model_id: str, run_id: str) -> str:

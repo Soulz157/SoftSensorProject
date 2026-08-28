@@ -62,21 +62,24 @@ function requireMetric(
 }
 
 /**
- * `runIdHint` is normally `mpTrainingResultAtom.runId`, set by the poll loop
- * the moment its own run reaches SUCCEEDED — in that path it is always
- * present when this hook is enabled. Null is the defensive case: a SUCCEEDED
- * run exists server-side but nothing client-side recorded its id (e.g. a
- * remount that skipped the reconnect effect). Falls back to
- * `ModelDraft.currentRunId`, the same field `use-model-training.ts`'s own
- * reconnect effect already trusts for this exact situation.
+ * MODEL-FLOW-013-T08. Always resolved server-side now — `runIdHint`
+ * (normally `mpTrainingResultAtom.runId`, set by the poll loop the moment
+ * its own run/job reaches a terminal state) is no longer trusted as a
+ * short-circuit, because a user's selection
+ * (`ModelCandidateJob.selectedRunId`, written well after the poll loop set
+ * the hint) must be able to override what Evaluation shows — the whole
+ * point of that field. `resolvedRunId` already collapses to
+ * `ModelDraft.currentRunId` when no candidate job exists, so this covers
+ * the plain single-run case identically to before; `runIdHint` is now only
+ * a last-resort fallback for the defensive case where the draft fetch
+ * itself resolves nothing (e.g. a remount that raced the draft write).
  */
 async function resolveRunId(
   draftId: string,
   runIdHint: string | null,
 ): Promise<string | null> {
-  if (runIdHint) return runIdHint
   const draftRes = await modelDraftService.get(draftId)
-  return draftRes.data.currentRunId
+  return draftRes.data.resolvedRunId ?? runIdHint
 }
 
 async function fetchEvaluation(

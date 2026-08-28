@@ -126,7 +126,7 @@ export default function PlantsPage() {
   return (
     <div className="flex h-full w-full overflow-hidden">
       <div className="relative flex-1 overflow-hidden">
-        <div className="pointer-events-none absolute left-0 right-0 top-0 z-10 bg-linear-to-b dark:from-black/70 dark:to-black/55  px-4 pb-6 pt-3">
+        <div className="pointer-events-none absolute left-0 right-0 top-0 z-10 bg-linear-to-b px-4 pb-6 pt-3">
           <h1 className="text-sm font-semibold tracking-wide text-muted-foreground dark:text-white drop-shadow">
             Workspaces Overview
           </h1>

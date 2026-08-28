@@ -206,7 +206,7 @@ export class ModelRunLaunchAuthorizedService {
   /** Draft lifecycle gate shared by every write path below — a draft that is
    *  SAVED or ABANDONED must refuse a new run, whether that run is the
    *  user's own POST (`createDraftRunService`) or one launched by the
-   *  fine-tuning chain (`launchDraftRun`, MODEL-FLOW-005), well after the
+   *  candidate-job chain (`launchDraftRun`, MODEL-FLOW-005), well after the
    *  user's own request has finished. */
   private assertDraftWritableStatus(draftId: string, status: string): void {
     if (status === 'SAVED') {
@@ -221,8 +221,9 @@ export class ModelRunLaunchAuthorizedService {
   }
 
   /**
-   * PUBLIC: the access+lifecycle gate `ModelFineTuningAuthorizedService.
-   * createJob` (MODEL-FLOW-005) needs before creating a job's first run —
+   * PUBLIC: the access+lifecycle gate `ModelCandidateJobAuthorizedService.
+   * createJob` (MODEL-FLOW-005, generalized by MODEL-FLOW-013) needs before
+   * creating a job's first run —
    * the same check `createDraftRunService` runs for a single run, exposed
    * once rather than reimplemented. `assertDraftAccess` stays private
    * (still only meaningful within a request that HAS a user/role to check);
@@ -235,7 +236,7 @@ export class ModelRunLaunchAuthorizedService {
   }
 
   /** PUBLIC read-only counterpart to `assertDraftWritable` — access only, no
-   *  lifecycle refusal. A SAVED or ABANDONED draft's fine-tuning history is
+   *  lifecycle refusal. A SAVED or ABANDONED draft's candidate-job history is
    *  still legitimately readable; only NEW writes are refused for those. */
   async assertDraftReadable(draftId: string, userId: string, role: string) {
     return this.assertDraftAccess(draftId, userId, role);
@@ -274,7 +275,7 @@ export class ModelRunLaunchAuthorizedService {
   /**
    * The actual run-creation write, with NO user/role parameter — the raw
    * row, not the envelope. Split out of `createDraftRunService` for
-   * MODEL-FLOW-005: a fine-tuning job's SECOND and later runs are launched
+   * MODEL-FLOW-005: a candidate job's SECOND and later runs are launched
    * by the run-COMPLETION webhook (container -> backend via RunTokenGuard),
    * a request with no user session in it at all. Authorization for the
    * whole search happens ONCE, when the job itself is created
@@ -289,7 +290,7 @@ export class ModelRunLaunchAuthorizedService {
   async launchDraftRun(
     draftId: string,
     dto: CreateTrainingRunDto,
-    fineTuningJobId?: string,
+    candidateJobId?: string,
   ) {
     const draft = await this.prisma.modelDraft.findUnique({
       where: { id: draftId },
@@ -310,7 +311,7 @@ export class ModelRunLaunchAuthorizedService {
         data: {
           ...runData,
           modelDraftId: draftId,
-          fineTuningJobId: fineTuningJobId ?? null,
+          candidateJobId: candidateJobId ?? null,
           imageDigest: this.runner.imageDigest,
           tokenHash,
           tokenExpiresAt: new Date(Date.now() + RUN_TOKEN_TTL_MS),

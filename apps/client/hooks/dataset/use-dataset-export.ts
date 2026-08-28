@@ -86,11 +86,18 @@ export function useDatasetExport(
 
   const download = useCallback(async () => {
     if (!datasetId || !artifactId) return
-    const res = await datasetVersionService.exportDownload(
-      datasetId,
-      artifactId,
-    )
-    window.open(res.data.downloadUrl, '_blank', 'noreferrer')
+    try {
+      const res = await datasetVersionService.exportDownload(
+        datasetId,
+        artifactId,
+      )
+      window.open(res.data.downloadUrl, '_blank', 'noreferrer')
+    } catch (err) {
+      setStatus('error')
+      setError(
+        err instanceof Error ? err.message : 'Could not download export.',
+      )
+    }
   }, [datasetId, artifactId])
 
   return { status, error, start, cancel, download }

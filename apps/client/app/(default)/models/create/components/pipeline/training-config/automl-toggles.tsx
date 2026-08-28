@@ -96,7 +96,16 @@ export function AutoMlToggles({
           step={2}
           nested
           title="Find Best Parameters"
-          description="Hyperparameter-tune the best model. Requires Find Best Model."
+          // MODEL-FLOW-013-T11. Tunes phase 1's winner via a curated
+          // hyperparameter shortlist (apps/backend/src/lib/tuning-grid.ts) —
+          // appended server-side once the sweep exhausts, one job, never a
+          // second orchestrator. Disabled only while Find Best Model is off:
+          // there is no winner yet to tune.
+          description={
+            findBestModel
+              ? 'Tune the sweep’s winning algorithm with a curated set of hyperparameter variants.'
+              : 'Turn on Find Best Model first — there’s no winner yet to tune.'
+          }
           checked={findBestParams}
           disabled={!findBestModel}
           onChange={onFindBestParams}

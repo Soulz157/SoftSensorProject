@@ -23,6 +23,9 @@ import { useArtifactMetadata } from '@/hooks/dataset/artifact/use-dataset-artifa
 import { useArtifactColumnStats } from '@/hooks/dataset/artifact/use-dataset-artifact-column-stats'
 import { useArtifactRows } from '@/hooks/dataset/artifact/use-artifact-rows'
 import { useArtifactHoldout } from '@/hooks/dataset/artifact/use-artifact-holdout'
+import { useArtifactFeatureSpec } from '@/hooks/dataset/artifact/use-artifact-feature-spec'
+import { inverseScale } from '@/lib/inverse-scale'
+import type { Dataset } from '@/lib/preprocessing'
 import { perTagStatsOrdered } from '@/lib/dataset-stats'
 import { SourceIdentityPanel } from './dataset-review/source-identity-panel'
 import { PerTagStatsPanel } from './dataset-review/per-tag-stats-panel'
@@ -94,13 +97,46 @@ export function Phase2DatasetReview({ nav }: Props) {
   // is no longer fetched here at all; the card asks the server itself.
   const { sample } = useArtifactRows(datasetId, artifactId, tags)
 
+  // DS-LAKE-025-T06. `artifactId` here is the saved dataset's FINAL — the
+  // post-`to_model_ready` frame, scaled to [0,1] by default with no UI
+  // affordance to have declined. The card's OWN "show scaled preview" toggle
+  // (`showScaled` in data-analysis-card.tsx) is inert with `showTransforms=
+  // {false}` (`activeScalers` forced to `NO_SCALERS`, so `scaledTagCount` is
+  // always 0) — it can only preview a FORWARD scale on top of whatever
+  // `dataset` already is, never undo one already baked into the bytes. So
+  // this is the one place that can fix it: same `scalingParams` inversion
+  // `dataset-detail-sheet.tsx`'s Data preview and the Compare modal's train
+  // side already apply, using the same `useArtifactFeatureSpec`.
+  const { featureSpec } = useArtifactFeatureSpec(datasetId, artifactId)
+  const scalingParams = featureSpec?.scalingParams ?? null
+
+  const engineeringUnitSample = useMemo<Dataset | null>(() => {
+    if (!sample) return null
+    if (!scalingParams) return sample
+    return {
+      tags: sample.tags,
+      rows: sample.rows.map(row => {
+        const cells = { ...row.cells }
+        for (const tag of sample.tags) {
+          const cell = cells[tag]
+          if (!cell) continue
+          const inverted = inverseScale(cell.value, scalingParams[tag])
+          // Left as-is (still scaled) when it cannot be inverted — never a
+          // guessed value, same discipline the other two surfaces use.
+          if (inverted !== null) cells[tag] = { ...cell, value: inverted }
+        }
+        return { ...row, cells }
+      }),
+    }
+  }, [sample, scalingParams])
+
   // `BoundedSample` is a branded type and the brand is the whole point: it
   // certifies the frame came from a bounded server page. `useArtifactRows`
   // is exactly that, so branding here states a fact rather than dodging the
   // gate — an unbounded frame still cannot reach the card.
   const boundedSample = useMemo(
-    () => brandBoundedSample(sample ?? { tags: [], rows: [] }),
-    [sample],
+    () => brandBoundedSample(engineeringUnitSample ?? { tags: [], rows: [] }),
+    [engineeringUnitSample],
   )
 
   const {

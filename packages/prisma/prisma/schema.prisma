@@ -74,7 +74,7 @@ model User {
   datasetArtifacts    DatasetArtifact[]
   datasetDrafts       DatasetDraft[]
   modelDrafts         ModelDraft[]
-  modelFineTuningJobs ModelFineTuningJob[]
+  modelCandidateJobs  ModelCandidateJob[]
   preprocessingJobs   PreprocessingJob[]
   presetImports       FeaturePresetImport[]
   loaderJobs          LoaderJob[]
@@ -966,7 +966,7 @@ model ModelDraft {
   updatedAt   DateTime @updatedAt
 
   trainingRuns    ModelTrainingRun[]
-  fineTuningJobs  ModelFineTuningJob[]
+  candidateJobs   ModelCandidateJob[]
 
   @@index([workspaceId])
   @@index([createdById])
@@ -1043,8 +1043,18 @@ model ModelTrainingRun {
   metricsKey     String?
   manifestKey    String?
   predictionsKey String?
+  /// MODEL-FLOW-013-T05. Set only for the algorithms train.py can extract a
+  /// real iteration-by-iteration loss trajectory from (mlp, lightgbm,
+  /// xgboost, hist_gradient_boosting) — null for a closed-form algorithm
+  /// (ols/ridge/pls/grp/svm/random_forest), which never writes this
+  /// artifact, and null for a series that exceeded MAX_LOSS_HISTORY_POINTS
+  /// (soft-skipped, not a training failure).
+  lossHistoryKey String?
   /// Denormalised from metrics.json for list/sort without an object read —
   /// the same reasoning DatasetArtifact uses for rowCount and missingPct.
+  /// MODEL-FLOW-013-T04 added train_r2/train_mae/train_rmse keys alongside
+  /// the existing test-split r2/mae/rmse — no schema change needed, this
+  /// column is untyped Json.
   metrics        Json?
   /// DS-LAKE-018-T05. The SAME shape as `metrics` (r2/mae/rmse/row counts),
   /// scored on the replayed RAW validation holdout instead of the
@@ -1063,18 +1073,19 @@ model ModelTrainingRun {
 
   logs ModelTrainingRunLog[]
 
-  /// MODEL-FLOW-005. Set only for a run that is one hyperparameter set of a
-  /// fine-tuning search — null for every ordinary run. The job groups these;
-  /// this run row is otherwise identical to any other and goes through the
-  /// SAME create/claim/complete path, so training never has a second code
-  /// path to drift from the first.
-  fineTuningJobId String?
-  fineTuningJob   ModelFineTuningJob? @relation(fields: [fineTuningJobId], references: [id], onDelete: SetNull)
+  /// MODEL-FLOW-005, generalized by MODEL-FLOW-013. Set only for a run that
+  /// is one candidate of a candidate job (a hyperparameter search OR an
+  /// algorithm sweep) — null for every ordinary single-run launch. The job
+  /// groups these; this run row is otherwise identical to any other and
+  /// goes through the SAME create/claim/complete path, so training never
+  /// has a second code path to drift from the first.
+  candidateJobId String?
+  candidateJob   ModelCandidateJob? @relation(fields: [candidateJobId], references: [id], onDelete: SetNull)
 
   @@index([modelId, createdAt])
   @@index([modelDraftId])
   @@index([status])
-  @@index([fineTuningJobId])
+  @@index([candidateJobId])
 }
 
 /// Per-run, not per-model: concurrent runs on one model would otherwise
@@ -1091,7 +1102,7 @@ model ModelTrainingRunLog {
   @@index([runId, createdAt])
 }
 
-enum ModelFineTuningJobStatus {
+enum ModelCandidateJobStatus {
   QUEUED
   RUNNING
   SUCCEEDED
@@ -1099,38 +1110,64 @@ enum ModelFineTuningJobStatus {
   CANCELED
 }
 
-/// MODEL-FLOW-005. "Fine-tuning" is defined (2026-08-25,
+/// MODEL-FLOW-013. Whether every candidate shares one algorithm (a
+/// hyperparameter search over it), each candidate names its own (an
+/// algorithm sweep, "Find Best Model"), or both toggles are on and phase 2
+/// tunes phase 1's winner (SWEEP_THEN_TUNE, MODEL-FLOW-013-T11). All three
+/// walk the exact same candidates[]/advanceJobForRun machinery — this only
+/// labels intent for the client and for `advanceJobForRun`'s phase-2
+/// append decision.
+enum ModelCandidateJobKind {
+  HYPERPARAMETER_SEARCH
+  ALGORITHM_SWEEP
+  SWEEP_THEN_TUNE
+}
+
+/// MODEL-FLOW-005, generalized by MODEL-FLOW-013 from a hyperparameter-search
+/// -only job into a candidate job whose elements can also vary algorithm.
+/// "Fine-tuning" was originally defined (2026-08-25,
 /// decisions.fine_tuning_undefined) as a HYPERPARAMETER SEARCH: one
 /// algorithm, one artifact, one train/test split, N hyperparameter sets tried
 /// in sequence, the best kept — NOT a retrain on different data or a
 /// warm-start (train.py fits once and exits; no algorithm here supports one).
-/// A search is orchestrated ABOVE the container, not inside it: each
-/// hyperparameter set is one ordinary ModelTrainingRun, chained by this row.
-/// No new spawn/claim/complete path exists — every child run goes through
-/// the exact machinery MODEL-FLOW-003 already built and live-verified.
-model ModelFineTuningJob {
+/// A search/sweep is orchestrated ABOVE the container, not inside it: each
+/// candidate is one ordinary ModelTrainingRun, chained by this row. No new
+/// spawn/claim/complete path exists — every candidate run goes through the
+/// exact machinery MODEL-FLOW-003 already built and live-verified.
+model ModelCandidateJob {
   id           String     @id @default(uuid())
   modelDraftId String
   modelDraft   ModelDraft @relation(fields: [modelDraftId], references: [id], onDelete: Cascade)
 
-  /// The fixed spec every child run shares — validated once, the same way
-  /// buildRunData validates a single run's spec.
-  algorithm      String
+  /// The fixed spec every candidate shares — validated once, the same way
+  /// buildRunData validates a single run's spec. `algorithm` moved INTO
+  /// each candidate (see `candidates` below) so an algorithm sweep and a
+  /// hyperparameter search share one shape; targetY/goldArtifactId/
+  /// trainTestSplit stay here because varying them would make candidates
+  /// incomparable.
   targetY        String
   goldArtifactId String
   trainTestSplit Float?
 
-  /// Ordered array of hyperparameter dicts. Index `completedRuns` is the
-  /// set currently in flight or about to launch.
-  hyperparameterSets Json
-  totalRuns          Int
-  completedRuns      Int @default(0)
+  kind ModelCandidateJobKind @default(HYPERPARAMETER_SEARCH)
 
-  status        ModelFineTuningJobStatus @default(QUEUED)
+  /// Ordered array of `{algorithm, hyperparameters, phase}`. Index
+  /// `completedRuns` is the candidate currently in flight or about to
+  /// launch. A hyperparameter search repeats the same algorithm on every
+  /// element; an algorithm sweep varies it. `phase` (1 or 2, stamped
+  /// server-side, never client-supplied) is only meaningful for
+  /// SWEEP_THEN_TUNE: `advanceJobForRun` appends phase-2 elements to this
+  /// SAME array once phase 1 exhausts (MODEL-FLOW-013-T11) — no second
+  /// migration needed for that, just longer arrays.
+  candidates    Json
+  totalRuns     Int
+  completedRuns Int @default(0)
+
+  status        ModelCandidateJobStatus @default(QUEUED)
   failureReason String?
 
   /// The run for the CURRENTLY in-flight (or just-finished, not yet
-  /// advanced) hyperparameter set.
+  /// advanced) candidate.
   currentRunId String?
   /// The lowest-RMSE run seen so far. RMSE, not R² — always present and
   /// well-behaved even for a degenerate fit (an observed real run scored
@@ -1139,6 +1176,14 @@ model ModelFineTuningJob {
   /// MODEL-FLOW-005-T01's own note on why.
   bestRunId String?
   bestRmse  Float?
+  /// MODEL-FLOW-013-T08. A user's override of bestRunId, written only once
+  /// the job is terminal and only to one of its own SUCCEEDED runs — never
+  /// bestRunId itself, which stays the metric's own answer even when
+  /// overridden. null means "accept the metric's answer." Evaluation/Save
+  /// Model resolve via `selectedRunId ?? bestRunId`, never currentRunId
+  /// directly — ModelDraft.currentRunId keeps its existing single writer,
+  /// advanceJobForRun's completion branch, untouched by this field.
+  selectedRunId String?
 
   createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
   createdById String

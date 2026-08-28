@@ -143,12 +143,50 @@ export class ModelDraftAuthorizedService {
 
   async getDraftService(user: Auth.UserPayload, draftId: string) {
     const draft = await this.assertDraftAccess(draftId, user);
+    const resolvedRunId = await this.resolveActiveRunId(draft);
     return {
       statusCode: 200,
       message: 'Model draft fetched successfully',
       type: 'SUCCESS' as const,
-      data: this.mapDraft(draft),
+      data: { ...this.mapDraft(draft), resolvedRunId },
     };
+  }
+
+  /**
+   * MODEL-FLOW-013-T08. `selectedRunId ?? bestRunId` from the draft's most
+   * recent TERMINAL candidate job (a user's override, or the metric's own
+   * winner) — falling back to the draft's own `currentRunId` (an ordinary
+   * single-run launch, or a job whose completion branch already wrote the
+   * winner there, unchanged by this feature) when no such job exists, or
+   * the most recent one is still QUEUED/RUNNING.
+   *
+   * ONE resolver: `currentRunId` keeps its existing single writer
+   * (`advanceJobForRun`'s completion branch in
+   * model-candidate-job.authorized.service.ts) — this is a READ, never a
+   * write, so a later user selection changes what callers see without a
+   * second writer ever touching `currentRunId` itself. Evaluation
+   * (`useDraftRunEvaluation`'s `resolveRunId`) reads this field; Save Model
+   * adoption (MODEL-FLOW-007-T10, unbuilt) is expected to read it too.
+   */
+  private async resolveActiveRunId(draft: {
+    id: string;
+    currentRunId: string | null;
+  }): Promise<string | null> {
+    const job = await this.prisma.modelCandidateJob.findFirst({
+      where: { modelDraftId: draft.id },
+      orderBy: { createdAt: 'desc' },
+      select: { status: true, selectedRunId: true, bestRunId: true },
+    });
+    if (
+      job &&
+      (job.status === 'SUCCEEDED' ||
+        job.status === 'FAILED' ||
+        job.status === 'CANCELED')
+    ) {
+      const resolved = job.selectedRunId ?? job.bestRunId;
+      if (resolved) return resolved;
+    }
+    return draft.currentRunId;
   }
 
   /**
