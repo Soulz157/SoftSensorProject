@@ -227,3 +227,29 @@ export async function getRunLossHistory(
   );
   return RunLossHistorySchema.parse(res);
 }
+
+/** MODEL-FLOW-007-T11. `null` for a run trained before the trainer image that
+ *  started recording this — Save Model treats that as "not recorded", never
+ *  as a reason to fail the save. */
+const RunManifestSchema = z.object({
+  framework_versions: z.record(z.string(), z.string()).nullable(),
+});
+
+export type RunManifestInfo = z.infer<typeof RunManifestSchema>;
+
+/**
+ * MODEL-FLOW-007-T11. `sourceKey` is resolved by the caller off the
+ * `ModelTrainingRun` row (`manifestKey`), same discipline `getRunLossHistory`
+ * applies to its own key. Every other manifest field already has a column on
+ * the run row — this exists only for `framework_versions`, which does not.
+ */
+export async function getRunManifest(
+  sourceKey: string,
+): Promise<RunManifestInfo> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/models/runs/manifest',
+    { source_key: sourceKey },
+    PYTHON_TIMEOUT.metadata,
+  );
+  return RunManifestSchema.parse(res);
+}

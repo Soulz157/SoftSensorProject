@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { createZodDto } from 'nestjs-zod';
 import { HyperparametersSchema } from '@/api/v1/model-run/authorized/dto/model-run.authorized.dto';
+import { DeploymentConfigSchema } from '@/api/v1/model/authorized/dto/model.authorized.dto';
 
 /**
  * Contracts for `ModelDraft` — the Model Creation wizard's server-side
@@ -68,3 +69,19 @@ export const ListModelDraftQuerySchema = z.object({
 export class ListModelDraftQueryDto extends createZodDto(
   ListModelDraftQuerySchema,
 ) {}
+
+/**
+ * MODEL-FLOW-007. What a user can still CHOOSE at Save time — everything
+ * else (algorithm, hyperparameters, targetVariables, trainTestSplit) is
+ * derived server-side from the draft's adopted run, not trusted from the
+ * client (see `saveDraftService`). `name` is required — `Model.name` has no
+ * default and `@@unique([workspaceId, name])` needs one to check against.
+ */
+export const SaveModelDraftSchema = z.object({
+  name: z.string().min(1).max(100),
+  nodeId: z.string().uuid().optional(),
+  description: z.string().max(2000).optional(),
+  deployment: DeploymentConfigSchema.optional(),
+});
+
+export class SaveModelDraftDto extends createZodDto(SaveModelDraftSchema) {}

@@ -215,6 +215,24 @@ export function parseDurationMs(duration: string): number | null {
   return value * unitMs
 }
 
+/**
+ * Format a DURATION in milliseconds as a zero-padded clock ("00:01:23") for the
+ * raw-fetch elapsed timer. Hours are never wrapped at 24 — a 30-hour pull reads
+ * "30:00:00", not "06:00:00". Negative/NaN input (a clock skew or a missing
+ * timestamp) clamps to "00:00:00" rather than rendering "NaN:NaN:NaN".
+ *
+ * Distinct from `dateToPiTime` below, which formats an ABSOLUTE instant.
+ */
+export function formatElapsed(ms: number): string {
+  const safeMs = Number.isFinite(ms) && ms > 0 ? ms : 0
+  const totalSec = Math.floor(safeMs / 1000)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return (
+    `${p(Math.floor(totalSec / 3600))}:` +
+    `${p(Math.floor((totalSec % 3600) / 60))}:${p(totalSec % 60)}`
+  )
+}
+
 /** Format a Date as the PI space-separated time ("YYYY-MM-DD HH:MM:SS") using
  * LOCAL fields — never UTC — so the window is not silently shifted by the
  * viewer's timezone offset. */

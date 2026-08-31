@@ -72,4 +72,48 @@ export const env = {
   CLEANUP_SWEEP_INTERVAL_MS: Number(
     process.env.CLEANUP_SWEEP_INTERVAL_MS ?? 300_000,
   ),
+
+  // MODEL-FLOW-011: the ModelDraft-side twin of the DS-LAKE-014 block above.
+  // ModelDraft has no artifact of its own — its ModelTrainingRuns write
+  // under drafts/{modelDraftId}/runs/{runId}/ instead (MODEL-FLOW-003-T08)
+  // — so the tiers here gate a DRAFT-LEVEL status transition to ABANDONED
+  // plus a run-prefix reclaim, not an artifact-level reclaim.
+  //   - MODEL_DRAFT_EMPTY_IDLE_HOURS: an ACTIVE draft owning ZERO
+  //     ModelTrainingRuns — nothing was computed, nothing is expensive to
+  //     lose. Longer than CLEANUP_ACTIVE_EMPTY_MINUTES's 15 minutes on
+  //     purpose: an abandoned draft drops off the Step 1 "Drafts in
+  //     progress" resume panel (MODEL-FLOW-010-T08), so this window is the
+  //     whole grace period before that panel forgets a user's work, not
+  //     just before bytes are freed. Default 24 hours.
+  //   - MODEL_DRAFT_RUNS_IDLE_HOURS: an ACTIVE draft that owns at least one
+  //     run — a real fit cost minutes of container time. Matches
+  //     CLEANUP_DRAFT_RECOVERY_HOURS' 168-hour figure. A draft with any run
+  //     QUEUED/RUNNING, or any ModelCandidateJob QUEUED/RUNNING, is never
+  //     eligible under this window regardless of `updatedAt` age — a run in
+  //     flight never touches ModelDraft.updatedAt, so without that check a
+  //     slow fit inside this window would be reclaimable mid-flight.
+  //   - MODEL_DRAFT_ABANDONED_RECOVERY_HOURS: an ABANDONED draft (via the
+  //     tier above, or the user's own Remove button —
+  //     ModelDraftAuthorizedService.abandonDraftService) whose run objects
+  //     have not yet been reclaimed (objectsReclaimedAt still null). Gives a
+  //     just-abandoned draft's bytes the same recovery grace
+  //     CLEANUP_DRAFT_RECOVERY_HOURS gives a DatasetDraft's.
+  //   - MODEL_DRAFT_SWEEP_INTERVAL_MS: ModelDraftCleanupAdminService's own
+  //     boot-registered setInterval, independent of CLEANUP_SWEEP_INTERVAL_MS
+  //     — one sweeper per entity, matching how DS-LAKE-014's sweeper never
+  //     touches ModelDraft. `<= 0` disables the sweep; the admin endpoint
+  //     keeps working unchanged either way.
+  // All three age windows measure from ModelDraft.updatedAt.
+  MODEL_DRAFT_EMPTY_IDLE_HOURS: Number(
+    process.env.MODEL_DRAFT_EMPTY_IDLE_HOURS ?? 24,
+  ),
+  MODEL_DRAFT_RUNS_IDLE_HOURS: Number(
+    process.env.MODEL_DRAFT_RUNS_IDLE_HOURS ?? 168,
+  ),
+  MODEL_DRAFT_ABANDONED_RECOVERY_HOURS: Number(
+    process.env.MODEL_DRAFT_ABANDONED_RECOVERY_HOURS ?? 168,
+  ),
+  MODEL_DRAFT_SWEEP_INTERVAL_MS: Number(
+    process.env.MODEL_DRAFT_SWEEP_INTERVAL_MS ?? 300_000,
+  ),
 };

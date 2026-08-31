@@ -275,6 +275,19 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       step: 1,
       min: 1,
     },
+    // MODEL-FLOW-009-T03. Default kept in sync with DEFAULT_SEQUENCE_LENGTH
+    // (images/trainer/train.py) — both are 24, not measured against any
+    // real dataset since no lookback-window convention exists elsewhere in
+    // this codebase yet. Still disabled inline (algorithm-selector.tsx)
+    // until MODEL-FLOW-009-T04 lands the runtime.
+    {
+      kind: 'number',
+      key: 'sequence_length',
+      label: 'Sequence length',
+      defaultValue: 24,
+      step: 1,
+      min: 1,
+    },
   ],
   gru: [
     {
@@ -298,6 +311,15 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       key: 'hidden_size',
       label: 'Hidden size',
       defaultValue: 64,
+      step: 1,
+      min: 1,
+    },
+    // MODEL-FLOW-009-T03. See the matching lstm entry's comment above.
+    {
+      kind: 'number',
+      key: 'sequence_length',
+      label: 'Sequence length',
+      defaultValue: 24,
       step: 1,
       min: 1,
     },

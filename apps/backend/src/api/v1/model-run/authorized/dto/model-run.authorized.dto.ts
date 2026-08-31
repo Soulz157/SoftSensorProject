@@ -7,11 +7,12 @@ const JsonScalar = z.union([z.string(), z.number(), z.boolean(), z.null()]);
 
 const MetricsSchema = z.record(z.string(), JsonScalar);
 
-// The 10 runnable algorithms: build_model (images/trainer/train.py) has a
-// branch for each. lstm/gru are deliberately excluded — they need a
-// windowing pipeline change this trainer doesn't have yet (tracked
-// separately); the wizard disables both inline so this enum is the second
-// line of defense, not the first.
+// MODEL-FLOW-009-T04. All 12 runnable algorithms: build_model
+// (images/trainer/train.py) has a branch for each, including lstm/gru now
+// that the windowing pipeline (build_windows/chronological_split_windows/
+// assert_no_window_leakage), the torch runtime, and SequenceRegressor
+// (sequence_model.py) all exist in the trainer image. The wizard's
+// AlgorithmSelector no longer disables either.
 export const TrainingAlgorithmEnum = z.enum([
   'ols',
   'ridge',
@@ -23,6 +24,8 @@ export const TrainingAlgorithmEnum = z.enum([
   'random_forest',
   'lightgbm',
   'xgboost',
+  'lstm',
+  'gru',
 ]);
 
 export const RunStatusEnum = z.enum([
@@ -82,6 +85,42 @@ export const RunUploadFilenameEnum = z.enum(
   RUN_UPLOAD_FILENAMES as unknown as [string, ...string[]],
 );
 
+const ChronologicalSplitSpecSchema = z
+  .object({
+    method: z.literal('chronological'),
+    ratio: z.number(),
+    cut_timestamp: z.string(),
+    train_rows: z.number().int().nonnegative(),
+    test_rows: z.number().int().nonnegative(),
+    source_rows: z.number().int().nonnegative(),
+    labelled_rows: z.number().int().nonnegative(),
+  })
+  .strict();
+
+// MODEL-FLOW-009-T04. lstm/gru's windowed split_spec — train.py's own
+// split_spec comment states train_rows/test_rows/labelled_rows here are
+// WINDOW counts, not row counts, unlike the tabular variant above.
+// sequence_length is the one field this variant adds; every other field
+// name matches so a caller reading .ratio/.cut_timestamp does not need to
+// discriminate first.
+const ChronologicalWindowedSplitSpecSchema = z
+  .object({
+    method: z.literal('chronological_windowed'),
+    ratio: z.number(),
+    cut_timestamp: z.string(),
+    sequence_length: z.number().int().positive(),
+    train_rows: z.number().int().nonnegative(),
+    test_rows: z.number().int().nonnegative(),
+    source_rows: z.number().int().nonnegative(),
+    labelled_rows: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export const SplitSpecSchema = z.discriminatedUnion('method', [
+  ChronologicalSplitSpecSchema,
+  ChronologicalWindowedSplitSpecSchema,
+]);
+
 export const RunLogSchema = z
   .object({
     /** Wider than AppendLogSchema's — train.py emits debug lines too. */
@@ -125,17 +164,7 @@ export const RunCompleteSchema = z
     // own replay failed — both leave training itself unaffected.
     holdoutMetrics: MetricsSchema.optional(),
 
-    splitSpec: z
-      .object({
-        method: z.literal('chronological'),
-        ratio: z.number(),
-        cut_timestamp: z.string(),
-        train_rows: z.number().int().nonnegative(),
-        test_rows: z.number().int().nonnegative(),
-        source_rows: z.number().int().nonnegative(),
-        labelled_rows: z.number().int().nonnegative(),
-      })
-      .optional(),
+    splitSpec: SplitSpecSchema.optional(),
 
     uploaded: z.array(RunUploadFilenameEnum).optional(),
   })

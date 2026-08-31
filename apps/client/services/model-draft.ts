@@ -1,4 +1,6 @@
 import { fetchClient } from '@/lib/fetcher'
+import type { AIModel } from '@/types'
+import type { DeploymentConfig } from '@/lib/model-config'
 
 /**
  * `ModelDraft` — the Model Creation wizard's server-side owner while no
@@ -104,6 +106,27 @@ export const modelDraftService = {
 
   abandon: (draftId: string): Promise<ApiResponse<ModelDraft>> =>
     fetchClient(`${one(draftId)}/abandon`, { method: 'POST' }),
+
+  /**
+   * MODEL-FLOW-007. The ONLY persistence boundary — creates the Model,
+   * adopting the draft's winning run by pointer. What a user can still
+   * choose at Save time; algorithm/hyperparameters/target/split are derived
+   * server-side from that run, not sent here. 409s if the draft is already
+   * SAVED, 422s if it has no SUCCEEDED run yet.
+   */
+  save: (
+    draftId: string,
+    body: {
+      name: string
+      nodeId?: string
+      description?: string
+      deployment?: DeploymentConfig
+    },
+  ): Promise<ApiResponse<AIModel>> =>
+    fetchClient(`${one(draftId)}/save`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 }
 
 /**
@@ -129,15 +152,26 @@ export interface ModelTrainingRunLog {
 }
 
 /**
- * The run's split spec (MODEL-FLOW-012 audit). `{method, ratio}` is written
- * at launch time; the remaining keys arrive only via the container's own
- * POST /complete, so a FAILED run (which never reaches /complete) keeps the
- * 2-key shape forever. Treat everything past `ratio` as absent, not zero.
+ * The run's split spec (MODEL-FLOW-012 audit). `{method: 'chronological',
+ * ratio}` is written at launch time REGARDLESS of algorithm
+ * (model-run-launch.authorized.service.ts hardcodes 'chronological' as a
+ * placeholder); the remaining keys — and, for lstm/gru,
+ * `method: 'chronological_windowed'` plus `sequence_length` — arrive only
+ * via the container's own POST /complete, so a FAILED run (which never
+ * reaches /complete) keeps the 2-key placeholder shape forever. Treat
+ * everything past `ratio` as absent, not zero.
+ *
+ * MODEL-FLOW-009-T04. `train_rows`/`test_rows`/`labelled_rows` are WINDOW
+ * counts, not row counts, when `method` is 'chronological_windowed' —
+ * train.py's own split_spec comment states this; this type does not
+ * encode it further (a single loose interface, matching this file's
+ * existing convention, rather than a true discriminated union).
  */
 export interface ModelRunSplitSpec {
-  method: 'chronological'
+  method: 'chronological' | 'chronological_windowed'
   ratio: number
   cut_timestamp?: string
+  sequence_length?: number
   train_rows?: number
   test_rows?: number
   source_rows?: number

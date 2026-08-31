@@ -40,7 +40,8 @@ import {
   dwTagConstantsAtom,
 } from '@/store/dataset-studio'
 import type { CustomInterval, FetchPeriod } from '@/store/model-pipeline'
-import { resolveInterval } from '@/lib/dataset-fetch'
+import { formatElapsed, resolveInterval } from '@/lib/dataset-fetch'
+import { FetchElapsed } from './fetch-elapsed'
 import { datasetToCsv, datasetCsvFilename } from '@/lib/csv'
 import { datasetQuality } from '@/lib/data-quality'
 import { HistoricalFetchConfigCard } from './source-configs/historical-fetch-config-card'
@@ -580,7 +581,18 @@ export function Step2RawData({ nav }: Props) {
               Cancel
             </Button>
           </div>
-          <Progress value={fetch.progress} />
+          {/* Progress is a generated shadcn component — composed around, never
+              edited. The clock sits on the same row so elapsed time reads as
+              part of the bar. */}
+          <div className="flex items-center gap-3">
+            <Progress value={fetch.progress} className="flex-1" />
+            {fetch.detail.startedAt !== null && (
+              <FetchElapsed startedAt={fetch.detail.startedAt} />
+            )}
+            <span className="font-mono text-xs tabular-nums text-muted-foreground">
+              {Math.round(fetch.progress)}%
+            </span>
+          </div>
           {/* Show partial rows as batches land; skeleton only before the first. */}
           {raw.rows.length > 0 ? (
             <RawReadingsTable dataset={raw} ignoreTags={constantTags} />
@@ -602,6 +614,20 @@ export function Step2RawData({ nav }: Props) {
                 <p className="text-sm font-medium text-foreground">
                   Dataset ready
                 </p>
+                {/* Frozen total for the run. Both stamps are required: edit
+                    mode hydrates status 'done' with no progress detail, and
+                    that must render nothing rather than "00:00:00". */}
+                {fetch.detail.startedAt !== null &&
+                  fetch.detail.finishedAt !== null && (
+                    <span className="text-xs text-muted-foreground">
+                      Fetched in{' '}
+                      <span className="font-mono tabular-nums">
+                        {formatElapsed(
+                          fetch.detail.finishedAt - fetch.detail.startedAt,
+                        )}
+                      </span>
+                    </span>
+                  )}
               </div>
               <Button
                 size="sm"

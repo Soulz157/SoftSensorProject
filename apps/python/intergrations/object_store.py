@@ -1147,6 +1147,19 @@ def draft_run_key(draft_id: str, run_id: str, filename: str) -> str:
     return f"{draft_run_prefix(draft_id, run_id)}{filename}"
 
 
+def draft_runs_prefix(draft_id: str) -> str:
+    """Every run a ModelDraft owns — MODEL-FLOW-011-T02's reclaim unit.
+
+    One level up from `draft_run_prefix`: no `run_id`, so this names the
+    WHOLE `runs/` subtree under one draft rather than one run inside it.
+    Reclaiming this deletes every run object the draft owns, never anything
+    outside `drafts/{draft_id}/runs/` — in particular never
+    `drafts/{draft_id}/artifacts/...`, the unrelated DatasetDraft shape that
+    happens to share the same `drafts/` root (see `is_draft_run_prefix`).
+    """
+    return f"{DRAFT_ROOT}{draft_id}/runs/"
+
+
 def is_committed_artifact_key(key: str) -> bool:
     """Whether `key` is a committed artifact's data object.
 
@@ -1197,5 +1210,27 @@ def is_draft_run_key(key: str) -> bool:
         return False
     parts = key[len(DRAFT_ROOT):].split("/")
     if len(parts) != 4 or parts[1] != "runs":
+        return False
+    return all(segment and segment not in (".", "..") for segment in parts)
+
+
+def is_draft_run_prefix(prefix: str) -> bool:
+    """Whether `prefix` is `drafts/{draft_id}/runs/` or `.../runs/{run_id}/`.
+
+    MODEL-FLOW-011-T02's structural guard for `delete_prefix` — the
+    directory-terminated counterpart of `is_draft_run_key`. That predicate
+    cannot be reused here: it requires exactly 4 non-empty, filename-
+    terminated segments, so a bare `drafts/{d}/runs/{r}/` fails its own
+    empty-trailing-segment rule. This one requires a TRAILING SLASH (a
+    prefix, never a key) and exactly 2 or 3 non-empty segments after the
+    root, with the second always `runs` — never a bare `drafts/{draft_id}/`,
+    which is what keeps a sweep built on this predicate structurally unable
+    to reach `drafts/{draft_id}/artifacts/...`, the unrelated DatasetDraft
+    shape sharing the same `drafts/` root.
+    """
+    if not prefix.startswith(DRAFT_ROOT) or not prefix.endswith("/"):
+        return False
+    parts = prefix[len(DRAFT_ROOT):-1].split("/")
+    if len(parts) not in (2, 3) or parts[1] != "runs":
         return False
     return all(segment and segment not in (".", "..") for segment in parts)

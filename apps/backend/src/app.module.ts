@@ -22,6 +22,7 @@ import { DatasetDraftModule } from './api/v1/dataset-draft/dataset-draft.module'
 import { ModelDraftModule } from './api/v1/model-draft/model-draft.module';
 import { FeaturePresetModule } from './api/v1/feature-preset/feature.preset.module';
 import { ArtifactCleanupModule } from './api/v1/artifact-cleanup/artifact-cleanup.module';
+import { ModelDraftCleanupModule } from './api/v1/model-draft-cleanup/model-draft-cleanup.module';
 import { ModelRunModule } from './api/v1/model-run/model-run.module';
 import { TrainningContainerModule } from './api/v1/trainning-container/trainning-container.module';
 
@@ -64,6 +65,7 @@ import { TrainningContainerModule } from './api/v1/trainning-container/trainning
     ModelDraftModule,
     FeaturePresetModule,
     ArtifactCleanupModule,
+    ModelDraftCleanupModule,
     ModelRunModule,
     TrainningContainerModule,
   ],

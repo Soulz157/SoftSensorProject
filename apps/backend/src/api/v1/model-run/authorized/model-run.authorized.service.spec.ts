@@ -432,5 +432,35 @@ describe('ModelRunAuthorizedService', () => {
       expect(updateCall[0].data.metrics).toEqual({ r2: 0.9 });
       expect(updateCall[0].data.holdoutMetrics).toEqual({ r2: 0.4 });
     });
+
+    it('MODEL-FLOW-007 regression guard: once modelId is set, resolveRunOwner flips to models/{modelId}/... — a key nothing was ever written to under pointer-only adoption', async () => {
+      // Save Model (MODEL-FLOW-007) sets modelId on the winning run WITHOUT
+      // moving its bytes — they stay under drafts/{modelDraftId}/runs/... —
+      // relying on claim()/mintUploadUrls()/complete() never being called
+      // again for a run once it is terminal (Save only ever adopts a
+      // SUCCEEDED run). This test pins exactly what complete() WOULD compute
+      // if that invariant were ever broken: models/{modelId}/..., not the
+      // drafts/{modelDraftId}/... prefix the bytes actually live under. If
+      // this assertion ever needs to change, the change is touching the
+      // exact risk this comment names — read model-run.authorized.service.ts's
+      // own resolveRunOwner doc comment first.
+      const prisma = makePrisma({
+        run: { modelId: 'model-1', modelDraftId: 'draft-1' },
+      });
+      const service = new ModelRunAuthorizedService(
+        prisma as never,
+        { advanceJobForRun: jest.fn() } as never,
+      );
+
+      await service.complete('run-1', {
+        status: 'SUCCEEDED',
+        uploaded: ['model.joblib'],
+      } as never);
+
+      const [updateCall] = prisma.modelTrainingRun.update.mock.calls;
+      expect(updateCall[0].data.modelKey).toBe(
+        'models/model-1/runs/run-1/model.joblib',
+      );
+    });
   });
 });

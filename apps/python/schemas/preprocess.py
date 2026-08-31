@@ -17,7 +17,13 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
-from intergrations.object_store import DATA_FILENAME, is_committed_artifact_key
+from intergrations.object_store import (
+    DATA_FILENAME,
+    draft_run_prefix,
+    draft_runs_prefix,
+    is_committed_artifact_key,
+    is_draft_run_prefix,
+)
 from schemas.data_source import PIFetchRequest, SQLQueryRequest
 
 # Ceilings chosen so a preview always answers inside PYTHON_TIMEOUT.metadata
@@ -339,6 +345,34 @@ class RunLossHistoryResponse(BaseModel):
     #: algorithms.
     metric: str
     series: dict[str, list[float]]
+
+
+class RunManifestRequest(BaseModel):
+    """MODEL-FLOW-007-T11. Reads a training run's `run_manifest.json` for the
+    one field Save Model needs that is not already a column on
+    `ModelTrainingRun` — everything else the manifest carries (gold_object_key,
+    artifact_checksum, target_y, algorithm, hyperparameters, seed, split,
+    metrics, holdout_metrics, model_sha256) is already recorded there via
+    `complete()`'s own write, so duplicating it here would be a second, driftable
+    copy of the same facts.
+
+    `source_key` is guarded the same structural way `RunLossHistoryRequest`
+    guards its own — NestJS already resolved which run's manifest this is off
+    the `ModelTrainingRun` row before calling here.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    source_key: str = Field(..., description="The run's run_manifest.json key.")
+
+
+class RunManifestResponse(BaseModel):
+    #: Absent (null) for every run trained by a trainer image before 1.0.3 —
+    #: Save Model must treat this as "not recorded for this run", not fail
+    #: the save. sklearn is always present when set (scalers/preprocessing
+    #: run through it regardless of the final estimator); lightgbm/xgboost
+    #: are present only when that algorithm trained.
+    framework_versions: dict[str, str] | None = None
 
 
 class ValidationCheckResponse(BaseModel):
@@ -996,6 +1030,55 @@ class ArtifactReclaimRequest(BaseModel):
 
 
 class ArtifactReclaimResponse(BaseModel):
+    prefix: str
+    deleted: int
+
+
+class DraftRunReclaimRequest(BaseModel):
+    """Delete one ModelDraft's training-run objects — MODEL-FLOW-011-T02.
+
+    NestJS never sends a prefix, only ids — the same discipline
+    `ArtifactReclaimRequest`'s own doc comment describes. `run_id` omitted
+    (or null) reclaims the WHOLE `drafts/{draft_id}/runs/` subtree in one
+    call — used when none of the draft's runs are adopted (`modelId` unset
+    on every one), and the one case that also catches a run prefix whose
+    `ModelTrainingRun` row is already gone. `run_id` given reclaims exactly
+    that one run, leaving its siblings (in particular any adopted run —
+    MODEL-FLOW-011-T05) untouched.
+    """
+
+    draft_id: str = Field(..., examples=["a1b2c3d4-…"])
+    run_id: str | None = Field(default=None, examples=["e5f6a7b8-…"])
+
+    @staticmethod
+    def _is_bare_segment(value: str) -> bool:
+        return not value or "/" in value or value in (".", "..")
+
+    @model_validator(mode="after")
+    def ids_are_bare_segments(self) -> "DraftRunReclaimRequest":
+        # A `/` or `.`/`..` here would let a caller name a path outside
+        # `drafts/{draft_id}/runs/` — the exact class of bug
+        # `is_model_run_key`/`is_draft_run_key` exist to catch on the
+        # write side. Checked again below via the structural predicate on
+        # the ASSEMBLED prefix, so a bare-segment bypass still fails closed.
+        if self._is_bare_segment(self.draft_id):
+            raise ValueError("draft_id must be a single non-empty path segment")
+        if self.run_id is not None and self._is_bare_segment(self.run_id):
+            raise ValueError("run_id must be a single non-empty path segment")
+        prefix = (
+            draft_run_prefix(self.draft_id, self.run_id)
+            if self.run_id
+            else draft_runs_prefix(self.draft_id)
+        )
+        if not is_draft_run_prefix(prefix):
+            raise ValueError(
+                "draft_id/run_id must resolve to a well-formed "
+                "drafts/{draft_id}/runs/[{run_id}/] prefix"
+            )
+        return self
+
+
+class DraftRunReclaimResponse(BaseModel):
     prefix: str
     deleted: int
 

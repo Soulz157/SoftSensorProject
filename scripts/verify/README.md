@@ -21,11 +21,25 @@ V04's bar is these numbers not growing, not reaching zero.
 
 ## Scripts
 
-- `invariants.ts` — DS-LAKE-012-V01 (no timeseries rows anywhere in Postgres) and V02
-  (FINAL artifact in MinIO matches the registry's rowCount/featureCount/checksum).
-- `rebuild-from-minio.ts` — T02 (rebuild from MinIO alone) and T10 (replay BRONZE +
-  recorded operations, compare against FINAL).
-- `generate-wide-artifact.py` — 1,000/4,000/8,000/16,000-tag synthetic artifact generator
-  for the T06 benchmark, same methodology as `docs/DS-LAKE-005B-C-BENCHMARK.md`.
-- `force-cleanup-eligibility.ts` — backdates/lowers retention so T09/V07's cleanup run
-  reclaims something real instead of passing vacuously.
+Corrected 2026-08-31 (MODEL-FLOW-008 pass) — this section previously named
+three files (`invariants.ts`, `rebuild-from-minio.ts`,
+`force-cleanup-eligibility.ts`) that do not exist anywhere in this directory
+or the repo, and omitted the two that do. What is actually here:
+
+- `v01-no-timeseries-in-postgres.sh` — DS-LAKE-012-V01. Bash + `docker exec psql`:
+  row counts per dataset-lake table, plus JSON/array column byte-length outliers
+  (a real timeseries payload would dwarf a legitimate recipe/pointer column).
+- `v02-final-artifact-matches-registry.py` — DS-LAKE-012-V02. Python + the real
+  `ObjectStore`: reconstructs a FINAL artifact from MinIO and compares its
+  recomputed rowCount/columnCount/checksum against the registry's recorded values
+  (passed as CLI args, looked up separately via `psql`).
+- `generate-wide-artifact.py` — 1,000/4,000/8,000/16,000-tag synthetic artifact
+  generator for the T06 benchmark, same methodology as
+  `docs/DS-LAKE-005B-C-BENCHMARK.md`.
+- `model-flow-008-lifecycle.py` — MODEL-FLOW-008. Python + `requests` + `docker exec
+psql` + the real `ObjectStore`. **Unlike the three scripts above, this one
+  WRITES to the dev database** — it drives the entire six-step Model Creation
+  lifecycle over HTTP against a real backend/python/Docker stack (a real training
+  container, a real 3-candidate fine-tuning search, a real Save Model), asserting
+  the persistence boundary (no `Model` row before Save) at every stage. See its own
+  module docstring for the full contract, including the `--cleanup` flag.

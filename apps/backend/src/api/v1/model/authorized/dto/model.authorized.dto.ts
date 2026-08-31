@@ -80,6 +80,17 @@ export const ModelConfigSchema = z
      * splitSpec instead of trusting the browser.
      */
     trainTestSplit: z.number().min(50).max(95).optional(),
+    /**
+     * MODEL-FLOW-007-T11. From the adopted run's `run_manifest.json` at Save
+     * time — `null`/absent for a run trained before the trainer image that
+     * started recording it. Lives inside `config`, not as a sibling key on
+     * `Model.data`: `normalizeData` (model.authorized.service.ts) whitelists
+     * top-level `data` keys explicitly and a field outside that list would
+     * silently vanish on the next `updateModel` call (e.g. Save & Deploy's
+     * immediate follow-up write) — `config` is one of the whitelisted keys,
+     * so nesting here is what makes this survive.
+     */
+    frameworkVersions: z.record(z.string(), z.string()).nullable().optional(),
     selectedMetrics: z.array(z.string()).optional(),
     deployment: DeploymentConfigSchema.optional(),
 

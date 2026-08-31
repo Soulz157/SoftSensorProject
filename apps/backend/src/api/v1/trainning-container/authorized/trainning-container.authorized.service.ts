@@ -27,8 +27,20 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
   // downloads and checksums the artifact, and only then dies on
   // "Unsupported algorithm" (images/trainer/train.py). Bump this default
   // alongside any future build_model change that isn't purely additive.
+  //
+  // 1.0.3 (MODEL-FLOW-007-T11): purely additive, not a build_model change —
+  // run_manifest.json gained a `framework_versions` field. Bumped anyway,
+  // for the same reason `image_digest` is recorded on every run at all:
+  // provenance. A pre-1.0.3 run's manifest simply lacks the field — every
+  // reader treats it as optional, so nothing branches on this tag.
+  //
+  // 1.0.4 (MODEL-FLOW-009-T04): build_model widened again — lstm/gru now
+  // construct a real SequenceRegressor (sequence_model.py, torch) instead
+  // of raising. Same rule as the 1.0.2 bump: TrainingAlgorithmEnum now
+  // allows lstm/gru, so the default image MUST agree or a run passes
+  // validation, spawns a container, and only then dies inside it.
   private readonly imageRef =
-    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.2';
+    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.4';
   // private readonly network = process.env.TRAINING_NETWORK ?? 'dslake_default';
   private readonly network = 'monorepo_network';
   private readonly memoryBytes = Number(
@@ -40,6 +52,75 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
 
   async onModuleInit() {
     await this.resolveDigest();
+    await this.reconcileOrphanedRuns();
+  }
+
+  /**
+   * MODEL-FLOW-011-T04. `watch()`'s in-memory `container.wait()` promise
+   * dies with the process — a `nest --watch` restart (or a real deploy) can
+   * therefore strand a run at RUNNING forever with a container the daemon
+   * either no longer has, or that finished without anyone noticing.
+   * `ModelTrainingRun.containerId` is what survives the restart; this walks
+   * every RUNNING row and reconciles it against the daemon's own state.
+   *
+   * Deliberately an EXISTENCE check per row, not the blanket
+   * `updateMany({status:'RUNNING'} -> FAILED)` `PreprocessingJobService`/
+   * `LoaderJobService` use for their own boot sweeps: unlike a preprocessing
+   * job, a training container is independent of the Node process and can
+   * still be alive (or already finished) across a `nest --watch` restart —
+   * failing it outright would kill a run that was never actually orphaned.
+   */
+  private async reconcileOrphanedRuns() {
+    const orphans = await this.prisma.modelTrainingRun.findMany({
+      where: { status: 'RUNNING' },
+      select: { id: true, containerId: true },
+    });
+    if (orphans.length === 0) return;
+
+    let reconciled = 0;
+    for (const run of orphans) {
+      if (!run.containerId) {
+        await this.prisma.modelTrainingRun.update({
+          where: { id: run.id },
+          data: {
+            status: 'FAILED',
+            failureReason:
+              'No container was ever recorded for this run — it never spawned.',
+            finishedAt: new Date(),
+          },
+        });
+        reconciled += 1;
+        continue;
+      }
+
+      const container = this.docker.getContainer(run.containerId);
+      try {
+        await container.inspect();
+      } catch {
+        await this.prisma.modelTrainingRun.update({
+          where: { id: run.id },
+          data: {
+            status: 'FAILED',
+            failureReason:
+              `Container ${run.containerId} no longer exists — the server ` +
+              'restarted while this run was in flight.',
+            finishedAt: new Date(),
+          },
+        });
+        reconciled += 1;
+        continue;
+      }
+
+      // The container still exists — re-attach the watcher regardless of
+      // whether it is still running or already exited: container.wait()
+      // resolves IMMEDIATELY for an already-stopped container, so this one
+      // call covers both cases through the same exit-code branch watch()
+      // already writes, rather than a second copy of that logic here.
+      void this.watch(run.id, container);
+      reconciled += 1;
+    }
+
+    this.log.warn(`Reconciled ${reconciled} orphaned RUNNING run(s) at boot.`);
   }
 
   /**

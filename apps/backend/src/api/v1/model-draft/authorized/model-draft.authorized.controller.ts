@@ -17,6 +17,7 @@ import {
   CreateModelDraftDto,
   ListModelDraftQueryDto,
   PatchModelDraftDto,
+  SaveModelDraftDto,
 } from './dto/model-draft.authorized.dto';
 
 /**
@@ -111,5 +112,29 @@ export class ModelDraftAuthorizedController {
     @Param('id') id: string,
   ) {
     return this.service.abandonDraftService(user, id);
+  }
+
+  /**
+   * MODEL-FLOW-007. The ONLY route allowed to create the final persistent
+   * `Model` — see `saveDraftService`'s own doc comment. Adopts the draft's
+   * winning run by pointer and flips the draft to SAVED; refuses (409) a
+   * draft already saved.
+   */
+  @Post('/:id/save')
+  @HttpCode(201)
+  @ApiOperation({
+    summary: 'Save Model — the one persistence boundary',
+    description:
+      "Creates the persistent Model, adopting the draft's winning " +
+      'training run by pointer. Config (algorithm/hyperparameters/target/' +
+      'split) is derived server-side from that run, not trusted from the ' +
+      'request body. Refuses (409) a draft already saved.',
+  })
+  async saveDraftController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Body() body: SaveModelDraftDto,
+  ) {
+    return this.service.saveDraftService(user, id, body);
   }
 }

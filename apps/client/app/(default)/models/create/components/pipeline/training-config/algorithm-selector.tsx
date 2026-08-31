@@ -25,11 +25,13 @@ const MAX = 3
  * the refusal is where the choice is made, not three layers downstream at
  * run creation (MODEL-FLOW-003-T10). Neutral/muted styling only — red/amber
  * are reserved for workspace and plant status, not catalogue availability.
+ *
+ * MODEL-FLOW-009-T04. lstm/gru's entries removed — the trainer now builds
+ * a windowed 3D input (build_windows) and has a real torch runtime
+ * (sequence_model.py). Left empty rather than deleted so a future
+ * algorithm gap has the same mechanism to reuse.
  */
-const DEFERRED_REASON: Partial<Record<Algorithm, string>> = {
-  lstm: 'Needs sequence support not yet in the trainer',
-  gru: 'Needs sequence support not yet in the trainer',
-}
+const DEFERRED_REASON: Partial<Record<Algorithm, string>> = {}
 
 interface Props {
   algorithms: Algorithm[]

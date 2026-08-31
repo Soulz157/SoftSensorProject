@@ -1,5 +1,15 @@
 import { AppException } from '@softsensor/common';
+import { PrismaTypes } from '@softsensor/prisma';
 import { ModelDraftAuthorizedService } from './model-draft.authorized.service';
+import { getRunManifest } from '@/lib/python-preprocess-client';
+
+jest.mock('@/lib/python-preprocess-client', () => ({
+  getRunManifest: jest.fn(),
+}));
+
+const mockGetRunManifest = getRunManifest as jest.MockedFunction<
+  typeof getRunManifest
+>;
 
 /**
  * MODEL-FLOW-010-T08. Covers `listDraftsService`, the route that makes a
@@ -40,7 +50,49 @@ const DRAFT_ROW = {
   updatedAt: new Date('2026-08-21T11:00:00.000Z'),
 };
 
+// MODEL-FLOW-007. A SUCCEEDED run with everything saveDraftService needs.
+const RUN_ROW = {
+  id: 'run-1',
+  status: 'SUCCEEDED',
+  datasetId: 'ds-1',
+  targetY: 'TAG_A',
+  algorithm: 'ridge',
+  hyperparameters: { alpha: 1 },
+  splitSpec: { method: 'chronological', ratio: 0.8 },
+  modelKey: 'drafts/draft-1/runs/run-1/model.joblib',
+  manifestKey: 'drafts/draft-1/runs/run-1/run_manifest.json',
+};
+
 function buildPrisma(overrides: Record<string, unknown> = {}) {
+  // MODEL-FLOW-007. Shared across every $transaction call in a test unless
+  // overridden — mirrors dataset-draft.authorized.service.spec.ts's own
+  // `tx` convention so a test can assert on exactly what each write inside
+  // the transaction received.
+  const tx = {
+    model: {
+      create: jest
+        .fn()
+        .mockImplementation(({ data }: { data: Record<string, unknown> }) =>
+          Promise.resolve({
+            id: 'model-1',
+            createdAt: new Date('2026-08-31T12:00:00.000Z'),
+            updatedAt: new Date('2026-08-31T12:00:00.000Z'),
+            nodes: null,
+            ...data,
+          }),
+        ),
+    },
+    modelTrainingRun: {
+      update: jest.fn().mockResolvedValue({ ...RUN_ROW, modelId: 'model-1' }),
+    },
+    modelDraft: {
+      update: jest.fn().mockResolvedValue({
+        ...DRAFT_ROW,
+        status: 'SAVED',
+        savedModelId: 'model-1',
+      }),
+    },
+  };
   return {
     workspace: {
       findFirst: jest.fn().mockResolvedValue({ id: 'ws-1' }),
@@ -56,6 +108,22 @@ function buildPrisma(overrides: Record<string, unknown> = {}) {
     modelCandidateJob: {
       findFirst: jest.fn().mockResolvedValue(null),
     },
+    // MODEL-FLOW-007. saveDraftService's own reads/writes — default to the
+    // happy path so a test that doesn't care about Save is unaffected.
+    modelTrainingRun: {
+      findUnique: jest.fn().mockResolvedValue(RUN_ROW),
+      update: jest.fn(),
+    },
+    model: {
+      findFirst: jest.fn().mockResolvedValue(null), // no name collision
+    },
+    // MODEL-FLOW-007. Default: SAVEABLE_DRAFT/DRAFT_ROW's own nodeId
+    // ('node-1') resolves within the workspace.
+    nodes: {
+      findFirst: jest.fn().mockResolvedValue({ id: 'node-1' }),
+    },
+    $transaction: jest.fn((cb: (t: typeof tx) => Promise<unknown>) => cb(tx)),
+    tx,
     ...overrides,
   };
 }
@@ -273,5 +341,308 @@ describe('ModelDraftAuthorizedService — resolveActiveRunId (MODEL-FLOW-013-T08
     await service.getDraftService(USER, 'draft-1');
 
     expect(prisma.modelDraft.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('ModelDraftAuthorizedService — patchDraftService write refusal (MODEL-FLOW-011)', () => {
+  it('409s once the draft is SAVED', async () => {
+    const prisma = buildPrisma({
+      modelDraft: {
+        findMany: jest.fn(),
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ ...DRAFT_ROW, status: 'SAVED' }),
+        create: jest.fn(),
+        update: jest.fn(),
+      },
+    });
+    const service = makeService(prisma);
+
+    await expect(
+      service.patchDraftService(USER, 'draft-1', {}),
+    ).rejects.toBeInstanceOf(AppException);
+    expect(prisma.modelDraft.update).not.toHaveBeenCalled();
+  });
+
+  it('409s once the draft is ABANDONED — the sweep, or the Remove button, must be learnable at the next edit', async () => {
+    const prisma = buildPrisma({
+      modelDraft: {
+        findMany: jest.fn(),
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ ...DRAFT_ROW, status: 'ABANDONED' }),
+        create: jest.fn(),
+        update: jest.fn(),
+      },
+    });
+    const service = makeService(prisma);
+
+    await expect(
+      service.patchDraftService(USER, 'draft-1', {}),
+    ).rejects.toBeInstanceOf(AppException);
+    expect(prisma.modelDraft.update).not.toHaveBeenCalled();
+  });
+
+  it('still accepts a PATCH on an ACTIVE draft', async () => {
+    const prisma = buildPrisma({
+      modelDraft: {
+        findMany: jest.fn(),
+        findFirst: jest.fn().mockResolvedValue(DRAFT_ROW),
+        create: jest.fn(),
+        update: jest.fn().mockResolvedValue({ ...DRAFT_ROW, name: 'Renamed' }),
+      },
+    });
+    const service = makeService(prisma);
+
+    await service.patchDraftService(USER, 'draft-1', { name: 'Renamed' });
+
+    expect(prisma.modelDraft.update).toHaveBeenCalled();
+  });
+});
+
+describe('ModelDraftAuthorizedService — saveDraftService (MODEL-FLOW-007)', () => {
+  const SAVEABLE_DRAFT = { ...DRAFT_ROW, currentRunId: 'run-1' };
+
+  beforeEach(() => {
+    mockGetRunManifest.mockReset();
+    mockGetRunManifest.mockResolvedValue({ framework_versions: null });
+  });
+
+  function draftPrisma(overrides: Record<string, unknown> = {}) {
+    return buildPrisma({
+      modelDraft: {
+        findMany: jest.fn(),
+        findFirst: jest.fn().mockResolvedValue(SAVEABLE_DRAFT),
+        create: jest.fn(),
+        update: jest.fn(),
+      },
+      ...overrides,
+    });
+  }
+
+  it('409s once the draft is already SAVED — before touching the run at all', async () => {
+    const prisma = draftPrisma({
+      modelDraft: {
+        findMany: jest.fn(),
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ ...SAVEABLE_DRAFT, status: 'SAVED' }),
+        create: jest.fn(),
+        update: jest.fn(),
+      },
+    });
+    const service = makeService(prisma);
+
+    await expect(
+      service.saveDraftService(USER, 'draft-1', { name: 'My Model' }),
+    ).rejects.toMatchObject({ statusCode: 409 });
+    expect(prisma.modelTrainingRun.findUnique).not.toHaveBeenCalled();
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('422s when the draft has no run at all', async () => {
+    const prisma = draftPrisma({
+      modelDraft: {
+        findMany: jest.fn(),
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ ...DRAFT_ROW, currentRunId: null }),
+        create: jest.fn(),
+        update: jest.fn(),
+      },
+      modelCandidateJob: { findFirst: jest.fn().mockResolvedValue(null) },
+    });
+    const service = makeService(prisma);
+
+    await expect(
+      service.saveDraftService(USER, 'draft-1', { name: 'My Model' }),
+    ).rejects.toMatchObject({ statusCode: 422 });
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('422s when the resolved run has not SUCCEEDED', async () => {
+    const prisma = draftPrisma({
+      modelTrainingRun: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({ ...RUN_ROW, status: 'RUNNING' }),
+        update: jest.fn(),
+      },
+    });
+    const service = makeService(prisma);
+
+    await expect(
+      service.saveDraftService(USER, 'draft-1', { name: 'My Model' }),
+    ).rejects.toMatchObject({ statusCode: 422 });
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('422s when the SUCCEEDED run has no modelKey — cannot save what was never uploaded', async () => {
+    const prisma = draftPrisma({
+      modelTrainingRun: {
+        findUnique: jest.fn().mockResolvedValue({ ...RUN_ROW, modelKey: null }),
+        update: jest.fn(),
+      },
+    });
+    const service = makeService(prisma);
+
+    await expect(
+      service.saveDraftService(USER, 'draft-1', { name: 'My Model' }),
+    ).rejects.toMatchObject({ statusCode: 422 });
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('400s on a name already used in the workspace — mirrors createModelService’s own pre-check', async () => {
+    const prisma = draftPrisma({
+      model: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'model-existing' }),
+      },
+    });
+    const service = makeService(prisma);
+
+    await expect(
+      service.saveDraftService(USER, 'draft-1', { name: 'Boiler efficiency' }),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('404s a nodeId that does not belong to the draft’s own workspace — mirrors createModelService’s own check, closes a cross-tenant leak', async () => {
+    const prisma = draftPrisma({
+      nodes: { findFirst: jest.fn().mockResolvedValue(null) },
+    });
+    const service = makeService(prisma);
+
+    await expect(
+      service.saveDraftService(USER, 'draft-1', {
+        name: 'My Model',
+        nodeId: 'node-from-another-workspace',
+      }),
+    ).rejects.toMatchObject({ statusCode: 404 });
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('also validates the fallback draft.nodeId, not just an explicit request nodeId', async () => {
+    const prisma = draftPrisma({
+      nodes: { findFirst: jest.fn().mockResolvedValue(null) },
+    });
+    const service = makeService(prisma);
+
+    // No nodeId in the request — falls back to SAVEABLE_DRAFT.nodeId
+    // ('node-1'), which PatchModelDraftSchema never uuid-validated.
+    await expect(
+      service.saveDraftService(USER, 'draft-1', { name: 'My Model' }),
+    ).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it('writes all three rows inside one $transaction, converts the split fraction to a percentage, and derives config from the run — not the request body', async () => {
+    const prisma = draftPrisma();
+    const service = makeService(prisma);
+
+    const res = await service.saveDraftService(USER, 'draft-1', {
+      name: 'My Model',
+      description: 'from the wizard',
+    });
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    const createArgs = prisma.tx.model.create.mock.calls[0][0];
+    expect(createArgs.data.workspaceId).toBe('ws-1');
+    expect(createArgs.data.name).toBe('My Model');
+    expect(createArgs.data.datasetId).toBe(RUN_ROW.datasetId);
+    expect(createArgs.data.data.config).toMatchObject({
+      description: 'from the wizard',
+      datasetId: RUN_ROW.datasetId,
+      algorithm: RUN_ROW.algorithm,
+      algorithms: [RUN_ROW.algorithm],
+      targetVariables: [RUN_ROW.targetY],
+      hyperparameters: RUN_ROW.hyperparameters,
+      // 0.8 (fraction, splitSpec.ratio) -> 80 (percentage) — the exact unit
+      // fix ModelConfigSchema's own comment names as this feature's job.
+      trainTestSplit: 80,
+    });
+
+    expect(prisma.tx.modelTrainingRun.update).toHaveBeenCalledWith({
+      where: { id: 'run-1' },
+      data: { modelId: 'model-1' },
+    });
+    expect(prisma.tx.modelDraft.update).toHaveBeenCalledWith({
+      where: { id: 'draft-1' },
+      data: { status: 'SAVED', savedModelId: 'model-1' },
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(res.data.id).toBe('model-1');
+  });
+
+  it('saves successfully with framework_versions null when the manifest read fails — a legacy/missing manifest must not block Save', async () => {
+    mockGetRunManifest.mockRejectedValue(new Error('NoSuchKey'));
+    const prisma = draftPrisma();
+    const service = makeService(prisma);
+
+    await service.saveDraftService(USER, 'draft-1', { name: 'My Model' });
+
+    const createArgs = prisma.tx.model.create.mock.calls[0][0];
+    expect(createArgs.data.data.config.frameworkVersions).toBeNull();
+  });
+
+  it('records framework_versions inside config when the manifest has them', async () => {
+    mockGetRunManifest.mockResolvedValue({
+      framework_versions: { sklearn: '1.5.1' },
+    });
+    const prisma = draftPrisma();
+    const service = makeService(prisma);
+
+    await service.saveDraftService(USER, 'draft-1', { name: 'My Model' });
+
+    const createArgs = prisma.tx.model.create.mock.calls[0][0];
+    expect(createArgs.data.data.config.frameworkVersions).toEqual({
+      sklearn: '1.5.1',
+    });
+  });
+
+  it('never reads the manifest when the run has no manifestKey', async () => {
+    const prisma = draftPrisma({
+      modelTrainingRun: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({ ...RUN_ROW, manifestKey: null }),
+        update: jest.fn(),
+      },
+    });
+    const service = makeService(prisma);
+
+    await service.saveDraftService(USER, 'draft-1', { name: 'My Model' });
+
+    expect(mockGetRunManifest).not.toHaveBeenCalled();
+  });
+
+  it('maps a P2002 unique-name race to a 409, not a raw Prisma error', async () => {
+    const err = new Error(
+      'Unique constraint failed on the fields: (`workspaceId`,`name`)',
+    );
+    Object.setPrototypeOf(
+      err,
+      PrismaTypes.PrismaClientKnownRequestError.prototype,
+    );
+    (err as unknown as { code: string }).code = 'P2002';
+
+    const prisma = draftPrisma({
+      $transaction: jest.fn().mockRejectedValue(err),
+    });
+    const service = makeService(prisma);
+
+    await expect(
+      service.saveDraftService(USER, 'draft-1', { name: 'My Model' }),
+    ).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it('propagates any other transaction failure without pretending the save succeeded', async () => {
+    const prisma = draftPrisma({
+      $transaction: jest.fn().mockRejectedValue(new Error('connection lost')),
+    });
+    const service = makeService(prisma);
+
+    await expect(
+      service.saveDraftService(USER, 'draft-1', { name: 'My Model' }),
+    ).rejects.toThrow('connection lost');
   });
 });

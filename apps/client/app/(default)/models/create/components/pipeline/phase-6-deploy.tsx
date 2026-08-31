@@ -62,8 +62,17 @@ export function Phase6Deploy({ nav }: Props) {
     let modelId: string | null
     try {
       modelId = await commit()
-    } catch {
-      toast.error('Failed to save. Please try again.')
+    } catch (err) {
+      // MODEL-FLOW-007. `saveDraftService` returns a specific reason (409
+      // already saved, 422 no successful run, 400 name collision) — surface
+      // it rather than one generic, wrongly-retryable message for every
+      // failure. Falls back to the generic string only for a genuinely
+      // unknown throw (e.g. a network error with no message).
+      const message =
+        err instanceof Error && err.message
+          ? err.message
+          : 'Failed to save. Please try again.'
+      toast.error(message)
       setBusy(null)
       return
     }

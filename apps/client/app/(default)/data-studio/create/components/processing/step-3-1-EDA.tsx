@@ -202,17 +202,20 @@ export function Step31EDA({ nav }: Props) {
       )}
 
       {isBusy && (
-        <div
-          className="flex items-center justify-center gap-2"
-          role="status"
-          aria-live="polite"
-          aria-busy="true"
-        >
-          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-          <p aria-hidden="true" className="text-[11px] text-muted-foreground">
-            {readiness.caption}
-          </p>
-          <span className="sr-only">{readiness.caption}</span>
+        <div className="flex w-full flex-col gap-3">
+          <div
+            className="flex items-center justify-center gap-2"
+            role="status"
+            aria-live="polite"
+            aria-busy="true"
+          >
+            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            <p aria-hidden="true" className="text-[11px] text-muted-foreground">
+              {readiness.caption}
+            </p>
+            <span className="sr-only">{readiness.caption}</span>
+          </div>
+
           {showSkeleton && <DataAnalysisCardSkeleton />}
         </div>
       )}

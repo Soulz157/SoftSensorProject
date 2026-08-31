@@ -38,6 +38,8 @@ from schemas.preprocess import (
     ArtifactReclaimRequest,
     ArtifactReclaimResponse,
     ArtifactStatsResponse,
+    DraftRunReclaimRequest,
+    DraftRunReclaimResponse,
     ArtifactPresignRequest,
     ArtifactPresignResponse,
     BoxplotRequest,
@@ -71,6 +73,8 @@ from schemas.preprocess import (
     ResplitHoldoutRequest,
     RunLossHistoryRequest,
     RunLossHistoryResponse,
+    RunManifestRequest,
+    RunManifestResponse,
     RowsRequest,
     RowsResponse,
     ScaleRequest,
@@ -626,6 +630,28 @@ async def reclaim_artifact(
 
 
 @router.post(
+    "/models/runs/reclaim",
+    response_model=DraftRunReclaimResponse,
+    summary="Delete one ModelDraft's training-run objects",
+    description=(
+        "MODEL-FLOW-011-T02. Called by ModelDraftCleanupAdminService once "
+        "Postgres has proven the draft eligible (stale ACTIVE past its idle "
+        "window, or ABANDONED with objectsReclaimedAt still null). run_id "
+        "omitted reclaims the whole drafts/{draft_id}/runs/ subtree in one "
+        "call; run_id given reclaims exactly that run, leaving every "
+        "sibling — including any run a Model has adopted by pointer — "
+        "untouched. Idempotent, same as /artifacts/reclaim: a retried call "
+        "on an already-reclaimed prefix returns deleted: 0."
+    ),
+)
+async def reclaim_draft_runs(
+    body: DraftRunReclaimRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.reclaim_draft_runs, store, body)
+
+
+@router.post(
     "/artifacts/adopt",
     response_model=ArtifactAdoptResponse,
     summary="Copy one artifact's objects into a dataset's own prefix",
@@ -739,6 +765,25 @@ async def run_loss_history(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(artifact_service.get_run_loss_history, store, body)
+
+
+@router.post(
+    "/models/runs/manifest",
+    response_model=RunManifestResponse,
+    summary="A training run's framework_versions, from run_manifest.json",
+    description=(
+        "MODEL-FLOW-007-T11. Every other manifest field already has a column "
+        "on ModelTrainingRun (written by /complete) — this exists only for "
+        "framework_versions, which does not. Null for a run trained before "
+        "the trainer image that added it; Save Model treats that as 'not "
+        "recorded', not a failure."
+    ),
+)
+async def run_manifest(
+    body: RunManifestRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.get_run_manifest, store, body)
 
 
 @router.post(

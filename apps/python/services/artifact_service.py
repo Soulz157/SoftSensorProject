@@ -45,6 +45,8 @@ from intergrations.object_store import (
     PREDICTIONS_FILENAME,
     RUN_MANIFEST_FILENAME,
     draft_run_key,
+    draft_run_prefix,
+    draft_runs_prefix,
     is_committed_artifact_key,
     is_draft_run_key,
     is_model_run_key,
@@ -58,6 +60,7 @@ from schemas.preprocess import (
     CleanRequest,
     CleanupRequest,
     ColumnStatsRequest,
+    DraftRunReclaimRequest,
     FeatureConfigRequest,
     FeatureSpecRequest,
     FeaturesRequest,
@@ -1235,6 +1238,33 @@ def reclaim_artifact(
     return {"prefix": prefix, "deleted": store.delete_prefix(prefix)}
 
 
+def reclaim_draft_runs(
+    store: ObjectStore, request: DraftRunReclaimRequest
+) -> dict[str, Any]:
+    """Delete one ModelDraft's training-run objects — MODEL-FLOW-011-T02.
+
+    `DraftRunReclaimRequest` already validates draft_id/run_id resolve to a
+    well-formed `drafts/{draft_id}/runs/[{run_id}/]` prefix, so the prefix
+    built here is always scoped to a draft's OWN runs subtree — never a bare
+    `drafts/{draft_id}/`, which would also reach an unrelated DatasetDraft's
+    `artifacts/` objects under the same shared root. `run_id` omitted
+    reclaims the whole subtree in one call (used when the sweep finds no
+    adopted run on the draft — MODEL-FLOW-011-T05 — including run prefixes
+    whose `ModelTrainingRun` row no longer exists); `run_id` given reclaims
+    exactly that run, leaving every sibling untouched.
+
+    Same idempotence as `reclaim_artifact`: `delete_prefix` on an absent
+    prefix returns `0` rather than erroring, so a retried sweep tick
+    converges instead of failing.
+    """
+    prefix = (
+        draft_run_prefix(request.draft_id, request.run_id)
+        if request.run_id
+        else draft_runs_prefix(request.draft_id)
+    )
+    return {"prefix": prefix, "deleted": store.delete_prefix(prefix)}
+
+
 def adopt_artifact(
     store: ObjectStore, request: ArtifactAdoptRequest
 ) -> dict[str, Any]:
@@ -1513,3 +1543,46 @@ def get_run_loss_history(store: ObjectStore, body) -> dict[str, Any]:
         "metric": data["metric"],
         "series": data["series"],
     }
+
+
+def get_run_manifest(store: ObjectStore, body) -> dict[str, Any]:
+    """A training run's `run_manifest.json`, read for `framework_versions` only
+    — MODEL-FLOW-007-T11.
+
+    Every other manifest field (gold_object_key, artifact_checksum, target_y,
+    algorithm, hyperparameters, seed, split, metrics, holdout_metrics,
+    model_sha256) is already a column on `ModelTrainingRun`, written by
+    `complete()` — returning them again here would be a second, driftable copy
+    of facts the row already owns. `framework_versions` is the one field
+    `images/trainer/train.py` writes that has no column, added in the same
+    trainer pass as this endpoint.
+
+    Guarded the same structural way `get_run_loss_history` guards its own key.
+    Absent for any run trained before that trainer version — returned as
+    `None`, not an error, so Save Model can still save an older run's result
+    with an honestly incomplete provenance record rather than refusing it.
+    """
+    key = body.source_key
+    if key.rsplit("/", 1)[-1] != RUN_MANIFEST_FILENAME:
+        raise ValueError(f"'{key}' does not name {RUN_MANIFEST_FILENAME}.")
+    if not (is_draft_run_key(key) or is_model_run_key(key)):
+        raise ValueError(
+            f"'{key}' is not a well-formed training-run output key. Only "
+            "drafts/{draftId}/runs/{runId}/... or "
+            "models/{modelId}/runs/{runId}/... can be read here."
+        )
+
+    data = store.get_json(key)
+    versions = data.get("framework_versions") if isinstance(data, dict) else None
+    if versions is not None and (
+        not isinstance(versions, dict)
+        or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in versions.items()
+        )
+    ):
+        raise ValueError(
+            f"'{key}' has a malformed framework_versions (expected a "
+            "string-to-string mapping)."
+        )
+
+    return {"framework_versions": versions}

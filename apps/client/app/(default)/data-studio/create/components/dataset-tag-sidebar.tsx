@@ -259,7 +259,7 @@ export function DatasetTagSidebar() {
 
         {/* Tag list */}
         <div className="relative min-h-0 flex-1">
-          <ScrollArea className="h-full w-full">
+          <ScrollArea className="h-full w-full [&_[data-radix-scroll-area-viewport]>div]:!block">
             {tags.length === 0 ? (
               <p className="px-4 py-6 text-center text-xs text-muted-foreground">
                 Select tags in Step 1 to populate this list.
@@ -280,10 +280,12 @@ export function DatasetTagSidebar() {
                       className="border-none"
                     >
                       <AccordionTrigger className="px-3 py-1.5 text-[11px] font-semibold tracking-wider text-muted-foreground uppercase hover:no-underline">
-                        {group.label}
-                        <Badge className="ml-2 h-4 items-center bg-muted font-medium text-muted-foreground">
-                          {group.id === 'target' ? 'Y' : group.tags.length}
-                        </Badge>
+                        <div className="flex flex-1 items-center">
+                          {group.label}
+                          <Badge className="ml-2 h-4 items-center bg-muted font-medium text-muted-foreground">
+                            {group.id === 'target' ? 'Y' : group.tags.length}
+                          </Badge>
+                        </div>
                       </AccordionTrigger>
                       <AccordionContent className="pb-2">
                         {groupTags.length === 0 ? (
@@ -324,7 +326,7 @@ export function DatasetTagSidebar() {
                                       }
                                     }}
                                     className={cn(
-                                      'flex cursor-pointer items-center gap-2 border-l-2 px-1 py-2 transition-colors',
+                                      'flex w-full min-w-0 cursor-pointer items-center gap-2 border-l-2 px-1 py-2 transition-colors',
                                       isFocused
                                         ? 'border-primary bg-primary/10'
                                         : 'border-transparent hover:bg-sidebar-accent',
@@ -363,10 +365,10 @@ export function DatasetTagSidebar() {
                                       <TooltipContent>
                                         <p>{tag}</p>
                                       </TooltipContent>
-                                      <TooltipTrigger>
+                                      <TooltipTrigger asChild>
                                         <span
                                           className={cn(
-                                            'truncate font-mono text-xs',
+                                            'min-w-0 flex-1 truncate font-mono text-xs',
                                             isFocused
                                               ? 'font-medium text-foreground'
                                               : isHidden

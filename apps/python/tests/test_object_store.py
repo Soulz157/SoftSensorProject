@@ -31,8 +31,11 @@ from intergrations.object_store import (
     assert_frame_shape,
     assert_tags_are_storable,
     draft_run_key,
+    draft_run_prefix,
+    draft_runs_prefix,
     is_committed_artifact_key,
     is_draft_run_key,
+    is_draft_run_prefix,
     is_model_run_key,
     manifest_key,
     MANIFEST_FILENAME,
@@ -287,6 +290,35 @@ def test_is_draft_run_key_rejects_traversal_and_malformed_segments() -> None:
     assert not is_model_run_key("drafts/d1/runs/r1/model.joblib")
 
 
+def test_is_draft_run_prefix_accepts_both_a_run_prefix_and_a_drafts_subtree() -> None:
+    """MODEL-FLOW-011-T02. Unlike is_draft_run_key (filename-terminated,
+    exactly 4 segments), this accepts either the 3-segment run prefix or the
+    2-segment whole-subtree prefix — both directory-terminated."""
+    assert is_draft_run_prefix(draft_run_prefix("d1", "r1"))
+    assert is_draft_run_prefix("drafts/d1/runs/r1/")
+    assert is_draft_run_prefix(draft_runs_prefix("d1"))
+    assert is_draft_run_prefix("drafts/d1/runs/")
+
+
+def test_is_draft_run_prefix_rejects_a_bare_draft_prefix() -> None:
+    """The hazard this predicate exists to prevent: drafts/ is a shared root
+    for ModelDraft run objects AND DatasetDraft artifact objects. A bare
+    drafts/{draft_id}/ prefix reaches BOTH — this must never validate."""
+    assert not is_draft_run_prefix("drafts/d1/")
+    assert not is_draft_run_prefix("drafts/d1")
+
+
+def test_is_draft_run_prefix_rejects_traversal_missing_slash_and_wrong_root() -> None:
+    assert not is_draft_run_prefix("drafts/../runs/r1/")
+    assert not is_draft_run_prefix("drafts/d1/runs/../")
+    assert not is_draft_run_prefix("drafts/d1/runs/r1")  # no trailing slash
+    assert not is_draft_run_prefix("drafts/d1/notruns/r1/")
+    assert not is_draft_run_prefix("drafts//runs/r1/")
+    assert not is_draft_run_prefix("drafts/d1/runs//")
+    assert not is_draft_run_prefix("models/m1/runs/r1/")
+    assert not is_draft_run_prefix("drafts/d1/artifacts/a1/")  # DatasetDraft shape
+
+
 # ── live MinIO ───────────────────────────────────────────────────────────
 
 
@@ -388,6 +420,64 @@ def test_reclaim_a_real_stage_suffixed_artifact_deletes_a_non_zero_count(
 
     assert deleted > 0
     assert not store.exists(key)
+
+
+def test_reclaim_one_draft_run_leaves_its_sibling_run_readable(
+    store: ObjectStore,
+) -> None:
+    """MODEL-FLOW-011-T05, proved by deletion rather than by assertion that a
+    mocked call was never made. Two run prefixes under one draft; reclaim
+    ONE by {draft_id, run_id}, then assert the survivor — standing in for an
+    adopted run's objects, which the sweep must never even name — is still
+    readable AFTER the tick that reclaimed its sibling. A mock-based Nest
+    spec can show "postToPython was never called with it"; only a real
+    delete against the survivor's neighbour can show the delete itself is
+    correctly scoped to just the one prefix."""
+    df = good_frame()
+    draft_id = "pytest-object-store-draft-t05"
+    reclaimed_run = "run-reclaimed"
+    surviving_run = "run-adopted"
+
+    reclaimed_key = draft_run_key(draft_id, reclaimed_run, "model.joblib")
+    surviving_key = draft_run_key(draft_id, surviving_run, "model.joblib")
+    store.put_frame(df, reclaimed_key, overwrite=True)
+    store.put_frame(df, surviving_key, overwrite=True)
+
+    prefix = draft_run_prefix(draft_id, reclaimed_run)
+    assert is_draft_run_prefix(prefix)
+
+    deleted = store.delete_prefix(prefix)
+
+    assert deleted > 0
+    assert not store.exists(reclaimed_key)
+    assert store.exists(surviving_key)
+
+    store.delete_prefix(draft_runs_prefix(draft_id))
+
+
+def test_reclaim_draft_runs_subtree_removes_every_run_including_an_orphan(
+    store: ObjectStore,
+) -> None:
+    """MODEL-FLOW-011-T02: the subtree-delete branch, used whenever no run on
+    a draft is adopted — also the one shape that reaches a run prefix whose
+    ModelTrainingRun row is already gone (an orphan the row-driven per-run
+    branch could never name). Two run prefixes, no Postgres row assumed for
+    either; one subtree call must remove both."""
+    df = good_frame()
+    draft_id = "pytest-object-store-draft-t02-subtree"
+    run_a = draft_run_key(draft_id, "run-a", "model.joblib")
+    run_b = draft_run_key(draft_id, "run-b", "metrics.json")
+    store.put_frame(df, run_a, overwrite=True)
+    store.put_json(run_b, {"rmse": 1.0})
+
+    subtree = draft_runs_prefix(draft_id)
+    assert is_draft_run_prefix(subtree)
+
+    deleted = store.delete_prefix(subtree)
+
+    assert deleted == 2
+    assert not store.exists(run_a)
+    assert not store.exists(run_b)
 
 
 def test_pre_existing_legacy_named_artifact_still_reads_end_to_end(

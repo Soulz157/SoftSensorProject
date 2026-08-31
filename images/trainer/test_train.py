@@ -21,11 +21,17 @@ os.environ.setdefault("API_BASE", "http://localhost:0")
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
+import pytest  # noqa: E402
 
 from train import (  # noqa: E402
     MAX_LOSS_HISTORY_POINTS,
     STATUS_GOOD,
+    assert_no_nan_features,
+    assert_no_window_leakage,
+    build_windows,
+    chronological_split_windows,
     extract_loss_history,
     labelled_mask,
     status_column,
@@ -163,7 +169,144 @@ def test_extract_loss_history_swallows_a_missing_attribute_rather_than_raising()
     assert extract_loss_history("lightgbm", _FakeModel()) is None
 
 
-if __name__ == "__main__":
-    import pytest
+def _grid_frame(n: int, labelled_rows: set[int], feature_col: str = "F1") -> tuple[pd.DataFrame, pd.Series]:
+    """MODEL-FLOW-009-T01. `n` rows on a regular 1-minute grid; `feature_col`
+    holds each row's own position (0..n-1) so a window's exact contents can
+    be asserted by original row index. `labelled_rows` marks which
+    positions have a Good target — the rest are Bad, simulating a target
+    sampled far sparser than the feature grid (the exact shape
+    `build_windows`'s full-frame-not-labelled-only design exists for)."""
+    frame = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-01-01", periods=n, freq="min"),
+            feature_col: [float(i) for i in range(n)],
+            "TI-101": [float(i) for i in range(n)],
+            status_column("TI-101"): [
+                STATUS_GOOD if i in labelled_rows else 99 for i in range(n)
+            ],
+        }
+    )
+    mask = labelled_mask(frame, "TI-101")
+    return frame, mask
 
+
+def test_build_windows_spans_true_grid_spacing_not_labelled_only_spacing():
+    # Rows 0-4 and 10-14 are labelled; rows 5-9 are not (a gap, same shape
+    # as a lab target sampled far sparser than the feature grid). A window
+    # over the FULL frame at target row 10, length 3, must be original
+    # rows [8, 9, 10] — three CONSECUTIVE MINUTES. Windowing over the
+    # `labelled`-only reduced frame instead would (wrongly) pull reduced
+    # rows [3, 4, 5] = original rows [3, 4, 10], splicing rows from six
+    # minutes earlier into what would look like a 3-minute window.
+    frame, mask = _grid_frame(20, labelled_rows=set(range(0, 5)) | set(range(10, 15)))
+    X, y, target_ts = build_windows(
+        frame, "TI-101", ["F1"], sequence_length=3, label_mask=mask)
+
+    target_row_10 = list(target_ts).index(frame.loc[10, "timestamp"])
+    assert X[target_row_10, :, 0].tolist() == [8.0, 9.0, 10.0]
+    assert y[target_row_10] == 10.0
+
+
+def test_build_windows_drops_targets_without_enough_history():
+    # Labelled rows 0 and 1 sit before enough history exists for
+    # sequence_length=3 (a window needs 3 rows ending at the target) — no
+    # padding, no partial window: they simply produce no window, same as
+    # an unlabelled row.
+    frame, mask = _grid_frame(5, labelled_rows={0, 1, 4})
+    X, y, target_ts = build_windows(
+        frame, "TI-101", ["F1"], sequence_length=3, label_mask=mask)
+    assert len(y) == 1
+    assert y[0] == 4.0
+    assert X[0, :, 0].tolist() == [2.0, 3.0, 4.0]
+
+
+def test_build_windows_excludes_unlabelled_target_rows_even_with_full_history():
+    frame, mask = _grid_frame(10, labelled_rows={5})
+    X, y, target_ts = build_windows(
+        frame, "TI-101", ["F1"], sequence_length=4, label_mask=mask)
+    assert len(y) == 1
+    assert y[0] == 5.0
+
+
+def test_build_windows_requires_sorted_frame():
+    frame, mask = _grid_frame(5, labelled_rows={4})
+    shuffled = frame.iloc[::-1].reset_index(drop=True)
+    shuffled_mask = mask.iloc[::-1].reset_index(drop=True)
+    with pytest.raises(RuntimeError, match="sorted"):
+        build_windows(shuffled, "TI-101", ["F1"],
+                       sequence_length=3, label_mask=shuffled_mask)
+
+
+def test_build_windows_returns_empty_arrays_when_nothing_qualifies():
+    frame, mask = _grid_frame(5, labelled_rows=set())
+    X, y, target_ts = build_windows(
+        frame, "TI-101", ["F1"], sequence_length=3, label_mask=mask)
+    assert X.shape == (0, 3, 1)
+    assert len(y) == 0
+    assert len(target_ts) == 0
+
+
+def test_chronological_split_windows_matches_flat_split_cut_rule():
+    # Windows are already target-timestamp ordered (build_windows walks
+    # the frame ascending) — same ratio*n cut rule chronological_split
+    # applies to a flat frame, applied here to window count instead of
+    # row count.
+    timestamps = pd.Series(pd.date_range("2026-01-01", periods=10, freq="D"))
+    train_idx, test_idx, cut_ts = chronological_split_windows(
+        timestamps, ratio=0.7)
+    assert list(train_idx) == list(range(7))
+    assert list(test_idx) == list(range(7, 10))
+    assert cut_ts == str(timestamps.iloc[7])
+
+
+def test_chronological_split_windows_rejects_empty_or_unsorted():
+    with pytest.raises(RuntimeError):
+        chronological_split_windows(
+            pd.Series([], dtype="datetime64[ns]"), ratio=0.7)
+    unsorted = pd.Series(pd.date_range(
+        "2026-01-01", periods=5, freq="D"))[::-1].reset_index(drop=True)
+    with pytest.raises(RuntimeError):
+        chronological_split_windows(unsorted, ratio=0.5)
+
+
+def test_assert_no_window_leakage_passes_for_correctly_target_keyed_windows():
+    timestamps = pd.Series(pd.date_range("2026-01-01", periods=10, freq="D"))
+    train_idx, _, cut_ts = chronological_split_windows(timestamps, ratio=0.7)
+    assert_no_window_leakage(timestamps, train_idx, cut_ts)  # must not raise
+
+
+def test_assert_no_window_leakage_catches_start_indexed_assignment_bug():
+    # The real failure mode T02 guards against: assigning windows to
+    # train/test by their START position instead of their TARGET
+    # timestamp. Simulate it directly — a "train" set that includes a
+    # window whose target sits at/after the cut.
+    timestamps = pd.Series(pd.date_range("2026-01-01", periods=10, freq="D"))
+    _, _, cut_ts = chronological_split_windows(timestamps, ratio=0.7)
+    buggy_train_idx = np.arange(0, 8)  # includes index 7, target >= cut
+    with pytest.raises(RuntimeError, match="start index"):
+        assert_no_window_leakage(timestamps, buggy_train_idx, cut_ts)
+
+
+def test_assert_no_nan_features_passes_on_clean_windows():
+    X = np.zeros((3, 4, 2))
+    assert_no_nan_features(X, "training")  # must not raise
+
+
+def test_assert_no_nan_features_catches_nan_on_a_non_target_row():
+    # A window's INCLUSION is gated on its TARGET row's label
+    # (build_windows), never on its non-target rows' quality — a NaN
+    # feature on one of those in-window rows (row 0 here, not the target
+    # row at index -1) must still be caught, not silently trained on.
+    X = np.zeros((2, 3, 2))
+    X[1, 0, 1] = np.nan
+    with pytest.raises(RuntimeError, match="NaN feature"):
+        assert_no_nan_features(X, "training")
+
+
+def test_assert_no_nan_features_empty_array_does_not_raise():
+    X = np.empty((0, 3, 2))
+    assert_no_nan_features(X, "training")  # must not raise
+
+
+if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

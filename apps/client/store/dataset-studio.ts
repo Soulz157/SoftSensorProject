@@ -237,6 +237,15 @@ export interface FetchProgress {
   completedTags: number
   etaMs: number | null
   failedBatches: string[][]
+  /**
+   * Epoch ms of the current run's start — the SAME clock `etaMs` is derived
+   * from, so the elapsed timer and the ETA can never disagree. Epoch stamps
+   * only: a ticking `elapsedMs` here would re-render every atom subscriber
+   * once a second.
+   */
+  startedAt: number | null
+  /** Epoch ms of completion (success or partial failure); null while running. */
+  finishedAt: number | null
 }
 
 export const EMPTY_FETCH_PROGRESS: FetchProgress = {
@@ -247,6 +256,8 @@ export const EMPTY_FETCH_PROGRESS: FetchProgress = {
   completedTags: 0,
   etaMs: null,
   failedBatches: [],
+  startedAt: null,
+  finishedAt: null,
 }
 
 export const dwFetchProgressAtom = atom<FetchProgress>({

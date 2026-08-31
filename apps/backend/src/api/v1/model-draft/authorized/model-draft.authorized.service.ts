@@ -1,11 +1,33 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService, PrismaTypes } from '@softsensor/prisma';
 import { AppException } from '@softsensor/common';
+import { getRunManifest } from '@/lib/python-preprocess-client';
+import { ModelConfigSchema } from '@/api/v1/model/authorized/dto/model.authorized.dto';
 import {
   type CreateModelDraftDto,
   type ListModelDraftQueryDto,
   type PatchModelDraftDto,
+  type SaveModelDraftDto,
 } from './dto/model-draft.authorized.dto';
+
+/** Same include `model.authorized.service.ts`'s `NODE_INCLUDE` uses — kept as
+ *  its own small copy rather than a cross-module import of a private const,
+ *  so a saved Model's response shape matches `createModelService`'s exactly
+ *  (`AIModel.nodes` on the client expects this shape). */
+const NODE_INCLUDE = {
+  nodes: {
+    select: {
+      id: true,
+      data: true,
+      planId: true,
+      plan: { select: { id: true, name: true } },
+    },
+  },
+} as const;
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 /**
  * ModelDraft — the Model Creation wizard's server-side owner while no
@@ -193,6 +215,14 @@ export class ModelDraftAuthorizedService {
    * Whichever fields changed, not the whole config — Step 2 debounces this
    * per edit. Refuses (409) once the draft is SAVED: an already-adopted
    * draft's config must not keep drifting after the Model it fed exists.
+   *
+   * MODEL-FLOW-011: also refuses ABANDONED, for the open-tab case a sweep
+   * introduces. Before this, a draft the sweep abandoned while the wizard
+   * sat open kept accepting the debounced PATCH (into
+   * useModelDraftSync's silent catch) — the user would learn nothing until
+   * Start Training refused the row for a completely different reason
+   * (assertDraftWritableStatus). Refusing here surfaces it at the very next
+   * edit instead.
    */
   async patchDraftService(
     user: Auth.UserPayload,
@@ -206,6 +236,15 @@ export class ModelDraftAuthorizedService {
         message:
           'Draft has already been saved as a Model — its configuration ' +
           'can no longer be edited.',
+        type: 'ERROR',
+      });
+    }
+    if (existing.status === 'ABANDONED') {
+      throw new AppException({
+        statusCode: 409,
+        message:
+          'This draft was abandoned (idle too long, or removed) and can no ' +
+          'longer be edited. Start a new model from Step 1.',
         type: 'ERROR',
       });
     }
@@ -248,6 +287,235 @@ export class ModelDraftAuthorizedService {
       type: 'SUCCESS' as const,
       data: this.mapDraft(draft),
     };
+  }
+
+  private isUniqueViolation(err: unknown): boolean {
+    return (
+      err instanceof PrismaTypes.PrismaClientKnownRequestError &&
+      err.code === 'P2002'
+    );
+  }
+
+  /** `ModelTrainingRun.splitSpec` is untyped Json — `{method, ratio, ...}` at
+   *  launch (`model-run-launch.authorized.service.ts`), `ratio` a FRACTION
+   *  (0.5-0.95). Narrowed by hand rather than cast, per CLAUDE.md's "no any". */
+  private extractSplitRatio(splitSpec: unknown): number | null {
+    if (!isPlainObject(splitSpec)) return null;
+    const ratio = splitSpec.ratio;
+    return typeof ratio === 'number' ? ratio : null;
+  }
+
+  /** `ModelTrainingRun.hyperparameters` is untyped Json, but every value on
+   *  it already passed `HyperparametersSchema` at launch — this narrows the
+   *  type for `ModelConfigSchema`, it does not re-validate; a non-scalar
+   *  value (unreachable today) is dropped rather than thrown, since a
+   *  stricter posture here would fail a Save over a value Start Training
+   *  already accepted. */
+  private extractHyperparameters(
+    hyperparameters: unknown,
+  ): Record<string, string | number | boolean | null> {
+    if (!isPlainObject(hyperparameters)) return {};
+    const out: Record<string, string | number | boolean | null> = {};
+    for (const [key, value] of Object.entries(hyperparameters)) {
+      if (
+        typeof value === 'string' ||
+        typeof value === 'number' ||
+        typeof value === 'boolean' ||
+        value === null
+      ) {
+        out[key] = value;
+      }
+    }
+    return out;
+  }
+
+  /**
+   * MODEL-FLOW-007. The ONLY route allowed to create the final persistent
+   * `Model` (CLAUDE.md §13) — mirrors `saveDraftAsDatasetService`'s shape:
+   * 409-on-already-SAVED, then artifact/run validation, then one
+   * `$transaction`. Unlike that dataset-side save, this one does NOT copy
+   * bytes: `ModelTrainingRun.modelId` is set on the winning run and its
+   * objects stay at `drafts/{draftId}/runs/{runId}/...` forever — MODEL-
+   * FLOW-011-T05's sweeper guard is what makes that safe (an adopted run is
+   * never reclaimed).
+   *
+   * Config is DERIVED SERVER-SIDE from the adopted run, never trusted from
+   * the client — `ModelConfigSchema`'s own comment names this as this
+   * feature's job, specifically for `trainTestSplit` (a client-sent
+   * percentage vs. the run's own `splitSpec.ratio` fraction).
+   */
+  async saveDraftService(
+    user: Auth.UserPayload,
+    draftId: string,
+    dto: SaveModelDraftDto,
+  ) {
+    const draft = await this.assertDraftAccess(draftId, user);
+    if (draft.status === 'SAVED') {
+      throw new AppException({
+        statusCode: 409,
+        message:
+          'Draft has already been saved as a Model — a draft can only be ' +
+          'saved once.',
+        type: 'ERROR',
+      });
+    }
+
+    const runId = await this.resolveActiveRunId(draft);
+    if (!runId) {
+      throw new AppException({
+        statusCode: 422,
+        message:
+          'This draft has no training run yet — start training before ' +
+          'saving.',
+        type: 'ERROR',
+      });
+    }
+    const run = await this.prisma.modelTrainingRun.findUnique({
+      where: { id: runId },
+    });
+    if (!run) {
+      throw new AppException({
+        statusCode: 422,
+        message: `Run ${runId} no longer exists.`,
+        type: 'ERROR',
+      });
+    }
+    if (run.status !== 'SUCCEEDED') {
+      throw new AppException({
+        statusCode: 422,
+        message:
+          `The run backing this draft has status ${run.status}, not ` +
+          'SUCCEEDED — nothing to save yet.',
+        type: 'ERROR',
+      });
+    }
+    if (!run.modelKey) {
+      throw new AppException({
+        statusCode: 422,
+        message:
+          'The run has no saved model artifact — cannot save. This should ' +
+          'not happen for a SUCCEEDED run; check the run logs.',
+        type: 'ERROR',
+      });
+    }
+
+    const existingName = await this.prisma.model.findFirst({
+      where: {
+        workspaceId: draft.workspaceId,
+        name: { equals: dto.name, mode: 'insensitive' },
+      },
+      select: { id: true },
+    });
+    if (existingName) {
+      throw new AppException({
+        statusCode: 400,
+        message: 'A model with this name already exists in this location.',
+        type: 'ERROR',
+      });
+    }
+
+    // Same check createModelService makes on its own dto.nodeId — a node id
+    // is meaningless (and a cross-tenant leak: getModels' own NODE_INCLUDE
+    // resolves plan.name through it) unless it belongs to THIS workspace.
+    // Covers both the request body's nodeId and the draft's own fallback —
+    // PatchModelDraftSchema.nodeId is unvalidated z.string(), not .uuid(),
+    // so a junk draft value must be caught here, not left to reach the FK
+    // as an uncaught P2003.
+    const nodeId = dto.nodeId ?? draft.nodeId ?? null;
+    if (nodeId) {
+      const node = await this.prisma.nodes.findFirst({
+        where: { id: nodeId, workspaceId: draft.workspaceId },
+      });
+      if (!node) {
+        throw new AppException({
+          statusCode: 404,
+          message: 'Node not found',
+          type: 'ERROR',
+        });
+      }
+    }
+
+    // T11. Best-effort — a missing/unreadable manifest (every run trained
+    // before the trainer image that added this field) must not fail the
+    // save; framework_versions is simply absent from this Model's
+    // provenance, same "honest legacy null" MODEL-FLOW-010-T06 established.
+    let frameworkVersions: Record<string, string> | null = null;
+    if (run.manifestKey) {
+      try {
+        frameworkVersions = (await getRunManifest(run.manifestKey))
+          .framework_versions;
+      } catch {
+        frameworkVersions = null;
+      }
+    }
+
+    const ratio = this.extractSplitRatio(run.splitSpec);
+    const trainTestSplit = ratio != null ? Math.round(ratio * 100) : undefined;
+
+    const config = ModelConfigSchema.parse({
+      ...(dto.description !== undefined && { description: dto.description }),
+      datasetId: run.datasetId,
+      algorithm: run.algorithm,
+      algorithms: [run.algorithm],
+      targetVariables: [run.targetY],
+      hyperparameters: this.extractHyperparameters(run.hyperparameters),
+      ...(trainTestSplit !== undefined && { trainTestSplit }),
+      ...(dto.deployment !== undefined && { deployment: dto.deployment }),
+      // T11. Nested inside `config`, not a sibling of it — `normalizeData`
+      // (model.authorized.service.ts) whitelists top-level `Model.data` keys
+      // explicitly, and `frameworkVersions` is not one of them; `config` is,
+      // so this is what makes it survive the very next `updateModel` call
+      // (e.g. Save & Deploy's immediate `deployStatus: 'running'` write).
+      frameworkVersions,
+    });
+
+    const initData = {
+      deployStatus: 'stopped' as const,
+      prodStatus: 'normal' as const,
+      logs: [] as unknown[],
+      config,
+    };
+
+    try {
+      const model = await this.prisma.$transaction(async (tx) => {
+        const created = await tx.model.create({
+          data: {
+            workspaceId: draft.workspaceId,
+            name: dto.name,
+            nodesId: nodeId,
+            datasetId: run.datasetId,
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+            data: JSON.parse(JSON.stringify(initData)),
+          },
+          include: NODE_INCLUDE,
+        });
+        await tx.modelTrainingRun.update({
+          where: { id: run.id },
+          data: { modelId: created.id },
+        });
+        await tx.modelDraft.update({
+          where: { id: draftId },
+          data: { status: 'SAVED', savedModelId: created.id },
+        });
+        return created;
+      });
+
+      return {
+        statusCode: 201,
+        message: 'Model saved successfully',
+        type: 'SUCCESS' as const,
+        data: model,
+      };
+    } catch (err) {
+      if (this.isUniqueViolation(err)) {
+        throw new AppException({
+          statusCode: 409,
+          message: 'A model with this name already exists in this location.',
+          type: 'ERROR',
+        });
+      }
+      throw err;
+    }
   }
 
   private mapDraft(draft: {

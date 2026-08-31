@@ -27,8 +27,11 @@ describe('defaultHyperparams', () => {
     random_forest: ['n_estimators', 'max_depth'],
     lightgbm: ['learning_rate', 'num_leaves', 'boosting_type'],
     xgboost: ['n_estimators', 'learning_rate', 'max_depth'],
-    lstm: ['epochs', 'batch_size', 'hidden_size'],
-    gru: ['epochs', 'batch_size', 'hidden_size'],
+    // MODEL-FLOW-009-T03: sequence_length added alongside the existing
+    // three — build_windows (images/trainer/train.py) reads it once
+    // MODEL-FLOW-009-T04 wires the windowing pipeline into main().
+    lstm: ['epochs', 'batch_size', 'hidden_size', 'sequence_length'],
+    gru: ['epochs', 'batch_size', 'hidden_size', 'sequence_length'],
   }
 
   for (const [algorithm, keys] of Object.entries(expectedKeys) as [

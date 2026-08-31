@@ -32,9 +32,11 @@ from schemas.preprocess import (
     CleanRequest,
     CleanupRequest,
     ColumnStatsRequest,
+    DraftRunReclaimRequest,
     MaterializeRequest,
     MetadataRequest,
     RowsRequest,
+    RunManifestRequest,
     TagCatalogRequest,
 )
 from services import artifact_service
@@ -726,6 +728,72 @@ def test_reclaim_refuses_a_sidecar_key() -> None:
         ArtifactReclaimRequest(object_key="ds-1/artifacts/art-7/manifest.json")
 
 
+# ── reclaim_draft_runs (MODEL-FLOW-011-T02) ─────────────────────────────
+
+
+def test_reclaim_draft_runs_deletes_one_run_only_when_run_id_given() -> None:
+    store = RecordingStore(
+        {
+            "drafts/draft-1/runs/run-a/model.joblib": frame(),
+            "drafts/draft-1/runs/run-b/model.joblib": frame(),
+        }
+    )
+    result = artifact_service.reclaim_draft_runs(
+        store, DraftRunReclaimRequest(draft_id="draft-1", run_id="run-a")
+    )
+
+    assert result == {"prefix": "drafts/draft-1/runs/run-a/", "deleted": 1}
+    assert set(store.objects) == {"drafts/draft-1/runs/run-b/model.joblib"}
+
+
+def test_reclaim_draft_runs_deletes_the_whole_subtree_when_run_id_omitted() -> None:
+    """The shape used when no run on the draft is adopted — also the ONLY
+    shape that reaches a run prefix whose ModelTrainingRun row is already
+    gone, since a per-run delete can only ever name a row that still
+    exists."""
+    store = RecordingStore(
+        {
+            "drafts/draft-1/runs/run-a/model.joblib": frame(),
+            "drafts/draft-1/runs/run-b/model.joblib": frame(),
+            "drafts/draft-2/runs/run-c/model.joblib": frame(),
+        }
+    )
+    result = artifact_service.reclaim_draft_runs(
+        store, DraftRunReclaimRequest(draft_id="draft-1", run_id=None)
+    )
+
+    assert result == {"prefix": "drafts/draft-1/runs/", "deleted": 2}
+    assert set(store.objects) == {"drafts/draft-2/runs/run-c/model.joblib"}
+
+
+def test_reclaim_draft_runs_is_idempotent() -> None:
+    store = RecordingStore({"drafts/draft-1/runs/run-a/model.joblib": frame()})
+    request = DraftRunReclaimRequest(draft_id="draft-1", run_id="run-a")
+
+    first = artifact_service.reclaim_draft_runs(store, request)
+    second = artifact_service.reclaim_draft_runs(store, request)
+
+    assert first["deleted"] == 1
+    assert second["deleted"] == 0
+
+
+def test_reclaim_draft_runs_refuses_a_slash_in_either_id() -> None:
+    """The class of bug is_model_run_key/is_draft_run_key exist to catch on
+    the write side: a bare-segment bypass here would let a caller name a
+    path outside drafts/{draft_id}/runs/."""
+    with pytest.raises(ValueError, match="path segment"):
+        DraftRunReclaimRequest(draft_id="../other-draft", run_id="run-a")
+    with pytest.raises(ValueError, match="path segment"):
+        DraftRunReclaimRequest(draft_id="draft-1", run_id="../../x")
+
+
+def test_reclaim_draft_runs_refuses_an_empty_or_dot_id() -> None:
+    with pytest.raises(ValueError, match="path segment"):
+        DraftRunReclaimRequest(draft_id="", run_id=None)
+    with pytest.raises(ValueError, match="path segment"):
+        DraftRunReclaimRequest(draft_id=".", run_id=None)
+
+
 # ── materialize request validation ───────────────────────────────────────
 #
 # The fetch itself needs a live PI/SQL source and is covered by the F4
@@ -1282,3 +1350,80 @@ def test_adopt_artifact_refuses_anything_but_a_committed_artifact_key(
         ArtifactAdoptRequest(
             object_key=bad_key, dataset_id="ds-1", artifact_id="final-9"
         )
+
+
+# ── get_run_manifest (MODEL-FLOW-007-T11) ───────────────────────────────
+
+
+def test_get_run_manifest_returns_framework_versions_when_present() -> None:
+    key = "drafts/draft-1/runs/run-a/run_manifest.json"
+    store = RecordingStore()
+    store.put_json(key, {"algorithm": "lightgbm", "framework_versions": {
+        "sklearn": "1.5.1",
+        "lightgbm": "4.3.0",
+    }})
+
+    result = artifact_service.get_run_manifest(
+        store, RunManifestRequest(source_key=key)
+    )
+
+    assert result == {
+        "framework_versions": {"sklearn": "1.5.1", "lightgbm": "4.3.0"}
+    }
+
+
+def test_get_run_manifest_returns_none_for_a_legacy_manifest() -> None:
+    """Every manifest written before the trainer pass that added this field —
+    Save Model must treat this as 'not recorded', not fail the read."""
+    key = "drafts/draft-1/runs/run-a/run_manifest.json"
+    store = RecordingStore()
+    store.put_json(key, {"algorithm": "ols", "target_y": "TI-101"})
+
+    result = artifact_service.get_run_manifest(
+        store, RunManifestRequest(source_key=key)
+    )
+
+    assert result == {"framework_versions": None}
+
+
+def test_get_run_manifest_accepts_an_adopted_model_run_key_too() -> None:
+    """Save Model adopts by pointer — an adopted run's manifest still lives
+    under drafts/, but a future read against models/{modelId}/runs/... must
+    not be refused either (same acceptance run_predictions/loss_history give
+    both roots)."""
+    key = "models/model-1/runs/run-a/run_manifest.json"
+    store = RecordingStore()
+    store.put_json(key, {"framework_versions": {"sklearn": "1.5.1"}})
+
+    result = artifact_service.get_run_manifest(
+        store, RunManifestRequest(source_key=key)
+    )
+
+    assert result == {"framework_versions": {"sklearn": "1.5.1"}}
+
+
+def test_get_run_manifest_refuses_a_key_not_named_run_manifest_json() -> None:
+    with pytest.raises(ValueError, match="run_manifest.json"):
+        artifact_service.get_run_manifest(
+            RecordingStore(),
+            RunManifestRequest(
+                source_key="drafts/draft-1/runs/run-a/metrics.json"
+            ),
+        )
+
+
+def test_get_run_manifest_refuses_a_malformed_run_key() -> None:
+    with pytest.raises(ValueError, match="well-formed training-run"):
+        artifact_service.get_run_manifest(
+            RecordingStore(),
+            RunManifestRequest(source_key="ds-1/run_manifest.json"),
+        )
+
+
+def test_get_run_manifest_refuses_a_malformed_framework_versions() -> None:
+    key = "drafts/draft-1/runs/run-a/run_manifest.json"
+    store = RecordingStore()
+    store.put_json(key, {"framework_versions": {"sklearn": 1.5}})
+
+    with pytest.raises(ValueError, match="malformed framework_versions"):
+        artifact_service.get_run_manifest(store, RunManifestRequest(source_key=key))

@@ -973,6 +973,15 @@ model ModelDraft {
   /// the draft that produced it.
   savedModelId String?
 
+  /// MODEL-FLOW-011-T01. Null until ModelDraftCleanupAdminService deletes
+  /// this draft's run objects under drafts/{id}/runs/ — the retry-on-
+  /// failure marker DatasetArtifact.objectReclaimedAt already uses on the
+  /// dataset side. Only meaningful once status is ABANDONED: an ACTIVE
+  /// draft the sweep reclaims flips status AND stamps this in the same
+  /// write, so a failed byte-delete leaves the stamp null and the next
+  /// tick retries rather than silently giving up.
+  objectsReclaimedAt DateTime?
+
   createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
   createdById String
   createdAt   DateTime @default(now())
