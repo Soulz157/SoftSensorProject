@@ -181,7 +181,9 @@ export function ImputationDetailPanel({
 }: Props) {
   const label = resolveTagMeta(isolatedTag)?.label || 'Sensor Data'
   const severity = quality ? tagSeverity(quality) : 'clean'
-  const missingRows = quality ? quality.missing + quality.suspect : 0
+  const missingRows = quality
+    ? quality.missing + quality.suspect + quality.frozen
+    : 0
 
   // Toolkit clicks stage a step here and open a confirm dialog; the step is only
   // committed to the pipeline once the user confirms.
@@ -244,7 +246,7 @@ export function ImputationDetailPanel({
           </p>
         </div>
 
-        {quality && severity !== 'clean' && (
+        {quality && (severity !== 'clean' || quality.frozen > 0) && (
           <div className="flex items-center gap-1 rounded-full bg-purple-500/15 px-2.5 py-0.5 text-xs font-medium text-purple-600 dark:text-purple-400">
             <span>Bad Data: {missingRows} rows</span>
             <Popover>
@@ -267,6 +269,7 @@ export function ImputationDetailPanel({
                   detail={{
                     bad: quality.missing,
                     questionable: quality.suspect,
+                    frozen: quality.frozen,
                   }}
                 />
               </PopoverContent>

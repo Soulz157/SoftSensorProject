@@ -1,12 +1,16 @@
 'use client'
 
 import { useCallback, useMemo, useState } from 'react'
-import { useAtom } from 'jotai'
+import { useAtom, useAtomValue } from 'jotai'
 import { badDataByTag, badDataDetailByTag } from '@/lib/data-quality'
 import { chartColorVar, resolveTagMeta } from '@/lib/mock-readings'
 import type { Dataset } from '@/lib/preprocessing'
 import type { BadDataDetail } from '@/app/(default)/data-studio/create/components/bad-data-breakdown'
-import { dwFocusedTagAtom, dwHiddenTagsAtom } from '@/store/dataset-studio'
+import {
+  dwFocusedTagAtom,
+  dwHiddenTagsAtom,
+  dwTagConstantsAtom,
+} from '@/store/dataset-studio'
 
 export interface UseDatasetTagSelectionOptions {
   /**
@@ -34,9 +38,9 @@ export interface UseDatasetTagSelectionResult {
   hidden: Set<string>
   /** The emphasized tag (falls back to the first active/available tag). */
   focusedTag: string[]
-  /** Per-tag unified Bad Data (Bad + Questionable) row count. */
+  /** Per-tag unified Bad Data (Bad + Questionable + Frozen) row count. */
   badByTag: Record<string, number>
-  /** Per-tag Bad/Questionable breakdown for the detail popover. */
+  /** Per-tag Bad/Questionable/Frozen breakdown for the detail popover. */
   badDetailByTag: Record<string, BadDataDetail>
   /** Stable chart color for a tag. */
   colorForTag: (tag: string) => string
@@ -97,8 +101,24 @@ export function useDatasetTagSelection(
         ? [tags[0]]
         : []
 
-  const badByTag = useMemo(() => badDataByTag(dataset), [dataset])
-  const badDetailByTag = useMemo(() => badDataDetailByTag(dataset), [dataset])
+  // Constants overlaid via applyConstantOverlay are flat by construction —
+  // exempt them from freeze detection so they don't show a 100%-frozen pill.
+  // Not read in isolated mode: those callers are outside the Data Studio
+  // wizard and must not inherit its dw* atoms (see the class doc above).
+  const tagConstants = useAtomValue(dwTagConstantsAtom)
+  const ignoreTags = useMemo(
+    () => (isolated ? [] : Object.keys(tagConstants)),
+    [isolated, tagConstants],
+  )
+
+  const badByTag = useMemo(
+    () => badDataByTag(dataset, { ignoreTags }),
+    [dataset, ignoreTags],
+  )
+  const badDetailByTag = useMemo(
+    () => badDataDetailByTag(dataset, { ignoreTags }),
+    [dataset, ignoreTags],
+  )
 
   const colorForTag = useCallback(
     (tag: string) => chartColorVar(resolveTagMeta(tag).chartIndex),

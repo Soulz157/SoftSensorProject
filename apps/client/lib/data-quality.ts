@@ -9,6 +9,7 @@
  * `docs/PLAN.md` §6 — there is no explicit null/missing flag):
  *   - `Bad`         → **Missing** (unusable / null-equivalent)
  *   - `Questionable`→ **Suspect** (present but low-trust)
+ *   - `Good`, unchanged for a long stretch → **Frozen** (see `qualityByTag`)
  */
 import type { Dataset } from '@/lib/preprocessing'
 
@@ -17,6 +18,8 @@ export interface TagQuality {
   good: number
   missing: number
   suspect: number
+  /** Good cells that are part of a qualifying frozen run — see `qualityByTag`. */
+  frozen: number
   missingPct: number
   suspectPct: number
 }
@@ -30,30 +33,154 @@ export interface DatasetQuality {
   suspectPct: number
 }
 
+export interface QualityOptions {
+  /** Tags exempt from freeze detection (e.g. user-entered constants — flat by construction). */
+  ignoreTags?: readonly string[]
+  /** Override the default freeze window (tests). */
+  freezeWindowMs?: number
+}
+
+/** A `Good` value unchanged across this much wall-clock time is frozen. */
+export const FREEZE_WINDOW_MS = 3 * 60 * 60 * 1000
+
+/**
+ * Multiplier on the inferred sample step beyond which a timestamp gap breaks
+ * a freeze run rather than being treated as a normal step. Provisional: PI
+ * summary buckets are not guaranteed perfectly uniform (a `1d` bucket can
+ * cross a DST/month boundary), so this was picked without live `1d`/`10min`
+ * PI deltas to check it against. Widen if real fetches show legitimately
+ * adjacent buckets exceeding it and splitting genuine freezes.
+ */
+export const FREEZE_GAP_FACTOR = 1.5
+
 function pct(part: number, whole: number): number {
   return whole === 0 ? 0 : (part / whole) * 100
 }
 
-/** Per-tag Missing (Bad) / Suspect (Questionable) counts + percentages. */
-export function qualityByTag(ds: Dataset): Record<string, TagQuality> {
+/**
+ * Median gap (ms) between consecutive PARSEABLE row timestamps. A row whose
+ * timestamp does not parse is skipped for this estimate rather than treated
+ * as a 0ms/NaN step — the PI fetch path passes `point.timestamp` through
+ * unnormalised (no fixture pins its format), so one bad row must not zero
+ * out freeze detection for the whole dataset. Returns null only when fewer
+ * than 2 timestamps parse.
+ */
+function inferStepMs(timestamps: (number | null)[]): number | null {
+  const deltas: number[] = []
+  let prev: number | null = null
+  for (const t of timestamps) {
+    if (t === null) continue
+    if (prev !== null) {
+      const d = t - prev
+      if (d > 0) deltas.push(d)
+    }
+    prev = t
+  }
+  if (deltas.length === 0) return null
+  const sorted = [...deltas].sort((a, b) => a - b)
+  const mid = Math.floor(sorted.length / 2)
+  return sorted.length % 2 === 0
+    ? ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2
+    : (sorted[mid] ?? 0)
+}
+
+/**
+ * Per-tag Missing (Bad) / Suspect (Questionable) / Frozen counts + percentages.
+ *
+ * Freezing: a run of consecutive `Good` cells with the exact same value,
+ * covering at least `freezeWindowMs` (default `FREEZE_WINDOW_MS`, 3h) of
+ * wall-clock time — e.g. 3 points at a 1h cadence, or 180 points at 1min.
+ * Every row in a qualifying run counts. A run breaks on a non-Good cell, a
+ * missing cell, a value change, an unparseable timestamp, or a timestamp gap
+ * beyond `FREEZE_GAP_FACTOR × stepMs` (a real gap in the data is not evidence
+ * of a freeze). `stepMs` is inferred from the dataset's own timestamps, never
+ * from a wizard atom, so this stays correct for CSV uploads and any caller
+ * outside the Data Studio wizard. Tags in `ignoreTags` always report 0.
+ */
+export function qualityByTag(
+  ds: Dataset,
+  options: QualityOptions = {},
+): Record<string, TagQuality> {
+  const ignoreTags = new Set(options.ignoreTags ?? [])
+  const freezeWindowMs = options.freezeWindowMs ?? FREEZE_WINDOW_MS
+
+  const timestamps = ds.rows.map(row => {
+    const t = Date.parse(row.timestamp)
+    return Number.isNaN(t) ? null : t
+  })
+  const stepMs = inferStepMs(timestamps)
+
   const out: Record<string, TagQuality> = {}
   for (const tag of ds.tags) {
     let good = 0
     let missing = 0
     let suspect = 0
-    for (const row of ds.rows) {
-      const cell = row.cells[tag]
-      if (!cell) continue
+    let frozen = 0
+
+    const canFreeze = stepMs !== null && !ignoreTags.has(tag)
+    let runStart = -1
+    let runValue: number | null = null
+
+    const closeRun = (endIdx: number) => {
+      if (runStart === -1 || runValue === null || stepMs === null) return
+      const runLength = endIdx - runStart + 1
+      if (runLength < 2) return
+      const startTs = timestamps[runStart] ?? null
+      const endTs = timestamps[endIdx] ?? null
+      if (startTs === null || endTs === null) return
+      const coverage = endTs - startTs + stepMs
+      if (coverage >= freezeWindowMs) frozen += runLength
+    }
+
+    for (let i = 0; i < ds.rows.length; i++) {
+      const cell = ds.rows[i]!.cells[tag]
+      if (!cell) {
+        if (canFreeze) {
+          closeRun(i - 1)
+          runStart = -1
+          runValue = null
+        }
+        continue
+      }
+
       if (cell.status === 'Bad') missing++
       else if (cell.status === 'Questionable') suspect++
       else good++
+
+      if (!canFreeze) continue
+
+      const ts = timestamps[i] ?? null
+      const isGoodCell = cell.status === 'Good' && ts !== null
+
+      let continues = false
+      if (isGoodCell && runStart !== -1 && runValue === cell.value) {
+        const prevTs = timestamps[i - 1] ?? null
+        if (prevTs !== null && ts - prevTs <= FREEZE_GAP_FACTOR * stepMs) {
+          continues = true
+        }
+      }
+
+      if (!continues) {
+        closeRun(i - 1)
+        if (isGoodCell) {
+          runStart = i
+          runValue = cell.value
+        } else {
+          runStart = -1
+          runValue = null
+        }
+      }
+
+      if (i === ds.rows.length - 1) closeRun(i)
     }
+
     const total = good + missing + suspect
     out[tag] = {
       total,
       good,
       missing,
       suspect,
+      frozen,
       missingPct: pct(missing, total),
       suspectPct: pct(suspect, total),
     }
@@ -61,27 +188,50 @@ export function qualityByTag(ds: Dataset): Record<string, TagQuality> {
   return out
 }
 
-/** Unified per-tag "Bad Data" row count = Bad (missing) + Questionable (suspect). */
-export function badDataByTag(ds: Dataset): Record<string, number> {
-  const q = qualityByTag(ds)
+/** Per-tag Frozen row count — see `qualityByTag`. */
+export function frozenByTag(
+  ds: Dataset,
+  options: QualityOptions = {},
+): Record<string, number> {
+  const q = qualityByTag(ds, options)
+  const out: Record<string, number> = {}
+  for (const tag of ds.tags) out[tag] = q[tag]?.frozen ?? 0
+  return out
+}
+
+/** Unified per-tag "Bad Data" row count = Bad (missing) + Questionable (suspect) + Frozen. */
+export function badDataByTag(
+  ds: Dataset,
+  options: QualityOptions = {},
+): Record<string, number> {
+  const q = qualityByTag(ds, options)
   const out: Record<string, number> = {}
   for (const tag of ds.tags) {
     const t = q[tag]
-    out[tag] = t ? t.missing + t.suspect : 0
+    out[tag] = t ? t.missing + t.suspect + t.frozen : 0
   }
   return out
 }
 
 /** Per-tag Bad Data breakdown for the sidebar detail popover:
- *  bad = Bad (null) cells, questionable = Questionable (missing-value) cells. */
+ *  bad = Bad (null) cells, questionable = Questionable (missing-value) cells,
+ *  frozen = Good cells stuck at one value for `>= freezeWindowMs`. */
 export function badDataDetailByTag(
   ds: Dataset,
-): Record<string, { bad: number; questionable: number }> {
-  const q = qualityByTag(ds)
-  const out: Record<string, { bad: number; questionable: number }> = {}
+  options: QualityOptions = {},
+): Record<string, { bad: number; questionable: number; frozen: number }> {
+  const q = qualityByTag(ds, options)
+  const out: Record<
+    string,
+    { bad: number; questionable: number; frozen: number }
+  > = {}
   for (const tag of ds.tags) {
     const t = q[tag]
-    out[tag] = { bad: t?.missing ?? 0, questionable: t?.suspect ?? 0 }
+    out[tag] = {
+      bad: t?.missing ?? 0,
+      questionable: t?.suspect ?? 0,
+      frozen: t?.frozen ?? 0,
+    }
   }
   return out
 }

@@ -40,6 +40,7 @@ export function useImputationTagList(
           good: 0,
           missing: 0,
           suspect: 0,
+          frozen: 0,
           missingPct: 0,
           suspectPct: 0,
         }

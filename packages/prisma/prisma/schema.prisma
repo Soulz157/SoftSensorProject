@@ -482,7 +482,7 @@ model DatasetVersion {
   /// point at; DS-LAKE-009-T07's migration decides whether/how to backfill
   /// it from the shared legacy id the backfill already gave every such row.
   artifactId String?
-  artifact   DatasetArtifact? @relation(fields: [artifactId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  artifact   DatasetArtifact? @relation(fields: [artifactId], references: [id], onDelete: SetNull, onUpdate: NoAction)
 
   /// sha256 of the artifact's stored Parquet bytes, copied at Save time —
   /// not re-derived from `artifact.checksum` on every read.
@@ -568,9 +568,22 @@ model DatasetArtifact {
   /// re-run is a new chain rather than a mutation of the previous one.
   runId String
 
-  /// Lineage. Null for a BRONZE root. NoAction matches DatasetVersion.parent.
+  /// Lineage. Null for a BRONZE root. SetNull (not Cascade): adoption at
+  /// Save only sets datasetId on the FINAL artifact and the lineage ROOT
+  /// (dataset-draft.authorized.service.ts, saveDraftAsDatasetService) —
+  /// intermediate SILVER/GOLD stay draft-owned forever. So deleting a
+  /// Dataset cascade-deletes BRONZE while a still-alive, still-draft-owned
+  /// SILVER row keeps pointing at it via parentArtifactId; NoAction made
+  /// that delete fail every time. Cascade would be worse: it would delete
+  /// that live SILVER/GOLD row out from under its own DatasetDraft, which
+  /// may still be in active use and has no FK relationship to this Dataset
+  /// at all (DatasetDraft carries only unenforced savedDatasetId/
+  /// editingDatasetId strings, never a real FK). SetNull is correct: BRONZE
+  /// is gone, SILVER survives with a null parent, exactly matching the
+  /// "adoption is a pointer, not a copy" contract in the datasetId/draftId
+  /// comment above.
   parentArtifactId String?
-  parent           DatasetArtifact?  @relation("ArtifactLineage", fields: [parentArtifactId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  parent           DatasetArtifact?  @relation("ArtifactLineage", fields: [parentArtifactId], references: [id], onDelete: SetNull, onUpdate: NoAction)
   children         DatasetArtifact[] @relation("ArtifactLineage")
 
   type DatasetArtifactType

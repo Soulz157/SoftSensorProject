@@ -407,7 +407,7 @@ export function DatasetTagSidebar() {
                                               onClick={e => e.stopPropagation()}
                                               aria-label={`Bad data detail for ${tag}`}
                                               className="flex items-center gap-1 rounded-full bg-purple-100 px-1.5 py-0.5 text-[10px] font-medium text-purple-700 dark:bg-purple-500/20 dark:text-purple-400"
-                                              title={`${badCount} Bad/Questionable rows`}
+                                              title={`${badCount} Bad/Questionable/Frozen rows`}
                                             >
                                               {badCount}
                                               <Info className="h-3 w-3 opacity-70" />

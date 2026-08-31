@@ -3,6 +3,7 @@
 export interface BadDataDetail {
   bad: number
   questionable: number
+  frozen: number
   reasons?: Array<{ label: string; count: number }>
 }
 
@@ -39,10 +40,14 @@ export function BadDataBreakdown({ tag, badCount, detail }: Props) {
 
       {detail ? (
         <>
-          <div className="grid grid-cols-2 gap-2 text-xs">
+          <div className="grid grid-cols-3 gap-2 text-xs">
             <Tile label="Missing" value={detail.bad} hint="rows" />
             <Tile label="Null" value={detail.questionable} hint="rows" />
+            <Tile label="Frozen" value={detail.frozen} hint="rows" />
           </div>
+          <p className="text-[10px] text-muted-foreground">
+            Frozen = value unchanged for 3h or more.
+          </p>
 
           {detail.reasons && detail.reasons.length > 0 && (
             <div className="space-y-1 border-t border-border pt-2">
@@ -72,8 +77,8 @@ export function BadDataBreakdown({ tag, badCount, detail }: Props) {
           <span className="font-mono font-semibold text-foreground">
             {badCount}
           </span>{' '}
-          row{badCount === 1 ? '' : 's'} flagged as Bad or Questionable.
-          Detailed breakdown not available for this tag.
+          row{badCount === 1 ? '' : 's'} flagged as Bad, Questionable, or
+          Frozen. Detailed breakdown not available for this tag.
         </p>
       )}
     </div>

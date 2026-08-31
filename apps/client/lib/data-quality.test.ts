@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { Dataset } from './preprocessing'
+import type { Cell, DataRow, Dataset } from './preprocessing'
 import {
   histogramBins,
   tagBoxplotStats,
@@ -7,6 +7,9 @@ import {
   pearsonMatrix,
   kdeEstimate,
   densityToCount,
+  frozenByTag,
+  badDataByTag,
+  badDataDetailByTag,
 } from './data-quality'
 
 function dataset(values: Record<string, (number | null)[]>): Dataset {
@@ -28,6 +31,159 @@ function dataset(values: Record<string, (number | null)[]>): Dataset {
   }))
   return { tags, rows }
 }
+
+const FREEZE_TAG = 'FT'
+const BASE_MS = Date.UTC(2026, 0, 1)
+const hoursIso = (h: number) => new Date(BASE_MS + h * 3_600_000).toISOString()
+const minutesIso = (m: number) => new Date(BASE_MS + m * 60_000).toISOString()
+
+interface FreezePoint {
+  ts: string
+  value?: number
+  status?: 'Good' | 'Bad' | 'Questionable'
+  missing?: boolean
+}
+
+function freezeDataset(points: FreezePoint[]): Dataset {
+  const rows: DataRow[] = points.map(p => {
+    const cells: Record<string, Cell> = p.missing
+      ? {}
+      : { [FREEZE_TAG]: { value: p.value ?? 0, status: p.status ?? 'Good' } }
+    return { timestamp: p.ts, cells }
+  })
+  return { tags: [FREEZE_TAG], rows }
+}
+
+describe('frozenByTag', () => {
+  it('flags 3 identical Good cells 1h apart as frozen (coverage = 3h)', () => {
+    const ds = freezeDataset([
+      { ts: hoursIso(0), value: 100 },
+      { ts: hoursIso(1), value: 100 },
+      { ts: hoursIso(2), value: 100 },
+    ])
+    expect(frozenByTag(ds)[FREEZE_TAG]).toBe(3)
+  })
+
+  it('does not flag 2 identical Good cells 1h apart (coverage = 2h)', () => {
+    const ds = freezeDataset([
+      { ts: hoursIso(0), value: 100 },
+      { ts: hoursIso(1), value: 100 },
+    ])
+    expect(frozenByTag(ds)[FREEZE_TAG]).toBe(0)
+  })
+
+  it('flags 180 identical Good cells 1min apart (coverage = 3h)', () => {
+    const points = Array.from({ length: 180 }, (_, i) => ({
+      ts: minutesIso(i),
+      value: 100,
+    }))
+    expect(frozenByTag(freezeDataset(points))[FREEZE_TAG]).toBe(180)
+  })
+
+  it('does not flag 179 identical Good cells 1min apart (coverage just under 3h)', () => {
+    const points = Array.from({ length: 179 }, (_, i) => ({
+      ts: minutesIso(i),
+      value: 100,
+    }))
+    expect(frozenByTag(freezeDataset(points))[FREEZE_TAG]).toBe(0)
+  })
+
+  it('breaks a run on a Bad cell, so a would-qualify run split in two does not count', () => {
+    const ds = freezeDataset([
+      { ts: hoursIso(0), value: 100 },
+      { ts: hoursIso(1), value: 100 },
+      { ts: hoursIso(2), value: 0, status: 'Bad' },
+      { ts: hoursIso(3), value: 100 },
+      { ts: hoursIso(4), value: 100 },
+    ])
+    expect(frozenByTag(ds)[FREEZE_TAG]).toBe(0)
+  })
+
+  it('never flags a run of Bad cells (freeze only scans Good cells)', () => {
+    const points = Array.from({ length: 5 }, (_, i) => ({
+      ts: hoursIso(i),
+      value: 0,
+      status: 'Bad' as const,
+    }))
+    expect(frozenByTag(freezeDataset(points))[FREEZE_TAG]).toBe(0)
+  })
+
+  it('breaks a run across a large timestamp gap, even with identical values either side', () => {
+    // Without a gap check this would look like one continuous 4-point run
+    // (coverage 15h, well past the 3h window); the gap must split it into
+    // two 2-point runs, each below the window on its own.
+    const ds = freezeDataset([
+      { ts: hoursIso(0), value: 100 },
+      { ts: hoursIso(1), value: 100 },
+      { ts: hoursIso(13), value: 100 },
+      { ts: hoursIso(14), value: 100 },
+    ])
+    expect(frozenByTag(ds)[FREEZE_TAG]).toBe(0)
+  })
+
+  it('counts both runs when a tag goes flat, changes value, then goes flat again', () => {
+    const points = [
+      ...Array.from({ length: 5 }, (_, i) => ({ ts: hoursIso(i), value: 100 })),
+      ...Array.from({ length: 5 }, (_, i) => ({
+        ts: hoursIso(i + 5),
+        value: 200,
+      })),
+    ]
+    expect(frozenByTag(freezeDataset(points))[FREEZE_TAG]).toBe(10)
+  })
+
+  it('exempts a tag listed in ignoreTags', () => {
+    const ds = freezeDataset([
+      { ts: hoursIso(0), value: 100 },
+      { ts: hoursIso(1), value: 100 },
+      { ts: hoursIso(2), value: 100 },
+    ])
+    expect(frozenByTag(ds, { ignoreTags: [FREEZE_TAG] })[FREEZE_TAG]).toBe(0)
+  })
+
+  it('reports 0 when every timestamp is unparseable', () => {
+    const ds = freezeDataset([
+      { ts: 'not-a-timestamp', value: 100 },
+      { ts: 'still-not-a-timestamp', value: 100 },
+      { ts: 'also-not-a-timestamp', value: 100 },
+    ])
+    expect(frozenByTag(ds)[FREEZE_TAG]).toBe(0)
+  })
+
+  it('splits a run at a single unparseable-timestamp row instead of zeroing out the whole tag', () => {
+    const ds = freezeDataset([
+      { ts: hoursIso(0), value: 100 },
+      { ts: hoursIso(1), value: 100 },
+      { ts: hoursIso(2), value: 100 },
+      { ts: 'not-a-timestamp', value: 100 },
+      { ts: hoursIso(4), value: 100 },
+      { ts: hoursIso(5), value: 100 },
+      { ts: hoursIso(6), value: 100 },
+    ])
+    // 3 before the bad row (coverage 3h) + 3 after (coverage 3h) = 6.
+    expect(frozenByTag(ds)[FREEZE_TAG]).toBe(6)
+  })
+})
+
+describe('badDataDetailByTag', () => {
+  it('sums to exactly badDataByTag (Missing + Null + Frozen tiles match the pill)', () => {
+    const ds = freezeDataset([
+      { ts: hoursIso(0), value: 0, status: 'Bad' },
+      { ts: hoursIso(1), value: 0, status: 'Bad' },
+      { ts: hoursIso(2), value: 5, status: 'Questionable' },
+      { ts: hoursIso(3), value: 100 },
+      { ts: hoursIso(4), value: 100 },
+      { ts: hoursIso(5), value: 100 },
+    ])
+    const detail = badDataDetailByTag(ds)[FREEZE_TAG]!
+    const pill = badDataByTag(ds)[FREEZE_TAG]
+
+    expect(detail.bad).toBe(2)
+    expect(detail.questionable).toBe(1)
+    expect(detail.frozen).toBe(3)
+    expect(detail.bad + detail.questionable + detail.frozen).toBe(pill)
+  })
+})
 
 describe('histogramBins', () => {
   it('bins Good values into equal-width buckets spanning [min, max]', () => {

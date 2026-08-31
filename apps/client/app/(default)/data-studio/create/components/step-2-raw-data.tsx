@@ -37,6 +37,7 @@ import {
   dwSelectedSourcesAtom,
   dwSelectedTagsAtom,
   dwSourceFetchConfigsAtom,
+  dwTagConstantsAtom,
 } from '@/store/dataset-studio'
 import type { CustomInterval, FetchPeriod } from '@/store/model-pipeline'
 import { resolveInterval } from '@/lib/dataset-fetch'
@@ -85,6 +86,8 @@ export function Step2RawData({ nav }: Props) {
   // The tags the user checked in Step 1 (dwSelectedTagsAtom) are exactly what
   // we fetch — no separate fetch-subset sentinel.
   const fetchTags = useAtomValue(dwSelectedTagsAtom)
+  const tagConstants = useAtomValue(dwTagConstantsAtom)
+  const constantTags = useMemo(() => Object.keys(tagConstants), [tagConstants])
 
   const range = nav.timeRange
   const raw = useAtomValue(dwRawDatasetAtom)
@@ -499,7 +502,10 @@ export function Step2RawData({ nav }: Props) {
                 {preview.dataset.rows.length} sample row
                 {preview.dataset.rows.length === 1 ? '' : 's'}
               </p>
-              <RawReadingsTable dataset={preview.dataset} />
+              <RawReadingsTable
+                dataset={preview.dataset}
+                ignoreTags={constantTags}
+              />
             </div>
           ) : null}
         </div>
@@ -545,7 +551,7 @@ export function Step2RawData({ nav }: Props) {
                 {raw.rows.length === 1 ? '' : 's'} from{' '}
                 {fetch.detail.completedTags}/{fetch.detail.totalTags} tags
               </p>
-              <RawReadingsTable dataset={raw} />
+              <RawReadingsTable dataset={raw} ignoreTags={constantTags} />
             </div>
           )}
         </div>
@@ -577,7 +583,7 @@ export function Step2RawData({ nav }: Props) {
           <Progress value={fetch.progress} />
           {/* Show partial rows as batches land; skeleton only before the first. */}
           {raw.rows.length > 0 ? (
-            <RawReadingsTable dataset={raw} />
+            <RawReadingsTable dataset={raw} ignoreTags={constantTags} />
           ) : (
             <div className="space-y-2">
               {Array.from({ length: 4 }).map((_, i) => (
