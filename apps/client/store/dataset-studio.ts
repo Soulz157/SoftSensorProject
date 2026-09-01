@@ -762,6 +762,20 @@ export const initDatasetWizardForEditAtom = atom(
     set(dwDraftIdAtom, null)
     set(dwDraftArtifactIdAtom, null)
     set(dwEditRootValidationRowCountAtom, null)
+    // DS-LAKE-027. The same "THE GROUP THAT CAUSED THE DRIFT" block both
+    // sibling initializers already carry, which this one never got. A
+    // create -> edit switch in the same tab is an SPA nav, not a remount, so
+    // a prior session's `dwFeaturePreviewSampleStateAtom: 'error'` survived
+    // into the edit session and rendered Step 3's "Preview sample
+    // unavailable" before a single request had been made. The preview sample
+    // itself matters for the same reason it does over there: it, not
+    // `dwSelectedTagsAtom`, is what the sidebar and every chart read their
+    // tag list from.
+    set(dwDraftGoldArtifactIdAtom, null)
+    set(dwBronzeWarmStateAtom, 'idle')
+    set(dwDraftSyncStateAtom, { status: 'idle' })
+    set(dwFeaturePreviewSampleAtom, brandBoundedSample({ tags: [], rows: [] }))
+    set(dwFeaturePreviewSampleStateAtom, 'idle')
 
     set(dwNameAtom, dataset.name)
     set(dwDescriptionAtom, dataset.description ?? '')

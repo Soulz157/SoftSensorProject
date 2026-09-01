@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { createStore } from 'jotai'
 import {
   initDatasetWizardAtom,
+  initDatasetWizardForEditAtom,
   dwFeaturePreviewSampleAtom,
   dwFeaturePreviewSampleStateAtom,
   dwFeaturedDatasetAtom,
@@ -15,6 +16,7 @@ import {
   dwSelectedTagKeysAtom,
 } from '@/store/dataset-studio'
 import { brandBoundedSample } from '@/lib/preprocessing'
+import { EMPTY_PIPELINE_CONFIG } from '@/lib/pipeline-config'
 
 /**
  * Bug: editing a dataset, then opening Create New Dataset, showed the prior
@@ -94,6 +96,59 @@ describe('initDatasetWizardAtom clears the draft-first server state group', () =
 
     expect(store.get(dwValueClipAtom)).toEqual({})
     expect(store.get(dwSelectedTagKeysAtom)).toEqual(new Set())
+  })
+
+  it('DS-LAKE-027: initDatasetWizardForEditAtom clears the same group', () => {
+    // The third initializer had the same gap, with a worse symptom: a
+    // create -> edit switch in one tab is an SPA nav, so a prior session's
+    // `'error'` preview state survived and rendered Step 3's "Preview sample
+    // unavailable" before any request was made.
+    const store = createStore()
+    store.set(
+      dwFeaturePreviewSampleAtom,
+      brandBoundedSample({
+        tags: ['TI-101'],
+        rows: [
+          {
+            timestamp: '2026-01-01T00:00:00Z',
+            cells: { 'TI-101': { value: 1, status: 'Good' } },
+          },
+        ],
+      }),
+    )
+    store.set(dwFeaturePreviewSampleStateAtom, 'error')
+    store.set(dwDraftGoldArtifactIdAtom, 'gold-old')
+    store.set(dwBronzeWarmStateAtom, 'materializing')
+    store.set(dwDraftSyncStateAtom, { status: 'error' })
+
+    store.set(initDatasetWizardForEditAtom, {
+      dataset: {
+        id: 'ds-1',
+        name: 'Edited',
+        description: null,
+        workspaceId: 'ws-2',
+        sourceIds: [],
+        tags: ['TI-200'],
+        pipelineConfig: EMPTY_PIPELINE_CONFIG,
+        fileUrl: null,
+        rowCount: 0,
+        missingPct: 0,
+        currentVersionId: null,
+        currentArtifactId: null,
+        currentArtifactType: null,
+        adoptedBronzeArtifactId: null,
+        createdAt: '2026-01-01T00:00:00Z',
+        updatedAt: '2026-01-01T00:00:00Z',
+        createdBy: 'user-1',
+      },
+      sources: [],
+    })
+
+    expect(store.get(dwFeaturePreviewSampleAtom).tags).toEqual([])
+    expect(store.get(dwFeaturePreviewSampleStateAtom)).toBe('idle')
+    expect(store.get(dwDraftGoldArtifactIdAtom)).toBeNull()
+    expect(store.get(dwBronzeWarmStateAtom)).toBe('idle')
+    expect(store.get(dwDraftSyncStateAtom)).toEqual({ status: 'idle' })
   })
 
   it('reproduces the reported symptom: a fresh Create no longer shows the prior edit session tags', () => {

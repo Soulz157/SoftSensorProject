@@ -70,6 +70,15 @@ export const CreateTrainingRunSchema = z
     trainTestSplit: z.coerce.number().min(0.5).max(0.95).optional(),
 
     seed: z.coerce.number().int().min(1).max(2147483646).optional(),
+
+    // MODEL-FLOW-014-T06. The tags the Split Distribution panel was
+    // showing at Start Training — sent so the frozen `splitStats` sidecar
+    // (ModelTrainingRun.splitStats) can match what the user actually saw,
+    // not an approximation. Optional: omitted, `launchDraftRun` freezes
+    // against `[targetY]` alone. `.strict()` above means this field MUST
+    // exist here before a caller can send it — added deliberately, not
+    // discovered by a 400 the day the client starts including it.
+    splitStatsTags: z.array(z.string()).max(20).optional(),
   })
   .strict();
 

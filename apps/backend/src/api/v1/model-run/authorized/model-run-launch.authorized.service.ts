@@ -12,6 +12,8 @@ import {
   fetchArtifactMetadata,
   runPredictions,
 } from '@/lib/python-preprocess-client';
+import { postToPython, PYTHON_TIMEOUT } from '@/lib/python-client';
+import { PythonSplitStatsSchema } from '../../dataset-version/authorized/dto/dataset-version.authorized.dto';
 import { AppException } from '@softsensor/common';
 import { TrainningContainerAuthorizedService } from '../../trainning-container/authorized/trainning-container.authorized.service';
 
@@ -166,6 +168,69 @@ export class ModelRunLaunchAuthorizedService {
         },
       });
     });
+  }
+
+  /**
+   * MODEL-FLOW-014-T06. Freezes the Split Distribution panel's own record
+   * of what the user was looking at when they pressed Start Training —
+   * fire-and-forget, mirroring `trackSpawn`'s own shape, called AFTER the
+   * run row exists (never inside `buildRunData`, which sits in the Start
+   * Training request path: `/split-stats` runs at `PYTHON_TIMEOUT.metadata`
+   * = 300,000ms, and a second full-artifact read there would make pressing
+   * Start Training wait on it).
+   *
+   * Calls `postToPython` DIRECTLY, not `getArtifactSplitStatsService` —
+   * that method opens with `assertDatasetAccess(datasetId, user)`, and this
+   * helper has no `user`: authorization already happened when the run was
+   * created (`assertDraftWritable`/`assertDraftAccess` above), and
+   * re-checking it here would be re-authorizing a decision already made
+   * against a background call that has nothing to check it with.
+   *
+   * `splitRatio`/`sampleRows`/`outlierCap` are pinned to what
+   * `getArtifactSplitStatsService` sends when the client omits them
+   * (server defaults) — the panel's own default request never sends
+   * `sampleRows`/`outlierCap` either, so the two stay in sync by
+   * construction, not by copying a second set of constants.
+   *
+   * A failure logs and leaves `splitStats` null — structurally incapable of
+   * failing the run itself, since this fires after the row is already
+   * durable and the transaction that created it has already committed.
+   */
+  private freezeSplitStats(
+    runId: string,
+    objectKey: string,
+    targetY: string,
+    splitRatio: number,
+    tags: string[],
+  ): void {
+    void postToPython(
+      '/v1/preprocess/split-stats',
+      {
+        source_key: objectKey,
+        tags,
+        target_y: targetY,
+        split_ratio: splitRatio,
+      },
+      PYTHON_TIMEOUT.metadata,
+    )
+      .then(async (raw) => {
+        // Same convention `getArtifactSplitStatsService` uses — parsed, not
+        // cast, so a connector shape change is a loud failure here too,
+        // not a silently wrong sidecar.
+        const splitStats = PythonSplitStatsSchema.parse(raw);
+        await this.prisma.modelTrainingRun.update({
+          where: { id: runId },
+          data: { splitStats },
+        });
+      })
+      .catch((err) => {
+        // Never fails the run — this fires well after the run row and the
+        // spawned container are both already real. A run whose split
+        // distribution was never recorded reads as "not recorded for this
+        // run" (the honest-legacy-null pattern), same as any legacy row.
+        const reason = err instanceof Error ? err.message : String(err);
+        this.log.warn(`freezeSplitStats failed for run ${runId}: ${reason}`);
+      });
   }
 
   // NOTE: this method and its three siblings below (cancelRunService,
@@ -327,6 +392,21 @@ export class ModelRunLaunchAuthorizedService {
     });
 
     this.trackSpawn(run.id, token);
+
+    // MODEL-FLOW-014-T06. Single-run launches only — a candidate run shares
+    // its split with every other candidate in the same job, so freezing per
+    // candidate would be N redundant artifact reads for one identical
+    // answer; a candidate's provenance belongs to its job, not this column.
+    if (!candidateJobId) {
+      this.freezeSplitStats(
+        run.id,
+        runData.goldObjectKey,
+        runData.targetY,
+        runData.splitSpec.ratio,
+        dto.splitStatsTags ?? [dto.targetY],
+      );
+    }
+
     return run;
   }
 

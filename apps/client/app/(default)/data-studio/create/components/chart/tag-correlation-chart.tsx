@@ -213,7 +213,7 @@ export function TagCorrelationChart({ data, status, threshold = 0.8 }: Props) {
       </div>
 
       {top.length > 0 ? (
-        <ScrollArea className="h-90 w-full rounded-md pr-4">
+        <ScrollArea className="w-full rounded-md [&>[data-radix-scroll-area-viewport]]:max-h-90">
           <div className="space-y-1.5 p-2">
             {top.map(pair => {
               const { bg, fg } = correlationColors(pair.r)

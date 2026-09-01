@@ -16,6 +16,9 @@ export function useArtifactCorrelation(
   artifactId: string | null,
   tags: string[],
   topK?: number,
+  /** DS-LAKE-026. Optional — see `useArtifactHistogram`'s own doc comment
+   * for why the compare modal needs this and the wizard's callers do not. */
+  sampleRows?: number,
 ) {
   const [correlation, setCorrelation] = useState<DraftCorrelationResult | null>(
     null,
@@ -43,7 +46,11 @@ export function useArtifactCorrelation(
         const res = await datasetArtifactService.correlation(
           datasetId,
           artifactId,
-          { tags: tagsKey.split(','), ...(topK !== undefined && { topK }) },
+          {
+            tags: tagsKey.split(','),
+            ...(topK !== undefined && { topK }),
+            ...(sampleRows && { sampleRows }),
+          },
           ac.signal,
         )
         if (tokenRef.current !== token) return
@@ -58,7 +65,7 @@ export function useArtifactCorrelation(
     })()
 
     return () => ac.abort()
-  }, [datasetId, artifactId, tagsKey, topK])
+  }, [datasetId, artifactId, tagsKey, topK, sampleRows])
 
   return { correlation, loading }
 }

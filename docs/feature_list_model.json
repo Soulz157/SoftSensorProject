@@ -2,10 +2,10 @@
   "project": "Model Serving & Deployment",
   "version": "0.1.0",
   "description": "Serve a saved Model over HTTP for synchronous and batch prediction, promote and roll back versions without rebuilding an image, and trigger retraining as a job. Begins where MODEL-FLOW ends: at a committed Model row. This ledger owns nothing before Save Model.",
-  "status": "not_started",
-  "progress": 0,
-  "progress_note": "Written 2026-08-24 from the MODEL-FLOW ledger alone, NOT from a code read. Every finding below is marked UNVERIFIED unless stated otherwise, and MODEL-SERVE-000 exists to replace them with facts before anything is built. Precedent for taking that seriously: MODEL-FLOW-000's own re-audit found five of its seven tasks describing code that was already correct, and one task (T03) whose premise was inverted against the tree.",
-  "upstream": "MODEL-FLOW ledger — this one assumes MODEL-FLOW-007 (Save Model) has landed. It has NOT: MODEL-FLOW-007 is pending, behind -004 (pending), -005 (blocked) and -006 (pending). Nothing here can be verified end to end until a Model row can be created by the wizard at all.",
+  "status": "in_progress",
+  "progress": 12,
+  "progress_note": "CORRECTED 2026-09-01. ORIGINAL, PRESERVED: 'Written 2026-08-24 from the MODEL-FLOW ledger alone, NOT from a code read. Every finding below is marked UNVERIFIED unless stated otherwise, and MODEL-SERVE-000 exists to replace them with facts before anything is built. Precedent for taking that seriously: MODEL-FLOW-000's own re-audit found five of its seven tasks describing code that was already correct, and one task (T03) whose premise was inverted against the tree.' MODEL-SERVE-000 is now complete: re-read against the tree, live Postgres, and live MinIO on 2026-09-01. The precedent repeated exactly — this ledger's two highest-severity findings (the T03 'three-hop chain to feature_spec.json' and the T07 'nothing pins or protects the artifact') were both wrong in the direction of overstating the gap, and a new, correct highest-severity finding (the empty-`scaling`-array default trap) was found in their place. MODEL-SERVE-001 through -007 remain unstarted; this ledger's progress (12%) reflects 1 of 8 features (MODEL-SERVE-000) complete.",
+  "upstream": "CORRECTED 2026-09-01, READ FROM docs/feature_list.json RATHER THAN ASSUMED. ORIGINAL CLAIM: 'MODEL-FLOW ledger — this one assumes MODEL-FLOW-007 (Save Model) has landed. It has NOT: MODEL-FLOW-007 is pending, behind -004 (pending), -005 (blocked) and -006 (pending). Nothing here can be verified end to end until a Model row can be created by the wizard at all.' ACTUAL STATUS: MODEL-FLOW-007 (Save Model) is completed (100%). MODEL-FLOW-004 (Evaluation reads real predictions) is in_progress 90 with all 5 tasks completed. MODEL-FLOW-005 (Fine-Tuning) is in_progress 85 with all 8 tasks completed — decisions.fine_tuning_undefined resolved 2026-08-25. MODEL-FLOW-006 is in_progress 95. MODEL-FLOW-011 (ModelDraft Lifecycle Reclaim, including T04 orphaned-RUNNING reconciliation and T05 never-reclaim-an-adopted-run) is completed 100%. A Model row CAN be created by the wizard today; this ledger's blockers were stale, not real.",
 
   "decisions": {
     "training_and_serving_are_separate_planes": {
@@ -25,11 +25,12 @@
       }
     },
     "retrain_is_blocked_on_the_same_definition_as_fine_tuning": {
-      "note": "See MODEL-FLOW decisions.fine_tuning_undefined and retrain_and_fine_tuning_are_one_question. MODEL-SERVE-004 is blocked on that decision, not on engineering. Recording it as its own blocked feature rather than as work is deliberate: sizing it as buildable would understate it exactly the way sizing lstm/gru as a build_model branch would have (MODEL-FLOW-009's own blocked_on says so)."
+      "note": "RESOLVED 2026-09-01 BY TRANSCRIPTION (MODEL-SERVE-000-T05 / upstream re-read). ORIGINAL, PRESERVED: 'See MODEL-FLOW decisions.fine_tuning_undefined and retrain_and_fine_tuning_are_one_question. MODEL-SERVE-004 is blocked on that decision, not on engineering... sizing it as buildable would understate it exactly the way sizing lstm/gru as a build_model branch would have.'\n\nUpstream docs/feature_list.json decisions.fine_tuning_undefined is RESOLVED (2026-08-25, user decision), transcribed here verbatim as retrain_and_fine_tuning_are_one_question requires: \"'fine-tuning' = a hyperparameter search — one algorithm, one artifact, one train/test split, N hyperparameter sets tried in sequence, best kept by RMSE (not R², see MODEL-FLOW-005's own implementation note for why). Not fine-tuning in the transfer-learning sense, and not a retrain on different/widened data — that reading was explicitly considered and rejected.\" MODEL-FLOW-005 was built on this definition 2026-08-25 and all 8 of its tasks are completed. The upstream note explicitly states this does NOT auto-unblock MODEL-SERVE-004 — 'whoever picks it up applies this same answer there and updates that ledger's own decision' — which this transcription does. MODEL-SERVE-004's status is flipped blocked -> pending below; POST /retrain now means: spawn the existing trainer container (per decisions.training_and_serving_are_separate_planes) to run a hyperparameter search over the SAME artifact/split the incumbent version used, best candidate kept by RMSE, landing as a new STAGING ModelVersion. No engineering has been done against this — only the block is lifted."
     },
     "serving_host_undecided": {
-      "open": true,
-      "note": "Training today spawns containers against a Docker daemon and tracks them with an in-memory watch() (trainning-container.authorized.service.ts). That mechanism is known-unsuitable for a long-running service — MODEL-FLOW-003-V01 observed a run stranded at RUNNING forever because a nest --watch restart killed the tracker, and MODEL-FLOW-011-T04 was opened to reconcile it. A serving process outliving the Node process that spawned it is the NORMAL case, not the exception, so the same design would be permanently wrong rather than occasionally.\n\nOPTIONS, not yet chosen: (a) keep the Docker-daemon spawn and give serving its own supervisor with boot reconciliation; (b) run serving as an ordinary long-lived service in the same compose/orchestrator as the backend, spawned by nothing; (c) an external orchestrator. (b) is the smallest and is the default unless someone needs per-model isolation. DECIDE BEFORE MODEL-SERVE-002 — the answer changes what that feature builds, not just where it runs."
+      "open_for_MODEL_SERVE_002": true,
+      "closed_for_MODEL_SERVE_006": true,
+      "note": "ORIGINAL NOTE, PRESERVED: 'Training today spawns containers against a Docker daemon and tracks them with an in-memory watch() (trainning-container.authorized.service.ts). That mechanism is known-unsuitable for a long-running service — MODEL-FLOW-003-V01 observed a run stranded at RUNNING forever because a nest --watch restart killed the tracker, and MODEL-FLOW-011-T04 was opened to reconcile it... OPTIONS, not yet chosen: (a) keep the Docker-daemon spawn and give serving its own supervisor with boot reconciliation; (b) run serving as an ordinary long-lived service...; (c) an external orchestrator... DECIDE BEFORE MODEL-SERVE-002.'\n\nCORRECTED 2026-09-01 (MODEL-SERVE-000-T05): the premise is stale. MODEL-FLOW-011-T04 — the reconciliation this decision said was only 'opened' — is now COMPLETED. Read from trainning-container.authorized.service.ts:53-123: `onModuleInit` calls `reconcileOrphanedRuns()`, which walks every RUNNING row against the Docker daemon's own state and either marks it FAILED (container gone), marks it based on actual exit (container finished while the process was down), or RE-ATTACHES `watch()` to a container still alive. The stated objection to option (a) no longer holds.\n\nRESOLUTION IS A NARROWING, NOT A full decision: for MODEL-SERVE-006 (short-lived infer.py containers, per decisions.short_lived_containers_for_scheduled_inference), CHOSEN: option (a), the existing Docker-daemon spawn — now verified adequate by the landed reconciliation. Short-lived containers exit and get reaped every run; there is no long-lived state for a restart to strand beyond what reconciliation already covers. For MODEL-SERVE-002 (a genuinely long-running synchronous serving process), this STAYS OPEN — nothing read in this audit pass decides it, and MODEL-SERVE-006 does not depend on it (see MODEL-SERVE-006's own dependency_notes.MODEL-SERVE-002: 'NOT a dependency, deliberately')."
     },
     "short_lived_containers_for_scheduled_inference": {
       "chosen": "Short-lived containers on the existing trainer image, second entrypoint",
@@ -47,16 +48,21 @@
     },
 
     "deploy_status_currently_asserts_something_untrue": {
-      "note": "OBSERVED 2026-08-25 in phase-4-deploy.tsx. Save & Deploy performs `updateModel(modelId, { deployStatus: 'running' })` and nothing else: no container, no schedule, no inference. The component is internally honest — its own comment explains why deploy is a second write and why the retrain/drift atoms are deliberately NOT rendered ('nothing persists them, so rendering them would collect settings that go nowhere'), which is the correct call and anticipated this ledger. The problem is the WORD: anyone reading the models list sees 'running' and concludes predictions are being produced.\n\nThis is therefore not a new feature to add but an existing claim to make true, which changes MODEL-SERVE-006's framing: deployStatus must become DERIVED from the last successful InferenceWindow, not a column any caller can set. Two writable sources of truth for 'is this deployed' is the same class of problem as a mutable latest/ key, rejected above for the same reason.\n\nThe atoms the comment names (mpAutoRetrainAtom and the drift/SD siblings) are the config a scheduler needs. They already exist client-side and are unpersisted — MODEL-SERVE-006-T09 is where they acquire a home."
+      "note": "CORRECTED 2026-09-01 (MODEL-SERVE-000-T02): still true, relocated and sharpened. ORIGINAL, PRESERVED: 'OBSERVED 2026-08-25 in phase-4-deploy.tsx. Save & Deploy performs `updateModel(modelId, { deployStatus: 'running' })` and nothing else: no container, no schedule, no inference... This is therefore not a new feature to add but an existing claim to make true, which changes MODEL-SERVE-006's framing: deployStatus must become DERIVED from the last successful InferenceWindow, not a column any caller can set... The atoms the comment names (mpAutoRetrainAtom and the drift/SD siblings) are the config a scheduler needs. They already exist client-side and are unpersisted — MODEL-SERVE-006-T09 is where they acquire a home.'\n\nRELOCATED: the wizard is now six phases; the write is at phase-6-deploy.tsx:83, not phase-4-deploy.tsx.\n\nSHARPENED: read Model's full Prisma definition (schema.prisma:170-187) — the row is `id, workspaceId, name, data Json?, createdAt, updatedAt, nodesId, datasetId, modelTrainingRuns[]`. THERE IS NO `deployStatus` COLUMN AT ALL. The call therefore writes into `Model.data Json?` — unvalidated, untyped, unqueryable by Prisma — which is worse than 'a column any caller can set': it is a string with no schema backing it, inside a catch-all JSON blob, until MODEL-SERVE-006-T12 gives it a real, derived home."
+    },
+
+    "open_question_pin_by_pointer_or_copy_bytes": {
+      "open": true,
+      "note": "NEW 2026-09-01, OPENED BY MODEL-SERVE-000-T07, NOT RESOLVED HERE — an audit surfaces the tension, MODEL-SERVE-001 decides it. MODEL-SERVE-000-T07's own detail forbids fixing the feature-spec-retention gap by copying feature_spec.json into the run prefix: 'That trades a reference problem for a divergence problem and contradicts the adopt-by-pointer rule MODEL-FLOW-007-T10 states, for the same reason it states it' — i.e. Save Model should reference the FINAL artifact by pointer, not duplicate its bytes into the run's own prefix.\n\nBut DS-LAKE-025's `adopt_artifact` (apps/python/services/artifact_service.py:1268) is live, working precedent for the OPPOSITE principle inside this same codebase: 'Save copies FINAL+BRONZE out of drafts/ so the saved dataset owns its bytes outright' — precisely so a later reclaim of the draft's own prefix cannot take the saved thing down with it (see project memory saved_dataset_owns_its_bytes / DS-LAKE-025).\n\nBoth are correct in their own scope and they point opposite directions on the same question: does the SAVED, LONG-LIVED thing (a Dataset version; a Model version) reference its source artifact by pointer, or copy the bytes so it owns them independently of the source's lifecycle? MODEL-SERVE-001-T01 (ModelVersion entity, artifact reference field) is where this gets decided for models — record the decision there with its rejected alternative, the way `deploy_is_a_row_change_not_an_image_build` above already does."
     }
   },
 
   "findings": [
     "CORRECTED 2026-08-24 FROM A MINIO SCREENSHOT OF A REAL RUN (bucket `datasets`, key drafts/1ce30923-394b-4135-b324-0e913606dcf9/runs/61f9aa28-0c31-4e99-bd52-4674200f72f6/, timestamps 2026-08-19 11:44 — one of the two runs MODEL-FLOW-003-V01 live-verified). The prior finding called the run's descriptor `manifest.json`; the object is `run_manifest.json`. The rename is not cosmetic: the name scopes it to the RUN, and a run descriptor and a serving descriptor are not the same document. A run manifest records what happened during a fit; serving needs what is required to LOAD the result. They may overlap, but assuming they are identical is exactly the kind of assumption MODEL-SERVE-000 exists to stop. Contents remain UNVERIFIED — the screenshot shows names and sizes only.",
 
-    "NEW AND HIGHEST SEVERITY IN THIS LEDGER — THE RUN DIRECTORY IS NOT A SELF-CONTAINED SERVING BUNDLE, CONFIRMED BY OBSERVATION. The directory holds exactly four objects: metrics.json (155 B), model.joblib (1.1 KiB), predictions.parquet (24.9 KiB), run_manifest.json (1.2 KiB). There is NO feature_spec.json and NO scaler or preprocessor object. model.joblib at 1.1 KiB is corroborating evidence rather than proof, but it is strong: a fitted sklearn Pipeline carrying a scaler's own state does not serialise to a kilobyte — this is an estimator alone.\n\nSo a serving process cannot open this prefix and predict. It must resolve Model -> ModelTrainingRun -> DatasetArtifact.featureSpecKey -> feature_spec.json, three hops across two entities, and the transform state (scalers, the effective column list from select_columns + force_keep_target) lives at the far end of that chain on an entity the USER CAN EDIT.\n\nThis upgrades, not merely confirms, the train/serve skew finding. The prior finding treated skew as a risk of REIMPLEMENTING the transform. The real exposure is that the transform's inputs are not co-located with the model at all, so a correct implementation can still be fed the wrong spec — a failure that produces a plausible number, which is the MODEL-FLOW-000-T02 shape again.",
+    "CORRECTED 2026-09-01 (MODEL-SERVE-000-T03). ORIGINAL CLAIM, PRESERVED: 'NEW AND HIGHEST SEVERITY IN THIS LEDGER — THE RUN DIRECTORY IS NOT A SELF-CONTAINED SERVING BUNDLE, CONFIRMED BY OBSERVATION. The directory holds exactly four objects: metrics.json (155 B), model.joblib (1.1 KiB), predictions.parquet (24.9 KiB), run_manifest.json (1.2 KiB). There is NO feature_spec.json and NO scaler or preprocessor object. model.joblib at 1.1 KiB is corroborating evidence rather than proof, but it is strong: a fitted sklearn Pipeline carrying a scaler's own state does not serialise to a kilobyte — this is an estimator alone. So a serving process cannot open this prefix and predict. It must resolve Model -> ModelTrainingRun -> DatasetArtifact.featureSpecKey -> feature_spec.json, three hops across two entities, and the transform state (scalers, the effective column list from select_columns + force_keep_target) lives at the far end of that chain on an entity the USER CAN EDIT.' THE 'THREE HOPS' CLAIM IS WRONG — read from packages/prisma/prisma/schema.prisma:1006-1031: ModelTrainingRun carries goldArtifactId, goldObjectKey, artifactChecksum AND featureSpecKey directly on the run row, set at launch from the ARTIFACT the run was actually created against (model-run-launch.authorized.service.ts:126, `featureSpecKey: artifact.featureSpecKey`) — never re-derived through the dataset's current artifact. Verified against the live dev database: 0 of 73 ModelTrainingRun rows have a null featureSpecKey. So this is ONE hop off the run row (ModelTrainingRun.featureSpecKey -> feature_spec.json), not three hops through an editable dataset. The 'not co-located, so a correct implementation can still be fed the wrong spec' exposure the finding worried about does not exist: the pinned key cannot silently repoint to an edited dataset's current artifact.",
 
-    "NEW — NOTHING PINS OR PROTECTS THE ARTIFACT A MODEL WAS FITTED AGAINST. MODEL-FLOW-010's own finding states that editing a dataset keeps the Dataset id and moves currentArtifactId, and correctly concludes that ModelDraft.datasetId stays valid. That conclusion is right for the WIZARD and wrong to inherit here: a served model needs the SPECIFIC artifact it was fitted against, not the dataset's current one, and neither ledger says that artifact is retained for as long as a model references it. Two separate objects can therefore be reclaimed out from under one production model — its bytes (guarded upstream by MODEL-FLOW-011-T05) and its feature spec (guarded by nothing). Losing either is the same outage.",
+    "CORRECTED 2026-09-01 (MODEL-SERVE-000-T07). ORIGINAL CLAIM, PRESERVED: 'NEW — NOTHING PINS OR PROTECTS THE ARTIFACT A MODEL WAS FITTED AGAINST. MODEL-FLOW-010's own finding states that editing a dataset keeps the Dataset id and moves currentArtifactId, and correctly concludes that ModelDraft.datasetId stays valid. That conclusion is right for the WIZARD and wrong to inherit here: a served model needs the SPECIFIC artifact it was fitted against, not the dataset's current one, and neither ledger says that artifact is retained for as long as a model references it. Two separate objects can therefore be reclaimed out from under one production model — its bytes (guarded upstream by MODEL-FLOW-011-T05) and its feature spec (guarded by nothing). Losing either is the same outage.' WRONG ON BOTH CLAUSES, verified against schema.prisma and the live dev DB/MinIO. PINNING: ModelTrainingRun already carries goldArtifactId, goldObjectKey, artifactChecksum and featureSpecKey — an id-only reference was never the design (see schema.prisma:1019-1031's own comment: 'NOT how the container resolves data ... an id-only reference would silently retrain on different rows later'). PROTECTION: measured live — ALL 73 ModelTrainingRun rows train against a FINAL artifact, zero against GOLD. `artifact-cleanup.admin.service.ts`'s candidate query (`where: { type: { not: 'FINAL' } }`) and `artifact-cleanup-eligibility.ts:236` (`if (artifact.type === 'FINAL') continue`) both exclude FINAL unconditionally — it is never a cleanup candidate. Post-DS-LAKE-025, FINAL owns its bytes outright at `{datasetId}/artifacts/{artifactId}/` with feature_spec.json copied alongside (`adopt_artifact`, artifact_service.py:1268). 0 of 61 SUCCEEDED runs point at a missing or objectReclaimedAt-stamped artifact (measured). TWO REAL EXPOSURES SURVIVE, NEITHER THE ONE ORIGINALLY CLAIMED: (1) the FINAL protection is a TYPE EXCLUSION, not a ModelTrainingRun reference check — nothing but PreprocessingJob (QUEUED/RUNNING) counts as a live reference in the cleanup sweep, and `artifact-cleanup-eligibility.ts:314-324` explicitly allows GOLD/SILVER to age out 'even if still lineage-reachable', reasoning that an unreached one is storage 'nothing can ever reclaim and nothing reads' — false the moment a ModelTrainingRun points at it, which no launch path currently forbids. Latent, not live, today. (2) `deleteDatasetService` (apps/backend/src/api/v1/dataset/authorized/dataset.authorized.service.ts:234-246) checks ownership only, then `prisma.dataset.delete` — Dataset cascades onto DatasetArtifact (schema.prisma:563), and ModelTrainingRun.goldArtifactId is a bare String with no FK, so it dangles silently. Bytes still resolve (goldObjectKey/featureSpecKey are pinned keys, not FKs), but the objects become permanently unreclaimable — cleanup enumerates DatasetArtifact rows, and the row is gone. UPSTREAM TICKETS NAMED, NOT WRITTEN HERE: deleteDatasetService should refuse or warn when a ModelTrainingRun references the dataset's artifacts; the cleanup sweep's live-reference set should include ModelTrainingRun.goldArtifactId before any launch path can target a non-FINAL artifact.",
 
     "NEW — ONE BUCKET HOLDS EVERYTHING. Model run outputs live in the `datasets` bucket (17.4 MiB / 138 objects at the time of the screenshot). That is fine today and cheap to leave alone, but it means no bucket-scoped lifecycle rule, retention policy or access grant can distinguish a production model's bytes from an abandoned dataset draft's. Anyone who later writes a lifecycle rule intending it for datasets writes it for models too. Record it now so that decision is made deliberately rather than discovered.",
 
@@ -65,17 +71,21 @@
     "NEW — NO CHECKSUM SIDECAR EXISTS. There is no .sha256 or equivalent object beside model.joblib, so a checksum either lives inside run_manifest.json or is not computed at all. MODEL-SERVE-000-T01 must distinguish those two, because they lead to different work: reading a field, versus adding a write to the trainer AND accepting that every artifact predating that change has no checksum and needs a stated policy.",
     "CONFIRMED 2026-08-24 by reading run_manifest.json from the run in the screenshot. The prior finding, and MODEL-SERVE-000-T01's three questions, are now answered and the finding is REPLACED rather than deleted so the audit trail survives: (1) a checksum EXISTS — model_sha256, plus artifact_checksum for the GOLD parquet; (2) provenance is pinned by image_digest (scgc/soft-sensor-trainer@sha256:…), which is STRONGER than the sklearn/joblib version string this ledger asked for, because it pins the whole runtime rather than one library; (3) the manifest does NOT carry a featureSpecKey, but it DOES inline feature_columns, target_y, target_scaled and derived_from_target — four of the fields serving would otherwise have walked to the spec for. seed and the full split record (method, ratio, cut_timestamp, labelled/train/test rows) are also present. This manifest is materially better than this ledger assumed, and the earlier UNVERIFIED framing overstated the gap.",
 
-    "NARROWED 2026-08-24 — THE ONLY MISSING SERVING INPUT IS SCALER STATE. With feature_columns inlined, the three-hop chain to feature_spec.json collapses to one open question rather than a general dependency: where does a run's SCALER configuration live, and is it recoverable at serve time? The manifest records target_scaled: false, which proves the system tracks scaling on the target side, and records nothing about the feature side. model.joblib at 1.1 KiB for a bare 8-feature OLS is consistent with this particular run having no scalers at all — which is why it cannot answer the question. MODEL-SERVE-000-T03 must therefore be run against a run that DID scale, not this one; the smallest, cleanest artifact is the least informative one here.",
+    "CORRECTED 2026-09-01 (MODEL-SERVE-000-T03), PREMISE INVERTED. ORIGINAL CLAIM, PRESERVED: 'NARROWED 2026-08-24 — THE ONLY MISSING SERVING INPUT IS SCALER STATE. With feature_columns inlined, the three-hop chain to feature_spec.json collapses to one open question rather than a general dependency: where does a run's SCALER configuration live, and is it recoverable at serve time? The manifest records target_scaled: false, which proves the system tracks scaling on the target side, and records nothing about the feature side. model.joblib at 1.1 KiB for a bare 8-feature OLS is consistent with this particular run having no scalers at all — which is why it cannot answer the question. MODEL-SERVE-000-T03 must therefore be run against a run that DID scale, not this one; the smallest, cleanest artifact is the least informative one here.' SCALER STATE IS NOT MISSING. feature_spec.json carries `scalingParams` — the actual FITTED params per tag (e.g. `{\"TI-101\": {\"min\": 70.0, \"max\": 75.0}}`), written by artifact_service.features() / feature_spec_service.py:241. ModelTrainingRun.featureSpecKey pins the exact spec (schema.prisma:1031), verified non-null on 73/73 runs. The primitive that applies a FITTED transform to new rows without re-fitting already exists and is tested: `to_model_ready(frame, tags, scalers, fitted_params=scaling_params)`, wrapped by `prepare_holdout_for_run`/`replay_holdout_for_run` (artifact_service.py:570-706), which already REFUSES when a tag would scale without a recorded scalingParams entry (artifact_service.py:676-687) rather than silently re-fitting. Serving's answer to 'call it or extract it' (MODEL-SERVE-000-T03's own question) is CALL IT — these entry points are object-storage-keyed (`store.get_frame(source_key)`), which fits MODEL-SERVE-006's parquet windows directly; a synchronous row-list /predict needs a thin in-memory wrapper, not an extraction. WHY THE ORIGINAL INFERENCE FAILED: the run examined had `target_scaled: false` and a 1.1 KiB model.joblib, read as 'no scalers at all'. Both premises are true and the conclusion is false — feature_spec_service.py:250 sets `target_scaled` from `scalers.get(target_y, \"none\")` (the TARGET defaults to none), while feature_service.py:79 sets `DEFAULT_SCALER = \"minmax\"` (FEATURES default to minmax). Two different defaults in one document. The joblib is small because scalers were never in the pickle — they live in the spec, not the model object. See the new empty-`scaling` finding below for the trap this created.",
+
+    "NEW 2026-09-01 (MODEL-SERVE-000-T03), HIGHEST-SEVERITY FINDING OF THIS AUDIT PASS — THE EMPTY-`scaling` TRAP. feature_service.py:79 sets `DEFAULT_SCALER = \"minmax\"`. feature_spec_service.py's `scaling` array (line ~23) holds one `{tag, method}` entry ONLY for a tag with an EXPLICIT scaler choice — a tag left at the default writes NOTHING to `scaling`, even though it IS scaled. Measured directly against all 21 `feature_spec.json` objects currently in MinIO: every single one has `len(scaling) == 0` while `len(scalingParams) == 22`. So on every real dataset in this system, every tag is minmax-scaled by default, and `scaling: []` is exactly what that looks like on disk — indistinguishable, by that field alone, from 'nothing was scaled'. A serving process that reads `scaling` to decide whether to transform inputs, finds it empty, and concludes no scaling is needed will feed RAW values into a model fitted on SCALED inputs and return a plausible wrong number — silently, with no error, no missing field, nothing to alert on. The existing preprocessing code is safe today only because `to_model_ready` reads `scalers.get(tag, DEFAULT_SCALER)`, never `scaling` directly. Any new serving code (MODEL-SERVE-002-T05, MODEL-SERVE-006-T03) MUST resolve each tag's scaler the same way — from `scalingParams`' keys and/or the same default-aware lookup — never by branching on whether `scaling` is non-empty.",
+
+    "NEW 2026-09-01 (MODEL-SERVE-000-T04) — SERVABILITY CENSUS AGAINST LIVE DATA. Read all 21 `feature_spec.json` objects in MinIO and cross-referenced against the live dev Postgres: 0 of 21 specs have a non-empty `derived_from_target` (the target-history request-contract fork in MODEL-SERVE-002-T06 guards a class the schema permits but no real spec currently uses); 0 of 21 have `target_scaled: true`; exactly 1 of 21 has zero `scalingParams` entries and is therefore UNSERVABLE without re-fitting — and it is `drafts/c47bfa69-.../artifacts/b9e25f8d-.../feature_spec.json`, the exact artifact this ledger's own MinIO screenshot and repeated findings are built from (it predates DS-LAKE-018-T02, so it has no recorded fitted params). The coverage guard in `prepare_holdout_for_run` (artifact_service.py:676-687) already refuses to serve it rather than silently re-fitting, which is the correct behaviour. Of 73 ModelTrainingRun rows, 0 have a null `featureSpecKey`, and 61 SUCCEEDED. This ledger's most-cited example run is its ONLY unservable one, which is worth knowing before anyone scopes MODEL-SERVE-002 against it as a representative case.",
 
     "IMAGE_DIGEST CREATES A NEW RETENTION DEPENDENCY. Pinning by digest is the right call, but a digest pins nothing once the image is garbage-collected from the registry — at which point the ONLY record of the runtime a production model was fitted under is a string that resolves to nothing. Whatever retains the model object and its artifact must extend to the trainer image any live ModelVersion names. This dependency did not exist under the version-string approach this ledger originally proposed; it is a consequence of the better mechanism, not a defect in it.",
 
-    "NEW — `drafts/` IS A SHARED ROOT FOR TWO UNRELATED ENTITIES IN ONE BUCKET. Observed directly: the run lives at drafts/1ce30923-…/runs/… (a ModelDraft) while its gold_object_key reads drafts/c47bfa69-…/artifacts/… (a DatasetDraft). Same bucket, same first segment, different tables, different lifecycles, different sweepers. UUIDs will not collide, so this is not a correctness bug today. The exposure is in the SWEEPERS: MODEL-FLOW-011-T02 already specifies is_draft_run_key rather than a string prefix match, which is correct — but DS-LAKE-014's DatasetDraft sweeper predates that guidance and it is UNVERIFIED whether it reclaims by structural predicate or by a drafts/{id}/ prefix. If the latter, a dataset sweep can reach a model draft's prefix. Hand to MODEL-SERVE-000-T06's read; the fix, if needed, is upstream.",
+    "CORRECTED 2026-09-01 (MODEL-SERVE-000-T06). ORIGINAL CLAIM, PRESERVED: 'NEW — `drafts/` IS A SHARED ROOT FOR TWO UNRELATED ENTITIES IN ONE BUCKET. Observed directly: the run lives at drafts/1ce30923-…/runs/… (a ModelDraft) while its gold_object_key reads drafts/c47bfa69-…/artifacts/… (a DatasetDraft). Same bucket, same first segment, different tables, different lifecycles, different sweepers... The exposure is in the SWEEPERS... it is UNVERIFIED whether [DS-LAKE-014's DatasetDraft sweeper] reclaims by structural predicate or by a drafts/{id}/ prefix. If the latter, a dataset sweep can reach a model draft's prefix.' NOT REAL, confirmed by reading both call paths. DS-LAKE-014's sweeper (artifact-cleanup.admin.service.ts:270-273) calls Python's `/v1/preprocess/artifacts/reclaim` with `{ object_key: artifact.objectKey }` — the specific DatasetArtifact row's own key — which resolves via `reclaim_artifact` -> `split_data_key(object_key)` to that artifact's own `.../artifacts/{artifactId}/` prefix (artifact_service.py:1213-1236). This is a DIFFERENT endpoint from the model side's `/v1/preprocess/models/runs/reclaim` -> `reclaim_draft_runs`, which independently scopes to `drafts/{draftId}/runs/[{runId}/]` (artifact_service.py:1241-1264) and never a bare `drafts/{draftId}/`. Neither sweeper derives its prefix from a shared or naive draftId-only guess; each is keyed off its own row's structural data. No upstream ticket needed.",
 
     "NEW — NOTHING GATES PROMOTION ON WHETHER THE MODEL IS ANY GOOD. The observed run has r2 = -2.4068: worse than predicting the mean, i.e. no predictive value. Every claim made about it is nonetheless true — MODEL-FLOW-003-V01 correctly recorded it as SUCCEEDED with real metrics, and the leakage guard correctly found nothing to check (derived_from_target is empty, so there is no leakage; the model is simply bad). MODEL-FLOW-000-T02 hardened this codebase against an implausibly HIGH R², and this is the opposite direction, which no criterion in either ledger covers. MODEL-SERVE-001-T05 refuses a version whose artifact cannot be LOADED; it says nothing about one that loads fine and is useless. See MODEL-SERVE-001-T06.",
 
-    "NEW 2026-08-25, READ FROM SOURCE — STEP 4 EVALUATION DOES NOT DISPLAY THE CONTAINER'S METRICS AT ALL. phase-3-evaluation.tsx computes every figure client-side: it picks `const xTag = modelReady.tags.find(t => t !== target)` — the first tag that is not the target — and runs computeFit(modelReady, xTag, target), a single-feature fit in the browser. The 8-feature fit the container actually performed is never read; mpTrainingResultAtom is not imported by this file. The compared-model series is explicitly mock (seededNoise + a comment saying real per-model predictions arrive later). mpSelectedMetricsAtom is a DISPLAY FILTER over these locally-computed values.\n\nCONSEQUENCE, AND IT EXPLAINS AN EARLIER FINDING: r2 = -2.4068 is invisible in the product. The screen shows a plausible chart from a different fit, which is why a model with no predictive value passed through the wizard without anyone stumbling. The MODEL-FLOW ledger is not wrong about this — MODEL-FLOW-003-V02 claims metrics are 'available', not consumed, and says so in as many words, and every MODEL-FLOW-004 task is still pending. The gap is real, correctly recorded upstream, and it is a HARD PREREQUISITE for anything in this ledger that touches metrics: a metric registry wired to a screen that computes its own numbers changes which locally-computed values are shown and nothing else.",
+    "SUPERSEDED 2026-09-01 (MODEL-SERVE-000, upstream re-read). ORIGINAL CLAIM, PRESERVED: 'NEW 2026-08-25, READ FROM SOURCE — STEP 4 EVALUATION DOES NOT DISPLAY THE CONTAINER'S METRICS AT ALL. phase-3-evaluation.tsx computes every figure client-side: it picks `const xTag = modelReady.tags.find(t => t !== target)` — the first tag that is not the target — and runs computeFit(modelReady, xTag, target), a single-feature fit in the browser. The 8-feature fit the container actually performed is never read; mpTrainingResultAtom is not imported by this file. The compared-model series is explicitly mock (seededNoise + a comment saying real per-model predictions arrive later). mpSelectedMetricsAtom is a DISPLAY FILTER over these locally-computed values. CONSEQUENCE...: r2 = -2.4068 is invisible in the product... every MODEL-FLOW-004 task is still pending.' NO LONGER TRUE. Read from docs/feature_list.json: MODEL-FLOW-004 is in_progress 90 with ALL 5 TASKS COMPLETED, including T04 'Update evaluation API to use Model Draft' and T05 'Store evaluation result in Model Draft'. The wizard is now SIX phases, not four; the file this finding names no longer exists under that path — `phase-5-evaluation.tsx` (apps/client/app/(default)/models/create/components/pipeline/phase-5-evaluation.tsx) imports `useDraftRunEvaluation` and `mpTrainingResultAtom` and reads the run's real predictions, not a browser-side single-feature fit. MODEL-SERVE-006-T08's hard prerequisite on MODEL-FLOW-004 is DISCHARGED. A partial display registry already exists at apps/client/lib/model-metrics.ts (`METRIC_KEYS = ['r2','rmse','sd']`, `METRIC_META`) as a starting point for T08, though it has no backfillable flag yet and is not derived from stored predictions per decisions.metrics_are_derived_from_predictions_not_computed_at_fit.",
 
-    "NEW 2026-08-25 — 'CHANGE THE EVALUATION METRICS FROM THE UI' IS NOT REACHABLE FROM WHERE THE UI IS TODAY. The request is well-formed and the design answer is in decisions.metrics_are_derived_from_predictions_not_computed_at_fit, but ordering matters: mpSelectedMetricsAtom currently filters browser-computed values, so pointing it at a registry while phase-3-evaluation.tsx still calls computeFit produces a prettier filter over the wrong numbers. MODEL-FLOW-004 first, registry second. Recorded as a sequencing constraint rather than a defect.",
+    "SUPERSEDED 2026-09-01 (MODEL-SERVE-000, upstream re-read). ORIGINAL CLAIM, PRESERVED: 'NEW 2026-08-25 — CHANGE THE EVALUATION METRICS FROM THE UI IS NOT REACHABLE FROM WHERE THE UI IS TODAY... mpSelectedMetricsAtom currently filters browser-computed values, so pointing it at a registry while phase-3-evaluation.tsx still calls computeFit produces a prettier filter over the wrong numbers. MODEL-FLOW-004 first, registry second.' The sequencing constraint is DISCHARGED — MODEL-FLOW-004 is done (see the finding immediately above). MODEL-SERVE-006-T08 can now point a real metric registry at real predictions and change what is shown, not just re-filter mock numbers.",
 
     "NEW 2026-08-25 — THE WIZARD'S OWN GATE IS LOOSER THAN THE RUN-CREATION GUARD BEHIND IT. phase-2-training-config.tsx computes `canTrain = targetVariables.length > 0 && training.status !== 'training' && tags.length > 0`, and renders AutoMlToggles as freely operable. MODEL-FLOW-003-T10 established that use-model-training refuses anything other than exactly one target, exactly one algorithm, and AutoML off. So the button is enabled for states the layer beneath it will reject: the user clicks, waits, and gets an error for a condition that was knowable before the click. Not a correctness bug — the refusal holds — and not this ledger's to fix, but it will be hit on every manual test of MODEL-SERVE-006, so it is recorded rather than rediscovered.",
 
@@ -87,60 +97,68 @@
       "id": "MODEL-SERVE-000",
       "title": "Audit — Replace Every UNVERIFIED Finding With a Fact",
       "priority": 0,
-      "status": "pending",
-      "progress": 0,
+      "status": "completed",
+      "progress": 100,
       "dependencies": [],
       "description": "This ledger was written from another ledger, not from the tree. Nothing below MODEL-SERVE-000 should be scoped, estimated or started until these reads are done, because the shape of each downstream feature depends on what is already there. The precedent is direct: MODEL-FLOW-000's re-audit found five of seven tasks describing already-correct code and one whose premise was inverted, and the cost of that was a task list nobody could trust.",
+      "audit_result_2026_09_01": "COMPLETED. Re-audited against the tree (schema.prisma, artifact_service.py, feature_spec_service.py, trainning-container.authorized.service.ts, artifact-cleanup.admin.service.ts, dataset.authorized.service.ts), the live dev Postgres (73 ModelTrainingRun rows, 61 SUCCEEDED, 20 Models) and the live dev MinIO (21 feature_spec.json objects). The precedent repeated: this ledger's two highest-severity findings (T03's 'three-hop chain', T07's 'nothing pins or protects') were BOTH wrong in the direction of overstating the gap — both artifact pinning and scaler state already exist and are one hop off the run row. A new, correct highest-severity finding was found in their place: the empty-`scaling` trap (T03). See the corrected findings[] entries and decisions{} above for the full evidence trail; every correction preserves the original claim per V01's rule.",
       "tasks": [
         {
           "id": "MODEL-SERVE-000-T01",
           "title": "Read run_manifest.json's contents",
-          "status": "pending",
-          "progress": 0,
-          "detail": "NARROWED 2026-08-24 by the MinIO observation — the object exists, is named run_manifest.json, and is 1.2 KiB, so this is no longer 'find out what the trainer uploads' but 'read one known 1.2 KiB file'. Download it and record its literal schema here. The three questions that decide downstream scope: (1) is there a checksum of model.joblib? (2) is the framework and its exact version recorded? (3) does it carry the featureSpecKey of the artifact it was fitted against, or must that be resolved through the run row? If (3) is yes, the three-hop chain collapses to two and MODEL-SERVE-000-T07 shrinks."
+          "status": "completed",
+          "progress": 100,
+          "detail": "NARROWED 2026-08-24 by the MinIO observation — the object exists, is named run_manifest.json, and is 1.2 KiB, so this is no longer 'find out what the trainer uploads' but 'read one known 1.2 KiB file'. Download it and record its literal schema here. The three questions that decide downstream scope: (1) is there a checksum of model.joblib? (2) is the framework and its exact version recorded? (3) does it carry the featureSpecKey of the artifact it was fitted against, or must that be resolved through the run row? If (3) is yes, the three-hop chain collapses to two and MODEL-SERVE-000-T07 shrinks.",
+          "result_2026_09_01": "Already answered by findings[6] on 2026-08-24 (model_sha256, artifact_checksum, image_digest, inlined feature_columns/target_y/target_scaled/derived_from_target, seed, split record). Re-confirmed accurate on this pass; no change needed."
         },
         {
           "id": "MODEL-SERVE-000-T02",
           "title": "Establish whether Model has any notion of version",
-          "status": "pending",
-          "progress": 0,
-          "detail": "packages/prisma/prisma/schema.prisma. MODEL-FLOW-010-T08 already caught this ledger's sibling asserting a row held fields it did not, so read the model, do not infer it from MODEL-FLOW-007's task titles. If Model is single-artifact with no version, MODEL-SERVE-001 is an additive entity; if it already versions, that feature shrinks to a stage column and a constraint."
+          "status": "completed",
+          "progress": 100,
+          "detail": "packages/prisma/prisma/schema.prisma. MODEL-FLOW-010-T08 already caught this ledger's sibling asserting a row held fields it did not, so read the model, do not infer it from MODEL-FLOW-007's task titles. If Model is single-artifact with no version, MODEL-SERVE-001 is an additive entity; if it already versions, that feature shrinks to a stage column and a constraint.",
+          "result_2026_09_01": "CONFIRMED: Model has NO notion of version (schema.prisma:170-187 — id, workspaceId, name, data Json?, createdAt, updatedAt, nodesId, datasetId, modelTrainingRuns[]). No version, stage, artifact pointer, or checksum. AND no `deployStatus` column — sharpens decisions.deploy_status_currently_asserts_something_untrue: that write lands inside `data Json?`, unvalidated and unqueryable. MODEL-SERVE-001 is fully additive."
         },
         {
           "id": "MODEL-SERVE-000-T03",
           "title": "Trace the preprocessing path end to end and decide how serving reuses it",
-          "status": "pending",
-          "progress": 0,
+          "status": "completed",
+          "progress": 100,
           "detail_addendum": "REVISED 2026-08-24: no longer 'trace the whole preprocessing path' — feature_columns is inlined in run_manifest.json, so column selection and order are already recoverable. Scope narrows to scalers alone. CHOOSE THE RUN DELIBERATELY: the observed OLS run has no scalers (target_scaled: false, and a 1.1 KiB model.joblib consistent with a bare estimator), so it cannot answer the question no matter how carefully it is read. Find a run whose dataset applied a scaler and start there.",
-          "detail": "apps/python artifact_service.py (select_columns, force_keep_target, the scalers path) and feature_spec_service.py. Answer one question: can a serving process apply the identical transform to raw input by calling the same code, or does something in that path assume a whole parquet frame rather than a handful of rows? The answer decides whether serving is a thin loader or needs an extracted, shared transform module — a difference in kind, not degree. Do NOT plan to reimplement it either way; see the findings."
+          "detail": "apps/python artifact_service.py (select_columns, force_keep_target, the scalers path) and feature_spec_service.py. Answer one question: can a serving process apply the identical transform to raw input by calling the same code, or does something in that path assume a whole parquet frame rather than a handful of rows? The answer decides whether serving is a thin loader or needs an extracted, shared transform module — a difference in kind, not degree. Do NOT plan to reimplement it either way; see the findings.",
+          "result_2026_09_01": "PREMISE INVERTED (per findings[]): scaler state is NOT missing. feature_spec.json's `scalingParams` carries the fitted params, ModelTrainingRun.featureSpecKey pins the exact spec (verified non-null on 73/73 runs), and `to_model_ready(..., fitted_params=scaling_params)` already applies a fitted transform without re-fitting, with an existing refuse-rather-than-silently-re-fit guard. ANSWER: call it, not extract it — the existing entry points are object-storage-keyed, which fits MODEL-SERVE-006 directly; a synchronous /predict needs a thin in-memory wrapper. Also surfaced the empty-`scaling`-array trap (new finding) — the real risk in this area, and the opposite of what this task originally worried about."
         },
         {
           "id": "MODEL-SERVE-000-T04",
           "title": "Determine which existing models are servable at all",
-          "status": "pending",
-          "progress": 0,
-          "detail": "For the artifacts that exist, read feature_spec.json and check derived_from_target. Any model with a non-empty closure needs target history at inference and has a different request contract from one without. This is a fact-finding task, not a design one — but if it turns out MOST real soft-sensor models are in that set, /predict's shape changes and it is much cheaper to know now."
+          "status": "completed",
+          "progress": 100,
+          "detail": "For the artifacts that exist, read feature_spec.json and check derived_from_target. Any model with a non-empty closure needs target history at inference and has a different request contract from one without. This is a fact-finding task, not a design one — but if it turns out MOST real soft-sensor models are in that set, /predict's shape changes and it is much cheaper to know now.",
+          "result_2026_09_01": "Measured against all 21 live feature_spec.json objects: 0 of 21 have non-empty derived_from_target, 0 of 21 have target_scaled true, 1 of 21 (the ledger's own most-cited example, b9e25f8d) has zero scalingParams and is unservable without a re-fit — and is already correctly refused by the existing coverage guard. See the new servability-census finding for the full table."
         },
         {
           "id": "MODEL-SERVE-000-T05",
           "title": "Decide the serving host",
-          "status": "pending",
-          "progress": 0,
-          "detail": "Resolve decisions.serving_host_undecided. Read trainning-container.authorized.service.ts's watch() and confirm the reasoning in that decision against the actual code rather than against MODEL-FLOW-003-V01's incident note. Output is a chosen option with its reason, recorded in the decision — not a prototype."
+          "status": "completed",
+          "progress": 100,
+          "detail": "Resolve decisions.serving_host_undecided. Read trainning-container.authorized.service.ts's watch() and confirm the reasoning in that decision against the actual code rather than against MODEL-FLOW-003-V01's incident note. Output is a chosen option with its reason, recorded in the decision — not a prototype.",
+          "result_2026_09_01": "Decision's premise was stale: MODEL-FLOW-011-T04 (the reconciliation it said was only 'opened') is completed — `reconcileOrphanedRuns()` runs at boot and re-attaches watch() to live containers. Resolved as a NARROWING, not a full decision: CHOSEN for MODEL-SERVE-006 — option (a), the existing Docker-daemon spawn, now verified adequate. STAYS OPEN for MODEL-SERVE-002's long-running host, which 006 does not depend on. See decisions.serving_host_undecided for the full reasoning."
         },
         {
           "id": "MODEL-SERVE-000-T06",
           "title": "Confirm the draft-prefix reclaim collision is real, then hand it upstream",
-          "status": "pending",
-          "progress": 0,
-          "detail": "MODEL-FLOW-011 is unstarted, so this is a paper check against its T01/T02 details plus MODEL-FLOW-007-T10's. If confirmed, MODEL-FLOW-011-T05 (already drafted upstream) is the fix and it belongs in THAT ledger, not this one — this task's deliverable is the confirmation, not a guard."
+          "status": "completed",
+          "progress": 100,
+          "detail": "MODEL-FLOW-011 is unstarted, so this is a paper check against its T01/T02 details plus MODEL-FLOW-007-T10's. If confirmed, MODEL-FLOW-011-T05 (already drafted upstream) is the fix and it belongs in THAT ledger, not this one — this task's deliverable is the confirmation, not a guard.",
+          "result_2026_09_01": "NOT REAL, confirmed against code (MODEL-FLOW-011 is now completed, not unstarted). reclaim_draft_runs (artifact_service.py:1241) is scoped to `drafts/{id}/runs/[{run_id}/]` by construction and its own docstring states it is 'never a bare drafts/{draft_id}/'; reclaim_artifact is scoped via split_data_key to `.../artifacts/{artifactId}/`. Neither predicate can reach the other's objects. No upstream ticket needed."
         },
         {
           "id": "MODEL-SERVE-000-T07",
           "title": "Establish what retains the fitted artifact, and pin it if nothing does",
-          "status": "pending",
-          "progress": 0,
-          "detail": "OPENED 2026-08-24 from the observation that feature_spec.json is not in the run directory. Read DatasetArtifact's lifecycle: is there any path — a dataset edit, a version supersession, MODEL-FLOW-011's sweep, an admin delete — that can remove or orphan an artifact a ModelTrainingRun points at? Check the artifact's own retention alongside the draft-prefix question MODEL-SERVE-000-T06 asks; they are two objects with one consequence and it is cheaper to answer them in one read.\n\nIF NOTHING RETAINS IT: the fix is upstream at Save Model, not here — MODEL-FLOW-007-T11 should record the artifact id and featureSpecKey on the saved Model so the reference is explicit and greppable, and whatever guards artifact deletion must treat a referencing ModelVersion the way MODEL-FLOW-011-T05 treats an adopted run. Deliverable of THIS task is the finding plus the upstream ticket, not a guard written in the wrong ledger.\n\nDO NOT 'FIX' THIS BY COPYING feature_spec.json INTO THE RUN PREFIX. That trades a reference problem for a divergence problem and contradicts the adopt-by-pointer rule MODEL-FLOW-007-T10 states, for the same reason it states it."
+          "status": "completed",
+          "progress": 100,
+          "detail": "OPENED 2026-08-24 from the observation that feature_spec.json is not in the run directory. Read DatasetArtifact's lifecycle: is there any path — a dataset edit, a version supersession, MODEL-FLOW-011's sweep, an admin delete — that can remove or orphan an artifact a ModelTrainingRun points at? Check the artifact's own retention alongside the draft-prefix question MODEL-SERVE-000-T06 asks; they are two objects with one consequence and it is cheaper to answer them in one read.\n\nIF NOTHING RETAINS IT: the fix is upstream at Save Model, not here — MODEL-FLOW-007-T11 should record the artifact id and featureSpecKey on the saved Model so the reference is explicit and greppable, and whatever guards artifact deletion must treat a referencing ModelVersion the way MODEL-FLOW-011-T05 treats an adopted run. Deliverable of THIS task is the finding plus the upstream ticket, not a guard written in the wrong ledger.\n\nDO NOT 'FIX' THIS BY COPYING feature_spec.json INTO THE RUN PREFIX. That trades a reference problem for a divergence problem and contradicts the adopt-by-pointer rule MODEL-FLOW-007-T10 states, for the same reason it states it.",
+          "result_2026_09_01": "CORRECTED IN BOTH DIRECTIONS (see findings[]). Pinning already exists on ModelTrainingRun (goldArtifactId/goldObjectKey/artifactChecksum/featureSpecKey). Protection already exists: measured live, 100% of 73 runs (0 GOLD) train against FINAL, which is unconditionally excluded from the cleanup candidate query and predicate. 0 of 61 SUCCEEDED runs point at a missing or reclaimed artifact. TWO REAL, NARROWER EXPOSURES SURVIVE: (1) the FINAL protection is a type exclusion, not a ModelTrainingRun reference check — GOLD/SILVER can still age out 'even if lineage-reachable' per the predicate's own comment, latent but real once any launch path targets a non-FINAL artifact; (2) deleteDatasetService has no reference check at all and can orphan goldArtifactId silently. Both named as upstream tickets (MODEL-FLOW/DS-LAKE), not written here. Also opened decisions.open_question_pin_by_pointer_or_copy_bytes for MODEL-SERVE-001 to resolve."
         }
       ],
       "acceptance_criteria": [
@@ -153,7 +171,8 @@
         {
           "id": "MODEL-SERVE-000-V01",
           "description": "Re-read this ledger and confirm no UNVERIFIED marker remains. A finding that was checked and turned out WRONG must appear as a correction with both versions visible, the way MODEL-FLOW-010's findings record their reversals — silently deleting a wrong finding loses the evidence that the audit ran.",
-          "status": "pending"
+          "status": "completed",
+          "result_2026_09_01": "Re-read 2026-09-01. Every prior UNVERIFIED marker is now inside a CORRECTED/SUPERSEDED/CONFIRMED block that quotes the original claim verbatim before stating what was found — none were silently edited or deleted. The one remaining bare mention of 'UNVERIFIED' belongs to MODEL-SERVE-007's own in-scope note about whether models/ has live objects, which is that feature's audit to close, not this one's."
         }
       ]
     },
@@ -173,7 +192,8 @@
           "status": "pending",
           "progress": 0,
           "detail": "Shape depends on MODEL-SERVE-000-T02. Fields: modelId, version, the artifact pointer and checksum, feature spec reference, framework + version, sourceRunId, sourceDatasetId, metrics, stage, timestamps, promotedById. A version row is IMMUTABLE except for stage — same discipline as MODEL-FLOW-007-T10's adopt-by-pointer: the row records what happened, it is not a workspace.",
-          "detail_addendum": "REVISED 2026-08-24: the artifact reference is NOT optional and NOT derivable later. Because the run directory holds no feature spec (see findings), ModelVersion must record the fitted DatasetArtifact's id and its featureSpecKey explicitly, alongside the model object pointer. Resolving it at serve time by walking to the dataset's CURRENT artifact would be silently wrong for any model whose dataset was edited after training — and it would be wrong in the direction that still returns a number."
+          "detail_addendum": "REVISED 2026-08-24: the artifact reference is NOT optional and NOT derivable later. Because the run directory holds no feature spec (see findings), ModelVersion must record the fitted DatasetArtifact's id and its featureSpecKey explicitly, alongside the model object pointer. Resolving it at serve time by walking to the dataset's CURRENT artifact would be silently wrong for any model whose dataset was edited after training — and it would be wrong in the direction that still returns a number.",
+          "audit_2026_09_01": "MODEL-SERVE-000 confirmed the run row already stores exactly this (ModelTrainingRun.goldArtifactId/goldObjectKey/artifactChecksum/featureSpecKey, verified non-null on 73/73 runs) — this task copies those four fields onto ModelVersion at promotion-worthy points, it does not invent them. Also: decisions.open_question_pin_by_pointer_or_copy_bytes is now open and must be resolved as part of this task — does ModelVersion reference the source artifact by pointer (per MODEL-FLOW-007-T10's adopt-by-pointer rule) or copy its bytes into a version-owned prefix (per DS-LAKE-025's adopt_artifact precedent)? Record the choice in that decision with its rejected alternative."
         },
         {
           "id": "MODEL-SERVE-001-T02",
@@ -267,7 +287,8 @@
           "status": "pending",
           "progress": 0,
           "detail_addendum": "REVISED 2026-08-24: verify model_sha256 (the field name is now known, not hypothesised) and verify image_digest against the serving runtime — noting that a digest match is not achievable if serving runs a DIFFERENT image from the trainer, which decisions.training_and_serving_are_separate_planes deliberately requires. So the digest is a provenance record to CHECK FOR PRESENCE and log, not a value to match. What must actually be validated at load is that the serving runtime's own library versions are compatible with the pickle; the digest tells you what to go and look up when they are not.",
-          "detail": "Resolve model_id -> PRODUCTION version -> object; verify checksum; verify the recorded framework version against the runtime and REFUSE on a mismatch rather than warn (see findings — a silently-loaded mismatch produces plausible wrong numbers). Cache bounded by memory, not by entry count: models differ in size by orders of magnitude and a count-based cap sizes for the smallest one."
+          "detail": "Resolve model_id -> PRODUCTION version -> object; verify checksum; verify the recorded framework version against the runtime and REFUSE on a mismatch rather than warn (see findings — a silently-loaded mismatch produces plausible wrong numbers). Cache bounded by memory, not by entry count: models differ in size by orders of magnitude and a count-based cap sizes for the smallest one.",
+          "audit_2026_09_01": "MODEL-SERVE-000 found the loader must also resolve scaler state alongside the model object — read feature_spec.json's scalingParams via ModelTrainingRun.featureSpecKey (one hop, verified non-null on 73/73 runs) at the same load step, and resolve each tag's method the way to_model_ready does (scalers.get(tag, DEFAULT_SCALER)), never by checking whether the spec's `scaling` array is non-empty — see the empty-`scaling`-array trap finding, which is real and specific to this task."
         },
         {
           "id": "MODEL-SERVE-002-T03",
@@ -288,14 +309,16 @@
           "title": "Apply the training-time preprocessing, by calling it",
           "status": "pending",
           "progress": 0,
-          "detail": "Per MODEL-SERVE-000-T03's answer. If the path is callable, call it. If it is not, extract it into a module BOTH the trainer and the server import, and make the trainer use the extracted copy in the same change — leaving the trainer on the original and the server on a copy is precisely the drift this task exists to prevent, and it would pass every test written against either side alone."
+          "detail": "Per MODEL-SERVE-000-T03's answer. If the path is callable, call it. If it is not, extract it into a module BOTH the trainer and the server import, and make the trainer use the extracted copy in the same change — leaving the trainer on the original and the server on a copy is precisely the drift this task exists to prevent, and it would pass every test written against either side alone.",
+          "audit_2026_09_01": "ANSWERED: call it. `to_model_ready(frame, tags, scalers, fitted_params=scaling_params)` (apps/python) already applies a fitted transform without re-fitting and is already tested via prepare_holdout_for_run/replay_holdout_for_run. It is frame-in/frame-out and object-storage-keyed today; a synchronous /predict needs a thin in-memory wrapper around it (rows -> frame -> to_model_ready -> rows), not an extraction. No new shared module is needed."
         },
         {
           "id": "MODEL-SERVE-002-T06",
           "title": "Refuse target-derived models that are not given target history",
           "status": "pending",
           "progress": 0,
-          "detail": "Read derived_from_target at LOAD time and fix the request contract from it, rather than discovering the gap per-request. Also validate the submitted history's sampling interval against the spec. A model in this class served without history does not error — it predicts from imputed or absent lags and returns a number, which is the failure mode with no symptom."
+          "detail": "Read derived_from_target at LOAD time and fix the request contract from it, rather than discovering the gap per-request. Also validate the submitted history's sampling interval against the spec. A model in this class served without history does not error — it predicts from imputed or absent lags and returns a number, which is the failure mode with no symptom.",
+          "audit_2026_09_01": "Measured: 0 of 21 live feature_spec.json objects have a non-empty derived_from_target. This guard governs a class the schema permits but no real model in this system currently belongs to — keep the guard (schema allows it), but do not treat /predict's request-contract fork as validated against real data; it is untested against a real target-derived model because none exists yet."
         },
         {
           "id": "MODEL-SERVE-002-T07",
@@ -414,44 +437,45 @@
       "id": "MODEL-SERVE-004",
       "title": "POST /retrain — Trigger Only",
       "priority": 4,
-      "status": "blocked",
+      "status": "pending",
       "progress": 0,
-      "blocked_on": "The same decision MODEL-FLOW-005 is blocked on — see MODEL-FLOW decisions.fine_tuning_undefined and this ledger's decisions.retrain_and_fine_tuning_are_one_question. Until 'retrain' is defined (a fresh fit on a widened window? a hyperparameter search reusing the split? a warm start on a framework that supports one?), the tasks below describe a job whose work is unspecified. Note this blocker is shared, not duplicated: resolving it unblocks both features at once and must not be counted twice.",
+      "blocked_on": "RESOLVED 2026-09-01 BY TRANSCRIPTION (MODEL-SERVE-000-T05 / upstream re-read) — status flipped blocked -> pending. ORIGINAL, PRESERVED: 'The same decision MODEL-FLOW-005 is blocked on — see MODEL-FLOW decisions.fine_tuning_undefined and this ledger's decisions.retrain_and_fine_tuning_are_one_question. Until retrain is defined (a fresh fit on a widened window? a hyperparameter search reusing the split? a warm start on a framework that supports one?), the tasks below describe a job whose work is unspecified.' Upstream decisions.fine_tuning_undefined resolved 2026-08-25 (user decision): fine-tuning = a hyperparameter search — one algorithm, one artifact, one split, N hyperparameter sets in sequence, best kept by RMSE. Transcribed into this ledger's decisions.retrain_is_blocked_on_the_same_definition_as_fine_tuning. MODEL-FLOW-005 was built on this definition and all 8 of its tasks are completed — it is a proven implementation pattern, not a speculative one. No engineering against MODEL-SERVE-004 has been done in this pass; only the block is lifted.",
       "dependencies": ["MODEL-SERVE-001", "MODEL-FLOW-005"],
       "description": "An endpoint that records the intent to retrain and returns. The work is done by the existing trainer image, spawned the way MODEL-FLOW-003-T04 already spawns it. A successful retrain produces a new ModelVersion at STAGING and promotes nothing.",
       "tasks": [
         {
           "id": "MODEL-SERVE-004-T01",
           "title": "Define what retrain means, and write it in the shared decision",
-          "status": "blocked",
-          "progress": 0,
-          "detail": "This is the whole blocker and it is a product decision, not an engineering one. Everything below is unscopeable until it lands. Write the answer into MODEL-FLOW decisions.fine_tuning_undefined so both ledgers read one definition."
+          "status": "completed",
+          "progress": 100,
+          "detail": "This is the whole blocker and it is a product decision, not an engineering one. Everything below is unscopeable until it lands. Write the answer into MODEL-FLOW decisions.fine_tuning_undefined so both ledgers read one definition.",
+          "result_2026_09_01": "Done by transcription, not new deliberation — see this feature's blocked_on and decisions.retrain_is_blocked_on_the_same_definition_as_fine_tuning: retrain = a hyperparameter search, one algorithm/artifact/split, N sets tried in sequence, best kept by RMSE."
         },
         {
           "id": "MODEL-SERVE-004-T02",
           "title": "Trigger endpoint with idempotency and a per-model lock",
-          "status": "blocked",
+          "status": "pending",
           "progress": 0,
           "detail": "Three clicks must not become three containers competing for the same 8 GiB. MODEL-FLOW-000-T03 established that /scratch's tmpfs shares the container's memory cgroup, so concurrent fits are not merely slow, they are a plausible OOM."
         },
         {
           "id": "MODEL-SERVE-004-T03",
           "title": "Spawn the existing trainer; never fit in the serving process",
-          "status": "blocked",
+          "status": "pending",
           "progress": 0,
           "detail": "Per decisions.training_and_serving_are_separate_planes."
         },
         {
           "id": "MODEL-SERVE-004-T04",
           "title": "On success, create a STAGING version — promote nothing",
-          "status": "blocked",
+          "status": "pending",
           "progress": 0,
           "detail": "Auto-promotion would put an unreviewed model in front of live traffic on a schedule, which is a decision no one made. MODEL-SERVE-001-T03 takes the same position for Save Model, for the same reason."
         },
         {
           "id": "MODEL-SERVE-004-T05",
           "title": "Compare the candidate against the incumbent, and publish the comparison",
-          "status": "blocked",
+          "status": "pending",
           "progress": 0,
           "detail": "The comparison is only meaningful on a common evaluation basis; a retrain on a widened window has a different test split, so a raw R² delta is not a like-for-like number. State the basis alongside the numbers rather than presenting a delta that reads as one and is not — the same discipline MODEL-FLOW-010-T06 applies to publishing the holdout's missing rate beside every metric."
         }
@@ -532,8 +556,8 @@
       "description": "Run a promoted model on a fixed cadence, writing one predictions parquet and one metrics document per time window, with per-run logs readable afterwards. This is the feature that makes 'deployed' mean something. It needs no serving process — see decisions.short_lived_containers_for_scheduled_inference.",
 
       "dependency_notes": {
-        "MODEL-FLOW-004": "HARD, not conventional. Step 4 currently computes its own metrics client-side (see findings), so until it reads the run's real metrics there is no surface on which a metric registry or a monitoring series means anything. Building the schedule first would produce a correct monitoring record beside a screen showing unrelated numbers.",
-        "MODEL-FLOW-011": "Specifically T04, orphaned-RUNNING reconciliation. MODEL-FLOW-003-V01 observed ONE stranded RUNNING row from ONE nest restart. At 24 windows a day that stops being an incident and becomes a background rate, and every stranded row is a permanent hole in the monitoring record. Reconciliation must exist before the cadence does, not after.",
+        "MODEL-FLOW-004": "SATISFIED 2026-09-01 (MODEL-SERVE-000 re-audit). ORIGINAL: 'HARD, not conventional. Step 4 currently computes its own metrics client-side (see findings), so until it reads the run's real metrics there is no surface on which a metric registry or a monitoring series means anything. Building the schedule first would produce a correct monitoring record beside a screen showing unrelated numbers.' MODEL-FLOW-004 is now in_progress 90 with all 5 tasks completed; phase-5-evaluation.tsx reads real predictions via useDraftRunEvaluation/mpTrainingResultAtom, not a client-side computeFit. T08 can proceed.",
+        "MODEL-FLOW-011": "SATISFIED 2026-09-01 (MODEL-SERVE-000 re-audit). ORIGINAL: 'Specifically T04, orphaned-RUNNING reconciliation. MODEL-FLOW-003-V01 observed ONE stranded RUNNING row from ONE nest restart. At 24 windows a day that stops being an incident and becomes a background rate, and every stranded row is a permanent hole in the monitoring record. Reconciliation must exist before the cadence does, not after.' MODEL-FLOW-011 is completed 100%, including T04 (reconcileOrphanedRuns() at boot, trainning-container.authorized.service.ts:53-123) and T05 (never reclaim an adopted run's prefix).",
         "MODEL-SERVE-002": "NOT a dependency, deliberately. Synchronous /predict is a different requirement; this feature must not wait on it and must not build a serving process to get a scheduled run."
       },
 
@@ -565,7 +589,8 @@
           "title": "infer.py as a second entrypoint on the existing trainer image",
           "status": "pending",
           "progress": 0,
-          "detail": "Reads its window spec from a /claim-style callback exactly as train.py does, resolves the model object and scaler state (MODEL-SERVE-000-T03 must have answered where scalers live — this task is blocked in practice until it has), scores, writes predictions.parquet and metrics.json, reports through /log and /complete.\n\nSame image as the trainer so both entrypoints unpickle with the same library versions, and so image_digest provenance works identically. HEED MODEL-FLOW-000-T04's warning: nothing in CI builds images/trainer/Dockerfile, so a correct repo and a stale deployed image are indistinguishable today. Adding an entrypoint makes that worse, because a deployed image without infer.py fails in a way that looks like a scheduler bug. Add the CI build in this task, not later."
+          "detail": "Reads its window spec from a /claim-style callback exactly as train.py does, resolves the model object and scaler state (MODEL-SERVE-000-T03 must have answered where scalers live — this task is blocked in practice until it has), scores, writes predictions.parquet and metrics.json, reports through /log and /complete.\n\nSame image as the trainer so both entrypoints unpickle with the same library versions, and so image_digest provenance works identically. HEED MODEL-FLOW-000-T04's warning: nothing in CI builds images/trainer/Dockerfile, so a correct repo and a stale deployed image are indistinguishable today. Adding an entrypoint makes that worse, because a deployed image without infer.py fails in a way that looks like a scheduler bug. Add the CI build in this task, not later.",
+          "audit_2026_09_01": "UNBLOCKED: MODEL-SERVE-000-T03 answered where scalers live — feature_spec.json's scalingParams, one hop off ModelTrainingRun.featureSpecKey, applied via the existing to_model_ready(..., fitted_params=...). infer.py resolves scaler state the same way T05/T06 above do. Also inherits the serving-host finding: the Docker-daemon spawn this entrypoint runs under is now verified adequate for short-lived containers (decisions.serving_host_undecided, closed for MODEL-SERVE-006)."
         },
         {
           "id": "MODEL-SERVE-006-T04",
@@ -687,126 +712,126 @@
       ]
     },
     {
-  "id": "MODEL-SERVE-007",
-  "title": "Retention Classes in Object Storage — the Storage Foundation",
-  "priority": 7,
-  "status": "pending",
-  "progress": 0,
-  "dependencies": ["MODEL-SERVE-000"],
-  "must_land_before": "MODEL-SERVE-006-T06. That task writes the first inference/ object; whichever layout is chosen, deciding after it lands turns a free choice into a migration.",
-
-  "description": "Make an object's RETENTION CLASS legible to storage tooling, so that 'may be reclaimed' is not knowable only from application code. Moves no existing bytes.",
-
-  "audit_note": "REVISED 2026-08-25 after reading apps/python/.../object_store.py. Three claims made when this feature was first drafted were wrong and are corrected in the findings below, not silently edited: the key layout (a), the cost of multi-bucket (b), and what a bucket lifecycle rule can actually express (c). The correction to (c) weakens this feature's original headline rationale, which is why T01 is now a decision to be made rather than a layout to implement.",
-
-  "findings": [
-    "CORRECTED (a) — `datasets/` IS THE BUCKET NAME, NOT A PREFIX. The module docstring renders the layout as `datasets/{datasetId}/artifacts/{artifactId}/data.parquet`, which reads as a prefixed key and is what an earlier draft of this feature assumed. The key helpers disagree: artifact_prefix returns f\"{dataset_id}/artifacts/{artifact_id}/\", version_key returns f\"{dataset_id}/{version_id}.parquet\", tmp_key returns f\"{dataset_id}/tmp/...\". Dataset keys begin with a BARE UUID and have no named root at all. The only named roots in the store are models/, drafts/ and feature-presets/.\n\nCONSEQUENCE: a key-to-bucket resolver cannot dispatch on the first segment, because dataset keys have nothing there to dispatch on. It must dispatch on the roots that DO exist and treat rootless keys as the dataset default. The docstring should also be fixed to say `bucket / key` — it is the direct cause of this misreading and will cause it again.",
-
-    "CONFIRMED — `drafts/` IS SHARED, AND THE DISCRIMINATOR IS THE THIRD SEGMENT. Previously inferred from one observed gold_object_key; now confirmed against the code. drafts/{id}/runs/{id}/… is a model run output (draft_run_key, MODEL-FLOW-003-T08) and drafts/{id}/artifacts/{id}/… is a dataset draft artifact (the observed gold_object_key). is_draft_run_key already tests exactly this shape — 4 segments after the root with parts[1] == 'runs' — so the discriminator a resolver needs is a predicate that already exists and is already tested.",
-
-    "CORRECTED (b) — THERE ARE NO HARDCODED BUCKET LITERALS, AND THE CONSTRUCTOR ALREADY TAKES A BUCKET. An earlier draft budgeted an audit for scattered literals. There are none: self.bucket is set once in __init__ from settings.S3_BUCKET and every method reads that one attribute (~15 sites, all reads). ObjectStore.__init__ already accepts an explicit `bucket` argument.\n\nSo multi-bucket is NOT a signature change threaded through fifteen methods — it is a FACTORY returning a per-bucket instance, plus a change at the few places that construct or hold an ObjectStore. _presign_minio is already an instance-level cache, which fits per-bucket instances rather than fighting them. This is materially cheaper than the earlier estimate and is the single biggest correction in this pass.",
-
-    "CORRECTED (c) — A BUCKET LIFECYCLE RULE CANNOT EXPRESS THE `models` RETENTION RULE, AND THE CODEBASE ALREADY SAYS SO. ensure_tmp_lifecycle_rule's own docstring: committed artifact prefixes are never expressed there because they need a reference check 'which a bucket lifecycle rule cannot do — only application-level cleanup is authoritative'. 'Retained while referenced' is exactly that kind of check.\n\nThis feature's original rationale — separation makes retention expressible at the bucket level — is therefore HALF WRONG and is restated: separation does not express the right rule, it prevents a wrong rule from REACHING the wrong objects. That is still worth having, and it is a narrower claim than the one first made.",
-
-    "THE TAG MECHANISM FOR THIS PROBLEM ALREADY EXISTS AND WAS BUILT FOR THE SAME REASON. TMP_LIFECYCLE_TAG_KEY's doc comment explains that S3/MinIO Prefix filters are literal and anchored, never wildcards, so 'tmp/ under any dataset' is not expressible as a prefix rule — hence an object TAG plus one bucket-wide rule. The identical constraint applies to a models bucket holding BOTH models/… and drafts/…/runs/… : two roots, so no single Prefix rule covers it, so a tag is needed there too. Any option chosen in T01 should reuse this mechanism rather than invent a second one.",
-
-    "PRIOR DECISION AGAINST A SECOND BUCKET, WITH A STATED REASON. PRESET_ROOT's comment: a prefix inside the existing bucket 'rather than a bucket of its own: ensure_bucket() has no runtime caller in this service, so a second bucket would need new bootstrap while a prefix needs none.' Confirmed: ensure_bucket has no automatic caller, and ensure_tmp_lifecycle_rule's comment records that docker-compose.yml does not declare MinIO at all — it runs as an uncommitted minio-local container. So every bucket is a manual, undocumented per-environment ops step.\n\nThis feature must engage with that decision rather than step around it. What presets did not have, and inference does, is a DIFFERENT RETENTION CLASS — presets and datasets are both reclaimable-with-a-reference-check, whereas an inference record is never reclaimable. That is a reason the earlier decision did not weigh, not a reason to overrule it.",
-
-    "`models/` MAY HAVE NO LIVE OBJECTS AT ALL. MODEL_ROOT, model_run_prefix and model_run_key all exist, but MODEL-FLOW-003-T08 routed live writes to draft_run_key, and MODEL-FLOW-007-T10 adopts by pointer without moving bytes — so nothing may ever write under models/. UNVERIFIED (needs a bucket listing), but if true, a 'models' bucket would hold only drafts/…/runs/… keys, which is confusing enough to be worth knowing before naming anything."
-  ],
-
-  "tasks": [
-    {
-      "id": "MODEL-SERVE-007-T01",
-      "title": "DECIDE the retention-class mechanism — three options, one recommendation",
+      "id": "MODEL-SERVE-007",
+      "title": "Retention Classes in Object Storage — the Storage Foundation",
+      "priority": 7,
       "status": "pending",
       "progress": 0,
-      "detail": "This was drafted as 'define three buckets'. Findings (c) and the PRESET_ROOT precedent make that a choice rather than a conclusion, so it is recorded as one.\n\nOPTION A — three buckets (datasets / models / inference). Strongest isolation: a lifecycle rule or access grant scoped to a bucket cannot reach another class even if authored carelessly. Costs what PRESET_ROOT's comment names: two more manual bucket-creation steps in an environment where MinIO is not even in docker-compose, plus the factory from T02.\n\nOPTION B — one bucket, retention-class OBJECT TAG on every write, lifecycle rules keyed on tag. Matches the mechanism already proven here for tmp/, needs no bootstrap, no factory, no resolver. Weaker: nothing stops a rule authored against a prefix or against no filter at all from reaching every class, and the tag is only as good as the writer that sets it.\n\nOPTION C (RECOMMENDED) — tag everything by retention class per Option B, AND give `inference` its own bucket. inference is the one class that is never reclaimable, grows without bound, and has zero existing objects — so its bucket is free, needs no migration, and is the one place where 'an operator cannot accidentally point a rule at this' is worth a manual bootstrap step. datasets and models stay co-located under tags, which keeps faith with the PRESET_ROOT decision instead of quietly reversing it.\n\nWHICHEVER IS CHOSEN, RECORD IT AS A DECISION WITH ITS REJECTED ALTERNATIVES. The next person to face 'new bucket or new prefix' will read whatever is written here, the way this task read PRESET_ROOT's comment."
-    },
-    {
-      "id": "MODEL-SERVE-007-T02",
-      "title": "Tag every write with its retention class",
-      "status": "pending",
-      "progress": 0,
-      "detail": "Required under all three options in T01 — it is what makes the class legible to tooling at all, and under Option B it is the entire mechanism.\n\nput_frame already sets an object tag conditionally (`if \"/tmp/\" in key`). Generalise that: derive the retention class from the key and tag every write, in put_object_stream so it covers put_frame and put_object_bytes together. put_json goes DIRECTLY to self._client.put_object and bypasses that path — the module's own comments flag it as un-refactored — so it needs the tag added too, or every JSON sidecar (including run_manifest.json) is written untagged.\n\nClasses: SWEEPABLE (dataset drafts/artifacts, tmp, presets), REFERENCED (model run outputs), PERMANENT (inference records). Note that REFERENCED still cannot be enforced by a lifecycle rule — finding (c) — so its tag is a label for humans and audits, not an enforcement point. Say so where the constant is defined, or someone will write a rule against it and believe it works."
-    },
-    {
-      "id": "MODEL-SERVE-007-T03",
-      "title": "One key-to-class resolver, built on the predicates that exist",
-      "status": "pending",
-      "progress": 0,
-      "detail": "class_for_key(key) in object_store.py with its TS twin in artifact-keys.ts. Dispatch on the roots that actually exist, per finding (a) — NOT on the first segment, which is a bare UUID for dataset keys:\n\n  inference/…                    → PERMANENT\n  models/…                       → REFERENCED\n  drafts/… + is_draft_run_key    → REFERENCED\n  drafts/… + /artifacts/         → SWEEPABLE\n  feature-presets/…              → SWEEPABLE\n  anything else (rootless)       → SWEEPABLE\n\nThe drafts/ branch MUST call is_draft_run_key rather than re-deriving the segment test — the two would otherwise disagree about the same key and only one of them is under test.\n\nThe rootless default is not a fallback: it is the historically correct answer for every dataset object ever written, all of which are bucket-less and root-less by construction."
-    },
-    {
-      "id": "MODEL-SERVE-007-T04",
-      "title": "Per-bucket ObjectStore factory — only if T01 chooses A or C",
-      "status": "pending",
-      "progress": 0,
-      "detail": "Per finding (b) this is a factory, not a refactor: ObjectStore.__init__ already accepts `bucket`, and no method holds a literal. store_for(bucket) caching one instance per bucket name, plus store_for_key(key) composing it with T03's resolver.\n\nTHE REAL WORK IS AT THE CONSTRUCTION SITES, NOT IN THIS CLASS. artifact_service and its siblings hold a single ObjectStore today; a flow spanning classes (infer.py reads a model, reads the gold parquet, writes an inference record — three classes) needs the store resolved per key rather than per service. Audit who constructs one before changing anything.\n\nUnder Option C only `inference` is separate, so the factory has two entries and the blast radius is small. Under Option A every dataset read moves too, which is the expensive half."
-    },
-    {
-      "id": "MODEL-SERVE-007-T05",
-      "title": "Write inference/ into its chosen home from the very first object",
-      "status": "pending",
-      "progress": 0,
-      "detail": "Free today, a migration after MODEL-SERVE-006-T06 lands. Nothing has written an inference object yet.\n\nUnder Option A or C this means the bucket exists and is bootstrapped BEFORE the first scheduled window runs — and since ensure_bucket has no runtime caller (finding: PRESET_ROOT precedent), 'exists' means someone did it by hand and wrote down that they did. A scheduler whose first window fails on NoSuchBucket at 02:00 is the predictable version of this."
-    },
-    {
-      "id": "MODEL-SERVE-007-T06",
-      "title": "Add bucket and gold_artifact_id to run_manifest.json",
-      "status": "pending",
-      "progress": 0,
-      "detail": "gold_bucket makes the manifest self-describing — a reader years later needs no resolver to find the object. gold_artifact_id (b9e25f8d in the observed run) is the durable reference: it is ALREADY IN the key as a path segment, so this promotes a substring to a field. A reference parsed out of a path breaks when the path shape changes; a field does not.\n\nBoth, not either. A manifest lacking gold_bucket resolves via T03's default, which is correct for every manifest written so far.\n\nNOTE the naming trap finding (a) created: gold_object_key's value is a KEY relative to a bucket, and the docstring's rendering of it as `datasets/...` is what made an earlier reading treat the bucket as part of the path. Fix that docstring in this task."
-    },
-    {
-      "id": "MODEL-SERVE-007-T07",
-      "title": "Write down each class's rule where an operator will see it",
-      "status": "pending",
-      "progress": 0,
-      "detail": "Per finding (c), state plainly what tooling CAN and CANNOT enforce: SWEEPABLE is expressible as a tag-filtered lifecycle rule (the tmp/ rule already proves the mechanism); PERMANENT is expressible as the absence of any rule; REFERENCED IS NOT EXPRESSIBLE and depends on MODEL-FLOW-011-T05's run-level guard plus ArtifactCleanupService.\n\nRecording the limit is the point. A retention scheme that looks fully enforced but has one class enforced only by application code is more dangerous than one that admits it, because the next person will trust the appearance.\n\nAlso record the bootstrap steps T05 needs, since ensure_bucket has no automatic caller and MinIO is not in docker-compose."
+      "dependencies": ["MODEL-SERVE-000"],
+      "must_land_before": "MODEL-SERVE-006-T06. That task writes the first inference/ object; whichever layout is chosen, deciding after it lands turns a free choice into a migration.",
+
+      "description": "Make an object's RETENTION CLASS legible to storage tooling, so that 'may be reclaimed' is not knowable only from application code. Moves no existing bytes.",
+
+      "audit_note": "REVISED 2026-08-25 after reading apps/python/.../object_store.py. Three claims made when this feature was first drafted were wrong and are corrected in the findings below, not silently edited: the key layout (a), the cost of multi-bucket (b), and what a bucket lifecycle rule can actually express (c). The correction to (c) weakens this feature's original headline rationale, which is why T01 is now a decision to be made rather than a layout to implement.",
+
+      "findings": [
+        "CORRECTED (a) — `datasets/` IS THE BUCKET NAME, NOT A PREFIX. The module docstring renders the layout as `datasets/{datasetId}/artifacts/{artifactId}/data.parquet`, which reads as a prefixed key and is what an earlier draft of this feature assumed. The key helpers disagree: artifact_prefix returns f\"{dataset_id}/artifacts/{artifact_id}/\", version_key returns f\"{dataset_id}/{version_id}.parquet\", tmp_key returns f\"{dataset_id}/tmp/...\". Dataset keys begin with a BARE UUID and have no named root at all. The only named roots in the store are models/, drafts/ and feature-presets/.\n\nCONSEQUENCE: a key-to-bucket resolver cannot dispatch on the first segment, because dataset keys have nothing there to dispatch on. It must dispatch on the roots that DO exist and treat rootless keys as the dataset default. The docstring should also be fixed to say `bucket / key` — it is the direct cause of this misreading and will cause it again.",
+
+        "CONFIRMED — `drafts/` IS SHARED, AND THE DISCRIMINATOR IS THE THIRD SEGMENT. Previously inferred from one observed gold_object_key; now confirmed against the code. drafts/{id}/runs/{id}/… is a model run output (draft_run_key, MODEL-FLOW-003-T08) and drafts/{id}/artifacts/{id}/… is a dataset draft artifact (the observed gold_object_key). is_draft_run_key already tests exactly this shape — 4 segments after the root with parts[1] == 'runs' — so the discriminator a resolver needs is a predicate that already exists and is already tested.",
+
+        "CORRECTED (b) — THERE ARE NO HARDCODED BUCKET LITERALS, AND THE CONSTRUCTOR ALREADY TAKES A BUCKET. An earlier draft budgeted an audit for scattered literals. There are none: self.bucket is set once in __init__ from settings.S3_BUCKET and every method reads that one attribute (~15 sites, all reads). ObjectStore.__init__ already accepts an explicit `bucket` argument.\n\nSo multi-bucket is NOT a signature change threaded through fifteen methods — it is a FACTORY returning a per-bucket instance, plus a change at the few places that construct or hold an ObjectStore. _presign_minio is already an instance-level cache, which fits per-bucket instances rather than fighting them. This is materially cheaper than the earlier estimate and is the single biggest correction in this pass.",
+
+        "CORRECTED (c) — A BUCKET LIFECYCLE RULE CANNOT EXPRESS THE `models` RETENTION RULE, AND THE CODEBASE ALREADY SAYS SO. ensure_tmp_lifecycle_rule's own docstring: committed artifact prefixes are never expressed there because they need a reference check 'which a bucket lifecycle rule cannot do — only application-level cleanup is authoritative'. 'Retained while referenced' is exactly that kind of check.\n\nThis feature's original rationale — separation makes retention expressible at the bucket level — is therefore HALF WRONG and is restated: separation does not express the right rule, it prevents a wrong rule from REACHING the wrong objects. That is still worth having, and it is a narrower claim than the one first made.",
+
+        "THE TAG MECHANISM FOR THIS PROBLEM ALREADY EXISTS AND WAS BUILT FOR THE SAME REASON. TMP_LIFECYCLE_TAG_KEY's doc comment explains that S3/MinIO Prefix filters are literal and anchored, never wildcards, so 'tmp/ under any dataset' is not expressible as a prefix rule — hence an object TAG plus one bucket-wide rule. The identical constraint applies to a models bucket holding BOTH models/… and drafts/…/runs/… : two roots, so no single Prefix rule covers it, so a tag is needed there too. Any option chosen in T01 should reuse this mechanism rather than invent a second one.",
+
+        "PRIOR DECISION AGAINST A SECOND BUCKET, WITH A STATED REASON. PRESET_ROOT's comment: a prefix inside the existing bucket 'rather than a bucket of its own: ensure_bucket() has no runtime caller in this service, so a second bucket would need new bootstrap while a prefix needs none.' Confirmed: ensure_bucket has no automatic caller, and ensure_tmp_lifecycle_rule's comment records that docker-compose.yml does not declare MinIO at all — it runs as an uncommitted minio-local container. So every bucket is a manual, undocumented per-environment ops step.\n\nThis feature must engage with that decision rather than step around it. What presets did not have, and inference does, is a DIFFERENT RETENTION CLASS — presets and datasets are both reclaimable-with-a-reference-check, whereas an inference record is never reclaimable. That is a reason the earlier decision did not weigh, not a reason to overrule it.",
+
+        "`models/` MAY HAVE NO LIVE OBJECTS AT ALL. MODEL_ROOT, model_run_prefix and model_run_key all exist, but MODEL-FLOW-003-T08 routed live writes to draft_run_key, and MODEL-FLOW-007-T10 adopts by pointer without moving bytes — so nothing may ever write under models/. UNVERIFIED (needs a bucket listing), but if true, a 'models' bucket would hold only drafts/…/runs/… keys, which is confusing enough to be worth knowing before naming anything."
+      ],
+
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-007-T01",
+          "title": "DECIDE the retention-class mechanism — three options, one recommendation",
+          "status": "pending",
+          "progress": 0,
+          "detail": "This was drafted as 'define three buckets'. Findings (c) and the PRESET_ROOT precedent make that a choice rather than a conclusion, so it is recorded as one.\n\nOPTION A — three buckets (datasets / models / inference). Strongest isolation: a lifecycle rule or access grant scoped to a bucket cannot reach another class even if authored carelessly. Costs what PRESET_ROOT's comment names: two more manual bucket-creation steps in an environment where MinIO is not even in docker-compose, plus the factory from T02.\n\nOPTION B — one bucket, retention-class OBJECT TAG on every write, lifecycle rules keyed on tag. Matches the mechanism already proven here for tmp/, needs no bootstrap, no factory, no resolver. Weaker: nothing stops a rule authored against a prefix or against no filter at all from reaching every class, and the tag is only as good as the writer that sets it.\n\nOPTION C (RECOMMENDED) — tag everything by retention class per Option B, AND give `inference` its own bucket. inference is the one class that is never reclaimable, grows without bound, and has zero existing objects — so its bucket is free, needs no migration, and is the one place where 'an operator cannot accidentally point a rule at this' is worth a manual bootstrap step. datasets and models stay co-located under tags, which keeps faith with the PRESET_ROOT decision instead of quietly reversing it.\n\nWHICHEVER IS CHOSEN, RECORD IT AS A DECISION WITH ITS REJECTED ALTERNATIVES. The next person to face 'new bucket or new prefix' will read whatever is written here, the way this task read PRESET_ROOT's comment."
+        },
+        {
+          "id": "MODEL-SERVE-007-T02",
+          "title": "Tag every write with its retention class",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Required under all three options in T01 — it is what makes the class legible to tooling at all, and under Option B it is the entire mechanism.\n\nput_frame already sets an object tag conditionally (`if \"/tmp/\" in key`). Generalise that: derive the retention class from the key and tag every write, in put_object_stream so it covers put_frame and put_object_bytes together. put_json goes DIRECTLY to self._client.put_object and bypasses that path — the module's own comments flag it as un-refactored — so it needs the tag added too, or every JSON sidecar (including run_manifest.json) is written untagged.\n\nClasses: SWEEPABLE (dataset drafts/artifacts, tmp, presets), REFERENCED (model run outputs), PERMANENT (inference records). Note that REFERENCED still cannot be enforced by a lifecycle rule — finding (c) — so its tag is a label for humans and audits, not an enforcement point. Say so where the constant is defined, or someone will write a rule against it and believe it works."
+        },
+        {
+          "id": "MODEL-SERVE-007-T03",
+          "title": "One key-to-class resolver, built on the predicates that exist",
+          "status": "pending",
+          "progress": 0,
+          "detail": "class_for_key(key) in object_store.py with its TS twin in artifact-keys.ts. Dispatch on the roots that actually exist, per finding (a) — NOT on the first segment, which is a bare UUID for dataset keys:\n\n  inference/…                    → PERMANENT\n  models/…                       → REFERENCED\n  drafts/… + is_draft_run_key    → REFERENCED\n  drafts/… + /artifacts/         → SWEEPABLE\n  feature-presets/…              → SWEEPABLE\n  anything else (rootless)       → SWEEPABLE\n\nThe drafts/ branch MUST call is_draft_run_key rather than re-deriving the segment test — the two would otherwise disagree about the same key and only one of them is under test.\n\nThe rootless default is not a fallback: it is the historically correct answer for every dataset object ever written, all of which are bucket-less and root-less by construction."
+        },
+        {
+          "id": "MODEL-SERVE-007-T04",
+          "title": "Per-bucket ObjectStore factory — only if T01 chooses A or C",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Per finding (b) this is a factory, not a refactor: ObjectStore.__init__ already accepts `bucket`, and no method holds a literal. store_for(bucket) caching one instance per bucket name, plus store_for_key(key) composing it with T03's resolver.\n\nTHE REAL WORK IS AT THE CONSTRUCTION SITES, NOT IN THIS CLASS. artifact_service and its siblings hold a single ObjectStore today; a flow spanning classes (infer.py reads a model, reads the gold parquet, writes an inference record — three classes) needs the store resolved per key rather than per service. Audit who constructs one before changing anything.\n\nUnder Option C only `inference` is separate, so the factory has two entries and the blast radius is small. Under Option A every dataset read moves too, which is the expensive half."
+        },
+        {
+          "id": "MODEL-SERVE-007-T05",
+          "title": "Write inference/ into its chosen home from the very first object",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Free today, a migration after MODEL-SERVE-006-T06 lands. Nothing has written an inference object yet.\n\nUnder Option A or C this means the bucket exists and is bootstrapped BEFORE the first scheduled window runs — and since ensure_bucket has no runtime caller (finding: PRESET_ROOT precedent), 'exists' means someone did it by hand and wrote down that they did. A scheduler whose first window fails on NoSuchBucket at 02:00 is the predictable version of this."
+        },
+        {
+          "id": "MODEL-SERVE-007-T06",
+          "title": "Add bucket and gold_artifact_id to run_manifest.json",
+          "status": "pending",
+          "progress": 0,
+          "detail": "gold_bucket makes the manifest self-describing — a reader years later needs no resolver to find the object. gold_artifact_id (b9e25f8d in the observed run) is the durable reference: it is ALREADY IN the key as a path segment, so this promotes a substring to a field. A reference parsed out of a path breaks when the path shape changes; a field does not.\n\nBoth, not either. A manifest lacking gold_bucket resolves via T03's default, which is correct for every manifest written so far.\n\nNOTE the naming trap finding (a) created: gold_object_key's value is a KEY relative to a bucket, and the docstring's rendering of it as `datasets/...` is what made an earlier reading treat the bucket as part of the path. Fix that docstring in this task."
+        },
+        {
+          "id": "MODEL-SERVE-007-T07",
+          "title": "Write down each class's rule where an operator will see it",
+          "status": "pending",
+          "progress": 0,
+          "detail": "Per finding (c), state plainly what tooling CAN and CANNOT enforce: SWEEPABLE is expressible as a tag-filtered lifecycle rule (the tmp/ rule already proves the mechanism); PERMANENT is expressible as the absence of any rule; REFERENCED IS NOT EXPRESSIBLE and depends on MODEL-FLOW-011-T05's run-level guard plus ArtifactCleanupService.\n\nRecording the limit is the point. A retention scheme that looks fully enforced but has one class enforced only by application code is more dangerous than one that admits it, because the next person will trust the appearance.\n\nAlso record the bootstrap steps T05 needs, since ensure_bucket has no automatic caller and MinIO is not in docker-compose."
+        }
+      ],
+
+      "acceptance_criteria": [
+        "T01's mechanism is chosen and recorded as a decision with its rejected alternatives, engaging with PRESET_ROOT's prior 'prefix not bucket' reasoning rather than bypassing it.",
+        "No existing object is moved; no persisted key column and no already-written manifest is rewritten.",
+        "Every write carries a retention-class tag — including put_json's, which bypasses the shared PUT path today.",
+        "One resolver per language maps key to retention class, calling is_draft_run_key rather than re-deriving its segment test.",
+        "A rootless key resolves to the dataset class, documented as historically correct rather than as a fallback.",
+        "The first inference object is written to its chosen home, with any bootstrap step recorded.",
+        "run_manifest.json records both gold_bucket and gold_artifact_id; a manifest lacking gold_bucket still resolves.",
+        "The written retention rules state which classes tooling can enforce and which one it cannot.",
+        "A model saved before this feature and one saved after load by the same code path."
+      ],
+
+      "verification": [
+        {
+          "id": "MODEL-SERVE-007-V01",
+          "description": "THE MIGRATION-SAFETY TEST: load a model whose run predates this feature (run 61f9aa28 is real) and confirm it resolves correctly AND that model_sha256 verifies via checksum_of. A test using only post-change objects proves the new path works and says nothing about the objects that can actually break.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-SERVE-007-V02",
+          "description": "PROVE THE SHARED ROOT IS DISAMBIGUATED: resolve drafts/{id}/runs/{id}/model.joblib and drafts/{id}/artifacts/{id}/data_gold.parquet and confirm DIFFERENT classes. A resolver dispatching on the first segment sends both to the same place and passes any test that checks only one.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-SERVE-007-V03",
+          "description": "Resolve a rootless legacy key ({datasetId}/{versionId}.parquet, the version_key layout) and confirm the dataset class. Finding (a) exists because this shape was mis-assumed once already.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-SERVE-007-V04",
+          "description": "Write a JSON sidecar via put_json and assert the retention tag is present on the stored object. put_json bypasses the shared PUT path, so a tag added only to put_object_stream leaves every manifest and metrics document untagged — and passes any test that writes a parquet.",
+          "status": "pending"
+        },
+        {
+          "id": "MODEL-SERVE-007-V05",
+          "description": "If T01 chose A or C: place the same key in two buckets with different bytes, confirm the loader lands on the intended one, and confirm checksum verification catches it when it does not. The guards are key-structural and bucket-blind, so the checksum is the only discriminator.",
+          "status": "pending"
+        }
+      ]
     }
-  ],
-
-  "acceptance_criteria": [
-    "T01's mechanism is chosen and recorded as a decision with its rejected alternatives, engaging with PRESET_ROOT's prior 'prefix not bucket' reasoning rather than bypassing it.",
-    "No existing object is moved; no persisted key column and no already-written manifest is rewritten.",
-    "Every write carries a retention-class tag — including put_json's, which bypasses the shared PUT path today.",
-    "One resolver per language maps key to retention class, calling is_draft_run_key rather than re-deriving its segment test.",
-    "A rootless key resolves to the dataset class, documented as historically correct rather than as a fallback.",
-    "The first inference object is written to its chosen home, with any bootstrap step recorded.",
-    "run_manifest.json records both gold_bucket and gold_artifact_id; a manifest lacking gold_bucket still resolves.",
-    "The written retention rules state which classes tooling can enforce and which one it cannot.",
-    "A model saved before this feature and one saved after load by the same code path."
-  ],
-
-  "verification": [
-    {
-      "id": "MODEL-SERVE-007-V01",
-      "description": "THE MIGRATION-SAFETY TEST: load a model whose run predates this feature (run 61f9aa28 is real) and confirm it resolves correctly AND that model_sha256 verifies via checksum_of. A test using only post-change objects proves the new path works and says nothing about the objects that can actually break.",
-      "status": "pending"
-    },
-    {
-      "id": "MODEL-SERVE-007-V02",
-      "description": "PROVE THE SHARED ROOT IS DISAMBIGUATED: resolve drafts/{id}/runs/{id}/model.joblib and drafts/{id}/artifacts/{id}/data_gold.parquet and confirm DIFFERENT classes. A resolver dispatching on the first segment sends both to the same place and passes any test that checks only one.",
-      "status": "pending"
-    },
-    {
-      "id": "MODEL-SERVE-007-V03",
-      "description": "Resolve a rootless legacy key ({datasetId}/{versionId}.parquet, the version_key layout) and confirm the dataset class. Finding (a) exists because this shape was mis-assumed once already.",
-      "status": "pending"
-    },
-    {
-      "id": "MODEL-SERVE-007-V04",
-      "description": "Write a JSON sidecar via put_json and assert the retention tag is present on the stored object. put_json bypasses the shared PUT path, so a tag added only to put_object_stream leaves every manifest and metrics document untagged — and passes any test that writes a parquet.",
-      "status": "pending"
-    },
-    {
-      "id": "MODEL-SERVE-007-V05",
-      "description": "If T01 chose A or C: place the same key in two buckets with different bytes, confirm the loader lands on the intended one, and confirm checksum verification catches it when it does not. The guards are key-structural and bucket-blind, so the checksum is the only discriminator.",
-      "status": "pending"
-    }
-  ]
-}
   ],
 
   "global_definition_of_done": [

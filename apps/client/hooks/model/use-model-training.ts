@@ -19,6 +19,8 @@ import {
   mpFindBestParamsAtom,
   mpHyperparamsAtom,
   mpTrainTestSplitAtom,
+  mpSplitStatsTagsAtom,
+  mpSeedAtom,
   mpSelectedDatasetAtom,
   mpTrainingResultAtom,
   mpCandidateJobIdAtom,
@@ -73,6 +75,8 @@ export function useModelTraining({
   const findBestParams = useAtomValue(mpFindBestParamsAtom)
   const hyperparameters = useAtomValue(mpHyperparamsAtom)
   const trainTestSplit = useAtomValue(mpTrainTestSplitAtom)
+  const splitStatsTags = useAtomValue(mpSplitStatsTagsAtom)
+  const seed = useAtomValue(mpSeedAtom)
   const selectedDataset = useAtomValue(mpSelectedDatasetAtom)
   const setTrainingResult = useSetAtom(mpTrainingResultAtom)
   const setArtifactRef = useSetAtom(mpArtifactRefAtom)
@@ -411,6 +415,15 @@ export function useModelTraining({
         // FRACTION, never a percentage — converted once, here, at the
         // client boundary (same rule useModelDraftSync's PATCH follows).
         trainTestSplit: trainTestSplit / 100,
+        // MODEL-FLOW-014-T06. The Split Distribution panel's own tag
+        // selection, so the frozen sidecar matches what was displayed.
+        // Omitted (undefined) when the panel never seeded a selection —
+        // the backend's own default is [targetY] either way.
+        ...(splitStatsTags.length > 0 && { splitStatsTags }),
+        // MODEL-FLOW-014-T07. Omitted when the user never set one — the
+        // server generates its own random seed in that case. Undefined and
+        // "explicitly 42" must stay distinguishable for reproducibility.
+        ...(seed !== undefined && { seed }),
       })
 
       pollRun(draftId, created.data.id)
@@ -434,6 +447,8 @@ export function useModelTraining({
     algorithms,
     hyperparameters,
     trainTestSplit,
+    splitStatsTags,
+    seed,
     ensureDraftId,
     pollRun,
     pollJob,

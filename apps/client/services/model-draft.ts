@@ -240,6 +240,9 @@ export interface CreateDraftRunInput {
   /** A FRACTION (0.5-0.95), never a percentage — same boundary rule as PatchModelDraftInput.splitRatio. */
   trainTestSplit?: number
   seed?: number
+  /** MODEL-FLOW-014-T06. The Split Distribution panel's tag selection at
+   * launch, so the frozen splitStats sidecar matches what was displayed. */
+  splitStatsTags?: string[]
 }
 
 const runsBase = (draftId: string) => `${one(draftId)}/runs`

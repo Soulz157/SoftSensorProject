@@ -14,6 +14,14 @@ type ModelData = {
   statusDetail?: string;
   deployedBy?: string;
   deployedAt?: string;
+  lastEditedBy?: string;
+  lastEditedAt?: string;
+  lastEditedFields?: string[];
+  editHistory: Array<{
+    by: string;
+    at: string;
+    fields: string[];
+  }>;
   logs: Array<{
     level: 'info' | 'warn' | 'error';
     message: string;
@@ -33,6 +41,18 @@ function normalizeData(raw: unknown): ModelData {
     ...(typeof r.statusDetail === 'string' && { statusDetail: r.statusDetail }),
     ...(typeof r.deployedBy === 'string' && { deployedBy: r.deployedBy }),
     ...(typeof r.deployedAt === 'string' && { deployedAt: r.deployedAt }),
+    ...(typeof r.lastEditedBy === 'string' && {
+      lastEditedBy: r.lastEditedBy,
+    }),
+    ...(typeof r.lastEditedAt === 'string' && {
+      lastEditedAt: r.lastEditedAt,
+    }),
+    ...(Array.isArray(r.lastEditedFields) && {
+      lastEditedFields: r.lastEditedFields as string[],
+    }),
+    editHistory: Array.isArray(r.editHistory)
+      ? (r.editHistory as ModelData['editHistory'])
+      : [],
     logs: Array.isArray(r.logs) ? (r.logs as ModelData['logs']) : [],
     ...(r.config && typeof r.config === 'object'
       ? { config: r.config as Record<string, unknown> }
@@ -152,6 +172,7 @@ export class ModelAuthorizedService {
     const initData: ModelData = {
       deployStatus: 'stopped',
       prodStatus: 'normal',
+      editHistory: [],
       logs: [],
       ...(dto.config && { config: dto.config }),
     };
@@ -215,21 +236,50 @@ export class ModelAuthorizedService {
 
     const current = normalizeData(existing.data);
 
-    let deployFields: Partial<ModelData> = {};
-    if (dto.deployStatus === 'running') {
+    const editedLabels: string[] = [];
+    if (dto.name !== undefined) editedLabels.push('Name');
+    if ('nodeId' in dto) editedLabels.push('Assigned node');
+    if ('datasetId' in dto) editedLabels.push('Dataset');
+    if (dto.prodStatus !== undefined) editedLabels.push('Production status');
+    if (dto.statusDetail !== undefined) editedLabels.push('Status detail');
+    if (dto.config !== undefined) editedLabels.push('Configuration');
+
+    let editorName = '';
+    if (dto.deployStatus === 'running' || editedLabels.length > 0) {
       const user = await this.prisma.user.findUnique({
         where: { id: userId },
         select: { firstName: true, lastName: true },
       });
-      const name = [user?.firstName, user?.lastName]
+      editorName = [user?.firstName, user?.lastName]
         .filter(Boolean)
         .join(' ')
         .trim();
+    }
+
+    let deployFields: Partial<ModelData> = {};
+    if (dto.deployStatus === 'running') {
       deployFields = {
         deployedAt: new Date().toISOString(),
-        ...(name && { deployedBy: name }),
+        ...(editorName && { deployedBy: editorName }),
       };
     }
+
+    const editFields: Partial<ModelData> =
+      editedLabels.length > 0
+        ? {
+            lastEditedAt: new Date().toISOString(),
+            lastEditedFields: editedLabels,
+            ...(editorName && { lastEditedBy: editorName }),
+            editHistory: [
+              ...current.editHistory,
+              {
+                by: editorName || 'Unknown user',
+                at: new Date().toISOString(),
+                fields: editedLabels,
+              },
+            ].slice(-200),
+          }
+        : {};
 
     const newData: ModelData = {
       ...current,
@@ -240,6 +290,7 @@ export class ModelAuthorizedService {
       }),
       ...(dto.config !== undefined && { config: dto.config }),
       ...deployFields,
+      ...editFields,
     };
 
     const updated = await this.prisma.model.update({

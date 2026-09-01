@@ -115,6 +115,19 @@ export const mpHyperparamsAtom = atom<Record<string, HyperparamValue>>({})
 export const mpLossFunctionAtom = atom<string>('mse')
 /** Train split percentage (test = 100 − this). Default 80/20. */
 export const mpTrainTestSplitAtom = atom<number>(80)
+/** MODEL-FLOW-014-T06. The Split Distribution panel's own tag selection —
+ * ephemeral wizard-session state, NOT a ModelDraft column (the panel has no
+ * server state of its own, per T05's own finding). Read by
+ * `use-model-training.ts` at launch so the frozen `splitStats` sidecar
+ * matches what the panel actually displayed, not an approximation. */
+export const mpSplitStatsTagsAtom = atom<string[]>([])
+/** MODEL-FLOW-014-T07. The estimator seed — `undefined` means "the user did
+ * not choose one", distinct from an explicit value like `42`: the server
+ * generates its own random seed when this is omitted
+ * (model-run-launch.authorized.service.ts), and collapsing "not chosen"
+ * into a default would make a run's reproducibility claim silently wrong.
+ * Bounds match CreateTrainingRunSchema.seed: 1-2147483646. */
+export const mpSeedAtom = atom<number | undefined>(undefined)
 
 /** How the user chose to supply tags: direct connector, csv upload, or manual text. */
 export type TagInputMethod = '' | 'direct' | 'csv' | 'text'
@@ -332,6 +345,8 @@ export const resetWizardAtom = atom(null, (_get, set) => {
   set(mpHyperparamsAtom, { fit_intercept: true })
   set(mpLossFunctionAtom, 'mse')
   set(mpTrainTestSplitAtom, 80)
+  set(mpSplitStatsTagsAtom, [])
+  set(mpSeedAtom, undefined)
   set(mpTrainStateAtom, { status: 'idle', progress: 0 })
   set(mpCreatedModelIdAtom, '')
   set(mpSelectedMetricsAtom, [...METRIC_KEYS])

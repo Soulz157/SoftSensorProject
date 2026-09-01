@@ -33,6 +33,7 @@ import {
   Cpu,
   Database,
   Gauge,
+  History,
   Pencil,
   Play,
   RefreshCw,
@@ -303,6 +304,7 @@ export default function ModelDetailPage({
   const plantName = model.nodes?.plan?.name ?? '—'
 
   const logs = [...(model.data?.logs ?? [])].reverse()
+  const editHistory = [...(model.data?.editHistory ?? [])].reverse()
   const anomalyCount = readings.filter(r => r.anomaly).length
 
   return (
@@ -351,6 +353,24 @@ export default function ModelDetailPage({
               <p className="mt-0.5 text-sm text-muted-foreground">
                 {plantName} · {nodeName}
               </p>
+              {model.data?.lastEditedBy && (
+                <p className="mt-0.5 text-xs text-muted-foreground/70">
+                  Last edited by {model.data.lastEditedBy}
+                  {model.data.lastEditedAt &&
+                    ` · ${new Date(model.data.lastEditedAt).toLocaleString(
+                      undefined,
+                      {
+                        month: 'short',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      },
+                    )}`}
+                  {model.data.lastEditedFields?.length
+                    ? ` · ${model.data.lastEditedFields.join(', ')}`
+                    : ''}
+                </p>
+              )}
             </div>
           </div>
 
@@ -520,6 +540,19 @@ export default function ModelDetailPage({
               </TabsTrigger>
 
               <TabsTrigger
+                value="history"
+                className="flex items-center gap-2 px-4"
+              >
+                <History className="h-4 w-4 shrink-0" />
+                <span>Edit History</span>
+                {editHistory.length > 0 && (
+                  <span className="ml-1 flex h-4 items-center justify-center rounded-full bg-muted-foreground/20 px-2 text-[10px] font-semibold tabular-nums text-foreground">
+                    {editHistory.length}
+                  </span>
+                )}
+              </TabsTrigger>
+
+              <TabsTrigger
                 value="input"
                 className="flex items-center gap-2 px-4"
               >
@@ -588,6 +621,52 @@ export default function ModelDetailPage({
                   </div>
                 )}
               </ScrollArea>
+            </Card>
+          </TabsContent>
+
+          {/* ── Edit History ── */}
+          <TabsContent value="history" className="mt-4">
+            <Card className="overflow-hidden border-border bg-card">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Timestamp</TableHead>
+                    <TableHead>Edited By</TableHead>
+                    <TableHead>Fields Changed</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody className="divide-y divide-border">
+                  {editHistory.length === 0 ? (
+                    <TableRow>
+                      <TableCell
+                        colSpan={3}
+                        className="h-24 text-center text-sm text-muted-foreground"
+                      >
+                        No edits recorded yet
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    editHistory.map((entry, i) => (
+                      <TableRow key={i}>
+                        <TableCell className="whitespace-nowrap font-mono text-xs text-muted-foreground">
+                          {new Date(entry.at).toLocaleString(undefined, {
+                            month: 'short',
+                            day: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </TableCell>
+                        <TableCell className="text-xs font-medium text-foreground">
+                          {entry.by}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {entry.fields.join(', ')}
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
             </Card>
           </TabsContent>
 

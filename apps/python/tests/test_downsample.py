@@ -10,7 +10,12 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from services.downsample import grid_bin_indices, lttb_indices, time_bucket_edges
+from services.downsample import (
+    grid_bin_indices,
+    lttb_indices,
+    systematic_sample,
+    time_bucket_edges,
+)
 
 # ── V05: six months at 1-minute interval, one tag ──────────────────────────
 
@@ -301,3 +306,68 @@ def test_grid_single_occupied_cell_for_a_degenerate_point():
     result = grid_bin_indices(xs, ys, 100)
 
     assert len(result.indices) == 1
+
+
+# ── MODEL-FLOW-014-T02: systematic_sample replaces the old frame.head(n)
+# cut in boxplot/histogram/scatter/correlation. V02's own claim is that a
+# row-count-only assertion would pass unchanged against the OLD head()
+# behaviour — these tests assert the timestamp SPAN instead, which head()
+# would fail.
+
+
+def _timestamped_frame(n: int) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2025-01-01", periods=n, freq="1min"),
+            "value": np.arange(n, dtype="float64"),
+        }
+    )
+
+
+def test_systematic_sample_spans_the_full_window_not_the_earliest_slice():
+    frame = _timestamped_frame(10_000)
+
+    sampled = systematic_sample(frame, 100)
+
+    assert len(sampled) == 100
+    # The old `frame.head(100)` would have `timestamp.max()` far short of
+    # the window's own last timestamp — this is the exact property a
+    # row-count-only check cannot distinguish.
+    assert sampled["timestamp"].min() == frame["timestamp"].min()
+    assert sampled["timestamp"].max() == frame["timestamp"].max()
+
+
+def test_systematic_sample_is_identity_when_frame_already_fits():
+    frame = _timestamped_frame(50)
+
+    sampled = systematic_sample(frame, 100)
+
+    assert len(sampled) == 50
+    pd.testing.assert_frame_equal(sampled, frame)
+
+
+def test_systematic_sample_indices_are_ascending_and_deduped():
+    frame = _timestamped_frame(1_000)
+
+    sampled = systematic_sample(frame, 137)
+
+    assert len(sampled) == 137
+    assert sampled.index.is_monotonic_increasing
+    assert sampled.index.is_unique
+
+
+def test_systematic_sample_n_equal_one_returns_first_row_only():
+    frame = _timestamped_frame(500)
+
+    sampled = systematic_sample(frame, 1)
+
+    assert len(sampled) == 1
+    assert sampled["timestamp"].iloc[0] == frame["timestamp"].iloc[0]
+
+
+def test_systematic_sample_n_zero_returns_empty():
+    frame = _timestamped_frame(500)
+
+    sampled = systematic_sample(frame, 0)
+
+    assert len(sampled) == 0

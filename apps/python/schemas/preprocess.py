@@ -1220,7 +1220,7 @@ class HistogramRequest(BaseModel):
         DEFAULT_SAMPLE_ROWS,
         ge=1,
         le=MAX_SAMPLE_ROWS,
-        description="Rows read from the head of the WINDOW to compute against",
+        description="Rows systematically sampled across the WINDOW's full span to compute against (MODEL-FLOW-014-T02) — not a head cut of its earliest rows",
     )
     start_time: Optional[str] = None
     end_time: Optional[str] = None
@@ -1289,7 +1289,7 @@ class BoxplotRequest(BaseModel):
         DEFAULT_SAMPLE_ROWS,
         ge=1,
         le=MAX_SAMPLE_ROWS,
-        description="Rows read from the head of the WINDOW to compute against",
+        description="Rows systematically sampled across the WINDOW's full span to compute against (MODEL-FLOW-014-T02) — not a head cut of its earliest rows",
     )
     start_time: Optional[str] = None
     end_time: Optional[str] = None
@@ -1320,13 +1320,103 @@ class BoxplotResponse(BaseModel):
     tags: list[TagBoxplot]
     #: Requested tags with 0 Good values in this window. NOT a port of the
     #: client's presentational `hasData` check (`min != max or median != 0`)
-    #: — `boxplot_service.py::_qualifies` deliberately gates on `count > 0`
+    #: — `boxplot_service.py::qualifies` deliberately gates on `count > 0`
     #: instead, since `hasData` mislabels a tag whose Good values are ALL
     #: exactly 0 (e.g. a valve stuck fully closed) as insufficient data,
-    #: when it is real data. See `_qualifies`'s own docstring for the full
+    #: when it is real data. See `qualifies`'s own docstring for the full
     #: reasoning; DS-LAKE-005B-D-T02's chart-parity fixture
     #: `boxplot_all_zero_tag_qualifies` pins this divergence directly.
     insufficient_tags: list[str]
+
+
+# MODEL-FLOW-014-T03. `tags` here is a SELECTION the panel's user makes (the
+# client's own MAX_COMPARE is 5) — this cap is deliberately generous
+# headroom above that, refused BY NAME rather than truncated silently, the
+# same discipline MAX_PREDICTION_POINTS states on itself. If a caller ever
+# needs more than this, that is a paging design to have on purpose, not a
+# number to raise without noticing why it was here.
+MAX_SPLIT_STATS_TAGS = 20
+
+
+class SplitStatsRequest(BaseModel):
+    """MODEL-FLOW-014-T03. Both sides of the train/test chronological split
+    `images/trainer/train.py` would actually make for `split_ratio`, from
+    ONE read of a COMMITTED artifact.
+
+    Deliberately narrower than `BoxplotRequest`: no `operations`, no
+    `precision`, no `start_time`/`end_time`. This reads a committed FINAL
+    artifact — the population under test IS the whole frame, and there is no
+    live-editing scrubber state to replay operations against (that is what
+    `/preview` and the wizard-draft chart family are for).
+
+    `precision` is dropped rather than kept-but-inert: `cleaning_service.
+    apply_operations(frame, operations, precision)` only threads `precision`
+    into `preprocess_pipelines` from INSIDE its per-operation loop
+    (`for operation in operations: ... out = preprocess_pipelines(...)`).
+    With `operations` empty that loop body never runs, so calling
+    `apply_operations(frame, [], precision)` — which the original design
+    for this schema proposed, to keep precision "working" — would in fact do
+    nothing at all; `precision` would sit in the request looking load-bearing
+    while every value passed through unrounded. Dropping the field is the
+    honest fix, traced against `cleaning_service.py` directly rather than
+    assumed.
+    """
+
+    source_key: str = Field(...,
+                            description="Object key of the source artifact")
+    #: Tags to summarize per side — REQUIRED, same rationale as
+    #: `BoxplotRequest.tags`. Refused BY NAME past `MAX_SPLIT_STATS_TAGS`.
+    tags: list[str] = Field(..., min_length=1, max_length=MAX_SPLIT_STATS_TAGS)
+    #: The target column — used ONLY to derive the labelled-row mask that
+    #: decides where the cut falls (mirrors `train.py::labelled_mask`
+    #: exactly). Does not have to be a member of `tags`.
+    target_y: str
+    #: A FRACTION, never a percentage — same convention `CreateTrainingRunSchema
+    #: .trainTestSplit` and `ModelDraft.splitRatio` already use. Bounds match
+    #: the launch path the wizard actually calls.
+    split_ratio: float = Field(..., ge=0.5, le=0.95)
+    sample_rows: int = Field(
+        DEFAULT_SAMPLE_ROWS,
+        ge=1,
+        le=MAX_SAMPLE_ROWS,
+        description=(
+            "Rows systematically sampled, per side, to compute the box "
+            "statistics against. Bounds the DISPLAY sample only — the cut "
+            "itself is always derived from the full labelled frame "
+            "(MODEL-FLOW-014 finding: sample_rows must never determine the "
+            "cut)."
+        ),
+    )
+    outlier_cap: int = Field(DEFAULT_BOXPLOT_OUTLIER_CAP, ge=1, le=500)
+
+
+class SplitStatsSide(BaseModel):
+    """One side of the split — same shape as `BoxplotResponse` minus
+    `source_key` (which belongs once, at the top of `SplitStatsResponse`),
+    so the client's existing `TagBoxplotChart` (typed against
+    `DraftBoxplotResult`) renders either side with no translation layer."""
+
+    tags: list[TagBoxplot]
+    insufficient_tags: list[str]
+
+
+class SplitStatsResponse(BaseModel):
+    source_key: str
+    target_y: str
+    split_ratio: float
+    #: The cut ECHOED back — the client cannot infer which boundary it got,
+    #: the same reason `/correlation` echoes its resolved tag list. This is
+    #: the FIRST TEST ROW's timestamp (train = strictly before, test = at or
+    #: after), matching `train.py::chronological_split`'s own convention.
+    cut_timestamp: str
+    train_labelled_rows: int
+    test_labelled_rows: int
+    #: The pre-mask row count, kept alongside so sparsity is visible in the
+    #: record rather than only inferable — same reasoning
+    #: `train.py`'s own `split_spec["source_rows"]` states for itself.
+    source_rows: int
+    train: SplitStatsSide
+    test: SplitStatsSide
 
 
 #: Grid/hex-binning decimation cap for the plotted point cloud — see
@@ -1353,7 +1443,7 @@ class ScatterRequest(BaseModel):
         DEFAULT_SAMPLE_ROWS,
         ge=1,
         le=MAX_SAMPLE_ROWS,
-        description="Rows read from the head of the WINDOW to compute against",
+        description="Rows systematically sampled across the WINDOW's full span to compute against (MODEL-FLOW-014-T02) — not a head cut of its earliest rows",
     )
     start_time: Optional[str] = None
     end_time: Optional[str] = None
@@ -1423,7 +1513,7 @@ class CorrelationRequest(BaseModel):
         DEFAULT_SAMPLE_ROWS,
         ge=1,
         le=MAX_SAMPLE_ROWS,
-        description="Rows read from the head of the WINDOW to compute against",
+        description="Rows systematically sampled across the WINDOW's full span to compute against (MODEL-FLOW-014-T02) — not a head cut of its earliest rows",
     )
     start_time: Optional[str] = None
     end_time: Optional[str] = None

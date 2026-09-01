@@ -35,6 +35,14 @@ interface Props {
   data: DraftHistogramResult | null
   tags: string[]
   status: 'no-tags' | 'pending' | 'loading' | 'ready' | 'unavailable'
+  /**
+   * DS-LAKE-026. Optional per-tag colour/dash override for the compare
+   * modal's two-sided (train vs. validation) tabs — the wizard's own
+   * callers pass nothing and get today's `chartColorVar` colouring
+   * unchanged. `dashed` needs its own field rather than piggybacking on
+   * `color`: the KDE stroke otherwise carries no `strokeDasharray` at all.
+   */
+  seriesStyle?: (tag: string) => { color: string; dashed?: boolean }
 }
 
 const W = 750
@@ -95,6 +103,10 @@ function fmt(n: number): string {
 interface TagLayer {
   tag: string
   color: string
+  /** DS-LAKE-026. `seriesStyle`'s dash flag, carried onto the KDE stroke
+   * only — the fill/halo stay solid regardless, same convention the compare
+   * modal's Line tab already uses for a validation series. */
+  dashed: boolean
   mean: number
   median: number
   kdeCounts: { x: number; y: number }[]
@@ -108,7 +120,7 @@ function computeLayerOpacities(layerCount: number) {
   return { fillOpacity, haloOpacity, strokeOpacity }
 }
 
-export function TagHistogramChart({ data, tags, status }: Props) {
+export function TagHistogramChart({ data, tags, status, seriesStyle }: Props) {
   const [zoom, setZoom] = useState(1)
   const [yZoom, setYZoom] = useState(1)
   const [center, setCenter] = useState(0.5)
@@ -154,17 +166,19 @@ export function TagHistogramChart({ data, tags, status }: Props) {
     return tags.flatMap(tag => {
       const t = byTag.get(tag)
       if (!t) return []
+      const style = seriesStyle?.(tag)
       return [
         {
           tag,
-          color: chartColorVar(resolveTagMeta(tag).chartIndex),
+          color: style?.color ?? chartColorVar(resolveTagMeta(tag).chartIndex),
+          dashed: style?.dashed ?? false,
           mean: t.mean,
           median: t.median,
           kdeCounts: t.kde,
         },
       ]
     })
-  }, [data, domain, tags])
+  }, [data, domain, tags, seriesStyle])
 
   if (status === 'no-tags') {
     return (
@@ -479,6 +493,7 @@ export function TagHistogramChart({ data, tags, status }: Props) {
                 stroke={layer.color}
                 strokeWidth={2.5}
                 strokeOpacity={strokeOpacity}
+                strokeDasharray={layer.dashed ? '5 3' : undefined}
               />
             ))}
 

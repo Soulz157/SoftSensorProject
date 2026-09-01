@@ -28,6 +28,12 @@ export function useArtifactHistogram(
   datasetId: string | null,
   artifactId: string | null,
   tags: string[],
+  /** DS-LAKE-026. Optional — the wizard's own callers leave this unset and
+   * get the server default unchanged. The compare modal passes an explicit
+   * value so its train and validation sides cover the same fraction of
+   * their data, rather than one side's head window covering less of itself
+   * than the other's. */
+  sampleRows?: number,
 ): ArtifactHistogramState {
   const [histogram, setHistogram] = useState<DraftHistogramResult | null>(null)
   const [loading, setLoading] = useState(false)
@@ -52,7 +58,15 @@ export function useArtifactHistogram(
     setLoading(true)
 
     datasetArtifactService
-      .histogram(datasetId, artifactId, { tags: tagsKey.split(',') }, ac.signal)
+      .histogram(
+        datasetId,
+        artifactId,
+        {
+          tags: tagsKey.split(','),
+          ...(sampleRows && { sampleRows }),
+        },
+        ac.signal,
+      )
       .then(res => {
         if (tokenRef.current !== token) return
         setHistogram(res.data)
@@ -68,7 +82,7 @@ export function useArtifactHistogram(
       })
 
     return () => ac.abort()
-  }, [datasetId, artifactId, tagsKey])
+  }, [datasetId, artifactId, tagsKey, sampleRows])
 
   return { histogram, loading, error }
 }

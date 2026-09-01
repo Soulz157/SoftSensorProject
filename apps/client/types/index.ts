@@ -36,6 +36,12 @@ export interface ModelLog {
   timestamp: string
 }
 
+export interface ModelEditHistoryEntry {
+  by: string
+  at: string
+  fields: string[]
+}
+
 export interface AIModel {
   id: string
   workspaceId: string
@@ -46,6 +52,10 @@ export interface AIModel {
     statusDetail?: string
     deployedBy?: string
     deployedAt?: string
+    lastEditedBy?: string
+    lastEditedAt?: string
+    lastEditedFields?: string[]
+    editHistory: ModelEditHistoryEntry[]
     logs: ModelLog[]
     /** Wizard data-source/tags/processing config (Model.data.config). */
     config?: import('@/lib/model-config').ModelConfig

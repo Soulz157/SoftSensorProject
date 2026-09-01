@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { Label } from '@/components/ui/label'
+import { Input } from '@/components/ui/input'
 import { Slider } from '@/components/ui/slider'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import {
@@ -12,6 +13,8 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { LOSS_OPTIONS } from '@/lib/training-config'
+import { seedConsumedBy } from '@/lib/run-params'
+import { ALGORITHM_LABELS, type Algorithm } from '@/store/model-pipeline'
 import { TargetVariableSelector } from './tag-variable-select'
 
 interface Props {
@@ -22,6 +25,9 @@ interface Props {
   onLossChange: (loss: string) => void
   trainTestSplit: number
   onSplitChange: (split: number) => void
+  seed: number | undefined
+  onSeedChange: (seed: number | undefined) => void
+  algorithms: Algorithm[]
 }
 
 export function CoreConfig({
@@ -32,6 +38,9 @@ export function CoreConfig({
   onLossChange,
   trainTestSplit,
   onSplitChange,
+  seed,
+  onSeedChange,
+  algorithms,
 }: Props) {
   return (
     <div className="space-y-4">
@@ -81,6 +90,85 @@ export function CoreConfig({
         trainTestSplit={trainTestSplit}
         onSplitChange={onSplitChange}
       />
+
+      <SeedControl
+        seed={seed}
+        onSeedChange={onSeedChange}
+        algorithms={algorithms}
+      />
+    </div>
+  )
+}
+
+/** Bounds match CreateTrainingRunSchema.seed (model-run.authorized.dto.ts) —
+ * the DTO the client actually hits when launching a single run. */
+const SEED_MIN = 1
+const SEED_MAX = 2147483646
+
+/**
+ * MODEL-FLOW-014-T07. Exposes the estimator seed — already generated and
+ * recorded server-side on every run (model-run-launch.authorized.service.ts
+ * `dto.seed ?? randomInt(...)`) — as an optional control. Copy states BOTH
+ * halves of what it does: the estimator's own randomness, never the
+ * train/test boundary, which is chronological regardless of this value.
+ * Per-algorithm truth via `seedConsumedBy`, not a blanket claim — the same
+ * annotate-don't-hide pattern MODEL-FLOW-012-T05 set for Loss function.
+ */
+function SeedControl({
+  seed,
+  onSeedChange,
+  algorithms,
+}: {
+  seed: number | undefined
+  onSeedChange: (seed: number | undefined) => void
+  algorithms: Algorithm[]
+}) {
+  const ignoring = algorithms.filter(a => !seedConsumedBy(a))
+
+  return (
+    <div className="space-y-1.5">
+      <Label className="text-xs font-medium" htmlFor="model-seed">
+        Seed{' '}
+        <span className="font-normal text-muted-foreground">(optional)</span>
+      </Label>
+      <Input
+        id="model-seed"
+        type="number"
+        inputMode="numeric"
+        min={SEED_MIN}
+        max={SEED_MAX}
+        step={1}
+        placeholder="auto — server generates one per run"
+        value={seed ?? ''}
+        onChange={e => {
+          const raw = e.target.value
+          if (raw === '') {
+            onSeedChange(undefined)
+            return
+          }
+          const parsed = Number(raw)
+          if (!Number.isFinite(parsed)) return
+          const clamped = Math.min(
+            SEED_MAX,
+            Math.max(SEED_MIN, Math.round(parsed)),
+          )
+          onSeedChange(clamped)
+        }}
+        className="h-9 text-sm"
+      />
+      <p className="text-[11px] text-muted-foreground">
+        Controls the estimator&apos;s own randomness — bootstrap sampling,
+        weight initialization, feature subsampling. Does{' '}
+        <span className="font-medium text-foreground">not</span> control the
+        train/test boundary: the split is always chronological, so the last rows
+        by time are the test set regardless of this value.
+      </p>
+      {ignoring.length > 0 && (
+        <p className="text-[11px] text-muted-foreground">
+          Ignored by {ignoring.map(a => ALGORITHM_LABELS[a]).join(', ')} — this
+          estimator has no source of randomness a seed could fix.
+        </p>
+      )}
     </div>
   )
 }

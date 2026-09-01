@@ -3030,4 +3030,156 @@ describe('DatasetDraftAuthorizedService — resolve-or-create edit draft (DS-LAK
       service.resolveOrCreateEditDraftService(USER, 'dataset-1'),
     ).rejects.toThrow('connection reset');
   });
+
+  /**
+   * DS-LAKE-027. Re-entry used to hand back whatever `currentArtifactId`
+   * held, including an artifact whose bytes cleanup had already reclaimed —
+   * which is the state EVERY idle edit draft reaches by design (DS-LAKE-014's
+   * ACTIVE branch), and what surfaced to the user as Step 3's "Preview sample
+   * unavailable" on every dataset.
+   */
+  describe('DS-LAKE-027: reclaimed currentArtifactId self-heals to the live BRONZE root', () => {
+    const LIVE_ROOT = {
+      id: 'shared-bronze-1',
+      type: 'BRONZE',
+      parentArtifactId: null,
+      objectReclaimedAt: null,
+      validationRowCount: null,
+    };
+
+    /** Keyed on `where.id` so one mock serves both the reclaim probe and
+     * `resolvePristineBronzeRoot`'s parent walk, which read different rows. */
+    function artifactFindFirstBy(rows: Record<string, unknown>) {
+      return jest
+        .fn()
+        .mockImplementation(({ where }: { where: { id?: string } }) =>
+          Promise.resolve(where.id ? (rows[where.id] ?? null) : LIVE_ROOT),
+        );
+    }
+
+    const RECLAIMED_DRAFT = {
+      ...EXISTING_EDIT_DRAFT,
+      currentArtifactId: 'gold-reclaimed-1',
+    };
+
+    it('re-points the draft at its BRONZE root and reports the recovery', async () => {
+      const findFirst = artifactFindFirstBy({
+        'gold-reclaimed-1': {
+          id: 'gold-reclaimed-1',
+          type: 'GOLD',
+          parentArtifactId: 'shared-bronze-1',
+          objectReclaimedAt: new Date('2026-08-28T06:48:54Z'),
+        },
+        'shared-bronze-1': LIVE_ROOT,
+      });
+      const update = jest.fn().mockResolvedValue(RECLAIMED_DRAFT);
+      const prisma = buildPrisma({
+        datasetDraft: {
+          findFirst: jest.fn().mockResolvedValue(RECLAIMED_DRAFT),
+          create: jest.fn(),
+          update,
+          updateMany: jest.fn(),
+        },
+        datasetArtifact: { findFirst },
+      });
+      const { service } = makeService(prisma);
+
+      const result = await service.resolveOrCreateEditDraftService(
+        USER,
+        'dataset-1',
+      );
+
+      expect(result.statusCode).toBe(200);
+      // The id the client stores in dwDraftArtifactIdAtom — the live root,
+      // never the reclaimed GOLD it arrived pointing at.
+      expect(result.data.currentArtifactId).toBe('shared-bronze-1');
+      expect(result.data.recoveredFromReclaimedArtifact).toBe(true);
+      // Persisted, so the next open needs no repair and the Step 5 jobs that
+      // read this column see the live row too.
+      expect(update).toHaveBeenCalledWith({
+        where: { id: 'edit-draft-1' },
+        data: { currentArtifactId: 'shared-bronze-1' },
+      });
+    });
+
+    it('leaves a live currentArtifactId untouched and writes nothing', async () => {
+      const update = jest.fn();
+      const prisma = buildPrisma({
+        datasetDraft: {
+          findFirst: jest.fn().mockResolvedValue(EXISTING_EDIT_DRAFT),
+          create: jest.fn(),
+          update,
+          updateMany: jest.fn(),
+        },
+        datasetArtifact: {
+          findFirst: artifactFindFirstBy({ 'shared-bronze-1': LIVE_ROOT }),
+        },
+      });
+      const { service } = makeService(prisma);
+
+      const result = await service.resolveOrCreateEditDraftService(
+        USER,
+        'dataset-1',
+      );
+
+      expect(result.data.currentArtifactId).toBe('shared-bronze-1');
+      expect(result.data.recoveredFromReclaimedArtifact).toBe(false);
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('refuses with a 422 when the BRONZE root is reclaimed too, rather than returning a second dead id', async () => {
+      const findFirst = artifactFindFirstBy({
+        'gold-reclaimed-1': {
+          id: 'gold-reclaimed-1',
+          type: 'GOLD',
+          parentArtifactId: 'shared-bronze-1',
+          objectReclaimedAt: new Date('2026-08-28T06:48:54Z'),
+        },
+        'shared-bronze-1': {
+          ...LIVE_ROOT,
+          objectReclaimedAt: new Date('2026-08-28T06:48:54Z'),
+        },
+      });
+      const update = jest.fn();
+      const prisma = buildPrisma({
+        datasetDraft: {
+          findFirst: jest.fn().mockResolvedValue(RECLAIMED_DRAFT),
+          create: jest.fn(),
+          update,
+          updateMany: jest.fn(),
+        },
+        datasetArtifact: { findFirst },
+      });
+      const { service } = makeService(prisma);
+
+      await expect(
+        service.resolveOrCreateEditDraftService(USER, 'dataset-1'),
+      ).rejects.toMatchObject({ statusCode: 422 });
+      expect(update).not.toHaveBeenCalled();
+    });
+  });
+
+  it('DS-LAKE-027: the create branch returns the shared root id, not the pre-update null', async () => {
+    // The transaction sets currentArtifactId in a separate update whose
+    // result is discarded, so serializing the captured `draft` object alone
+    // returned null — leaving dwDraftArtifactIdAtom unset for the whole
+    // session on a dataset's FIRST edit.
+    const tx = buildEditDraftTx();
+    const prisma = buildPrisma({
+      datasetDraft: { findFirst: jest.fn().mockResolvedValue(null) },
+      datasetArtifact: { findFirst: jest.fn().mockResolvedValue(ROOT_BRONZE) },
+      $transaction: jest.fn((cb: (t: typeof tx) => Promise<unknown>) => cb(tx)),
+    });
+    prisma.dataset.findFirst.mockResolvedValue(DATASET_ROW);
+    const { service } = makeService(prisma);
+
+    const result = await service.resolveOrCreateEditDraftService(
+      USER,
+      'dataset-1',
+    );
+
+    expect(result.statusCode).toBe(201);
+    expect(result.data.currentArtifactId).toBe('shared-bronze-1');
+    expect(result.data.recoveredFromReclaimedArtifact).toBe(false);
+  });
 });

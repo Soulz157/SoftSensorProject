@@ -28,6 +28,9 @@ export function useArtifactBoxplot(
   datasetId: string | null,
   artifactId: string | null,
   tags: string[],
+  /** DS-LAKE-026. Optional — see `useArtifactHistogram`'s own doc comment
+   * for why the compare modal needs this and the wizard's callers do not. */
+  sampleRows?: number,
 ): ArtifactBoxplotState {
   const [boxplot, setBoxplot] = useState<DraftBoxplotResult | null>(null)
   const [loading, setLoading] = useState(false)
@@ -52,7 +55,15 @@ export function useArtifactBoxplot(
     setLoading(true)
 
     datasetArtifactService
-      .boxplot(datasetId, artifactId, { tags: tagsKey.split(',') }, ac.signal)
+      .boxplot(
+        datasetId,
+        artifactId,
+        {
+          tags: tagsKey.split(','),
+          ...(sampleRows && { sampleRows }),
+        },
+        ac.signal,
+      )
       .then(res => {
         if (tokenRef.current !== token) return
         setBoxplot(res.data)
@@ -66,7 +77,7 @@ export function useArtifactBoxplot(
       })
 
     return () => ac.abort()
-  }, [datasetId, artifactId, tagsKey])
+  }, [datasetId, artifactId, tagsKey, sampleRows])
 
   return { boxplot: boxplot, loading, error }
 }

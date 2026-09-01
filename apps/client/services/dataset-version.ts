@@ -34,6 +34,23 @@ interface ApiResponse<T> {
   type: string
 }
 
+/** MODEL-FLOW-014-T04. Mirrors apps/python `schemas.preprocess.
+ * SplitStatsResponse` field for field — `train`/`test` are
+ * `DraftBoxplotResult`-shaped minus `source_key` (which belongs once, at
+ * the top), so `TagBoxplotChart` renders either side with no translation
+ * layer. */
+export interface DraftSplitStatsResult {
+  source_key: string
+  target_y: string
+  split_ratio: number
+  cut_timestamp: string
+  train_labelled_rows: number
+  test_labelled_rows: number
+  source_rows: number
+  train: Omit<DraftBoxplotResult, 'source_key'>
+  test: Omit<DraftBoxplotResult, 'source_key'>
+}
+
 export type PreprocessingJobStatus =
   | 'QUEUED'
   | 'RUNNING'
@@ -255,7 +272,7 @@ export const datasetArtifactService = {
   correlation: (
     datasetId: string,
     artifactId: string,
-    body: { tags: string[]; topK?: number },
+    body: { tags: string[]; topK?: number; sampleRows?: number },
     signal?: AbortSignal,
   ): Promise<ApiResponse<DraftCorrelationResult>> =>
     fetchClient(`${artifact(datasetId, artifactId)}/correlation`, {
@@ -267,7 +284,12 @@ export const datasetArtifactService = {
   histogram: (
     datasetId: string,
     artifactId: string,
-    body: { tags: string[]; kdeSamples?: number; binCount?: number },
+    body: {
+      tags: string[]
+      kdeSamples?: number
+      binCount?: number
+      sampleRows?: number
+    },
     signal?: AbortSignal,
   ): Promise<ApiResponse<DraftHistogramResult>> =>
     fetchClient(`${artifact(datasetId, artifactId)}/histogram`, {
@@ -279,10 +301,59 @@ export const datasetArtifactService = {
   boxplot: (
     datasetId: string,
     artifactId: string,
-    body: { tags: string[]; outlierCap?: number },
+    body: { tags: string[]; outlierCap?: number; sampleRows?: number },
     signal?: AbortSignal,
   ): Promise<ApiResponse<DraftBoxplotResult>> =>
     fetchClient(`${artifact(datasetId, artifactId)}/boxplot`, {
+      method: 'POST',
+      body: JSON.stringify({ operations: [], ...body }),
+      signal,
+    }),
+
+  /** Compare-view twin of `correlation` above, over the run's validation
+   * holdout sidecar instead of the artifact's own object. Same 404-on-missing
+   * discipline as `validationRows` — the sidecar was reclaimed, or the run
+   * has no holdout at all. */
+  validationCorrelation: (
+    datasetId: string,
+    artifactId: string,
+    body: { tags: string[]; topK?: number; sampleRows?: number },
+    signal?: AbortSignal,
+  ): Promise<ApiResponse<DraftCorrelationResult>> =>
+    fetchClient(`${artifact(datasetId, artifactId)}/validation-correlation`, {
+      method: 'POST',
+      body: JSON.stringify({ operations: [], ...body }),
+      signal,
+    }),
+
+  /** Compare-view twin of `histogram` above, over the run's validation
+   * holdout sidecar instead of the artifact's own object. */
+  validationHistogram: (
+    datasetId: string,
+    artifactId: string,
+    body: {
+      tags: string[]
+      kdeSamples?: number
+      binCount?: number
+      sampleRows?: number
+    },
+    signal?: AbortSignal,
+  ): Promise<ApiResponse<DraftHistogramResult>> =>
+    fetchClient(`${artifact(datasetId, artifactId)}/validation-histogram`, {
+      method: 'POST',
+      body: JSON.stringify({ operations: [], ...body }),
+      signal,
+    }),
+
+  /** Compare-view twin of `boxplot` above, over the run's validation holdout
+   * sidecar instead of the artifact's own object. */
+  validationBoxplot: (
+    datasetId: string,
+    artifactId: string,
+    body: { tags: string[]; outlierCap?: number; sampleRows?: number },
+    signal?: AbortSignal,
+  ): Promise<ApiResponse<DraftBoxplotResult>> =>
+    fetchClient(`${artifact(datasetId, artifactId)}/validation-boxplot`, {
       method: 'POST',
       body: JSON.stringify({ operations: [], ...body }),
       signal,
@@ -297,6 +368,28 @@ export const datasetArtifactService = {
     fetchClient(`${artifact(datasetId, artifactId)}/scatter`, {
       method: 'POST',
       body: JSON.stringify({ operations: [], ...body }),
+      signal,
+    }),
+
+  /** MODEL-FLOW-014-T04. Both sides of the train/test chronological split
+   * from one read — no `operations` sent, unlike every sibling chart call
+   * above: this reads a committed FINAL artifact and there is no live-
+   * editing scrubber state to replay operations against. */
+  splitStats: (
+    datasetId: string,
+    artifactId: string,
+    body: {
+      tags: string[]
+      targetY: string
+      splitRatio: number
+      sampleRows?: number
+      outlierCap?: number
+    },
+    signal?: AbortSignal,
+  ): Promise<ApiResponse<DraftSplitStatsResult>> =>
+    fetchClient(`${artifact(datasetId, artifactId)}/split-stats`, {
+      method: 'POST',
+      body: JSON.stringify(body),
       signal,
     }),
 

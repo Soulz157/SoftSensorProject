@@ -7,15 +7,14 @@ import {
   mpAlgorithmsAtom,
   mpFindBestModelAtom,
   mpFindBestParamsAtom,
-  mpHighestUnlockedAtom,
   mpHyperparamsAtom,
   mpTargetVariableAtom,
-  mpTrainStateAtom,
   mpTrainTestSplitAtom,
   type Algorithm,
 } from '@/store/model-pipeline'
 import type { ModelTrainingRunListItem } from '@/services/model-draft'
 import { splitPercentFromRun, toApplyPatch } from '@/lib/run-params'
+import { useCommitRunConfig } from './use-commit-run-config'
 
 export interface UseApplyRunParamsResult {
   applyRun: (run: ModelTrainingRunListItem) => { dropped: string[] }
@@ -28,12 +27,12 @@ export interface UseApplyRunParamsResult {
  * clean defaults (`use-model-pipeline-nav.ts:206-221`), which would erase
  * the very values this hook exists to apply.
  *
- * Because it bypasses the nav hook, it must replicate the two side effects
- * that live INSIDE every nav setter, or Apply leaves a stale `trainState`
- * ('done') and later steps unlocked beside freshly-applied parameters that
- * do not match what is on screen at Step 4+:
- *   - resetTraining()                              -> trainState idle
- *   - setHighestUnlocked(prev => Math.min(prev, 3)) -> relock to Training Config
+ * Because it bypasses the nav hook, it must replicate the relock side
+ * effect every nav setter used to perform inline, or Apply leaves a stale
+ * `trainState` ('done') and later steps unlocked beside freshly-applied
+ * parameters that do not match what is on screen at Step 4+ — done via the
+ * shared `useCommitRunConfig()` (MODEL-FLOW-014-T08), the same one Step 3's
+ * own Apply (`useRunConfigDraft`) calls.
  *
  * Cross-algorithm Apply SWITCHES the form to the run's algorithm (decided
  * 2026-08-27) rather than refusing — run-create itself requires exactly one
@@ -51,8 +50,7 @@ export function useApplyRunParams(): UseApplyRunParamsResult {
   const setHyperparameters = useSetAtom(mpHyperparamsAtom)
   const setTargetVariable = useSetAtom(mpTargetVariableAtom)
   const setTrainTestSplit = useSetAtom(mpTrainTestSplitAtom)
-  const setTrainState = useSetAtom(mpTrainStateAtom)
-  const setHighestUnlocked = useSetAtom(mpHighestUnlockedAtom)
+  const commitRunConfig = useCommitRunConfig()
 
   const applyRun = useCallback(
     (run: ModelTrainingRunListItem) => {
@@ -67,9 +65,8 @@ export function useApplyRunParams(): UseApplyRunParamsResult {
       setFindBestModel(false)
       setFindBestParams(false)
 
-      // Replicated nav-setter side effects — see doc comment above.
-      setTrainState({ status: 'idle', progress: 0 })
-      setHighestUnlocked(prev => Math.min(prev, 3))
+      // Replicated nav-setter side effect — see doc comment above.
+      commitRunConfig()
 
       return { dropped }
     },
@@ -78,10 +75,9 @@ export function useApplyRunParams(): UseApplyRunParamsResult {
       setAlgorithms,
       setFindBestModel,
       setFindBestParams,
-      setHighestUnlocked,
+      commitRunConfig,
       setHyperparameters,
       setTargetVariable,
-      setTrainState,
       setTrainTestSplit,
     ],
   )

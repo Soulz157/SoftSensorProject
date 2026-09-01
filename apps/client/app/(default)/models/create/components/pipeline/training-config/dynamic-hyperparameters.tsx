@@ -38,7 +38,7 @@ export function DynamicHyperparameters({
   return (
     <div className="space-y-2">
       <Label className="text-xs font-medium">Hyperparameters</Label>
-      <div className="grid grid-cols-1 gap-4 rounded-lg bg-muted p-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 rounded-lg p-4 sm:grid-cols-2">
         {fields.map(field => (
           <HyperparamControl
             key={field.key}

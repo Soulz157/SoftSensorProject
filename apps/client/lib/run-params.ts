@@ -19,9 +19,17 @@ import type {
 /**
  * Exactly the hyperparameter keys each `build_model` branch reads via
  * `.get(key, default)` — never a `**kwargs` splat, so this is a fixed,
- * enumerable set per algorithm, not a runtime question. `lstm`/`gru` raise
- * unconditionally in `build_model` (no windowing pipeline yet) and cannot
- * appear on a real run row; kept here only so the type is total.
+ * enumerable set per algorithm, not a runtime question.
+ *
+ * MODEL-FLOW-014-T07 CORRECTION: `lstm`/`gru` do NOT raise unconditionally —
+ * that was true before MODEL-FLOW-009-T04 built the windowing pipeline.
+ * `build_model`'s lstm/gru branch now reads `hidden_size`/`epochs`/
+ * `batch_size` via `hyperparameters.get(...)`, same as every other
+ * algorithm. `sequence_length` is the one exception: it is consumed ONE
+ * LEVEL UP, in `main()`'s `is_sequence` branch (`train.py:819-822`), before
+ * `build_model` is ever called — `run-params.test.ts`'s guard scans that
+ * block specifically for this key, rather than letting a build_model-only
+ * extractor silently conclude it is unconsumed.
  */
 export const CONSUMED_HYPERPARAM_KEYS: Record<Algorithm, string[]> = {
   ols: ['fit_intercept'],
@@ -34,16 +42,20 @@ export const CONSUMED_HYPERPARAM_KEYS: Record<Algorithm, string[]> = {
   random_forest: ['n_estimators', 'max_depth'],
   lightgbm: ['learning_rate', 'num_leaves', 'boosting_type'],
   xgboost: ['n_estimators', 'learning_rate', 'max_depth'],
-  lstm: [],
-  gru: [],
+  lstm: ['hidden_size', 'epochs', 'batch_size', 'sequence_length'],
+  gru: ['hidden_size', 'epochs', 'batch_size', 'sequence_length'],
 }
 
 /**
  * `seed` is generated and recorded on every run (model-run-launch.authorized
- * .service.ts), but `train.py` only forwards it as `random_state` to these
- * six estimators — ridge/ols/svm/pls never see it. A bare seed value is more
- * misleading here than an unconsumed hyperparameter, since it is present on
- * every run regardless of whether it did anything.
+ * .service.ts). `train.py` forwards it to 8 of the 12 algorithms —
+ * ridge/ols/svm/pls never see it. Six as `random_state=seed` (the sklearn/
+ * lightgbm/xgboost convention); `lstm`/`gru` as `seed=seed` on
+ * `SequenceRegressor` instead (MODEL-FLOW-014-T07 CORRECTION — the prior
+ * six-algorithm list predates MODEL-FLOW-009-T04's windowing pipeline and
+ * was stale). A bare seed value is more misleading here than an unconsumed
+ * hyperparameter, since it is present on every run regardless of whether it
+ * did anything.
  */
 export const SEED_CONSUMING_ALGORITHMS: Algorithm[] = [
   'hist_gradient_boosting',
@@ -52,6 +64,8 @@ export const SEED_CONSUMING_ALGORITHMS: Algorithm[] = [
   'random_forest',
   'lightgbm',
   'xgboost',
+  'lstm',
+  'gru',
 ]
 
 export function seedConsumedBy(algorithm: string): boolean {

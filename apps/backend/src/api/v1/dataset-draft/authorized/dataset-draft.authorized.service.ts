@@ -203,12 +203,30 @@ export class DatasetDraftAuthorizedService {
       where: { editingDatasetId: datasetId, status: 'ACTIVE' },
     });
     if (existing) {
+      // DS-LAKE-027. An ACTIVE draft's own artifacts become reclaim-eligible
+      // after `activeIdleHours` of inactivity (DS-LAKE-014, deliberate —
+      // artifact-cleanup-eligibility.ts's ACTIVE branch). Re-entry therefore
+      // routinely finds a draft whose `currentArtifactId` names an artifact
+      // whose BYTES ARE GONE, while the row itself still resolves. Handing
+      // that id back sent every draft-scoped read (the Step 3.1 preview
+      // sample first, but also the Step 5 clean/scale commit and the holdout
+      // re-split) at an object storage no longer has — surfacing to the user
+      // as Step 3's "Preview sample unavailable" with no way forward.
+      //
+      // The create branch below already refuses a reclaimed root; this
+      // branch used to skip the check entirely. Self-heal instead of
+      // refusing: the draft's own BRONZE root is pinned by
+      // `protectedObjectKeys` (it shares the saved dataset's key), so it is
+      // still readable, and re-pointing at it costs the user only the
+      // feature warm that Step 4 recomputes anyway.
+      const recovered = await this.recoverReclaimedEditDraftRoot(existing);
       return {
         statusCode: 200,
         message: 'Edit draft resolved',
         type: 'SUCCESS' as const,
         data: {
-          ...this.mapDraft(existing),
+          ...this.mapDraft(recovered.draft),
+          recoveredFromReclaimedArtifact: recovered.recovered,
           rootValidationRowCount: await this.getEditDraftRootValidationRowCount(
             existing.id,
           ),
@@ -335,7 +353,18 @@ export class DatasetDraftAuthorizedService {
         message: 'Edit draft created',
         type: 'SUCCESS' as const,
         data: {
-          ...this.mapDraft(draft),
+          // DS-LAKE-027. `currentArtifactId` is spread from `sharedRoot`, NOT
+          // read off `draft`. The transaction above sets that column in a
+          // separate `tx.datasetDraft.update` whose result is discarded, so
+          // `draft` is the PRE-update row and `mapDraft(draft)` alone
+          // serialized `currentArtifactId: null` — a first edit of any
+          // dataset therefore left `dwDraftArtifactIdAtom` null for the whole
+          // session, and every consumer of it (gold warm, holdout re-split,
+          // the draft pipeline) ran id-less. The preview card only survived
+          // that by accident: a null id is exactly what routes it to the
+          // dataset leg, which reads the still-live adopted BRONZE.
+          ...this.mapDraft({ ...draft, currentArtifactId: sharedRoot.id }),
+          recoveredFromReclaimedArtifact: false,
           // Cloned verbatim from `root` above at create time — the shared
           // artifact IS this draft's root, so no extra read is needed here
           // the way the other two branches need
@@ -349,12 +378,17 @@ export class DatasetDraftAuthorizedService {
           where: { editingDatasetId: datasetId, status: 'ACTIVE' },
         });
         if (winner) {
+          // DS-LAKE-027. Same self-heal as the resolve branch above: the
+          // race winner is an ACTIVE draft reached by a different route, so
+          // its `currentArtifactId` can be just as reclaimed.
+          const recovered = await this.recoverReclaimedEditDraftRoot(winner);
           return {
             statusCode: 200,
             message: 'Edit draft resolved',
             type: 'SUCCESS' as const,
             data: {
-              ...this.mapDraft(winner),
+              ...this.mapDraft(recovered.draft),
+              recoveredFromReclaimedArtifact: recovered.recovered,
               rootValidationRowCount:
                 await this.getEditDraftRootValidationRowCount(winner.id),
             },
@@ -381,6 +415,70 @@ export class DatasetDraftAuthorizedService {
       select: { validationRowCount: true },
     });
     return root?.validationRowCount ?? null;
+  }
+
+  /**
+   * DS-LAKE-027. Re-point an ACTIVE edit draft whose `currentArtifactId` names
+   * a RECLAIMED artifact back onto its own live BRONZE root.
+   *
+   * Reads the reclaim LEDGER (`objectReclaimedAt`), not object storage: the
+   * stamp is what cleanup writes (`stampReclaimed` in
+   * artifact-cleanup.admin.service.ts — rows are never deleted, so the stamp
+   * is the reliable signal), and checking it costs one indexed read instead
+   * of a round trip to Python per resolve. An artifact whose bytes vanished
+   * WITHOUT a stamp is therefore not caught here — see the DS-LAKE-025
+   * findings for that separate, unreconciled case; `listDraftRowsService`'s
+   * own guard reports it honestly rather than this method inventing a
+   * recovery for it.
+   *
+   * Returns the draft unchanged (and `recovered: false`) in the common case,
+   * so the caller can spread it either way.
+   */
+  private async recoverReclaimedEditDraftRoot<
+    T extends { id: string; currentArtifactId: string | null },
+  >(draft: T): Promise<{ draft: T; recovered: boolean }> {
+    if (!draft.currentArtifactId) return { draft, recovered: false };
+
+    const current = await this.prisma.datasetArtifact.findFirst({
+      where: { id: draft.currentArtifactId, draftId: draft.id },
+      select: { objectReclaimedAt: true },
+    });
+    // A row that no longer resolves at all is left to the caller's own
+    // downstream 404 — this method only repairs the reclaimed case it can
+    // prove, never guesses at a missing row.
+    if (!current || !current.objectReclaimedAt) {
+      return { draft, recovered: false };
+    }
+
+    // Walks `parentArtifactId` to the BRONZE root, scoped `where: { id,
+    // draftId }` — touches no bytes, so a reclaimed starting point is fine.
+    const root = await this.resolvePristineBronzeRoot(
+      draft.id,
+      draft.currentArtifactId,
+    );
+    if (root.objectReclaimedAt) {
+      // Same refusal the create branch already gives for a reclaimed dataset
+      // root: handing back a second dead id would only move the failure one
+      // request later, with a worse message.
+      throw new AppException({
+        statusCode: 422,
+        message:
+          'This dataset has no readable raw artifact to edit from — its ' +
+          'stored bytes have been reclaimed. Re-fetch the dataset from ' +
+          'its source before editing.',
+        type: 'ERROR',
+      });
+    }
+
+    await this.prisma.datasetDraft.update({
+      where: { id: draft.id },
+      data: { currentArtifactId: root.id },
+    });
+
+    return {
+      draft: { ...draft, currentArtifactId: root.id },
+      recovered: true,
+    };
   }
 
   async getDraftService(user: Auth.UserPayload, draftId: string) {
@@ -1623,16 +1721,29 @@ export class DatasetDraftAuthorizedService {
 
   // ── rows ─────────────────────────────────────────────────────────────────
 
-  async listDraftRowsService(
-    user: Auth.UserPayload,
+  /**
+   * DS-LAKE-027. The draft-scoped artifact lookup every read that actually
+   * FETCHES BYTES shares, with the reclaim check those reads were missing.
+   *
+   * Without it a reclaimed artifact fell straight through to Python, whose
+   * `ObjectNotFoundError` surfaces as a bare 404 the client can only report
+   * as "something failed" — which is how an expected, policy-driven cleanup
+   * (DS-LAKE-014's idle-draft reclaim) reached the user as Step 3's
+   * "Preview sample unavailable" with no reason attached. The row is still
+   * there and still resolves; only its bytes are gone, and that is a
+   * different fact from "artifact not found" and worth its own message.
+   *
+   * Deliberately NOT applied to the metadata/tag-catalog/job-start lookups
+   * nearby: those read the DatasetArtifact ROW (or a sidecar), which
+   * outlives the reclaim by design.
+   */
+  private async resolveReadableDraftArtifactKey(
     draftId: string,
     artifactId: string,
-    query: ListRowsDto,
-  ) {
-    await this.assertDraftAccess(draftId, user);
+  ): Promise<string> {
     const artifact = await this.prisma.datasetArtifact.findFirst({
       where: { id: artifactId, draftId },
-      select: { objectKey: true },
+      select: { objectKey: true, objectReclaimedAt: true },
     });
     if (!artifact) {
       throw new AppException({
@@ -1641,9 +1752,32 @@ export class DatasetDraftAuthorizedService {
         type: 'ERROR',
       });
     }
+    if (artifact.objectReclaimedAt) {
+      throw new AppException({
+        statusCode: 422,
+        message:
+          "This draft's stored bytes were reclaimed after a period of " +
+          'inactivity. Reopen the dataset to rebuild from its raw artifact.',
+        type: 'ERROR',
+      });
+    }
+    return artifact.objectKey;
+  }
+
+  async listDraftRowsService(
+    user: Auth.UserPayload,
+    draftId: string,
+    artifactId: string,
+    query: ListRowsDto,
+  ) {
+    await this.assertDraftAccess(draftId, user);
+    const objectKey = await this.resolveReadableDraftArtifactKey(
+      draftId,
+      artifactId,
+    );
 
     const pythonBody = {
-      source_key: artifact.objectKey,
+      source_key: objectKey,
       offset: query.offset,
       limit: query.limit,
       ...(query.tags && { tags: query.tags }),
@@ -1926,23 +2060,16 @@ export class DatasetDraftAuthorizedService {
     dto: HistogramRequestDto,
   ) {
     await this.assertDraftAccess(draftId, user);
-    const artifact = await this.prisma.datasetArtifact.findFirst({
-      where: { id: artifactId, draftId },
-      select: { objectKey: true },
-    });
-    if (!artifact) {
-      throw new AppException({
-        statusCode: 404,
-        message: 'Draft artifact not found',
-        type: 'ERROR',
-      });
-    }
+    const objectKey = await this.resolveReadableDraftArtifactKey(
+      draftId,
+      artifactId,
+    );
 
     const histogram = PythonHistogramSchema.parse(
       await postToPython(
         '/v1/preprocess/histogram',
         {
-          source_key: artifact.objectKey,
+          source_key: objectKey,
           operations: dto.operations,
           precision: dto.precision,
           tags: dto.tags,
@@ -1978,23 +2105,16 @@ export class DatasetDraftAuthorizedService {
     dto: BoxplotRequestDto,
   ) {
     await this.assertDraftAccess(draftId, user);
-    const artifact = await this.prisma.datasetArtifact.findFirst({
-      where: { id: artifactId, draftId },
-      select: { objectKey: true },
-    });
-    if (!artifact) {
-      throw new AppException({
-        statusCode: 404,
-        message: 'Draft artifact not found',
-        type: 'ERROR',
-      });
-    }
+    const objectKey = await this.resolveReadableDraftArtifactKey(
+      draftId,
+      artifactId,
+    );
 
     const boxplot = PythonBoxplotSchema.parse(
       await postToPython(
         '/v1/preprocess/boxplot',
         {
-          source_key: artifact.objectKey,
+          source_key: objectKey,
           operations: dto.operations,
           precision: dto.precision,
           tags: dto.tags,
@@ -2030,23 +2150,16 @@ export class DatasetDraftAuthorizedService {
     dto: ScatterRequestDto,
   ) {
     await this.assertDraftAccess(draftId, user);
-    const artifact = await this.prisma.datasetArtifact.findFirst({
-      where: { id: artifactId, draftId },
-      select: { objectKey: true },
-    });
-    if (!artifact) {
-      throw new AppException({
-        statusCode: 404,
-        message: 'Draft artifact not found',
-        type: 'ERROR',
-      });
-    }
+    const objectKey = await this.resolveReadableDraftArtifactKey(
+      draftId,
+      artifactId,
+    );
 
     const scatter = PythonScatterSchema.parse(
       await postToPython(
         '/v1/preprocess/scatter',
         {
-          source_key: artifact.objectKey,
+          source_key: objectKey,
           operations: dto.operations,
           precision: dto.precision,
           x_tag: dto.xTag,
@@ -2081,23 +2194,16 @@ export class DatasetDraftAuthorizedService {
     dto: CorrelationRequestDto,
   ) {
     await this.assertDraftAccess(draftId, user);
-    const artifact = await this.prisma.datasetArtifact.findFirst({
-      where: { id: artifactId, draftId },
-      select: { objectKey: true },
-    });
-    if (!artifact) {
-      throw new AppException({
-        statusCode: 404,
-        message: 'Draft artifact not found',
-        type: 'ERROR',
-      });
-    }
+    const objectKey = await this.resolveReadableDraftArtifactKey(
+      draftId,
+      artifactId,
+    );
 
     const correlation = PythonCorrelationSchema.parse(
       await postToPython(
         '/v1/preprocess/correlation',
         {
-          source_key: artifact.objectKey,
+          source_key: objectKey,
           operations: dto.operations,
           precision: dto.precision,
           tags: dto.tags,

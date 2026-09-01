@@ -32,7 +32,7 @@ import { useDraftRuns } from '@/hooks/model/use-draft-runs'
 import { useApplyRunParams } from '@/hooks/model/use-apply-run-params'
 import {
   classifyHyperparams,
-  // seedConsumedBy,
+  seedConsumedBy,
   splitPercentFromRun,
 } from '@/lib/run-params'
 import { METRIC_META } from '@/lib/model-metrics'
@@ -245,7 +245,7 @@ function RunDetails({
   const StatusIcon = status.icon
   const nonTerminal = run.status === 'QUEUED' || run.status === 'RUNNING'
   const rows = classifyHyperparams(run.algorithm, run.hyperparameters)
-  // const seedUsed = seedConsumedBy(run.algorithm)
+  const seedUsed = seedConsumedBy(run.algorithm)
   const splitPct = splitPercentFromRun(run.splitSpec)
   const rmse = typeof run.metrics?.rmse === 'number' ? run.metrics.rmse : null
 
@@ -272,11 +272,11 @@ function RunDetails({
           label="Split"
           value={`Train ${splitPct}% · Test ${100 - splitPct}%`}
         />
-        {/* <Field
+        <Field
           label="Seed"
           value={String(run.seed)}
           hint={seedUsed ? undefined : 'not used by this estimator'}
-        /> */}
+        />
       </dl>
 
       <div className="space-y-1">

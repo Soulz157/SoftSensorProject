@@ -31,8 +31,10 @@ import {
   PythonPreviewSchema,
   PythonRowsSchema,
   PythonScatterSchema,
+  PythonSplitStatsSchema,
   PythonTagCatalogSchema,
   ScatterRequestDto,
+  SplitStatsRequestDto,
   type CreateRawVersionDto,
   type ListRowsDto,
   type PreviewVersionDto,
@@ -1220,6 +1222,224 @@ export class DatasetVersionAuthorizedService {
     return {
       statusCode: 200,
       message: 'Boxplot generated successfully',
+      type: 'SUCCESS' as const,
+      data: boxplot,
+    };
+  }
+
+  /**
+   * MODEL-FLOW-014-T04. Both sides of the train/test chronological split
+   * `images/trainer/train.py` would actually make for `dto.splitRatio`,
+   * from one read of the dataset's committed FINAL artifact — verbatim
+   * copy of `getArtifactCorrelationService`'s shape (assert access, resolve
+   * `objectKey` OFF THE ARTIFACT ROW, never from the request, then
+   * postToPython + zod-parse + envelope).
+   */
+  async getArtifactSplitStatsService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    artifactId: string,
+    dto: SplitStatsRequestDto,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+    const artifact = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, datasetId },
+      select: { objectKey: true },
+    });
+    if (!artifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Artifact not found',
+        type: 'ERROR',
+      });
+    }
+
+    const splitStats = PythonSplitStatsSchema.parse(
+      await postToPython(
+        '/v1/preprocess/split-stats',
+        {
+          source_key: artifact.objectKey,
+          tags: dto.tags,
+          target_y: dto.targetY,
+          split_ratio: dto.splitRatio,
+          ...(dto.sampleRows && { sample_rows: dto.sampleRows }),
+          ...(dto.outlierCap && { outlier_cap: dto.outlierCap }),
+        },
+        PYTHON_TIMEOUT.metadata,
+      ),
+    );
+
+    return {
+      statusCode: 200,
+      message: 'Split statistics generated successfully',
+      type: 'SUCCESS' as const,
+      data: splitStats,
+    };
+  }
+
+  /**
+   * Shared by the three `validation-*` chart methods below. Same lookup
+   * `getArtifactValidationRowsService` (:1001+) and `getArtifactHoldoutService`
+   * (:890+) already perform — `findHoldoutArtifact` by `runId`, then
+   * `sidecarKey(holdoutArtifact.objectKey, VALIDATE_DATA_FILENAME)` — so all
+   * four routes can never resolve a different sibling for the same artifact.
+   *
+   * Deliberately does NOT catch a 422 from Python: `postToPython` never
+   * produces one here (a missing object surfaces as 404, everything else
+   * upstream 4xx collapses to 400 — see `python-client.ts`), so the
+   * `statusCode === 422` branch `getArtifactValidationRowsService` carries is
+   * dead code, not a pattern to copy forward.
+   */
+  private async resolveValidationSourceKey(
+    datasetId: string,
+    artifactId: string,
+  ): Promise<string> {
+    const artifact = await this.prisma.datasetArtifact.findFirst({
+      where: { id: artifactId, datasetId },
+      select: { runId: true },
+    });
+    if (!artifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Dataset artifact not found',
+        type: 'ERROR',
+      });
+    }
+
+    const holdoutArtifact = await this.findHoldoutArtifact(artifact.runId);
+    if (!holdoutArtifact) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'This dataset has no validation holdout',
+        type: 'ERROR',
+      });
+    }
+
+    return sidecarKey(holdoutArtifact.objectKey, VALIDATE_DATA_FILENAME);
+  }
+
+  /**
+   * Compare-view twin of `getArtifactCorrelationService` (:1095) — identical
+   * Python call and DTO, over the run's `validate_data.parquet` sidecar
+   * instead of the artifact's own object.
+   */
+  async getArtifactValidationCorrelationService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    artifactId: string,
+    dto: CorrelationRequestDto,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+    const sourceKey = await this.resolveValidationSourceKey(
+      datasetId,
+      artifactId,
+    );
+
+    const correlation = PythonCorrelationSchema.parse(
+      await postToPython(
+        '/v1/preprocess/correlation',
+        {
+          source_key: sourceKey,
+          operations: dto.operations,
+          precision: dto.precision,
+          tags: dto.tags,
+          ...(dto.sampleRows && { sample_rows: dto.sampleRows }),
+          ...(dto.startTime && { start_time: dto.startTime }),
+          ...(dto.endTime && { end_time: dto.endTime }),
+          ...(dto.topK && { top_k: dto.topK }),
+        },
+        PYTHON_TIMEOUT.metadata,
+      ),
+    );
+
+    return {
+      statusCode: 200,
+      message: 'Validation correlation matrix generated successfully',
+      type: 'SUCCESS' as const,
+      data: correlation,
+    };
+  }
+
+  /**
+   * Compare-view twin of `getArtifactHistogramService` (:1139) — identical
+   * Python call and DTO, over the run's `validate_data.parquet` sidecar
+   * instead of the artifact's own object.
+   */
+  async getArtifactValidationHistogramService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    artifactId: string,
+    dto: HistogramRequestDto,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+    const sourceKey = await this.resolveValidationSourceKey(
+      datasetId,
+      artifactId,
+    );
+
+    const histogram = PythonHistogramSchema.parse(
+      await postToPython(
+        '/v1/preprocess/histogram',
+        {
+          source_key: sourceKey,
+          operations: dto.operations,
+          precision: dto.precision,
+          tags: dto.tags,
+          ...(dto.sampleRows && { sample_rows: dto.sampleRows }),
+          ...(dto.startTime && { start_time: dto.startTime }),
+          ...(dto.endTime && { end_time: dto.endTime }),
+          ...(dto.kdeSamples && { kde_samples: dto.kdeSamples }),
+          ...(dto.binCount && { bin_count: dto.binCount }),
+        },
+        PYTHON_TIMEOUT.metadata,
+      ),
+    );
+
+    return {
+      statusCode: 200,
+      message: 'Validation histogram generated successfully',
+      type: 'SUCCESS' as const,
+      data: histogram,
+    };
+  }
+
+  /**
+   * Compare-view twin of `getArtifactBoxplotService` (:1184) — identical
+   * Python call and DTO, over the run's `validate_data.parquet` sidecar
+   * instead of the artifact's own object.
+   */
+  async getArtifactValidationBoxplotService(
+    user: Auth.UserPayload,
+    datasetId: string,
+    artifactId: string,
+    dto: BoxplotRequestDto,
+  ) {
+    await this.assertDatasetAccess(datasetId, user);
+    const sourceKey = await this.resolveValidationSourceKey(
+      datasetId,
+      artifactId,
+    );
+
+    const boxplot = PythonBoxplotSchema.parse(
+      await postToPython(
+        '/v1/preprocess/boxplot',
+        {
+          source_key: sourceKey,
+          operations: dto.operations,
+          precision: dto.precision,
+          tags: dto.tags,
+          ...(dto.sampleRows && { sample_rows: dto.sampleRows }),
+          ...(dto.startTime && { start_time: dto.startTime }),
+          ...(dto.endTime && { end_time: dto.endTime }),
+          ...(dto.outlierCap && { outlier_cap: dto.outlierCap }),
+        },
+        PYTHON_TIMEOUT.metadata,
+      ),
+    );
+
+    return {
+      statusCode: 200,
+      message: 'Validation boxplot generated successfully',
       type: 'SUCCESS' as const,
       data: boxplot,
     };

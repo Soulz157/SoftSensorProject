@@ -23,6 +23,7 @@ import {
   mpSelectedMetricsAtom,
   mpLossFunctionAtom,
   mpTrainTestSplitAtom,
+  mpSeedAtom,
   mpAutoRetrainAtom,
   mpRetrainWarnSdAtom,
   mpRetrainCriticalSdAtom,
@@ -47,6 +48,9 @@ export interface UsePipelineNavResult {
   hyperparameters: Record<string, HyperparamValue>
   lossFunction: string
   trainTestSplit: number
+  /** MODEL-FLOW-014-T07. `undefined` means the user has not chosen one —
+   * the server generates its own when omitted. */
+  seed: number | undefined
   autoRetrain: boolean
   warnSd: number
   criticalSd: number
@@ -57,20 +61,11 @@ export interface UsePipelineNavResult {
   back: () => void
   canAdvance: (step: number) => boolean
   setSelectedDataset: (dataset: SavedDataset | null) => void
-  setAlgorithm: (algorithm: Algorithm) => void
-  setAlgorithms: (algorithms: Algorithm[]) => void
-  setFindBestModel: (on: boolean) => void
-  setFindBestParams: (on: boolean) => void
-  setTargetVariable: (tag: string[]) => void
-  setHyperparameter: (key: string, value: HyperparamValue) => void
-  setLossFunction: (loss: string) => void
-  setTrainTestSplit: (split: number) => void
   setAutoRetrain: (on: boolean) => void
   setWarnSd: (sd: number) => void
   setCriticalSd: (sd: number) => void
   setDriftMonitor: (on: boolean) => void
   setDriftThresholdPct: (pct: number) => void
-  setFetchTagOverride: (tag: string) => void
   resetPipeline: () => void
 }
 
@@ -114,6 +109,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
   const [hyperparameters, setHyperparametersAtom] = useAtom(mpHyperparamsAtom)
   const [lossFunction, setLossFunctionAtom] = useAtom(mpLossFunctionAtom)
   const [trainTestSplit, setTrainTestSplitAtom] = useAtom(mpTrainTestSplitAtom)
+  const [seed, setSeedAtom] = useAtom(mpSeedAtom)
   const [autoRetrain, setAutoRetrainAtom] = useAtom(mpAutoRetrainAtom)
   const [warnSd, setWarnSdAtom] = useAtom(mpRetrainWarnSdAtom)
   const [criticalSd, setCriticalSdAtom] = useAtom(mpRetrainCriticalSdAtom)
@@ -216,113 +212,17 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     ],
   )
 
-  // Switching algorithm resets hyperparameters to that algorithm's clean
-  // defaults so the persisted record never accumulates keys from prior picks.
-  const setAlgorithm = useCallback(
-    (value: Algorithm) => {
-      setAlgorithmAtom(value)
-      setHyperparametersAtom(defaultHyperparams(value))
-      resetTraining()
-      setHighestUnlocked(prev => Math.min(prev, 3))
-    },
-    [
-      setAlgorithmAtom,
-      setHyperparametersAtom,
-      resetTraining,
-      setHighestUnlocked,
-    ],
-  )
-
-  // Multi-algorithm select (max 3). Keep the primary (index 0) + its clean
-  // hyperparameters in sync so the manual grid always reflects algorithms[0].
-  const setAlgorithms = useCallback(
-    (next: Algorithm[]) => {
-      const capped = next.slice(0, 3)
-      setAlgorithmsAtom(capped)
-      const primary = capped[0] ?? 'ols'
-      setAlgorithmAtom(primary)
-      setHyperparametersAtom(defaultHyperparams(primary))
-      resetTraining()
-      setHighestUnlocked(prev => Math.min(prev, 3))
-    },
-    [
-      setAlgorithmsAtom,
-      setAlgorithmAtom,
-      setHyperparametersAtom,
-      resetTraining,
-      setHighestUnlocked,
-    ],
-  )
-
-  const setFindBestModel = useCallback(
-    (on: boolean) => {
-      setFindBestModelAtom(on)
-      // Step B requires Step A — turning A off cascades B off.
-      if (!on) setFindBestParamsAtom(false)
-      resetTraining()
-      setHighestUnlocked(prev => Math.min(prev, 3))
-    },
-    [
-      setFindBestModelAtom,
-      setFindBestParamsAtom,
-      resetTraining,
-      setHighestUnlocked,
-    ],
-  )
-
-  const setFindBestParams = useCallback(
-    (on: boolean) => {
-      setFindBestParamsAtom(on)
-      resetTraining()
-      setHighestUnlocked(prev => Math.min(prev, 3))
-    },
-    [setFindBestParamsAtom, resetTraining, setHighestUnlocked],
-  )
-
-  const setFetchTagOverride = useCallback(
-    (tag: string) => {
-      setTargetVariableAtom([tag])
-      resetTraining()
-      setHighestUnlocked(prev => Math.min(prev, 3))
-    },
-    [setTargetVariableAtom, resetTraining, setHighestUnlocked],
-  )
-
-  const setTargetVariable = useCallback(
-    (tags: string[]) => {
-      setTargetVariableAtom(tags)
-      resetTraining()
-      setHighestUnlocked(prev => Math.min(prev, 3))
-    },
-    [setTargetVariableAtom, resetTraining, setHighestUnlocked],
-  )
-
-  const setHyperparameter = useCallback(
-    (key: string, value: HyperparamValue) => {
-      setHyperparametersAtom(prev => ({ ...prev, [key]: value }))
-      resetTraining()
-      setHighestUnlocked(prev => Math.min(prev, 3))
-    },
-    [setHyperparametersAtom, resetTraining, setHighestUnlocked],
-  )
-
-  const setLossFunction = useCallback(
-    (loss: string) => {
-      setLossFunctionAtom(loss)
-      resetTraining()
-      setHighestUnlocked(prev => Math.min(prev, 3))
-    },
-    [setLossFunctionAtom, resetTraining, setHighestUnlocked],
-  )
-
-  const setTrainTestSplit = useCallback(
-    (split: number) => {
-      setTrainTestSplitAtom(split)
-      resetTraining()
-      setHighestUnlocked(prev => Math.min(prev, 3))
-    },
-    [setTrainTestSplitAtom, resetTraining, setHighestUnlocked],
-  )
+  // MODEL-FLOW-014-T08: the per-field relock setters that used to live here
+  // (setAlgorithm, setAlgorithms, setFindBestModel, setFindBestParams,
+  // setFetchTagOverride, setTargetVariable, setHyperparameter,
+  // setLossFunction, setTrainTestSplit, setSeed) are gone — Step 3 now
+  // edits a local draft (`useRunConfigDraft`) and commits all nine fields
+  // in one Apply via `useCommitRunConfig`, which performs the same
+  // resetTraining + relock this file used to duplicate nine times.
+  // `setAlgorithmAtom`/`setAlgorithmsAtom`/etc above stay: `resetPipeline`
+  // below still writes them directly, and their VALUES (`algorithm`,
+  // `algorithms`, …) are still read off this hook by `useRunConfigDraft`
+  // as the committed snapshot.
 
   // Deploy step (Step 6) — last step, so no `highestUnlocked` relock.
   const setAutoRetrain = useCallback(
@@ -364,6 +264,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     // displayed loss function.
     setLossFunctionAtom('mse')
     setTrainTestSplitAtom(80)
+    setSeedAtom(undefined)
     setTrainState({ status: 'idle', progress: 0 })
     setCreatedModelId('')
     setSelectedMetrics(['r2', 'rmse', 'sd'])
@@ -388,6 +289,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     setHyperparametersAtom,
     setLossFunctionAtom,
     setTrainTestSplitAtom,
+    setSeedAtom,
     setTrainState,
     setCreatedModelId,
     setSelectedMetrics,
@@ -414,6 +316,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     hyperparameters,
     lossFunction,
     trainTestSplit,
+    seed,
     autoRetrain,
     warnSd,
     criticalSd,
@@ -424,20 +327,11 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     back,
     canAdvance,
     setSelectedDataset,
-    setAlgorithm,
-    setAlgorithms,
-    setFindBestModel,
-    setFindBestParams,
-    setTargetVariable,
-    setHyperparameter,
-    setLossFunction,
-    setTrainTestSplit,
     setAutoRetrain,
     setWarnSd,
     setCriticalSd,
     setDriftMonitor,
     setDriftThresholdPct,
-    setFetchTagOverride,
     resetPipeline,
   }
 }

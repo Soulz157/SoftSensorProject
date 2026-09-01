@@ -195,7 +195,6 @@ export function CorrelationMatrix({ dataset, threshold = 0.8 }: Props) {
             <table className="w-max border-separate border-spacing-0 text-[11px] [&_tr]:border-none ">
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
-                  {/* corner: pinned ทั้งสองแกน */}
                   <TableHead
                     style={{ position: 'sticky', left: 0, top: 0, zIndex: 30 }}
                     className="bg-card p-1"

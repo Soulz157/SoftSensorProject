@@ -1,9 +1,11 @@
 'use client'
 
+import { useEffect } from 'react'
 import { AlertTriangle, Cpu, Loader2, Timer, Upload } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useModelTraining } from '@/hooks/model/use-model-training'
 import { useModelDraftSync } from '@/hooks/model/use-model-draft-sync'
+import { useRunConfigDraft } from '@/hooks/model/use-run-config-draft'
 import type { UsePipelineNavResult } from '@/hooks/model/use-model-pipeline-nav'
 import { CoreConfig } from './training-config/core-config'
 import { AlgorithmSelector } from './training-config/algorithm-selector'
@@ -11,50 +13,61 @@ import { AutoMlToggles } from './training-config/automl-toggles'
 import { DynamicHyperparameters } from './training-config/dynamic-hyperparameters'
 import { RuntimeEstimate } from './training-config/runtime-estimate'
 import { RunParamsPanel } from './training-config/run-params-panel'
+import { SplitDistributionPanel } from './training-config/split-distribution-panel'
 
 interface Props {
   nav: UsePipelineNavResult
 }
 
 export function Phase3TrainingConfig({ nav }: Props) {
-  const {
-    selectedDataset,
-    algorithms,
-    findBestModel,
-    findBestParams,
-    targetVariables,
-    hyperparameters,
-    lossFunction,
-    trainTestSplit,
-  } = nav
+  const { selectedDataset, targetVariables, trainTestSplit } = nav
   // MODEL-FLOW-002: syncs Step 1 + Training Configuration (Step 3 as of
   // MODEL-FLOW-010) config to a server-side ModelDraft in the background.
-  // This component mounting IS "advancing to Training Configuration" —
-  // canAdvance(1) already validated workspace/plant/node/dataset/name, and
-  // Step 2 (Dataset Review) configures nothing of its own to sync, before
-  // the wizard let the user get here.
-  const { ensureDraftId } = useModelDraftSync()
+  // MODEL-FLOW-014-T08: autoSync off — Core Config now commits on Apply,
+  // not on change, so the debounced per-keystroke PATCH this hook used to
+  // run would otherwise fire against config nothing has committed yet.
+  const { ensureDraftId, flush } = useModelDraftSync({ autoSync: false })
+  const runConfigDraft = useRunConfigDraft(nav)
+  const { draft, dirty } = runConfigDraft
   const training = useModelTraining({ ensureDraftId })
   const tags = selectedDataset?.tags ?? []
 
-  const primaryAlgorithm = algorithms[0] ?? 'ols'
-  const showHyperparams = algorithms.length === 1 && !findBestParams
+  // Flushes on mount (replacing autoSync's old mount PATCH — a user who
+  // accepts every default must not leave the draft row never seeded) AND on
+  // every subsequent change to the fields `flush`'s own `syncNow` reads
+  // (target/algorithm/hyperparameters/split — `useModelDraftSync.ts`),
+  // whether from Apply here or the Recall panel's Apply
+  // (`useApplyRunParams`) writing the same atoms directly while Step 3
+  // stays mounted. Depending on `flush` alone — not a hand-picked field
+  // list — means this can't drift from what `syncNow` actually sends.
+  // Deliberately an effect on the RESOLVED atoms via `flush`'s own identity,
+  // not a callback fired from inside `runConfigDraft.apply()` itself — a
+  // flush called synchronously there would still read the PREVIOUS render's
+  // stale values, since `useModelDraftSync`'s own atom reads haven't
+  // re-rendered yet at that point in the same click handler.
+  useEffect(() => {
+    void flush()
+  }, [flush])
 
-  const learningRate = hyperparameters?.learning_rate
-    ? Number(hyperparameters.learning_rate)
+  const primaryAlgorithm = draft.algorithms[0] ?? 'ols'
+  const showHyperparams = draft.algorithms.length === 1 && !draft.findBestParams
+
+  const learningRate = draft.hyperparameters?.learning_rate
+    ? Number(draft.hyperparameters.learning_rate)
     : 0.1
-  const numLeaves = hyperparameters?.num_leaves
-    ? Number(hyperparameters.num_leaves)
+  const numLeaves = draft.hyperparameters?.num_leaves
+    ? Number(draft.hyperparameters.num_leaves)
     : 31
-  const nEstimators = hyperparameters?.n_estimators
-    ? Number(hyperparameters.n_estimators)
+  const nEstimators = draft.hyperparameters?.n_estimators
+    ? Number(draft.hyperparameters.n_estimators)
     : undefined
   const rowCount = selectedDataset?.rowCount ?? 0
 
   const canTrain =
     targetVariables.length > 0 &&
     training.status !== 'training' &&
-    tags.length > 0
+    tags.length > 0 &&
+    !dirty
 
   return (
     <div className="space-y-6">
@@ -100,12 +113,28 @@ export function Phase3TrainingConfig({ nav }: Props) {
             </h3>
             <CoreConfig
               tags={tags}
+              targetVariables={draft.targetVariables}
+              onTargetChange={runConfigDraft.setTargetVariable}
+              lossFunction={draft.lossFunction}
+              onLossChange={runConfigDraft.setLossFunction}
+              trainTestSplit={draft.trainTestSplit}
+              onSplitChange={runConfigDraft.setTrainTestSplit}
+              seed={draft.seed}
+              onSeedChange={runConfigDraft.setSeed}
+              algorithms={draft.algorithms}
+            />
+            {/* Deliberately fed the COMMITTED trainTestSplit/algorithms/
+                targetVariables (nav), not the draft above — this panel
+                describes the split that will actually run, and must fetch
+                once per Apply, not once per keystroke (MODEL-FLOW-014-T08). */}
+            <SplitDistributionPanel
+              datasetId={selectedDataset?.id ?? null}
+              artifactId={selectedDataset?.currentArtifactId ?? null}
+              hasArtifact={Boolean(selectedDataset?.currentArtifactId)}
+              allTags={tags}
               targetVariables={targetVariables}
-              onTargetChange={nav.setTargetVariable}
-              lossFunction={lossFunction}
-              onLossChange={nav.setLossFunction}
-              trainTestSplit={trainTestSplit}
-              onSplitChange={nav.setTrainTestSplit}
+              trainTestSplitPercent={trainTestSplit}
+              algorithms={nav.algorithms}
             />
           </section>
 
@@ -114,20 +143,20 @@ export function Phase3TrainingConfig({ nav }: Props) {
               Algorithm &amp; hyperparameters
             </h3>
             <AlgorithmSelector
-              algorithms={algorithms}
-              onChange={nav.setAlgorithms}
+              algorithms={draft.algorithms}
+              onChange={runConfigDraft.setAlgorithms}
             />
             <AutoMlToggles
-              findBestModel={findBestModel}
-              onFindBestModel={nav.setFindBestModel}
-              findBestParams={findBestParams}
-              onFindBestParams={nav.setFindBestParams}
+              findBestModel={draft.findBestModel}
+              onFindBestModel={runConfigDraft.setFindBestModel}
+              findBestParams={draft.findBestParams}
+              onFindBestParams={runConfigDraft.setFindBestParams}
             />
             {showHyperparams ? (
               <DynamicHyperparameters
                 algorithm={primaryAlgorithm}
-                hyperparameters={hyperparameters}
-                onChange={nav.setHyperparameter}
+                hyperparameters={draft.hyperparameters}
+                onChange={runConfigDraft.setHyperparameter}
               />
             ) : (
               <p className="rounded-lg bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
@@ -137,6 +166,33 @@ export function Phase3TrainingConfig({ nav }: Props) {
               </p>
             )}
           </section>
+
+          {dirty && (
+            <div className="flex flex-col gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 ring-1 ring-amber-500/20 sm:flex-row sm:items-center sm:justify-between dark:text-amber-400">
+              <span className="flex items-center gap-1.5">
+                <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                Unapplied changes — Start Training uses the last applied
+                configuration until you Apply.
+              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 cursor-pointer px-2 text-xs"
+                  onClick={runConfigDraft.discard}
+                >
+                  Discard
+                </Button>
+                <Button
+                  size="sm"
+                  className="h-7 cursor-pointer px-2 text-xs"
+                  onClick={runConfigDraft.apply}
+                >
+                  Apply
+                </Button>
+              </div>
+            </div>
+          )}
 
           {/* Training Actions */}
           <div className="space-y-3 pt-2">
@@ -156,6 +212,11 @@ export function Phase3TrainingConfig({ nav }: Props) {
                   ? 'Retrain'
                   : 'Start Training'}
             </Button>
+            {dirty && training.status !== 'training' && (
+              <p className="text-xs text-muted-foreground">
+                Apply the changes above to start training with them.
+              </p>
+            )}
             {training.status === 'training' && (
               // A fit has no reportable percentage (MODEL-FLOW-003-T09) —
               // train.py emits log lines, not a fraction. Showing the
@@ -189,11 +250,14 @@ export function Phase3TrainingConfig({ nav }: Props) {
             <div className="space-y-4 pt-2">
               <RuntimeEstimate
                 rows={rowCount}
-                features={Math.max(tags.length - targetVariables.length, 1)}
-                algorithms={algorithms}
-                targets={targetVariables.length}
-                findBestModel={findBestModel}
-                findBestParams={findBestParams}
+                features={Math.max(
+                  tags.length - draft.targetVariables.length,
+                  1,
+                )}
+                algorithms={draft.algorithms}
+                targets={draft.targetVariables.length}
+                findBestModel={draft.findBestModel}
+                findBestParams={draft.findBestParams}
                 nEstimators={nEstimators}
                 status={training.status}
                 progress={training.progress}

@@ -75,33 +75,12 @@ describe('useModelPipelineNav — 6-step renumbering (MODEL-FLOW-013-T01)', () =
     expect(result.current.canAdvance(6)).toBe(false)
   })
 
-  it('editing the algorithm from step 4 relocks highestUnlocked to 3, not 2', () => {
-    store.set(mpHighestUnlockedAtom, 4)
-    const { result } = renderNav()
-
-    act(() => result.current.setAlgorithm('random_forest'))
-
-    expect(result.current.highestUnlocked).toBe(3)
-  })
-
-  it('editing the target variable from step 5 relocks highestUnlocked to 3', () => {
-    store.set(mpHighestUnlockedAtom, 5)
-    const { result } = renderNav()
-
-    act(() => result.current.setTargetVariable(['TI-101']))
-
-    expect(result.current.highestUnlocked).toBe(3)
-  })
-
-  it('editing hyperparameters relocks highestUnlocked to 3 but does not touch a lower value', () => {
-    store.set(mpHighestUnlockedAtom, 2)
-    const { result } = renderNav()
-
-    act(() => result.current.setHyperparameter('n_estimators', 100))
-
-    // Math.min(2, 3) === 2 — a relock must never RAISE highestUnlocked.
-    expect(result.current.highestUnlocked).toBe(2)
-  })
+  // MODEL-FLOW-014-T08: the per-field relock setters this suite used to
+  // exercise here (setAlgorithm, setTargetVariable, setHyperparameter, …)
+  // are gone from this hook — Step 3 edits a local draft and relocks once
+  // on Apply via the shared `useCommitRunConfig`. That relock behaviour
+  // (including the "must never RAISE highestUnlocked" case the middle test
+  // above pinned) is now covered in use-run-config-draft.test.tsx instead.
 
   it('picking a different dataset still relocks highestUnlocked to 1, unchanged by the renumbering', () => {
     store.set(mpHighestUnlockedAtom, 5)

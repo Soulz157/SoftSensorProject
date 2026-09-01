@@ -54,6 +54,7 @@ export function WizardShell() {
   const {
     reload: reloadEditRows,
     draftError,
+    featureArtifactExpired,
     rawDataAbsent,
   } = useDatasetEditHydration()
   // DS-LAKE-025. The remedy for the one recoverable synthetic cause. Lives
@@ -234,6 +235,28 @@ export function WizardShell() {
                 message={draftError}
               />
             )}
+            {/* DS-LAKE-027. Informational, not a failure: the draft was
+                already repaired server-side and editing works normally from
+                here. Says why the previous session's feature result is gone,
+                so Step 4 recomputing it does not read as work silently
+                undone. Suppressed alongside the two banners above, which
+                describe genuinely blocking states. */}
+            {mode === 'edit' &&
+              featureArtifactExpired &&
+              !rawDataAbsent &&
+              !draftError && (
+                <SyntheticDataBanner
+                  reason=""
+                  title="Previous feature engineering result expired"
+                  message={
+                    'This dataset had been left open for a while, so its ' +
+                    'intermediate feature-engineering data was cleaned up. ' +
+                    'Editing has resumed from the raw artifact — the result ' +
+                    'is recomputed automatically when you reach Feature ' +
+                    'Engineering. Nothing saved was lost.'
+                  }
+                />
+              )}
             {showStageWarning && (
               <SyntheticDataBanner
                 reason=""

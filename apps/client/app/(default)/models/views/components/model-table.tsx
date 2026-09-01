@@ -37,6 +37,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
@@ -326,6 +327,16 @@ export function ModelTable({
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="w-full">
+                        {m.data?.lastEditedBy && (
+                          <>
+                            <DropdownMenuLabel className="font-normal text-xs text-muted-foreground">
+                              Last edited by {m.data.lastEditedBy}
+                              {m.data.lastEditedAt &&
+                                ` · ${formatDeployedAt(m.data.lastEditedAt)}`}
+                            </DropdownMenuLabel>
+                            <DropdownMenuSeparator />
+                          </>
+                        )}
                         <DropdownMenuItem onClick={() => onLog(m)}>
                           <Terminal className="h-3.5 w-3.5" />
                           Console

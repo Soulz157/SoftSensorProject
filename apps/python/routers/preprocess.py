@@ -80,6 +80,8 @@ from schemas.preprocess import (
     ScaleRequest,
     ScatterRequest,
     ScatterResponse,
+    SplitStatsRequest,
+    SplitStatsResponse,
     TagCatalogRequest,
     TagCatalogResponse,
     ValidateRequest,
@@ -93,6 +95,7 @@ from services.export_service import export_artifact_csv
 from services.histogram_service import build_histogram
 from services.preview_service import build_preview
 from services.scatter_service import build_scatter
+from services.split_stats_service import build_split_stats
 
 router = APIRouter(prefix="/v1/preprocess", tags=["Preprocess"])
 
@@ -219,8 +222,10 @@ async def preview_pipeline(
     summary="Histogram/KDE for one or more tags, recomputed under live operations",
     description=(
         "DS-LAKE-005B-D-T01. Same window-then-apply-operations shape as "
-        "/preview — reads a capped head window, applies the operations, and "
-        "returns bug-for-bug parity with the client's own tagDistribution/"
+        "/preview, except the window is a systematic sample spanning its "
+        "full time range (MODEL-FLOW-014-T02), not a head cut of its "
+        "earliest rows. Applies the operations and returns bug-for-bug "
+        "parity with the client's own tagDistribution/"
         "kdeEstimate/densityToCount (lib/data-quality.ts). Writes nothing. "
         "`tags` is REQUIRED (unlike /preview) — the domain is shared across "
         "every overlaid tag, so 'every tag' is never a sane default here."
@@ -239,7 +244,8 @@ async def histogram_pipeline(
     summary="Five-number summary + capped outlier list per tag, recomputed under live operations",
     description=(
         "DS-LAKE-005B-D-T03. Same window-then-apply-operations shape as "
-        "/histogram — reads a capped head window, applies the operations, "
+        "/histogram — a systematic sample spanning the window's full time "
+        "range (MODEL-FLOW-014-T02), not a head cut. Applies the operations "
         "and returns bug-for-bug parity with the client's own "
         "tagBoxplotStats (lib/data-quality.ts). Writes nothing. `tags` is "
         "REQUIRED (unlike /preview) — a box plot with no tags named is "
@@ -255,13 +261,37 @@ async def boxplot_pipeline(
 
 
 @router.post(
+    "/split-stats",
+    response_model=SplitStatsResponse,
+    summary="Both sides of the train/test chronological split, from one read of a committed artifact",
+    description=(
+        "MODEL-FLOW-014-T03. Derives the SAME cut `images/trainer/train.py` "
+        "would make for `split_ratio` — on the LABELLED frame, not row "
+        "count — and returns a per-tag five-number summary for EACH side "
+        "from one read, never two /boxplot calls. `cut_timestamp` is "
+        "ECHOED back; the client never derives a cut itself. `sample_rows` "
+        "bounds the per-side box statistics only, never the cut itself, "
+        "which is always computed over the FULL labelled frame. Tabular "
+        "only — lstm/gru cut on window count via a different rule this "
+        "endpoint does not implement. Writes nothing."
+    ),
+)
+async def split_stats_pipeline(
+    body: SplitStatsRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(build_split_stats, store, body)
+
+
+@router.post(
     "/scatter",
     response_model=ScatterResponse,
     summary="Decimated scatter cloud + full-frame regression for two tags",
     description=(
         "DS-LAKE-005B-D-T04. Same window-then-apply-operations shape as "
-        "/histogram and /boxplot — reads a capped head window, applies the "
-        "operations, and returns bug-for-bug parity with the client's own "
+        "/histogram and /boxplot — a systematic sample spanning the "
+        "window's full time range (MODEL-FLOW-014-T02), not a head cut. "
+        "Applies the operations and returns bug-for-bug parity with the client's own "
         "linearRegression (lib/preprocessing.ts) for the coefficients. "
         "Writes nothing. `points` is decimated via 2D grid binning for "
         "plotting only (NOT the /preview LTTB path — a scatter's axes are "
@@ -285,7 +315,9 @@ async def scatter_pipeline(
     summary="Pearson correlation matrix over a server-resolved column list, hard-capped",
     description=(
         "DS-LAKE-005B-D-T05b. Same window-then-apply-operations shape as "
-        "/histogram, /boxplot and /scatter. `tags` is the CANDIDATE "
+        "/histogram, /boxplot and /scatter — a systematic sample spanning "
+        "the window's full time range (MODEL-FLOW-014-T02), not a head "
+        "cut. `tags` is the CANDIDATE "
         "universe; the server resolves it (DS-LAKE-005B-D-T05a: near-"
         "constant filter, then rank by IQR/median or CV) down to at most "
         "`top_k` columns before computing the matrix — 8,000 candidate "

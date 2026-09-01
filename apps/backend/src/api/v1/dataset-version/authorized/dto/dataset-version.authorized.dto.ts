@@ -329,6 +329,31 @@ export const BoxplotRequestSchema = z.object({
 export class BoxplotRequestDto extends createZodDto(BoxplotRequestSchema) {}
 
 /**
+ * MODEL-FLOW-014-T04. Deliberately narrower than `BoxplotRequestSchema`: no
+ * `operations`, no `precision`, no `startTime`/`endTime`. This reads a
+ * committed FINAL artifact for a fixed, server-derived split — there is no
+ * live-editing scrubber state to replay operations against, and
+ * `precision` was dropped from the Python schema entirely (traced
+ * `apply_operations`: it is a no-op with an empty `operations` list, so
+ * keeping the field here would carry a value the connector can never use).
+ * `splitRatio` bounds are INCLUSIVE (0.5-0.95), matching
+ * `CreateTrainingRunSchema.trainTestSplit` — the launch path the wizard
+ * actually calls — not `CreateModelRunSchema.splitRatio`'s exclusive
+ * `gt/lt`, a second, older bound this codebase also carries.
+ */
+export const SplitStatsRequestSchema = z.object({
+  tags: z.array(z.string()).min(1).max(20),
+  targetY: z.string().min(1),
+  splitRatio: z.number().min(0.5).max(0.95),
+  sampleRows: z.number().int().min(1).max(50_000).optional(),
+  outlierCap: z.number().int().min(1).max(500).optional(),
+});
+
+export class SplitStatsRequestDto extends createZodDto(
+  SplitStatsRequestSchema,
+) {}
+
+/**
  * DS-LAKE-005B-D-T04. Similar payload shape to `HistogramRequestSchema`/
  * `BoxplotRequestSchema` (operations/precision/sampleRows/startTime/
  * endTime), but takes exactly TWO tags (`xTag`/`yTag`) rather than a `tags`
@@ -848,8 +873,34 @@ export const PythonBoxplotSchema = z.object({
   /** Requested tags with 0 Good values in this window. Gated on
    * `count > 0` server-side — NOT the client's `hasData` check
    * (`min != max or median != 0`), which would mislabel an all-zero-
-   * valued tag as insufficient (`boxplot_service.py::_qualifies`). */
+   * valued tag as insufficient (`boxplot_service.py::qualifies`). */
   insufficient_tags: z.array(z.string()),
+});
+
+/**
+ * apps/python `schemas.preprocess.SplitStatsResponse` (MODEL-FLOW-014-T03).
+ * `train`/`test` are `BoxplotResponse`-shaped (minus `source_key`, which
+ * belongs once at the top) so the client's existing `TagBoxplotChart`
+ * renders either side with no translation layer.
+ */
+const PythonSplitStatsSideSchema = z.object({
+  tags: z.array(PythonTagBoxplotSchema),
+  insufficient_tags: z.array(z.string()),
+});
+
+export const PythonSplitStatsSchema = z.object({
+  source_key: z.string(),
+  target_y: z.string(),
+  split_ratio: z.number(),
+  /** The resolved cut, ECHOED back — the client never derives it. The
+   * FIRST TEST ROW's timestamp (train = strictly before, test = at or
+   * after), matching `train.py::chronological_split`'s own convention. */
+  cut_timestamp: z.string(),
+  train_labelled_rows: z.number().int().nonnegative(),
+  test_labelled_rows: z.number().int().nonnegative(),
+  source_rows: z.number().int().nonnegative(),
+  train: PythonSplitStatsSideSchema,
+  test: PythonSplitStatsSideSchema,
 });
 
 const PythonScatterPointSchema = z.object({

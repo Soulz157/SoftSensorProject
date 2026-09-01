@@ -2,10 +2,13 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import {
+  BarChart3,
+  BoxSelect,
   Check,
   ChevronLeft,
   ChevronRight,
   ChevronsUpDown,
+  GitCompareArrows,
   LineChart as LineChartIcon,
   RotateCcw,
   Table2,
@@ -53,7 +56,27 @@ import {
   useArtifactValidationRows,
   COMPARE_ROWS,
 } from '@/hooks/dataset/artifact/use-artifact-validation-rows'
+import { useArtifactHistogram } from '@/hooks/dataset/artifact/use-artifact-histogram'
+import { useArtifactBoxplot } from '@/hooks/dataset/artifact/use-artifact-boxplot'
+import { useArtifactCorrelation } from '@/hooks/dataset/artifact/use-artifact-correlation'
+import { useArtifactValidationHistogram } from '@/hooks/dataset/artifact/use-artifact-validation-histogram'
+import { useArtifactValidationBoxplot } from '@/hooks/dataset/artifact/use-artifact-validation-boxplot'
+import { useArtifactValidationCorrelation } from '@/hooks/dataset/artifact/use-artifact-validation-correlation'
+import {
+  inverseScaleHistogram,
+  inverseScaleBoxplot,
+} from '@/lib/inverse-scale-stats'
+import type {
+  DraftHistogramResult,
+  DraftTagHistogram,
+  DraftBoxplotResult,
+  DraftTagBoxplot,
+  DraftCorrelationResult,
+} from '@/services/dataset-draft'
 import { RawReadingsTable } from '../create/components/raw-readings-table'
+import { TagHistogramChart } from '../create/components/chart/tag-histogram-chart'
+import { TagBoxplotChart } from '../create/components/chart/tag-boxplot-chart'
+import { TagCorrelationChart } from '../create/components/chart/tag-correlation-chart'
 import {
   ResponsiveContainer,
   LineChart,
@@ -72,6 +95,13 @@ import {
  * carries the SIDE, so one tag costs one colour rather than two. */
 const MAX_TAGS = 5
 
+/** Stable empty ref for the chart-tab gating below — a fresh `[]` literal
+ * each render would give `histogramTags`/`boxplotTags`/`correlationTags` a
+ * new identity on every render even while idle, defeating the `useMemo`s
+ * that key off them. Same discipline `data-analysis-card.tsx`'s own
+ * `NO_SCALERS` already documents. */
+const EMPTY_TAGS: string[] = []
+
 const AXIS_TICK = { fill: 'var(--muted-foreground)', fontSize: 11 }
 
 /** Validation columns are suffixed so each side is its OWN recharts series —
@@ -87,6 +117,275 @@ const VAL_SUFFIX = '__val'
  * exactly as timeline mode does. */
 const TRAIN_COLOR = 'var(--chart-1)'
 const VAL_COLOR = 'var(--chart-4)'
+
+/**
+ * DS-LAKE-026. Sent on BOTH sides of the Histogram/Box Plot/Correlation
+ * tabs — every one of those routes computes over a head window
+ * (`sample_rows`, `apps/python/schemas/preprocess.py`'s
+ * `MAX_SAMPLE_ROWS = 50_000`), not a decimated sample. Left at the server
+ * default (5,000) a large train artifact would cover a far smaller fraction
+ * of itself than a small validation holdout does, which on a tab whose
+ * whole job is distribution SHAPE would misrepresent the comparison. This
+ * does not fully close the gap — a train artifact bigger than 50,000 rows
+ * still covers less of itself than the holdout, which is why the caption
+ * states the artifact's row count alongside the chart rather than staying
+ * silent about it.
+ */
+const CHART_SAMPLE_ROWS = 50_000
+
+/**
+ * DS-LAKE-026. The compare modal's tag picker already caps a selection at
+ * `MAX_TAGS`, so an explicit `topK` this high means the server's top-k cut
+ * never fires on either side of the Correlation tab — the near-constant
+ * filter (not scale-invariant, unlike Pearson r itself) is then the only
+ * remaining source of divergence between the two sides' resolved tag sets,
+ * and that divergence is what the Δr list's by-name matching is for.
+ */
+const CORRELATION_TOP_K = MAX_TAGS
+
+/** Same literal union `TagHistogramChart`/`TagBoxplotChart`/
+ * `TagCorrelationChart` already declare inline (`data-analysis-card.tsx`'s
+ * own `TabStatus`, not exported). This modal never passes `'pending'` or
+ * `'unavailable'` — both render wizard-specific copy ("Save cleaned tags…",
+ * "Apply a cleaning rule…") that is nonsense for a saved dataset, which
+ * always has a committed artifact. */
+type ChartTabStatus =
+  | 'no-tags'
+  | 'pending'
+  | 'loading'
+  | 'ready'
+  | 'unavailable'
+
+/** Per-series colour/dash for the Histogram and Box Plot tabs, reusing the
+ * exact rule the Line tab's `sideColoured` already applies: with one tag
+ * selected, colour carries the SIDE (`TRAIN_COLOR`/`VAL_COLOR`, no dash);
+ * with more than one, colour carries the TAG (`tagColor`) and the dash
+ * carries the side. Kept as a lookup built once per merge rather than
+ * re-derived per render inside the chart, so the two chart components never
+ * have to know this rule themselves. */
+type SeriesStyleMap = Map<string, { color: string; dashed?: boolean }>
+
+const trainLabel = (tag: string) => `${tag} · train`
+const validationLabel = (tag: string) => `${tag} · validation`
+
+interface MergedHistogram {
+  result: DraftHistogramResult
+  tags: string[]
+  styleMap: SeriesStyleMap
+}
+
+/**
+ * Merges an already-inverted train histogram result with a raw validation
+ * one into a single `DraftHistogramResult` `TagHistogramChart` can render
+ * unmodified — each selected tag becomes up to two entries,
+ * `"TAG · train"` and `"TAG · validation"`, so the existing chart's own
+ * per-tag KDE overlay draws both without any two-sided concept of its own.
+ *
+ * A tag absent from one side (that side's request failed entirely, or the
+ * server found it statistically insufficient) simply contributes no entry
+ * for that side — the chart's own `insufficient_tags` handling covers the
+ * latter case unchanged; the former is a tab-level caption, not a per-tag
+ * message (see `validationUnavailableMessage`).
+ *
+ * `domain_min`/`domain_max` are RECOMPUTED as the min/max across whichever
+ * entries actually made it in, never taken from either side's own request
+ * response — see `inverseScaleHistogram`'s own doc comment for why a
+ * shared request-time domain cannot survive per-tag inversion.
+ */
+function mergeHistogramSides(
+  train: DraftHistogramResult | null,
+  validation: DraftHistogramResult | null,
+  tags: string[],
+  singleTagCompare: boolean,
+): MergedHistogram {
+  const trainByTag = new Map((train?.tags ?? []).map(t => [t.tag, t]))
+  const valByTag = new Map((validation?.tags ?? []).map(t => [t.tag, t]))
+  const mergedTags: DraftTagHistogram[] = []
+  const styleMap: SeriesStyleMap = new Map()
+  const insufficientTags: string[] = []
+
+  tags.forEach((tag, index) => {
+    const t = trainByTag.get(tag)
+    const v = valByTag.get(tag)
+    if (t) {
+      const label = trainLabel(tag)
+      mergedTags.push({ ...t, tag: label })
+      styleMap.set(
+        label,
+        singleTagCompare ? { color: TRAIN_COLOR } : { color: tagColor(index) },
+      )
+    }
+    if (v) {
+      const label = validationLabel(tag)
+      mergedTags.push({ ...v, tag: label })
+      styleMap.set(
+        label,
+        singleTagCompare
+          ? { color: VAL_COLOR }
+          : { color: tagColor(index), dashed: true },
+      )
+    }
+    if (!t && !v) insufficientTags.push(tag)
+  })
+
+  let domainMin: number | null = null
+  let domainMax: number | null = null
+  for (const t of mergedTags) {
+    if (domainMin === null || t.min < domainMin) domainMin = t.min
+    if (domainMax === null || t.max > domainMax) domainMax = t.max
+  }
+
+  return {
+    result: {
+      source_key: train?.source_key ?? validation?.source_key ?? '',
+      domain_min: domainMin,
+      domain_max: domainMax,
+      tags: mergedTags,
+      insufficient_tags: insufficientTags,
+    },
+    tags: mergedTags.map(t => t.tag),
+    styleMap,
+  }
+}
+
+interface MergedBoxplot {
+  result: DraftBoxplotResult
+  tags: string[]
+  styleMap: SeriesStyleMap
+}
+
+/**
+ * Box Plot's twin of `mergeHistogramSides`. No domain to reconcile —
+ * `TagBoxplotChart` derives its own Y ticks from the rows it is handed —
+ * and the two sides need no dash: they are separate X categories
+ * (`"TAG · train"`, `"TAG · validation"`), not overlaid strokes, so
+ * `2 * tags.length` bars is the two-sided layout itself, not a style choice
+ * layered on top of a one-sided one.
+ */
+function mergeBoxplotSides(
+  train: DraftBoxplotResult | null,
+  validation: DraftBoxplotResult | null,
+  tags: string[],
+  singleTagCompare: boolean,
+): MergedBoxplot {
+  const trainByTag = new Map((train?.tags ?? []).map(t => [t.tag, t]))
+  const valByTag = new Map((validation?.tags ?? []).map(t => [t.tag, t]))
+  const mergedTags: DraftTagBoxplot[] = []
+  const styleMap: SeriesStyleMap = new Map()
+  const insufficientTags: string[] = []
+
+  tags.forEach((tag, index) => {
+    const t = trainByTag.get(tag)
+    const v = valByTag.get(tag)
+    if (t) {
+      const label = trainLabel(tag)
+      mergedTags.push({ ...t, tag: label })
+      styleMap.set(
+        label,
+        singleTagCompare ? { color: TRAIN_COLOR } : { color: tagColor(index) },
+      )
+    }
+    if (v) {
+      const label = validationLabel(tag)
+      mergedTags.push({ ...v, tag: label })
+      styleMap.set(
+        label,
+        singleTagCompare ? { color: VAL_COLOR } : { color: tagColor(index) },
+      )
+    }
+    if (!t && !v) insufficientTags.push(tag)
+  })
+
+  return {
+    result: {
+      source_key: train?.source_key ?? validation?.source_key ?? '',
+      tags: mergedTags,
+      insufficient_tags: insufficientTags,
+    },
+    tags: mergedTags.map(t => t.tag),
+    styleMap,
+  }
+}
+
+interface CorrelationDelta {
+  a: string
+  b: string
+  trainR: number
+  validationR: number
+  deltaR: number
+}
+
+interface CorrelationComparison {
+  deltas: CorrelationDelta[]
+  /** Tags the resolver kept on one side but dropped on the other — the
+   * near-constant filter is not scale-invariant, so the scaled train side
+   * and the raw validation side can legitimately disagree here. Named
+   * rather than silently absorbed into the shared pair list. */
+  onlyTrainTags: string[]
+  onlyValidationTags: string[]
+}
+
+/**
+ * Δr, matched by tag NAME on the intersection of the two sides' RESOLVED
+ * lists — never by matrix index. `DraftCorrelationResult.tags` is
+ * server-resolved (its own doc comment: never assume it equals the
+ * request's own `tags`), and the near-constant filter that produces it is
+ * not scale-invariant, so the scaled train side and the raw validation side
+ * can legitimately resolve to different tag sets for a structural reason,
+ * not noise. No numeric inversion here — Pearson r is invariant under a
+ * positive affine transform, and every scaler this app supports has a
+ * positive slope (`lib/inverse-scale-stats.ts`'s own doc comment).
+ */
+function correlationDeltas(
+  train: DraftCorrelationResult | null,
+  validation: DraftCorrelationResult | null,
+): CorrelationComparison {
+  if (!train || !validation) {
+    return { deltas: [], onlyTrainTags: [], onlyValidationTags: [] }
+  }
+  const trainIndex = new Map(train.tags.map((t, i) => [t, i]))
+  const valIndex = new Map(validation.tags.map((t, i) => [t, i]))
+  const shared = train.tags.filter(t => valIndex.has(t))
+
+  const deltas: CorrelationDelta[] = []
+  for (let i = 0; i < shared.length; i++) {
+    for (let j = i + 1; j < shared.length; j++) {
+      const a = shared[i]!
+      const b = shared[j]!
+      const trainR = train.matrix[trainIndex.get(a)!]?.[trainIndex.get(b)!] ?? 0
+      const validationR =
+        validation.matrix[valIndex.get(a)!]?.[valIndex.get(b)!] ?? 0
+      deltas.push({ a, b, trainR, validationR, deltaR: validationR - trainR })
+    }
+  }
+  deltas.sort((x, y) => Math.abs(y.deltaR) - Math.abs(x.deltaR))
+
+  return {
+    deltas,
+    onlyTrainTags: train.tags.filter(t => !valIndex.has(t)),
+    onlyValidationTags: validation.tags.filter(t => !trainIndex.has(t)),
+  }
+}
+
+/** One message for whichever of the three validation chart states applies,
+ * so all three tabs render the same wording for the same underlying cause —
+ * matches the Line tab's own `validationErrorMessage` construction. */
+function validationUnavailableMessage(state: {
+  missing: boolean
+  tagMismatch: boolean
+  error: string | null
+}): string | null {
+  if (state.missing) return 'The validation holdout is no longer retained.'
+  if (state.tagMismatch) {
+    return (
+      'One or more selected tags predate feature engineering, so the ' +
+      'validation holdout has no matching column for them. Deselect a ' +
+      'derived feature tag to compare both sides.'
+    )
+  }
+  if (state.error) return `Could not load the validation side — ${state.error}`
+  return null
+}
 
 const HOUR_MS = 3_600_000
 const DAY_MS = 86_400_000
@@ -823,7 +1122,7 @@ function ChartBox({
                 stroke="var(--muted-foreground)"
                 strokeDasharray="3 3"
                 label={{
-                  value: 'Validation starts',
+                  value: 'Validation start',
                   position: 'insideTopRight',
                   fill: 'var(--muted-foreground)',
                   fontSize: 10,
@@ -1100,14 +1399,23 @@ export function DatasetCompareModal({
   const [selected, setSelected] = useState<string[]>([])
   const [pickerOpen, setPickerOpen] = useState(false)
   const [draft, setDraft] = useState<string[]>([])
-  // Timeline is the default now that its row-cap gap is closed: it keeps the
-  // real date order and the holdout boundary, which is what a comparison is
-  // usually for. Overlay superimposes the two by row index, for shape.
   const [axis, setAxis] = useState<CompareAxis>('time')
-  // Timeline-only. Kept across a mode switch rather than reset, so toggling
-  // to Overlay and back does not silently discard the choice — overlay just
-  // ignores it, its axis being a row number.
   const [tickUnit, setTickUnit] = useState<TickUnit>('auto')
+
+  // DS-LAKE-026. `tab` drives which of Histogram/Box Plot/Correlation's six
+  // requests are actually live (see `handleTabChange` below); `visitedTabs`
+  // is what makes that lazy-load "once, then keep" rather than a refetch on
+  // every switch. Both reset on close, in the same effect that resets
+  // `selected` below, so a stale non-Line tab from a previous dataset never
+  // survives into the next open.
+  const [tab, setTab] = useState('line')
+  const [visitedTabs, setVisitedTabs] = useState<Set<string>>(
+    () => new Set(['line']),
+  )
+  const handleTabChange = (next: string) => {
+    setTab(next)
+    setVisitedTabs(prev => (prev.has(next) ? prev : new Set(prev).add(next)))
+  }
 
   // DS-LAKE-025-T06. The scaler params the train artifact was written with —
   // gated on `open` so closing the sheet does not leave a fetch in flight.
@@ -1143,6 +1451,12 @@ export function DatasetCompareModal({
   useEffect(() => {
     if (!open) {
       setSelected([])
+      // DS-LAKE-026. Otherwise a non-Line tab, and every tab this session
+      // already visited, would survive into the NEXT dataset this modal is
+      // opened for — a stale `visitedTabs` would let a chart tab fetch
+      // immediately even though the user never chose to look at it there.
+      setTab('line')
+      setVisitedTabs(new Set(['line']))
       return
     }
     const plottable = plottableTagsKey ? plottableTagsKey.split(',') : []
@@ -1230,6 +1544,173 @@ export function DatasetCompareModal({
     : validationError
       ? `Could not load validation rows — ${validationError}`
       : null
+
+  // DS-LAKE-026. Same rule the Line tab's own `sideColoured` applies
+  // (`axis === 'overlay' && selected.length === 1`), independent of axis —
+  // Histogram/Box Plot/Correlation have no timeline/overlay concept of
+  // their own to gate on.
+  const singleTagCompare = selected.length === 1
+
+  // DS-LAKE-026. `tab`/`visitedTabs`/`handleTabChange` are declared above,
+  // beside the modal's other top-level state — this is where they gate the
+  // six chart-tab requests. Five of six would otherwise fire on every open
+  // regardless of which tab the user ever looks at, each one at
+  // `CHART_SAMPLE_ROWS` (10x the wizard's own default) against
+  // `PYTHON_TIMEOUT.metadata` (300s). Loaded lazily, once per tab, and kept
+  // once loaded (never refetched on switching back) — `tab` and
+  // `visitedTabs` update together in `handleTabChange`, in the SAME event
+  // handler, so the render that first shows a tab already has its real tag
+  // list, not one render behind. Every `useArtifact*` hook already no-ops
+  // on an empty tag list, so `[]` is a real idle state, not a workaround.
+  const histogramTags = visitedTabs.has('histogram') ? selected : EMPTY_TAGS
+  const trainHistogram = useArtifactHistogram(
+    datasetId,
+    trainArtifactId,
+    histogramTags,
+    CHART_SAMPLE_ROWS,
+  )
+  const validationHistogram = useArtifactValidationHistogram(
+    datasetId,
+    artifactId,
+    histogramTags,
+    CHART_SAMPLE_ROWS,
+  )
+  // DS-LAKE-025-T06. Train values are min-max scaled to [0,1]; validation is
+  // stored raw and needs no inversion — same asymmetry `toSeries` already
+  // applies to the Line tab.
+  const trainHistogramInverted = useMemo(
+    () =>
+      trainHistogram.histogram
+        ? inverseScaleHistogram(trainHistogram.histogram, scalingParams)
+        : null,
+    [trainHistogram.histogram, scalingParams],
+  )
+  const mergedHistogram = useMemo(
+    () =>
+      mergeHistogramSides(
+        trainHistogramInverted,
+        validationHistogram.histogram,
+        histogramTags,
+        singleTagCompare,
+      ),
+    [
+      trainHistogramInverted,
+      validationHistogram.histogram,
+      histogramTags,
+      singleTagCompare,
+    ],
+  )
+  // Waits on BOTH sides, same as the Line tab's own
+  // `loading={trainLoading || validationLoading || specLoading}` — waiting
+  // on train alone would render a train-only chart that then reflows the
+  // instant a slower validation request lands, and would show the "Not
+  // enough values" message for a tab that simply has not been visited yet
+  // (`histogramTags` is `[]` until then, so `trainHistogram.loading` alone
+  // would already read `false`).
+  const histogramStatus: ChartTabStatus =
+    selected.length === 0
+      ? 'no-tags'
+      : trainHistogram.loading || validationHistogram.loading || specLoading
+        ? 'loading'
+        : 'ready'
+  const validationHistogramMessage =
+    validationUnavailableMessage(validationHistogram)
+
+  const boxplotTags = visitedTabs.has('boxplot') ? selected : EMPTY_TAGS
+  const trainBoxplot = useArtifactBoxplot(
+    datasetId,
+    trainArtifactId,
+    boxplotTags,
+    CHART_SAMPLE_ROWS,
+  )
+  const validationBoxplot = useArtifactValidationBoxplot(
+    datasetId,
+    artifactId,
+    boxplotTags,
+    CHART_SAMPLE_ROWS,
+  )
+  const trainBoxplotInverted = useMemo(
+    () =>
+      trainBoxplot.boxplot
+        ? inverseScaleBoxplot(trainBoxplot.boxplot, scalingParams)
+        : null,
+    [trainBoxplot.boxplot, scalingParams],
+  )
+  const mergedBoxplot = useMemo(
+    () =>
+      mergeBoxplotSides(
+        trainBoxplotInverted,
+        validationBoxplot.boxplot,
+        boxplotTags,
+        singleTagCompare,
+      ),
+    [
+      trainBoxplotInverted,
+      validationBoxplot.boxplot,
+      boxplotTags,
+      singleTagCompare,
+    ],
+  )
+  const boxplotStatus: ChartTabStatus =
+    selected.length === 0
+      ? 'no-tags'
+      : trainBoxplot.loading || validationBoxplot.loading || specLoading
+        ? 'loading'
+        : 'ready'
+  const validationBoxplotMessage =
+    validationUnavailableMessage(validationBoxplot)
+
+  // Correlation needs at least two tags — an empty candidate list keeps
+  // both hooks idle rather than firing a request the server would just
+  // reject as "not enough numeric tags".
+  const correlationTags =
+    visitedTabs.has('correlation') && selected.length >= 2
+      ? selected
+      : EMPTY_TAGS
+  const trainCorrelation = useArtifactCorrelation(
+    datasetId,
+    trainArtifactId,
+    correlationTags,
+    CORRELATION_TOP_K,
+    CHART_SAMPLE_ROWS,
+  )
+  const validationCorrelation = useArtifactValidationCorrelation(
+    datasetId,
+    artifactId,
+    correlationTags,
+    CORRELATION_TOP_K,
+    CHART_SAMPLE_ROWS,
+  )
+  // Two independent instances (train chart, validation chart) need their
+  // OWN status apiece — sharing one derived only from train's `loading`
+  // left the validation instance falsely reporting "Not enough numeric
+  // tags to correlate" for as long as its own (typically slower, since it
+  // resolves the run's sidecar first) request was still in flight. This is
+  // exactly the wait-reported-as-a-finding failure `describeAnalysisReadiness`
+  // already guards against elsewhere in this codebase.
+  const trainCorrelationStatus: ChartTabStatus =
+    correlationTags.length === 0
+      ? 'no-tags'
+      : trainCorrelation.loading || specLoading
+        ? 'loading'
+        : 'ready'
+  const validationCorrelationStatus: ChartTabStatus =
+    correlationTags.length === 0
+      ? 'no-tags'
+      : validationCorrelation.loading || specLoading
+        ? 'loading'
+        : 'ready'
+  const validationCorrelationMessage = validationUnavailableMessage(
+    validationCorrelation,
+  )
+  const correlationComparison = useMemo(
+    () =>
+      correlationDeltas(
+        trainCorrelation.correlation,
+        validationCorrelation.correlation,
+      ),
+    [trainCorrelation.correlation, validationCorrelation.correlation],
+  )
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -1437,13 +1918,26 @@ export function DatasetCompareModal({
               : `Could not load the feature specification — ${specError}`}
           </p>
         ) : (
-          <Tabs defaultValue="line" className="flex w-full flex-col">
+          <Tabs
+            value={tab}
+            onValueChange={handleTabChange}
+            className="flex w-full flex-col"
+          >
             <TabsList className="mb-3 inline-flex flex-wrap gap-4 border-b border-border">
               <TabsTrigger value="line" className="cursor-pointer gap-2">
                 <LineChartIcon className="h-3.5 w-3.5" /> Line Chart
               </TabsTrigger>
               <TabsTrigger value="raw-table" className="cursor-pointer gap-2">
                 <Table2 className="h-3.5 w-3.5" /> Raw Table
+              </TabsTrigger>
+              <TabsTrigger value="histogram" className="cursor-pointer gap-2">
+                <BarChart3 className="h-3.5 w-3.5" /> Histogram
+              </TabsTrigger>
+              <TabsTrigger value="boxplot" className="cursor-pointer gap-2">
+                <BoxSelect className="h-3.5 w-3.5" /> Box Plot
+              </TabsTrigger>
+              <TabsTrigger value="correlation" className="cursor-pointer gap-2">
+                <GitCompareArrows className="h-3.5 w-3.5" /> Correlation Heatmap
               </TabsTrigger>
             </TabsList>
 
@@ -1501,6 +1995,36 @@ export function DatasetCompareModal({
                   />
                 )}
               </div>
+
+              <p className="text-[11px] text-muted-foreground/70">
+                {axis === 'time' ? (
+                  <>
+                    The two sides sit adjacent in true date order, with the
+                    marked line where the holdout begins. The Ticks control sets
+                    the label granularity — Hr keeps hour-level detail on a
+                    short fetch, and on a long one it settles at the coarsest
+                    hour step rather than switching to days. Positions are
+                    evenly spaced, so{' '}
+                    <strong className="font-semibold">
+                      distance along the axis is order, not elapsed time
+                    </strong>{' '}
+                    — each side shows only its first {COMPARE_ROWS} rows, and
+                    the unloaded stretch between them is closed rather than
+                    drawn.
+                  </>
+                ) : (
+                  <>
+                    Both sides are drawn from their own first row, so the X axis
+                    is a row index —{' '}
+                    <strong className="font-semibold">not a clock</strong>. One
+                    position holds a different timestamp on each side, and the
+                    holdout boundary has no position here. Each side&apos;s real
+                    window is named under its legend, and the tooltip gives both
+                    timestamps. Switch to Timeline for dates.
+                  </>
+                )}{' '}
+                Gaps inside a line are Bad-status readings, not zero.
+              </p>
             </TabsContent>
 
             <TabsContent value="raw-table" className="mt-0 space-y-3">
@@ -1532,36 +2056,157 @@ export function DatasetCompareModal({
               />
             </TabsContent>
 
+            <TabsContent value="histogram" className="mt-0 space-y-3">
+              <p className="text-[11px] text-muted-foreground">
+                Engineering units · computed on the saved artifact, over up to{' '}
+                {CHART_SAMPLE_ROWS.toLocaleString()} rows per side — a different
+                window than the {COMPARE_ROWS}-row chronological prefix shown in
+                Line Chart and Raw Table above; per-tag statistics elsewhere on
+                this page may differ, since those are computed over the entire
+                artifact.
+              </p>
+              {validationHistogramMessage && (
+                <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+                  {validationHistogramMessage}
+                </p>
+              )}
+              {trainHistogram.error && (
+                <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+                  Could not load the train side — {trainHistogram.error}
+                </p>
+              )}
+              <TagHistogramChart
+                data={mergedHistogram.result}
+                tags={mergedHistogram.tags}
+                status={histogramStatus}
+                seriesStyle={tag =>
+                  mergedHistogram.styleMap.get(tag) ?? {
+                    color: 'var(--muted-foreground)',
+                  }
+                }
+              />
+              {!singleTagCompare && selected.length > 1 && (
+                <p className="text-[11px] text-muted-foreground">
+                  Colour separates the two sides only with one tag selected.
+                  With {selected.length}, colour is the tag and the dashed curve
+                  is the validation side — same convention as the Line tab.
+                </p>
+              )}
+            </TabsContent>
+
+            <TabsContent value="boxplot" className="mt-0 space-y-3">
+              <p className="text-[11px] text-muted-foreground">
+                Engineering units · computed on the saved artifact, over up to{' '}
+                {CHART_SAMPLE_ROWS.toLocaleString()} rows per side. Each tag
+                shows two boxes — train, then validation.
+              </p>
+              {validationBoxplotMessage && (
+                <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+                  {validationBoxplotMessage}
+                </p>
+              )}
+              {trainBoxplot.error && (
+                <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+                  Could not load the train side — {trainBoxplot.error}
+                </p>
+              )}
+              <TagBoxplotChart
+                data={mergedBoxplot.result}
+                tags={mergedBoxplot.tags}
+                status={boxplotStatus}
+                seriesStyle={tag =>
+                  mergedBoxplot.styleMap.get(tag) ?? {
+                    color: 'var(--muted-foreground)',
+                  }
+                }
+              />
+            </TabsContent>
+
+            <TabsContent value="correlation" className="mt-0 space-y-3">
+              <p className="text-[11px] text-muted-foreground">
+                Pearson correlation needs no unit conversion — it is unchanged
+                by the scaling that produced the train side&apos;s stored
+                values, so both matrices are shown as the server returned them.
+                Computed over up to {CHART_SAMPLE_ROWS.toLocaleString()} rows
+                per side.
+              </p>
+              {validationCorrelationMessage && (
+                <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+                  {validationCorrelationMessage}
+                </p>
+              )}
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <p className="mb-2 text-[11px] font-semibold text-foreground">
+                    Dataset (train)
+                  </p>
+                  <TagCorrelationChart
+                    data={trainCorrelation.correlation}
+                    status={trainCorrelationStatus}
+                  />
+                </div>
+                <div>
+                  <p className="mb-2 text-[11px] font-semibold text-foreground">
+                    Validation
+                  </p>
+                  {validationCorrelationMessage ? (
+                    <p className="flex h-80 items-center justify-center rounded-md border border-border p-4 text-center text-xs text-muted-foreground">
+                      {validationCorrelationMessage}
+                    </p>
+                  ) : (
+                    <TagCorrelationChart
+                      data={validationCorrelation.correlation}
+                      status={validationCorrelationStatus}
+                    />
+                  )}
+                </div>
+              </div>
+
+              {correlationComparison.deltas.length > 0 && (
+                <div className="space-y-1.5 rounded-lg border border-border p-3">
+                  <p className="text-xs font-semibold text-foreground">
+                    Δr — train vs. validation
+                  </p>
+                  {correlationComparison.deltas.map(d => (
+                    <div
+                      key={`${d.a}-${d.b}`}
+                      className="flex items-center justify-between gap-3 font-mono text-[11px]"
+                    >
+                      <span className="truncate text-muted-foreground">
+                        {d.a} ↔ {d.b}
+                      </span>
+                      <span
+                        className={cn(
+                          'shrink-0 tabular-nums text-foreground',
+                          Math.abs(d.deltaR) >= 0.3 && 'font-semibold',
+                        )}
+                      >
+                        {d.trainR.toFixed(2)} → {d.validationR.toFixed(2)} (Δ
+                        {d.deltaR >= 0 ? '+' : ''}
+                        {d.deltaR.toFixed(2)})
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {(correlationComparison.onlyTrainTags.length > 0 ||
+                correlationComparison.onlyValidationTags.length > 0) && (
+                <p className="text-[11px] text-muted-foreground">
+                  The two sides resolved different candidate tags — the
+                  near-constant filter is not scale-invariant.
+                  {correlationComparison.onlyTrainTags.length > 0 &&
+                    ` Train only: ${correlationComparison.onlyTrainTags.join(', ')}.`}
+                  {correlationComparison.onlyValidationTags.length > 0 &&
+                    ` Validation only: ${correlationComparison.onlyValidationTags.join(', ')}.`}
+                </p>
+              )}
+            </TabsContent>
+
             <p className="mt-3 text-[11px] text-muted-foreground/70">
-              {axis === 'time' ? (
-                <>
-                  The two sides sit adjacent in true date order, with the marked
-                  line where the holdout begins. The Ticks control sets the
-                  label granularity — Hr keeps hour-level detail on a short
-                  fetch, and on a long one it settles at the coarsest hour step
-                  rather than switching to days. Positions are evenly spaced, so{' '}
-                  <strong className="font-semibold">
-                    distance along the axis is order, not elapsed time
-                  </strong>{' '}
-                  — each side shows only its first {COMPARE_ROWS} rows, and the
-                  unloaded stretch between them is closed rather than drawn.
-                </>
-              ) : (
-                <>
-                  Both sides are drawn from their own first row, so the X axis
-                  is a row index —{' '}
-                  <strong className="font-semibold">not a clock</strong>. One
-                  position holds a different timestamp on each side, and the
-                  holdout boundary has no position here. Each side&apos;s real
-                  window is named under its legend, and the tooltip gives both
-                  timestamps. Switch to Timeline for dates.
-                </>
-              )}{' '}
-              Gaps inside a line are Bad-status readings, not zero. The saved
-              dataset is stored model-ready (scaled); its values are converted
-              back to engineering units from the recorded scaler fit, accurate
-              to about 0.1% of each tag&apos;s range. The validation holdout is
-              stored raw and is shown as-is.
+              The saved dataset is stored model-ready (scaled); its values are
+              converted back to engineering units from the recorded scaler fit,
+              accurate to about 0.1% of each tag&apos;s range. The validation
+              holdout is stored raw and is shown as-is.
             </p>
           </Tabs>
         )}

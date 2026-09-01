@@ -42,11 +42,16 @@ from intergrations.object_store import (
 )
 from schemas.preprocess import BoxplotRequest
 from services.cleaning_service import apply_operations
+from services.downsample import systematic_sample
 
 
-def _good_values(frame: pd.DataFrame, tag: str) -> np.ndarray:
-    """Mirrors `column_stats_service._good_values` — kept local rather than
-    imported, matching `histogram_service._good_values`'s own precedent."""
+def good_values(frame: pd.DataFrame, tag: str) -> np.ndarray:
+    """Mirrors `column_stats_service._good_values` — was module-private
+    (`_good_values`) matching `histogram_service._good_values`'s own
+    precedent, until MODEL-FLOW-014-T03 promoted this module's trio
+    (`good_values`/`boxplot_stats`/`qualifies`) to public names so
+    `split_stats_service.py` reuses them rather than writing a sixth copy
+    of the same Good-value filter and five-number summary."""
     values = frame[tag].to_numpy(dtype="float64", copy=False)
     statuses = frame[status_column(tag)].to_numpy(copy=False)
     return values[statuses == STATUS_GOOD]
@@ -88,7 +93,7 @@ _EMPTY_STATS: dict[str, Any] = {
 }
 
 
-def _boxplot_stats(good: np.ndarray) -> dict[str, Any]:
+def boxplot_stats(good: np.ndarray) -> dict[str, Any]:
     """Mirrors `lib/data-quality.ts::tagBoxplotStats` bug-for-bug."""
     if good.size == 0:
         return dict(_EMPTY_STATS)
@@ -122,7 +127,7 @@ def _boxplot_stats(good: np.ndarray) -> dict[str, Any]:
     }
 
 
-def _qualifies(stats: dict[str, Any]) -> bool:
+def qualifies(stats: dict[str, Any]) -> bool:
     """DELIBERATELY NOT a port of `tag-boxplot-chart.tsx::hasData`
     (`min != max or median != 0`), unlike every other predicate in this
     module. Caught in review: that check mislabels a tag whose Good values
@@ -158,7 +163,11 @@ def build_boxplot(store: ObjectStore, request: BoxplotRequest) -> dict[str, Any]
         frame = frame[frame[TIMESTAMP_COLUMN] >= pd.Timestamp(request.start_time)]
     if request.end_time is not None:
         frame = frame[frame[TIMESTAMP_COLUMN] <= pd.Timestamp(request.end_time)]
-    frame = frame.head(request.sample_rows).reset_index(drop=True)
+    # MODEL-FLOW-014-T02. Was `frame.head(request.sample_rows)` — on
+    # time-ordered data that kept only the window's earliest contiguous
+    # period. `systematic_sample` spans the whole window instead; see its
+    # own docstring for why a box plot needs that.
+    frame = systematic_sample(frame, request.sample_rows).reset_index(drop=True)
 
     after = apply_operations(
         frame,
@@ -169,9 +178,9 @@ def build_boxplot(store: ObjectStore, request: BoxplotRequest) -> dict[str, Any]
     tags_out: list[dict[str, Any]] = []
     insufficient: list[str] = []
     for tag in request.tags:
-        good = _good_values(after, tag)
-        stats = _boxplot_stats(good)
-        if not _qualifies(stats):
+        good = good_values(after, tag)
+        stats = boxplot_stats(good)
+        if not qualifies(stats):
             insufficient.append(tag)
             continue
         outliers_full = stats["outliers_full"]

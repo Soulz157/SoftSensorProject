@@ -23,6 +23,7 @@ import {
   PreviewVersionDto,
   PromoteVersionStatusDto,
   ScatterRequestDto,
+  SplitStatsRequestDto,
   StartCleanJobDto,
   TagCatalogDto,
 } from './dto/dataset-version.authorized.dto';
@@ -386,6 +387,108 @@ export class DatasetVersionAuthorizedController {
     @Body() body: BoxplotRequestDto,
   ) {
     return this.service.getArtifactBoxplotService(user, id, artifactId, body);
+  }
+
+  @Post('/:id/artifacts/:artifactId/split-stats')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Both sides of the train/test chronological split, from one read of a committed artifact',
+    description:
+      'MODEL-FLOW-014-T04. Derives the SAME cut images/trainer/train.py ' +
+      'would make for `splitRatio` — on the labelled frame, not row count ' +
+      '— and returns a per-tag five-number summary for EACH side from one ' +
+      'read, never two /boxplot calls. `cutTimestamp` is echoed back; the ' +
+      'client never derives a cut itself. Read-only; `objectKey` is always ' +
+      'resolved off the artifact row, never from the request.',
+  })
+  async getArtifactSplitStatsController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Body() body: SplitStatsRequestDto,
+  ) {
+    return this.service.getArtifactSplitStatsService(
+      user,
+      id,
+      artifactId,
+      body,
+    );
+  }
+
+  @Post('/:id/artifacts/:artifactId/validation-correlation')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      "Pearson correlation matrix over the run's validation holdout, hard-capped",
+    description:
+      'Compare-view twin of /correlation, reading `validate_data.parquet` ' +
+      'via the same run-sibling lookup /validation-rows and /holdout use, ' +
+      "instead of the artifact's own object. `tags` is the candidate " +
+      'universe; the server resolves it down to at most `topK` columns and ' +
+      'echoes the resolved list back. 404s when the run has no holdout, or ' +
+      'one was recorded but its sidecar is gone from storage.',
+  })
+  async getArtifactValidationCorrelationController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Body() body: CorrelationRequestDto,
+  ) {
+    return this.service.getArtifactValidationCorrelationService(
+      user,
+      id,
+      artifactId,
+      body,
+    );
+  }
+
+  @Post('/:id/artifacts/:artifactId/validation-histogram')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: "Per-tag histogram and KDE over the run's validation holdout",
+    description:
+      'Compare-view twin of /histogram, reading `validate_data.parquet` ' +
+      'via the same run-sibling lookup /validation-rows and /holdout use, ' +
+      "instead of the artifact's own object. 404s when the run has no " +
+      'holdout, or one was recorded but its sidecar is gone from storage.',
+  })
+  async getArtifactValidationHistogramController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Body() body: HistogramRequestDto,
+  ) {
+    return this.service.getArtifactValidationHistogramService(
+      user,
+      id,
+      artifactId,
+      body,
+    );
+  }
+
+  @Post('/:id/artifacts/:artifactId/validation-boxplot')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: "Per-tag box plot over the run's validation holdout",
+    description:
+      'Compare-view twin of /boxplot, reading `validate_data.parquet` via ' +
+      'the same run-sibling lookup /validation-rows and /holdout use, ' +
+      "instead of the artifact's own object. 404s when the run has no " +
+      'holdout, or one was recorded but its sidecar is gone from storage.',
+  })
+  async getArtifactValidationBoxplotController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Param('artifactId') artifactId: string,
+    @Body() body: BoxplotRequestDto,
+  ) {
+    return this.service.getArtifactValidationBoxplotService(
+      user,
+      id,
+      artifactId,
+      body,
+    );
   }
 
   @Post('/:id/artifacts/:artifactId/scatter')

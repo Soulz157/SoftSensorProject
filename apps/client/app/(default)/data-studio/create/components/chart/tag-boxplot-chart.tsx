@@ -26,6 +26,12 @@ interface Props {
   data: DraftBoxplotResult | null
   tags: string[]
   status: 'no-tags' | 'pending' | 'loading' | 'ready' | 'unavailable'
+  /** DS-LAKE-026. Optional per-tag colour override for the compare modal's
+   * two-sided (train vs. validation) tab — the wizard's own callers pass
+   * nothing and get today's `chartColorVar` colouring unchanged. No dash
+   * flag here: the two sides are expressed as separate X categories
+   * (`TAG · train`, `TAG · validation`), not overlaid strokes. */
+  seriesStyle?: (tag: string) => { color: string }
 }
 
 const CHART_HEIGHT = 500
@@ -239,7 +245,7 @@ function BoxWhiskerShape(props: BoxShapeProps) {
   )
 }
 
-export function TagBoxplotChart({ data, tags, status }: Props) {
+export function TagBoxplotChart({ data, tags, status, seriesStyle }: Props) {
   const insufficientTags = data?.insufficient_tags ?? []
 
   const rows = useMemo<BoxRow[]>(() => {
@@ -252,7 +258,9 @@ export function TagBoxplotChart({ data, tags, status }: Props) {
       return [
         {
           tag,
-          color: chartColorVar(resolveTagMeta(tag).chartIndex),
+          color:
+            seriesStyle?.(tag).color ??
+            chartColorVar(resolveTagMeta(tag).chartIndex),
           min: t.min,
           q1: t.q1,
           median: t.median,
@@ -268,7 +276,7 @@ export function TagBoxplotChart({ data, tags, status }: Props) {
         },
       ]
     })
-  }, [data, tags])
+  }, [data, tags, seriesStyle])
 
   if (status === 'no-tags') {
     return (

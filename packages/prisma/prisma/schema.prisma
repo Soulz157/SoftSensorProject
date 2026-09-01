@@ -1088,6 +1088,23 @@ model ModelTrainingRun {
   /// both cases leave training itself unaffected (see model-run.authorized.
   /// service.ts's claim()).
   holdoutMetrics Json?
+  /// MODEL-FLOW-014-T06. The train/test split distribution panel's own
+  /// response (SplitStatsResponse, apps/python schemas/preprocess.py),
+  /// frozen at RUN CREATION — the record of what the user was actually
+  /// looking at when they pressed Start Training. Written OUT OF BAND after
+  /// the row exists (mirrors `trackSpawn`'s own fire-and-forget shape,
+  /// never inside `buildRunData` — that sits in the Start Training request
+  /// path and a second full-artifact read there would make the button wait
+  /// on it). Same honest-legacy-null pattern MODEL-FLOW-010-T06 established
+  /// for `validationMissingPct` and MODEL-FLOW-007-T11 reused for
+  /// `frameworkVersions`: null means "not recorded for this run" — a run
+  /// predating this feature, OR the freeze call itself failed (which must
+  /// never fail the run) — never a value reconstructed on read. Single-run
+  /// launches only; a candidate run (`candidateJobId != null`) stores null
+  /// on purpose (N candidates sharing one split is N redundant artifact
+  /// reads for an identical answer; a candidate's provenance belongs to its
+  /// job, not to this column).
+  splitStats Json?
 
   createdAt  DateTime  @default(now())
   startedAt  DateTime?

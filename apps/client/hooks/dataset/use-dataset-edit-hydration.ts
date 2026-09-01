@@ -69,6 +69,10 @@ export interface EditRawDataAbsent {
 export function useDatasetEditHydration(): {
   reload: () => void
   draftError: string | null
+  /** DS-LAKE-027. The draft's previous feature artifact had been reclaimed
+   * and the server re-pointed it at the live BRONZE root. Informational
+   * only — editing works normally; nothing here blocks. */
+  featureArtifactExpired: boolean
   rawDataAbsent: EditRawDataAbsent | null
 } {
   const mode = useAtomValue(dwModeAtom)
@@ -88,6 +92,7 @@ export function useDatasetEditHydration(): {
     dwEditRootValidationRowCountAtom,
   )
   const [draftError, setDraftError] = useState<string | null>(null)
+  const [featureArtifactExpired, setFeatureArtifactExpired] = useState(false)
 
   const {
     dataset: rows,
@@ -186,6 +191,12 @@ export function useDatasetEditHydration(): {
       .then(res => {
         if (cancelled) return
         setDraftError(null)
+        // DS-LAKE-027. Informational, never blocking: the draft has already
+        // been repaired server-side and `currentArtifactId` below is the
+        // recovered id. This only explains why the feature result from the
+        // last session is gone, so Step 4's warm recomputing it does not
+        // read as work silently undone.
+        setFeatureArtifactExpired(res.data.recoveredFromReclaimedArtifact)
         setDraftId(res.data.id)
         setDraftArtifactId(res.data.currentArtifactId)
         setEditRootValidationRowCount(res.data.rootValidationRowCount)
@@ -234,5 +245,5 @@ export function useDatasetEditHydration(): {
   // re-run hydration after a successful re-fetch — `createRaw` repoints
   // `Dataset.currentArtifactId` at the new BRONZE, and without a re-read the
   // wizard would keep showing the stand-in rows it fell back to.
-  return { reload, draftError, rawDataAbsent }
+  return { reload, draftError, featureArtifactExpired, rawDataAbsent }
 }

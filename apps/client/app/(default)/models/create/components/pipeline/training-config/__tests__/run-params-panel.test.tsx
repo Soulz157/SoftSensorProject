@@ -188,4 +188,23 @@ describe('RunParamsPanel (MODEL-FLOW-012)', () => {
       screen.getByText(/isn't a tag on the currently selected dataset/i),
     ).toBeInTheDocument()
   })
+
+  // MODEL-FLOW-014-T07/V06. Both directions, or the "not used by this
+  // estimator" label is unfalsified — a panel that always shows the hint
+  // (or never does) would pass a one-sided test.
+  it('shows the seed value with NO hint for an algorithm that consumes it (random_forest)', () => {
+    renderPanel([run({ algorithm: 'random_forest', seed: 4242 })])
+    expect(screen.getByText('Seed')).toBeInTheDocument()
+    expect(screen.getByText('4242')).toBeInTheDocument()
+    expect(
+      screen.queryByText(/not used by this estimator/i),
+    ).not.toBeInTheDocument()
+  })
+
+  it('shows the seed value WITH "not used by this estimator" for ridge, which train.py never passes random_state to', () => {
+    renderPanel([run({ algorithm: 'ridge', seed: 4242 })])
+    expect(screen.getByText('Seed')).toBeInTheDocument()
+    expect(screen.getByText('4242')).toBeInTheDocument()
+    expect(screen.getByText(/not used by this estimator/i)).toBeInTheDocument()
+  })
 })

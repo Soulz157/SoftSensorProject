@@ -38,6 +38,27 @@ function extractBuildModelBody(source: string): string {
   return nextDef === -1 ? rest : rest.slice(0, nextDef)
 }
 
+/**
+ * MODEL-FLOW-014-T07. `main()`'s `is_sequence` branch (train.py:818-839),
+ * where `sequence_length` is actually consumed — ONE LEVEL UP from
+ * `build_model`, before it is ever called (see `CONSUMED_HYPERPARAM_KEYS`'s
+ * own doc comment for why this needs its own extraction rather than being
+ * silently absent from a build_model-only scan).
+ */
+function extractSequenceBranchBody(source: string): string {
+  const start = source.indexOf('if is_sequence:')
+  if (start === -1) {
+    throw new Error(
+      'main()\'s "if is_sequence:" branch not found in train.py — has it ' +
+        "moved or been renamed? CONSUMED_HYPERPARAM_KEYS.lstm/gru's " +
+        'sequence_length entry can no longer be verified.',
+    )
+  }
+  const rest = source.slice(start)
+  const elseIdx = rest.indexOf('\n    else:')
+  return elseIdx === -1 ? rest : rest.slice(0, elseIdx)
+}
+
 const HEADER_TO_ALGORITHM: { pattern: RegExp; algorithm: Algorithm }[] = [
   {
     pattern: /if algorithm in \("hgb", "hist_gradient_boosting"\):/,
@@ -52,13 +73,18 @@ const HEADER_TO_ALGORITHM: { pattern: RegExp; algorithm: Algorithm }[] = [
   { pattern: /if algorithm == "random_forest":/, algorithm: 'random_forest' },
   { pattern: /if algorithm == "lightgbm":/, algorithm: 'lightgbm' },
   { pattern: /if algorithm == "xgboost":/, algorithm: 'xgboost' },
+  // lstm/gru share ONE branch (`if algorithm in ("lstm", "gru"):`) — handled
+  // separately below rather than folded into this table, since one header
+  // maps to TWO algorithms here, unlike every other row.
 ]
 
-function extractConsumedKeys(
-  body: string,
-): Partial<Record<Algorithm, string[]>> {
+const LSTM_GRU_HEADER = /if algorithm in \("lstm", "gru"\):/
+
+function headerIndices(
+  buildModelBody: string,
+): { algorithm: Algorithm; index: number }[] {
   const headers = HEADER_TO_ALGORITHM.map(({ pattern, algorithm }) => {
-    const match = pattern.exec(body)
+    const match = pattern.exec(buildModelBody)
     if (!match) {
       throw new Error(
         `train.py no longer has a build_model branch matching ${pattern} ` +
@@ -66,59 +92,129 @@ function extractConsumedKeys(
       )
     }
     return { algorithm, index: match.index }
-  }).sort((a, b) => a.index - b.index)
+  })
+
+  const lstmMatch = LSTM_GRU_HEADER.exec(buildModelBody)
+  if (!lstmMatch) {
+    throw new Error(
+      'train.py no longer has a build_model branch matching ' +
+        `${LSTM_GRU_HEADER} — CONSUMED_HYPERPARAM_KEYS.lstm/gru is stale.`,
+    )
+  }
+  headers.push(
+    { algorithm: 'lstm', index: lstmMatch.index },
+    { algorithm: 'gru', index: lstmMatch.index },
+  )
+  return headers.sort((a, b) => a.index - b.index)
+}
+
+function blockFor(
+  buildModelBody: string,
+  headers: { algorithm: Algorithm; index: number }[],
+  index: number,
+): string {
+  const uniqueIndices = [...new Set(headers.map(h => h.index))].sort(
+    (a, b) => a - b,
+  )
+  const nextIndex = uniqueIndices.find(i => i > index)
+  return buildModelBody.slice(index, nextIndex ?? buildModelBody.length)
+}
+
+function extractConsumedKeys(
+  buildModelBody: string,
+  sequenceBranchBody: string,
+): Partial<Record<Algorithm, string[]>> {
+  const headers = headerIndices(buildModelBody)
 
   const result: Partial<Record<Algorithm, string[]>> = {}
-  headers.forEach(({ algorithm, index }, i) => {
-    const next = headers[i + 1]
-    const end = next ? next.index : body.length
-    const block = body.slice(index, end)
+  headers.forEach(({ algorithm, index }) => {
+    const block = blockFor(buildModelBody, headers, index)
     const keys = [...block.matchAll(/hyperparameters\.get\(\s*"([^"]+)"/g)]
       .map(m => m[1])
       .filter((k): k is string => k !== undefined)
     result[algorithm] = [...new Set(keys)]
   })
+
+  // sequence_length is consumed one level up, in main()'s is_sequence
+  // branch — merge it in for lstm/gru specifically rather than leaving the
+  // build_model-only scan conclude it is unconsumed.
+  if (/\.get\(\s*\n?\s*"sequence_length"/.test(sequenceBranchBody)) {
+    result.lstm = [...(result.lstm ?? []), 'sequence_length']
+    result.gru = [...(result.gru ?? []), 'sequence_length']
+  }
+
   return result
 }
 
+/**
+ * MODEL-FLOW-014-T07 CORRECTION. The old assertion here regexed
+ * `if algorithm in ("lstm", "gru"):[\s\S]*?raise RuntimeError` and
+ * concluded lstm/gru consume nothing — a FALSE PASS. That regex matches
+ * the `LSTM_MAX_TRAIN_WINDOWS` ceiling guard (a real refusal for an
+ * oversized run, not an unconditional one), and by the time
+ * MODEL-FLOW-009-T04 built the windowing pipeline, this branch reads
+ * hidden_size/epochs/batch_size via hyperparameters.get() same as every
+ * other algorithm. This suite now scans the branch live instead of
+ * asserting a hand-typed conclusion about it.
+ */
+function extractSeedConsumingAlgorithms(
+  buildModelBody: string,
+): Set<Algorithm> {
+  const headers = headerIndices(buildModelBody)
+
+  const consuming = new Set<Algorithm>()
+  headers.forEach(({ algorithm, index }) => {
+    const block = blockFor(buildModelBody, headers, index)
+    // Two spellings: sklearn/lightgbm/xgboost's `random_state=seed`, and
+    // SequenceRegressor's own `seed=seed` — an extractor matching only the
+    // first form would conclude lstm/gru don't consume it, the same false
+    // pass this suite exists to stop making.
+    if (
+      /\brandom_state\s*=\s*seed\b/.test(block) ||
+      /\bseed\s*=\s*seed\b/.test(block)
+    ) {
+      consuming.add(algorithm)
+    }
+  })
+  return consuming
+}
+
 describe('CONSUMED_HYPERPARAM_KEYS matches images/trainer/train.py, read live', () => {
-  const body = extractBuildModelBody(readTrainer())
-  const actual = extractConsumedKeys(body)
+  const source = readTrainer()
+  const buildModelBody = extractBuildModelBody(source)
+  const sequenceBranchBody = extractSequenceBranchBody(source)
+  const actual = extractConsumedKeys(buildModelBody, sequenceBranchBody)
 
   for (const algorithm of Object.keys(
     CONSUMED_HYPERPARAM_KEYS,
   ) as Algorithm[]) {
-    if (algorithm === 'lstm' || algorithm === 'gru') continue
-    it(`${algorithm}: the catalogue's consumed-key list equals what build_model actually reads`, () => {
+    it(`${algorithm}: the catalogue's consumed-key list equals what train.py actually reads`, () => {
       expect([...(actual[algorithm] ?? [])].sort()).toEqual(
         [...CONSUMED_HYPERPARAM_KEYS[algorithm]].sort(),
       )
     })
   }
+})
 
-  it('lstm/gru raise before any hyperparameters.get() call — nothing is consumed', () => {
-    expect(body).toMatch(
-      /if algorithm in \("lstm", "gru"\):[\s\S]*?raise RuntimeError/,
-    )
-    expect(CONSUMED_HYPERPARAM_KEYS.lstm).toEqual([])
-    expect(CONSUMED_HYPERPARAM_KEYS.gru).toEqual([])
+describe('SEED_CONSUMING_ALGORITHMS matches images/trainer/train.py, read live', () => {
+  const buildModelBody = extractBuildModelBody(readTrainer())
+  const actual = extractSeedConsumingAlgorithms(buildModelBody)
+
+  it('the catalogue equals what train.py actually forwards seed/random_state to', () => {
+    expect([...SEED_CONSUMING_ALGORITHMS].sort()).toEqual([...actual].sort())
+  })
+
+  it('ridge explicitly drops random_state — a documented refusal, not merely an unmentioned field', () => {
+    const headers = headerIndices(buildModelBody)
+    const ridge = headers.find(h => h.algorithm === 'ridge')
+    expect(ridge).toBeDefined()
+    const ridgeBlock = blockFor(buildModelBody, headers, ridge!.index)
+    expect(ridgeBlock).toMatch(/random_state dropped/)
+    expect(actual.has('ridge')).toBe(false)
   })
 })
 
 describe('seedConsumedBy', () => {
-  it('matches the six estimators train.py forwards random_state to', () => {
-    expect([...SEED_CONSUMING_ALGORITHMS].sort()).toEqual(
-      [
-        'hist_gradient_boosting',
-        'mlp',
-        'grp',
-        'random_forest',
-        'lightgbm',
-        'xgboost',
-      ].sort(),
-    )
-  })
-
   it('is false for ridge/ols/svm/pls — train.py never passes random_state to them', () => {
     expect(seedConsumedBy('ridge')).toBe(false)
     expect(seedConsumedBy('ols')).toBe(false)
@@ -126,8 +222,13 @@ describe('seedConsumedBy', () => {
     expect(seedConsumedBy('pls')).toBe(false)
   })
 
-  it('is true for an estimator that does receive random_state', () => {
+  it('is true for an estimator that receives random_state=seed', () => {
     expect(seedConsumedBy('random_forest')).toBe(true)
+  })
+
+  it('is true for lstm/gru, which receive seed=seed (a different spelling, same consumption)', () => {
+    expect(seedConsumedBy('lstm')).toBe(true)
+    expect(seedConsumedBy('gru')).toBe(true)
   })
 })
 

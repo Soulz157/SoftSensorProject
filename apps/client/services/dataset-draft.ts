@@ -61,6 +61,16 @@ export interface DatasetDraft {
  */
 export interface EditDraftResolution extends DatasetDraft {
   rootValidationRowCount: number | null
+  /**
+   * DS-LAKE-027. True when the server found this draft's `currentArtifactId`
+   * pointing at an artifact whose bytes were reclaimed (DS-LAKE-014's idle
+   * sweep, working as designed) and re-pointed it at the draft's own live
+   * BRONZE root. The id in `currentArtifactId` is the recovered one, so
+   * nothing downstream needs to branch on this — it exists only so the
+   * wizard can say WHY the feature-engineering result the user left behind
+   * is no longer there and is about to be recomputed.
+   */
+  recoveredFromReclaimedArtifact: boolean
 }
 
 export interface DraftArtifact {
