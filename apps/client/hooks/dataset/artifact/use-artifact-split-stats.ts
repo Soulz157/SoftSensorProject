@@ -60,7 +60,13 @@ export function useArtifactSplitStats(
   artifactId: string | null,
   tags: string[],
   targetY: string | null,
+  // MODEL-FLOW-016-T02/T09. EXACTLY ONE of splitRatio / nSplits is
+  // consulted — mirrors the server's own mutual-exclusion validator. Both
+  // remain positional after `targetY` for backward compatibility: every
+  // existing caller stops at `splitRatio` and never supplied `sampleRows`/
+  // `outlierCap`, so this insertion shifts nothing actually in use.
   splitRatio: number | null,
+  nSplits?: number | null,
   sampleRows?: number,
   outlierCap?: number,
 ): ArtifactSplitStatsState {
@@ -73,11 +79,16 @@ export function useArtifactSplitStats(
   const [error, setError] = useState<string | null>(null)
 
   const tagsKey = tags.join(',')
+  const cvMode = nSplits != null
 
   const enabled =
-    !!datasetId && !!artifactId && !!tagsKey && !!targetY && splitRatio !== null
+    !!datasetId &&
+    !!artifactId &&
+    !!tagsKey &&
+    !!targetY &&
+    (cvMode ? true : splitRatio !== null)
   const cacheKey = enabled
-    ? `split-stats|${datasetId}|${artifactId}|${tagsKey}|${targetY}|${splitRatio}|${sampleRows ?? ''}|${outlierCap ?? ''}`
+    ? `split-stats|${datasetId}|${artifactId}|${tagsKey}|${targetY}|${cvMode ? `k${nSplits}` : splitRatio}|${sampleRows ?? ''}|${outlierCap ?? ''}`
     : null
 
   useDebouncedAbortableRequest<FetchOutcome>({
@@ -88,13 +99,21 @@ export function useArtifactSplitStats(
         const res = await datasetArtifactService.splitStats(
           datasetId!,
           artifactId!,
-          {
-            tags: tagsKey.split(','),
-            targetY: targetY!,
-            splitRatio: splitRatio!,
-            ...(sampleRows && { sampleRows }),
-            ...(outlierCap && { outlierCap }),
-          },
+          cvMode
+            ? {
+                tags: tagsKey.split(','),
+                targetY: targetY!,
+                nSplits: nSplits!,
+                ...(sampleRows && { sampleRows }),
+                ...(outlierCap && { outlierCap }),
+              }
+            : {
+                tags: tagsKey.split(','),
+                targetY: targetY!,
+                splitRatio: splitRatio!,
+                ...(sampleRows && { sampleRows }),
+                ...(outlierCap && { outlierCap }),
+              },
           signal,
         )
         return { kind: 'ready', data: res.data }

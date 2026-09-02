@@ -5,11 +5,14 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { createHash, randomBytes, randomInt } from 'node:crypto';
+import { randomInt } from 'node:crypto';
+import { mintRunToken } from '@/lib/mint-run-token';
+import { findHoldoutArtifact } from '@/lib/holdout-artifact';
 import { PrismaService } from '@softsensor/prisma';
 import { CreateTrainingRunDto } from './dto/model-run.authorized.dto';
 import {
   fetchArtifactMetadata,
+  getRunCvFolds,
   runPredictions,
 } from '@/lib/python-preprocess-client';
 import { postToPython, PYTHON_TIMEOUT } from '@/lib/python-client';
@@ -118,6 +121,42 @@ export class ModelRunLaunchAuthorizedService {
       );
     }
 
+    // MODEL-FLOW-016-T03/T07. Two CONFIG-TIME refusals for a CV run, both
+    // fired here rather than inside the container: this feature's own
+    // requirement is to refuse "before k fits are paid for", and a
+    // container that spawns only to die on its own backstop has already
+    // cost the artifact download and the queue slot.
+    if (dto.nSplits !== undefined) {
+      // (a) T01(c): CV is TABULAR ONLY. lstm/gru cut on WINDOW count, not
+      // labelled-row count (chronological_split_windows), a fold rule
+      // this feature deliberately does not implement. train.py refuses
+      // the same pair as a fit-time backstop.
+      if (dto.algorithm === 'lstm' || dto.algorithm === 'gru') {
+        throw new BadRequestException(
+          `Cross-validation is not available for ${dto.algorithm}: sequence ` +
+            `models split on window count, not labelled rows, which this ` +
+            `feature does not implement. Use a chronological split instead.`,
+        );
+      }
+      // (b) T07's own precondition (finding 6). A CV run produces NO
+      // predictions.parquet by design — its only prediction series comes
+      // from the separate, user-triggered holdout-scoring phase
+      // (ModelRunScoreAuthorizedService). With no holdout on the dataset
+      // that phase can never run, so the user would pay for k+1 fits and
+      // receive fold metrics with no way to ever score the model that
+      // actually ships. Refused at config time, with the reason named.
+      const holdout = await findHoldoutArtifact(this.prisma, artifact.id);
+      if (!holdout) {
+        throw new BadRequestException(
+          `This dataset has no validation holdout, so a cross-validation ` +
+            `run could never be scored: CV reports fold metrics for the ` +
+            `configuration and writes no predictions, and the saved model's ` +
+            `own score comes from the holdout. Pick a holdout window when ` +
+            `saving the dataset, or use a chronological split instead.`,
+        );
+      }
+    }
+
     return {
       datasetId: artifact.datasetId,
       goldArtifactId: artifact.id,
@@ -130,22 +169,34 @@ export class ModelRunLaunchAuthorizedService {
       // Generated, not defaulted to a constant: a fixed seed across every
       // run hides variance, and an unrecorded one makes replay impossible.
       seed: dto.seed ?? randomInt(1, 2 ** 31 - 1),
-      splitSpec: {
-        method: 'chronological' as const,
-        ratio: dto.trainTestSplit ?? 0.8,
-        // cut_timestamp/train_rows/test_rows are filled by the container —
-        // they cannot be known until non-Good target rows are dropped.
-      },
+      // MODEL-FLOW-016-T03. `n_splits` is the ONLY field known at creation
+      // for a CV run — source_rows/labelled_rows/distinct_labelled_values
+      // and the per-fold cuts are all filled by the container, for the
+      // same reason cut_timestamp is below: they cannot be known until
+      // non-Good target rows are dropped. NOT capped against
+      // max_admissible_k here: that needs a full artifact read
+      // (/split-stats), which the panel has already done at config time
+      // and which train.py re-checks as a fit-time backstop — doing it a
+      // third time would make Start Training wait on a second read of the
+      // whole artifact.
+      splitSpec:
+        dto.nSplits !== undefined
+          ? { method: 'cv_expanding' as const, n_splits: dto.nSplits }
+          : {
+              method: 'chronological' as const,
+              ratio: dto.trainTestSplit ?? 0.8,
+              // cut_timestamp/train_rows/test_rows are filled by the
+              // container — they cannot be known until non-Good target
+              // rows are dropped.
+            },
     };
   }
 
-  /** Mint a run token and its hash. The plaintext never touches a DB row. */
+  /** Mint a run token and its hash. The plaintext never touches a DB row.
+   *  MODEL-FLOW-016-T07: extracted to `@/lib/mint-run-token` — the scoring
+   *  trigger needs the identical mint a second time. */
   private mintToken(): { token: string; tokenHash: string } {
-    const token = randomBytes(32).toString('base64url');
-    return {
-      token,
-      tokenHash: createHash('sha256').update(token).digest('hex'),
-    };
+    return mintRunToken();
   }
 
   /**
@@ -200,7 +251,19 @@ export class ModelRunLaunchAuthorizedService {
     runId: string,
     objectKey: string,
     targetY: string,
-    splitRatio: number,
+    // MODEL-FLOW-016-T07. The run's OWN splitSpec, not a bare ratio: this
+    // endpoint takes EXACTLY ONE of split_ratio / n_splits (its own
+    // `_exactly_one_of_ratio_or_splits` validator, schemas/preprocess.py),
+    // and a CV run sending split_ratio would freeze a plausible-looking
+    // ratio-mode cut for a run that never used one — the "looks like
+    // success" failure class this feature's ledger keeps naming, and the
+    // exact precondition finding 12 recorded against this function.
+    splitSpec:
+      | { method: 'chronological'; ratio: number }
+      | {
+          method: 'cv_expanding';
+          n_splits: number;
+        },
     tags: string[],
   ): void {
     void postToPython(
@@ -209,7 +272,9 @@ export class ModelRunLaunchAuthorizedService {
         source_key: objectKey,
         tags,
         target_y: targetY,
-        split_ratio: splitRatio,
+        ...(splitSpec.method === 'cv_expanding'
+          ? { n_splits: splitSpec.n_splits }
+          : { split_ratio: splitSpec.ratio }),
       },
       PYTHON_TIMEOUT.metadata,
     )
@@ -402,7 +467,7 @@ export class ModelRunLaunchAuthorizedService {
         run.id,
         runData.goldObjectKey,
         runData.targetY,
-        runData.splitSpec.ratio,
+        runData.splitSpec,
         dto.splitStatsTags ?? [dto.targetY],
       );
     }
@@ -544,6 +609,27 @@ export class ModelRunLaunchAuthorizedService {
       include: { logs: { orderBy: { createdAt: 'asc' }, take: 500 } },
     });
     if (!run) throw new NotFoundException();
+
+    // MODEL-FLOW-016-T11. `cvFoldsKey` is only a pointer — Step 4/5's own
+    // per-fold table needs the actual records. Read here, once, attached
+    // to the same response the 2.5s poll loop already fetches, rather than
+    // a second client-facing endpoint/hook (the `lossHistory` precedent in
+    // `advanceJobForRun` reads the same way, attached, never its own
+    // route). A read failure is soft — log and fall back to null, never
+    // fail the whole run fetch over one auxiliary table this endpoint's
+    // callers do not all need every tick.
+    let cvFolds: Awaited<ReturnType<typeof getRunCvFolds>> | null = null;
+    if (run.cvFoldsKey) {
+      try {
+        cvFolds = await getRunCvFolds(run.cvFoldsKey);
+      } catch (err) {
+        this.log.error(
+          `getDraftRunService: could not read cv_folds for run ${runId}`,
+          err,
+        );
+      }
+    }
+
     // Same envelope fix as createDraftRunService, and arguably the more
     // load-bearing half of it: this is what the 2.5s poll loop
     // (use-model-training.ts pollRun) calls on every tick, so an unwrapped
@@ -553,7 +639,7 @@ export class ModelRunLaunchAuthorizedService {
       statusCode: 200,
       message: 'Training run fetched',
       type: 'SUCCESS' as const,
-      data: run,
+      data: { ...run, cvFolds },
     };
   }
 

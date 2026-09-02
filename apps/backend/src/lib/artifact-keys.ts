@@ -35,6 +35,16 @@ export const VALIDATION_REPORT_FILENAME = 'validation_report.json';
 export const VALIDATE_DATA_FILENAME = 'validate_data.parquet';
 
 /**
+ * MODEL-FLOW-016-T08. The model-ready holdout `prepare_holdout_for_run`/
+ * `replay_holdout_for_run` write under a run's own prefix
+ * (`tryReplayHoldout`, model-run.authorized.service.ts) — a run-scoped
+ * object, never a committed dataset artifact, so it is read via
+ * `presignRunObject`, not `presignArtifact`. Mirrored from
+ * `VALIDATE_READY_FILENAME` in object_store.py — change both.
+ */
+export const VALIDATE_READY_FILENAME = 'validate_ready.parquet';
+
+/**
  * DS-LAKE-021-T01. The CSV export sidecar, beside a committed artifact's own
  * data key. Mirrored from `EXPORT_CSV_FILENAME` in object_store.py — change
  * both.
@@ -86,6 +96,10 @@ export const RUN_UPLOAD_FILENAMES = [
   // closed-form fit. Mirrored from LOSS_HISTORY_FILENAME in
   // object_store.py — change both.
   'loss_history.json',
+  // MODEL-FLOW-016-T04. Per-fold CV metrics — present only on a CV run.
+  // Mirrored from CV_FOLDS_FILENAME in object_store.py and train.py —
+  // change all three.
+  'cv_folds.json',
 ] as const;
 
 /**

@@ -271,7 +271,7 @@ export function ValidationHoldoutSection({
               ) : (
                 <>
                   <Check className="h-3.5 w-3.5" />
-                  Apply
+                  Apply Split
                 </>
               )}
             </Button>

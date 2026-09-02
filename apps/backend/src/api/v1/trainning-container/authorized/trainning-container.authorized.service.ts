@@ -39,8 +39,22 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
   // of raising. Same rule as the 1.0.2 bump: TrainingAlgorithmEnum now
   // allows lstm/gru, so the default image MUST agree or a run passes
   // validation, spawns a container, and only then dies inside it.
+  //
+  // 1.0.5 (MODEL-FLOW-016-T03/T07): TWO main()-path changes in one bump, on
+  // purpose — bumping twice would leave a window where a scoring container
+  // runs a CV-only image. (a) train.py handles splitSpec.method
+  // 'cv_expanding' (k expanding folds + a refit, cv_folds.json, no
+  // predictions.parquet); (b) a MODE=score entrypoint (run_score) that
+  // reloads model.joblib and scores the validation holdout. Same rule as
+  // the 1.0.2/1.0.4 bumps: the DTO now accepts nSplits and this service
+  // now spawns with MODE=score, so the default image MUST agree or a run
+  // passes validation, spawns, and only then dies inside the container.
+  // Both paths verified against this exact tag before the bump landed —
+  // MODE=score reaches /score-claim, /score-log, /score-complete and NEVER
+  // a training endpoint (including on its crash path); MODE unset still
+  // reaches /log and /complete.
   private readonly imageRef =
-    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.4';
+    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.5';
   // private readonly network = process.env.TRAINING_NETWORK ?? 'dslake_default';
   private readonly network = 'monorepo_network';
   private readonly memoryBytes = Number(
@@ -75,7 +89,16 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
       where: { status: 'RUNNING' },
       select: { id: true, containerId: true },
     });
-    if (orphans.length === 0) return;
+    // MODEL-FLOW-016-T07. A scoring container never touches `status` (it
+    // stays at the run's own terminal value throughout — see
+    // `scoringContainerId`'s doc comment), so the training sweep above
+    // cannot see it. Same restart hazard, same fix: without this, a
+    // restart during scoring strands `scoringContainerId` set forever and
+    // the UI polls a phase that will never finish.
+    const scoringOrphans = await this.prisma.modelTrainingRun.findMany({
+      where: { scoringContainerId: { not: null } },
+      select: { id: true, scoringContainerId: true },
+    });
 
     let reconciled = 0;
     for (const run of orphans) {
@@ -116,11 +139,35 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
       // resolves IMMEDIATELY for an already-stopped container, so this one
       // call covers both cases through the same exit-code branch watch()
       // already writes, rather than a second copy of that logic here.
-      void this.watch(run.id, container);
+      void this.watch(run.id, container, 'train');
       reconciled += 1;
     }
 
-    this.log.warn(`Reconciled ${reconciled} orphaned RUNNING run(s) at boot.`);
+    for (const run of scoringOrphans) {
+      if (!run.scoringContainerId) continue;
+      const container = this.docker.getContainer(run.scoringContainerId);
+      try {
+        await container.inspect();
+      } catch {
+        // Container gone — clear the in-flight marker, same as watch()'s
+        // own "exited without reporting" branch for scoring below. The
+        // training run's own status/metrics are untouched.
+        await this.prisma.modelTrainingRun.update({
+          where: { id: run.id },
+          data: { scoringContainerId: null },
+        });
+        reconciled += 1;
+        continue;
+      }
+      void this.watch(run.id, container, 'score');
+      reconciled += 1;
+    }
+
+    if (reconciled > 0) {
+      this.log.warn(
+        `Reconciled ${reconciled} orphaned run/container(s) at boot.`,
+      );
+    }
   }
 
   /**
@@ -153,16 +200,31 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
     this.log.log(`Training image pinned to ${this.imageDigest}`);
   }
 
-  async spawn(runId: string, token: string) {
+  /**
+   * MODEL-FLOW-016-T07. `mode` parameterizes ONE spawn path rather than a
+   * near-copy `spawnScore` — the HostConfig below is ~25 lines of
+   * security-critical settings (CapDrop, ReadonlyRootfs, Tmpfs, memory
+   * caps); two copies is how they drift out of sync with each other.
+   * `train-${runId}` and `score-${runId}` are deliberately DIFFERENT
+   * container names — the training container has already exited by the
+   * time scoring starts (see `claim()`'s doc comment), but a stale name
+   * collision would still be possible if the training container were ever
+   * kept (`TRAINING_KEEP_FAILED=1`).
+   */
+  async spawn(runId: string, token: string, mode: 'train' | 'score' = 'train') {
     const container = await this.docker.createContainer({
       Image: this.imageDigest || this.imageRef,
-      name: `train-${runId}`,
+      name: `${mode}-${runId}`,
       Env: [
         `RUN_ID=${runId}`,
         `RUN_TOKEN=${token}`,
         `API_BASE=${process.env.INTERNAL_API_BASE ?? 'http://backend:3000'}`,
+        `MODE=${mode}`,
       ],
-      Labels: { 'dslake.role': 'training', 'dslake.runId': runId },
+      Labels: {
+        'dslake.role': mode === 'score' ? 'scoring' : 'training',
+        'dslake.runId': runId,
+      },
       HostConfig: {
         NetworkMode: this.network,
         // No host filesystem, ever. Everything the run needs arrives over
@@ -185,30 +247,85 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
       },
     });
 
-    await container.start();
-    await this.prisma.modelTrainingRun.update({
-      where: { id: runId },
-      data: {
-        status: 'RUNNING',
-        containerId: container.id,
-        startedAt: new Date(),
-      },
-    });
+    // `mode === 'score'` writes ONLY scoringContainerId — status/containerId/
+    // startedAt belong to the TRAINING spawn and must not be clobbered by a
+    // scoring run against an already-terminal (SUCCEEDED) row.
+    //
+    // Ordering differs by mode, deliberately: `ScoreTokenGuard` admits a
+    // call ONLY when `scoringContainerId` is already set — there is no
+    // equivalent "not started yet" state it accepts the way RunTokenGuard
+    // accepts QUEUED for training. Writing it BEFORE `start()` (container
+    // ids are assigned by `createContainer`, not `start`) closes the race
+    // where a fast-booting container's own `/score-claim` could 401
+    // against a row the update hadn't reached yet. The training branch
+    // stays AFTER start() on purpose — marking a run RUNNING before it
+    // has actually started would be worse than the (harmless, guard-
+    // admitted) QUEUED window it currently has.
+    if (mode === 'score') {
+      await this.prisma.modelTrainingRun.update({
+        where: { id: runId },
+        data: { scoringContainerId: container.id },
+      });
+      await container.start();
+    } else {
+      await container.start();
+      await this.prisma.modelTrainingRun.update({
+        where: { id: runId },
+        data: {
+          status: 'RUNNING',
+          containerId: container.id,
+          startedAt: new Date(),
+        },
+      });
+    }
 
-    void this.watch(runId, container);
+    void this.watch(runId, container, mode);
   }
 
   /**
    * Observe the exit code.
    *
-   * The container reports its own outcome via /complete, but a process that
-   * is OOM-killed or segfaults never gets to. Without this, such a run stays
-   * RUNNING forever. `/complete` having already landed wins — this only
-   * fills a gap, it does not overrule a real report.
+   * The container reports its own outcome via /complete (train) or
+   * /score-complete (score), but a process that is OOM-killed or segfaults
+   * never gets to. Without this, such a run stays RUNNING (train) or
+   * "scoring" (score) forever. A real report having already landed always
+   * wins — this only fills a gap, it does not overrule one.
    */
-  private async watch(runId: string, container: Docker.Container) {
+  private async watch(
+    runId: string,
+    container: Docker.Container,
+    mode: 'train' | 'score' = 'train',
+  ) {
     try {
       const { StatusCode } = await container.wait();
+
+      if (mode === 'score') {
+        const run = await this.prisma.modelTrainingRun.findUnique({
+          where: { id: runId },
+          select: { scoringContainerId: true },
+        });
+        // Already cleared by a real /score-complete (or a later re-trigger's
+        // own container) — this exit report is stale, do not clobber it.
+        if (!run || run.scoringContainerId !== container.id) return;
+
+        const tail = await this.tailLogs(container);
+        await this.prisma.modelTrainingRun.update({
+          where: { id: runId },
+          data: { scoringContainerId: null },
+        });
+        await this.prisma.modelTrainingRunLog.create({
+          data: {
+            runId,
+            level: 'error',
+            message: (StatusCode === 0
+              ? `Scoring container exited 0 without reporting a result. Tail: ${tail}`
+              : `Scoring container exited ${StatusCode}. Tail: ${tail}`
+            ).slice(0, 4000),
+          },
+        });
+        return;
+      }
+
       const run = await this.prisma.modelTrainingRun.findUnique({
         where: { id: runId },
         select: { status: true },
@@ -228,7 +345,7 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
         });
       }
     } catch (err) {
-      this.log.error(`watch failed for run ${runId}`, err);
+      this.log.error(`watch failed for run ${runId} (${mode})`, err);
     } finally {
       await this.reap(container, false);
     }

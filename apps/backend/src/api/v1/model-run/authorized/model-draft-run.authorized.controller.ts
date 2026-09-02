@@ -4,6 +4,7 @@ import { JwtAccessGuard } from '@/guards/jwt-access.guard';
 import { Users } from '@/common/decorators/user.decorator';
 import { CreateTrainingRunDto } from './dto/model-run.authorized.dto';
 import { ModelRunLaunchAuthorizedService } from './model-run-launch.authorized.service';
+import { ModelRunScoreAuthorizedService } from './model-run-score.authorized.service';
 
 /**
  * Draft-scoped twin of `ModelRunLaunchAuthorizedController` (MODEL-FLOW-003)
@@ -23,7 +24,10 @@ import { ModelRunLaunchAuthorizedService } from './model-run-launch.authorized.s
 @Controller('authorized/model-drafts')
 @UseGuards(JwtAccessGuard)
 export class ModelDraftRunAuthorizedController {
-  constructor(private readonly runs: ModelRunLaunchAuthorizedService) {}
+  constructor(
+    private readonly runs: ModelRunLaunchAuthorizedService,
+    private readonly scoring: ModelRunScoreAuthorizedService,
+  ) {}
 
   @Post('/:draftId/runs')
   @ApiOperation({
@@ -76,6 +80,31 @@ export class ModelDraftRunAuthorizedController {
     @Users() user: Auth.UserPayload,
   ) {
     return this.runs.cancelDraftRunService(draftId, runId, user.id, user.role);
+  }
+
+  @Post('/:draftId/runs/:runId/score')
+  @ApiOperation({
+    summary: "Trigger a CV run's separate holdout-scoring phase",
+    description:
+      'MODEL-FLOW-016-T07. A CV run refuses (400) unless it is SUCCEEDED, ' +
+      'is actually a Cross-Validation run (a non-CV run already scores ' +
+      'its holdout inline during training), is not already being scored, ' +
+      'and its dataset actually has a validation holdout. Mints a fresh ' +
+      "token and spawns a scoring container out of band; poll the run's " +
+      'own GET for `scoringContainerId` (in flight) / `predictionsKey` + ' +
+      '`holdoutMetrics` (finished).',
+  })
+  triggerScoringController(
+    @Param('draftId') draftId: string,
+    @Param('runId') runId: string,
+    @Users() user: Auth.UserPayload,
+  ) {
+    return this.scoring.triggerScoringService(
+      draftId,
+      runId,
+      user.id,
+      user.role,
+    );
   }
 
   @Get('/:draftId/runs/:runId/predictions')

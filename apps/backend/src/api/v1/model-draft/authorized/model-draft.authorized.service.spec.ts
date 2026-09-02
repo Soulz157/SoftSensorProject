@@ -50,7 +50,8 @@ const DRAFT_ROW = {
   updatedAt: new Date('2026-08-21T11:00:00.000Z'),
 };
 
-// MODEL-FLOW-007. A SUCCEEDED run with everything saveDraftService needs.
+// MODEL-FLOW-007 / MODEL-SERVE-001-T03. A SUCCEEDED run with everything
+// saveDraftService (and, since T03, ModelVersion creation) needs.
 const RUN_ROW = {
   id: 'run-1',
   status: 'SUCCEEDED',
@@ -61,6 +62,12 @@ const RUN_ROW = {
   splitSpec: { method: 'chronological', ratio: 0.8 },
   modelKey: 'drafts/draft-1/runs/run-1/model.joblib',
   manifestKey: 'drafts/draft-1/runs/run-1/run_manifest.json',
+  goldArtifactId: 'artifact-1',
+  goldObjectKey: 'drafts/ds-1/artifacts/artifact-1/data.parquet',
+  artifactChecksum: 'sha256:gold',
+  featureSpecKey: 'drafts/ds-1/artifacts/artifact-1/feature_spec.json',
+  imageDigest: 'sha256:trainer',
+  metrics: { r2: 0.9, rmse: 1.2 },
 };
 
 function buildPrisma(overrides: Record<string, unknown> = {}) {
@@ -90,6 +97,15 @@ function buildPrisma(overrides: Record<string, unknown> = {}) {
         ...DRAFT_ROW,
         status: 'SAVED',
         savedModelId: 'model-1',
+      }),
+    },
+    // MODEL-SERVE-001-T03.
+    modelVersion: {
+      create: jest.fn().mockResolvedValue({
+        id: 'version-1',
+        modelId: 'model-1',
+        version: 1,
+        stage: 'STAGING',
       }),
     },
   };
@@ -534,7 +550,7 @@ describe('ModelDraftAuthorizedService — saveDraftService (MODEL-FLOW-007)', ()
     ).rejects.toMatchObject({ statusCode: 404 });
   });
 
-  it('writes all three rows inside one $transaction, converts the split fraction to a percentage, and derives config from the run — not the request body', async () => {
+  it('writes all four rows inside one $transaction, converts the split fraction to a percentage, and derives config from the run — not the request body', async () => {
     const prisma = draftPrisma();
     const service = makeService(prisma);
 
@@ -568,6 +584,26 @@ describe('ModelDraftAuthorizedService — saveDraftService (MODEL-FLOW-007)', ()
       where: { id: 'draft-1' },
       data: { status: 'SAVED', savedModelId: 'model-1' },
     });
+
+    // MODEL-SERVE-001-T03. Version 1, STAGING (never set explicitly — the
+    // schema default), one hop off the adopted run's own pinned columns.
+    const versionArgs = prisma.tx.modelVersion.create.mock.calls[0][0];
+    expect(versionArgs.data).toMatchObject({
+      modelId: 'model-1',
+      version: 1,
+      sourceRunId: 'run-1',
+      sourceDatasetId: RUN_ROW.datasetId,
+      goldArtifactId: RUN_ROW.goldArtifactId,
+      goldObjectKey: RUN_ROW.goldObjectKey,
+      artifactChecksum: RUN_ROW.artifactChecksum,
+      featureSpecKey: RUN_ROW.featureSpecKey,
+      modelObjectKey: RUN_ROW.modelKey,
+      algorithm: RUN_ROW.algorithm,
+      hyperparameters: RUN_ROW.hyperparameters,
+      imageDigest: RUN_ROW.imageDigest,
+      metrics: RUN_ROW.metrics,
+    });
+    expect(versionArgs.data.stage).toBeUndefined();
 
     expect(res.statusCode).toBe(201);
     expect(res.data.id).toBe('model-1');

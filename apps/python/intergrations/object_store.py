@@ -1129,6 +1129,19 @@ PREDICTIONS_FILENAME = "predictions.parquet"
 # MODEL-FLOW-013-T05. Only present for the algorithms train.py can extract a
 # real loss trajectory from — absent, not empty, for a closed-form fit.
 LOSS_HISTORY_FILENAME = "loss_history.json"
+# MODEL-FLOW-016-T04. Per-fold CV metrics — present only for a CV run (a
+# non-CV run never writes this). Mirrored in images/trainer/train.py
+# (CV_FOLDS_FILENAME) and artifact-keys.ts — change all three.
+CV_FOLDS_FILENAME = "cv_folds.json"
+# MODEL-FLOW-016-T08. The model-ready validation holdout `tryReplayHoldout`
+# (model-run.authorized.service.ts) writes under a run's own prefix, via
+# `prepare_holdout_for_run`/`replay_holdout_for_run` — NOT one of train.py's
+# own uploads, so deliberately absent from _ALLOWED_RUN_UPLOADS (that set
+# gates what the CONTAINER may upload; this file is written server-side,
+# before the container is ever claimed). Exists purely so `presign_run_object`
+# below can name-check it, the same way every other run-scoped reader here
+# checks its own filename. Mirrored in TypeScript at artifact-keys.ts.
+VALIDATE_READY_FILENAME = "validate_ready.parquet"
 
 
 def model_run_prefix(model_id: str, run_id: str) -> str:

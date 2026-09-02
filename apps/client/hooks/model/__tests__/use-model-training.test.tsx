@@ -73,10 +73,11 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
     vi.useRealTimers()
   })
 
-  it('refuses Find Best Parameters even if the UI-disable was bypassed by stale state', async () => {
-    const { result, store } = renderTraining(s =>
-      s.set(mpFindBestParamsAtom, true),
-    )
+  it('refuses Find Best Parameters even if the UI-disable was bypassed by stale state (2 algorithms, no sweep — [fix] only exempts exactly 1)', async () => {
+    const { result, store } = renderTraining(s => {
+      s.set(mpFindBestParamsAtom, true)
+      s.set(mpAlgorithmsAtom, ['ols', 'ridge'])
+    })
 
     await act(async () => {
       result.current.start()
@@ -85,6 +86,67 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
 
     expect(store.get(mpTrainStateAtom).status).toBe('error')
     expect(modelDraftRunService.create).not.toHaveBeenCalled()
+    expect(modelDraftCandidateJobService.create).not.toHaveBeenCalled()
+  })
+
+  // [fix]. "allow find best parameter when select 1 algorithm" — the toggle
+  // no longer requires Find Best Model when exactly one algorithm is
+  // selected; it sends a direct HYPERPARAMETER_SEARCH job instead, expanded
+  // server-side from this ONE candidate via tuning-grid.ts's curated
+  // shortlist (never built client-side).
+  it('creates a HYPERPARAMETER_SEARCH job with one candidate when Find Best Parameters is on, Find Best Model is off, and exactly one algorithm is selected', async () => {
+    vi.mocked(modelDraftCandidateJobService.create).mockResolvedValue({
+      statusCode: 201,
+      message: 'ok',
+      type: 'SUCCESS',
+      data: { id: 'job-1' } as never,
+    })
+    vi.mocked(modelDraftCandidateJobService.get).mockResolvedValue({
+      statusCode: 200,
+      message: 'ok',
+      type: 'SUCCESS',
+      data: {
+        id: 'job-1',
+        status: 'RUNNING',
+        completedRuns: 0,
+        totalRuns: 5,
+        candidates: [],
+      } as never,
+    })
+    const { result, store } = renderTraining(s => {
+      s.set(mpFindBestParamsAtom, true)
+      s.set(mpAlgorithmsAtom, ['ridge'])
+    })
+
+    await act(async () => {
+      result.current.start()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(modelDraftCandidateJobService.create).toHaveBeenCalledWith(
+      'draft-1',
+      expect.objectContaining({
+        kind: 'HYPERPARAMETER_SEARCH',
+        targetY: 'TI-101',
+        candidates: [{ algorithm: 'ridge', hyperparameters: { alpha: 1.0 } }],
+      }),
+    )
+    expect(modelDraftRunService.create).not.toHaveBeenCalled()
+    expect(store.get(mpTrainStateAtom).status).toBe('training')
+  })
+
+  it('refuses Find Best Parameters with zero algorithms and no sweep', async () => {
+    const { result, store } = renderTraining(s => {
+      s.set(mpFindBestParamsAtom, true)
+      s.set(mpAlgorithmsAtom, [])
+    })
+
+    await act(async () => {
+      result.current.start()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(store.get(mpTrainStateAtom).status).toBe('error')
     expect(modelDraftCandidateJobService.create).not.toHaveBeenCalled()
   })
 

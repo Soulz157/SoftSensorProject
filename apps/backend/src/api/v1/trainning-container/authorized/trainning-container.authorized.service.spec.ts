@@ -26,10 +26,32 @@ interface RunRow {
   containerId: string | null;
 }
 
-function buildPrisma(options: { runs: RunRow[]; findUniqueStatus?: string }) {
+interface ScoringRunRow {
+  id: string;
+  scoringContainerId: string | null;
+}
+
+/**
+ * MODEL-FLOW-016-T07. `findMany` now runs TWICE per boot reconcile — the
+ * pre-existing `status: 'RUNNING'` sweep, and a second `scoringContainerId`
+ * sweep. Discriminated by `where` shape rather than call order, so each
+ * test can supply either independently of the other (`runs` defaults to
+ * `[]`-equivalent behaviour when omitted, same as `scoringRuns`).
+ */
+function buildPrisma(options: {
+  runs: RunRow[];
+  scoringRuns?: ScoringRunRow[];
+  findUniqueStatus?: string;
+}) {
   return {
     modelTrainingRun: {
-      findMany: jest.fn().mockResolvedValue(options.runs),
+      findMany: jest
+        .fn()
+        .mockImplementation((args: { where: Record<string, unknown> }) =>
+          Promise.resolve(
+            'status' in args.where ? options.runs : (options.scoringRuns ?? []),
+          ),
+        ),
       findUnique: jest
         .fn()
         .mockResolvedValue({ status: options.findUniqueStatus ?? 'RUNNING' }),
@@ -137,7 +159,7 @@ describe('TrainningContainerAuthorizedService — boot reconcile (MODEL-FLOW-011
 
     await service.onModuleInit();
 
-    expect(watchSpy).toHaveBeenCalledWith('run-1', container);
+    expect(watchSpy).toHaveBeenCalledWith('run-1', container, 'train');
     // The reconcile loop itself never writes FAILED for an existing
     // container — only watch()'s own exit-code branch may, and it is
     // mocked away here.
@@ -223,7 +245,63 @@ describe('TrainningContainerAuthorizedService — boot reconcile (MODEL-FLOW-011
     expect(prisma.modelTrainingRun.update).toHaveBeenCalledWith(
       expect.objectContaining({ where: { id: 'run-gone' } }),
     );
-    expect(watchSpy).toHaveBeenCalledWith('run-live', expect.anything());
+    expect(watchSpy).toHaveBeenCalledWith(
+      'run-live',
+      expect.anything(),
+      'train',
+    );
+
+    watchSpy.mockRestore();
+  });
+
+  it('a scoring container that no longer exists clears scoringContainerId — the training run status/metrics are untouched', async () => {
+    mockGetContainer.mockReturnValue({
+      inspect: jest.fn().mockRejectedValue(new Error('no such container: s1')),
+    });
+    const prisma = buildPrisma({
+      runs: [],
+      scoringRuns: [{ id: 'run-1', scoringContainerId: 's1' }],
+    });
+    const service = makeService(prisma);
+
+    await service.onModuleInit();
+
+    expect(prisma.modelTrainingRun.update).toHaveBeenCalledWith({
+      where: { id: 'run-1' },
+      data: { scoringContainerId: null },
+    });
+  });
+
+  it('a scoring container that still exists is re-attached to watch() in score mode', async () => {
+    const watchSpy = jest
+      .spyOn(
+        TrainningContainerAuthorizedService.prototype as unknown as Record<
+          string,
+          (...args: unknown[]) => Promise<void>
+        >,
+        'watch',
+      )
+      .mockResolvedValue(undefined);
+    const container = {
+      id: 's1',
+      inspect: jest
+        .fn()
+        .mockResolvedValue({ Id: 's1', State: { Running: true } }),
+    };
+    mockGetContainer.mockReturnValue(container);
+    const prisma = buildPrisma({
+      runs: [],
+      scoringRuns: [{ id: 'run-1', scoringContainerId: 's1' }],
+    });
+    const service = makeService(prisma);
+
+    await service.onModuleInit();
+
+    expect(watchSpy).toHaveBeenCalledWith('run-1', container, 'score');
+    // Same discipline as the training case — the reconcile loop itself
+    // never writes for an existing container, only watch()'s own
+    // exit-code branch may, and it is mocked away here.
+    expect(prisma.modelTrainingRun.update).not.toHaveBeenCalled();
 
     watchSpy.mockRestore();
   });

@@ -129,6 +129,18 @@ export const mpSplitStatsTagsAtom = atom<string[]>([])
  * Bounds match CreateTrainingRunSchema.seed: 1-2147483646. */
 export const mpSeedAtom = atom<number | undefined>(undefined)
 
+/** MODEL-FLOW-016-T10. `undefined` means Cross-Validation is OFF — the run
+ * launches with the ordinary chronological `trainTestSplit` above, exactly
+ * as before this feature. A number (3-10) means CV is ON with that many
+ * expanding folds; `trainTestSplit` is then ignored at launch (the two are
+ * mutually exclusive server-side — CreateTrainingRunSchema's own .refine()).
+ * CLIENT-ONLY, deliberately: `ModelDraft` has no column for this (this
+ * feature's own acceptance criterion forbids adding one — see the ledger's
+ * ModelDraft-has-no-column finding), so `useModelDraftSync`'s PATCH never
+ * carries it and a resumed draft always comes back with CV off. The value
+ * is committed into the run's own `splitSpec` only at Start Training. */
+export const mpNSplitsAtom = atom<number | undefined>(undefined)
+
 /** How the user chose to supply tags: direct connector, csv upload, or manual text. */
 export type TagInputMethod = '' | 'direct' | 'csv' | 'text'
 export const mpTagInputMethodAtom = atom<TagInputMethod>('')
@@ -233,6 +245,11 @@ export interface DraftTrainingResult {
   algorithm: Algorithm
   metrics: Record<string, unknown> | null
   trainedAt: string
+  /** MODEL-FLOW-016-T11. Set only for a Cross-Validation run — Step 4's
+   *  single-run pass-through keys its mean±std render off this, never
+   *  `algorithm`. Always null from the sweep-winner path (`pollJob` below):
+   *  CV and Find Best Model are mutually exclusive by construction. */
+  cvFoldsKey: string | null
 }
 export const mpTrainingResultAtom = atom<DraftTrainingResult | null>(null)
 

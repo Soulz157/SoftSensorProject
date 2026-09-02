@@ -34,21 +34,42 @@ interface ApiResponse<T> {
   type: string
 }
 
+/** MODEL-FLOW-016-T09. One expanding-window fold's plan — mirrors
+ * apps/python `schemas.preprocess.SplitStatsFold` field for field. No box
+ * statistics per this feature's own userDecisions. */
+export interface DraftSplitStatsFold {
+  cut_timestamp: string
+  train_rows: number
+  test_rows: number
+  distinct: number
+}
+
 /** MODEL-FLOW-014-T04. Mirrors apps/python `schemas.preprocess.
  * SplitStatsResponse` field for field — `train`/`test` are
  * `DraftBoxplotResult`-shaped minus `source_key` (which belongs once, at
  * the top), so `TagBoxplotChart` renders either side with no translation
- * layer. */
+ * layer.
+ *
+ * MODEL-FLOW-016-T02/T09 widened every ratio-mode field to nullable and
+ * added the CV-mode fields: `split_ratio`/`cut_timestamp`/
+ * `train_labelled_rows`/`test_labelled_rows`/`train`/`test` are null in
+ * n_splits mode, and `n_splits`/`folds` are null in ratio mode —
+ * `distinct_labelled_values`/`max_admissible_k` are the only two fields
+ * always present in both. */
 export interface DraftSplitStatsResult {
   source_key: string
   target_y: string
-  split_ratio: number
-  cut_timestamp: string
-  train_labelled_rows: number
-  test_labelled_rows: number
+  split_ratio: number | null
+  cut_timestamp: string | null
+  train_labelled_rows: number | null
+  test_labelled_rows: number | null
   source_rows: number
-  train: Omit<DraftBoxplotResult, 'source_key'>
-  test: Omit<DraftBoxplotResult, 'source_key'>
+  train: Omit<DraftBoxplotResult, 'source_key'> | null
+  test: Omit<DraftBoxplotResult, 'source_key'> | null
+  distinct_labelled_values: number
+  max_admissible_k: number
+  n_splits: number | null
+  folds: DraftSplitStatsFold[] | null
 }
 
 export type PreprocessingJobStatus =
@@ -374,17 +395,31 @@ export const datasetArtifactService = {
   /** MODEL-FLOW-014-T04. Both sides of the train/test chronological split
    * from one read — no `operations` sent, unlike every sibling chart call
    * above: this reads a committed FINAL artifact and there is no live-
-   * editing scrubber state to replay operations against. */
+   * editing scrubber state to replay operations against.
+   *
+   * MODEL-FLOW-016-T02/T09: `splitRatio`/`nSplits` are EXACTLY ONE —
+   * mirrors the server's own `.refine()`. Callers pass whichever mode they
+   * want; nothing here defaults one over the other. */
   splitStats: (
     datasetId: string,
     artifactId: string,
-    body: {
-      tags: string[]
-      targetY: string
-      splitRatio: number
-      sampleRows?: number
-      outlierCap?: number
-    },
+    body:
+      | {
+          tags: string[]
+          targetY: string
+          splitRatio: number
+          nSplits?: never
+          sampleRows?: number
+          outlierCap?: number
+        }
+      | {
+          tags: string[]
+          targetY: string
+          splitRatio?: never
+          nSplits: number
+          sampleRows?: number
+          outlierCap?: number
+        },
     signal?: AbortSignal,
   ): Promise<ApiResponse<DraftSplitStatsResult>> =>
     fetchClient(`${artifact(datasetId, artifactId)}/split-stats`, {

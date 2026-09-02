@@ -21,6 +21,7 @@ import {
   mpTrainTestSplitAtom,
   mpSplitStatsTagsAtom,
   mpSeedAtom,
+  mpNSplitsAtom,
   mpSelectedDatasetAtom,
   mpTrainingResultAtom,
   mpCandidateJobIdAtom,
@@ -77,6 +78,7 @@ export function useModelTraining({
   const trainTestSplit = useAtomValue(mpTrainTestSplitAtom)
   const splitStatsTags = useAtomValue(mpSplitStatsTagsAtom)
   const seed = useAtomValue(mpSeedAtom)
+  const nSplits = useAtomValue(mpNSplitsAtom)
   const selectedDataset = useAtomValue(mpSelectedDatasetAtom)
   const setTrainingResult = useSetAtom(mpTrainingResultAtom)
   const setArtifactRef = useSetAtom(mpArtifactRefAtom)
@@ -131,6 +133,7 @@ export function useModelTraining({
               algorithm: run.algorithm as Algorithm,
               metrics: run.metrics,
               trainedAt: run.finishedAt ?? run.createdAt,
+              cvFoldsKey: run.cvFoldsKey,
             })
             setArtifactRef(run.modelKey ?? null)
             setTrainState({ status: 'done', progress: 100, lastLog })
@@ -230,6 +233,10 @@ export function useModelTraining({
               algorithm: winner.algorithm as Algorithm,
               metrics: winner.metrics,
               trainedAt: job.finishedAt ?? job.createdAt,
+              // A sweep job and CV are mutually exclusive (automl-toggles.tsx,
+              // use-model-training.ts's own defense-in-depth refusal) — no
+              // candidate here was ever a CV run.
+              cvFoldsKey: null,
             })
             setCandidateJobId(job.id)
             setArtifactRef(null)
@@ -335,20 +342,72 @@ export function useModelTraining({
             : 'Select exactly one target — a run fits one target per model.',
         )
       }
-      // MODEL-FLOW-013-T11. Find Best Parameters TUNES the sweep's winner —
-      // it has no meaning without a sweep to tune. The UI already disables
-      // its toggle unless Find Best Model is on (automl-toggles.tsx); this
-      // is defense in depth against stale draft state from before that
-      // dependency existed.
-      if (findBestParams && !findBestModel) {
+      // MODEL-FLOW-013-T11 / [fix]. Find Best Parameters TUNES a winner —
+      // either the sweep's (Find Best Model on) or, with exactly one
+      // algorithm selected, that algorithm directly (a HYPERPARAMETER_SEARCH
+      // job — no sweep needed, there is only one candidate). The UI already
+      // disables the toggle for every other combination
+      // (automl-toggles.tsx); this is defense in depth against stale draft
+      // state from before that dependency existed.
+      if (findBestParams && !findBestModel && algorithms.length !== 1) {
         throw new Error(
-          'Find Best Parameters tunes the sweep’s winner — turn on Find Best Model too.',
+          'Find Best Parameters tunes the sweep’s winner — turn on Find Best Model too, or select exactly one algorithm to tune it directly.',
+        )
+      }
+      // MODEL-FLOW-016. userDecisions: CV × algorithm sweep is mutually
+      // exclusive — a CV run fits one algorithm's k folds, a sweep
+      // evaluates several. The UI already disables Find Best Model while
+      // CV is on (automl-toggles.tsx) and clears nSplits when a sweep
+      // turns on (CvControl's own eligibility effect, core-config.tsx);
+      // this is defense in depth against stale draft state from before
+      // either dependency existed, same discipline the check above applies.
+      if (nSplits !== undefined && findBestModel) {
+        throw new Error(
+          'Cross-Validation fits one algorithm — turn off Find Best Model, or turn off Cross-Validation to sweep.',
         )
       }
 
       const draftId = await ensureDraftId()
       if (!draftId) {
         throw new Error("Model draft isn't ready yet — check Step 1.")
+      }
+
+      // [fix]. Find Best Parameters with exactly one algorithm selected and
+      // no sweep — a direct HYPERPARAMETER_SEARCH job. The client sends ONE
+      // candidate (this algorithm's current/default hyperparameters); the
+      // server expands it into the curated TUNING_GRID shortlist
+      // (tuning-grid.ts, the same shortlist SWEEP_THEN_TUNE's phase 2
+      // already uses) — the grid stays declared in exactly one place,
+      // never duplicated client-side.
+      if (findBestParams && !findBestModel) {
+        const [algorithm] = algorithms
+        if (algorithms.length !== 1 || !algorithm) {
+          throw new Error(
+            'Select exactly one algorithm to tune it directly, or turn on Find Best Model to sweep first.',
+          )
+        }
+        const backendAlgorithm = toBackendAlgorithm(algorithm)
+        if (!backendAlgorithm) {
+          throw new Error(
+            `"${ALGORITHM_LABELS[algorithm]}" isn't supported by the training service yet — pick another algorithm.`,
+          )
+        }
+
+        const created = await modelDraftCandidateJobService.create(draftId, {
+          goldArtifactId: selectedDataset.currentArtifactId,
+          targetY,
+          kind: 'HYPERPARAMETER_SEARCH',
+          trainTestSplit: trainTestSplit / 100,
+          candidates: [
+            {
+              algorithm: backendAlgorithm,
+              hyperparameters: defaultHyperparams(algorithm),
+            },
+          ],
+        })
+
+        pollJob(draftId, created.data.id)
+        return
       }
 
       if (findBestModel) {
@@ -412,9 +471,15 @@ export function useModelTraining({
         targetY,
         algorithm: backendAlgorithm,
         hyperparameters,
-        // FRACTION, never a percentage — converted once, here, at the
-        // client boundary (same rule useModelDraftSync's PATCH follows).
-        trainTestSplit: trainTestSplit / 100,
+        // MODEL-FLOW-016-T10. EXACTLY ONE of the two, mirroring
+        // CreateTrainingRunSchema's own .refine() server-side — sending
+        // both would 400 a run the UI otherwise built correctly.
+        // trainTestSplit is a FRACTION, never a percentage — converted
+        // once, here, at the client boundary (same rule
+        // useModelDraftSync's PATCH follows).
+        ...(nSplits !== undefined
+          ? { nSplits }
+          : { trainTestSplit: trainTestSplit / 100 }),
         // MODEL-FLOW-014-T06. The Split Distribution panel's own tag
         // selection, so the frozen sidecar matches what was displayed.
         // Omitted (undefined) when the panel never seeded a selection —
@@ -447,6 +512,7 @@ export function useModelTraining({
     algorithms,
     hyperparameters,
     trainTestSplit,
+    nSplits,
     splitStatsTags,
     seed,
     ensureDraftId,

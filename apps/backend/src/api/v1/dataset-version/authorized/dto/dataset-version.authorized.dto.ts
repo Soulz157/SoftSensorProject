@@ -341,13 +341,26 @@ export class BoxplotRequestDto extends createZodDto(BoxplotRequestSchema) {}
  * actually calls — not `CreateModelRunSchema.splitRatio`'s exclusive
  * `gt/lt`, a second, older bound this codebase also carries.
  */
-export const SplitStatsRequestSchema = z.object({
-  tags: z.array(z.string()).min(1).max(20),
-  targetY: z.string().min(1),
-  splitRatio: z.number().min(0.5).max(0.95),
-  sampleRows: z.number().int().min(1).max(50_000).optional(),
-  outlierCap: z.number().int().min(1).max(500).optional(),
-});
+export const SplitStatsRequestSchema = z
+  .object({
+    tags: z.array(z.string()).min(1).max(20),
+    targetY: z.string().min(1),
+    // MODEL-FLOW-016-T02/T09. EXACTLY ONE of splitRatio / nSplits — mirrors
+    // the Python schema's own `_exactly_one_of_ratio_or_splits` validator.
+    // A single chronological cut and a k-fold expanding plan answer
+    // different questions with different response shapes.
+    splitRatio: z.number().min(0.5).max(0.95).optional(),
+    nSplits: z.number().int().min(2).max(10).optional(),
+    sampleRows: z.number().int().min(1).max(50_000).optional(),
+    outlierCap: z.number().int().min(1).max(500).optional(),
+  })
+  .refine((v) => (v.splitRatio === undefined) !== (v.nSplits === undefined), {
+    message:
+      'Provide exactly one of splitRatio or nSplits — a single chronological ' +
+      'cut and a k-fold expanding plan are different questions with ' +
+      'different response shapes.',
+    path: ['splitRatio'],
+  });
 
 export class SplitStatsRequestDto extends createZodDto(
   SplitStatsRequestSchema,
@@ -888,19 +901,42 @@ const PythonSplitStatsSideSchema = z.object({
   insufficient_tags: z.array(z.string()),
 });
 
+/** MODEL-FLOW-016-T09. One expanding-window fold's plan — no box
+ * statistics, per this feature's own userDecisions. Mirrors apps/python
+ * `schemas.preprocess.SplitStatsFold` field for field. */
+const PythonSplitStatsFoldSchema = z.object({
+  cut_timestamp: z.string(),
+  train_rows: z.number().int().nonnegative(),
+  test_rows: z.number().int().nonnegative(),
+  distinct: z.number().int().nonnegative(),
+});
+
 export const PythonSplitStatsSchema = z.object({
   source_key: z.string(),
   target_y: z.string(),
-  split_ratio: z.number(),
+  /** Present only in ratio mode — null in n_splits (CV) mode, where there
+   * is no single cut. MODEL-FLOW-016-T09 widens every field below to
+   * nullable for the same reason. */
+  split_ratio: z.number().nullable(),
   /** The resolved cut, ECHOED back — the client never derives it. The
    * FIRST TEST ROW's timestamp (train = strictly before, test = at or
    * after), matching `train.py::chronological_split`'s own convention. */
-  cut_timestamp: z.string(),
-  train_labelled_rows: z.number().int().nonnegative(),
-  test_labelled_rows: z.number().int().nonnegative(),
+  cut_timestamp: z.string().nullable(),
+  train_labelled_rows: z.number().int().nonnegative().nullable(),
+  test_labelled_rows: z.number().int().nonnegative().nullable(),
   source_rows: z.number().int().nonnegative(),
-  train: PythonSplitStatsSideSchema,
-  test: PythonSplitStatsSideSchema,
+  train: PythonSplitStatsSideSchema.nullable(),
+  test: PythonSplitStatsSideSchema.nullable(),
+  /** MODEL-FLOW-016-T02. ALWAYS present, in both modes — see
+   * `build_split_stats`'s own docstring for why: the wizard needs these
+   * before the user ever opens CV mode, to disable-with-reason at config
+   * time rather than after a round trip. */
+  distinct_labelled_values: z.number().int().nonnegative(),
+  max_admissible_k: z.number().int().nonnegative(),
+  /** Present only in n_splits (CV) mode — echoes the request, same as
+   * split_ratio does for ratio mode. */
+  n_splits: z.number().int().nullable(),
+  folds: z.array(PythonSplitStatsFoldSchema).nullable(),
 });
 
 const PythonScatterPointSchema = z.object({

@@ -6,7 +6,9 @@ import {
   AlertTriangle,
   CheckCircle2,
   GitCompareArrows,
+  Loader2,
   Pencil,
+  PlayCircle,
   RotateCw,
   SlidersHorizontal,
 } from 'lucide-react'
@@ -35,9 +37,13 @@ import {
   ALGORITHM_LABELS,
   type Algorithm,
 } from '@/store/model-pipeline'
-import { useDraftRunEvaluation } from '@/hooks/model/use-draft-run-evaluation'
+import {
+  useDraftRunEvaluation,
+  cvScoringPhaseOf,
+} from '@/hooks/model/use-draft-run-evaluation'
 import { ChartZoomControls } from '@/components/charts/chart-zoom-controls'
 import { residualHistogram, qqPoints } from '@/lib/model-evaluation'
+import type { RunCvFolds } from '@/services/model-draft'
 import { StatTile } from '../stat-tile'
 import { ActualVsPredictedChart } from './evaluation/actual-vs-predicted-chart'
 import { ResidualChart } from './evaluation/residual-chart'
@@ -70,6 +76,80 @@ function EmptyPanel({ children }: { children: React.ReactNode }) {
 }
 
 /**
+ * MODEL-FLOW-016-T11. The REAL per-fold table — post-training r2/rmse/mae
+ * beside each fold's own row counts, distinct from T10's `CvFoldPlan`
+ * (Step 3's pre-training `/split-stats` plan; same row counts, no metrics
+ * yet, because training had not run). Available as soon as `cvFoldsKey` is
+ * set — training writes `cv_folds.json` before scoring exists as a
+ * concept — so this renders in the awaiting-scoring/scoring state too, not
+ * only once the model is scored: it is how a reader spots the fold that
+ * looks worst, which is the whole reason to still trust (or not) the
+ * configuration while its refit is waiting to be scored.
+ */
+function CvFoldTable({ cvFolds }: { cvFolds: RunCvFolds }) {
+  return (
+    <section className="space-y-3 rounded-xl border border-border/60 p-4">
+      <div className="space-y-1">
+        <h3 className="text-sm font-medium text-foreground">
+          Per-fold configuration metrics
+        </h3>
+        <p className="text-xs text-muted-foreground">
+          {cvFolds.n_splits} expanding fold{cvFolds.n_splits === 1 ? '' : 's'} —
+          the configuration&apos;s own numbers, never the shipped model&apos;s
+          score above. A fold far worse than its neighbours is a real finding,
+          not noise.
+        </p>
+      </div>
+      <div className="overflow-x-auto rounded-lg border border-border">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b border-border bg-muted/40 text-left text-muted-foreground">
+              <th className="px-3 py-2 font-medium">Fold</th>
+              <th className="px-3 py-2 font-medium">Cut</th>
+              <th className="px-3 py-2 font-medium text-right">Train rows</th>
+              <th className="px-3 py-2 font-medium text-right">Test rows</th>
+              <th className="px-3 py-2 font-medium text-right">R²</th>
+              <th className="px-3 py-2 font-medium text-right">RMSE</th>
+              <th className="px-3 py-2 font-medium text-right">MAE</th>
+            </tr>
+          </thead>
+          <tbody>
+            {cvFolds.folds.map(fold => (
+              <tr
+                key={fold.fold}
+                className={fold.fold > 1 ? 'border-t border-border' : undefined}
+              >
+                <td className="px-3 py-2 font-medium text-foreground">
+                  {fold.fold}
+                </td>
+                <td className="px-3 py-2 text-muted-foreground">
+                  {new Date(fold.cut_timestamp).toLocaleString()}
+                </td>
+                <td className="px-3 py-2 text-right font-mono tabular-nums">
+                  {fold.train_rows.toLocaleString()}
+                </td>
+                <td className="px-3 py-2 text-right font-mono tabular-nums">
+                  {fold.test_rows.toLocaleString()}
+                </td>
+                <td className="px-3 py-2 text-right font-mono tabular-nums">
+                  {fold.r2.toFixed(3)}
+                </td>
+                <td className="px-3 py-2 text-right font-mono tabular-nums">
+                  {fold.rmse.toFixed(3)}
+                </td>
+                <td className="px-3 py-2 text-right font-mono tabular-nums">
+                  {fold.mae.toFixed(3)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  )
+}
+
+/**
  * MODEL-FLOW-004. Reads the Model Draft's own training run — no persistent
  * Model record, no client-side fit. `r2`/`rmse` come from the run's own
  * metrics.json; the per-sample actual/predicted series and residual SD are
@@ -82,10 +162,24 @@ export function Phase5Evaluation({ nav }: Props) {
   const serverDraftId = useAtomValue(mpServerDraftIdAtom)
   const trainingResult = useAtomValue(mpTrainingResultAtom)
 
-  const { run, fit, manifest, loading, error } = useDraftRunEvaluation(
-    serverDraftId,
-    trainingResult?.runId ?? null,
-  )
+  const { run, fit, manifest, loading, error, triggerScoring } =
+    useDraftRunEvaluation(serverDraftId, trainingResult?.runId ?? null)
+  const cvPhase = cvScoringPhaseOf(run)
+  const [scoringError, setScoringError] = useState<string | null>(null)
+  const [triggering, setTriggering] = useState(false)
+  const handleTriggerScoring = async () => {
+    setTriggering(true)
+    setScoringError(null)
+    try {
+      await triggerScoring()
+    } catch (err) {
+      setScoringError(
+        err instanceof Error ? err.message : 'Could not start scoring.',
+      )
+    } finally {
+      setTriggering(false)
+    }
+  }
 
   // Chart rows: one per timestamp, carrying the ±1/±2/±3 SD bands (true
   // residual SD). No compared series — MODEL-FLOW-007 has not landed, so no
@@ -179,6 +273,53 @@ export function Phase5Evaluation({ nav }: Props) {
     )
   }
 
+  // MODEL-FLOW-016-T11. A CV run's training success and its refit's OWN
+  // holdout score are two different questions — the fold metrics in
+  // cv_folds.json describe the CONFIGURATION (see Step 4), not this
+  // shipped model. This branch must come before the generic
+  // "still running" one below: a SUCCEEDED CV run with no `fit` yet is not
+  // running, it is honestly awaiting a scoring phase the user triggers.
+  if (
+    run.status === 'SUCCEEDED' &&
+    (cvPhase === 'awaiting-scoring' || cvPhase === 'scoring')
+  ) {
+    return (
+      <div className="space-y-4">
+        <EmptyPanel>
+          {cvPhase === 'scoring' ? (
+            <span className="flex items-center justify-center gap-2">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Scoring against the holdout — this refits nothing, it only scores
+              the model already trained.
+            </span>
+          ) : (
+            <>
+              Cross-validation trained {run.algorithm} on {run.targetY}. The
+              fold metrics (Step 4) describe the configuration — the shipped
+              model has no score of its own until it is scored against the
+              dataset&apos;s validation holdout.
+            </>
+          )}
+        </EmptyPanel>
+        {scoringError && <p className="text-xs text-red-500">{scoringError}</p>}
+        {run.cvFolds && <CvFoldTable cvFolds={run.cvFolds} />}
+        <div className="flex flex-wrap items-center gap-2 border-t border-border/60 pt-4">
+          <Button
+            onClick={() => void handleTriggerScoring()}
+            disabled={cvPhase === 'scoring' || triggering}
+          >
+            <PlayCircle className="h-4 w-4" />
+            {cvPhase === 'scoring' ? 'Scoring…' : 'Score against holdout'}
+          </Button>
+          <Button variant="outline" onClick={() => nav.goTo(3)}>
+            <RotateCw className="h-4 w-4" />
+            Retrain
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
   if (run.status !== 'SUCCEEDED' || !fit) {
     const terminal = run.status === 'FAILED' || run.status === 'CANCELED'
     return (
@@ -205,17 +346,39 @@ export function Phase5Evaluation({ nav }: Props) {
 
   return (
     <div className="space-y-5">
-      {/* Success banner — the run's own record, not a client-side count. */}
+      {/* Success banner — the run's own record, not a client-side count.
+          A scored CV run's `fit.n` counts HOLDOUT rows, not a test split —
+          say so, never "test sample", so this isn't misread as the split
+          this run never had (three numbers, three meanings, never merged). */}
       <div className="flex items-center gap-3 rounded-xl bg-emerald-500/10 px-4 py-3 ring-1 ring-emerald-500/20">
         <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-500" />
         <div>
           <p className="text-sm font-semibold text-emerald-600 dark:text-emerald-400">
-            Training complete
+            {cvPhase === 'scored'
+              ? 'Holdout scoring complete'
+              : 'Training complete'}
           </p>
           <p className="text-xs text-muted-foreground">
-            {algorithmLabel} on {run.targetY} · {fit.n} test sample
-            {fit.n === 1 ? '' : 's'}
+            {algorithmLabel} on {run.targetY} ·{' '}
+            {cvPhase === 'scored'
+              ? `${fit.n} holdout sample${fit.n === 1 ? '' : 's'}`
+              : `${fit.n} test sample${fit.n === 1 ? '' : 's'}`}
           </p>
+          {/* DS-LAKE-018-T05: the holdout's own missing rate stated beside
+              every figure it backs — raw rows reach `predict()` unimputed,
+              so a reader must be able to tell how many were dropped before
+              trusting the numbers above. */}
+          {cvPhase === 'scored' &&
+            run.holdoutMetrics &&
+            (typeof run.holdoutMetrics.dropped_unlabelled === 'number' ||
+              typeof run.holdoutMetrics.dropped_bad_features === 'number') && (
+              <p className="text-[11px] text-muted-foreground">
+                Dropped {String(run.holdoutMetrics.dropped_unlabelled ?? 0)}{' '}
+                unlabelled,{' '}
+                {String(run.holdoutMetrics.dropped_bad_features ?? 0)} with bad
+                features from the raw holdout before scoring.
+              </p>
+            )}
         </div>
       </div>
 
@@ -355,16 +518,22 @@ export function Phase5Evaluation({ nav }: Props) {
             />
           </section>
 
-          {/* Distribution + normality over the run's TEST split — not the
-              validation holdout, which is a separate object with its own
-              (currently null) metrics; see Step 2's Holdout panel for that. */}
+          {/* Distribution + normality over the run's TEST split for an
+              ordinary run — MODEL-FLOW-016-T11: for a scored CV run, `fit`
+              is instead the raw validation holdout no fit ever saw, so the
+              heading/copy below say so rather than naming a test split this
+              run never had. */}
           <section className="space-y-3 rounded-xl border border-border/60 p-4">
             <div className="space-y-1">
               <h3 className="text-sm font-medium text-foreground">
-                Test-split residual diagnostics
+                {cvPhase === 'scored'
+                  ? 'Holdout residual diagnostics'
+                  : 'Test-split residual diagnostics'}
               </h3>
               <p className="text-xs text-muted-foreground">
-                Residuals from the run&apos;s held-out test rows should be
+                {cvPhase === 'scored'
+                  ? "Residuals from the model's validation holdout should be"
+                  : "Residuals from the run's held-out test rows should be"}{' '}
                 centred on 0 and roughly normal — a symmetric histogram and
                 points hugging the Q-Q diagonal indicate an unbiased,
                 well-behaved fit.
@@ -386,6 +555,10 @@ export function Phase5Evaluation({ nav }: Props) {
             </div>
           </section>
         </div>
+      )}
+
+      {cvPhase === 'scored' && run.cvFolds && (
+        <CvFoldTable cvFolds={run.cvFolds} />
       )}
 
       {/* Actions */}

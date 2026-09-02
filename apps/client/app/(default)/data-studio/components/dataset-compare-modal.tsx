@@ -2162,7 +2162,7 @@ export function DatasetCompareModal({
                 </div>
               </div>
 
-              {correlationComparison.deltas.length > 0 && (
+              {/* {correlationComparison.deltas.length > 0 && (
                 <div className="space-y-1.5 rounded-lg border border-border p-3">
                   <p className="text-xs font-semibold text-foreground">
                     Δr — train vs. validation
@@ -2188,7 +2188,7 @@ export function DatasetCompareModal({
                     </div>
                   ))}
                 </div>
-              )}
+              )} */}
               {(correlationComparison.onlyTrainTags.length > 0 ||
                 correlationComparison.onlyValidationTags.length > 0) && (
                 <p className="text-[11px] text-muted-foreground">

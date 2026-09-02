@@ -28,8 +28,10 @@ from intergrations.object_store import (
     COLUMN_STATS_FILENAME,
     FEATURE_SPEC_FILENAME,
     MANIFEST_FILENAME,
+    CV_FOLDS_FILENAME,
     TIMESTAMP_COLUMN,
     VALIDATE_DATA_FILENAME,
+    VALIDATE_READY_FILENAME,
     VALIDATION_REPORT_FILENAME,
     ArtifactStats,
     ObjectStore,
@@ -104,6 +106,8 @@ _ALLOWED_RUN_UPLOADS = frozenset(
         RUN_MANIFEST_FILENAME,
         PREDICTIONS_FILENAME,
         LOSS_HISTORY_FILENAME,
+        # MODEL-FLOW-016-T04. Per-fold CV metrics — present only on a CV run.
+        CV_FOLDS_FILENAME,
     }
 )
 
@@ -1545,22 +1549,68 @@ def get_run_loss_history(store: ObjectStore, body) -> dict[str, Any]:
     }
 
 
+def get_run_cv_folds(store: ObjectStore, body) -> dict[str, Any]:
+    """A training run's `cv_folds.json`, read and shape-checked —
+    MODEL-FLOW-016-T04/T11.
+
+    Same discipline as `get_run_loss_history`: `cv_folds.json` is already
+    exactly the response shape (`images/trainer/train.py` writes it that
+    way on purpose), so this is a read-and-validate, not a parse-and-reshape
+    like `run_predictions`. Guarded the same structural way.
+    """
+    key = body.source_key
+    if key.rsplit("/", 1)[-1] != CV_FOLDS_FILENAME:
+        raise ValueError(f"'{key}' does not name {CV_FOLDS_FILENAME}.")
+    if not (is_draft_run_key(key) or is_model_run_key(key)):
+        raise ValueError(
+            f"'{key}' is not a well-formed training-run output key. Only "
+            "drafts/{draftId}/runs/{runId}/... or "
+            "models/{modelId}/runs/{runId}/... can be read here."
+        )
+
+    data = store.get_json(key)
+    if (
+        not isinstance(data, dict)
+        or not isinstance(data.get("algorithm"), str)
+        or not isinstance(data.get("n_splits"), int)
+        or not isinstance(data.get("folds"), list)
+    ):
+        raise ValueError(f"'{key}' is not a well-formed cv_folds.json.")
+
+    return {
+        "algorithm": data["algorithm"],
+        "n_splits": data["n_splits"],
+        "folds": data["folds"],
+    }
+
+
 def get_run_manifest(store: ObjectStore, body) -> dict[str, Any]:
-    """A training run's `run_manifest.json`, read for `framework_versions` only
-    — MODEL-FLOW-007-T11.
+    """A training run's `run_manifest.json`, read for `framework_versions` and
+    `model_sha256` — MODEL-FLOW-007-T11 / MODEL-SERVE-001-T01.
 
     Every other manifest field (gold_object_key, artifact_checksum, target_y,
-    algorithm, hyperparameters, seed, split, metrics, holdout_metrics,
-    model_sha256) is already a column on `ModelTrainingRun`, written by
-    `complete()` — returning them again here would be a second, driftable copy
-    of facts the row already owns. `framework_versions` is the one field
-    `images/trainer/train.py` writes that has no column, added in the same
-    trainer pass as this endpoint.
+    algorithm, hyperparameters, seed, split, metrics, holdout_metrics) is
+    already a column on `ModelTrainingRun`, written by `complete()` —
+    returning them again here would be a second, driftable copy of facts the
+    row already owns. `framework_versions` and `model_sha256` are the two
+    fields `images/trainer/train.py` writes that have no column.
+
+    CORRECTED 2026-09-01 (MODEL-SERVE-001-T01): `model_sha256` was previously
+    listed above as "already a column" — it is not (verified against
+    `schema.prisma`: no model.joblib checksum field exists on
+    `ModelTrainingRun`). `ModelVersion.modelChecksum` reads it from here.
+
+    CORRECTED 2026-09-01 (MODEL-FLOW-016-T07): `feature_columns` is ALSO not
+    already a column, for the same reason — verified against `schema.prisma`
+    directly. The holdout-scoring phase is the first caller that needs it:
+    `model.predict` requires the SAME columns, in the SAME order, the model
+    was trained on, and nothing else records that order.
 
     Guarded the same structural way `get_run_loss_history` guards its own key.
-    Absent for any run trained before that trainer version — returned as
-    `None`, not an error, so Save Model can still save an older run's result
-    with an honestly incomplete provenance record rather than refusing it.
+    Any of the three fields is absent for a run trained before the trainer
+    version that added it — returned as `None`, not an error, so a caller can
+    still read an older run's result with an honestly incomplete provenance
+    record rather than being refused outright.
     """
     key = body.source_key
     if key.rsplit("/", 1)[-1] != RUN_MANIFEST_FILENAME:
@@ -1585,4 +1635,123 @@ def get_run_manifest(store: ObjectStore, body) -> dict[str, Any]:
             "string-to-string mapping)."
         )
 
-    return {"framework_versions": versions}
+    model_sha256 = data.get("model_sha256") if isinstance(data, dict) else None
+    if model_sha256 is not None and not isinstance(model_sha256, str):
+        raise ValueError(f"'{key}' has a malformed model_sha256 (expected a string).")
+
+    feature_columns = data.get("feature_columns") if isinstance(data, dict) else None
+    if feature_columns is not None and (
+        not isinstance(feature_columns, list)
+        or not all(isinstance(c, str) for c in feature_columns)
+    ):
+        raise ValueError(
+            f"'{key}' has a malformed feature_columns (expected a list of strings)."
+        )
+
+    return {
+        "framework_versions": versions,
+        "model_sha256": model_sha256,
+        "feature_columns": feature_columns,
+    }
+
+
+def verify_model_object(store: ObjectStore, body) -> dict[str, Any]:
+    """MODEL-SERVE-001-T05. Existence + checksum for one training-run
+    `model.joblib`, checked live against object storage before a promote or
+    rollback is allowed to flip a `ModelVersion`'s stage.
+
+    Guarded the same structural way `run_predictions`/`get_run_manifest`
+    guard their own keys — both `drafts/{draftId}/runs/{runId}/` and
+    `models/{modelId}/runs/{runId}/` are accepted, since an adopted run's
+    objects stay under `drafts/` permanently (Save Model adopts by pointer,
+    never copies bytes).
+
+    Deliberately NOT `/artifacts/presign`: that endpoint hard-refuses
+    anything that is not `is_committed_artifact_key` (a committed dataset
+    artifact's data.parquet), and model.joblib is a different object with a
+    different owner entirely.
+    """
+    key = body.source_key
+    if key.rsplit("/", 1)[-1] != MODEL_FILENAME:
+        raise ValueError(f"'{key}' does not name {MODEL_FILENAME}.")
+    if not (is_draft_run_key(key) or is_model_run_key(key)):
+        raise ValueError(
+            f"'{key}' is not a well-formed training-run output key. Only "
+            "drafts/{draftId}/runs/{runId}/... or "
+            "models/{modelId}/runs/{runId}/... can be verified here."
+        )
+
+    if not store.exists(key):
+        return {"exists": False, "checksum": None}
+    return {"exists": True, "checksum": store.checksum_of(key)}
+
+
+#: MODEL-FLOW-016-T07. Extended beyond T08's original single-filename check:
+#: the holdout-scoring container needs BOTH a presigned model.joblib (to
+#: unpickle) and validate_ready.parquet (to score against). Only these two —
+#: still never the full run-scoped surface `run_predictions`/
+#: `get_run_manifest` each expose for their OWN one filename.
+_ALLOWED_RUN_OBJECT_PRESIGNS = frozenset({VALIDATE_READY_FILENAME, MODEL_FILENAME})
+
+
+def presign_run_object(store: ObjectStore, body) -> dict[str, Any]:
+    """MODEL-FLOW-016-T08/T07. Presigns a training-run-scoped object for
+    READING — `validate_ready.parquet` (the model-ready holdout
+    `prepare_holdout_for_run`/`replay_holdout_for_run` writes under a run's
+    own prefix, `tryReplayHoldout` in model-run.authorized.service.ts) or
+    `model.joblib` (the holdout-scoring container's own claim step, T07).
+
+    FIXES A LIVE DEFECT, not a latent one (T08's original finding):
+    `claim()` used to call `/artifacts/presign` for the holdout key, and
+    `presign_artifact` below hard-refuses anything that is not
+    `is_committed_artifact_key` — true of every committed DATASET artifact,
+    false of every run-scoped object. That refusal fired on every run whose
+    dataset actually had a holdout (confirmed live, 2026-09-01:
+    `validate_ready.parquet` already exists in object storage for every
+    affected run — the WRITE succeeded; only this READ was ever refused), so
+    `holdoutMetrics` had been null on 100% of runs for a reason unrelated to
+    whether a holdout existed at all.
+
+    Guarded the same structural way `verify_model_object`/`run_predictions`
+    guard their own run-scoped keys — never widen `is_committed_artifact_key`
+    itself, which is shared by every committed-dataset-artifact path in this
+    service and must keep refusing a run-scoped key.
+
+    `row_count` is `None` for `model.joblib` — `get_frame_metadata` is a
+    PARQUET reader and would raise on a pickled estimator; only
+    `validate_ready.parquet` gets a real row count. Otherwise the response
+    shape matches `presign_artifact`'s (`data_url`/`checksum`, plus an
+    always-empty `sidecar_urls` — a run-scoped object has none) so `claim()`'s
+    caller can go on constructing `holdoutDataUrl`/`holdoutArtifactChecksum`/
+    `holdoutRowCount` exactly as it did when this read went through
+    `/artifacts/presign`.
+    """
+    key = body.source_key
+    filename = key.rsplit("/", 1)[-1]
+    if filename not in _ALLOWED_RUN_OBJECT_PRESIGNS:
+        raise ValueError(
+            f"'{key}' does not name one of {sorted(_ALLOWED_RUN_OBJECT_PRESIGNS)}."
+        )
+    if not (is_draft_run_key(key) or is_model_run_key(key)):
+        raise ValueError(
+            f"'{key}' is not a well-formed training-run output key. Only "
+            "drafts/{draftId}/runs/{runId}/... or "
+            "models/{modelId}/runs/{runId}/... can be presigned here."
+        )
+
+    data_url = store.presigned_get(key)
+    row_count = (
+        store.get_frame_metadata(key)["row_count"]
+        if filename == VALIDATE_READY_FILENAME
+        else None
+    )
+
+    return {
+        "data_url": data_url,
+        "sidecar_urls": {},
+        "checksum": store.checksum_of(key),
+        "row_count": row_count,
+        "expires_at": (
+            datetime.now(timezone.utc) + store.PRESIGN_READ_TTL
+        ).isoformat(),
+    }

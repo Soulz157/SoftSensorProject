@@ -321,6 +321,65 @@ class ModelRunPredictionsResponse(BaseModel):
     target_scaled: bool | None = None
 
 
+class ModelObjectVerifyRequest(BaseModel):
+    """MODEL-SERVE-001-T05. Existence + checksum check for ONE training-run
+    output object, called by promote/rollback BEFORE flipping a
+    `ModelVersion`'s stage. Deliberately separate from `/artifacts/presign`:
+    that endpoint is hard-restricted to committed artifact `data.parquet`
+    keys (`is_committed_artifact_key`), and `model.joblib` is not one —
+    conflating the two guards would let a promote check accept a key it
+    should refuse, or a presign accept one it should not.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    source_key: str = Field(
+        ..., description="The run's model.joblib key."
+    )
+
+
+class ModelObjectVerifyResponse(BaseModel):
+    exists: bool
+    #: Recomputed from the object's own bytes, same discipline
+    #: `ArtifactPresignResponse.checksum` uses — null when `exists` is
+    #: false, since there is nothing to hash.
+    checksum: str | None = None
+
+
+class RunObjectPresignRequest(BaseModel):
+    """MODEL-FLOW-016-T08/T07. Presigns a training-run-scoped object for
+    READING — `validate_ready.parquet` (the model-ready holdout
+    `tryReplayHoldout`, model-run.authorized.service.ts, writes under a
+    run's own prefix) or `model.joblib` (the holdout-scoring container's own
+    claim step, T07). Deliberately separate from `/artifacts/presign`: that
+    endpoint is hard-restricted to `is_committed_artifact_key` (a committed
+    DATASET artifact's data.parquet), which a run-scoped object under
+    drafts/{draftId}/runs/{runId}/ or models/{modelId}/runs/{runId}/ is not
+    — the exact refusal `presign_run_object`'s own docstring records as
+    having silently swallowed every holdout score in this system to date.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    source_key: str = Field(
+        ..., description="The run's validate_ready.parquet or model.joblib key."
+    )
+
+
+class RunObjectPresignResponse(BaseModel):
+    data_url: str
+    #: Always empty — a run-scoped object has no sidecars. Kept in the
+    #: response only so its shape matches `ArtifactPresignResponse` and the
+    #: TypeScript caller can reuse that same parsed type without a second
+    #: zod schema.
+    sidecar_urls: dict[str, str | None]
+    checksum: str
+    #: None for model.joblib — a pickled estimator has no row count.
+    #: Real only for validate_ready.parquet.
+    row_count: int | None
+    expires_at: str
+
+
 class RunLossHistoryRequest(BaseModel):
     """MODEL-FLOW-013-T05/T07. Reads a training run's `loss_history.json`
     verbatim — it is already the exact shape the client renders (see
@@ -347,14 +406,56 @@ class RunLossHistoryResponse(BaseModel):
     series: dict[str, list[float]]
 
 
+class RunCvFoldsRequest(BaseModel):
+    """MODEL-FLOW-016-T11. Reads a training run's `cv_folds.json` verbatim —
+    already exactly the response shape (`images/trainer/train.py` writes it
+    that way on purpose, MODEL-FLOW-016-T04) — a read-and-validate, not a
+    parse-and-reshape, same discipline as `RunLossHistoryRequest`.
+
+    `source_key` is guarded the same structural way `run_predictions` and
+    `RunLossHistoryRequest` guard their own.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    source_key: str = Field(..., description="The run's cv_folds.json key.")
+
+
+class CvFoldRecord(BaseModel):
+    fold: int
+    cut_timestamp: str
+    train_rows: int
+    test_rows: int
+    distinct: int
+    r2: float
+    rmse: float
+    mae: float
+    train_r2: float
+    train_rmse: float
+    train_mae: float
+
+
+class RunCvFoldsResponse(BaseModel):
+    algorithm: str
+    n_splits: int
+    folds: list[CvFoldRecord]
+
+
 class RunManifestRequest(BaseModel):
-    """MODEL-FLOW-007-T11. Reads a training run's `run_manifest.json` for the
-    one field Save Model needs that is not already a column on
-    `ModelTrainingRun` — everything else the manifest carries (gold_object_key,
-    artifact_checksum, target_y, algorithm, hyperparameters, seed, split,
-    metrics, holdout_metrics, model_sha256) is already recorded there via
-    `complete()`'s own write, so duplicating it here would be a second, driftable
-    copy of the same facts.
+    """MODEL-FLOW-007-T11 / MODEL-SERVE-001-T01. Reads a training run's
+    `run_manifest.json` for the fields Save Model / ModelVersion creation
+    need that are NOT already a column on `ModelTrainingRun` —
+    gold_object_key, artifact_checksum, target_y, algorithm, hyperparameters,
+    seed, split and metrics ARE already recorded there via `complete()`'s own
+    write, so duplicating those here would be a second, driftable copy of
+    the same facts.
+
+    CORRECTED 2026-09-01 (MODEL-SERVE-001-T01): this docstring previously
+    listed `model_sha256` alongside those already-a-column fields. It is
+    not one — verified against `schema.prisma`: `ModelTrainingRun` has
+    `artifactChecksum` (data.parquet) and `tokenHash` (the run token), no
+    model.joblib checksum column at all. `model_sha256` is read from the
+    manifest here, same as `framework_versions` always was.
 
     `source_key` is guarded the same structural way `RunLossHistoryRequest`
     guards its own — NestJS already resolved which run's manifest this is off
@@ -373,6 +474,15 @@ class RunManifestResponse(BaseModel):
     #: run through it regardless of the final estimator); lightgbm/xgboost
     #: are present only when that algorithm trained.
     framework_versions: dict[str, str] | None = None
+    #: MODEL-SERVE-001-T01. sha256 of model.joblib, computed by the trainer
+    #: at fit time. Null for a run trained before the manifest recorded it —
+    #: `ModelVersion.modelChecksum` inherits the same honest-legacy-null
+    #: policy `framework_versions` already established above.
+    model_sha256: str | None = None
+    #: MODEL-FLOW-016-T07. The exact columns, in the exact order, model.
+    #: predict expects — no DB column carries this. Null for a run trained
+    #: before this field was added, same honest-legacy-null policy.
+    feature_columns: list[str] | None = None
 
 
 class ValidationCheckResponse(BaseModel):
@@ -1373,8 +1483,20 @@ class SplitStatsRequest(BaseModel):
     target_y: str
     #: A FRACTION, never a percentage — same convention `CreateTrainingRunSchema
     #: .trainTestSplit` and `ModelDraft.splitRatio` already use. Bounds match
-    #: the launch path the wizard actually calls.
-    split_ratio: float = Field(..., ge=0.5, le=0.95)
+    #: the launch path the wizard actually calls. MODEL-FLOW-016-T02/T09:
+    #: EXACTLY ONE of `split_ratio` / `n_splits` — enforced below, the same
+    #: "never both, never neither" shape `ModelRunUploadPresignRequest`'s own
+    #: model_id/draft_id pair uses. A single chronological cut and a k-fold
+    #: expanding-window plan are different questions with different
+    #: response shapes; this endpoint answers exactly one per call.
+    split_ratio: float | None = Field(None, ge=0.5, le=0.95)
+    #: MODEL-FLOW-016-T09. When set, the response carries a k-fold expanding
+    #: fold plan instead of a single cut's box statistics. Bounds match
+    #: MODEL-FLOW-016-T10's control (3-10 in the wizard); 2 is admitted here
+    #: since the service-level floor is `max_admissible_k`, not the UI's own
+    #: default — a caller other than the wizard should not be blocked at 3
+    #: by a bound this endpoint does not itself require.
+    n_splits: int | None = Field(None, ge=2, le=10)
     sample_rows: int = Field(
         DEFAULT_SAMPLE_ROWS,
         ge=1,
@@ -1384,10 +1506,21 @@ class SplitStatsRequest(BaseModel):
             "statistics against. Bounds the DISPLAY sample only — the cut "
             "itself is always derived from the full labelled frame "
             "(MODEL-FLOW-014 finding: sample_rows must never determine the "
-            "cut)."
+            "cut). Unused in n_splits mode, which returns no box statistics "
+            "at all (MODEL-FLOW-016-T09)."
         ),
     )
     outlier_cap: int = Field(DEFAULT_BOXPLOT_OUTLIER_CAP, ge=1, le=500)
+
+    @model_validator(mode="after")
+    def _exactly_one_of_ratio_or_splits(self) -> "SplitStatsRequest":
+        if (self.split_ratio is None) == (self.n_splits is None):
+            raise ValueError(
+                "Exactly one of split_ratio or n_splits is required — a "
+                "single chronological cut and a k-fold expanding plan are "
+                "different questions with different response shapes."
+            )
+        return self
 
 
 class SplitStatsSide(BaseModel):
@@ -1400,23 +1533,54 @@ class SplitStatsSide(BaseModel):
     insufficient_tags: list[str]
 
 
+class SplitStatsFold(BaseModel):
+    """MODEL-FLOW-016-T09. One expanding-window fold's plan — no box
+    statistics (per this feature's own userDecisions: a CV run itself
+    writes no predictions.parquet, and a per-fold box-plot pair for every
+    selected tag would be k times this endpoint's existing payload for a
+    number the UI does not currently show). Just enough for T11's per-fold
+    table: the cut, both row counts (an expanding window's fold 1 trains on
+    a fraction of what fold k does — invisible without this), and the
+    fold's own distinct labelled count (T02's effective-sample-size figure,
+    per fold rather than only in aggregate).
+    """
+
+    cut_timestamp: str
+    train_rows: int
+    test_rows: int
+    distinct: int
+
+
 class SplitStatsResponse(BaseModel):
     source_key: str
     target_y: str
-    split_ratio: float
+    #: Present only in ratio mode — None in n_splits mode, where there is no
+    #: single cut. MODEL-FLOW-016-T09 widens every field below split_ratio
+    #: to optional for the same reason.
+    split_ratio: float | None = None
     #: The cut ECHOED back — the client cannot infer which boundary it got,
     #: the same reason `/correlation` echoes its resolved tag list. This is
     #: the FIRST TEST ROW's timestamp (train = strictly before, test = at or
     #: after), matching `train.py::chronological_split`'s own convention.
-    cut_timestamp: str
-    train_labelled_rows: int
-    test_labelled_rows: int
+    cut_timestamp: str | None = None
+    train_labelled_rows: int | None = None
+    test_labelled_rows: int | None = None
     #: The pre-mask row count, kept alongside so sparsity is visible in the
     #: record rather than only inferable — same reasoning
     #: `train.py`'s own `split_spec["source_rows"]` states for itself.
     source_rows: int
-    train: SplitStatsSide
-    test: SplitStatsSide
+    train: SplitStatsSide | None = None
+    test: SplitStatsSide | None = None
+    #: MODEL-FLOW-016-T02. ALWAYS present, in both modes — see
+    #: `build_split_stats`'s own docstring for why: the wizard needs these
+    #: before the user ever opens CV mode, to disable-with-reason at config
+    #: time rather than after a round trip.
+    distinct_labelled_values: int
+    max_admissible_k: int
+    #: Present only in n_splits mode — echoes the request the same way
+    #: split_ratio does for ratio mode.
+    n_splits: int | None = None
+    folds: list[SplitStatsFold] | None = None
 
 
 #: Grid/hex-binning decimation cap for the plotted point cloud — see

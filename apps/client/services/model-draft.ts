@@ -167,6 +167,32 @@ export interface ModelTrainingRunLog {
  * encode it further (a single loose interface, matching this file's
  * existing convention, rather than a true discriminated union).
  */
+/** MODEL-FLOW-016-T04/T11. `cv_folds.json` verbatim — snake_case, matching
+ *  every other python-passthrough JSON blob this file leaves unmapped
+ *  (`metrics`, `holdoutMetrics`) rather than the wire-shape/camelCase
+ *  split `RunPredictions` uses. `train_r2`/`train_rmse`/`train_mae` sit
+ *  beside each fold's own `r2`/`rmse`/`mae` so overfitting is visible
+ *  fold-by-fold, not just in the aggregate mean±std on `metrics`. */
+export interface CvFoldRecord {
+  fold: number
+  cut_timestamp: string
+  train_rows: number
+  test_rows: number
+  distinct: number
+  r2: number
+  rmse: number
+  mae: number
+  train_r2: number
+  train_rmse: number
+  train_mae: number
+}
+
+export interface RunCvFolds {
+  algorithm: string
+  n_splits: number
+  folds: CvFoldRecord[]
+}
+
 export interface ModelRunSplitSpec {
   method: 'chronological' | 'chronological_windowed'
   ratio: number
@@ -205,6 +231,29 @@ export interface ModelTrainingRun {
    *  extract a real loss trajectory from — mode A/B render selection reads
    *  this, never the algorithm name. */
   lossHistoryKey: string | null
+  /** MODEL-FLOW-016-T04/T05a. Set only by `complete()` for a Cross-
+   *  Validation run — the durable, typed signal for CV render mode (never
+   *  `splitSpec.method`, never the algorithm name). Null on an ordinary
+   *  run, which already scores its holdout inline during training. */
+  cvFoldsKey: string | null
+  /** MODEL-FLOW-016-T06/T07. Null pre-scoring on a CV run (there is no
+   *  test-split predictions file for CV — see `use-draft-run-evaluation`'s
+   *  CV branch); set once the separate scoring phase completes. An
+   *  ordinary (non-CV) run has this set at training `complete()` time,
+   *  same as before this feature. */
+  predictionsKey: string | null
+  /** MODEL-FLOW-016-T07. Non-null only while a scoring container is
+   *  in flight for this run — its ONLY purpose is letting the UI poll
+   *  "scoring is currently running" (mirrors `containerId` for training). */
+  scoringContainerId: string | null
+  /** MODEL-FLOW-016-T11. Attached by `getDraftRunService` (never a second
+   *  endpoint — mirrors the `lossHistory` precedent) when `cvFoldsKey` is
+   *  set; `undefined` on a list-endpoint row (`ModelTrainingRunListItem`
+   *  never attaches it), `null` on a `get()` row for a non-CV run OR when
+   *  the read itself soft-failed. Never conflate the two — a per-fold
+   *  table has nothing to show in either case, but only `null` after a
+   *  `get()` call means "this really is/was checked". */
+  cvFolds?: RunCvFolds | null
   candidateJobId: string | null
   createdAt: string
   startedAt: string | null
@@ -237,8 +286,13 @@ export interface CreateDraftRunInput {
     | 'lightgbm'
     | 'xgboost'
   hyperparameters?: Record<string, unknown>
-  /** A FRACTION (0.5-0.95), never a percentage — same boundary rule as PatchModelDraftInput.splitRatio. */
+  /** A FRACTION (0.5-0.95), never a percentage — same boundary rule as
+   * PatchModelDraftInput.splitRatio. Mutually exclusive with `nSplits` —
+   * matches CreateTrainingRunSchema's own .refine() server-side. */
   trainTestSplit?: number
+  /** MODEL-FLOW-016-T10. Present => Cross-Validation (2-10 expanding
+   * folds); absent => the ordinary chronological `trainTestSplit` above. */
+  nSplits?: number
   seed?: number
   /** MODEL-FLOW-014-T06. The Split Distribution panel's tag selection at
    * launch, so the frozen splitStats sidecar matches what was displayed. */
@@ -457,4 +511,15 @@ export const modelDraftRunService = {
     )
     return { ...res, data: toRunPredictions(res.data) }
   },
+
+  /** MODEL-FLOW-016-T07/T11. Triggers a CV run's separate holdout-scoring
+   *  phase (refused server-side for a non-CV run, or one already scoring —
+   *  see `triggerScoringService`'s own checks). Poll `get()` afterwards for
+   *  `scoringContainerId` (in flight) / `predictionsKey` + `holdoutMetrics`
+   *  (finished), same as training's own poll loop. */
+  score: (
+    draftId: string,
+    runId: string,
+  ): Promise<ApiResponse<{ runId: string; scoring: true }>> =>
+    fetchClient(`${oneRun(draftId, runId)}/score`, { method: 'POST' }),
 }

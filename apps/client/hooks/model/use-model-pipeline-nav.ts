@@ -24,6 +24,7 @@ import {
   mpLossFunctionAtom,
   mpTrainTestSplitAtom,
   mpSeedAtom,
+  mpNSplitsAtom,
   mpAutoRetrainAtom,
   mpRetrainWarnSdAtom,
   mpRetrainCriticalSdAtom,
@@ -51,6 +52,9 @@ export interface UsePipelineNavResult {
   /** MODEL-FLOW-014-T07. `undefined` means the user has not chosen one —
    * the server generates its own when omitted. */
   seed: number | undefined
+  /** MODEL-FLOW-016-T10. `undefined` means Cross-Validation is off — see
+   * `mpNSplitsAtom`'s own doc comment for the full contract. */
+  nSplits: number | undefined
   autoRetrain: boolean
   warnSd: number
   criticalSd: number
@@ -110,6 +114,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
   const [lossFunction, setLossFunctionAtom] = useAtom(mpLossFunctionAtom)
   const [trainTestSplit, setTrainTestSplitAtom] = useAtom(mpTrainTestSplitAtom)
   const [seed, setSeedAtom] = useAtom(mpSeedAtom)
+  const [nSplits, setNSplitsAtom] = useAtom(mpNSplitsAtom)
   const [autoRetrain, setAutoRetrainAtom] = useAtom(mpAutoRetrainAtom)
   const [warnSd, setWarnSdAtom] = useAtom(mpRetrainWarnSdAtom)
   const [criticalSd, setCriticalSdAtom] = useAtom(mpRetrainCriticalSdAtom)
@@ -265,6 +270,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     setLossFunctionAtom('mse')
     setTrainTestSplitAtom(80)
     setSeedAtom(undefined)
+    setNSplitsAtom(undefined)
     setTrainState({ status: 'idle', progress: 0 })
     setCreatedModelId('')
     setSelectedMetrics(['r2', 'rmse', 'sd'])
@@ -290,6 +296,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     setLossFunctionAtom,
     setTrainTestSplitAtom,
     setSeedAtom,
+    setNSplitsAtom,
     setTrainState,
     setCreatedModelId,
     setSelectedMetrics,
@@ -317,6 +324,7 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     lossFunction,
     trainTestSplit,
     seed,
+    nSplits,
     autoRetrain,
     warnSd,
     criticalSd,

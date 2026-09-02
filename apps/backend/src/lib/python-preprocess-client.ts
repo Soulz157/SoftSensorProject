@@ -84,6 +84,53 @@ export async function presignModelRunUpload(
   return PresignUploadSchema.parse(res);
 }
 
+/**
+ * MODEL-FLOW-016-T08/T07. `row_count` is `null` for anything that is not
+ * `validate_ready.parquet` — confirmed live 2026-09-01: `presign_run_object`
+ * (artifact_service.py) only computes it for that one filename, and returns
+ * `None` for `model.joblib` (T07's own widening of this endpoint). A SEPARATE
+ * schema from `PresignArtifactSchema`, not a shared one: that schema's
+ * `row_count` is a real, non-nullable guarantee for a committed dataset
+ * artifact (always a parquet file), and loosening it to nullable everywhere
+ * would weaken that guarantee for every OTHER caller just to accommodate
+ * this one. The original T08 doc comment claimed one schema was enough — it
+ * was, until T07 widened the endpoint to accept a non-parquet filename;
+ * caught live by actually running a scoring container end to end, not by
+ * reading: `PresignArtifactSchema.parse` threw on a real `row_count: null`
+ * response, uncaught, surfacing as a bare 500 with no diagnostic message.
+ */
+const PresignRunObjectSchema = z.object({
+  data_url: z.string().url(),
+  sidecar_urls: z.record(z.string(), z.string().url().nullable()),
+  checksum: z.string().min(1),
+  row_count: z.number().int().nonnegative().nullable(),
+  expires_at: z.string(),
+});
+
+export type PresignedRunObject = z.infer<typeof PresignRunObjectSchema>;
+
+/**
+ * MODEL-FLOW-016-T08. Presigns a training-run-scoped object for reading —
+ * `validate_ready.parquet` (`tryReplayHoldout`, model-run.authorized.
+ * service.ts) and, as of T07, `model.joblib` (`scoreClaimService`,
+ * model-run-score.authorized.service.ts). Deliberately NOT `presignArtifact`:
+ * that call is hard-restricted server-side to `is_committed_artifact_key`
+ * (a committed DATASET artifact's data.parquet) and refuses a run-scoped
+ * key outright — confirmed live (2026-09-01) as the reason `holdoutMetrics`
+ * had been null on every run in this system regardless of whether the
+ * dataset actually had a holdout.
+ */
+export async function presignRunObject(input: {
+  source_key: string;
+}): Promise<PresignedRunObject> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/models/runs/presign-object',
+    { source_key: input.source_key },
+    PYTHON_TIMEOUT.metadata,
+  );
+  return PresignRunObjectSchema.parse(res);
+}
+
 export async function fetchArtifactMetadata(
   sourceKey: string,
 ): Promise<ArtifactMetadata> {
@@ -228,11 +275,61 @@ export async function getRunLossHistory(
   return RunLossHistorySchema.parse(res);
 }
 
-/** MODEL-FLOW-007-T11. `null` for a run trained before the trainer image that
- *  started recording this — Save Model treats that as "not recorded", never
- *  as a reason to fail the save. */
+/** MODEL-FLOW-016-T04/T11. Already the exact shape train.py wrote — no
+ *  snake_case/camelCase mapping needed beyond the outer keys. Per-fold
+ *  `train_r2`/`train_rmse`/`train_mae` sit beside each fold's own
+ *  `r2`/`rmse`/`mae` so overfitting is visible fold-by-fold, not just in
+ *  aggregate. */
+const CvFoldRecordSchema = z.object({
+  fold: z.number().int().positive(),
+  cut_timestamp: z.string(),
+  train_rows: z.number().int().nonnegative(),
+  test_rows: z.number().int().nonnegative(),
+  distinct: z.number().int().nonnegative(),
+  r2: z.number(),
+  rmse: z.number(),
+  mae: z.number(),
+  train_r2: z.number(),
+  train_rmse: z.number(),
+  train_mae: z.number(),
+});
+
+const RunCvFoldsSchema = z.object({
+  algorithm: z.string().min(1),
+  n_splits: z.number().int().min(2),
+  folds: z.array(CvFoldRecordSchema),
+});
+
+export type RunCvFolds = z.infer<typeof RunCvFoldsSchema>;
+
+/**
+ * MODEL-FLOW-016-T04/T11. `source_key` is resolved by the caller off the
+ * `ModelTrainingRun` row (`cvFoldsKey`) — never accepted from a browser
+ * request, same discipline `getRunLossHistory` applies to its own key.
+ */
+export async function getRunCvFolds(sourceKey: string): Promise<RunCvFolds> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/models/runs/cv-folds',
+    { source_key: sourceKey },
+    PYTHON_TIMEOUT.metadata,
+  );
+  return RunCvFoldsSchema.parse(res);
+}
+
+/** MODEL-FLOW-007-T11 / MODEL-SERVE-001-T01. `null` for a run trained before
+ *  the trainer image that started recording each field — Save Model and
+ *  ModelVersion creation both treat that as "not recorded", never as a
+ *  reason to fail. `model_sha256` is nullable for the same reason:
+ *  MODEL-SERVE-000-T01 confirmed the field exists on current manifests, but
+ *  a run trained before the trainer started writing it has no honest value
+ *  to fill in. */
 const RunManifestSchema = z.object({
   framework_versions: z.record(z.string(), z.string()).nullable(),
+  model_sha256: z.string().nullable().optional(),
+  // MODEL-FLOW-016-T07. The exact columns, in the exact order, model.predict
+  // expects — no DB column carries this. Null for a run trained before this
+  // field was added, same honest-legacy-null policy as the fields above.
+  feature_columns: z.array(z.string()).nullable().optional(),
 });
 
 export type RunManifestInfo = z.infer<typeof RunManifestSchema>;
@@ -241,7 +338,8 @@ export type RunManifestInfo = z.infer<typeof RunManifestSchema>;
  * MODEL-FLOW-007-T11. `sourceKey` is resolved by the caller off the
  * `ModelTrainingRun` row (`manifestKey`), same discipline `getRunLossHistory`
  * applies to its own key. Every other manifest field already has a column on
- * the run row — this exists only for `framework_versions`, which does not.
+ * the run row — this exists for `framework_versions` and `model_sha256`,
+ * neither of which does (MODEL-SERVE-001-T01 added the second read).
  */
 export async function getRunManifest(
   sourceKey: string,
@@ -252,4 +350,30 @@ export async function getRunManifest(
     PYTHON_TIMEOUT.metadata,
   );
   return RunManifestSchema.parse(res);
+}
+
+/** MODEL-SERVE-001-T05. `exists: false` implies `checksum: null` — there is
+ *  nothing to hash. */
+const ModelObjectVerifySchema = z.object({
+  exists: z.boolean(),
+  checksum: z.string().nullable(),
+});
+
+export type ModelObjectVerifyResult = z.infer<typeof ModelObjectVerifySchema>;
+
+/**
+ * MODEL-SERVE-001-T05. Called by promote/rollback BEFORE flipping a
+ * ModelVersion's stage — deliberately its own endpoint, not
+ * `presignArtifact`, which is hard-restricted to committed dataset
+ * artifacts and refuses a model.joblib key outright.
+ */
+export async function verifyModelObject(
+  sourceKey: string,
+): Promise<ModelObjectVerifyResult> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/models/runs/verify-object',
+    { source_key: sourceKey },
+    PYTHON_TIMEOUT.metadata,
+  );
+  return ModelObjectVerifySchema.parse(res);
 }

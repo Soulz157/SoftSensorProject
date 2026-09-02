@@ -121,6 +121,11 @@ function splitStatsResponse(
     source_rows: 1000,
     train: { tags: [], insufficient_tags: [] },
     test: { tags: [], insufficient_tags: [] },
+    // MODEL-FLOW-016-T02. ALWAYS present now, in both modes.
+    distinct_labelled_values: 40,
+    max_admissible_k: 4,
+    n_splits: null,
+    folds: null,
     ...overrides,
   }
 }

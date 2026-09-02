@@ -79,8 +79,30 @@ export const CreateTrainingRunSchema = z
     // exist here before a caller can send it — added deliberately, not
     // discovered by a 400 the day the client starts including it.
     splitStatsTags: z.array(z.string()).max(20).optional(),
+
+    /**
+     * MODEL-FLOW-016-T03/T07. Present => this run is a CROSS-VALIDATION
+     * run: k expanding time-ordered folds plus a refit, instead of one
+     * chronological train/test cut. Bounds match
+     * `CvExpandingSplitSpecSchema.n_splits` exactly (2-10) — the two are
+     * the same number at opposite ends of the run's life (request here,
+     * container's own `/complete` report there), and a mismatch would let
+     * a run launch at a k its own completion callback then rejects.
+     *
+     * NOT persisted on ModelDraft (that model has no column for it and
+     * this feature's acceptance criteria forbid adding one) — CV config
+     * is client-only until Start Training commits it into the run's own
+     * `splitSpec`, which is the durable record.
+     */
+    nSplits: z.coerce.number().int().min(2).max(10).optional(),
   })
-  .strict();
+  .strict()
+  .refine((v) => !(v.nSplits !== undefined && v.trainTestSplit !== undefined), {
+    message:
+      'trainTestSplit and nSplits are mutually exclusive — a cross-validation ' +
+      'run has k fold cuts, not one train/test ratio.',
+    path: ['nSplits'],
+  });
 
 export const ListRunsQuerySchema = z
   .object({
@@ -125,9 +147,37 @@ const ChronologicalWindowedSplitSpecSchema = z
   })
   .strict();
 
+// MODEL-FLOW-016-T03 (finding 7). A CV run's own splitSpec — k cut points,
+// not one. Deliberately LIGHTWEIGHT: fold cut/row counts only, no
+// r2/rmse/mae — those live in cv_folds.json, a separate object-storage
+// artifact (T04), never duplicated into this DB-stored column. `.strict()`
+// like every sibling variant: MODEL-FLOW-009-T04's windowed variant was
+// found one review short of 400ing a successful run's own /complete call
+// for the exact reason this union exists — a caller sending a shape this
+// schema does not know about must be refused, not silently accepted.
+const CvExpandingFoldSchema = z
+  .object({
+    cut_timestamp: z.string(),
+    train_rows: z.number().int().nonnegative(),
+    test_rows: z.number().int().nonnegative(),
+  })
+  .strict();
+
+const CvExpandingSplitSpecSchema = z
+  .object({
+    method: z.literal('cv_expanding'),
+    n_splits: z.number().int().min(2).max(10),
+    source_rows: z.number().int().nonnegative(),
+    labelled_rows: z.number().int().nonnegative(),
+    distinct_labelled_values: z.number().int().nonnegative(),
+    folds: z.array(CvExpandingFoldSchema),
+  })
+  .strict();
+
 export const SplitSpecSchema = z.discriminatedUnion('method', [
   ChronologicalSplitSpecSchema,
   ChronologicalWindowedSplitSpecSchema,
+  CvExpandingSplitSpecSchema,
 ]);
 
 export const RunLogSchema = z
@@ -191,9 +241,50 @@ export const RunCompleteSchema = z
   })
   .strict();
 
+/**
+ * MODEL-FLOW-016-T07. The scoring container's own `/score-complete` — a
+ * DELIBERATELY narrower sibling of `RunCompleteSchema`, not a reuse of it:
+ * scoring writes ONLY `predictionsKey` + `holdoutMetrics` (see
+ * `model-run-score.authorized.service.ts`'s doc comment) and must never
+ * carry `metrics`/`splitSpec`/`modelKey`-shaped fields that would let a
+ * scoring callback overwrite a training run's own recorded outcome.
+ */
+export const ScoreCompleteSchema = z
+  .object({
+    status: z.enum(['SUCCEEDED', 'FAILED']),
+    failureReason: z.string().max(2000).optional(),
+    holdoutMetrics: MetricsSchema.optional(),
+    // Deliberately a LITERAL, not the full RunUploadFilenameEnum a scoring
+    // container could otherwise claim to have uploaded — scoring ever
+    // writes exactly one file. The service's own upload-URL minting
+    // (scoreUploadUrlsService) enforces the same allowlist independently,
+    // so a divergence here would only ever be caught here, not there.
+    uploaded: z.array(z.literal('predictions.parquet')).max(1).optional(),
+  })
+  .refine(
+    (v) =>
+      v.status !== 'SUCCEEDED' ||
+      (v.uploaded ?? []).includes('predictions.parquet'),
+    {
+      message:
+        'A SUCCEEDED score must report predictions.parquet among its uploads.',
+      path: ['uploaded'],
+    },
+  )
+  .refine((v) => v.status !== 'SUCCEEDED' || v.holdoutMetrics !== undefined, {
+    message: 'A SUCCEEDED score must report holdoutMetrics.',
+    path: ['holdoutMetrics'],
+  })
+  .refine((v) => v.status !== 'FAILED' || Boolean(v.failureReason), {
+    message: 'A FAILED score must carry a failureReason.',
+    path: ['failureReason'],
+  })
+  .strict();
+
 export class RunLogDto extends createZodDto(RunLogSchema) {}
 export class RunUploadUrlsDto extends createZodDto(RunUploadUrlsSchema) {}
 export class RunCompleteDto extends createZodDto(RunCompleteSchema) {}
+export class ScoreCompleteDto extends createZodDto(ScoreCompleteSchema) {}
 
 export class CreateTrainingRunDto extends createZodDto(
   CreateTrainingRunSchema,

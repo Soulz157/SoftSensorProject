@@ -10,6 +10,7 @@ import {
   mpHyperparamsAtom,
   mpLossFunctionAtom,
   mpSeedAtom,
+  mpNSplitsAtom,
   mpTargetVariableAtom,
   mpTrainTestSplitAtom,
   type Algorithm,
@@ -28,6 +29,8 @@ export interface RunConfigDraft {
   lossFunction: string
   trainTestSplit: number
   seed: number | undefined
+  /** MODEL-FLOW-016-T10. `undefined` means Cross-Validation is off. */
+  nSplits: number | undefined
 }
 
 function committedSnapshot(nav: UsePipelineNavResult): RunConfigDraft {
@@ -40,6 +43,7 @@ function committedSnapshot(nav: UsePipelineNavResult): RunConfigDraft {
     lossFunction: nav.lossFunction,
     trainTestSplit: nav.trainTestSplit,
     seed: nav.seed,
+    nSplits: nav.nSplits,
   }
 }
 
@@ -63,6 +67,7 @@ function draftsEqual(a: RunConfigDraft, b: RunConfigDraft): boolean {
     a.lossFunction === b.lossFunction &&
     a.trainTestSplit === b.trainTestSplit &&
     a.seed === b.seed &&
+    a.nSplits === b.nSplits &&
     sameValues(a.algorithms, b.algorithms) &&
     sameValues(a.targetVariables, b.targetVariables) &&
     hyperparamsEqual(a.hyperparameters, b.hyperparameters)
@@ -82,6 +87,8 @@ export interface UseRunConfigDraftResult {
   setLossFunction: (loss: string) => void
   setTrainTestSplit: (split: number) => void
   setSeed: (seed: number | undefined) => void
+  /** `undefined` turns Cross-Validation off. */
+  setNSplits: (nSplits: number | undefined) => void
   /** Writes `draft` to the committed atoms and relocks (via
    * `useCommitRunConfig`). Does NOT flush the draft-sync PATCH itself —
    * `Phase3TrainingConfig` does that from an effect on the COMMITTED atoms
@@ -139,7 +146,8 @@ export function useRunConfigDraft(
     syncedFrom.hyperparameters !== nav.hyperparameters ||
     syncedFrom.lossFunction !== nav.lossFunction ||
     syncedFrom.trainTestSplit !== nav.trainTestSplit ||
-    syncedFrom.seed !== nav.seed
+    syncedFrom.seed !== nav.seed ||
+    syncedFrom.nSplits !== nav.nSplits
   ) {
     const snapshot = committedSnapshot(nav)
     setSyncedFrom(snapshot)
@@ -201,6 +209,10 @@ export function useRunConfigDraft(
     setDraft(prev => ({ ...prev, seed }))
   }, [])
 
+  const setNSplits = useCallback((nSplits: number | undefined) => {
+    setDraft(prev => ({ ...prev, nSplits }))
+  }, [])
+
   const setAlgorithmsAtom = useSetAtom(mpAlgorithmsAtom)
   const setAlgorithmAtom = useSetAtom(mpAlgorithmAtom)
   const setFindBestModelAtom = useSetAtom(mpFindBestModelAtom)
@@ -210,6 +222,7 @@ export function useRunConfigDraft(
   const setLossFunctionAtom = useSetAtom(mpLossFunctionAtom)
   const setTrainTestSplitAtom = useSetAtom(mpTrainTestSplitAtom)
   const setSeedAtom = useSetAtom(mpSeedAtom)
+  const setNSplitsAtom = useSetAtom(mpNSplitsAtom)
   const commitRunConfig = useCommitRunConfig()
 
   const apply = useCallback(() => {
@@ -223,6 +236,7 @@ export function useRunConfigDraft(
     setLossFunctionAtom(draft.lossFunction)
     setTrainTestSplitAtom(draft.trainTestSplit)
     setSeedAtom(draft.seed)
+    setNSplitsAtom(draft.nSplits)
     commitRunConfig()
   }, [
     draft,
@@ -235,6 +249,7 @@ export function useRunConfigDraft(
     setLossFunctionAtom,
     setTrainTestSplitAtom,
     setSeedAtom,
+    setNSplitsAtom,
     commitRunConfig,
   ])
 
@@ -252,6 +267,7 @@ export function useRunConfigDraft(
     nav.lossFunction,
     nav.trainTestSplit,
     nav.seed,
+    nav.nSplits,
   ])
 
   return {
@@ -260,6 +276,7 @@ export function useRunConfigDraft(
     setAlgorithms,
     setFindBestModel,
     setFindBestParams,
+    setNSplits,
     setTargetVariable,
     setHyperparameter,
     setLossFunction,

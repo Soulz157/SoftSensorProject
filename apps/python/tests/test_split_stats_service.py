@@ -16,6 +16,7 @@ from intergrations.object_store import STATUS_BAD, STATUS_GOOD, status_column
 from schemas.preprocess import SplitStatsRequest
 from services.split_stats_service import (
     MIN_LABELLED_ROWS,
+    MIN_LABELS_PER_FOLD,
     build_split_stats,
     labelled_mask,
 )
@@ -207,3 +208,140 @@ def test_a_tag_insufficient_on_one_side_only_is_labelled_per_side():
     assert result["test"]["insufficient_tags"] == ["TI-101"]
     assert [t["tag"] for t in result["train"]["tags"]] == ["TI-101"]
     assert result["test"]["tags"] == []
+
+
+# ── MODEL-FLOW-016-T02/T09: n_splits mode ───────────────────────────────
+
+
+def test_split_ratio_and_n_splits_are_mutually_exclusive():
+    with pytest.raises(ValueError, match="Exactly one"):
+        SplitStatsRequest(
+            source_key="ds/final.parquet",
+            tags=["TI-101"],
+            target_y="Y",
+            split_ratio=0.8,
+            n_splits=3,
+        )
+    with pytest.raises(ValueError, match="Exactly one"):
+        SplitStatsRequest(
+            source_key="ds/final.parquet",
+            tags=["TI-101"],
+            target_y="Y",
+        )
+
+
+def test_distinct_labelled_values_and_max_admissible_k_always_present_in_ratio_mode():
+    # T02's own instruction: these two fields are one more cheap aggregate
+    # over a frame already in memory, returned in EVERY mode so the wizard
+    # can disable-with-reason before the user ever opens CV mode.
+    frame = _sparse_target_frame(n_rows=350, label_every=10)  # 35 labelled
+    store = _NoWriteStore(frame)
+
+    result = build_split_stats(store, _request(split_ratio=0.8))
+
+    assert result["distinct_labelled_values"] == 35
+    assert result["max_admissible_k"] == 35 // MIN_LABELS_PER_FOLD
+
+
+def test_n_splits_mode_returns_no_box_statistics():
+    # MODEL-FLOW-016 userDecisions: a CV run itself writes no
+    # predictions.parquet, and this panel does not compute k box-plot pairs
+    # either — the fold plan is numeric only.
+    frame = _sparse_target_frame(n_rows=350, label_every=10)  # 35 labelled
+    store = _NoWriteStore(frame)
+
+    result = build_split_stats(store, _request(split_ratio=None, n_splits=3))
+
+    assert result["split_ratio"] is None
+    assert result["cut_timestamp"] is None
+    assert result["train_labelled_rows"] is None
+    assert result["test_labelled_rows"] is None
+    assert result["train"] is None
+    assert result["test"] is None
+    assert result["n_splits"] == 3
+    assert len(result["folds"]) == 3
+
+
+def test_n_splits_folds_are_expanding_and_strictly_chronological():
+    # Per this feature's resolved userDecisions: EXPANDING window, never
+    # rolling — every fold's train window must be everything before its own
+    # test window, and folds must not overlap in time.
+    frame = _sparse_target_frame(n_rows=12_000, label_every=37)  # V01's fixture
+    store = _NoWriteStore(frame)
+
+    result = build_split_stats(store, _request(split_ratio=None, n_splits=5))
+    folds = result["folds"]
+
+    assert len(folds) == 5
+    # Expanding: each fold's train_rows is strictly larger than the last —
+    # a rolling window would hold train_rows roughly constant instead.
+    train_rows = [f["train_rows"] for f in folds]
+    assert train_rows == sorted(train_rows)
+    assert len(set(train_rows)) == len(train_rows)  # strictly increasing
+    # Chronological: cut timestamps strictly increase, fold to fold.
+    cuts = [f["cut_timestamp"] for f in folds]
+    assert cuts == sorted(cuts)
+    assert len(set(cuts)) == len(cuts)
+    # Every fold's own test window immediately follows its train window —
+    # no gap, no overlap: fold i's test_rows account for exactly the rows
+    # between its train_rows and the next fold's train_rows (or the frame
+    # end, for the last fold).
+    labelled_total = sum(1 for s in frame[status_column("Y")] if s == STATUS_GOOD)
+    assert train_rows[0] + sum(f["test_rows"] for f in folds) == labelled_total
+
+
+def test_n_splits_cut_is_on_labelled_rows_not_row_count():
+    # V01's own claim, restated for CV: a dense-target dataset would pass
+    # either a correct (labelled-frame) or a naive (row-count) fold cut and
+    # prove nothing — this fixture's label_every does not divide evenly
+    # into any fold boundary, so the two rules land on different rows.
+    frame = _sparse_target_frame(n_rows=12_000, label_every=37)
+    store = _NoWriteStore(frame)
+
+    result = build_split_stats(store, _request(split_ratio=None, n_splits=5))
+    folds = result["folds"]
+
+    labelled_rows = frame.loc[
+        frame[status_column("Y")] == STATUS_GOOD
+    ].sort_values("timestamp").reset_index(drop=True)
+    n_labelled = len(labelled_rows)
+    k = 5
+    test_size = n_labelled // (k + 1)
+
+    for i, fold in enumerate(folds):
+        correct_test_start = n_labelled - (k - i) * test_size
+        correct_cut = str(labelled_rows.loc[correct_test_start, "timestamp"])
+        assert fold["cut_timestamp"] == correct_cut
+
+        # A row-count-derived cut at the same fold boundary lands on a
+        # DIFFERENT row, since label_every=37 does not divide evenly.
+        naive_test_start = len(frame) - (k - i) * (len(frame) // (k + 1))
+        if 0 <= naive_test_start < len(frame):
+            naive_cut = str(frame.loc[naive_test_start, "timestamp"])
+            assert fold["cut_timestamp"] != naive_cut
+
+
+def test_n_splits_refuses_more_folds_than_distinct_values_support():
+    # V02: the refusal half. 35 distinct labelled values / MIN_LABELS_PER_FOLD
+    # (10) admits at most 3 folds — 4 is refused BY NAME, at config time,
+    # never silently run as an under-powered CV.
+    frame = _sparse_target_frame(n_rows=350, label_every=10)  # 35 labelled
+    store = _NoWriteStore(frame)
+    assert 35 // MIN_LABELS_PER_FOLD == 3
+
+    with pytest.raises(ValueError, match="exceeds the admissible maximum"):
+        build_split_stats(store, _request(split_ratio=None, n_splits=4))
+
+
+def test_n_splits_admits_a_k_the_distinct_count_actually_supports():
+    # V02: the admission half — proving only the refusal cannot distinguish
+    # a working cap from a blanket rejection. A denser target (distinct
+    # values well above the 3-fold ceiling above) admits a larger k.
+    frame = _sparse_target_frame(n_rows=12_000, label_every=37)  # ~325 labelled
+    store = _NoWriteStore(frame)
+
+    result = build_split_stats(store, _request(split_ratio=None, n_splits=10))
+
+    assert result["n_splits"] == 10
+    assert len(result["folds"]) == 10
+    assert result["max_admissible_k"] >= 10

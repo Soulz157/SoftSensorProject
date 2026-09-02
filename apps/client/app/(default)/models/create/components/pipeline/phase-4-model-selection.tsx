@@ -454,7 +454,15 @@ export function Phase4ModelSelection({ nav }: Props) {
   if (!candidateJobId) {
     const algorithmLabel =
       ALGORITHM_LABELS[trainingResult.algorithm] ?? trainingResult.algorithm
+    // MODEL-FLOW-016-T11. Render mode is a property of the RUN
+    // (`cvFoldsKey`), never the algorithm name (MODEL-FLOW-013-T05a's
+    // rule) — CV and Find Best Model are mutually exclusive, so this
+    // pass-through is the only place a CV run's own summary renders.
+    const isCv = trainingResult.cvFoldsKey !== null
     const rmse = trainingResult.metrics?.rmse
+    const rmseMean = trainingResult.metrics?.cv_rmse_mean
+    const rmseStd = trainingResult.metrics?.cv_rmse_std
+    const nSplits = trainingResult.metrics?.n_splits
     return (
       <div className="space-y-4">
         <div className="flex items-center gap-3 rounded-xl bg-emerald-500/10 px-4 py-3 ring-1 ring-emerald-500/20">
@@ -466,8 +474,28 @@ export function Phase4ModelSelection({ nav }: Props) {
             <p className="text-xs text-muted-foreground">
               Only one candidate this run — nothing to compare. Continue to
               Evaluation.
-              {typeof rmse === 'number' ? ` RMSE ${rmse.toFixed(3)}.` : ''}
+              {!isCv && typeof rmse === 'number' && ` RMSE ${rmse.toFixed(3)}.`}
+              {isCv &&
+                typeof rmseMean === 'number' &&
+                typeof rmseStd === 'number' &&
+                ` RMSE ${rmseMean.toFixed(3)} ± ${rmseStd.toFixed(3)}` +
+                  (typeof nSplits === 'number'
+                    ? ` across ${nSplits} folds`
+                    : '') +
+                  '.'}
             </p>
+            {/* Three numbers, three meanings, never merged: this is the fold
+                mean — how much to trust the CONFIGURATION, not a score for
+                the refit model that ships. That model's own honest number
+                only exists once Evaluation's separate holdout-scoring phase
+                runs (MODEL-FLOW-016-T07). */}
+            {isCv && (
+              <p className="text-[11px] text-muted-foreground">
+                Mean ± std across folds — an estimate of the configuration, not
+                the shipped model&apos;s own score. Score it against the holdout
+                in Evaluation.
+              </p>
+            )}
           </div>
         </div>
       </div>

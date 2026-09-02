@@ -1,12 +1,15 @@
 'use client'
 
 import { useEffect } from 'react'
+import { useAtomValue } from 'jotai'
 import { AlertTriangle, Cpu, Loader2, Timer, Upload } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useModelTraining } from '@/hooks/model/use-model-training'
 import { useModelDraftSync } from '@/hooks/model/use-model-draft-sync'
 import { useRunConfigDraft } from '@/hooks/model/use-run-config-draft'
+import { useArtifactSplitStats } from '@/hooks/dataset/artifact/use-artifact-split-stats'
 import type { UsePipelineNavResult } from '@/hooks/model/use-model-pipeline-nav'
+import { mpSplitStatsTagsAtom } from '@/store/model-pipeline'
 import { CoreConfig } from './training-config/core-config'
 import { AlgorithmSelector } from './training-config/algorithm-selector'
 import { AutoMlToggles } from './training-config/automl-toggles'
@@ -31,6 +34,36 @@ export function Phase3TrainingConfig({ nav }: Props) {
   const { draft, dirty } = runConfigDraft
   const training = useModelTraining({ ensureDraftId })
   const tags = selectedDataset?.tags ?? []
+
+  // MODEL-FLOW-016-T10. ONE fetch, shared by SplitDistributionPanel (the
+  // box-plot / fold-plan render) and CoreConfig's own CvControl (the
+  // max_admissible_k eligibility check) — each calling this hook
+  // independently doubled the request per mount and, worse, CvControl's
+  // own copy read the DRAFT trainTestSplit rather than the committed one,
+  // refetching on every ratio-slider drag. Sourced from the COMMITTED
+  // nav fields exactly like SplitDistributionPanel's own props already
+  // were, so this changes nothing about WHEN it fetches (still once per
+  // Apply, MODEL-FLOW-014-T08) — only WHERE the one fetch lives.
+  const splitStatsTags = useAtomValue(mpSplitStatsTagsAtom)
+  const targetY = targetVariables.length === 1 ? targetVariables[0]! : null
+  const hasSequenceAlgorithm = nav.algorithms.some(
+    a => a === 'lstm' || a === 'gru',
+  )
+  // lstm/gru cut on WINDOW count via a rule this endpoint does not
+  // implement — same gate SplitDistributionPanel's own render branch
+  // already applies; declining to fetch here is what keeps that branch
+  // truthful rather than showing a tabular split as if it were theirs.
+  const enabledTargetY = hasSequenceAlgorithm ? null : targetY
+  const cvMode = nav.nSplits !== undefined
+  const hasArtifact = Boolean(selectedDataset?.currentArtifactId)
+  const splitStats = useArtifactSplitStats(
+    hasArtifact ? (selectedDataset?.id ?? null) : null,
+    hasArtifact ? (selectedDataset?.currentArtifactId ?? null) : null,
+    splitStatsTags,
+    enabledTargetY,
+    cvMode ? null : trainTestSplit / 100,
+    cvMode ? nav.nSplits : undefined,
+  )
 
   // Flushes on mount (replacing autoSync's old mount PATCH — a user who
   // accepts every default must not leave the draft row never seeded) AND on
@@ -122,19 +155,33 @@ export function Phase3TrainingConfig({ nav }: Props) {
               seed={draft.seed}
               onSeedChange={runConfigDraft.setSeed}
               algorithms={draft.algorithms}
-            />
-            {/* Deliberately fed the COMMITTED trainTestSplit/algorithms/
-                targetVariables (nav), not the draft above — this panel
-                describes the split that will actually run, and must fetch
-                once per Apply, not once per keystroke (MODEL-FLOW-014-T08). */}
-            <SplitDistributionPanel
+              nSplits={draft.nSplits}
+              onNSplitsChange={runConfigDraft.setNSplits}
+              findBestModel={draft.findBestModel}
               datasetId={selectedDataset?.id ?? null}
               artifactId={selectedDataset?.currentArtifactId ?? null}
-              hasArtifact={Boolean(selectedDataset?.currentArtifactId)}
+              hasArtifact={hasArtifact}
+              maxAdmissibleK={splitStats.splitStats?.max_admissible_k ?? null}
+              splitStatsLoading={splitStats.loading}
+            />
+            {/* Deliberately fed the COMMITTED trainTestSplit/algorithms/
+                targetVariables/nSplits (nav), not the draft above — this
+                panel describes the split that will actually run. The fetch
+                itself (splitStats) lives in THIS component, once per Apply,
+                not once per keystroke (MODEL-FLOW-014-T08) — see its own
+                declaration above for why it moved out of this panel. */}
+            <SplitDistributionPanel
+              datasetId={selectedDataset?.id ?? null}
+              hasArtifact={hasArtifact}
               allTags={tags}
               targetVariables={targetVariables}
-              trainTestSplitPercent={trainTestSplit}
               algorithms={nav.algorithms}
+              nSplits={nav.nSplits}
+              splitStats={splitStats.splitStats}
+              loading={splitStats.loading}
+              missing={splitStats.missing}
+              refusal={splitStats.refusal}
+              error={splitStats.error}
             />
           </section>
 
@@ -151,6 +198,8 @@ export function Phase3TrainingConfig({ nav }: Props) {
               onFindBestModel={runConfigDraft.setFindBestModel}
               findBestParams={draft.findBestParams}
               onFindBestParams={runConfigDraft.setFindBestParams}
+              cvEnabled={draft.nSplits !== undefined}
+              algorithms={draft.algorithms}
             />
             {showHyperparams ? (
               <DynamicHyperparameters

@@ -1261,7 +1261,11 @@ export class DatasetVersionAuthorizedService {
           source_key: artifact.objectKey,
           tags: dto.tags,
           target_y: dto.targetY,
-          split_ratio: dto.splitRatio,
+          // MODEL-FLOW-016-T02/T09. EXACTLY ONE of the two — the DTO's own
+          // .refine() already enforces this before the request reaches
+          // here, so at most one of these spreads is ever non-empty.
+          ...(dto.splitRatio !== undefined && { split_ratio: dto.splitRatio }),
+          ...(dto.nSplits !== undefined && { n_splits: dto.nSplits }),
           ...(dto.sampleRows && { sample_rows: dto.sampleRows }),
           ...(dto.outlierCap && { outlier_cap: dto.outlierCap }),
         },

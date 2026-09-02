@@ -6,22 +6,22 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '@softsensor/prisma';
 import {
-  draftRunKey,
-  modelRunKey,
   sidecarKey,
   VALIDATE_DATA_FILENAME,
+  VALIDATE_READY_FILENAME,
 } from '@/lib/artifact-keys';
 import {
   presignArtifact,
+  presignRunObject,
   PresignedArtifact,
   presignModelRunUpload,
   prepareHoldoutForRun,
   replayHoldoutForRun,
 } from '@/lib/python-preprocess-client';
+import { buildRunKey, resolveRunOwner, RunOwner } from '@/lib/model-run-owner';
+import { findHoldoutArtifact } from '@/lib/holdout-artifact';
 import { RunCompleteDto } from './dto/model-run.authorized.dto';
 import { ModelCandidateJobAuthorizedService } from './model-candidate-job.authorized.service';
-
-type RunOwner = { scope: 'model'; id: string } | { scope: 'draft'; id: string };
 
 @Injectable()
 export class ModelRunAuthorizedService {
@@ -31,41 +31,6 @@ export class ModelRunAuthorizedService {
     private readonly prisma: PrismaService,
     private readonly candidateJobs: ModelCandidateJobAuthorizedService,
   ) {}
-
-  /**
-   * EXACTLY ONE of modelId / modelDraftId is set, enforced by a DB CHECK
-   * constraint (MODEL-FLOW-002) — a run created from the wizard has
-   * modelDraftId until Save Model adopts it (MODEL-FLOW-003-T08), after
-   * which modelId is set and modelDraftId is KEPT for traceability. This
-   * resolves which root (models/ or drafts/) the run's own outputs live
-   * under, since a run adopted at Save Model still keeps writing to its
-   * original prefix — Save Model never re-uploads bytes.
-   */
-  private resolveRunOwner(run: {
-    id: string;
-    modelId: string | null;
-    modelDraftId: string | null;
-  }): RunOwner {
-    if (run.modelId) return { scope: 'model', id: run.modelId };
-    if (run.modelDraftId) return { scope: 'draft', id: run.modelDraftId };
-    // Unreachable given the CHECK constraint — guarded so a future schema
-    // change cannot silently reintroduce a run with neither.
-    throw new BadRequestException(
-      `Run ${run.id} has neither modelId nor modelDraftId.`,
-    );
-  }
-
-  /** Same key layout `complete()` writes run outputs to — `claim()` needs it
-   * too, to place the replayed holdout under this run's own prefix. */
-  private buildRunKey(
-    owner: RunOwner,
-    runId: string,
-    filename: string,
-  ): string {
-    return owner.scope === 'draft'
-      ? draftRunKey(owner.id, runId, filename)
-      : modelRunKey(owner.id, runId, filename);
-  }
 
   /**
    * DS-LAKE-018-T05 / DS-LAKE-023-T03/T04. If this run's dataset has a
@@ -107,45 +72,14 @@ export class ModelRunAuthorizedService {
   } | null> {
     if (!run.featureSpecKey) return null;
 
-    const gold = await this.prisma.datasetArtifact.findUnique({
-      where: { id: run.goldArtifactId },
-      select: { runId: true },
-    });
-    if (!gold) return null;
-
-    // Deterministically ordered (finding: DS-LAKE-023's own audit found the
-    // legacy resolver used an unordered `findFirst` — a draft resplit more
-    // than once can leave two artifacts sharing one `runId`, and picking
-    // the wrong one silently replays/prepares the WRONG holdout, or none).
-    // Newest first: a later split always supersedes an earlier one for
-    // scoring purposes, matching resplit's own "always write a NEW
-    // artifact" contract.
-    //
-    // `GOLD` joins `BRONZE`/`SILVER` here as of DS-LAKE-023's edit-mode
-    // re-split pass: edit mode's FEATURE job writes a combined, already-
-    // scaled GOLD (`preprocessing-job.service.ts`'s own `artifactType`
-    // decision — a FEATURE job commits SILVER only when `scale === false`,
-    // which edit mode never sends), so an edit-mode holdout's
-    // `validationRowCount` lands on a GOLD row, not a SILVER one. Without
-    // this, an edit-mode holdout would be invisible to this resolver and
-    // scoring would silently soft-fail for every such run.
-    const holdoutArtifact = await this.prisma.datasetArtifact.findFirst({
-      where: {
-        runId: gold.runId,
-        type: { in: ['BRONZE', 'SILVER', 'GOLD'] },
-        validationRowCount: { not: null },
-      },
-      orderBy: { createdAt: 'desc' },
-      select: {
-        type: true,
-        objectKey: true,
-        validationRowCount: true,
-        validationHoldoutFrom: true,
-      },
-    });
-    if (!holdoutArtifact || holdoutArtifact.validationRowCount == null) {
-      return null;
-    }
+    // MODEL-FLOW-016-T07. Lookup extracted to a shared lib — the scoring
+    // trigger needs the SAME existence check, cheaply, before spawning a
+    // container (see model-run-score.authorized.service.ts).
+    const holdoutArtifact = await findHoldoutArtifact(
+      this.prisma,
+      run.goldArtifactId,
+    );
+    if (!holdoutArtifact) return null;
 
     try {
       // Derived from the artifact's own `objectKey` (the key actually
@@ -158,11 +92,7 @@ export class ModelRunAuthorizedService {
         holdoutArtifact.objectKey,
         VALIDATE_DATA_FILENAME,
       );
-      const targetKey = this.buildRunKey(
-        owner,
-        run.id,
-        'validate_ready.parquet',
-      );
+      const targetKey = buildRunKey(owner, run.id, VALIDATE_READY_FILENAME);
       const commonInput = {
         feature_spec_key: run.featureSpecKey,
         source_key: sourceKey,
@@ -194,7 +124,26 @@ export class ModelRunAuthorizedService {
         const prepared = await prepareHoldoutForRun(commonInput);
         holdoutDroppedBadRows = prepared.dropped_bad_rows ?? null;
       }
-      const holdoutPresigned = await presignArtifact({ source_key: targetKey });
+      // MODEL-FLOW-016-T08. NOT presignArtifact: that call is hard-restricted
+      // server-side to is_committed_artifact_key (a committed DATASET
+      // artifact's data.parquet) and refuses this run-scoped key outright —
+      // confirmed live (2026-09-01) as the reason holdoutMetrics had been
+      // null on every run in this system, regardless of whether the dataset
+      // actually had a holdout. presignRunObject is the run-scoped read.
+      const holdoutPresigned = await presignRunObject({
+        source_key: targetKey,
+      });
+      // presign_run_object only computes row_count for VALIDATE_READY_
+      // FILENAME (artifact_service.py) — always a real number for THIS
+      // filename. Null here means the object it read was not actually a
+      // parquet file, a real anomaly worth failing loudly on (caught by
+      // this function's own outer soft-fail try/catch) rather than lying
+      // with a fabricated 0.
+      if (holdoutPresigned.row_count == null) {
+        throw new Error(
+          `Presigned holdout object ${targetKey} reported no row_count.`,
+        );
+      }
 
       return {
         holdoutDataUrl: holdoutPresigned.data_url,
@@ -209,6 +158,30 @@ export class ModelRunAuthorizedService {
       });
       return null;
     }
+  }
+
+  /**
+   * MODEL-FLOW-016-T07. PUBLIC entry point for
+   * `ModelRunScoreAuthorizedService`'s scoring-claim: the SAME replay/
+   * prepare + presign `claim()` uses inline for a non-CV run's holdout,
+   * reused here rather than re-implemented, so a CV run's separate scoring
+   * phase resolves its holdout through one code path, not two.
+   * `tryReplayHoldout` stays private — this is the one door into it from
+   * outside this class, same shape as `assertDraftWritable`'s relationship
+   * to `assertDraftAccess` in the launch service.
+   */
+  resolveHoldoutForRun(
+    run: {
+      id: string;
+      datasetId: string;
+      goldArtifactId: string;
+      featureSpecKey: string | null;
+      modelId: string | null;
+      modelDraftId: string | null;
+    },
+    owner: RunOwner,
+  ) {
+    return this.tryReplayHoldout(run, owner);
   }
 
   /** Everything the container needs, in one round trip. */
@@ -253,8 +226,18 @@ export class ModelRunAuthorizedService {
       );
     }
 
-    const owner = this.resolveRunOwner(run);
-    const holdout = await this.tryReplayHoldout(run, owner);
+    const owner = resolveRunOwner(run);
+    // MODEL-FLOW-016-T07. A CV run's holdout is scored by the SEPARATE,
+    // user-triggered scoring phase (model-run-score.authorized.service.ts),
+    // not here — replaying it at claim time too would be a second full
+    // replay of the same frame for a run whose training container never
+    // reads `holdoutDataUrl` in the first place (train.py's step 9b is
+    // gated `and not is_cv`). `splitSpec` is untyped Json on the row; the
+    // discriminant is the same `method` field the DTO's discriminated union
+    // switches on.
+    const isCvRun =
+      (run.splitSpec as { method?: string } | null)?.method === 'cv_expanding';
+    const holdout = isCvRun ? null : await this.tryReplayHoldout(run, owner);
 
     return {
       runId: run.id,
@@ -290,7 +273,7 @@ export class ModelRunAuthorizedService {
     if (!run) throw new NotFoundException();
     // Ids come from the ROW, never from the container's request body — a
     // container must not be able to choose which run's prefix it writes to.
-    const owner = this.resolveRunOwner(run);
+    const owner = resolveRunOwner(run);
     return presignModelRunUpload(
       owner.scope === 'draft'
         ? { draft_id: owner.id, run_id: run.id, filenames }
@@ -305,9 +288,9 @@ export class ModelRunAuthorizedService {
     if (!run) throw new NotFoundException();
 
     const uploaded = new Set(dto.uploaded ?? []);
-    const owner = this.resolveRunOwner(run);
+    const owner = resolveRunOwner(run);
     const keyIf = (f: string) =>
-      uploaded.has(f) ? this.buildRunKey(owner, run.id, f) : null;
+      uploaded.has(f) ? buildRunKey(owner, run.id, f) : null;
 
     const data = {
       status: dto.status,
@@ -326,6 +309,9 @@ export class ModelRunAuthorizedService {
       // and the client's render-mode choice (T05a) keys off this column
       // being null vs. set, never off the algorithm name.
       lossHistoryKey: keyIf('loss_history.json'),
+      // MODEL-FLOW-016-T04. null for every non-CV run — the same
+      // null-means-not-applicable discipline lossHistoryKey uses above.
+      cvFoldsKey: keyIf('cv_folds.json'),
       finishedAt: new Date(),
       // Close the token with the run. Nothing legitimate needs it after
       // this point.

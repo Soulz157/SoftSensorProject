@@ -78,6 +78,7 @@ model User {
   preprocessingJobs   PreprocessingJob[]
   presetImports       FeaturePresetImport[]
   loaderJobs          LoaderJob[]
+  promotedModelVersions ModelVersion[]
 }
 
 model Account {
@@ -180,6 +181,7 @@ model Model {
   dataset           Dataset?           @relation(fields: [datasetId], references: [id])
   datasetId         String?
   modelTrainingRuns ModelTrainingRun[]
+  versions          ModelVersion[]
 
   @@unique([workspaceId, name])
   @@index([workspaceId])
@@ -1048,6 +1050,15 @@ model ModelTrainingRun {
   /// run unreproducible by construction.
   imageDigest String
   containerId String?
+  /// MODEL-FLOW-016-T07. The CONTAINER running this run's separate,
+  /// user-triggered holdout-scoring phase — distinct from `containerId`
+  /// (that field tracks the TRAINING spawn, whose container has already
+  /// exited by the time scoring starts). Null before scoring is ever
+  /// triggered, and after it completes (scored or failed) — its ONLY
+  /// purpose is letting the UI poll "scoring is currently running", which
+  /// neither `predictionsKey` (null/set = not-scored/scored) nor `status`
+  /// (already terminal by the time scoring starts) can represent.
+  scoringContainerId String?
 
   /// sha256 of the run token, never the token. A leaked table dump must not
   /// yield working credentials.
@@ -1072,6 +1083,14 @@ model ModelTrainingRun {
   /// artifact, and null for a series that exceeded MAX_LOSS_HISTORY_POINTS
   /// (soft-skipped, not a training failure).
   lossHistoryKey String?
+  /// MODEL-FLOW-016-T04. Per-fold CV metrics (cv_folds.json) — set only for
+  /// a CV run (splitSpec.method === "cv_expanding"); null for every other
+  /// run, the same honest-legacy-null pattern MODEL-FLOW-010-T06 established
+  /// for validationMissingPct. BOUNDED by construction: n_splits is already
+  /// capped (MIN_LABELS_PER_FOLD, split_stats_service.py / train.py) before
+  /// a fold ever fits, so an oversized artifact is unreachable — no
+  /// redundant size guard needed on this column.
+  cvFoldsKey String?
   /// Denormalised from metrics.json for list/sort without an object read —
   /// the same reasoning DatasetArtifact uses for rowCount and missingPct.
   /// MODEL-FLOW-013-T04 added train_r2/train_mae/train_rmse keys alongside
@@ -1121,6 +1140,12 @@ model ModelTrainingRun {
   candidateJobId String?
   candidateJob   ModelCandidateJob? @relation(fields: [candidateJobId], references: [id], onDelete: SetNull)
 
+  /// MODEL-SERVE-001. Back-relation for ModelVersion.sourceRunId (@unique) —
+  /// null until this run is turned into a version by Save Model or a
+  /// retrain; a SUCCEEDED run with no ModelVersion is unremarkable (most
+  /// candidate-job runs never become one).
+  modelVersion ModelVersion?
+
   @@index([modelId, createdAt])
   @@index([modelDraftId])
   @@index([status])
@@ -1139,6 +1164,112 @@ model ModelTrainingRunLog {
   createdAt DateTime @default(now())
 
   @@index([runId, createdAt])
+}
+
+/// MODEL-SERVE-001. STAGING -> PRODUCTION -> ARCHIVED. Not a strict forward
+/// line like DatasetVersionStage: ARCHIVED -> PRODUCTION is legal (a
+/// rollback IS a promote pointed at the previous PRODUCTION, per this
+/// feature's own decisions — never a distinct mechanism). See
+/// lib/model-version-transitions.ts for the actual predicate.
+enum ModelVersionStage {
+  STAGING
+  PRODUCTION
+  ARCHIVED
+}
+
+/// MODEL-SERVE-001. The row that decides what is in production. Created
+/// ONLY by Save Model (MODEL-SERVE-001-T03, one row per saved Model, STAGING)
+/// and by a future retrain (MODEL-SERVE-004, STAGING, promotes nothing).
+/// IMMUTABLE except stage/promotedById/promotedAt/archivedAt/
+/// promotionOverride — every other field is a snapshot of what the source
+/// run actually produced, recorded once, per MODEL-FLOW-007-T10's
+/// adopt-by-pointer discipline: this row references the source run's own
+/// bytes by their pinned key, it never copies them (see MODEL-SERVE-000-T07
+/// and decisions.open_question_pin_by_pointer_or_copy_bytes, resolved
+/// pointer — the FINAL artifact every run trains against is already
+/// unconditionally excluded from cleanup, so a copy would duplicate storage
+/// against a risk that does not exist).
+model ModelVersion {
+  id      String @id @default(uuid())
+  modelId String
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  /// Monotonic per model, starting at 1 — allocated by the creator inside
+  /// its own transaction (max(version)+1), never by a DB sequence: a
+  /// version's identity must be assignable inside the SAME transaction that
+  /// creates the row, for the same reason DS-LAKE-009's versionNumber
+  /// allocation does it this way.
+  version Int
+
+  stage ModelVersionStage @default(STAGING)
+
+  /// One version per source run — a retrain that fails never gets a second
+  /// chance to mint a version from the SAME run; it fits again instead.
+  sourceRunId String           @unique
+  /// NO ACTION, not the implicit Restrict a required relation would
+  /// otherwise get: a Model delete cascades onto ModelTrainingRun and
+  /// ModelVersion in the same statement, and Restrict is checked
+  /// immediately per row rather than deferred to end-of-statement — see
+  /// the migration's own comment for why that ordering breaks
+  /// deleteModelService. Explicit here so a future `migrate dev` does not
+  /// "fix" this back to the default and reintroduce the bug.
+  sourceRun ModelTrainingRun @relation(fields: [sourceRunId], references: [id], onDelete: NoAction, onUpdate: Cascade)
+  sourceDatasetId String
+
+  /// Pinned off the source run row (goldArtifactId/goldObjectKey/
+  /// artifactChecksum/featureSpecKey), one hop, never re-derived through the
+  /// dataset's CURRENT artifact — see MODEL-SERVE-000-T03/T07's findings for
+  /// why re-deriving would be silently wrong for an edited dataset.
+  goldArtifactId   String
+  goldObjectKey    String
+  artifactChecksum String
+  featureSpecKey   String?
+
+  /// The actual object a serving process loads — the run's model.joblib,
+  /// NOT goldObjectKey (that is training DATA, kept for provenance/replay).
+  modelObjectKey String
+  /// sha256 of model.joblib, read from run_manifest.json's model_sha256 at
+  /// version-creation time. Nullable for the same "honest legacy null"
+  /// reason ModelConfigSchema.frameworkVersions is: a run trained before the
+  /// manifest recorded this has no honest value to fill in.
+  modelChecksum String?
+
+  algorithm         String
+  hyperparameters   Json
+  frameworkVersions Json?
+  /// Digest, never a tag — same discipline as ModelTrainingRun.imageDigest.
+  /// Retention: MODEL-SERVE-000-T07 found no GHCR retention/GC workflow
+  /// exists in this repo, so nothing currently prunes the image this
+  /// points at; storing the digest here is what a future GC policy would
+  /// need to consult before it could safely add one.
+  imageDigest String
+
+  /// Snapshot of ModelTrainingRun.metrics at creation time — r2/mae/rmse
+  /// (test split) and train_r2/train_mae/train_rmse. Never re-read from the
+  /// run after creation: this row is what promote's r2 floor (T06) checks
+  /// against, and it must not change under a row nothing else is touching.
+  metrics Json?
+
+  /// MODEL-SERVE-001-T06. Set only when a promote crossed the r2<=0 floor
+  /// with an explicit override — {actorId, actorName, reason, at}. Absent
+  /// for every version promoted above the floor. An override that left no
+  /// trace would be the same as no floor.
+  promotionOverride Json?
+
+  promotedById String?
+  promotedBy   User?     @relation(fields: [promotedById], references: [id], onDelete: SetNull)
+  promotedAt   DateTime?
+  /// Set when this version is demoted PRODUCTION -> ARCHIVED by a later
+  /// promote. Rollback's own "previous PRODUCTION" lookup orders by this
+  /// column, descending — see model.authorized.service.ts.
+  archivedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([modelId, version])
+  @@index([modelId, stage])
+  @@index([modelId, archivedAt])
 }
 
 enum ModelCandidateJobStatus {

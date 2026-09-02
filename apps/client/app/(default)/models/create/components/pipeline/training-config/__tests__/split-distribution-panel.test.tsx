@@ -5,23 +5,34 @@ import type { Algorithm } from '@/store/model-pipeline'
 
 /**
  * MODEL-FLOW-014-T05. Covers the honest-state branches, which are pure
- * props -> render and need no network mock: the panel's own hook
- * (`useArtifactSplitStats`) never fires a request when `enabled` is false,
- * which every one of these cases hits before the hook's own state matters.
- * The `loading`/`missing`/`refusal`/`ready` branches (which DO depend on
- * the hook's fetched state) are exercised at V01-V08's own level, per the
- * plan's verification section — mocking the network here would duplicate
- * that coverage without adding a claim this file can prove better.
+ * props -> render and need no network mock: `datasetId`/`hasArtifact`/
+ * `targetVariables`/`algorithms` alone decide these branches, before the
+ * fetched-state props (`splitStats`/`loading`/`missing`/`refusal`/`error`
+ * — MODEL-FLOW-016-T10 lifted the actual `useArtifactSplitStats` call out
+ * to the parent) are ever read. Those, and the `ready` branch, are
+ * exercised at V01-V08's own level, per the plan's verification section —
+ * mocking the network here would duplicate that coverage without adding a
+ * claim this file can prove better.
  */
 function baseProps() {
   return {
     datasetId: 'ds-1',
-    artifactId: 'art-1',
     hasArtifact: true,
     allTags: ['TI-101', 'PI-201', 'FI-301'],
     targetVariables: ['TI-101'],
-    trainTestSplitPercent: 80,
     algorithms: ['ols'] as Algorithm[],
+    // MODEL-FLOW-016-T10. undefined = CV off — every case in this file
+    // exercises the ratio-mode honest states, unaffected by CV.
+    nSplits: undefined,
+    // MODEL-FLOW-016-T10. The fetch now lives in the parent
+    // (Phase3TrainingConfig) — every branch this file exercises returns
+    // before these fetched-state props are ever read, same as it did
+    // when the panel fetched them itself.
+    splitStats: null,
+    loading: false,
+    missing: null,
+    refusal: null,
+    error: null,
   }
 }
 
@@ -34,13 +45,7 @@ describe('SplitDistributionPanel — honest states', () => {
   })
 
   it('no committed artifact', () => {
-    render(
-      <SplitDistributionPanel
-        {...baseProps()}
-        artifactId={null}
-        hasArtifact={false}
-      />,
-    )
+    render(<SplitDistributionPanel {...baseProps()} hasArtifact={false} />)
     expect(screen.getByText(/has no stored artifact yet/)).toBeInTheDocument()
   })
 

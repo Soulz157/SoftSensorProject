@@ -398,6 +398,11 @@ export class ModelDraftAuthorizedService {
         type: 'ERROR',
       });
     }
+    // Bound to a new const, not reused as `run.modelKey` further down —
+    // TS's narrowing on a property access (as opposed to a local binding)
+    // is not guaranteed to survive the `await getRunManifest(...)` call
+    // between this check and the transaction below.
+    const modelObjectKey = run.modelKey;
 
     const existingName = await this.prisma.model.findFirst({
       where: {
@@ -439,13 +444,18 @@ export class ModelDraftAuthorizedService {
     // before the trainer image that added this field) must not fail the
     // save; framework_versions is simply absent from this Model's
     // provenance, same "honest legacy null" MODEL-FLOW-010-T06 established.
+    // MODEL-SERVE-001-T01: model_sha256 read in the same call — it goes
+    // onto ModelVersion.modelChecksum below, same honest-legacy-null policy.
     let frameworkVersions: Record<string, string> | null = null;
+    let modelChecksum: string | null = null;
     if (run.manifestKey) {
       try {
-        frameworkVersions = (await getRunManifest(run.manifestKey))
-          .framework_versions;
+        const manifest = await getRunManifest(run.manifestKey);
+        frameworkVersions = manifest.framework_versions;
+        modelChecksum = manifest.model_sha256 ?? null;
       } catch {
         frameworkVersions = null;
+        modelChecksum = null;
       }
     }
 
@@ -497,6 +507,49 @@ export class ModelDraftAuthorizedService {
           where: { id: draftId },
           data: { status: 'SAVED', savedModelId: created.id },
         });
+
+        // MODEL-SERVE-001-T03. Save Model creates version 1 in STAGING,
+        // never PRODUCTION — saving is not deploying (CLAUDE.md §8/§13). In
+        // the SAME transaction as the Model create: a Model with no version
+        // row is a state nothing downstream (promote/rollback/serving) can
+        // interpret. `version: 1` is hardcoded, not max()+1 — `created` is a
+        // brand-new Model in this same transaction, so no other version can
+        // exist yet; a retrain (MODEL-SERVE-004) creating a later version
+        // needs the max()+1 allocation DS-LAKE-009-T03 uses, this path does
+        // not. Every field below is copied from the adopted run's own
+        // pinned columns (goldArtifactId/goldObjectKey/artifactChecksum/
+        // featureSpecKey), one hop, never re-derived through the dataset's
+        // CURRENT artifact (MODEL-SERVE-000-T03/T07's findings) — resolved
+        // per decisions.open_question_pin_by_pointer_or_copy_bytes as a
+        // POINTER, matching MODEL-FLOW-007-T10's own adopt-by-pointer rule:
+        // this row references the run's bytes, it never copies them.
+        await tx.modelVersion.create({
+          data: {
+            modelId: created.id,
+            version: 1,
+            sourceRunId: run.id,
+            sourceDatasetId: run.datasetId,
+            goldArtifactId: run.goldArtifactId,
+            goldObjectKey: run.goldObjectKey,
+            artifactChecksum: run.artifactChecksum,
+            featureSpecKey: run.featureSpecKey,
+            modelObjectKey,
+            modelChecksum,
+            algorithm: run.algorithm,
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+            hyperparameters: JSON.parse(JSON.stringify(run.hyperparameters)),
+            imageDigest: run.imageDigest,
+            ...(frameworkVersions !== null && {
+              // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+              frameworkVersions: JSON.parse(JSON.stringify(frameworkVersions)),
+            }),
+            ...(run.metrics != null && {
+              // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+              metrics: JSON.parse(JSON.stringify(run.metrics)),
+            }),
+          },
+        });
+
         return created;
       });
 

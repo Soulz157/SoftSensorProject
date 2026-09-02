@@ -25,6 +25,7 @@ import { ArtifactCleanupModule } from './api/v1/artifact-cleanup/artifact-cleanu
 import { ModelDraftCleanupModule } from './api/v1/model-draft-cleanup/model-draft-cleanup.module';
 import { ModelRunModule } from './api/v1/model-run/model-run.module';
 import { TrainningContainerModule } from './api/v1/trainning-container/trainning-container.module';
+import { ModelVersionModule } from './api/v1/model-version/model-version.module';
 
 @Module({
   imports: [
@@ -68,6 +69,7 @@ import { TrainningContainerModule } from './api/v1/trainning-container/trainning
     ModelDraftCleanupModule,
     ModelRunModule,
     TrainningContainerModule,
+    ModelVersionModule,
   ],
   providers: [
     {

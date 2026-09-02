@@ -1,0 +1,56 @@
+# Load-bearing, not housekeeping. The Dockerfile does `COPY app/ /app/`, so
+# anything sitting in app/ that is not excluded here ships in a production image.
+
+# Stale caches from local dev. Harmless at import (Python 3 will not import a
+# .pyc without its .py in __pycache__), but they bloat the image and their
+# mtimes break the build-time compileall's timestamp match, causing every module
+# to be re-parsed on every run.
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Tests live outside app/ in this layout, so they are not copied by the COPY
+# above — listed anyway so the exclusion survives someone moving them in.
+# Both spellings: this image uses `test/`, but `tests/` is the more common
+# convention and would otherwise ship silently if the directory were renamed.
+test/
+tests/
+conftest.py
+.coverage
+htmlcov/
+
+# Never, under any circumstance. This container is credential-free by design:
+# it talks to the internal API with a run token from the environment and to
+# object storage over presigned URLs, and holds no S3 credentials at all.
+.env
+.env.*
+*.pem
+*.key
+credentials*
+secrets*
+
+# Local scratch that has a habit of appearing next to the code.
+*.parquet
+*.joblib
+*.ipynb
+.ipynb_checkpoints/
+notebooks/
+scratch/
+tmp/
+
+# VCS and editor state.
+.git/
+.gitignore
+.github/
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# The Dockerfile itself and its siblings — outside app/, so not copied, but
+# excluding them also keeps them out of the build context hash.
+Dockerfile
+.dockerignore

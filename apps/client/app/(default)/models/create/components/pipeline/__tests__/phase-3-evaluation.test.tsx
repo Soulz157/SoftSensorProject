@@ -28,12 +28,24 @@ const h = vi.hoisted(() => ({
     manifest: null as unknown,
     loading: false,
     error: null as string | null,
+    triggerScoring: async () => {},
   },
 }))
 
-vi.mock('@/hooks/model/use-draft-run-evaluation', () => ({
-  useDraftRunEvaluation: () => h.result,
-}))
+// MODEL-FLOW-016-T11. `cvScoringPhaseOf` is a pure derivation off `run` —
+// kept real via `importOriginal` rather than re-mocked, so this file only
+// fakes the network-backed half of the module (same discipline as every
+// other hook mock in this suite: mock the fetch, not the module's own logic).
+vi.mock('@/hooks/model/use-draft-run-evaluation', async importOriginal => {
+  const actual =
+    await importOriginal<
+      typeof import('@/hooks/model/use-draft-run-evaluation')
+    >()
+  return {
+    ...actual,
+    useDraftRunEvaluation: () => h.result,
+  }
+})
 
 const NAV = { goTo: vi.fn() } as unknown as UsePipelineNavResult
 
@@ -83,6 +95,7 @@ function renderStep(overrides: Partial<typeof h.result> = {}) {
     algorithm: 'ols',
     metrics: METRICS,
     trainedAt: '2026-02-17T08:06:00.000Z',
+    cvFoldsKey: null,
   })
   return render(
     <Provider store={store}>

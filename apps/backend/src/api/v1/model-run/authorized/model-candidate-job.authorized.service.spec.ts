@@ -1,6 +1,7 @@
 import { NotFoundException } from '@nestjs/common';
 import { AppException } from '@softsensor/common';
 import { ModelCandidateJobAuthorizedService } from './model-candidate-job.authorized.service';
+import { CreateCandidateJobSchema } from './dto/model-candidate-job.authorized.dto';
 import * as pythonClient from '@/lib/python-preprocess-client';
 import * as tuningGrid from '@/lib/tuning-grid';
 
@@ -122,6 +123,157 @@ describe('ModelCandidateJobAuthorizedService', () => {
         jest.fn().mockResolvedValue({ id: 'run-2' }),
     };
   }
+
+  /**
+   * [fix]. `.refine()` guarding the loosened `.min(1)` array bound —
+   * HYPERPARAMETER_SEARCH may send exactly 1 candidate (createJob expands
+   * it); ALGORITHM_SWEEP/SWEEP_THEN_TUNE still need >=2 (one candidate
+   * there is a normal training run, not a sweep).
+   */
+  describe('CreateCandidateJobSchema', () => {
+    const BASE = {
+      goldArtifactId: '123e4567-e89b-12d3-a456-426614174000',
+      targetY: 'TI-101',
+      candidates: [{ algorithm: 'ridge', hyperparameters: { alpha: 1 } }],
+    };
+
+    it('accepts a single candidate for HYPERPARAMETER_SEARCH', () => {
+      const result = CreateCandidateJobSchema.safeParse({
+        ...BASE,
+        kind: 'HYPERPARAMETER_SEARCH',
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('refuses a single candidate for ALGORITHM_SWEEP', () => {
+      const result = CreateCandidateJobSchema.safeParse({
+        ...BASE,
+        kind: 'ALGORITHM_SWEEP',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('refuses a single candidate for SWEEP_THEN_TUNE', () => {
+      const result = CreateCandidateJobSchema.safeParse({
+        ...BASE,
+        kind: 'SWEEP_THEN_TUNE',
+      });
+      expect(result.success).toBe(false);
+    });
+  });
+
+  /**
+   * [fix]. "allow find best parameter when select 1 algorithm" —
+   * HYPERPARAMETER_SEARCH is a job kind that existed server-side already
+   * (schema, this method, polling, selection) but had no client caller and
+   * no test coverage of its own before this fix. `createJob` now expands a
+   * single-candidate HYPERPARAMETER_SEARCH request via `tuningCandidatesFor`
+   * (already mocked at file scope for the SWEEP_THEN_TUNE phase-2 tests
+   * below) — the SAME curated grid, never a second copy.
+   */
+  describe('createJob — HYPERPARAMETER_SEARCH single-candidate expansion', () => {
+    // Same local-reset convention as the SWEEP_THEN_TUNE phase-transition
+    // block below — this mock is shared at file scope with no global
+    // clearAllMocks, so a stale call from an earlier test in this describe
+    // block would otherwise leak into `.not.toHaveBeenCalled()` assertions.
+    beforeEach(() => {
+      mockedTuningCandidatesFor.mockReset();
+    });
+
+    it('expands 1 candidate into base + curated variants, all phase 1', async () => {
+      mockedTuningCandidatesFor.mockReturnValue([
+        { alpha: 0.01 },
+        { alpha: 10 },
+      ]);
+      const prisma = makePrisma();
+      const runLaunch = makeRunLaunch();
+      const service = new ModelCandidateJobAuthorizedService(
+        prisma as never,
+        runLaunch as never,
+      );
+
+      await service.createJob(
+        'draft-1',
+        {
+          goldArtifactId: 'gold-1',
+          targetY: 'TI-101',
+          kind: 'HYPERPARAMETER_SEARCH',
+          candidates: [{ algorithm: 'ridge', hyperparameters: { alpha: 1 } }],
+        } as never,
+        'user-1',
+        'ADMIN',
+      );
+
+      expect(mockedTuningCandidatesFor).toHaveBeenCalledWith('ridge', {
+        alpha: 1,
+      });
+      const createCall = prisma.modelCandidateJob.create.mock.calls[0][0];
+      expect(createCall.data.totalRuns).toBe(3);
+      expect(createCall.data.candidates).toEqual([
+        { algorithm: 'ridge', hyperparameters: { alpha: 1 }, phase: 1 },
+        { algorithm: 'ridge', hyperparameters: { alpha: 0.01 }, phase: 1 },
+        { algorithm: 'ridge', hyperparameters: { alpha: 10 }, phase: 1 },
+      ]);
+    });
+
+    it('refuses (400), naming the algorithm, when the grid has no distinct variants', async () => {
+      mockedTuningCandidatesFor.mockReturnValue([]);
+      const prisma = makePrisma();
+      const runLaunch = makeRunLaunch();
+      const service = new ModelCandidateJobAuthorizedService(
+        prisma as never,
+        runLaunch as never,
+      );
+
+      await expect(
+        service.createJob(
+          'draft-1',
+          {
+            goldArtifactId: 'gold-1',
+            targetY: 'TI-101',
+            kind: 'HYPERPARAMETER_SEARCH',
+            candidates: [{ algorithm: 'lstm', hyperparameters: {} }],
+          } as never,
+          'user-1',
+          'ADMIN',
+        ),
+      ).rejects.toMatchObject(
+        expect.objectContaining({
+          statusCode: 400,
+          message: expect.stringContaining('lstm'),
+        }),
+      );
+      expect(prisma.modelCandidateJob.create).not.toHaveBeenCalled();
+    });
+
+    it('does not expand an ALGORITHM_SWEEP request (2+ candidates, different algorithms) — regression', async () => {
+      const prisma = makePrisma();
+      const runLaunch = makeRunLaunch();
+      const service = new ModelCandidateJobAuthorizedService(
+        prisma as never,
+        runLaunch as never,
+      );
+
+      await service.createJob(
+        'draft-1',
+        {
+          goldArtifactId: 'gold-1',
+          targetY: 'TI-101',
+          kind: 'ALGORITHM_SWEEP',
+          candidates: [
+            { algorithm: 'ols', hyperparameters: {} },
+            { algorithm: 'ridge', hyperparameters: { alpha: 1 } },
+          ],
+        } as never,
+        'user-1',
+        'ADMIN',
+      );
+
+      expect(mockedTuningCandidatesFor).not.toHaveBeenCalled();
+      const createCall = prisma.modelCandidateJob.create.mock.calls[0][0];
+      expect(createCall.data.totalRuns).toBe(2);
+    });
+  });
 
   describe('advanceJobForRun', () => {
     it('is a no-op once the job has already moved past this run (idempotency guard)', async () => {

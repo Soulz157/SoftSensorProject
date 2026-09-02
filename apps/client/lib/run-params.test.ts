@@ -13,24 +13,44 @@ import {
 
 /**
  * MODEL-FLOW-012-V05. A static source guard, not a hand-copied table: reads
- * `images/trainer/train.py` itself and extracts exactly the keys each
- * `build_model` branch reads via `hyperparameters.get("KEY", ...)`. If a UI
- * knob is added to `HYPERPARAMS` (lib/training-config.ts) without a matching
- * `.get()` in the trainer, or `build_model`'s per-algorithm reads drift,
- * this fails — a hand-typed key list would keep passing while the panel
- * silently claimed a value took effect that the estimator never saw.
+ * the trainer's own source and extracts exactly the keys each `build_model`
+ * branch reads via `hyperparameters.get("KEY", ...)`. If a UI knob is added to
+ * `HYPERPARAMS` (lib/training-config.ts) without a matching `.get()` in the
+ * trainer, or `build_model`'s per-algorithm reads drift, this fails — a
+ * hand-typed key list would keep passing while the panel silently claimed a
+ * value took effect that the estimator never saw.
+ *
+ * TWO files now, not one. The trainer image was split into a package: the
+ * estimator factory moved to `app/models.py`, and the sequence path that reads
+ * `sequence_length` one level above it moved to `app/pipelines/windowed.py`.
+ * Both are read live, for the same reason the single file was.
+ *
+ * A wrong path here fails at readFileSync with ENOENT, BEFORE either "has it
+ * moved or been renamed?" guard below can report it — so if these modules move
+ * again, these two constants are the first thing to fix, not those messages.
  */
-const TRAINER_FILE = path.resolve(__dirname, '../../../images/trainer/train.py')
+const MODELS_FILE = path.resolve(
+  __dirname,
+  '../../../images/trainer/app/models.py',
+)
+const WINDOWED_FILE = path.resolve(
+  __dirname,
+  '../../../images/trainer/app/pipelines/windowed.py',
+)
 
 function readTrainer(): string {
-  return readFileSync(TRAINER_FILE, 'utf-8')
+  return readFileSync(MODELS_FILE, 'utf-8')
+}
+
+function readWindowedStrategy(): string {
+  return readFileSync(WINDOWED_FILE, 'utf-8')
 }
 
 function extractBuildModelBody(source: string): string {
   const start = source.indexOf('def build_model(')
   if (start === -1) {
     throw new Error(
-      'build_model not found in train.py — has it moved or been renamed?',
+      'build_model not found in app/models.py — has it moved or been renamed?',
     )
   }
   const rest = source.slice(start)
@@ -39,24 +59,32 @@ function extractBuildModelBody(source: string): string {
 }
 
 /**
- * MODEL-FLOW-014-T07. `main()`'s `is_sequence` branch (train.py:818-839),
- * where `sequence_length` is actually consumed — ONE LEVEL UP from
- * `build_model`, before it is ever called (see `CONSUMED_HYPERPARAM_KEYS`'s
- * own doc comment for why this needs its own extraction rather than being
- * silently absent from a build_model-only scan).
+ * MODEL-FLOW-014-T07. The windowed strategy's `run()`, where `sequence_length`
+ * is actually consumed — ONE LEVEL UP from `build_model`, before it is ever
+ * called (see `CONSUMED_HYPERPARAM_KEYS`'s own doc comment for why this needs
+ * its own extraction rather than being silently absent from a build_model-only
+ * scan).
+ *
+ * The pre-split version scanned `main()`'s `if is_sequence:` branch and bounded
+ * it with the matching `\n    else:`. Both anchors are gone. `_select_strategy`
+ * still asks `is_sequence`, but it merely RETURNS the strategy and reads no
+ * hyperparameters at all — pointing at it would scan a block that cannot
+ * contain the key and conclude, wrongly, that nothing consumes it. Anchoring on
+ * `def run(` in the windowed module instead: one function, whole file, no
+ * terminator heuristic needed.
  */
 function extractSequenceBranchBody(source: string): string {
-  const start = source.indexOf('if is_sequence:')
+  const start = source.indexOf('def run(')
   if (start === -1) {
     throw new Error(
-      'main()\'s "if is_sequence:" branch not found in train.py — has it ' +
-        "moved or been renamed? CONSUMED_HYPERPARAM_KEYS.lstm/gru's " +
+      'def run( not found in app/pipelines/windowed.py — has the windowed ' +
+        "strategy moved or been renamed? CONSUMED_HYPERPARAM_KEYS.lstm/gru's " +
         'sequence_length entry can no longer be verified.',
     )
   }
   const rest = source.slice(start)
-  const elseIdx = rest.indexOf('\n    else:')
-  return elseIdx === -1 ? rest : rest.slice(0, elseIdx)
+  const nextDef = rest.indexOf('\ndef ', 1)
+  return nextDef === -1 ? rest : rest.slice(0, nextDef)
 }
 
 const HEADER_TO_ALGORITHM: { pattern: RegExp; algorithm: Algorithm }[] = [
@@ -73,12 +101,21 @@ const HEADER_TO_ALGORITHM: { pattern: RegExp; algorithm: Algorithm }[] = [
   { pattern: /if algorithm == "random_forest":/, algorithm: 'random_forest' },
   { pattern: /if algorithm == "lightgbm":/, algorithm: 'lightgbm' },
   { pattern: /if algorithm == "xgboost":/, algorithm: 'xgboost' },
-  // lstm/gru share ONE branch (`if algorithm in ("lstm", "gru"):`) — handled
-  // separately below rather than folded into this table, since one header
-  // maps to TWO algorithms here, unlike every other row.
+  // lstm/gru share ONE branch (`if algorithm in SEQUENCE_ALGORITHMS:`) —
+  // handled separately below rather than folded into this table, since one
+  // header maps to TWO algorithms here, unlike every other row.
 ]
 
-const LSTM_GRU_HEADER = /if algorithm in \("lstm", "gru"\):/
+/**
+ * The sequence branch spells its membership test through a named constant
+ * rather than an inline tuple, unlike every other row above. That indirection
+ * is why `SEQUENCE_ALGORITHMS_TUPLE` exists beside it: matching the header
+ * alone would let the constant grow a third algorithm — silently mapping this
+ * one block to an algorithm whose consumed keys nothing here checks — while
+ * this suite kept passing. Both are asserted, so the pair cannot drift.
+ */
+const LSTM_GRU_HEADER = /if algorithm in SEQUENCE_ALGORITHMS:/
+const SEQUENCE_ALGORITHMS_TUPLE = /^SEQUENCE_ALGORITHMS = \("lstm", "gru"\)$/m
 
 function headerIndices(
   buildModelBody: string,
@@ -87,7 +124,7 @@ function headerIndices(
     const match = pattern.exec(buildModelBody)
     if (!match) {
       throw new Error(
-        `train.py no longer has a build_model branch matching ${pattern} ` +
+        `app/models.py no longer has a build_model branch matching ${pattern} ` +
           `(expected for "${algorithm}") — CONSUMED_HYPERPARAM_KEYS is stale.`,
       )
     }
@@ -97,7 +134,7 @@ function headerIndices(
   const lstmMatch = LSTM_GRU_HEADER.exec(buildModelBody)
   if (!lstmMatch) {
     throw new Error(
-      'train.py no longer has a build_model branch matching ' +
+      'app/models.py no longer has a build_model branch matching ' +
         `${LSTM_GRU_HEADER} — CONSUMED_HYPERPARAM_KEYS.lstm/gru is stale.`,
     )
   }
@@ -135,8 +172,8 @@ function extractConsumedKeys(
     result[algorithm] = [...new Set(keys)]
   })
 
-  // sequence_length is consumed one level up, in main()'s is_sequence
-  // branch — merge it in for lstm/gru specifically rather than leaving the
+  // sequence_length is consumed one level up, in the windowed strategy's
+  // run() — merge it in for lstm/gru specifically rather than letting the
   // build_model-only scan conclude it is unconsumed.
   if (/\.get\(\s*\n?\s*"sequence_length"/.test(sequenceBranchBody)) {
     result.lstm = [...(result.lstm ?? []), 'sequence_length']
@@ -179,16 +216,23 @@ function extractSeedConsumingAlgorithms(
   return consuming
 }
 
-describe('CONSUMED_HYPERPARAM_KEYS matches images/trainer/train.py, read live', () => {
-  const source = readTrainer()
-  const buildModelBody = extractBuildModelBody(source)
-  const sequenceBranchBody = extractSequenceBranchBody(source)
+describe('CONSUMED_HYPERPARAM_KEYS matches the trainer package, read live', () => {
+  const modelsSource = readTrainer()
+  const buildModelBody = extractBuildModelBody(modelsSource)
+  const sequenceBranchBody = extractSequenceBranchBody(readWindowedStrategy())
   const actual = extractConsumedKeys(buildModelBody, sequenceBranchBody)
+
+  it('SEQUENCE_ALGORITHMS is still exactly ("lstm", "gru")', () => {
+    // The one branch header that routes through a constant. If a third
+    // algorithm joins the tuple it shares this block's keys, and the loop
+    // below would never notice — it only iterates the catalogue's OWN names.
+    expect(modelsSource).toMatch(SEQUENCE_ALGORITHMS_TUPLE)
+  })
 
   for (const algorithm of Object.keys(
     CONSUMED_HYPERPARAM_KEYS,
   ) as Algorithm[]) {
-    it(`${algorithm}: the catalogue's consumed-key list equals what train.py actually reads`, () => {
+    it(`${algorithm}: the catalogue's consumed-key list equals what the trainer actually reads`, () => {
       expect([...(actual[algorithm] ?? [])].sort()).toEqual(
         [...CONSUMED_HYPERPARAM_KEYS[algorithm]].sort(),
       )
@@ -196,11 +240,11 @@ describe('CONSUMED_HYPERPARAM_KEYS matches images/trainer/train.py, read live', 
   }
 })
 
-describe('SEED_CONSUMING_ALGORITHMS matches images/trainer/train.py, read live', () => {
+describe('SEED_CONSUMING_ALGORITHMS matches images/trainer/app/models.py, read live', () => {
   const buildModelBody = extractBuildModelBody(readTrainer())
   const actual = extractSeedConsumingAlgorithms(buildModelBody)
 
-  it('the catalogue equals what train.py actually forwards seed/random_state to', () => {
+  it('the catalogue equals what build_model actually forwards seed/random_state to', () => {
     expect([...SEED_CONSUMING_ALGORITHMS].sort()).toEqual([...actual].sort())
   })
 

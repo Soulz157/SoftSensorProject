@@ -36,14 +36,29 @@ export const CreateCandidateJobSchema = z
     trainTestSplit: z.coerce.number().min(0.5).max(0.95).optional(),
     kind: CandidateJobKindEnum,
 
-    // At least 2 — one candidate is not a search/sweep, it is a normal
-    // training run (createDraftRunService already exists for that). Capped
-    // well below MIN_LABELLED_ROWS-scale concerns: this is a count of
-    // CONTAINER spawns, and an unbounded list would let one request queue an
-    // unbounded amount of compute with no review point.
-    candidates: z.array(CandidateSchema).min(2).max(20),
+    // At least 1 for HYPERPARAMETER_SEARCH — a single algorithm + its
+    // current hyperparameters, expanded server-side into the curated
+    // TUNING_GRID variants by createJob (tuning-grid.ts's own grid stays
+    // the one place this shortlist is declared, never duplicated
+    // client-side). ALGORITHM_SWEEP/SWEEP_THEN_TUNE keep requiring 2 — one
+    // candidate there is not a sweep, it is a normal training run
+    // (createDraftRunService already exists for that) — enforced by the
+    // .refine() below since the bare array bound can no longer say it.
+    // Capped well below MIN_LABELLED_ROWS-scale concerns: this is a count
+    // of CONTAINER spawns, and an unbounded list would let one request
+    // queue an unbounded amount of compute with no review point.
+    candidates: z.array(CandidateSchema).min(1).max(20),
   })
-  .strict();
+  .strict()
+  .refine(
+    (data) =>
+      data.kind === 'HYPERPARAMETER_SEARCH' || data.candidates.length >= 2,
+    {
+      message:
+        'ALGORITHM_SWEEP/SWEEP_THEN_TUNE need at least 2 candidates — one candidate is a normal training run, not a sweep.',
+      path: ['candidates'],
+    },
+  );
 
 export class CreateCandidateJobDto extends createZodDto(
   CreateCandidateJobSchema,

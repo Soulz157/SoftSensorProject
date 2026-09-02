@@ -18,6 +18,18 @@ function baseProps() {
     seed: undefined,
     onSeedChange: vi.fn(),
     algorithms: ['random_forest'] as Algorithm[],
+    // MODEL-FLOW-016-T10. datasetId/artifactId null keeps CvControl's own
+    // useArtifactSplitStats/useArtifactHoldout calls disabled (both hooks'
+    // own `enabled` gates require both non-null) — these Seed-control
+    // tests have no dataset fixture and must not trigger a real fetch.
+    nSplits: undefined,
+    onNSplitsChange: vi.fn(),
+    findBestModel: false,
+    datasetId: null,
+    artifactId: null,
+    hasArtifact: false,
+    maxAdmissibleK: null,
+    splitStatsLoading: false,
   }
 }
 

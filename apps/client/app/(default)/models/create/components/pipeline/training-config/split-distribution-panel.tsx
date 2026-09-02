@@ -7,25 +7,43 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { CompareTagsPopover } from '@/app/(default)/data-studio/create/components/processing/compare-tags-popover'
 import { TagBoxplotChart } from '@/app/(default)/data-studio/create/components/chart/tag-boxplot-chart'
 import { MAX_COMPARE } from '@/hooks/dataset/use-compare-tags'
-import { useArtifactSplitStats } from '@/hooks/dataset/artifact/use-artifact-split-stats'
 import { chartColorVar, resolveTagMeta } from '@/lib/mock-readings'
 import type {
   DraftBoxplotResult,
   DraftTagBoxplot,
 } from '@/services/dataset-draft'
+import type { DraftSplitStatsResult } from '@/services/dataset-version'
 import { mpSplitStatsTagsAtom, type Algorithm } from '@/store/model-pipeline'
 
 interface Props {
   datasetId: string | null
-  artifactId: string | null
   hasArtifact: boolean
   allTags: string[]
   targetVariables: string[]
-  /** PERCENT (0-100) — the same unit `CoreConfig`'s own `trainTestSplit`
-   * prop carries. Converted to a fraction once, here, at this panel's own
-   * boundary, matching `use-model-training.ts`'s rule. */
-  trainTestSplitPercent: number
   algorithms: Algorithm[]
+  /** MODEL-FLOW-016-T10. The COMMITTED value — `undefined` means CV is
+   * off. Mirrors the fetch's own sourcing: this panel reads what will
+   * actually run, fetched once per Apply, never per keystroke. */
+  nSplits: number | undefined
+  /**
+   * MODEL-FLOW-016-T10. The fetch itself now lives in the PARENT
+   * (`Phase3TrainingConfig`), not here — `CoreConfig`'s own `CvControl`
+   * needs the identical `max_admissible_k` this panel needs, and each
+   * calling `useArtifactSplitStats` independently doubled the request on
+   * every mount (caught by this feature's own V07 test: "Apply gates the
+   * split-stats fetch... once" started failing at 2 calls, not 1). Worse
+   * than the duplicate request itself: `CoreConfig` was passed the DRAFT
+   * `trainTestSplit` (live, pre-Apply), so its own call would have
+   * refetched on every ratio-slider drag — exactly the per-keystroke
+   * refetch MODEL-FLOW-014-T08's Apply boundary exists to prevent. One
+   * fetch, in the parent, sourced from the COMMITTED config either way,
+   * fixes both problems at once.
+   */
+  splitStats: DraftSplitStatsResult | null
+  loading: boolean
+  missing: string | null
+  refusal: string | null
+  error: string | null
 }
 
 const TRAIN_COLOR = 'var(--chart-1)'
@@ -127,12 +145,16 @@ function fmtRows(n: number): string {
  */
 export function SplitDistributionPanel({
   datasetId,
-  artifactId,
   hasArtifact,
   allTags,
   targetVariables,
-  trainTestSplitPercent,
   algorithms,
+  nSplits,
+  splitStats,
+  loading,
+  missing,
+  refusal,
+  error,
 }: Props) {
   const targetY = targetVariables.length === 1 ? targetVariables[0]! : null
 
@@ -175,17 +197,12 @@ export function SplitDistributionPanel({
   // showing a tabular cut as if it were theirs.
   const hasSequenceAlgorithm = algorithms.some(a => a === 'lstm' || a === 'gru')
 
-  const splitRatio = trainTestSplitPercent / 100
-  const enabledTargetY = hasSequenceAlgorithm ? null : targetY
-
-  const { splitStats, loading, missing, refusal, error } =
-    useArtifactSplitStats(
-      datasetId,
-      artifactId,
-      selectedTags,
-      enabledTargetY,
-      splitRatio,
-    )
+  // MODEL-FLOW-016-T10. CV is TABULAR ONLY (T01(c), same gate
+  // `hasSequenceAlgorithm` already applies above) — `nSplits` can only be
+  // non-undefined for a non-sequence algorithm by construction (CoreConfig's
+  // own CvControl disables the toggle for lstm/gru), so no extra guard is
+  // needed here beyond what the parent's own fetch already establishes.
+  const cvMode = nSplits !== undefined
 
   if (!datasetId) {
     return <EmptyPanel>No dataset selected — go back to Step 1.</EmptyPanel>
@@ -248,6 +265,10 @@ export function SplitDistributionPanel({
     return <EmptyPanel>Could not load the split — {error}</EmptyPanel>
   }
 
+  if (cvMode) {
+    return <CvFoldPlan splitStats={splitStats} />
+  }
+
   const merged = mergeSplitSides(
     splitStats?.train ?? null,
     splitStats?.test ?? null,
@@ -259,7 +280,10 @@ export function SplitDistributionPanel({
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Layers className="h-3.5 w-3.5" />
-          {splitStats ? (
+          {splitStats &&
+          splitStats.cut_timestamp !== null &&
+          splitStats.train_labelled_rows !== null &&
+          splitStats.test_labelled_rows !== null ? (
             <span>
               Cut at{' '}
               <span className="font-medium text-foreground">
@@ -269,6 +293,9 @@ export function SplitDistributionPanel({
               {fmtRows(splitStats.test_labelled_rows)} test labelled rows
             </span>
           ) : (
+            // Ratio mode, not yet loaded — CV mode returns via CvFoldPlan
+            // above before this branch is ever reached (cvMode is checked
+            // first), so this null case is exclusively "move the slider".
             <span>Move the split slider to preview the cut.</span>
           )}
         </div>
@@ -293,6 +320,95 @@ export function SplitDistributionPanel({
         }
         seriesStyle={tag => merged.styleMap.get(tag) ?? { color: TRAIN_COLOR }}
       />
+    </div>
+  )
+}
+
+/**
+ * MODEL-FLOW-016-T10. The fold plan CV will actually run, shown BEFORE the
+ * user pays for it — same purpose the ratio-mode boxplot above serves,
+ * different shape: no box statistics per this feature's own userDecisions
+ * ("k FOLDS LIVE IN ONE RUN... folds are SAMPLES to aggregate", not
+ * per-tag distributions to compare side by side). Row counts are shown
+ * beside every fold on purpose (this feature's own acceptance criterion:
+ * "so an expanding-window artefact cannot be misread as a period
+ * finding") — an expanding window means later folds train on
+ * increasingly more data, which reads as a trend unless the counts are
+ * right there to explain it.
+ */
+function CvFoldPlan({
+  splitStats,
+}: {
+  splitStats: DraftSplitStatsResult | null
+}) {
+  if (!splitStats || splitStats.folds === null) {
+    return (
+      <div className="space-y-2 rounded-lg border border-border p-3">
+        <Skeleton className="h-4 w-2/3" />
+        <Skeleton className="h-40 w-full" />
+      </div>
+    )
+  }
+
+  const { folds, n_splits, source_rows, distinct_labelled_values } = splitStats
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <Layers className="h-3.5 w-3.5" />
+        <span>
+          {n_splits} expanding fold{n_splits === 1 ? '' : 's'} over{' '}
+          {fmtRows(source_rows)} rows ({distinct_labelled_values} distinct
+          labelled values)
+        </span>
+      </div>
+
+      <div className="overflow-x-auto rounded-lg border border-border">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b border-border bg-muted/40 text-left text-muted-foreground">
+              <th className="px-3 py-2 font-medium">Fold</th>
+              <th className="px-3 py-2 font-medium">Cut</th>
+              <th className="px-3 py-2 font-medium text-right">Train rows</th>
+              <th className="px-3 py-2 font-medium text-right">Test rows</th>
+              <th className="px-3 py-2 font-medium text-right">
+                Distinct (test)
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {folds.map((fold, i) => (
+              <tr
+                key={i}
+                className={i > 0 ? 'border-t border-border' : undefined}
+              >
+                <td className="px-3 py-2 font-medium text-foreground">
+                  {i + 1}
+                </td>
+                <td className="px-3 py-2 text-muted-foreground">
+                  {new Date(fold.cut_timestamp).toLocaleString()}
+                </td>
+                <td className="px-3 py-2 text-right font-mono tabular-nums">
+                  {fmtRows(fold.train_rows)}
+                </td>
+                <td className="px-3 py-2 text-right font-mono tabular-nums">
+                  {fmtRows(fold.test_rows)}
+                </td>
+                <td className="px-3 py-2 text-right font-mono tabular-nums">
+                  {fold.distinct}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="text-[11px] text-muted-foreground">
+        Expanding window — each fold trains on everything before its own test
+        window, so later folds train on more rows. A fold with far fewer
+        distinct values than its neighbours is a real finding, not noise — check
+        what changed around its cut.
+      </p>
     </div>
   )
 }

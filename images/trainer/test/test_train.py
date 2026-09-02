@@ -1,41 +1,37 @@
-"""DS-LAKE-023-T03/D4: `train.py`'s `labelled_mask` — the non-Good-target
-mask shared between the train/test split (steps 6-7) and holdout scoring.
+"""DS-LAKE-023-T03/D4: `labelled_mask` — the non-Good-target mask shared
+between the train/test split (steps 6-7) and holdout scoring — plus the other
+pure functions this image can exercise without a live run.
 
-No existing test infrastructure covers this file (it is a standalone Docker
-training-container entrypoint, never imported outside its own container) —
-this is new coverage for the ONE pure function this fix introduces/extracts,
-not an attempt to test the whole training flow (which needs a live PI
-container, S3 credentials, and a real training run to exercise end to end).
+No existing test infrastructure covers this image (it is a standalone Docker
+training container, never imported outside itself) — this is coverage for the
+pure functions only, not an attempt to test the whole training flow (which
+needs a live PI container, S3 credentials, and a real training run to exercise
+end to end).
 
-`train.py` reads RUN_ID/RUN_TOKEN/API_BASE from the environment at module
-scope, so those are set to synthetic placeholders before import.
+Imports are per-module and no longer routed through `train.py`: the module
+split moved every function below out of the entrypoint, which now holds only
+the mode dispatch. The names and behaviour are unchanged — only where they
+live is.
+
+The environment placeholders the single-file version needed are gone with it.
+RUN_ID/RUN_TOKEN/API_BASE are read by `RunContext.from_env()`, called
+explicitly by the entrypoint, so importing any function here no longer touches
+the environment at all (see config.py's module docstring for why that was the
+point of moving it). `sys.path` is set up by the image-root `conftest.py`,
+which puts `app/` on it exactly as the container's own `sys.path[0]` does — so
+these are the same import names the running image resolves.
 """
 
-import os
-import sys
-from pathlib import Path
+import numpy as np
+import pandas as pd
+import pytest
 
-os.environ.setdefault("RUN_ID", "test-run")
-os.environ.setdefault("RUN_TOKEN", "test-token")
-os.environ.setdefault("API_BASE", "http://localhost:0")
-
-sys.path.insert(0, str(Path(__file__).parent))
-
-import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
-import pytest  # noqa: E402
-
-from train import (  # noqa: E402
-    MAX_LOSS_HISTORY_POINTS,
-    STATUS_GOOD,
-    assert_no_nan_features,
-    assert_no_window_leakage,
-    build_windows,
-    chronological_split_windows,
-    extract_loss_history,
-    labelled_mask,
-    status_column,
-)
+from config import STATUS_GOOD
+from guards import assert_no_nan_features, assert_no_window_leakage
+from labels import labelled_mask, status_column
+from metrics import MAX_LOSS_HISTORY_POINTS, extract_loss_history
+from splits import chronological_split_windows, expanding_fold_plan
+from windows import build_windows
 
 
 def _frame(target_values: list[float | None], statuses: list[int] | None = None) -> pd.DataFrame:
@@ -306,6 +302,106 @@ def test_assert_no_nan_features_catches_nan_on_a_non_target_row():
 def test_assert_no_nan_features_empty_array_does_not_raise():
     X = np.empty((0, 3, 2))
     assert_no_nan_features(X, "training")  # must not raise
+
+
+# ── MODEL-FLOW-016-T03: expanding_fold_plan ─────────────────────────────
+#
+# This mirrors _expanding_fold_plan in apps/python's split_stats_service.py
+# — no cross-import is possible (separate container images), so the
+# guarantee both copies agree is: (a) both were independently checked
+# index-for-index against a REAL sklearn.model_selection.TimeSeriesSplit
+# (see split_stats_service.py's own MIN_LABELS_PER_FOLD comment for the
+# n/k values checked), and (b) both are pinned here against the SAME
+# formula, the same way test_split_stats_service.py pins its own copy.
+# The exact-value cross-system pin (this function's output against a real
+# /split-stats response for the same real artifact) happens once the
+# trainer image is built and a live run executes — see this feature's own
+# V01.
+
+
+def _cv_frame(n_rows: int, label_every: int) -> pd.DataFrame:
+    """A 1-minute grid, `n_rows` long, with `TI-101` Good only every
+    `label_every` rows — the sparse-target shape needed to prove a
+    labelled-frame cut differs from a naive row-count cut (V01's own claim,
+    restated for CV). STATUS_GOOD is 0 in this file, so the "bad" fallback
+    below must be a distinct nonzero value — not another 0, which would
+    silently mark every row Good and defeat the sparse-target fixture."""
+    ts = pd.date_range("2026-01-01", periods=n_rows, freq="min")
+    statuses = [
+        STATUS_GOOD if i % label_every == 0 else STATUS_GOOD + 1
+        for i in range(n_rows)
+    ]
+    return pd.DataFrame(
+        {
+            "timestamp": ts,
+            "TI-101": list(range(n_rows)),
+            status_column("TI-101"): pd.array(statuses, dtype="int8"),
+        }
+    )
+
+
+def test_expanding_fold_plan_is_expanding_and_strictly_chronological():
+    frame = _cv_frame(n_rows=12_000, label_every=37)
+    labelled = frame.loc[
+        frame[status_column("TI-101")] == STATUS_GOOD
+    ].sort_values("timestamp").reset_index(drop=True)
+
+    folds = expanding_fold_plan(labelled, "TI-101", k=5)
+
+    assert len(folds) == 5
+    train_rows = [f["train_rows"] for f in folds]
+    assert train_rows == sorted(train_rows)
+    assert len(set(train_rows)) == len(train_rows)  # strictly increasing
+    cuts = [f["cut_timestamp"] for f in folds]
+    assert cuts == sorted(cuts)
+    assert len(set(cuts)) == len(cuts)
+    # No gap, no overlap: fold 0's train plus every fold's test accounts
+    # for the entire labelled frame.
+    assert train_rows[0] + sum(f["test_rows"] for f in folds) == len(labelled)
+
+
+def test_expanding_fold_plan_cuts_on_labelled_rows_not_row_count():
+    # V01, restated for CV: label_every=37 does not divide evenly into any
+    # fold boundary, so the correct (labelled-frame) cut and a naive
+    # (row-count) cut land on different rows — a dense target would pass
+    # either rule and prove nothing.
+    frame = _cv_frame(n_rows=12_000, label_every=37)
+    labelled = frame.loc[
+        frame[status_column("TI-101")] == STATUS_GOOD
+    ].sort_values("timestamp").reset_index(drop=True)
+    k = 5
+    n_labelled = len(labelled)
+    test_size = n_labelled // (k + 1)
+
+    folds = expanding_fold_plan(labelled, "TI-101", k)
+
+    for i, fold in enumerate(folds):
+        correct_test_start = n_labelled - (k - i) * test_size
+        correct_cut = str(labelled.loc[correct_test_start, "timestamp"])
+        assert fold["cut_timestamp"] == correct_cut
+
+        naive_test_start = len(frame) - (k - i) * (len(frame) // (k + 1))
+        if 0 <= naive_test_start < len(frame):
+            naive_cut = str(frame.loc[naive_test_start, "timestamp"])
+            assert fold["cut_timestamp"] != naive_cut
+
+
+def test_expanding_fold_plan_remainder_lands_in_fold_zero_train():
+    # A remainder that does not divide evenly into (k+1) must land in fold
+    # 0's train window, never in any fold's test window — the SAME
+    # accounting real TimeSeriesSplit uses (verified live against it; see
+    # split_stats_service.py's own comment).
+    n = 103  # 103 // 6 = 17, remainder 1 -> fold 0's train absorbs it
+    frame = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-01-01", periods=n, freq="min"),
+            "TI-101": list(range(n)),
+        }
+    )
+    folds = expanding_fold_plan(frame, "TI-101", k=5)
+    test_size = n // 6
+    assert all(f["test_rows"] == test_size for f in folds)
+    assert folds[0]["train_rows"] == n - 5 * test_size  # absorbs the remainder
 
 
 if __name__ == "__main__":

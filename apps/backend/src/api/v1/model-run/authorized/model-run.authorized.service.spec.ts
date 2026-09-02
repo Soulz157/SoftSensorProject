@@ -4,6 +4,15 @@ import * as pythonClient from '@/lib/python-preprocess-client';
 jest.mock('@/lib/python-preprocess-client');
 
 const mockedPresignArtifact = pythonClient.presignArtifact as jest.Mock;
+// MODEL-FLOW-016-T08. The holdout presign is now a SEPARATE call
+// (presignRunObject), not a second call to presignArtifact — the whole
+// point of the fix (presignArtifact hard-refuses a run-scoped key). Mocked
+// separately so each test queues exactly one once-value per mock per
+// claim() call; chaining two mockResolvedValueOnce entries on ONE mock (as
+// this used to, when both calls went through presignArtifact) leaks an
+// unconsumed value into the next test, since jest.clearAllMocks() clears
+// call history but not queued once-implementations.
+const mockedPresignRunObject = pythonClient.presignRunObject as jest.Mock;
 const mockedReplayHoldoutForRun = pythonClient.replayHoldoutForRun as jest.Mock;
 const mockedPrepareHoldoutForRun =
   pythonClient.prepareHoldoutForRun as jest.Mock;
@@ -94,23 +103,13 @@ describe('ModelRunAuthorizedService', () => {
         row_count: 3,
         checksum: 'replay-checksum',
       });
-      mockedPresignArtifact
-        .mockResolvedValueOnce({
-          data_url: 'https://minio.example/gold-signed',
-          sidecar_urls: {
-            'feature_spec.json': 'https://minio.example/spec-signed',
-          },
-          checksum: 'gold-checksum',
-          row_count: 100,
-          expires_at: '2026-01-01T00:00:00Z',
-        })
-        .mockResolvedValueOnce({
-          data_url: 'https://minio.example/holdout-signed',
-          sidecar_urls: {},
-          checksum: 'holdout-checksum',
-          row_count: 3,
-          expires_at: '2026-01-01T00:00:00Z',
-        });
+      mockedPresignRunObject.mockResolvedValueOnce({
+        data_url: 'https://minio.example/holdout-signed',
+        sidecar_urls: {},
+        checksum: 'holdout-checksum',
+        row_count: 3,
+        expires_at: '2026-01-01T00:00:00Z',
+      });
 
       const service = new ModelRunAuthorizedService(
         prisma as never,
@@ -126,6 +125,9 @@ describe('ModelRunAuthorizedService', () => {
         target_key: 'drafts/draft-1/runs/run-1/validate_ready.parquet',
         holdout_from: '2026-01-08T00:00:00.000Z',
         overwrite: true,
+      });
+      expect(mockedPresignRunObject).toHaveBeenCalledWith({
+        source_key: 'drafts/draft-1/runs/run-1/validate_ready.parquet',
       });
       expect(result.holdoutDataUrl).toBe(
         'https://minio.example/holdout-signed',
@@ -155,23 +157,13 @@ describe('ModelRunAuthorizedService', () => {
         row_count: 3,
         checksum: 'replay-checksum',
       });
-      mockedPresignArtifact
-        .mockResolvedValueOnce({
-          data_url: 'https://minio.example/gold-signed',
-          sidecar_urls: {
-            'feature_spec.json': 'https://minio.example/spec-signed',
-          },
-          checksum: 'gold-checksum',
-          row_count: 100,
-          expires_at: '2026-01-01T00:00:00Z',
-        })
-        .mockResolvedValueOnce({
-          data_url: 'https://minio.example/holdout-signed',
-          sidecar_urls: {},
-          checksum: 'holdout-checksum',
-          row_count: 3,
-          expires_at: '2026-01-01T00:00:00Z',
-        });
+      mockedPresignRunObject.mockResolvedValueOnce({
+        data_url: 'https://minio.example/holdout-signed',
+        sidecar_urls: {},
+        checksum: 'holdout-checksum',
+        row_count: 3,
+        expires_at: '2026-01-01T00:00:00Z',
+      });
 
       const service = new ModelRunAuthorizedService(
         prisma as never,
@@ -244,23 +236,13 @@ describe('ModelRunAuthorizedService', () => {
         row_count: 5,
         checksum: 'prepare-checksum',
       });
-      mockedPresignArtifact
-        .mockResolvedValueOnce({
-          data_url: 'https://minio.example/gold-signed',
-          sidecar_urls: {
-            'feature_spec.json': 'https://minio.example/spec-signed',
-          },
-          checksum: 'gold-checksum',
-          row_count: 100,
-          expires_at: '2026-01-01T00:00:00Z',
-        })
-        .mockResolvedValueOnce({
-          data_url: 'https://minio.example/holdout-signed',
-          sidecar_urls: {},
-          checksum: 'holdout-checksum',
-          row_count: 5,
-          expires_at: '2026-01-01T00:00:00Z',
-        });
+      mockedPresignRunObject.mockResolvedValueOnce({
+        data_url: 'https://minio.example/holdout-signed',
+        sidecar_urls: {},
+        checksum: 'holdout-checksum',
+        row_count: 5,
+        expires_at: '2026-01-01T00:00:00Z',
+      });
 
       const service = new ModelRunAuthorizedService(
         prisma as never,
@@ -299,23 +281,13 @@ describe('ModelRunAuthorizedService', () => {
         row_count: 7,
         checksum: 'prepare-checksum',
       });
-      mockedPresignArtifact
-        .mockResolvedValueOnce({
-          data_url: 'https://minio.example/gold-signed',
-          sidecar_urls: {
-            'feature_spec.json': 'https://minio.example/spec-signed',
-          },
-          checksum: 'gold-checksum',
-          row_count: 100,
-          expires_at: '2026-01-01T00:00:00Z',
-        })
-        .mockResolvedValueOnce({
-          data_url: 'https://minio.example/holdout-signed',
-          sidecar_urls: {},
-          checksum: 'holdout-checksum',
-          row_count: 7,
-          expires_at: '2026-01-01T00:00:00Z',
-        });
+      mockedPresignRunObject.mockResolvedValueOnce({
+        data_url: 'https://minio.example/holdout-signed',
+        sidecar_urls: {},
+        checksum: 'holdout-checksum',
+        row_count: 7,
+        expires_at: '2026-01-01T00:00:00Z',
+      });
 
       const service = new ModelRunAuthorizedService(
         prisma as never,
@@ -431,6 +403,47 @@ describe('ModelRunAuthorizedService', () => {
       const [updateCall] = prisma.modelTrainingRun.update.mock.calls;
       expect(updateCall[0].data.metrics).toEqual({ r2: 0.9 });
       expect(updateCall[0].data.holdoutMetrics).toEqual({ r2: 0.4 });
+    });
+
+    it('MODEL-FLOW-016-T04: sets cvFoldsKey when cv_folds.json is uploaded, null otherwise', async () => {
+      const prisma = makePrisma();
+      const service = new ModelRunAuthorizedService(
+        prisma as never,
+        { advanceJobForRun: jest.fn() } as never,
+      );
+
+      await service.complete('run-1', {
+        status: 'SUCCEEDED',
+        metrics: { cv_r2_mean: 0.9 },
+        splitSpec: {
+          method: 'cv_expanding',
+          n_splits: 3,
+          source_rows: 100,
+          labelled_rows: 90,
+          distinct_labelled_values: 30,
+          folds: [],
+        },
+        uploaded: ['model.joblib', 'cv_folds.json'],
+      } as never);
+
+      const [updateCall] = prisma.modelTrainingRun.update.mock.calls;
+      expect(updateCall[0].data.cvFoldsKey).toBe(
+        'drafts/draft-1/runs/run-1/cv_folds.json',
+      );
+
+      // A non-CV run (cv_folds.json never uploaded) gets null — the same
+      // null-means-not-applicable discipline lossHistoryKey uses.
+      const prisma2 = makePrisma();
+      const service2 = new ModelRunAuthorizedService(
+        prisma2 as never,
+        { advanceJobForRun: jest.fn() } as never,
+      );
+      await service2.complete('run-1', {
+        status: 'SUCCEEDED',
+        uploaded: ['model.joblib'],
+      } as never);
+      const [updateCall2] = prisma2.modelTrainingRun.update.mock.calls;
+      expect(updateCall2[0].data.cvFoldsKey).toBeNull();
     });
 
     it('MODEL-FLOW-007 regression guard: once modelId is set, resolveRunOwner flips to models/{modelId}/... — a key nothing was ever written to under pointer-only adoption', async () => {

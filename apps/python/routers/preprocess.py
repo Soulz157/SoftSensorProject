@@ -63,6 +63,10 @@ from schemas.preprocess import (
     MetadataResponse,
     ModelRunPredictionsRequest,
     ModelRunPredictionsResponse,
+    ModelObjectVerifyRequest,
+    ModelObjectVerifyResponse,
+    RunObjectPresignRequest,
+    RunObjectPresignResponse,
     PreviewRequest,
     PreviewResponse,
     CorrelationRequest,
@@ -71,6 +75,8 @@ from schemas.preprocess import (
     ReplayHoldoutForRunRequest,
     ReplayHoldoutRequest,
     ResplitHoldoutRequest,
+    RunCvFoldsRequest,
+    RunCvFoldsResponse,
     RunLossHistoryRequest,
     RunLossHistoryResponse,
     RunManifestRequest,
@@ -800,15 +806,35 @@ async def run_loss_history(
 
 
 @router.post(
+    "/models/runs/cv-folds",
+    response_model=RunCvFoldsResponse,
+    summary="A training run's cv_folds.json, read and shape-checked",
+    description=(
+        "MODEL-FLOW-016-T04/T11. `cv_folds.json` is already exactly the "
+        "response shape (images/trainer/train.py writes it that way on "
+        "purpose) — a read-and-validate, not a parse-and-reshape like "
+        "/models/runs/predictions. `source_key` is guarded the same "
+        "structural way that endpoint guards its own."
+    ),
+)
+async def run_cv_folds(
+    body: RunCvFoldsRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.get_run_cv_folds, store, body)
+
+
+@router.post(
     "/models/runs/manifest",
     response_model=RunManifestResponse,
-    summary="A training run's framework_versions, from run_manifest.json",
+    summary="A training run's framework_versions and model_sha256, from run_manifest.json",
     description=(
-        "MODEL-FLOW-007-T11. Every other manifest field already has a column "
-        "on ModelTrainingRun (written by /complete) — this exists only for "
-        "framework_versions, which does not. Null for a run trained before "
-        "the trainer image that added it; Save Model treats that as 'not "
-        "recorded', not a failure."
+        "MODEL-FLOW-007-T11 / MODEL-SERVE-001-T01. Every other manifest "
+        "field already has a column on ModelTrainingRun (written by "
+        "/complete) — this exists for framework_versions and model_sha256, "
+        "neither of which does. Either field is null for a run trained "
+        "before the trainer image that added it; callers treat that as "
+        "'not recorded', not a failure."
     ),
 )
 async def run_manifest(
@@ -816,6 +842,47 @@ async def run_manifest(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(artifact_service.get_run_manifest, store, body)
+
+
+@router.post(
+    "/models/runs/verify-object",
+    response_model=ModelObjectVerifyResponse,
+    summary="Existence + checksum of one training-run output object",
+    description=(
+        "MODEL-SERVE-001-T05. Called by promote/rollback BEFORE flipping a "
+        "ModelVersion's stage — a promote that succeeds against a missing "
+        "or altered object turns a deploy into an outage discovered by the "
+        "first request. Separate from /artifacts/presign, which is "
+        "hard-restricted to committed artifact data.parquet keys and "
+        "refuses model.joblib outright."
+    ),
+)
+async def verify_model_object(
+    body: ModelObjectVerifyRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.verify_model_object, store, body)
+
+
+@router.post(
+    "/models/runs/presign-object",
+    response_model=RunObjectPresignResponse,
+    summary="Presign a training-run-scoped object for reading",
+    description=(
+        "MODEL-FLOW-016-T08. Today only validate_ready.parquet, the "
+        "model-ready holdout tryReplayHoldout writes under a run's own "
+        "prefix. Separate from /artifacts/presign, which is hard-restricted "
+        "to committed dataset artifact data.parquet keys and refuses a "
+        "run-scoped object outright — confirmed live (2026-09-01) as the "
+        "cause of every holdoutMetrics null on this system's runs to date, "
+        "not an absent holdout."
+    ),
+)
+async def presign_run_object(
+    body: RunObjectPresignRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.presign_run_object, store, body)
 
 
 @router.post(

@@ -9,26 +9,33 @@ import {
 /**
  * MODEL-FLOW-013-T11. A static source guard, not a hand-copied table:
  * mirrors `apps/client/lib/run-params.test.ts`'s existing precedent — reads
- * `images/trainer/train.py` itself and extracts exactly the keys each
- * `build_model` branch reads via `hyperparameters.get("KEY", ...)`. If
- * TUNING_GRID names a key the trainer never reads for that algorithm, this
- * fails — a hand-typed grid would keep passing while a tuning variant
- * silently changed nothing the estimator saw.
+ * the trainer's own `build_model` source and extracts exactly the keys each
+ * branch reads via `hyperparameters.get("KEY", ...)`. If TUNING_GRID names a
+ * key the trainer never reads for that algorithm, this fails — a hand-typed
+ * grid would keep passing while a tuning variant silently changed nothing the
+ * estimator saw.
+ *
+ * Points at `app/models.py`, not `train.py`: the trainer image was split into
+ * a package and `build_model` moved to its own module, leaving `train.py` as
+ * the mode dispatch alone. Note that a wrong path here fails at readFileSync
+ * with ENOENT, BEFORE the "has it moved or been renamed?" guard below can
+ * report it — so if that module moves again, this constant is the first thing
+ * to fix, not that message.
  */
-const TRAINER_FILE = path.resolve(
+const MODELS_FILE = path.resolve(
   __dirname,
-  '../../../../images/trainer/train.py',
+  '../../../../images/trainer/app/models.py',
 );
 
 function readTrainer(): string {
-  return readFileSync(TRAINER_FILE, 'utf-8');
+  return readFileSync(MODELS_FILE, 'utf-8');
 }
 
 function extractBuildModelBody(source: string): string {
   const start = source.indexOf('def build_model(');
   if (start === -1) {
     throw new Error(
-      'build_model not found in train.py — has it moved or been renamed?',
+      'build_model not found in app/models.py — has it moved or been renamed?',
     );
   }
   const rest = source.slice(start);
@@ -57,7 +64,7 @@ function extractConsumedKeys(body: string): Record<string, string[]> {
     const match = pattern.exec(body);
     if (!match) {
       throw new Error(
-        `train.py no longer has a build_model branch matching ${pattern} ` +
+        `app/models.py no longer has a build_model branch matching ${pattern} ` +
           `(expected for "${algorithm}") — TUNING_GRID is stale.`,
       );
     }
@@ -77,7 +84,7 @@ function extractConsumedKeys(body: string): Record<string, string[]> {
   return result;
 }
 
-describe('TUNING_GRID matches images/trainer/train.py, read live', () => {
+describe('TUNING_GRID matches images/trainer/app/models.py, read live', () => {
   const body = extractBuildModelBody(readTrainer());
   const actual = extractConsumedKeys(body);
 

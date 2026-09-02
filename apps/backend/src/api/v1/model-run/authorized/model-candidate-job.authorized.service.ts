@@ -114,11 +114,45 @@ export class ModelCandidateJobAuthorizedService {
   ) {
     await this.runLaunch.assertDraftWritable(draftId, userId, role);
 
+    // A direct HYPERPARAMETER_SEARCH request (exactly 1 algorithm selected,
+    // no sweep) names ONE candidate — its current hyperparameters — and
+    // relies on THIS expansion into the curated TUNING_GRID shortlist,
+    // reusing the exact same `tuningCandidatesFor` SWEEP_THEN_TUNE's phase 2
+    // already calls (see `advanceJobForRun` below), so the grid stays
+    // declared in exactly one place. `alreadyTried` is the base candidate's
+    // own hyperparameters — the same "don't repeat what's already covered"
+    // exclusion phase 2 relies on, applied here to the search's own starting
+    // point instead of a sweep's winner.
+    const requestedCandidates =
+      dto.kind === 'HYPERPARAMETER_SEARCH' && dto.candidates.length === 1
+        ? (() => {
+            const base = dto.candidates[0];
+            const variants = tuningCandidatesFor(
+              base.algorithm,
+              base.hyperparameters,
+            );
+            if (variants.length === 0) {
+              throw new AppException({
+                statusCode: 400,
+                message: `No distinct hyperparameter variants to try for ${base.algorithm} — nothing to search.`,
+                type: 'ERROR',
+              });
+            }
+            return [
+              base,
+              ...variants.map((hyperparameters) => ({
+                algorithm: base.algorithm,
+                hyperparameters,
+              })),
+            ];
+          })()
+        : dto.candidates;
+
     // Every candidate a client sends is phase 1 — `CandidateSchema` has no
     // `phase` field, so this is the ONLY place phase 1 is stamped.
     // `advanceJobForRun` stamps phase 2 itself when a SWEEP_THEN_TUNE job's
     // phase 1 exhausts.
-    const phase1Candidates: Candidate[] = dto.candidates.map((c) => ({
+    const phase1Candidates: Candidate[] = requestedCandidates.map((c) => ({
       ...c,
       phase: 1,
     }));

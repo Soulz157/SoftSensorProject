@@ -4,12 +4,25 @@ import { Sparkles } from 'lucide-react'
 import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
 import { cn } from '@/lib/utils'
+import type { Algorithm } from '@/store/model-pipeline'
 
 interface Props {
   findBestModel: boolean
   onFindBestModel: (on: boolean) => void
   findBestParams: boolean
   onFindBestParams: (on: boolean) => void
+  /** MODEL-FLOW-016. userDecisions: CV × algorithm sweep is mutually
+   * exclusive — a CV run fits one algorithm's k folds, a sweep evaluates
+   * several algorithms; the two answer different questions and neither's
+   * result composes with the other's. Same disable+swapped-description
+   * pattern this file already uses for Find Best Parameters. */
+  cvEnabled: boolean
+  /** Find Best Parameters is enabled either via Find Best Model's sweep
+   * (tunes the winner) OR directly when exactly one algorithm is selected
+   * (a HYPERPARAMETER_SEARCH job — one algorithm, N curated hyperparameter
+   * variants, no sweep needed since there is only one candidate to begin
+   * with). */
+  algorithms: Algorithm[]
 }
 
 interface RowProps {
@@ -75,7 +88,11 @@ export function AutoMlToggles({
   onFindBestModel,
   findBestParams,
   onFindBestParams,
+  cvEnabled,
+  algorithms,
 }: Props) {
+  const singleAlgorithm = algorithms.length === 1
+  const findBestParamsEnabled = findBestModel || singleAlgorithm
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
@@ -88,26 +105,38 @@ export function AutoMlToggles({
         <ToggleRow
           step={1}
           title="Find Best Model"
-          description="Evaluate the selected algorithms and automatically pick the best one."
+          description={
+            cvEnabled
+              ? 'Turn off Cross-Validation first — a sweep evaluates several algorithms, CV fits one.'
+              : 'Evaluate the selected algorithms and automatically pick the best one.'
+          }
           checked={findBestModel}
+          disabled={cvEnabled}
           onChange={onFindBestModel}
         />
         <ToggleRow
           step={2}
           nested
           title="Find Best Parameters"
-          // MODEL-FLOW-013-T11. Tunes phase 1's winner via a curated
-          // hyperparameter shortlist (apps/backend/src/lib/tuning-grid.ts) —
-          // appended server-side once the sweep exhausts, one job, never a
-          // second orchestrator. Disabled only while Find Best Model is off:
-          // there is no winner yet to tune.
+          // MODEL-FLOW-013-T11 / [fix]. Two ways in: tunes phase 1's
+          // sweep-winner via a curated hyperparameter shortlist
+          // (apps/backend/src/lib/tuning-grid.ts), appended server-side
+          // once the sweep exhausts — OR, with exactly one algorithm
+          // selected and no sweep, tunes THAT algorithm directly
+          // (HYPERPARAMETER_SEARCH — same curated shortlist, expanded
+          // server-side from the one candidate, no sweep needed since
+          // there's only one candidate to begin with). Disabled only when
+          // neither applies: Find Best Model is off AND more/fewer than
+          // one algorithm is selected.
           description={
             findBestModel
               ? 'Tune the sweep’s winning algorithm with a curated set of hyperparameter variants.'
-              : 'Turn on Find Best Model first — there’s no winner yet to tune.'
+              : singleAlgorithm
+                ? 'Tune this algorithm’s hyperparameters directly — no sweep needed with one algorithm selected.'
+                : 'Turn on Find Best Model first, or select exactly one algorithm to tune it directly.'
           }
           checked={findBestParams}
-          disabled={!findBestModel}
+          disabled={!findBestParamsEnabled}
           onChange={onFindBestParams}
         />
       </div>

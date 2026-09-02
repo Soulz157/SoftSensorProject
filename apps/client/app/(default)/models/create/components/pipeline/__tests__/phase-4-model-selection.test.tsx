@@ -118,6 +118,7 @@ describe('Phase4ModelSelection (MODEL-FLOW-013)', () => {
         algorithm: 'ridge',
         metrics: { rmse: 0.42 },
         trainedAt: '2026-08-28T00:00:00.000Z',
+        cvFoldsKey: null,
       }),
     )
 
@@ -146,6 +147,7 @@ describe('Phase4ModelSelection (MODEL-FLOW-013)', () => {
         algorithm: 'ridge',
         metrics: { rmse: 0.5 },
         trainedAt: '2026-08-28T00:00:00.000Z',
+        cvFoldsKey: null,
       })
       store.set(mpCandidateJobIdAtom, 'job-1')
     })
@@ -173,6 +175,7 @@ describe('Phase4ModelSelection (MODEL-FLOW-013)', () => {
         algorithm: 'ridge',
         metrics: { rmse: 0.5 },
         trainedAt: '2026-08-28T00:00:00.000Z',
+        cvFoldsKey: null,
       })
       store.set(mpCandidateJobIdAtom, 'job-1')
     })
@@ -191,6 +194,7 @@ describe('Phase4ModelSelection (MODEL-FLOW-013)', () => {
         algorithm: 'ols',
         metrics: { rmse: 0.5 },
         trainedAt: '2026-08-28T00:00:00.000Z',
+        cvFoldsKey: null,
       })
       store.set(mpCandidateJobIdAtom, 'job-1')
     })
@@ -222,6 +226,7 @@ describe('Phase4ModelSelection (MODEL-FLOW-013)', () => {
         algorithm: 'xgboost',
         metrics: { rmse: 0.5 },
         trainedAt: '2026-08-28T00:00:00.000Z',
+        cvFoldsKey: null,
       })
       store.set(mpCandidateJobIdAtom, 'job-1')
     })
@@ -249,6 +254,7 @@ describe('Phase4ModelSelection (MODEL-FLOW-013)', () => {
         algorithm: 'ridge',
         metrics: { rmse: 0.5 },
         trainedAt: '2026-08-28T00:00:00.000Z',
+        cvFoldsKey: null,
       })
       store.set(mpCandidateJobIdAtom, 'job-1')
     })
@@ -273,6 +279,7 @@ describe('Phase4ModelSelection (MODEL-FLOW-013)', () => {
         algorithm: 'ridge',
         metrics: null,
         trainedAt: '2026-08-28T00:00:00.000Z',
+        cvFoldsKey: null,
       })
       store.set(mpCandidateJobIdAtom, 'job-1')
     })
@@ -297,6 +304,7 @@ describe('Phase4ModelSelection (MODEL-FLOW-013)', () => {
         algorithm: 'ols',
         metrics: { rmse: 0.5 },
         trainedAt: '2026-08-28T00:00:00.000Z',
+        cvFoldsKey: null,
       })
       store.set(mpCandidateJobIdAtom, 'job-1')
     })
@@ -319,6 +327,7 @@ describe('Phase4ModelSelection (MODEL-FLOW-013)', () => {
         algorithm: 'ols',
         metrics: { rmse: 0.5 },
         trainedAt: '2026-08-28T00:00:00.000Z',
+        cvFoldsKey: null,
       })
       store.set(mpCandidateJobIdAtom, 'job-1')
     })
