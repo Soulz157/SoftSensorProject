@@ -47,6 +47,23 @@ export interface ModelConfig {
   lossFunction?: string
   /** Train split percentage; test = 100 − this. */
   trainTestSplit?: number
+  /**
+   * MODEL-FLOW-016-T12. READ-ONLY here, and absent from
+   * `BuildModelConfigInput` on purpose: this is derived server-side from the
+   * adopted run's own splitSpec at Save Model, so no wizard atom authors it
+   * and `buildModelConfig` must never send it. Non-null means the model is a
+   * refit from a Cross-Validation run — its fold metrics describe the
+   * CONFIGURATION, not this artifact, and `holdoutScored` says whether the
+   * artifact ever got a held-out number of its own. See
+   * `ModelConfigSchema.crossValidation` (the authority) for the full
+   * rationale. `trainTestSplit` is absent whenever this is set: a CV run has
+   * no single train/test cut.
+   */
+  crossValidation?: {
+    method: 'cv_expanding'
+    nSplits: number
+    holdoutScored: boolean
+  } | null
   selectedMetrics?: MetricKey[]
   /** Advanced deploy guardrails captured by the Deploy step (Step 4). */
   deployment?: DeploymentConfig

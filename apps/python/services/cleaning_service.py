@@ -48,6 +48,15 @@ from intergrations.object_store import (
     status_column,
     tag_columns,
 )
+from softsensor_scaling import _js_round, _median_sorted, _round_to
+
+# MODEL-SERVE-002 decisions.serving_transform_is_an_extracted_module —
+# _js_round/_round_to/_median_sorted moved to softsensor_scaling (imported
+# above), since `to_model_ready`'s scaling depends on them too and serving
+# must not import this module (it pulls object_store -> config.settings,
+# requiring SYS_USER/SYS_PASS/PI_NAME at import time). Re-imported here
+# under their original names so every existing call in this file below is
+# unchanged.
 
 DEFAULT_PRECISION = 2
 DEFAULT_SMOOTH_WINDOW = 3
@@ -57,35 +66,6 @@ DEFAULT_EMA_ALPHA = 0.3
 
 class CleaningError(ValueError):
     """Invalid operation or parameter, safe to surface to the caller."""
-
-
-# ── numeric helpers matching the browser exactly ─────────────────────────
-
-
-def _js_round(value: float) -> float:
-    """JavaScript `Math.round`: half rounds toward +Infinity.
-
-    `Math.round(2.5) === 3` and `Math.round(-2.5) === -2`. Python's built-in
-    `round` uses banker's rounding and returns 2 and -2, so every rounded cell
-    could differ in its last decimal place.
-    """
-    if math.isnan(value) or math.isinf(value):
-        return value
-    return math.floor(value + 0.5)
-
-
-def _round_to(value: float, precision: int) -> float:
-    factor = 10**precision
-    return _js_round(value * factor) / factor
-
-
-def _median_sorted(sorted_values: Sequence[float]) -> float:
-    n = len(sorted_values)
-    if n == 0:
-        return 0.0
-    mid = n // 2
-    hi = sorted_values[mid]
-    return (sorted_values[mid - 1] + hi) / 2 if n % 2 == 0 else hi
 
 
 def _good_values(values: np.ndarray, statuses: np.ndarray) -> np.ndarray:

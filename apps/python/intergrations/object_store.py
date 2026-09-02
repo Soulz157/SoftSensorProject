@@ -54,17 +54,24 @@ from minio.error import S3Error
 from minio.lifecycleconfig import Expiration, LifecycleConfig, Rule
 
 from config import settings
+from softsensor_scaling import (
+    STATUS_BAD,
+    STATUS_GOOD,
+    STATUS_QUESTIONABLE,
+    STATUS_SUFFIX,
+    TIMESTAMP_COLUMN,
+    status_column,
+    tag_columns,
+)
+from softsensor_scaling.constants import _tags_from_columns
 
-# Suffix reserved for the status sidecar column. A real tag named `FOO__status`
-# would collide with `FOO`'s status column and silently corrupt it, so writes
-# reject it rather than trusting that PI never produces such a name.
-STATUS_SUFFIX = "__status"
-
-TIMESTAMP_COLUMN = "timestamp"
-
-STATUS_GOOD = 0
-STATUS_BAD = 1
-STATUS_QUESTIONABLE = 2
+# MODEL-SERVE-002 decisions.serving_transform_is_an_extracted_module —
+# STATUS_SUFFIX/TIMESTAMP_COLUMN/STATUS_GOOD/STATUS_BAD/STATUS_QUESTIONABLE
+# and tag_columns()/status_column() moved to softsensor_scaling (imported
+# above) so apps/serving can use the same status-column conventions without
+# pulling in this module's `config.settings` import (which requires
+# SYS_USER/SYS_PASS/PI_NAME at import time). Re-imported here under their
+# original names so every existing caller in this codebase is unchanged.
 
 #: Bumped when the physical frame layout changes in a way a reader must know
 #: about. Recorded on every artifact so an old object stays interpretable.
@@ -170,30 +177,6 @@ class ArtifactStats:
     #: immutability checkable rather than merely promised: the write refusal
     #: stops an overwrite, and this proves the bytes never changed anyway.
     checksum: str
-
-
-def _tags_from_columns(columns: list[str]) -> list[str]:
-    """Shared by `tag_columns` (has a DataFrame) and `get_frame_metadata`
-    (has only Parquet schema names, no decoded columns) so the two never
-    diverge on what counts as a tag.
-    """
-    return [
-        c for c in columns if c != TIMESTAMP_COLUMN and not c.endswith(STATUS_SUFFIX)
-    ]
-
-
-def tag_columns(df: pd.DataFrame) -> list[str]:
-    """Logical tags only — excludes `timestamp` and every status sidecar.
-
-    `columnCount` on the artifact row and the preview's "feature count" must both
-    use this definition or they disagree on screen: the frame carries 2N+1
-    physical columns for N logical tags.
-    """
-    return _tags_from_columns(list(df.columns))
-
-
-def status_column(tag: str) -> str:
-    return f"{tag}{STATUS_SUFFIX}"
 
 
 def assert_tags_are_storable(tags: list[str]) -> None:

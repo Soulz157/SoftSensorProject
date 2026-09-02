@@ -116,4 +116,13 @@ export const env = {
   MODEL_DRAFT_SWEEP_INTERVAL_MS: Number(
     process.env.MODEL_DRAFT_SWEEP_INTERVAL_MS ?? 300_000,
   ),
+
+  // MODEL-SERVE-002. Shared secret the apps/serving process presents to
+  // reach the descriptor endpoints (`ServingTokenGuard`) — not a JWT,
+  // because JwtAccessStrategy's `validate()` carries an unconditional
+  // 100ms delay (strategies/jwt-access.strategy.ts) that has no business
+  // being on a path whose whole point is being bounded, and a serving
+  // process is not a logged-in user. No default: an unset token must fail
+  // closed, never silently accept every bearer value.
+  SERVING_API_TOKEN: process.env.SERVING_API_TOKEN,
 };

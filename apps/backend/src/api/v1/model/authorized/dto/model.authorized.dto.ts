@@ -91,6 +91,44 @@ export const ModelConfigSchema = z
      * so nesting here is what makes this survive.
      */
     frameworkVersions: z.record(z.string(), z.string()).nullable().optional(),
+    /**
+     * MODEL-FLOW-016-T12. Present only for a model adopted from a
+     * Cross-Validation run — `null`/absent means an ordinary chronological
+     * train/test run, which is what every row written before this feature
+     * is. Derived SERVER-SIDE from the adopted run's own `splitSpec` at Save
+     * time, never sent by the client.
+     *
+     * It exists because a CV run's headline numbers describe the
+     * CONFIGURATION (the fold mean ± std in `metrics`), not the refit model
+     * that actually ships — this feature's finding 3. Without this field a
+     * CV-derived model is indistinguishable from a train/test one in the
+     * saved row, and its fold mean reads as though it were the artifact's
+     * own held-out score.
+     *
+     * `holdoutScored` records whether the separate, user-triggered scoring
+     * phase (T07) ever ran — i.e. whether an honest held-out number for this
+     * artifact exists at all. It cannot go stale in the false direction:
+     * scoring is draft-scoped (`assertDraftWritable` refuses a SAVED
+     * draft), so a model saved unscored can never be scored afterward.
+     *
+     * The holdout NUMBERS are deliberately not copied here — `ModelVersion.
+     * sourceRunId` already points at the run row that owns them, the same
+     * pointer-not-copy rule the rest of the save path follows. Nested
+     * inside `config` for the same reason `frameworkVersions` above is.
+     */
+    crossValidation: z
+      .object({
+        method: z.literal('cv_expanding'),
+        nSplits: z.number().int().min(2).max(10),
+        holdoutScored: z.boolean(),
+      })
+      // `.strict()` like DeploymentConfigSchema above, and for the same
+      // reason: zod's default STRIPS an unknown nested key silently, which is
+      // the passthrough-era behaviour MODEL-FLOW-006 rewrote this schema to
+      // remove. A nested field nobody declared must fail at the boundary.
+      .strict()
+      .nullable()
+      .optional(),
     selectedMetrics: z.array(z.string()).optional(),
     deployment: DeploymentConfigSchema.optional(),
 

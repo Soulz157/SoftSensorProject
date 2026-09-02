@@ -69,3 +69,8 @@ pyarrow==25.0.0
 minio==7.2.20
 openpyxl==3.1.5
 et-xmlfile==2.0.0
+
+# MODEL-SERVE-002. Extracted scaling transform, shared with apps/serving —
+# installed from monorepo source, not an index. See
+# docs/feature_list_model.json decisions.serving_transform_is_an_extracted_module.
+-e ../../packages/py-scaling

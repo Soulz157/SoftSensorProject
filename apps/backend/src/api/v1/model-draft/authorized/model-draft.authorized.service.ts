@@ -305,6 +305,41 @@ export class ModelDraftAuthorizedService {
     return typeof ratio === 'number' ? ratio : null;
   }
 
+  /**
+   * MODEL-FLOW-016-T12. The adopted run's CV provenance, or `null` for an
+   * ordinary chronological run — see `ModelConfigSchema.crossValidation` for
+   * why a saved Model has to carry this at all.
+   *
+   * Read off `splitSpec`, NOT `cvFoldsKey`: `triggerScoringService` keys its
+   * own CV check on `cvFoldsKey` because that is the durable typed column
+   * set only by a CV run's `complete()`, but it carries no k — and k is
+   * exactly what this field exists to record. `splitSpec.method` is the same
+   * discriminant `SplitSpecSchema`'s discriminated union switches on, and
+   * `claim()` already narrows this untyped Json the same way.
+   *
+   * `holdoutScored` comes from the run's own `holdoutMetrics` column rather
+   * than a re-derivation: `scoreCompleteService` is its only writer, so a
+   * non-null value IS the fact that the refit has a held-out number.
+   */
+  private extractCvConfig(
+    splitSpec: unknown,
+    holdoutMetrics: unknown,
+  ): {
+    method: 'cv_expanding';
+    nSplits: number;
+    holdoutScored: boolean;
+  } | null {
+    if (!isPlainObject(splitSpec)) return null;
+    if (splitSpec.method !== 'cv_expanding') return null;
+    const nSplits = splitSpec.n_splits;
+    if (typeof nSplits !== 'number' || !Number.isInteger(nSplits)) return null;
+    return {
+      method: 'cv_expanding',
+      nSplits,
+      holdoutScored: holdoutMetrics != null,
+    };
+  }
+
   /** `ModelTrainingRun.hyperparameters` is untyped Json, but every value on
    *  it already passed `HyperparametersSchema` at launch — this narrows the
    *  type for `ModelConfigSchema`, it does not re-validate; a non-scalar
@@ -461,6 +496,12 @@ export class ModelDraftAuthorizedService {
 
     const ratio = this.extractSplitRatio(run.splitSpec);
     const trainTestSplit = ratio != null ? Math.round(ratio * 100) : undefined;
+    // T12. `null` for every non-CV run, which is what makes this an additive
+    // field rather than a behaviour change for the rows that already exist.
+    const crossValidation = this.extractCvConfig(
+      run.splitSpec,
+      run.holdoutMetrics,
+    );
 
     const config = ModelConfigSchema.parse({
       ...(dto.description !== undefined && { description: dto.description }),
@@ -477,6 +518,11 @@ export class ModelDraftAuthorizedService {
       // so this is what makes it survive the very next `updateModel` call
       // (e.g. Save & Deploy's immediate `deployStatus: 'running'` write).
       frameworkVersions,
+      // T12. Same nesting rationale as `frameworkVersions` directly above —
+      // and `trainTestSplit` is correctly absent whenever this is non-null:
+      // a `cv_expanding` splitSpec carries no `ratio` for extractSplitRatio
+      // to find, because a CV run genuinely has no single train/test cut.
+      crossValidation,
     });
 
     const initData = {

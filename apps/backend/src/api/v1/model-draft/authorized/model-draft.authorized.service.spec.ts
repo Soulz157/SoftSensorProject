@@ -681,4 +681,132 @@ describe('ModelDraftAuthorizedService — saveDraftService (MODEL-FLOW-007)', ()
       service.saveDraftService(USER, 'draft-1', { name: 'My Model' }),
     ).rejects.toThrow('connection lost');
   });
+
+  // MODEL-FLOW-016-T12. Adoption itself is unchanged for a CV run — one run,
+  // one model.joblib — but the saved config has to SAY it was a CV run, or a
+  // fold mean reads as the shipped model's own held-out score.
+  describe('a Cross-Validation run', () => {
+    // The real shape a CV run's own /complete call writes, from
+    // CvExpandingSplitSpecSchema — k cut points, no `ratio`.
+    const CV_RUN = {
+      ...RUN_ROW,
+      splitSpec: {
+        method: 'cv_expanding',
+        n_splits: 3,
+        source_rows: 8350,
+        labelled_rows: 8350,
+        distinct_labelled_values: 32,
+        folds: [
+          {
+            cut_timestamp: '2026-02-05T14:15:00.000Z',
+            train_rows: 2089,
+            test_rows: 2087,
+          },
+          {
+            cut_timestamp: '2026-02-19T12:05:00.000Z',
+            train_rows: 4176,
+            test_rows: 2087,
+          },
+          {
+            cut_timestamp: '2026-03-05T09:55:00.000Z',
+            train_rows: 6263,
+            test_rows: 2087,
+          },
+        ],
+      },
+      // A CV run's metrics is the FOLD aggregate — no plain r2 at all.
+      metrics: { cv_r2_mean: 0.41, cv_r2_std: 0.12, refit_rows: 8350 },
+      holdoutMetrics: null,
+    };
+
+    function cvPrisma(run: Record<string, unknown> = CV_RUN) {
+      return draftPrisma({
+        modelTrainingRun: {
+          findUnique: jest.fn().mockResolvedValue(run),
+          update: jest.fn(),
+        },
+      });
+    }
+
+    /** The config the transaction actually wrote. Typed rather than read
+     *  straight off `mock.calls` (which is `any`) so these assertions cannot
+     *  silently pass on a key that stopped existing. */
+    function savedConfig(prisma: ReturnType<typeof buildPrisma>) {
+      const calls = prisma.tx.model.create.mock.calls as unknown as Array<
+        [{ data: { data: { config: Record<string, unknown> } } }]
+      >;
+      return calls[0][0].data.data.config;
+    }
+
+    function savedVersion(prisma: ReturnType<typeof buildPrisma>) {
+      const calls = prisma.tx.modelVersion.create.mock
+        .calls as unknown as Array<[{ data: Record<string, unknown> }]>;
+      return calls[0][0].data;
+    }
+
+    it('records k and the unscored holdout, and writes NO trainTestSplit', async () => {
+      const prisma = cvPrisma();
+      const service = makeService(prisma);
+
+      await service.saveDraftService(USER, 'draft-1', { name: 'My Model' });
+
+      const config = savedConfig(prisma);
+      expect(config.crossValidation).toEqual({
+        method: 'cv_expanding',
+        nSplits: 3,
+        holdoutScored: false,
+      });
+      // Asserted explicitly, not left implied: today this holds only because
+      // a cv_expanding splitSpec carries no `ratio` for extractSplitRatio to
+      // find. A future variant that did carry one would silently print a
+      // train/test split for a run that never had a single cut.
+      expect(config.trainTestSplit).toBeUndefined();
+    });
+
+    it('records holdoutScored once the separate scoring phase has produced a number', async () => {
+      const prisma = cvPrisma({
+        ...CV_RUN,
+        holdoutMetrics: { r2: -4.536, mae: 0.181, rmse: 0.21 },
+      });
+      const service = makeService(prisma);
+
+      await service.saveDraftService(USER, 'draft-1', { name: 'My Model' });
+
+      const config = savedConfig(prisma);
+      expect(config.crossValidation).toMatchObject({ holdoutScored: true });
+      // Pointer, not copy: the numbers stay on the run row ModelVersion
+      // already references through sourceRunId.
+      expect(config.crossValidation).not.toHaveProperty('holdoutMetrics');
+    });
+
+    it('adopts by pointer exactly as a chronological run does — the refit is the run’s one model.joblib', async () => {
+      const prisma = cvPrisma();
+      const service = makeService(prisma);
+
+      await service.saveDraftService(USER, 'draft-1', { name: 'My Model' });
+
+      const version = savedVersion(prisma);
+      expect(version.modelObjectKey).toBe(CV_RUN.modelKey);
+      expect(version.sourceRunId).toBe('run-1');
+      // The known consequence, pinned so it cannot change silently: a CV
+      // run's metrics snapshot has no plain r2, so MODEL-SERVE-001-T06's
+      // promote floor (extractR2) reads null and requires a written-reason
+      // override. Recorded in this feature's findings; MODEL-SERVE owns the
+      // fix, since merging a holdout r2 into that key would make it mean a
+      // different quantity for CV rows than for every other row.
+      expect(version.metrics).toEqual(CV_RUN.metrics);
+      expect(version.metrics).not.toHaveProperty('r2');
+    });
+
+    it('leaves a chronological run’s config with no crossValidation at all', async () => {
+      const prisma = draftPrisma();
+      const service = makeService(prisma);
+
+      await service.saveDraftService(USER, 'draft-1', { name: 'My Model' });
+
+      const config = savedConfig(prisma);
+      expect(config.crossValidation).toBeNull();
+      expect(config.trainTestSplit).toBe(80);
+    });
+  });
 });

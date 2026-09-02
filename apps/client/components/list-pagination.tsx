@@ -1,17 +1,17 @@
 import { Button } from '@/components/ui/button'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 
-interface ModelsPaginationProps {
+interface ListPaginationProps {
   currentPage: number
   totalPages: number
   onPageChange: (page: number) => void
 }
 
-export function ModelsPagination({
+export function ListPagination({
   currentPage,
   totalPages,
   onPageChange,
-}: ModelsPaginationProps) {
+}: ListPaginationProps) {
   if (totalPages <= 1) return null
 
   return (

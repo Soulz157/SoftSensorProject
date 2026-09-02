@@ -377,3 +377,54 @@ export async function verifyModelObject(
   );
   return ModelObjectVerifySchema.parse(res);
 }
+
+/**
+ * MODEL-SERVE-002. `spec` is intentionally loose (`.passthrough()`, every
+ * field optional) — `build_feature_spec` writes a versioned document that
+ * only WIDENS over time (`FeatureSpecResponse`'s own docstring, DS-LAKE-
+ * 025-T06), so a strict schema here would 500 on a legacy sidecar that
+ * reads perfectly well. Only the fields the descriptor endpoint actually
+ * reads are named; everything else passes through unvalidated.
+ */
+const FeatureSpecSchema = z
+  .object({
+    source_key: z.string().min(1),
+    feature_spec_key: z.string().min(1),
+    spec: z
+      .object({
+        target_y: z.string().nullable().optional(),
+        target_scaled: z.boolean().nullable().optional(),
+        scaling: z
+          .array(z.object({ tag: z.string(), method: z.string() }))
+          .optional(),
+        scalingParams: z
+          .record(z.string(), z.record(z.string(), z.number()))
+          .optional(),
+        derived_from_target: z.array(z.string()).nullable().optional(),
+      })
+      .passthrough(),
+  })
+  .passthrough();
+
+export type FeatureSpecResult = z.infer<typeof FeatureSpecSchema>;
+
+/**
+ * MODEL-SERVE-002. Reads ONLY feature_spec.json beside a committed
+ * artifact — the data object itself is never opened (`artifact_service.
+ * feature_spec`, DS-LAKE-025-T06). The descriptor endpoint calls this with
+ * `ModelVersion.goldObjectKey` and asserts the returned `feature_spec_key`
+ * equals `ModelVersion.featureSpecKey` (verified 0-mismatch across all 73
+ * live ModelTrainingRun rows before this call was written) — cheap
+ * insurance that the descriptor never re-derives through a different
+ * artifact than the one the version actually pins.
+ */
+export async function readFeatureSpec(
+  sourceKey: string,
+): Promise<FeatureSpecResult> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/feature-spec',
+    { source_key: sourceKey },
+    PYTHON_TIMEOUT.serving,
+  );
+  return FeatureSpecSchema.parse(res);
+}

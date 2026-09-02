@@ -113,4 +113,76 @@ describe('ModelConfigSchema', () => {
       DeploymentConfigSchema.parse({ autoRetrain: true, notARealField: 1 }),
     ).toThrow();
   });
+
+  // MODEL-FLOW-016-T12. The CV provenance a saved Model carries so its fold
+  // metrics cannot be read as the shipped artifact's own held-out score.
+  describe('crossValidation', () => {
+    it('round-trips a CV run’s provenance, scored and unscored alike', () => {
+      const scored = {
+        crossValidation: {
+          method: 'cv_expanding',
+          nSplits: 3,
+          holdoutScored: true,
+        },
+      };
+      expect(ModelConfigSchema.parse(scored)).toEqual(scored);
+
+      const unscored = {
+        crossValidation: {
+          method: 'cv_expanding',
+          nSplits: 5,
+          holdoutScored: false,
+        },
+      };
+      expect(ModelConfigSchema.parse(unscored)).toEqual(unscored);
+    });
+
+    it('accepts null — every non-CV run, and every row written before this feature', () => {
+      expect(
+        ModelConfigSchema.parse({ crossValidation: null }).crossValidation,
+      ).toBeNull();
+      expect(
+        ModelConfigSchema.parse({ trainTestSplit: 80 }).crossValidation,
+      ).toBeUndefined();
+    });
+
+    it('refuses an unknown key inside crossValidation (.strict())', () => {
+      expect(() =>
+        ModelConfigSchema.parse({
+          crossValidation: {
+            method: 'cv_expanding',
+            nSplits: 3,
+            holdoutScored: true,
+            foldMetrics: { r2: 0.9 },
+          },
+        }),
+      ).toThrow();
+    });
+
+    it('refuses a method the trainer cannot produce, and a k outside 2-10', () => {
+      // `cv_expanding` is the only variant SplitSpecSchema's own union
+      // carries — a second CV method is a declared schema change on both
+      // sides, never a silently accepted string here.
+      expect(() =>
+        ModelConfigSchema.parse({
+          crossValidation: {
+            method: 'cv_rolling',
+            nSplits: 3,
+            holdoutScored: false,
+          },
+        }),
+      ).toThrow();
+      // k=1 is the "single fold under a CV label" this feature's own
+      // acceptance criteria refuse outright.
+      expect(() =>
+        ModelConfigSchema.parse({
+          crossValidation: {
+            method: 'cv_expanding',
+            nSplits: 1,
+            holdoutScored: false,
+          },
+        }),
+      ).toThrow();
+    });
+  });
 });

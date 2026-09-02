@@ -91,6 +91,7 @@ from services.feature_service import (
     select_columns,
     to_model_ready,
 )
+from softsensor_scaling import assert_scaling_coverage
 from services.feature_spec_service import build_feature_spec, max_replay_lookback
 from services.frame_service import from_pi_response, from_sql_response
 from services.preview_service import _finite, sample_rows
@@ -675,20 +676,11 @@ def prepare_holdout_for_run(
     # on the holdout's own statistics — the exact wrongness this whole
     # design exists to prevent (finding: "scaling the holdout against its
     # own statistics is a DIFFERENT transform... and it fails silently").
-    # `method == "none"` is exempt: it never fits anything to begin with
-    # (`_scale_column`'s own early return).
-    unrecorded = [
-        tag
-        for tag in tag_columns(frame)
-        if scalers.get(tag, DEFAULT_SCALER) != "none" and tag not in scaling_params
-    ]
-    if unrecorded:
-        raise ValueError(
-            f"Holdout scoring refused: {sorted(unrecorded)} would scale "
-            "without a recorded scalingParams entry, which would silently "
-            "re-fit on the holdout's own statistics instead of the "
-            "train's."
-        )
+    # MODEL-SERVE-002 decisions.serving_transform_is_an_extracted_module —
+    # this used to be an inline copy; now shared with the serving loader's
+    # own predict-time coverage check via softsensor_scaling, so the two
+    # cannot silently disagree about which tags need coverage.
+    assert_scaling_coverage(tag_columns(frame), scalers, scaling_params)
 
     # DS-LAKE-023-T05. BEFORE `to_model_ready` — see `drop_bad_feature_rows`'s
     # own docstring for why this must run here, not after. `target_y` is

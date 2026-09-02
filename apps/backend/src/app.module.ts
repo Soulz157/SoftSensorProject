@@ -26,6 +26,7 @@ import { ModelDraftCleanupModule } from './api/v1/model-draft-cleanup/model-draf
 import { ModelRunModule } from './api/v1/model-run/model-run.module';
 import { TrainningContainerModule } from './api/v1/trainning-container/trainning-container.module';
 import { ModelVersionModule } from './api/v1/model-version/model-version.module';
+import { ModelServingModule } from './api/v1/model-serving/model-serving.module';
 
 @Module({
   imports: [
@@ -70,6 +71,7 @@ import { ModelVersionModule } from './api/v1/model-version/model-version.module'
     ModelRunModule,
     TrainningContainerModule,
     ModelVersionModule,
+    ModelServingModule,
   ],
   providers: [
     {

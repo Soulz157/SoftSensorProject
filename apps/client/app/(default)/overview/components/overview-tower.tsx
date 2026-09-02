@@ -147,7 +147,7 @@ export function PlantNameBadge({
 
   const statusDotX = badgeX + BADGE_PAD + STATUS_R
   const nameX = statusDotX + STATUS_R + GAP
-  const dotsX = nameX + nameW + GAP + 2.5
+  const dotsX = nameX + nameW + GAP + 5
   const iconX = badgeX + badgeW - BADGE_PAD - ICON
 
   return (

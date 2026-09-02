@@ -60,6 +60,47 @@ function normalizeData(raw: unknown): ModelData {
   };
 }
 
+/**
+ * MODEL-FLOW-016-T12. Config keys DERIVED SERVER-SIDE at Save Model, which no
+ * client can author: `saveDraftService` reads them off the adopted training
+ * run, and `buildModelConfig` (apps/client/lib/model-config.ts) has no field
+ * for either — it assembles config from wizard atoms alone.
+ *
+ * That combination is a real data-loss bug, not a hypothetical: edit mode
+ * ("Save Changes") sends a freshly-built config, and the merge below replaces
+ * `config` wholesale — so before this const existed, renaming a saved model
+ * silently dropped `frameworkVersions` (MODEL-FLOW-007-T11's provenance) from
+ * the row. T11 guarded the SIBLING-key case via `normalizeData`'s top-level
+ * whitelist; this is the second, uncovered one.
+ *
+ * Deliberately a NAMED LIST rather than a blanket `{...current, ...incoming}`
+ * merge: a blanket merge would resurrect keys the user actually cleared (an
+ * emptied description makes `buildModelConfig` omit `description` entirely,
+ * and the old value would come back). Only keys the client cannot express are
+ * preserved.
+ */
+const SERVER_DERIVED_CONFIG_KEYS = [
+  'frameworkVersions',
+  'crossValidation',
+] as const;
+
+/** Carry the server-derived provenance keys forward onto an incoming config
+ *  that does not mention them. An incoming config that DOES carry a key wins,
+ *  so a future server-side writer can still update one. */
+function preserveServerDerivedConfig(
+  incoming: Record<string, unknown>,
+  current: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  if (!current) return incoming;
+  const preserved: Record<string, unknown> = {};
+  for (const key of SERVER_DERIVED_CONFIG_KEYS) {
+    if (!(key in incoming) && key in current) preserved[key] = current[key];
+  }
+  return Object.keys(preserved).length > 0
+    ? { ...incoming, ...preserved }
+    : incoming;
+}
+
 const NODE_INCLUDE = {
   nodes: {
     select: {
@@ -288,7 +329,9 @@ export class ModelAuthorizedService {
       ...(dto.statusDetail !== undefined && {
         statusDetail: dto.statusDetail ?? undefined,
       }),
-      ...(dto.config !== undefined && { config: dto.config }),
+      ...(dto.config !== undefined && {
+        config: preserveServerDerivedConfig(dto.config, current.config),
+      }),
       ...deployFields,
       ...editFields,
     };

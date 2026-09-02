@@ -73,14 +73,25 @@ from intergrations.object_store import (
     status_column,
     tag_columns,
 )
-from services.cleaning_service import _median_sorted, _round_to
 from services.formula_service import compile_formula, eval_formula_row
+from softsensor_scaling import (
+    DEFAULT_SCALER,
+    FeatureError,
+    _scale_column,
+    _welford_population_std,
+    to_model_ready,
+)
 
-DEFAULT_SCALER = "minmax"
-
-
-class FeatureError(ValueError):
-    """Invalid feature config or scaler, safe to surface to the caller."""
+# MODEL-SERVE-002 decisions.serving_transform_is_an_extracted_module —
+# DEFAULT_SCALER/FeatureError/_scale_column/_welford_population_std/
+# to_model_ready moved to softsensor_scaling (imported above) so
+# apps/serving can apply the same fitted transform at predict time without
+# importing this module's feature-engineering code (apply_features,
+# select_columns, formula compilation), which serving never runs — see
+# that decision and MODEL-SERVE-002's "Contract boundary" note. Re-imported
+# here under their original names so every existing caller in this file
+# and elsewhere in apps/python (`from services.feature_service import
+# to_model_ready`, etc.) is unchanged.
 
 
 # ── column naming, matching featureColumnName exactly ────────────────────
@@ -388,103 +399,12 @@ def select_columns(df: pd.DataFrame, kept: list[str] | None) -> pd.DataFrame:
 
 
 # ── scaling (toModelReady) ────────────────────────────────────────────────
-
-
-def _welford_population_std(values: list[float]) -> tuple[float, float]:
-    """Mean and POPULATION std (`/n`) via Welford's online algorithm.
-
-    Iterates `values` in the order given — callers MUST pass row order, not
-    a numpy-vectorised reduction, so float results match `toModelReady`'s
-    own row-by-row accumulation bit-for-bit rather than merely numerically.
-    """
-    n = 0
-    mean = 0.0
-    m2 = 0.0
-    for v in values:
-        n += 1
-        d = v - mean
-        mean += d / n
-        m2 += d * (v - mean)
-    std = math.sqrt(m2 / n) if n > 0 else 0.0
-    return mean, std
-
-
-def _scale_column(
-    values: np.ndarray,
-    method: str,
-    params: Mapping[str, float] | None = None,
-) -> tuple[np.ndarray, dict[str, float]]:
-    """Transform one tag's dense values array (`scaleColumn`/`toModelReady` body).
-
-    Every branch here already ran once for its own float; a caller that
-    determines the whole column should be left untouched (the `robust`,
-    zero-finite-values case) must check for that itself and skip calling
-    this at all — this function unconditionally returns a transformed array.
-
-    DS-LAKE-018-T02: also returns the params the transform actually used, so
-    a caller (`to_model_ready`) can persist what was FIT (`feature_spec.json`
-    `scalingParams`) or, when `params` is given here, apply what was
-    RECORDED instead of re-fitting — the replay path DS-LAKE-018-T04 needs
-    for a holdout, which must be scaled with the train rows' own statistics,
-    never its own (finding: "scaling the holdout against its own statistics
-    is a DIFFERENT transform... and it fails silently").
-    """
-    finite_mask = np.isfinite(values)
-
-    if method == "none":
-        return np.array([_round_to(v, 3) for v in values]), {}
-
-    if method == "minmax":
-        if params is not None:
-            lo, hi = params["min"], params["max"]
-        else:
-            finite = values[finite_mask]
-            if finite.size == 0:
-                lo, hi = 0.0, 0.0
-            else:
-                lo = float(finite.min())
-                hi = float(finite.max())
-        span = hi - lo
-        scaled = np.array(
-            [0.0 if span == 0 else _round_to(
-                (v - lo) / span, 3) for v in values]
-        )
-        return scaled, {"min": lo, "max": hi}
-
-    if method == "standard":
-        if params is not None:
-            mean, std = params["mean"], params["std"]
-        else:
-            # Row order matters — see _welford_population_std's own docstring.
-            finite_in_order = [float(v) for v in values if np.isfinite(v)]
-            mean, std = _welford_population_std(finite_in_order)
-        scaled = np.array(
-            [0.0 if std == 0 else _round_to(
-                (v - mean) / std, 3) for v in values]
-        )
-        return scaled, {"mean": mean, "std": std}
-
-    if method == "robust":
-        if params is not None:
-            med, iqr = params["median"], params["iqr"]
-        else:
-            finite_sorted = sorted(float(v) for v in values if np.isfinite(v))
-            k = len(finite_sorted)
-            if k == 0:
-                # Fitting on zero finite values: nothing to compute — caller
-                # skips this tag entirely rather than force (0, Good).
-                return values.copy(), {}
-            med = _median_sorted(finite_sorted)
-            upper = _median_sorted(finite_sorted[math.ceil(k / 2):])
-            lower = _median_sorted(finite_sorted[: math.floor(k / 2)])
-            iqr = upper - lower
-        scaled = np.array(
-            [0.0 if iqr == 0 else _round_to(
-                (v - med) / iqr, 3) for v in values]
-        )
-        return scaled, {"median": med, "iqr": iqr}
-
-    raise FeatureError(f"Unknown scaler {method!r}")
+#
+# MODEL-SERVE-002 decisions.serving_transform_is_an_extracted_module —
+# _welford_population_std, _scale_column and to_model_ready moved to
+# softsensor_scaling (imported above) and are re-exported under their
+# original names, so `assert_target_is_unscaled`/`force_keep_target` below
+# and every external caller of `to_model_ready` are unchanged.
 
 
 def assert_target_is_unscaled(target_y: str | None, scalers: dict[str, str]) -> None:
@@ -514,50 +434,6 @@ def force_keep_target(selected: list[str] | None, target_y: str | None) -> list[
     if selected is None or not target_y:
         return selected
     return selected if target_y in selected else [*selected, target_y]
-
-
-def to_model_ready(
-    df: pd.DataFrame,
-    tags: list[str],
-    scalers: Mapping[str, str],
-    fitted_params: Mapping[str, Mapping[str, float]] | None = None,
-) -> tuple[pd.DataFrame, dict[str, dict[str, float]]]:
-    """Scale every tag column and force its status to Good (`toModelReady`).
-
-    Every FINITE value is scaled regardless of its ORIGINAL status — a Bad
-    cell holding a real number is scaled and marked Good, same as the
-    browser. `robust` is the one exception: a tag with zero finite values is
-    left byte-identical (values AND status), matching the TS `if (k === 0)
-    continue` that skips before the status-forcing loop even runs.
-
-    DS-LAKE-018-T02: returns `(frame, scaling_params)` — `scaling_params` is
-    what each tag's scaler actually FIT (or, when `fitted_params` supplies a
-    tag, what it was given instead of re-fitting — DS-LAKE-018-T04's holdout
-    replay). Only tags with real fit state are keys; "none"-scaled and
-    entirely-skipped (`robust`, zero finite values) tags are absent, same
-    "no comparison possible" convention `build_column_stats` already uses
-    elsewhere for a tag that has nothing to report.
-    """
-    out = df.copy()
-    scaling_params: dict[str, dict[str, float]] = {}
-    for tag in tags:
-        if tag not in out.columns:
-            continue
-        method = scalers.get(tag, DEFAULT_SCALER)
-        values = out[tag].to_numpy(dtype="float64")
-
-        if method == "robust" and not np.isfinite(values).any():
-            continue  # column left exactly as-is, status untouched
-
-        params = fitted_params.get(tag) if fitted_params else None
-        scaled, used_params = _scale_column(values, method, params)
-        out[tag] = scaled
-        out[status_column(tag)] = pd.array(
-            np.full(len(out), STATUS_GOOD, dtype="int8"), dtype="int8"
-        )
-        if used_params:
-            scaling_params[tag] = used_params
-    return out, scaling_params
 
 
 def drop_bad_feature_rows(

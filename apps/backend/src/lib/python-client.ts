@@ -39,6 +39,13 @@ export const PYTHON_TIMEOUT = {
    * per pipeline precisely so no single call approaches this ceiling.
    */
   preprocess: 300_000,
+  /**
+   * MODEL-SERVE-002. The descriptor endpoint's own presign/manifest/spec
+   * calls to python — bounded like `test`, named separately so a call site
+   * reads as "this is on the synchronous /predict path" rather than
+   * borrowing an unrelated timeout's number by coincidence.
+   */
+  serving: 15_000,
 } as const;
 
 interface FastApiError {
