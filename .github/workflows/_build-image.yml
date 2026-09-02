@@ -98,6 +98,14 @@ jobs:
                   file: ${{ inputs.dockerfile }}
                   platforms: ${{ inputs.platforms }}
                   push: ${{ inputs.push }}
+                  # push:false alone leaves the built image in the buildx
+                  # cache only — nothing at steps.ref.outputs.image for the
+                  # Trivy/SBOM steps below to reference, so those would fail
+                  # on every push:false call (never previously exercised;
+                  # every existing caller uses the push:true default). Load
+                  # into the local daemon instead so scan/SBOM still have a
+                  # real image to point at.
+                  load: ${{ !inputs.push }}
                   tags: ${{ steps.meta.outputs.tags }}
                   labels: ${{ steps.meta.outputs.labels }}
                   # Registry-backed layer cache scoped per image so the services do not

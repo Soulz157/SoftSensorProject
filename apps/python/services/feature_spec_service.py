@@ -72,6 +72,23 @@ import json
 from typing import Any, Mapping, Sequence
 
 from services.feature_service import feature_column_name
+from softsensor_scaling import _own_lookback, _reads_tags, max_replay_lookback
+
+# MODEL-SERVE-002-T06: `max_replay_lookback` (with `_reads_tags`/
+# `_own_lookback`) moved to softsensor_scaling.features and is imported
+# back here under its original name, so `from services.feature_spec_service
+# import max_replay_lookback` (artifact_service.py:95, and this module's own
+# tests) is unchanged. It moved because apps/serving reports the SAME number
+# to a /predict caller that prepare_holdout_for_run already refuses on — one
+# implementation, not two. Re-exported explicitly below.
+
+__all__ = [
+    "FEATURE_SPEC_VERSION",
+    "build_feature_spec",
+    "max_replay_lookback",
+    "_own_lookback",
+    "_reads_tags",
+]
 
 FEATURE_SPEC_VERSION = 2  # DS-LAKE-018-T02: added `scalingParams`
 
@@ -124,74 +141,6 @@ def _derived_from_target(
             tainted.add(out)
             derived.append(out)
     return sorted(derived)
-
-
-def _reads_tags(cfg: Mapping[str, Any]) -> list[str]:
-    """Which tag(s)/column(s) one FeatureConfig reads — same extraction
-    `_derived_from_target` above inlines, factored out so
-    `max_replay_lookback` can reuse it without re-deriving the per-kind
-    field names (`tag` vs `tags` vs `vars`) a second time.
-    """
-    if cfg.get("kind") == "datetime":
-        return []
-    reads: list[str] = []
-    tag = cfg.get("tag")
-    if tag is not None:
-        reads.append(tag)
-    reads.extend(cfg.get("tags") or [])
-    reads.extend((cfg.get("vars") or {}).values())
-    return reads
-
-
-def _own_lookback(cfg: Mapping[str, Any]) -> int:
-    """Rows BEFORE the current one this config's OWN computation reads —
-    ignoring whatever its source column itself may need (that is
-    `max_replay_lookback`'s job, via compounding).
-
-    `rolling(window)` uses `window` here, not `window-1` — one row more
-    than `_compute_feature_column`'s own `[i-window+1, i]` strictly needs.
-    Matches this task's own worked example (scope_note: "lag(5) of
-    rolling(60) needs 65") and is deliberately conservative: the lead-in
-    check this feeds is a REFUSAL, and refusing one row early is a cheap
-    UI-time widening away, where under-refusing is the silent, hard-to-trace
-    failure this whole check exists to prevent.
-    """
-    kind = cfg.get("kind")
-    if kind == "lag":
-        return int(cfg["k"])
-    if kind == "delta":
-        return 1
-    if kind == "rolling":
-        return int(cfg["window"])
-    return 0
-
-
-def max_replay_lookback(features: Sequence[Mapping[str, Any]]) -> int:
-    """DS-LAKE-018-T04. The deepest number of rows, before the holdout
-    boundary, ANY feature in this recipe needs to compute correctly —
-    compounding through chained configs exactly like `_derived_from_target`
-    does (a later config may read an earlier config's own derived column,
-    module docstring). `lag(5)` of a `rolling(60)` column needs the
-    rolling's own 60-row lookback PLUS the lag's 5, not just 5 — reading
-    only the outermost config's own window would silently under-count.
-
-    Used as a REFUSAL threshold (DS-LAKE-018-T04's replay endpoint), not a
-    warning: a holdout whose captured lead-in falls short of this produces
-    null/wrong lag-rolling values for its own first rows, which then feed
-    straight into `predict()` with no trace of why the metric moved.
-    """
-    lookback_by_output: dict[str, int] = {}
-    overall_max = 0
-    for cfg in features:
-        out = cfg.get("name") or feature_column_name(cfg)
-        source_lookback = max(
-            (lookback_by_output.get(tag, 0) for tag in _reads_tags(cfg)),
-            default=0,
-        )
-        total = _own_lookback(cfg) + source_lookback
-        lookback_by_output[out] = total
-        overall_max = max(overall_max, total)
-    return overall_max
 
 
 def build_feature_spec(

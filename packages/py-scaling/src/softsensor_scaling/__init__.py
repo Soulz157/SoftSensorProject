@@ -30,6 +30,12 @@ from .constants import (
     status_column,
     tag_columns,
 )
+from .features import (
+    _own_lookback,
+    _reads_tags,
+    feature_column_name,
+    max_replay_lookback,
+)
 from .rounding import _js_round, _median_sorted, _round_to
 from .scaling import (
     DEFAULT_SCALER,
@@ -51,6 +57,10 @@ __all__ = [
     "_js_round",
     "_median_sorted",
     "_round_to",
+    "_own_lookback",
+    "_reads_tags",
+    "feature_column_name",
+    "max_replay_lookback",
     "DEFAULT_SCALER",
     "FeatureError",
     "_scale_column",

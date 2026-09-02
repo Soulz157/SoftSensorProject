@@ -1,0 +1,44 @@
+# BuildKit-specific naming (<dockerfile>.dockerignore, co-located with the
+# Dockerfile it applies to) — deliberately NOT a root .dockerignore. The
+# build context for apps/serving/Dockerfile is the repo root (packages/
+# py-scaling lives outside apps/serving), so without this every other app,
+# node_modules, .git, and every local .venv in the monorepo would enter the
+# build context. This file scopes it back down to the two trees the
+# Dockerfile actually COPYs, then excludes local-only noise inside those.
+
+# Everything else at the repo root — the Dockerfile only ever COPYs
+# apps/serving/ and packages/py-scaling/.
+*
+!apps/serving
+!packages/py-scaling
+
+# Re-include the trees themselves (Docker requires each ancestor
+# component to be explicitly un-ignored for a deeper negation to apply).
+!apps/serving/**
+!packages/py-scaling/**
+
+# Local dev/test state inside the two un-ignored trees — mirrors
+# images/trainer/.dockerignore's own discipline. A directory COPY ships
+# whatever is sitting there; this is load-bearing, not housekeeping.
+apps/serving/.venv/
+apps/serving/**/__pycache__/
+apps/serving/.pytest_cache/
+apps/serving/.impeccable/
+apps/serving/tests/
+apps/serving/conftest.py
+apps/serving/.env
+apps/serving/.env.*
+apps/serving/.coverage
+apps/serving/htmlcov/
+
+packages/py-scaling/**/__pycache__/
+packages/py-scaling/.pytest_cache/
+packages/py-scaling/tests/
+packages/py-scaling/src/*.egg-info/
+
+# Never, under any circumstance — this container is credential-free by
+# design, same statement images/trainer/.dockerignore makes about itself.
+**/*.pem
+**/*.key
+**/credentials*
+**/secrets*

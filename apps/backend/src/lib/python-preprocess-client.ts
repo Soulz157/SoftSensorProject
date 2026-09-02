@@ -401,6 +401,27 @@ const FeatureSpecSchema = z
           .record(z.string(), z.record(z.string(), z.number()))
           .optional(),
         derived_from_target: z.array(z.string()).nullable().optional(),
+        /**
+         * MODEL-SERVE-002-T06. The recipe itself, passed through to serving
+         * so it can compute the required history depth with the SAME code
+         * apps/python uses (softsensor_scaling.max_replay_lookback) rather
+         * than a TypeScript reimplementation that could drift. Each entry's
+         * `config` carries the per-kind fields that determine lookback
+         * (`k` for lag, `window` for rolling), so it is kept loose here
+         * rather than re-modelled — the authority on its shape is
+         * feature_spec_service.build_feature_spec, not this schema.
+         */
+        features: z
+          .array(
+            z
+              .object({
+                name: z.string().optional(),
+                kind: z.string().optional(),
+                config: z.record(z.string(), z.unknown()).optional(),
+              })
+              .passthrough(),
+          )
+          .optional(),
       })
       .passthrough(),
   })

@@ -13,7 +13,11 @@ from __future__ import annotations
 from typing import Any
 
 import pandas as pd
-from softsensor_scaling import assert_scaling_coverage, to_model_ready
+from softsensor_scaling import (
+    assert_scaling_coverage,
+    max_replay_lookback,
+    to_model_ready,
+)
 
 
 class PredictError(ValueError):
@@ -44,6 +48,36 @@ def _validate_rows(
             )
 
 
+def required_history_rows(descriptor: dict[str, Any]) -> int:
+    """T06. How many consecutive prior observations this model's recipe
+    reaches back over, computed from the recipe itself with the SAME
+    function `artifact_service.prepare_holdout_for_run` refuses on — one
+    implementation, not two (softsensor_scaling.max_replay_lookback).
+
+    ROWS, NOT A DURATION, deliberately — see that function's own note. A
+    `lag(k)` reaches back k ROWS; turning that into wall-clock time needs a
+    sampling cadence that `feature_spec.json` does not record and no Prisma
+    column holds. This repo already settled that axis one layer down, in
+    the structurally identical holdout-replay check: "computed from the
+    recipe's own compound lookback ... NOT re-derived from a
+    duration/interval a caller would have to look up."
+
+    Returns 0 when the descriptor carries no recipe (a spec written before
+    the field was passed through) — absent is reported as unknown-depth,
+    never as a fabricated number.
+    """
+    features = descriptor.get("features") or []
+    if not features:
+        return 0
+    try:
+        return max_replay_lookback(features)
+    except (KeyError, TypeError, ValueError):
+        # A recipe this process cannot read is not a reason to refuse a
+        # request whose columns are all present — the depth is advisory
+        # context on a refusal, not itself a gate.
+        return 0
+
+
 def assert_history_satisfies_target_derivation(
     descriptor: dict[str, Any], rows: list[dict[str, Any]]
 ) -> None:
@@ -51,6 +85,15 @@ def assert_history_satisfies_target_derivation(
     carries it) and refuse a history-less request BEFORE predicting —
     predicting from imputed/absent lags returns a plausible number with no
     symptom, which is the failure mode this guard exists to prevent.
+
+    The refusal names the recipe's own required depth (see
+    `required_history_rows`) so the caller learns how far back its history
+    must reach, not merely that a column was missing. The request contract
+    carries pre-computed feature columns rather than a timestamped series
+    (the contract boundary this feature deliberately kept: serving applies
+    scaling only), so the depth is stated for the caller to satisfy
+    upstream rather than verified here against timestamps this endpoint
+    never receives.
 
     0 of 21 live feature_spec.json objects have a non-empty
     derived_from_target as of this feature's own audit — this guard is
@@ -62,10 +105,19 @@ def assert_history_satisfies_target_derivation(
         return
     missing = [c for c in derived if any(c not in row for row in rows)]
     if missing:
+        depth = required_history_rows(descriptor)
+        depth_note = (
+            f" This model's recipe reaches back {depth} consecutive prior "
+            f"observation(s), so those column(s) must be computed from at "
+            f"least that much history, at the cadence the dataset was "
+            f"built at."
+            if depth
+            else ""
+        )
         raise PredictError(
             f"This model is target-derived (depends on {sorted(derived)}) "
             f"and needs target history in every request row — missing "
-            f"{sorted(set(missing))}."
+            f"{sorted(set(missing))}.{depth_note}"
         )
 
 

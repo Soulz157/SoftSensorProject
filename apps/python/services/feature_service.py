@@ -79,6 +79,7 @@ from softsensor_scaling import (
     FeatureError,
     _scale_column,
     _welford_population_std,
+    feature_column_name,
     to_model_ready,
 )
 
@@ -95,28 +96,13 @@ from softsensor_scaling import (
 
 
 # ── column naming, matching featureColumnName exactly ────────────────────
-
-
-def feature_column_name(cfg: Mapping[str, Any]) -> str:
-    kind = cfg.get("kind")
-    if kind == "lag":
-        return f"{cfg['tag']}__lag{cfg['k']}"
-    if kind == "rolling":
-        return f"{cfg['tag']}__roll{cfg['window']}_{cfg['agg']}"
-    if kind == "ratio":
-        return "__over__".join(cfg["tags"])
-    if kind == "delta":
-        return f"{cfg['tag']}__delta"
-    if kind == "arith":
-        return f"__{cfg['op']}__".join(cfg["tags"])
-    if kind == "log":
-        return f"{cfg['tag']}__log"
-    if kind == "datetime":
-        return f"__dt_{cfg['part']}"
-    if kind == "formula":
-        name = (cfg.get("name") or "").strip()
-        return name or cfg["expr"]
-    raise FeatureError(f"Unknown feature kind {kind!r}")
+#
+# MODEL-SERVE-002-T06: `feature_column_name` moved to
+# softsensor_scaling.features (imported above under its original name, so
+# every caller here and elsewhere in apps/python is unchanged). It moved
+# because `max_replay_lookback` needs it and BOTH are now read by
+# apps/serving to tell a /predict caller how much target history a recipe
+# needs — see that module's own docstring.
 
 
 # ── value/status helpers ──────────────────────────────────────────────────

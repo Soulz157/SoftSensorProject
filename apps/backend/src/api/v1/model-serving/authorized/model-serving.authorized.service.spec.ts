@@ -138,6 +138,50 @@ describe('ModelServingAuthorizedService.getDescriptorService', () => {
     });
     expect(mockedReadFeatureSpec).toHaveBeenCalledWith(VERSION.goldObjectKey);
   });
+
+  // MODEL-SERVE-002-T06. feature_spec.json nests per-kind fields under
+  // `config`; max_replay_lookback (on the serving side) reads them at the
+  // top level. If this flattening regresses, serving silently computes a
+  // history depth of 0 and the refusal loses the half that tells a caller
+  // how far back to go — so assert the flattened shape, not just presence.
+  it('flattens the feature recipe into the shape max_replay_lookback reads', async () => {
+    mockedReadFeatureSpec.mockResolvedValueOnce({
+      source_key: VERSION.goldObjectKey,
+      feature_spec_key: VERSION.featureSpecKey,
+      spec: {
+        scaling: [],
+        scalingParams: {},
+        derived_from_target: ['S204FBP.lab__lag3'],
+        features: [
+          {
+            name: 'S204FBP.lab__lag3',
+            kind: 'lag',
+            config: { tag: 'S204FBP.lab', k: 3 },
+          },
+        ],
+      },
+    });
+    const prisma = makePrisma();
+    const service = new ModelServingAuthorizedService(prisma);
+    const result = await service.getDescriptorService('model-1');
+
+    expect(result.data.features).toEqual([
+      { tag: 'S204FBP.lab', k: 3, kind: 'lag', name: 'S204FBP.lab__lag3' },
+    ]);
+  });
+
+  it('reports an absent or unreadable recipe as an empty list, never a guess', async () => {
+    mockedReadFeatureSpec.mockResolvedValueOnce({
+      source_key: VERSION.goldObjectKey,
+      feature_spec_key: VERSION.featureSpecKey,
+      spec: { scaling: [], scalingParams: {} },
+    });
+    const prisma = makePrisma();
+    const service = new ModelServingAuthorizedService(prisma);
+    const result = await service.getDescriptorService('model-1');
+
+    expect(result.data.features).toEqual([]);
+  });
 });
 
 describe('ModelServingAuthorizedService.listProductionVersionsService', () => {

@@ -20,6 +20,39 @@ function asFrameworkVersions(value: unknown): Record<string, string> | null {
   return Object.fromEntries(entries) as Record<string, string>;
 }
 
+/** One `feature_spec.json` feature entry, flattened into the shape
+ *  `softsensor_scaling.max_replay_lookback` reads (per-kind fields at the
+ *  top level, `name` alongside them). */
+type ServingFeatureConfig = Record<string, unknown> & { kind?: string };
+
+/**
+ * MODEL-SERVE-002-T06. `feature_spec.json` nests each feature's per-kind
+ * fields under `config`; `max_replay_lookback` reads them at the top level
+ * (the shape apps/python feeds it). Flatten rather than re-model: this
+ * endpoint is a pass-through for a recipe whose authority is
+ * `feature_spec_service.build_feature_spec`, and re-describing its per-kind
+ * fields here would be a second definition free to drift from that one.
+ * An unreadable entry is dropped rather than guessed at, same convention as
+ * `asFrameworkVersions` above.
+ */
+function asFeatureConfigs(value: unknown): ServingFeatureConfig[] {
+  if (!Array.isArray(value)) return [];
+  const configs: ServingFeatureConfig[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const row = entry as Record<string, unknown>;
+    const nested =
+      row.config && typeof row.config === 'object' && !Array.isArray(row.config)
+        ? (row.config as Record<string, unknown>)
+        : {};
+    const flattened: ServingFeatureConfig = { ...nested };
+    if (typeof row.kind === 'string') flattened.kind = row.kind;
+    if (typeof row.name === 'string') flattened.name = row.name;
+    configs.push(flattened);
+  }
+  return configs;
+}
+
 /**
  * MODEL-SERVE-002. Resolves a Model's PRODUCTION `ModelVersion` into
  * everything `apps/serving`'s loader and predict path need, in one round
@@ -144,6 +177,14 @@ export class ModelServingAuthorizedService {
         scalingParams: spec.scalingParams ?? {},
         derivedFromTarget: spec.derived_from_target ?? [],
         targetScaled: spec.target_scaled ?? false,
+        // MODEL-SERVE-002-T06. The recipe, FLATTENED — feature_spec.json
+        // stores `{name, kind, config: {...}}`, but max_replay_lookback
+        // reads the per-kind fields (`k`, `window`, `tag`, `tags`, `vars`)
+        // at the top level, which is the shape apps/python already feeds it
+        // (artifact_service.py's `[f.to_step() for f in request.features]`).
+        // Flattened here so serving computes the history depth with that
+        // same function rather than a reimplementation.
+        features: asFeatureConfigs(spec.features),
         // Prefer the live manifest read (the actual recorded transcript)
         // over the pinned snapshot on the version row; fall back to the
         // snapshot only when the manifest read has nothing.
