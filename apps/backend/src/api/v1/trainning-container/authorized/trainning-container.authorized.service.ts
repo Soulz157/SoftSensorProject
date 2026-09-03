@@ -53,8 +53,18 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
   // MODE=score reaches /score-claim, /score-log, /score-complete and NEVER
   // a training endpoint (including on its crash path); MODE unset still
   // reaches /log and /complete.
+  //
+  // 1.0.6 (MODEL-SERVE-003): MODE=batch entrypoint added (pipelines/batch.py)
+  // — reaches /batch-claim, /batch-log, /batch-complete and never a training
+  // or score endpoint. Same rule as every prior bump: this service now spawns
+  // batch jobs with MODE=batch, so the default image MUST carry batch.py or a
+  // job passes validation, spawns, and dies inside the container on the old
+  // train.py's MODE dispatch (no such branch existed before this tag).
+  // Verified against this exact tag before the bump landed: images/trainer's
+  // own pytest suite (27/27) plus a live in-container run against real
+  // fitted-model + parquet fixtures.
   private readonly imageRef =
-    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.5';
+    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.6';
   // private readonly network = process.env.TRAINING_NETWORK ?? 'dslake_default';
   private readonly network = 'monorepo_network';
   private readonly memoryBytes = Number(
@@ -163,6 +173,56 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
       reconciled += 1;
     }
 
+    // MODEL-SERVE-003-V01. Same existence-check discipline as the training
+    // sweep above, not PreprocessingJobService/LoaderJobService's blanket
+    // updateMany — a batch container is independent of the Node process for
+    // the identical reason a training one is. NOTE (recorded deliberately,
+    // not inherited silently): this only reconciles RUNNING, so a job that
+    // dies between row-create and spawn stays QUEUED forever — the same gap
+    // trainning-container's own training sweep has always had. Acceptable
+    // here for the same reason: creation and spawn are both synchronous and
+    // fast (createContainer, not a pull), so the window is a process crash
+    // landing inside a few hundred milliseconds, not an image pull that can
+    // take minutes.
+    const batchOrphans = await this.prisma.predictionJob.findMany({
+      where: { status: 'RUNNING' },
+      select: { id: true, containerId: true },
+    });
+    for (const job of batchOrphans) {
+      if (!job.containerId) {
+        await this.prisma.predictionJob.update({
+          where: { id: job.id },
+          data: {
+            status: 'FAILED',
+            failureReason:
+              'No container was ever recorded for this job — it never spawned.',
+            finishedAt: new Date(),
+          },
+        });
+        reconciled += 1;
+        continue;
+      }
+      const container = this.docker.getContainer(job.containerId);
+      try {
+        await container.inspect();
+      } catch {
+        await this.prisma.predictionJob.update({
+          where: { id: job.id },
+          data: {
+            status: 'FAILED',
+            failureReason:
+              `Container ${job.containerId} no longer exists — the server ` +
+              'restarted while this job was in flight.',
+            finishedAt: new Date(),
+          },
+        });
+        reconciled += 1;
+        continue;
+      }
+      void this.watch(job.id, container, 'batch');
+      reconciled += 1;
+    }
+
     if (reconciled > 0) {
       this.log.warn(
         `Reconciled ${reconciled} orphaned run/container(s) at boot.`,
@@ -201,29 +261,43 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
   }
 
   /**
-   * MODEL-FLOW-016-T07. `mode` parameterizes ONE spawn path rather than a
-   * near-copy `spawnScore` — the HostConfig below is ~25 lines of
-   * security-critical settings (CapDrop, ReadonlyRootfs, Tmpfs, memory
-   * caps); two copies is how they drift out of sync with each other.
-   * `train-${runId}` and `score-${runId}` are deliberately DIFFERENT
-   * container names — the training container has already exited by the
-   * time scoring starts (see `claim()`'s doc comment), but a stale name
-   * collision would still be possible if the training container were ever
-   * kept (`TRAINING_KEEP_FAILED=1`).
+   * MODEL-FLOW-016-T07 / MODEL-SERVE-003. `mode` parameterizes ONE spawn
+   * path rather than a near-copy per mode — the HostConfig below is ~25
+   * lines of security-critical settings (CapDrop, ReadonlyRootfs, Tmpfs,
+   * memory caps); separate copies is how they drift out of sync with each
+   * other. `train-${id}`, `score-${id}`, `batch-${id}` are deliberately
+   * DIFFERENT container names — the training container has already exited
+   * by the time scoring starts (see `claim()`'s doc comment), but a stale
+   * name collision would still be possible if the training container were
+   * ever kept (`TRAINING_KEEP_FAILED=1`).
+   *
+   * `id` is a `ModelTrainingRun.id` for train/score, a `PredictionJob.id`
+   * for batch — the Docker Env var stays the generic `RUN_ID` either way
+   * (see `RunContext.api`'s own doc comment on the trainer side for why the
+   * route BASE branches on mode there, not the env var name here).
    */
-  async spawn(runId: string, token: string, mode: 'train' | 'score' = 'train') {
+  async spawn(
+    id: string,
+    token: string,
+    mode: 'train' | 'score' | 'batch' = 'train',
+  ) {
     const container = await this.docker.createContainer({
       Image: this.imageDigest || this.imageRef,
-      name: `${mode}-${runId}`,
+      name: `${mode}-${id}`,
       Env: [
-        `RUN_ID=${runId}`,
+        `RUN_ID=${id}`,
         `RUN_TOKEN=${token}`,
         `API_BASE=${process.env.INTERNAL_API_BASE ?? 'http://backend:3000'}`,
         `MODE=${mode}`,
       ],
       Labels: {
-        'dslake.role': mode === 'score' ? 'scoring' : 'training',
-        'dslake.runId': runId,
+        'dslake.role':
+          mode === 'score'
+            ? 'scoring'
+            : mode === 'batch'
+              ? 'batch-predict'
+              : 'training',
+        'dslake.runId': id,
       },
       HostConfig: {
         NetworkMode: this.network,
@@ -260,17 +334,30 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
     // against a row the update hadn't reached yet. The training branch
     // stays AFTER start() on purpose — marking a run RUNNING before it
     // has actually started would be worse than the (harmless, guard-
-    // admitted) QUEUED window it currently has.
+    // admitted) QUEUED window it currently has. Batch (MODEL-SERVE-003)
+    // follows the training branch's ordering: `PredictionJobTokenGuard`
+    // accepts QUEUED the same way RunTokenGuard does, so there is no
+    // equivalent race to close by writing early.
     if (mode === 'score') {
       await this.prisma.modelTrainingRun.update({
-        where: { id: runId },
+        where: { id },
         data: { scoringContainerId: container.id },
       });
       await container.start();
+    } else if (mode === 'batch') {
+      await container.start();
+      await this.prisma.predictionJob.update({
+        where: { id },
+        data: {
+          status: 'RUNNING',
+          containerId: container.id,
+          startedAt: new Date(),
+        },
+      });
     } else {
       await container.start();
       await this.prisma.modelTrainingRun.update({
-        where: { id: runId },
+        where: { id },
         data: {
           status: 'RUNNING',
           containerId: container.id,
@@ -279,29 +366,30 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
       });
     }
 
-    void this.watch(runId, container, mode);
+    void this.watch(id, container, mode);
   }
 
   /**
    * Observe the exit code.
    *
-   * The container reports its own outcome via /complete (train) or
-   * /score-complete (score), but a process that is OOM-killed or segfaults
-   * never gets to. Without this, such a run stays RUNNING (train) or
-   * "scoring" (score) forever. A real report having already landed always
-   * wins — this only fills a gap, it does not overrule one.
+   * The container reports its own outcome via /complete (train),
+   * /score-complete (score), or /batch-complete (batch), but a process that
+   * is OOM-killed or segfaults never gets to. Without this, such a run
+   * stays RUNNING (train, batch) or "scoring" (score) forever. A real
+   * report having already landed always wins — this only fills a gap, it
+   * does not overrule one.
    */
   private async watch(
-    runId: string,
+    id: string,
     container: Docker.Container,
-    mode: 'train' | 'score' = 'train',
+    mode: 'train' | 'score' | 'batch' = 'train',
   ) {
     try {
       const { StatusCode } = await container.wait();
 
       if (mode === 'score') {
         const run = await this.prisma.modelTrainingRun.findUnique({
-          where: { id: runId },
+          where: { id },
           select: { scoringContainerId: true },
         });
         // Already cleared by a real /score-complete (or a later re-trigger's
@@ -310,12 +398,12 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
 
         const tail = await this.tailLogs(container);
         await this.prisma.modelTrainingRun.update({
-          where: { id: runId },
+          where: { id },
           data: { scoringContainerId: null },
         });
         await this.prisma.modelTrainingRunLog.create({
           data: {
-            runId,
+            runId: id,
             level: 'error',
             message: (StatusCode === 0
               ? `Scoring container exited 0 without reporting a result. Tail: ${tail}`
@@ -326,14 +414,39 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
         return;
       }
 
+      if (mode === 'batch') {
+        const job = await this.prisma.predictionJob.findUnique({
+          where: { id },
+          select: { status: true },
+        });
+        // Same "a real report already landed always wins" rule as train —
+        // a stale exit report for a job already terminal (via a real
+        // /batch-complete) must not clobber the recorded outcome.
+        if (job && (job.status === 'RUNNING' || job.status === 'QUEUED')) {
+          const tail = await this.tailLogs(container);
+          await this.prisma.predictionJob.update({
+            where: { id },
+            data: {
+              status: 'FAILED',
+              failureReason:
+                StatusCode === 0
+                  ? `Container exited 0 without reporting a result. Tail: ${tail}`
+                  : `Container exited ${StatusCode}. Tail: ${tail}`,
+              finishedAt: new Date(),
+            },
+          });
+        }
+        return;
+      }
+
       const run = await this.prisma.modelTrainingRun.findUnique({
-        where: { id: runId },
+        where: { id },
         select: { status: true },
       });
       if (run && (run.status === 'RUNNING' || run.status === 'QUEUED')) {
         const tail = await this.tailLogs(container);
         await this.prisma.modelTrainingRun.update({
-          where: { id: runId },
+          where: { id },
           data: {
             status: 'FAILED',
             failureReason:
@@ -345,7 +458,7 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
         });
       }
     } catch (err) {
-      this.log.error(`watch failed for run ${runId} (${mode})`, err);
+      this.log.error(`watch failed for run ${id} (${mode})`, err);
     } finally {
       await this.reap(container, false);
     }

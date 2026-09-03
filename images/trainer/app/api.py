@@ -22,13 +22,25 @@ import requests
 
 from config import RunContext
 
-# role -> (train path, score path). The ONLY place these two surfaces are
-# paired; every caller in this codebase asks for a role.
-_ROUTES: dict[str, tuple[str, str]] = {
-    "claim": ("/claim", "/score-claim"),
-    "log": ("/log", "/score-log"),
-    "upload-urls": ("/upload-urls", "/score-upload-urls"),
-    "complete": ("/complete", "/score-complete"),
+# role -> {mode: path}. The ONLY place these surfaces are paired; every
+# caller in this codebase asks for a role, never a literal URL. MODEL-SERVE-
+# 003 added the "batch" column — a role missing a "batch" entry (there is
+# none today) would KeyError rather than silently reach a train/score route,
+# which is the same "no code path here that could reach the wrong endpoint
+# even by mistake" guarantee this module's docstring already states.
+_ROUTES: dict[str, dict[str, str]] = {
+    "claim": {"train": "/claim", "score": "/score-claim", "batch": "/batch-claim"},
+    "log": {"train": "/log", "score": "/score-log", "batch": "/batch-log"},
+    "upload-urls": {
+        "train": "/upload-urls",
+        "score": "/score-upload-urls",
+        "batch": "/batch-upload-urls",
+    },
+    "complete": {
+        "train": "/complete",
+        "score": "/score-complete",
+        "batch": "/batch-complete",
+    },
 }
 
 
@@ -42,8 +54,7 @@ class RunApi:
             {"Authorization": f"Bearer {context.run_token}"})
 
     def _endpoint(self, role: str) -> str:
-        train_path, score_path = _ROUTES[role]
-        path = score_path if self.context.is_score_mode else train_path
+        path = _ROUTES[role][self.context.mode]
         return f"{self.context.api}{path}"
 
     def log(self, message: str, level: str = "info") -> None:

@@ -27,6 +27,7 @@ import { ModelRunModule } from './api/v1/model-run/model-run.module';
 import { TrainningContainerModule } from './api/v1/trainning-container/trainning-container.module';
 import { ModelVersionModule } from './api/v1/model-version/model-version.module';
 import { ModelServingModule } from './api/v1/model-serving/model-serving.module';
+import { PredictionJobModule } from './api/v1/prediction-job/prediction-job.module';
 
 @Module({
   imports: [
@@ -72,6 +73,7 @@ import { ModelServingModule } from './api/v1/model-serving/model-serving.module'
     TrainningContainerModule,
     ModelVersionModule,
     ModelServingModule,
+    PredictionJobModule,
   ],
   providers: [
     {

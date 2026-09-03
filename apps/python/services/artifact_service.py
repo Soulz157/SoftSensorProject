@@ -52,9 +52,13 @@ from intergrations.object_store import (
     is_committed_artifact_key,
     is_draft_run_key,
     is_model_run_key,
+    is_prediction_job_key,
     missing_pct,
     model_run_key,
+    prediction_job_key,
     split_data_key,
+    OUTPUT_FILENAME,
+    BATCH_MANIFEST_FILENAME,
 )
 from schemas.preprocess import (
     ArtifactAdoptRequest,
@@ -1743,6 +1747,95 @@ def presign_run_object(store: ObjectStore, body) -> dict[str, Any]:
         "sidecar_urls": {},
         "checksum": store.checksum_of(key),
         "row_count": row_count,
+        "expires_at": (
+            datetime.now(timezone.utc) + store.PRESIGN_READ_TTL
+        ).isoformat(),
+    }
+
+
+#: MODEL-SERVE-003. What a batch container may upload — mirrors
+#: _ALLOWED_RUN_UPLOADS' allow-list discipline one root over.
+_ALLOWED_PREDICTION_JOB_UPLOADS = frozenset({OUTPUT_FILENAME, BATCH_MANIFEST_FILENAME})
+
+
+def presign_prediction_job_upload(store: ObjectStore, body) -> dict:
+    """MODEL-SERVE-003. Mints WRITE URLs for a batch container's own two
+    outputs — mirrors `presign_model_run_upload`'s exact shape one root
+    over (predictions/{modelId}/{jobId}/ instead of {models|drafts}/
+    {ownerId}/runs/{runId}/). No draft/model split: a PredictionJob always
+    has a model_id.
+    """
+    unknown = sorted(set(body.filenames) - _ALLOWED_PREDICTION_JOB_UPLOADS)
+    if unknown:
+        raise ValueError(
+            f"Not part of the prediction-job layout: {unknown}. "
+            f"Allowed: {sorted(_ALLOWED_PREDICTION_JOB_UPLOADS)}."
+        )
+
+    upload_urls: dict[str, str] = {}
+    for filename in body.filenames:
+        key = prediction_job_key(body.model_id, body.job_id, filename)
+        # Belt and braces, same reasoning presign_model_run_upload states on
+        # itself: the allow-list above already constrains the filename, but
+        # the ids come from the request too, and this predicate is the one
+        # thing standing between a malformed id and a write outside
+        # predictions/.
+        if not is_prediction_job_key(key):
+            raise ValueError(
+                f"Refusing to presign a write outside predictions/: '{key}'"
+            )
+        upload_urls[filename] = store.presigned_put(key)
+
+    return {
+        "upload_urls": upload_urls,
+        "expires_at": (
+            datetime.now(timezone.utc) + store.PRESIGN_WRITE_TTL
+        ).isoformat(),
+    }
+
+
+#: MODEL-SERVE-003. Only the output — nothing today needs a fresh read URL
+#: for a job's own batch_manifest.json (V03 reads it directly off the
+#: worker's own upload response / a live re-fetch on the container side,
+#: never through this READ path).
+_ALLOWED_PREDICTION_JOB_OBJECT_PRESIGNS = frozenset({OUTPUT_FILENAME})
+
+
+def presign_prediction_job_object(store: ObjectStore, body) -> dict[str, Any]:
+    """MODEL-SERVE-003. Presigns a PredictionJob's own output.parquet for
+    READING — mirrors `presign_run_object`'s exact shape one root over.
+
+    Deliberately NOT routed through `/artifacts/presign`
+    (`presign_artifact`): that function hard-refuses anything failing
+    `is_committed_artifact_key`, which a prediction-job output satisfies
+    neither condition of (no `/artifacts/` segment, no `ALL_DATA_FILENAMES`
+    match — see `is_committed_artifact_key`'s own docstring). Reusing it
+    here would repeat the exact mistake `presign_run_object` was built to
+    fix: that refusal already made `holdoutMetrics` null on 100% of runs
+    for a reason unrelated to whether the object existed at all (see this
+    function's own doc comment above). Never widen
+    `is_committed_artifact_key` itself — it is shared by every committed-
+    dataset-artifact path in this service and must keep refusing a
+    job-scoped key.
+    """
+    key = body.source_key
+    filename = key.rsplit("/", 1)[-1]
+    if filename not in _ALLOWED_PREDICTION_JOB_OBJECT_PRESIGNS:
+        raise ValueError(
+            f"'{key}' does not name one of "
+            f"{sorted(_ALLOWED_PREDICTION_JOB_OBJECT_PRESIGNS)}."
+        )
+    if not is_prediction_job_key(key):
+        raise ValueError(
+            f"'{key}' is not a well-formed prediction-job output key. Only "
+            "predictions/{modelId}/{jobId}/... can be presigned here."
+        )
+
+    return {
+        "data_url": store.presigned_get(key),
+        "sidecar_urls": {},
+        "checksum": store.checksum_of(key),
+        "row_count": None,
         "expires_at": (
             datetime.now(timezone.utc) + store.PRESIGN_READ_TTL
         ).isoformat(),

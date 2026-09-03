@@ -1210,6 +1210,46 @@ def is_draft_run_key(key: str) -> bool:
     return all(segment and segment not in (".", "..") for segment in parts)
 
 
+#: MODEL-SERVE-003. Where a PredictionJob's output lands. Deliberately NOT
+#: under models/{modelId}/runs/... — that root names TRAINING-run outputs
+#: (model.joblib, metrics.json, ...), and a batch score is a different
+#: lifecycle keyed to its own PredictionJob, not a ModelTrainingRun.
+#: Deliberately NOT under inference/ either — the ledger has already
+#: reserved that root for MODEL-SERVE-006's hourly-window layout
+#: (docs/feature_list_model.json), and picking a colliding root now would
+#: turn a free choice into a migration later. Mirrored in TypeScript at
+#: artifact-keys.ts — change all three, per MODEL-FLOW-013-T05's own note
+#: on what happens when one is missed.
+PREDICTION_ROOT = "predictions/"
+OUTPUT_FILENAME = "output.parquet"
+BATCH_MANIFEST_FILENAME = "batch_manifest.json"
+
+
+def prediction_job_prefix(model_id: str, job_id: str) -> str:
+    return f"{PREDICTION_ROOT}{model_id}/{job_id}/"
+
+
+def prediction_job_key(model_id: str, job_id: str, filename: str) -> str:
+    return f"{prediction_job_prefix(model_id, job_id)}{filename}"
+
+
+def is_prediction_job_key(key: str) -> bool:
+    """Whether `key` is a well-formed PredictionJob output object.
+
+    Same structural-not-substring discipline as `is_model_run_key`/
+    `is_draft_run_key`: requires exactly `predictions/{model_id}/{job_id}/
+    {filename}` — 3 non-empty path segments after the root, none `.`/`..`.
+    Three, not four, since this root has no equivalent of the
+    models/drafts layout's fixed `runs` middle segment.
+    """
+    if not key.startswith(PREDICTION_ROOT):
+        return False
+    parts = key[len(PREDICTION_ROOT):].split("/")
+    if len(parts) != 3:
+        return False
+    return all(segment and segment not in (".", "..") for segment in parts)
+
+
 def is_draft_run_prefix(prefix: str) -> bool:
     """Whether `prefix` is `drafts/{draft_id}/runs/` or `.../runs/{run_id}/`.
 

@@ -7,11 +7,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --uid 10001 trainer
-WORKDIR /app
+
+# MODEL-SERVE-003. Build CONTEXT moved to the repo root — packages/py-
+# scaling lives outside images/trainer, needed so pipelines/batch.py can
+# apply the SAME fitted scaling transform apps/serving uses
+# (decisions.serving_transform_is_an_extracted_module: one implementation,
+# not two that could drift). WORKSPACE mirrors the monorepo's own relative
+# layout — apps/serving/Dockerfile already made this exact move, for the
+# identical reason: requirements.txt's `-e ../../packages/py-scaling` line
+# is a relative path resolved against its own location, and changing the
+# on-disk depth here would silently break that install with no error until
+# the first import. See Dockerfile.dockerignore (co-located, BuildKit
+# per-Dockerfile naming) for what keeps the repo-root context from sweeping
+# in node_modules/.git/every local .venv.
+WORKDIR /workspace
+
+COPY packages/py-scaling /workspace/packages/py-scaling
 
 # requirements ก่อนโค้ด — แก้โค้ดแล้ว pip layer ยัง cache อยู่
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+COPY images/trainer/requirements.txt /workspace/images/trainer/requirements.txt
+WORKDIR /workspace/images/trainer
+RUN pip install --no-cache-dir -r requirements.txt
 
 # ONE COPY OF THE WHOLE PACKAGE, replacing the previous per-file COPY list.
 #
@@ -28,7 +44,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 # stray .env would silently enter a production image. .dockerignore is therefore
 # load-bearing here in a way it was not before — treat it as part of this
 # Dockerfile, not as housekeeping.
-COPY app/ /app/
+COPY images/trainer/app/ /workspace/images/trainer/app/
 
 # Byte-compile at BUILD time, and note the ordering: this must run before the
 # PYTHONDONTWRITEBYTECODE ENV below, which would otherwise suppress it.
@@ -44,7 +60,8 @@ COPY app/ /app/
 #
 # COPY preserves mtimes and this runs immediately after, so the default
 # timestamp-based invalidation matches and Python does not re-parse.
-RUN python -m compileall -q /app && chown -R trainer:trainer /app
+RUN python -m compileall -q /workspace/images/trainer/app \
+    && chown -R trainer:trainer /workspace
 
 ENV HOME=/scratch \
     MPLCONFIGDIR=/scratch/.mpl \
@@ -65,18 +82,22 @@ ENV HOME=/scratch \
 # invisible the moment the real tmpfs mounts over it.
 #
 # The guarantee that /scratch exists and is writable now comes from
-# pipelines.run_training / pipelines.score.run_scoring — each calls
-# `SCRATCH.mkdir(parents=True, exist_ok=True)` as its first line of work, before
-# anything else touches the filesystem. Note "each": the single-file version had
-# one mkdir in main(), and score mode reached it too. After the split there are
-# two entrypoints and therefore two mkdir calls, one per entrypoint. If a third
-# mode is ever added, it needs its own.
+# pipelines.run_training / pipelines.score.run_scoring / (MODEL-SERVE-003)
+# pipelines.batch.run_batch_scoring — each calls `SCRATCH.mkdir(parents=True,
+# exist_ok=True)` as its first line of work, before anything else touches the
+# filesystem. Note "each": the single-file version had one mkdir in main(),
+# and score mode reached it too. There are now THREE entrypoints and
+# therefore three mkdir calls, one per entrypoint. If a fourth mode is ever
+# added, it needs its own.
 
 USER trainer
 
-# sys.path[0] is the script's directory, i.e. /app — which is what makes the
-# package's flat absolute imports (`from labels import ...`, `import pipelines`)
-# resolve identically here and under pytest (see conftest.py). Left as
-# ./train.py rather than `-m train` to keep this line unchanged from the
-# pre-split image.
+# sys.path[0] is the script's directory — which is what makes the package's
+# flat absolute imports (`from labels import ...`, `import pipelines`)
+# resolve identically here and under pytest (see conftest.py). WORKDIR set
+# explicitly here (MODEL-SERVE-003's context move left the last WORKDIR at
+# .../images/trainer, one level up) so `./train.py` below still resolves.
+# Left as ./train.py rather than `-m train` to keep this line unchanged from
+# the pre-split image.
+WORKDIR /workspace/images/trainer/app
 ENTRYPOINT ["python", "./train.py"]

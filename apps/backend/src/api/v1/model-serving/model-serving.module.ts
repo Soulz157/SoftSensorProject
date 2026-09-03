@@ -5,5 +5,10 @@ import { ModelServingAuthorizedService } from './authorized/model-serving.author
 @Module({
   controllers: [ModelServingAuthorizedController],
   providers: [ModelServingAuthorizedService],
+  // MODEL-SERVE-003. PredictionJobModule reuses getDescriptorByVersionIdService
+  // rather than re-deriving the presign/manifest/feature-spec chain a second
+  // time — one implementation of "how to build a model descriptor", not two
+  // that could drift.
+  exports: [ModelServingAuthorizedService],
 })
 export class ModelServingModule {}

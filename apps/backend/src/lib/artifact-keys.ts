@@ -297,3 +297,29 @@ export function draftRunKey(
 ): string {
   return `${draftRunPrefix(draftId, runId)}${filename}`;
 }
+
+/**
+ * MODEL-SERVE-003. Where a PredictionJob's output lands. Deliberately NOT
+ * under MODEL_ROOT — that root names TRAINING-run outputs, and a batch
+ * score is a different lifecycle keyed to its own PredictionJob, never a
+ * ModelTrainingRun. Deliberately NOT under `inference/` either — the
+ * ledger has already reserved that root for MODEL-SERVE-006's hourly-window
+ * layout (docs/feature_list_model.json), and picking a colliding root now
+ * would turn a free choice into a migration later. Mirrored in Python at
+ * object_store.py — change both.
+ */
+export const PREDICTION_ROOT = 'predictions/';
+export const OUTPUT_FILENAME = 'output.parquet';
+export const BATCH_MANIFEST_FILENAME = 'batch_manifest.json';
+
+export function predictionJobPrefix(modelId: string, jobId: string): string {
+  return `${PREDICTION_ROOT}${modelId}/${jobId}/`;
+}
+
+export function predictionJobKey(
+  modelId: string,
+  jobId: string,
+  filename: string,
+): string {
+  return `${predictionJobPrefix(modelId, jobId)}${filename}`;
+}

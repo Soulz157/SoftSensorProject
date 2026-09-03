@@ -1,0 +1,72 @@
+# BuildKit-specific naming (<dockerfile>.dockerignore, co-located with the
+# Dockerfile it applies to) — deliberately NOT a root .dockerignore, and
+# replaces the old images/trainer/.dockerignore (dead since the context
+# move: that file is neither at the context root nor co-located under this
+# name, so BuildKit never reads it any more — see MODEL-SERVE-003's context
+# move in the Dockerfile itself). The build context for images/trainer/
+# Dockerfile is now the repo root (packages/py-scaling lives outside
+# images/trainer), so without this every other app, node_modules, .git, and
+# every local .venv in the monorepo would enter the build context. This
+# file scopes it back down to the two trees the Dockerfile actually COPYs,
+# then excludes local-only noise inside those — same discipline the old
+# file stated about itself: "load-bearing, not housekeeping."
+
+# Everything else at the repo root — the Dockerfile only ever COPYs
+# images/trainer/ and packages/py-scaling/.
+*
+!images/trainer
+!packages/py-scaling
+!images/trainer/**
+!packages/py-scaling/**
+
+# Stale caches from local dev. Harmless at import (Python 3 will not import
+# a .pyc without its .py in __pycache__), but they bloat the image and their
+# mtimes break the build-time compileall's timestamp match, causing every
+# module to be re-parsed on every run.
+images/trainer/**/__pycache__/
+images/trainer/*.py[cod]
+images/trainer/**/*$py.class
+images/trainer/.pytest_cache/
+images/trainer/.mypy_cache/
+images/trainer/.ruff_cache/
+
+# Tests live outside app/ in this layout, so they are not copied by the
+# COPY above — listed anyway so the exclusion survives someone moving them
+# in. Both spellings: this image uses test/, but tests/ is the more common
+# convention and would otherwise ship silently if the directory were
+# renamed.
+images/trainer/test/
+images/trainer/tests/
+images/trainer/conftest.py
+images/trainer/.coverage
+images/trainer/htmlcov/
+
+# Never, under any circumstance — this container is credential-free by
+# design, same statement the old .dockerignore made about itself.
+**/*.pem
+**/*.key
+**/credentials*
+**/secrets*
+images/trainer/.env
+images/trainer/.env.*
+
+# Local scratch that has a habit of appearing next to the code.
+images/trainer/*.parquet
+images/trainer/*.joblib
+images/trainer/*.ipynb
+images/trainer/.ipynb_checkpoints/
+images/trainer/notebooks/
+images/trainer/scratch/
+images/trainer/tmp/
+images/trainer/.impeccable/
+
+packages/py-scaling/**/__pycache__/
+packages/py-scaling/.pytest_cache/
+packages/py-scaling/tests/
+packages/py-scaling/src/*.egg-info/
+
+# The old Dockerfile/.dockerignore themselves — not copied, but excluded
+# from the build context hash too.
+images/trainer/Dockerfile
+images/trainer/Dockerfile.dockerignore
+images/trainer/.dockerignore

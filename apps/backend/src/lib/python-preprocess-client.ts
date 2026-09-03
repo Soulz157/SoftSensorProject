@@ -131,6 +131,45 @@ export async function presignRunObject(input: {
   return PresignRunObjectSchema.parse(res);
 }
 
+/**
+ * MODEL-SERVE-003. Time-limited write URLs for a batch container's own two
+ * outputs — mirrors `presignModelRunUpload`'s shape one root over, minus
+ * the model_id/draft_id split (a PredictionJob always has a modelId).
+ */
+export async function presignPredictionJobUpload(input: {
+  model_id: string;
+  job_id: string;
+  filenames: string[];
+}): Promise<PresignedUpload> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/prediction-jobs/presign-upload',
+    input,
+    PYTHON_TIMEOUT.test,
+  );
+  return PresignUploadSchema.parse(res);
+}
+
+/**
+ * MODEL-SERVE-003. Presigns a PredictionJob's own output.parquet for
+ * reading — mirrors `presignRunObject`'s shape one root over. Deliberately
+ * NOT `presignArtifact`: that call is hard-restricted server-side to
+ * `is_committed_artifact_key` and refuses a prediction-job-scoped key
+ * outright, the same class of mistake `presignRunObject` itself exists to
+ * fix for run-scoped objects one entity over. `row_count` mirrors
+ * `PresignedRunObject`'s own nullable shape — a prediction-job output never
+ * carries one (see `presign_prediction_job_object`'s own doc comment).
+ */
+export async function presignPredictionJobObject(input: {
+  source_key: string;
+}): Promise<PresignedRunObject> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/prediction-jobs/presign-object',
+    { source_key: input.source_key },
+    PYTHON_TIMEOUT.metadata,
+  );
+  return PresignRunObjectSchema.parse(res);
+}
+
 export async function fetchArtifactMetadata(
   sourceKey: string,
 ): Promise<ArtifactMetadata> {

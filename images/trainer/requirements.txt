@@ -6,6 +6,13 @@ requests==2.32.3
 numpy==2.1.3
 lightgbm==4.5.0
 xgboost==2.1.2
+
+# MODEL-SERVE-003. Shared scaling transform, same package apps/serving and
+# apps/python import — installed from monorepo source, not an index. Path
+# is relative to THIS file's own location; the Dockerfile's build-context
+# move preserves the two-levels-up depth this assumes. See
+# decisions.serving_transform_is_an_extracted_module.
+-e ../../packages/py-scaling
 # MODEL-FLOW-009-T04. CPU-only wheel index — this container has no GPU
 # passthrough (trainning-container.authorized.service.ts configures none),
 # so the default pip resolution (which bundles a multi-GB CUDA runtime) is

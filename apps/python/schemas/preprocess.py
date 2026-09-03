@@ -380,6 +380,55 @@ class RunObjectPresignResponse(BaseModel):
     expires_at: str
 
 
+class PredictionJobUploadPresignRequest(BaseModel):
+    """MODEL-SERVE-003. Mints WRITE URLs for a batch container's own two
+    outputs (output.parquet, batch_manifest.json) — mirrors
+    `ModelRunUploadPresignRequest`'s exact shape one root over
+    (predictions/{modelId}/{jobId}/ instead of {models|drafts}/{ownerId}/
+    runs/{runId}/). No draft/model split needed here: a PredictionJob always
+    has a modelId (Save Model already happened by the time a model can be
+    promoted to PRODUCTION and scored)."""
+
+    model_config = {"extra": "forbid"}
+
+    model_id: str
+    job_id: str
+    filenames: list[str] = Field(
+        ..., description="Filenames under predictions/{modelId}/{jobId}/."
+    )
+
+
+class PredictionJobUploadPresignResponse(BaseModel):
+    upload_urls: dict[str, str]
+    expires_at: str
+
+
+class PredictionJobObjectPresignRequest(BaseModel):
+    """MODEL-SERVE-003. Presigns a PredictionJob's own output.parquet for
+    READING — deliberately separate from `/artifacts/presign`: that endpoint
+    is hard-restricted to `is_committed_artifact_key`, which a prediction-job
+    output satisfies neither condition of (no /artifacts/ segment, no
+    ALL_DATA_FILENAMES match). Mirrors `RunObjectPresignRequest`'s exact
+    shape one root over — see `presign_prediction_job_object`'s own
+    docstring for why reusing `/artifacts/presign` here would repeat the
+    exact mistake `presign_run_object` was built to fix."""
+
+    model_config = {"extra": "forbid"}
+
+    source_key: str = Field(..., description="The job's output.parquet key.")
+
+
+class PredictionJobObjectPresignResponse(BaseModel):
+    data_url: str
+    #: Always empty — a prediction-job output has no sidecars in the
+    #: /artifacts/presign sense. Kept only so the response shape matches
+    #: ArtifactPresignResponse/RunObjectPresignResponse.
+    sidecar_urls: dict[str, str | None]
+    checksum: str
+    row_count: int | None
+    expires_at: str
+
+
 class RunLossHistoryRequest(BaseModel):
     """MODEL-FLOW-013-T05/T07. Reads a training run's `loss_history.json`
     verbatim — it is already the exact shape the client renders (see

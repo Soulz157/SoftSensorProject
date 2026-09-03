@@ -79,6 +79,7 @@ model User {
   presetImports       FeaturePresetImport[]
   loaderJobs          LoaderJob[]
   promotedModelVersions ModelVersion[]
+  predictionJobs      PredictionJob[]
 }
 
 model Account {
@@ -182,6 +183,7 @@ model Model {
   datasetId         String?
   modelTrainingRuns ModelTrainingRun[]
   versions          ModelVersion[]
+  predictionJobs    PredictionJob[]
 
   @@unique([workspaceId, name])
   @@index([workspaceId])
@@ -1267,9 +1269,92 @@ model ModelVersion {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  predictionJobs PredictionJob[]
+
   @@unique([modelId, version])
   @@index([modelId, stage])
   @@index([modelId, archivedAt])
+}
+
+enum PredictionJobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELED
+}
+
+/// MODEL-SERVE-003. Asynchronous batch scoring of a parquet already in
+/// object storage — the "submit, poll, collect by reference" half of
+/// prediction, alongside MODEL-SERVE-002's synchronous /predict. Mirrors
+/// LoaderJob/ModelTrainingRun's vocabulary and shape deliberately (see
+/// docs/feature_list_model.json's delta-re-audit finding: FOUR job models
+/// already share this exact five-value status enum).
+model PredictionJob {
+  id String @id @default(uuid())
+
+  modelId String
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  /// Pinned at job START, never re-resolved — MODEL-SERVE-003-T05. A batch
+  /// spanning a promote must not silently score its first half on one
+  /// model version and its second on another; a job whose model is
+  /// "whatever was PRODUCTION at some point" cannot be reproduced or
+  /// defended later.
+  modelVersionId String
+  /// NO ACTION, not the implicit Restrict a required relation would
+  /// otherwise get — same footgun and same fix as ModelVersion.sourceRun
+  /// above: deleting a Model cascades onto ModelVersion AND PredictionJob
+  /// (via its own direct modelId FK) in the same statement. Restrict is
+  /// checked immediately per row and would fire while ModelVersion's own
+  /// cascade is still being processed, before the referencing
+  /// PredictionJob row is gone.
+  modelVersion ModelVersion @relation(fields: [modelVersionId], references: [id], onDelete: NoAction, onUpdate: Cascade)
+
+  /// The committed dataset artifact being scored — validated against
+  /// is_committed_artifact_key before this row is ever created, not
+  /// re-checked here.
+  inputKey String
+
+  outputKey      String?
+  /// sha256 of the output parquet, written by the container on completion.
+  outputChecksum String?
+  rowCount       Int?
+
+  /// NULL for a job submitted without a key. Uniqueness is scoped
+  /// (modelId, idempotencyKey) by a HAND-WRITTEN partial unique index —
+  /// Prisma's schema DSL cannot express WHERE — see the migration.
+  idempotencyKey String?
+
+  status        PredictionJobStatus @default(QUEUED)
+  /// Present only on FAILED. Written from the container's own report or
+  /// from a non-zero exit code the runner observed.
+  failureReason String?
+
+  /// Digest, never a tag — same discipline as ModelTrainingRun.imageDigest.
+  imageDigest String
+  containerId String?
+
+  /// sha256 of the job token, never the token — same discipline as
+  /// ModelTrainingRun.tokenHash. A leaked table dump must not yield working
+  /// credentials.
+  tokenHash      String
+  /// Callbacks are refused past this even if the token is right.
+  tokenExpiresAt DateTime
+
+  /// Mirrors LoaderJob/PreprocessingJob.attempts: incremented by the runner
+  /// on start, carried forward (not reset) by retry.
+  attempts Int @default(0)
+
+  createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  createdById String
+  createdAt   DateTime @default(now())
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  updatedAt   DateTime @updatedAt
+
+  @@index([modelId, createdAt])
+  @@index([status])
 }
 
 enum ModelCandidateJobStatus {

@@ -38,9 +38,16 @@ interface ScoringRunRow {
  * test can supply either independently of the other (`runs` defaults to
  * `[]`-equivalent behaviour when omitted, same as `scoringRuns`).
  */
+/**
+ * MODEL-SERVE-003-V01. A third findMany — predictionJob, its own model, not
+ * a discriminated modelTrainingRun.findMany call the way the scoring sweep
+ * is. Defaults to `[]` so every existing test above (which builds a
+ * prisma mock with no `jobs` option) is unaffected.
+ */
 function buildPrisma(options: {
   runs: RunRow[];
   scoringRuns?: ScoringRunRow[];
+  jobs?: RunRow[];
   findUniqueStatus?: string;
 }) {
   return {
@@ -52,6 +59,13 @@ function buildPrisma(options: {
             'status' in args.where ? options.runs : (options.scoringRuns ?? []),
           ),
         ),
+      findUnique: jest
+        .fn()
+        .mockResolvedValue({ status: options.findUniqueStatus ?? 'RUNNING' }),
+      update: jest.fn().mockResolvedValue({}),
+    },
+    predictionJob: {
+      findMany: jest.fn().mockResolvedValue(options.jobs ?? []),
       findUnique: jest
         .fn()
         .mockResolvedValue({ status: options.findUniqueStatus ?? 'RUNNING' }),
@@ -302,6 +316,79 @@ describe('TrainningContainerAuthorizedService — boot reconcile (MODEL-FLOW-011
     // never writes for an existing container, only watch()'s own
     // exit-code branch may, and it is mocked away here.
     expect(prisma.modelTrainingRun.update).not.toHaveBeenCalled();
+
+    watchSpy.mockRestore();
+  });
+
+  // MODEL-SERVE-003-V01. Same existence-check sweep, own model
+  // (predictionJob, not modelTrainingRun) — mirrors the training-run cases
+  // above exactly, since it is the identical per-row discipline applied to
+  // a different table.
+  it('a prediction job with no containerId FAILS with a reason naming that it never spawned', async () => {
+    const prisma = buildPrisma({
+      runs: [],
+      jobs: [{ id: 'job-1', containerId: null }],
+    });
+    const service = makeService(prisma);
+
+    await service.onModuleInit();
+
+    expect(mockGetContainer).not.toHaveBeenCalled();
+    expect(prisma.predictionJob.update).toHaveBeenCalledWith({
+      where: { id: 'job-1' },
+      data: {
+        status: 'FAILED',
+        failureReason: expect.stringContaining('never spawned'),
+        finishedAt: expect.any(Date),
+      },
+    });
+  });
+
+  it('a prediction job whose container no longer exists FAILS, naming the container id', async () => {
+    mockGetContainer.mockReturnValue({
+      inspect: jest.fn().mockRejectedValue(new Error('no such container: b1')),
+    });
+    const prisma = buildPrisma({
+      runs: [],
+      jobs: [{ id: 'job-1', containerId: 'b1' }],
+    });
+    const service = makeService(prisma);
+
+    await service.onModuleInit();
+
+    const [[{ data }]] = prisma.predictionJob.update.mock.calls;
+    expect(data.status).toBe('FAILED');
+    expect(data.failureReason).toContain('b1');
+    expect(data.failureReason).toContain('no longer exists');
+  });
+
+  it('a prediction job whose container still exists is re-attached to watch() in batch mode', async () => {
+    const watchSpy = jest
+      .spyOn(
+        TrainningContainerAuthorizedService.prototype as unknown as Record<
+          string,
+          (...args: unknown[]) => Promise<void>
+        >,
+        'watch',
+      )
+      .mockResolvedValue(undefined);
+    const container = {
+      id: 'b1',
+      inspect: jest
+        .fn()
+        .mockResolvedValue({ Id: 'b1', State: { Running: true } }),
+    };
+    mockGetContainer.mockReturnValue(container);
+    const prisma = buildPrisma({
+      runs: [],
+      jobs: [{ id: 'job-1', containerId: 'b1' }],
+    });
+    const service = makeService(prisma);
+
+    await service.onModuleInit();
+
+    expect(watchSpy).toHaveBeenCalledWith('job-1', container, 'batch');
+    expect(prisma.predictionJob.update).not.toHaveBeenCalled();
 
     watchSpy.mockRestore();
   });

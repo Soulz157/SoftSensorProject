@@ -67,6 +67,10 @@ from schemas.preprocess import (
     ModelObjectVerifyResponse,
     RunObjectPresignRequest,
     RunObjectPresignResponse,
+    PredictionJobUploadPresignRequest,
+    PredictionJobUploadPresignResponse,
+    PredictionJobObjectPresignRequest,
+    PredictionJobObjectPresignResponse,
     PreviewRequest,
     PreviewResponse,
     CorrelationRequest,
@@ -883,6 +887,45 @@ async def presign_run_object(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(artifact_service.presign_run_object, store, body)
+
+
+@router.post(
+    "/prediction-jobs/presign-upload",
+    response_model=PredictionJobUploadPresignResponse,
+    summary="Time-limited write URLs for one batch prediction job's outputs",
+    description=(
+        "MODEL-SERVE-003. The write half for a batch container's own two "
+        "outputs (output.parquet, batch_manifest.json) — mirrors "
+        "/models/runs/presign-upload one root over "
+        "(predictions/{modelId}/{jobId}/), refusing any key outside that "
+        "job's own root."
+    ),
+)
+async def presign_prediction_job_upload(
+    body: PredictionJobUploadPresignRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.presign_prediction_job_upload, store, body)
+
+
+@router.post(
+    "/prediction-jobs/presign-object",
+    response_model=PredictionJobObjectPresignResponse,
+    summary="Presign a batch prediction job's output for reading",
+    description=(
+        "MODEL-SERVE-003. Today only output.parquet. Deliberately separate "
+        "from /artifacts/presign, which is hard-restricted to committed "
+        "dataset artifact data.parquet keys and would refuse a "
+        "prediction-job-scoped object outright — the same class of mistake "
+        "/models/runs/presign-object was built to fix for run-scoped "
+        "objects one entity over."
+    ),
+)
+async def presign_prediction_job_object(
+    body: PredictionJobObjectPresignRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.presign_prediction_job_object, store, body)
 
 
 @router.post(

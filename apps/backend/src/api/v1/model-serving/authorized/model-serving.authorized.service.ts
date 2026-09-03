@@ -108,7 +108,50 @@ export class ModelServingAuthorizedService {
         type: 'ERROR',
       });
     }
+    return this.buildDescriptor(modelId, version);
+  }
 
+  /**
+   * MODEL-SERVE-003-T05. The pinned-version twin of `getDescriptorService`
+   * — resolves a SPECIFIC ModelVersion regardless of its current stage,
+   * never "whatever is PRODUCTION right now". A PredictionJob pins its
+   * modelVersionId at submit time precisely so a promote landing mid-batch
+   * cannot silently retarget an in-flight job (V03) — an ARCHIVED version
+   * must still resolve here, or a promote would strand every job pinned to
+   * the version it demoted.
+   */
+  async getDescriptorByVersionIdService(modelVersionId: string) {
+    const version = await this.prisma.modelVersion.findUnique({
+      where: { id: modelVersionId },
+      include: {
+        sourceRun: { select: { targetY: true, manifestKey: true } },
+      },
+    });
+    if (!version) {
+      throw new AppException({
+        statusCode: 404,
+        message: `ModelVersion ${modelVersionId} not found.`,
+        type: 'ERROR',
+      });
+    }
+    return this.buildDescriptor(version.modelId, version);
+  }
+
+  private async buildDescriptor(
+    modelId: string,
+    version: {
+      id: string;
+      version: number;
+      algorithm: string;
+      modelObjectKey: string;
+      modelChecksum: string | null;
+      goldObjectKey: string;
+      featureSpecKey: string | null;
+      frameworkVersions: unknown;
+      imageDigest: string;
+      sourceRun: { targetY: string; manifestKey: string | null };
+    },
+  ) {
     const presigned = await presignRunObject({
       source_key: version.modelObjectKey,
     });
