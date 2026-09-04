@@ -11,6 +11,8 @@ import { ModelRunScoreAuthorizedController } from './authorized/model-run-score.
 import { ModelRunScoreAuthorizedService } from './authorized/model-run-score.authorized.service';
 import { ModelCandidateJobAuthorizedController } from './authorized/model-candidate-job.authorized.controller';
 import { ModelCandidateJobAuthorizedService } from './authorized/model-candidate-job.authorized.service';
+import { ModelRetrainAuthorizedController } from './authorized/model-retrain.authorized.controller';
+import { ModelRetrainAuthorizedService } from './authorized/model-retrain.authorized.service';
 
 @Module({
   imports: [TrainningContainerModule],
@@ -22,6 +24,11 @@ import { ModelCandidateJobAuthorizedService } from './authorized/model-candidate
     // Hyperparameter search / algorithm sweep over draft-scoped runs
     // (MODEL-FLOW-005, generalized by MODEL-FLOW-013).
     ModelCandidateJobAuthorizedController,
+    // MODEL-SERVE-004. The SAME candidate-job machinery pointed at a saved
+    // Model instead of a draft — a retrain. Its own controller because the
+    // prefix (`authorized/model/:modelId`) and the authorization rule
+    // (editor access on the Model) differ from the draft-scoped one.
+    ModelRetrainAuthorizedController,
     // MODEL-FLOW-016-T07. Scoring container callbacks — separate guard,
     // separate controller (see ScoreTokenGuard's doc comment).
     ModelRunScoreAuthorizedController,
@@ -30,6 +37,7 @@ import { ModelCandidateJobAuthorizedService } from './authorized/model-candidate
     ModelRunLaunchAuthorizedService,
     ModelRunAuthorizedService,
     ModelCandidateJobAuthorizedService,
+    ModelRetrainAuthorizedService,
     ModelRunScoreAuthorizedService,
     RunTokenGuard,
     ScoreTokenGuard,

@@ -125,4 +125,14 @@ export const env = {
   // process is not a logged-in user. No default: an unset token must fail
   // closed, never silently accept every bearer value.
   SERVING_API_TOKEN: process.env.SERVING_API_TOKEN,
+
+  // MODEL-SERVE-005. Drift thresholds, using the SAME field names the
+  // wizard's own deploy atoms already use (mpRetrainWarnSdAtom/
+  // mpRetrainCriticalSdAtom/mpDriftThresholdPctAtom — MODEL-FLOW-010-T08's
+  // field list) — not persisted per model in this pass (MODEL-SERVE-006-T09
+  // is where those atoms get a real home); these are the system-wide
+  // defaults every drift report uses until then.
+  DRIFT_WARN_SD: Number(process.env.DRIFT_WARN_SD ?? 1.5),
+  DRIFT_CRITICAL_SD: Number(process.env.DRIFT_CRITICAL_SD ?? 3.0),
+  DRIFT_OUT_OF_RANGE_PCT: Number(process.env.DRIFT_OUT_OF_RANGE_PCT ?? 10),
 };

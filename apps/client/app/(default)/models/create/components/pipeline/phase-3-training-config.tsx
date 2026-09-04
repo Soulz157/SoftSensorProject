@@ -311,11 +311,11 @@ export function Phase3TrainingConfig({ nav }: Props) {
                 status={training.status}
                 progress={training.progress}
               />
-              <RunParamsPanel />
             </div>
           </section>
         </div>
       </div>
+      <RunParamsPanel />
     </div>
   )
 }

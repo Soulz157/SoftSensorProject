@@ -85,3 +85,20 @@ export const SaveModelDraftSchema = z.object({
 });
 
 export class SaveModelDraftDto extends createZodDto(SaveModelDraftSchema) {}
+
+/**
+ * MODEL-FLOW-018-T02. The user's explicit choice of which run carries
+ * forward, for a run no ModelCandidateJob owns (a standalone launch, or any
+ * CV run — CV and Find Best Model are mutually exclusive, so a CV run can
+ * never belong to a sweep). `runId` must be one of THIS draft's own runs and
+ * SUCCEEDED — both enforced in the service, not here, since they need a DB
+ * read. Writes ONLY `ModelDraft.selectedRunId`; `currentRunId` keeps its
+ * existing writers, untouched by this route.
+ */
+export const SelectDraftRunSchema = z
+  .object({
+    runId: z.string().uuid(),
+  })
+  .strict();
+
+export class SelectDraftRunDto extends createZodDto(SelectDraftRunSchema) {}

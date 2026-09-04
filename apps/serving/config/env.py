@@ -41,6 +41,27 @@ class Settings(BaseSettings):
     # the descriptor lookup, not an emergent property.
     SERVING_DESCRIPTOR_TTL_SECONDS: int = 30
 
+    # MODEL-SERVE-005-T01. Whether THIS request gets logged at all — a coin
+    # flip per /predict call, not a per-row sample within one request (a
+    # sampled-out request produces no PredictionLog row and no object;
+    # nothing about it is retained). 1.0 logs every request; 0 disables
+    # logging entirely without touching a call site. A rate chosen by
+    # accident makes every downstream statistic uninterpretable, so this
+    # has no silent fallback — every logged row carries the rate that was
+    # actually in force (PredictionLog.samplingRate), never re-derived from
+    # this setting later.
+    SERVING_LOG_SAMPLE_RATE: float = 1.0
+    # Cap on RAW rows written to the Parquet object for one logged request —
+    # independent of SERVING_MAX_ROWS (the request-size cap): a request can
+    # be sampled IN yet still have its per-row detail trimmed, while the
+    # aggregates (featureStats/predictionStats) are always computed over
+    # every row, capped or not.
+    SERVING_LOG_MAX_ROWS: int = 200
+    # Bounds the best-effort backend POST — logging must never make
+    # /predict wait longer than this, and a hung log call must not hold a
+    # BackgroundTasks worker open indefinitely.
+    SERVING_LOG_TIMEOUT_SECONDS: float = 5.0
+
     model_config = SettingsConfigDict(
         env_file=(_REPO_ROOT / ".env", _SERVICE_ROOT / ".env"),
         env_file_encoding="utf-8",

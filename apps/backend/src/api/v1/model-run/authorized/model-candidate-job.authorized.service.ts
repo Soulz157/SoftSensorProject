@@ -7,9 +7,15 @@ import {
 } from './dto/model-candidate-job.authorized.dto';
 import { CreateTrainingRunDto } from './dto/model-run.authorized.dto';
 import { ModelRunLaunchAuthorizedService } from './model-run-launch.authorized.service';
-import { draftRunKey } from '@/lib/artifact-keys';
-import { getRunLossHistory } from '@/lib/python-preprocess-client';
+import {
+  getRunLossHistory,
+  getRunManifest,
+} from '@/lib/python-preprocess-client';
 import { tuningCandidatesFor } from '@/lib/tuning-grid';
+import {
+  buildModelVersionData,
+  nextModelVersionNumber,
+} from '@/lib/model-version-from-run';
 
 interface Candidate {
   algorithm: string;
@@ -83,6 +89,77 @@ export class ModelCandidateJobAuthorizedService {
     return typeof rmse === 'number' && Number.isFinite(rmse) ? rmse : null;
   }
 
+  /**
+   * MODEL-SERVE-004. A candidate job is owned by a ModelDraft (the wizard's
+   * search/sweep) or by a Model (a retrain) — never both, never neither, by
+   * the `ModelCandidateJob_owner_exactly_one` CHECK. Both owners launch the
+   * SAME `ModelTrainingRun` through the SAME `buildRunData` validation; only
+   * the row's owner column and the object-key root differ (`models/…` vs
+   * `drafts/…`, resolved downstream by `resolveRunOwner`). Every caller in
+   * this file goes through here rather than naming a launcher directly, so
+   * the two owners cannot drift.
+   */
+  launchForJob(
+    job: {
+      id: string;
+      modelDraftId: string | null;
+      modelId: string | null;
+      goldArtifactId: string;
+      targetY: string;
+      trainTestSplit: number | null;
+    },
+    candidate: Candidate,
+  ): Promise<LaunchedRun> {
+    const dto = this.runDtoFor(job, candidate);
+    if (job.modelId) {
+      return this.runLaunch.launchModelRun(job.modelId, dto, job.id);
+    }
+    if (job.modelDraftId) {
+      return this.runLaunch.launchDraftRun(job.modelDraftId, dto, job.id);
+    }
+    // Unreachable while the CHECK constraint holds — kept so a row that
+    // somehow has neither owner fails loudly here instead of launching
+    // nothing and leaving the job stranded RUNNING.
+    throw new AppException({
+      statusCode: 500,
+      message: `Candidate job ${job.id} has neither a draft nor a model owner.`,
+      type: 'ERROR',
+    });
+  }
+
+  /**
+   * MODEL-FLOW-013 / MODEL-SERVE-004. A HYPERPARAMETER_SEARCH names ONE
+   * starting candidate and relies on the curated `TUNING_GRID` shortlist for
+   * the rest. Extracted from `createJob` so the retrain path
+   * (`ModelRetrainAuthorizedService`) expands the incumbent's own
+   * hyperparameters through the IDENTICAL grid rather than a second copy of
+   * it — the grid stays declared in exactly one place, and so does the
+   * refusal when an algorithm has no variants to try.
+   */
+  expandSearchCandidates(base: {
+    algorithm: string;
+    hyperparameters: Record<string, unknown>;
+  }): Array<{ algorithm: string; hyperparameters: Record<string, unknown> }> {
+    const variants = tuningCandidatesFor(
+      base.algorithm,
+      base.hyperparameters as Record<string, string | number | boolean | null>,
+    );
+    if (variants.length === 0) {
+      throw new AppException({
+        statusCode: 400,
+        message: `No distinct hyperparameter variants to try for ${base.algorithm} — nothing to search.`,
+        type: 'ERROR',
+      });
+    }
+    return [
+      base,
+      ...variants.map((hyperparameters) => ({
+        algorithm: base.algorithm,
+        hyperparameters,
+      })),
+    ];
+  }
+
   private runDtoFor(
     job: {
       goldArtifactId: string;
@@ -125,27 +202,7 @@ export class ModelCandidateJobAuthorizedService {
     // point instead of a sweep's winner.
     const requestedCandidates =
       dto.kind === 'HYPERPARAMETER_SEARCH' && dto.candidates.length === 1
-        ? (() => {
-            const base = dto.candidates[0];
-            const variants = tuningCandidatesFor(
-              base.algorithm,
-              base.hyperparameters,
-            );
-            if (variants.length === 0) {
-              throw new AppException({
-                statusCode: 400,
-                message: `No distinct hyperparameter variants to try for ${base.algorithm} — nothing to search.`,
-                type: 'ERROR',
-              });
-            }
-            return [
-              base,
-              ...variants.map((hyperparameters) => ({
-                algorithm: base.algorithm,
-                hyperparameters,
-              })),
-            ];
-          })()
+        ? this.expandSearchCandidates(dto.candidates[0])
         : dto.candidates;
 
     // Every candidate a client sends is phase 1 — `CandidateSchema` has no
@@ -207,11 +264,7 @@ export class ModelCandidateJobAuthorizedService {
     }
 
     try {
-      const firstRun = await this.runLaunch.launchDraftRun(
-        draftId,
-        this.runDtoFor(job, phase1Candidates[0]),
-        job.id,
-      );
+      const firstRun = await this.launchForJob(job, phase1Candidates[0]);
       const updated = await this.prisma.modelCandidateJob.update({
         where: { id: job.id },
         data: {
@@ -312,11 +365,7 @@ export class ModelCandidateJobAuthorizedService {
     if (completedRuns < candidates.length) {
       let nextRun: LaunchedRun;
       try {
-        nextRun = await this.runLaunch.launchDraftRun(
-          job.modelDraftId,
-          this.runDtoFor(job, candidates[completedRuns]),
-          job.id,
-        );
+        nextRun = await this.launchForJob(job, candidates[completedRuns]);
       } catch (err) {
         this.log.error(
           `candidate job ${job.id}: could not launch candidate ${completedRuns + 1} of ${candidates.length}`,
@@ -393,11 +442,7 @@ export class ModelCandidateJobAuthorizedService {
 
         let tuneRun: LaunchedRun;
         try {
-          tuneRun = await this.runLaunch.launchDraftRun(
-            job.modelDraftId,
-            this.runDtoFor(job, phase2Candidates[0]),
-            job.id,
-          );
+          tuneRun = await this.launchForJob(job, phase2Candidates[0]);
         } catch (err) {
           this.log.error(
             `candidate job ${job.id}: could not launch tuning candidate 1 of ${phase2Candidates.length}`,
@@ -445,6 +490,17 @@ export class ModelCandidateJobAuthorizedService {
       }
     }
 
+    // MODEL-SERVE-004. A MODEL-owned job (a retrain) completes by minting a
+    // STAGING ModelVersion from its winner — see `completeModelOwnedJob` for
+    // why that cannot be a second statement after the compare-and-swap.
+    if (job.modelId) {
+      await this.completeModelOwnedJob(
+        { id: jobId, modelId: job.modelId },
+        { runId, completedRuns, finalBestRunId, finalBestRmse },
+      );
+      return;
+    }
+
     // Job complete.
     const result = await this.prisma.modelCandidateJob.updateMany({
       where: {
@@ -460,7 +516,7 @@ export class ModelCandidateJobAuthorizedService {
         finishedAt: new Date(),
       },
     });
-    if (result.count > 0 && finalBestRunId) {
+    if (result.count > 0 && finalBestRunId && job.modelDraftId) {
       // Point the draft at the metric's winner — the SAME single writer of
       // ModelDraft.currentRunId this branch has always been (MODEL-FLOW-013
       // -T08 does not add a second one: a later user selection writes
@@ -471,6 +527,131 @@ export class ModelCandidateJobAuthorizedService {
         data: { currentRunId: finalBestRunId, status: 'TRAINED' },
       });
     }
+  }
+
+  /**
+   * MODEL-SERVE-004-T04. The retrain counterpart of the draft branch above:
+   * where a draft-owned job points its draft at the winner, a model-owned
+   * job mints a new ModelVersion at STAGING from it — and promotes nothing.
+   * No PRODUCTION pointer is read or written anywhere in this method; that
+   * is the whole feature (V01).
+   *
+   * The compare-and-swap and the version create are ONE interactive
+   * transaction, unlike the draft branch's two statements. The draft branch
+   * can tolerate a crash between them (the draft simply is not flipped to
+   * TRAINED, and the next read re-derives from the job); a retrain cannot —
+   * `getJobService` only reconciles a job that is still QUEUED/RUNNING, so a
+   * job left SUCCEEDED with `resultVersionId: null` would have lost its only
+   * deliverable with nothing left to repair it.
+   *
+   * The manifest read (`getRunManifest`, an HTTP call to the Python service)
+   * happens BEFORE the transaction opens — Save Model's own ordering, and the
+   * reason is the same: a transaction must never be held open across a
+   * network call to another service.
+   *
+   * Re-entrancy: `ModelVersion.sourceRunId` is `@unique`, so the winner can
+   * back at most one version, ever. This checks for that row inside the
+   * transaction and adopts it rather than racing the constraint — a retry
+   * after a partially-observed completion links the existing version instead
+   * of failing with a P2002 the caller cannot act on.
+   */
+  private async completeModelOwnedJob(
+    job: { id: string; modelId: string },
+    outcome: {
+      runId: string;
+      completedRuns: number;
+      finalBestRunId: string | null;
+      finalBestRmse: number | null;
+    },
+  ): Promise<void> {
+    const { runId, completedRuns, finalBestRunId, finalBestRmse } = outcome;
+    const terminal = {
+      completedRuns,
+      bestRunId: finalBestRunId,
+      bestRmse: finalBestRmse,
+      finishedAt: new Date(),
+    };
+    const swapWhere: PrismaTypes.ModelCandidateJobWhereInput = {
+      id: job.id,
+      currentRunId: runId,
+      status: { in: ['QUEUED', 'RUNNING'] },
+    };
+
+    const winner = finalBestRunId
+      ? await this.prisma.modelTrainingRun.findUnique({
+          where: { id: finalBestRunId },
+        })
+      : null;
+
+    // Every candidate ran and none produced a usable artifact. Recorded as a
+    // FAILED job naming why, never as a SUCCEEDED job with no version — the
+    // caller polling this job must be able to tell "your retrain produced
+    // nothing" from "your retrain produced version N".
+    if (!winner || !winner.modelKey) {
+      await this.prisma.modelCandidateJob.updateMany({
+        where: swapWhere,
+        data: {
+          ...terminal,
+          status: 'FAILED',
+          failureReason: winner
+            ? `Winning run ${winner.id} recorded no model artifact; nothing to version.`
+            : 'No candidate produced a usable result; nothing to version.',
+        },
+      });
+      return;
+    }
+
+    // Best-effort, exactly as Save Model treats it: a run trained before the
+    // manifest carried these fields has no honest value to fill in, and that
+    // must not block the version.
+    let frameworkVersions: Record<string, string> | null = null;
+    let modelChecksum: string | null = null;
+    if (winner.manifestKey) {
+      try {
+        const manifest = await getRunManifest(winner.manifestKey);
+        frameworkVersions = manifest.framework_versions;
+        modelChecksum = manifest.model_sha256 ?? null;
+      } catch {
+        frameworkVersions = null;
+        modelChecksum = null;
+      }
+    }
+    const modelObjectKey = winner.modelKey;
+
+    await this.prisma.$transaction(async (tx) => {
+      const swapped = await tx.modelCandidateJob.updateMany({
+        where: swapWhere,
+        data: { ...terminal, status: 'SUCCEEDED' },
+      });
+      // Lost the race to a concurrent caller — it is minting (or has minted)
+      // the version. Do nothing, exactly as every other branch does.
+      if (swapped.count === 0) return;
+
+      const existing = await tx.modelVersion.findUnique({
+        where: { sourceRunId: winner.id },
+        select: { id: true },
+      });
+      const versionId =
+        existing?.id ??
+        (
+          await tx.modelVersion.create({
+            data: buildModelVersionData({
+              modelId: job.modelId,
+              version: await nextModelVersionNumber(tx, job.modelId),
+              run: winner,
+              modelObjectKey,
+              modelChecksum,
+              frameworkVersions,
+            }),
+            select: { id: true },
+          })
+        ).id;
+
+      await tx.modelCandidateJob.update({
+        where: { id: job.id },
+        data: { resultVersionId: versionId },
+      });
+    });
   }
 
   /**
@@ -492,11 +673,32 @@ export class ModelCandidateJobAuthorizedService {
     role: string,
   ) {
     await this.runLaunch.assertDraftReadable(draftId, userId, role);
-    let job = await this.prisma.modelCandidateJob.findFirst({
+    const found = await this.prisma.modelCandidateJob.findFirst({
       where: { id: jobId, modelDraftId: draftId },
     });
-    if (!job) throw new NotFoundException('Candidate job not found');
+    if (!found) throw new NotFoundException('Candidate job not found');
 
+    const { job, candidates } = await this.reconcileAndShape(found);
+    return {
+      statusCode: 200,
+      message: 'Candidate job fetched',
+      type: 'SUCCESS' as const,
+      data: { ...job, candidates },
+    };
+  }
+
+  /**
+   * MODEL-SERVE-004. The reconcile-on-read + per-candidate table, split out
+   * of `getJobService` so the retrain read
+   * (`ModelRetrainAuthorizedService.getRetrainJobService`) shows the same
+   * truth through the same code. ACCESS IS THE CALLER'S JOB — this method
+   * takes a job row that has already been fetched under an authorization
+   * check, and never performs one itself (the two owners authorize
+   * differently: a draft by workspace membership on the draft, a Model by
+   * editor access on the Model).
+   */
+  async reconcileAndShape(fetched: PrismaModels.ModelCandidateJobModel) {
+    let job = fetched;
     if (
       (job.status === 'QUEUED' || job.status === 'RUNNING') &&
       job.currentRunId
@@ -549,9 +751,15 @@ export class ModelCandidateJobAuthorizedService {
         } | null = null;
         if (run?.lossHistoryKey) {
           try {
-            lossHistory = await getRunLossHistory(
-              draftRunKey(job.modelDraftId, run.id, 'loss_history.json'),
-            );
+            // MODEL-SERVE-004. The STORED key, not one rebuilt from the
+            // draft id: `complete()` wrote it through `buildRunKey(owner,…)`,
+            // so it is already correct for either owner. Rebuilding it as
+            // `draftRunKey(job.modelDraftId, …)` — what this line used to do
+            // — yields `drafts/null/runs/…` for a model-owned (retrain) job,
+            // which soft-fails to null and silently shows no loss history at
+            // all. Same "read the pinned key, never re-derive it" discipline
+            // MODEL-SERVE-000-T03 established for featureSpecKey.
+            lossHistory = await getRunLossHistory(run.lossHistoryKey);
           } catch (err) {
             this.log.error(
               `candidate job ${job.id}: could not read loss history for run ${run.id}`,
@@ -585,16 +793,26 @@ export class ModelCandidateJobAuthorizedService {
             : null,
           lossHistoryKey: run?.lossHistoryKey ?? null,
           lossHistory,
+          // MODEL-FLOW-017-T03. Pointers only, same "key on the response,
+          // read the object separately" shape `lossHistoryKey` already
+          // uses — the client resolves its OWN batch of runIds from
+          // `predictionsKey !== null` and fetches every series in one call
+          // (GET .../runs/predictions/batch), rather than this endpoint
+          // reading N predictions.parquet objects inline the way it does
+          // for loss history (a chart's full series is much larger than a
+          // loss curve's few hundred floats — not a read worth doing here
+          // on every job poll). `cvFoldsKey`/`scoringContainerId` travel
+          // alongside so the client can tell a CV candidate's scored
+          // predictionsKey (a holdout) from a non-CV candidate's (a test
+          // split) — see MODEL-FLOW-016 AC5's 2026-09-04 amendment.
+          predictionsKey: run?.predictionsKey ?? null,
+          cvFoldsKey: run?.cvFoldsKey ?? null,
+          scoringContainerId: run?.scoringContainerId ?? null,
         };
       }),
     );
 
-    return {
-      statusCode: 200,
-      message: 'Candidate job fetched',
-      type: 'SUCCESS' as const,
-      data: { ...job, candidates },
-    };
+    return { job, candidates };
   }
 
   /**
@@ -726,9 +944,27 @@ export class ModelCandidateJobAuthorizedService {
       });
     }
 
-    const updated = await this.prisma.modelCandidateJob.update({
-      where: { id: jobId },
-      data: { selectedRunId: dto.runId },
+    // MODEL-FLOW-018-T02. A job-level selection is a NEWER, more specific
+    // choice than any standalone one — `ModelDraft.selectedRunId` is
+    // cleared in the same transaction so `resolveActiveRunId`'s source 1
+    // can never shadow this one. The `job2.modelDraftId` check is DEFENSIVE
+    // rather than reachable today: the lookup above already filters on
+    // `modelDraftId: draftId`, a real (non-null) route param, so `job2` is
+    // always draft-owned here — a retrain (MODEL-SERVE-004) job can never
+    // be found by this query and never reaches this line. Kept in case a
+    // future caller changes that lookup.
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const job2 = await tx.modelCandidateJob.update({
+        where: { id: jobId },
+        data: { selectedRunId: dto.runId },
+      });
+      if (job2.modelDraftId) {
+        await tx.modelDraft.update({
+          where: { id: job2.modelDraftId },
+          data: { selectedRunId: null },
+        });
+      }
+      return job2;
     });
     return {
       statusCode: 200,

@@ -184,6 +184,12 @@ model Model {
   modelTrainingRuns ModelTrainingRun[]
   versions          ModelVersion[]
   predictionJobs    PredictionJob[]
+  /// MODEL-SERVE-004. A retrain is a candidate job owned by this Model
+  /// instead of a ModelDraft — see ModelCandidateJob's own doc comment.
+  candidateJobs     ModelCandidateJob[]
+  /// MODEL-SERVE-005. Sampled synchronous /predict requests — see
+  /// PredictionLog's own doc comment.
+  predictionLogs    PredictionLog[]
 
   @@unique([workspaceId, name])
   @@index([workspaceId])
@@ -973,6 +979,16 @@ model ModelDraft {
   /// DatasetDraft.currentArtifactId plays for the dataset wizard.
   currentRunId String?
 
+  /// MODEL-FLOW-018-T02. The user's explicit choice of which run carries
+  /// forward, for runs no ModelCandidateJob owns (a standalone launch, or
+  /// any CV run — CV and Find Best Model are mutually exclusive, so a CV
+  /// run can never belong to a sweep). Null means "resolve by the default
+  /// rules" — see resolveActiveRunId's precedence comment. CLEARED
+  /// whenever a newer explicit choice is made (a job selection) or new
+  /// training starts (launchDraftRun), so the user's most recent choice
+  /// always wins regardless of which mechanism made it.
+  selectedRunId String?
+
   /// Set when the draft is promoted, so a saved Model is traceable back to
   /// the draft that produced it.
   savedModelId String?
@@ -1270,6 +1286,7 @@ model ModelVersion {
   updatedAt DateTime @updatedAt
 
   predictionJobs PredictionJob[]
+  predictionLogs PredictionLog[]
 
   @@unique([modelId, version])
   @@index([modelId, stage])
@@ -1390,9 +1407,47 @@ enum ModelCandidateJobKind {
 /// spawn/claim/complete path exists — every candidate run goes through the
 /// exact machinery MODEL-FLOW-003 already built and live-verified.
 model ModelCandidateJob {
-  id           String     @id @default(uuid())
-  modelDraftId String
-  modelDraft   ModelDraft @relation(fields: [modelDraftId], references: [id], onDelete: Cascade)
+  id String @id @default(uuid())
+
+  /// MODEL-SERVE-004. EXACTLY ONE of modelDraftId / modelId is set —
+  /// enforced by a CHECK constraint in the migration, the same shape
+  /// ModelTrainingRun_owner_present already uses one table over (but XOR,
+  /// not "at least one": a job is never adopted from a draft to a Model the
+  /// way a RUN is by Save Model, so "both" is meaningless here).
+  /// A DRAFT-owned job is the wizard's hyperparameter search / algorithm
+  /// sweep (MODEL-FLOW-005/013). A MODEL-owned job is a retrain: same
+  /// machinery, same chained ModelTrainingRuns, but it lands a new STAGING
+  /// ModelVersion instead of pointing a draft at its winner, and it
+  /// promotes nothing.
+  modelDraftId String?
+  modelDraft   ModelDraft? @relation(fields: [modelDraftId], references: [id], onDelete: Cascade)
+  modelId      String?
+  model        Model?      @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  /// MODEL-SERVE-004, retrain only (null for every draft-owned job). The
+  /// incumbent PRODUCTION version this retrain was triggered against,
+  /// PINNED at trigger time — a promote landing mid-search must not
+  /// silently re-point the comparison at a different incumbent, the same
+  /// reason PredictionJob.modelVersionId is pinned at submit.
+  /// A bare String, not a relation: an FK here would put a third edge into
+  /// the Model -> ModelVersion / ModelTrainingRun cascade diamond that
+  /// already broke deleteModelService once (see the
+  /// ModelVersion_sourceRunId_fkey comment in migration
+  /// 20260901090000_model_serve_001_model_version).
+  sourceVersionId String?
+  /// The STAGING ModelVersion this job minted from its winning run, written
+  /// in the SAME transaction that marks the job SUCCEEDED. Null while the
+  /// job is live, and for every draft-owned job. Bare String for the same
+  /// reason as sourceVersionId.
+  resultVersionId String?
+  /// MODEL-SERVE-004-T02. Optional caller-supplied dedupe key, scoped to
+  /// the model by a partial unique index — the same shape and semantics
+  /// PredictionJob.idempotencyKey already has. The per-model live lock
+  /// (ModelCandidateJob_one_live_per_model) is what stops three concurrent
+  /// triggers becoming three containers; this key is what makes a RETRY
+  /// after a dropped response return the original job instead of a second
+  /// one once the first has finished.
+  idempotencyKey String?
 
   /// The fixed spec every candidate shares — validated once, the same way
   /// buildRunData validates a single run's spec. `algorithm` moved INTO
@@ -1449,5 +1504,77 @@ model ModelCandidateJob {
   runs ModelTrainingRun[]
 
   @@index([modelDraftId])
+  @@index([modelId])
   @@index([status])
+}
+
+/// MODEL-SERVE-005-T01. The queryable INDEX of a sampled synchronous
+/// /predict request — never the payload. The actual rows (raw + model-
+/// ready feature values, predictions) are a Parquet object in MinIO
+/// (`serving_log_key`, object_store.py); this row is what a time-range
+/// query and a drift computation can filter/aggregate without opening
+/// every object. Written by ModelServingIngestAuthorizedService on a
+/// ServingTokenGuard-authenticated callback from apps/serving — there is
+/// no user session on this path, matching PredictionJob's own container-
+/// callback rows.
+model PredictionLog {
+  id String @id @default(uuid())
+
+  modelId String
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  /// Pinned to whatever /predict actually served, read off the descriptor
+  /// apps/serving already resolved — never re-resolved to "current
+  /// PRODUCTION" here, so a promote mid-flight cannot retarget a row that
+  /// already describes a specific request. Same reasoning as
+  /// PredictionJob.modelVersionId.
+  modelVersionId String
+  /// NO ACTION, not the implicit Restrict a required relation would
+  /// otherwise get — identical footgun and identical fix to
+  /// PredictionJob.modelVersion: deleting a Model cascades onto
+  /// ModelVersion AND PredictionLog (via its own direct modelId FK) in the
+  /// same statement, and Restrict fires per-row before ModelVersion's own
+  /// cascade has finished removing the referencing rows.
+  modelVersion ModelVersion @relation(fields: [modelVersionId], references: [id], onDelete: NoAction, onUpdate: Cascade)
+
+  /// Null means the object write did not happen (a python/MinIO failure
+  /// after the row's aggregates were already computed) — the aggregates
+  /// below are still real and still usable for drift; only the raw-row
+  /// detail is unavailable. Never implied from a missing key; always this
+  /// explicit null, the same discipline PredictionJob.outputKey uses for
+  /// "not there yet" vs "never happening" — except here `objectChecksum`
+  /// null WITH a non-null objectKey is also legitimate (checksum recorded
+  /// best-effort).
+  objectKey      String?
+  objectChecksum String?
+
+  /// Rows in the ORIGINAL /predict request — may exceed loggedRows if the
+  /// per-request row cap (SERVING_LOG_MAX_ROWS) trimmed what was written.
+  /// Both are kept, deliberately not collapsed into one number: a series
+  /// that only ever shows loggedRows cannot tell a caller its own log is
+  /// truncated.
+  rowCount    Int
+  loggedRows  Int
+
+  /// MODEL-SERVE-005-T01. The sampling rate IN FORCE for this specific
+  /// request, on the row — never a global config value looked up later,
+  /// because a rate that changes over time (an operator turning it up
+  /// during an incident) must not silently reinterpret every prior row's
+  /// implied population. "A rate chosen by accident makes every downstream
+  /// statistic uninterpretable" — this column is what keeps it accidental
+  /// only once.
+  samplingRate Float
+
+  /// Per model-ready (scaled) feature column: {n, sum, sumsq, min, max} —
+  /// sufficient statistics for an EXACT pooled mean/std across many rows
+  /// without ever re-opening the Parquet objects. Keyed by feature column
+  /// name, matching featureColumns order from the serving descriptor.
+  featureStats Json
+  /// Same shape, one entry, for the request's own predictions.
+  predictionStats Json
+
+  requestedAt DateTime @default(now())
+
+  @@index([modelId, requestedAt])
+  @@index([modelVersionId, requestedAt])
 }

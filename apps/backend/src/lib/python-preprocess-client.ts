@@ -288,6 +288,68 @@ export async function runPredictions(input: {
   return RunPredictionsSchema.parse(res);
 }
 
+/**
+ * MODEL-FLOW-017-T02. One run's decimated series, or its failure. `error`
+ * non-null means every other field but `source_key` is a placeholder —
+ * mirrors the per-candidate loss-history soft-fail already established in
+ * `model-candidate-job.authorized.service.ts`'s `reconcileAndShape`.
+ */
+const RunPredictionsBatchItemSchema = z.object({
+  source_key: z.string().min(1),
+  row_count: z.number().int().nonnegative().nullable(),
+  residual_sd: z.number().nullable(),
+  residual_rmse_check: z.number().nullable(),
+  y_true_min: z.number().nullable(),
+  y_true_max: z.number().nullable(),
+  y_pred_min: z.number().nullable(),
+  y_pred_max: z.number().nullable(),
+  points: z.array(
+    z.object({
+      timestamp: z.string(),
+      y_true: z.number(),
+      y_pred: z.number(),
+    }),
+  ),
+  downsampled: z.boolean(),
+  error: z.string().nullable(),
+});
+
+const RunPredictionsBatchSchema = z.object({
+  results: z.array(RunPredictionsBatchItemSchema),
+});
+
+export type RunPredictionsBatchItem = z.infer<
+  typeof RunPredictionsBatchItemSchema
+>;
+export type RunPredictionsBatch = z.infer<typeof RunPredictionsBatchSchema>;
+
+/**
+ * MODEL-FLOW-017-T02/T03. Decimated actual/predicted series for N runs in
+ * one call — Step 4 Model Selection's overlay + small-multiple charts.
+ * `keys` are resolved by the caller off `ModelTrainingRun` rows
+ * (`predictionsKey`), never accepted from a browser request, same
+ * discipline `runPredictions` applies to its own key. Distinct from
+ * `runPredictions`: that endpoint stays undecimated for Step 5's
+ * full-width chart, this one always decimates and never throws per-run —
+ * a bad run's item carries only `source_key` and `error`.
+ */
+export async function runPredictionsBatch(input: {
+  keys: string[];
+  max_points?: number;
+}): Promise<RunPredictionsBatch> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/models/runs/predictions/batch',
+    {
+      keys: input.keys,
+      ...(input.max_points !== undefined
+        ? { max_points: input.max_points }
+        : {}),
+    },
+    PYTHON_TIMEOUT.metadata,
+  );
+  return RunPredictionsBatchSchema.parse(res);
+}
+
 /** MODEL-FLOW-013-T05/T07. Already the exact shape train.py wrote — no
  *  snake_case/camelCase mapping needed beyond the outer keys. */
 const RunLossHistorySchema = z.object({
@@ -487,4 +549,72 @@ export async function readFeatureSpec(
     PYTHON_TIMEOUT.serving,
   );
   return FeatureSpecSchema.parse(res);
+}
+
+const PredictionLogAppendResultSchema = z.object({
+  object_key: z.string().min(1),
+  object_checksum: z.string().min(1),
+  row_count: z.number().int().nonnegative(),
+});
+
+export type PredictionLogAppendResult = z.infer<
+  typeof PredictionLogAppendResultSchema
+>;
+
+/**
+ * MODEL-SERVE-005-T01. Writes one logged request's capped rows as a single
+ * Parquet object. `PredictionLogAuthorizedService.ingestPredictionLogService`
+ * calls this ONLY when `rows.length > 0` — a 0-row append is refused
+ * server-side (schemas/preprocess.py `min_length=1`) and would otherwise
+ * surface as an opaque 422 for a case the caller can and does avoid.
+ */
+export async function appendPredictionLog(input: {
+  model_id: string;
+  model_version_id: string;
+  requested_at: string;
+  rows: Array<{ features: Record<string, number>; prediction: number }>;
+}): Promise<PredictionLogAppendResult> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/prediction-log/append',
+    input,
+    PYTHON_TIMEOUT.serving,
+  );
+  return PredictionLogAppendResultSchema.parse(res);
+}
+
+const PredictionLogPointSchema = z.object({
+  timestamp: z.string(),
+  prediction: z.number(),
+  features: z.record(z.string(), z.number()),
+});
+
+const PredictionLogSeriesResultSchema = z.object({
+  points: z.array(PredictionLogPointSchema),
+  truncated: z.boolean(),
+});
+
+export type PredictionLogSeriesResult = z.infer<
+  typeof PredictionLogSeriesResultSchema
+>;
+
+/**
+ * MODEL-SERVE-005. Reads every logged row for ONE (modelId, modelVersionId)
+ * pair in a time range — scoped to one version because that is how the
+ * write side partitions objects (serving_log_prefix). A range spanning a
+ * promote calls this once per distinct modelVersionId the caller's own
+ * PredictionLog rows name, then merges — see
+ * `PredictionLogAuthorizedService.getPredictionSeriesService`.
+ */
+export async function predictionLogSeries(input: {
+  model_id: string;
+  model_version_id: string;
+  from: string;
+  to: string;
+}): Promise<PredictionLogSeriesResult> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/prediction-log/series',
+    input,
+    PYTHON_TIMEOUT.serving,
+  );
+  return PredictionLogSeriesResultSchema.parse(res);
 }

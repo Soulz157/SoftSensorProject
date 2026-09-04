@@ -2,18 +2,16 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService, PrismaTypes } from '@softsensor/prisma';
 import { AppException } from '@softsensor/common';
 import { getRunManifest } from '@/lib/python-preprocess-client';
+import { buildModelVersionData } from '@/lib/model-version-from-run';
 import { ModelConfigSchema } from '@/api/v1/model/authorized/dto/model.authorized.dto';
 import {
   type CreateModelDraftDto,
   type ListModelDraftQueryDto,
   type PatchModelDraftDto,
   type SaveModelDraftDto,
+  type SelectDraftRunDto,
 } from './dto/model-draft.authorized.dto';
 
-/** Same include `model.authorized.service.ts`'s `NODE_INCLUDE` uses — kept as
- *  its own small copy rather than a cross-module import of a private const,
- *  so a saved Model's response shape matches `createModelService`'s exactly
- *  (`AIModel.nodes` on the client expects this shape). */
 const NODE_INCLUDE = {
   nodes: {
     select: {
@@ -175,40 +173,144 @@ export class ModelDraftAuthorizedService {
   }
 
   /**
-   * MODEL-FLOW-013-T08. `selectedRunId ?? bestRunId` from the draft's most
-   * recent TERMINAL candidate job (a user's override, or the metric's own
-   * winner) — falling back to the draft's own `currentRunId` (an ordinary
-   * single-run launch, or a job whose completion branch already wrote the
-   * winner there, unchanged by this feature) when no such job exists, or
-   * the most recent one is still QUEUED/RUNNING.
+   * MODEL-FLOW-018-T02. THREE sources, precedence stated ONCE, here, so
+   * Evaluation and Save Model adoption can never disagree about which run
+   * they mean:
    *
-   * ONE resolver: `currentRunId` keeps its existing single writer
-   * (`advanceJobForRun`'s completion branch in
-   * model-candidate-job.authorized.service.ts) — this is a READ, never a
-   * write, so a later user selection changes what callers see without a
-   * second writer ever touching `currentRunId` itself. Evaluation
-   * (`useDraftRunEvaluation`'s `resolveRunId`) reads this field; Save Model
-   * adoption (MODEL-FLOW-007-T10, unbuilt) is expected to read it too.
+   *   1. `draft.selectedRunId` — a STANDALONE selection (this feature): a
+   *      user's explicit choice for a run no ModelCandidateJob owns (a
+   *      one-at-a-time launch, or any CV run — CV and Find Best Model are
+   *      mutually exclusive, so a CV run can never belong to a sweep).
+   *      Written by `selectDraftRunService` below; CLEARED by every
+   *      `launchDraftRun` call and by `selectCandidateService`, so it can
+   *      never outlive the choice it recorded and a job-level selection
+   *      always wins over a stale standalone one.
+   *   2. The draft's most recent TERMINAL candidate job's own
+   *      `selectedRunId ?? bestRunId` (MODEL-FLOW-013-T08) — a user's
+   *      override of the metric's winner, or the metric's own winner.
+   *      `status` is filtered INSIDE the query (T01's fix) so a newer
+   *      QUEUED/RUNNING job can never shadow an older terminal one's
+   *      selection by outranking it in `orderBy` alone.
+   *   3. `draft.currentRunId` — an ordinary single-run launch, or a job's
+   *      own completion branch. Unchanged by this feature: this resolver is
+   *      a READ, never a write, so `currentRunId` keeps its existing
+   *      writers (`launchDraftRun`'s transaction, a non-candidate run's own
+   *      completion branch, and `advanceJobForRun`'s completion branch).
+   *
+   * Evaluation (`useDraftRunEvaluation`'s `resolveRunId`) reads this field;
+   * Save Model adoption (`saveDraftService` below) reads it too.
    */
   private async resolveActiveRunId(draft: {
     id: string;
     currentRunId: string | null;
+    selectedRunId: string | null;
   }): Promise<string | null> {
+    if (draft.selectedRunId) return draft.selectedRunId;
+
     const job = await this.prisma.modelCandidateJob.findFirst({
-      where: { modelDraftId: draft.id },
+      where: {
+        modelDraftId: draft.id,
+        status: { in: ['SUCCEEDED', 'FAILED', 'CANCELED'] },
+      },
       orderBy: { createdAt: 'desc' },
-      select: { status: true, selectedRunId: true, bestRunId: true },
+      select: { selectedRunId: true, bestRunId: true },
     });
-    if (
-      job &&
-      (job.status === 'SUCCEEDED' ||
-        job.status === 'FAILED' ||
-        job.status === 'CANCELED')
-    ) {
+    if (job) {
       const resolved = job.selectedRunId ?? job.bestRunId;
       if (resolved) return resolved;
     }
     return draft.currentRunId;
+  }
+
+  /**
+   * MODEL-FLOW-018-T02. Writes ONLY `ModelDraft.selectedRunId` — never
+   * `currentRunId`, which keeps its existing writers untouched (see
+   * `resolveActiveRunId`'s own comment). Mirrors
+   * `selectCandidateService`'s refusal shape (model-candidate-job.
+   * authorized.service.ts) rather than inventing a second vocabulary for
+   * the same checks, with one addition: a run that belongs to a candidate
+   * job still QUEUED/RUNNING is refused too (MODEL-FLOW-012-T11's deferred
+   * job-level rule, discharged here) — that run's job may still overwrite
+   * it, and a selection made mid-sweep has no coherent meaning.
+   *
+   * Target/dataset mismatch is NOT refused here — `saveDraftService` derives
+   * the whole saved config from the adopted run, never from the draft's own
+   * `datasetId`, so a mismatch against the draft's CURRENT Step 2 dataset
+   * creates no inconsistency at Save Model. The client warns; this route
+   * does not refuse a perfectly good, already-trained run over an unrelated
+   * later Step 2 change.
+   */
+  async selectDraftRunService(
+    user: Auth.UserPayload,
+    draftId: string,
+    dto: SelectDraftRunDto,
+  ) {
+    const draft = await this.assertDraftAccess(draftId, user);
+    if (draft.status === 'SAVED') {
+      throw new AppException({
+        statusCode: 409,
+        message:
+          'Draft has already been saved as a Model — its runs are frozen.',
+        type: 'ERROR',
+      });
+    }
+    if (draft.status === 'ABANDONED') {
+      throw new AppException({
+        statusCode: 409,
+        message: 'This draft has been abandoned.',
+        type: 'ERROR',
+      });
+    }
+
+    const run = await this.prisma.modelTrainingRun.findFirst({
+      where: { id: dto.runId, modelDraftId: draftId },
+      select: { status: true, candidateJobId: true },
+    });
+    if (!run) {
+      throw new AppException({
+        statusCode: 400,
+        message: `${dto.runId} is not a run of this draft.`,
+        type: 'ERROR',
+      });
+    }
+    if (run.status === 'QUEUED' || run.status === 'RUNNING') {
+      throw new AppException({
+        statusCode: 400,
+        message: `${dto.runId} is ${run.status}, not terminal — selection is only meaningful once it has a result.`,
+        type: 'ERROR',
+      });
+    }
+    if (run.status !== 'SUCCEEDED') {
+      throw new AppException({
+        statusCode: 400,
+        message: `${dto.runId} is ${run.status} — there is nothing to carry forward.`,
+        type: 'ERROR',
+      });
+    }
+    if (run.candidateJobId) {
+      const job = await this.prisma.modelCandidateJob.findUnique({
+        where: { id: run.candidateJobId },
+        select: { status: true },
+      });
+      if (job && (job.status === 'QUEUED' || job.status === 'RUNNING')) {
+        throw new AppException({
+          statusCode: 400,
+          message: `This run's candidate job is still ${job.status} — selection is only meaningful once the job finishes.`,
+          type: 'ERROR',
+        });
+      }
+    }
+
+    const updated = await this.prisma.modelDraft.update({
+      where: { id: draftId },
+      data: { selectedRunId: dto.runId },
+    });
+    return {
+      statusCode: 200,
+      message: 'Run selected',
+      type: 'SUCCESS' as const,
+      data: this.mapDraft(updated),
+    };
   }
 
   /**
@@ -569,31 +671,19 @@ export class ModelDraftAuthorizedService {
         // per decisions.open_question_pin_by_pointer_or_copy_bytes as a
         // POINTER, matching MODEL-FLOW-007-T10's own adopt-by-pointer rule:
         // this row references the run's bytes, it never copies them.
+        // MODEL-SERVE-004: the field mapping moved to
+        // `@/lib/model-version-from-run` so a retrain builds the IDENTICAL
+        // row with only `version` differing (max+1 there, 1 here). Behaviour
+        // unchanged — same fields, same values, same STAGING default.
         await tx.modelVersion.create({
-          data: {
+          data: buildModelVersionData({
             modelId: created.id,
             version: 1,
-            sourceRunId: run.id,
-            sourceDatasetId: run.datasetId,
-            goldArtifactId: run.goldArtifactId,
-            goldObjectKey: run.goldObjectKey,
-            artifactChecksum: run.artifactChecksum,
-            featureSpecKey: run.featureSpecKey,
+            run,
             modelObjectKey,
             modelChecksum,
-            algorithm: run.algorithm,
-            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-            hyperparameters: JSON.parse(JSON.stringify(run.hyperparameters)),
-            imageDigest: run.imageDigest,
-            ...(frameworkVersions !== null && {
-              // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-              frameworkVersions: JSON.parse(JSON.stringify(frameworkVersions)),
-            }),
-            ...(run.metrics != null && {
-              // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-              metrics: JSON.parse(JSON.stringify(run.metrics)),
-            }),
-          },
+            frameworkVersions,
+          }),
         });
 
         return created;
@@ -630,6 +720,7 @@ export class ModelDraftAuthorizedService {
     splitRatio: number | null;
     status: string;
     currentRunId: string | null;
+    selectedRunId: string | null;
     savedModelId: string | null;
     createdAt: Date;
     updatedAt: Date;
@@ -647,6 +738,7 @@ export class ModelDraftAuthorizedService {
       splitRatio: draft.splitRatio,
       status: draft.status,
       currentRunId: draft.currentRunId,
+      selectedRunId: draft.selectedRunId,
       savedModelId: draft.savedModelId,
       createdAt: draft.createdAt.toISOString(),
       updatedAt: draft.updatedAt.toISOString(),

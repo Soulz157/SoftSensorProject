@@ -1,8 +1,19 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAccessGuard } from '@/guards/jwt-access.guard';
 import { Users } from '@/common/decorators/user.decorator';
-import { CreateTrainingRunDto } from './dto/model-run.authorized.dto';
+import {
+  CreateTrainingRunDto,
+  RunPredictionsBatchQueryDto,
+} from './dto/model-run.authorized.dto';
 import { ModelRunLaunchAuthorizedService } from './model-run-launch.authorized.service';
 import { ModelRunScoreAuthorizedService } from './model-run-score.authorized.service';
 
@@ -55,6 +66,37 @@ export class ModelDraftRunAuthorizedController {
     @Users() user: Auth.UserPayload,
   ) {
     return this.runs.listDraftRunsService(draftId, user.id, user.role);
+  }
+
+  // MODEL-FLOW-017-T03. Declared BEFORE `@Get('/:draftId/runs/:runId')` —
+  // same "Nest/Fastify matches a literal segment before a parametric one"
+  // convention `ModelDraftAuthorizedController` documents for its own
+  // `@Get()` vs `@Get('/:id')` ordering. `runs/predictions/batch` is a
+  // literal three-segment path and cannot be shadowed by `:runId` (which
+  // matches ONE segment, not two), but this stays declared first anyway so
+  // the file reads in the order Fastify's router actually resolves it.
+  @Get('/:draftId/runs/predictions/batch')
+  @ApiOperation({
+    summary: 'Decimated actual/predicted series for N runs, one call',
+    description:
+      'MODEL-FLOW-017. Step 4 Model Selection’s overlay + small-multiple ' +
+      'charts, never Step 5’s single full-width chart (that stays on ' +
+      'GET .../runs/:runId/predictions, undecimated). A run that is not ' +
+      'SUCCEEDED or has no predictions artifact contributes no series and ' +
+      'is not an error; a run whose series cannot be read soft-fails on ' +
+      'its own item.',
+  })
+  getDraftRunPredictionsBatchController(
+    @Param('draftId') draftId: string,
+    @Query() query: RunPredictionsBatchQueryDto,
+    @Users() user: Auth.UserPayload,
+  ) {
+    return this.runs.getDraftRunPredictionsBatchService(
+      draftId,
+      query.runIds,
+      user.id,
+      user.role,
+    );
   }
 
   @Get('/:draftId/runs/:runId')

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Activity } from 'lucide-react'
 import { useAllModels } from '@/hooks/use-all-models'
 import { useMonitoringData } from '@/hooks/model/use-monitoring-data'
+import { usePredictionMonitoring } from '@/hooks/model/use-prediction-monitoring'
 import type { TimeRange } from '@/lib/mock-readings'
 import {
   buildMonitoringRows,
@@ -16,6 +17,8 @@ import { ChartZoomControls } from '@/components/charts/chart-zoom-controls'
 import { MonitoringToolbar } from './components/monitoring-toolbar'
 import { ActualVsPredictChart } from './components/actual-vs-predict-chart'
 import { ResidualChart, type ResidualMode } from './components/residual-chart'
+import { LivePredictionChart } from './components/live-prediction-chart'
+import { DriftPanel } from './components/drift-panel'
 
 function LegendItem({ color, label }: { color: string; label: string }) {
   return (
@@ -46,6 +49,13 @@ export default function AdvancedModelMonitoring() {
     [models, selectedId],
   )
   const { points, tag } = useMonitoringData(model, range)
+  const {
+    points: livePoints,
+    pointsLoading: livePointsLoading,
+    drift,
+    driftLoading,
+    driftUnavailableReason,
+  } = usePredictionMonitoring(model, range)
 
   const start = brush.startIndex ?? 0
   const end = brush.endIndex ?? Math.max(0, points.length - 1)
@@ -197,6 +207,46 @@ export default function AdvancedModelMonitoring() {
             mode={residualMode}
           />
         </div>
+      </div>
+
+      {/* MODEL-SERVE-005. Real data — the sampled synchronous-/predict
+          stream and the drift signal built on it. Separate from the charts
+          above: those depend on ground truth this system does not have yet
+          (T03 is blocked), so this section never fabricates an "actual". */}
+      <div className="flex min-h-0 flex-col rounded-xl border border-border bg-card p-4">
+        <div className="mb-4 space-y-1">
+          <h2 className="text-sm font-semibold text-foreground">
+            Live Predictions (sampled)
+          </h2>
+          <p className="text-xs text-muted-foreground">
+            The actual synchronous /predict stream — no ground truth is joined
+            yet, so no actual/residual is shown here.
+          </p>
+        </div>
+        {livePointsLoading ? (
+          <div className="flex h-48 items-center justify-center text-sm text-muted-foreground">
+            Loading…
+          </div>
+        ) : (
+          <LivePredictionChart points={livePoints} />
+        )}
+      </div>
+
+      <div className="flex min-h-0 flex-col rounded-xl border border-border bg-card p-4">
+        <div className="mb-4 space-y-1">
+          <h2 className="text-sm font-semibold text-foreground">
+            Distribution Drift
+          </h2>
+          <p className="text-xs text-muted-foreground">
+            Live inputs vs. the production version&apos;s own training
+            distribution (column_stats.json).
+          </p>
+        </div>
+        <DriftPanel
+          report={drift}
+          loading={driftLoading}
+          unavailableReason={driftUnavailableReason}
+        />
       </div>
     </div>
   )

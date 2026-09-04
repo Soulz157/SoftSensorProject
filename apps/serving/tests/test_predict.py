@@ -52,16 +52,18 @@ def test_coverage_guard_refuses_an_uncovered_feature_column() -> None:
 
 def test_happy_path_scales_and_predicts() -> None:
     descriptor = _descriptor()
-    predictions = rows_to_predictions(
+    predictions, scaled = rows_to_predictions(
         _SumModel(), descriptor, [{"a": 5.0, "b": 5.0}]
     )
     # minmax(5, 0, 10) = 0.5 for both columns -> sum = 1.0
     assert predictions == pytest.approx([1.0])
+    assert list(scaled.columns) == ["a", "b"]
+    assert scaled["a"].tolist() == pytest.approx([0.5])
 
 
 def test_column_order_is_enforced_regardless_of_request_key_order() -> None:
     descriptor = _descriptor()
-    predictions = rows_to_predictions(
+    predictions, _scaled = rows_to_predictions(
         _SumModel(), descriptor, [{"b": 10.0, "a": 0.0}]
     )
     assert predictions == pytest.approx([1.0])

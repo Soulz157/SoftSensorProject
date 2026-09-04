@@ -323,3 +323,18 @@ export function predictionJobKey(
 ): string {
   return `${predictionJobPrefix(modelId, jobId)}${filename}`;
 }
+
+/**
+ * MODEL-SERVE-005. Root for sampled synchronous-/predict logging, one
+ * object per request under `{modelId}/{modelVersionId}/dt=YYYY-MM-DD/
+ * hour=HH/{uuid}.parquet` — reserved here purely to keep this root from
+ * colliding with PREDICTION_ROOT (batch) or the inference/ root
+ * MODEL-SERVE-006 already reserves. apps/python (object_store.py's
+ * `serving_log_key`/`is_serving_log_key`) is the only writer and the only
+ * key-builder: it mints the uuid and computes dt/hour from its own write-
+ * time clock, so NestJS never constructs this key — it only stores
+ * whatever key python's `/prediction-log/append` response returns. No TS
+ * builder function exists here for that reason; adding one with no caller
+ * would be dead code the next reader has to explain away.
+ */
+export const SERVING_LOG_ROOT = 'serving-logs/';

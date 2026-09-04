@@ -22,6 +22,16 @@ interface Props {
   tickFormatter: (t: number) => string
   /** Name of the compared model — renders a second prediction line. */
   compareName?: string
+  /** Defaults to Step 5's full-width 320. MODEL-FLOW-017-T04 renders this
+   *  at small-multiple size (~120-160) inside Step 4's candidate cards. */
+  height?: number
+  /** Defaults to `EVAL_SYNC_ID`, sharing Step 5's crosshair with the
+   *  residual chart beside it. MODEL-FLOW-017-T06 gives EACH small-multiple
+   *  instance its OWN id (its own runId) — sharing the module default
+   *  across N mounted candidates would sync every card's crosshair
+   *  together, since `syncId` was a module CONSTANT before this prop
+   *  existed, not something the caller could vary per instance. */
+  syncId?: string
 }
 
 /**
@@ -33,12 +43,14 @@ export function ActualVsPredictedChart({
   rows,
   tickFormatter,
   compareName,
+  height = 320,
+  syncId = EVAL_SYNC_ID,
 }: Props) {
   return (
-    <ResponsiveContainer width="100%" height={320}>
+    <ResponsiveContainer width="100%" height={height}>
       <ComposedChart
         data={rows}
-        syncId={EVAL_SYNC_ID}
+        syncId={syncId}
         margin={{ top: 8, right: 16, left: 0, bottom: 0 }}
       >
         <CartesianGrid

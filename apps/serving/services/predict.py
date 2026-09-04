@@ -123,7 +123,11 @@ def assert_history_satisfies_target_derivation(
 
 def rows_to_predictions(
     model: Any, descriptor: dict[str, Any], rows: list[dict[str, Any]]
-) -> list[float]:
+) -> tuple[list[float], pd.DataFrame]:
+    """Returns `(predictions, scaled)` — MODEL-SERVE-005-T01 needs the
+    model-ready frame `to_model_ready` already built here to compute its
+    drift aggregates over the SAME values the model actually scored,
+    without re-scaling anything a second time."""
     feature_columns: list[str] = descriptor["featureColumns"]
     _validate_rows(rows, feature_columns)
 
@@ -160,4 +164,4 @@ def rows_to_predictions(
         frame, feature_columns, scalers, fitted_params=scaling_params
     )
     predicted = model.predict(scaled[feature_columns])
-    return [float(p) for p in predicted]
+    return [float(p) for p in predicted], scaled[feature_columns]

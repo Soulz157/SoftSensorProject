@@ -63,6 +63,8 @@ from schemas.preprocess import (
     MetadataResponse,
     ModelRunPredictionsRequest,
     ModelRunPredictionsResponse,
+    RunPredictionsBatchRequest,
+    RunPredictionsBatchResponse,
     ModelObjectVerifyRequest,
     ModelObjectVerifyResponse,
     RunObjectPresignRequest,
@@ -71,6 +73,10 @@ from schemas.preprocess import (
     PredictionJobUploadPresignResponse,
     PredictionJobObjectPresignRequest,
     PredictionJobObjectPresignResponse,
+    PredictionLogAppendRequest,
+    PredictionLogAppendResponse,
+    PredictionLogSeriesRequest,
+    PredictionLogSeriesResponse,
     PreviewRequest,
     PreviewResponse,
     CorrelationRequest,
@@ -97,7 +103,7 @@ from schemas.preprocess import (
     ValidateRequest,
     ValidationReportResponse,
 )
-from services import artifact_service
+from services import artifact_service, prediction_log_service
 from services.boxplot_service import build_boxplot
 from services.cleaning_service import CleaningError
 from services.correlation_matrix_service import build_correlation_matrix
@@ -611,6 +617,44 @@ async def read_column_stats(
 
 
 @router.post(
+    "/prediction-log/append",
+    response_model=PredictionLogAppendResponse,
+    summary="Write one sampled /predict request's capped rows",
+    description=(
+        "MODEL-SERVE-005-T01. NestJS calls this once per LOGGED request — "
+        "apps/serving already decided whether to sample this request in "
+        "and capped its rows before this call. Writes ONE Parquet object "
+        "under serving-logs/{modelId}/{modelVersionId}/dt=.../hour=.../ "
+        "and returns its key + checksum for NestJS's own PredictionLog row."
+    ),
+)
+async def append_prediction_log(
+    body: PredictionLogAppendRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(prediction_log_service.append, store, body)
+
+
+@router.post(
+    "/prediction-log/series",
+    response_model=PredictionLogSeriesResponse,
+    summary="Read logged prediction rows for one model version in a time range",
+    description=(
+        "MODEL-SERVE-005. Walks the dt=/hour= partitions "
+        "/prediction-log/append wrote, reading every object whose window "
+        "overlaps [from, to] and filtering to rows actually in range. "
+        "Response is capped and marks `truncated` rather than silently "
+        "returning a partial series as complete."
+    ),
+)
+async def read_prediction_log_series(
+    body: PredictionLogSeriesRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(prediction_log_service.series, store, body)
+
+
+@router.post(
     "/feature-spec",
     response_model=FeatureSpecResponse,
     summary="feature_spec.json sidecar for a committed artifact",
@@ -788,6 +832,29 @@ async def run_predictions(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(artifact_service.run_predictions, store, body)
+
+
+@router.post(
+    "/models/runs/predictions/batch",
+    response_model=RunPredictionsBatchResponse,
+    summary="Decimated actual/predicted series for N training runs, one call",
+    description=(
+        "MODEL-FLOW-017. Step 4 Model Selection's overlay + small-multiple "
+        "charts need every terminal candidate's actual-vs-predicted series "
+        "at once — this is that batch, decimated with LTTB over the time "
+        "axis so the payload stays bounded regardless of how many rows "
+        "each run's test split holds. `/models/runs/predictions` (above) "
+        "stays the undecimated single-run endpoint Step 5's full-width "
+        "chart uses; this route never replaces it. A run's series that "
+        "cannot be read soft-fails to an `error` on its own item rather "
+        "than failing the whole batch."
+    ),
+)
+async def run_predictions_batch(
+    body: RunPredictionsBatchRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.run_predictions_batch, store, body)
 
 
 @router.post(

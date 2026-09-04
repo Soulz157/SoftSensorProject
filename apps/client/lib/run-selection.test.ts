@@ -20,6 +20,9 @@ function candidate(overrides: Partial<CandidateResult> = {}): CandidateResult {
     trainMetrics: { r2: 0.95, rmse: 0.3, mae: 0.2 },
     lossHistoryKey: null,
     lossHistory: null,
+    predictionsKey: null,
+    cvFoldsKey: null,
+    scoringContainerId: null,
     ...overrides,
   }
 }

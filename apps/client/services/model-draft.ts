@@ -40,6 +40,14 @@ export interface ModelDraft {
    *  Evaluation/Save-Model-adoption should read, never `currentRunId`
    *  directly, so a user's selection can override what they see. */
   resolvedRunId: string | null
+  /** MODEL-FLOW-018-T02. The user's own explicit standalone choice (a run no
+   *  ModelCandidateJob owns) — null until Select is used, and null again
+   *  once a newer launch or a job-level selection supersedes it. Distinct
+   *  from `resolvedRunId`, which is non-null for ANY draft with any run at
+   *  all: this is the one field that says whether the user actually chose
+   *  something, which is what a "Carrying forward: …" footer needs to know
+   *  before it renders. */
+  selectedRunId: string | null
   savedModelId: string | null
   createdAt: string
   updatedAt: string
@@ -126,6 +134,19 @@ export const modelDraftService = {
     fetchClient(`${one(draftId)}/save`, {
       method: 'POST',
       body: JSON.stringify(body),
+    }),
+
+  /** MODEL-FLOW-018-T02. Records which STANDALONE run (one no
+   *  ModelCandidateJob owns) carries forward. Refused server-side (400) for
+   *  a run not of this draft, one still QUEUED/RUNNING, one that FAILED/
+   *  CANCELED, or one whose own candidate job is still QUEUED/RUNNING. */
+  selectRun: (
+    draftId: string,
+    runId: string,
+  ): Promise<ApiResponse<ModelDraft>> =>
+    fetchClient(`${one(draftId)}/select-run`, {
+      method: 'POST',
+      body: JSON.stringify({ runId }),
     }),
 }
 
@@ -370,6 +391,79 @@ function toRunPredictions(wire: RunPredictionsWire): RunPredictions {
   }
 }
 
+/**
+ * MODEL-FLOW-017-T02/T03. One run's DECIMATED series, or its failure — the
+ * batch counterpart of `RunPredictions` above. `error` non-null means every
+ * numeric field is `null` and `points` is empty; `runId` is resolved
+ * server-side from the `predictionsKey` the caller asked for, so the client
+ * never has to re-match a source key back to a run itself.
+ */
+export interface RunPredictionsBatchItem {
+  runId: string | null
+  sourceKey: string
+  rowCount: number | null
+  residualSd: number | null
+  residualRmseCheck: number | null
+  yTrueMin: number | null
+  yTrueMax: number | null
+  yPredMin: number | null
+  yPredMax: number | null
+  points: RunPredictionPoint[]
+  /** True count exceeded what was returned — see `points.length` for what
+   *  actually rendered. State this in the chart, per DraftScatterResult's
+   *  own "N of M shown" precedent. */
+  downsampled: boolean
+  error: string | null
+}
+
+export interface RunPredictionsBatchResult {
+  results: RunPredictionsBatchItem[]
+}
+
+interface RunPredictionsBatchItemWire {
+  source_key: string
+  row_count: number | null
+  residual_sd: number | null
+  residual_rmse_check: number | null
+  y_true_min: number | null
+  y_true_max: number | null
+  y_pred_min: number | null
+  y_pred_max: number | null
+  points: { timestamp: string; y_true: number; y_pred: number }[]
+  downsampled: boolean
+  error: string | null
+  runId: string | null
+}
+
+interface RunPredictionsBatchWire {
+  results: RunPredictionsBatchItemWire[]
+}
+
+function toRunPredictionsBatch(
+  wire: RunPredictionsBatchWire,
+): RunPredictionsBatchResult {
+  return {
+    results: wire.results.map(item => ({
+      runId: item.runId,
+      sourceKey: item.source_key,
+      rowCount: item.row_count,
+      residualSd: item.residual_sd,
+      residualRmseCheck: item.residual_rmse_check,
+      yTrueMin: item.y_true_min,
+      yTrueMax: item.y_true_max,
+      yPredMin: item.y_pred_min,
+      yPredMax: item.y_pred_max,
+      points: item.points.map(p => ({
+        timestamp: p.timestamp,
+        yTrue: p.y_true,
+        yPred: p.y_pred,
+      })),
+      downsampled: item.downsampled,
+      error: item.error,
+    })),
+  }
+}
+
 // ── Candidate jobs (MODEL-FLOW-005, generalized by MODEL-FLOW-013) ─────────
 // Algorithm sweep ("Find Best Model") or hyperparameter search over
 // draft-scoped runs, mirroring modelDraftRunService's shape one level up —
@@ -425,6 +519,19 @@ export interface CandidateResult {
     metric: string
     series: Record<string, number[]>
   } | null
+  /** MODEL-FLOW-017-T03. A pointer only — the client resolves its OWN batch
+   *  of runIds from `predictionsKey !== null` and fetches every series in
+   *  one call (`modelDraftRunService.predictionsBatch`), rather than this
+   *  job response embedding the series inline the way it does for
+   *  `lossHistory` (a chart's full series is much larger than a loss
+   *  curve's few hundred floats). */
+  predictionsKey: string | null
+  /** Present on a CV candidate. Combined with `predictionsKey`, tells the
+   *  client whether a non-null predictionsKey is a test-split series or a
+   *  scored holdout — see MODEL-FLOW-016 AC5's 2026-09-04 amendment. */
+  cvFoldsKey: string | null
+  /** Non-null while a CV candidate's holdout-scoring phase is in flight. */
+  scoringContainerId: string | null
 }
 
 export interface ModelCandidateJob {
@@ -510,6 +617,35 @@ export const modelDraftRunService = {
       { method: 'GET' },
     )
     return { ...res, data: toRunPredictions(res.data) }
+  },
+
+  /**
+   * MODEL-FLOW-017-T02/T03. Decimated actual/predicted series for every run
+   * in `runIds`, one call — Step 4's overlay + small-multiple charts. A run
+   * that is not SUCCEEDED or has no predictions artifact is silently absent
+   * from `results`, not an error; a run whose series could not be read
+   * still has an entry, with `error` set. Empty `runIds` short-circuits
+   * without a request — there is nothing to ask for.
+   */
+  predictionsBatch: async (
+    draftId: string,
+    runIds: string[],
+  ): Promise<ApiResponse<RunPredictionsBatchResult>> => {
+    if (runIds.length === 0) {
+      return {
+        statusCode: 200,
+        message: 'No run ids requested',
+        type: 'SUCCESS',
+        data: { results: [] },
+      }
+    }
+    const res: ApiResponse<RunPredictionsBatchWire> = await fetchClient(
+      `${runsBase(draftId)}/predictions/batch?runIds=${runIds
+        .map(encodeURIComponent)
+        .join(',')}`,
+      { method: 'GET' },
+    )
+    return { ...res, data: toRunPredictionsBatch(res.data) }
   },
 
   /** MODEL-FLOW-016-T07/T11. Triggers a CV run's separate holdout-scoring

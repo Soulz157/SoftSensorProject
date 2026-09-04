@@ -38,6 +38,7 @@ import logging
 import os
 import tempfile
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import IO, Any
@@ -711,6 +712,26 @@ class ObjectStore:
 
     # ── delete ───────────────────────────────────────────────────────────
 
+    def list_object_keys(self, prefix: str) -> list[str]:
+        """MODEL-SERVE-005. Every object key under `prefix`, listing order —
+        the public counterpart of `delete_prefix`'s internal listing loop,
+        needed by `prediction_log_service.series` to enumerate an hour
+        partition's individual request objects before reading them. Returns
+        `[]` for an empty/nonexistent prefix rather than raising: an absent
+        window is a normal "no requests logged this hour", not an error.
+        """
+        try:
+            return [
+                obj.object_name
+                for obj in self._client.list_objects(
+                    self.bucket, prefix=prefix, recursive=True
+                )
+            ]
+        except S3Error as err:
+            raise ObjectStoreError(
+                f"Could not list prefix '{prefix}': {err.code}"
+            ) from err
+
     def delete_prefix(self, prefix: str) -> int:
         """Drop every object under a prefix — used to clear tmp/{jobId}/."""
         removed = 0
@@ -1246,6 +1267,53 @@ def is_prediction_job_key(key: str) -> bool:
         return False
     parts = key[len(PREDICTION_ROOT):].split("/")
     if len(parts) != 3:
+        return False
+    return all(segment and segment not in (".", "..") for segment in parts)
+
+
+#: MODEL-SERVE-005. One object per SAMPLED synchronous /predict request —
+#: deliberately NOT under predictions/ (that root is PredictionJob's BATCH
+#: output, a different lifecycle) and NOT under inference/ (reserved for
+#: MODEL-SERVE-006's hourly-window record, a different cadence and a
+#: different owner: a window is one row per (modelVersionId, windowStart),
+#: this is one row per REQUEST). Hive-style dt=/hour= partitioning, the
+#: same layout MODEL-SERVE-006-T06 specifies for its own root, so a date
+#: range reads without listing everything. Mirrored in TypeScript at
+#: artifact-keys.ts — change both.
+SERVING_LOG_ROOT = "serving-logs/"
+
+
+def serving_log_prefix(
+    model_id: str, model_version_id: str, dt: str, hour: str
+) -> str:
+    """`dt` is `YYYY-MM-DD`, `hour` is `HH` (zero-padded, 00-23) — both
+    caller-supplied strings, never derived here, so the write and the read
+    side compute the same partition from the same UTC timestamp exactly
+    once each, not twice with a chance to disagree."""
+    return f"{SERVING_LOG_ROOT}{model_id}/{model_version_id}/dt={dt}/hour={hour}/"
+
+
+def serving_log_key(model_id: str, model_version_id: str, dt: str, hour: str) -> str:
+    """One request, one object — the filename is a fresh uuid4, never a
+    caller-supplied id: a serving-token caller has no per-request identity
+    to key off, unlike a ModelTrainingRun or PredictionJob row."""
+    return f"{serving_log_prefix(model_id, model_version_id, dt, hour)}{uuid.uuid4()}.parquet"
+
+
+def is_serving_log_key(key: str) -> bool:
+    """Whether `key` is a well-formed serving-log object.
+
+    Same structural-not-substring discipline as `is_prediction_job_key`:
+    `{modelId}/{modelVersionId}/dt={date}/hour={hour}/{filename}` — exactly
+    5 non-empty segments after the root, the 3rd and 4th literally prefixed
+    `dt=`/`hour=`.
+    """
+    if not key.startswith(SERVING_LOG_ROOT):
+        return False
+    parts = key[len(SERVING_LOG_ROOT):].split("/")
+    if len(parts) != 5:
+        return False
+    if not parts[2].startswith("dt=") or not parts[3].startswith("hour="):
         return False
     return all(segment and segment not in (".", "..") for segment in parts)
 

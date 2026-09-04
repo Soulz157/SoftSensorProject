@@ -112,6 +112,27 @@ export const ListRunsQuerySchema = z
   })
   .strict();
 
+// MODEL-FLOW-017-T03. 24, not 20: CreateCandidateJobSchema
+// (dto/model-candidate-job.authorized.dto.ts) caps a submitted set at 20,
+// but SWEEP_THEN_TUNE appends a phase-2 group to the SAME candidates array
+// once phase 1 exhausts, bounded by TUNE_VARIANTS_PER_JOB=4
+// (lib/tuning-grid.ts) — 24 is the real ceiling a caller can present.
+export const MAX_PREDICTION_BATCH_RUN_IDS = 24;
+
+export const RunPredictionsBatchQuerySchema = z
+  .object({
+    // Comma-separated, not a repeated query key — same "no `qs` parser
+    // registered" reasoning ListRowsSchema.tags already documents.
+    runIds: z
+      .string()
+      .min(1)
+      .transform((v) => v.split(',').filter(Boolean))
+      .pipe(
+        z.array(z.string().uuid()).min(1).max(MAX_PREDICTION_BATCH_RUN_IDS),
+      ),
+  })
+  .strict();
+
 export const RunUploadFilenameEnum = z.enum(
   RUN_UPLOAD_FILENAMES as unknown as [string, ...string[]],
 );
@@ -291,3 +312,6 @@ export class CreateTrainingRunDto extends createZodDto(
 ) {}
 export class CreateModelRunDto extends createZodDto(CreateModelRunSchema) {}
 export class ListRunsQueryDto extends createZodDto(ListRunsQuerySchema) {}
+export class RunPredictionsBatchQueryDto extends createZodDto(
+  RunPredictionsBatchQuerySchema,
+) {}

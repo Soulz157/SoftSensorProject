@@ -14,6 +14,7 @@ import {
   fetchArtifactMetadata,
   getRunCvFolds,
   runPredictions,
+  runPredictionsBatch,
 } from '@/lib/python-preprocess-client';
 import { postToPython, PYTHON_TIMEOUT } from '@/lib/python-client';
 import { PythonSplitStatsSchema } from '../../dataset-version/authorized/dto/dataset-version.authorized.dto';
@@ -314,6 +315,39 @@ export class ModelRunLaunchAuthorizedService {
     role: string,
   ) {
     await this.assertModelAccess(modelId, userId, role);
+    return this.launchModelRun(modelId, dto);
+  }
+
+  /**
+   * MODEL-SERVE-004. The Model-scoped twin of `launchDraftRun`, split out of
+   * `createRunService` for exactly the reason MODEL-FLOW-005 split
+   * `createDraftRunService`: a retrain job's SECOND and later candidates are
+   * launched by the run-completion webhook (container -> backend via
+   * RunTokenGuard), a request with no user session in it at all.
+   * Authorization for the whole search happens ONCE, when the retrain job is
+   * created (`ModelRetrainAuthorizedService`'s own access gate).
+   *
+   * `createRunService` keeps its behaviour by calling this — same
+   * `buildRunData` validation, same token mint, same fire-and-forget
+   * `trackSpawn`.
+   *
+   * Two deliberate differences from `launchDraftRun`, neither an omission:
+   *  - no transaction, because there is no second write: a Model has no
+   *    `currentRunId` pointer for the run to be atomic with (that field
+   *    belongs to ModelDraft, and the retrain path must never write it —
+   *    this ledger's own definition of done forbids writing any MODEL-FLOW
+   *    wizard path);
+   *  - `freezeSplitStats` is not called, matching `launchDraftRun`'s own rule
+   *    for a candidate run: N candidates share one split, so freezing per
+   *    candidate is N redundant full-artifact reads for one identical answer.
+   *    A retrain is always a candidate job today; if a single Model-scoped
+   *    run ever gets a caller, freeze it there, not here.
+   */
+  async launchModelRun(
+    modelId: string,
+    dto: CreateTrainingRunDto,
+    candidateJobId?: string,
+  ) {
     const runData = await this.buildRunData(dto);
     const { token, tokenHash } = this.mintToken();
 
@@ -321,6 +355,7 @@ export class ModelRunLaunchAuthorizedService {
       data: {
         ...runData,
         modelId,
+        candidateJobId: candidateJobId ?? null,
         imageDigest: this.runner.imageDigest,
         tokenHash,
         tokenExpiresAt: new Date(Date.now() + RUN_TOKEN_TTL_MS),
@@ -449,9 +484,13 @@ export class ModelRunLaunchAuthorizedService {
         },
         omit: { tokenHash: true },
       });
+      // MODEL-FLOW-018-T02. `selectedRunId` CLEARED on every new launch —
+      // a standalone selection must not outlive the run set it was made
+      // against; the user's most recent explicit choice always wins, and a
+      // fresh launch has no choice of its own yet.
       await tx.modelDraft.update({
         where: { id: draftId },
-        data: { currentRunId: created.id },
+        data: { currentRunId: created.id, selectedRunId: null },
       });
       return created;
     });
@@ -689,6 +728,78 @@ export class ModelRunLaunchAuthorizedService {
       message: 'Training run predictions fetched',
       type: 'SUCCESS' as const,
       data: predictions,
+    };
+  }
+
+  /**
+   * MODEL-FLOW-017-T02/T03. Decimated actual/predicted series for every run
+   * in `runIds`, ONE call out to python — Step 4 Model Selection's overlay
+   * + small-multiple charts need every terminal candidate's series at
+   * once, not one `getDraftRunPredictionsService` request per candidate.
+   *
+   * Key-set input, not a job id (AC10): a MODEL-FLOW-018 `selectedRunId`
+   * run has `candidateJobId = null`, so a job-keyed batch would silently
+   * drop the standalone selection path's runs. Every key still comes off
+   * the run rows, never the request — `runIds` names WHICH rows to read,
+   * the row itself supplies the `predictionsKey` that is actually fetched,
+   * same discipline `getDraftRunPredictionsService` applies to a single
+   * run. `runIds` is already bounded to
+   * MAX_PREDICTION_BATCH_RUN_IDS by `RunPredictionsBatchQuerySchema` (the
+   * global ZodValidationPipe refuses an oversized list before this method
+   * ever runs) — not re-checked here, so there is one place that bound is
+   * declared.
+   *
+   * A run that is not SUCCEEDED or has no `predictionsKey` contributes no
+   * series and is NOT an error — silently absent from the python call, and
+   * the caller (client) already knows this from the candidate list's own
+   * `status`/`predictionsKey` fields. A run id that does not belong to
+   * this draft (wrong draft, or simply does not exist) is treated the
+   * same way: dropped, not 404'd — a batch view of many candidates must
+   * not fail the whole screen over one stale id.
+   */
+  async getDraftRunPredictionsBatchService(
+    draftId: string,
+    runIds: string[],
+    userId: string,
+    role: string,
+  ) {
+    await this.assertDraftAccess(draftId, userId, role);
+
+    const runs = await this.prisma.modelTrainingRun.findMany({
+      where: { id: { in: runIds }, modelDraftId: draftId },
+      select: { id: true, status: true, predictionsKey: true },
+    });
+
+    const readable = runs.filter(
+      (run) => run.status === 'SUCCEEDED' && run.predictionsKey,
+    );
+
+    if (readable.length === 0) {
+      return {
+        statusCode: 200,
+        message: 'No terminal candidate has a predictions artifact yet',
+        type: 'SUCCESS' as const,
+        data: { results: [] },
+      };
+    }
+
+    const keyToRunId = new Map(
+      readable.map((run) => [run.predictionsKey as string, run.id]),
+    );
+    const batch = await runPredictionsBatch({
+      keys: [...keyToRunId.keys()],
+    });
+
+    return {
+      statusCode: 200,
+      message: 'Training run predictions fetched',
+      type: 'SUCCESS' as const,
+      data: {
+        results: batch.results.map((item) => ({
+          ...item,
+          runId: keyToRunId.get(item.source_key) ?? null,
+        })),
+      },
     };
   }
 

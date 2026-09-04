@@ -31,7 +31,7 @@ const mockedTuningCandidatesFor = tuningGrid.tuningCandidatesFor as jest.Mock;
 describe('ModelCandidateJobAuthorizedService', () => {
   const JOB_BASE = {
     id: 'job-1',
-    modelDraftId: 'draft-1',
+    modelDraftId: 'draft-1' as string | null,
     targetY: 'TI-101',
     goldArtifactId: 'gold-1',
     trainTestSplit: null as number | null,
@@ -90,7 +90,7 @@ describe('ModelCandidateJobAuthorizedService', () => {
           }
         : overrides.run;
 
-    return {
+    const prismaObj = {
       modelCandidateJob: {
         findUnique: jest.fn().mockResolvedValue(job),
         findFirst: jest.fn().mockResolvedValue(job),
@@ -111,7 +111,18 @@ describe('ModelCandidateJobAuthorizedService', () => {
       modelDraft: {
         update: jest.fn().mockResolvedValue({}),
       },
+      // MODEL-FLOW-018-T02. selectCandidateService now wraps its write in
+      // $transaction (to also clear ModelDraft.selectedRunId) — `tx` is
+      // this same object, so `prisma.modelCandidateJob.update`/
+      // `prisma.modelDraft.update` assertions below see the calls made
+      // through it exactly as before.
+      $transaction: jest
+        .fn()
+        .mockImplementation((fn: (tx: unknown) => Promise<unknown>) =>
+          fn(prismaObj),
+        ),
     };
+    return prismaObj;
   }
 
   function makeRunLaunch(overrides: { launchDraftRun?: jest.Mock } = {}) {
@@ -891,7 +902,7 @@ describe('ModelCandidateJobAuthorizedService', () => {
       ).rejects.toBeInstanceOf(AppException);
     });
 
-    it('writes ONLY selectedRunId — never touches ModelDraft.currentRunId', async () => {
+    it('writes ONLY job.selectedRunId — never touches ModelDraft.currentRunId', async () => {
       const prisma = makePrisma({
         job: { status: 'SUCCEEDED' },
         run: { status: 'SUCCEEDED' },
@@ -914,7 +925,259 @@ describe('ModelCandidateJobAuthorizedService', () => {
         where: { id: 'job-1' },
         data: { selectedRunId: 'run-2' },
       });
+      expect(prisma.modelDraft.update).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ currentRunId: expect.anything() }),
+        }),
+      );
+    });
+
+    // MODEL-FLOW-018-T02. A job-level selection outranks a standalone one —
+    // resolveActiveRunId's own precedence comment states this — so a stale
+    // ModelDraft.selectedRunId must not survive it.
+    it('clears ModelDraft.selectedRunId for a draft-owned job', async () => {
+      const prisma = makePrisma({
+        job: { status: 'SUCCEEDED', modelDraftId: 'draft-1' },
+        run: { status: 'SUCCEEDED' },
+      });
+      const runLaunch = makeRunLaunch();
+      const service = new ModelCandidateJobAuthorizedService(
+        prisma as never,
+        runLaunch as never,
+      );
+
+      await service.selectCandidateService(
+        'draft-1',
+        'job-1',
+        { runId: 'run-2' },
+        'user-1',
+        'ADMIN',
+      );
+
+      expect(prisma.modelDraft.update).toHaveBeenCalledWith({
+        where: { id: 'draft-1' },
+        data: { selectedRunId: null },
+      });
+    });
+
+    // Defensive path, not a reachable one: the lookup above filters on
+    // `modelDraftId: draftId`, so a real call can never produce a job with
+    // a null `modelDraftId` here (a retrain job can never be found by this
+    // query at all). This exercises the `if (job2.modelDraftId)` guard
+    // directly so it doesn't throw if that ever stops being true.
+    it('the modelDraftId guard does not throw for a null modelDraftId', async () => {
+      const prisma = makePrisma({
+        job: { status: 'SUCCEEDED', modelDraftId: null },
+        run: { status: 'SUCCEEDED' },
+      });
+      const runLaunch = makeRunLaunch();
+      const service = new ModelCandidateJobAuthorizedService(
+        prisma as never,
+        runLaunch as never,
+      );
+
+      await service.selectCandidateService(
+        'draft-1',
+        'job-1',
+        { runId: 'run-2' },
+        'user-1',
+        'ADMIN',
+      );
+
       expect(prisma.modelDraft.update).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * MODEL-SERVE-004. The MODEL-owned (retrain) branches of the same
+   * machinery. Live verification covers the real trigger, the real
+   * containers and the real version row (V01/V02); this covers what a live
+   * test cannot show cheaply — that the draft writes are NOT made, that a
+   * winner with no artifact fails the job instead of minting a version, and
+   * that the version is minted inside the SAME transaction as the
+   * compare-and-swap.
+   */
+  describe('advanceJobForRun — model-owned (retrain) job', () => {
+    const MODEL_JOB = {
+      ...JOB_BASE,
+      id: 'job-m1',
+      modelDraftId: null as string | null,
+      modelId: 'model-1',
+      sourceVersionId: 'ver-1',
+      resultVersionId: null as string | null,
+      idempotencyKey: null as string | null,
+      completedRuns: 1,
+      totalRuns: 2,
+      currentRunId: 'run-2',
+    };
+
+    const WINNER = {
+      id: 'run-2',
+      status: 'SUCCEEDED',
+      metrics: { rmse: 0.4 },
+      failureReason: null,
+      datasetId: 'ds-1',
+      goldArtifactId: 'gold-1',
+      goldObjectKey: 'ds-1/artifacts/gold-1/data.parquet',
+      artifactChecksum: 'sha-1',
+      featureSpecKey: 'ds-1/artifacts/gold-1/feature_spec.json',
+      algorithm: 'ridge',
+      hyperparameters: { alpha: 0.5 },
+      imageDigest: 'scgc/soft-sensor-trainer@sha256:abc',
+      modelKey: 'models/model-1/runs/run-2/model.joblib',
+      manifestKey: null as string | null,
+    };
+
+    function makeModelPrisma(
+      overrides: {
+        job?: Partial<typeof MODEL_JOB>;
+        run?: Record<string, unknown> | null;
+        updateManyCount?: number;
+        existingVersion?: { id: string } | null;
+      } = {},
+    ) {
+      const job = { ...MODEL_JOB, ...overrides.job };
+      const run = overrides.run === undefined ? WINNER : overrides.run;
+      const tx = {
+        modelCandidateJob: {
+          updateMany: jest
+            .fn()
+            .mockResolvedValue({ count: overrides.updateManyCount ?? 1 }),
+          update: jest.fn().mockResolvedValue(job),
+        },
+        modelVersion: {
+          findUnique: jest
+            .fn()
+            .mockResolvedValue(overrides.existingVersion ?? null),
+          findFirst: jest.fn().mockResolvedValue({ version: 3 }),
+          create: jest.fn().mockResolvedValue({ id: 'ver-2' }),
+        },
+      };
+      return {
+        tx,
+        prisma: {
+          modelCandidateJob: {
+            findUnique: jest.fn().mockResolvedValue(job),
+            updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+            update: jest.fn().mockResolvedValue(job),
+          },
+          modelTrainingRun: {
+            findUnique: jest.fn().mockResolvedValue(run),
+          },
+          modelDraft: { update: jest.fn().mockResolvedValue({}) },
+          $transaction: jest
+            .fn()
+            .mockImplementation((fn: (t: typeof tx) => Promise<unknown>) =>
+              fn(tx),
+            ),
+        },
+      };
+    }
+
+    it('mints a STAGING version at max+1 and never writes a draft', async () => {
+      const { prisma, tx } = makeModelPrisma();
+      const runLaunch = makeRunLaunch();
+      const service = new ModelCandidateJobAuthorizedService(
+        prisma as never,
+        runLaunch as never,
+      );
+
+      await service.advanceJobForRun('run-2', 'job-m1');
+
+      // The compare-and-swap still decides the winner of the race, and the
+      // version create sits inside the SAME transaction.
+      expect(tx.modelCandidateJob.updateMany).toHaveBeenCalledTimes(1);
+      const createCalls = tx.modelVersion.create.mock.calls as Array<
+        [{ data: Record<string, unknown> }]
+      >;
+      const created = createCalls[0][0];
+      expect(created.data).toMatchObject({
+        modelId: 'model-1',
+        version: 4, // max(3) + 1
+        sourceRunId: 'run-2',
+        modelObjectKey: WINNER.modelKey,
+        algorithm: 'ridge',
+      });
+      // STAGING is the schema default — never set explicitly, and never
+      // PRODUCTION. That is the whole feature (V01).
+      expect(created.data.stage).toBeUndefined();
+      expect(tx.modelCandidateJob.update).toHaveBeenCalledWith({
+        where: { id: 'job-m1' },
+        data: { resultVersionId: 'ver-2' },
+      });
+      expect(prisma.modelDraft.update).not.toHaveBeenCalled();
+    });
+
+    it('adopts an existing version for the same run rather than racing the unique index', async () => {
+      const { prisma, tx } = makeModelPrisma({
+        existingVersion: { id: 'ver-existing' },
+      });
+      const service = new ModelCandidateJobAuthorizedService(
+        prisma as never,
+        makeRunLaunch() as never,
+      );
+
+      await service.advanceJobForRun('run-2', 'job-m1');
+
+      expect(tx.modelVersion.create).not.toHaveBeenCalled();
+      expect(tx.modelCandidateJob.update).toHaveBeenCalledWith({
+        where: { id: 'job-m1' },
+        data: { resultVersionId: 'ver-existing' },
+      });
+    });
+
+    it('mints nothing when it loses the compare-and-swap race', async () => {
+      const { prisma, tx } = makeModelPrisma({ updateManyCount: 0 });
+      const service = new ModelCandidateJobAuthorizedService(
+        prisma as never,
+        makeRunLaunch() as never,
+      );
+
+      await service.advanceJobForRun('run-2', 'job-m1');
+
+      expect(tx.modelVersion.create).not.toHaveBeenCalled();
+      expect(tx.modelCandidateJob.update).not.toHaveBeenCalled();
+    });
+
+    it('fails the job instead of versioning a winner with no model artifact', async () => {
+      const { prisma, tx } = makeModelPrisma({
+        run: { ...WINNER, modelKey: null },
+      });
+      const service = new ModelCandidateJobAuthorizedService(
+        prisma as never,
+        makeRunLaunch() as never,
+      );
+
+      await service.advanceJobForRun('run-2', 'job-m1');
+
+      expect(tx.modelVersion.create).not.toHaveBeenCalled();
+      const failCalls = prisma.modelCandidateJob.updateMany.mock.calls as Array<
+        [{ data: { status: string; failureReason: string } }]
+      >;
+      const failed = failCalls[0][0];
+      expect(failed.data.status).toBe('FAILED');
+      expect(failed.data.failureReason).toContain('no model artifact');
+    });
+
+    it('launches the next candidate through launchModelRun, not launchDraftRun', async () => {
+      const { prisma } = makeModelPrisma({
+        job: { completedRuns: 0, totalRuns: 2 },
+      });
+      const launchModelRun = jest.fn().mockResolvedValue({ id: 'run-3' });
+      const runLaunch = { ...makeRunLaunch(), launchModelRun };
+      const service = new ModelCandidateJobAuthorizedService(
+        prisma as never,
+        runLaunch as never,
+      );
+
+      await service.advanceJobForRun('run-2', 'job-m1');
+
+      expect(launchModelRun).toHaveBeenCalledWith(
+        'model-1',
+        expect.objectContaining({ goldArtifactId: 'gold-1' }),
+        'job-m1',
+      );
+      expect(runLaunch.launchDraftRun).not.toHaveBeenCalled();
     });
   });
 });

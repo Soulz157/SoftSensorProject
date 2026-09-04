@@ -18,6 +18,7 @@ import {
   ListModelDraftQueryDto,
   PatchModelDraftDto,
   SaveModelDraftDto,
+  SelectDraftRunDto,
 } from './dto/model-draft.authorized.dto';
 
 /**
@@ -112,6 +113,30 @@ export class ModelDraftAuthorizedController {
     @Param('id') id: string,
   ) {
     return this.service.abandonDraftService(user, id);
+  }
+
+  /**
+   * MODEL-FLOW-018-T02. The user's explicit choice of which run carries
+   * forward, for a run no ModelCandidateJob owns (a standalone launch, or
+   * any CV run). Writes ONLY `ModelDraft.selectedRunId` — never
+   * `currentRunId`, which keeps its existing writers untouched.
+   */
+  @Post('/:id/select-run')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Select which standalone run carries forward',
+    description:
+      'Only a run of THIS draft, and only one that SUCCEEDED and whose ' +
+      'candidate job (if any) is no longer QUEUED/RUNNING. Decides what ' +
+      'Evaluation shows and what Save Model adopts, ahead of any ' +
+      "candidate job's own selection or the draft's currentRunId.",
+  })
+  async selectDraftRunController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+    @Body() body: SelectDraftRunDto,
+  ) {
+    return this.service.selectDraftRunService(user, id, body);
   }
 
   /**

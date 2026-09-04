@@ -161,6 +161,188 @@ describe('ModelRunLaunchAuthorizedService.getDraftRunPredictionsService', () => 
 });
 
 /**
+ * MODEL-FLOW-017-T02/T03: `getDraftRunPredictionsBatchService`. One call
+ * out to python for every readable run, not one `getDraftRunPredictionsService`
+ * call per candidate. Role is 'ADMIN' throughout, same isolation rationale
+ * as the single-run describe block above.
+ */
+describe('ModelRunLaunchAuthorizedService.getDraftRunPredictionsBatchService', () => {
+  const DRAFT = { id: 'draft-1', workspaceId: 'ws-1', status: 'TRAINED' };
+  const mockedRunPredictionsBatch =
+    pythonClient.runPredictionsBatch as jest.Mock;
+
+  function makePrisma(
+    overrides: {
+      draft?: Record<string, unknown> | null;
+      runs?: Array<Record<string, unknown>>;
+    } = {},
+  ) {
+    const draft = overrides.draft === undefined ? DRAFT : overrides.draft;
+    const runs =
+      overrides.runs === undefined
+        ? [
+            {
+              id: 'run-1',
+              status: 'SUCCEEDED',
+              predictionsKey: 'drafts/draft-1/runs/run-1/predictions.parquet',
+            },
+            {
+              id: 'run-2',
+              status: 'SUCCEEDED',
+              predictionsKey: 'drafts/draft-1/runs/run-2/predictions.parquet',
+            },
+          ]
+        : overrides.runs;
+
+    return {
+      modelDraft: { findUnique: jest.fn().mockResolvedValue(draft) },
+      modelTrainingRun: { findMany: jest.fn().mockResolvedValue(runs) },
+    };
+  }
+
+  const BATCH_RESULT = {
+    results: [
+      {
+        source_key: 'drafts/draft-1/runs/run-1/predictions.parquet',
+        row_count: 4,
+        residual_sd: 0.1,
+        residual_rmse_check: 0.1,
+        y_true_min: 1,
+        y_true_max: 2,
+        y_pred_min: 1.1,
+        y_pred_max: 1.9,
+        points: [],
+        downsampled: false,
+        error: null,
+      },
+      {
+        source_key: 'drafts/draft-1/runs/run-2/predictions.parquet',
+        row_count: null,
+        residual_sd: null,
+        residual_rmse_check: null,
+        y_true_min: null,
+        y_true_max: null,
+        y_pred_min: null,
+        y_pred_max: null,
+        points: [],
+        downsampled: false,
+        error: 'could not read',
+      },
+    ],
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockedRunPredictionsBatch.mockResolvedValue(BATCH_RESULT);
+  });
+
+  it('refuses (404) when the draft does not exist', async () => {
+    const prisma = makePrisma({ draft: null });
+    const service = new ModelRunLaunchAuthorizedService(
+      prisma as never,
+      {} as never,
+    );
+    await expect(
+      service.getDraftRunPredictionsBatchService(
+        'draft-1',
+        ['run-1', 'run-2'],
+        'u1',
+        'ADMIN',
+      ),
+    ).rejects.toThrow(NotFoundException);
+    expect(mockedRunPredictionsBatch).not.toHaveBeenCalled();
+  });
+
+  it('scopes the lookup to modelDraftId — an id from another draft is silently absent, not a 404', async () => {
+    const prisma = makePrisma();
+    const service = new ModelRunLaunchAuthorizedService(
+      prisma as never,
+      {} as never,
+    );
+    await service.getDraftRunPredictionsBatchService(
+      'draft-1',
+      ['run-1', 'run-2', 'run-from-another-draft'],
+      'u1',
+      'ADMIN',
+    );
+    expect(prisma.modelTrainingRun.findMany).toHaveBeenCalledWith({
+      where: {
+        id: { in: ['run-1', 'run-2', 'run-from-another-draft'] },
+        modelDraftId: 'draft-1',
+      },
+      select: { id: true, status: true, predictionsKey: true },
+    });
+  });
+
+  it('drops a non-SUCCEEDED or predictionsKey-less run without erroring', async () => {
+    const prisma = makePrisma({
+      runs: [
+        {
+          id: 'run-1',
+          status: 'SUCCEEDED',
+          predictionsKey: 'drafts/draft-1/runs/run-1/predictions.parquet',
+        },
+        { id: 'run-2', status: 'RUNNING', predictionsKey: null },
+        { id: 'run-3', status: 'SUCCEEDED', predictionsKey: null },
+      ],
+    });
+    const service = new ModelRunLaunchAuthorizedService(
+      prisma as never,
+      {} as never,
+    );
+    mockedRunPredictionsBatch.mockResolvedValue({
+      results: [BATCH_RESULT.results[0]],
+    });
+    const result = await service.getDraftRunPredictionsBatchService(
+      'draft-1',
+      ['run-1', 'run-2', 'run-3'],
+      'u1',
+      'ADMIN',
+    );
+    expect(mockedRunPredictionsBatch).toHaveBeenCalledWith({
+      keys: ['drafts/draft-1/runs/run-1/predictions.parquet'],
+    });
+    expect(result.data.results).toHaveLength(1);
+  });
+
+  it('returns an empty result set with no python call when nothing is readable', async () => {
+    const prisma = makePrisma({
+      runs: [{ id: 'run-1', status: 'RUNNING', predictionsKey: null }],
+    });
+    const service = new ModelRunLaunchAuthorizedService(
+      prisma as never,
+      {} as never,
+    );
+    const result = await service.getDraftRunPredictionsBatchService(
+      'draft-1',
+      ['run-1'],
+      'u1',
+      'ADMIN',
+    );
+    expect(mockedRunPredictionsBatch).not.toHaveBeenCalled();
+    expect(result.data).toEqual({ results: [] });
+  });
+
+  it('maps each python result item back to its runId via the resolved key', async () => {
+    const prisma = makePrisma();
+    const service = new ModelRunLaunchAuthorizedService(
+      prisma as never,
+      {} as never,
+    );
+    const result = await service.getDraftRunPredictionsBatchService(
+      'draft-1',
+      ['run-1', 'run-2'],
+      'u1',
+      'ADMIN',
+    );
+    expect(result.data.results).toEqual([
+      { ...BATCH_RESULT.results[0], runId: 'run-1' },
+      { ...BATCH_RESULT.results[1], runId: 'run-2' },
+    ]);
+  });
+});
+
+/**
  * MODEL-FLOW-016-T11. `getDraftRunService` attaches a CV run's cv_folds.json
  * (never a second client-facing endpoint — the `lossHistory` precedent in
  * `advanceJobForRun` reads the same way, attached to a response the client

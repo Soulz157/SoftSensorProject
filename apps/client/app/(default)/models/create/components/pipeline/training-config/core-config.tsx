@@ -363,6 +363,45 @@ function CvControl({
   // `findHoldoutArtifact` draws (it checks `validationRowCount`, never
   // object existence). Only a CONFIRMED absence (holdout === null, with
   // neither a fetch in flight nor a reclaimed-sidecar 404) disables here.
+  // Slider -> Input: the Slider could only ever emit an in-range integer, so
+  // the store took its value verbatim. A text field can emit '', '3.5', 'abc'
+  // and out-of-range values mid-typing, so the field keeps its own string
+  // state and only writes a VALID integer through to the draft — otherwise
+  // typing '12' would momentarily commit '1', below N_SPLITS_MIN, and the
+  // clamp effect below would fight the user's own keystrokes.
+  // Hoisted out of the Slider's old inline `max` — the Input needs the same
+  // ceiling for its `max` attribute, its blur clamp, and its hint text.
+  const effectiveMax = Math.max(
+    N_SPLITS_MIN,
+    Math.min(N_SPLITS_MAX, maxAdmissibleK ?? N_SPLITS_MAX),
+  )
+  const [kText, setKText] = useState(String(nSplits ?? N_SPLITS_DEFAULT))
+
+  useEffect(() => {
+    if (nSplits !== undefined) setKText(String(nSplits))
+  }, [nSplits])
+
+  const commitK = (raw: string) => {
+    const n = Number(raw)
+    if (raw.trim() === '' || !Number.isInteger(n)) return
+    if (n < N_SPLITS_MIN || n > effectiveMax) return
+    if (n !== nSplits) onNSplitsChange(n)
+  }
+
+  // Blur resolves whatever was left incomplete or out of range, so the field
+  // can never sit showing a k that Start Training won't actually send. An
+  // empty or unparseable field reverts to the last committed value rather
+  // than silently becoming N_SPLITS_MIN.
+  const normalizeK = () => {
+    const n = Number(kText)
+    const fallback = nSplits ?? N_SPLITS_DEFAULT
+    const next =
+      kText.trim() === '' || !Number.isInteger(n)
+        ? fallback
+        : Math.min(effectiveMax, Math.max(N_SPLITS_MIN, n))
+    setKText(String(next))
+    if (next !== nSplits) onNSplitsChange(next)
+  }
   const hasHoldout = holdout !== null || holdoutMissing
 
   const checked = nSplits !== undefined
@@ -445,26 +484,34 @@ function CvControl({
 
       {checked && (
         <div className="space-y-1.5">
-          <div className="flex items-center justify-between">
-            <Label className="text-xs font-medium">Folds (k)</Label>
-            <span className="font-mono text-xs tabular-nums text-muted-foreground">
-              {nSplits}
-              {maxAdmissibleK !== null && ` (max ${maxAdmissibleK})`}
-            </span>
+          <div className="flex items-center justify-between gap-3">
+            <Label htmlFor="cv-folds" className="text-xs font-medium">
+              Folds (k)
+            </Label>
+            <Input
+              id="cv-folds"
+              type="number"
+              inputMode="numeric"
+              min={N_SPLITS_MIN}
+              max={effectiveMax}
+              step={1}
+              value={kText}
+              onChange={e => {
+                setKText(e.target.value)
+                commitK(e.target.value)
+              }}
+              onBlur={normalizeK}
+              className="h-7 w-20 text-right font-mono text-xs tabular-nums"
+            />
           </div>
-          <Slider
-            min={N_SPLITS_MIN}
-            max={Math.max(
-              N_SPLITS_MIN,
-              Math.min(N_SPLITS_MAX, maxAdmissibleK ?? N_SPLITS_MAX),
-            )}
-            step={1}
-            value={[nSplits ?? N_SPLITS_DEFAULT]}
-            onValueChange={vals => {
-              const next = vals[0]
-              if (next !== undefined) onNSplitsChange(next)
-            }}
-          />
+          <p className="text-[11px] text-muted-foreground">
+            {N_SPLITS_MIN}–{effectiveMax} folds
+            {maxAdmissibleK !== null &&
+              maxAdmissibleK < N_SPLITS_MAX &&
+              ` — capped at ${maxAdmissibleK} by the distinct labelled values in this dataset`}
+            . A k={kText || N_SPLITS_DEFAULT} run fits{' '}
+            {(Number(kText) || N_SPLITS_DEFAULT) + 1} models.
+          </p>
         </div>
       )}
     </div>

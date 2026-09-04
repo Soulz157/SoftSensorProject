@@ -318,6 +318,16 @@ describe('ModelDraftAuthorizedService — resolveActiveRunId (MODEL-FLOW-013-T08
   });
 
   it('ignores a non-terminal job and falls back to currentRunId — a mid-sweep job has no coherent answer yet', async () => {
+    // T01's fix: the status filter is now INSIDE the query's `where`, not
+    // checked after the fetch — this mock simulates that (a real Prisma
+    // call honors `where.status.in`; a mock that returns the job
+    // unconditionally could not tell the fixed resolver from the buggy
+    // one).
+    const runningJob = {
+      status: 'RUNNING',
+      selectedRunId: null,
+      bestRunId: 'run-partial-best',
+    };
     const prisma = buildPrisma({
       modelDraft: {
         findMany: jest.fn(),
@@ -328,11 +338,14 @@ describe('ModelDraftAuthorizedService — resolveActiveRunId (MODEL-FLOW-013-T08
         update: jest.fn(),
       },
       modelCandidateJob: {
-        findFirst: jest.fn().mockResolvedValue({
-          status: 'RUNNING',
-          selectedRunId: null,
-          bestRunId: 'run-partial-best',
-        }),
+        findFirst: jest
+          .fn()
+          .mockImplementation(
+            ({ where }: { where: { status: { in: string[] } } }) =>
+              Promise.resolve(
+                where.status.in.includes(runningJob.status) ? runningJob : null,
+              ),
+          ),
       },
     });
     const service = makeService(prisma);
@@ -356,6 +369,183 @@ describe('ModelDraftAuthorizedService — resolveActiveRunId (MODEL-FLOW-013-T08
 
     await service.getDraftService(USER, 'draft-1');
 
+    expect(prisma.modelDraft.update).not.toHaveBeenCalled();
+  });
+
+  // MODEL-FLOW-018-T02. Source 1 — a standalone `draft.selectedRunId` — is
+  // checked FIRST and short-circuits sources 2 and 3, exactly what makes a
+  // CV run (which can never belong to a job) selectable at all.
+  it('a standalone selectedRunId outranks a terminal job’s own selection', async () => {
+    const prisma = buildPrisma({
+      modelDraft: {
+        findMany: jest.fn(),
+        findFirst: jest.fn().mockResolvedValue({
+          ...DRAFT_ROW,
+          selectedRunId: 'run-standalone-pick',
+        }),
+        create: jest.fn(),
+        update: jest.fn(),
+      },
+      modelCandidateJob: {
+        findFirst: jest.fn().mockResolvedValue({
+          status: 'SUCCEEDED',
+          selectedRunId: 'run-user-picked',
+          bestRunId: 'run-metric-winner',
+        }),
+      },
+    });
+    const service = makeService(prisma);
+
+    const res = await service.getDraftService(USER, 'draft-1');
+
+    expect(res.data).toMatchObject({ resolvedRunId: 'run-standalone-pick' });
+  });
+
+  it('a standalone selectedRunId outranks currentRunId when no job exists', async () => {
+    const prisma = buildPrisma({
+      modelDraft: {
+        findMany: jest.fn(),
+        findFirst: jest.fn().mockResolvedValue({
+          ...DRAFT_ROW,
+          currentRunId: 'run-legacy',
+          selectedRunId: 'run-standalone-pick',
+        }),
+        create: jest.fn(),
+        update: jest.fn(),
+      },
+    });
+    const service = makeService(prisma);
+
+    const res = await service.getDraftService(USER, 'draft-1');
+
+    expect(res.data).toMatchObject({ resolvedRunId: 'run-standalone-pick' });
+  });
+});
+
+describe('ModelDraftAuthorizedService — selectDraftRunService (MODEL-FLOW-018-T02)', () => {
+  it('refuses a runId that is not a run of this draft', async () => {
+    const prisma = buildPrisma({
+      modelTrainingRun: {
+        findUnique: jest.fn().mockResolvedValue(RUN_ROW),
+        update: jest.fn(),
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+    });
+    const service = makeService(prisma);
+
+    await expect(
+      service.selectDraftRunService(USER, 'draft-1', {
+        runId: 'run-from-elsewhere',
+      }),
+    ).rejects.toBeInstanceOf(AppException);
+    expect(prisma.modelDraft.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses a run that is still QUEUED or RUNNING', async () => {
+    const prisma = buildPrisma({
+      modelTrainingRun: {
+        findUnique: jest.fn().mockResolvedValue(RUN_ROW),
+        update: jest.fn(),
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ status: 'RUNNING', candidateJobId: null }),
+      },
+    });
+    const service = makeService(prisma);
+
+    await expect(
+      service.selectDraftRunService(USER, 'draft-1', { runId: 'run-2' }),
+    ).rejects.toBeInstanceOf(AppException);
+    expect(prisma.modelDraft.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses a run that FAILED or was CANCELED — nothing to carry forward', async () => {
+    const prisma = buildPrisma({
+      modelTrainingRun: {
+        findUnique: jest.fn().mockResolvedValue(RUN_ROW),
+        update: jest.fn(),
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ status: 'FAILED', candidateJobId: null }),
+      },
+    });
+    const service = makeService(prisma);
+
+    await expect(
+      service.selectDraftRunService(USER, 'draft-1', { runId: 'run-2' }),
+    ).rejects.toBeInstanceOf(AppException);
+    expect(prisma.modelDraft.update).not.toHaveBeenCalled();
+  });
+
+  // MODEL-FLOW-012-T11's deferred job-level rule, discharged here: a
+  // SUCCEEDED intermediate run of a still-sweeping job is not selectable.
+  it('refuses a SUCCEEDED run whose candidate job is still QUEUED/RUNNING', async () => {
+    const prisma = buildPrisma({
+      modelTrainingRun: {
+        findUnique: jest.fn().mockResolvedValue(RUN_ROW),
+        update: jest.fn(),
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ status: 'SUCCEEDED', candidateJobId: 'job-1' }),
+      },
+      modelCandidateJob: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        findUnique: jest.fn().mockResolvedValue({ status: 'RUNNING' }),
+      },
+    });
+    const service = makeService(prisma);
+
+    await expect(
+      service.selectDraftRunService(USER, 'draft-1', { runId: 'run-2' }),
+    ).rejects.toBeInstanceOf(AppException);
+    expect(prisma.modelDraft.update).not.toHaveBeenCalled();
+  });
+
+  it('writes ModelDraft.selectedRunId for a SUCCEEDED standalone run', async () => {
+    const prisma = buildPrisma({
+      modelDraft: {
+        findMany: jest.fn(),
+        findFirst: jest.fn().mockResolvedValue(DRAFT_ROW),
+        create: jest.fn(),
+        update: jest.fn().mockResolvedValue({
+          ...DRAFT_ROW,
+          selectedRunId: 'run-2',
+        }),
+      },
+      modelTrainingRun: {
+        findUnique: jest.fn().mockResolvedValue(RUN_ROW),
+        update: jest.fn(),
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ status: 'SUCCEEDED', candidateJobId: null }),
+      },
+    });
+    const service = makeService(prisma);
+
+    await service.selectDraftRunService(USER, 'draft-1', { runId: 'run-2' });
+
+    expect(prisma.modelDraft.update).toHaveBeenCalledWith({
+      where: { id: 'draft-1' },
+      data: { selectedRunId: 'run-2' },
+    });
+  });
+
+  it('refuses once the draft is SAVED', async () => {
+    const prisma = buildPrisma({
+      modelDraft: {
+        findMany: jest.fn(),
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ ...DRAFT_ROW, status: 'SAVED' }),
+        create: jest.fn(),
+        update: jest.fn(),
+      },
+    });
+    const service = makeService(prisma);
+
+    await expect(
+      service.selectDraftRunService(USER, 'draft-1', { runId: 'run-2' }),
+    ).rejects.toBeInstanceOf(AppException);
     expect(prisma.modelDraft.update).not.toHaveBeenCalled();
   });
 });
@@ -607,6 +797,50 @@ describe('ModelDraftAuthorizedService — saveDraftService (MODEL-FLOW-007)', ()
 
     expect(res.statusCode).toBe(201);
     expect(res.data.id).toBe('model-1');
+  });
+
+  // MODEL-FLOW-018-T02/V01. The persistence-boundary half: Save Model must
+  // adopt a STANDALONE selection over a terminal job's own winner, not just
+  // report it back from getDraftService.
+  it('adopts the draft-level selectedRunId over a terminal job’s own selection', async () => {
+    const prisma = draftPrisma({
+      modelDraft: {
+        findMany: jest.fn(),
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ ...SAVEABLE_DRAFT, selectedRunId: 'run-2' }),
+        create: jest.fn(),
+        update: jest.fn(),
+      },
+      modelCandidateJob: {
+        findFirst: jest.fn().mockResolvedValue({
+          status: 'SUCCEEDED',
+          selectedRunId: null,
+          bestRunId: 'run-job-winner',
+        }),
+      },
+      modelTrainingRun: {
+        findUnique: jest
+          .fn()
+          .mockImplementation(({ where }: { where: { id: string } }) =>
+            Promise.resolve(
+              where.id === 'run-2' ? { ...RUN_ROW, id: 'run-2' } : null,
+            ),
+          ),
+        update: jest.fn(),
+      },
+    });
+    const service = makeService(prisma);
+
+    const res = await service.saveDraftService(USER, 'draft-1', {
+      name: 'My Model',
+    });
+
+    expect(prisma.tx.modelTrainingRun.update).toHaveBeenCalledWith({
+      where: { id: 'run-2' },
+      data: { modelId: 'model-1' },
+    });
+    expect(res.statusCode).toBe(201);
   });
 
   it('saves successfully with framework_versions null when the manifest read fails — a legacy/missing manifest must not block Save', async () => {

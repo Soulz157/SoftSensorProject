@@ -45,6 +45,30 @@ MAX_DOWNSAMPLE_POINTS = 10_000
 # Comfortably under MAX_SAMPLE_ROWS; a run this large is refused by name
 # rather than silently decimated, so the refusal is legible when it happens.
 MAX_PREDICTION_POINTS = 20_000
+
+# MODEL-FLOW-017-T02. Step 4 Model Selection renders every terminal
+# candidate's actual-vs-predicted series at once — the caller MAX_PREDICTION_
+# POINTS' own comment named as the day decimation could no longer be
+# deferred. Two independent ceilings, because the worst case is bounded on
+# BOTH axes, not one:
+#
+# MAX_PREDICTION_BATCH_RUNS caps how many runs one call may decimate.
+# CreateCandidateJobSchema caps a submitted set at 20
+# (dto/model-candidate-job.authorized.dto.ts), but SWEEP_THEN_TUNE appends a
+# phase-2 group to the SAME candidates array once phase 1 exhausts, bounded
+# by TUNE_VARIANTS_PER_JOB=4 (lib/tuning-grid.ts) — so 24, not 20, is the
+# real ceiling a caller can present. Refused by name rather than truncated,
+# same discipline as MAX_PREDICTION_POINTS above: whoever raises either cap
+# must re-derive it from source, not from this comment.
+#
+# MAX_PREDICTION_BATCH_POINTS caps points PER RUN. The client asks for 1,000
+# (chosen so 24 runs decimated at once stays under ~1.6 MB of JSON, measured
+# against the largest real predictions.parquet observed: 4,633 rows / 68.7
+# bytes per point as JSON) — this ceiling is deliberately looser (2,000) so
+# a caller with a smaller candidate set can ask for more detail per chart
+# without a schema change.
+MAX_PREDICTION_BATCH_RUNS = 24
+MAX_PREDICTION_BATCH_POINTS = 2_000
 # When max_points is set, build_preview runs operations over the FULL
 # tag/time-filtered window instead of sample_rows' head cut (V05's "local
 # extrema of the source series" cannot be reachable if the series was
@@ -319,6 +343,63 @@ class ModelRunPredictionsResponse(BaseModel):
     #: but must not misrepresent by omitting. Both null if no manifest.
     derived_from_target: list[str] | None = None
     target_scaled: bool | None = None
+
+
+class RunPredictionsBatchRequest(BaseModel):
+    """MODEL-FLOW-017-T02/T03. Decimated actual/predicted series for N runs
+    in one call — Step 4 Model Selection's overlay + small-multiple charts,
+    never Step 5's single full-width chart (that stays on
+    `ModelRunPredictionsRequest`, undecimated).
+
+    `keys` are `predictions.parquet` object keys, already resolved by
+    NestJS off the `ModelTrainingRun` rows it looked up — same division of
+    labour `ModelRunPredictionsRequest.source_key` uses, just N of them.
+    Each is guarded structurally on read, not accepted on trust.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    keys: list[str] = Field(..., min_length=1, max_length=MAX_PREDICTION_BATCH_RUNS)
+    #: Per-run point budget. Bounded by MAX_PREDICTION_BATCH_POINTS, not
+    #: MAX_PREDICTION_POINTS — that ceiling governs the undecimated
+    #: single-run endpoint and has no bearing on a decimated series' size.
+    max_points: int = Field(default=1_000, ge=3, le=MAX_PREDICTION_BATCH_POINTS)
+
+
+class RunPredictionsBatchItem(BaseModel):
+    """One run's decimated series, or its failure — MODEL-FLOW-017-T02.
+
+    Soft-fail per run, mirroring the per-candidate loss-history hydration
+    precedent (`model-candidate-job.authorized.service.ts`'s
+    `reconcileAndShape`): a candidate list is data the whole screen depends
+    on, so one run's unreadable artifact must not blank every other
+    candidate's chart. `error` non-null means every other field but
+    `source_key` is a placeholder (`None`/`0`/`[]`/`False`), never a
+    best-effort partial result a caller could mistake for real data.
+    """
+
+    source_key: str
+    row_count: int | None = None
+    residual_sd: float | None = None
+    residual_rmse_check: float | None = None
+    y_true_min: float | None = None
+    y_true_max: float | None = None
+    y_pred_min: float | None = None
+    y_pred_max: float | None = None
+    #: DECIMATED. y_true and y_pred share every kept timestamp by
+    #: construction — see `run_predictions_batch`'s own docstring for why
+    #: bucketing is keyed on y_true and never derived independently per
+    #: column.
+    points: list[RunPredictionPoint] = Field(default_factory=list)
+    #: TRUE count this run's frame held before decimation — same
+    #: `points`/`row_count`/`downsampled` triple `DraftScatterResult`
+    #: already establishes, so a chart can state "N of M shown".
+    downsampled: bool = False
+    error: str | None = None
+
+
+class RunPredictionsBatchResponse(BaseModel):
+    results: list[RunPredictionsBatchItem]
 
 
 class ModelObjectVerifyRequest(BaseModel):
@@ -1050,6 +1131,19 @@ class TagColumnStats(BaseModel):
     min: Optional[float] = None
     max: Optional[float] = None
     mean: Optional[float] = None
+    #: MODEL-SERVE-005. Present in `column_stats.json` since this class was
+    #: first written, but never declared here — FastAPI's `response_model`
+    #: silently stripped both from every `/v1/preprocess/column-stats`
+    #: response, even though the backend zod schema (`TagColumnStatsSchema`,
+    #: dataset-version.authorized.dto.ts) and the client type
+    #: (`ArtifactTagColumnStats`, services/dataset-version.ts) both already
+    #: declare and render them (dataset-detail-sheet.tsx). Verified live
+    #: against a real sidecar: the object carried `std`/`median`, the
+    #: response did not. `std` is what MODEL-SERVE-005's drift z-score
+    #: divides by — an undeclared field here would have made every column
+    #: report UNKNOWN.
+    median: Optional[float] = None
+    std: Optional[float] = None
     #: `mean - parent_mean` for this tag on the immediate parent artifact.
     #: None for a lineage root (BRONZE has no parent — nothing to compare,
     #: not "zero drift") or when either side has no Good cells for the tag.
@@ -1078,6 +1172,76 @@ class ColumnStatsResponse(BaseModel):
     #: scanning a list, and this is a single-page response by design (see
     #: ColumnStatsRequest).
     stats: dict[str, TagColumnStats]
+
+
+class PredictionLogRow(BaseModel):
+    """One sampled request's ONE row, as apps/serving received it — RAW
+    (engineering-unit) values, never the scaled/model-ready ones. The
+    drift computation (apps/backend) never reads this object; it only
+    consumes the sufficient-statistics aggregates apps/serving computed
+    over the model-ready frame and sent straight to Postgres, bypassing
+    this service entirely. This row exists for the Monitoring page's
+    actual-vs-predict view, which needs values a domain user recognizes.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    features: dict[str, float]
+    prediction: float
+
+
+class PredictionLogAppendRequest(BaseModel):
+    """MODEL-SERVE-005-T01. Write ONE sampled request's capped row subset
+    as a single Parquet object. `rows` is already capped to
+    SERVING_LOG_MAX_ROWS by apps/serving before this call — this endpoint
+    trusts the caller's cap rather than re-enforcing one, the same
+    division of responsibility ColumnStatsRequest/split_stats_service
+    already draw between "backend decides policy" and "this service does
+    the I/O"."""
+
+    model_config = {"extra": "forbid"}
+
+    model_id: str
+    model_version_id: str
+    requested_at: datetime
+    #: At least one row — an empty append is the caller's bug (a
+    #: sampled-in request with zero logged rows should never call this at
+    #: all), not a 0-row object silently written.
+    rows: list[PredictionLogRow] = Field(..., min_length=1)
+
+
+class PredictionLogAppendResponse(BaseModel):
+    object_key: str
+    object_checksum: str
+    row_count: int
+
+
+class PredictionLogSeriesRequest(BaseModel):
+    """MODEL-SERVE-005. Read every row logged for one model version across
+    a time range, walking the dt=/hour= partitions the write side created —
+    no separate index of "which hours have objects" exists or is needed,
+    the same reasoning `delete_prefix`'s own listing loop uses."""
+
+    model_config = {"extra": "forbid", "populate_by_name": True}
+
+    model_id: str
+    model_version_id: str
+    range_from: datetime = Field(..., alias="from")
+    range_to: datetime = Field(..., alias="to")
+
+
+class PredictionLogPoint(BaseModel):
+    timestamp: datetime
+    prediction: float
+    features: dict[str, float]
+
+
+class PredictionLogSeriesResponse(BaseModel):
+    points: list[PredictionLogPoint]
+    #: True when more points existed in range than PREDICTION_LOG_SERIES_CAP
+    #: — the response is the OLDEST-first slice up to the cap, never a
+    #: silent partial series presented as complete.
+    truncated: bool
 
 
 class FeatureSpecRequest(BaseModel):
