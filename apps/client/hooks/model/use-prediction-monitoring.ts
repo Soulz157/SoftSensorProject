@@ -13,10 +13,16 @@ import { useDebouncedAbortableRequest } from '@/hooks/dataset/internal/use-debou
 /** One model prediction at a timestamp — no lab/actual counterpart, matching
  *  `lib/mock-lab-data.ts`'s own `PredPoint` shape for the equivalent mock
  *  path. Ground truth is not joined yet (MODEL-SERVE-005-T03, blocked — see
- *  the ledger for what blocks it); this hook never fabricates one. */
+ *  the ledger for what blocks it); this hook never fabricates one.
+ *
+ *  `features`/`modelVersionId` are carried straight through from
+ *  `PredictionSeriesPoint` (the raw logged row) for the Input Data tab,
+ *  which needs the real X tag names — `LivePredictionChart` ignores both. */
 export interface LivePredictionPoint {
   timestamp: string
   predicted: number
+  features: Record<string, number>
+  modelVersionId: string
 }
 
 const RANGE_MS: Record<TimeRange, number> = {
@@ -80,13 +86,25 @@ export function usePredictionMonitoring(
   >(null)
 
   const enabled = !!model
-  const cacheKey = enabled
-    ? `prediction-monitoring|${model!.id}|${range}`
+  // ONE KEY PER ENDPOINT. `lib/chart-request-cache.ts` is a single
+  // `Map<string, unknown>` keyed only by this string, and its `getCached<T>`
+  // is an unchecked `entry.data as T` cast — so the two requests below
+  // sharing one key meant last-writer-wins, and whichever landed second was
+  // then handed to BOTH consumers with no type error anywhere. That is how
+  // `DriftPanel` came to read `report.columns.length` off a
+  // `PredictionSeriesResult` ("Cannot read properties of undefined (reading
+  // 'length')"), and how this hook came to spread a `DriftReport`'s missing
+  // `.points`. Regression: use-prediction-monitoring.test.tsx.
+  const seriesCacheKey = enabled
+    ? `prediction-monitoring|predictions|${model!.id}|${range}`
+    : null
+  const driftCacheKey = enabled
+    ? `prediction-monitoring|drift|${model!.id}|${range}`
     : null
 
   useDebouncedAbortableRequest<PredictionSeriesResult>({
     enabled,
-    cacheKey,
+    cacheKey: seriesCacheKey,
     debounceMs: 0,
     fetcher: signal => {
       const to = new Date().toISOString()
@@ -105,6 +123,8 @@ export function usePredictionMonitoring(
           sorted.map(p => ({
             timestamp: p.timestamp,
             predicted: p.prediction,
+            features: p.features,
+            modelVersionId: p.modelVersionId,
           })),
         )
         setPointsTruncated(result.data.truncated)
@@ -123,7 +143,7 @@ export function usePredictionMonitoring(
 
   useDebouncedAbortableRequest<DriftReport>({
     enabled,
-    cacheKey,
+    cacheKey: driftCacheKey,
     debounceMs: 0,
     fetcher: signal => {
       const to = new Date().toISOString()

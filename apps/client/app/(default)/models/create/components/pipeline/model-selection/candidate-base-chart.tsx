@@ -25,9 +25,9 @@ interface Props {
  * MODEL-FLOW-017-T04. The unconditional base chart — every terminal
  * candidate gets one, regardless of algorithm (finding 1). Reuses
  * `ActualVsPredictedChart` rather than a second implementation of the same
- * view; NO branch on algorithm name anywhere in this component (finding 6)
- * — every state below is keyed on the run's own recorded fields, never on
- * `candidate.algorithm`.
+ * view; NO branch on the algorithm field anywhere in this component
+ * (finding 6) — every state below is keyed on the run's own recorded
+ * predictions fields, never on which estimator produced them.
  */
 export function CandidateBaseChart({
   runId,
@@ -79,7 +79,7 @@ export function CandidateBaseChart({
   return (
     <div className="space-y-1">
       <p className="text-[10px] font-medium text-muted-foreground">
-        Does it track reality?
+        Actual vs. Predicted values
       </p>
       <ActualVsPredictedChart
         rows={rows}

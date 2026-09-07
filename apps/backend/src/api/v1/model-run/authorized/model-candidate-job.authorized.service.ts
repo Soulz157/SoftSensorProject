@@ -16,6 +16,59 @@ import {
   buildModelVersionData,
   nextModelVersionNumber,
 } from '@/lib/model-version-from-run';
+import { findHoldoutArtifact } from '@/lib/holdout-artifact';
+
+/**
+ * MODEL-FLOW-019-T02. A metric's SOURCE travels with its value, on the wire
+ * — a tagged shape, never a second parallel `holdoutMetrics` field beside
+ * `metrics`/`trainMetrics` that a renderer could pick the wrong one of.
+ * Three sources, three different claims about a model: the run's own TEST
+ * SPLIT (same cleaned artifact it trained on), the dataset's raw validation
+ * HOLDOUT (rows no fit ever saw — carried with its own row/dropped counts,
+ * per DS-LAKE-018-T05, because under that feature's no-imputation decision a
+ * hole reaches predict() and depresses the score for reasons that are not
+ * the model's fault), and a CV FOLD ESTIMATE (a mean WITH its spread, an
+ * estimate of the configuration rather than a measurement of the shipped
+ * model — deliberately carrying no bare `rmse` field, since a real CV run's
+ * `metrics` has none either).
+ *
+ * `metrics`/`trainMetrics` below are UNCHANGED: MODEL-FLOW-013-T07's charts
+ * and MODEL-FLOW-017's shipped Step 4 read them, and this task adds a
+ * source-carrying view rather than reshaping what already works.
+ */
+type MetricTriple = {
+  r2: number | null;
+  rmse: number | null;
+  mae: number | null;
+};
+
+type SourcedMetrics =
+  | ({ source: 'test-split' } & MetricTriple)
+  | ({
+      source: 'holdout';
+      rowCount: number | null;
+      droppedUnlabelled: number | null;
+      droppedBadFeatures: number | null;
+    } & MetricTriple)
+  | {
+      source: 'cv-fold-estimate';
+      nSplits: number | null;
+      mean: MetricTriple;
+      std: MetricTriple;
+    };
+
+/**
+ * Why a SUCCEEDED run shows no holdout figure — three facts with three
+ * different next actions (MODEL-FLOW-019 AC11), never one blank cell:
+ * `no-dataset-holdout` (this dataset never had one — the common case, not
+ * an error), `not-scored-yet` (a CV run awaiting its own scoring phase —
+ * the next action is to trigger it), `not-recorded` (the dataset HAS a
+ * holdout and this run still carries no figure: trained before the replay
+ * fix landed 2026-09-01, or a replay that failed — this one hides a real
+ * defect if it renders as a blank). Null when a figure IS present, or when
+ * the run is not SUCCEEDED and has nothing of any kind to explain yet.
+ */
+type HoldoutAbsence = 'no-dataset-holdout' | 'not-scored-yet' | 'not-recorded';
 
 interface Candidate {
   algorithm: string;
@@ -87,6 +140,111 @@ export class ModelCandidateJobAuthorizedService {
     if (!metrics || typeof metrics !== 'object') return null;
     const rmse = (metrics as Record<string, unknown>).rmse;
     return typeof rmse === 'number' && Number.isFinite(rmse) ? rmse : null;
+  }
+
+  /** MODEL-FLOW-019-T02. `metrics`/`holdoutMetrics` are untyped Json columns,
+   *  so every read through them is a narrowing — never NaN, never a string
+   *  coerced into a number. */
+  private num(bag: Record<string, unknown> | null, key: string): number | null {
+    const v = bag?.[key];
+    return typeof v === 'number' && Number.isFinite(v) ? v : null;
+  }
+
+  /**
+   * MODEL-FLOW-019-T02. Every figure this run can honestly show, each
+   * carrying what it is a figure OF. Stable order — the run's own
+   * training-side source first (test split, or the fold estimate for a CV
+   * run), holdout second — so a table's columns cannot reorder between
+   * polls.
+   *
+   * A CV run contributes NO test-split entry: its `metrics` carry only
+   * `cv_*` aggregates and no bare `rmse` (measured against every real CV
+   * run in this system, MODEL-FLOW-019-T01 finding (g)), so a reader
+   * looking for `rmse` on that source finds nothing to misread rather than
+   * a fold mean wearing a measurement's name.
+   */
+  private sourcedMetricsFor(run: {
+    metrics: unknown;
+    holdoutMetrics: unknown;
+    cvFoldsKey: string | null;
+  }): SourcedMetrics[] {
+    const metrics = (run.metrics ?? null) as Record<string, unknown> | null;
+    const holdout = (run.holdoutMetrics ?? null) as Record<
+      string,
+      unknown
+    > | null;
+    const out: SourcedMetrics[] = [];
+
+    if (run.cvFoldsKey) {
+      const mean: MetricTriple = {
+        r2: this.num(metrics, 'cv_r2_mean'),
+        rmse: this.num(metrics, 'cv_rmse_mean'),
+        mae: this.num(metrics, 'cv_mae_mean'),
+      };
+      if (mean.r2 !== null || mean.rmse !== null || mean.mae !== null) {
+        out.push({
+          source: 'cv-fold-estimate',
+          nSplits: this.num(metrics, 'n_splits'),
+          mean,
+          std: {
+            r2: this.num(metrics, 'cv_r2_std'),
+            rmse: this.num(metrics, 'cv_rmse_std'),
+            mae: this.num(metrics, 'cv_mae_std'),
+          },
+        });
+      }
+    } else if (metrics) {
+      out.push({
+        source: 'test-split',
+        r2: this.num(metrics, 'r2'),
+        rmse: this.num(metrics, 'rmse'),
+        mae: this.num(metrics, 'mae'),
+      });
+    }
+
+    if (holdout) {
+      out.push({
+        source: 'holdout',
+        r2: this.num(holdout, 'r2'),
+        rmse: this.num(holdout, 'rmse'),
+        mae: this.num(holdout, 'mae'),
+        // DS-LAKE-018-T05's requirement, carried WITH the value rather than
+        // fetched beside it. Each independently nullable: a run scored
+        // before these keys existed records the figure and not the counts,
+        // which must read as "not recorded" rather than as zero dropped
+        // rows (MODEL-FLOW-010-T06's honest-legacy-null pattern). The RATE
+        // is deliberately not computed here — a rate needs a denominator
+        // this row may not have, and inventing 0% is the failure that
+        // pattern exists to prevent.
+        rowCount: this.num(holdout, 'row_count'),
+        droppedUnlabelled: this.num(holdout, 'dropped_unlabelled'),
+        droppedBadFeatures: this.num(holdout, 'dropped_bad_features'),
+      });
+    }
+
+    return out;
+  }
+
+  /**
+   * MODEL-FLOW-019-T02. Why a SUCCEEDED run shows no holdout figure.
+   * `datasetHasHoldout` is the dataset-level fact the run row cannot answer
+   * — null means the lookup was skipped or soft-failed, which reads as
+   * `not-recorded` rather than as a guess in either direction.
+   */
+  private holdoutAbsenceFor(
+    run: {
+      status: string;
+      holdoutMetrics: unknown;
+      cvFoldsKey: string | null;
+      predictionsKey: string | null;
+    } | null,
+    datasetHasHoldout: boolean | null,
+  ): HoldoutAbsence | null {
+    if (!run || run.status !== 'SUCCEEDED') return null;
+    if (run.holdoutMetrics) return null;
+    if (datasetHasHoldout === false) return 'no-dataset-holdout';
+    if (run.cvFoldsKey && !run.predictionsKey) return 'not-scored-yet';
+    return 'not-recorded';
   }
 
   /**
@@ -236,6 +394,14 @@ export class ModelCandidateJobAuthorizedService {
           targetY: dto.targetY,
           goldArtifactId: dto.goldArtifactId,
           trainTestSplit: dto.trainTestSplit ?? null,
+          // MODEL-FLOW-020-T04. Captured verbatim from what the client saw,
+          // never recomputed — see this pair's own note on
+          // CreateCandidateJobSchema for why the client is the one that has
+          // them. `?? null` for both, and the schema's own refine has
+          // already guaranteed they are both present or both absent, so
+          // these two lines cannot produce a half-captured row.
+          sizedRowCount: dto.sizedRowCount ?? null,
+          sizedDistinctLabelled: dto.sizedDistinctLabelled ?? null,
           kind: dto.kind,
           candidates: candidatesJson,
           totalRuns: phase1Candidates.length,
@@ -725,6 +891,31 @@ export class ModelCandidateJobAuthorizedService {
       orderBy: { createdAt: 'asc' },
     });
     const declared = job.candidates as unknown as Candidate[];
+
+    // MODEL-FLOW-019-T02. The dataset-level half of "why is there no holdout
+    // figure" — a run row cannot tell "this dataset never had a holdout"
+    // (the common case, not an error) from "it has one and this run still
+    // carries no number" (a run older than the 2026-09-01 replay fix, or a
+    // failed replay — a real defect that must not render as a blank).
+    //
+    // ONE lookup for the whole job, not one per candidate: every candidate
+    // of a job shares `goldArtifactId` by construction (MODEL-FLOW-013-T03
+    // put it on the job root), and it is skipped entirely unless some
+    // SUCCEEDED candidate actually lacks a figure to explain. Soft-fails to
+    // null — the same discipline as the loss-history read below, since this
+    // endpoint's job is the job's status and metrics first.
+    let datasetHasHoldout: boolean | null = null;
+    if (runs.some((r) => r.status === 'SUCCEEDED' && !r.holdoutMetrics)) {
+      try {
+        datasetHasHoldout =
+          (await findHoldoutArtifact(this.prisma, job.goldArtifactId)) !== null;
+      } catch (err) {
+        this.log.error(
+          `candidate job ${job.id}: could not resolve dataset holdout for ${job.goldArtifactId}`,
+          err,
+        );
+      }
+    }
     // Launch order is array order — one candidate in flight or launched at a
     // time — so index alignment holds; still matched by position rather
     // than assumed by count in case a candidate never got a run (a launch
@@ -808,6 +999,13 @@ export class ModelCandidateJobAuthorizedService {
           predictionsKey: run?.predictionsKey ?? null,
           cvFoldsKey: run?.cvFoldsKey ?? null,
           scoringContainerId: run?.scoringContainerId ?? null,
+          // MODEL-FLOW-019-T02. The same numbers as `metrics`/`trainMetrics`
+          // above can never be, because each entry here carries the SOURCE
+          // it is a figure of — and the holdout entry carries the counts
+          // its own missing rate is computed from. `metrics`/`trainMetrics`
+          // stay for MODEL-FLOW-013-T07's charts and -017's shipped cards.
+          sourcedMetrics: run ? this.sourcedMetricsFor(run) : [],
+          holdoutAbsence: this.holdoutAbsenceFor(run, datasetHasHoldout),
         };
       }),
     );

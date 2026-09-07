@@ -76,6 +76,14 @@ describe('ModelCandidateJobAuthorizedService', () => {
       run?: Record<string, unknown> | null;
       runs?: Record<string, unknown>[];
       updateManyCount?: number;
+      /**
+       * MODEL-FLOW-019-T02. What `findHoldoutArtifact` resolves for this
+       * job's `goldArtifactId` — the dataset-level fact a run row cannot
+       * answer ("this dataset never had a holdout" vs "it has one and this
+       * run still carries no figure"). Default null = no holdout, which is
+       * what every pre-existing fixture below implies about itself.
+       */
+      holdoutArtifact?: Record<string, unknown> | null;
     } = {},
   ) {
     const job =
@@ -111,6 +119,16 @@ describe('ModelCandidateJobAuthorizedService', () => {
       modelDraft: {
         update: jest.fn().mockResolvedValue({}),
       },
+      // MODEL-FLOW-019-T02. `findHoldoutArtifact`'s two reads: the GOLD row
+      // (for its `runId`) and the holdout-bearing artifact on that same
+      // pipeline run. Only reached when some SUCCEEDED candidate lacks a
+      // holdout figure to explain.
+      datasetArtifact: {
+        findUnique: jest.fn().mockResolvedValue({ runId: 'ds-run-1' }),
+        findFirst: jest
+          .fn()
+          .mockResolvedValue(overrides.holdoutArtifact ?? null),
+      },
       // MODEL-FLOW-018-T02. selectCandidateService now wraps its write in
       // $transaction (to also clear ModelDraft.selectedRunId) — `tx` is
       // this same object, so `prisma.modelCandidateJob.update`/
@@ -123,6 +141,20 @@ describe('ModelCandidateJobAuthorizedService', () => {
         ),
     };
     return prismaObj;
+  }
+
+  /**
+   * MODEL-FLOW-020-T04. `modelCandidateJob.create`'s recorded calls, typed.
+   * The mock's whole call LIST is `any`, so casting only the tuple element
+   * would leave the index itself unchecked and still trip
+   * `no-unsafe-member-access`. Used by this task's own assertions; the
+   * pre-existing ones nearby read the same mock untyped and are deliberately
+   * left alone (an unrelated refactor, CLAUDE.md section 3).
+   */
+  function createCalls(prisma: ReturnType<typeof makePrisma>) {
+    return prisma.modelCandidateJob.create.mock.calls as [
+      { data: Record<string, unknown> },
+    ][];
   }
 
   function makeRunLaunch(overrides: { launchDraftRun?: jest.Mock } = {}) {
@@ -168,6 +200,44 @@ describe('ModelCandidateJobAuthorizedService', () => {
       const result = CreateCandidateJobSchema.safeParse({
         ...BASE,
         kind: 'SWEEP_THEN_TUNE',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    /**
+     * MODEL-FLOW-020-T04. The size figures are optional, but never HALF
+     * supplied — the pair exists to show how far the two diverge (up to 260x
+     * on this system's own data), and one alone carries no such comparison.
+     */
+    it('accepts both size figures together', () => {
+      const result = CreateCandidateJobSchema.safeParse({
+        ...BASE,
+        kind: 'HYPERPARAMETER_SEARCH',
+        sizedRowCount: 8350,
+        sizedDistinctLabelled: 32,
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('accepts neither figure — the Apply-gated null path', () => {
+      const result = CreateCandidateJobSchema.safeParse({
+        ...BASE,
+        kind: 'HYPERPARAMETER_SEARCH',
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it.each([
+      ['sizedRowCount without sizedDistinctLabelled', { sizedRowCount: 8350 }],
+      [
+        'sizedDistinctLabelled without sizedRowCount',
+        { sizedDistinctLabelled: 32 },
+      ],
+    ])('refuses %s', (_label, half) => {
+      const result = CreateCandidateJobSchema.safeParse({
+        ...BASE,
+        kind: 'HYPERPARAMETER_SEARCH',
+        ...half,
       });
       expect(result.success).toBe(false);
     });
@@ -225,6 +295,82 @@ describe('ModelCandidateJobAuthorizedService', () => {
         { algorithm: 'ridge', hyperparameters: { alpha: 0.01 }, phase: 1 },
         { algorithm: 'ridge', hyperparameters: { alpha: 10 }, phase: 1 },
       ]);
+    });
+
+    /**
+     * MODEL-FLOW-020-T04. What the client sent reaches the ROW — the schema
+     * tests above only prove the request parses.
+     *
+     * The fixture is the real measured pair from this system's own data
+     * (8,350 rows holding 32 distinct labelled values) rather than two
+     * similar numbers, so a service that wrote one figure into the other's
+     * column would fail here instead of passing unnoticed.
+     */
+    it('persists both size figures onto the job row (MODEL-FLOW-020-T04)', async () => {
+      mockedTuningCandidatesFor.mockReturnValue([{ alpha: 0.01 }]);
+      const prisma = makePrisma();
+      const runLaunch = makeRunLaunch();
+      const service = new ModelCandidateJobAuthorizedService(
+        prisma as never,
+        runLaunch as never,
+      );
+
+      await service.createJob(
+        'draft-1',
+        {
+          goldArtifactId: 'gold-1',
+          targetY: 'TI-101',
+          kind: 'HYPERPARAMETER_SEARCH',
+          candidates: [{ algorithm: 'ridge', hyperparameters: { alpha: 1 } }],
+          sizedRowCount: 8350,
+          sizedDistinctLabelled: 32,
+        } as never,
+        'user-1',
+        'ADMIN',
+      );
+
+      // Typed at the `.calls` level, not just the element: the mock's whole
+      // call list is `any`, so casting only the tuple still leaves the index
+      // itself unchecked. The surrounding tests predate the repo's
+      // no-unsafe-* rules and are left as they are (an unrelated refactor),
+      // but new assertions need not inherit that.
+      const { data } = createCalls(prisma)[0][0];
+      expect(data.sizedRowCount).toBe(8350);
+      expect(data.sizedDistinctLabelled).toBe(32);
+    });
+
+    /**
+     * MODEL-FLOW-020-T04. A job created without the figures records NULL in
+     * BOTH — never a reconstruction from the artifact, and never one column
+     * populated while the other is null. `null`, not `undefined`: Prisma
+     * treats an undefined field as "leave unset", which happens to reach the
+     * same column default today but stops being equivalent the moment this
+     * write is ever reused in an update.
+     */
+    it('records null in BOTH figures when the client sent neither', async () => {
+      mockedTuningCandidatesFor.mockReturnValue([{ alpha: 0.01 }]);
+      const prisma = makePrisma();
+      const runLaunch = makeRunLaunch();
+      const service = new ModelCandidateJobAuthorizedService(
+        prisma as never,
+        runLaunch as never,
+      );
+
+      await service.createJob(
+        'draft-1',
+        {
+          goldArtifactId: 'gold-1',
+          targetY: 'TI-101',
+          kind: 'HYPERPARAMETER_SEARCH',
+          candidates: [{ algorithm: 'ridge', hyperparameters: { alpha: 1 } }],
+        } as never,
+        'user-1',
+        'ADMIN',
+      );
+
+      const { data } = createCalls(prisma)[0][0];
+      expect(data.sizedRowCount).toBeNull();
+      expect(data.sizedDistinctLabelled).toBeNull();
     });
 
     it('refuses (400), naming the algorithm, when the grid has no distinct variants', async () => {
@@ -836,6 +982,215 @@ describe('ModelCandidateJobAuthorizedService', () => {
 
       expect(result.data.candidates[0]?.lossHistory).toBeNull();
       expect(result.data.candidates[0]?.status).toBe('SUCCEEDED');
+    });
+  });
+
+  /**
+   * MODEL-FLOW-019-T02. `metrics`/`trainMetrics` above are the same numbers
+   * WITHOUT their source — these assert the source-carrying view that a
+   * renderer cannot drop the tag from, and the three-fact absence reason a
+   * blank cell would hide.
+   */
+  describe('reconcileAndShape — sourced metrics (MODEL-FLOW-019-T02)', () => {
+    const CV_METRICS = {
+      cv_r2_mean: 0.42,
+      cv_r2_std: 0.05,
+      cv_rmse_mean: 0.21203298,
+      cv_rmse_std: 0.01706996,
+      cv_mae_mean: 0.17,
+      cv_mae_std: 0.01,
+      n_splits: 3,
+      refit_rows: 8512,
+    };
+    const HOLDOUT = {
+      r2: -2.5595085122232173,
+      mae: 0.1431604564833554,
+      rmse: 0.16871918983885217,
+      row_count: 1153,
+      dropped_unlabelled: 0,
+      dropped_bad_features: 0,
+    };
+    const HOLDOUT_ARTIFACT = {
+      type: 'BRONZE',
+      objectKey: 'datasets/ds-1/runs/ds-run-1/validate_data.parquet',
+      validationRowCount: 1153,
+      validationHoldoutFrom: '2026-01-01T00:00:00.000Z',
+    };
+
+    function shape(
+      runs: Record<string, unknown>[],
+      holdoutArtifact: Record<string, unknown> | null = null,
+    ) {
+      const prisma = makePrisma({
+        job: { status: 'SUCCEEDED', completedRuns: runs.length },
+        runs,
+        holdoutArtifact,
+      });
+      const service = new ModelCandidateJobAuthorizedService(
+        prisma as never,
+        makeRunLaunch() as never,
+      );
+      return { prisma, service };
+    }
+
+    it('tags a plain candidate test-split and a scored CV candidate with BOTH of its sources', async () => {
+      const { service } = shape(
+        [
+          {
+            id: 'run-1',
+            status: 'SUCCEEDED',
+            failureReason: null,
+            metrics: { r2: 0.9, rmse: 0.5, mae: 0.4 },
+            holdoutMetrics: null,
+            lossHistoryKey: null,
+            cvFoldsKey: null,
+            predictionsKey: 'drafts/d/runs/run-1/predictions.parquet',
+          },
+          {
+            id: 'run-2',
+            status: 'SUCCEEDED',
+            failureReason: null,
+            metrics: CV_METRICS,
+            holdoutMetrics: HOLDOUT,
+            lossHistoryKey: null,
+            cvFoldsKey: 'drafts/d/runs/run-2/cv_folds.json',
+            predictionsKey: 'drafts/d/runs/run-2/predictions.parquet',
+          },
+        ],
+        HOLDOUT_ARTIFACT,
+      );
+
+      const { candidates } = await service
+        .getJobService('draft-1', 'job-1', 'user-1', 'ADMIN')
+        .then((r) => r.data);
+
+      // Two candidates in one set, carrying DIFFERENT sources — the case a
+      // uniformly-sourced set could never distinguish from a table that
+      // tags nothing.
+      expect(candidates[0]?.sourcedMetrics).toEqual([
+        { source: 'test-split', r2: 0.9, rmse: 0.5, mae: 0.4 },
+      ]);
+      expect(candidates[1]?.sourcedMetrics.map((m) => m.source)).toEqual([
+        'cv-fold-estimate',
+        'holdout',
+      ]);
+
+      // A holdout figure never travels without the counts its own missing
+      // rate is computed from (DS-LAKE-018-T05).
+      expect(candidates[1]?.sourcedMetrics[1]).toEqual({
+        source: 'holdout',
+        r2: HOLDOUT.r2,
+        rmse: HOLDOUT.rmse,
+        mae: HOLDOUT.mae,
+        rowCount: 1153,
+        droppedUnlabelled: 0,
+        droppedBadFeatures: 0,
+      });
+
+      // The fold estimate carries a mean WITH its spread and NO bare
+      // `rmse` — a reader cannot pick the fold mean up as a measurement.
+      expect(candidates[1]?.sourcedMetrics[0]).toEqual({
+        source: 'cv-fold-estimate',
+        nSplits: 3,
+        mean: { r2: 0.42, rmse: 0.21203298, mae: 0.17 },
+        std: { r2: 0.05, rmse: 0.01706996, mae: 0.01 },
+      });
+      expect(candidates[1]?.sourcedMetrics[0]).not.toHaveProperty('rmse');
+    });
+
+    it('distinguishes all three reasons a holdout figure is absent', async () => {
+      // (1) The dataset never had a holdout — no artifact resolves.
+      const noHoldout = shape([
+        {
+          id: 'run-1',
+          status: 'SUCCEEDED',
+          failureReason: null,
+          metrics: { rmse: 0.5 },
+          holdoutMetrics: null,
+          lossHistoryKey: null,
+          cvFoldsKey: null,
+          predictionsKey: 'k',
+        },
+      ]);
+      const a = await noHoldout.service
+        .getJobService('draft-1', 'job-1', 'user-1', 'ADMIN')
+        .then((r) => r.data);
+      expect(a.candidates[0]?.holdoutAbsence).toBe('no-dataset-holdout');
+
+      // (2) a CV run awaiting its own scoring phase, and (3) a run on the
+      // SAME holdout-bearing dataset that still carries no figure — a
+      // pre-2026-09-01 run or a failed replay, which is a real defect and
+      // must not read the same as (1).
+      const hasHoldout = shape(
+        [
+          {
+            id: 'run-1',
+            status: 'SUCCEEDED',
+            failureReason: null,
+            metrics: CV_METRICS,
+            holdoutMetrics: null,
+            lossHistoryKey: null,
+            cvFoldsKey: 'drafts/d/runs/run-1/cv_folds.json',
+            predictionsKey: null,
+          },
+          {
+            id: 'run-2',
+            status: 'SUCCEEDED',
+            failureReason: null,
+            metrics: { rmse: 0.5 },
+            holdoutMetrics: null,
+            lossHistoryKey: null,
+            cvFoldsKey: null,
+            predictionsKey: 'k',
+          },
+        ],
+        HOLDOUT_ARTIFACT,
+      );
+      const b = await hasHoldout.service
+        .getJobService('draft-1', 'job-1', 'user-1', 'ADMIN')
+        .then((r) => r.data);
+      expect(b.candidates[0]?.holdoutAbsence).toBe('not-scored-yet');
+      expect(b.candidates[1]?.holdoutAbsence).toBe('not-recorded');
+    });
+
+    it('claims nothing about a FAILED candidate, which has no figure of any kind yet', async () => {
+      const { service } = shape([
+        {
+          id: 'run-1',
+          status: 'FAILED',
+          failureReason: 'bad fit',
+          metrics: null,
+          holdoutMetrics: null,
+          lossHistoryKey: null,
+          cvFoldsKey: null,
+          predictionsKey: null,
+        },
+      ]);
+      const { candidates } = await service
+        .getJobService('draft-1', 'job-1', 'user-1', 'ADMIN')
+        .then((r) => r.data);
+      expect(candidates[0]?.sourcedMetrics).toEqual([]);
+      expect(candidates[0]?.holdoutAbsence).toBeNull();
+    });
+
+    it('does not pay for the dataset lookup when every candidate already has its holdout figure', async () => {
+      const { prisma, service } = shape(
+        [
+          {
+            id: 'run-1',
+            status: 'SUCCEEDED',
+            failureReason: null,
+            metrics: { rmse: 0.5 },
+            holdoutMetrics: HOLDOUT,
+            lossHistoryKey: null,
+            cvFoldsKey: null,
+            predictionsKey: 'k',
+          },
+        ],
+        HOLDOUT_ARTIFACT,
+      );
+      await service.getJobService('draft-1', 'job-1', 'user-1', 'ADMIN');
+      expect(prisma.datasetArtifact.findFirst).not.toHaveBeenCalled();
     });
   });
 

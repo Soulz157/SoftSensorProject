@@ -77,7 +77,7 @@ export function DatasetCard({
           <button
             type="button"
             onClick={onViewDetails}
-            className="truncate text-left text-[15px] font-semibold text-foreground transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="cursor-pointer truncate text-left text-[15px] font-semibold text-foreground transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             {d.name}
           </button>
@@ -154,13 +154,17 @@ export function DatasetCard({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-full">
-          <DropdownMenuItem onClick={onEditPipeline} className="cursor-pointer">
-            <Wand2 className="mr-2 h-3.5 w-3.5" />
-            Edit
+          <DropdownMenuItem onClick={onViewDetails} className="cursor-pointer">
+            <FolderGit2 className="mr-2 h-3.5 w-3.5" />
+            View Details
           </DropdownMenuItem>
           <DropdownMenuItem onClick={onViewConfig} className="cursor-pointer">
             <Braces className="mr-2 h-3.5 w-3.5" />
             View Config
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={onEditPipeline} className="cursor-pointer">
+            <Wand2 className="mr-2 h-3.5 w-3.5" />
+            Edit
           </DropdownMenuItem>
 
           <DropdownMenuSeparator />

@@ -52,6 +52,12 @@ LogFn = Callable[..., None]
 # further into the reserve and inflates wall time beyond this table — the
 # margin below (10,000 vs the ~15,700 the memory model alone would allow)
 # is there to absorb that, not measured at d >> 10 directly.
+# MIRRORED CLIENT-SIDE — see MIRRORS.md entry 5 before changing this number.
+# MODEL-FLOW-020-T06 echoes it in the wizard's algorithm-selector.tsx to
+# disable Gaussian Process at selection time, rather than paying for a
+# container that can only reach the refusal below. LOWERING this value without
+# updating that copy leaves the wizard offering a choice every run then dies
+# on; raising it only makes the wizard over-cautious.
 GPR_MAX_TRAIN_ROWS = 10_000
 
 # Measured against this image (1.0.4, torch 2.5.1) under the production

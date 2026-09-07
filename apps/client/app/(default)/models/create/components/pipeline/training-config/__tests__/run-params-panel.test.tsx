@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest'
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { createStore, Provider } from 'jotai'
 import {
   mpAlgorithmAtom,
@@ -57,6 +58,20 @@ vi.mock('@/hooks/model/use-candidate-job', () => ({
   useCandidateJob: () => h.jobResult,
 }))
 
+// MODEL-FLOW-021. `RunComparisonPanel` mounts once the draft has two
+// SUCCEEDED runs and fetches every chartable run's decimated series. Stubbed
+// to an empty map so the overlay renders its own honest nothing (its
+// `entries.length === 0` early return) and no request is attempted — the
+// comparison's DATA is `run-comparison-panel.test.tsx`'s subject, not this
+// file's; what this file owns is which runs reach it.
+vi.mock('@/hooks/model/use-candidate-predictions', () => ({
+  useCandidatePredictions: () => ({
+    byRunId: new Map(),
+    loading: false,
+    error: null,
+  }),
+}))
+
 vi.mock('@/services/model-draft', async importOriginal => {
   const actual = await importOriginal<typeof import('@/services/model-draft')>()
   return {
@@ -94,6 +109,10 @@ function run(
     predictionsKey: null,
     scoringContainerId: null,
     lossHistoryKey: null,
+    // MODEL-FLOW-020-T04. Null by default, so every pre-existing case here
+    // exercises the panel's absent-sidecar branch; the dedicated block below
+    // overrides it to assert the rendered figures.
+    splitStats: null,
     candidateJobId: null,
     createdAt: '2026-08-27T00:00:00.000Z',
     startedAt: '2026-08-27T00:00:01.000Z',
@@ -176,15 +195,18 @@ describe('RunParamsPanel (MODEL-FLOW-012)', () => {
     ).not.toBeDisabled()
   })
 
-  // MODEL-FLOW-018-T03. A FAILED run enables Apply (retry with its params)
-  // but must refuse Select — nothing succeeded, nothing to carry forward.
-  it('renders a FAILED run with Select disabled and its own stated reason, while Apply stays enabled', () => {
+  // MODEL-FLOW-021. A FAILED run enables Apply (retry with its params) but
+  // must refuse Compare — it produced no metrics, so it has nothing to put in
+  // either the table or the overlay.
+  it('renders a FAILED run with Compare disabled and its own stated reason, while Apply stays enabled', () => {
     renderPanel([
       run({ status: 'FAILED', failureReason: 'container OOM', metrics: null }),
     ])
-    expect(screen.getByText('Select').closest('button')).toBeDisabled()
     expect(
-      screen.getByText(/didn't succeed.*nothing to carry forward/i),
+      screen.getByRole('checkbox', { name: /Compare Ridge Regression/i }),
+    ).toBeDisabled()
+    expect(
+      screen.getByText(/didn't succeed.*no metrics to compare/i),
     ).toBeInTheDocument()
   })
 
@@ -200,14 +222,16 @@ describe('RunParamsPanel (MODEL-FLOW-012)', () => {
     expect(container.querySelector('.text-destructive')).toBeNull()
   })
 
-  it('disables Apply and Select while the run is non-terminal (QUEUED/RUNNING) but still shows its parameters', () => {
+  it('disables Apply and Compare while the run is non-terminal (QUEUED/RUNNING) but still shows its parameters', () => {
     renderPanel([run({ status: 'RUNNING', metrics: null })])
     expect(screen.getByText('Running')).toBeInTheDocument()
     expect(screen.getByText('Ridge Regression')).toBeInTheDocument()
     expect(
       screen.getByText('Apply to Training Config').closest('button'),
     ).toBeDisabled()
-    expect(screen.getByText('Select').closest('button')).toBeDisabled()
+    expect(
+      screen.getByRole('checkbox', { name: /Compare Ridge Regression/i }),
+    ).toBeDisabled()
     expect(
       screen.getByText(/Available once this run finishes/i),
     ).toBeInTheDocument()
@@ -267,9 +291,42 @@ describe('RunParamsPanel (MODEL-FLOW-012)', () => {
     ).toBeInTheDocument()
   })
 
-  // MODEL-FLOW-018-T02's finding: target mismatch is a WARNING for Select,
-  // never a refusal — Select must still be enabled here.
-  it('warns but does NOT refuse Select on a target/dataset mismatch', () => {
+  /**
+   * MODEL-FLOW-020-T04. The two dataset size figures a past run was sized
+   * against, shown beside the hyperparameters a user can Apply.
+   *
+   * The fixture is the real measured pair from this system (8,350 rows
+   * holding 32 distinct labelled values) rather than two similar numbers:
+   * asserting both means a panel that rendered the row count twice, or
+   * swapped the two, fails here instead of looking plausible.
+   */
+  describe('MODEL-FLOW-020-T04: what a run was sized against', () => {
+    it('shows BOTH the row count and the distinct labelled count', () => {
+      renderPanel([
+        run({
+          splitStats: { source_rows: 8350, distinct_labelled_values: 32 },
+        }),
+      ])
+
+      expect(screen.getByText(/8,350 rows/)).toBeInTheDocument()
+      expect(screen.getByText(/32 distinct/)).toBeInTheDocument()
+    })
+
+    it('shows neither when the run carries no frozen sidecar', () => {
+      renderPanel([run({ splitStats: null })])
+
+      // Silence, not a zero: a run launched before MODEL-FLOW-014 — or one
+      // whose fire-and-forget freeze never landed — has no figure to show,
+      // and "0 rows" would be a claim about the dataset rather than about
+      // the record.
+      expect(screen.queryByText(/distinct/)).not.toBeInTheDocument()
+      expect(screen.queryByText(/rows ·/)).not.toBeInTheDocument()
+    })
+  })
+
+  // MODEL-FLOW-018-T02's finding: target mismatch is a WARNING, never a
+  // refusal — Compare must still be enabled here.
+  it('warns but does NOT refuse Compare on a target/dataset mismatch', () => {
     Object.assign(h.runsResult, {
       runs: [run({ targetY: 'TI-999' })],
       loading: false,
@@ -290,30 +347,43 @@ describe('RunParamsPanel (MODEL-FLOW-012)', () => {
       </Provider>,
     )
 
-    expect(screen.getByText('Select').closest('button')).not.toBeDisabled()
+    expect(
+      screen.getByRole('checkbox', { name: /Compare Ridge Regression/i }),
+    ).not.toBeDisabled()
   })
 
-  // MODEL-FLOW-018 openDecision, MODEL-FLOW-014-V07's own mirrored proof:
-  // Select must not relock — Apply remains the only relock trigger.
-  it('Select changes no trainState/highestUnlocked and never fires Apply’s commit path', async () => {
+  // MODEL-FLOW-021. The checkbox is a VIEW control: it writes no server
+  // state, so a compare click must not reach `selectRun` at all. The old
+  // Select's own invariant (no relock — Apply remains the only relock
+  // trigger) is preserved here for the footer picker instead.
+  it('checking Compare writes nothing to the server and changes no trainState/highestUnlocked', async () => {
     const { store } = renderPanel([run()])
     store.set(mpTrainStateAtom, { status: 'done', progress: 100 })
     store.set(mpHighestUnlockedAtom, 3)
     const trainStateBefore = store.get(mpTrainStateAtom)
     const highestBefore = store.get(mpHighestUnlockedAtom)
 
-    fireEvent.click(screen.getByText('Select'))
-    await waitFor(() => expect(mockSelectRun).toHaveBeenCalledTimes(1))
+    fireEvent.click(
+      screen.getByRole('checkbox', { name: /Compare Ridge Regression/i }),
+    )
 
+    await waitFor(() =>
+      expect(
+        screen.getByRole('checkbox', { name: /Compare Ridge Regression/i }),
+      ).toBeChecked(),
+    )
+    expect(mockSelectRun).not.toHaveBeenCalled()
     expect(store.get(mpTrainStateAtom)).toEqual(trainStateBefore)
     expect(store.get(mpHighestUnlockedAtom)).toBe(highestBefore)
-    expect(mockSelectRun).toHaveBeenCalledWith('draft-1', 'run-1')
   })
 
-  // MODEL-FLOW-012-T11's deferred job-level rule, discharged by
-  // MODEL-FLOW-018-T03: a SUCCEEDED run whose own candidate job is still
-  // QUEUED/RUNNING is not selectable.
-  it('disables Select, naming the job, for a SUCCEEDED run whose candidate job is still RUNNING', () => {
+  // MODEL-FLOW-021. `jobStillLive` is about selection AUTHORITY mid-sweep,
+  // not about whether a finished run's numbers can be read beside another's
+  // — so it gates the footer picker (below) and NOT the compare checkbox. A
+  // SUCCEEDED run owned by a running sweep has real metrics and real
+  // predictions; greying out its checkbox would refuse a comparison for a
+  // reason the user cannot see.
+  it('does NOT disable Compare for a SUCCEEDED run whose candidate job is still RUNNING, but withholds it from the carry-forward picker', () => {
     h.jobResult.job = {
       id: 'job-1',
       modelDraftId: 'draft-1',
@@ -336,16 +406,18 @@ describe('RunParamsPanel (MODEL-FLOW-012)', () => {
     }
     renderPanel([run({ candidateJobId: 'job-1' })])
 
-    expect(screen.getByText('Select').closest('button')).toBeDisabled()
     expect(
-      screen.getByText(/candidate job is still running/i),
-    ).toBeInTheDocument()
+      screen.getByRole('checkbox', { name: /Compare Ridge Regression/i }),
+    ).not.toBeDisabled()
+    // The run is the draft's ONLY run and it is job-blocked, so no run is
+    // pickable and the footer does not render.
+    expect(screen.queryByText('Use this run')).not.toBeInTheDocument()
   })
 
   // A run belonging to an OLDER job (not the live one) is never blocked by
   // it — the (draftId)-scoped one-live-job index guarantees an older job is
   // already terminal.
-  it('does not block Select for a run whose candidateJobId is NOT the live job', () => {
+  it('offers the carry-forward picker for a run whose candidateJobId is NOT the live job', () => {
     h.jobResult.job = {
       id: 'job-2',
       modelDraftId: 'draft-1',
@@ -368,25 +440,22 @@ describe('RunParamsPanel (MODEL-FLOW-012)', () => {
     }
     renderPanel([run({ candidateJobId: 'job-1' })])
 
-    expect(screen.getByText('Select').closest('button')).not.toBeDisabled()
+    expect(screen.getByText('Use this run')).toBeInTheDocument()
   })
 
-  // MODEL-FLOW-018 openDecision: mark-and-stay + footer CTA — the footer
-  // renders only once a selection exists, and its CTA advances the wizard
-  // the same way the bottom-nav Next control does (canAdvance(3) gated).
-  // The CTA writes `mpCurrentStepAtom`/`mpHighestUnlockedAtom` DIRECTLY
-  // (MODEL-FLOW-018-T03) rather than calling `useModelPipelineNav().next()`
-  // — deliberately NOT presetting currentStep/highestUnlocked here, so this
-  // proves the CTA lands on Step 4 from wherever the wizard actually is
-  // (its default mount state: step 1, highestUnlocked 1), not only from a
-  // hand-set "step 3, trainState done" precondition a stale `next()` closure
-  // would have needed.
-  it('renders the "Carrying forward" footer once a run is selected, and its CTA lands on and unlocks Step 4 regardless of the current step', () => {
+  // MODEL-FLOW-018 openDecision, carried into MODEL-FLOW-021: mark-and-stay
+  // + footer CTA — the CTA renders once a selection exists, and advances the
+  // wizard the same way the bottom-nav Next control does (canAdvance(3)
+  // gated). It writes `mpCurrentStepAtom`/`mpHighestUnlockedAtom` DIRECTLY
+  // rather than calling `useModelPipelineNav().next()` — deliberately NOT
+  // presetting currentStep/highestUnlocked here, so this proves the CTA lands
+  // on Step 4 from wherever the wizard actually is (its default mount state:
+  // step 1, highestUnlocked 1), not only from a hand-set "step 3, trainState
+  // done" precondition a stale `next()` closure would have needed.
+  it('renders the selection footer once a run is picked, and its CTA lands on and unlocks Step 4 regardless of the current step', () => {
     h.selectionResult.selectedRunId = 'run-1'
     const { store } = renderPanel([run()])
 
-    // "Carrying forward" also labels the per-card badge — the footer's own
-    // CTA text is the unambiguous proof the footer itself rendered.
     expect(screen.getByText('Compare in Model Selection')).toBeInTheDocument()
     expect(store.get(mpCurrentStepAtom)).toBe(1)
     expect(store.get(mpHighestUnlockedAtom)).toBe(1)
@@ -396,11 +465,130 @@ describe('RunParamsPanel (MODEL-FLOW-012)', () => {
     expect(store.get(mpHighestUnlockedAtom)).toBeGreaterThanOrEqual(4)
   })
 
-  it('renders no footer when nothing has been selected', () => {
+  // MODEL-FLOW-021 AC6. The phrase is retired from this step — asserted, not
+  // merely intended, because it survived in three doc comments and one test
+  // name after the control it described was gone.
+  it('never says "carrying forward" anywhere in the panel', () => {
+    h.selectionResult.selectedRunId = 'run-1'
+    renderPanel([run()])
+    expect(screen.queryByText(/carrying forward/i)).not.toBeInTheDocument()
+  })
+
+  // MODEL-FLOW-021. The CTA's precondition is the SELECTION, not the picker's
+  // candidate list — a draft can hold a persisted choice while every pickable
+  // run is withheld (each owned by a still-running sweep). Gating the whole
+  // footer on the picker would strand such a user with no route to Step 4.
+  it('keeps the Step 4 CTA when a selection exists but no run is currently pickable', () => {
+    h.selectionResult.selectedRunId = 'run-1'
+    h.jobResult.job = {
+      id: 'job-1',
+      modelDraftId: 'draft-1',
+      targetY: 'TI-101',
+      goldArtifactId: 'art-1',
+      trainTestSplit: null,
+      kind: 'ALGORITHM_SWEEP',
+      totalRuns: 2,
+      completedRuns: 1,
+      status: 'RUNNING',
+      failureReason: null,
+      currentRunId: 'run-1',
+      bestRunId: null,
+      bestRmse: null,
+      selectedRunId: null,
+      createdAt: '2026-08-27T00:00:00.000Z',
+      startedAt: '2026-08-27T00:00:00.000Z',
+      finishedAt: null,
+      candidates: [],
+    }
+    renderPanel([run({ candidateJobId: 'job-1' })])
+
+    expect(screen.getByText('Compare in Model Selection')).toBeInTheDocument()
+    expect(screen.getByText(/^Selected:/)).toBeInTheDocument()
+    // …while the picker itself, which needs candidates, stays away.
+    expect(screen.queryByText('Use this run')).not.toBeInTheDocument()
+  })
+
+  it('renders no Step 4 CTA when nothing has been picked', () => {
     renderPanel([run()])
     expect(
       screen.queryByText('Compare in Model Selection'),
     ).not.toBeInTheDocument()
+  })
+
+  // MODEL-FLOW-021. The compare set decides WHICH runs the comparison is
+  // about; the empty set means every run, not none. These assert the rule at
+  // the panel boundary — the table's own rendering is
+  // `run-comparison-panel.test.tsx`'s subject.
+  describe('compare set (MODEL-FLOW-021)', () => {
+    const twoRuns = () => [
+      run({ id: 'run-1', algorithm: 'ridge' }),
+      run({ id: 'run-2', algorithm: 'random_forest' }),
+    ]
+
+    it('renders no comparison at all until the draft has two terminal runs', () => {
+      renderPanel([run()])
+      expect(screen.queryByText('Run comparison')).not.toBeInTheDocument()
+    })
+
+    it('compares every run when no box is checked', () => {
+      renderPanel(twoRuns())
+      expect(screen.getByText('Run comparison')).toBeInTheDocument()
+      // Both rows reach the table: each algorithm label appears twice — once
+      // on its card, once in the comparison row.
+      expect(screen.getAllByText('Ridge Regression')).toHaveLength(2)
+      expect(screen.getAllByText('Random Forest')).toHaveLength(2)
+    })
+
+    it('narrows the comparison to the checked runs, and un-checking the last one restores compare-all', () => {
+      renderPanel(twoRuns())
+
+      fireEvent.click(
+        screen.getByRole('checkbox', { name: /Compare Ridge Regression/i }),
+      )
+      // Ridge still twice (card + row); Random Forest only on its own card.
+      expect(screen.getAllByText('Ridge Regression')).toHaveLength(2)
+      expect(screen.getAllByText('Random Forest')).toHaveLength(1)
+
+      fireEvent.click(
+        screen.getByRole('checkbox', { name: /Compare Ridge Regression/i }),
+      )
+      expect(screen.getAllByText('Random Forest')).toHaveLength(2)
+    })
+
+    it('keeps a one-run comparison rather than emptying the panel', () => {
+      renderPanel(twoRuns())
+      fireEvent.click(
+        screen.getByRole('checkbox', { name: /Compare Random Forest/i }),
+      )
+      expect(screen.getByText('Run comparison')).toBeInTheDocument()
+      expect(screen.getAllByText('Random Forest')).toHaveLength(2)
+    })
+
+    it('renders MAE and R² columns beside RMSE — the metrics a single card never showed', () => {
+      renderPanel(twoRuns())
+      expect(screen.getByTitle(/Rank by RMSE/i)).toBeInTheDocument()
+      expect(screen.getByTitle(/Rank by MAE/i)).toBeInTheDocument()
+      expect(screen.getByTitle(/Rank by R²/i)).toBeInTheDocument()
+    })
+
+    it('the footer picker is the ONLY control that records the carry-forward run', async () => {
+      renderPanel(twoRuns())
+
+      fireEvent.click(
+        screen.getByRole('checkbox', { name: /Compare Ridge Regression/i }),
+      )
+      expect(mockSelectRun).not.toHaveBeenCalled()
+
+      // Radix's DropdownMenu opens on pointer events it raises itself, which
+      // `fireEvent.click` does not produce — the same reason
+      // algorithm-selector.test.tsx reaches for userEvent on its own menu.
+      const user = userEvent.setup()
+      await user.click(screen.getByRole('button', { name: /Use this run/i }))
+      await user.click(await screen.findByRole('menuitemradio'))
+
+      await waitFor(() => expect(mockSelectRun).toHaveBeenCalledTimes(1))
+      expect(mockSelectRun).toHaveBeenCalledWith('draft-1', 'run-1')
+    })
   })
 
   // MODEL-FLOW-014-T07/V06. Both directions, or the "not used by this

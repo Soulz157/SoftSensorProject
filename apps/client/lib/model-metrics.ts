@@ -11,15 +11,26 @@
  */
 import { buildMonitoringRows, type MonitoringRow } from '@/lib/monitoring'
 
-export type MetricKey = 'r2' | 'rmse' | 'sd'
+/**
+ * MODEL-FLOW-019-T04. Widened from `r2 | rmse | sd` to add `mae` — the
+ * decision the user made 2026-09-05 (docs/feature_list.json,
+ * MODEL-FLOW-019 userDecisions) so Step 4's own metric picker reads this
+ * SAME list rather than declaring a second one. Every run's own
+ * `metrics`/`holdoutMetrics` already carries `mae` (T01's audit; confirmed
+ * against the live dev DB with zero counter-examples: no row has `rmse`
+ * without `mae`), so it is a required field here, matching `r2`/`rmse`.
+ */
+export type MetricKey = 'r2' | 'rmse' | 'mae' | 'sd'
 
-export const METRIC_KEYS: MetricKey[] = ['r2', 'rmse', 'sd']
+export const METRIC_KEYS: MetricKey[] = ['r2', 'rmse', 'mae', 'sd']
 
 export interface ModelMetrics {
   /** Coefficient of determination from the run's own metrics.json. */
   r2: number
   /** Root mean squared error, from the run's own metrics.json. */
   rmse: number
+  /** Mean absolute error, from the run's own metrics.json. */
+  mae: number
   /** Standard deviation of residuals, computed server-side over the full test split. */
   sd: number
   /** Sample count (test_rows) — UI shows a placeholder when < 2. */
@@ -58,11 +69,33 @@ export const METRIC_META: Record<MetricKey, MetricMeta> = {
     hint: 'Root mean squared error',
     format: fmt2,
   },
+  mae: {
+    label: 'MAE',
+    hint: 'Mean absolute error',
+    format: fmt2,
+  },
   sd: {
     label: 'SD',
     hint: 'Residual standard deviation',
     format: fmt2,
   },
+}
+
+/**
+ * MODEL-FLOW-019-T04. The "cannot deselect the last remaining metric" guard
+ * Step 5's own picker already carries (phase-5-evaluation.tsx), extracted
+ * so Step 4's picker shares the exact RULE and not only the vocabulary —
+ * two pickers computing "is this the last one" independently is how they
+ * would drift the moment one grows a special case the other does not.
+ */
+export function toggleMetricSelection(
+  prev: MetricKey[],
+  key: MetricKey,
+  on: boolean,
+): MetricKey[] {
+  return on
+    ? METRIC_KEYS.filter(k => prev.includes(k) || k === key)
+    : prev.filter(k => k !== key)
 }
 
 export interface FitPoint {
@@ -85,11 +118,12 @@ export interface ModelFit extends ModelMetrics {
  */
 export function fitFromRun(
   points: FitPoint[],
-  metrics: { r2: number; rmse: number; sd: number },
+  metrics: { r2: number; rmse: number; mae: number; sd: number },
 ): ModelFit {
   return {
     r2: metrics.r2,
     rmse: metrics.rmse,
+    mae: metrics.mae,
     sd: metrics.sd,
     n: points.length,
     points,

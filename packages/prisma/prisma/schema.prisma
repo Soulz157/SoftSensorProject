@@ -1459,6 +1459,47 @@ model ModelCandidateJob {
   goldArtifactId String
   trainTestSplit Float?
 
+  /// MODEL-FLOW-020-T04/T02. The dataset's own two size figures AS THE
+  /// CLIENT SAW THEM at job creation — `sizedRowCount` is /split-stats'
+  /// `source_rows` (the PRE-MASK row count), `sizedDistinctLabelled` its
+  /// `distinct_labelled_values` (distinct values of the target among
+  /// labelled rows). Both come from one `/split-stats` response the Step 3
+  /// panel had already fetched; neither is recomputed here.
+  ///
+  /// THOSE TWO FIELDS SPECIFICALLY because they are the only two that
+  /// /split-stats guarantees in BOTH ratio and CV mode —
+  /// train/test_labelled_rows are null in n_splits mode
+  /// (MODEL-FLOW-016-T09), so a job created with CV on would capture a null
+  /// row count for no reason if it read those instead.
+  ///
+  /// STORED RATHER THAN LOOKED UP because they are not reachable where they
+  /// will eventually be used: `advanceJobForRun` holds this row and no size
+  /// figure, and `distinct_labelled_values` needs a full artifact read that
+  /// `model-run-launch.authorized.service.ts` explicitly refuses to add to
+  /// the launch path. Captured once, at the only point that has them free.
+  ///
+  /// BOTH, NEVER ONE. On this system's own data they diverge by up to 260x
+  /// (an 8,350-row artifact holds 32 distinct labelled values), which is the
+  /// whole reason MODEL-FLOW-020 exists — a reader shown only one figure
+  /// cannot see why any bound derived from it is what it is.
+  ///
+  /// NAMED `sized*`, NOT `derivedFrom*`: as of MODEL-FLOW-020-T04 nothing is
+  /// derived from them — TUNING_GRID is still the fixed table, and T03 (the
+  /// derivation) is BLOCKED for want of a measurable range. A name promising
+  /// a derivation the code does not perform is the trap MODEL-FLOW-018's
+  /// "Carrying forward" copy fell into. T03 adds the derivation without
+  /// renaming these.
+  ///
+  /// NULLABLE, and null means "not captured", never "reconstruct it" — the
+  /// honest-legacy-null pattern MODEL-FLOW-010-T06 established for
+  /// validationMissingPct. Two live sources of null, both correct: a job
+  /// created before this migration, and a job started before the user ever
+  /// pressed Apply on Step 3 (the panel's fetch is gated on Apply, so the
+  /// client genuinely has no figures to send). They are written together or
+  /// not at all — one populated and the other null is a bug, not a state.
+  sizedRowCount         Int?
+  sizedDistinctLabelled Int?
+
   kind ModelCandidateJobKind @default(HYPERPARAMETER_SEARCH)
 
   /// Ordered array of `{algorithm, hyperparameters, phase}`. Index

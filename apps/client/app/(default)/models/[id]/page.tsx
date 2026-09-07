@@ -1,6 +1,6 @@
 'use client'
 
-import { use, useEffect, useMemo, useState } from 'react'
+import { use, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useAtomValue } from 'jotai'
 import { Card, CardContent } from '@/components/ui/card'
@@ -28,6 +28,7 @@ import {
 import {
   Activity,
   ArrowLeft,
+  BarChart3,
   Box,
   CheckCircle2,
   Cpu,
@@ -40,7 +41,6 @@ import {
   Settings,
   SlidersHorizontal,
   Snowflake,
-  Sparkles,
   StopCircle,
   Terminal,
   User,
@@ -58,6 +58,8 @@ import { ModelEvaluation } from '../evaluation/components/model-evaluation'
 import { ModelUpsertDialog } from '../views/components/model-upsert-dialog'
 import { ModelRetrainDialog } from './components/model-retrain-dialog'
 import { RetrainProgress } from './components/retrain-progress'
+import { InputDataTab } from './components/input-data-tab'
+import { ModelMonitoringTab } from './components/monitoring/model-monitoring-tab'
 import { useModelRetrain } from '@/hooks/model/use-model-retrain'
 import LoadingModelPage from './loading'
 import ErrorModelPage from './error'
@@ -118,89 +120,6 @@ const LOG_CLS = {
   warn: 'text-amber-400',
   error: 'text-red-400',
 } as const
-
-function seedRand(seed: number) {
-  let s = seed
-  return () => {
-    s = (s * 1664525 + 1013904223) & 0xffffffff
-    return (s >>> 0) / 0xffffffff
-  }
-}
-
-const SIGNALS = [
-  { name: 'Temp_01', unit: '°C', base: 45, range: 20 },
-  { name: 'Pressure_A', unit: 'bar', base: 3.2, range: 1.5 },
-  { name: 'Vibration_X', unit: 'mm/s', base: 0.8, range: 0.6 },
-  { name: 'Flow_In', unit: 'L/min', base: 120, range: 30 },
-  { name: 'Torque_1', unit: 'Nm', base: 55, range: 15 },
-  { name: 'Speed_RPM', unit: 'rpm', base: 1450, range: 200 },
-  { name: 'Current_A', unit: 'A', base: 8.5, range: 3 },
-  { name: 'Temp_02', unit: '°C', base: 52, range: 18 },
-]
-
-type Quality = 'Good' | 'Suspect' | 'Bad'
-type CleanMethod = 'Clipped' | 'Interpolated' | '—'
-type AnomalyFlag = 'OutOfRange' | 'Spike' | 'Missing' | null
-
-interface MockReading {
-  ts: string
-  signal: string
-  rawValue: number
-  unit: string
-  quality: Quality
-  flag: AnomalyFlag
-  cleanedValue: number
-  method: CleanMethod
-  anomaly: boolean
-}
-
-function generateReadings(modelId: string, baseTime: string): MockReading[] {
-  const seed = modelId.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)
-  const rand = seedRand(seed)
-  const base = new Date(baseTime).getTime()
-
-  return SIGNALS.map((sig, i) => {
-    const r1 = rand()
-    const r2 = rand()
-    const r3 = rand()
-    const r4 = rand()
-    const ts = new Date(base - i * 80_000).toISOString()
-    const rawValue = parseFloat(
-      (sig.base + (r1 - 0.5) * sig.range * 2).toFixed(2),
-    )
-
-    const isAnomaly = r2 < 0.28
-    const flagOptions: AnomalyFlag[] = ['OutOfRange', 'Spike', 'Missing']
-    const flag: AnomalyFlag = isAnomaly
-      ? (flagOptions[Math.floor(r3 * 3)] ?? 'OutOfRange')
-      : null
-    const quality: Quality = isAnomaly
-      ? r2 < 0.12
-        ? 'Bad'
-        : 'Suspect'
-      : 'Good'
-    const cleanedValue = isAnomaly
-      ? parseFloat((sig.base + (r4 - 0.5) * sig.range * 0.4).toFixed(2))
-      : rawValue
-    const method: CleanMethod = isAnomaly
-      ? flag === 'Missing'
-        ? 'Interpolated'
-        : 'Clipped'
-      : '—'
-
-    return {
-      ts,
-      signal: sig.name,
-      rawValue,
-      unit: sig.unit,
-      quality,
-      flag,
-      cleanedValue,
-      method,
-      anomaly: isAnomaly,
-    }
-  })
-}
 
 export default function ModelDetailPage({
   params,
@@ -276,11 +195,6 @@ export default function ModelDetailPage({
     }
   }, [id, workspaces, version])
 
-  const readings = useMemo(
-    () => (model ? generateReadings(model.id, model.updatedAt) : []),
-    [model],
-  )
-
   if (loading) {
     return <LoadingModelPage />
   }
@@ -305,7 +219,6 @@ export default function ModelDetailPage({
 
   const logs = [...(model.data?.logs ?? [])].reverse()
   const editHistory = [...(model.data?.editHistory ?? [])].reverse()
-  const anomalyCount = readings.filter(r => r.anomaly).length
 
   return (
     <div className="flex-1 overflow-auto bg-background p-6 md:p-8">
@@ -523,20 +436,15 @@ export default function ModelDetailPage({
         </div>
 
         {/* Tabs */}
-        <Tabs defaultValue="logs" className="flex w-full flex-col">
+        <Tabs defaultValue="input" className="flex w-full flex-col">
           <div className="mb-4 flex w-full items-center overflow-x-auto pb-1">
             <TabsList className="inline-flex h-10 w-max items-center justify-start p-1">
               <TabsTrigger
-                value="logs"
+                value="input"
                 className="flex items-center gap-2 px-4"
               >
-                <Terminal className="h-4 w-4 shrink-0" />
-                <span>Logs</span>
-                {logs.length > 0 && (
-                  <span className="ml-1 flex h-4 items-center justify-center rounded-full bg-muted-foreground/20 px-2 text-[10px] font-semibold tabular-nums text-foreground">
-                    {logs.length}
-                  </span>
-                )}
+                <Database className="h-4 w-4 shrink-0" />
+                <span>Input Data</span>
               </TabsTrigger>
 
               <TabsTrigger
@@ -553,24 +461,11 @@ export default function ModelDetailPage({
               </TabsTrigger>
 
               <TabsTrigger
-                value="input"
+                value="monitoring"
                 className="flex items-center gap-2 px-4"
               >
-                <Database className="h-4 w-4 shrink-0" />
-                <span>Input Data</span>
-              </TabsTrigger>
-
-              <TabsTrigger
-                value="cleansing"
-                className="flex items-center gap-2 px-4"
-              >
-                <Sparkles className="h-4 w-4 shrink-0" />
-                <span>Data Cleansing</span>
-                {anomalyCount > 0 && (
-                  <span className="ml-1 flex h-4 items-center justify-center rounded-full bg-amber-500/15 px-2 text-[10px] font-semibold tabular-nums text-amber-500">
-                    {anomalyCount}
-                  </span>
-                )}
+                <BarChart3 className="h-4 w-4 shrink-0" />
+                <span>Monitoring</span>
               </TabsTrigger>
 
               <TabsTrigger
@@ -580,48 +475,25 @@ export default function ModelDetailPage({
                 <Gauge className="h-4 w-4 shrink-0" />
                 <span>Evaluation</span>
               </TabsTrigger>
+
+              <TabsTrigger
+                value="logs"
+                className="flex items-center gap-2 px-4"
+              >
+                <Terminal className="h-4 w-4 shrink-0" />
+                <span>Logs</span>
+                {logs.length > 0 && (
+                  <span className="ml-1 flex h-4 items-center justify-center rounded-full bg-muted-foreground/20 px-2 text-[10px] font-semibold tabular-nums text-foreground">
+                    {logs.length}
+                  </span>
+                )}
+              </TabsTrigger>
             </TabsList>
           </div>
 
-          {/* ── Logs ── */}
-          <TabsContent value="logs" className="mt-0">
-            <Card className="border-border bg-card">
-              <ScrollArea className="h-96 rounded-lg">
-                {logs.length === 0 ? (
-                  <div className="flex h-96 items-center justify-center text-sm text-muted-foreground">
-                    No log entries yet
-                  </div>
-                ) : (
-                  <div className="divide-y divide-border/40">
-                    {logs.map((entry, i) => (
-                      <div
-                        key={i}
-                        className={cn(
-                          'flex items-start gap-3 px-4 py-2.5 hover:bg-muted/30',
-                          entry.level === 'error' &&
-                            'border-l-2 border-red-500/50 pl-3',
-                        )}
-                      >
-                        <span className="mt-0.5 min-w-24 shrink-0 font-mono text-[11px] text-muted-foreground/60">
-                          {new Date(entry.timestamp).toLocaleTimeString()}
-                        </span>
-                        <span
-                          className={cn(
-                            'w-12 shrink-0 font-mono text-[11px] font-semibold uppercase',
-                            LOG_CLS[entry.level],
-                          )}
-                        >
-                          {entry.level}
-                        </span>
-                        <span className="break-all font-mono text-[11px] text-foreground/80">
-                          {entry.message}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </ScrollArea>
-            </Card>
+          {/* ── Input Data ── */}
+          <TabsContent value="input" className="mt-0">
+            <InputDataTab model={model} />
           </TabsContent>
 
           {/* ── Edit History ── */}
@@ -670,135 +542,55 @@ export default function ModelDetailPage({
             </Card>
           </TabsContent>
 
-          {/* ── Input Data ── */}
-          <TabsContent value="input" className="mt-4">
-            <Card className="overflow-hidden border-border bg-card">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Timestamp</TableHead>
-                    <TableHead>Signal</TableHead>
-                    <TableHead className="text-right">Raw Value</TableHead>
-                    <TableHead>Unit</TableHead>
-                    <TableHead>Quality</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody className="divide-y divide-border">
-                  {readings.map((row, i) => (
-                    <TableRow key={i}>
-                      <TableCell className="whitespace-nowrap font-mono text-xs text-muted-foreground">
-                        {new Date(row.ts).toLocaleTimeString()}
-                      </TableCell>
-                      <TableCell className="font-mono text-xs font-medium text-foreground">
-                        {row.signal}
-                      </TableCell>
-                      <TableCell className="text-right font-mono text-xs tabular-nums text-foreground">
-                        {row.rawValue}
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {row.unit}
-                      </TableCell>
-                      <TableCell>
-                        <span
-                          className={cn(
-                            'inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-medium',
-                            row.quality === 'Good' &&
-                              'bg-emerald-500/10 text-emerald-500',
-                            row.quality === 'Suspect' &&
-                              'bg-amber-500/10 text-amber-500',
-                            row.quality === 'Bad' &&
-                              'bg-red-500/10 text-red-500',
-                          )}
-                        >
-                          {row.quality}
-                        </span>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </Card>
-          </TabsContent>
-
-          {/* ── Data Cleansing ── */}
-          <TabsContent value="cleansing" className="mt-4 space-y-3">
-            <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-3">
-              <Sparkles className="h-4 w-4 text-amber-500" />
-              <p className="text-sm text-foreground">
-                <span className="font-semibold text-amber-500">
-                  {anomalyCount}
-                </span>{' '}
-                of <span className="font-semibold">{readings.length}</span>{' '}
-                signals cleaned this cycle
-              </p>
-            </div>
-
-            <Card className="overflow-hidden border-border bg-card">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-6" />
-                    <TableHead>Signal</TableHead>
-                    <TableHead className="text-right">Raw</TableHead>
-                    <TableHead>Flag</TableHead>
-                    <TableHead className="text-right">Cleaned</TableHead>
-                    <TableHead>Method</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {readings.map((row, i) => (
-                    <TableRow
-                      key={i}
-                      className={row.anomaly ? 'bg-amber-500/0.03' : undefined}
-                    >
-                      <TableCell>
-                        <span
-                          className={cn(
-                            'block h-2 w-2 rounded-full',
-                            row.anomaly ? 'bg-amber-500' : 'bg-emerald-500',
-                          )}
-                        />
-                      </TableCell>
-                      <TableCell className="font-mono text-xs font-medium text-foreground">
-                        {row.signal}
-                      </TableCell>
-                      <TableCell
-                        className={cn(
-                          'text-right font-mono text-xs tabular-nums',
-                          row.anomaly
-                            ? 'text-amber-500 line-through opacity-70'
-                            : 'text-foreground',
-                        )}
-                      >
-                        {row.rawValue} {row.unit}
-                      </TableCell>
-                      <TableCell>
-                        {row.flag ? (
-                          <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-amber-500/10 text-amber-500">
-                            {row.flag}
-                          </span>
-                        ) : (
-                          <span className="text-xs text-muted-foreground/40">
-                            —
-                          </span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-right font-mono text-xs tabular-nums text-foreground">
-                        {row.cleanedValue} {row.unit}
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {row.method}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </Card>
+          {/* ── Monitoring ── */}
+          <TabsContent value="monitoring" className="mt-4">
+            <ModelMonitoringTab model={model} />
           </TabsContent>
 
           {/* ── Evaluation ── */}
           <TabsContent value="evaluation" className="mt-4">
             <ModelEvaluation model={model} />
+          </TabsContent>
+
+          {/* ── Logs ── */}
+          <TabsContent value="logs" className="mt-4">
+            <Card className="border-border bg-card">
+              <ScrollArea className="h-96 rounded-lg">
+                {logs.length === 0 ? (
+                  <div className="flex h-96 items-center justify-center text-sm text-muted-foreground">
+                    No log entries yet
+                  </div>
+                ) : (
+                  <div className="divide-y divide-border/40">
+                    {logs.map((entry, i) => (
+                      <div
+                        key={i}
+                        className={cn(
+                          'flex items-start gap-3 px-4 py-2.5 hover:bg-muted/30',
+                          entry.level === 'error' &&
+                            'border-l-2 border-red-500/50 pl-3',
+                        )}
+                      >
+                        <span className="mt-0.5 min-w-24 shrink-0 font-mono text-[11px] text-muted-foreground/60">
+                          {new Date(entry.timestamp).toLocaleTimeString()}
+                        </span>
+                        <span
+                          className={cn(
+                            'w-12 shrink-0 font-mono text-[11px] font-semibold uppercase',
+                            LOG_CLS[entry.level],
+                          )}
+                        >
+                          {entry.level}
+                        </span>
+                        <span className="break-all font-mono text-[11px] text-foreground/80">
+                          {entry.message}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </ScrollArea>
+            </Card>
           </TabsContent>
         </Tabs>
       </div>

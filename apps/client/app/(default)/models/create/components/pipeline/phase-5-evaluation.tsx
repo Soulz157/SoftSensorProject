@@ -27,6 +27,7 @@ import {
   buildFitRows,
   METRIC_KEYS,
   METRIC_META,
+  toggleMetricSelection,
   type MetricKey,
 } from '@/lib/model-metrics'
 import { pickTimeFormat, type BrushWindow } from '@/lib/monitoring'
@@ -223,11 +224,7 @@ export function Phase5Evaluation({ nav }: Props) {
   }
 
   const toggleMetric = (key: MetricKey, on: boolean) => {
-    setSelectedMetrics(prev =>
-      on
-        ? METRIC_KEYS.filter(k => prev.includes(k) || k === key)
-        : prev.filter(k => k !== key),
-    )
+    setSelectedMetrics(prev => toggleMetricSelection(prev, key, on))
   }
 
   const visible = METRIC_KEYS.filter(k => selectedMetrics.includes(k))
@@ -467,8 +464,9 @@ export function Phase5Evaluation({ nav }: Props) {
                   Actual vs Predicted
                 </h3>
                 <p className="text-xs text-muted-foreground">
-                  The prediction should track actual within the ±1 SD band;
-                  excursions are the samples the fit explains worst.
+                  Measured actual against the model&apos;s own prediction on the
+                  same rows — the prediction should track actual inside the ±1
+                  SD band; excursions are the samples the fit explains worst.
                 </p>
               </div>
               <ChartZoomControls
@@ -495,8 +493,10 @@ export function Phase5Evaluation({ nav }: Props) {
                   Residuals
                 </h3>
                 <p className="text-xs text-muted-foreground">
-                  Residual = Actual − Predicted. A healthy fit stays inside ±1
-                  SD with no drift or repeating structure.
+                  Residual = measured actual − the model&apos;s prediction. A
+                  healthy fit stays inside ±1 SD with no drift or repeating
+                  structure; the figure on each guardline is the share of
+                  residuals in that band alone, counted outward from zero.
                 </p>
               </div>
               <ChartZoomControls

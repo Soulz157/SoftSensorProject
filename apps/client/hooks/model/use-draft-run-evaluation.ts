@@ -51,31 +51,27 @@ export interface DraftRunSummary {
   cvFolds: RunCvFolds | null
 }
 
-/** Reads the three raw signals on `DraftRunSummary` into the one phase Step
- *  5 renders from, so that branching logic exists in exactly one place. A
- *  non-SUCCEEDED run has no defined phase — callers must check `fit`/
- *  `run.status` first, same as before this feature. */
-export function cvScoringPhaseOf(run: DraftRunSummary | null): CvScoringPhase {
-  if (!run?.cvFoldsKey) return 'not-cv'
-  if (run.predictionsKey) return 'scored'
-  if (run.scoringContainerId) return 'scoring'
-  return 'awaiting-scoring'
-}
-
-/** MODEL-FLOW-016-T11. A CV run's own three-phase Step 5 state, distinct
- *  from `fit === null` meaning "not SUCCEEDED yet" on a plain run:
- *  - `not-cv`: ordinary run — `fit` (if any) is that run's own test-split
- *    score, unchanged behaviour.
- *  - `awaiting-scoring`: SUCCEEDED CV run, `predictionsKey` still null,
- *    no scoring container running — Step 5 shows the trigger action.
- *  - `scoring`: a scoring container is in flight — Step 5 polls.
- *  - `scored`: `predictionsKey` set — `fit` is that model's OWN holdout
- *    score (from `holdoutMetrics`, never the fold mean in `metrics`). */
-export type CvScoringPhase =
-  | 'not-cv'
-  | 'awaiting-scoring'
-  | 'scoring'
-  | 'scored'
+/**
+ * MODEL-FLOW-016-T11's derivation, MOVED to `lib/metric-source` by
+ * MODEL-FLOW-019-T02 — what it decides is which SOURCE a run's headline
+ * figure has, which is that module's whole subject, and a pure derivation
+ * belongs in `lib/` rather than inside a hook module. Re-exported here so
+ * every existing caller (`phase-5-evaluation`, `phase-6-deploy`,
+ * `phase-4-model-selection`, and the tests that `importOriginal` this
+ * module) keeps its import path unchanged.
+ *
+ * A CV run's own three-phase state, distinct from `fit === null` meaning
+ * "not SUCCEEDED yet" on a plain run:
+ * - `not-cv`: ordinary run — `fit` (if any) is that run's own test-split
+ *   score, unchanged behaviour.
+ * - `awaiting-scoring`: SUCCEEDED CV run, `predictionsKey` still null, no
+ *   scoring container running — Step 5 shows the trigger action.
+ * - `scoring`: a scoring container is in flight — Step 5 polls.
+ * - `scored`: `predictionsKey` set — `fit` is that model's OWN holdout
+ *   score (from `holdoutMetrics`, never the fold mean in `metrics`).
+ */
+export { cvScoringPhaseOf } from '@/lib/metric-source'
+export type { CvScoringPhase } from '@/lib/metric-source'
 
 export interface DraftRunManifestInfo {
   /** The leakage guard's own record (MODEL-FLOW-000-T02) — non-empty means
@@ -115,7 +111,7 @@ interface EvaluationData {
  */
 function requireMetric(
   metrics: Record<string, unknown> | null,
-  key: 'r2' | 'rmse',
+  key: 'r2' | 'rmse' | 'mae',
   source: 'metrics' | 'holdout_metrics' = 'metrics',
 ): number {
   const value = metrics?.[key]
@@ -205,11 +201,13 @@ async function fetchEvaluation(
     ? fitFromRun(points, {
         r2: requireMetric(run.holdoutMetrics, 'r2', 'holdout_metrics'),
         rmse: requireMetric(run.holdoutMetrics, 'rmse', 'holdout_metrics'),
+        mae: requireMetric(run.holdoutMetrics, 'mae', 'holdout_metrics'),
         sd: pred.residualSd,
       })
     : fitFromRun(points, {
         r2: requireMetric(run.metrics, 'r2'),
         rmse: requireMetric(run.metrics, 'rmse'),
+        mae: requireMetric(run.metrics, 'mae'),
         sd: pred.residualSd,
       })
 

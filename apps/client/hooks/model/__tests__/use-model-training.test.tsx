@@ -42,8 +42,18 @@ const DATASET: SavedDataset = {
   currentArtifactType: 'FINAL',
 } as SavedDataset
 
+/**
+ * MODEL-FLOW-020-T04. The two figures a candidate job records, shaped as
+ * `/split-stats` returns them. Deliberately the REAL measured pair from this
+ * system's own data — 8,350 rows holding 32 distinct labelled values — so a
+ * test that confused the two would show it. A fixture where both numbers
+ * were alike could not.
+ */
+const SPLIT_STATS = { source_rows: 8350, distinct_labelled_values: 32 }
+
 function renderTraining(
   configure?: (store: ReturnType<typeof createStore>) => void,
+  splitStats: typeof SPLIT_STATS | null = SPLIT_STATS,
 ) {
   const store = createStore()
   store.set(mpSelectedDatasetAtom, DATASET)
@@ -57,9 +67,10 @@ function renderTraining(
   const ensureDraftId = vi.fn().mockResolvedValue('draft-1')
   const wrapper = ({ children }: { children: ReactNode }) =>
     Provider({ store, children })
-  const rendered = renderHook(() => useModelTraining({ ensureDraftId }), {
-    wrapper,
-  })
+  const rendered = renderHook(
+    () => useModelTraining({ ensureDraftId, splitStats }),
+    { wrapper },
+  )
   return { ...rendered, store, ensureDraftId }
 }
 
@@ -297,6 +308,104 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
       expect.objectContaining({ kind: 'SWEEP_THEN_TUNE' }),
     )
     expect(store.get(mpTrainStateAtom).status).toBe('training')
+  })
+
+  /**
+   * MODEL-FLOW-020-T04. Every job-creating path records the two dataset size
+   * figures, or neither of them.
+   *
+   * ALL THREE KINDS, not one: the sweep sources its candidates from the
+   * client's own defaults and a direct search sends a single candidate the
+   * server then expands, so they reach `create` down visibly different
+   * branches. Asserting one would leave the others free to drift.
+   */
+  describe('MODEL-FLOW-020-T04: the dataset size figures a job records', () => {
+    beforeEach(() => {
+      vi.mocked(modelDraftCandidateJobService.create).mockResolvedValue({
+        statusCode: 201,
+        message: 'ok',
+        type: 'SUCCESS',
+        data: { id: 'job-1' } as never,
+      })
+      vi.mocked(modelDraftCandidateJobService.get).mockResolvedValue({
+        statusCode: 200,
+        message: 'ok',
+        type: 'SUCCESS',
+        data: {
+          id: 'job-1',
+          status: 'RUNNING',
+          completedRuns: 0,
+          totalRuns: 2,
+          candidates: [],
+        } as never,
+      })
+    })
+
+    it.each([
+      [
+        'ALGORITHM_SWEEP',
+        (s: ReturnType<typeof createStore>) => {
+          s.set(mpFindBestModelAtom, true)
+          s.set(mpAlgorithmsAtom, ['ols', 'ridge'])
+        },
+      ],
+      [
+        'SWEEP_THEN_TUNE',
+        (s: ReturnType<typeof createStore>) => {
+          s.set(mpFindBestModelAtom, true)
+          s.set(mpFindBestParamsAtom, true)
+          s.set(mpAlgorithmsAtom, ['ols', 'ridge'])
+        },
+      ],
+      [
+        'HYPERPARAMETER_SEARCH',
+        (s: ReturnType<typeof createStore>) => {
+          s.set(mpFindBestParamsAtom, true)
+          s.set(mpAlgorithmsAtom, ['ridge'])
+        },
+      ],
+    ])('sends both figures on a %s job', async (kind, configure) => {
+      const { result } = renderTraining(configure)
+
+      await act(async () => {
+        result.current.start()
+        await vi.advanceTimersByTimeAsync(0)
+      })
+
+      expect(modelDraftCandidateJobService.create).toHaveBeenCalledWith(
+        'draft-1',
+        expect.objectContaining({
+          kind,
+          // The ROW count and the DISTINCT count, each in its own field —
+          // this is the assertion that would fail if the two were ever
+          // swapped, which is the whole reason the fixture uses a real pair
+          // that differs by 260x rather than two similar numbers.
+          sizedRowCount: 8350,
+          sizedDistinctLabelled: 32,
+        }),
+      )
+    })
+
+    it('sends NEITHER figure when split-stats has not resolved — the Apply-gated null path, not a bug', async () => {
+      const { result } = renderTraining(s => {
+        s.set(mpFindBestModelAtom, true)
+        s.set(mpAlgorithmsAtom, ['ols', 'ridge'])
+      }, null)
+
+      await act(async () => {
+        result.current.start()
+        await vi.advanceTimersByTimeAsync(0)
+      })
+
+      const [, body] = vi.mocked(modelDraftCandidateJobService.create).mock
+        .calls[0]!
+      // `not.toHaveProperty`, not `toBeUndefined`: the server's schema is
+      // `.strict()` with a together-or-neither refine, so an explicitly
+      // present `sizedRowCount: undefined` and an absent key are different
+      // requests. Only the absent one is correct here.
+      expect(body).not.toHaveProperty('sizedRowCount')
+      expect(body).not.toHaveProperty('sizedDistinctLabelled')
+    })
   })
 
   it('shows a "Tuning …" progress label once the in-flight candidate is phase 2', async () => {

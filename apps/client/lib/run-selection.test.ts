@@ -23,6 +23,11 @@ function candidate(overrides: Partial<CandidateResult> = {}): CandidateResult {
     predictionsKey: null,
     cvFoldsKey: null,
     scoringContainerId: null,
+    // MODEL-FLOW-019-T02. This module's derivations read neither field —
+    // the defaults keep the fixture a valid `CandidateResult` without
+    // implying these tests say anything about metric sources.
+    sourcedMetrics: [],
+    holdoutAbsence: null,
     ...overrides,
   }
 }

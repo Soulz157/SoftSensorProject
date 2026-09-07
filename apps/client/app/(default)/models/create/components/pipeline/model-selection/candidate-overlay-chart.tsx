@@ -11,19 +11,34 @@ import {
 } from 'recharts'
 import { pickTimeFormat } from '@/lib/monitoring'
 import { ALGORITHM_LABELS, type Algorithm } from '@/store/model-pipeline'
-import type {
-  CandidateResult,
-  RunPredictionsBatchItem,
-} from '@/services/model-draft'
+import type { RunPredictionsBatchItem } from '@/services/model-draft'
 import { AXIS_TICK } from '../evaluation/actual-vs-predicted-chart'
 
+/**
+ * MODEL-FLOW-021-T02. The STRUCTURAL MINIMUM this chart actually reads —
+ * widened from `CandidateResult` so Step 3's `RunComparisonPanel` can pass
+ * its own `ModelTrainingRunListItem` rows (adapted `{ runId: r.id, … }`,
+ * since a run row keys it `id`) without either a cast or a second copy of
+ * this component. `CandidateResult` still satisfies it, so phase-4's own
+ * call site is unchanged.
+ *
+ * Widening rather than copying is deliberate: `__tests__/model-selection-
+ * contract.test.ts` greps THIS path for algorithm branching, and a copy
+ * under `training-config/` would be silently uncovered by that guard.
+ */
+export interface OverlaySeries {
+  runId: string | null
+  algorithm: string
+}
+
 interface Props {
-  /** One phase group's candidates (`CandidateGroups`' own phase1/phase2
-   *  split) — every candidate in ONE ModelCandidateJob shares the job's
-   *  own goldArtifactId/targetY/trainTestSplit, so they are ALWAYS
-   *  split-comparable by construction. No comparability check is needed
-   *  here the way `StandaloneComparison`'s cross-job rows need one. */
-  candidates: CandidateResult[]
+  /** One comparable group. Phase-4 passes one phase group of ONE
+   *  ModelCandidateJob (every candidate shares the job's own
+   *  goldArtifactId/targetY/trainTestSplit, so they are split-comparable by
+   *  construction); Step 3 passes one `groupByTarget` group. Either way the
+   *  CALLER owns comparability — this chart merges every series onto one
+   *  shared `actual` line and cannot detect a mixed target itself. */
+  candidates: OverlaySeries[]
   byRunId: Map<string, RunPredictionsBatchItem>
 }
 
@@ -107,7 +122,7 @@ export function CandidateOverlayChart({ candidates, byRunId }: Props) {
     <div className="space-y-1.5 rounded-xl border border-border/60 p-3">
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
         <p className="text-xs font-medium text-foreground">
-          Which candidate tracks reality best?
+          Overall candidate comparison
         </p>
         <div className="flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground">
           <span className="flex items-center gap-1">

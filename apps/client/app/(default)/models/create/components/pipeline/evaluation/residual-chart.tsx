@@ -1,5 +1,5 @@
 'use client'
-
+import { useMemo } from 'react'
 import {
   Area,
   CartesianGrid,
@@ -25,8 +25,52 @@ interface Props {
   compareName?: string
 }
 
+/**
+ * Share of residuals falling in each SD band. Counted from zero OUTWARD, so
+ * each figure describes the region its own label sits in rather than
+ * everything inside it — same convention as the monitoring ResidualChart's
+ * readout. Points beyond ±3 SD belong to no band and appear in no figure.
+ */
+function sdCoverage(
+  rows: FitRow[],
+  sd: number,
+): Record<number, { up: number; down: number }> | null {
+  if (!Number.isFinite(sd) || sd <= 0) return null
+
+  const residuals = rows
+    .map(r => r.residual)
+    .filter((v): v is number => typeof v === 'number' && Number.isFinite(v))
+  if (residuals.length === 0) return null
+
+  const n = residuals.length
+  const out: Record<number, { up: number; down: number }> = {}
+  for (const k of [1, 2, 3]) {
+    const limit = k * sd
+    const inner = (k - 1) * sd
+    let up = 0
+    let down = 0
+    for (const r of residuals) {
+      if (r > inner && r <= limit) up++
+      else if (r < -inner && r >= -limit) down++
+    }
+    out[k] = { up: (up / n) * 100, down: (down / n) * 100 }
+  }
+  return out
+}
+
 /** A ±k·SD guardline pair. */
-function SdGuard({ sd, k, color }: { sd: number; k: number; color: string }) {
+/** A ±k·SD guardline pair, labelled with that band's own coverage. */
+function SdGuard({
+  sd,
+  k,
+  color,
+  pct,
+}: {
+  sd: number
+  k: number
+  color: string
+  pct?: { up: number; down: number }
+}) {
   const y = sd * k
   return (
     <>
@@ -37,10 +81,12 @@ function SdGuard({ sd, k, color }: { sd: number; k: number; color: string }) {
         strokeOpacity={0.5}
         ifOverflow="extendDomain"
         label={{
-          value: `+${k} SD`,
+          value: pct ? `+${k} SD  ${pct.up.toFixed(1)}%` : `+${k} SD`,
           position: 'insideTopRight',
+          dx: -4,
           fill: color,
           fontSize: 11,
+          fontWeight: 600,
         }}
       />
       <ReferenceLine
@@ -50,10 +96,12 @@ function SdGuard({ sd, k, color }: { sd: number; k: number; color: string }) {
         strokeOpacity={0.5}
         ifOverflow="extendDomain"
         label={{
-          value: `-${k} SD`,
+          value: pct ? `-${k} SD  ${pct.down.toFixed(1)}%` : `-${k} SD`,
           position: 'insideBottomRight',
+          dx: -4,
           fill: color,
           fontSize: 11,
+          fontWeight: 600,
         }}
       />
     </>
@@ -104,6 +152,7 @@ function SdBackground({ sd }: { sd: number }) {
  * the ±2 / ±3 layers mark the samples the model misses.
  */
 export function ResidualChart({ rows, sd, tickFormatter, compareName }: Props) {
+  const coverage = useMemo(() => sdCoverage(rows, sd), [rows, sd])
   return (
     <ResponsiveContainer width="100%" height={280}>
       <ComposedChart
@@ -144,9 +193,9 @@ export function ResidualChart({ rows, sd, tickFormatter, compareName }: Props) {
         />
 
         <SdBackground sd={sd} />
-        <SdGuard sd={sd} k={1} color="var(--chart-2)" />
-        <SdGuard sd={sd} k={2} color="var(--chart-3)" />
-        <SdGuard sd={sd} k={3} color="var(--destructive)" />
+        <SdGuard sd={sd} k={1} color="var(--chart-2)" pct={coverage?.[1]} />
+        <SdGuard sd={sd} k={2} color="var(--chart-3)" pct={coverage?.[2]} />
+        <SdGuard sd={sd} k={3} color="var(--destructive)" pct={coverage?.[3]} />
 
         {/* Perfect-prediction baseline. */}
         <ReferenceLine

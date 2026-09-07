@@ -44,6 +44,9 @@ function ridgeRun(overrides: Partial<ModelTrainingRun> = {}): ModelTrainingRun {
     predictionsKey: null,
     scoringContainerId: null,
     lossHistoryKey: null,
+    // MODEL-FLOW-020-T04. Apply reads hyperparameters and split, never this
+    // sidecar — null keeps that boundary visible in the fixture.
+    splitStats: null,
     candidateJobId: null,
     createdAt: '2026-08-27T00:00:00.000Z',
     startedAt: '2026-08-27T00:00:01.000Z',

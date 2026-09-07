@@ -330,3 +330,80 @@ def test_replay_for_run_produces_the_same_columns_in_the_same_order_as_the_gold(
     )
 
     assert replayed_columns == gold_columns
+
+
+def test_replay_accepts_a_tz_aware_boundary_and_matches_the_naive_one() -> None:
+    """MODEL-FLOW-020-T03 regression. The boundary reaches this service as
+    JSON, and the backend serialises it with JavaScript's `toISOString()`,
+    which appends `Z`. Before `_wall_clock`, `pd.Timestamp` built a tz-AWARE
+    value and pandas raised `TypeError: Invalid comparison between
+    dtype=datetime64[us] and Timestamp` against the frame's naive column.
+
+    The bug was invisible where it mattered: `tryReplayHoldout` swallows the
+    error and the run's only trace is the generic "Holdout scoring skipped:
+    Preprocessing failed", so an affected dataset trained fine and silently
+    never scored a holdout at all — 0 of 5 runs on the real artifact
+    1ae5cc53.
+
+    Asserted as EQUALITY WITH THE NAIVE FORM, not merely "does not raise":
+    a fix that converted rather than stripped the zone would also stop
+    raising, while moving the boundary by the UTC offset and changing which
+    rows are scored. Same wall time in, same rows out.
+    """
+    source = _daily_frame(10)[4:10].reset_index(drop=True)
+
+    def run(boundary: str) -> tuple[int, list[float]]:
+        store = RecordingStore(
+            {"ds-1/artifacts/bronze-1/validate_data.parquet": source.copy()}
+        )
+        result = artifact_service.replay_holdout(
+            store,
+            ReplayHoldoutRequest(
+                source_key="ds-1/artifacts/bronze-1/validate_data.parquet",
+                target_key="ds-1/artifacts/bronze-1/validate_ready.parquet",
+                holdout_from=boundary,
+                features=[
+                    FeatureConfigRequest(id="f1", kind="lag", tag="TI-101", k=3)
+                ],
+                selected_columns=["TI-101__lag3"],
+                scalers={"TI-101__lag3": "none"},
+            ),
+        )
+        written = store.objects["ds-1/artifacts/bronze-1/validate_ready.parquet"]
+        return result["row_count"], written["TI-101__lag3"].tolist()
+
+    naive = run("2026-01-08")
+    # The exact shape `new Date(...).toISOString()` produces server-side.
+    tz_aware = run("2026-01-08T00:00:00.000Z")
+
+    assert tz_aware == naive
+    assert naive == (3, [4.0, 5.0, 6.0])
+
+
+def test_replay_refusal_still_fires_on_a_tz_aware_boundary() -> None:
+    """The lead-in refusal is computed from the SAME comparison the tz bug
+    broke, so it must survive the fix rather than be quietly disabled by it.
+    Without the boundary normalisation this raised TypeError; with a fix
+    that swallowed the comparison entirely it would raise nothing at all.
+    """
+    store = RecordingStore(
+        {
+            "ds-1/artifacts/bronze-1/validate_data.parquet": _daily_frame(10)[
+                6:10
+            ].reset_index(drop=True)
+        }
+    )
+    with pytest.raises(ValueError, match="Lead-in is insufficient"):
+        artifact_service.replay_holdout(
+            store,
+            ReplayHoldoutRequest(
+                source_key="ds-1/artifacts/bronze-1/validate_data.parquet",
+                target_key="ds-1/artifacts/bronze-1/validate_ready.parquet",
+                holdout_from="2026-01-08T00:00:00.000Z",
+                features=[
+                    FeatureConfigRequest(id="f1", kind="lag", tag="TI-101", k=5)
+                ],
+                selected_columns=["TI-101__lag5"],
+                scalers={"TI-101__lag5": "none"},
+            ),
+        )

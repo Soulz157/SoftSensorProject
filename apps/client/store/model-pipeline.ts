@@ -211,6 +211,8 @@ export const mpTrainStateAtom = atom<TrainState>({
 export const mpCreatedModelIdAtom = atom<string>('')
 export const mpSelectedMetricsAtom = atom<MetricKey[]>([...METRIC_KEYS])
 
+export const mpCompareRunIdsAtom = atom<ReadonlySet<string>>(new Set<string>())
+
 // --- Model Draft workspace (client-only; MODEL-FLOW-002) -------------------
 // The wizard's "Model Draft" is the in-memory collection of `mp*` atoms — it has
 // NO backend record. Per the refactor invariant, the persistent `Model` row is

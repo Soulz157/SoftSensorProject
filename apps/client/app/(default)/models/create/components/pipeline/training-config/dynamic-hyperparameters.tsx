@@ -10,7 +10,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { HYPERPARAMS, type HyperparamField } from '@/lib/training-config'
+import {
+  HYPERPARAMS,
+  type HyperparamField,
+  type SuggestedRange,
+} from '@/lib/training-config'
 import type { Algorithm, HyperparamValue } from '@/store/model-pipeline'
 
 interface Props {
@@ -38,6 +42,20 @@ export function DynamicHyperparameters({
   return (
     <div className="space-y-2">
       <Label className="text-xs font-medium">Hyperparameters</Label>
+      {/* MODEL-FLOW-020-T05. Said ONCE per block rather than per field, and
+          said at all because the bands would otherwise overclaim. Each range
+          describes its estimator in general; none is sized to the selected
+          dataset, because MODEL-FLOW-020-T03 measured capacity against real
+          holdouts at 32, 59 and 97 distinct labelled values and found three
+          different orderings of the same settings — no value inside these
+          bands separated from another. Leaving that unsaid would put a
+          confident-looking number in front of the user on exactly the data
+          where it carries no information, which is the failure this
+          feature's own finding 1 opens with. */}
+      <p className="text-[10px] leading-tight text-muted-foreground">
+        Suggested ranges describe each estimator, not your dataset — on data
+        this size, no value within them measurably changed holdout error.
+      </p>
       <div className="grid grid-cols-1 gap-4 rounded-lg p-4 sm:grid-cols-2">
         {fields.map(field => (
           <HyperparamControl
@@ -49,6 +67,28 @@ export function DynamicHyperparameters({
         ))}
       </div>
     </div>
+  )
+}
+
+/**
+ * MODEL-FLOW-020-T05. The suggested band, rendered UNDER its field as
+ * advisory text — it constrains nothing, and the input still accepts whatever
+ * the field's own min/max allow.
+ *
+ * Neutral muted token, never a warning colour: red and amber are reserved for
+ * workspace and plant status in this codebase, and a value outside this band
+ * is not an error — it is a choice the user is allowed to make. Nothing here
+ * reacts to the current value for the same reason; a band that turned red
+ * would be a validation message wearing advisory clothing.
+ */
+function RangeHint({ range }: { range: SuggestedRange }) {
+  return (
+    <p className="text-[10px] leading-tight text-muted-foreground">
+      <span className="font-mono tabular-nums">
+        {range.min}–{range.max}
+      </span>{' '}
+      · {range.note}
+    </p>
   )
 }
 
@@ -79,6 +119,7 @@ function HyperparamControl({
             onChange={e => onChange(field.key, Number(e.target.value))}
             className="h-9 font-mono text-sm tabular-nums"
           />
+          {field.suggestedRange && <RangeHint range={field.suggestedRange} />}
         </div>
       )
     }
@@ -154,6 +195,7 @@ function HyperparamControl({
             />
             Unlimited (None)
           </label>
+          {field.suggestedRange && <RangeHint range={field.suggestedRange} />}
         </div>
       )
     }

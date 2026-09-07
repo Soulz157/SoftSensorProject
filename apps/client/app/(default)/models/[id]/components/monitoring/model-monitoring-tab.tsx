@@ -142,8 +142,8 @@ export function ModelMonitoringTab({ model }: Props) {
           />
         </div>
         <p className="mb-3 text-xs text-muted-foreground">
-          Simulated pending the ground-truth join — no measured actual value
-          exists for this model yet.
+          Measured actual against this model&apos;s own prediction over the same
+          period — the shaded band is ±1 SD of the fit residual.
         </p>
 
         <div className="max-h-full flex-1">

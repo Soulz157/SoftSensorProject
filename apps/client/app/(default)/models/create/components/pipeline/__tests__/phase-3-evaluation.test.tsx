@@ -57,7 +57,13 @@ const RUN = {
   targetY: 'S204FBP.lab',
   failureReason: null,
 }
-const METRICS = { r2: -2.406723649677836, rmse: 0.5259401632305729 }
+const METRICS = {
+  r2: -2.406723649677836,
+  rmse: 0.5259401632305729,
+  // MODEL-FLOW-019-T04. Added when ModelMetrics widened to include `mae` —
+  // an arbitrary but plausible value, not asserted on by any test here.
+  mae: 0.31,
+}
 const POINTS = [
   {
     timestamp: '2026-02-08 00:46:00',
@@ -115,6 +121,7 @@ describe('Phase5Evaluation (MODEL-FLOW-004)', () => {
       fit: {
         r2: METRICS.r2,
         rmse: METRICS.rmse,
+        mae: METRICS.mae,
         sd: 0.435277,
         n: POINTS.length,
         points: POINTS,
@@ -141,6 +148,7 @@ describe('Phase5Evaluation (MODEL-FLOW-004)', () => {
       fit: {
         r2: METRICS.r2,
         rmse: METRICS.rmse,
+        mae: METRICS.mae,
         sd: 0.435277,
         n: POINTS.length,
         points: POINTS,
@@ -167,6 +175,7 @@ describe('Phase5Evaluation (MODEL-FLOW-004)', () => {
       fit: {
         r2: METRICS.r2,
         rmse: METRICS.rmse,
+        mae: METRICS.mae,
         sd: 0.435277,
         n: POINTS.length,
         points: POINTS,
@@ -201,6 +210,7 @@ describe('Phase5Evaluation (MODEL-FLOW-004)', () => {
       fit: {
         r2: METRICS.r2,
         rmse: METRICS.rmse,
+        mae: METRICS.mae,
         sd: 0.435277,
         n: POINTS.length,
         points: POINTS,
@@ -216,6 +226,7 @@ describe('Phase5Evaluation (MODEL-FLOW-004)', () => {
       fit: {
         r2: METRICS.r2,
         rmse: METRICS.rmse,
+        mae: METRICS.mae,
         sd: 0.435277,
         n: POINTS.length,
         points: POINTS,

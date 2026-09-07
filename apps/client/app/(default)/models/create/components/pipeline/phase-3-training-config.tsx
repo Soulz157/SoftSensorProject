@@ -32,7 +32,6 @@ export function Phase3TrainingConfig({ nav }: Props) {
   const { ensureDraftId, flush } = useModelDraftSync({ autoSync: false })
   const runConfigDraft = useRunConfigDraft(nav)
   const { draft, dirty } = runConfigDraft
-  const training = useModelTraining({ ensureDraftId })
   const tags = selectedDataset?.tags ?? []
 
   // MODEL-FLOW-016-T10. ONE fetch, shared by SplitDistributionPanel (the
@@ -64,6 +63,22 @@ export function Phase3TrainingConfig({ nav }: Props) {
     cvMode ? null : trainTestSplit / 100,
     cvMode ? nav.nSplits : undefined,
   )
+
+  // MODEL-FLOW-020-T04. Declared AFTER the fetch above, not before it as it
+  // was originally: a candidate job records the two dataset size figures the
+  // user was actually shown, which only exist once `splitStats` has
+  // resolved. The hook reads nothing this fetch depends on, so the move is
+  // ordering alone.
+  //
+  // The RESULT is passed, never a second fetch — `distinct_labelled_values`
+  // costs a full artifact read, and this is the one place in the wizard that
+  // has already paid for it. `splitStats.splitStats` is null until Apply
+  // (and stays null for an lstm/gru selection, which declines to fetch at
+  // all above); the job then records neither figure.
+  const training = useModelTraining({
+    ensureDraftId,
+    splitStats: splitStats.splitStats,
+  })
 
   // Flushes on mount (replacing autoSync's old mount PATCH — a user who
   // accepts every default must not leave the draft row never seeded) AND on
@@ -192,6 +207,13 @@ export function Phase3TrainingConfig({ nav }: Props) {
             <AlgorithmSelector
               algorithms={draft.algorithms}
               onChange={runConfigDraft.setAlgorithms}
+              // MODEL-FLOW-020-T06. The train-split figure the GPR ceiling is
+              // actually measured against — null before Apply and in CV mode,
+              // where no single train split exists, and the selector then
+              // offers no size-based refusal at all.
+              trainLabelledRows={
+                splitStats.splitStats?.train_labelled_rows ?? null
+              }
             />
             <AutoMlToggles
               findBestModel={draft.findBestModel}
@@ -295,7 +317,7 @@ export function Phase3TrainingConfig({ nav }: Props) {
               </h3>
             </div>
 
-            {/* Mockup Visualization for Algorithm Behavior */}
+            {/*  Visualization for Algorithm Behavior */}
             <div className="space-y-4 pt-2">
               <RuntimeEstimate
                 rows={rowCount}

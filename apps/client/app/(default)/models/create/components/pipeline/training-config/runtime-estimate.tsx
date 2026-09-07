@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { AlertTriangle, Timer } from 'lucide-react'
+import { AlertTriangle } from 'lucide-react'
 import {
   breakdownRuntime,
   estimateRuntimeSeconds,

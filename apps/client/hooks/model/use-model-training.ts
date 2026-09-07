@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import {
   modelDraftRunService,
@@ -9,6 +9,7 @@ import {
   type CreateDraftRunInput,
   type ModelCandidateJob,
 } from '@/services/model-draft'
+import type { DraftSplitStatsResult } from '@/services/dataset-version'
 import { defaultHyperparams } from '@/lib/training-config'
 import {
   mpTrainStateAtom,
@@ -44,6 +45,28 @@ export interface UseModelTrainingResult extends TrainState {
 interface Deps {
   /** From `useModelDraftSync()` — guarantees a server ModelDraft exists. */
   ensureDraftId: () => Promise<string | null>
+  /**
+   * MODEL-FLOW-020-T04/T02. The `/split-stats` result Step 3 has ALREADY
+   * fetched, passed in rather than re-read here: the two size figures a
+   * candidate job records come off it, and this hook must not make a second
+   * call for them — the whole reason they are captured client-side is that
+   * `distinct_labelled_values` costs a full artifact read the launch path
+   * deliberately refuses.
+   *
+   * A DEP, NOT AN ATOM, unlike every other input this hook reads: these are
+   * the RESPONSE to a fetch the parent owns, not wizard state the user set.
+   * Putting them in an `mp*` atom would make a server response look like
+   * config that survives a draft resume, which it is not.
+   *
+   * `null` whenever that fetch has not resolved — no Apply yet, a sequence
+   * algorithm selected (the parent declines to fetch for lstm/gru), or still
+   * in flight. The job then records NEITHER figure, which is the honest
+   * state rather than a guess.
+   */
+  splitStats: Pick<
+    DraftSplitStatsResult,
+    'source_rows' | 'distinct_labelled_values'
+  > | null
 }
 
 /**
@@ -67,6 +90,7 @@ function toBackendAlgorithm(
  */
 export function useModelTraining({
   ensureDraftId,
+  splitStats,
 }: Deps): UseModelTrainingResult {
   const [trainState, setTrainState] = useAtom(mpTrainStateAtom)
   const serverDraftId = useAtomValue(mpServerDraftIdAtom)
@@ -313,6 +337,29 @@ export function useModelTraining({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  /**
+   * MODEL-FLOW-020-T04. The two size figures a candidate job records, shaped
+   * once here and spread into all three job-creating calls below rather than
+   * re-derived at each — the sweep, the direct search and SWEEP_THEN_TUNE
+   * must record the same thing, and three copies of `?? undefined` is how
+   * they would eventually stop doing so.
+   *
+   * `{}` when the fetch has not resolved: the server's own schema refuses one
+   * figure without the other, so the pair is spread whole or not at all,
+   * which makes a half-captured job unrepresentable here rather than merely
+   * rejected downstream.
+   */
+  const sizedFigures = useMemo(
+    () =>
+      splitStats
+        ? {
+            sizedRowCount: splitStats.source_rows,
+            sizedDistinctLabelled: splitStats.distinct_labelled_values,
+          }
+        : {},
+    [splitStats],
+  )
+
   const run = useCallback(async () => {
     if (runningRef.current || trainState.status === 'training') return
     runningRef.current = true
@@ -404,6 +451,7 @@ export function useModelTraining({
               hyperparameters: defaultHyperparams(algorithm),
             },
           ],
+          ...sizedFigures,
         })
 
         pollJob(draftId, created.data.id)
@@ -443,6 +491,7 @@ export function useModelTraining({
           kind: findBestParams ? 'SWEEP_THEN_TUNE' : 'ALGORITHM_SWEEP',
           trainTestSplit: trainTestSplit / 100,
           candidates,
+          ...sizedFigures,
         })
 
         pollJob(draftId, created.data.id)
@@ -515,6 +564,7 @@ export function useModelTraining({
     nSplits,
     splitStatsTags,
     seed,
+    sizedFigures,
     ensureDraftId,
     pollRun,
     pollJob,

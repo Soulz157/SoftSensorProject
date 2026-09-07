@@ -6,6 +6,7 @@ import {
   waitFor,
   within,
 } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { createStore, Provider } from 'jotai'
 import { Phase4ModelSelection } from '../phase-4-model-selection'
 import {
@@ -19,6 +20,7 @@ import type {
   CandidateResult,
   ModelCandidateJob,
   ModelTrainingRunListItem,
+  RunPredictionsBatchItem,
 } from '@/services/model-draft'
 import type { UsePipelineNavResult } from '@/hooks/model/use-model-pipeline-nav'
 
@@ -43,6 +45,15 @@ const h = vi.hoisted(() => ({
     loading: false,
     refetch: vi.fn(),
   },
+  // MODEL-FLOW-017. Default empty — pre-existing tests below never
+  // configure this, so `CandidateBaseChart` renders its own "no predictions
+  // artifact recorded" honest state for every candidate, unchanged by this
+  // feature's mock unless a test opts in.
+  predictionsResult: {
+    byRunId: new Map<string, RunPredictionsBatchItem>(),
+    loading: false,
+    error: null as string | null,
+  },
 }))
 
 vi.mock('@/hooks/model/use-candidate-job', () => ({
@@ -55,6 +66,10 @@ vi.mock('@/hooks/model/use-draft-runs', () => ({
 
 vi.mock('@/hooks/model/use-draft-selection', () => ({
   useDraftSelection: () => h.selectionResult,
+}))
+
+vi.mock('@/hooks/model/use-candidate-predictions', () => ({
+  useCandidatePredictions: () => h.predictionsResult,
 }))
 
 vi.mock('@/services/model-draft', async () => {
@@ -90,6 +105,11 @@ function candidate(overrides: Partial<CandidateResult> = {}): CandidateResult {
     predictionsKey: null,
     cvFoldsKey: null,
     scoringContainerId: null,
+    // MODEL-FLOW-019-T02. Mirrors what the server sends for this fixture's
+    // own `metrics` — the same figure, carrying the source it is a figure
+    // of. Overridable per test like every other field here.
+    sourcedMetrics: [{ source: 'test-split', r2: 0.9, rmse: 0.5, mae: 0.4 }],
+    holdoutAbsence: 'no-dataset-holdout',
     ...overrides,
   }
 }
@@ -149,6 +169,9 @@ beforeEach(() => {
   h.selectionResult.selectedRunId = null
   h.selectionResult.loading = false
   h.selectionResult.refetch = vi.fn()
+  h.predictionsResult.byRunId = new Map()
+  h.predictionsResult.loading = false
+  h.predictionsResult.error = null
   NAV.goTo = vi.fn()
 })
 
@@ -176,6 +199,11 @@ function trainingRun(
     predictionsKey: null,
     scoringContainerId: null,
     lossHistoryKey: null,
+    // MODEL-FLOW-020-T04. Null by default — Step 4 reads nothing from this
+    // sidecar, and a run whose fire-and-forget freeze never landed is the
+    // more common shape regardless (31 of 179 runs carried one when
+    // measured).
+    splitStats: null,
     candidateJobId: null,
     createdAt: '2026-08-27T00:00:00.000Z',
     startedAt: '2026-08-27T00:00:01.000Z',
@@ -232,8 +260,146 @@ describe('Phase4ModelSelection (MODEL-FLOW-013)', () => {
       store.set(mpCandidateJobIdAtom, 'job-1')
     })
 
-    expect(screen.getByText('Ridge Regression')).toBeInTheDocument()
+    // MODEL-FLOW-019-T04/T06. Both names render once, in their own table
+    // row — charts (and any algorithm label inside them) stay collapsed
+    // until that row's own reveal toggle is clicked, so `getAllByText`
+    // here is just defensive, not asserting a specific count.
+    expect(screen.getAllByText('Ridge Regression').length).toBeGreaterThan(0)
     expect(screen.getByText('Support Vector Machine')).toBeInTheDocument()
+    expect(screen.getByText('container OOM')).toBeInTheDocument()
+  })
+
+  function predictionsItem(
+    overrides: Partial<RunPredictionsBatchItem> = {},
+  ): RunPredictionsBatchItem {
+    return {
+      runId: 'run-1',
+      sourceKey: 'drafts/draft-1/runs/run-1/predictions.parquet',
+      rowCount: 3,
+      residualSd: 0.1,
+      residualRmseCheck: 0.1,
+      yTrueMin: 1,
+      yTrueMax: 3,
+      yPredMin: 1,
+      yPredMax: 3,
+      points: [
+        { timestamp: '2026-01-01 00:00:00', yTrue: 1, yPred: 1.1 },
+        { timestamp: '2026-01-01 00:10:00', yTrue: 2, yPred: 1.9 },
+        { timestamp: '2026-01-01 00:20:00', yTrue: 3, yPred: 3.2 },
+      ],
+      downsampled: false,
+      error: null,
+      ...overrides,
+    }
+  }
+
+  it('MODEL-FLOW-017-V01: BOTH a closed-form (mode B) and a mode-A candidate get the actual-vs-predicted base chart', () => {
+    h.predictionsResult.byRunId = new Map([
+      ['run-1', predictionsItem({ runId: 'run-1' })],
+      [
+        'run-2',
+        predictionsItem({
+          runId: 'run-2',
+          sourceKey: 'drafts/draft-1/runs/run-2/predictions.parquet',
+        }),
+      ],
+    ])
+    h.result.job = job({
+      candidates: [
+        // Closed-form — no lossHistory, mode B diagnostic.
+        candidate({ runId: 'run-1', algorithm: 'ridge', status: 'SUCCEEDED' }),
+        // Mode A — has a real lossHistory.
+        candidate({
+          runId: 'run-2',
+          algorithm: 'xgboost',
+          status: 'SUCCEEDED',
+          lossHistoryKey: 'drafts/draft-1/runs/run-2/loss_history.json',
+          lossHistory: {
+            algorithm: 'xgboost',
+            metric: 'rmse',
+            series: { train: [1.0, 0.5], validation: [1.1, 0.6] },
+          },
+        }),
+      ],
+    })
+    const { container } = renderStep(store => {
+      store.set(mpTrainingResultAtom, {
+        runId: 'run-1',
+        algorithm: 'ridge',
+        metrics: { rmse: 0.5 },
+        trainedAt: '2026-08-28T00:00:00.000Z',
+        cvFoldsKey: null,
+      })
+      store.set(mpCandidateJobIdAtom, 'job-1')
+    })
+
+    // MODEL-FLOW-019-T06. Charts render only once a row's own toggle is
+    // opened — reveal both here, matching -017's original "every SUCCEEDED
+    // candidate gets a chart" claim, just no longer unconditional.
+    screen
+      .getAllByRole('button', { name: /show charts/i })
+      .forEach(button => fireEvent.click(button))
+
+    // Every SUCCEEDED candidate — closed-form included — gets the base
+    // chart's own question, never only the mode-A one.
+    expect(screen.getAllByText('Does it track reality?')).toHaveLength(2)
+    // Both candidates ALSO get the "did it converge" diagnostic label —
+    // mode B answers it honestly with two paired marks rather than a real
+    // curve, it is not omitted for lacking one (T05: the diagnostic's
+    // question doesn't change, only its substance).
+    expect(screen.getAllByText('Did it converge?')).toHaveLength(2)
+    expect(
+      screen.getByText(/No iteration-by-iteration curve/i),
+    ).toBeInTheDocument()
+    // At least 2 chart svgs render: ridge's base chart + xgboost's base
+    // chart + xgboost's mode-A loss curve. Asserting only the mode-A
+    // candidate has a rendered chart would pass against the
+    // pre-MODEL-FLOW-017 behaviour unchanged.
+    expect(
+      container.querySelectorAll('.recharts-wrapper, svg').length,
+    ).toBeGreaterThanOrEqual(2)
+  })
+
+  it('MODEL-FLOW-017-V04: a FAILED candidate shows no chart frame, alongside SUCCEEDED candidates that do', () => {
+    h.predictionsResult.byRunId = new Map([
+      ['run-1', predictionsItem({ runId: 'run-1' })],
+    ])
+    h.result.job = job({
+      candidates: [
+        candidate({ runId: 'run-1', algorithm: 'ridge', status: 'SUCCEEDED' }),
+        candidate({
+          runId: 'run-2',
+          algorithm: 'svm',
+          status: 'FAILED',
+          failureReason: 'container OOM',
+          metrics: null,
+          trainMetrics: null,
+        }),
+      ],
+    })
+    renderStep(store => {
+      store.set(mpTrainingResultAtom, {
+        runId: 'run-1',
+        algorithm: 'ridge',
+        metrics: { rmse: 0.5 },
+        trainedAt: '2026-08-28T00:00:00.000Z',
+        cvFoldsKey: null,
+      })
+      store.set(mpCandidateJobIdAtom, 'job-1')
+    })
+
+    // MODEL-FLOW-019-T06. Only the SUCCEEDED row gets a reveal toggle at
+    // all — a FAILED row has nothing to chart, so there is no button for it
+    // to click, which is the suppression this test asserts.
+    expect(
+      screen.getAllByRole('button', { name: /show charts/i }),
+    ).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: /show charts/i }))
+
+    // The SUCCEEDED candidate got its base chart — one occurrence, not zero
+    // (distinguishes correct suppression on the FAILED row from a set that
+    // happened to render no charts at all).
+    expect(screen.getAllByText('Does it track reality?')).toHaveLength(1)
     expect(screen.getByText('container OOM')).toBeInTheDocument()
   })
 
@@ -278,6 +444,8 @@ describe('Phase4ModelSelection (MODEL-FLOW-013)', () => {
       })
       store.set(mpCandidateJobIdAtom, 'job-1')
     })
+    // MODEL-FLOW-019-T06. Reveal this row's charts — hidden by default.
+    fireEvent.click(screen.getByRole('button', { name: /show charts/i }))
 
     expect(
       screen.getByText(/No iteration-by-iteration curve/i),
@@ -310,6 +478,8 @@ describe('Phase4ModelSelection (MODEL-FLOW-013)', () => {
       })
       store.set(mpCandidateJobIdAtom, 'job-1')
     })
+    // MODEL-FLOW-019-T06. Reveal this row's charts — hidden by default.
+    fireEvent.click(screen.getByRole('button', { name: /show charts/i }))
 
     expect(screen.getByText('Test split')).toBeInTheDocument()
     expect(screen.queryByText('Validation')).not.toBeInTheDocument()
@@ -414,6 +584,345 @@ describe('Phase4ModelSelection (MODEL-FLOW-013)', () => {
 
     expect(screen.queryByText('Sweep')).not.toBeInTheDocument()
     expect(screen.queryByText(/^Tuning /)).not.toBeInTheDocument()
+  })
+})
+
+describe('Phase4ModelSelection — the ranked candidate table (MODEL-FLOW-019-T04)', () => {
+  function setup(job: ModelCandidateJob) {
+    h.result.job = job
+    return renderStep(store => {
+      store.set(mpTrainingResultAtom, {
+        runId: 'run-1',
+        algorithm: 'ols',
+        metrics: { rmse: 0.5 },
+        trainedAt: '2026-08-28T00:00:00.000Z',
+        cvFoldsKey: null,
+      })
+      store.set(mpCandidateJobIdAtom, 'job-1')
+    })
+  }
+
+  it('states which source ordered the table, above the rows (AC3)', () => {
+    // Both candidates default to `holdoutAbsence: 'no-dataset-holdout'` —
+    // the fixture's own default — so the ordering falls back to the test
+    // split, honestly, and says so.
+    setup(
+      job({
+        candidates: [
+          candidate({ runId: 'run-1', algorithm: 'ols' }),
+          candidate({
+            runId: 'run-2',
+            algorithm: 'ridge',
+            metrics: { r2: 0.7, rmse: 0.7, mae: 0.6 },
+            sourcedMetrics: [
+              { source: 'test-split', r2: 0.7, rmse: 0.7, mae: 0.6 },
+            ],
+          }),
+        ],
+      }),
+    )
+    expect(
+      screen.getByText(
+        'Ranked by Test RMSE — this dataset has no validation holdout.',
+      ),
+    ).toBeInTheDocument()
+  })
+
+  it('names each of the three reasons a holdout figure is absent distinctly (AC11)', () => {
+    setup(
+      job({
+        candidates: [
+          candidate({
+            runId: 'run-1',
+            algorithm: 'ols',
+            holdoutAbsence: 'no-dataset-holdout',
+          }),
+          candidate({
+            runId: 'run-2',
+            algorithm: 'ridge',
+            metrics: { r2: 0.7, rmse: 0.7, mae: 0.6 },
+            sourcedMetrics: [
+              { source: 'test-split', r2: 0.7, rmse: 0.7, mae: 0.6 },
+            ],
+            holdoutAbsence: 'not-scored-yet',
+          }),
+          candidate({
+            runId: 'run-3',
+            algorithm: 'svm',
+            metrics: { r2: 0.6, rmse: 0.8, mae: 0.7 },
+            sourcedMetrics: [
+              { source: 'test-split', r2: 0.6, rmse: 0.8, mae: 0.7 },
+            ],
+            holdoutAbsence: 'not-recorded',
+          }),
+        ],
+      }),
+    )
+    // Each carries the same reason ONCE PER SELECTED METRIC COLUMN (r2,
+    // rmse, mae by default) — a per-column repeat, not a per-row single
+    // value, so `getAllByText` proves presence without asserting a count
+    // this test's own AC does not care about.
+    expect(screen.getAllByText('No holdout').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Awaiting scoring').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Not recorded').length).toBeGreaterThan(0)
+  })
+
+  it('never shows a holdout figure without its own missing rate, beside the value (AC2)', () => {
+    setup(
+      job({
+        candidates: [
+          candidate({
+            runId: 'run-1',
+            algorithm: 'ols',
+            sourcedMetrics: [
+              { source: 'test-split', r2: 0.9, rmse: 0.5, mae: 0.4 },
+              {
+                source: 'holdout',
+                r2: 0.8,
+                rmse: 0.169,
+                mae: 0.14,
+                rowCount: 1153,
+                droppedUnlabelled: 0,
+                droppedBadFeatures: 0,
+              },
+            ],
+          }),
+        ],
+      }),
+    )
+    // Appears once for rmse's own Holdout cell, and the rate text repeats
+    // per selected metric column since it describes the SAME holdout
+    // sample each column reads from — `getAllByText` for the shared rate,
+    // singular for the one rmse value this fixture set.
+    expect(screen.getByText('0.169')).toBeInTheDocument()
+    expect(screen.getAllByText('0.0% missing (n=1153)').length).toBeGreaterThan(
+      0,
+    )
+  })
+
+  it('reads the missing rate as "not recorded" for a legacy holdout with no counts, never as 0% (AC2)', () => {
+    setup(
+      job({
+        candidates: [
+          candidate({
+            runId: 'run-1',
+            algorithm: 'ols',
+            sourcedMetrics: [
+              { source: 'test-split', r2: 0.9, rmse: 0.5, mae: 0.4 },
+              {
+                source: 'holdout',
+                r2: 0.8,
+                rmse: 0.2,
+                mae: 0.1,
+                rowCount: null,
+                droppedUnlabelled: null,
+                droppedBadFeatures: null,
+              },
+            ],
+          }),
+        ],
+      }),
+    )
+    expect(
+      screen.getAllByText('missing rate not recorded').length,
+    ).toBeGreaterThan(0)
+    expect(screen.queryByText(/0\.0% missing/)).not.toBeInTheDocument()
+  })
+
+  it('re-ranks the table when a different metric header is clicked (AC3, T03)', () => {
+    setup(
+      job({
+        candidates: [
+          candidate({
+            runId: 'run-1',
+            algorithm: 'ols',
+            metrics: { r2: 0.4, rmse: 0.9, mae: 0.8 },
+            sourcedMetrics: [
+              { source: 'test-split', r2: 0.4, rmse: 0.9, mae: 0.8 },
+            ],
+          }),
+          candidate({
+            runId: 'run-2',
+            algorithm: 'ridge',
+            metrics: { r2: 0.9, rmse: 0.2, mae: 0.1 },
+            sourcedMetrics: [
+              { source: 'test-split', r2: 0.9, rmse: 0.2, mae: 0.1 },
+            ],
+          }),
+        ],
+      }),
+    )
+    // By default (rmse, minimised) ridge (0.2) ranks #1, ols (0.9) #2 — the
+    // first "#" cell belongs to whichever row is FIRST in ranked order.
+    const rankCellsBefore = screen
+      .getAllByRole('cell')
+      .filter(c => c.textContent === '1' || c.textContent === '2')
+    expect(rankCellsBefore[0]?.textContent).toBe('1')
+
+    // Both candidates already share r2 too — clicking its header re-sorts
+    // by r2 (maximised), which does not change first place here (ridge
+    // still wins on r2 as well as rmse), so assert the CLICK itself worked
+    // via the one thing that must change: the active header's own state.
+    fireEvent.click(screen.getByTitle('Rank by R²'))
+    expect(screen.getByTitle('Rank by R²').className).toMatch(/font-semibold/)
+    expect(screen.getByTitle('Rank by RMSE').className).not.toMatch(
+      /font-semibold/,
+    )
+  })
+
+  it('shares Step 5s picker vocabulary and its cannot-deselect-the-last-metric guard (AC6)', async () => {
+    setup(job({ candidates: [candidate({ runId: 'run-1' })] }))
+    const user = userEvent.setup()
+
+    // Radix's DropdownMenu opens on pointer events it listens for itself —
+    // `fireEvent.click` alone does not raise them; `userEvent`, used
+    // elsewhere in this codebase for the same reason (draft-resume-section
+    // .test.tsx), does.
+    await user.click(screen.getByRole('button', { name: /Metrics/i }))
+    // Same four keys Step 5 offers — r2/rmse/mae/sd — not a second,
+    // independently-declared vocabulary.
+    expect(
+      screen.getByText(/R² — Coefficient of determination/),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(/RMSE — Root mean squared error/),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/MAE — Mean absolute error/)).toBeInTheDocument()
+    expect(
+      screen.getByText(/SD — Residual standard deviation/),
+    ).toBeInTheDocument()
+
+    // Deselect down to one. Each checkbox item is a Radix "select" that
+    // closes the menu (this component's own existing, un-overridden
+    // behaviour — Step 5's identical picker closes the same way) — reopen
+    // before each further click.
+    await user.click(screen.getByText(/RMSE — Root mean squared error/))
+    await user.click(screen.getByRole('button', { name: /Metrics/i }))
+    await user.click(screen.getByText(/MAE — Mean absolute error/))
+    await user.click(screen.getByRole('button', { name: /Metrics/i }))
+    await user.click(screen.getByText(/SD — Residual standard deviation/))
+    await user.click(screen.getByRole('button', { name: /Metrics/i }))
+    const lastItem = screen
+      .getByText(/R² — Coefficient of determination/)
+      .closest('[role="menuitemcheckbox"]')
+    expect(lastItem).toHaveAttribute('aria-disabled', 'true')
+  })
+
+  it('renders an em dash for a failed candidate’s metric cells and keeps its row (AC5)', () => {
+    setup(
+      job({
+        candidates: [
+          candidate({ runId: 'run-1', algorithm: 'ols' }),
+          candidate({
+            runId: 'run-2',
+            algorithm: 'svm',
+            status: 'FAILED',
+            failureReason: 'container OOM',
+            metrics: null,
+            trainMetrics: null,
+            sourcedMetrics: [],
+            holdoutAbsence: null,
+          }),
+        ],
+      }),
+    )
+    // The FAILED row keeps its place at the bottom with a dash rank, its
+    // failure reason, and dashes for every metric cell — never dropped,
+    // never a fabricated number.
+    expect(screen.getByText('container OOM')).toBeInTheDocument()
+    // The reason is the "#" cell's own `title`, not visible text — the rank
+    // column itself renders '—' for any unranked row.
+    expect(screen.getByTitle('Did not finish')).toBeInTheDocument()
+  })
+})
+
+describe('Phase4ModelSelection — charts revealed per row, not all at once (MODEL-FLOW-019-T06)', () => {
+  function setup(job: ModelCandidateJob) {
+    h.result.job = job
+    return renderStep(store => {
+      store.set(mpTrainingResultAtom, {
+        runId: 'run-1',
+        algorithm: 'ols',
+        metrics: { rmse: 0.5 },
+        trainedAt: '2026-08-28T00:00:00.000Z',
+        cvFoldsKey: null,
+      })
+      store.set(mpCandidateJobIdAtom, 'job-1')
+    })
+  }
+
+  it('renders no chart until a row is expanded, then hides it again on a second click', () => {
+    setup(
+      job({ candidates: [candidate({ runId: 'run-1', algorithm: 'ols' })] }),
+    )
+
+    // Collapsed by default — MODEL-FLOW-017's charts exist but nothing
+    // renders them unasked, which is this task's own stated problem with
+    // rendering every candidate's charts unconditionally. This fixture
+    // stubs no `useCandidatePredictions` data, so `CandidateBaseChart`'s
+    // own honest "no predictions artifact" text is what proves the panel
+    // mounted — the panel's presence is what this test checks, not the
+    // chart's internal data state (that is MODEL-FLOW-017's own coverage).
+    const noPredictionsText = 'No predictions artifact recorded for this run.'
+    expect(screen.queryByText(noPredictionsText)).not.toBeInTheDocument()
+
+    const toggle = screen.getByRole('button', { name: /show charts/i })
+    fireEvent.click(toggle)
+    expect(screen.getByText(noPredictionsText)).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: /hide charts/i }),
+    ).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /hide charts/i }))
+    expect(screen.queryByText(noPredictionsText)).not.toBeInTheDocument()
+  })
+
+  it('gives no reveal toggle to a candidate with nothing to chart (no run yet, or FAILED)', () => {
+    setup(
+      job({
+        candidates: [
+          candidate({
+            runId: null,
+            algorithm: 'ols',
+            status: 'PENDING',
+            metrics: null,
+            trainMetrics: null,
+            sourcedMetrics: [],
+            holdoutAbsence: null,
+          }),
+          candidate({
+            runId: 'run-2',
+            algorithm: 'svm',
+            status: 'FAILED',
+            failureReason: 'container OOM',
+            metrics: null,
+            trainMetrics: null,
+            sourcedMetrics: [],
+            holdoutAbsence: null,
+          }),
+        ],
+      }),
+    )
+    expect(
+      screen.queryByRole('button', { name: /show charts/i }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('expanding one row does not reveal another row’s chart', () => {
+    setup(
+      job({
+        candidates: [
+          candidate({ runId: 'run-1', algorithm: 'ols' }),
+          candidate({ runId: 'run-2', algorithm: 'ridge' }),
+        ],
+      }),
+    )
+    const toggles = screen.getAllByRole('button', { name: /show charts/i })
+    expect(toggles).toHaveLength(2)
+    fireEvent.click(toggles[0]!)
+    expect(
+      screen.getAllByText('No predictions artifact recorded for this run.'),
+    ).toHaveLength(1)
   })
 })
 

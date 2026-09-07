@@ -1,5 +1,6 @@
 /**
- * Pure builders for the Model Monitoring dashboard (`/models/monitoring`).
+ * Pure builders for the Model Monitoring tab (`models/[id]`, Monitoring tab —
+ * moved off the old standalone `/models/monitoring` route).
  * No React / IO — turns aligned `EvalPoint[]` into chart rows + window stats and
  * picks an adaptive time-axis formatter. Single source of truth for the
  * monitoring math; the page/components stay thin.

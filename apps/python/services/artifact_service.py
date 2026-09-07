@@ -267,6 +267,37 @@ def _as_mapping(response: Any) -> dict[str, Any]:
     return response.model_dump() if hasattr(response, "model_dump") else dict(response)
 
 
+def _wall_clock(value: Any) -> pd.Timestamp:
+    """A caller-supplied boundary timestamp, normalised to the NAIVE
+    wall-clock convention every frame in this wizard already stores.
+
+    MODEL-FLOW-020-T03 found this the hard way. `DatasetArtifact.
+    validationHoldoutFrom` is Postgres `timestamp WITHOUT time zone`, and the
+    parquet's own timestamp column is `datetime64[us]`, tz-naive — but the
+    value reaches this service as JSON, and the backend serialises it with
+    JavaScript's `toISOString()`, which appends `Z`. `pd.Timestamp` then
+    builds a tz-AWARE object, and pandas refuses to compare aware against
+    naive: `TypeError: Invalid comparison between dtype=datetime64[us] and
+    Timestamp`.
+
+    The failure was invisible where it mattered. `tryReplayHoldout` swallows
+    it, and the run's only trace is the generic line "Holdout scoring
+    skipped: Preprocessing failed" — so an affected dataset trains fine,
+    reports test-split metrics fine, and silently never scores a holdout at
+    all. Measured on artifact 1ae5cc53: 0 of its 5 runs had ever produced
+    `holdoutMetrics`.
+
+    `tz_localize(None)` KEEPS THE WALL TIME rather than converting it: a
+    `2026-01-25T17:00:00Z` in becomes `2026-01-25 17:00:00`, the exact value
+    Postgres holds. Converting to a local zone instead would shift the
+    holdout boundary by the UTC offset and silently move which rows are
+    scored. Naive input passes through unchanged, so a caller that already
+    sends wall-clock is unaffected.
+    """
+    ts = pd.Timestamp(value)
+    return ts.tz_localize(None) if ts.tzinfo is not None else ts
+
+
 # DS-LAKE-018-T02/T03: over-provisioned lead-in duration, mirrored from
 # `HOLDOUT_LEAD_IN_DURATION` in apps/client/lib/holdout.ts ({value:7,
 # unit:'day'}). Applied HERE rather than client-side — userDecisions[0]:
@@ -310,8 +341,13 @@ def _split_holdout(
     own doc comment) — no second timezone conversion here.
     """
     ts = frame[TIMESTAMP_COLUMN]
-    holdout_from = pd.Timestamp(holdout.from_time)
-    holdout_to = pd.Timestamp(holdout.to_time)
+    # Same normalisation as `replay_holdout`'s own boundary, and for the same
+    # reason: these compare against a tz-naive column, and a `Z`-suffixed
+    # caller value would raise rather than mis-split. The "compare directly"
+    # note above describes the CONVENTION (wall-clock on both sides), which
+    # is what `_wall_clock` enforces rather than departs from.
+    holdout_from = _wall_clock(holdout.from_time)
+    holdout_to = _wall_clock(holdout.to_time)
     lead_in_from = holdout_from - lead_in
 
     holdout_mask = (ts >= holdout_from) & (ts <= holdout_to)
@@ -541,7 +577,11 @@ def replay_holdout(store: ObjectStore, request: ReplayHoldoutRequest) -> dict[st
     # the holdout's first rows get null/wrong lag values, feed straight
     # into predict(), and depress the metric with no trace of why.
     required = max_replay_lookback(step_configs)
-    holdout_from = pd.Timestamp(request.holdout_from)
+    # `_wall_clock`, not a bare `pd.Timestamp`: the boundary arrives as JSON
+    # with a `Z` suffix and would otherwise be tz-aware, which pandas refuses
+    # to compare against this naive column — see that helper's own note for
+    # the silent-skip this caused.
+    holdout_from = _wall_clock(request.holdout_from)
     captured = int((source[TIMESTAMP_COLUMN] < holdout_from).sum())
     if captured < required:
         raise ValueError(

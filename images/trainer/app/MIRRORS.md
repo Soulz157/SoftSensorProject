@@ -13,9 +13,9 @@ note that already existed in the single-file `train.py`.
 
 ## 1. `labelled_mask`
 
-| Copy | Location |
-| --- | --- |
-| this image | `labels.py` |
+| Copy        | Location                                            |
+| ----------- | --------------------------------------------------- |
+| this image  | `labels.py`                                         |
 | apps/python | `services/split_stats_service.py` (same mask logic) |
 
 The non-Good-target mask. DS-LAKE-023-T03/D4. Both copies must agree on the
@@ -27,9 +27,9 @@ comparable.
 
 ## 2. `MIN_LABELS_PER_FOLD = 10`
 
-| Copy | Location |
-| --- | --- |
-| this image | `splits.py` |
+| Copy        | Location                          |
+| ----------- | --------------------------------- |
+| this image  | `splits.py`                       |
 | apps/python | `services/split_stats_service.py` |
 
 MODEL-FLOW-016-T02/T03. The **number** must match; the measured table
@@ -43,9 +43,9 @@ Pinned identically by `test_split_stats_service.py` and by this package's
 
 ## 3. `expanding_fold_plan`
 
-| Copy | Location |
-| --- | --- |
-| this image | `splits.py` |
+| Copy        | Location                                                |
+| ----------- | ------------------------------------------------------- |
+| this image  | `splits.py`                                             |
 | apps/python | `services/split_stats_service.py::_expanding_fold_plan` |
 
 MODEL-FLOW-016-T03. `TimeSeriesSplit(n_splits=k)`'s cut arithmetic, verified
@@ -58,14 +58,77 @@ artifact and `k`.
 
 ## 4. `CV_FOLDS_FILENAME = "cv_folds.json"`
 
-| Copy | Location |
-| --- | --- |
-| this image | `artifacts.py` |
+| Copy        | Location                                |
+| ----------- | --------------------------------------- |
+| this image  | `artifacts.py`                          |
 | apps/python | `object_store.py` (`CV_FOLDS_FILENAME`) |
-| API (TS) | `artifact-keys.ts` |
+| API (TS)    | `artifact-keys.ts`                      |
 
 MODEL-FLOW-016-T04. **Three** copies, not two. Miss one and the run writes an
 artifact nothing reads, with no error anywhere.
+
+---
+
+## 5. `GPR_MAX_TRAIN_ROWS = 10_000`
+
+| Copy        | Location                                                                                 |
+| ----------- | ---------------------------------------------------------------------------------------- |
+| this image  | `models.py` (the authority — measured here)                                              |
+| client (TS) | `app/(default)/models/create/components/pipeline/training-config/algorithm-selector.tsx` |
+
+MODEL-FLOW-020-T06. The **number is measured in `models.py` and only echoed**
+by the client; if it moves, it moves here first.
+
+Unlike mirrors 1-4 the two copies do not do the same work: `build_model` raises
+at fit time, while the selector disables Gaussian Process the moment it is
+ticked, so the refusal costs no container spawn. Both nonetheless key on the
+same quantity — `n_train_rows`, the post-split post-mask count, which reaches
+the client as `/split-stats`' `train_labelled_rows`. A client copy keyed on an
+artifact's raw `rowCount` would refuse datasets that actually fit.
+
+Drift here is **quiet in the safe direction and loud in the wrong one**: raise
+this constant in `models.py` alone and the selector keeps refusing datasets the
+trainer would now accept — annoying, not incorrect. Lower it in `models.py`
+alone and the selector offers a choice every run then dies on. The second case
+is why this entry exists.
+
+---
+
+## 6. The naive wall-clock timestamp convention (NOT a duplicate yet — a trap)
+
+| Copy        | Location                                                       |
+| ----------- | -------------------------------------------------------------- |
+| apps/python | `services/artifact_service.py::_wall_clock` (the only handler) |
+| this image  | **none today** — see below                                     |
+
+MODEL-FLOW-020-T03. Listed here despite having no second copy, because the
+next person to add one will need it and the failure is silent.
+
+Three layers disagree about how a timestamp is represented:
+`DatasetArtifact.validationHoldoutFrom` is Postgres `timestamp WITHOUT time
+zone`; the backend serialises it with JavaScript `toISOString()`, which
+appends `Z`; and every parquet frame's own timestamp column is
+`datetime64[us]`, tz-naive. Build a `pd.Timestamp` from the serialised value
+and it is tz-AWARE, and pandas refuses to compare it against the naive
+column — `TypeError: Invalid comparison between dtype=datetime64[us] and
+Timestamp`.
+
+**Why it is worth a warning rather than a bug report.** That TypeError was
+swallowed by `tryReplayHoldout` and surfaced only as the generic run log
+line `Holdout scoring skipped: Preprocessing failed`. An affected dataset
+trained fine, reported test-split metrics fine, and silently never scored a
+holdout at all — artifact `1ae5cc53` had 0 holdout scores across 5 runs
+before the fix, with nothing in the UI to say why.
+
+**This image has no instance today** because it splits on ROW POSITION
+(`chronological_split`'s ratio, `expanding_fold_plan`'s fold indices), never
+on a caller-supplied timestamp boundary — verified: no `pd.Timestamp`
+comparison and no tz handling anywhere under `app/`. The moment a trainer
+pipeline takes a boundary from the request and compares it to the frame,
+this becomes a real mirror and needs `_wall_clock`'s exact semantics:
+`tz_localize(None)`, which KEEPS the wall time, never `tz_convert`, which
+would shift the boundary by the UTC offset and silently change which rows
+are scored.
 
 ---
 

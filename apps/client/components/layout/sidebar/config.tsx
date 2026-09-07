@@ -75,12 +75,6 @@ export const getUserNavItems = (alertCount: number): NavItem[] => [
         icon: <Gauge className="h-4 w-4" />,
         href: '/models/evaluation',
       },
-      {
-        id: 'models-monitoring',
-        name: 'Model Monitoring',
-        icon: <BarChart3 className="h-4 w-4" />,
-        href: '/models/monitoring',
-      },
     ],
   },
   {

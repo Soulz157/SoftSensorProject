@@ -1,6 +1,7 @@
 import { fetchClient } from '@/lib/fetcher'
 import type { AIModel } from '@/types'
 import type { DeploymentConfig } from '@/lib/model-config'
+import type { HoldoutAbsence, SourcedMetrics } from '@/lib/metric-source'
 
 /**
  * `ModelDraft` — the Model Creation wizard's server-side owner while no
@@ -275,6 +276,28 @@ export interface ModelTrainingRun {
    *  table has nothing to show in either case, but only `null` after a
    *  `get()` call means "this really is/was checked". */
   cvFolds?: RunCvFolds | null
+  /**
+   * MODEL-FLOW-014-T06's frozen `/split-stats` sidecar — what the Split
+   * Distribution panel was showing when this run was launched. Already sent
+   * by both run endpoints (they omit only `tokenHash`); this interface was
+   * the narrow part, the same gap MODEL-FLOW-012's own T01/T03 found for
+   * every other column.
+   *
+   * SURFACED BY MODEL-FLOW-020-T04 for its two size figures. Only
+   * `source_rows` and `distinct_labelled_values` are typed here, of the
+   * dozen-odd keys the sidecar holds: those two are the pair whose
+   * divergence sizes a model (up to 260x apart on this system's own data),
+   * and typing the rest would invite a second reader of a record whose
+   * shape belongs to MODEL-FLOW-014.
+   *
+   * `null` on a run launched before that feature, and on one whose
+   * fire-and-forget freeze never landed — the write is deliberately not in
+   * the launch transaction, so its absence is normal rather than a fault.
+   */
+  splitStats: {
+    source_rows: number
+    distinct_labelled_values: number
+  } | null
   candidateJobId: string | null
   createdAt: string
   startedAt: string | null
@@ -489,6 +512,20 @@ export interface CreateCandidateJobInput {
   trainTestSplit?: number
   kind: ModelCandidateJobKind
   candidates: CandidateInput[]
+  /** MODEL-FLOW-020-T04/T02. The two dataset size figures as this form saw
+   *  them, taken straight off the `/split-stats` response Step 3 has already
+   *  fetched: `sizedRowCount` is its `source_rows`, `sizedDistinctLabelled`
+   *  its `distinct_labelled_values` — the only two fields that endpoint
+   *  guarantees in both ratio and CV mode.
+   *
+   *  SENT TOGETHER OR NOT AT ALL; the server refuses one without the other.
+   *  Both absent is a real, accepted case: the panel's fetch is gated on
+   *  Apply (MODEL-FLOW-014-T08), so a user who starts a job without ever
+   *  pressing Apply genuinely has no figures to send, and the job records
+   *  null rather than the client guessing or forcing a second artifact read
+   *  onto the Start Training path. */
+  sizedRowCount?: number
+  sizedDistinctLabelled?: number
 }
 
 /** One candidate's own outcome, resolved against its run row server-side
@@ -532,6 +569,20 @@ export interface CandidateResult {
   cvFoldsKey: string | null
   /** Non-null while a CV candidate's holdout-scoring phase is in flight. */
   scoringContainerId: string | null
+  /** MODEL-FLOW-019-T02. Every figure this candidate can honestly show,
+   *  each carrying the SOURCE it is a figure of — the run's own test split,
+   *  the dataset's raw validation holdout (with the counts its missing rate
+   *  is computed from), or a CV fold estimate (a mean with its spread, and
+   *  no bare `rmse` to misread as a measurement). Empty for a candidate
+   *  with no run yet. `metrics`/`trainMetrics` above are the same numbers
+   *  WITHOUT their source and stay only because -013-T07's charts and
+   *  -017's cards already read them; new readers use this. */
+  sourcedMetrics: SourcedMetrics[]
+  /** MODEL-FLOW-019-T02. Why a SUCCEEDED candidate shows no holdout figure
+   *  — three facts with three different next actions, never one blank cell.
+   *  Null when a figure is present, or when the run has produced nothing at
+   *  all yet. */
+  holdoutAbsence: HoldoutAbsence | null
 }
 
 export interface ModelCandidateJob {
