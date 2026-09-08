@@ -215,6 +215,33 @@ export interface RunCvFolds {
   folds: CvFoldRecord[]
 }
 
+export interface FeatureImportanceEntry {
+  name: string
+  /** Always non-negative — for a coefficient method this is `abs(coefficient)`,
+   *  never the signed value, so ranking and "share of total" stay meaningful. */
+  importance: number
+  /** Present only for a coefficient method ('coefficient'/'pls-coefficient')
+   *  — the signed value, absent for 'impurity' where no such quantity exists. */
+  coefficient?: number | null
+}
+
+/**
+ * MODEL-FLOW-019-T09. `method` decides calibration — "impurity"
+ * (feature_importances_), "coefficient" (raw coef_), or "pls-coefficient"
+ * (coef_ on a latent-component projection, kept distinct from "coefficient":
+ * never the same quantity). `standardized` is only meaningful for a
+ * coefficient method (`null` for "impurity") — a coefficient over unscaled
+ * inputs ranks by unit, not by influence (AC27), which is why the reader
+ * must refuse to rank when this is `false` rather than silently mis-ranking.
+ */
+export interface RunFeatureImportance {
+  algorithm: string
+  method: string
+  standardized: boolean | null
+  scaling_methods: string[]
+  features: FeatureImportanceEntry[]
+}
+
 export interface ModelRunSplitSpec {
   method: 'chronological' | 'chronological_windowed'
   ratio: number
@@ -276,6 +303,18 @@ export interface ModelTrainingRun {
    *  table has nothing to show in either case, but only `null` after a
    *  `get()` call means "this really is/was checked". */
   cvFolds?: RunCvFolds | null
+  /** MODEL-FLOW-019-T09. Set only for the algorithms
+   *  images/trainer/app/importance.py can read a real per-feature quantity
+   *  from — null for every other algorithm, and null for a run trained
+   *  before this column existed. */
+  featureImportanceKey: string | null
+  /** MODEL-FLOW-019-T09. Attached by `getDraftRunService` (mirrors the
+   *  `cvFolds` precedent immediately above) when `featureImportanceKey` is
+   *  set; `undefined` on a list-endpoint row, `null` on a `get()` row for a
+   *  run with no importance recorded OR when the read itself soft-failed —
+   *  a Step 5 reader has nothing to show in either case, but only `null`
+   *  after a `get()` call means "this really was checked". */
+  featureImportance?: RunFeatureImportance | null
   /**
    * MODEL-FLOW-014-T06's frozen `/split-stats` sidecar — what the Split
    * Distribution panel was showing when this run was launched. Already sent

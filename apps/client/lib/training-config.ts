@@ -100,7 +100,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 1.0,
       step: 0.1,
       min: 0,
-      suggestedRange: { min: 0.01, max: 100, note: 'higher = stronger L2 shrinkage toward zero' },
+      suggestedRange: {
+        min: 0.01,
+        max: 100,
+        note: 'higher = stronger L2 shrinkage toward zero',
+      },
     },
   ],
   // Key names match `xgboost`/`lightgbm` below on purpose, not `max_iter` /
@@ -116,7 +120,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 0.1,
       step: 0.01,
       min: 0,
-      suggestedRange: { min: 0.01, max: 0.3, note: 'lower needs more estimators to reach the same fit' },
+      suggestedRange: {
+        min: 0.01,
+        max: 0.3,
+        note: 'lower needs more estimators to reach the same fit',
+      },
     },
     {
       kind: 'number',
@@ -125,7 +133,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 200,
       step: 10,
       min: 1,
-      suggestedRange: { min: 100, max: 500, note: 'boosting rounds (max_iter); pairs with learning_rate' },
+      suggestedRange: {
+        min: 100,
+        max: 500,
+        note: 'boosting rounds (max_iter); pairs with learning_rate',
+      },
     },
     {
       kind: 'number',
@@ -134,7 +146,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 31,
       step: 1,
       min: 2,
-      suggestedRange: { min: 7, max: 63, note: 'max_leaf_nodes; higher fits finer structure, overfits sooner' },
+      suggestedRange: {
+        min: 7,
+        max: 63,
+        note: 'max_leaf_nodes; higher fits finer structure, overfits sooner',
+      },
     },
   ],
   svm: [
@@ -145,7 +161,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 1.0,
       step: 0.1,
       min: 0,
-      suggestedRange: { min: 0.1, max: 100, note: 'higher = less regularisation, tighter fit to training points' },
+      suggestedRange: {
+        min: 0.1,
+        max: 100,
+        note: 'higher = less regularisation, tighter fit to training points',
+      },
     },
     {
       kind: 'select',
@@ -166,7 +186,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 0.1,
       step: 0.01,
       min: 0,
-      suggestedRange: { min: 0.01, max: 0.1, note: 'width of the no-penalty tube around the prediction' },
+      suggestedRange: {
+        min: 0.01,
+        max: 0.1,
+        note: 'width of the no-penalty tube around the prediction',
+      },
     },
   ],
   mlp: [
@@ -177,7 +201,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 100,
       step: 1,
       min: 1,
-      suggestedRange: { min: 50, max: 300, note: 'width of the single hidden layer' },
+      suggestedRange: {
+        min: 50,
+        max: 300,
+        note: 'width of the single hidden layer',
+      },
     },
     {
       kind: 'number',
@@ -186,7 +214,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 0.0001,
       step: 0.0001,
       min: 0,
-      suggestedRange: { min: 0.00001, max: 0.01, note: 'L2 penalty on the weights' },
+      suggestedRange: {
+        min: 0.00001,
+        max: 0.01,
+        note: 'L2 penalty on the weights',
+      },
     },
     {
       kind: 'number',
@@ -195,7 +227,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 200,
       step: 10,
       min: 1,
-      suggestedRange: { min: 200, max: 1000, note: 'optimiser cap; raise it if convergence warnings appear' },
+      suggestedRange: {
+        min: 200,
+        max: 1000,
+        note: 'optimiser cap; raise it if convergence warnings appear',
+      },
     },
   ],
   grp: [
@@ -205,7 +241,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       label: 'Alpha (noise)',
       defaultValue: 1e-10,
       min: 0,
-      suggestedRange: { min: 1e-10, max: 0.001, note: 'jitter on the kernel diagonal; raise it if the fit fails to converge' },
+      suggestedRange: {
+        min: 1e-10,
+        max: 0.001,
+        note: 'jitter on the kernel diagonal; raise it if the fit fails to converge',
+      },
     },
     {
       kind: 'number',
@@ -214,7 +254,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 0,
       step: 1,
       min: 0,
-      suggestedRange: { min: 0, max: 10, note: 'restarts of the kernel hyperparameter search; each costs a full fit' },
+      suggestedRange: {
+        min: 0,
+        max: 10,
+        note: 'restarts of the kernel hyperparameter search; each costs a full fit',
+      },
     },
   ],
   pls: [
@@ -225,7 +269,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 2,
       step: 1,
       min: 1,
-      suggestedRange: { min: 1, max: 6, note: 'latent components; cannot exceed the feature count' },
+      suggestedRange: {
+        min: 1,
+        max: 6,
+        note: 'latent components; cannot exceed the feature count',
+      },
     },
     {
       kind: 'number',
@@ -234,7 +282,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 500,
       step: 10,
       min: 1,
-      suggestedRange: { min: 250, max: 1000, note: 'NIPALS iteration cap per component' },
+      suggestedRange: {
+        min: 250,
+        max: 1000,
+        note: 'NIPALS iteration cap per component',
+      },
     },
   ],
   xgboost: [
@@ -245,7 +297,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 100,
       step: 10,
       min: 1,
-      suggestedRange: { min: 100, max: 500, note: 'boosting rounds; pairs with learning_rate' },
+      suggestedRange: {
+        min: 100,
+        max: 500,
+        note: 'boosting rounds; pairs with learning_rate',
+      },
     },
     {
       kind: 'number',
@@ -254,7 +310,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 0.1,
       step: 0.01,
       min: 0,
-      suggestedRange: { min: 0.01, max: 0.3, note: 'lower needs more estimators to reach the same fit' },
+      suggestedRange: {
+        min: 0.01,
+        max: 0.3,
+        note: 'lower needs more estimators to reach the same fit',
+      },
     },
     {
       kind: 'number',
@@ -263,7 +323,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 6,
       step: 1,
       min: 1,
-      suggestedRange: { min: 3, max: 10, note: 'tree depth; the dominant overfitting control for this estimator' },
+      suggestedRange: {
+        min: 3,
+        max: 10,
+        note: 'tree depth; the dominant overfitting control for this estimator',
+      },
     },
   ],
   random_forest: [
@@ -274,14 +338,22 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 100,
       step: 10,
       min: 1,
-      suggestedRange: { min: 100, max: 500, note: 'more trees only reduce variance — a forest does not overfit by count' },
+      suggestedRange: {
+        min: 100,
+        max: 500,
+        note: 'more trees only reduce variance — a forest does not overfit by count',
+      },
     },
     {
       kind: 'nullable-number',
       key: 'max_depth',
       label: 'Max depth',
       defaultValue: null,
-      suggestedRange: { min: 5, max: 20, note: 'unlimited grows each tree until its leaves are pure' },
+      suggestedRange: {
+        min: 5,
+        max: 20,
+        note: 'unlimited grows each tree until its leaves are pure',
+      },
     },
   ],
   lightgbm: [
@@ -292,7 +364,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 0.1,
       step: 0.01,
       min: 0,
-      suggestedRange: { min: 0.01, max: 0.3, note: 'lower needs more boosting rounds to reach the same fit' },
+      suggestedRange: {
+        min: 0.01,
+        max: 0.3,
+        note: 'lower needs more boosting rounds to reach the same fit',
+      },
     },
     {
       kind: 'number',
@@ -301,7 +377,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 31,
       step: 1,
       min: 2,
-      suggestedRange: { min: 15, max: 63, note: 'leaf-wise growth: the main capacity control, not depth' },
+      suggestedRange: {
+        min: 15,
+        max: 63,
+        note: 'leaf-wise growth: the main capacity control, not depth',
+      },
     },
     {
       kind: 'select',
@@ -323,7 +403,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 50,
       step: 1,
       min: 1,
-      suggestedRange: { min: 10, max: 200, note: 'full passes over the training windows' },
+      suggestedRange: {
+        min: 10,
+        max: 200,
+        note: 'full passes over the training windows',
+      },
     },
     {
       kind: 'number',
@@ -355,7 +439,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 24,
       step: 1,
       min: 1,
-      suggestedRange: { min: 12, max: 168, note: 'lookback window in samples, not hours' },
+      suggestedRange: {
+        min: 12,
+        max: 168,
+        note: 'lookback window in samples, not hours',
+      },
     },
   ],
   gru: [
@@ -366,7 +454,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 50,
       step: 1,
       min: 1,
-      suggestedRange: { min: 10, max: 200, note: 'full passes over the training windows' },
+      suggestedRange: {
+        min: 10,
+        max: 200,
+        note: 'full passes over the training windows',
+      },
     },
     {
       kind: 'number',
@@ -394,7 +486,11 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       defaultValue: 24,
       step: 1,
       min: 1,
-      suggestedRange: { min: 12, max: 168, note: 'lookback window in samples, not hours' },
+      suggestedRange: {
+        min: 12,
+        max: 168,
+        note: 'lookback window in samples, not hours',
+      },
     },
   ],
 }
@@ -411,7 +507,7 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
  * regression-only.
  */
 export const LOSS_OPTIONS: { value: string; label: string }[] = [
-  { value: 'mse', label: 'MSE' },
+  { value: 'r2', label: 'R2' },
   { value: 'rmse', label: 'RMSE' },
   { value: 'mae', label: 'MAE' },
 ]

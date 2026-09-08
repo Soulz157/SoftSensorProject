@@ -47,7 +47,6 @@ export function RuntimeEstimate({ status, progress, ...input }: Props) {
   const high = est * 2
   const heavy = est > 900 // 15 min
 
-  // ETA only becomes meaningful once there is real progress to extrapolate from
   const eta =
     status === 'training' && progress > 5
       ? (elapsed * (100 - progress)) / progress

@@ -31,6 +31,12 @@ LOSS_HISTORY_FILENAME = "loss_history.json"
 # MODEL-FLOW-013-T05's own note on what happens when one is missed. See
 # MIRRORS.md.
 CV_FOLDS_FILENAME = "cv_folds.json"
+# MODEL-FLOW-019-T09. Per-feature importance — present only for the
+# algorithms importance.extract_feature_importance can read a real quantity
+# from; absent, not empty, for one that cannot (see that module's own doc).
+# Mirrored in apps/python's object_store.py (FEATURE_IMPORTANCE_FILENAME) and
+# artifact-keys.ts — change all three. See MIRRORS.md entry 7.
+FEATURE_IMPORTANCE_FILENAME = "feature_importance.json"
 
 
 class ArtifactSet:

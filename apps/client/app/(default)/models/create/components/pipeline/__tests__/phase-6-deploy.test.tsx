@@ -85,6 +85,8 @@ const BASE_RUN: DraftRunSummary = {
   scoringContainerId: null,
   holdoutMetrics: null,
   cvFolds: null,
+  featureImportance: null,
+  splitStats: null,
 }
 
 const CV_FOLDS = {

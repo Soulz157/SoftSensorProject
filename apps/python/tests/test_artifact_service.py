@@ -36,6 +36,7 @@ from schemas.preprocess import (
     MaterializeRequest,
     MetadataRequest,
     RowsRequest,
+    RunFeatureImportanceRequest,
     RunManifestRequest,
     TagCatalogRequest,
 )
@@ -1400,6 +1401,117 @@ def test_get_run_manifest_accepts_an_adopted_model_run_key_too() -> None:
     )
 
     assert result == {"framework_versions": {"sklearn": "1.5.1"}}
+
+
+# ── get_run_feature_importance (MODEL-FLOW-019-T09) ─────────────────────
+
+
+def test_get_run_feature_importance_reads_an_impurity_artifact() -> None:
+    key = "drafts/draft-1/runs/run-a/feature_importance.json"
+    store = RecordingStore()
+    store.put_json(
+        key,
+        {
+            "algorithm": "random_forest",
+            "method": "impurity",
+            "standardized": None,
+            "scaling_methods": [],
+            "features": [
+                {"name": "TI-101", "importance": 0.6},
+                {"name": "FI-404", "importance": 0.4},
+            ],
+        },
+    )
+
+    result = artifact_service.get_run_feature_importance(
+        store, RunFeatureImportanceRequest(source_key=key)
+    )
+
+    assert result["algorithm"] == "random_forest"
+    assert result["method"] == "impurity"
+    assert result["standardized"] is None
+    assert result["scaling_methods"] == []
+    assert result["features"] == [
+        {"name": "TI-101", "importance": 0.6},
+        {"name": "FI-404", "importance": 0.4},
+    ]
+
+
+def test_get_run_feature_importance_reads_a_coefficient_artifact_with_standardized_flag() -> None:
+    key = "drafts/draft-1/runs/run-a/feature_importance.json"
+    store = RecordingStore()
+    store.put_json(
+        key,
+        {
+            "algorithm": "ridge",
+            "method": "coefficient",
+            "standardized": True,
+            "scaling_methods": ["standard"],
+            "features": [{"name": "TI-101", "importance": 0.4, "coefficient": -0.4}],
+        },
+    )
+
+    result = artifact_service.get_run_feature_importance(
+        store, RunFeatureImportanceRequest(source_key=key)
+    )
+
+    assert result["method"] == "coefficient"
+    assert result["standardized"] is True
+    assert result["scaling_methods"] == ["standard"]
+    assert result["features"][0]["coefficient"] == -0.4
+
+
+def test_get_run_feature_importance_refuses_a_key_not_named_feature_importance_json() -> None:
+    with pytest.raises(ValueError, match="does not name"):
+        artifact_service.get_run_feature_importance(
+            RecordingStore(),
+            RunFeatureImportanceRequest(
+                source_key="drafts/draft-1/runs/run-a/metrics.json"
+            ),
+        )
+
+
+def test_get_run_feature_importance_refuses_a_malformed_key_root() -> None:
+    key = "ds-1/tmp/job-1/feature_importance.json"
+    with pytest.raises(ValueError, match="not a well-formed training-run output key"):
+        artifact_service.get_run_feature_importance(
+            RecordingStore(), RunFeatureImportanceRequest(source_key=key)
+        )
+
+
+def test_get_run_feature_importance_refuses_a_malformed_payload() -> None:
+    key = "drafts/draft-1/runs/run-a/feature_importance.json"
+    store = RecordingStore()
+    store.put_json(key, {"algorithm": "ridge"})  # missing method/features
+
+    with pytest.raises(ValueError, match="not a well-formed feature_importance.json"):
+        artifact_service.get_run_feature_importance(
+            store, RunFeatureImportanceRequest(source_key=key)
+        )
+
+
+def test_get_run_feature_importance_accepts_an_adopted_model_run_key_too() -> None:
+    """Same acceptance run_predictions/loss_history/cv_folds/manifest all
+    give both roots — Save Model adopts a run's objects by pointer, so a
+    read against models/{modelId}/runs/... must not be refused either."""
+    key = "models/model-1/runs/run-a/feature_importance.json"
+    store = RecordingStore()
+    store.put_json(
+        key,
+        {
+            "algorithm": "random_forest",
+            "method": "impurity",
+            "standardized": None,
+            "scaling_methods": [],
+            "features": [{"name": "TI-101", "importance": 1.0}],
+        },
+    )
+
+    result = artifact_service.get_run_feature_importance(
+        store, RunFeatureImportanceRequest(source_key=key)
+    )
+
+    assert result["algorithm"] == "random_forest"
 
 
 def test_get_run_manifest_refuses_a_key_not_named_run_manifest_json() -> None:

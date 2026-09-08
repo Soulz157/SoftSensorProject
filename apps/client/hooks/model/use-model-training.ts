@@ -19,6 +19,7 @@ import {
   mpFindBestModelAtom,
   mpFindBestParamsAtom,
   mpHyperparamsAtom,
+  mpPerAlgorithmHyperparamsAtom,
   mpTrainTestSplitAtom,
   mpSplitStatsTagsAtom,
   mpSeedAtom,
@@ -30,6 +31,7 @@ import {
   ALGORITHM_LABELS,
   type TrainState,
   type Algorithm,
+  type HyperparamValue,
 } from '@/store/model-pipeline'
 
 const POLL_MS = 2500
@@ -99,6 +101,9 @@ export function useModelTraining({
   const findBestModel = useAtomValue(mpFindBestModelAtom)
   const findBestParams = useAtomValue(mpFindBestParamsAtom)
   const hyperparameters = useAtomValue(mpHyperparamsAtom)
+  const perAlgorithmHyperparameters = useAtomValue(
+    mpPerAlgorithmHyperparamsAtom,
+  )
   const trainTestSplit = useAtomValue(mpTrainTestSplitAtom)
   const splitStatsTags = useAtomValue(mpSplitStatsTagsAtom)
   const seed = useAtomValue(mpSeedAtom)
@@ -360,6 +365,31 @@ export function useModelTraining({
     [splitStats],
   )
 
+  /**
+   * MODEL-FLOW-022-T04. `mpPerAlgorithmHyperparamsAtom` deliberately omits
+   * the primary algorithm (`mpHyperparamsAtom` is its single source, see
+   * that atom's own doc comment) — so a candidate builder that only checked
+   * the sibling atom would send `{}` for whichever algorithm is primary.
+   * Mirrors `committedSnapshot`'s own composition in `use-run-config-draft.ts`.
+   *
+   * The primary falls back to `defaultHyperparams` too, when its flat atom
+   * is still at its virgin `{}` (`mpHyperparamsAtom`'s own default,
+   * store/model-pipeline.ts) — unreachable once the wizard has run through
+   * `resetPipeline`/`resetWizardAtom`, both of which seed it before Step 3
+   * is ever reachable, but kept as the same defense-in-depth every other
+   * algorithm entry already gets, not a special case for this one.
+   */
+  const hyperparametersFor = useCallback(
+    (algorithm: Algorithm): Record<string, HyperparamValue> =>
+      algorithm === algorithms[0]
+        ? Object.keys(hyperparameters).length > 0
+          ? hyperparameters
+          : defaultHyperparams(algorithm)
+        : (perAlgorithmHyperparameters[algorithm] ??
+          defaultHyperparams(algorithm)),
+    [algorithms, hyperparameters, perAlgorithmHyperparameters],
+  )
+
   const run = useCallback(async () => {
     if (runningRef.current || trainState.status === 'training') return
     runningRef.current = true
@@ -448,7 +478,10 @@ export function useModelTraining({
           candidates: [
             {
               algorithm: backendAlgorithm,
-              hyperparameters: defaultHyperparams(algorithm),
+              // MODEL-FLOW-022-T04. This algorithm is always the primary
+              // here (findBestParams + single-algorithm), so this is the
+              // USER'S value, not the default it used to send.
+              hyperparameters: hyperparametersFor(algorithm),
             },
           ],
           ...sizedFigures,
@@ -481,7 +514,11 @@ export function useModelTraining({
           }
           return {
             algorithm: backendAlgorithm,
-            hyperparameters: defaultHyperparams(a),
+            // MODEL-FLOW-022-T04. The user's own per-tab value — the fix
+            // this feature exists for. `hyperparametersFor` falls back to
+            // `defaultHyperparams(a)` only for an algorithm the user never
+            // opened a tab for.
+            hyperparameters: hyperparametersFor(a),
           }
         })
 
@@ -560,6 +597,7 @@ export function useModelTraining({
     findBestParams,
     algorithms,
     hyperparameters,
+    hyperparametersFor,
     trainTestSplit,
     nSplits,
     splitStatsTags,

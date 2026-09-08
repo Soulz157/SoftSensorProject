@@ -100,6 +100,12 @@ export const RUN_UPLOAD_FILENAMES = [
   // Mirrored from CV_FOLDS_FILENAME in object_store.py and train.py —
   // change all three.
   'cv_folds.json',
+  // MODEL-FLOW-019-T09. Per-feature importance — present only for the
+  // algorithms images/trainer/app/importance.py can read a real quantity
+  // from. Mirrored from FEATURE_IMPORTANCE_FILENAME in object_store.py and
+  // that same importance.py — change all three. See
+  // images/trainer/app/MIRRORS.md entry 7.
+  'feature_importance.json',
 ] as const;
 
 /**

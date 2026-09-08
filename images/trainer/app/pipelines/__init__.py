@@ -36,6 +36,7 @@ import pandas as pd
 from api import RunApi
 from artifacts import (
     ArtifactSet,
+    FEATURE_IMPORTANCE_FILENAME,
     LOSS_HISTORY_FILENAME,
     MANIFEST_FILENAME,
     METRICS_FILENAME,
@@ -45,6 +46,7 @@ from artifacts import (
 from config import SCRATCH, STATUS_SUFFIX, TIMESTAMP_COLUMN, RunContext
 from guards import assert_no_target_leakage
 from holdout import score_holdout
+from importance import extract_feature_importance
 from labels import labelled_mask
 from manifest import build_run_manifest
 from models import SEQUENCE_ALGORITHMS
@@ -226,6 +228,23 @@ def _publish(
     # and no placeholder.
     if result.loss_history is not None:
         artifacts.add_json(LOSS_HISTORY_FILENAME, result.loss_history)
+
+    # MODEL-FLOW-019-T09. Computed HERE, centrally, rather than as a
+    # per-strategy TrainingResult field: result.model/prepared.feature_cols/
+    # prepared.feature_spec are all already in scope, this covers CV's own
+    # refit (fit k+1) uniformly with the other two strategies, and it adds no
+    # new field to TrainingResult — so a future fourth strategy gets this for
+    # free rather than needing to remember it, the exact trap context.py's own
+    # docstring exists to close off.
+    importance = extract_feature_importance(
+        prepared.algorithm,
+        result.model,
+        prepared.feature_cols,
+        prepared.feature_spec,
+        log_fn=api.log,
+    )
+    if importance is not None:
+        artifacts.add_json(FEATURE_IMPORTANCE_FILENAME, importance)
 
     for filename, payload in result.extra_json.items():
         artifacts.add_json(filename, payload)

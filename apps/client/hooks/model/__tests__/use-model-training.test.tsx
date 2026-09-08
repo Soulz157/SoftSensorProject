@@ -17,6 +17,7 @@ import {
   mpTrainingResultAtom,
   mpCandidateJobIdAtom,
   mpTrainStateAtom,
+  mpPerAlgorithmHyperparamsAtom,
 } from '@/store/model-pipeline'
 import type { SavedDataset } from '@/store/datasets'
 
@@ -217,6 +218,52 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
       }),
     )
     expect(store.get(mpTrainStateAtom).status).toBe('training')
+  })
+
+  it('MODEL-FLOW-022. a 3-algorithm sweep sends the USER-SET value from the SECOND tab, not defaultHyperparams — a defaults fixture would pass against the bug this feature fixes', async () => {
+    vi.mocked(modelDraftCandidateJobService.create).mockResolvedValue({
+      statusCode: 201,
+      message: 'ok',
+      type: 'SUCCESS',
+      data: { id: 'job-1' } as never,
+    })
+    vi.mocked(modelDraftCandidateJobService.get).mockResolvedValue({
+      statusCode: 200,
+      message: 'ok',
+      type: 'SUCCESS',
+      data: {
+        id: 'job-1',
+        status: 'RUNNING',
+        completedRuns: 0,
+        totalRuns: 3,
+        candidates: [],
+      } as never,
+    })
+    const { result } = renderTraining(s => {
+      s.set(mpFindBestModelAtom, true)
+      s.set(mpAlgorithmsAtom, ['ols', 'ridge', 'xgboost'])
+      // The second tab's own (non-default) value — ridge's default alpha is
+      // 1.0, not 0.037 (same deliberately-non-default fixture discipline
+      // MODEL-FLOW-012-V01 uses for its own ridge alpha).
+      s.set(mpPerAlgorithmHyperparamsAtom, { ridge: { alpha: 0.037 } })
+    })
+
+    await act(async () => {
+      result.current.start()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(modelDraftCandidateJobService.create).toHaveBeenCalledWith(
+      'draft-1',
+      expect.objectContaining({
+        kind: 'ALGORITHM_SWEEP',
+        candidates: [
+          { algorithm: 'ols', hyperparameters: { fit_intercept: true } },
+          { algorithm: 'ridge', hyperparameters: { alpha: 0.037 } },
+          expect.objectContaining({ algorithm: 'xgboost' }),
+        ],
+      }),
+    )
   })
 
   it('on a successful sweep, sets mpTrainingResultAtom from the WINNING candidate and records the job id', async () => {

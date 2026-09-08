@@ -5,7 +5,6 @@ import { useAtom, useAtomValue } from 'jotai'
 import {
   AlertTriangle,
   CheckCircle2,
-  GitCompareArrows,
   Loader2,
   Pencil,
   PlayCircle,
@@ -44,28 +43,37 @@ import {
 } from '@/hooks/model/use-draft-run-evaluation'
 import { ChartZoomControls } from '@/components/charts/chart-zoom-controls'
 import { residualHistogram, qqPoints } from '@/lib/model-evaluation'
-import type { RunCvFolds } from '@/services/model-draft'
+import {
+  populationOf,
+  populationLabel,
+  populationAxisLabel,
+  populationTitle,
+} from '@/lib/metric-source'
+import {
+  canRank,
+  observationsPerFeature,
+  rankFeatures,
+  tailSummary,
+} from '@/lib/feature-importance'
+import type { RunCvFolds, RunFeatureImportance } from '@/services/model-draft'
 import { StatTile } from '../stat-tile'
-import { ActualVsPredictedChart } from './evaluation/actual-vs-predicted-chart'
-import { ResidualChart } from './evaluation/residual-chart'
+import {
+  ActualVsPredictedChart,
+  AVP_LEGEND,
+} from './evaluation/actual-vs-predicted-chart'
+import { ParityScatterChart } from './evaluation/parity-scatter-chart'
+import {
+  ResidualChart,
+  RESIDUAL_LEGEND,
+} from './evaluation/residual-chart'
 import { ResidualHistogramChart } from './evaluation/residual-histogram-chart'
 import { QQPlotChart } from './evaluation/qq-plot-chart'
 import type { UsePipelineNavResult } from '@/hooks/model/use-model-pipeline-nav'
+import { ChartLegend } from '@/components/charts/chart-legend'
+import { PARITY_LEGEND } from './evaluation/parity-scatter-chart'
 
 interface Props {
   nav: UsePipelineNavResult
-}
-
-function LegendItem({ color, label }: { color: string; label: string }) {
-  return (
-    <span className="flex items-center gap-1.5">
-      <span
-        className="h-2.5 w-2.5 rounded-sm"
-        style={{ backgroundColor: color }}
-      />
-      {label}
-    </span>
-  )
 }
 
 function EmptyPanel({ children }: { children: React.ReactNode }) {
@@ -150,22 +158,145 @@ function CvFoldTable({ cvFolds }: { cvFolds: RunCvFolds }) {
   )
 }
 
+function formatPct(fraction: number): string {
+  return `${(fraction * 100).toFixed(1)}%`
+}
+
+const METHOD_LABEL: Record<string, string> = {
+  impurity: 'impurity',
+  coefficient: 'coefficient',
+  'pls-coefficient': 'PLS coefficient',
+}
+
 /**
- * MODEL-FLOW-004. Reads the Model Draft's own training run — no persistent
- * Model record, no client-side fit. `r2`/`rmse` come from the run's own
- * metrics.json; the per-sample actual/predicted series and residual SD are
- * computed server-side over the run's FULL test split (no decimation
- * branch — see `useDraftRunEvaluation`), so the metric cards, both charts
- * and the diagnostics below always agree on sample count.
+ * MODEL-FLOW-019-T09. Top 10 by importance, beneath the residual
+ * diagnostics — AC22-AC27. `derivedFromTarget` flags a leakage-guard feature
+ * where it ranks, read off the run's own manifest (never re-derived here);
+ * `distinctLabelledValues`/`featureCount` feed AC26's observations-per-
+ * feature arithmetic, `null` on a candidate-job run by design
+ * (MODEL-FLOW-014-T06 — splitStats is never frozen for one).
  */
+function FeatureImportanceTable({
+  importance,
+  derivedFromTarget,
+  distinctLabelledValues,
+}: {
+  importance: RunFeatureImportance
+  derivedFromTarget: string[] | null
+  distinctLabelledValues: number | null
+}) {
+  const rankable = canRank(importance)
+  const ranked = rankable ? rankFeatures(importance, 10) : []
+  const tail = tailSummary(importance, 10)
+  const derivedSet = new Set(derivedFromTarget ?? [])
+  const obsPerFeature = observationsPerFeature(
+    distinctLabelledValues,
+    tail.totalCount,
+  )
+  const methodLabel = METHOD_LABEL[importance.method] ?? importance.method
+
+  return (
+    <section className="space-y-3 rounded-xl border border-border/60 p-4">
+      <div className="space-y-1">
+        <h3 className="text-sm font-medium text-foreground">
+          Feature importance
+        </h3>
+        <p className="text-xs text-muted-foreground">
+          Measured by {methodLabel} — a reader cannot compare this figure across
+          a different method.
+        </p>
+      </div>
+
+      {!rankable ? (
+        <EmptyPanel>
+          {importance.features.length} feature
+          {importance.features.length === 1 ? '' : 's'} recorded, but not
+          ranked: {methodLabel} over unscaled inputs ranks by unit, not by
+          influence.
+        </EmptyPanel>
+      ) : (
+        <>
+          <div className="overflow-x-auto rounded-lg border border-border">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-border bg-muted/40 text-left text-muted-foreground">
+                  <th className="px-3 py-2 font-medium">#</th>
+                  <th className="px-3 py-2 font-medium">Feature</th>
+                  <th className="px-3 py-2 font-medium text-right">
+                    Importance
+                  </th>
+                  <th className="px-3 py-2 font-medium text-right">Share</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ranked.map(row => (
+                  <tr
+                    key={row.name}
+                    className={
+                      row.rank > 1 ? 'border-t border-border' : undefined
+                    }
+                  >
+                    <td className="px-3 py-2 text-muted-foreground">
+                      {row.rank}
+                    </td>
+                    <td className="px-3 py-2 font-medium text-foreground">
+                      {row.name}
+                      {derivedSet.has(row.name) && (
+                        <span className="ml-2 rounded-sm bg-muted px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground">
+                          target-derived
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono tabular-nums">
+                      {row.importance.toFixed(4)}
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono tabular-nums">
+                      {formatPct(row.share)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {tail.totalCount > tail.shownCount && (
+            <p className="text-xs text-muted-foreground">
+              Top {tail.shownCount} of {tail.totalCount} features — the
+              remaining {tail.totalCount - tail.shownCount} carry{' '}
+              {formatPct(tail.tailShare)} in aggregate.
+            </p>
+          )}
+        </>
+      )}
+
+      <p className="text-xs text-muted-foreground">
+        {obsPerFeature !== null
+          ? `${obsPerFeature.toFixed(1)} distinct labelled observations per feature.`
+          : 'Observations per feature: not recorded for this run.'}
+      </p>
+    </section>
+  )
+}
+
 export function Phase5Evaluation({ nav }: Props) {
   const [selectedMetrics, setSelectedMetrics] = useAtom(mpSelectedMetricsAtom)
   const serverDraftId = useAtomValue(mpServerDraftIdAtom)
   const trainingResult = useAtomValue(mpTrainingResultAtom)
 
-  const { run, fit, manifest, loading, error, triggerScoring } =
+  const { run, fit, manifest, parityRange, loading, error, triggerScoring } =
     useDraftRunEvaluation(serverDraftId, trainingResult?.runId ?? null)
   const cvPhase = cvScoringPhaseOf(run)
+  // MODEL-FLOW-019-T15. ONE derivation of the population for every panel on
+  // this step — exhaustive over all four scoring phases in `populationOf`,
+  // never a ternary here that quietly maps three of them to a test split.
+  const population = populationOf(cvPhase)
+  const populationText = populationLabel(population)
+  const parityDomain = useMemo<[number, number] | null>(() => {
+    if (!parityRange) return null
+    return [
+      Math.min(parityRange.yTrueMin, parityRange.yPredMin),
+      Math.max(parityRange.yTrueMax, parityRange.yPredMax),
+    ]
+  }, [parityRange])
   const [scoringError, setScoringError] = useState<string | null>(null)
   const [triggering, setTriggering] = useState(false)
   const handleTriggerScoring = async () => {
@@ -182,7 +313,6 @@ export function Phase5Evaluation({ nav }: Props) {
     }
   }
 
-  // Chart rows: one per timestamp, carrying the ±1/±2/±3 SD bands (true
   // residual SD). No compared series — MODEL-FLOW-007 has not landed, so no
   // saved Model can supply a real predicted series to compare against (see
   // the disabled control below).
@@ -214,9 +344,14 @@ export function Phase5Evaluation({ nav }: Props) {
     return pickTimeFormat(first && last ? last.t - first.t : 0)
   }, [visibleRows])
 
+  // 3 decimal places for every metric card on THIS step — R² already
+  // formatted this way (`METRIC_META.r2.format`); RMSE/MAE/SD used a
+  // 2-digit formatter shared with `run-params-panel.tsx`, so this reads
+  // straight off `fit` rather than widening that shared formatter's
+  // precision for a step that did not ask for it.
   const valueFor = (key: MetricKey): string => {
     if (!fit || fit.n < 2) return '—'
-    return METRIC_META[key].format(fit[key])
+    return fit[key].toFixed(3)
   }
   const accentFor = (key: MetricKey): string | undefined => {
     if (!fit || fit.n < 2) return undefined
@@ -270,12 +405,6 @@ export function Phase5Evaluation({ nav }: Props) {
     )
   }
 
-  // MODEL-FLOW-016-T11. A CV run's training success and its refit's OWN
-  // holdout score are two different questions — the fold metrics in
-  // cv_folds.json describe the CONFIGURATION (see Step 4), not this
-  // shipped model. This branch must come before the generic
-  // "still running" one below: a SUCCEEDED CV run with no `fit` yet is not
-  // running, it is honestly awaiting a scoring phase the user triggers.
   if (
     run.status === 'SUCCEEDED' &&
     (cvPhase === 'awaiting-scoring' || cvPhase === 'scoring')
@@ -343,10 +472,6 @@ export function Phase5Evaluation({ nav }: Props) {
 
   return (
     <div className="space-y-5">
-      {/* Success banner — the run's own record, not a client-side count.
-          A scored CV run's `fit.n` counts HOLDOUT rows, not a test split —
-          say so, never "test sample", so this isn't misread as the split
-          this run never had (three numbers, three meanings, never merged). */}
       <div className="flex items-center gap-3 rounded-xl bg-emerald-500/10 px-4 py-3 ring-1 ring-emerald-500/20">
         <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-500" />
         <div>
@@ -361,10 +486,6 @@ export function Phase5Evaluation({ nav }: Props) {
               ? `${fit.n} holdout sample${fit.n === 1 ? '' : 's'}`
               : `${fit.n} test sample${fit.n === 1 ? '' : 's'}`}
           </p>
-          {/* DS-LAKE-018-T05: the holdout's own missing rate stated beside
-              every figure it backs — raw rows reach `predict()` unimputed,
-              so a reader must be able to tell how many were dropped before
-              trusting the numbers above. */}
           {cvPhase === 'scored' &&
             run.holdoutMetrics &&
             (typeof run.holdoutMetrics.dropped_unlabelled === 'number' ||
@@ -393,21 +514,6 @@ export function Phase5Evaluation({ nav }: Props) {
           <h2 className="text-sm font-medium text-foreground">
             Evaluation metrics
           </h2>
-          {/* Disabled, not removed: no saved Model can supply a real
-              predicted series to compare against yet — MODEL-FLOW-007
-              adopts a run's predictions by pointer, which is what this
-              needs. Same disable-with-reason precedent as AlgorithmSelector's
-              lstm/gru entries. */}
-          <Button
-            variant="outline"
-            size="sm"
-            className="w-fit gap-2"
-            disabled
-            title="Compares against another model's real predictions — available once Save Model can adopt a run (MODEL-FLOW-007)."
-          >
-            <GitCompareArrows className="h-3.5 w-3.5" />
-            Compare with…
-          </Button>
         </div>
 
         <DropdownMenu>
@@ -429,7 +535,7 @@ export function Phase5Evaluation({ nav }: Props) {
                 }
                 onCheckedChange={on => toggleMetric(key, on)}
               >
-                {METRIC_META[key].label} — {METRIC_META[key].hint}
+                {METRIC_META[key].label} ({METRIC_META[key].hint})
               </DropdownMenuCheckboxItem>
             ))}
           </DropdownMenuContent>
@@ -461,12 +567,12 @@ export function Phase5Evaluation({ nav }: Props) {
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="space-y-1">
                 <h3 className="text-sm font-medium text-foreground">
-                  Actual vs Predicted
+                  Actual vs predicted over time
                 </h3>
                 <p className="text-xs text-muted-foreground">
                   Measured actual against the model&apos;s own prediction on the
                   same rows — the prediction should track actual inside the ±1
-                  SD band; excursions are the samples the fit explains worst.
+                  SD band;
                 </p>
               </div>
               <ChartZoomControls
@@ -476,9 +582,7 @@ export function Phase5Evaluation({ nav }: Props) {
               />
             </div>
             <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-background px-3 py-1.5 text-[10px] font-medium text-muted-foreground">
-              <LegendItem color="var(--foreground)" label="Actual" />
-              <LegendItem color="var(--chart-1)" label="Predicted" />
-              <LegendItem color="var(--chart-2)" label="±1 SD" />
+              <ChartLegend items={AVP_LEGEND} />
             </div>
             <ActualVsPredictedChart
               rows={visibleRows}
@@ -486,11 +590,44 @@ export function Phase5Evaluation({ nav }: Props) {
             />
           </section>
 
+          {parityDomain ? (
+            <section className="space-y-3 rounded-xl border border-border/60 p-4">
+              <div className="space-y-1">
+                <h3 className="text-sm font-medium text-foreground">
+                  Predicted vs actual (parity)
+                </h3>
+                <p className="text-xs text-muted-foreground">
+                  Each {populationText} row as (actual, predicted) against the
+                  45° identity line, both axes on one shared domain so distance
+                  from the line is error at that magnitude. Fanning is
+                  heteroscedastic error; curvature is unmodelled nonlinearity; a
+                  cloud flatter than the line is the model compressing its range
+                  toward the mean.
+                </p>
+              </div>
+              <div className="mx-auto w-full max-w-md space-y-2">
+                <ChartLegend items={PARITY_LEGEND} />
+                <div className="aspect-square w-full">
+                  <ParityScatterChart
+                    rows={rows}
+                    domain={parityDomain}
+                    population={populationAxisLabel(population)}
+                  />
+                </div>
+              </div>
+            </section>
+          ) : (
+            <EmptyPanel>
+              Parity plot: this run&apos;s prediction range wasn&apos;t
+              recorded, so both axes have no shared domain to draw against.
+            </EmptyPanel>
+          )}
+
           <section className="space-y-3 rounded-xl border border-border/60 p-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="space-y-1">
                 <h3 className="text-sm font-medium text-foreground">
-                  Residuals
+                  Residuals over time
                 </h3>
                 <p className="text-xs text-muted-foreground">
                   Residual = measured actual − the model&apos;s prediction. A
@@ -506,10 +643,7 @@ export function Phase5Evaluation({ nav }: Props) {
               />
             </div>
             <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-background px-3 py-1.5 text-[10px] font-medium text-muted-foreground">
-              <LegendItem color="var(--chart-1)" label="Residual" />
-              <LegendItem color="var(--chart-2)" label="±1 SD" />
-              <LegendItem color="var(--chart-3)" label="±2 SD" />
-              <LegendItem color="var(--destructive)" label="±3 SD" />
+              <ChartLegend items={RESIDUAL_LEGEND} />
             </div>
             <ResidualChart
               rows={visibleRows}
@@ -522,27 +656,24 @@ export function Phase5Evaluation({ nav }: Props) {
               ordinary run — MODEL-FLOW-016-T11: for a scored CV run, `fit`
               is instead the raw validation holdout no fit ever saw, so the
               heading/copy below say so rather than naming a test split this
-              run never had. */}
+              run never had. MODEL-FLOW-019-T15: both read the ONE
+              `population` derivation above rather than re-deriving it from
+              `cvPhase` a third and fourth time. */}
           <section className="space-y-3 rounded-xl border border-border/60 p-4">
             <div className="space-y-1">
               <h3 className="text-sm font-medium text-foreground">
-                {cvPhase === 'scored'
-                  ? 'Holdout residual diagnostics'
-                  : 'Test-split residual diagnostics'}
+                {populationTitle(population)} residual diagnostics
               </h3>
               <p className="text-xs text-muted-foreground">
-                {cvPhase === 'scored'
-                  ? "Residuals from the model's validation holdout should be"
-                  : "Residuals from the run's held-out test rows should be"}{' '}
-                centred on 0 and roughly normal — a symmetric histogram and
-                points hugging the Q-Q diagonal indicate an unbiased,
-                well-behaved fit.
+                Residuals from the run&apos;s {populationText} should be centred
+                on 0 and roughly normal — a symmetric histogram and points
+                hugging the Q-Q diagonal indicate an unbiased, well-behaved fit.
               </p>
             </div>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <div className="space-y-2 rounded-lg border border-border/60 bg-card p-3">
                 <p className="text-xs font-medium text-foreground">
-                  Residual Distribution
+                  Residual Distribution — {populationText}
                 </p>
                 <ResidualHistogramChart bins={histogramBins} />
               </div>
@@ -555,6 +686,22 @@ export function Phase5Evaluation({ nav }: Props) {
             </div>
           </section>
         </div>
+      )}
+
+      {run.featureImportance ? (
+        <FeatureImportanceTable
+          importance={run.featureImportance}
+          derivedFromTarget={manifest?.derivedFromTarget ?? null}
+          distinctLabelledValues={
+            run.splitStats?.distinct_labelled_values ?? null
+          }
+        />
+      ) : (
+        <EmptyPanel>
+          Feature importance: not recorded for this run — either it predates
+          feature-importance recording, or {algorithmLabel} has no such quantity
+          to read.
+        </EmptyPanel>
       )}
 
       {cvPhase === 'scored' && run.cvFolds && (

@@ -10,12 +10,14 @@ import userEvent from '@testing-library/user-event'
 import { createStore, Provider } from 'jotai'
 import { Phase4ModelSelection } from '../phase-4-model-selection'
 import {
+  mpAcceptanceCriteriaAtom,
   mpCandidateJobIdAtom,
   mpCurrentStepAtom,
   mpHighestUnlockedAtom,
   mpServerDraftIdAtom,
   mpTrainingResultAtom,
 } from '@/store/model-pipeline'
+import type { AcceptanceCriterion } from '@/lib/acceptance-criteria'
 import type {
   CandidateResult,
   ModelCandidateJob,
@@ -196,6 +198,7 @@ function trainingRun(
     metrics: { r2: 0.9, rmse: 0.5 },
     holdoutMetrics: null,
     cvFoldsKey: null,
+    featureImportanceKey: null,
     predictionsKey: null,
     scoringContainerId: null,
     lossHistoryKey: null,
@@ -218,8 +221,11 @@ describe('Phase4ModelSelection (MODEL-FLOW-013)', () => {
     expect(screen.getByText(/No training run yet/i)).toBeInTheDocument()
   })
 
-  it('passes a single run through honestly — no comparison table, no stalling', () => {
-    // mpCandidateJobIdAtom stays null — no sweep happened.
+  it('passes a single run through the unified table — no separate summary, no stalling', () => {
+    // MODEL-FLOW-019-T08 part 4 deleted `SingleRunSummary`: a lone run now
+    // renders through the SAME CandidateTable + overlay chart every other
+    // count does (mpCandidateJobIdAtom stays null — no sweep happened).
+    h.runsResult.runs = [trainingRun({ id: 'run-1', algorithm: 'ridge' })]
     renderStep(store =>
       store.set(mpTrainingResultAtom, {
         runId: 'run-1',
@@ -230,9 +236,10 @@ describe('Phase4ModelSelection (MODEL-FLOW-013)', () => {
       }),
     )
 
-    expect(screen.getByText('Ridge Regression trained')).toBeInTheDocument()
-    expect(screen.getByText(/Only one candidate this run/)).toBeInTheDocument()
-    expect(screen.queryByText('Select')).not.toBeInTheDocument()
+    expect(
+      screen.queryByText('Ridge Regression trained'),
+    ).not.toBeInTheDocument()
+    expect(screen.getByText('Ridge Regression')).toBeInTheDocument()
   })
 
   it('renders each candidate — a FAILED one stays listed with its reason, never silently dropped', () => {
@@ -770,7 +777,7 @@ describe('Phase4ModelSelection — the ranked candidate table (MODEL-FLOW-019-T0
     )
   })
 
-  it('shares Step 5s picker vocabulary and its cannot-deselect-the-last-metric guard (AC6)', async () => {
+  it('shares Step 5s picker vocabulary, now including SD (MODEL-FLOW-019-T10), and its cannot-deselect-the-last-metric guard (AC6)', async () => {
     setup(job({ candidates: [candidate({ runId: 'run-1' })] }))
     const user = userEvent.setup()
 
@@ -779,8 +786,11 @@ describe('Phase4ModelSelection — the ranked candidate table (MODEL-FLOW-019-T0
     // elsewhere in this codebase for the same reason (draft-resume-section
     // .test.tsx), does.
     await user.click(screen.getByRole('button', { name: /Metrics/i }))
-    // Same four keys Step 5 offers — r2/rmse/mae/sd — not a second,
-    // independently-declared vocabulary.
+    // Same vocabulary Step 5 offers for r2/rmse/mae/sd — not a second,
+    // independently-declared set of labels. `sd` is no longer excluded
+    // (MODEL-FLOW-019-T10 reverses the 2026-09-07 follow-up): it now has a
+    // real source — `useCandidatePredictions`' own batch response — so this
+    // picker offers exactly `METRIC_KEYS`, the full shared vocabulary.
     expect(
       screen.getByText(/R² — Coefficient of determination/),
     ).toBeInTheDocument()
@@ -833,6 +843,136 @@ describe('Phase4ModelSelection — the ranked candidate table (MODEL-FLOW-019-T0
     // The reason is the "#" cell's own `title`, not visible text — the rank
     // column itself renders '—' for any unranked row.
     expect(screen.getByTitle('Did not finish')).toBeInTheDocument()
+  })
+})
+
+describe('Phase4ModelSelection — advisory acceptance criteria (MODEL-FLOW-019-T12)', () => {
+  function setup(
+    jobFixture: ModelCandidateJob,
+    criteria: AcceptanceCriterion[],
+  ) {
+    h.result.job = jobFixture
+    return renderStep(store => {
+      store.set(mpTrainingResultAtom, {
+        runId: 'run-1',
+        algorithm: 'ols',
+        metrics: { rmse: 0.5 },
+        trainedAt: '2026-08-28T00:00:00.000Z',
+        cvFoldsKey: null,
+      })
+      store.set(mpCandidateJobIdAtom, 'job-1')
+      store.set(mpAcceptanceCriteriaAtom, criteria)
+    })
+  }
+
+  // T04's own recorded shape: test rmse 0.42, holdout rmse 0.81/mae 0.14.
+  function candidateWithBothSources() {
+    return candidate({
+      runId: 'run-1',
+      sourcedMetrics: [
+        { source: 'test-split', r2: 0.9, rmse: 0.42, mae: 0.35 },
+        {
+          source: 'holdout',
+          r2: 0.8,
+          rmse: 0.81,
+          mae: 0.14,
+          rowCount: 1153,
+          droppedUnlabelled: 0,
+          droppedBadFeatures: 0,
+        },
+      ],
+      holdoutAbsence: null,
+    })
+  }
+
+  it('marks a passing candidate without hiding, filtering, or disabling anything (AC12/AC13)', () => {
+    setup(job({ bestRunId: null, candidates: [candidateWithBothSources()] }), [
+      {
+        kind: 'comparison',
+        left: { metric: 'rmse', source: 'holdout' },
+        operator: 'gt',
+        right: { metric: 'rmse', source: 'test-split' },
+      },
+    ])
+    // Holdout rmse 0.81 > test rmse 0.42 — holds.
+    expect(screen.getByText(/Validate RMSE > Test RMSE/)).toBeInTheDocument()
+    // Still just a row — nothing is hidden, filtered, or barred.
+    expect(screen.getByText('Select').closest('button')).not.toBeDisabled()
+  })
+
+  it('marks a failing candidate the same way — advisory, never blocking (AC13)', () => {
+    setup(job({ bestRunId: null, candidates: [candidateWithBothSources()] }), [
+      {
+        kind: 'comparison',
+        left: { metric: 'rmse', source: 'holdout' },
+        operator: 'lt',
+        right: { metric: 'rmse', source: 'test-split' },
+      },
+    ])
+    // Holdout rmse 0.81 is NOT < test rmse 0.42 — a miss is marked, not
+    // hidden or barred.
+    expect(screen.getByText(/Validate RMSE < Test RMSE/)).toBeInTheDocument()
+    expect(screen.getByText('Select').closest('button')).not.toBeDisabled()
+  })
+
+  // MODEL-FLOW-019-V13, exercised end to end through the rendered table.
+  it('reads "not evaluated", naming the reason, rather than "fail" when a source is absent (V13/AC11)', () => {
+    setup(
+      job({
+        bestRunId: null,
+        candidates: [
+          candidate({
+            runId: 'run-1',
+            sourcedMetrics: [
+              { source: 'test-split', r2: 0.9, rmse: 0.5, mae: 0.4 },
+            ],
+            holdoutAbsence: 'no-dataset-holdout',
+          }),
+        ],
+      }),
+      [
+        {
+          kind: 'comparison',
+          left: { metric: 'rmse', source: 'holdout' },
+          operator: 'gt',
+          right: { metric: 'rmse', source: 'test-split' },
+        },
+      ],
+    )
+    expect(
+      screen.getByText(
+        /Validate RMSE > Test RMSE — not evaluated \(no holdout\)/,
+      ),
+    ).toBeInTheDocument()
+  })
+
+  it('evaluates two comparisons on the SAME candidate independently, one passing and one failing', () => {
+    setup(job({ bestRunId: null, candidates: [candidateWithBothSources()] }), [
+      {
+        kind: 'comparison',
+        left: { metric: 'rmse', source: 'holdout' },
+        operator: 'gt',
+        right: { metric: 'rmse', source: 'test-split' },
+      },
+      {
+        kind: 'comparison',
+        left: { metric: 'r2', source: 'holdout' },
+        operator: 'gt',
+        right: { metric: 'r2', source: 'test-split' },
+      },
+    ])
+    // Holdout rmse 0.81 > test rmse 0.42 holds; holdout r2 0.8 is NOT >
+    // test r2 0.9 — two different comparisons, two independent readings.
+    expect(screen.getByText(/Validate RMSE > Test RMSE/)).toBeInTheDocument()
+    expect(screen.getByText(/Validate R² > Test R²/)).toBeInTheDocument()
+  })
+
+  it('marks the Validate R² ≥ 0 floor independently of any comparison (AC33)', () => {
+    setup(job({ bestRunId: null, candidates: [candidateWithBothSources()] }), [
+      { kind: 'r2-floor' },
+    ])
+    // Holdout r2 0.8 >= 0 — holds.
+    expect(screen.getByText(/Validate R² ≥ 0/)).toBeInTheDocument()
   })
 })
 
@@ -942,27 +1082,50 @@ describe('Phase4ModelSelection — standalone comparison (MODEL-FLOW-018-T04)', 
     // mpCandidateJobIdAtom stays null — no CURRENT job to compare through.
   }
 
-  it('still passes a TRUE single-run draft through with no table (runs.length <= 1)', () => {
+  // MODEL-FLOW-019-T08 part 4 reversed MODEL-FLOW-018-T04's own decision:
+  // one layout for every count, including one — a 1-row table + overlay
+  // chart, not the deleted `SingleRunSummary`. MODEL-FLOW-013's own
+  // acceptance criterion ("a single run must not stall") is honoured by a
+  // table that asks the user to choose nothing, not by a second renderer.
+  it('renders a 1-row table for a single selectable run — no separate summary card', () => {
     h.runsResult.runs = [trainingRun()]
     renderStep(store => setupNoJob(store))
 
-    expect(screen.getByText('Ridge Regression trained')).toBeInTheDocument()
-    expect(screen.queryByText('Select')).not.toBeInTheDocument()
+    expect(
+      screen.queryByText('Ridge Regression trained'),
+    ).not.toBeInTheDocument()
+    expect(screen.getByText('Ridge Regression')).toBeInTheDocument()
+    expect(screen.getByText('0.500')).toBeInTheDocument()
+    // Nothing selected yet, so the lone row still offers Select — a real
+    // question about this one run, not "nothing to choose."
+    expect(screen.getByText('Select')).toBeInTheDocument()
   })
 
-  // The gate counts SELECTABLE (SUCCEEDED) runs, not raw row count — two
-  // rows with only one SUCCEEDED among them is still "nothing to choose
-  // between," matching MODEL-FLOW-013's own acceptance criterion by what it
-  // actually means rather than by row count.
-  it('still passes through with no table when only ONE of two runs SUCCEEDED', () => {
+  // The old gate counted SELECTABLE (SUCCEEDED) runs, not raw row count, to
+  // decide whether a table opened at all — T08 deleted that gate entirely.
+  // Every row renders in the same table regardless of status, including a
+  // FAILED one with its own reason, matching MODEL-FLOW-013-T07's
+  // "never silently drop a row" rule.
+  it('renders BOTH rows in the same table when only one of two runs SUCCEEDED', () => {
     h.runsResult.runs = [
       trainingRun({ id: 'run-a' }),
-      trainingRun({ id: 'run-b', status: 'FAILED', metrics: null }),
+      trainingRun({
+        id: 'run-b',
+        status: 'FAILED',
+        failureReason: 'container OOM',
+        metrics: null,
+      }),
     ]
     renderStep(store => setupNoJob(store))
 
-    expect(screen.getByText('Ridge Regression trained')).toBeInTheDocument()
-    expect(screen.queryByText('Select')).not.toBeInTheDocument()
+    expect(
+      screen.queryByText('Ridge Regression trained'),
+    ).not.toBeInTheDocument()
+    expect(screen.getAllByText('Ridge Regression')).toHaveLength(2)
+    expect(screen.getByText('container OOM')).toBeInTheDocument()
+    // run-a (SUCCEEDED) offers Select; run-b (FAILED) has nothing to carry
+    // forward and gets none.
+    expect(screen.getAllByText('Select')).toHaveLength(1)
   })
 
   it('renders a comparison table for 2+ standalone runs no job owns — including two CV runs', () => {
@@ -987,13 +1150,14 @@ describe('Phase4ModelSelection — standalone comparison (MODEL-FLOW-018-T04)', 
       screen.queryByText('Ridge Regression trained'),
     ).not.toBeInTheDocument()
     expect(screen.getAllByText('Ridge Regression')).toHaveLength(2)
+    // MODEL-FLOW-019-T08 part 4 — the fold mean AND its spread, never just
+    // the mean (`CvEstimateCell`), inherited from the deleted
+    // `StandaloneRunRow`'s own correct rendering; neither run has a
+    // `predictionsKey` (awaiting scoring), so the estimate is never
+    // mistaken for the shipped model's own score.
     expect(screen.getByText('0.400 ± 0.050')).toBeInTheDocument()
     expect(screen.getByText('0.600 ± 0.080')).toBeInTheDocument()
-    // MODEL-FLOW-018-T06: neither run has a `predictionsKey` (awaiting
-    // scoring) — the label says so, distinct from a scored run's "Holdout
-    // RMSE", so the fold-mean estimate is never mistaken for the shipped
-    // model's own score.
-    expect(screen.getAllByText('Est. CV RMSE')).toHaveLength(2)
+    expect(screen.getAllByText('Est. CV').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Select')).toHaveLength(2)
   })
 
@@ -1001,7 +1165,13 @@ describe('Phase4ModelSelection — standalone comparison (MODEL-FLOW-018-T04)', 
   // the table on SELECTABLE count (2 here), not raw row count, and once
   // open every row renders, including the non-SUCCEEDED ones with their own
   // stated reason (MODEL-FLOW-013-T07's "never silently drop a row" rule).
-  it('disables Select with a stated reason for a non-terminal or FAILED/CANCELED standalone run', () => {
+  // MODEL-FLOW-019-T08 unified this path onto `CandidateTable`, whose own
+  // rule (job path, unchanged by this feature) is simpler than the deleted
+  // `StandaloneRunRow`'s per-status disabled-with-reason button: Select
+  // exists ONLY for a SUCCEEDED, unselected candidate — a non-terminal or
+  // FAILED/CANCELED row keeps its place (and its own reason, where it has
+  // one) with no Select button at all, never a disabled one.
+  it('gives Select only to a SUCCEEDED standalone run — every other status keeps its place with no Select button', () => {
     h.runsResult.runs = [
       trainingRun({ id: 'run-a', status: 'RUNNING', metrics: null }),
       trainingRun({
@@ -1015,25 +1185,15 @@ describe('Phase4ModelSelection — standalone comparison (MODEL-FLOW-018-T04)', 
     ]
     renderStep(store => setupNoJob(store))
 
-    const buttons = screen
-      .getAllByText('Select')
-      .map(el => el.closest('button'))
-    // run-a (RUNNING) and run-b (FAILED) are disabled; run-c/run-d
-    // (SUCCEEDED) are the ones that made the table open at all.
-    expect(buttons[0]).toBeDisabled()
-    expect(buttons[1]).toBeDisabled()
-    expect(buttons[2]).not.toBeDisabled()
-    expect(buttons[3]).not.toBeDisabled()
-    expect(
-      screen.getByText(/Available once this run finishes/i),
-    ).toBeInTheDocument()
-    expect(
-      screen.getByText(/didn't succeed.*nothing to carry forward/i),
-    ).toBeInTheDocument()
+    expect(screen.getAllByText('Select')).toHaveLength(2)
+    expect(screen.getByText('Running')).toBeInTheDocument()
     expect(screen.getByText('container OOM')).toBeInTheDocument()
   })
 
-  it('marks the standalone-selected run "Carrying forward" and hides its own Select button', () => {
+  // MODEL-FLOW-021 AC6 retired the phrase "Carrying forward" from this
+  // wizard; `CandidateTable`'s own badge (shared with the job path) reads
+  // "Selected" instead.
+  it('marks the standalone-selected run "Selected" and hides its own Select button', () => {
     h.runsResult.runs = [
       trainingRun({ id: 'run-a', algorithm: 'ridge' }),
       trainingRun({ id: 'run-b', algorithm: 'svm', metrics: { rmse: 0.6 } }),
@@ -1041,7 +1201,7 @@ describe('Phase4ModelSelection — standalone comparison (MODEL-FLOW-018-T04)', 
     h.selectionResult.selectedRunId = 'run-b'
     renderStep(store => setupNoJob(store))
 
-    expect(screen.getByText('Carrying forward')).toBeInTheDocument()
+    expect(screen.getByText('Selected')).toBeInTheDocument()
     // Only run-a's Select remains — run-b's own button is hidden once selected.
     expect(screen.getAllByText('Select')).toHaveLength(1)
   })
@@ -1148,19 +1308,21 @@ describe('Phase4ModelSelection — targetY grouping and comparability notes (MOD
     // algorithm 'ridge') must carry NO note even though the OTHER group
     // (TI-202, 'svm') has one. A total-count assertion alone can't tell a
     // note landing on the wrong group from one landing on the right group.
+    // MODEL-FLOW-019-T08: each run is now a TABLE ROW, not a card — scope
+    // by `tr` rather than the deleted card wrapper's `.rounded-xl` class.
     const notePattern = /Not the same comparison as the other rows here/
-    const ti101Cards = screen
+    const ti101Rows = screen
       .getAllByText('Ridge Regression')
-      .map(el => el.closest('.rounded-xl') as HTMLElement)
-    for (const card of ti101Cards) {
-      expect(within(card).queryByText(notePattern)).not.toBeInTheDocument()
+      .map(el => el.closest('tr') as HTMLElement)
+    for (const row of ti101Rows) {
+      expect(within(row).queryByText(notePattern)).not.toBeInTheDocument()
     }
 
-    const ti202Cards = screen
+    const ti202Rows = screen
       .getAllByText('Support Vector Machine')
-      .map(el => el.closest('.rounded-xl') as HTMLElement)
-    for (const card of ti202Cards) {
-      expect(within(card).getByText(notePattern)).toBeInTheDocument()
+      .map(el => el.closest('tr') as HTMLElement)
+    for (const row of ti202Rows) {
+      expect(within(row).getByText(notePattern)).toBeInTheDocument()
     }
   })
 
@@ -1276,12 +1438,17 @@ describe('Phase4ModelSelection — an honest metric column across run kinds (MOD
     ]
     renderStep(store => setupNoJob(store))
 
-    // `getByText('—')` is a SINGULAR query — asserting run-b's own value
-    // renders too confirms it isn't masking a second `—` that would make
-    // this throw instead of pass.
-    expect(screen.getByText('—')).toBeInTheDocument()
+    // MODEL-FLOW-019-T10 (this comment was stale before that task — `sd`
+    // is a real fourth column now, not merely claimed to be one): the
+    // unified table shows FOUR metric columns by default (r2/rmse/mae/sd),
+    // each with its own Test+Holdout pair, so a missing figure produces
+    // several dashes, not one — `getAllByText` proves presence without
+    // over-asserting a count this test doesn't care about. `sd`'s own
+    // absence reads as its own reason text, not a bare dash, which is why
+    // it is named here rather than folded into the same dash count.
+    expect(screen.getAllByText('—').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('No predictions series').length).toBe(2)
     expect(screen.getByText('0.600')).toBeInTheDocument()
-    expect(screen.getAllByText('Test RMSE')).toHaveLength(2)
     // The real failure mode a `0` fallback would produce — `'0'` alone can
     // never appear here even from a bug, since the row always formats via
     // `toFixed(3)`.
@@ -1300,19 +1467,23 @@ describe('Phase4ModelSelection — an honest metric column across run kinds (MOD
     renderStep(store => setupNoJob(store))
 
     expect(screen.getByText('0.400 ± 0.050')).toBeInTheDocument()
-    expect(screen.getByText('Est. CV RMSE')).toBeInTheDocument()
+    expect(screen.getAllByText('Est. CV').length).toBeGreaterThan(0)
     expect(
       screen.getByText(
-        /An estimate of the configuration, not the shipped model's own score\. Select it to score it/,
+        "Fold mean — an estimate of the configuration, not the shipped model's own score.",
       ),
     ).toBeInTheDocument()
     // Offering the action here would silently resolve Evaluation to
     // WHATEVER run is currently active — not necessarily this one — since
     // this row isn't the draft's own selection yet.
-    expect(screen.queryByText('Score in Evaluation')).not.toBeInTheDocument()
+    expect(
+      screen.queryByTitle(
+        "Score this model against the dataset's validation holdout.",
+      ),
+    ).not.toBeInTheDocument()
   })
 
-  it('offers "Score in Evaluation" only once this row IS the carrying-forward selection, and it moves to Step 5 honestly (never nav.goTo, which can read stale state)', () => {
+  it("offers a Score action only once this row IS the draft's selection, and it moves to Step 5 honestly (never nav.goTo, which can read stale state)", () => {
     h.runsResult.runs = [
       trainingRun({
         id: 'run-cv',
@@ -1326,10 +1497,12 @@ describe('Phase4ModelSelection — an honest metric column across run kinds (MOD
 
     expect(
       screen.getByText(
-        /An estimate of the configuration, not the shipped model's own score — score it/,
+        "Fold mean — an estimate of the configuration, not the shipped model's own score.",
       ),
     ).toBeInTheDocument()
-    const button = screen.getByText('Score in Evaluation')
+    const button = screen.getByTitle(
+      "Score this model against the dataset's validation holdout.",
+    )
     fireEvent.click(button)
 
     expect(store.get(mpCurrentStepAtom)).toBe(5)
@@ -1349,10 +1522,12 @@ describe('Phase4ModelSelection — an honest metric column across run kinds (MOD
     h.selectionResult.selectedRunId = 'run-cv'
     renderStep(store => setupNoJob(store))
 
+    expect(screen.getByText(/Holdout scoring is running/)).toBeInTheDocument()
     expect(
-      screen.getByText(/Scoring against the holdout is running/),
-    ).toBeInTheDocument()
-    expect(screen.queryByText('Score in Evaluation')).not.toBeInTheDocument()
+      screen.queryByTitle(
+        "Score this model against the dataset's validation holdout.",
+      ),
+    ).not.toBeInTheDocument()
   })
 
   it('reads a scored CV run’s RMSE from holdoutMetrics — the refit’s own number — never the fold mean, and drops the pre-scoring note', () => {
@@ -1369,8 +1544,10 @@ describe('Phase4ModelSelection — an honest metric column across run kinds (MOD
     renderStep(store => setupNoJob(store))
 
     expect(screen.getByText('0.350')).toBeInTheDocument()
-    expect(screen.getByText('Holdout RMSE')).toBeInTheDocument()
-    // The fold mean must not leak through once a real holdout score exists.
+    // The fold mean must not leak through once a real holdout score exists
+    // — the Test column reads a plain dash instead of the estimate
+    // (MODEL-FLOW-019-T08's own inherited rule, checked structurally in
+    // the next test's "renders an em dash" case).
     expect(screen.queryByText('0.400 ± 0.050')).not.toBeInTheDocument()
     expect(
       screen.queryByText(/estimate of the configuration/),
@@ -1390,18 +1567,21 @@ describe('Phase4ModelSelection — an honest metric column across run kinds (MOD
     ]
     renderStep(store => setupNoJob(store))
 
-    expect(screen.getByText('—')).toBeInTheDocument()
+    // Both the Test column (suppressed — the run is scored) and the
+    // Holdout column (the figure itself is missing) read a plain dash.
+    expect(screen.getAllByText('—').length).toBeGreaterThan(0)
     expect(screen.getByText('0.600')).toBeInTheDocument()
-    expect(screen.getByText('Holdout RMSE')).toBeInTheDocument()
+    expect(screen.getByText('0.910')).toBeInTheDocument()
     expect(screen.queryByText('0.400 ± 0.050')).not.toBeInTheDocument()
   })
 
-  // Advisor-found gap, 2026-09-04: the SOLE-selectable-run pass-through
-  // (`SingleRunSummary`) reads a DIFFERENT source (`selectedRun` built into
-  // `DraftTrainingResult`) than `StandaloneRunRow`'s table does — the two
-  // components must still agree about the SAME run once it has been scored,
-  // reachable via Step 4 -> Evaluation -> score -> back to Step 4.
-  it('the single-run pass-through shows Holdout RMSE, never the fold mean, once the sole run has been scored — must agree with the comparison table', () => {
+  // Advisor-found gap, 2026-09-04, closed by MODEL-FLOW-019-T08 part 4: the
+  // deleted `SingleRunSummary` read a DIFFERENT source (`selectedRun` built
+  // into `DraftTrainingResult`) than `StandaloneRunRow`'s table did — the
+  // two could disagree about the SAME run once it had been scored,
+  // reachable via Step 4 -> Evaluation -> score -> back to Step 4. There is
+  // now only ONE renderer, so a single-run draft cannot reopen that gap.
+  it('carries the scored CV run’s real figure through even when it is the ONLY run on the draft — no second renderer to disagree with it', () => {
     h.runsResult.runs = [
       trainingRun({
         id: 'run-cv',
@@ -1414,48 +1594,108 @@ describe('Phase4ModelSelection — an honest metric column across run kinds (MOD
     h.selectionResult.selectedRunId = 'run-cv'
     renderStep(store => setupNoJob(store))
 
-    expect(screen.getByText(/Holdout RMSE 0\.350\./)).toBeInTheDocument()
-    // The old "score it" note must not survive into the scored state — that
-    // was the exact disagreement this test guards against.
+    expect(screen.getByText('0.350')).toBeInTheDocument()
     expect(
       screen.queryByText(/estimate of the configuration/),
     ).not.toBeInTheDocument()
-    expect(screen.queryByText(/RMSE 0\.400 ± 0\.050/)).not.toBeInTheDocument()
+    expect(screen.queryByText('0.400 ± 0.050')).not.toBeInTheDocument()
   })
+})
 
-  it('the single-run pass-through still shows the fold-mean estimate and "score it" note while the sole run is awaiting scoring — unchanged pre-T06 behaviour', () => {
+describe('Phase4ModelSelection — residual SD, tagged with its population (MODEL-FLOW-019-T10)', () => {
+  function setupNoJob(store: ReturnType<typeof createStore>) {
+    store.set(mpTrainingResultAtom, {
+      runId: 'run-1',
+      algorithm: 'ridge',
+      metrics: { rmse: 0.5 },
+      trainedAt: '2026-08-27T00:00:30.000Z',
+      cvFoldsKey: null,
+    })
+  }
+
+  // Local copy of the module's own `predictionsItem` fixture (defined
+  // inside the first describe block above, out of this block's scope) —
+  // same shape, same defaults.
+  function predictionsItem(
+    overrides: Partial<RunPredictionsBatchItem> = {},
+  ): RunPredictionsBatchItem {
+    return {
+      runId: 'run-1',
+      sourceKey: 'drafts/draft-1/runs/run-1/predictions.parquet',
+      rowCount: 3,
+      residualSd: 0.1,
+      residualRmseCheck: 0.1,
+      yTrueMin: 1,
+      yTrueMax: 3,
+      yPredMin: 1,
+      yPredMax: 3,
+      points: [],
+      downsampled: false,
+      error: null,
+      ...overrides,
+    }
+  }
+
+  // MODEL-FLOW-019-V11. "PROVE SD'S SOURCE BITES" — a non-CV run beside a
+  // SCORED CV run must show their SD cells in DIFFERENT columns.
+  it('renders a non-CV run’s SD under Test and a SCORED CV run’s SD under Validate', () => {
     h.runsResult.runs = [
+      trainingRun({ id: 'run-a', predictionsKey: 'predictions.parquet' }),
       trainingRun({
         id: 'run-cv',
         cvFoldsKey: 'cv_folds.json',
-        metrics: { cv_rmse_mean: 0.4, cv_rmse_std: 0.05, n_splits: 5 },
+        predictionsKey: 'predictions.parquet',
+        metrics: { cv_rmse_mean: 0.4, cv_rmse_std: 0.05 },
+        holdoutMetrics: { rmse: 0.35, r2: 0.91 },
       }),
     ]
-    h.selectionResult.selectedRunId = 'run-cv'
+    h.predictionsResult.byRunId = new Map([
+      ['run-a', predictionsItem({ runId: 'run-a', residualSd: 0.12 })],
+      ['run-cv', predictionsItem({ runId: 'run-cv', residualSd: 0.09 })],
+    ])
     renderStep(store => setupNoJob(store))
 
-    expect(
-      screen.getByText(/RMSE 0\.400 ± 0\.050 across 5 folds\./),
-    ).toBeInTheDocument()
-    expect(
-      screen.getByText(/Score it against the holdout in Evaluation/),
-    ).toBeInTheDocument()
+    // Two different SD figures, each printed exactly once — proving each
+    // landed in its OWN column rather than both racing for the same cell.
+    expect(screen.getByText('0.120')).toBeInTheDocument()
+    expect(screen.getByText('0.090')).toBeInTheDocument()
   })
 
-  it('the single-run pass-through shows a running-scoring note while the sole run’s scoring container is in flight', () => {
+  // MODEL-FLOW-019-V12. Three causes, three different strings — never one
+  // em dash for all of them.
+  it('reads three different reasons for three different null causes', () => {
     h.runsResult.runs = [
+      // Awaiting scoring — a CV run with no predictions.parquet by design.
       trainingRun({
-        id: 'run-cv',
+        id: 'run-awaiting',
         cvFoldsKey: 'cv_folds.json',
-        scoringContainerId: 'container-1',
+        predictionsKey: null,
         metrics: { cv_rmse_mean: 0.4, cv_rmse_std: 0.05 },
       }),
+      // Predates the predictions endpoint — a non-CV run with no key.
+      trainingRun({ id: 'run-legacy', predictionsKey: null }),
+      // The key exists but the batch item itself failed — a reclaimed
+      // prefix, or an oversized frame.
+      trainingRun({ id: 'run-broken', predictionsKey: 'predictions.parquet' }),
     ]
-    h.selectionResult.selectedRunId = 'run-cv'
+    h.predictionsResult.byRunId = new Map([
+      [
+        'run-broken',
+        predictionsItem({
+          runId: 'run-broken',
+          residualSd: null,
+          error: 'NoSuchKey',
+        }),
+      ],
+    ])
     renderStep(store => setupNoJob(store))
 
-    expect(
-      screen.getByText(/Scoring against the holdout is running/),
-    ).toBeInTheDocument()
+    // "Awaiting scoring" is shared with `HOLDOUT_ABSENCE_TEXT`'s own
+    // 'not-scored-yet' reason — the same string names both this run's
+    // absent holdout r2/rmse/mae AND its absent SD, so `getAllByText`
+    // rather than a uniqueness assumption this fixture doesn't have.
+    expect(screen.getAllByText('Awaiting scoring').length).toBeGreaterThan(0)
+    expect(screen.getByText('No predictions series')).toBeInTheDocument()
+    expect(screen.getByText(/Unreadable — NoSuchKey/)).toBeInTheDocument()
   })
 })

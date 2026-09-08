@@ -30,6 +30,11 @@ function baseProps() {
     hasArtifact: false,
     maxAdmissibleK: null,
     splitStatsLoading: false,
+    // MODEL-FLOW-019-T11. Empty means no ratio criterion set anywhere — the
+    // advisory default; these Seed-control tests don't exercise it.
+    acceptanceCriteria: [],
+    onAcceptanceCriteriaChange: vi.fn(),
+    currentRunMetrics: null,
   }
 }
 

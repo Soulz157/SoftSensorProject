@@ -44,6 +44,12 @@ export interface EvalAnalysis {
   suggestions: string[]
 }
 
+// MODEL-FLOW-019-T15. `EvaluationPopulation` and its label forms moved to
+// `lib/metric-source.ts`, where they are DERIVED from `MetricSource`
+// (`Extract<MetricSource, 'test-split' | 'holdout'>`) rather than declared
+// as a second union carrying its own spelling of the same values — that
+// file owns the source, so it owns every name for it.
+
 function round(v: number, digits = 2): number {
   const f = Math.pow(10, digits)
   return Math.round(v * f) / f

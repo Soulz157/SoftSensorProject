@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AlgorithmSelector } from '../algorithm-selector'
 import type { Algorithm } from '@/store/model-pipeline'
+import { ineligibleReason } from '@/lib/algorithm-eligibility'
 
 /**
  * MODEL-FLOW-020-T06. Gaussian Process is refused AT SELECTION when the
@@ -94,5 +95,63 @@ describe('AlgorithmSelector — MODEL-FLOW-020-T06 GPR size refusal', () => {
     expect(
       screen.getByRole('menuitemcheckbox', { name: 'Random Forest' }),
     ).not.toHaveAttribute('aria-disabled', 'true')
+  })
+})
+
+/**
+ * MODEL-FLOW-022-T03/V04. A dataset can shrink under an ALREADY-selected
+ * `grp` mid-edit (the user picks a smaller dataset upstream in the same
+ * session). Hiding its tab is not enough — the sweep would still launch a
+ * candidate for it and fail at fit time — so it must leave the selection
+ * too, keeping at least one algorithm.
+ */
+describe('AlgorithmSelector — MODEL-FLOW-022 self-correcting eligibility', () => {
+  it('drops grp from the selection when the dataset shrinks under it, keeping the rest', () => {
+    const onChange = vi.fn()
+    const { rerender } = render(
+      <AlgorithmSelector
+        algorithms={['grp', 'ridge'] as Algorithm[]}
+        onChange={onChange}
+        trainLabelledRows={UNDER}
+      />,
+    )
+    expect(onChange).not.toHaveBeenCalled()
+
+    rerender(
+      <AlgorithmSelector
+        algorithms={['grp', 'ridge'] as Algorithm[]}
+        onChange={onChange}
+        trainLabelledRows={OVER}
+      />,
+    )
+
+    expect(onChange).toHaveBeenCalledWith(['ridge'])
+  })
+
+  it('never drops the LAST remaining algorithm, even if it becomes ineligible', () => {
+    const onChange = vi.fn()
+    const { rerender } = render(
+      <AlgorithmSelector
+        algorithms={['grp'] as Algorithm[]}
+        onChange={onChange}
+        trainLabelledRows={UNDER}
+      />,
+    )
+
+    rerender(
+      <AlgorithmSelector
+        algorithms={['grp'] as Algorithm[]}
+        onChange={onChange}
+        trainLabelledRows={OVER}
+      />,
+    )
+
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('ineligibleReason (the shared predicate) matches what the selector itself refuses', () => {
+    expect(ineligibleReason('grp', OVER)).not.toBeNull()
+    expect(ineligibleReason('grp', UNDER)).toBeNull()
+    expect(ineligibleReason('ridge', OVER)).toBeNull()
   })
 })

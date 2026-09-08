@@ -4,8 +4,13 @@ import {
   cvScoringPhaseOf,
   headlineMetricOf,
   holdoutAbsenceOf,
+  populationAxisLabel,
+  populationLabel,
+  populationOf,
+  populationTitle,
   rmseOf,
   sourcedMetricsOf,
+  type MetricSource,
   type MetricSourceRun,
 } from './metric-source'
 
@@ -208,9 +213,58 @@ describe('headlineMetricOf and rmseOf', () => {
 describe('METRIC_SOURCE_LABELS', () => {
   it('names each source the way the shipped Step 4 column already does', () => {
     expect(`${METRIC_SOURCE_LABELS['test-split']} RMSE`).toBe('Test RMSE')
-    expect(`${METRIC_SOURCE_LABELS.holdout} RMSE`).toBe('Holdout RMSE')
+    // 'Validate', not 'Holdout' — the word Step 4's own column header uses.
+    // MODEL-FLOW-019-T15 deliberately does NOT resolve Holdout-vs-Validate;
+    // it centralises the choice so it stays one line here, whichever way
+    // MODEL-FLOW-021's open decision lands.
+    expect(`${METRIC_SOURCE_LABELS.holdout} RMSE`).toBe('Validate RMSE')
     expect(`${METRIC_SOURCE_LABELS['cv-fold-estimate']} RMSE`).toBe(
       'Est. CV RMSE',
     )
+  })
+})
+
+/**
+ * MODEL-FLOW-019-T15. The population a predictions file describes, derived
+ * from `MetricSource` rather than declared beside it. These assert the
+ * SHAPE — every phase resolves, the two run kinds differ — never the
+ * contested word, which is still an open decision.
+ */
+describe('populationOf — exhaustive over all four scoring phases', () => {
+  it('reads the test split for an ordinary run and the holdout for a scored CV run', () => {
+    expect(populationOf('not-cv')).toBe('test-split')
+    expect(populationOf('scored')).toBe('holdout')
+    // The two run kinds must not collapse to one label.
+    expect(populationOf('not-cv')).not.toBe(populationOf('scored'))
+  })
+
+  it('never names a test split for a CV run that has none, in either pre-scoring phase', () => {
+    expect(populationOf('awaiting-scoring')).toBe('holdout')
+    expect(populationOf('scoring')).toBe('holdout')
+  })
+
+  it('is a member of MetricSource, never a second spelling of one', () => {
+    const sources: MetricSource[] = [
+      'test-split',
+      'holdout',
+      'cv-fold-estimate',
+    ]
+    expect(sources).toContain(populationOf('not-cv'))
+    expect(sources).toContain(populationOf('scored'))
+  })
+})
+
+describe('population label forms', () => {
+  it('gives an axis form in the same vocabulary as the Step 4 columns', () => {
+    expect(populationAxisLabel('test-split')).toBe(
+      METRIC_SOURCE_LABELS['test-split'],
+    )
+    expect(populationAxisLabel('holdout')).toBe(METRIC_SOURCE_LABELS.holdout)
+  })
+
+  it('gives a prose form and a heading form that differ from each other and by population', () => {
+    expect(populationLabel('test-split')).not.toBe(populationLabel('holdout'))
+    expect(populationTitle('test-split')).not.toBe(populationTitle('holdout'))
+    expect(populationTitle('holdout')).not.toBe(populationLabel('holdout'))
   })
 })

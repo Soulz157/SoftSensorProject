@@ -1,7 +1,8 @@
 'use client'
 
 import { Badge } from '@/components/ui/badge'
-import type { DriftReport, DriftStatus } from '@/services/model-monitoring'
+import type { DriftReport } from '@/services/model-monitoring'
+import { DRIFT_STATUS_CLASS as STATUS_CLASS } from '@/lib/drift-status-style'
 
 interface Props {
   report: DriftReport | null
@@ -14,19 +15,11 @@ interface Props {
  * own training distribution — z-score + estimated out-of-range rate per
  * column (see apps/backend/src/lib/prediction-drift.ts for the math).
  *
- * Status colors: NOT the red/amber "model deployment status" vocabulary
- * (§5 of docs/DESIGN_SYSTEM.md) — that reads as "is the model up", and
- * drift is a different kind of signal (is the INPUT distribution shifting).
- * Uses the data-quality palette instead — neutral for OK/UNKNOWN, purple
- * for WARN/CRITICAL — matching the Bad Data pill convention
- * (quality-summary-badges.tsx) rather than inventing a new mapping.
+ * Status colors live in `lib/drift-status-style.ts` — hoisted there once
+ * the Input Data tab's feature table became a second consumer of the same
+ * palette; see that module for the rationale (not the red/amber
+ * deploy-status vocabulary).
  */
-const STATUS_CLASS: Record<DriftStatus, string> = {
-  OK: 'bg-zinc-500/15 text-zinc-500',
-  WARN: 'bg-purple-500/15 text-purple-500',
-  CRITICAL: 'bg-purple-700/20 text-purple-700 dark:text-purple-400',
-  UNKNOWN: 'bg-zinc-500/10 text-zinc-400',
-}
 
 function formatSigned(value: number, digits = 2): string {
   const s = value.toFixed(digits)

@@ -4,6 +4,7 @@ import { useModels } from '@/hooks/workspace/use-models'
 import type { SavedDataset } from '@/store/datasets'
 import {
   MP_TOTAL_STEPS,
+  mpAcceptanceCriteriaAtom,
   mpCurrentStepAtom,
   mpHighestUnlockedAtom,
   mpNameAtom,
@@ -18,6 +19,7 @@ import {
   mpFindBestParamsAtom,
   mpTargetVariableAtom,
   mpHyperparamsAtom,
+  mpPerAlgorithmHyperparamsAtom,
   mpTrainStateAtom,
   mpCreatedModelIdAtom,
   mpSelectedMetricsAtom,
@@ -34,6 +36,7 @@ import {
   type Algorithm,
   type HyperparamValue,
 } from '@/store/model-pipeline'
+import type { AcceptanceCriterion } from '@/lib/acceptance-criteria'
 import { defaultHyperparams } from '@/lib/training-config'
 
 export interface UsePipelineNavResult {
@@ -47,6 +50,12 @@ export interface UsePipelineNavResult {
   findBestParams: boolean
   targetVariables: string[]
   hyperparameters: Record<string, HyperparamValue>
+  /** MODEL-FLOW-022-T02. Non-primary algorithms' values — see
+   * `mpPerAlgorithmHyperparamsAtom`'s own doc comment for why the primary's
+   * values never appear here. */
+  perAlgorithmHyperparameters: Partial<
+    Record<Algorithm, Record<string, HyperparamValue>>
+  >
   lossFunction: string
   trainTestSplit: number
   /** MODEL-FLOW-014-T07. `undefined` means the user has not chosen one —
@@ -55,6 +64,10 @@ export interface UsePipelineNavResult {
   /** MODEL-FLOW-016-T10. `undefined` means Cross-Validation is off — see
    * `mpNSplitsAtom`'s own doc comment for the full contract. */
   nSplits: number | undefined
+  /** MODEL-FLOW-019-T07. Advisory thresholds, committed on Apply like
+   * `seed`/`nSplits` above — `useRunConfigDraft` writes the underlying
+   * atom directly, so no setter is exposed here (same as those two). */
+  acceptanceCriteria: AcceptanceCriterion[]
   autoRetrain: boolean
   warnSd: number
   criticalSd: number
@@ -111,10 +124,15 @@ export function useModelPipelineNav(): UsePipelineNavResult {
   const [findBestParams, setFindBestParamsAtom] = useAtom(mpFindBestParamsAtom)
   const [targetVariables, setTargetVariableAtom] = useAtom(mpTargetVariableAtom)
   const [hyperparameters, setHyperparametersAtom] = useAtom(mpHyperparamsAtom)
+  const [perAlgorithmHyperparameters, setPerAlgorithmHyperparametersAtom] =
+    useAtom(mpPerAlgorithmHyperparamsAtom)
   const [lossFunction, setLossFunctionAtom] = useAtom(mpLossFunctionAtom)
   const [trainTestSplit, setTrainTestSplitAtom] = useAtom(mpTrainTestSplitAtom)
   const [seed, setSeedAtom] = useAtom(mpSeedAtom)
   const [nSplits, setNSplitsAtom] = useAtom(mpNSplitsAtom)
+  const [acceptanceCriteria, setAcceptanceCriteriaAtom] = useAtom(
+    mpAcceptanceCriteriaAtom,
+  )
   const [autoRetrain, setAutoRetrainAtom] = useAtom(mpAutoRetrainAtom)
   const [warnSd, setWarnSdAtom] = useAtom(mpRetrainWarnSdAtom)
   const [criticalSd, setCriticalSdAtom] = useAtom(mpRetrainCriticalSdAtom)
@@ -263,14 +281,16 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     setFindBestParamsAtom(false)
     setTargetVariableAtom([])
     setHyperparametersAtom(defaultHyperparams('ols'))
+    setPerAlgorithmHyperparametersAtom({})
     // MODEL-FLOW-012: was 'rmse', diverging from mpLossFunctionAtom's own
     // default and resetWizardAtom's 'mse' — this fired on every
     // workspace/plant change (use-create-model.ts) and silently flipped the
     // displayed loss function.
-    setLossFunctionAtom('mse')
+    setLossFunctionAtom('rmse')
     setTrainTestSplitAtom(80)
     setSeedAtom(undefined)
     setNSplitsAtom(undefined)
+    setAcceptanceCriteriaAtom([])
     setTrainState({ status: 'idle', progress: 0 })
     setCreatedModelId('')
     setSelectedMetrics(['r2', 'rmse', 'sd'])
@@ -293,10 +313,12 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     setFindBestParamsAtom,
     setTargetVariableAtom,
     setHyperparametersAtom,
+    setPerAlgorithmHyperparametersAtom,
     setLossFunctionAtom,
     setTrainTestSplitAtom,
     setSeedAtom,
     setNSplitsAtom,
+    setAcceptanceCriteriaAtom,
     setTrainState,
     setCreatedModelId,
     setSelectedMetrics,
@@ -321,10 +343,12 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     findBestParams,
     targetVariables,
     hyperparameters,
+    perAlgorithmHyperparameters,
     lossFunction,
     trainTestSplit,
     seed,
     nSplits,
+    acceptanceCriteria,
     autoRetrain,
     warnSd,
     criticalSd,

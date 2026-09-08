@@ -13,6 +13,7 @@ import { CreateTrainingRunDto } from './dto/model-run.authorized.dto';
 import {
   fetchArtifactMetadata,
   getRunCvFolds,
+  getRunFeatureImportance,
   runPredictions,
   runPredictionsBatch,
 } from '@/lib/python-preprocess-client';
@@ -669,6 +670,25 @@ export class ModelRunLaunchAuthorizedService {
       }
     }
 
+    // MODEL-FLOW-019-T09. Same soft-read shape as cvFolds immediately
+    // above: a storage hiccup must never fail this whole run fetch over one
+    // auxiliary artifact not every caller needs on every tick.
+    let featureImportance: Awaited<
+      ReturnType<typeof getRunFeatureImportance>
+    > | null = null;
+    if (run.featureImportanceKey) {
+      try {
+        featureImportance = await getRunFeatureImportance(
+          run.featureImportanceKey,
+        );
+      } catch (err) {
+        this.log.error(
+          `getDraftRunService: could not read feature_importance for run ${runId}`,
+          err,
+        );
+      }
+    }
+
     // Same envelope fix as createDraftRunService, and arguably the more
     // load-bearing half of it: this is what the 2.5s poll loop
     // (use-model-training.ts pollRun) calls on every tick, so an unwrapped
@@ -678,7 +698,7 @@ export class ModelRunLaunchAuthorizedService {
       statusCode: 200,
       message: 'Training run fetched',
       type: 'SUCCESS' as const,
-      data: { ...run, cvFolds },
+      data: { ...run, cvFolds, featureImportance },
     };
   }
 

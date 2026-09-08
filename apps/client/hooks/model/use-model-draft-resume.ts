@@ -4,7 +4,11 @@ import { useCallback, useState } from 'react'
 import { useSetAtom } from 'jotai'
 import { toast } from 'sonner'
 import { datasetService } from '@/services/dataset'
-import { modelDraftService, type ModelDraft } from '@/services/model-draft'
+import {
+  modelDraftRunService,
+  modelDraftService,
+  type ModelDraft,
+} from '@/services/model-draft'
 import {
   asHyperparams,
   isAlgorithm,
@@ -24,7 +28,9 @@ import {
   mpSelectedDatasetAtom,
   mpServerDraftIdAtom,
   mpTargetVariableAtom,
+  mpTrainStateAtom,
   mpTrainTestSplitAtom,
+  mpTrainingResultAtom,
   mpWorkspaceIdAtom,
 } from '@/store/model-pipeline'
 
@@ -73,6 +79,8 @@ export function useModelDraftResume(): UseModelDraftResumeResult {
   const setTrainTestSplit = useSetAtom(mpTrainTestSplitAtom)
   const setCurrentStep = useSetAtom(mpCurrentStepAtom)
   const setHighestUnlocked = useSetAtom(mpHighestUnlockedAtom)
+  const setTrainState = useSetAtom(mpTrainStateAtom)
+  const setTrainingResult = useSetAtom(mpTrainingResultAtom)
 
   const [resuming, setResuming] = useState(false)
 
@@ -134,40 +142,82 @@ export function useModelDraftResume(): UseModelDraftResumeResult {
         if (!draft.datasetId) {
           setTargetVariable(draft.targetY ? [draft.targetY] : [])
           toast.success(RESUME_MESSAGE)
-          return true
+        } else {
+          // Re-reading the dataset IS the reconciliation: every artifact-keyed
+          // hook in the review step is keyed on (datasetId, artifactId), so a
+          // `currentArtifactId` moved by an edit is a new cache key and the
+          // stale panels cannot survive it. No separate invalidation needed.
+          try {
+            const dataset = await datasetService.get(draft.datasetId)
+            setSelectedDataset(dataset.data)
+            const { targets, droppedTarget } = reconcileTarget(
+              draft.targetY,
+              dataset.data.tags,
+            )
+            setTargetVariable(targets)
+            // Step 2 (Dataset Review) is reachable from restored dataset
+            // choice alone. Whether Step 4 is ALSO reachable depends on
+            // whether the draft has a terminal run — decided below, not
+            // here, since it needs the run list this branch has no reason
+            // to fetch on its own.
+            setHighestUnlocked(2)
+            if (droppedTarget) {
+              toast.warning(
+                `Target “${droppedTarget}” is no longer in this dataset — pick a new one in Training Config.`,
+              )
+            } else {
+              toast.success(RESUME_MESSAGE)
+            }
+          } catch {
+            // The dataset id stays valid across an edit, so a failure here is
+            // a load failure, not a deletion — say that instead of clearing it.
+            setTargetVariable([])
+            toast.warning(
+              'Draft restored, but its dataset could not be loaded — re-select it at Step 1.',
+            )
+          }
         }
 
-        // Re-reading the dataset IS the reconciliation: every artifact-keyed
-        // hook in the review step is keyed on (datasetId, artifactId), so a
-        // `currentArtifactId` moved by an edit is a new cache key and the stale
-        // panels cannot survive it. No separate invalidation needed.
+        // MODEL-FLOW-019-T08. `mpTrainStateAtom`/`mpTrainingResultAtom` are
+        // otherwise written only by the live poll loop
+        // (use-model-training.ts) — resume never touched either, so a
+        // restored draft with terminal runs came back with trainState
+        // 'idle' and failed canAdvance(3)'s `status === 'done'` gate. That
+        // hole used to be papered over by RunParamsPanel's own footer CTA
+        // (raw setCurrentStep(4)/setHighestUnlocked(4) setters), which T08
+        // removes because the wizard shell's forward button is now the
+        // ONLY control that advances Step 3 -> Step 4. Without this, a
+        // resumed draft with finished runs would be unreachable past Step 3.
+        //
+        // Mirrors StandaloneSelection's own run -> DraftTrainingResult
+        // mapping (phase-4-model-selection.tsx) so the two do not drift.
+        // A failure here must not fail resume as a whole — the Step 3
+        // panel's own useDraftRuns retries once the wizard mounts, and
+        // canAdvance(3) simply stays false until a run is confirmed done.
         try {
-          const dataset = await datasetService.get(draft.datasetId)
-          setSelectedDataset(dataset.data)
-          const { targets, droppedTarget } = reconcileTarget(
-            draft.targetY,
-            dataset.data.tags,
+          const runsRes = await modelDraftRunService.list(draftId)
+          // Server-ordered most-recent-first — the first SUCCEEDED row is
+          // the latest one.
+          const latestSucceeded = runsRes.data.find(
+            run => run.status === 'SUCCEEDED',
           )
-          setTargetVariable(targets)
-          // Only Step 2 (Dataset Review) is genuinely reachable: no training
-          // result is restored, so unlocking past it would offer an Evaluation
-          // step with nothing in it.
-          setHighestUnlocked(2)
-          if (droppedTarget) {
-            toast.warning(
-              `Target “${droppedTarget}” is no longer in this dataset — pick a new one in Training Config.`,
-            )
-          } else {
-            toast.success(RESUME_MESSAGE)
+          if (latestSucceeded) {
+            setTrainState({ status: 'done', progress: 100 })
+            if (isAlgorithm(latestSucceeded.algorithm)) {
+              setTrainingResult({
+                runId: latestSucceeded.id,
+                algorithm: latestSucceeded.algorithm,
+                metrics: latestSucceeded.metrics,
+                trainedAt: latestSucceeded.createdAt,
+                cvFoldsKey: latestSucceeded.cvFoldsKey,
+              })
+            }
+            setHighestUnlocked(prev => Math.max(prev, 4))
           }
         } catch {
-          // The dataset id stays valid across an edit, so a failure here is a
-          // load failure, not a deletion — say that instead of clearing it.
-          setTargetVariable([])
-          toast.warning(
-            'Draft restored, but its dataset could not be loaded — re-select it at Step 1.',
-          )
+          // Swallowed deliberately — see comment above.
         }
+
         return true
       } catch {
         toast.error('Draft not found — it may have been saved or abandoned.')
@@ -176,7 +226,15 @@ export function useModelDraftResume(): UseModelDraftResumeResult {
         setResuming(false)
       }
     },
-    [reset, hydrate, setTargetVariable, setSelectedDataset, setHighestUnlocked],
+    [
+      reset,
+      hydrate,
+      setTargetVariable,
+      setSelectedDataset,
+      setHighestUnlocked,
+      setTrainState,
+      setTrainingResult,
+    ],
   )
 
   return { resuming, resume }

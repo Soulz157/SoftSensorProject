@@ -43,7 +43,9 @@ import {
 } from '@/components/ui/table'
 import { cn } from '@/lib/utils'
 import {
+  mpAcceptanceCriteriaAtom,
   mpCandidateJobIdAtom,
+  mpCompareRunIdsAtom,
   mpCurrentStepAtom,
   mpHighestUnlockedAtom,
   mpSelectedMetricsAtom,
@@ -51,8 +53,20 @@ import {
   mpTrainingResultAtom,
   ALGORITHM_LABELS,
   type Algorithm,
-  type DraftTrainingResult,
 } from '@/store/model-pipeline'
+import {
+  criterionLabel,
+  evaluateCriterion,
+  isLegacyCriterion,
+  type AcceptanceCriterion,
+  type ComparisonFigures,
+  type OperandAbsence,
+} from '@/lib/acceptance-criteria'
+import {
+  residualSdOf,
+  type ResidualSdAbsence,
+  type ResidualSdCell,
+} from '@/lib/residual-sd'
 import { useCandidateJob } from '@/hooks/model/use-candidate-job'
 import { useCandidatePredictions } from '@/hooks/model/use-candidate-predictions'
 import { useDraftRuns } from '@/hooks/model/use-draft-runs'
@@ -67,13 +81,13 @@ import {
 import {
   METRIC_SOURCE_LABELS,
   metricValueOf,
-  rmseOf,
   sourcedMetricsOf,
-  type MetricSource,
+  type CvFoldEstimate,
   type SourcedMetrics,
 } from '@/lib/metric-source'
 import {
   DEFAULT_RANK_METRIC,
+  RANK_DIRECTION,
   rankCandidates,
   rankingSummaryText,
   type RankMetricKey,
@@ -117,6 +131,71 @@ function EmptyPanel({ children }: { children: React.ReactNode }) {
   )
 }
 
+/** A metrics blob's numeric field, or null — same narrowing every other
+ *  reader of this untyped Json column already does (RunParamsPanel's own
+ *  `rmse` field, `lib/run-comparison.ts`'s `numberField`). Never NaN, never
+ *  a string coerced into a number. */
+function numField(
+  metrics: Record<string, unknown> | null,
+  key: string,
+): number | null {
+  const v = metrics?.[key]
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+/**
+ * MODEL-FLOW-019-T08 part 4. Maps a draft run row onto the SAME
+ * `CandidateResult` shape the job path already produces, so both render
+ * through `CandidateTable`/`CandidateOverlayChart` and never drift.
+ *
+ * Every field here is either read straight off `run` (most of them — the
+ * run row and the job's own candidate shape share `predictionsKey`,
+ * `cvFoldsKey`, `scoringContainerId`, `lossHistoryKey` exactly) or narrowed
+ * from the same untyped `metrics` Json every other reader narrows
+ * (`metrics`/`trainMetrics`, the `train_*` convention MODEL-FLOW-013-T04
+ * established). `lossHistory` is the one honest exception: the run row
+ * never carries the PARSED series (only the job response embeds it
+ * inline), so it is `null` here rather than a fabricated shape — T08's own
+ * rule against inventing a value a run row has no source for.
+ */
+function candidateFromRun(run: ModelTrainingRunListItem): CandidateResult {
+  const cvPhase = cvScoringPhaseOf(run)
+  const hasHoldout = typeof run.holdoutMetrics?.rmse === 'number'
+  return {
+    algorithm: run.algorithm,
+    status: run.status,
+    runId: run.id,
+    phase: 1,
+    hyperparameters: run.hyperparameters,
+    failureReason: run.failureReason,
+    metrics: run.metrics
+      ? {
+          r2: numField(run.metrics, 'r2'),
+          rmse: numField(run.metrics, 'rmse'),
+          mae: numField(run.metrics, 'mae'),
+        }
+      : null,
+    trainMetrics: run.metrics
+      ? {
+          r2: numField(run.metrics, 'train_r2'),
+          rmse: numField(run.metrics, 'train_rmse'),
+          mae: numField(run.metrics, 'train_mae'),
+        }
+      : null,
+    lossHistoryKey: run.lossHistoryKey,
+    lossHistory: null,
+    predictionsKey: run.predictionsKey,
+    cvFoldsKey: run.cvFoldsKey,
+    scoringContainerId: run.scoringContainerId,
+    sourcedMetrics: sourcedMetricsOf(run),
+    holdoutAbsence: hasHoldout
+      ? null
+      : cvPhase === 'awaiting-scoring' || cvPhase === 'scoring'
+        ? 'not-scored-yet'
+        : 'not-recorded',
+  }
+}
+
 const STATUS_META: Record<
   CandidateResult['status'],
   { label: string; icon: typeof Clock; className: string }
@@ -155,113 +234,119 @@ const STATUS_META: Record<
  * from a real curve to a reader.
  */
 function CandidateChart({ candidate }: { candidate: CandidateResult }) {
-  if (renderModeFor(candidate) === 'A') {
-    const rows = modeARows(candidate)
-    const hasValidation = modeAHasValidationSeries(candidate)
-    const metricLabel = modeAMetricLabel(candidate)
-    return (
-      <div className="space-y-1">
-        <p className="text-[10px] font-medium text-muted-foreground">
-          {metricLabel} over iterations
-        </p>
-        <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
+  return renderModeFor(candidate) === 'A' ? (
+    <CandidateChartModeA candidate={candidate} />
+  ) : (
+    <CandidateChartModeB candidate={candidate} />
+  )
+}
+
+function CandidateChartModeA({ candidate }: { candidate: CandidateResult }) {
+  const rows = modeARows(candidate)
+  const hasValidation = modeAHasValidationSeries(candidate)
+  const metricLabel = modeAMetricLabel(candidate)
+  return (
+    <div className="space-y-1">
+      <p className="text-[10px] font-medium text-muted-foreground">
+        {metricLabel} over iterations
+      </p>
+      <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
+        <span className="flex items-center gap-1">
+          <span className="h-1.5 w-1.5 rounded-full bg-primary" /> Train
+        </span>
+        {hasValidation && (
           <span className="flex items-center gap-1">
-            <span className="h-1.5 w-1.5 rounded-full bg-primary" /> Train
+            <span className="h-1.5 w-1.5 rounded-full bg-sky-500" /> Test split
           </span>
+        )}
+      </div>
+      <ResponsiveContainer width="100%" height={120}>
+        <LineChart
+          data={rows}
+          margin={{ top: 4, right: 8, bottom: 0, left: 8 }}
+        >
+          <XAxis
+            dataKey="iteration"
+            tick={{ fontSize: 10 }}
+            tickLine={false}
+            axisLine={false}
+          />
+          <YAxis
+            tick={{ fontSize: 10 }}
+            tickLine={false}
+            axisLine={false}
+            width={32}
+            label={{
+              value: metricLabel,
+              angle: -90,
+              position: 'insideLeft',
+              fontSize: 10,
+            }}
+          />
+          <Tooltip
+            contentStyle={{ fontSize: 11 }}
+            formatter={(value: unknown, name: unknown) => [
+              typeof value === 'number' ? value.toFixed(4) : String(value),
+              name === 'validation' ? 'Test split' : 'Train',
+            ]}
+          />
+          <Line
+            type="monotone"
+            dataKey="train"
+            stroke="var(--primary)"
+            dot={false}
+            strokeWidth={1.5}
+            isAnimationActive={false}
+          />
           {hasValidation && (
-            <span className="flex items-center gap-1">
-              <span className="h-1.5 w-1.5 rounded-full bg-sky-500" /> Test
-              split
-            </span>
-          )}
-        </div>
-        <ResponsiveContainer width="100%" height={120}>
-          <LineChart
-            data={rows}
-            margin={{ top: 4, right: 8, bottom: 0, left: 8 }}
-          >
-            <XAxis
-              dataKey="iteration"
-              tick={{ fontSize: 10 }}
-              tickLine={false}
-              axisLine={false}
-            />
-            <YAxis
-              tick={{ fontSize: 10 }}
-              tickLine={false}
-              axisLine={false}
-              width={32}
-              label={{
-                value: metricLabel,
-                angle: -90,
-                position: 'insideLeft',
-                fontSize: 10,
-              }}
-            />
-            <Tooltip
-              contentStyle={{ fontSize: 11 }}
-              formatter={(value: unknown) =>
-                typeof value === 'number' ? value.toFixed(4) : String(value)
-              }
-            />
             <Line
               type="monotone"
-              dataKey="train"
-              stroke="var(--primary)"
+              dataKey="validation"
+              stroke="#0ea5e9"
               dot={false}
               strokeWidth={1.5}
               isAnimationActive={false}
             />
-            {hasValidation && (
-              <Line
-                type="monotone"
-                dataKey="validation"
-                stroke="#0ea5e9"
-                dot={false}
-                strokeWidth={1.5}
-                isAnimationActive={false}
-              />
-            )}
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
-    )
-  }
+          )}
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  )
+}
 
-  // Mode B — no real trajectory for this algorithm. Paired marks, no line.
+/**
+ * MODEL-FLOW-013-T07's own Mode B: this algorithm's run produced no
+ * per-iteration `lossHistory`, so there is no curve to plot — a disabled
+ * placeholder (dashed border, muted background, no interactivity) showing
+ * the two RMSE marks `modeBMarks` already derives, explicitly NOT joined by
+ * a line (a two-point line reads as a real curve to a viewer, the exact
+ * mistake this mode exists to avoid).
+ */
+function CandidateChartModeB({ candidate }: { candidate: CandidateResult }) {
   const marks = modeBMarks(candidate)
-  const max = Math.max(0.0001, ...marks.map(m => m.rmse ?? 0))
   return (
-    <div className="space-y-2">
+    <div className="space-y-1">
       <p className="text-[10px] font-medium text-muted-foreground">
-        model performance — train vs. test RMSE
+        No loss curve for this algorithm
       </p>
       <p className="text-[10px] text-muted-foreground">
-        No iteration-by-iteration curve for this algorithm — train vs. test
-        RMSE, as two points.
+        No iteration-by-iteration curve for this algorithm — train/test RMSE
+        shown as marks instead.
       </p>
-      <div className="flex items-end gap-4 pt-1">
+      <div className="flex h-[120px] items-center justify-center gap-8 rounded-md border border-dashed border-border bg-muted/20">
         {marks.map(mark => (
-          <div
-            key={mark.label}
-            className="flex flex-1 flex-col items-center gap-1"
-          >
-            <span className="font-mono text-xs tabular-nums text-foreground">
-              {mark.rmse !== null ? mark.rmse.toFixed(3) : '—'}
-            </span>
-            <div className="flex h-16 w-6 items-end rounded-sm bg-muted/60">
-              {mark.rmse !== null && (
-                <div
-                  className={cn(
-                    'w-full rounded-sm',
-                    mark.label === 'Train' ? 'bg-primary' : 'bg-sky-500',
-                  )}
-                  style={{ height: `${(mark.rmse / max) * 100}%` }}
-                />
+          <div key={mark.label} className="flex flex-col items-center gap-1">
+            <span
+              className={cn(
+                'h-2 w-2 rounded-full',
+                mark.label === 'Train' ? 'bg-primary' : 'bg-sky-500',
               )}
-            </div>
+            />
             <span className="text-[10px] text-muted-foreground">
               {mark.label}
+            </span>
+            <span className="font-mono text-xs tabular-nums text-foreground">
+              {mark.rmse === null ? '—' : mark.rmse.toFixed(3)}
             </span>
           </div>
         ))}
@@ -297,17 +382,22 @@ const UNRANKED_LABELS: Record<UnrankedReason, string> = {
   'no-shared-source': 'Mixed sources — not ranked',
 }
 
-/** MODEL-FLOW-019-T04. `sd` is computed only in Evaluation, over one run's
- *  own residual series (`pred.residualSd`) — no candidate-job source
- *  (`metrics`/`holdoutMetrics`/a CV fold aggregate) ever carries it, so
- *  every cell under it reads the same honest "not tracked here" rather than
- *  a blank, and its header is not a sort target (`RankMetricKey` excludes
- *  `sd` for the same reason — there is nothing to sort BY). */
-const UNTRACKED_METRIC_KEYS: readonly MetricKey[] = ['sd']
-
+/** MODEL-FLOW-019-T10. Reverses T04's own "sd is not a table column" — that
+ *  reasoning was true of the run row (`metrics`/`holdoutMetrics`/a CV fold
+ *  aggregate never carry it) and false of the source this table now reads,
+ *  `useCandidatePredictions`' own batch response (`residualSdOf`, below).
+ *  `RankMetricKey` still excludes `sd` (`lib/metric-ranking.ts`'s own
+ *  `RANK_DIRECTION`) — read directly off that table rather than a second
+ *  list, so a metric is rankable here iff it is rankable there. */
 function isRankMetricKey(key: MetricKey): key is RankMetricKey {
-  return !UNTRACKED_METRIC_KEYS.includes(key)
+  return key in RANK_DIRECTION
 }
+
+/** MODEL-FLOW-019-T10. Fixed column order so `sd` renders beside `rmse` —
+ *  `residual_SD <= RMSE` always, and the gap between them IS the model's
+ *  bias, readable by eye only when the two are adjacent rather than
+ *  separated by `mae`. Independent of pick order in `mpSelectedMetricsAtom`. */
+const STEP4_COLUMN_ORDER: readonly MetricKey[] = ['r2', 'rmse', 'sd', 'mae']
 
 /**
  * One metric's two source columns — never merged into one cell (finding 3;
@@ -315,10 +405,19 @@ function isRankMetricKey(key: MetricKey): key is RankMetricKey {
  * `metricValueOf`, so a cell literally cannot show a number without also
  * having the source it came from in hand.
  */
+/** MODEL-FLOW-019-T07 follow-up. The Validate (holdout) column, and only
+ *  that column, in every metric group — the one thresholds actually bind
+ *  to since the form went holdout-only. A quiet primary-tinted left
+ *  border + background, not a loud one: it marks the column, it does not
+ *  compete with the pass/fail marks inside it (those stay uncoloured per
+ *  AC13's own advisory, never-alarming rule). */
+const VALIDATE_COLUMN_CLASS = 'border-l border-primary/30 bg-primary/5'
+
 function MetricSourceCell({
   metric,
   metricKey,
   emptyReason,
+  highlighted,
 }: {
   metric: SourcedMetrics | null
   metricKey: RankMetricKey
@@ -328,10 +427,15 @@ function MetricSourceCell({
    *  a test-split figure; a CV or non-terminal row shows a plain dash,
    *  matching this table's pre-existing Test-column behaviour). */
   emptyReason?: string
+  /** Marks this as the Validate (holdout) column — see
+   *  `VALIDATE_COLUMN_CLASS`'s own doc comment. */
+  highlighted?: boolean
 }) {
   if (!metric) {
     return (
-      <TableCell className="text-right">
+      <TableCell
+        className={cn('text-right', highlighted && VALIDATE_COLUMN_CLASS)}
+      >
         {emptyReason ? (
           <span className="text-[10px] text-muted-foreground italic">
             {emptyReason}
@@ -343,28 +447,198 @@ function MetricSourceCell({
     )
   }
   const value = metricValueOf(metric, metricKey)
-  // MISSING RATE, ALWAYS shown beside a holdout figure (DS-LAKE-018-T05;
-  // MODEL-FLOW-019 AC2) — a legacy run may have the score and not the
-  // counts, which must read as "not recorded" rather than a fabricated 0%.
-  const rateText =
-    metric.source === 'holdout'
-      ? metric.rowCount === null
-        ? 'missing rate not recorded'
-        : (() => {
-            const dropped =
-              (metric.droppedUnlabelled ?? 0) + (metric.droppedBadFeatures ?? 0)
-            return `${((dropped / metric.rowCount) * 100).toFixed(1)}% missing (n=${metric.rowCount})`
-          })()
-      : null
   return (
-    <TableCell className="text-right">
+    <TableCell
+      className={cn('text-right', highlighted && VALIDATE_COLUMN_CLASS)}
+    >
       <p className="font-mono text-xs tabular-nums text-foreground">
         {value === null ? '—' : value.toFixed(3)}
       </p>
-      {rateText && (
-        <p className="text-[9px] text-muted-foreground">{rateText}</p>
-      )}
     </TableCell>
+  )
+}
+
+/** MODEL-FLOW-019-T10. Absent SD, three honest causes plus the plain-dash
+ *  non-terminal case (`lib/residual-sd.ts`'s own doc comment) — the same
+ *  three-facts discipline `HOLDOUT_ABSENCE_TEXT` already applies to a
+ *  missing holdout figure. `unreadable` appends the batch item's own error,
+ *  the way `candidate-base-chart.tsx`'s "Predictions could not be read"
+ *  state already does — that cause hides a real defect and must never
+ *  collapse into the same dash as a dataset that simply has no series. */
+const RESIDUAL_SD_ABSENCE_TEXT: Record<ResidualSdAbsence, string> = {
+  'awaiting-scoring': 'Awaiting scoring',
+  scoring: 'Scoring…',
+  'no-series': 'No predictions series',
+  unreadable: 'Unreadable',
+  'not-recorded': 'Not recorded',
+}
+
+/** One SD figure — or its reason — in the column its own `source` names.
+ *  Never called for the OTHER column: that one renders a plain dash at the
+ *  call site, the same "nothing to show, nothing to explain" treatment a
+ *  non-CV run's holdout cell already gets. */
+function SdCellBody({ cell }: { cell: ResidualSdCell }) {
+  if (cell.value !== null) {
+    return (
+      <p className="font-mono text-xs tabular-nums text-foreground">
+        {cell.value.toFixed(3)}
+      </p>
+    )
+  }
+  if (!cell.absence) {
+    return <span className="font-mono text-xs text-muted-foreground">—</span>
+  }
+  const reason =
+    RESIDUAL_SD_ABSENCE_TEXT[cell.absence] +
+    (cell.errorText ? ` — ${cell.errorText}` : '')
+  return (
+    <span className="text-[10px] text-muted-foreground italic">{reason}</span>
+  )
+}
+
+/** MODEL-FLOW-019. Three facts, three different next actions — never one
+ *  blank cell (AC11), reused here for an absent COMPARISON operand rather
+ *  than a candidate's headline holdout figure. `cross-validation` is the
+ *  AC28/V18 guard naming itself when it fires. */
+const OPERAND_ABSENCE_TEXT: Record<OperandAbsence, string> = {
+  'no-dataset-holdout': 'no holdout',
+  'not-scored-yet': 'awaiting scoring',
+  'not-recorded': 'not recorded',
+  'awaiting-scoring': 'awaiting scoring',
+  scoring: 'scoring…',
+  'no-series': 'no predictions series',
+  unreadable: 'unreadable',
+  'cross-validation': 'fold estimate, not a run measurement',
+}
+
+/**
+ * MODEL-FLOW-019-T12 AC12/AC13/AC1. One line per configured criterion — a
+ * shape icon plus the comparison, e.g. "✓ Validate RMSE < Test RMSE" —
+ * never a colour-coded pass/fail (red/amber are reserved for
+ * workspace+plant status elsewhere in this codebase), and never hiding,
+ * filtering, or disabling anything else on the row (AC13). A legacy
+ * criterion (T07's or T11's shape) is filtered out before evaluation
+ * rather than reaching `evaluateCriterion` with fields it does not have
+ * (V19) — Step 3's own migration strip is where it is surfaced and
+ * cleared.
+ */
+function RowCriteriaMarks({
+  criteria,
+  figures,
+}: {
+  criteria: AcceptanceCriterion[]
+  figures: ComparisonFigures
+}) {
+  const current = criteria.filter(
+    (c): c is AcceptanceCriterion => !isLegacyCriterion(c),
+  )
+  if (current.length === 0) return null
+  return (
+    <div className="space-y-0.5">
+      {current.map((criterion, i) => {
+        const evaluation = evaluateCriterion(criterion, figures)
+        const label = criterionLabel(criterion)
+        if (evaluation.verdict === 'not-evaluated') {
+          const reason = evaluation.left.absence ?? evaluation.right.absence
+          return (
+            <p key={i} className="text-[9px] italic text-muted-foreground">
+              {label} — not evaluated
+              {reason && ` (${OPERAND_ABSENCE_TEXT[reason]})`}
+            </p>
+          )
+        }
+        const Icon =
+          evaluation.verdict === 'pass' ? CheckCircle2 : AlertTriangle
+        return (
+          <p
+            key={i}
+            className="flex flex-col items-end gap-0 text-[9px] text-muted-foreground"
+          >
+            <span className="flex items-center gap-0.5">
+              <Icon className="h-2.5 w-2.5 shrink-0" />
+              {label}
+            </span>
+            {evaluation.left.value !== null &&
+              evaluation.right.value !== null && (
+                <span>
+                  {evaluation.left.value.toFixed(2)} /{' '}
+                  {evaluation.right.value.toFixed(2)}
+                </span>
+              )}
+          </p>
+        )
+      })}
+    </div>
+  )
+}
+
+/**
+ * MODEL-FLOW-019-T08 part 4. A CV run's fold estimate — mean AND spread,
+ * labelled `Est. CV` (`METRIC_SOURCE_LABELS`), never merged into an
+ * ordinary `MetricSourceCell`'s single-value shape. `StandaloneRunRow`
+ * already rendered this correctly (`0.400 ± 0.050`, "Est. CV RMSE") before
+ * it was deleted for this same task's "one layout" rule — the unified
+ * table must inherit that discipline, not replace it with a bare
+ * "N/A": a CV run is reachable from the standalone path (never from a
+ * candidate job, per this column's own history below) and would otherwise
+ * show no figure of any kind for its own headline number.
+ */
+function CvEstimateCell({
+  metric,
+  metricKey,
+}: {
+  metric: CvFoldEstimate
+  metricKey: RankMetricKey
+}) {
+  const mean = metric.mean[metricKey]
+  const std = metric.std[metricKey]
+  return (
+    <TableCell className="border-l text-right">
+      <p className="font-mono text-xs tabular-nums text-foreground">
+        {mean === null
+          ? '—'
+          : `${mean.toFixed(3)}${std !== null ? ` ± ${std.toFixed(3)}` : ''}`}
+      </p>
+      <p className="text-[9px] text-muted-foreground">
+        {METRIC_SOURCE_LABELS['cv-fold-estimate']}
+      </p>
+    </TableCell>
+  )
+}
+
+/** One picker, one atom — a second copy with its own state is how two
+ *  surfaces start disagreeing about what a metric is called. */
+function MetricsPicker() {
+  const [selectedMetrics, setSelectedMetrics] = useAtom(mpSelectedMetricsAtom)
+  return (
+    <div className="flex justify-end">
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="outline" size="sm">
+            <SlidersHorizontal className="h-3.5 w-3.5" />
+            Metrics
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-full">
+          <DropdownMenuLabel>Show metrics</DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          {METRIC_KEYS.map(key => (
+            <DropdownMenuCheckboxItem
+              key={key}
+              checked={selectedMetrics.includes(key)}
+              disabled={
+                selectedMetrics.length === 1 && selectedMetrics.includes(key)
+              }
+              onCheckedChange={on =>
+                setSelectedMetrics(prev => toggleMetricSelection(prev, key, on))
+              }
+            >
+              {METRIC_META[key].label} — {METRIC_META[key].hint}
+            </DropdownMenuCheckboxItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
   )
 }
 
@@ -395,6 +669,10 @@ function CandidateTable({
   onSortMetric,
   byRunId,
   predictionsLoading,
+  rowNote,
+  rowAction,
+  chartMode = 'full',
+  criteria,
 }: {
   candidates: CandidateResult[]
   resolvedRunId: string | null
@@ -405,6 +683,12 @@ function CandidateTable({
   onSortMetric: (key: RankMetricKey) => void
   byRunId: Map<string, RunPredictionsBatchItem>
   predictionsLoading: boolean
+  rowNote?: (runId: string) => React.ReactNode
+  rowAction?: (runId: string) => React.ReactNode
+  chartMode?: 'full' | 'predictions-only'
+  /** MODEL-FLOW-019-T07. Advisory thresholds — annotates cells, never
+   *  filters/hides/blocks a row. Defaults to none set. */
+  criteria?: AcceptanceCriterion[]
 }) {
   const ranking = useMemo(
     () => rankCandidates(candidates, sortMetric),
@@ -424,9 +708,17 @@ function CandidateTable({
       else next.add(runId)
       return next
     })
-  // rank + algorithm + status + two columns per selected metric + actions —
-  // the chart row spans every column so it reads as one panel, not a cell.
-  const totalCols = 3 + selectedMetrics.length * 2 + 1
+  // MODEL-FLOW-019-T10. Fixed order (`STEP4_COLUMN_ORDER`), not pick order
+  // — `sd` renders beside `rmse` regardless of when the user selected it.
+  const visibleMetrics: MetricKey[] = STEP4_COLUMN_ORDER.filter(key =>
+    selectedMetrics.includes(key),
+  )
+  const hasCriteria = (criteria ?? []).length > 0
+
+  // rank + algorithm + status + two columns per selected metric + an
+  // optional criteria column + actions — the chart row spans every column
+  // so it reads as one panel, not a cell.
+  const totalCols = 3 + visibleMetrics.length * 2 + (hasCriteria ? 1 : 0) + 1
 
   return (
     <div className="space-y-2">
@@ -444,7 +736,7 @@ function CandidateTable({
               <TableHead rowSpan={2} className="align-bottom">
                 Status
               </TableHead>
-              {selectedMetrics.map(key => {
+              {visibleMetrics.map(key => {
                 const sortable = isRankMetricKey(key)
                 const active = sortable && sortMetric === key
                 return (
@@ -474,7 +766,7 @@ function CandidateTable({
                     ) : (
                       <span
                         className="text-muted-foreground"
-                        title="Computed only in Evaluation, over one run's own residuals — not tracked per candidate here."
+                        title="Not a sort target — ranking by residual scatter would sort a biased model with tight scatter above an unbiased one with wider scatter."
                       >
                         {METRIC_META[key].label}
                       </span>
@@ -482,15 +774,25 @@ function CandidateTable({
                   </TableHead>
                 )
               })}
+              {hasCriteria && (
+                <TableHead rowSpan={2} className="border-l align-bottom">
+                  Criteria
+                </TableHead>
+              )}
               <TableHead rowSpan={2} className="align-bottom" />
             </TableRow>
             <TableRow>
-              {selectedMetrics.map(key => (
+              {visibleMetrics.map(key => (
                 <Fragment key={key}>
                   <TableHead className="border-l text-right text-[10px] font-normal">
                     Test
                   </TableHead>
-                  <TableHead className="text-right text-[10px] font-normal">
+                  <TableHead
+                    className={cn(
+                      'text-right text-[10px] font-normal',
+                      VALIDATE_COLUMN_CLASS,
+                    )}
+                  >
                     Validate
                   </TableHead>
                 </Fragment>
@@ -514,15 +816,34 @@ function CandidateTable({
                 null
               // A candidate whose only non-holdout source is a CV fold
               // estimate has no TEST-SPLIT figure at all (finding (g) — a CV
-              // run's `metrics` carries no bare rmse/r2/mae). Rather than
-              // show that estimate under the "Test" header — the exact
+              // run's `metrics` carries no bare rmse/r2/mae). MODEL-FLOW-
+              // 019-T08 part 4: reachable from the standalone path (a CV
+              // run launched one at a time, never from a candidate job —
+              // CreateCandidateJob's own schema has no `nSplits` field), so
+              // the cell renders the fold estimate itself
+              // (`CvEstimateCell`, its own mean+std, labelled `Est. CV` —
+              // never under the plain "Test" shape, which would be the
               // merge-two-sources-into-one-column mistake this feature
-              // exists to prevent — the Test cell says plainly that the
-              // question does not apply. Unreached by any real data today
-              // (no candidate-job candidate can be CV — CreateCandidateJob's
-              // own schema has no `nSplits` field), kept honest in case that
-              // ever changes.
-              const testIsCv = testMetric?.source === 'cv-fold-estimate'
+              // exists to prevent) — UNLESS the run has since been SCORED,
+              // in which case the real holdout figure in the next column
+              // supersedes it; showing an ESTIMATE beside a MEASUREMENT as
+              // though comparable is `StandaloneRunRow`'s own "drop the
+              // pre-scoring note once scored" rule, inherited here.
+              const cvPhase = cvScoringPhaseOf(candidate)
+              // MODEL-FLOW-019-T10. Computed once per row and reused for
+              // both the SD column and the Criteria column's ratio
+              // evaluation, so the two never disagree about which
+              // population this run's SD is a figure of.
+              const sdCell = residualSdOf(
+                candidate,
+                candidate.runId ? byRunId.get(candidate.runId) : undefined,
+                predictionsLoading,
+              )
+              const comparisonFigures: ComparisonFigures = {
+                sourcedMetrics: candidate.sourcedMetrics,
+                residualSd: sdCell,
+                holdoutAbsence: candidate.holdoutAbsence,
+              }
               const canChart =
                 candidate.status === 'SUCCEEDED' && Boolean(candidate.runId)
               const isExpanded = Boolean(
@@ -563,6 +884,7 @@ function CandidateTable({
                         )}
                       </div>
                       <CandidateHyperparams candidate={candidate} />
+                      {candidate.runId && rowNote?.(candidate.runId)}
                     </TableCell>
                     <TableCell>
                       <span className="text-xs text-muted-foreground">
@@ -574,18 +896,22 @@ function CandidateTable({
                         </p>
                       )}
                     </TableCell>
-                    {selectedMetrics.map(key =>
+                    {visibleMetrics.map(key =>
                       isRankMetricKey(key) ? (
                         <Fragment key={key}>
-                          {testIsCv ? (
-                            <TableCell className="border-l text-right">
-                              <span className="text-[10px] text-muted-foreground italic">
-                                N/A — cross-validation
-                              </span>
-                            </TableCell>
+                          {testMetric?.source === 'cv-fold-estimate' &&
+                          cvPhase !== 'scored' ? (
+                            <CvEstimateCell
+                              metric={testMetric}
+                              metricKey={key}
+                            />
                           ) : (
                             <MetricSourceCell
-                              metric={testMetric}
+                              metric={
+                                testMetric?.source === 'cv-fold-estimate'
+                                  ? null
+                                  : testMetric
+                              }
                               metricKey={key}
                             />
                           )}
@@ -597,22 +923,43 @@ function CandidateTable({
                                 ? HOLDOUT_ABSENCE_TEXT[candidate.holdoutAbsence]
                                 : undefined
                             }
+                            highlighted
                           />
                         </Fragment>
                       ) : (
+                        // Only `sd` reaches here — every rank-metric key
+                        // (r2/rmse/mae) takes the branch above.
                         <Fragment key={key}>
                           <TableCell className="border-l text-right">
-                            <span className="text-[10px] text-muted-foreground">
-                              n/a
-                            </span>
+                            {sdCell.source === 'test-split' ? (
+                              <SdCellBody cell={sdCell} />
+                            ) : (
+                              <span className="font-mono text-xs text-muted-foreground">
+                                —
+                              </span>
+                            )}
                           </TableCell>
-                          <TableCell className="text-right">
-                            <span className="text-[10px] text-muted-foreground">
-                              n/a
-                            </span>
+                          <TableCell
+                            className={cn('text-right', VALIDATE_COLUMN_CLASS)}
+                          >
+                            {sdCell.source === 'holdout' ? (
+                              <SdCellBody cell={sdCell} />
+                            ) : (
+                              <span className="font-mono text-xs text-muted-foreground">
+                                —
+                              </span>
+                            )}
                           </TableCell>
                         </Fragment>
                       ),
+                    )}
+                    {hasCriteria && (
+                      <TableCell className="border-l">
+                        <RowCriteriaMarks
+                          criteria={criteria ?? []}
+                          figures={comparisonFigures}
+                        />
+                      </TableCell>
                     )}
                     <TableCell>
                       <div className="flex items-center justify-end gap-1.5">
@@ -636,6 +983,7 @@ function CandidateTable({
                             )}
                           </Button>
                         )}
+                        {candidate.runId && rowAction?.(candidate.runId)}
                         {candidate.status === 'SUCCEEDED' &&
                           !isSelected &&
                           candidate.runId && (
@@ -663,7 +1011,9 @@ function CandidateTable({
                             item={byRunId.get(candidate.runId)}
                             loading={predictionsLoading}
                           />
-                          <CandidateChart candidate={candidate} />
+                          {chartMode !== 'predictions-only' && (
+                            <CandidateChart candidate={candidate} />
+                          )}
                         </div>
                       </TableCell>
                     </TableRow>
@@ -718,6 +1068,9 @@ function CandidateComparison({
   const [selectedMetrics, setSelectedMetrics] = useAtom(mpSelectedMetricsAtom)
   const [sortMetric, setSortMetric] =
     useState<RankMetricKey>(DEFAULT_RANK_METRIC)
+  // MODEL-FLOW-019-T07. Same shared-atom pattern as `mpSelectedMetricsAtom`
+  // above — read independently at each surface that renders CandidateTable.
+  const acceptanceCriteria = useAtomValue(mpAcceptanceCriteriaAtom)
 
   // MODEL-FLOW-017-T03. Every terminal candidate's own runId, in one batch
   // request — a candidate not yet SUCCEEDED (no runId) contributes nothing
@@ -734,6 +1087,20 @@ function CandidateComparison({
   const { byRunId, loading: predictionsLoading } = useCandidatePredictions(
     draftId,
     candidateRunIds,
+  )
+
+  // MODEL-FLOW-019-T08 part 3. Step 3's own compare checkboxes sit on draft
+  // runs, and a job-owned run IS a draft run, so a ticked set narrows this
+  // path too — implemented HERE, independently of the standalone path
+  // below, so the two cannot resolve "empty means all" differently.
+  // Intersected against this job's OWN candidates (not the raw atom) so a
+  // stale id left over from a different draft/job cannot empty this table
+  // out from under the user.
+  const compareRunIds = useAtomValue(mpCompareRunIdsAtom)
+  const activeCompareIds = useMemo(
+    () =>
+      new Set([...compareRunIds].filter(id => candidateRunIds.includes(id))),
+    [compareRunIds, candidateRunIds],
   )
 
   if (loading) {
@@ -765,6 +1132,16 @@ function CandidateComparison({
   }
 
   const resolvedRunId = resolvedRunIdFor(job)
+
+  // Empty means every candidate — the same rule Step 3's own footer states
+  // in words. `resolvedRunId` above stays computed off the FULL job
+  // (selection is server-side draft state, not a view of the narrowed set).
+  const visibleCandidates =
+    activeCompareIds.size === 0
+      ? job.candidates
+      : job.candidates.filter(
+          c => c.runId !== null && activeCompareIds.has(c.runId),
+        )
 
   const handleSelect = async (runId: string) => {
     setSelecting(true)
@@ -798,7 +1175,7 @@ function CandidateComparison({
               Metrics
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
+          <DropdownMenuContent align="end" className="w-full">
             <DropdownMenuLabel>Show metrics</DropdownMenuLabel>
             <DropdownMenuSeparator />
             {METRIC_KEYS.map(key => (
@@ -821,7 +1198,7 @@ function CandidateComparison({
         </DropdownMenu>
       </div>
       <CandidateGroups
-        candidates={job.candidates}
+        candidates={visibleCandidates}
         resolvedRunId={resolvedRunId}
         selecting={selecting}
         onSelect={runId => void handleSelect(runId)}
@@ -830,6 +1207,7 @@ function CandidateComparison({
         selectedMetrics={selectedMetrics}
         sortMetric={sortMetric}
         onSortMetric={setSortMetric}
+        criteria={acceptanceCriteria}
       />
     </div>
   )
@@ -853,6 +1231,7 @@ function CandidateGroups({
   selectedMetrics,
   sortMetric,
   onSortMetric,
+  criteria,
 }: {
   candidates: CandidateResult[]
   resolvedRunId: string | null
@@ -863,6 +1242,7 @@ function CandidateGroups({
   selectedMetrics: MetricKey[]
   sortMetric: RankMetricKey
   onSortMetric: (key: RankMetricKey) => void
+  criteria?: AcceptanceCriterion[]
 }) {
   const phase1 = candidates.filter(c => c.phase !== 2)
   const phase2 = candidates.filter(c => c.phase === 2)
@@ -890,6 +1270,7 @@ function CandidateGroups({
         onSortMetric={onSortMetric}
         byRunId={byRunId}
         predictionsLoading={predictionsLoading}
+        criteria={criteria}
       />
     </div>
   )
@@ -909,106 +1290,21 @@ function CandidateGroups({
 }
 
 /**
- * The ORIGINAL pass-through (MODEL-FLOW-016-T11) — a draft with only one
- * selectable run must not stall on a comparison table (MODEL-FLOW-013's own
- * acceptance criterion, restated by MODEL-FLOW-018-T04). Sourced from
- * `mpTrainingResultAtom`, a client-side cache of the run that just finished
- * training in THIS session — not a wizard form value, so MODEL-FLOW-012 AC1
- * (no current-form value rendered as a past run's own) does not apply to it
- * the way it would to Step 3's own atoms.
- *
- * MODEL-FLOW-018-T06 (advisor-found gap, 2026-09-04): `cvScoringPhase` /
- * `holdoutRmse` are optional because `DraftTrainingResult` carries no
- * `predictionsKey`/`scoringContainerId` — only the caller with the FULL run
- * row (`StandaloneSelection`'s own `selectedRun`) can know them. `undefined`
- * means exactly what it always meant before this task: the just-trained-
- * this-session fallback path, where scoring cannot yet have happened by
- * construction (it is a separate, later, user-triggered phase reachable only
- * from a resolved run in Evaluation) — same render as before. Without this,
- * a round trip (Step 4 -> Evaluation -> score -> back to Step 4) left this
- * component telling the user to do what they had just done, beside the fold
- * mean instead of `StandaloneRunRow`'s own honest `Holdout RMSE` — the same
- * category error in the same file, from two components disagreeing about one
- * run.
+ * DELETED by MODEL-FLOW-019-T08 part 4 ("one layout, and the overlay chart
+ * everywhere"), which reversed MODEL-FLOW-016-T11/MODEL-FLOW-018-T04's own
+ * decision that a single selectable run needed its own pass-through
+ * component. A 1-row `CandidateTable` (via `StandaloneComparison`, below)
+ * now covers this case too: MODEL-FLOW-013's "a single run must not stall"
+ * acceptance criterion is honoured by a table that asks the user to choose
+ * nothing, not by a second renderer. `SingleRunSummary`'s own facts survive
+ * elsewhere rather than being lost: the algorithm/RMSE/CV-mean±std numbers
+ * this component printed as prose are the SAME `sourcedMetricsOf` figures
+ * `CandidateTable`'s cells already render for any run; the two CV-phase
+ * sentences ("Scoring is running…", "an estimate of the configuration…")
+ * live on in `StandaloneComparison`'s own `noteFor`; and the "score it
+ * against the holdout" call-to-action is now a real button
+ * (`StandaloneComparison`'s `actionFor`) rather than only prose.
  */
-function SingleRunSummary({
-  trainingResult,
-  cvScoringPhase,
-  holdoutRmse,
-}: {
-  trainingResult: DraftTrainingResult
-  cvScoringPhase?: 'awaiting-scoring' | 'scoring' | 'scored'
-  holdoutRmse?: number | null
-}) {
-  const algorithmLabel =
-    ALGORITHM_LABELS[trainingResult.algorithm] ?? trainingResult.algorithm
-  // Render mode is a property of the RUN (`cvFoldsKey`), never the algorithm
-  // name (MODEL-FLOW-013-T05a's rule) — CV and Find Best Model are mutually
-  // exclusive, so this pass-through is the only place a CV run's own
-  // summary renders.
-  const isCv = trainingResult.cvFoldsKey !== null
-  const phase = cvScoringPhase ?? 'awaiting-scoring'
-  const rmse = trainingResult.metrics?.rmse
-  const rmseMean = trainingResult.metrics?.cv_rmse_mean
-  const rmseStd = trainingResult.metrics?.cv_rmse_std
-  const nSplits = trainingResult.metrics?.n_splits
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-3 rounded-xl bg-emerald-500/10 px-4 py-3 ring-1 ring-emerald-500/20">
-        <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-500" />
-        <div>
-          <p className="text-sm font-semibold text-emerald-600 dark:text-emerald-400">
-            {algorithmLabel} trained
-          </p>
-          <p className="text-xs text-muted-foreground">
-            Only one candidate this run — nothing to compare. Continue to
-            Evaluation.
-            {!isCv && typeof rmse === 'number' && ` RMSE ${rmse.toFixed(3)}.`}
-            {isCv &&
-              phase === 'scored' &&
-              ` Validate RMSE ${typeof holdoutRmse === 'number' ? holdoutRmse.toFixed(3) : '—'}.`}
-            {isCv &&
-              phase !== 'scored' &&
-              typeof rmseMean === 'number' &&
-              typeof rmseStd === 'number' &&
-              ` RMSE ${rmseMean.toFixed(3)} ± ${rmseStd.toFixed(3)}` +
-                (typeof nSplits === 'number'
-                  ? ` across ${nSplits} folds`
-                  : '') +
-                '.'}
-          </p>
-          {/* Three numbers, three meanings, never merged: this is the fold
-              mean — how much to trust the CONFIGURATION, not a score for
-              the refit model that ships. That model's own honest number
-              (`holdoutRmse`, above) only exists once Evaluation's separate
-              holdout-scoring phase runs (MODEL-FLOW-016-T07) — this note
-              drops once it has, matching `StandaloneRunRow`'s own rule. */}
-          {isCv && phase !== 'scored' && (
-            <p className="text-[11px] text-muted-foreground">
-              {phase === 'scoring'
-                ? 'Scoring against the holdout is running — this refits nothing, it only scores the model already trained.'
-                : "Mean ± std across folds — an estimate of the configuration, not the shipped model's own score. Score it against the holdout in Evaluation."}
-            </p>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-const RUN_STATUS_META: Record<
-  ModelTrainingRunListItem['status'],
-  { icon: typeof Clock; className: string }
-> = {
-  QUEUED: { icon: Clock, className: 'text-muted-foreground' },
-  RUNNING: { icon: Loader2, className: 'text-primary animate-spin' },
-  SUCCEEDED: { icon: CheckCircle2, className: 'text-emerald-500' },
-  FAILED: { icon: AlertTriangle, className: 'text-red-500' },
-  // Same icon `STATUS_META` above already uses for CANCELED (this file's
-  // own established convention for a candidate) — one icon per status,
-  // not two, within this file.
-  CANCELED: { icon: AlertTriangle, className: 'text-muted-foreground' },
-}
 
 function formatRunTimestamp(iso: string): string {
   return new Date(iso).toLocaleString(undefined, {
@@ -1019,222 +1315,6 @@ function formatRunTimestamp(iso: string): string {
   })
 }
 
-/**
- * MODEL-FLOW-018-T04. A standalone run's own row — a SEPARATE renderer from
- * `CandidateRow` above, deliberately: the task's own instruction is that
- * both shapes coexist and neither is flattened into the other's renderer.
- * `CandidateResult` and `ModelTrainingRunListItem` differ in exactly the
- * fields that matter here (no `phase`, a real `candidateJobId`, `cvFoldsKey`
- * for the CV-aware metric read below) — coercing one shape into the other's
- * component would either drop those fields or fake them.
- *
- * ROWS ARE NOT SORTED BY METRIC. `comparabilityNote` (MODEL-FLOW-018-T05,
- * computed by the caller and passed in) is how a differing dataset/feature-
- * spec/split shape is surfaced instead — sorting by RMSE would risk the
- * exact category error grouping-by-target exists to catch (two different
- * targets' RMSEs in one ordered column), so rows stay in the run list's own
- * server order (most-recent-first), same as RunParamsPanel.
- *
- * DISABLE REASONS ARE THE FIRST TWO OF MODEL-FLOW-018-T03's THREE — a
- * non-terminal run, and a FAILED/CANCELED one. The third (the run's own
- * candidate job still live) is not reproduced here: this branch is only
- * reached when `mpCandidateJobIdAtom` is null, i.e. there is no CURRENTLY
- * tracked live job to compare a run's `candidateJobId` against client-side.
- * `selectDraftRunService` still refuses it server-side regardless (the
- * authority for that check), and the refusal surfaces through `selectError`
- * below like any other refusal.
- */
-function StandaloneRunRow({
-  run,
-  isSelected,
-  selecting,
-  comparabilityNote,
-  onSelect,
-}: {
-  run: ModelTrainingRunListItem
-  isSelected: boolean
-  selecting: boolean
-  comparabilityNote: string | null
-  onSelect: () => void
-}) {
-  const algorithmLabel =
-    ALGORITHM_LABELS[run.algorithm as Algorithm] ?? run.algorithm
-  const status = RUN_STATUS_META[run.status]
-  const StatusIcon = status.icon
-  const nonTerminal = run.status === 'QUEUED' || run.status === 'RUNNING'
-  const runFailed = run.status === 'FAILED' || run.status === 'CANCELED'
-  const selectDisabledReason = nonTerminal
-    ? 'Available once this run finishes.'
-    : runFailed
-      ? "This run didn't succeed — nothing to carry forward."
-      : null
-
-  // MODEL-FLOW-018-T06, per finding 6. Keyed off `cvFoldsKey`/
-  // `cvScoringPhaseOf` (MODEL-FLOW-016-T11's own signals), never
-  // `algorithm` — a membership list in the client is a second source of
-  // truth that drifts, and it drifts toward showing an empty cell rather
-  // than an honest one (MODEL-FLOW-013-T05a's rule). MODEL-FLOW-019-T02:
-  // the row is passed whole now — that derivation reads only
-  // `cvFoldsKey`/`predictionsKey`/`scoringContainerId`, so the hand-built
-  // `DraftRunSummary` literal this used to construct carried nothing the
-  // row itself does not.
-  const cvPhase = cvScoringPhaseOf(run)
-
-  // Three DIFFERENT quantities behind one column position, never blended:
-  // a non-CV run's own test-split score; a CV run's fold-mean ESTIMATE of
-  // the configuration, pre-scoring; a scored CV run's refit holdout score —
-  // the shipped model's OWN number, never `metrics.cv_rmse_mean` (the same
-  // category error MODEL-FLOW-016's finding 3 already caught once in this
-  // wizard's Evaluation step). A missing metric renders as an em dash,
-  // never 0 and never a value computed client-side.
-  //
-  // MODEL-FLOW-019-T02: WHICH of the three this row shows is unchanged, but
-  // the value now comes from a tagged entry carrying its own source, so the
-  // number and the label beneath it cannot be sourced from different
-  // places. The phase picks the source; `sourcedMetricsOf` decides whether
-  // that source has a figure at all. Deliberately NOT `headlineMetricOf` —
-  // that prefers a holdout figure wherever one exists, which for an
-  // ordinary run would silently relabel this shipped column.
-  const sourced = sourcedMetricsOf(run)
-  const shownSource: MetricSource =
-    cvPhase === 'scored'
-      ? 'holdout'
-      : cvPhase === 'not-cv'
-        ? 'test-split'
-        : 'cv-fold-estimate'
-  const shown = sourced.find(m => m.source === shownSource) ?? null
-  const shownRmse = shown ? rmseOf(shown) : null
-  const shownSpread =
-    shown?.source === 'cv-fold-estimate' ? shown.std.rmse : null
-  const metricValue =
-    shownRmse === null
-      ? '—'
-      : `${shownRmse.toFixed(3)}${
-          shownSpread !== null ? ` ± ${shownSpread.toFixed(3)}` : ''
-        }`
-  const metricLabel = `${METRIC_SOURCE_LABELS[shownSource]} RMSE`
-
-  // MODEL-FLOW-018-T03's own pattern (RunParamsPanel's footer CTA): raw
-  // setters, not `nav.goTo()` — `StandaloneRunRow` sits three components
-  // below `Phase4ModelSelection`'s own `nav` prop, and threading it through
-  // two intermediate components that never use it themselves just to reach
-  // this one leaf branch is the exact prop churn that pattern exists to
-  // avoid. Gated on `isSelected`: `nav`-equivalent navigation to Evaluation
-  // resolves whichever run `ModelDraft.selectedRunId` (or its fallback
-  // chain) currently names — offering this action on a NON-selected row
-  // would silently land on a DIFFERENT run's Evaluation, the exact
-  // "whichever ran last" failure this whole feature exists to replace.
-  const setCurrentStep = useSetAtom(mpCurrentStepAtom)
-  const setHighestUnlocked = useSetAtom(mpHighestUnlockedAtom)
-
-  return (
-    <div
-      className={cn(
-        'space-y-3 rounded-xl border p-4',
-        isSelected
-          ? 'border-primary ring-1 ring-primary/40'
-          : 'border-border/60',
-      )}
-    >
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0 space-y-0.5">
-          <div className="flex items-center gap-1.5">
-            <StatusIcon
-              className={cn('h-3.5 w-3.5 shrink-0', status.className)}
-            />
-            <span className="text-sm font-medium text-foreground">
-              {algorithmLabel}
-            </span>
-            {isSelected && (
-              <Badge variant="secondary" className="h-4 px-1.5 text-[9px]">
-                Carrying forward
-              </Badge>
-            )}
-          </div>
-          <p className="truncate text-[10px] text-muted-foreground">
-            y = {run.targetY} · {formatRunTimestamp(run.createdAt)}
-          </p>
-          {run.failureReason && (
-            <p className="text-[11px] text-red-500">{run.failureReason}</p>
-          )}
-        </div>
-        {run.status === 'SUCCEEDED' && (
-          <div className="shrink-0 text-right">
-            <p className="font-mono text-sm tabular-nums text-foreground">
-              {metricValue}
-            </p>
-            <p className="text-[10px] text-muted-foreground">{metricLabel}</p>
-          </div>
-        )}
-      </div>
-
-      {comparabilityNote && (
-        <p className="rounded-md bg-muted/60 px-2 py-1.5 text-[10px] leading-relaxed text-muted-foreground">
-          {comparabilityNote}
-        </p>
-      )}
-
-      {/* MODEL-FLOW-018-T06. The configuration's own estimate is not the
-          shipped model's score — say so, same fact SingleRunSummary already
-          states for the pre-comparison pass-through, worded to match. */}
-      {(cvPhase === 'awaiting-scoring' || cvPhase === 'scoring') && (
-        <div className="space-y-1.5 rounded-md bg-muted/60 px-2 py-1.5 text-[10px] leading-relaxed text-muted-foreground">
-          <p>
-            {cvPhase === 'scoring'
-              ? 'Scoring against the holdout is running — this refits nothing, it only scores the model already trained.'
-              : isSelected
-                ? "An estimate of the configuration, not the shipped model's own score — score it against the holdout in Evaluation."
-                : "An estimate of the configuration, not the shipped model's own score. Select it to score it against the holdout in Evaluation."}
-          </p>
-          {cvPhase === 'awaiting-scoring' && isSelected && (
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-6 cursor-pointer gap-1 px-2 text-[10px]"
-              onClick={() => {
-                setHighestUnlocked(prev => Math.max(prev, 5))
-                setCurrentStep(5)
-              }}
-            >
-              Score in Evaluation
-              <ArrowRight className="h-3 w-3" />
-            </Button>
-          )}
-        </div>
-      )}
-
-      {selectDisabledReason && (
-        <p className="text-[10px] text-muted-foreground">
-          {selectDisabledReason}
-        </p>
-      )}
-
-      {!isSelected && (
-        <Button
-          size="sm"
-          variant="outline"
-          className="w-full cursor-pointer"
-          disabled={selecting || selectDisabledReason !== null}
-          title={selectDisabledReason ?? undefined}
-          onClick={onSelect}
-        >
-          Select
-        </Button>
-      )}
-    </div>
-  )
-}
-
-/**
- * MODEL-FLOW-018-T04, extended by T05. The comparison table for runs no
- * ModelCandidateJob owns — sourced from `runs` (the draft's OWN run list,
- * passed down from `StandaloneSelection` below), never a job's candidates
- * array. Mirrors `CandidateComparison`'s shape (error/select-error handling,
- * refetch after select) without sharing its renderer, per T04's own
- * instruction. ROWS STILL ARE NOT SORTED BY METRIC — T05's own scope is
- * grouping and per-row labeling, not introducing a ranking that was never
- * requested; each group's rows stay in server order.
- */
 function StandaloneComparison({
   draftId,
   runs,
@@ -1248,6 +1328,28 @@ function StandaloneComparison({
 }) {
   const [selectingRunId, setSelectingRunId] = useState<string | null>(null)
   const [selectError, setSelectError] = useState<string | null>(null)
+  const selectedMetrics = useAtomValue(mpSelectedMetricsAtom)
+  const acceptanceCriteria = useAtomValue(mpAcceptanceCriteriaAtom)
+  const [sortMetric, setSortMetric] =
+    useState<RankMetricKey>(DEFAULT_RANK_METRIC)
+  // Same raw-setter pattern StandaloneRunRow used, and for the same reason:
+  // this component sits below `Phase4ModelSelection`'s `nav` prop and
+  // threading it through two intermediates that never use it is the churn
+  // that pattern avoids.
+  const setCurrentStep = useSetAtom(mpCurrentStepAtom)
+  const setHighestUnlocked = useSetAtom(mpHighestUnlockedAtom)
+
+  const byId = useMemo(() => new Map(runs.map(run => [run.id, run])), [runs])
+  // Only SUCCEEDED runs have predictions to fetch; the rest contribute
+  // nothing, not an error (CandidateBaseChart's own `!runId` early return).
+  const runIds = useMemo(
+    () => runs.filter(run => run.status === 'SUCCEEDED').map(run => run.id),
+    [runs],
+  )
+  const { byRunId, loading: predictionsLoading } = useCandidatePredictions(
+    draftId,
+    runIds,
+  )
 
   const handleSelect = async (runId: string) => {
     setSelectingRunId(runId)
@@ -1267,61 +1369,129 @@ function StandaloneComparison({
   const groups = groupByTarget(runs)
   const multiTarget = groups.length > 1
 
+  // What the card layout carried and a table cell has no column for. The
+  // TIMESTAMP is not decoration here: two runs of the same algorithm on the
+  // same target are otherwise indistinguishable rows, which the card's own
+  // identity line prevented.
+  const noteFor = (groupRuns: ModelTrainingRunListItem[]) =>
+    function NoteFor(runId: string) {
+      const run = byId.get(runId)
+      if (!run) return null
+      const note = comparabilityNote(run, groupRuns)
+      const cvPhase = cvScoringPhaseOf(run)
+      const estimate =
+        cvPhase === 'scoring'
+          ? 'Holdout scoring is running — it refits nothing, it only scores the model already trained.'
+          : cvPhase === 'awaiting-scoring'
+            ? "Fold mean — an estimate of the configuration, not the shipped model's own score."
+            : null
+      return (
+        <div className="space-y-0.5 pt-0.5">
+          <p className="text-[10px] text-muted-foreground">
+            {formatRunTimestamp(run.createdAt)}
+          </p>
+          {estimate && (
+            <p className="text-[10px] leading-snug text-muted-foreground">
+              {estimate}
+            </p>
+          )}
+          {note && (
+            <p className="text-[10px] leading-snug text-muted-foreground">
+              {note}
+            </p>
+          )}
+        </div>
+      )
+    }
+  // Gated on `isSelected` for StandaloneRunRow's own reason, unchanged:
+  // Evaluation resolves whichever run `selectedRunId` names, so offering
+  // this on a non-selected row would land on a DIFFERENT run's Evaluation.
+  const actionFor = (runId: string) => {
+    const run = byId.get(runId)
+    if (!run || run.id !== selectedRunId) return null
+    if (cvScoringPhaseOf(run) !== 'awaiting-scoring') return null
+    return (
+      <Button
+        size="sm"
+        variant="ghost"
+        className="h-7 cursor-pointer gap-1 px-2 text-xs"
+        title="Score this model against the dataset's validation holdout."
+        onClick={() => {
+          setHighestUnlocked(prev => Math.max(prev, 5))
+          setCurrentStep(5)
+        }}
+      >
+        Score
+        <ArrowRight className="h-3 w-3" />
+      </Button>
+    )
+  }
+
   return (
     <div className="space-y-4">
       {selectError && <p className="text-xs text-red-500">{selectError}</p>}
-      {groups.map(([targetY, groupRuns]) => (
-        <div key={targetY} className="space-y-3">
-          {multiTarget && (
-            <p className="text-xs font-medium text-muted-foreground">
-              y = {targetY}
-            </p>
-          )}
-          <div
-            className={cn(
-              'grid gap-4',
-              groupRuns.length > 1 && 'sm:grid-cols-2',
+      <MetricsPicker />
+      {groups.map(([targetY, groupRuns]) => {
+        const groupCandidates = groupRuns.map(candidateFromRun)
+        return (
+          <div key={targetY} className="space-y-4">
+            {multiTarget && (
+              <p className="text-xs font-medium text-muted-foreground">
+                y = {targetY}
+              </p>
             )}
-          >
-            {groupRuns.map(run => (
-              <StandaloneRunRow
-                key={run.id}
-                run={run}
-                isSelected={run.id === selectedRunId}
-                selecting={selectingRunId === run.id}
-                comparabilityNote={comparabilityNote(run, groupRuns)}
-                onSelect={() => void handleSelect(run.id)}
-              />
-            ))}
+            {/* MODEL-FLOW-019-T08 part 4. The overlay chart the job path
+                already gets (`CandidateGroups`' own `section()`), now on
+                every path — including a single-run group, which renders one
+                prediction series against actual rather than no chart at
+                all. */}
+            <CandidateOverlayChart
+              candidates={groupCandidates}
+              byRunId={byRunId}
+            />
+            <CandidateTable
+              candidates={groupCandidates}
+              resolvedRunId={selectedRunId}
+              selecting={selectingRunId !== null}
+              onSelect={runId => void handleSelect(runId)}
+              selectedMetrics={selectedMetrics}
+              sortMetric={sortMetric}
+              onSortMetric={setSortMetric}
+              byRunId={byRunId}
+              predictionsLoading={predictionsLoading}
+              rowNote={noteFor(groupRuns)}
+              rowAction={actionFor}
+              chartMode="predictions-only"
+              criteria={acceptanceCriteria}
+            />
           </div>
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
 
 /**
- * MODEL-FLOW-018-T04. Decides between the two standalone shapes: a single
- * selectable run still passes through via `SingleRunSummary`, and 2+
- * selectable runs — including two CV runs, which no sweep can ever group
- * (CV and Find Best Model are mutually exclusive) — get the comparison
- * table. Fetches the run list ONCE here and passes it down, rather than each
- * child fetching its own copy.
- *
- * MODEL-FLOW-018-T06 extends the single-run branch below with
- * `cvScoringPhase`/`holdoutRmse`, sourced from the same `selectedRun` this
- * branch already reads — see `SingleRunSummary`'s own doc comment.
+ * MODEL-FLOW-018-T04, reversed by MODEL-FLOW-019-T08 part 4 ("one layout
+ * for every training shape"): every selectable-run count, including one,
+ * now renders through this same comparison table + overlay chart — see
+ * the deleted `SingleRunSummary`'s own doc comment for where its facts
+ * went. Fetches the run list ONCE here and passes it down, rather than
+ * each child fetching its own copy.
  */
-function StandaloneSelection({
-  draftId,
-  trainingResult,
-}: {
-  draftId: string
-  trainingResult: DraftTrainingResult
-}) {
+function StandaloneSelection({ draftId }: { draftId: string }) {
   const { runs, loading, error } = useDraftRuns(draftId)
   const { selectedRunId, refetch: refetchSelection } =
     useDraftSelection(draftId)
+  // MODEL-FLOW-019-T08 part 3. Empty means every run — the same rule
+  // Step 3's own footer states in words. Intersected against this draft's
+  // OWN run list (not the raw atom) so a stale id left over from a
+  // different draft cannot empty this table out from under the user.
+  const compareRunIds = useAtomValue(mpCompareRunIdsAtom)
+  const activeCompareIds = useMemo(
+    () => new Set([...compareRunIds].filter(id => runs.some(r => r.id === id))),
+    [compareRunIds, runs],
+  )
 
   if (loading) {
     return (
@@ -1337,61 +1507,15 @@ function StandaloneSelection({
     return <EmptyPanel>Could not load training runs — {error}</EmptyPanel>
   }
 
-  // Gate on SELECTABLE runs (SUCCEEDED), not the raw row count — `runs`
-  // includes QUEUED/RUNNING/FAILED/CANCELED rows too, and a draft with one
-  // SUCCEEDED run plus one FAILED attempt has exactly one candidate to
-  // compare, matching MODEL-FLOW-013's own acceptance criterion ("a single
-  // run must not stall") by what it actually means: nothing to CHOOSE
-  // between, not merely "more than one row exists." The table, once it
-  // opens, still renders every row (including non-SUCCEEDED ones, named with
-  // their own reason) — the count below decides ONLY whether it opens.
-  const selectableCount = runs.filter(r => r.status === 'SUCCEEDED').length
-  if (selectableCount <= 1) {
-    // Prefer the run `selectedRunId` names, if one is set and present in
-    // the list — `trainingResult` is this SESSION's last completed run,
-    // which can disagree with an explicit selection made on a different
-    // (also-terminal) run earlier. Defensive: `launchDraftRun` clears
-    // `selectedRunId` on every new launch and the SUCCEEDED count can only
-    // grow, so a mismatch should not be reachable in the normal flow — but
-    // an incorrect summary here would silently misname what Save Model
-    // actually adopts, so this is cheap insurance rather than an assumption.
-    const selectedRun = runs.find(r => r.id === selectedRunId)
-    const summarySource: DraftTrainingResult = selectedRun
-      ? {
-          runId: selectedRun.id,
-          algorithm: selectedRun.algorithm as Algorithm,
-          metrics: selectedRun.metrics,
-          trainedAt: selectedRun.createdAt,
-          cvFoldsKey: selectedRun.cvFoldsKey,
-        }
-      : trainingResult
-    // MODEL-FLOW-018-T06 (advisor-found gap, 2026-09-04). Only knowable from
-    // the FULL run row, never from the `trainingResult` fallback — see
-    // `SingleRunSummary`'s own doc comment for why `undefined` there is
-    // correct, not a missing case.
-    const cvScoringPhase =
-      selectedRun && selectedRun.cvFoldsKey !== null
-        ? cvScoringPhaseOf(selectedRun)
-        : undefined
-    const holdoutRmse =
-      typeof selectedRun?.holdoutMetrics?.rmse === 'number'
-        ? selectedRun.holdoutMetrics.rmse
-        : null
-    return (
-      <SingleRunSummary
-        trainingResult={summarySource}
-        cvScoringPhase={
-          cvScoringPhase === 'not-cv' ? undefined : cvScoringPhase
-        }
-        holdoutRmse={holdoutRmse}
-      />
-    )
-  }
+  const visibleRuns =
+    activeCompareIds.size === 0
+      ? runs
+      : runs.filter(run => activeCompareIds.has(run.id))
 
   return (
     <StandaloneComparison
       draftId={draftId}
-      runs={runs}
+      runs={visibleRuns}
       selectedRunId={selectedRunId}
       refetchSelection={refetchSelection}
     />
@@ -1399,17 +1523,18 @@ function StandaloneSelection({
 }
 
 /**
- * MODEL-FLOW-013, extended by MODEL-FLOW-018-T04. Compares each candidate an
- * algorithm sweep trained (Step 3's "Find Best Model") and lets the user
- * pick which one carries forward, or accept the metric's own answer.
- * `mpCandidateJobIdAtom` being null means there is no CURRENT sweep to show
- * via that path — it does NOT mean there is nothing to compare: a draft
- * whose runs were launched one at a time (including every CV run, which can
- * never belong to a sweep) now gets its own comparison
- * (`StandaloneSelection`), sourced from the draft's run list rather than a
- * job's candidates array. A draft with only one selectable run still passes
- * through honestly, no comparison table — MODEL-FLOW-013's own acceptance
- * criterion, unchanged by this feature.
+ * MODEL-FLOW-013, extended by MODEL-FLOW-018-T04 and MODEL-FLOW-019-T08.
+ * Compares each candidate an algorithm sweep trained (Step 3's "Find Best
+ * Model") and lets the user pick which one carries forward, or accept the
+ * metric's own answer. `mpCandidateJobIdAtom` being null means there is no
+ * CURRENT sweep to show via that path — it does NOT mean there is nothing
+ * to compare: a draft whose runs were launched one at a time (including
+ * every CV run, which can never belong to a sweep) now gets its own
+ * comparison (`StandaloneSelection`), sourced from the draft's run list
+ * rather than a job's candidates array. T08 part 4 made this ONE layout for
+ * every count, including one selectable run — MODEL-FLOW-013's own
+ * acceptance criterion ("a single run must not stall") is now honoured by a
+ * 1-row table asking the user to choose nothing, not by a second renderer.
  */
 export function Phase4ModelSelection({ nav }: Props) {
   const draftId = useAtomValue(mpServerDraftIdAtom)
@@ -1435,9 +1560,7 @@ export function Phase4ModelSelection({ nav }: Props) {
     if (!draftId) {
       return <EmptyPanel>Model draft isn&apos;t ready yet.</EmptyPanel>
     }
-    return (
-      <StandaloneSelection draftId={draftId} trainingResult={trainingResult} />
-    )
+    return <StandaloneSelection draftId={draftId} />
   }
 
   if (!draftId) {

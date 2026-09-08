@@ -132,6 +132,21 @@ are scored.
 
 ---
 
+## 7. `FEATURE_IMPORTANCE_FILENAME = "feature_importance.json"`
+
+| Copy        | Location                                                                                                               |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------- |
+| this image  | `artifacts.py`                                                                                                         |
+| apps/python | `object_store.py` (`FEATURE_IMPORTANCE_FILENAME`), also gates `_ALLOWED_RUN_UPLOADS` in `services/artifact_service.py` |
+| API (TS)    | `artifact-keys.ts`                                                                                                     |
+
+MODEL-FLOW-019-T09. Same "three copies, not two" shape as entry 4 — miss one
+and the run either writes an artifact the container upload allowlist refuses
+(silent upload failure) or writes one that nothing downstream can ever read
+(silent absence).
+
+---
+
 ## Long-term
 
 The right fix is a shared wheel containing `labelled_mask`, the fold plan, and

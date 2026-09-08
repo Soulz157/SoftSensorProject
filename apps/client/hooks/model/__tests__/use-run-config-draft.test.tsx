@@ -78,7 +78,9 @@ describe('useRunConfigDraft — edits stay local until Apply', () => {
     store.set(mpHighestUnlockedAtom, 2)
     const { result } = renderDraft()
 
-    act(() => result.current.runConfig.setHyperparameter('n_estimators', 100))
+    act(() =>
+      result.current.runConfig.setHyperparameter('ols', 'n_estimators', 100),
+    )
 
     expect(result.current.runConfig.draft.hyperparameters.n_estimators).toBe(
       100,
@@ -90,13 +92,86 @@ describe('useRunConfigDraft — edits stay local until Apply', () => {
   it('setAlgorithms cascades default hyperparameters in the DRAFT only, mirroring the deleted nav.setAlgorithms', () => {
     const { result } = renderDraft()
 
-    act(() => result.current.runConfig.setHyperparameter('alpha', 0.5))
+    act(() => result.current.runConfig.setHyperparameter('ols', 'alpha', 0.5))
     act(() => result.current.runConfig.setAlgorithms(['random_forest']))
 
     expect(result.current.runConfig.draft.algorithms).toEqual(['random_forest'])
     // random_forest's clean defaults, not ridge's leftover alpha.
     expect(result.current.runConfig.draft.hyperparameters.alpha).toBeUndefined()
     expect(store.get(mpAlgorithmsAtom)).toEqual(['ols']) // still uncommitted
+  })
+
+  it('MODEL-FLOW-022. a non-primary tab keeps its own value across an unrelated draft edit, and an unticked algorithm loses it', () => {
+    const { result } = renderDraft()
+
+    act(() => result.current.runConfig.setAlgorithms(['ols', 'xgboost']))
+    act(() =>
+      result.current.runConfig.setHyperparameter(
+        'xgboost',
+        'n_estimators',
+        777,
+      ),
+    )
+
+    expect(
+      result.current.runConfig.draft.perAlgorithmHyperparameters.xgboost
+        ?.n_estimators,
+    ).toBe(777)
+
+    // Untick xgboost — AC2: its value must not survive the prune.
+    act(() => result.current.runConfig.setAlgorithms(['ols']))
+    expect(
+      result.current.runConfig.draft.perAlgorithmHyperparameters.xgboost,
+    ).toBeUndefined()
+
+    // Re-tick it — must come back at DEFAULTS, not the stale 777.
+    act(() => result.current.runConfig.setAlgorithms(['ols', 'xgboost']))
+    expect(
+      result.current.runConfig.draft.perAlgorithmHyperparameters.xgboost
+        ?.n_estimators,
+    ).not.toBe(777)
+  })
+
+  it("MODEL-FLOW-022 AC2, the bypass path: a writer that sets mpAlgorithmsAtom directly (Recall-Apply, resume, preset, edit-existing-model) also loses a dropped algorithm's stale value, not just useRunConfigDraft.setAlgorithms", () => {
+    const { result } = renderDraft()
+
+    act(() => result.current.runConfig.setAlgorithms(['ols', 'xgboost']))
+    act(() =>
+      result.current.runConfig.setHyperparameter(
+        'xgboost',
+        'n_estimators',
+        777,
+      ),
+    )
+    expect(
+      result.current.runConfig.draft.perAlgorithmHyperparameters.xgboost
+        ?.n_estimators,
+    ).toBe(777)
+
+    // Simulates use-apply-run-params.ts: writes mpAlgorithmsAtom AND
+    // mpHyperparamsAtom directly, bypassing useRunConfigDraft entirely —
+    // never touches mpPerAlgorithmHyperparamsAtom.
+    act(() => {
+      store.set(mpAlgorithmsAtom, ['ridge'])
+      store.set(mpAlgorithmAtom, 'ridge')
+      store.set(mpHyperparamsAtom, { alpha: 0.037 })
+    })
+
+    // The render-time re-seed prunes to nav.algorithms = ['ridge'] — xgboost's
+    // stale 777 must not be reachable in the draft any more.
+    expect(result.current.runConfig.draft.algorithms).toEqual(['ridge'])
+    expect(
+      result.current.runConfig.draft.perAlgorithmHyperparameters.xgboost,
+    ).toBeUndefined()
+
+    // Re-ticking xgboost afterwards must come back at defaults, not 777 —
+    // proving the underlying atom's leftover entry (never cleared by the
+    // bypass writer) cannot leak back in through the draft-local setter.
+    act(() => result.current.runConfig.setAlgorithms(['ridge', 'xgboost']))
+    expect(
+      result.current.runConfig.draft.perAlgorithmHyperparameters.xgboost
+        ?.n_estimators,
+    ).not.toBe(777)
   })
 
   it('setFindBestModel(false) cascades findBestParams off in the draft, mirroring the deleted cascade', () => {
@@ -153,7 +228,9 @@ describe('useRunConfigDraft — apply()', () => {
     store.set(mpHighestUnlockedAtom, 2)
     const { result } = renderDraft()
 
-    act(() => result.current.runConfig.setHyperparameter('n_estimators', 100))
+    act(() =>
+      result.current.runConfig.setHyperparameter('ols', 'n_estimators', 100),
+    )
     act(() => result.current.runConfig.apply())
 
     expect(store.get(mpHighestUnlockedAtom)).toBe(2)

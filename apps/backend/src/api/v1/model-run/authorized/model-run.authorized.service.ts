@@ -312,6 +312,11 @@ export class ModelRunAuthorizedService {
       // MODEL-FLOW-016-T04. null for every non-CV run — the same
       // null-means-not-applicable discipline lossHistoryKey uses above.
       cvFoldsKey: keyIf('cv_folds.json'),
+      // MODEL-FLOW-019-T09. null for every algorithm
+      // images/trainer/app/importance.py cannot read a real per-feature
+      // quantity from — the same null-means-not-applicable discipline
+      // lossHistoryKey/cvFoldsKey use above.
+      featureImportanceKey: keyIf('feature_importance.json'),
       finishedAt: new Date(),
       // Close the token with the run. Nothing legitimate needs it after
       // this point.

@@ -571,6 +571,49 @@ class RunCvFoldsResponse(BaseModel):
     folds: list[CvFoldRecord]
 
 
+class RunFeatureImportanceRequest(BaseModel):
+    """MODEL-FLOW-019-T09. Reads a training run's `feature_importance.json`
+    verbatim — already exactly the response shape
+    (`images/trainer/app/importance.py` writes it that way on purpose) — a
+    read-and-validate, not a parse-and-reshape, same discipline as
+    `RunCvFoldsRequest`/`RunLossHistoryRequest`.
+
+    `source_key` is guarded the same structural way those requests guard
+    their own.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    source_key: str = Field(
+        ..., description="The run's feature_importance.json key."
+    )
+
+
+class FeatureImportanceEntry(BaseModel):
+    name: str
+    #: Always non-negative — for a coefficient method this is `abs(coefficient)`,
+    #: never the signed value, so ranking and "share of total" stay meaningful.
+    importance: float
+    #: Present only for a coefficient method ("coefficient"/"pls-coefficient")
+    #: — the signed value, absent for "impurity" where no such quantity exists.
+    coefficient: float | None = None
+
+
+class RunFeatureImportanceResponse(BaseModel):
+    algorithm: str
+    #: "impurity" (feature_importances_), "coefficient" (raw coef_), or
+    #: "pls-coefficient" (coef_ on a latent-component projection, kept
+    #: distinct from "coefficient" — never assumed the same quantity).
+    method: str
+    #: Whether the inputs were scaled — only meaningful for a coefficient
+    #: method; `None` for "impurity". A coefficient over unscaled inputs
+    #: ranks by unit, not by influence (MODEL-FLOW-019 AC27) — the CLIENT
+    #: refuses to rank when this is `False`.
+    standardized: bool | None
+    scaling_methods: list[str]
+    features: list[FeatureImportanceEntry]
+
+
 class RunManifestRequest(BaseModel):
     """MODEL-FLOW-007-T11 / MODEL-SERVE-001-T01. Reads a training run's
     `run_manifest.json` for the fields Save Model / ModelVersion creation

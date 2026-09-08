@@ -15,6 +15,23 @@ import {
 import type { FitRow } from '@/lib/model-metrics'
 import { EvaluationTooltip } from './evaluation-tooltip'
 import { AXIS_TICK, EVAL_SYNC_ID } from './actual-vs-predicted-chart'
+import type { LegendEntry } from '@/components/charts/chart-legend'
+
+/** MODEL-FLOW-019-T17. The colours this chart draws with, named once here
+ *  so the legend beside it cannot claim a colour the chart does not use.
+ *  The band multiplier is stated in each LABEL rather than left to the
+ *  swatch — meaning is never carried by colour alone. */
+const RESIDUAL_COLOR = 'var(--chart-1)'
+const SD1_COLOR = 'var(--chart-2)'
+const SD2_COLOR = 'var(--chart-3)'
+const SD3_COLOR = 'var(--destructive)'
+
+export const RESIDUAL_LEGEND: LegendEntry[] = [
+  { shape: 'square', color: RESIDUAL_COLOR, label: 'Residual' },
+  { shape: 'dashed', color: SD1_COLOR, label: '±1 SD' },
+  { shape: 'dashed', color: SD2_COLOR, label: '±2 SD' },
+  { shape: 'dashed', color: SD3_COLOR, label: '±3 SD' },
+]
 
 interface Props {
   rows: FitRow[]
@@ -115,31 +132,31 @@ function SdBackground({ sd }: { sd: number }) {
       <ReferenceArea
         y1={sd * 2}
         y2={sd * 3}
-        fill="var(--destructive)"
+        fill={SD3_COLOR}
         fillOpacity={0.15}
       />
       <ReferenceArea
         y1={sd}
         y2={sd * 2}
-        fill="var(--chart-3)"
+        fill={SD2_COLOR}
         fillOpacity={0.15}
       />
       <ReferenceArea
         y1={-sd}
         y2={sd}
-        fill="var(--chart-2)"
+        fill={SD1_COLOR}
         fillOpacity={0.25}
       />
       <ReferenceArea
         y1={-sd * 2}
         y2={-sd}
-        fill="var(--chart-3)"
+        fill={SD2_COLOR}
         fillOpacity={0.15}
       />
       <ReferenceArea
         y1={-sd * 3}
         y2={-sd * 2}
-        fill="var(--destructive)"
+        fill={SD3_COLOR}
         fillOpacity={0.15}
       />
     </>
@@ -193,9 +210,9 @@ export function ResidualChart({ rows, sd, tickFormatter, compareName }: Props) {
         />
 
         <SdBackground sd={sd} />
-        <SdGuard sd={sd} k={1} color="var(--chart-2)" pct={coverage?.[1]} />
-        <SdGuard sd={sd} k={2} color="var(--chart-3)" pct={coverage?.[2]} />
-        <SdGuard sd={sd} k={3} color="var(--destructive)" pct={coverage?.[3]} />
+        <SdGuard sd={sd} k={1} color={SD1_COLOR} pct={coverage?.[1]} />
+        <SdGuard sd={sd} k={2} color={SD2_COLOR} pct={coverage?.[2]} />
+        <SdGuard sd={sd} k={3} color={SD3_COLOR} pct={coverage?.[3]} />
 
         {/* Perfect-prediction baseline. */}
         <ReferenceLine
@@ -209,9 +226,9 @@ export function ResidualChart({ rows, sd, tickFormatter, compareName }: Props) {
           connectNulls
           type="monotone"
           dataKey="residual"
-          stroke="var(--chart-1)"
+          stroke={RESIDUAL_COLOR}
           strokeWidth={2}
-          fill="var(--chart-1)"
+          fill={RESIDUAL_COLOR}
           fillOpacity={0.12}
           dot={false}
           isAnimationActive={false}

@@ -272,7 +272,10 @@ describe('rankingSummaryText — the ordering states itself', () => {
       row('a', [testSplit(0.5), holdout(0.9)]),
       row('b', [testSplit(0.4), holdout(0.3)]),
     ])
-    expect(rankingSummaryText(result)).toBe('Ranked by Holdout RMSE.')
+    // 'Validate', the word `METRIC_SOURCE_LABELS` gives this source and
+    // Step 4's own column header shows — this string is DERIVED from that
+    // table, so it follows the rename rather than restating it.
+    expect(rankingSummaryText(result)).toBe('Ranked by Validate RMSE.')
   })
 
   it('names the honest fallback distinctly from the one covering a defect', () => {

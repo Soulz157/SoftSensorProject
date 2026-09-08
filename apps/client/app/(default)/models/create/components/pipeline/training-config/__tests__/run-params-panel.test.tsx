@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest'
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
 import { createStore, Provider } from 'jotai'
 import {
   mpAlgorithmAtom,
@@ -13,18 +12,18 @@ import {
 import type { SavedDataset } from '@/store/datasets'
 import { RunParamsPanel } from '../run-params-panel'
 import { modelDraftService } from '@/services/model-draft'
-import type {
-  ModelCandidateJob,
-  ModelTrainingRunListItem,
-} from '@/services/model-draft'
+import type { ModelTrainingRunListItem } from '@/services/model-draft'
 
 /**
- * MODEL-FLOW-012-V04 / MODEL-FLOW-018-T03. Only the network hooks
- * (`useDraftRuns`, `useDraftSelection`, `useCandidateJob`) and
- * `modelDraftService.selectRun` are mocked — `useApplyRunParams` and
- * `useModelPipelineNav` run for real against the test's own jotai store, so
- * an Apply/Select-footer click here proves the same raw-setter / nav path
- * actually wires up through the rendered UI, not just through a mock.
+ * MODEL-FLOW-012-V04 / MODEL-FLOW-018-T03, then MODEL-FLOW-019-T08. Only
+ * the network hooks (`useDraftRuns`, `useDraftSelection`) and
+ * `modelDraftService.selectRun` are mocked — `useApplyRunParams` runs for
+ * real against the test's own jotai store, so an Apply click here proves
+ * the raw-setter path actually wires up through the rendered UI, not just
+ * through a mock. `useCandidateJob` is NOT mocked here any more: T08
+ * deleted the panel's only caller of it (the carry-forward picker's
+ * job-liveness gate), so the real component no longer imports that hook at
+ * all.
  */
 const h = vi.hoisted(() => ({
   runsResult: {
@@ -38,12 +37,6 @@ const h = vi.hoisted(() => ({
     loading: false,
     refetch: () => {},
   },
-  jobResult: {
-    job: null as ModelCandidateJob | null,
-    loading: false,
-    error: null as string | null,
-    refetch: () => {},
-  },
 }))
 
 vi.mock('@/hooks/model/use-draft-runs', () => ({
@@ -52,24 +45,6 @@ vi.mock('@/hooks/model/use-draft-runs', () => ({
 
 vi.mock('@/hooks/model/use-draft-selection', () => ({
   useDraftSelection: () => h.selectionResult,
-}))
-
-vi.mock('@/hooks/model/use-candidate-job', () => ({
-  useCandidateJob: () => h.jobResult,
-}))
-
-// MODEL-FLOW-021. `RunComparisonPanel` mounts once the draft has two
-// SUCCEEDED runs and fetches every chartable run's decimated series. Stubbed
-// to an empty map so the overlay renders its own honest nothing (its
-// `entries.length === 0` early return) and no request is attempted — the
-// comparison's DATA is `run-comparison-panel.test.tsx`'s subject, not this
-// file's; what this file owns is which runs reach it.
-vi.mock('@/hooks/model/use-candidate-predictions', () => ({
-  useCandidatePredictions: () => ({
-    byRunId: new Map(),
-    loading: false,
-    error: null,
-  }),
 }))
 
 vi.mock('@/services/model-draft', async importOriginal => {
@@ -106,6 +81,7 @@ function run(
     metrics: { r2: 0.9, rmse: 1.234 },
     holdoutMetrics: null,
     cvFoldsKey: null,
+    featureImportanceKey: null,
     predictionsKey: null,
     scoringContainerId: null,
     lossHistoryKey: null,
@@ -119,6 +95,22 @@ function run(
     finishedAt: '2026-08-27T00:00:30.000Z',
     ...overrides,
   }
+}
+
+/**
+ * The footer's "Nothing ticked — comparing…" sentence splits across a bare
+ * text node and a `<span>` sibling (the count is styled distinctly) — a
+ * plain `getByText(exactString)` compares against the whole `<p>`'s
+ * `textContent`, which concatenates JSX whitespace RTL's normalizer does
+ * not fully re-collapse after the fact. Re-normalizing manually here
+ * sidesteps that, rather than asserting on JSX's own whitespace output.
+ */
+function getByNormalizedText(text: string) {
+  return screen.getByText(
+    (_, element) =>
+      element?.tagName === 'P' &&
+      (element.textContent ?? '').replace(/\s+/g, ' ').trim() === text,
+  )
 }
 
 function renderPanel(runs: ModelTrainingRunListItem[]) {
@@ -143,10 +135,6 @@ beforeEach(() => {
   h.selectionResult.selectedRunId = null
   h.selectionResult.loading = false
   h.selectionResult.refetch = () => {}
-  h.jobResult.job = null
-  h.jobResult.loading = false
-  h.jobResult.error = null
-  h.jobResult.refetch = () => {}
   mockSelectRun.mockReset()
   mockSelectRun.mockResolvedValue({
     statusCode: 200,
@@ -377,92 +365,21 @@ describe('RunParamsPanel (MODEL-FLOW-012)', () => {
     expect(store.get(mpHighestUnlockedAtom)).toBe(highestBefore)
   })
 
-  // MODEL-FLOW-021. `jobStillLive` is about selection AUTHORITY mid-sweep,
-  // not about whether a finished run's numbers can be read beside another's
-  // — so it gates the footer picker (below) and NOT the compare checkbox. A
-  // SUCCEEDED run owned by a running sweep has real metrics and real
-  // predictions; greying out its checkbox would refuse a comparison for a
-  // reason the user cannot see.
-  it('does NOT disable Compare for a SUCCEEDED run whose candidate job is still RUNNING, but withholds it from the carry-forward picker', () => {
-    h.jobResult.job = {
-      id: 'job-1',
-      modelDraftId: 'draft-1',
-      targetY: 'TI-101',
-      goldArtifactId: 'art-1',
-      trainTestSplit: null,
-      kind: 'ALGORITHM_SWEEP',
-      totalRuns: 2,
-      completedRuns: 1,
-      status: 'RUNNING',
-      failureReason: null,
-      currentRunId: 'run-1',
-      bestRunId: null,
-      bestRmse: null,
-      selectedRunId: null,
-      createdAt: '2026-08-27T00:00:00.000Z',
-      startedAt: '2026-08-27T00:00:00.000Z',
-      finishedAt: null,
-      candidates: [],
-    }
-    renderPanel([run({ candidateJobId: 'job-1' })])
-
-    expect(
-      screen.getByRole('checkbox', { name: /Compare Ridge Regression/i }),
-    ).not.toBeDisabled()
-    // The run is the draft's ONLY run and it is job-blocked, so no run is
-    // pickable and the footer does not render.
-    expect(screen.queryByText('Use this run')).not.toBeInTheDocument()
-  })
-
-  // A run belonging to an OLDER job (not the live one) is never blocked by
-  // it — the (draftId)-scoped one-live-job index guarantees an older job is
-  // already terminal.
-  it('offers the carry-forward picker for a run whose candidateJobId is NOT the live job', () => {
-    h.jobResult.job = {
-      id: 'job-2',
-      modelDraftId: 'draft-1',
-      targetY: 'TI-101',
-      goldArtifactId: 'art-1',
-      trainTestSplit: null,
-      kind: 'ALGORITHM_SWEEP',
-      totalRuns: 2,
-      completedRuns: 1,
-      status: 'RUNNING',
-      failureReason: null,
-      currentRunId: 'run-2',
-      bestRunId: null,
-      bestRmse: null,
-      selectedRunId: null,
-      createdAt: '2026-08-27T00:00:00.000Z',
-      startedAt: '2026-08-27T00:00:00.000Z',
-      finishedAt: null,
-      candidates: [],
-    }
-    renderPanel([run({ candidateJobId: 'job-1' })])
-
-    expect(screen.getByText('Use this run')).toBeInTheDocument()
-  })
-
-  // MODEL-FLOW-018 openDecision, carried into MODEL-FLOW-021: mark-and-stay
-  // + footer CTA — the CTA renders once a selection exists, and advances the
-  // wizard the same way the bottom-nav Next control does (canAdvance(3)
-  // gated). It writes `mpCurrentStepAtom`/`mpHighestUnlockedAtom` DIRECTLY
-  // rather than calling `useModelPipelineNav().next()` — deliberately NOT
-  // presetting currentStep/highestUnlocked here, so this proves the CTA lands
-  // on Step 4 from wherever the wizard actually is (its default mount state:
-  // step 1, highestUnlocked 1), not only from a hand-set "step 3, trainState
-  // done" precondition a stale `next()` closure would have needed.
-  it('renders the selection footer once a run is picked, and its CTA lands on and unlocks Step 4 regardless of the current step', () => {
+  // MODEL-FLOW-019-T08 (resolved 2026-09-07) REVERSED MODEL-FLOW-021's own
+  // footer design: no picker, no Select, no destination promise — the
+  // wizard shell's forward button is the ONLY control that advances Step 3
+  // -> Step 4, gated by `canAdvance(3)`. This panel writes no step atom at
+  // all, from any state (a selection existing or not).
+  it('never writes mpCurrentStepAtom/mpHighestUnlockedAtom — the wizard shell owns the only move to Step 4', () => {
     h.selectionResult.selectedRunId = 'run-1'
     const { store } = renderPanel([run()])
 
-    expect(screen.getByText('Compare in Model Selection')).toBeInTheDocument()
+    expect(
+      screen.queryByText('Compare in Model Selection'),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText('Use this run')).not.toBeInTheDocument()
     expect(store.get(mpCurrentStepAtom)).toBe(1)
     expect(store.get(mpHighestUnlockedAtom)).toBe(1)
-
-    fireEvent.click(screen.getByText('Compare in Model Selection'))
-    expect(store.get(mpCurrentStepAtom)).toBe(4)
-    expect(store.get(mpHighestUnlockedAtom)).toBeGreaterThanOrEqual(4)
   })
 
   // MODEL-FLOW-021 AC6. The phrase is retired from this step — asserted, not
@@ -474,120 +391,68 @@ describe('RunParamsPanel (MODEL-FLOW-012)', () => {
     expect(screen.queryByText(/carrying forward/i)).not.toBeInTheDocument()
   })
 
-  // MODEL-FLOW-021. The CTA's precondition is the SELECTION, not the picker's
-  // candidate list — a draft can hold a persisted choice while every pickable
-  // run is withheld (each owned by a still-running sweep). Gating the whole
-  // footer on the picker would strand such a user with no route to Step 4.
-  it('keeps the Step 4 CTA when a selection exists but no run is currently pickable', () => {
-    h.selectionResult.selectedRunId = 'run-1'
-    h.jobResult.job = {
-      id: 'job-1',
-      modelDraftId: 'draft-1',
-      targetY: 'TI-101',
-      goldArtifactId: 'art-1',
-      trainTestSplit: null,
-      kind: 'ALGORITHM_SWEEP',
-      totalRuns: 2,
-      completedRuns: 1,
-      status: 'RUNNING',
-      failureReason: null,
-      currentRunId: 'run-1',
-      bestRunId: null,
-      bestRmse: null,
-      selectedRunId: null,
-      createdAt: '2026-08-27T00:00:00.000Z',
-      startedAt: '2026-08-27T00:00:00.000Z',
-      finishedAt: null,
-      candidates: [],
-    }
-    renderPanel([run({ candidateJobId: 'job-1' })])
-
-    expect(screen.getByText('Compare in Model Selection')).toBeInTheDocument()
-    expect(screen.getByText(/^Selected:/)).toBeInTheDocument()
-    // …while the picker itself, which needs candidates, stays away.
-    expect(screen.queryByText('Use this run')).not.toBeInTheDocument()
-  })
-
-  it('renders no Step 4 CTA when nothing has been picked', () => {
-    renderPanel([run()])
-    expect(
-      screen.queryByText('Compare in Model Selection'),
-    ).not.toBeInTheDocument()
-  })
-
-  // MODEL-FLOW-021. The compare set decides WHICH runs the comparison is
-  // about; the empty set means every run, not none. These assert the rule at
-  // the panel boundary — the table's own rendering is
-  // `run-comparison-panel.test.tsx`'s subject.
-  describe('compare set (MODEL-FLOW-021)', () => {
+  // MODEL-FLOW-019-T08 (resolved 2026-09-07): "AN EMPTY COMPARE SET MEANS
+  // EVERY RUN, AND THE FOOTER SAYS SO." Step 3's footer reports the COUNT
+  // of runs ticked and nothing else — no picker, no Select, no destination
+  // promise. The comparison TABLE itself now lives in Step 4
+  // (phase-4-model-selection.test.tsx), which reads the same
+  // `mpCompareRunIdsAtom` this panel writes — this describe block owns only
+  // the count line and the checkbox's own write-nothing guarantee.
+  describe('compare set (MODEL-FLOW-019-T08)', () => {
     const twoRuns = () => [
       run({ id: 'run-1', algorithm: 'ridge' }),
       run({ id: 'run-2', algorithm: 'random_forest' }),
     ]
 
-    it('renders no comparison at all until the draft has two terminal runs', () => {
-      renderPanel([run()])
-      expect(screen.queryByText('Run comparison')).not.toBeInTheDocument()
+    it('renders no footer bar until the draft has at least one terminal run', () => {
+      renderPanel([])
+      expect(
+        screen.queryByText(/selected to compare|Nothing ticked/),
+      ).not.toBeInTheDocument()
     })
 
-    it('compares every run when no box is checked', () => {
+    it('reports "comparing all" when nothing is ticked', () => {
       renderPanel(twoRuns())
-      expect(screen.getByText('Run comparison')).toBeInTheDocument()
-      // Both rows reach the table: each algorithm label appears twice — once
-      // on its card, once in the comparison row.
-      expect(screen.getAllByText('Ridge Regression')).toHaveLength(2)
-      expect(screen.getAllByText('Random Forest')).toHaveLength(2)
+      expect(
+        getByNormalizedText('Nothing ticked — comparing all 2 runs'),
+      ).toBeInTheDocument()
     })
 
-    it('narrows the comparison to the checked runs, and un-checking the last one restores compare-all', () => {
+    it('ticking a box narrows the count, and un-ticking the last one restores compare-all', () => {
       renderPanel(twoRuns())
 
       fireEvent.click(
         screen.getByRole('checkbox', { name: /Compare Ridge Regression/i }),
       )
-      // Ridge still twice (card + row); Random Forest only on its own card.
-      expect(screen.getAllByText('Ridge Regression')).toHaveLength(2)
-      expect(screen.getAllByText('Random Forest')).toHaveLength(1)
+      expect(screen.getByText('1 of 2')).toBeInTheDocument()
 
       fireEvent.click(
         screen.getByRole('checkbox', { name: /Compare Ridge Regression/i }),
       )
-      expect(screen.getAllByText('Random Forest')).toHaveLength(2)
+      expect(
+        getByNormalizedText('Nothing ticked — comparing all 2 runs'),
+      ).toBeInTheDocument()
     })
 
-    it('keeps a one-run comparison rather than emptying the panel', () => {
+    it('checking a box writes no server state — the checkbox is a view control, never Select', () => {
       renderPanel(twoRuns())
-      fireEvent.click(
-        screen.getByRole('checkbox', { name: /Compare Random Forest/i }),
-      )
-      expect(screen.getByText('Run comparison')).toBeInTheDocument()
-      expect(screen.getAllByText('Random Forest')).toHaveLength(2)
-    })
-
-    it('renders MAE and R² columns beside RMSE — the metrics a single card never showed', () => {
-      renderPanel(twoRuns())
-      expect(screen.getByTitle(/Rank by RMSE/i)).toBeInTheDocument()
-      expect(screen.getByTitle(/Rank by MAE/i)).toBeInTheDocument()
-      expect(screen.getByTitle(/Rank by R²/i)).toBeInTheDocument()
-    })
-
-    it('the footer picker is the ONLY control that records the carry-forward run', async () => {
-      renderPanel(twoRuns())
-
       fireEvent.click(
         screen.getByRole('checkbox', { name: /Compare Ridge Regression/i }),
       )
       expect(mockSelectRun).not.toHaveBeenCalled()
+    })
 
-      // Radix's DropdownMenu opens on pointer events it raises itself, which
-      // `fireEvent.click` does not produce — the same reason
-      // algorithm-selector.test.tsx reaches for userEvent on its own menu.
-      const user = userEvent.setup()
-      await user.click(screen.getByRole('button', { name: /Use this run/i }))
-      await user.click(await screen.findByRole('menuitemradio'))
+    it('the "Compare all" button clears the set back to every run', () => {
+      renderPanel(twoRuns())
+      fireEvent.click(
+        screen.getByRole('checkbox', { name: /Compare Ridge Regression/i }),
+      )
+      expect(screen.getByText('1 of 2')).toBeInTheDocument()
 
-      await waitFor(() => expect(mockSelectRun).toHaveBeenCalledTimes(1))
-      expect(mockSelectRun).toHaveBeenCalledWith('draft-1', 'run-1')
+      fireEvent.click(screen.getAllByText('Compare all')[0]!)
+      expect(
+        getByNormalizedText('Nothing ticked — comparing all 2 runs'),
+      ).toBeInTheDocument()
     })
   })
 

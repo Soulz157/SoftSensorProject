@@ -87,6 +87,8 @@ from schemas.preprocess import (
     ResplitHoldoutRequest,
     RunCvFoldsRequest,
     RunCvFoldsResponse,
+    RunFeatureImportanceRequest,
+    RunFeatureImportanceResponse,
     RunLossHistoryRequest,
     RunLossHistoryResponse,
     RunManifestRequest,
@@ -893,6 +895,25 @@ async def run_cv_folds(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(artifact_service.get_run_cv_folds, store, body)
+
+
+@router.post(
+    "/models/runs/feature-importance",
+    response_model=RunFeatureImportanceResponse,
+    summary="A training run's feature_importance.json, read and shape-checked",
+    description=(
+        "MODEL-FLOW-019-T09. `feature_importance.json` is already exactly "
+        "the response shape (images/trainer/app/importance.py writes it "
+        "that way on purpose) — a read-and-validate, not a "
+        "parse-and-reshape like /models/runs/predictions. `source_key` is "
+        "guarded the same structural way that endpoint guards its own."
+    ),
+)
+async def run_feature_importance(
+    body: RunFeatureImportanceRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.get_run_feature_importance, store, body)
 
 
 @router.post(

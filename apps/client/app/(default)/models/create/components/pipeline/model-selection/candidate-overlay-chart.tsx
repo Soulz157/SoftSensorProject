@@ -114,9 +114,25 @@ export function CandidateOverlayChart({ candidates, byRunId }: Props) {
   const rows = buildOverlayRows(entries)
   const first = rows[0]
   const last = rows[rows.length - 1]
-  const tickFormatter = pickTimeFormat(first && last ? last.t - first.t : 0)
+  const tickFormatter = pickTimeFormat(
+    first && last ? last.t - first.t : 0,
+  )
   const anyDownsampled = entries.some(({ item }) => item.downsampled)
   const maxRowCount = Math.max(...entries.map(({ item }) => item.rowCount ?? 0))
+
+  const seriesLabels = new Map<string, string>(
+    entries.map(({ candidate, runId }, i) => {
+      const label =
+        ALGORITHM_LABELS[candidate.algorithm as Algorithm] ??
+        candidate.algorithm
+      const duplicate = entries.some(
+        (other, j) =>
+          j !== i && other.candidate.algorithm === candidate.algorithm,
+      )
+      return [`pred_${runId}`, duplicate ? `${label} #${i + 1}` : label]
+    }),
+  )
+  seriesLabels.set('actual', 'Actual')
 
   return (
     <div className="space-y-1.5 rounded-xl border border-border/60 p-3">
@@ -128,7 +144,7 @@ export function CandidateOverlayChart({ candidates, byRunId }: Props) {
           <span className="flex items-center gap-1">
             <span className="h-1.5 w-1.5 rounded-full bg-foreground" /> Actual
           </span>
-          {entries.map(({ candidate, runId }, i) => (
+          {entries.map(({ runId }, i) => (
             <span key={runId} className="flex items-center gap-1">
               <span
                 className="h-1.5 w-1.5 rounded-full"
@@ -136,8 +152,7 @@ export function CandidateOverlayChart({ candidates, byRunId }: Props) {
                   backgroundColor: OVERLAY_COLORS[i % OVERLAY_COLORS.length],
                 }}
               />
-              {ALGORITHM_LABELS[candidate.algorithm as Algorithm] ??
-                candidate.algorithm}
+              {seriesLabels.get(`pred_${runId}`)}
             </span>
           ))}
         </div>
@@ -172,6 +187,10 @@ export function CandidateOverlayChart({ candidates, byRunId }: Props) {
           <Tooltip
             contentStyle={{ fontSize: 11 }}
             labelFormatter={v => tickFormatter(Number(v))}
+            formatter={(value: unknown, name: unknown) => [
+              typeof value === 'number' ? value.toFixed(4) : '—',
+              seriesLabels.get(String(name)) ?? String(name),
+            ]}
           />
           <Line
             connectNulls

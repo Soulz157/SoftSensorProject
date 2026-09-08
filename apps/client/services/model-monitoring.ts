@@ -55,6 +55,31 @@ export interface DriftReport {
   }
 }
 
+/**
+ * The Input Data tab's trained X/Y schema read — the ordered feature list
+ * `run_manifest.json` recorded at train time, over `JwtAccessGuard` rather
+ * than the machine-only `ServingTokenGuard` the descriptor endpoint sits
+ * behind. `featureColumns`/`unavailableReason` are a pair: null/non-null
+ * together, never independently — a legacy run with no recorded manifest
+ * is a normal state (see `unavailableReason`), not a fetch error.
+ */
+export interface ModelInputSchema {
+  modelId: string
+  versionId: string
+  version: number
+  stage: 'STAGING' | 'PRODUCTION' | 'ARCHIVED'
+  /** Ordered exactly as model.predict expects. Null only alongside a set
+   *  `unavailableReason`. */
+  featureColumns: string[] | null
+  unavailableReason: string | null
+  /** The trained run's own target — one column, not the wizard's
+   *  (possibly multi-select) copy. See `configTargets` for that one. */
+  targetY: string
+  /** Per-tag fitted scaler params, keyed by tag; null when the sidecar is
+   *  unreadable. Feed `inverseScale` one tag's entry at a time. */
+  scalingParams: Record<string, Record<string, number>> | null
+}
+
 function base(modelId: string): string {
   return `/api/v1/authorized/model/${modelId}`
 }
@@ -89,6 +114,19 @@ export const modelMonitoringService = {
     signal?: AbortSignal,
   ): Promise<ApiResponse<DriftReport>> =>
     fetchClient(`${base(modelId)}/drift?${rangeQuery(from, to)}`, {
+      method: 'GET',
+      signal,
+    }),
+
+  /** The trained X/Y schema for the Input Data tab — does not vary with a
+   *  time range, unlike `predictions`/`drift` above. Never 404s for "no
+   *  PRODUCTION version": falls back to the model's latest version, since
+   *  Save Model always mints at least one. */
+  inputSchema: (
+    modelId: string,
+    signal?: AbortSignal,
+  ): Promise<ApiResponse<ModelInputSchema>> =>
+    fetchClient(`${base(modelId)}/input-schema`, {
       method: 'GET',
       signal,
     }),

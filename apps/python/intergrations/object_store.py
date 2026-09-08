@@ -1137,6 +1137,12 @@ LOSS_HISTORY_FILENAME = "loss_history.json"
 # non-CV run never writes this). Mirrored in images/trainer/train.py
 # (CV_FOLDS_FILENAME) and artifact-keys.ts — change all three.
 CV_FOLDS_FILENAME = "cv_folds.json"
+# MODEL-FLOW-019-T09. Per-feature importance — present only for the
+# algorithms images/trainer/app/importance.py can read a real quantity from;
+# absent, not empty, for one that cannot. Mirrored in that same file
+# (FEATURE_IMPORTANCE_FILENAME) and artifact-keys.ts — change all three. See
+# images/trainer/app/MIRRORS.md entry 7.
+FEATURE_IMPORTANCE_FILENAME = "feature_importance.json"
 # MODEL-FLOW-016-T08. The model-ready validation holdout `tryReplayHoldout`
 # (model-run.authorized.service.ts) writes under a run's own prefix, via
 # `prepare_holdout_for_run`/`replay_holdout_for_run` — NOT one of train.py's

@@ -18,9 +18,23 @@ import { describe, it, expect } from 'vitest'
  */
 
 const STEP_FILE = path.resolve(__dirname, '../phase-5-evaluation.tsx')
+const PARITY_CHART_FILE = path.resolve(
+  __dirname,
+  '../evaluation/parity-scatter-chart.tsx',
+)
 
 function read(): string {
   return readFileSync(STEP_FILE, 'utf-8')
+}
+
+/** Comments may legitimately explain WHY a symbol is absent (this file's
+ *  own parity-chart doc comment does exactly that) — strip them so the
+ *  check below proves no CODE uses the sync group, not that the word never
+ *  appears in prose. */
+function readParityChartCode(): string {
+  return readFileSync(PARITY_CHART_FILE, 'utf-8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/.*$/gm, '')
 }
 
 describe('Evaluation step contract (MODEL-FLOW-004)', () => {
@@ -48,5 +62,22 @@ describe('Evaluation step contract (MODEL-FLOW-004)', () => {
       /from ['"]@\/hooks\/model\/use-draft-run-evaluation['"]/,
     )
     expect(src).toMatch(/useDraftRunEvaluation\(/)
+  })
+})
+
+/**
+ * MODEL-FLOW-019-V20. `syncId` never reaches the DOM through Recharts, so a
+ * render assertion cannot distinguish an unsynced chart from a synced one
+ * whose axes happen to overlap — only a source check can prove the parity
+ * scatter was never joined to the time-axis sync group
+ * (`EVAL_SYNC_ID`, `actual-vs-predicted-chart.tsx`/`residual-chart.tsx`).
+ * That group shares a TIME x-axis; this chart's x-axis is `y_true`, so
+ * joining it would crosshair-link two incompatible axes.
+ */
+describe('Parity scatter contract (MODEL-FLOW-019-T13/V20)', () => {
+  it('carries no syncId prop and imports no EVAL_SYNC_ID', () => {
+    const code = readParityChartCode()
+    expect(code).not.toMatch(/\bsyncId\b/)
+    expect(code).not.toMatch(/\bEVAL_SYNC_ID\b/)
   })
 })

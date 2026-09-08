@@ -32,6 +32,7 @@ import type {
   DiscoveredTag,
 } from '@/store/data-visualize'
 import { METRIC_KEYS, type MetricKey } from '@/lib/model-metrics'
+import type { AcceptanceCriterion } from '@/lib/acceptance-criteria'
 
 export type { SavedDataSource }
 
@@ -111,6 +112,23 @@ export const mpFindBestModelAtom = atom<boolean>(false)
 export const mpFindBestParamsAtom = atom<boolean>(false)
 export const mpTargetVariableAtom = atom<string[]>([])
 export const mpHyperparamsAtom = atom<Record<string, HyperparamValue>>({})
+/**
+ * MODEL-FLOW-022-T02. The NON-PRIMARY algorithms' hyperparameters, for a
+ * multi-algorithm sweep's tabbed block. `mpHyperparamsAtom` above stays the
+ * single source for the PRIMARY algorithm's values — this atom never holds
+ * an entry for `algorithms[0]`, so there is exactly one place a primary
+ * value can live and no drift between the two atoms is representable.
+ *
+ * An algorithm no longer selected has no entry here — pruned at
+ * `useRunConfigDraft`'s committed-snapshot composition, not by any writer,
+ * so every one of `mpAlgorithmsAtom`'s seven writers (including the four
+ * that bypass `useRunConfigDraft` entirely: Apply-from-RunParamsPanel,
+ * draft resume, "use as preset", edit-existing-model) gets the discard for
+ * free rather than needing its own copy of the rule.
+ */
+export const mpPerAlgorithmHyperparamsAtom = atom<
+  Partial<Record<Algorithm, Record<string, HyperparamValue>>>
+>({})
 /** Evaluation metric optimized during training. See `LOSS_OPTIONS` in `lib/training-config`. */
 export const mpLossFunctionAtom = atom<string>('mse')
 /** Train split percentage (test = 100 − this). Default 80/20. */
@@ -212,6 +230,16 @@ export const mpCreatedModelIdAtom = atom<string>('')
 export const mpSelectedMetricsAtom = atom<MetricKey[]>([...METRIC_KEYS])
 
 export const mpCompareRunIdsAtom = atom<ReadonlySet<string>>(new Set<string>())
+
+/**
+ * MODEL-FLOW-019-T07. VIEW STATE, NOT DRAFT STATE — a threshold is how the
+ * user chooses to READ a set of candidates, not a fact about what produced
+ * them, so it lives beside `mpSelectedMetricsAtom` rather than as a
+ * `ModelDraft` column. Committed only on Apply (`useRunConfigDraft`'s own
+ * draft/apply boundary), never on keystroke. Empty means no threshold is
+ * set anywhere — the advisory default.
+ */
+export const mpAcceptanceCriteriaAtom = atom<AcceptanceCriterion[]>([])
 
 // --- Model Draft workspace (client-only; MODEL-FLOW-002) -------------------
 // The wizard's "Model Draft" is the in-memory collection of `mp*` atoms — it has
@@ -362,6 +390,7 @@ export const resetWizardAtom = atom(null, (_get, set) => {
   // Default algorithm is `ols` — seed its clean hyperparameters (mirrors
   // `defaultHyperparams('ols')`; inlined to avoid a store → training-config cycle).
   set(mpHyperparamsAtom, { fit_intercept: true })
+  set(mpPerAlgorithmHyperparamsAtom, {})
   set(mpLossFunctionAtom, 'mse')
   set(mpTrainTestSplitAtom, 80)
   set(mpSplitStatsTagsAtom, [])
@@ -369,6 +398,15 @@ export const resetWizardAtom = atom(null, (_get, set) => {
   set(mpTrainStateAtom, { status: 'idle', progress: 0 })
   set(mpCreatedModelIdAtom, '')
   set(mpSelectedMetricsAtom, [...METRIC_KEYS])
+  // MODEL-FLOW-019-T08. Client-only view state, same as its neighbour above
+  // — a compare set ticked against the PREVIOUS draft's runs must not
+  // survive into a fresh wizard run and silently narrow Step 3/4 to ids
+  // that no longer exist on the new draft.
+  set(mpCompareRunIdsAtom, new Set<string>())
+  // MODEL-FLOW-019-T07. Same client-only view-state classification as
+  // mpCompareRunIdsAtom above — a threshold set against the PREVIOUS
+  // draft's own metric distributions has no meaning for a fresh one.
+  set(mpAcceptanceCriteriaAtom, [])
   // Fresh Model Draft workspace (client-only) — new id, clean lifecycle/results.
   set(mpDraftIdAtom, nanoid())
   set(mpDraftStateAtom, 'draft')

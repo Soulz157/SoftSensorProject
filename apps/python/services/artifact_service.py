@@ -29,6 +29,7 @@ from intergrations.object_store import (
     FEATURE_SPEC_FILENAME,
     MANIFEST_FILENAME,
     CV_FOLDS_FILENAME,
+    FEATURE_IMPORTANCE_FILENAME,
     TIMESTAMP_COLUMN,
     VALIDATE_DATA_FILENAME,
     VALIDATE_READY_FILENAME,
@@ -119,6 +120,10 @@ _ALLOWED_RUN_UPLOADS = frozenset(
         LOSS_HISTORY_FILENAME,
         # MODEL-FLOW-016-T04. Per-fold CV metrics — present only on a CV run.
         CV_FOLDS_FILENAME,
+        # MODEL-FLOW-019-T09. Per-feature importance — present only for the
+        # algorithms images/trainer/app/importance.py can read a real
+        # quantity from.
+        FEATURE_IMPORTANCE_FILENAME,
     }
 )
 
@@ -1782,6 +1787,44 @@ def get_run_cv_folds(store: ObjectStore, body) -> dict[str, Any]:
         "algorithm": data["algorithm"],
         "n_splits": data["n_splits"],
         "folds": data["folds"],
+    }
+
+
+def get_run_feature_importance(store: ObjectStore, body) -> dict[str, Any]:
+    """A training run's `feature_importance.json`, read and shape-checked —
+    MODEL-FLOW-019-T09.
+
+    Same discipline as `get_run_cv_folds`/`get_run_loss_history`:
+    `feature_importance.json` is already exactly the response shape
+    (`images/trainer/app/importance.py` writes it that way on purpose), so
+    this is a read-and-validate, not a parse-and-reshape. Guarded the same
+    structural way.
+    """
+    key = body.source_key
+    if key.rsplit("/", 1)[-1] != FEATURE_IMPORTANCE_FILENAME:
+        raise ValueError(f"'{key}' does not name {FEATURE_IMPORTANCE_FILENAME}.")
+    if not (is_draft_run_key(key) or is_model_run_key(key)):
+        raise ValueError(
+            f"'{key}' is not a well-formed training-run output key. Only "
+            "drafts/{draftId}/runs/{runId}/... or "
+            "models/{modelId}/runs/{runId}/... can be read here."
+        )
+
+    data = store.get_json(key)
+    if (
+        not isinstance(data, dict)
+        or not isinstance(data.get("algorithm"), str)
+        or not isinstance(data.get("method"), str)
+        or not isinstance(data.get("features"), list)
+    ):
+        raise ValueError(f"'{key}' is not a well-formed feature_importance.json.")
+
+    return {
+        "algorithm": data["algorithm"],
+        "method": data["method"],
+        "standardized": data.get("standardized"),
+        "scaling_methods": data.get("scaling_methods") or [],
+        "features": data["features"],
     }
 
 

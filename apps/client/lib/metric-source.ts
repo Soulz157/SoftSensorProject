@@ -38,7 +38,7 @@ export type MetricSource = 'test-split' | 'holdout' | 'cv-fold-estimate'
  *  the same wording `StandaloneRunRow` shipped under MODEL-FLOW-018-T06. */
 export const METRIC_SOURCE_LABELS: Record<MetricSource, string> = {
   'test-split': 'Test',
-  holdout: 'Holdout',
+  holdout: 'Validate',
   'cv-fold-estimate': 'Est. CV',
 }
 
@@ -278,4 +278,110 @@ export function metricValueOf(
  *  r2 = -1,110,858 while its rmse stayed readable). */
 export function rmseOf(metric: SourcedMetrics): number | null {
   return metricValueOf(metric, 'rmse')
+}
+
+/**
+ * MODEL-FLOW-019 AC2. What fraction of the holdout's rows never reached a
+ * score, beside the figure it qualifies — a holdout value with a third of
+ * its rows dropped as unlabelled/bad-feature is a different claim than one
+ * with none, and this system does not let the two look the same (DS-LAKE-
+ * 018-T05's own reasoning, `HoldoutMetrics`'s own doc comment above).
+ *
+ * `rowCount` is the SCORED count (post-drop); the original sample is
+ * `rowCount + droppedUnlabelled + droppedBadFeatures`, so the rate is
+ * dropped-over-original, never dropped-over-scored.
+ *
+ * `'missing rate not recorded'`, never `'0.0% missing'`, when any of the
+ * three counts is null — a run scored before these columns existed carries
+ * a figure with no counts beside it, and reporting 0% would claim a clean
+ * sample this run never actually measured (the same honest-legacy-null
+ * discipline `holdoutAbsenceOf` already follows).
+ */
+export function holdoutMissingRateText(metric: HoldoutMetrics): string {
+  const { rowCount, droppedUnlabelled, droppedBadFeatures } = metric
+  if (
+    rowCount === null ||
+    droppedUnlabelled === null ||
+    droppedBadFeatures === null
+  ) {
+    return 'missing rate not recorded'
+  }
+  const dropped = droppedUnlabelled + droppedBadFeatures
+  const original = rowCount + dropped
+  const rate = original > 0 ? (dropped / original) * 100 : 0
+  return `${rate.toFixed(1)}% missing (n=${rowCount})`
+}
+
+/**
+ * MODEL-FLOW-019-T15. WHICH POPULATION a predictions file describes.
+ *
+ * DERIVED from `MetricSource`, never declared beside it: a predictions
+ * file is written by training (the test split) or by scoring (the raw
+ * validation holdout), and is never a fold ESTIMATE — so this is that
+ * union minus the one member it cannot be. A hand-written second union
+ * would be the second-source-of-truth this feature's own T11 and T12 each
+ * refused for pair lists and MODEL-FLOW-013-T05a refused for render
+ * modes, and it would drift the moment `MetricSource` gains a member or
+ * respells one.
+ */
+export type EvaluationPopulation = Extract<
+  MetricSource,
+  'test-split' | 'holdout'
+>
+
+/**
+ * The population a run's predictions file describes, from its own scoring
+ * phase. EXHAUSTIVE OVER ALL FOUR PHASES BY CONSTRUCTION rather than by
+ * control flow: `awaiting-scoring` and `scoring` are CV runs that have no
+ * test split to name at all, and today they only avoid being mislabelled
+ * because two early returns fire before any chart renders. A fifth phase
+ * fails to compile here (`never`) instead of silently defaulting to a
+ * label — T01 already recorded that `cvScoringPhaseOf` has FOUR states
+ * after this feature's own finding said three.
+ */
+export function populationOf(phase: CvScoringPhase): EvaluationPopulation {
+  switch (phase) {
+    case 'not-cv':
+      return 'test-split'
+    case 'scored':
+      return 'holdout'
+    // A CV run before its own scoring phase has produced no predictions
+    // file yet. Callers reach a chart only past an early return, so this
+    // names the population that file WILL have rather than inventing a
+    // test split the run never had.
+    case 'awaiting-scoring':
+    case 'scoring':
+      return 'holdout'
+    default: {
+      const unreachable: never = phase
+      return unreachable
+    }
+  }
+}
+
+/**
+ * THREE LABEL FORMS, ALL IN THIS FILE, because an axis, a sentence and a
+ * heading each need different words, and the file that owns the source
+ * owns every name for it. This deliberately does NOT resolve
+ * Holdout-vs-Validate (MODEL-FLOW-019-T04 argues for 'Holdout' since
+ * `validate` names the dataset QUALITY GATE in this codebase;
+ * MODEL-FLOW-021 records a concurrent partial rename toward 'Validate'
+ * and leaves it an open user decision) — it makes that decision a
+ * one-line change in one file, whichever way it goes.
+ */
+
+/** Axis/column form, in the split vocabulary `METRIC_SOURCE_LABELS`
+ *  already uses for Step 4's own columns — 'Test' / 'Validate'. */
+export function populationAxisLabel(p: EvaluationPopulation): string {
+  return METRIC_SOURCE_LABELS[p]
+}
+
+/** Prose form, for the middle of a sentence. */
+export function populationLabel(p: EvaluationPopulation): string {
+  return p === 'holdout' ? 'validation holdout' : 'test split'
+}
+
+/** Heading form — capitalised, standalone. */
+export function populationTitle(p: EvaluationPopulation): string {
+  return p === 'holdout' ? 'Holdout' : 'Test-split'
 }

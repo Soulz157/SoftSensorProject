@@ -41,6 +41,7 @@ function ridgeRun(overrides: Partial<ModelTrainingRun> = {}): ModelTrainingRun {
     metrics: { r2: 0.9, rmse: 1.2 },
     holdoutMetrics: null,
     cvFoldsKey: null,
+    featureImportanceKey: null,
     predictionsKey: null,
     scoringContainerId: null,
     lossHistoryKey: null,

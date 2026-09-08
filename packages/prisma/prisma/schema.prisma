@@ -65,21 +65,21 @@ model User {
   authLogs      AuthLog[]
   workspaceLogs WorkspaceLog[]
 
-  subscriptions       Subscription[]
-  passwordResetTokens PasswordResetToken[]
-  workspaceMembers    WorkspaceMember[]
-  dataSources         DataSource[]
-  datasets            Dataset[]
-  datasetVersions     DatasetVersion[]
-  datasetArtifacts    DatasetArtifact[]
-  datasetDrafts       DatasetDraft[]
-  modelDrafts         ModelDraft[]
-  modelCandidateJobs  ModelCandidateJob[]
-  preprocessingJobs   PreprocessingJob[]
-  presetImports       FeaturePresetImport[]
-  loaderJobs          LoaderJob[]
+  subscriptions         Subscription[]
+  passwordResetTokens   PasswordResetToken[]
+  workspaceMembers      WorkspaceMember[]
+  dataSources           DataSource[]
+  datasets              Dataset[]
+  datasetVersions       DatasetVersion[]
+  datasetArtifacts      DatasetArtifact[]
+  datasetDrafts         DatasetDraft[]
+  modelDrafts           ModelDraft[]
+  modelCandidateJobs    ModelCandidateJob[]
+  preprocessingJobs     PreprocessingJob[]
+  presetImports         FeaturePresetImport[]
+  loaderJobs            LoaderJob[]
   promotedModelVersions ModelVersion[]
-  predictionJobs      PredictionJob[]
+  predictionJobs        PredictionJob[]
 }
 
 model Account {
@@ -170,25 +170,21 @@ model WorkspaceMember {
 }
 
 model Model {
-  id                String             @id @default(uuid())
+  id                String              @id @default(uuid())
   workspaceId       String
-  workspace         Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace         Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   name              String
   data              Json?
-  createdAt         DateTime           @default(now())
-  updatedAt         DateTime           @updatedAt
-  nodes             Nodes?             @relation(fields: [nodesId], references: [id])
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  nodes             Nodes?              @relation(fields: [nodesId], references: [id])
   nodesId           String?
-  dataset           Dataset?           @relation(fields: [datasetId], references: [id])
+  dataset           Dataset?            @relation(fields: [datasetId], references: [id])
   datasetId         String?
   modelTrainingRuns ModelTrainingRun[]
   versions          ModelVersion[]
   predictionJobs    PredictionJob[]
-  /// MODEL-SERVE-004. A retrain is a candidate job owned by this Model
-  /// instead of a ModelDraft — see ModelCandidateJob's own doc comment.
   candidateJobs     ModelCandidateJob[]
-  /// MODEL-SERVE-005. Sampled synchronous /predict requests — see
-  /// PredictionLog's own doc comment.
   predictionLogs    PredictionLog[]
 
   @@unique([workspaceId, name])
@@ -324,20 +320,9 @@ model Dataset {
   artifacts  DatasetArtifact[]
   loaderJobs LoaderJob[]
 
-  /// Version the wizard hydrates from. Null for every pre-existing dataset,
-  /// which is why the client must keep a fallback until they are backfilled.
-  ///
-  /// The FK was MISSING until DS-LAKE-002: migration 20260801163509 added this
-  /// column with a bare ADD COLUMN and no AddForeignKey, so it was a dangling
-  /// pointer. NoAction (not Cascade/SetNull) matches the DatasetVersion.parent
-  /// convention and avoids a cascade cycle — deleting a Dataset cascades to its
-  /// versions, and this constraint is checked at end-of-statement by which time
-  /// the referencing Dataset row is gone too.
   currentVersionId String?
   currentVersion   DatasetVersion? @relation("DatasetCurrentVersion", fields: [currentVersionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
-  /// Artifact the wizard hydrates rows from. Replaces currentVersionId as the
-  /// hydration pointer once DS-LAKE-004 lands; both coexist during migration.
   currentArtifactId String?
   currentArtifact   DatasetArtifact? @relation("DatasetCurrentArtifact", fields: [currentArtifactId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
@@ -359,45 +344,20 @@ enum DatasetDraftStatus {
   ABANDONED
 }
 
-/// A dataset being built in the wizard, before it is worth persisting.
-///
-/// Exists so the four processing stages can run as real async jobs — with
-/// progress, cancellation and retry — WITHOUT creating a Dataset row that would
-/// be orphaned the moment the user closes the tab. Artifacts and jobs hang off
-/// a draft; Save Dataset promotes the draft by ADOPTING those artifacts rather
-/// than regenerating them.
 model DatasetDraft {
   id          String    @id @default(uuid())
   name        String?
   workspaceId String
   workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
-  /// Sources the wizard may read. This is the draft's answer to
-  /// `Dataset.sourceIds`, and it is the guard that stops a caller naming an
-  /// arbitrary DataSource id and having the server connect with that source's
-  /// decrypted credentials.
   sourceIds String[]
 
   status DatasetDraftStatus @default(ACTIVE)
 
-  /// Latest artifact in the chain, for wizard hydration.
   currentArtifactId String?
 
-  /// Set when the draft is promoted, so a saved dataset is traceable back to
-  /// the run that produced it.
   savedDatasetId String?
 
-  /// DS-LAKE-024. Set at CREATION for a draft opened by editing an existing
-  /// saved Dataset — the origin half of the story `savedDatasetId` (above)
-  /// tells the outcome half of. Null for a create-mode draft. Deliberately
-  /// its OWN column rather than overloading `savedDatasetId`: that field
-  /// means "this draft BECAME that Dataset" (written at Save), this one
-  /// means "this draft is EDITING that Dataset" (written at creation) — the
-  /// two are different facts about different moments, and one column
-  /// cannot hold both without making "is this draft saved?" unanswerable
-  /// from the row alone. A partial unique index (hand-written in the
-  /// migration, since Prisma cannot express a WHERE clause on an index)
-  /// enforces at most one ACTIVE draft per edited Dataset.
   editingDatasetId String?
 
   createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
@@ -411,19 +371,9 @@ model DatasetDraft {
   @@index([workspaceId])
   @@index([createdById])
   @@index([status])
-  /// Ordinary (non-unique) lookup index — the AT-MOST-ONE-ACTIVE guarantee
-  /// is the partial UNIQUE index hand-written in the migration
-  /// (`DatasetDraft_one_active_edit_per_dataset`), because a plain
-  /// `@@unique` here would also forbid a SECOND edit session opened after
-  /// the first was abandoned or saved, which is legal.
   @@index([editingDatasetId])
 }
 
-/// Which Lakehouse layer produced an artifact.
-///
-/// This is the ARTIFACT axis. DatasetVersion.versionNumber is the VERSION axis.
-/// The two were conflated on DatasetVersion.stage, which is exactly why every
-/// intermediate stage used to create a Dataset Version.
 enum DatasetArtifactType {
   BRONZE
   SILVER
@@ -432,8 +382,6 @@ enum DatasetArtifactType {
   EXPORT
 }
 
-/// Registry lifecycle of a saved dataset version. Promotion moves a row through
-/// these states and changes NOTHING else — no artifact is copied or rewritten.
 enum DatasetStatus {
   DRAFT
   VALIDATED
@@ -450,9 +398,6 @@ enum PreprocessingJobStatus {
   CANCELED
 }
 
-/// DS-LAKE-011: mirrors PreprocessingJobStatus exactly, so the existing
-/// runner patterns (boot sweep, retry, attempt counting) transfer without
-/// inventing a second state machine.
 enum LoaderJobStatus {
   QUEUED
   RUNNING
@@ -461,71 +406,29 @@ enum LoaderJobStatus {
   CANCELED
 }
 
-/// The Dataset Registry row. Created ONLY by Save Dataset (DS-LAKE-009) — see
-/// ADR-DS-LAKE-005B-B-006 for why this points to an already-completed FINAL
-/// artifact instead of owning its own bytes.
-///
-/// Reshaped by DS-LAKE-009-T06 from the old shape (stage/objectKey/
-/// parentVersionId/operations/columnStats — a version used to own storage
-/// AND a live parent chain, which is exactly why every intermediate stage
-/// used to wrongly create one). DatasetArtifact now owns storage and the
-/// live, queryable lineage chain (`parentArtifactId`); this table owns the
-/// REGISTRY facts about one saved version — semantic label, quality-gate
-/// result at Save time, promotion status — plus a FROZEN lineage snapshot,
-/// not a second live parent-pointer chain.
-///
-/// Creating one of these is NOT a Model commit: CLAUDE.md §8 reserves that for
-/// Save Model, and nothing here touches the Model table.
 model DatasetVersion {
   id              String  @id @default(uuid())
   datasetId       String
   dataset         Dataset @relation(fields: [datasetId], references: [id], onDelete: Cascade)
   versionNumber   Int
-  /// Display label, e.g. "1.0.0" — a human-facing tag, distinct from
-  /// `versionNumber`'s raw sequence. DS-LAKE-009-T03 keys concurrency-safe
-  /// allocation off `versionNumber`, never this field.
   semanticVersion String?
 
-  /// The FINAL artifact this version points to, by reference — never a byte
-  /// copy (ADR-DS-LAKE-005B-B-006). Nullable: a row backfilled by
-  /// DS-LAKE-002-T04 (before this reshape existed) has no FINAL artifact to
-  /// point at; DS-LAKE-009-T07's migration decides whether/how to backfill
-  /// it from the shared legacy id the backfill already gave every such row.
   artifactId String?
   artifact   DatasetArtifact? @relation(fields: [artifactId], references: [id], onDelete: SetNull, onUpdate: NoAction)
 
-  /// sha256 of the artifact's stored Parquet bytes, copied at Save time —
-  /// not re-derived from `artifact.checksum` on every read.
   checksum      String?
   schemaVersion Int     @default(1)
 
-  /// LOGICAL tag count — excludes `timestamp` and every `__status` sidecar.
   columnCount  Int    @default(0)
   featureCount Int    @default(0)
   rowCount     Int    @default(0)
   missingPct   Float  @default(0)
-  /// 64-bit on purpose, matching DatasetArtifact.sizeBytes (DS-LAKE-002-T02)
-  /// — the old 32-bit Int here topped out around 2.1 GB, and an 8,000-tag
-  /// artifact already reaches it.
   sizeBytes    BigInt @default(0)
 
-  /// DS-LAKE-007's quality score (0-100) at Save time, frozen — re-running
-  /// validation later never changes what a saved version already promised.
-  qualityScore Float?
-  /// DS-LAKE-019. The report's ADVISORY-failed checks at Save time, frozen
-  /// — same reasoning as qualityScore right above: the MinIO sidecar
-  /// (artifact.validationKey) is rewritten on every Step 5 revalidate, so
-  /// it cannot answer "what did Save actually promise". Array of
-  /// {name, detail, measured, threshold, offenders}, always [] when there
-  /// were none — null means only "saved before this feature existed".
-  /// BLOCKING failures are never here: a FAIL never reaches Save.
+  qualityScore       Float?
   validationAdvisory Json?
   status             DatasetStatus @default(DRAFT)
 
-  /// Frozen BRONZE -> SILVER -> GOLD -> FINAL chain (ids/checksums/types) as
-  /// of Save time — a point-in-time snapshot, not a live FK walk.
-  /// DatasetArtifact.parentArtifactId remains the live, queryable chain;
-  /// this is what a saved version promises never changes underneath it.
   lineage Json?
 
   durationMs Int?
@@ -538,7 +441,6 @@ model DatasetVersion {
   jobsAsResult PreprocessingJob[] @relation("JobResult")
   loaderJobs   LoaderJob[]
 
-  /// Back-relation for Dataset.currentVersionId, which finally has a real FK.
   currentOf Dataset[] @relation("DatasetCurrentVersion")
 
   @@unique([datasetId, versionNumber])
@@ -546,60 +448,22 @@ model DatasetVersion {
   @@index([artifactId])
 }
 
-/// One immutable Lakehouse stage output, stored as Parquet in object storage.
-/// Postgres holds metadata and a pointer only — never the rows.
-///
-/// Created freely, once per stage per run. Creating one of these is NOT a
-/// Dataset Version: DS-LAKE-009 reserves that for Save Dataset. It is also not
-/// a Model commit — CLAUDE.md §8 reserves that for Save Model.
 model DatasetArtifact {
   id String @id @default(uuid())
 
-  /// AT LEAST ONE of datasetId / draftId is set — "never neither", enforced
-  /// by a CHECK constraint in the migration (`DatasetArtifact_owner_present`,
-  /// `datasetId IS NOT NULL OR draftId IS NOT NULL`), because Prisma cannot
-  /// express it. Both columns are nullable at the column level so that a
-  /// draft artifact can exist before any Dataset does.
-  ///
-  /// BOTH IS LEGAL ON PURPOSE, not just tolerated — the migration's own
-  /// comment says so. An artifact starts owned by a draft and is ADOPTED
-  /// (datasetId set, draftId KEPT for traceability) at Save — never copied,
-  /// never rewritten — so an adopted artifact carries both. A prior version
-  /// of this comment said "EXACTLY ONE", which the very next sentence about
-  /// adoption already contradicted; corrected while designing DS-LAKE-024's
-  /// edit-mode draft, which relies on "both" being legal to share a
-  /// dataset-owned artifact's objectKey with a second, draft-owned row.
   datasetId String?
   dataset   Dataset?      @relation(fields: [datasetId], references: [id], onDelete: Cascade)
   draftId   String?
   draft     DatasetDraft? @relation(fields: [draftId], references: [id], onDelete: Cascade)
 
-  /// Groups one wizard run's BRONZE -> SILVER -> GOLD -> FINAL chain, so a
-  /// re-run is a new chain rather than a mutation of the previous one.
   runId String
 
-  /// Lineage. Null for a BRONZE root. SetNull (not Cascade): adoption at
-  /// Save only sets datasetId on the FINAL artifact and the lineage ROOT
-  /// (dataset-draft.authorized.service.ts, saveDraftAsDatasetService) —
-  /// intermediate SILVER/GOLD stay draft-owned forever. So deleting a
-  /// Dataset cascade-deletes BRONZE while a still-alive, still-draft-owned
-  /// SILVER row keeps pointing at it via parentArtifactId; NoAction made
-  /// that delete fail every time. Cascade would be worse: it would delete
-  /// that live SILVER/GOLD row out from under its own DatasetDraft, which
-  /// may still be in active use and has no FK relationship to this Dataset
-  /// at all (DatasetDraft carries only unenforced savedDatasetId/
-  /// editingDatasetId strings, never a real FK). SetNull is correct: BRONZE
-  /// is gone, SILVER survives with a null parent, exactly matching the
-  /// "adoption is a pointer, not a copy" contract in the datasetId/draftId
-  /// comment above.
   parentArtifactId String?
   parent           DatasetArtifact?  @relation("ArtifactLineage", fields: [parentArtifactId], references: [id], onDelete: SetNull, onUpdate: NoAction)
   children         DatasetArtifact[] @relation("ArtifactLineage")
 
   type DatasetArtifactType
 
-  /// e.g. "{datasetId}/artifacts/{artifactId}/data.parquet". Legacy rows
-  /// backfilled from DatasetVersion keep the old "{datasetId}/{versionId}.parquet".
   objectKey String
   format    String @default("parquet")
 
@@ -1007,8 +871,8 @@ model ModelDraft {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  trainingRuns    ModelTrainingRun[]
-  candidateJobs   ModelCandidateJob[]
+  trainingRuns  ModelTrainingRun[]
+  candidateJobs ModelCandidateJob[]
 
   @@index([workspaceId])
   @@index([createdById])
@@ -1066,8 +930,8 @@ model ModelTrainingRun {
 
   /// Digest, never a tag. `:latest` makes the image a moving target and the
   /// run unreproducible by construction.
-  imageDigest String
-  containerId String?
+  imageDigest        String
+  containerId        String?
   /// MODEL-FLOW-016-T07. The CONTAINER running this run's separate,
   /// user-triggered holdout-scoring phase — distinct from `containerId`
   /// (that field tracks the TRAINING spawn, whose container has already
@@ -1108,7 +972,20 @@ model ModelTrainingRun {
   /// capped (MIN_LABELS_PER_FOLD, split_stats_service.py / train.py) before
   /// a fold ever fits, so an oversized artifact is unreachable — no
   /// redundant size guard needed on this column.
-  cvFoldsKey String?
+  cvFoldsKey     String?
+  /// MODEL-FLOW-019-T09. Per-feature importance (feature_importance.json) —
+  /// set only for the algorithms images/trainer/app/importance.py can read
+  /// a real quantity from (random_forest/lightgbm/xgboost via
+  /// feature_importances_; ols/ridge/pls/a linear-kernel svm via coef_);
+  /// null for every other algorithm (hgb/hist_gradient_boosting, mlp, grp,
+  /// a non-linear svm, lstm, gru), which never writes this artifact, and
+  /// null for a run trained before this column existed — the same
+  /// honest-legacy-null pattern `cvFoldsKey` above and MODEL-FLOW-010-T06's
+  /// `validationMissingPct` established. `null` means "not recorded for
+  /// this run"; never reconstructed on read (that would mean loading
+  /// model.joblib outside the trainer image, MODEL-FLOW-016-T07's own
+  /// finding that apps/python has no sklearn/joblib at all).
+  featureImportanceKey String?
   /// Denormalised from metrics.json for list/sort without an object read —
   /// the same reasoning DatasetArtifact uses for rowCount and missingPct.
   /// MODEL-FLOW-013-T04 added train_r2/train_mae/train_rmse keys alongside
@@ -1141,7 +1018,7 @@ model ModelTrainingRun {
   /// on purpose (N candidates sharing one split is N redundant artifact
   /// reads for an identical answer; a candidate's provenance belongs to its
   /// job, not to this column).
-  splitStats Json?
+  splitStats     Json?
 
   createdAt  DateTime  @default(now())
   startedAt  DateTime?
@@ -1223,7 +1100,7 @@ model ModelVersion {
 
   /// One version per source run — a retrain that fails never gets a second
   /// chance to mint a version from the SAME run; it fits again instead.
-  sourceRunId String           @unique
+  sourceRunId     String           @unique
   /// NO ACTION, not the implicit Restrict a required relation would
   /// otherwise get: a Model delete cascades onto ModelTrainingRun and
   /// ModelVersion in the same statement, and Restrict is checked
@@ -1231,7 +1108,7 @@ model ModelVersion {
   /// the migration's own comment for why that ordering breaks
   /// deleteModelService. Explicit here so a future `migrate dev` does not
   /// "fix" this back to the default and reintroduce the bug.
-  sourceRun ModelTrainingRun @relation(fields: [sourceRunId], references: [id], onDelete: NoAction, onUpdate: Cascade)
+  sourceRun       ModelTrainingRun @relation(fields: [sourceRunId], references: [id], onDelete: NoAction, onUpdate: Cascade)
   sourceDatasetId String
 
   /// Pinned off the source run row (goldArtifactId/goldObjectKey/
@@ -1250,7 +1127,7 @@ model ModelVersion {
   /// version-creation time. Nullable for the same "honest legacy null"
   /// reason ModelConfigSchema.frameworkVersions is: a run trained before the
   /// manifest recorded this has no honest value to fill in.
-  modelChecksum String?
+  modelChecksum  String?
 
   algorithm         String
   hyperparameters   Json
@@ -1260,7 +1137,7 @@ model ModelVersion {
   /// exists in this repo, so nothing currently prunes the image this
   /// points at; storing the digest here is what a future GC policy would
   /// need to consult before it could safely add one.
-  imageDigest String
+  imageDigest       String
 
   /// Snapshot of ModelTrainingRun.metrics at creation time — r2/mae/rmse
   /// (test split) and train_r2/train_mae/train_rmse. Never re-read from the
@@ -1280,7 +1157,7 @@ model ModelVersion {
   /// Set when this version is demoted PRODUCTION -> ARCHIVED by a later
   /// promote. Rollback's own "previous PRODUCTION" lookup orders by this
   /// column, descending — see model.authorized.service.ts.
-  archivedAt DateTime?
+  archivedAt   DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1326,7 +1203,7 @@ model PredictionJob {
   /// checked immediately per row and would fire while ModelVersion's own
   /// cascade is still being processed, before the referencing
   /// PredictionJob row is gone.
-  modelVersion ModelVersion @relation(fields: [modelVersionId], references: [id], onDelete: NoAction, onUpdate: Cascade)
+  modelVersion   ModelVersion @relation(fields: [modelVersionId], references: [id], onDelete: NoAction, onUpdate: Cascade)
 
   /// The committed dataset artifact being scored — validated against
   /// is_committed_artifact_key before this row is ever created, not
@@ -1363,12 +1240,12 @@ model PredictionJob {
   /// on start, carried forward (not reset) by retry.
   attempts Int @default(0)
 
-  createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  createdBy   User      @relation(fields: [createdById], references: [id], onDelete: Cascade)
   createdById String
-  createdAt   DateTime @default(now())
+  createdAt   DateTime  @default(now())
   startedAt   DateTime?
   finishedAt  DateTime?
-  updatedAt   DateTime @updatedAt
+  updatedAt   DateTime  @updatedAt
 
   @@index([modelId, createdAt])
   @@index([status])
@@ -1447,7 +1324,7 @@ model ModelCandidateJob {
   /// triggers becoming three containers; this key is what makes a RETRY
   /// after a dropped response return the original job instead of a second
   /// one once the first has finished.
-  idempotencyKey String?
+  idempotencyKey  String?
 
   /// The fixed spec every candidate shares — validated once, the same way
   /// buildRunData validates a single run's spec. `algorithm` moved INTO
@@ -1512,21 +1389,21 @@ model ModelCandidateJob {
   /// migration needed for that, just longer arrays.
   candidates    Json
   totalRuns     Int
-  completedRuns Int @default(0)
+  completedRuns Int  @default(0)
 
   status        ModelCandidateJobStatus @default(QUEUED)
   failureReason String?
 
   /// The run for the CURRENTLY in-flight (or just-finished, not yet
   /// advanced) candidate.
-  currentRunId String?
+  currentRunId  String?
   /// The lowest-RMSE run seen so far. RMSE, not R² — always present and
   /// well-behaved even for a degenerate fit (an observed real run scored
   /// R² = -1,110,858; RMSE stayed a sane, comparable number). Selection
   /// metric is intentionally not configurable in this pass — see
   /// MODEL-FLOW-005-T01's own note on why.
-  bestRunId String?
-  bestRmse  Float?
+  bestRunId     String?
+  bestRmse      Float?
   /// MODEL-FLOW-013-T08. A user's override of bestRunId, written only once
   /// the job is terminal and only to one of its own SUCCEEDED runs — never
   /// bestRunId itself, which stays the metric's own answer even when
@@ -1536,9 +1413,9 @@ model ModelCandidateJob {
   /// advanceJobForRun's completion branch, untouched by this field.
   selectedRunId String?
 
-  createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  createdBy   User      @relation(fields: [createdById], references: [id], onDelete: Cascade)
   createdById String
-  createdAt   DateTime @default(now())
+  createdAt   DateTime  @default(now())
   startedAt   DateTime?
   finishedAt  DateTime?
 
@@ -1576,7 +1453,7 @@ model PredictionLog {
   /// ModelVersion AND PredictionLog (via its own direct modelId FK) in the
   /// same statement, and Restrict fires per-row before ModelVersion's own
   /// cascade has finished removing the referencing rows.
-  modelVersion ModelVersion @relation(fields: [modelVersionId], references: [id], onDelete: NoAction, onUpdate: Cascade)
+  modelVersion   ModelVersion @relation(fields: [modelVersionId], references: [id], onDelete: NoAction, onUpdate: Cascade)
 
   /// Null means the object write did not happen (a python/MinIO failure
   /// after the row's aggregates were already computed) — the aggregates
@@ -1594,8 +1471,8 @@ model PredictionLog {
   /// Both are kept, deliberately not collapsed into one number: a series
   /// that only ever shows loggedRows cannot tell a caller its own log is
   /// truncated.
-  rowCount    Int
-  loggedRows  Int
+  rowCount   Int
+  loggedRows Int
 
   /// MODEL-SERVE-005-T01. The sampling rate IN FORCE for this specific
   /// request, on the row — never a global config value looked up later,
@@ -1610,7 +1487,7 @@ model PredictionLog {
   /// sufficient statistics for an EXACT pooled mean/std across many rows
   /// without ever re-opening the Parquet objects. Keyed by feature column
   /// name, matching featureColumns order from the serving descriptor.
-  featureStats Json
+  featureStats    Json
   /// Same shape, one entry, for the request's own predictions.
   predictionStats Json
 

@@ -417,6 +417,44 @@ export async function getRunCvFolds(sourceKey: string): Promise<RunCvFolds> {
   return RunCvFoldsSchema.parse(res);
 }
 
+/** MODEL-FLOW-019-T09. `importance` is always non-negative — for a
+ *  coefficient method it is `abs(coefficient)`, never the signed value, so
+ *  ranking and "share of total" stay meaningful; `coefficient` (the signed
+ *  value) is present only for "coefficient"/"pls-coefficient". */
+const FeatureImportanceEntrySchema = z.object({
+  name: z.string().min(1),
+  importance: z.number(),
+  coefficient: z.number().nullish(),
+});
+
+const RunFeatureImportanceSchema = z.object({
+  algorithm: z.string().min(1),
+  // "impurity" | "coefficient" | "pls-coefficient" — a reader cannot
+  // calibrate an unlabelled figure, so this is never optional.
+  method: z.string().min(1),
+  standardized: z.boolean().nullable(),
+  scaling_methods: z.array(z.string()),
+  features: z.array(FeatureImportanceEntrySchema),
+});
+
+export type RunFeatureImportance = z.infer<typeof RunFeatureImportanceSchema>;
+
+/**
+ * MODEL-FLOW-019-T09. `source_key` is resolved by the caller off the
+ * `ModelTrainingRun` row (`featureImportanceKey`) — never accepted from a
+ * browser request, same discipline `getRunCvFolds` applies to its own key.
+ */
+export async function getRunFeatureImportance(
+  sourceKey: string,
+): Promise<RunFeatureImportance> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/models/runs/feature-importance',
+    { source_key: sourceKey },
+    PYTHON_TIMEOUT.metadata,
+  );
+  return RunFeatureImportanceSchema.parse(res);
+}
+
 /** MODEL-FLOW-007-T11 / MODEL-SERVE-001-T01. `null` for a run trained before
  *  the trainer image that started recording each field — Save Model and
  *  ModelVersion creation both treat that as "not recorded", never as a

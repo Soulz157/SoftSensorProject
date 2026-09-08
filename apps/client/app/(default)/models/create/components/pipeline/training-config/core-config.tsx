@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
+import { Plus, X } from 'lucide-react'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
 import { Slider } from '@/components/ui/slider'
@@ -13,11 +14,37 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { LOSS_OPTIONS } from '@/lib/training-config'
-import { seedConsumedBy } from '@/lib/run-params'
+import {
+  canonicalise,
+  criterionLabel,
+  evaluateCriterion,
+  isLegacyCriterion,
+  lossAlignedMetric,
+  offerablePairs,
+  operandLabel,
+  operatorSymbol,
+  pairLabel,
+  pairsEqual,
+  type AcceptanceCriterion,
+  type ComparisonCriterion,
+  type ComparisonOperator,
+  type ComparisonPair,
+  type LegacyAcceptanceCriterion,
+} from '@/lib/acceptance-criteria'
+import type { SourcedMetrics } from '@/lib/metric-source'
 import { useArtifactHoldout } from '@/hooks/dataset/artifact/use-artifact-holdout'
-import { ALGORITHM_LABELS, type Algorithm } from '@/store/model-pipeline'
+import { type Algorithm } from '@/store/model-pipeline'
 import { TargetVariableSelector } from './tag-variable-select'
+import { Button } from '@/components/ui/button'
 
 interface Props {
   tags: string[]
@@ -30,26 +57,17 @@ interface Props {
   seed: number | undefined
   onSeedChange: (seed: number | undefined) => void
   algorithms: Algorithm[]
-  /** MODEL-FLOW-016-T10. `undefined` means Cross-Validation is off. */
   nSplits: number | undefined
   onNSplitsChange: (nSplits: number | undefined) => void
-  /** Sweep mutual exclusion (userDecisions: CV × algorithm sweep is
-   * mutually exclusive, disabled with a stated reason — same discipline
-   * lstm/gru already follows in this wizard). */
   findBestModel: boolean
   datasetId: string | null
   artifactId: string | null
   hasArtifact: boolean
-  /**
-   * MODEL-FLOW-016-T10. Fetched by the PARENT (`Phase3TrainingConfig`),
-   * not here — see `SplitDistributionPanel`'s own `splitStats` doc comment
-   * for why: a call here duplicated the request AND, since this prop is
-   * fed from the DRAFT trainTestSplit rather than the committed one,
-   * would have refetched on every ratio-slider drag, defeating the Apply
-   * boundary this whole feature commits `n_splits` inside.
-   */
   maxAdmissibleK: number | null
   splitStatsLoading: boolean
+  acceptanceCriteria: AcceptanceCriterion[]
+  onAcceptanceCriteriaChange: (criteria: AcceptanceCriterion[]) => void
+  currentRunMetrics: SourcedMetrics[] | null
 }
 
 export function CoreConfig({
@@ -60,8 +78,8 @@ export function CoreConfig({
   onLossChange,
   trainTestSplit,
   onSplitChange,
-  seed,
-  onSeedChange,
+  // seed,
+  // onSeedChange,
   algorithms,
   nSplits,
   onNSplitsChange,
@@ -71,33 +89,59 @@ export function CoreConfig({
   hasArtifact,
   maxAdmissibleK,
   splitStatsLoading,
+  acceptanceCriteria,
+  onAcceptanceCriteriaChange,
+  currentRunMetrics,
 }: Props) {
+  const {
+    holdout,
+    loading: holdoutLoading,
+    missing: holdoutMissing,
+  } = useArtifactHoldout(
+    hasArtifact ? datasetId : null,
+    hasArtifact ? artifactId : null,
+  )
+
+  const hasHoldout = holdout !== null || holdoutMissing
+
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        {/* Target Variables */}
-        <div className="space-y-1.5">
-          <Label className="text-xs font-medium">
-            Target variable <span className="text-destructive">*</span>
-          </Label>
-
-          <TargetVariableSelector
-            tags={tags}
-            targetVariables={targetVariables}
-            onTargetChange={onTargetChange}
-            disabled={tags.length === 0}
+    <div className="grid grid-cols-1 items-start gap-4 sm:grid-cols-2">
+      {/* Target Variables */}
+      <div className="space-y-1.5">
+        <Label className="text-xs font-medium">
+          Target variable <span className="text-destructive">*</span>
+        </Label>
+        <TargetVariableSelector
+          tags={tags}
+          targetVariables={targetVariables}
+          onTargetChange={onTargetChange}
+          disabled={tags.length === 0}
+        />
+        <div className={nSplits !== undefined ? 'opacity-50' : undefined}>
+          <TrainTestSplit
+            trainTestSplit={trainTestSplit}
+            onSplitChange={onSplitChange}
           />
+          {nSplits !== undefined && (
+            <p className="mt-1.5 text-[11px] text-muted-foreground">
+              Ignored — Cross-Validation below controls the split instead.
+            </p>
+          )}
         </div>
+      </div>
 
-        {/* Loss Function */}
+      {/* Loss function + the criteria judged in its terms. One column, not
+      two sections: the acceptance metric is chosen in the same breath as
+      the objective, and the old placement (below Cross-Validation) put a
+      screen of split controls between two decisions a user makes
+      together. */}
+      <div className="space-y-3 grid grid-cols-1 gap-3 ">
         <div className="space-y-1.5">
           <Label className="text-xs font-medium">Loss function</Label>
-
           <Select value={lossFunction} onValueChange={onLossChange}>
             <SelectTrigger className="h-9 text-sm">
               <SelectValue />
             </SelectTrigger>
-
             <SelectContent>
               {LOSS_OPTIONS.map(opt => (
                 <SelectItem key={opt.value} value={opt.value}>
@@ -106,41 +150,32 @@ export function CoreConfig({
               ))}
             </SelectContent>
           </Select>
-          {/* MODEL-FLOW-012: recorded on the saved model, not sent to the
-              trainer — see LOSS_OPTIONS' own doc comment. */}
           <p className="text-[11px] text-muted-foreground">
             Recorded on the saved model. Not sent to the trainer — the
             estimator&apos;s own objective is used.
           </p>
         </div>
-      </div>
 
-      {/* Train / Test Split — presets + Custom. Ignored, not hidden, when
-          CV is on: the run's own splitSpec is one or the other, and hiding
-          this control would leave no record of what it WOULD have been. */}
-      <div className={nSplits !== undefined ? 'opacity-50' : undefined}>
-        <TrainTestSplit
-          trainTestSplit={trainTestSplit}
-          onSplitChange={onSplitChange}
+        <AcceptanceCriteriaControl
+          criteria={acceptanceCriteria}
+          onChange={onAcceptanceCriteriaChange}
+          hasHoldout={hasHoldout}
+          holdoutLoading={holdoutLoading}
+          lossFunction={lossFunction}
+          currentRunMetrics={currentRunMetrics}
         />
-        {nSplits !== undefined && (
-          <p className="mt-1.5 text-[11px] text-muted-foreground">
-            Ignored — Cross-Validation below controls the split instead.
-          </p>
-        )}
-      </div>
 
-      <CvControl
-        datasetId={datasetId}
-        artifactId={artifactId}
-        hasArtifact={hasArtifact}
-        algorithms={algorithms}
-        findBestModel={findBestModel}
-        nSplits={nSplits}
-        onNSplitsChange={onNSplitsChange}
-        maxAdmissibleK={maxAdmissibleK}
-        splitStatsLoading={splitStatsLoading}
-      />
+        <CvControl
+          hasHoldout={hasHoldout}
+          holdoutLoading={holdoutLoading}
+          algorithms={algorithms}
+          findBestModel={findBestModel}
+          nSplits={nSplits}
+          onNSplitsChange={onNSplitsChange}
+          maxAdmissibleK={maxAdmissibleK}
+          splitStatsLoading={splitStatsLoading}
+        />
+      </div>
 
       {/* <SeedControl
         seed={seed}
@@ -151,78 +186,67 @@ export function CoreConfig({
   )
 }
 
-/** Bounds match CreateTrainingRunSchema.seed (model-run.authorized.dto.ts) —
- * the DTO the client actually hits when launching a single run. */
-const SEED_MIN = 1
-const SEED_MAX = 2147483646
+// const SEED_MIN = 1
+// const SEED_MAX = 2147483646
 
-/**
- * MODEL-FLOW-014-T07. Exposes the estimator seed — already generated and
- * recorded server-side on every run (model-run-launch.authorized.service.ts
- * `dto.seed ?? randomInt(...)`) — as an optional control. Copy states BOTH
- * halves of what it does: the estimator's own randomness, never the
- * train/test boundary, which is chronological regardless of this value.
- * Per-algorithm truth via `seedConsumedBy`, not a blanket claim — the same
- * annotate-don't-hide pattern MODEL-FLOW-012-T05 set for Loss function.
- */
-function SeedControl({
-  seed,
-  onSeedChange,
-  algorithms,
-}: {
-  seed: number | undefined
-  onSeedChange: (seed: number | undefined) => void
-  algorithms: Algorithm[]
-}) {
-  const ignoring = algorithms.filter(a => !seedConsumedBy(a))
+// function SeedControl({
+//   seed,
+//   onSeedChange,
+//   algorithms,
+// }: {
+//   seed: number | undefined
+//   onSeedChange: (seed: number | undefined) => void
+//   algorithms: Algorithm[]
+// }) {
+//   const ignoring = algorithms.filter(a => !seedConsumedBy(a))
 
-  return (
-    <div className="space-y-1.5">
-      <Label className="text-xs font-medium" htmlFor="model-seed">
-        Seed{' '}
-        <span className="font-normal text-muted-foreground">(optional)</span>
-      </Label>
-      <Input
-        id="model-seed"
-        type="number"
-        inputMode="numeric"
-        min={SEED_MIN}
-        max={SEED_MAX}
-        step={1}
-        placeholder="auto — server generates one per run"
-        value={seed ?? ''}
-        onChange={e => {
-          const raw = e.target.value
-          if (raw === '') {
-            onSeedChange(undefined)
-            return
-          }
-          const parsed = Number(raw)
-          if (!Number.isFinite(parsed)) return
-          const clamped = Math.min(
-            SEED_MAX,
-            Math.max(SEED_MIN, Math.round(parsed)),
-          )
-          onSeedChange(clamped)
-        }}
-        className="h-9 text-sm"
-      />
-      <p className="text-[11px] text-muted-foreground">
-        Controls the estimator&apos;s own randomness — bootstrap sampling,
-        weight initialization, feature subsampling. Does{' '}
-        <span className="font-medium text-foreground">not</span> control the
-        train/test boundary: the split is always chronological, so the last rows
-        by time are the test set regardless of this value.
-      </p>
-      {ignoring.length > 0 && (
-        <p className="text-[11px] text-muted-foreground">
-          Ignored by {ignoring.map(a => ALGORITHM_LABELS[a]).join(', ')} — this
-          estimator has no source of randomness a seed could fix.
-        </p>
-      )}
-    </div>
-  )
-}
+//   return (
+//     <div className="space-y-1.5">
+//       <Label className="text-xs font-medium" htmlFor="model-seed">
+//         Seed{' '}
+//         <span className="font-normal text-muted-foreground">(optional)</span>
+//       </Label>
+//       <Input
+//         id="model-seed"
+//         type="number"
+//         inputMode="numeric"
+//         min={SEED_MIN}
+//         max={SEED_MAX}
+//         step={1}
+//         placeholder="auto — server generates one per run"
+//         value={seed ?? ''}
+//         onChange={e => {
+//           const raw = e.target.value
+//           if (raw === '') {
+//             onSeedChange(undefined)
+//             return
+//           }
+//           const parsed = Number(raw)
+//           if (!Number.isFinite(parsed)) return
+//           const clamped = Math.min(
+//             SEED_MAX,
+//             Math.max(SEED_MIN, Math.round(parsed)),
+//           )
+//           onSeedChange(clamped)
+//         }}
+//         className="h-9 text-sm"
+//       />
+//       <p className="text-[11px] text-muted-foreground">
+//         Controls the estimator&apos;s own randomness — bootstrap sampling,
+//         weight initialization, feature subsampling. Does{' '}
+//         <span className="font-medium text-foreground">not</span> control the
+//         train/test boundary: the split is always chronological, so the last rows
+//         by time are the test set regardless of this value.
+//       </p>
+//       {ignoring.length > 0 && (
+//         <p className="text-[11px] text-muted-foreground">
+//           Ignored by {ignoring.map(a => ALGORITHM_LABELS[a]).join(', ')} — this
+//           estimator has no source of randomness a seed could fix.
+//         </p>
+//       )}
+//     </div>
+//   )
+// }
 
 const SPLIT_PRESETS = [90, 80, 70, 60, 50] as const
 
@@ -296,50 +320,25 @@ function TrainTestSplit({
 const N_SPLITS_MIN = 3
 const N_SPLITS_MAX = 10
 const N_SPLITS_DEFAULT = 5
-/** T01(c): CV is TABULAR ONLY — lstm/gru cut on WINDOW count via
- *  chronological_split_windows, a fold rule this feature does not
- *  implement. Mirrors SplitDistributionPanel's own `hasSequenceAlgorithm`
- *  check exactly — the same disable reason, in the same place a training
- *  run's own config-time refusal fires (model-run-launch.authorized.
- *  service.ts). */
+
 function hasSequenceAlgorithm(algorithms: Algorithm[]): boolean {
   return algorithms.some(a => a === 'lstm' || a === 'gru')
 }
 
 interface CvControlProps {
-  datasetId: string | null
-  artifactId: string | null
-  hasArtifact: boolean
+  hasHoldout: boolean
+  holdoutLoading: boolean
   algorithms: Algorithm[]
   findBestModel: boolean
   nSplits: number | undefined
   onNSplitsChange: (nSplits: number | undefined) => void
-  /** Fetched by the parent — see `Props.maxAdmissibleK`'s own doc comment. */
   maxAdmissibleK: number | null
   splitStatsLoading: boolean
 }
 
-/**
- * MODEL-FLOW-016-T10. The enable toggle + `n_splits`, committed on Apply
- * like every other Core Config field — a live `n_splits` would refetch the
- * fold plan on every keystroke, which is the reason `useRunConfigDraft`'s
- * Apply boundary (MODEL-FLOW-014-T08) exists in the first place.
- *
- * DISABLE WITH A STATED REASON, never silently, in four cases (T01(c) adds
- * a fourth beyond this task's own three): the algorithm is lstm/gru; Find
- * Best Model (a sweep) is on; the dataset has no validation holdout — a CV
- * run's only prediction series comes from holdout scoring, so with none the
- * user would pay for k+1 fits and get nothing to ever score; and the
- * dataset cannot support two folds (`max_admissible_k < 2`). Same
- * disable+swapped-description pattern `ToggleRow` (automl-toggles.tsx)
- * already uses for Find Best Parameters — one vocabulary, three
- * precedents (lstm/gru, Find Best Parameters, Evaluation's "Compare
- * with…"), not a fourth invented here.
- */
 function CvControl({
-  datasetId,
-  artifactId,
-  hasArtifact,
+  hasHoldout,
+  holdoutLoading,
   algorithms,
   findBestModel,
   nSplits,
@@ -349,28 +348,6 @@ function CvControl({
 }: CvControlProps) {
   const isSequence = hasSequenceAlgorithm(algorithms)
 
-  const {
-    holdout,
-    loading: holdoutLoading,
-    missing: holdoutMissing,
-  } = useArtifactHoldout(
-    hasArtifact ? datasetId : null,
-    hasArtifact ? artifactId : null,
-  )
-
-  // A reclaimed holdout's BYTES are gone, but its DB record (and therefore
-  // eligibility) is not — the same distinction the server's own
-  // `findHoldoutArtifact` draws (it checks `validationRowCount`, never
-  // object existence). Only a CONFIRMED absence (holdout === null, with
-  // neither a fetch in flight nor a reclaimed-sidecar 404) disables here.
-  // Slider -> Input: the Slider could only ever emit an in-range integer, so
-  // the store took its value verbatim. A text field can emit '', '3.5', 'abc'
-  // and out-of-range values mid-typing, so the field keeps its own string
-  // state and only writes a VALID integer through to the draft — otherwise
-  // typing '12' would momentarily commit '1', below N_SPLITS_MIN, and the
-  // clamp effect below would fight the user's own keystrokes.
-  // Hoisted out of the Slider's old inline `max` — the Input needs the same
-  // ceiling for its `max` attribute, its blur clamp, and its hint text.
   const effectiveMax = Math.max(
     N_SPLITS_MIN,
     Math.min(N_SPLITS_MAX, maxAdmissibleK ?? N_SPLITS_MAX),
@@ -388,10 +365,6 @@ function CvControl({
     if (n !== nSplits) onNSplitsChange(n)
   }
 
-  // Blur resolves whatever was left incomplete or out of range, so the field
-  // can never sit showing a k that Start Training won't actually send. An
-  // empty or unparseable field reverts to the last committed value rather
-  // than silently becoming N_SPLITS_MIN.
   const normalizeK = () => {
     const n = Number(kText)
     const fallback = nSplits ?? N_SPLITS_DEFAULT
@@ -402,7 +375,6 @@ function CvControl({
     setKText(String(next))
     if (next !== nSplits) onNSplitsChange(next)
   }
-  const hasHoldout = holdout !== null || holdoutMissing
 
   const checked = nSplits !== undefined
 
@@ -428,21 +400,10 @@ function CvControl({
 
   const disabled = disabledReason !== null
 
-  // Defense in depth, not the primary path: the Switch's own `disabled`
-  // prop already stops a NEW enable while ineligible. This covers the
-  // draft edit that makes an ALREADY-on CV ineligible mid-edit (algorithm
-  // changed to lstm, Find Best Model turned on) — without it the toggle
-  // would sit checked-and-disabled, and Start Training would only find out
-  // from the server's own refusal (buildRunData's own lstm/gru or sweep
-  // guard) at Apply time instead of here, immediately.
   useEffect(() => {
     if (disabled && checked) onNSplitsChange(undefined)
   }, [disabled, checked, onNSplitsChange])
 
-  // The default (5) or a value picked before `max_admissible_k` finished
-  // loading can exceed the cap once it arrives — clamp the STORED value,
-  // not just the Slider's own visual max, so what Start Training sends
-  // matches what the thumb shows.
   useEffect(() => {
     if (
       checked &&
@@ -512,6 +473,231 @@ function CvControl({
             . A k={kText || N_SPLITS_DEFAULT} run fits{' '}
             {(Number(kText) || N_SPLITS_DEFAULT) + 1} models.
           </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * MODEL-FLOW-019-T12. A bare comparison — free operator, chosen operands,
+ * no typed value. REVERSES T11's ratio-with-a-ceiling shape on the user's
+ * own ground: no threshold is derivable from this system's data
+ * (MODEL-FLOW-020-T03's own capacity ladder got three different orderings
+ * of the same five settings). A pair is picked from `offerablePairs()`
+ * (lib/acceptance-criteria.ts, itself derived — never hand-listed), and the
+ * operator is a per-row `<`/`>` toggle with no numeric input anywhere.
+ * Advisory only, committed on Apply like every other field in this file —
+ * Step 4 marks candidates against these, never filters, hides, or blocks
+ * on them (AC13). `Validate R² ≥ 0` is the one surviving number, and it is
+ * a checkbox rather than a typed field (AC33).
+ */
+function AcceptanceCriteriaControl({
+  criteria,
+  onChange,
+  hasHoldout,
+  holdoutLoading,
+  lossFunction,
+  currentRunMetrics,
+}: {
+  criteria: AcceptanceCriterion[]
+  onChange: (criteria: AcceptanceCriterion[]) => void
+  hasHoldout: boolean
+  holdoutLoading: boolean
+  lossFunction: string
+  currentRunMetrics: SourcedMetrics[] | null
+}) {
+  const noHoldout = !holdoutLoading && !hasHoldout
+
+  const legacy = criteria.filter(
+    isLegacyCriterion,
+  ) as unknown as LegacyAcceptanceCriterion[]
+  const current = criteria.filter(
+    (c): c is AcceptanceCriterion => !isLegacyCriterion(c),
+  )
+  const comparisons = current.filter(
+    (c): c is ComparisonCriterion => c.kind === 'comparison',
+  )
+  const r2Floor = current.find(c => c.kind === 'r2-floor')
+
+  const allPairs = offerablePairs()
+  const aligned = lossAlignedMetric(lossFunction)
+  const sortedPairs = [...allPairs].sort((a, b) => {
+    const rank = (p: ComparisonPair) =>
+      aligned && p.left.metric === aligned ? 0 : 1
+    return rank(a) - rank(b)
+  })
+  const addable = sortedPairs.filter(
+    p => !comparisons.some(c => pairsEqual(c, p)),
+  )
+
+  const setComparison = (
+    pair: ComparisonPair,
+    operator: ComparisonOperator,
+  ) => {
+    const withoutThis = current.filter(
+      c => !(c.kind === 'comparison' && pairsEqual(c, pair)),
+    )
+    onChange([
+      ...withoutThis,
+      canonicalise({
+        kind: 'comparison',
+        left: pair.left,
+        operator,
+        right: pair.right,
+      }),
+    ])
+  }
+
+  const removeComparison = (pair: ComparisonPair) => {
+    onChange(
+      current.filter(c => !(c.kind === 'comparison' && pairsEqual(c, pair))),
+    )
+  }
+
+  const toggleR2Floor = (checked: boolean) => {
+    const withoutFloor = current.filter(c => c.kind !== 'r2-floor')
+    onChange(checked ? [...withoutFloor, { kind: 'r2-floor' }] : withoutFloor)
+  }
+
+  const clearLegacy = () => onChange(current)
+
+  return (
+    <div className="space-y-3 rounded-lg border border-border p-3">
+      <div className="space-y-1">
+        <Label className="text-xs font-medium">
+          Acceptance criteria{' '}
+          <span className="font-normal text-muted-foreground">
+            (optional, advisory)
+          </span>
+        </Label>
+        <p className="text-[11px] text-muted-foreground">
+          A comparison between two figures of the same run — no threshold to
+          type, just which is bigger. Step 4 marks each candidate against these,
+          but never hides, filters, or blocks on them.
+          {noHoldout &&
+            ' This dataset has no validation holdout, so a holdout-sourced comparison has no figure to judge a candidate against yet.'}
+        </p>
+      </div>
+
+      <label className="flex cursor-pointer items-center gap-2 text-xs">
+        <input
+          type="checkbox"
+          checked={Boolean(r2Floor)}
+          onChange={e => toggleR2Floor(e.target.checked)}
+          className="h-3.5 w-3.5 cursor-pointer accent-foreground"
+        />
+        <span className="font-medium text-foreground">
+          {criterionLabel({ kind: 'r2-floor' })}
+        </span>
+      </label>
+
+      {comparisons.length > 0 && (
+        <div className="grid grid-cols-[1fr_auto_auto] items-center gap-x-3 gap-y-1">
+          {comparisons.map((criterion, i) => {
+            const pair: ComparisonPair = criterion
+            const involvesSd =
+              pair.left.metric === 'sd' || pair.right.metric === 'sd'
+            const evaluation =
+              !involvesSd && currentRunMetrics
+                ? evaluateCriterion(criterion, {
+                    sourcedMetrics: currentRunMetrics,
+                    residualSd: null,
+                    holdoutAbsence: null,
+                  })
+                : null
+            const preview = involvesSd
+              ? "Current value shown per run in Step 4 — residual SD isn't fetched here."
+              : !evaluation ||
+                  evaluation.left.value === null ||
+                  evaluation.right.value === null
+                ? 'No run yet to compute a value from.'
+                : `${operandLabel(pair.left)} ${evaluation.left.value.toFixed(2)} · ${operandLabel(pair.right)} ${evaluation.right.value.toFixed(2)} — ${evaluation.verdict === 'pass' ? 'holds today' : 'does not hold today'}`
+            return (
+              <Fragment key={`${pairLabel(pair)}-${i}`}>
+                <span className="text-xs font-medium text-foreground">
+                  {operandLabel(pair.left)}
+                </span>
+                <ToggleGroup
+                  type="single"
+                  value={criterion.operator}
+                  onValueChange={v =>
+                    v && setComparison(pair, v as ComparisonOperator)
+                  }
+                  className="h-8"
+                >
+                  <ToggleGroupItem value="lt" className="h-8 px-2 text-xs">
+                    {operatorSymbol('lt')}
+                  </ToggleGroupItem>
+                  <ToggleGroupItem value="gt" className="h-8 px-2 text-xs">
+                    {operatorSymbol('gt')}
+                  </ToggleGroupItem>
+                </ToggleGroup>
+                <span className="flex items-center gap-1 text-xs font-medium text-foreground">
+                  {operandLabel(pair.right)}
+                  <button
+                    type="button"
+                    onClick={() => removeComparison(pair)}
+                    aria-label={`Remove ${pairLabel(pair)} criteria`}
+                    className="cursor-pointer rounded-full p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </span>
+                <p className="col-span-3 -mt-1 text-[10px] text-muted-foreground">
+                  {preview}
+                </p>
+              </Fragment>
+            )
+          })}
+        </div>
+      )}
+
+      {addable.length > 0 && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 cursor-pointer gap-1 text-xs"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Add criteria
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-full">
+            <DropdownMenuLabel>Also judge against</DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            {addable.map((pair, i) => (
+              <DropdownMenuCheckboxItem
+                key={`${pairLabel(pair)}-${i}`}
+                checked={false}
+                onCheckedChange={() => setComparison(pair, 'lt')}
+                className="cursor-pointer"
+              >
+                {pairLabel(pair)}
+              </DropdownMenuCheckboxItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+
+      {legacy.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-muted/60 px-2 py-1.5">
+          <p className="text-[10px] leading-relaxed text-muted-foreground">
+            {legacy.length} threshold{legacy.length === 1 ? '' : 's'} set under
+            a previous form {legacy.length === 1 ? 'is' : 'are'} no longer
+            applied in Step 4.
+          </p>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 shrink-0 cursor-pointer px-2 text-[10px]"
+            onClick={clearLegacy}
+          >
+            Clear
+          </Button>
         </div>
       )}
     </div>

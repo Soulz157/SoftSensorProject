@@ -1,10 +1,9 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { useAtomValue, useSetAtom } from 'jotai'
+import { useAtom, useAtomValue } from 'jotai'
 import {
   AlertTriangle,
-  ArrowRight,
   Ban,
   Braces,
   CheckCircle2,
@@ -25,10 +24,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import {
   ALGORITHM_LABELS,
   mpAlgorithmsAtom,
-  mpCandidateJobIdAtom,
   mpCompareRunIdsAtom,
-  mpCurrentStepAtom,
-  mpHighestUnlockedAtom,
   mpSelectedDatasetAtom,
   mpServerDraftIdAtom,
   mpTrainStateAtom,
@@ -37,19 +33,16 @@ import {
 import { useDraftRuns } from '@/hooks/model/use-draft-runs'
 import { useDraftSelection } from '@/hooks/model/use-draft-selection'
 import { useApplyRunParams } from '@/hooks/model/use-apply-run-params'
-import { useCandidateJob } from '@/hooks/model/use-candidate-job'
 import {
   classifyHyperparams,
   seedConsumedBy,
   splitPercentFromRun,
 } from '@/lib/run-params'
 import { METRIC_META } from '@/lib/model-metrics'
-import { modelDraftService } from '@/services/model-draft'
 import type {
   ModelRunStatus,
   ModelTrainingRunListItem,
 } from '@/services/model-draft'
-import { useAtom } from 'jotai'
 
 function EmptyPanel({ children }: { children: React.ReactNode }) {
   return (
@@ -105,65 +98,47 @@ function formatRunTimestamp(iso: string): string {
  * LOSS_OPTIONS' own doc comment), so recalling it here would mean rendering
  * the CURRENT form value beside a finished run's other parameters — the exact
  * provenance-theatre failure this feature exists to avoid. The wizard atoms
- * read below (`mpAlgorithmsAtom`, `mpSelectedDatasetAtom`, and MODEL-FLOW-018-
- * T03's `mpCandidateJobIdAtom`) are only COMPARED against the row to warn
- * about what an action will do; they are never displayed as if they were the
- * run's own values.
+ * read below (`mpAlgorithmsAtom`, `mpSelectedDatasetAtom`) are only COMPARED
+ * against the row to warn about what an action will do; they are never
+ * displayed as if they were the run's own values.
  *
  * One card per run, in the DatasetCard zone layout (identity / metrics /
  * provenance / action). The old `Select` existed only because the sidebar had
  * no room for more than one run at a time; its per-run timestamp now sits in
  * each card's identity line.
  *
- * MODEL-FLOW-021, replacing MODEL-FLOW-018-T03's per-card Select. The second
- * per-run action is now Compare, a checkbox that puts the run in the
- * comparison below — distinct from Apply, which seeds the NEXT run's
+ * MODEL-FLOW-021 replaced MODEL-FLOW-018-T03's per-card Select with a
+ * Compare checkbox — distinct from Apply, which seeds the NEXT run's
  * configuration. Neither changes configuration: neither relocks, clears
  * trainState, nor fires a /split-stats fetch (all three stay Apply-only, via
  * `useApplyRunParams`'s own `useCommitRunConfig` call, untouched here).
  *
- * THE CHECKBOX WRITES NOTHING. `ModelDraft.selectedRunId` — the one run Step
- * 4 and Step 5 resolve against — is set only by the footer's own "Use this
- * run" picker, and the footer then offers the move to Step 4. The two were
- * separated deliberately: a compare set is any number of runs and is usually
- * empty, so deriving a single server-side choice from it would persist one
- * the user never made and strand it when the set is cleared.
+ * MODEL-FLOW-019-T08 (resolved 2026-09-07) REVERSED MODEL-FLOW-021's own
+ * footer design: the footer below reports a COUNT and nothing else — no
+ * "Use this run" picker, no Select, no destination promise. Nothing in this
+ * panel writes `ModelDraft.selectedRunId` any more (Step 4's own Select is
+ * the only writer) or a step atom (the wizard shell's forward button is the
+ * only control that advances to Step 4, gated by `canAdvance(3)`). THE
+ * CHECKBOX STILL WRITES NOTHING SERVER-SIDE — `compareRunIds` is client-only
+ * view state, lifted to `mpCompareRunIdsAtom` so Step 4 can read the same
+ * set and implement the same empty-means-all rule.
  */
 export function RunParamsPanel() {
   const draftId = useAtomValue(mpServerDraftIdAtom)
   const currentAlgorithms = useAtomValue(mpAlgorithmsAtom)
   const selectedDataset = useAtomValue(mpSelectedDatasetAtom)
   const trainStatus = useAtomValue(mpTrainStateAtom).status
-  const candidateJobId = useAtomValue(mpCandidateJobIdAtom)
   const { runs, loading, error, refetch } = useDraftRuns(draftId)
   const { selectedRunId, refetch: refetchSelection } =
     useDraftSelection(draftId)
   const { applyRun } = useApplyRunParams()
-  // MODEL-FLOW-018-T03. Raw setters, not `useModelPipelineNav().next()`:
-  // `next()` advances from `mpCurrentStepAtom`'s CURRENT value, which this
-  // panel does not own and cannot assume is still 3 — Select persists a
-  // server-side choice and the footer below can render on a remount days
-  // later from wherever the wizard happens to be. The CTA's own label is
-  // the destination it promises, so it writes that destination directly.
-  // `highestUnlocked` is raised the same way Apply's own relock does
-  // (useCommitRunConfig) — a SUCCEEDED run the user just selected IS the
-  // evidence Step 4 is reachable, the same fact `canAdvance(3)`'s
-  // trainState-done check exists to establish.
-  const setCurrentStep = useSetAtom(mpCurrentStepAtom)
-  const setHighestUnlocked = useSetAtom(mpHighestUnlockedAtom)
-  // Compared against each run's own `candidateJobId`, never displayed — the
-  // one live job (if any) is the only one that can still be QUEUED/RUNNING;
-  // an older job a run might belong to is guaranteed terminal by the
-  // (draftId)-scoped one-live-job index, so there is nothing to fetch for it.
-  const { job: liveJob } = useCandidateJob(draftId, candidateJobId)
 
   const [appliedMessage, setAppliedMessage] = useState<string | null>(null)
-  const [selectingRunId, setSelectingRunId] = useState<string | null>(null)
-  const [selectError, setSelectError] = useState<string | null>(null)
   /**
-   * MODEL-FLOW-021. Which runs the comparison below is about — CLIENT-ONLY
-   * and deliberately so. It is a view preference, not draft state: it fires
-   * no request, survives nothing, and is not what Step 4 opens with.
+   * MODEL-FLOW-021, lifted to a shared atom by MODEL-FLOW-019-T08 part 3 so
+   * Step 4 can read the same set. Still a view preference, not draft state:
+   * it fires no request, survives nothing beyond the wizard session, and is
+   * not what Step 4 opens with independently.
    *
    * EMPTY MEANS EVERY RUN, not "no runs". Checking nothing is how a user
    * asks to compare the whole list, so the empty set is the DEFAULT view
@@ -205,22 +180,6 @@ export function RunParamsPanel() {
     )
   }
 
-  const handleSelect = async (run: ModelTrainingRunListItem) => {
-    if (!draftId) return
-    setSelectingRunId(run.id)
-    setSelectError(null)
-    try {
-      await modelDraftService.selectRun(draftId, run.id)
-      refetchSelection()
-    } catch (err) {
-      setSelectError(
-        err instanceof Error ? err.message : 'Could not record that selection.',
-      )
-    } finally {
-      setSelectingRunId(null)
-    }
-  }
-
   if (!draftId || loading) {
     return (
       <section className="space-y-3">
@@ -230,54 +189,24 @@ export function RunParamsPanel() {
     )
   }
 
-  // `selectedRunId` is server-side draft state (written by Save-Model-
-  // adoption's own resolver), not a wizard atom, so MODEL-FLOW-012 AC1's
-  // "every value comes from a run row" is unaffected: it exists to refuse a
-  // CURRENT-FORM value rendered as though it belonged to a past run, and
-  // this is neither. The footer's own DISPLAYED values (algorithm,
-  // timestamp) still come from `selectedRun` — the row itself.
-  const selectedRun = runs.find(run => run.id === selectedRunId) ?? null
-
-  // MODEL-FLOW-021. The comparison's own input. An empty checkbox set is
-  // "compare everything", so the filter collapses to the whole list rather
-  // than to nothing — see `compareRunIds`' own doc comment.
-  const comparedRuns =
-    compareRunIds.size === 0
-      ? runs
-      : runs.filter(run => compareRunIds.has(run.id))
-
-  // The comparison renders once the DRAFT has two terminal runs — a gate on
-  // the run list, never on the checkbox set, so checking a single box
-  // narrows the comparison to one run (a 1-row table and one prediction
-  // series against actual, which is a real question about that run) instead
-  // of making the whole panel vanish.
+  // `selectedRunId` is server-side draft state written by Step 4's own
+  // Select (MODEL-FLOW-019-T08 — Step 3 no longer writes it), not a wizard
+  // atom, so MODEL-FLOW-012 AC1's "every value comes from a run row" is
+  // unaffected. Only DISPLAYED here as the "Model Selection" badge below.
   const terminalRuns = runs.filter(run => run.status === 'SUCCEEDED')
-  const comparedTerminal = terminalRuns.filter(run => compareRunIds.has(run.id))
-  const viewCount =
-    compareRunIds.size === 0 ? terminalRuns.length : comparedTerminal.length
 
-  const showComparison = draftId !== '' && terminalRuns.length >= 2
-
-  // Which runs the footer may carry into Model Selection. `jobStillLive`
-  // stays a SELECTION rule and is not reused as a comparison rule: a
-  // SUCCEEDED run owned by a running sweep has real metrics and real
-  // predictions and compares perfectly well — what it cannot do is be
-  // committed as the draft's choice while that job may still overwrite it
-  // (selectDraftRunService refuses it server-side regardless).
-  const pickableRuns = terminalRuns.filter(
-    run =>
-      !(
-        run.candidateJobId !== null &&
-        run.candidateJobId === (liveJob?.id ?? null) &&
-        (liveJob?.status === 'QUEUED' || liveJob?.status === 'RUNNING')
-      ),
+  // MODEL-FLOW-019-T08. `mpCompareRunIdsAtom` is never pruned or reset on a
+  // per-draft basis, so a stale id from a previous draft/session must not
+  // keep the set "non-empty" and silently narrow the count to zero — every
+  // read below goes through this intersected set, never the raw atom, so
+  // this panel's own count and Step 4's table can never disagree about what
+  // is ticked.
+  const activeCompareIds = new Set(
+    [...compareRunIds].filter(id => runs.some(run => run.id === id)),
   )
-  // Offer the checked runs when a compare set exists — the user has already
-  // said which runs are in play — and every pickable run otherwise.
-  const pickChoices =
-    compareRunIds.size === 0
-      ? pickableRuns
-      : pickableRuns.filter(run => compareRunIds.has(run.id))
+  const comparedTerminal = terminalRuns.filter(run =>
+    activeCompareIds.has(run.id),
+  )
 
   return (
     <section className="space-y-3">
@@ -302,7 +231,7 @@ export function RunParamsPanel() {
             latest={i === 0}
             currentAlgorithms={currentAlgorithms}
             datasetTags={selectedDataset ? selectedDataset.tags : null}
-            isCompared={compareRunIds.has(run.id)}
+            isCompared={activeCompareIds.has(run.id)}
             isCarryForward={run.id === selectedRunId}
             onApply={handleApply}
             onToggleCompare={toggleCompare}
@@ -313,14 +242,16 @@ export function RunParamsPanel() {
           {appliedMessage}
         </p>
       )}
-      {selectError && (
-        <p className="text-[11px] text-destructive">{selectError}</p>
-      )}
 
+      {/* MODEL-FLOW-019-T08 (resolved 2026-09-07): the footer reports a
+          COUNT and nothing else — no picker, no Select, no destination
+          promise, no step navigation. The wizard shell's own forward
+          button is the single control that advances Step 3 -> Step 4,
+          gated by `canAdvance(3)`. */}
       {terminalRuns.length > 0 && (
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2">
           <p className="min-w-0 text-[11px] text-muted-foreground">
-            {compareRunIds.size === 0 ? (
+            {activeCompareIds.size === 0 ? (
               <>
                 Nothing ticked — comparing{' '}
                 <span className="font-medium text-foreground">
@@ -338,30 +269,16 @@ export function RunParamsPanel() {
               </>
             )}
           </p>
-          <div className="flex shrink-0 items-center gap-2">
-            {compareRunIds.size > 0 && (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-8 cursor-pointer px-2 text-[11px]"
-                onClick={() => setCompareRunIds(new Set())}
-              >
-                Compare all
-              </Button>
-            )}
+          {activeCompareIds.size > 0 && (
             <Button
               size="sm"
-              className="cursor-pointer gap-1.5"
-              disabled={viewCount === 0}
-              onClick={() => {
-                setHighestUnlocked(prev => Math.max(prev, 4))
-                setCurrentStep(4)
-              }}
+              variant="ghost"
+              className="h-8 shrink-0 cursor-pointer px-2 text-[11px]"
+              onClick={() => setCompareRunIds(new Set())}
             >
-              View results ({viewCount})
-              <ArrowRight className="h-3.5 w-3.5" />
+              Compare all
             </Button>
-          </div>
+          )}
         </div>
       )}
     </section>
@@ -486,7 +403,7 @@ function RunCard({
     >
       <label
         htmlFor={`compare-${run.id}`}
-        className={`absolute right-3 top-3 z-10 flex min-h-9 items-center gap-2 rounded-full border py-1.5 pl-3 pr-1.5 text-[11px] font-medium transition-colors focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-1 focus-within:ring-offset-card ${
+        className={`absolute right-3 top-3 z-10 flex p-2 items-center gap-2 rounded-full border  text-[11px] font-medium transition-colors focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-1 focus-within:ring-offset-card ${
           compareDisabledReason
             ? 'cursor-not-allowed border-border/60 text-muted-foreground/60'
             : isCompared
@@ -497,14 +414,13 @@ function RunCard({
           compareDisabledReason ?? 'Include this run in the comparison below'
         }
       >
-        Compare
         <Checkbox
           id={`compare-${run.id}`}
           checked={isCompared}
           disabled={compareDisabledReason !== null}
           aria-label={`Compare ${algorithmLabel}`}
           onCheckedChange={() => onToggleCompare(run)}
-          className="size-5 rounded-full border-border data-[state=checked]:border-emerald-500 data-[state=checked]:bg-emerald-500 data-[state=checked]:text-white dark:data-[state=checked]:border-emerald-400 dark:data-[state=checked]:bg-emerald-400 dark:data-[state=checked]:text-emerald-950"
+          className="cursor-pointer size-5 rounded-full border-border data-[state=checked]:border-emerald-500 data-[state=checked]:bg-emerald-500 data-[state=checked]:text-white dark:data-[state=checked]:border-emerald-400 dark:data-[state=checked]:bg-emerald-400 dark:data-[state=checked]:text-emerald-950"
         />
       </label>
 
@@ -527,9 +443,6 @@ function RunCard({
                   latest
                 </Badge>
               )}
-              {/* The draft's server-side pick, distinct from the emerald
-                  compare ring — one run is adopted at Save Model, any number
-                  can be in the comparison. */}
               {isCarryForward && (
                 <Badge
                   variant="outline"
@@ -590,7 +503,7 @@ function RunCard({
           </span>
           {run.featureSpecKey && (
             <span
-              className="flex min-w-0 max-w-[220px] items-center gap-1"
+              className="flex min-w-0 max-w-55 items-center gap-1"
               title={run.featureSpecKey}
             >
               <Braces className="h-3 w-3 shrink-0" />
@@ -690,10 +603,6 @@ function RunCard({
           </p>
         )}
 
-        {/* Apply lives with its OWN consequence text, not in a corner far
-            from it: "Applying switches the algorithm to X" and the
-            target-mismatch warning above are both about pressing this
-            button, and the old Zone 4 put them in different visual groups. */}
         <div className="flex justify-end pt-1">
           <Button
             size="sm"

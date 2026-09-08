@@ -37,6 +37,7 @@ function run(
     metrics: { r2: 0.9, rmse: 1.234, mae: 0.987 },
     holdoutMetrics: null,
     cvFoldsKey: null,
+    featureImportanceKey: null,
     predictionsKey: null,
     scoringContainerId: null,
     lossHistoryKey: null,

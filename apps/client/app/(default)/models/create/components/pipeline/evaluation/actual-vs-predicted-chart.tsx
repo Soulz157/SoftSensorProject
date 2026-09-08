@@ -12,10 +12,34 @@ import {
 } from 'recharts'
 import type { FitRow } from '@/lib/model-metrics'
 import { EvaluationTooltip } from './evaluation-tooltip'
+import type { LegendEntry } from '@/components/charts/chart-legend'
 
 /** Shared with the residual chart so the crosshair tracks across both. */
 export const EVAL_SYNC_ID = 'evaluation'
 export const AXIS_TICK = { fill: 'var(--muted-foreground)', fontSize: 11 }
+
+/** MODEL-FLOW-019-T17. The colours this chart actually draws with, named
+ *  once here rather than retyped into a legend swatch by whoever renders
+ *  it — a second copy of a colour drifts silently on the first theme or
+ *  density change, and is invisible to every test that asserts on text. */
+const ACTUAL_COLOR = 'var(--foreground)'
+const PREDICT_COLOR = 'var(--chart-1)'
+const SD_BAND_COLOR = 'var(--chart-2)'
+const SD_BAND_OPACITY = 0.42
+
+/** Rendered by the consumer through `ChartLegend`; this component owns the
+ *  entries because it owns the marks they explain. The prediction line is
+ *  DASHED on screen, so its swatch is too. */
+export const AVP_LEGEND: LegendEntry[] = [
+  { shape: 'square', color: ACTUAL_COLOR, label: 'Actual' },
+  { shape: 'dashed', color: PREDICT_COLOR, label: 'Predicted' },
+  {
+    shape: 'square',
+    color: SD_BAND_COLOR,
+    opacity: SD_BAND_OPACITY,
+    label: '±1 SD band',
+  },
+]
 
 interface Props {
   rows: FitRow[]
@@ -90,8 +114,8 @@ export function ActualVsPredictedChart({
           connectNulls
           dataKey="sd1"
           stroke="none"
-          fill="var(--chart-2)"
-          fillOpacity={0.42}
+          fill={SD_BAND_COLOR}
+          fillOpacity={SD_BAND_OPACITY}
           isAnimationActive={false}
           activeDot={false}
         />
@@ -100,7 +124,7 @@ export function ActualVsPredictedChart({
           connectNulls
           type="monotone"
           dataKey="predict"
-          stroke="var(--chart-1)"
+          stroke={PREDICT_COLOR}
           strokeWidth={2}
           strokeDasharray="5 5"
           dot={false}
@@ -124,13 +148,13 @@ export function ActualVsPredictedChart({
           connectNulls
           type="monotone"
           dataKey="actual"
-          stroke="var(--foreground)"
+          stroke={ACTUAL_COLOR}
           strokeWidth={2}
           dot={false}
           activeDot={{
             r: 4,
-            fill: 'var(--foreground)',
-            stroke: 'var(--chart-1)',
+            fill: ACTUAL_COLOR,
+            stroke: PREDICT_COLOR,
             strokeWidth: 2,
           }}
           isAnimationActive={false}

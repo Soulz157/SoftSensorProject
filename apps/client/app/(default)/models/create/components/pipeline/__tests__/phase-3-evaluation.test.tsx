@@ -26,6 +26,7 @@ const h = vi.hoisted(() => ({
     run: null as unknown,
     fit: null as unknown,
     manifest: null as unknown,
+    parityRange: null as unknown,
     loading: false,
     error: null as string | null,
     triggerScoring: async () => {},
@@ -90,6 +91,7 @@ function renderStep(overrides: Partial<typeof h.result> = {}) {
     run: null,
     fit: null,
     manifest: null,
+    parityRange: null,
     loading: false,
     error: null,
     ...overrides,
@@ -129,17 +131,13 @@ describe('Phase5Evaluation (MODEL-FLOW-004)', () => {
       manifest: { derivedFromTarget: [], targetScaled: false },
     })
 
-    // METRIC_META['r2'].format = v => v.toFixed(3)
+    // Every metric card on this step reads 3 decimal places straight off
+    // `fit` (`valueFor`'s own doc comment) — not `METRIC_META[key].format`,
+    // which stays 2 digits for `run-params-panel.tsx`'s own use.
     expect(screen.getByText(METRICS.r2.toFixed(3))).toBeInTheDocument()
-    // METRIC_META['rmse'].format uses toLocaleString with 2 fraction digits.
-    expect(
-      screen.getByText(
-        METRICS.rmse.toLocaleString(undefined, {
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2,
-        }),
-      ),
-    ).toBeInTheDocument()
+    expect(screen.getByText(METRICS.rmse.toFixed(3))).toBeInTheDocument()
+    expect(screen.getByText(METRICS.mae.toFixed(3))).toBeInTheDocument()
+    expect(screen.getByText((0.435277).toFixed(3))).toBeInTheDocument()
   })
 
   it('renders both charts and the diagnostics section when the run succeeded', () => {
@@ -156,8 +154,10 @@ describe('Phase5Evaluation (MODEL-FLOW-004)', () => {
       manifest: { derivedFromTarget: [], targetScaled: false },
     })
 
-    expect(screen.getByText('Actual vs Predicted')).toBeInTheDocument()
-    expect(screen.getByText('Residuals')).toBeInTheDocument()
+    expect(
+      screen.getByText('Actual vs predicted over time'),
+    ).toBeInTheDocument()
+    expect(screen.getByText('Residuals over time')).toBeInTheDocument()
     expect(
       screen.getByText('Test-split residual diagnostics'),
     ).toBeInTheDocument()
@@ -188,7 +188,9 @@ describe('Phase5Evaluation (MODEL-FLOW-004)', () => {
   it('renders an honest empty state when there is no run yet', () => {
     renderStep()
     expect(screen.getByText(/No training run yet/i)).toBeInTheDocument()
-    expect(screen.queryByText('Actual vs Predicted')).not.toBeInTheDocument()
+    expect(
+      screen.queryByText('Actual vs predicted over time'),
+    ).not.toBeInTheDocument()
   })
 
   it('renders an honest empty state for a still-training run', () => {
@@ -202,22 +204,6 @@ describe('Phase5Evaluation (MODEL-FLOW-004)', () => {
       fit: null,
     })
     expect(screen.getByText(/container OOM/)).toBeInTheDocument()
-  })
-
-  it('disables the Compare-with control rather than fabricating a series', () => {
-    renderStep({
-      run: RUN,
-      fit: {
-        r2: METRICS.r2,
-        rmse: METRICS.rmse,
-        mae: METRICS.mae,
-        sd: 0.435277,
-        n: POINTS.length,
-        points: POINTS,
-      },
-      manifest: { derivedFromTarget: [], targetScaled: false },
-    })
-    expect(screen.getByText('Compare with…').closest('button')).toBeDisabled()
   })
 
   it('names the target-derived feature count when the manifest reports one', () => {
@@ -234,5 +220,138 @@ describe('Phase5Evaluation (MODEL-FLOW-004)', () => {
       manifest: { derivedFromTarget: ['lag_1'], targetScaled: false },
     })
     expect(screen.getByText(/1 target-derived feature/)).toBeInTheDocument()
+  })
+})
+
+// MODEL-FLOW-019-T09. AC22-AC27 — top-10 ranking, the stated tail, the
+// target-derived flag, and the unscaled-coefficient refusal.
+describe('Phase5Evaluation feature importance (MODEL-FLOW-019-T09)', () => {
+  const FIT = {
+    r2: METRICS.r2,
+    rmse: METRICS.rmse,
+    mae: METRICS.mae,
+    sd: 0.435277,
+    n: POINTS.length,
+    points: POINTS,
+  }
+
+  it('renders the top 10 of N with the stated tail — AC23', () => {
+    const features = Array.from({ length: 21 }, (_, i) => ({
+      name: `tag_${i}`,
+      importance: 21 - i,
+    }))
+    renderStep({
+      run: {
+        ...RUN,
+        featureImportance: {
+          algorithm: 'random_forest',
+          method: 'impurity',
+          standardized: null,
+          scaling_methods: [],
+          features,
+        },
+      },
+      fit: FIT,
+      manifest: { derivedFromTarget: [], targetScaled: false },
+    })
+    expect(screen.getByText(/Top 10 of 21 features/)).toBeInTheDocument()
+    expect(screen.getByText('tag_0')).toBeInTheDocument()
+    // Only the top 10 are LISTED, even though 21 exist.
+    expect(screen.queryByText('tag_20')).not.toBeInTheDocument()
+  })
+
+  it('flags a target-derived feature where it ranks — AC24', () => {
+    renderStep({
+      run: {
+        ...RUN,
+        featureImportance: {
+          algorithm: 'random_forest',
+          method: 'impurity',
+          standardized: null,
+          scaling_methods: [],
+          features: [
+            { name: 'lag_1', importance: 0.9 },
+            { name: 'tag_1', importance: 0.1 },
+          ],
+        },
+      },
+      fit: FIT,
+      manifest: { derivedFromTarget: ['lag_1'], targetScaled: false },
+    })
+    expect(screen.getByText('target-derived')).toBeInTheDocument()
+  })
+
+  it('refuses to rank an unscaled coefficient run and states why — AC27', () => {
+    renderStep({
+      run: {
+        ...RUN,
+        featureImportance: {
+          algorithm: 'ridge',
+          method: 'coefficient',
+          standardized: false,
+          scaling_methods: [],
+          features: [{ name: 'tag_1', importance: 0.4, coefficient: -0.4 }],
+        },
+      },
+      fit: FIT,
+      manifest: { derivedFromTarget: [], targetScaled: false },
+    })
+    expect(screen.getByText(/not ranked/)).toBeInTheDocument()
+  })
+
+  it('reads "not recorded for this run" when featureImportance is null — AC25', () => {
+    renderStep({
+      run: { ...RUN, featureImportance: null },
+      fit: FIT,
+      manifest: { derivedFromTarget: [], targetScaled: false },
+    })
+    expect(
+      screen.getByText(/Feature importance: not recorded for this run/),
+    ).toBeInTheDocument()
+  })
+})
+
+// MODEL-FLOW-019-T13/V21. A non-CV run's parity scatter is drawn from the
+// TEST split; a SCORED CV run's is drawn from the VALIDATION holdout —
+// asserting both, on the SAME fixture shape apart from that one field, is
+// what tells a working population label apart from one that names nothing.
+describe('Phase5Evaluation parity scatter (MODEL-FLOW-019-T13)', () => {
+  const FIT = {
+    r2: METRICS.r2,
+    rmse: METRICS.rmse,
+    mae: METRICS.mae,
+    sd: 0.435277,
+    n: POINTS.length,
+    points: POINTS,
+  }
+  const PARITY_RANGE = {
+    yTrueMin: 0.1,
+    yTrueMax: 0.4,
+    yPredMin: 0.2,
+    yPredMax: 0.5,
+  }
+
+  it("names the TEST split for a non-CV run's parity scatter", () => {
+    renderStep({
+      run: RUN,
+      fit: FIT,
+      manifest: { derivedFromTarget: [], targetScaled: false },
+      parityRange: PARITY_RANGE,
+    })
+    expect(screen.getByText(/Each test split row/)).toBeInTheDocument()
+    expect(
+      screen.queryByText(/Each validation holdout row/),
+    ).not.toBeInTheDocument()
+  })
+
+  it("names the VALIDATION holdout for a SCORED CV run's parity scatter", () => {
+    renderStep({
+      run: { ...RUN, cvFoldsKey: 'cv-folds-key', predictionsKey: 'pred-key' },
+      fit: FIT,
+      manifest: { derivedFromTarget: [], targetScaled: false },
+      parityRange: PARITY_RANGE,
+    })
+    expect(screen.getByText(/Each validation holdout row/)).toBeInTheDocument()
+    expect(screen.queryByText(/Each test split row/)).not.toBeInTheDocument()
   })
 })

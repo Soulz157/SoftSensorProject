@@ -6,6 +6,7 @@ import {
   modelDraftService,
   type ModelRunStatus,
   type RunCvFolds,
+  type RunFeatureImportance,
 } from '@/services/model-draft'
 import { fitFromRun, type ModelFit, type FitPoint } from '@/lib/model-metrics'
 import { useDebouncedAbortableRequest } from '@/hooks/dataset/internal/use-debounced-abortable-request'
@@ -49,6 +50,20 @@ export interface DraftRunSummary {
    *  the two are kept distinguishable at the wire level even though this
    *  hook does not currently need to tell them apart. */
   cvFolds: RunCvFolds | null
+  /** MODEL-FLOW-019-T09. `null` means "not recorded for this run" — either
+   *  it predates feature-importance recording, or its algorithm has no such
+   *  quantity to read (hgb/hist_gradient_boosting, mlp, grp, a non-linear
+   *  svm, lstm, gru). REQUIRED (never optional) so a caller cannot forget to
+   *  map it — the same enforcement `splitStats` below gets for the same
+   *  reason. */
+  featureImportance: RunFeatureImportance | null
+  /** MODEL-FLOW-014-T06's frozen split-distribution sidecar — `null` on a
+   *  candidate-job run BY DESIGN (N candidates sharing one split is N
+   *  redundant artifact reads for an identical answer) and on a run
+   *  launched before that feature. REQUIRED so Step 5's
+   *  observations-per-feature figure (AC26) cannot be silently dropped by a
+   *  caller that forgets to map it. */
+  splitStats: { source_rows: number; distinct_labelled_values: number } | null
 }
 
 /**
@@ -81,10 +96,27 @@ export interface DraftRunManifestInfo {
   targetScaled: boolean | null
 }
 
+/** MODEL-FLOW-019-T13. The FULL-FRAME y-value ranges `run_predictions`
+ *  already computes server-side (`services/model-draft.ts`'s own
+ *  `RunPredictions.yTrueMin/yTrueMax/yPredMin/yPredMax`) — not on
+ *  `ModelFit`, which is shared with the `models/[id]` monitoring surfaces
+ *  and whose fields are metrics, not axis bounds. Kept separate so the
+ *  parity scatter's shared domain is taken from the endpoint's own
+ *  full-frame figure rather than from the rendered point set, and so the
+ *  axis does not shift if that point set is ever decimated. Null whenever
+ *  `fit` is null (no predictions fetched yet). */
+export interface ParityRange {
+  yTrueMin: number
+  yTrueMax: number
+  yPredMin: number
+  yPredMax: number
+}
+
 export interface UseDraftRunEvaluationResult {
   run: DraftRunSummary | null
   fit: ModelFit | null
   manifest: DraftRunManifestInfo | null
+  parityRange: ParityRange | null
   loading: boolean
   error: string | null
   /** MODEL-FLOW-016-T11. POSTs the run's own `/score` trigger (T07) and
@@ -100,6 +132,7 @@ interface EvaluationData {
   run: DraftRunSummary | null
   fit: ModelFit | null
   manifest: DraftRunManifestInfo | null
+  parityRange: ParityRange | null
 }
 
 /**
@@ -149,7 +182,7 @@ async function fetchEvaluation(
   runIdHint: string | null,
 ): Promise<EvaluationData> {
   const runId = await resolveRunId(draftId, runIdHint)
-  if (!runId) return { run: null, fit: null, manifest: null }
+  if (!runId) return { run: null, fit: null, manifest: null, parityRange: null }
 
   const runRes = await modelDraftRunService.get(draftId, runId)
   const run = runRes.data
@@ -164,10 +197,12 @@ async function fetchEvaluation(
     scoringContainerId: run.scoringContainerId,
     holdoutMetrics: run.holdoutMetrics,
     cvFolds: run.cvFolds ?? null,
+    featureImportance: run.featureImportance ?? null,
+    splitStats: run.splitStats,
   }
 
   if (run.status !== 'SUCCEEDED') {
-    return { run: summary, fit: null, manifest: null }
+    return { run: summary, fit: null, manifest: null, parityRange: null }
   }
 
   // MODEL-FLOW-016-T11. A CV run writes no test-split predictions file at
@@ -177,7 +212,7 @@ async function fetchEvaluation(
   // "awaiting scoring"/"scoring" phase (`cvScoringPhaseOf`, read off
   // `summary` above) IS the honest answer, not an error to surface.
   if (run.cvFoldsKey && !run.predictionsKey) {
-    return { run: summary, fit: null, manifest: null }
+    return { run: summary, fit: null, manifest: null, parityRange: null }
   }
 
   const predRes = await modelDraftRunService.predictions(draftId, runId)
@@ -218,6 +253,12 @@ async function fetchEvaluation(
       derivedFromTarget: pred.derivedFromTarget,
       targetScaled: pred.targetScaled,
     },
+    parityRange: {
+      yTrueMin: pred.yTrueMin,
+      yTrueMax: pred.yTrueMax,
+      yPredMin: pred.yPredMin,
+      yPredMax: pred.yPredMax,
+    },
   }
 }
 
@@ -244,6 +285,7 @@ export function useDraftRunEvaluation(
   const [run, setRun] = useState<DraftRunSummary | null>(null)
   const [fit, setFit] = useState<ModelFit | null>(null)
   const [manifest, setManifest] = useState<DraftRunManifestInfo | null>(null)
+  const [parityRange, setParityRange] = useState<ParityRange | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // Bumped by the poll effect below and by `triggerScoring` — included in
@@ -276,6 +318,7 @@ export function useDraftRunEvaluation(
         setRun(null)
         setFit(null)
         setManifest(null)
+        setParityRange(null)
         setLoading(true)
       }
       setError(null)
@@ -285,6 +328,7 @@ export function useDraftRunEvaluation(
         setRun(result.data.run)
         setFit(result.data.fit)
         setManifest(result.data.manifest)
+        setParityRange(result.data.parityRange)
       } else {
         setError(result.error)
       }
@@ -294,6 +338,7 @@ export function useDraftRunEvaluation(
       setRun(null)
       setFit(null)
       setManifest(null)
+      setParityRange(null)
       setLoading(false)
       setError(null)
     },
@@ -317,5 +362,5 @@ export function useDraftRunEvaluation(
     setPollTick(t => t + 1)
   }
 
-  return { run, fit, manifest, loading, error, triggerScoring }
+  return { run, fit, manifest, parityRange, loading, error, triggerScoring }
 }
