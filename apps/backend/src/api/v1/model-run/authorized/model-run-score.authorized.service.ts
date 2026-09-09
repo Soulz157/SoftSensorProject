@@ -17,10 +17,16 @@ import { ModelRunAuthorizedService } from './model-run.authorized.service';
 import { ModelRunLaunchAuthorizedService } from './model-run-launch.authorized.service';
 import { ScoreCompleteDto } from './dto/model-run.authorized.dto';
 
-/** predictions.parquet — the one filename scoring ever uploads. Matches
- *  `complete()`'s own literal (RUN_UPLOAD_FILENAMES has no dedicated
- *  constant for this filename either). */
+/** predictions.parquet — the one filename a CV run's scoring ever uploads
+ *  (it has no test split to lose). Matches `complete()`'s own literal
+ *  (RUN_UPLOAD_FILENAMES has no dedicated constant for this filename
+ *  either). */
 const PREDICTIONS_FILENAME = 'predictions.parquet';
+/** MODEL-FLOW-019-T20. The one filename a NON-CV run's scoring uploads —
+ *  never PREDICTIONS_FILENAME, which already holds that run's own TEST
+ *  split the moment training finishes. See artifact-keys.ts and
+ *  images/trainer/app/MIRRORS.md entry 8. */
+const HOLDOUT_PREDICTIONS_FILENAME = 'holdout_predictions.parquet';
 
 /**
  * Much shorter than training's RUN_TOKEN_TTL_MS (12h): scoring is a
@@ -37,6 +43,16 @@ const SCORE_TOKEN_TTL_MS = 2 * 60 * 60 * 1000;
  * artifact, and unlike a non-CV run, `claim()` never scores this model
  * against the dataset's raw validation holdout (see that method's own
  * `isCvRun` gate). This service is the separate path that does.
+ *
+ * MODEL-FLOW-019-T20. WIDENED to non-CV runs, by explicit user decision.
+ * A non-CV run's `claim()` already computes an inline holdout AGGREGATE
+ * (`_score_holdout_if_present` in images/trainer/app/pipelines/__init__.py)
+ * but discards the per-row frame — this path is now how that per-row
+ * series gets produced and persisted for a non-CV run too, on demand. The
+ * two run kinds diverge only in WHICH filename `score.py` uploads
+ * (`isCvRun` in `scoreClaimService`'s response) and which column
+ * `scoreCompleteService` writes it to — never in whether scoring is
+ * allowed.
  *
  * DELIBERATELY three new endpoints, not a re-entry of the training path:
  * `claim()` returns a training spec (dataUrl/algorithm/hyperparameters),
@@ -83,16 +99,6 @@ export class ModelRunScoreAuthorizedService {
       throw new BadRequestException(
         `Run ${runId} is ${run.status.toLowerCase()} — holdout scoring ` +
           'needs a SUCCEEDED run.',
-      );
-    }
-    // splitSpec is untyped Json on the row — cvFoldsKey is the durable,
-    // typed signal (set only by complete() for a CV run) and is what
-    // `claim()`'s own isCvRun gate exists to make possible in the first
-    // place: a non-CV run already has its holdout scored inline.
-    if (!run.cvFoldsKey) {
-      throw new BadRequestException(
-        `Run ${runId} is not a Cross-Validation run — its holdout score ` +
-          'is already computed during training.',
       );
     }
     if (run.scoringContainerId) {
@@ -198,6 +204,11 @@ export class ModelRunScoreAuthorizedService {
       runId: run.id,
       targetY: run.targetY,
       imageDigest: run.imageDigest,
+      // MODEL-FLOW-019-T20. Tells score.py which filename to upload —
+      // PREDICTIONS_FILENAME for a CV run (no test split to lose),
+      // HOLDOUT_PREDICTIONS_FILENAME otherwise. The container has no other
+      // way to know: cvFoldsKey itself is never sent to it.
+      isCvRun: Boolean(run.cvFoldsKey),
       modelUrl: modelPresigned.data_url,
       modelChecksum: modelPresigned.checksum,
       featureColumns,
@@ -219,24 +230,36 @@ export class ModelRunScoreAuthorizedService {
    * for any of them and overwrite the training run's own recorded
    * artifacts, contradicting `scoreCompleteService`'s own stated
    * invariant that a SUCCEEDED run's outcome is immutable. Scoring ever
-   * uploads exactly one file.
+   * uploads exactly one file — WHICH one depends on the run's own
+   * `cvFoldsKey` (MODEL-FLOW-019-T20), so this now reads the row rather
+   * than checking against one fixed literal.
    */
-  scoreUploadUrlsService(runId: string, filenames: string[]) {
-    const disallowed = filenames.filter((f) => f !== PREDICTIONS_FILENAME);
+  async scoreUploadUrlsService(runId: string, filenames: string[]) {
+    const run = await this.prisma.modelTrainingRun.findUnique({
+      where: { id: runId },
+      select: { cvFoldsKey: true },
+    });
+    if (!run) throw new NotFoundException();
+
+    const allowedFilename = run.cvFoldsKey
+      ? PREDICTIONS_FILENAME
+      : HOLDOUT_PREDICTIONS_FILENAME;
+    const disallowed = filenames.filter((f) => f !== allowedFilename);
     if (disallowed.length > 0) {
       throw new BadRequestException(
-        `Scoring may only upload ${PREDICTIONS_FILENAME} — refused: ` +
+        `Scoring may only upload ${allowedFilename} — refused: ` +
           disallowed.join(', '),
       );
     }
     return this.runs.mintUploadUrls(runId, filenames);
   }
 
-  /** CONTAINER-facing. Writes ONLY `predictionsKey` + `holdoutMetrics` and
-   *  clears the in-flight marker — deliberately touches nothing else on
-   *  the run row (no status, no finishedAt, no splitSpec/metrics/modelKey,
-   *  no candidate-job nudge). The training run's own recorded outcome is
-   *  immutable once SUCCEEDED. */
+  /** CONTAINER-facing. Writes ONLY `predictionsKey`/`holdoutPredictionsKey`
+   *  (whichever this run's kind uploaded — never both) + `holdoutMetrics`,
+   *  and clears the in-flight marker — deliberately touches nothing else
+   *  on the run row (no status, no finishedAt, no
+   *  splitSpec/metrics/modelKey, no candidate-job nudge). The training
+   *  run's own recorded outcome is immutable once SUCCEEDED. */
   async scoreCompleteService(runId: string, dto: ScoreCompleteDto) {
     const run = await this.prisma.modelTrainingRun.findUnique({
       where: { id: runId },
@@ -252,6 +275,12 @@ export class ModelRunScoreAuthorizedService {
       data: {
         predictionsKey: uploaded.has(PREDICTIONS_FILENAME)
           ? buildRunKey(owner, run.id, PREDICTIONS_FILENAME)
+          : undefined,
+        // MODEL-FLOW-019-T20. A non-CV run's score lands here, never in
+        // predictionsKey — that column already holds this run's own test
+        // split.
+        holdoutPredictionsKey: uploaded.has(HOLDOUT_PREDICTIONS_FILENAME)
+          ? buildRunKey(owner, run.id, HOLDOUT_PREDICTIONS_FILENAME)
           : undefined,
         holdoutMetrics: dto.holdoutMetrics ?? undefined,
         // Clears the poll target regardless of outcome — a FAILED score is

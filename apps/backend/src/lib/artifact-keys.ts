@@ -106,6 +106,13 @@ export const RUN_UPLOAD_FILENAMES = [
   // that same importance.py — change all three. See
   // images/trainer/app/MIRRORS.md entry 7.
   'feature_importance.json',
+  // MODEL-FLOW-019-T20. A SUCCEEDED run's own holdout series, written by
+  // score-mode only — a run's predictions.parquet, if it has one, is
+  // always the TEST split, and scoring must never overwrite it. Mirrored
+  // from HOLDOUT_PREDICTIONS_FILENAME in object_store.py and
+  // images/trainer/app/artifacts.py — change all three. See
+  // images/trainer/app/MIRRORS.md entry 8.
+  'holdout_predictions.parquet',
 ] as const;
 
 /**

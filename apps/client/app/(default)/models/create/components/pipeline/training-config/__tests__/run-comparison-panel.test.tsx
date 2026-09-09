@@ -39,6 +39,7 @@ function run(
     cvFoldsKey: null,
     featureImportanceKey: null,
     predictionsKey: null,
+    holdoutPredictionsKey: null,
     scoringContainerId: null,
     lossHistoryKey: null,
     splitStats: null,

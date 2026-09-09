@@ -291,6 +291,13 @@ export interface ModelTrainingRun {
    *  ordinary (non-CV) run has this set at training `complete()` time,
    *  same as before this feature. */
   predictionsKey: string | null
+  /** MODEL-FLOW-019-T20. A non-CV run's own scored holdout series —
+   *  always null until this run's scoring phase completes, for EITHER run
+   *  kind: a CV run's scored holdout still lands in `predictionsKey`
+   *  (unchanged from -016-T07, since that column is unused by CV until
+   *  scored), so this column is populated for a non-CV run only. Never
+   *  read this to decide CV-ness — use `cvFoldsKey`. */
+  holdoutPredictionsKey: string | null
   /** MODEL-FLOW-016-T07. Non-null only while a scoring container is
    *  in flight for this run — its ONLY purpose is letting the UI poll
    *  "scoring is currently running" (mirrors `containerId` for training). */

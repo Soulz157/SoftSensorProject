@@ -83,6 +83,7 @@ function run(
     cvFoldsKey: null,
     featureImportanceKey: null,
     predictionsKey: null,
+    holdoutPredictionsKey: null,
     scoringContainerId: null,
     lossHistoryKey: null,
     // MODEL-FLOW-020-T04. Null by default, so every pre-existing case here

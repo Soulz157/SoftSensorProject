@@ -30,6 +30,7 @@ from intergrations.object_store import (
     MANIFEST_FILENAME,
     CV_FOLDS_FILENAME,
     FEATURE_IMPORTANCE_FILENAME,
+    HOLDOUT_PREDICTIONS_FILENAME,
     TIMESTAMP_COLUMN,
     VALIDATE_DATA_FILENAME,
     VALIDATE_READY_FILENAME,
@@ -124,6 +125,10 @@ _ALLOWED_RUN_UPLOADS = frozenset(
         # algorithms images/trainer/app/importance.py can read a real
         # quantity from.
         FEATURE_IMPORTANCE_FILENAME,
+        # MODEL-FLOW-019-T20. A SUCCEEDED run's own holdout series, written by
+        # score-mode only — never predictions.parquet, which a non-CV run's
+        # test split already occupies.
+        HOLDOUT_PREDICTIONS_FILENAME,
     }
 )
 

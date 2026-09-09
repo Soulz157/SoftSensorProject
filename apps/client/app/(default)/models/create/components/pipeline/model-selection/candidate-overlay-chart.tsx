@@ -10,6 +10,12 @@ import {
   YAxis,
 } from 'recharts'
 import { parseServerTimestamp, pickTimeFormat } from '@/lib/monitoring'
+import {
+  cvScoringPhaseOf,
+  populationAxisLabel,
+  populationOf,
+  type CvScoringSignals,
+} from '@/lib/metric-source'
 import { ALGORITHM_LABELS, type Algorithm } from '@/store/model-pipeline'
 import type { RunPredictionsBatchItem } from '@/services/model-draft'
 import { AXIS_TICK } from '../evaluation/actual-vs-predicted-chart'
@@ -25,8 +31,17 @@ import { AXIS_TICK } from '../evaluation/actual-vs-predicted-chart'
  * Widening rather than copying is deliberate: `__tests__/model-selection-
  * contract.test.ts` greps THIS path for algorithm branching, and a copy
  * under `training-config/` would be silently uncovered by that guard.
+ *
+ * MODEL-FLOW-019-T20. Extends `CvScoringSignals` (never a hand-written
+ * second copy of those three fields — `lib/metric-source.ts` is the one
+ * place that resolves Holdout-vs-Validate wording) so this chart can
+ * derive EACH series' own population (`cvScoringPhaseOf`/`populationOf`)
+ * rather than captioning every series as an ordinary test-split
+ * comparison regardless of source — the exact conflation this whole
+ * feature exists to prevent, which this chart committed, live, for every
+ * already-scored CV candidate, until now.
  */
-export interface OverlaySeries {
+export interface OverlaySeries extends CvScoringSignals {
   runId: string | null
   algorithm: string
 }
@@ -123,6 +138,16 @@ export function CandidateOverlayChart({ candidates, byRunId }: Props) {
   const anyDownsampled = entries.some(({ item }) => item.downsampled)
   const maxRowCount = Math.max(...entries.map(({ item }) => item.rowCount ?? 0))
 
+  // MODEL-FLOW-019-T20. Population travels with the series, never with the
+  // chart as a whole — a CV candidate's series is its scored HOLDOUT the
+  // moment cvScoringPhaseOf reads 'scored', a non-CV candidate's is always
+  // its TEST split (populationOf's own exhaustive switch). Named on every
+  // series individually so two candidates from different sources sharing
+  // one chart is visible rather than silently implied to be the same kind
+  // of comparison.
+  const populationOfEntry = (candidate: CvScoringSignals) =>
+    populationOf(cvScoringPhaseOf(candidate))
+
   const seriesLabels = new Map<string, string>(
     entries.map(({ candidate, runId }, i) => {
       const label =
@@ -132,7 +157,11 @@ export function CandidateOverlayChart({ candidates, byRunId }: Props) {
         (other, j) =>
           j !== i && other.candidate.algorithm === candidate.algorithm,
       )
-      return [`pred_${runId}`, duplicate ? `${label} #${i + 1}` : label]
+      const named = duplicate ? `${label} #${i + 1}` : label
+      return [
+        `pred_${runId}`,
+        `${named} (${populationAxisLabel(populationOfEntry(candidate))})`,
+      ]
     }),
   )
   seriesLabels.set('actual', 'Actual')

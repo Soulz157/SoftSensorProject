@@ -15,7 +15,11 @@ separation must hold even on an unhandled crash).
 from __future__ import annotations
 
 from api import RunApi
-from artifacts import ArtifactSet, PREDICTIONS_FILENAME
+from artifacts import (
+    ArtifactSet,
+    HOLDOUT_PREDICTIONS_FILENAME,
+    PREDICTIONS_FILENAME,
+)
 from config import SCRATCH, RunContext
 from holdout import score_holdout
 from storage import download_verified, upload_artifacts
@@ -62,8 +66,17 @@ def run_scoring(context: RunContext, api: RunApi) -> int:
         log_fn=api.log,
     )
 
+    # MODEL-FLOW-019-T20. A CV run's predictions.parquet is unused until
+    # scoring (it never had a test split); a non-CV run's already holds the
+    # TEST split the moment training finishes, so its holdout score must
+    # land under a different name or this PUT would silently destroy it.
+    output_filename = (
+        PREDICTIONS_FILENAME
+        if spec.get("isCvRun")
+        else HOLDOUT_PREDICTIONS_FILENAME
+    )
     artifacts = ArtifactSet(SCRATCH)
-    artifacts.add_parquet(PREDICTIONS_FILENAME, predictions)
+    artifacts.add_parquet(output_filename, predictions)
     uploaded = upload_artifacts(api, artifacts.as_outputs(), log_fn=api.log)
 
     api.complete(

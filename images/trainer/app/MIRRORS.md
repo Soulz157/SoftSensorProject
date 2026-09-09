@@ -147,6 +147,25 @@ and the run either writes an artifact the container upload allowlist refuses
 
 ---
 
+## 8. `HOLDOUT_PREDICTIONS_FILENAME = "holdout_predictions.parquet"`
+
+| Copy        | Location                                                                                                                |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------- |
+| this image  | `artifacts.py`                                                                                                          |
+| apps/python | `object_store.py` (`HOLDOUT_PREDICTIONS_FILENAME`), also gates `_ALLOWED_RUN_UPLOADS` in `services/artifact_service.py` |
+| API (TS)    | `artifact-keys.ts` (`RUN_UPLOAD_FILENAMES`)                                                                             |
+
+MODEL-FLOW-019-T20. Same "three copies, not two" shape as entries 4 and 7 —
+miss one and score-mode's upload is refused outright. Deliberately a
+DIFFERENT filename from `PREDICTIONS_FILENAME`, not a third copy of it: a
+non-CV run's `predictions.parquet` already holds its TEST split the moment
+training finishes, and scoring must never overwrite that object. `score.py`
+picks the filename from `spec["isCvRun"]` (`scoreClaimService`'s own field) —
+a CV run still writes `predictions.parquet` (it has no test split to lose),
+a non-CV run writes this one.
+
+---
+
 ## Long-term
 
 The right fix is a shared wheel containing `labelled_mask`, the fold plan, and

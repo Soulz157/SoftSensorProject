@@ -275,20 +275,31 @@ export const ScoreCompleteSchema = z
     status: z.enum(['SUCCEEDED', 'FAILED']),
     failureReason: z.string().max(2000).optional(),
     holdoutMetrics: MetricsSchema.optional(),
-    // Deliberately a LITERAL, not the full RunUploadFilenameEnum a scoring
-    // container could otherwise claim to have uploaded — scoring ever
-    // writes exactly one file. The service's own upload-URL minting
-    // (scoreUploadUrlsService) enforces the same allowlist independently,
-    // so a divergence here would only ever be caught here, not there.
-    uploaded: z.array(z.literal('predictions.parquet')).max(1).optional(),
+    // Deliberately a two-literal union, not the full RunUploadFilenameEnum
+    // a scoring container could otherwise claim to have uploaded —
+    // scoring ever writes exactly one file, and MODEL-FLOW-019-T20 is
+    // WHICH one depends on the run's own cvFoldsKey (predictions.parquet
+    // for a CV run, holdout_predictions.parquet otherwise — never both,
+    // never the other run kind's filename). The service's own upload-URL
+    // minting (scoreUploadUrlsService) enforces the same per-run allowlist
+    // independently, so a divergence here would only ever be caught here,
+    // not there.
+    uploaded: z
+      .array(z.enum(['predictions.parquet', 'holdout_predictions.parquet']))
+      .max(1)
+      .optional(),
   })
   .refine(
     (v) =>
       v.status !== 'SUCCEEDED' ||
-      (v.uploaded ?? []).includes('predictions.parquet'),
+      (v.uploaded ?? []).some(
+        (f) =>
+          f === 'predictions.parquet' || f === 'holdout_predictions.parquet',
+      ),
     {
       message:
-        'A SUCCEEDED score must report predictions.parquet among its uploads.',
+        'A SUCCEEDED score must report predictions.parquet or ' +
+        'holdout_predictions.parquet among its uploads.',
       path: ['uploaded'],
     },
   )

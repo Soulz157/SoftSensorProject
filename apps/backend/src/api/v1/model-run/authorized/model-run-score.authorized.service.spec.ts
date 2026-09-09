@@ -123,13 +123,20 @@ describe('triggerScoringService — what it refuses BEFORE spawning a container'
     expect(runner.spawn).not.toHaveBeenCalled();
   });
 
-  it('refuses a NON-CV run — its holdout was already scored inline during training', async () => {
+  // MODEL-FLOW-019-T20. WIDENED, by explicit user decision: a non-CV run
+  // may now trigger scoring too, to produce the per-row holdout frame
+  // inline training discards (see holdout.ts's own `_score_holdout_if_
+  // present` — it computes the aggregate and throws the rows away).
+  it('spawns for a NON-CV run too — its aggregate was scored inline, but the per-row frame was not', async () => {
     const { service, runner } = makeDeps({ run: { cvFoldsKey: null } });
 
-    await expect(
-      service.triggerScoringService('draft-1', 'run-1', 'u1', 'USER'),
-    ).rejects.toThrow(/not a Cross-Validation run/);
-    expect(runner.spawn).not.toHaveBeenCalled();
+    await service.triggerScoringService('draft-1', 'run-1', 'u1', 'USER');
+
+    expect(runner.spawn).toHaveBeenCalledWith(
+      'run-1',
+      expect.any(String),
+      'score',
+    );
   });
 
   it('refuses a run already being scored, rather than spawning a second container', async () => {
@@ -193,6 +200,17 @@ describe('scoreClaimService', () => {
     // DS-LAKE-023-T05's own count, passed through so the container can
     // publish it beside the score rather than reporting an unstated subset.
     expect(claim.holdoutDroppedBadRows).toBe(4);
+    // MODEL-FLOW-019-T20. The one field score.py reads to pick which
+    // filename to upload — the fixture is a CV run.
+    expect(claim.isCvRun).toBe(true);
+  });
+
+  it('isCvRun is false for a non-CV run — score.py must write the OTHER filename', async () => {
+    const { service } = makeDeps({ run: { cvFoldsKey: null } });
+
+    const claim = await service.scoreClaimService('run-1');
+
+    expect(claim.isCvRun).toBe(false);
   });
 
   it('REFUSES a manifest with no feature_columns rather than guessing a column order', async () => {
@@ -223,7 +241,7 @@ describe('scoreClaimService', () => {
 });
 
 describe('scoreUploadUrlsService — the write-path allowlist', () => {
-  it('allows predictions.parquet', async () => {
+  it('allows predictions.parquet for a CV run', async () => {
     const { service, runs } = makeDeps();
 
     await service.scoreUploadUrlsService('run-1', ['predictions.parquet']);
@@ -233,9 +251,35 @@ describe('scoreUploadUrlsService — the write-path allowlist', () => {
     ]);
   });
 
-  // Refused SYNCHRONOUSLY, before any promise exists — the guard runs
-  // ahead of the mintUploadUrls call it protects, so a caller cannot
-  // observe a half-started mint.
+  // MODEL-FLOW-019-T20. The allowed filename is now RUN-DEPENDENT — a
+  // non-CV run may never upload as predictions.parquet (its test split
+  // already lives there) and must use the separate filename instead.
+  it('allows holdout_predictions.parquet for a non-CV run, and REFUSES predictions.parquet from it', async () => {
+    const { service, runs } = makeDeps({ run: { cvFoldsKey: null } });
+
+    await service.scoreUploadUrlsService('run-1', [
+      'holdout_predictions.parquet',
+    ]);
+    expect(runs.mintUploadUrls).toHaveBeenCalledWith('run-1', [
+      'holdout_predictions.parquet',
+    ]);
+
+    runs.mintUploadUrls.mockClear();
+    await expect(
+      service.scoreUploadUrlsService('run-1', ['predictions.parquet']),
+    ).rejects.toThrow(/may only upload holdout_predictions\.parquet/);
+    expect(runs.mintUploadUrls).not.toHaveBeenCalled();
+  });
+
+  it('REFUSES holdout_predictions.parquet from a CV run — that run must still use predictions.parquet', async () => {
+    const { service, runs } = makeDeps();
+
+    await expect(
+      service.scoreUploadUrlsService('run-1', ['holdout_predictions.parquet']),
+    ).rejects.toThrow(/may only upload predictions\.parquet/);
+    expect(runs.mintUploadUrls).not.toHaveBeenCalled();
+  });
+
   it.each([
     'model.joblib',
     'metrics.json',
@@ -243,25 +287,25 @@ describe('scoreUploadUrlsService — the write-path allowlist', () => {
     'cv_folds.json',
   ])(
     "REFUSES %s — a scoring container must not be able to overwrite the training run's own artifacts",
-    (filename) => {
+    async (filename) => {
       const { service, runs } = makeDeps();
 
-      expect(() => service.scoreUploadUrlsService('run-1', [filename])).toThrow(
-        BadRequestException,
-      );
+      await expect(
+        service.scoreUploadUrlsService('run-1', [filename]),
+      ).rejects.toThrow(BadRequestException);
       expect(runs.mintUploadUrls).not.toHaveBeenCalled();
     },
   );
 
-  it('refuses a mixed request outright, rather than minting the allowed half', () => {
+  it('refuses a mixed request outright, rather than minting the allowed half', async () => {
     const { service, runs } = makeDeps();
 
-    expect(() =>
+    await expect(
       service.scoreUploadUrlsService('run-1', [
         'predictions.parquet',
         'model.joblib',
       ]),
-    ).toThrow(/model\.joblib/);
+    ).rejects.toThrow(/model\.joblib/);
     expect(runs.mintUploadUrls).not.toHaveBeenCalled();
   });
 });
@@ -289,6 +333,9 @@ describe('scoreCompleteService — a terminal run stays terminal', () => {
     });
     expect(update.data.scoringContainerId).toBeNull();
     expect(update.data.tokenExpiresAt).toEqual(new Date(0));
+    // Never touched for a CV run's score — that column is reserved for a
+    // non-CV run's holdout series.
+    expect(update.data.holdoutPredictionsKey).toBeUndefined();
 
     // The invariant this whole controller/guard split exists to protect:
     // scoring must never re-open a run's own recorded training outcome.
@@ -305,6 +352,28 @@ describe('scoreCompleteService — a terminal run stays terminal', () => {
     ]) {
       expect(update.data).not.toHaveProperty(forbidden);
     }
+  });
+
+  // MODEL-FLOW-019-T20. The non-CV counterpart of the CV test above — the
+  // whole reason the two filenames/columns are separate: a non-CV score
+  // must land in holdoutPredictionsKey and leave predictionsKey (this
+  // run's own test split) completely untouched.
+  it('a non-CV score writes holdoutPredictionsKey and leaves predictionsKey untouched', async () => {
+    const { service, prisma } = makeDeps({
+      run: { cvFoldsKey: null, scoringContainerId: 'c-score' },
+    });
+
+    await service.scoreCompleteService('run-1', {
+      status: 'SUCCEEDED',
+      holdoutMetrics: { r2: 0.6, rmse: 2.1, mae: 1.4 },
+      uploaded: ['holdout_predictions.parquet'],
+    });
+
+    const [[update]] = prisma.modelTrainingRun.update.mock.calls;
+    expect(update.data.holdoutPredictionsKey).toBe(
+      'drafts/draft-1/runs/run-1/holdout_predictions.parquet',
+    );
+    expect(update.data.predictionsKey).toBeUndefined();
   });
 
   it('a FAILED score clears the marker too — a failed phase is finished, not stuck', async () => {

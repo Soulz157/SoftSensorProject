@@ -1143,6 +1143,14 @@ CV_FOLDS_FILENAME = "cv_folds.json"
 # (FEATURE_IMPORTANCE_FILENAME) and artifact-keys.ts — change all three. See
 # images/trainer/app/MIRRORS.md entry 7.
 FEATURE_IMPORTANCE_FILENAME = "feature_importance.json"
+# MODEL-FLOW-019-T20. A SUCCEEDED run's own holdout series
+# ({timestamp,y_true,y_pred}), written by score-mode ONLY — a DIFFERENT
+# filename from PREDICTIONS_FILENAME because a non-CV run's predictions.parquet
+# already holds its TEST split the moment training finishes; scoring must
+# never overwrite that. Mirrored in images/trainer/app/artifacts.py (same
+# name) and artifact-keys.ts — change all three, and also add to
+# _ALLOWED_RUN_UPLOADS below. See images/trainer/app/MIRRORS.md entry 8.
+HOLDOUT_PREDICTIONS_FILENAME = "holdout_predictions.parquet"
 # MODEL-FLOW-016-T08. The model-ready validation holdout `tryReplayHoldout`
 # (model-run.authorized.service.ts) writes under a run's own prefix, via
 # `prepare_holdout_for_run`/`replay_holdout_for_run` — NOT one of train.py's

@@ -43,6 +43,7 @@ function ridgeRun(overrides: Partial<ModelTrainingRun> = {}): ModelTrainingRun {
     cvFoldsKey: null,
     featureImportanceKey: null,
     predictionsKey: null,
+    holdoutPredictionsKey: null,
     scoringContainerId: null,
     lossHistoryKey: null,
     // MODEL-FLOW-020-T04. Apply reads hyperparameters and split, never this

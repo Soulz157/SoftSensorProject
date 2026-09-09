@@ -958,6 +958,17 @@ model ModelTrainingRun {
   metricsKey     String?
   manifestKey    String?
   predictionsKey String?
+  /// MODEL-FLOW-019-T20. A SUCCEEDED run's own holdout series
+  /// ({timestamp,y_true,y_pred} over the dataset's raw validation holdout),
+  /// written ONLY by scoreCompleteService — deliberately a SEPARATE column
+  /// from `predictionsKey`, never the same slot: `predictionsKey` is the
+  /// run's TEST-split series and scoring must never overwrite it (a CV run
+  /// has no test split to lose, since it never had one, but a non-CV run
+  /// already has one live in `predictionsKey` the moment training
+  /// finishes). Null until scoring has run at least once; not cleared on a
+  /// re-score failure, so a prior successful score is not lost by a later
+  /// attempt that fails.
+  holdoutPredictionsKey String?
   /// MODEL-FLOW-013-T05. Set only for the algorithms train.py can extract a
   /// real iteration-by-iteration loss trajectory from (mlp, lightgbm,
   /// xgboost, hist_gradient_boosting) — null for a closed-form algorithm

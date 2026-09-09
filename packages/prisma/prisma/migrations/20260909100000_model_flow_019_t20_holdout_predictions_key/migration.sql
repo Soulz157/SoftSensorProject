@@ -1,0 +1,14 @@
+-- MODEL-FLOW-019-T20. One nullable column on ModelTrainingRun:
+--   holdoutPredictionsKey  object-storage key for a SUCCEEDED run's own
+--                          holdout series ({timestamp,y_true,y_pred} over
+--                          the dataset's raw validation holdout), written
+--                          only by scoreCompleteService. Deliberately
+--                          SEPARATE from predictionsKey (the run's own
+--                          TEST-split series) rather than reusing that
+--                          slot — a non-CV run already has predictionsKey
+--                          set to its test split the moment training
+--                          finishes, and scoring must never overwrite it.
+-- Additive, nullable, no default — NULL is correct for every existing row
+-- (a run scored before this column existed, or never scored at all,
+-- simply has no holdout series recorded).
+ALTER TABLE "ModelTrainingRun" ADD COLUMN "holdoutPredictionsKey" TEXT;

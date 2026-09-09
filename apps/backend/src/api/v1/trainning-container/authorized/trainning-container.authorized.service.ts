@@ -63,8 +63,59 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
   // Verified against this exact tag before the bump landed: images/trainer's
   // own pytest suite (27/27) plus a live in-container run against real
   // fitted-model + parquet fixtures.
+  //
+  // 1.0.7 (MODEL-FLOW-019-T09): purely additive, bumped for the reason 1.0.3
+  // was — a new artifact, not a new mode. `_publish` now writes
+  // feature_importance.json (importance.py) for the algorithms carrying a
+  // readable importance; every other algorithm writes nothing, as before.
+  // No DTO or enum widened, so unlike the 1.0.2/1.0.4/1.0.5/1.0.6 bumps a
+  // stale image here does NOT kill a run — it is a SILENT no-op, which is
+  // why this bump was easy to forget and was forgotten: 1.0.6 was built
+  // 2026-09-02, importance.py landed 2026-09-08, and every run in between
+  // recorded featureImportanceKey null while Step 5 honestly read "not
+  // recorded for this run" against working code on both sides of it.
+  // Verified against this exact tag before the bump landed, in-image and
+  // measured rather than dated: `from importance import
+  // extract_feature_importance` raises ModuleNotFoundError on 1.0.6 and
+  // imports on 1.0.7, and a real fitted RandomForestRegressor through the
+  // image's own extract_feature_importance returns the documented
+  // {algorithm, method, standardized, scaling_methods, features[]} shape.
+  // images/trainer's pytest suite is NOT runnable in-image (the test/ tree
+  // and pytest itself are excluded from the build), so suite-level evidence
+  // for importance.py remains T09's own throwaway-venv run, 12/12.
+  //
+  // "PURELY ADDITIVE" IS A MEASURED CLAIM HERE, NOT AN ASSUMPTION — a rebuild
+  // ships whatever the tree holds, so the whole 1.0.6..1.0.7 delta was
+  // checked, not just this task's own commit. Three commits touched
+  // images/trainer/app after 1.0.6's build: 4f20227 (MODE=batch), 8d1d59d
+  // (models.py, COMMENT-ONLY — the MIRRORS.md entry-5 note on the grp
+  // row-count guard, no behavior), and e9fcdf6 (this feature). 4f20227 is
+  // the subtle one: it is dated 2026-09-03, AFTER 1.0.6's 2026-09-02 build,
+  // which would mean 1.0.6 lacks batch.py and every MODE=batch job has been
+  // dying inside the container. It does not — `ls pipelines/` inside 1.0.6
+  // shows batch.py present, i.e. 1.0.6 was built from that working tree the
+  // evening before it was committed. So the only BEHAVIORAL change 1.0.7
+  // adds over 1.0.6 is importance.py plus its artifacts.py constant and
+  // _publish wiring.
+  //
+  // 1.0.8 (MODEL-FLOW-019-T20): score.py's OWN upload filename changed —
+  // not additive like 1.0.3/1.0.7, closer to the 1.0.5 shape. Scoring was
+  // CV-only through 1.0.7 (predictions.parquet only, since a CV run never
+  // has one already); this service now also triggers it for a non-CV run,
+  // whose predictions.parquet already holds its TEST split. score.py reads
+  // `spec["isCvRun"]` (scoreClaimService's new field) and uploads
+  // predictions.parquet for a CV run, holdout_predictions.parquet
+  // otherwise — a stale pre-1.0.8 image would upload predictions.parquet
+  // for EVERY scored run regardless of kind, silently destroying a non-CV
+  // run's own test-split predictions the moment its first score completes.
+  // Verified against this exact tag before the bump landed, in-image:
+  // `docker run --entrypoint python <tag>:1.0.8 -c "from artifacts import
+  // HOLDOUT_PREDICTIONS_FILENAME"` imports cleanly and `inspect.getsource
+  // (run_scoring)` shows the isCvRun branch present. images/trainer's own
+  // pytest suite is not runnable in-image (see the 1.0.7 note above); no
+  // trainer-level test exists for score.py specifically at this tag.
   private readonly imageRef =
-    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.6';
+    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.8';
   // private readonly network = process.env.TRAINING_NETWORK ?? 'dslake_default';
   private readonly network = 'monorepo_network';
   private readonly memoryBytes = Number(

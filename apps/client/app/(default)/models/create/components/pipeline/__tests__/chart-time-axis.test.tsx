@@ -251,8 +251,20 @@ describe('MODEL-FLOW-019-V32 — chart ticks stay inside the plotted window', ()
 
   it('CandidateOverlayChart', () => {
     const candidates: OverlaySeries[] = [
-      { runId: 'run-a', algorithm: 'ols' },
-      { runId: 'run-b', algorithm: 'random_forest' },
+      {
+        runId: 'run-a',
+        algorithm: 'ols',
+        cvFoldsKey: null,
+        predictionsKey: 'predictions.parquet',
+        scoringContainerId: null,
+      },
+      {
+        runId: 'run-b',
+        algorithm: 'random_forest',
+        cvFoldsKey: null,
+        predictionsKey: 'predictions.parquet',
+        scoringContainerId: null,
+      },
     ]
     const byRunId = new Map<string, RunPredictionsBatchItem>([
       ['run-a', batchItem('run-a', 0.01)],
@@ -262,6 +274,36 @@ describe('MODEL-FLOW-019-V32 — chart ticks stay inside the plotted window', ()
       <CandidateOverlayChart candidates={candidates} byRunId={byRunId} />,
     )
     expectTicksWithinWindow(container)
+  })
+
+  it("MODEL-FLOW-019-T20: names each candidate's own population in the legend, never one shared caption", () => {
+    // The exact live conflation T20 found: a CV candidate's series is its
+    // scored HOLDOUT (predictionsKey set only via scoring, cvFoldsKey set),
+    // a non-CV candidate's is always its TEST split — mixed in one chart
+    // here on purpose, to prove the label is PER-SERIES, not chart-wide.
+    const candidates: OverlaySeries[] = [
+      {
+        runId: 'run-cv-scored',
+        algorithm: 'random_forest',
+        cvFoldsKey: 'cv_folds.json',
+        predictionsKey: 'predictions.parquet',
+        scoringContainerId: null,
+      },
+      {
+        runId: 'run-plain',
+        algorithm: 'ols',
+        cvFoldsKey: null,
+        predictionsKey: 'predictions.parquet',
+        scoringContainerId: null,
+      },
+    ]
+    const byRunId = new Map<string, RunPredictionsBatchItem>([
+      ['run-cv-scored', batchItem('run-cv-scored', 0.01)],
+      ['run-plain', batchItem('run-plain', -0.01)],
+    ])
+    render(<CandidateOverlayChart candidates={candidates} byRunId={byRunId} />)
+    expect(screen.getByText('Random Forest (Validate)')).toBeInTheDocument()
+    expect(screen.getByText('Linear Regression (Test)')).toBeInTheDocument()
   })
 
   it('ActualVsPredictedChart', () => {
@@ -395,6 +437,7 @@ function trainingRun(
     cvFoldsKey: null,
     featureImportanceKey: null,
     predictionsKey: null,
+    holdoutPredictionsKey: null,
     scoringContainerId: null,
     lossHistoryKey: null,
     splitStats: null,

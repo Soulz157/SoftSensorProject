@@ -200,6 +200,7 @@ function trainingRun(
     cvFoldsKey: null,
     featureImportanceKey: null,
     predictionsKey: null,
+    holdoutPredictionsKey: null,
     scoringContainerId: null,
     lossHistoryKey: null,
     // MODEL-FLOW-020-T04. Null by default — Step 4 reads nothing from this
