@@ -322,6 +322,36 @@ export function holdoutMissingRateText(metric: HoldoutMetrics): string {
 }
 
 /**
+ * MODEL-FLOW-019-T20. AC2 for a GROUP of candidates sharing one holdout
+ * chart, rather than for a single figure.
+ *
+ * AC2 ("a holdout figure is never shown without its own missing rate") was
+ * written for one number in one cell; a chart plots many candidates' rows at
+ * once and needs the same fact stated once. Candidates in a job share a
+ * dataset and so normally share one rate — but that is a fact to CHECK, not
+ * to assume: the standalone path can group runs across artifacts, and
+ * silently printing the first candidate's rate over a group with several
+ * would be a wrong number wearing a precise format.
+ *
+ * `undefined` when no candidate here has a holdout figure at all — the
+ * caller then has no holdout chart to qualify, which is not the same as a
+ * clean 0% sample and must not read like one.
+ */
+export function holdoutGroupMissingRateText(
+  perCandidate: SourcedMetrics[][],
+): string | undefined {
+  const texts = new Set<string>()
+  for (const sourced of perCandidate) {
+    const holdout = sourced.find(m => m.source === 'holdout')
+    if (holdout) texts.add(holdoutMissingRateText(holdout))
+  }
+  if (texts.size === 0) return undefined
+  const [only] = [...texts]
+  if (texts.size === 1) return `Holdout ${only}.`
+  return `Holdout missing rate differs by candidate: ${[...texts].join('; ')}.`
+}
+
+/**
  * MODEL-FLOW-019-T15. WHICH POPULATION a predictions file describes.
  *
  * DERIVED from `MetricSource`, never declared beside it: a predictions

@@ -175,3 +175,55 @@ def test_request_schema_caps_max_points_at_max_prediction_batch_points() -> None
         RunPredictionsBatchRequest(
             keys=[RUN_KEY_A], max_points=MAX_PREDICTION_BATCH_POINTS + 1
         )
+
+
+# ---------------------------------------------------------------------------
+# MODEL-FLOW-019-T20. The READ side of the new holdout series.
+#
+# Registering `holdout_predictions.parquet` in `_ALLOWED_RUN_UPLOADS` alone
+# left it WRITABLE and then unreadable: both readers gated on the basename
+# being exactly `predictions.parquet`, so score-mode's upload would have
+# landed in object storage and then been refused by name on every read. These
+# pin the widened `_READABLE_PREDICTION_FILENAMES` guard from both directions
+# — the new name is accepted, and a genuinely wrong name is still refused.
+# ---------------------------------------------------------------------------
+
+HOLDOUT_KEY_A = "drafts/d1/runs/r1/holdout_predictions.parquet"
+
+
+def test_batch_reads_a_holdout_predictions_key_the_same_as_a_test_split_one() -> None:
+    store = RecordingStore()
+    store.put_frame(predictions_frame(), HOLDOUT_KEY_A)
+
+    result = artifact_service.run_predictions_batch(
+        store, RunPredictionsBatchRequest(keys=[HOLDOUT_KEY_A])
+    )
+
+    item = result["results"][0]
+    assert item["error"] is None
+    assert item["row_count"] == 4
+    assert len(item["points"]) == 4
+
+
+def test_single_read_accepts_a_holdout_predictions_key() -> None:
+    from schemas.preprocess import ModelRunPredictionsRequest
+
+    store = RecordingStore()
+    store.put_frame(predictions_frame(), HOLDOUT_KEY_A)
+
+    result = artifact_service.run_predictions(
+        store, ModelRunPredictionsRequest(source_key=HOLDOUT_KEY_A)
+    )
+
+    assert result["row_count"] == 4
+
+
+def test_a_filename_that_is_neither_series_is_still_refused_by_name() -> None:
+    # The guard widened to exactly two names, not to "any parquet under a run
+    # prefix" — model.joblib must not become parseable as a series.
+    store = RecordingStore()
+    result = artifact_service.run_predictions_batch(
+        store,
+        RunPredictionsBatchRequest(keys=["drafts/d1/runs/r1/model.joblib"]),
+    )
+    assert "does not name" in (result["results"][0]["error"] or "")

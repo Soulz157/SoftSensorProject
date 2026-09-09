@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import {
   modelDraftRunService,
+  type PredictionPopulation,
   type RunPredictionsBatchItem,
 } from '@/services/model-draft'
 
@@ -27,6 +28,7 @@ export interface UseCandidatePredictionsResult {
 export function useCandidatePredictions(
   draftId: string | null,
   runIds: string[],
+  population: PredictionPopulation = 'test',
 ): UseCandidatePredictionsResult {
   const [byRunId, setByRunId] = useState<Map<string, RunPredictionsBatchItem>>(
     new Map(),
@@ -47,7 +49,11 @@ export function useCandidatePredictions(
 
     void (async () => {
       try {
-        const res = await modelDraftRunService.predictionsBatch(draftId, runIds)
+        const res = await modelDraftRunService.predictionsBatch(
+          draftId,
+          runIds,
+          population,
+        )
         if (ignore) return
         const map = new Map<string, RunPredictionsBatchItem>()
         for (const item of res.data.results) {
@@ -67,7 +73,7 @@ export function useCandidatePredictions(
     return () => {
       ignore = true
     }
-  }, [draftId, runIds])
+  }, [draftId, runIds, population])
 
   return { byRunId, loading, error }
 }

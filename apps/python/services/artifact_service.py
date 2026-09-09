@@ -132,6 +132,19 @@ _ALLOWED_RUN_UPLOADS = frozenset(
     }
 )
 
+#: MODEL-FLOW-019-T20. The READ counterpart of the write allowlist above, and
+#: deliberately its own set: `_ALLOWED_RUN_UPLOADS` gates what a CONTAINER may
+#: write, this gates what `run_predictions`/`_decimated_run_predictions` will
+#: parse as a `{timestamp, y_true, y_pred}` series. Both filenames carry that
+#: identical shape — the only difference is WHICH population the rows describe
+#: (test split vs the dataset's raw validation holdout), which is the caller's
+#: fact to state, not this reader's to infer from a filename. Widening the
+#: WRITE side alone would have left the new artifact uploadable and then
+#: unreadable, refused right here by name.
+_READABLE_PREDICTION_FILENAMES = frozenset(
+    {PREDICTIONS_FILENAME, HOLDOUT_PREDICTIONS_FILENAME}
+)
+
 
 def _stats_payload(
     stats: ArtifactStats,
@@ -1476,9 +1489,10 @@ def run_predictions(store: ObjectStore, body) -> dict[str, Any]:
     exceeds it is refused by name rather than silently decimated.
     """
     key = body.source_key
-    if key.rsplit("/", 1)[-1] != PREDICTIONS_FILENAME:
+    if key.rsplit("/", 1)[-1] not in _READABLE_PREDICTION_FILENAMES:
         raise ValueError(
-            f"'{key}' does not name {PREDICTIONS_FILENAME}."
+            f"'{key}' does not name one of "
+            f"{sorted(_READABLE_PREDICTION_FILENAMES)}."
         )
     if not (is_draft_run_key(key) or is_model_run_key(key)):
         raise ValueError(
@@ -1597,8 +1611,11 @@ def _decimated_run_predictions(
     `run_predictions` computes them — a decimated series must never feed a
     number a reader takes as exact, only the chart it draws.
     """
-    if key.rsplit("/", 1)[-1] != PREDICTIONS_FILENAME:
-        raise ValueError(f"'{key}' does not name {PREDICTIONS_FILENAME}.")
+    if key.rsplit("/", 1)[-1] not in _READABLE_PREDICTION_FILENAMES:
+        raise ValueError(
+            f"'{key}' does not name one of "
+            f"{sorted(_READABLE_PREDICTION_FILENAMES)}."
+        )
     if not (is_draft_run_key(key) or is_model_run_key(key)):
         raise ValueError(
             f"'{key}' is not a well-formed training-run output key. Only "

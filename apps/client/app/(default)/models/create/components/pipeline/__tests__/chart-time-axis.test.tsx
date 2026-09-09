@@ -57,6 +57,14 @@ const h = vi.hoisted(() => ({
     loading: false,
     error: null as string | null,
   },
+  /** MODEL-FLOW-019-T20. The holdout population's own series, empty unless a
+   *  case opts in — a run that has never been scored has none, and that is
+   *  the common shape. */
+  holdoutPredictionsResult: {
+    byRunId: new Map<string, RunPredictionsBatchItem>(),
+    loading: false,
+    error: null as string | null,
+  },
   predictionsSpy: vi.fn(),
 }))
 
@@ -74,10 +82,22 @@ vi.mock('@/hooks/model/use-draft-selection', () => ({
 
 // Wraps the fetch hook so the assertion can see exactly which runIds every
 // consumer requested, not only what it rendered — V33 requires both.
+// MODEL-FLOW-019-T20. Population-AWARE, because Step 4 now calls this hook
+// twice per path (test + holdout) and a blind mock would hand the same test
+// series to both charts — making the holdout overlay render test data under
+// a Holdout heading, i.e. staging the exact conflation these tests exist to
+// catch. `holdoutPredictionsResult` is empty by default, which is the real
+// shape for the many runs never scored against a holdout.
 vi.mock('@/hooks/model/use-candidate-predictions', () => ({
-  useCandidatePredictions: (draftId: string, runIds: string[]) => {
-    h.predictionsSpy(draftId, runIds)
-    return h.predictionsResult
+  useCandidatePredictions: (
+    draftId: string,
+    runIds: string[],
+    population: 'test' | 'holdout' = 'test',
+  ) => {
+    h.predictionsSpy(draftId, runIds, population)
+    return population === 'holdout'
+      ? h.holdoutPredictionsResult
+      : h.predictionsResult
   },
 }))
 
@@ -251,59 +271,72 @@ describe('MODEL-FLOW-019-V32 — chart ticks stay inside the plotted window', ()
 
   it('CandidateOverlayChart', () => {
     const candidates: OverlaySeries[] = [
-      {
-        runId: 'run-a',
-        algorithm: 'ols',
-        cvFoldsKey: null,
-        predictionsKey: 'predictions.parquet',
-        scoringContainerId: null,
-      },
-      {
-        runId: 'run-b',
-        algorithm: 'random_forest',
-        cvFoldsKey: null,
-        predictionsKey: 'predictions.parquet',
-        scoringContainerId: null,
-      },
+      { runId: 'run-a', algorithm: 'ols' },
+      { runId: 'run-b', algorithm: 'random_forest' },
     ]
     const byRunId = new Map<string, RunPredictionsBatchItem>([
       ['run-a', batchItem('run-a', 0.01)],
       ['run-b', batchItem('run-b', -0.01)],
     ])
     const { container } = render(
-      <CandidateOverlayChart candidates={candidates} byRunId={byRunId} />,
+      <CandidateOverlayChart
+        candidates={candidates}
+        byRunId={byRunId}
+        population="test-split"
+      />,
     )
     expectTicksWithinWindow(container)
   })
 
-  it("MODEL-FLOW-019-T20: names each candidate's own population in the legend, never one shared caption", () => {
-    // The exact live conflation T20 found: a CV candidate's series is its
-    // scored HOLDOUT (predictionsKey set only via scoring, cvFoldsKey set),
-    // a non-CV candidate's is always its TEST split — mixed in one chart
-    // here on purpose, to prove the label is PER-SERIES, not chart-wide.
-    const candidates: OverlaySeries[] = [
-      {
-        runId: 'run-cv-scored',
-        algorithm: 'random_forest',
-        cvFoldsKey: 'cv_folds.json',
-        predictionsKey: 'predictions.parquet',
-        scoringContainerId: null,
-      },
-      {
-        runId: 'run-plain',
-        algorithm: 'ols',
-        cvFoldsKey: null,
-        predictionsKey: 'predictions.parquet',
-        scoringContainerId: null,
-      },
-    ]
+  it('MODEL-FLOW-019-T20: names its own population, from the prop rather than a per-run guess', () => {
+    // The conflation T20 closed: this chart used to caption every series as
+    // an ordinary comparison with no source named. Deriving the source per
+    // run does not fix it either — `populationOf(cvScoringPhaseOf(nonCv))`
+    // is 'test-split' unconditionally, so a non-CV run's HOLDOUT series
+    // would still read as Test. The population is therefore whatever the
+    // caller fetched, stated once, and the same candidates render under
+    // either heading depending only on which series were passed.
+    const candidates: OverlaySeries[] = [{ runId: 'run-a', algorithm: 'ols' }]
     const byRunId = new Map<string, RunPredictionsBatchItem>([
-      ['run-cv-scored', batchItem('run-cv-scored', 0.01)],
-      ['run-plain', batchItem('run-plain', -0.01)],
+      ['run-a', batchItem('run-a', 0.01)],
     ])
-    render(<CandidateOverlayChart candidates={candidates} byRunId={byRunId} />)
-    expect(screen.getByText('Random Forest (Validate)')).toBeInTheDocument()
-    expect(screen.getByText('Linear Regression (Test)')).toBeInTheDocument()
+
+    const test = render(
+      <CandidateOverlayChart
+        candidates={candidates}
+        byRunId={byRunId}
+        population="test-split"
+      />,
+    )
+    expect(test.getByText('Test-split')).toBeInTheDocument()
+    expect(test.container.textContent).toContain('on the test split')
+    test.unmount()
+
+    const holdout = render(
+      <CandidateOverlayChart
+        candidates={candidates}
+        byRunId={byRunId}
+        population="holdout"
+        note="Holdout 12.5% missing (n=7)."
+      />,
+    )
+    expect(holdout.getByText('Holdout')).toBeInTheDocument()
+    expect(holdout.container.textContent).toContain('on the validation holdout')
+    // AC2 — a holdout chart never renders without its own missing rate.
+    expect(holdout.container.textContent).toContain('12.5% missing')
+  })
+
+  it('MODEL-FLOW-019-T20: renders nothing when no candidate has that population', () => {
+    // An unscored group's holdout chart must be absent, not an empty axis
+    // implying a measurement that was never taken.
+    const { container } = render(
+      <CandidateOverlayChart
+        candidates={[{ runId: 'run-a', algorithm: 'ols' }]}
+        byRunId={new Map()}
+        population="holdout"
+      />,
+    )
+    expect(container).toBeEmptyDOMElement()
   })
 
   it('ActualVsPredictedChart', () => {
@@ -455,6 +488,7 @@ beforeEach(() => {
   h.runsResult.runs = []
   h.selectionResult.selectedRunId = null
   h.predictionsResult.byRunId = new Map()
+  h.holdoutPredictionsResult.byRunId = new Map()
 })
 
 describe('MODEL-FLOW-019-V33 — a foreign compare id plots nothing, empties nothing', () => {
@@ -486,7 +520,12 @@ describe('MODEL-FLOW-019-V33 — a foreign compare id plots nothing, empties not
     // Plotted: the overlay renders (would return null if narrowed to zero
     // candidates), and both real algorithm labels are on screen — an empty
     // "0 of 2" narrowing would show neither.
-    expect(screen.getByText('Overall candidate comparison')).toBeInTheDocument()
+    // MODEL-FLOW-019-T20. The heading now names its population, and
+    // there are two charts. Asserting the TEST-SPLIT one specifically
+    // also proves the holdout chart did not render in its place with
+    // test-split rows under it.
+    expect(screen.getByText('Test-split')).toBeInTheDocument()
+    expect(screen.queryByText('Holdout')).not.toBeInTheDocument()
     // getAllByText, not getByText: both the overlay chart's own legend AND
     // the candidate table render each algorithm's label, so more than one
     // match is the EXPECTED shape, not a duplicate-content bug.
@@ -531,7 +570,12 @@ describe('MODEL-FLOW-019-V33 — a foreign compare id plots nothing, empties not
       </Provider>,
     )
 
-    expect(screen.getByText('Overall candidate comparison')).toBeInTheDocument()
+    // MODEL-FLOW-019-T20. The heading now names its population, and
+    // there are two charts. Asserting the TEST-SPLIT one specifically
+    // also proves the holdout chart did not render in its place with
+    // test-split rows under it.
+    expect(screen.getByText('Test-split')).toBeInTheDocument()
+    expect(screen.queryByText('Holdout')).not.toBeInTheDocument()
     // getAllByText, not getByText: both the overlay chart's own legend AND
     // the candidate table render each algorithm's label, so more than one
     // match is the EXPECTED shape, not a duplicate-content bug.

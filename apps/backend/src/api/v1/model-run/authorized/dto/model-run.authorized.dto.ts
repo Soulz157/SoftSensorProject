@@ -119,6 +119,22 @@ export const ListRunsQuerySchema = z
 // (lib/tuning-grid.ts) — 24 is the real ceiling a caller can present.
 export const MAX_PREDICTION_BATCH_RUN_IDS = 24;
 
+/**
+ * MODEL-FLOW-019-T20. WHICH population's series to read. Optional and
+ * defaulting to `test`, so every caller that predates the holdout series is
+ * unchanged and keeps getting exactly what it got before.
+ *
+ * A query PARAMETER rather than a second endpoint: the two differ only in
+ * which column supplies the object key (`predictionKeyFor`), and everything
+ * downstream — access check, batch cap, decimation, soft-fail-per-run — is
+ * identical. A parallel endpoint would have to restate all of it.
+ */
+export const PredictionPopulationEnum = z.enum(['test', 'holdout']);
+
+export const RunPredictionsQuerySchema = z
+  .object({ population: PredictionPopulationEnum.optional() })
+  .strict();
+
 export const RunPredictionsBatchQuerySchema = z
   .object({
     // Comma-separated, not a repeated query key — same "no `qs` parser
@@ -130,6 +146,7 @@ export const RunPredictionsBatchQuerySchema = z
       .pipe(
         z.array(z.string().uuid()).min(1).max(MAX_PREDICTION_BATCH_RUN_IDS),
       ),
+    population: PredictionPopulationEnum.optional(),
   })
   .strict();
 
@@ -325,4 +342,7 @@ export class CreateModelRunDto extends createZodDto(CreateModelRunSchema) {}
 export class ListRunsQueryDto extends createZodDto(ListRunsQuerySchema) {}
 export class RunPredictionsBatchQueryDto extends createZodDto(
   RunPredictionsBatchQuerySchema,
+) {}
+export class RunPredictionsQueryDto extends createZodDto(
+  RunPredictionsQuerySchema,
 ) {}

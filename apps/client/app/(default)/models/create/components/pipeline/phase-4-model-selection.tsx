@@ -80,6 +80,7 @@ import {
 } from '@/lib/model-metrics'
 import {
   METRIC_SOURCE_LABELS,
+  holdoutGroupMissingRateText,
   metricValueOf,
   sourcedMetricsOf,
   type CvFoldEstimate,
@@ -1087,6 +1088,19 @@ function CandidateComparison({
   const { byRunId, loading: predictionsLoading } = useCandidatePredictions(
     draftId,
     candidateRunIds,
+    'test',
+  )
+  // MODEL-FLOW-019-T20. A SECOND fetch, not a widened first one: the two
+  // populations come from different object keys per run and either can be
+  // absent on its own (a non-CV run that has never been scored has no
+  // holdout series; a CV run has no test split at all). Fetching them
+  // separately is what lets each chart state its own source and render its
+  // own absence — merging them into one map would need a per-point tag to
+  // stay honest, which is the conflation this feature exists to prevent.
+  const { byRunId: holdoutByRunId } = useCandidatePredictions(
+    draftId,
+    candidateRunIds,
+    'holdout',
   )
 
   // MODEL-FLOW-019-T08 part 3. Step 3's own compare checkboxes sit on draft
@@ -1203,6 +1217,7 @@ function CandidateComparison({
         selecting={selecting}
         onSelect={runId => void handleSelect(runId)}
         byRunId={byRunId}
+        holdoutByRunId={holdoutByRunId}
         predictionsLoading={predictionsLoading}
         selectedMetrics={selectedMetrics}
         sortMetric={sortMetric}
@@ -1227,6 +1242,7 @@ function CandidateGroups({
   selecting,
   onSelect,
   byRunId,
+  holdoutByRunId,
   predictionsLoading,
   selectedMetrics,
   sortMetric,
@@ -1238,6 +1254,9 @@ function CandidateGroups({
   selecting: boolean
   onSelect: (runId: string) => void
   byRunId: Map<string, RunPredictionsBatchItem>
+  /** MODEL-FLOW-019-T20. The same candidates' HOLDOUT series, fetched
+   *  separately — empty for a candidate never scored against one. */
+  holdoutByRunId: Map<string, RunPredictionsBatchItem>
   predictionsLoading: boolean
   selectedMetrics: MetricKey[]
   sortMetric: RankMetricKey
@@ -1259,7 +1278,24 @@ function CandidateGroups({
   // ranking, its own summary sentence.
   const section = (group: CandidateResult[]) => (
     <div className="space-y-4">
-      <CandidateOverlayChart candidates={group} byRunId={byRunId} />
+      <CandidateOverlayChart
+        candidates={group}
+        byRunId={byRunId}
+        population="test-split"
+      />
+      {/* MODEL-FLOW-019-T20. Beside the test-split overlay, never merged
+          into it — the two windows are genuinely different data (the
+          holdout is raw rows split off at BRONZE that no fit ever saw)
+          and mistaking one for the other is what produced T19's report.
+          Renders nothing at all when no candidate here has been scored
+          against a holdout, which is its own honest state: the chart
+          cannot claim an absence it has not checked. */}
+      <CandidateOverlayChart
+        candidates={group}
+        byRunId={holdoutByRunId}
+        population="holdout"
+        note={holdoutGroupMissingRateText(group.map(c => c.sourcedMetrics))}
+      />
       <CandidateTable
         candidates={group}
         resolvedRunId={resolvedRunId}
@@ -1349,6 +1385,15 @@ function StandaloneComparison({
   const { byRunId, loading: predictionsLoading } = useCandidatePredictions(
     draftId,
     runIds,
+    'test',
+  )
+  // MODEL-FLOW-019-T20. The standalone path's own holdout fetch — same
+  // reasoning as the job path's (see there); duplicated as a CALL, not as
+  // a rule, since both go through the one `useCandidatePredictions`.
+  const { byRunId: holdoutByRunId } = useCandidatePredictions(
+    draftId,
+    runIds,
+    'holdout',
   )
 
   const handleSelect = async (runId: string) => {
@@ -1403,9 +1448,7 @@ function StandaloneComparison({
         </div>
       )
     }
-  // Gated on `isSelected` for StandaloneRunRow's own reason, unchanged:
-  // Evaluation resolves whichever run `selectedRunId` names, so offering
-  // this on a non-selected row would land on a DIFFERENT run's Evaluation.
+
   const actionFor = (runId: string) => {
     const run = byId.get(runId)
     if (!run || run.id !== selectedRunId) return null
@@ -1448,6 +1491,17 @@ function StandaloneComparison({
             <CandidateOverlayChart
               candidates={groupCandidates}
               byRunId={byRunId}
+              population="test-split"
+            />
+            {/* MODEL-FLOW-019-T20. The holdout counterpart, same layout,
+                beside rather than merged — see the job path's own note. */}
+            <CandidateOverlayChart
+              candidates={groupCandidates}
+              byRunId={holdoutByRunId}
+              population="holdout"
+              note={holdoutGroupMissingRateText(
+                groupCandidates.map(c => c.sourcedMetrics),
+              )}
             />
             <CandidateTable
               candidates={groupCandidates}

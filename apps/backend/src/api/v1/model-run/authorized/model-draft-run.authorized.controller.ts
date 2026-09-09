@@ -13,6 +13,7 @@ import { Users } from '@/common/decorators/user.decorator';
 import {
   CreateTrainingRunDto,
   RunPredictionsBatchQueryDto,
+  RunPredictionsQueryDto,
 } from './dto/model-run.authorized.dto';
 import { ModelRunLaunchAuthorizedService } from './model-run-launch.authorized.service';
 import { ModelRunScoreAuthorizedService } from './model-run-score.authorized.service';
@@ -84,7 +85,11 @@ export class ModelDraftRunAuthorizedController {
       'GET .../runs/:runId/predictions, undecimated). A run that is not ' +
       'SUCCEEDED or has no predictions artifact contributes no series and ' +
       'is not an error; a run whose series cannot be read soft-fails on ' +
-      'its own item.',
+      'its own item. MODEL-FLOW-019-T20: `population` selects which series ' +
+      '— `test` (default, the run’s own test split) or `holdout` (the ' +
+      'dataset’s raw validation holdout). Which COLUMN backs each is a ' +
+      'per-run fact, not a fixed one: a CV run’s `predictionsKey` IS its ' +
+      'holdout, a non-CV run’s is its test split.',
   })
   getDraftRunPredictionsBatchController(
     @Param('draftId') draftId: string,
@@ -96,6 +101,7 @@ export class ModelDraftRunAuthorizedController {
       query.runIds,
       user.id,
       user.role,
+      query.population,
     );
   }
 
@@ -126,15 +132,18 @@ export class ModelDraftRunAuthorizedController {
 
   @Post('/:draftId/runs/:runId/score')
   @ApiOperation({
-    summary: "Trigger a CV run's separate holdout-scoring phase",
+    summary: "Trigger a run's separate holdout-scoring phase",
     description:
-      'MODEL-FLOW-016-T07. A CV run refuses (400) unless it is SUCCEEDED, ' +
-      'is actually a Cross-Validation run (a non-CV run already scores ' +
-      'its holdout inline during training), is not already being scored, ' +
-      'and its dataset actually has a validation holdout. Mints a fresh ' +
+      'MODEL-FLOW-016-T07, widened to any run by MODEL-FLOW-019-T20. ' +
+      'Refuses (400) unless the run is SUCCEEDED, is not already being ' +
+      'scored, and its dataset actually has a validation holdout. The ' +
+      'CV-only refusal is GONE: training computes a non-CV run’s holdout ' +
+      'AGGREGATE inline but discards the per-row frame, so this phase is ' +
+      'how that frame gets produced for either run kind. Mints a fresh ' +
       "token and spawns a scoring container out of band; poll the run's " +
-      'own GET for `scoringContainerId` (in flight) / `predictionsKey` + ' +
-      '`holdoutMetrics` (finished).',
+      'own GET for `scoringContainerId` (in flight) / `holdoutMetrics` ' +
+      'plus `predictionsKey` (CV) or `holdoutPredictionsKey` (non-CV) ' +
+      '(finished).',
   })
   triggerScoringController(
     @Param('draftId') draftId: string,
@@ -151,14 +160,19 @@ export class ModelDraftRunAuthorizedController {
 
   @Get('/:draftId/runs/:runId/predictions')
   @ApiOperation({
-    summary: "Parsed actual/predicted series for one run's test split",
+    summary: "Parsed actual/predicted series for one run's chosen population",
     description:
       'MODEL-FLOW-004 — Step 4 Evaluation. Refuses (404) a run that has ' +
-      'not SUCCEEDED or recorded no predictions artifact, naming which.',
+      'not SUCCEEDED or recorded no predictions artifact, naming which. ' +
+      'MODEL-FLOW-019-T20: `population` selects `test` (default) or ' +
+      '`holdout`, and the 404 names the population that is missing — a ' +
+      'scored non-CV run has both, so "no predictions artifact" alone is ' +
+      'no longer an unambiguous refusal.',
   })
   getDraftRunPredictionsController(
     @Param('draftId') draftId: string,
     @Param('runId') runId: string,
+    @Query() query: RunPredictionsQueryDto,
     @Users() user: Auth.UserPayload,
   ) {
     return this.runs.getDraftRunPredictionsService(
@@ -166,6 +180,7 @@ export class ModelDraftRunAuthorizedController {
       runId,
       user.id,
       user.role,
+      query.population,
     );
   }
 }

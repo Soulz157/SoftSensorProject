@@ -394,8 +394,23 @@ const oneRun = (draftId: string, runId: string) =>
   `${runsBase(draftId)}/${encodeURIComponent(runId)}`
 
 /**
- * A training run's test-split predictions, parsed (MODEL-FLOW-004). Every
- * scalar (`rowCount`, `residualSd`, the y ranges) is computed server-side
+ * MODEL-FLOW-019-T20. WHICH population a predictions request asks for, in
+ * the WIRE's own spelling — deliberately `'test'`, not `lib/metric-source`'s
+ * display-side `'test-split'`. These are two vocabularies on purpose: this
+ * one is a query-parameter value the backend's own zod enum pins
+ * (`PredictionPopulationEnum`), and respelling it here to match a label
+ * would silently 400 every request. The display vocabulary stays the one
+ * `populationLabel`/`populationAxisLabel` own.
+ *
+ * WHICH COLUMN backs each is a per-run fact resolved server-side
+ * (`predictionKeyFor`), never here: a CV run's `predictionsKey` IS its
+ * holdout, a non-CV run's is its test split.
+ */
+export type PredictionPopulation = 'test' | 'holdout'
+
+/**
+ * A training run's predictions for one population, parsed (MODEL-FLOW-004).
+ * Every scalar (`rowCount`, `residualSd`, the y ranges) is computed server-side
  * over the FULL frame — this endpoint has no decimation branch, so
  * `rowCount === points.length` always. `residualRmseCheck` is a cross-check
  * against the run's own `metrics.rmse`, not a second source of truth to
@@ -708,9 +723,10 @@ export const modelDraftRunService = {
   predictions: async (
     draftId: string,
     runId: string,
+    population: PredictionPopulation = 'test',
   ): Promise<ApiResponse<RunPredictions>> => {
     const res: ApiResponse<RunPredictionsWire> = await fetchClient(
-      `${oneRun(draftId, runId)}/predictions`,
+      `${oneRun(draftId, runId)}/predictions?population=${population}`,
       { method: 'GET' },
     )
     return { ...res, data: toRunPredictions(res.data) }
@@ -727,6 +743,7 @@ export const modelDraftRunService = {
   predictionsBatch: async (
     draftId: string,
     runIds: string[],
+    population: PredictionPopulation = 'test',
   ): Promise<ApiResponse<RunPredictionsBatchResult>> => {
     if (runIds.length === 0) {
       return {
@@ -739,17 +756,21 @@ export const modelDraftRunService = {
     const res: ApiResponse<RunPredictionsBatchWire> = await fetchClient(
       `${runsBase(draftId)}/predictions/batch?runIds=${runIds
         .map(encodeURIComponent)
-        .join(',')}`,
+        .join(',')}&population=${population}`,
       { method: 'GET' },
     )
     return { ...res, data: toRunPredictionsBatch(res.data) }
   },
 
-  /** MODEL-FLOW-016-T07/T11. Triggers a CV run's separate holdout-scoring
-   *  phase (refused server-side for a non-CV run, or one already scoring —
-   *  see `triggerScoringService`'s own checks). Poll `get()` afterwards for
-   *  `scoringContainerId` (in flight) / `predictionsKey` + `holdoutMetrics`
-   *  (finished), same as training's own poll loop. */
+  /** MODEL-FLOW-016-T07/T11, widened by MODEL-FLOW-019-T20. Triggers a run's
+   *  separate holdout-scoring phase — no longer CV-only: training computes a
+   *  non-CV run's holdout AGGREGATE inline but discards the per-row frame,
+   *  and this is how that frame gets produced. Still refused server-side for
+   *  a run already scoring, a non-SUCCEEDED run, or a dataset with no
+   *  validation holdout (`triggerScoringService`'s own checks). Poll `get()`
+   *  afterwards for `scoringContainerId` (in flight) / `holdoutMetrics` plus
+   *  `predictionsKey` (CV) or `holdoutPredictionsKey` (non-CV) — same cadence
+   *  as training's own poll loop. */
   score: (
     draftId: string,
     runId: string,

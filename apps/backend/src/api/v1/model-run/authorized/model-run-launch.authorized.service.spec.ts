@@ -270,7 +270,17 @@ describe('ModelRunLaunchAuthorizedService.getDraftRunPredictionsBatchService', (
         id: { in: ['run-1', 'run-2', 'run-from-another-draft'] },
         modelDraftId: 'draft-1',
       },
-      select: { id: true, status: true, predictionsKey: true },
+      // MODEL-FLOW-019-T20. cvFoldsKey and holdoutPredictionsKey joined the
+      // select because `predictionKeyFor` needs all three to answer WHICH
+      // key holds the requested population — predictionsKey alone is a CV
+      // run's holdout and a non-CV run's test split.
+      select: {
+        id: true,
+        status: true,
+        cvFoldsKey: true,
+        predictionsKey: true,
+        holdoutPredictionsKey: true,
+      },
     });
   });
 

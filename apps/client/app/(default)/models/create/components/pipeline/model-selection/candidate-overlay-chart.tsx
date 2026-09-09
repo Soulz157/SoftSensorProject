@@ -11,10 +11,9 @@ import {
 } from 'recharts'
 import { parseServerTimestamp, pickTimeFormat } from '@/lib/monitoring'
 import {
-  cvScoringPhaseOf,
-  populationAxisLabel,
-  populationOf,
-  type CvScoringSignals,
+  populationTitle,
+  populationLabel,
+  type EvaluationPopulation,
 } from '@/lib/metric-source'
 import { ALGORITHM_LABELS, type Algorithm } from '@/store/model-pipeline'
 import type { RunPredictionsBatchItem } from '@/services/model-draft'
@@ -32,16 +31,8 @@ import { AXIS_TICK } from '../evaluation/actual-vs-predicted-chart'
  * contract.test.ts` greps THIS path for algorithm branching, and a copy
  * under `training-config/` would be silently uncovered by that guard.
  *
- * MODEL-FLOW-019-T20. Extends `CvScoringSignals` (never a hand-written
- * second copy of those three fields — `lib/metric-source.ts` is the one
- * place that resolves Holdout-vs-Validate wording) so this chart can
- * derive EACH series' own population (`cvScoringPhaseOf`/`populationOf`)
- * rather than captioning every series as an ordinary test-split
- * comparison regardless of source — the exact conflation this whole
- * feature exists to prevent, which this chart committed, live, for every
- * already-scored CV candidate, until now.
  */
-export interface OverlaySeries extends CvScoringSignals {
+export interface OverlaySeries {
   runId: string | null
   algorithm: string
 }
@@ -55,6 +46,32 @@ interface Props {
    *  shared `actual` line and cannot detect a mixed target itself. */
   candidates: OverlaySeries[]
   byRunId: Map<string, RunPredictionsBatchItem>
+  /**
+   * MODEL-FLOW-019-T20. WHICH population every series here describes.
+   *
+   * REQUIRED and explicit, deliberately NOT derived per series from the
+   * run's own scoring phase. `byRunId` is fetched one population at a time
+   * (`predictionsBatch(..., population)`), so the caller is the only thing
+   * that actually knows — and the derivation would be WRONG for exactly the
+   * case this task added: `populationOf(cvScoringPhaseOf(nonCvRun))` is
+   * `test-split` unconditionally, so a non-CV run's holdout series would
+   * caption as Test. That is the conflation this whole feature exists to
+   * prevent, arriving through a derivation that looks careful.
+   *
+   * A chart therefore never mixes populations; two populations are two
+   * charts, each naming its own.
+   */
+  population: EvaluationPopulation
+  /**
+   * MODEL-FLOW-019 AC2. A qualifier the CALLER states beside a holdout
+   * chart — in practice the holdout's own missing rate
+   * (`holdoutMissingRateText`), which AC2 requires beside every figure that
+   * source backs: the holdout is deliberately unimputed (DS-LAKE-018), so a
+   * MISSING_VALUE hole reaches predict() and depresses the fit for reasons
+   * that are not the model's fault. Optional because a test-split chart has
+   * no such qualifier to make.
+   */
+  note?: string
 }
 
 const OVERLAY_COLORS = [
@@ -119,7 +136,12 @@ export function buildOverlayRows(
  * multiples below still show each candidate's own honest state, so this
  * chart's absence is not the group's only signal.
  */
-export function CandidateOverlayChart({ candidates, byRunId }: Props) {
+export function CandidateOverlayChart({
+  candidates,
+  byRunId,
+  population,
+  note,
+}: Props) {
   const entries = candidates
     .filter(c => c.runId && byRunId.has(c.runId))
     .map(c => ({
@@ -138,16 +160,6 @@ export function CandidateOverlayChart({ candidates, byRunId }: Props) {
   const anyDownsampled = entries.some(({ item }) => item.downsampled)
   const maxRowCount = Math.max(...entries.map(({ item }) => item.rowCount ?? 0))
 
-  // MODEL-FLOW-019-T20. Population travels with the series, never with the
-  // chart as a whole — a CV candidate's series is its scored HOLDOUT the
-  // moment cvScoringPhaseOf reads 'scored', a non-CV candidate's is always
-  // its TEST split (populationOf's own exhaustive switch). Named on every
-  // series individually so two candidates from different sources sharing
-  // one chart is visible rather than silently implied to be the same kind
-  // of comparison.
-  const populationOfEntry = (candidate: CvScoringSignals) =>
-    populationOf(cvScoringPhaseOf(candidate))
-
   const seriesLabels = new Map<string, string>(
     entries.map(({ candidate, runId }, i) => {
       const label =
@@ -157,11 +169,7 @@ export function CandidateOverlayChart({ candidates, byRunId }: Props) {
         (other, j) =>
           j !== i && other.candidate.algorithm === candidate.algorithm,
       )
-      const named = duplicate ? `${label} #${i + 1}` : label
-      return [
-        `pred_${runId}`,
-        `${named} (${populationAxisLabel(populationOfEntry(candidate))})`,
-      ]
+      return [`pred_${runId}`, duplicate ? `${label} #${i + 1}` : label]
     }),
   )
   seriesLabels.set('actual', 'Actual')
@@ -170,7 +178,10 @@ export function CandidateOverlayChart({ candidates, byRunId }: Props) {
     <div className="space-y-1.5 rounded-xl border border-border/60 p-3">
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
         <p className="text-xs font-medium text-foreground">
-          Overall candidate comparison
+          Overall candidate comparison —{' '}
+          <span className="font-normal text-muted-foreground">
+            {populationTitle(population)}
+          </span>
         </p>
         <div className="flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground">
           <span className="flex items-center gap-1">
@@ -248,11 +259,13 @@ export function CandidateOverlayChart({ candidates, byRunId }: Props) {
           ))}
         </ComposedChart>
       </ResponsiveContainer>
-      {anyDownsampled && (
-        <p className="text-[10px] text-muted-foreground">
-          {rows.length} of {maxRowCount} points shown per candidate
-        </p>
-      )}
+      <p className="text-[10px] text-muted-foreground">
+        Each candidate&apos;s prediction against one shared actual line, on the{' '}
+        {populationLabel(population)}.{note ? ` ${note}` : ''}
+        {anyDownsampled
+          ? ` ${rows.length} of ${maxRowCount} points shown per candidate.`
+          : ''}
+      </p>
     </div>
   )
 }

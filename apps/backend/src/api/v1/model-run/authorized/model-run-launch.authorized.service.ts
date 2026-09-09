@@ -8,6 +8,10 @@ import {
 import { randomInt } from 'node:crypto';
 import { mintRunToken } from '@/lib/mint-run-token';
 import { findHoldoutArtifact } from '@/lib/holdout-artifact';
+import {
+  predictionKeyFor,
+  type PredictionPopulation,
+} from '@/lib/run-prediction-source';
 import { PrismaService } from '@softsensor/prisma';
 import { CreateTrainingRunDto } from './dto/model-run.authorized.dto';
 import {
@@ -716,11 +720,18 @@ export class ModelRunLaunchAuthorizedService {
     runId: string,
     userId: string,
     role: string,
+    population: PredictionPopulation = 'test',
   ) {
     await this.assertDraftAccess(draftId, userId, role);
     const run = await this.prisma.modelTrainingRun.findFirst({
       where: { id: runId, modelDraftId: draftId },
-      select: { status: true, predictionsKey: true, manifestKey: true },
+      select: {
+        status: true,
+        cvFoldsKey: true,
+        predictionsKey: true,
+        holdoutPredictionsKey: true,
+        manifestKey: true,
+      },
     });
     if (!run) throw new NotFoundException('Training run not found');
     if (run.status !== 'SUCCEEDED') {
@@ -730,16 +741,21 @@ export class ModelRunLaunchAuthorizedService {
         type: 'ERROR',
       });
     }
-    if (!run.predictionsKey) {
+    // MODEL-FLOW-019-T20. Names the POPULATION in the refusal, not just the
+    // absence: "no predictions artifact" was unambiguous when a run had at
+    // most one series, and is not any more — a scored non-CV run has a test
+    // split and a holdout, and a caller needs to know which one is missing.
+    const sourceKey = predictionKeyFor(run, population);
+    if (!sourceKey) {
       throw new AppException({
         statusCode: 404,
-        message: 'Training run succeeded but recorded no predictions artifact.',
+        message: `Training run succeeded but recorded no ${population} predictions artifact.`,
         type: 'ERROR',
       });
     }
 
     const predictions = await runPredictions({
-      source_key: run.predictionsKey,
+      source_key: sourceKey,
       manifest_key: run.manifestKey,
     });
 
@@ -782,30 +798,41 @@ export class ModelRunLaunchAuthorizedService {
     runIds: string[],
     userId: string,
     role: string,
+    population: PredictionPopulation = 'test',
   ) {
     await this.assertDraftAccess(draftId, userId, role);
 
     const runs = await this.prisma.modelTrainingRun.findMany({
       where: { id: { in: runIds }, modelDraftId: draftId },
-      select: { id: true, status: true, predictionsKey: true },
+      select: {
+        id: true,
+        status: true,
+        cvFoldsKey: true,
+        predictionsKey: true,
+        holdoutPredictionsKey: true,
+      },
     });
 
-    const readable = runs.filter(
-      (run) => run.status === 'SUCCEEDED' && run.predictionsKey,
-    );
+    // MODEL-FLOW-019-T20. WHICH key carries the requested population is a
+    // per-run question, not one this method may answer from `predictionsKey`
+    // directly — that column is a CV run's HOLDOUT and a non-CV run's TEST
+    // split. `predictionKeyFor` is the single place that rule lives.
+    const withKey = runs.flatMap((run) => {
+      if (run.status !== 'SUCCEEDED') return [];
+      const key = predictionKeyFor(run, population);
+      return key ? [{ id: run.id, key }] : [];
+    });
 
-    if (readable.length === 0) {
+    if (withKey.length === 0) {
       return {
         statusCode: 200,
-        message: 'No terminal candidate has a predictions artifact yet',
+        message: `No terminal candidate has a ${population} predictions artifact yet`,
         type: 'SUCCESS' as const,
         data: { results: [] },
       };
     }
 
-    const keyToRunId = new Map(
-      readable.map((run) => [run.predictionsKey as string, run.id]),
-    );
+    const keyToRunId = new Map(withKey.map(({ id, key }) => [key, id]));
     const batch = await runPredictionsBatch({
       keys: [...keyToRunId.keys()],
     });
