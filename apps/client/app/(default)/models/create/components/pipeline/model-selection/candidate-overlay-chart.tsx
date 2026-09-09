@@ -66,7 +66,10 @@ interface OverlayRow {
  * wherever two candidates' series overlap; this still merges by key rather
  * than trusting that agreement, in case an artifact ever disagrees.
  */
-function buildOverlayRows(
+// MODEL-FLOW-019-V34. Exported so a test can prove two runs with
+// non-coincident timestamps each keep their own x value in the merge,
+// rather than a positional (index) merge silently misaligning them.
+export function buildOverlayRows(
   entries: { runId: string; item: RunPredictionsBatchItem }[],
 ): OverlayRow[] {
   const byTimestamp = new Map<string, OverlayRow>()
@@ -114,9 +117,7 @@ export function CandidateOverlayChart({ candidates, byRunId }: Props) {
   const rows = buildOverlayRows(entries)
   const first = rows[0]
   const last = rows[rows.length - 1]
-  const tickFormatter = pickTimeFormat(
-    first && last ? last.t - first.t : 0,
-  )
+  const tickFormatter = pickTimeFormat(first && last ? last.t - first.t : 0)
   const anyDownsampled = entries.some(({ item }) => item.downsampled)
   const maxRowCount = Math.max(...entries.map(({ item }) => item.rowCount ?? 0))
 
