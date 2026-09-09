@@ -351,6 +351,110 @@ export function holdoutGroupMissingRateText(
   return `Holdout missing rate differs by candidate: ${[...texts].join('; ')}.`
 }
 
+/** The per-candidate facts `groupAbsenceText` needs — the STRUCTURAL
+ *  minimum, so both of phase-4's shapes and Step 3's run rows satisfy it. */
+export interface GroupAbsenceCandidate {
+  cvFoldsKey: string | null
+  holdoutAbsence: HoldoutAbsence | null
+}
+
+/**
+ * MODEL-FLOW-019-T20 follow-up. WHY a population's overlay chart has no
+ * series to draw, in one sentence, for the group as a whole.
+ *
+ * Until now that chart rendered `null` — it vanished. Vanishing is the one
+ * outcome this feature exists to prevent: a reader who sees a test-split
+ * chart and no holdout chart cannot tell whether the holdout does not
+ * apply, was never scored, or failed to load, and the empty screen argues
+ * for whichever they already believed. AC11 already refused a blank CELL
+ * for exactly this reason ("three facts, three different next actions —
+ * never one blank cell"); a missing chart is a blank cell the size of the
+ * panel.
+ *
+ * It also made AC2 unreachable in practice: `holdoutGroupMissingRateText`
+ * is passed to a chart that returns null whenever no candidate has a
+ * holdout series, which is every real draft today, so the qualifier it
+ * produces has never once appeared on screen.
+ *
+ * Stated by the GROUP rather than per candidate because the chart is one
+ * figure over many runs — the same discipline `holdoutGroupMissingRateText`
+ * follows directly above.
+ */
+export function groupAbsenceText(
+  population: EvaluationPopulation,
+  candidates: GroupAbsenceCandidate[],
+): string {
+  if (candidates.length === 0) return 'No candidates in this group.'
+
+  if (population === 'test-split') {
+    // A CV run has no test split AT ALL — cv_folds.json describes the fold
+    // configuration, and the refit model that ships is scored separately.
+    // So an all-CV group is not missing anything; naming it "missing" would
+    // invent a defect out of a run kind behaving correctly.
+    if (candidates.every(c => c.cvFoldsKey)) {
+      return (
+        'Every candidate here is cross-validated, and a cross-validated ' +
+        'run has no test split — its held-out figure comes from the ' +
+        'separate holdout scoring phase instead.'
+      )
+    }
+    return artifactAbsenceText(population)
+  }
+
+  const absences = new Set(candidates.map(c => c.holdoutAbsence))
+  if (absences.size === 1 && absences.has('no-dataset-holdout')) {
+    return 'This dataset has no validation holdout, so there is nothing to score against.'
+  }
+  // ACTIONABLE, and phrased as such: the run is fine, the scoring phase
+  // simply has not run. MODEL-FLOW-019-T20 widened scoring to non-CV runs,
+  // so this is now a state the user can leave, not a defect they are stuck
+  // reading about.
+  if (absences.has('not-scored-yet')) {
+    return 'No candidate has been scored against the validation holdout yet — scoring runs separately from training.'
+  }
+  return artifactAbsenceText(population)
+}
+
+/**
+ * The plainest absence a population can report: nothing recorded, no reason
+ * known beyond that.
+ *
+ * The population word is DERIVED from `populationLabel`, never spelled into
+ * the sentence. This module's display vocabulary is live — 'Holdout' was
+ * respelled to 'Validate' mid-flight to match `METRIC_SOURCE_LABELS` — and a
+ * blanket rename over a hardcoded copy of it produced "a validate
+ * predictions artifact", which is not English. Deriving keeps the next
+ * rewording grammatical for free.
+ */
+function artifactAbsenceText(population: EvaluationPopulation): string {
+  return `No candidate recorded a ${populationLabel(population)} predictions artifact.`
+}
+
+/**
+ * MODEL-FLOW-019-T20 follow-up. The candidates a chart could NOT draw, when
+ * it drew at least one — named, never silently dropped.
+ *
+ * The PARTIAL case is more dangerous than the empty one: a chart headed
+ * "Overall candidate comparison" that quietly omits two of five candidates
+ * looks complete and is not. The standalone path can group a CV run and a
+ * non-CV run onto one target, and then each population's chart drops
+ * whichever candidates lack that population — in opposite directions, with
+ * neither chart saying so.
+ *
+ * `undefined` when every candidate is drawn, so a complete chart carries no
+ * caveat at all.
+ */
+export function groupOmittedText(
+  drawnRunIds: Set<string>,
+  candidates: { runId: string | null; label: string }[],
+): string | undefined {
+  const omitted = candidates.filter(c => !c.runId || !drawnRunIds.has(c.runId))
+  if (omitted.length === 0) return undefined
+  return `Not drawn (no series for this population): ${omitted
+    .map(c => c.label)
+    .join(', ')}.`
+}
+
 /**
  * MODEL-FLOW-019-T15. WHICH POPULATION a predictions file describes.
  *
@@ -422,5 +526,5 @@ export function populationLabel(p: EvaluationPopulation): string {
 
 /** Heading form — capitalised, standalone. */
 export function populationTitle(p: EvaluationPopulation): string {
-  return p === 'holdout' ? 'Holdout' : 'Test-split'
+  return p === 'holdout' ? 'Validate' : 'Test-split'
 }

@@ -12,6 +12,8 @@ import {
   sourcedMetricsOf,
   type MetricSource,
   type MetricSourceRun,
+  groupAbsenceText,
+  groupOmittedText,
 } from './metric-source'
 
 /**
@@ -287,5 +289,86 @@ describe('population label forms', () => {
     expect(populationLabel('test-split')).not.toBe(populationLabel('holdout'))
     expect(populationTitle('test-split')).not.toBe(populationTitle('holdout'))
     expect(populationTitle('holdout')).not.toBe(populationLabel('holdout'))
+  })
+})
+
+/**
+ * MODEL-FLOW-019-T20 follow-up. The two chart-level absence statements.
+ *
+ * These exist because the overlay chart used to render `null` when it had
+ * no series — which is what a real draft always hit, since no run in the
+ * database has ever been scored against a holdout. A reader saw one chart
+ * and could not tell "not applicable" from "not scored yet" from "broken".
+ */
+describe('groupAbsenceText', () => {
+  const cv = { cvFoldsKey: 'k', holdoutAbsence: null }
+  const nonCv = { cvFoldsKey: null, holdoutAbsence: null }
+
+  it('tells an all-CV group its test split does not exist, rather than calling it missing', () => {
+    const text = groupAbsenceText('test-split', [cv, cv])
+    expect(text).toMatch(/cross-validated/i)
+    expect(text).not.toMatch(/missing|failed/i)
+  })
+
+  it('does not claim "no test split" when even one candidate is not cross-validated', () => {
+    expect(groupAbsenceText('test-split', [cv, nonCv])).not.toMatch(
+      /cross-validated run has no test split/i,
+    )
+  })
+
+  it('reports a dataset with no holdout as a dataset fact, not a scoring gap', () => {
+    const text = groupAbsenceText('holdout', [
+      { cvFoldsKey: null, holdoutAbsence: 'no-dataset-holdout' },
+      { cvFoldsKey: null, holdoutAbsence: 'no-dataset-holdout' },
+    ])
+    expect(text).toMatch(/dataset has no validation holdout/i)
+    expect(text).not.toMatch(/yet/i)
+  })
+
+  it('reports an unscored holdout as actionable, never as a defect', () => {
+    const text = groupAbsenceText('holdout', [
+      { cvFoldsKey: null, holdoutAbsence: 'not-scored-yet' },
+      { cvFoldsKey: null, holdoutAbsence: 'not-recorded' },
+    ])
+    // 'not-scored-yet' anywhere wins: one scoreable candidate makes the
+    // whole group's state one the user can leave.
+    expect(text).toMatch(/scored against the validation holdout yet/i)
+  })
+
+  it('never returns an empty string, for any population or group', () => {
+    for (const p of ['test-split', 'holdout'] as const) {
+      for (const g of [[], [cv], [nonCv], [cv, nonCv]]) {
+        expect(groupAbsenceText(p, g).length).toBeGreaterThan(0)
+      }
+    }
+  })
+})
+
+describe('groupOmittedText', () => {
+  it('says nothing when every candidate was drawn', () => {
+    expect(
+      groupOmittedText(new Set(['a', 'b']), [
+        { runId: 'a', label: 'OLS' },
+        { runId: 'b', label: 'Random Forest' },
+      ]),
+    ).toBeUndefined()
+  })
+
+  it('names the candidates a partial chart left out', () => {
+    const text = groupOmittedText(new Set(['a']), [
+      { runId: 'a', label: 'OLS' },
+      { runId: 'b', label: 'Random Forest' },
+    ])
+    expect(text).toContain('Random Forest')
+    expect(text).not.toContain('OLS')
+  })
+
+  it('counts a candidate with no runId as omitted, not as drawn', () => {
+    expect(
+      groupOmittedText(new Set(['a']), [
+        { runId: 'a', label: 'OLS' },
+        { runId: null, label: 'MLP' },
+      ]),
+    ).toContain('MLP')
   })
 })

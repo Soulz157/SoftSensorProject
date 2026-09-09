@@ -13,6 +13,7 @@ import { parseServerTimestamp, pickTimeFormat } from '@/lib/monitoring'
 import {
   populationTitle,
   populationLabel,
+  groupOmittedText,
   type EvaluationPopulation,
 } from '@/lib/metric-source'
 import { ALGORITHM_LABELS, type Algorithm } from '@/store/model-pipeline'
@@ -72,6 +73,20 @@ interface Props {
    * no such qualifier to make.
    */
   note?: string
+  /**
+   * MODEL-FLOW-019-T20 follow-up. WHY this chart has nothing to draw, when
+   * no candidate has a series for `population`.
+   *
+   * Supplied by the caller, not derived, for the same reason `population`
+   * is: this component sees `byRunId` for ONE population and cannot tell
+   * "not applicable" from "not scored yet" from "failed to load" — only the
+   * caller holds each candidate's `holdoutAbsence`/`cvFoldsKey`. See
+   * `groupAbsenceText`, which produces exactly this string.
+   *
+   * Optional, and its absence keeps the old behaviour (render nothing), so
+   * a caller that has no reason to give does not print a vague one.
+   */
+  absenceNote?: string
 }
 
 const OVERLAY_COLORS = [
@@ -132,15 +147,23 @@ export function buildOverlayRows(
  * "which candidate tracks reality best", not "does this one" or "did it
  * converge".
  *
- * Renders nothing for a group with no readable candidate — the small
- * multiples below still show each candidate's own honest state, so this
- * chart's absence is not the group's only signal.
+ * With no readable candidate it renders its own frame and STATES why
+ * (`absenceNote`), rather than vanishing.
+ *
+ * It used to render nothing, justified by the small multiples below
+ * carrying each candidate's own state. That justification was already
+ * false for the holdout instance MODEL-FLOW-019-T20 added: there are no
+ * holdout small multiples, so for that population this chart's absence was
+ * the group's ONLY signal, and an absent signal is the one thing a reader
+ * cannot interpret. A caller that passes no `absenceNote` still gets the
+ * old silence.
  */
 export function CandidateOverlayChart({
   candidates,
   byRunId,
   population,
   note,
+  absenceNote,
 }: Props) {
   const entries = candidates
     .filter(c => c.runId && byRunId.has(c.runId))
@@ -151,7 +174,20 @@ export function CandidateOverlayChart({
     }))
     .filter(({ item }) => !item.error && item.points.length > 0)
 
-  if (entries.length === 0) return null
+  if (entries.length === 0) {
+    if (!absenceNote) return null
+    return (
+      <div className="space-y-1.5 rounded-xl border border-dashed border-border/60 p-3">
+        <p className="text-xs font-medium text-foreground">
+          Overall candidate comparison —{' '}
+          <span className="font-normal text-muted-foreground">
+            {populationTitle(population)}
+          </span>
+        </p>
+        <p className="text-[10px] text-muted-foreground">{absenceNote}</p>
+      </div>
+    )
+  }
 
   const rows = buildOverlayRows(entries)
   const first = rows[0]
@@ -173,6 +209,18 @@ export function CandidateOverlayChart({
     }),
   )
   seriesLabels.set('actual', 'Actual')
+
+  // MODEL-FLOW-019-T20 follow-up. A PARTIALLY drawn group says which
+  // candidates it left out. Silently dropping them is worse than the empty
+  // case handled above: the heading still reads "Overall candidate
+  // comparison", so an incomplete chart looks complete.
+  const omittedText = groupOmittedText(
+    new Set(entries.map(e => e.runId)),
+    candidates.map(c => ({
+      runId: c.runId,
+      label: ALGORITHM_LABELS[c.algorithm as Algorithm] ?? c.algorithm,
+    })),
+  )
 
   return (
     <div className="space-y-1.5 rounded-xl border border-border/60 p-3">
@@ -262,6 +310,7 @@ export function CandidateOverlayChart({
       <p className="text-[10px] text-muted-foreground">
         Each candidate&apos;s prediction against one shared actual line, on the{' '}
         {populationLabel(population)}.{note ? ` ${note}` : ''}
+        {omittedText ? ` ${omittedText}` : ''}
         {anyDownsampled
           ? ` ${rows.length} of ${maxRowCount} points shown per candidate.`
           : ''}

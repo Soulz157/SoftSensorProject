@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
+// MODEL-FLOW-019-T20 follow-up. The heading WORD is read from the source of
+// truth rather than spelled here: `populationTitle` is display vocabulary and
+// has already been respelled once mid-flight ('Holdout' -> 'Validate', to
+// match METRIC_SOURCE_LABELS). What these tests actually pin is WHICH
+// population each panel names, which survives any rewording; a hardcoded
+// literal would fail for a copy edit that broke nothing.
+import { populationTitle, populationLabel } from '@/lib/metric-source'
 import { createStore, Provider } from 'jotai'
 import { parse } from 'date-fns'
 import {
@@ -320,7 +327,9 @@ describe('MODEL-FLOW-019-V32 — chart ticks stay inside the plotted window', ()
         note="Holdout 12.5% missing (n=7)."
       />,
     )
-    expect(holdout.getByText('Holdout')).toBeInTheDocument()
+    expect(
+      holdout.getByText(populationTitle('holdout')),
+    ).toBeInTheDocument()
     expect(holdout.container.textContent).toContain('on the validation holdout')
     // AC2 — a holdout chart never renders without its own missing rate.
     expect(holdout.container.textContent).toContain('12.5% missing')
@@ -524,8 +533,29 @@ describe('MODEL-FLOW-019-V33 — a foreign compare id plots nothing, empties not
     // there are two charts. Asserting the TEST-SPLIT one specifically
     // also proves the holdout chart did not render in its place with
     // test-split rows under it.
-    expect(screen.getByText('Test-split')).toBeInTheDocument()
-    expect(screen.queryByText('Holdout')).not.toBeInTheDocument()
+    //
+    // MODEL-FLOW-019-T20 follow-up. This used to assert 'Holdout' was
+    // ABSENT, which encoded the old behaviour: a holdout chart with no
+    // series rendered nothing at all. That is exactly what made the user
+    // report "only one chart shows" with no way to tell why. The holdout
+    // panel now always renders and STATES its own emptiness, so the fact
+    // worth pinning is no longer its absence but that it draws no series
+    // and says so in words.
+    // getAllByText for both: the holdout word ('Validate') also heads a
+    // CandidateTable column, so the panel heading is not unique on screen.
+    expect(
+      screen.getAllByText(populationTitle('test-split')).length,
+    ).toBeGreaterThan(0)
+    expect(
+      screen.getAllByText(populationTitle('holdout')).length,
+    ).toBeGreaterThan(0)
+    // The reason is DERIVED from these candidates, not a generic string:
+    // this fixture's runs carry `holdoutAbsence: 'no-dataset-holdout'`, so
+    // the panel must say the dataset has none — not "not scored yet",
+    // which would send the reader to a scoring button that cannot help.
+    expect(
+      screen.getByText(/nothing to score against/i),
+    ).toBeInTheDocument()
     // getAllByText, not getByText: both the overlay chart's own legend AND
     // the candidate table render each algorithm's label, so more than one
     // match is the EXPECTED shape, not a duplicate-content bug.
@@ -574,8 +604,37 @@ describe('MODEL-FLOW-019-V33 — a foreign compare id plots nothing, empties not
     // there are two charts. Asserting the TEST-SPLIT one specifically
     // also proves the holdout chart did not render in its place with
     // test-split rows under it.
-    expect(screen.getByText('Test-split')).toBeInTheDocument()
-    expect(screen.queryByText('Holdout')).not.toBeInTheDocument()
+    //
+    // MODEL-FLOW-019-T20 follow-up. This used to assert 'Holdout' was
+    // ABSENT, which encoded the old behaviour: a holdout chart with no
+    // series rendered nothing at all. That is exactly what made the user
+    // report "only one chart shows" with no way to tell why. The holdout
+    // panel now always renders and STATES its own emptiness, so the fact
+    // worth pinning is no longer its absence but that it draws no series
+    // and says so in words.
+    // getAllByText here, unlike the job path above: the standalone path
+    // groups runs by target, and every group now renders BOTH population
+    // panels — an empty one states its reason instead of vanishing — so
+    // more than one "Test-split" heading is the expected shape.
+    expect(
+      screen.getAllByText(populationTitle('test-split')).length,
+    ).toBeGreaterThan(0)
+    expect(
+      screen.getAllByText(populationTitle('holdout')).length,
+    ).toBeGreaterThan(0)
+    // The reason is DERIVED from these candidates, not a generic string:
+    // this fixture's runs carry `holdoutAbsence: 'no-dataset-holdout'`, so
+    // the panel must say the dataset has none — not "not scored yet",
+    // which would send the reader to a scoring button that cannot help.
+    // A DIFFERENT branch from the job path above, and deliberately so:
+    // these runs carry `holdoutAbsence: 'not-recorded'` (the dataset-holdout
+    // fact is unknown here), so the panel must state that plainly rather
+    // than claim a dataset has no holdout it never checked for.
+    expect(
+      screen.getAllByText(
+        new RegExp(`No candidate recorded a ${populationLabel('holdout')}`, 'i'),
+      ).length,
+    ).toBeGreaterThan(0)
     // getAllByText, not getByText: both the overlay chart's own legend AND
     // the candidate table render each algorithm's label, so more than one
     // match is the EXPECTED shape, not a duplicate-content bug.

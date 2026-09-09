@@ -81,6 +81,7 @@ import {
 import {
   METRIC_SOURCE_LABELS,
   holdoutGroupMissingRateText,
+  groupAbsenceText,
   metricValueOf,
   sourcedMetricsOf,
   type CvFoldEstimate,
@@ -1282,19 +1283,26 @@ function CandidateGroups({
         candidates={group}
         byRunId={byRunId}
         population="test-split"
+        absenceNote={groupAbsenceText('test-split', group)}
       />
       {/* MODEL-FLOW-019-T20. Beside the test-split overlay, never merged
           into it — the two windows are genuinely different data (the
           holdout is raw rows split off at BRONZE that no fit ever saw)
           and mistaking one for the other is what produced T19's report.
-          Renders nothing at all when no candidate here has been scored
-          against a holdout, which is its own honest state: the chart
-          cannot claim an absence it has not checked. */}
+
+          STATES its absence rather than vanishing when no candidate here
+          has a holdout series. It vanished at first, on the reasoning that
+          a chart must not claim an absence it has not checked — but the
+          absence IS checked: `groupAbsenceText` reads each candidate's own
+          `holdoutAbsence`, the same field AC11 already refuses to leave
+          blank in the table below. Vanishing was not modesty, it was the
+          one state a reader cannot tell apart from a bug. */}
       <CandidateOverlayChart
         candidates={group}
         byRunId={holdoutByRunId}
         population="holdout"
         note={holdoutGroupMissingRateText(group.map(c => c.sourcedMetrics))}
+        absenceNote={groupAbsenceText('holdout', group)}
       />
       <CandidateTable
         candidates={group}
@@ -1492,9 +1500,8 @@ function StandaloneComparison({
               candidates={groupCandidates}
               byRunId={byRunId}
               population="test-split"
+              absenceNote={groupAbsenceText('test-split', groupCandidates)}
             />
-            {/* MODEL-FLOW-019-T20. The holdout counterpart, same layout,
-                beside rather than merged — see the job path's own note. */}
             <CandidateOverlayChart
               candidates={groupCandidates}
               byRunId={holdoutByRunId}
@@ -1502,6 +1509,7 @@ function StandaloneComparison({
               note={holdoutGroupMissingRateText(
                 groupCandidates.map(c => c.sourcedMetrics),
               )}
+              absenceNote={groupAbsenceText('holdout', groupCandidates)}
             />
             <CandidateTable
               candidates={groupCandidates}
