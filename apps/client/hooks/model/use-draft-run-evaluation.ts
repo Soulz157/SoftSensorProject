@@ -215,7 +215,23 @@ async function fetchEvaluation(
     return { run: summary, fit: null, manifest: null, parityRange: null }
   }
 
-  const predRes = await modelDraftRunService.predictions(draftId, runId)
+  // MODEL-FLOW-019-T20. WHICH population this run's single series is, in
+  // the endpoint's new vocabulary. The endpoint used to read
+  // `predictionsKey` unconditionally; it now disambiguates, and its `test`
+  // default resolves to NULL for a CV run (a CV run has no test split) —
+  // so a scored CV run 404s unless the caller names `holdout`.
+  //
+  // Deriving is correct HERE, unlike in `CandidateOverlayChart`: this hook
+  // fetches whatever the ONE run it was handed actually has, so that run's
+  // own shape is the only thing that decides. The overlay chart is the
+  // opposite case — its caller has already chosen a population and fetched
+  // that batch, so a per-series derivation there would contradict the
+  // bytes already on screen.
+  const predRes = await modelDraftRunService.predictions(
+    draftId,
+    runId,
+    run.cvFoldsKey ? 'holdout' : 'test',
+  )
   const pred = predRes.data
 
   const points: FitPoint[] = pred.points.map(p => ({

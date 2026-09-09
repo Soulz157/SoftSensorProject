@@ -158,6 +158,103 @@ describe('ModelRunLaunchAuthorizedService.getDraftRunPredictionsService', () => 
       data: PREDICTIONS,
     });
   });
+
+  /**
+   * MODEL-FLOW-019-T20. The `population` parameter's asymmetry, pinned from
+   * BOTH sides for a CV run, because getting it wrong is silent in one
+   * direction and a 404 in the other.
+   *
+   * A CV run never had a test split — cv_folds.json describes the fold
+   * CONFIGURATION, and the refit model is scored separately — so its
+   * `predictionsKey` IS its holdout series. Asking a CV run for `test`
+   * must therefore refuse rather than hand back the holdout under the
+   * wrong name, and asking it for `holdout` must serve `predictionsKey`.
+   *
+   * The refusal case is the one that regressed once already: the parameter
+   * defaults to `test`, so a caller that simply did not pass a population
+   * turned a working scored-CV read into a 404. Step 5's `fetchEvaluation`
+   * is that caller, and it now derives `cvFoldsKey ? 'holdout' : 'test'`.
+   */
+  const CV_RUN = {
+    status: 'SUCCEEDED',
+    cvFoldsKey: 'drafts/draft-1/runs/run-1/cv_folds.json',
+    predictionsKey: 'drafts/draft-1/runs/run-1/predictions.parquet',
+    holdoutPredictionsKey: null,
+    manifestKey: 'drafts/draft-1/runs/run-1/run_manifest.json',
+  };
+
+  it("serves a scored CV run's predictionsKey when asked for the holdout", async () => {
+    const prisma = makePrisma({ run: CV_RUN });
+    const service = new ModelRunLaunchAuthorizedService(
+      prisma as never,
+      {} as never,
+    );
+    const result = await service.getDraftRunPredictionsService(
+      'draft-1',
+      'run-1',
+      'u1',
+      'ADMIN',
+      'holdout',
+    );
+
+    expect(mockedRunPredictions).toHaveBeenCalledWith({
+      source_key: 'drafts/draft-1/runs/run-1/predictions.parquet',
+      manifest_key: 'drafts/draft-1/runs/run-1/run_manifest.json',
+    });
+    expect(result.statusCode).toBe(200);
+  });
+
+  it('refuses (404) a CV run asked for the test split it never had', async () => {
+    const prisma = makePrisma({ run: CV_RUN });
+    const service = new ModelRunLaunchAuthorizedService(
+      prisma as never,
+      {} as never,
+    );
+    await expect(
+      service.getDraftRunPredictionsService(
+        'draft-1',
+        'run-1',
+        'u1',
+        'ADMIN',
+        'test',
+      ),
+    ).rejects.toMatchObject(
+      expect.objectContaining({
+        statusCode: 404,
+        message: expect.stringContaining('test'),
+      }),
+    );
+    expect(mockedRunPredictions).not.toHaveBeenCalled();
+  });
+
+  it("serves a non-CV run's holdoutPredictionsKey, never its test split", async () => {
+    const prisma = makePrisma({
+      run: {
+        status: 'SUCCEEDED',
+        cvFoldsKey: null,
+        predictionsKey: 'drafts/draft-1/runs/run-1/predictions.parquet',
+        holdoutPredictionsKey:
+          'drafts/draft-1/runs/run-1/holdout_predictions.parquet',
+        manifestKey: 'drafts/draft-1/runs/run-1/run_manifest.json',
+      },
+    });
+    const service = new ModelRunLaunchAuthorizedService(
+      prisma as never,
+      {} as never,
+    );
+    await service.getDraftRunPredictionsService(
+      'draft-1',
+      'run-1',
+      'u1',
+      'ADMIN',
+      'holdout',
+    );
+
+    expect(mockedRunPredictions).toHaveBeenCalledWith({
+      source_key: 'drafts/draft-1/runs/run-1/holdout_predictions.parquet',
+      manifest_key: 'drafts/draft-1/runs/run-1/run_manifest.json',
+    });
+  });
 });
 
 /**
