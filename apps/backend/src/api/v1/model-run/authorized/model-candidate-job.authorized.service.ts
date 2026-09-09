@@ -243,7 +243,13 @@ export class ModelCandidateJobAuthorizedService {
     if (!run || run.status !== 'SUCCEEDED') return null;
     if (run.holdoutMetrics) return null;
     if (datasetHasHoldout === false) return 'no-dataset-holdout';
-    if (run.cvFoldsKey && !run.predictionsKey) return 'not-scored-yet';
+    // MODEL-FLOW-019-T20. Was `run.cvFoldsKey && !run.predictionsKey` —
+    // CV-only, because only a CV run could trigger scoring
+    // (ModelRunScoreAuthorizedService.triggerScoringService). Now any
+    // SUCCEEDED run can, so a CONFIRMED holdout-bearing dataset with no
+    // figure yet is always actionable via that same trigger, never a bare
+    // defect claim.
+    if (datasetHasHoldout === true) return 'not-scored-yet';
     return 'not-recorded';
   }
 

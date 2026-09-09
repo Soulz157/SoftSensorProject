@@ -156,9 +156,11 @@ describe('holdoutAbsenceOf', () => {
     expect(
       holdoutAbsenceOf(run({ cvFoldsKey: 'k', predictionsKey: null }), true),
     ).toBe('not-scored-yet')
-    // The dataset HAS one and this run still carries no figure: trained
-    // before the 2026-09-01 replay fix, or a replay that failed.
-    expect(holdoutAbsenceOf(run(), true)).toBe('not-recorded')
+    // MODEL-FLOW-019-T20. A non-CV run with no figure on a CONFIRMED
+    // holdout-bearing dataset is ALSO not-scored-yet now, not not-recorded
+    // — scoring is triggerable for any SUCCEEDED run, so this is always
+    // actionable rather than a bare defect claim.
+    expect(holdoutAbsenceOf(run(), true)).toBe('not-scored-yet')
   })
 
   it('reads an unknown dataset-level answer as not-recorded, never as a guess', () => {
@@ -251,6 +253,25 @@ describe('populationOf — exhaustive over all four scoring phases', () => {
     ]
     expect(sources).toContain(populationOf('not-cv'))
     expect(sources).toContain(populationOf('scored'))
+  })
+
+  // MODEL-FLOW-019-V26. A phase outside `CvScoringPhase`'s four members is
+  // a TYPE ERROR at the call site, caught by `tsc --noEmit`, not a runtime
+  // default `populationOf`'s own switch could silently fall through to —
+  // the `never` exhaustiveness check inside it (module doc) is what a
+  // widened parameter type would defeat. An unused `@ts-expect-error`
+  // directive is itself a type error, so this fails loudly the moment the
+  // guard weakens (e.g. the parameter loosened to `string`) rather than
+  // staying silently green.
+  it('rejects a phase outside CvScoringPhase at compile time (V26)', () => {
+    // @ts-expect-error — 'rescoring' is not a member of CvScoringPhase, so
+    // this call fails to typecheck TODAY. If `CvScoringPhase` is ever
+    // widened to a fifth real phase, or `populationOf`'s parameter is
+    // loosened (e.g. to `string`), this call stops erroring and the
+    // directive itself becomes an "unused @ts-expect-error" error under
+    // `tsc --noEmit` — a build failure, not a silently green test.
+    populationOf('rescoring')
+    expect(true).toBe(true)
   })
 })
 

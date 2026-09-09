@@ -94,13 +94,20 @@ export type SourcedMetrics = TestSplitMetrics | HoldoutMetrics | CvFoldEstimate
  *
  * - `no-dataset-holdout` — this dataset never had one. Not an error; the
  *   common case for much of this system. Nothing to do about it here.
- * - `not-scored-yet`     — a CV run that has not been through its own
- *   scoring phase. The next action is to trigger scoring (MODEL-FLOW-016).
- * - `not-recorded`       — the dataset HAS a holdout and this run still
- *   carries no figure: a run trained before the replay fix landed
- *   (MODEL-FLOW-016-T08, 2026-09-01), or a replay that failed. This one
- *   hides a real defect if it renders as a blank, which is why it is its
- *   own value and not folded into the first.
+ * - `not-scored-yet`     — the dataset HAS a holdout (confirmed, not
+ *   assumed) and this run has not been through a scoring phase that could
+ *   produce a figure. The next action is to trigger scoring (MODEL-FLOW-016
+ *   for a CV run; MODEL-FLOW-019-T20 widened the same trigger to any
+ *   SUCCEEDED run — a stale non-CV run whose inline training-time replay
+ *   failed is retroactively fixable through the exact same action, not a
+ *   dead end).
+ * - `not-recorded`       — EITHER the dataset-holdout fact itself is
+ *   unknown (`datasetHasHoldout === null` — the lookup was skipped or
+ *   soft-failed, which must read as "not recorded" rather than as a guess
+ *   in either direction), or this run's own status makes the question
+ *   moot. Never reached for a SUCCEEDED run on a CONFIRMED holdout-bearing
+ *   dataset as of T20 — that case is always `not-scored-yet` now, since a
+ *   remedy always exists.
  */
 export type HoldoutAbsence =
   | 'no-dataset-holdout'
@@ -235,9 +242,11 @@ export function holdoutAbsenceOf(
   if (!run || run.status !== 'SUCCEEDED') return null
   if (run.holdoutMetrics) return null
   if (datasetHasHoldout === false) return 'no-dataset-holdout'
-  if (cvScoringPhaseOf(run) !== 'not-cv' && !run.predictionsKey) {
-    return 'not-scored-yet'
-  }
+  // MODEL-FLOW-019-T20. Was `cvScoringPhaseOf(run) !== 'not-cv' && ...` —
+  // CV-only, because only a CV run could trigger scoring. Now any
+  // SUCCEEDED run can, so a CONFIRMED holdout-bearing dataset with no
+  // figure yet is always actionable, never a bare defect claim.
+  if (datasetHasHoldout === true) return 'not-scored-yet'
   return 'not-recorded'
 }
 

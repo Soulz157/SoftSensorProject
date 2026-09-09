@@ -1117,10 +1117,12 @@ describe('ModelCandidateJobAuthorizedService', () => {
         .then((r) => r.data);
       expect(a.candidates[0]?.holdoutAbsence).toBe('no-dataset-holdout');
 
-      // (2) a CV run awaiting its own scoring phase, and (3) a run on the
-      // SAME holdout-bearing dataset that still carries no figure — a
-      // pre-2026-09-01 run or a failed replay, which is a real defect and
-      // must not read the same as (1).
+      // (2) a CV run awaiting its own scoring phase, and (3) a non-CV run
+      // on the SAME holdout-bearing dataset that still carries no figure —
+      // MODEL-FLOW-019-T20 widened triggerScoringService to any SUCCEEDED
+      // run, so this is now ALSO not-scored-yet: a real remedy (trigger
+      // scoring) exists either way, which is what must not read the same
+      // as (1)'s "nothing to do here".
       const hasHoldout = shape(
         [
           {
@@ -1150,7 +1152,7 @@ describe('ModelCandidateJobAuthorizedService', () => {
         .getJobService('draft-1', 'job-1', 'user-1', 'ADMIN')
         .then((r) => r.data);
       expect(b.candidates[0]?.holdoutAbsence).toBe('not-scored-yet');
-      expect(b.candidates[1]?.holdoutAbsence).toBe('not-recorded');
+      expect(b.candidates[1]?.holdoutAbsence).toBe('not-scored-yet');
     });
 
     it('claims nothing about a FAILED candidate, which has no figure of any kind yet', async () => {
