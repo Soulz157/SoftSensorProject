@@ -9,7 +9,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { pickTimeFormat } from '@/lib/monitoring'
+import { parseServerTimestamp, pickTimeFormat } from '@/lib/monitoring'
 import { ALGORITHM_LABELS, type Algorithm } from '@/store/model-pipeline'
 import type { RunPredictionsBatchItem } from '@/services/model-draft'
 import { AXIS_TICK } from '../evaluation/actual-vs-predicted-chart'
@@ -77,8 +77,10 @@ export function buildOverlayRows(
     for (const p of item.points) {
       let row = byTimestamp.get(p.timestamp)
       if (!row) {
+        const t = parseServerTimestamp(p.timestamp)
+        if (Number.isNaN(t)) continue
         row = {
-          t: Date.parse(p.timestamp),
+          t,
           timestamp: p.timestamp,
           actual: p.yTrue,
         }

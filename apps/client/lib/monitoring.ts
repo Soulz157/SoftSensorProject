@@ -49,31 +49,58 @@ const MINUTE = 60_000
 const HOUR = 60 * MINUTE
 const DAY = 24 * HOUR
 
+const HAS_TZ = /[Zz]|[+-]\d{2}:?\d{2}$/
+
+/**
+ * MODEL-FLOW-019-T21. The backend's wire form is zone-less —
+ * `YYYY-MM-DD HH:mm:ss` (artifact_service.py's `ts.isoformat(sep=' ')`), not
+ * an ECMA-262 date-time string. `Date.parse` treats a bare space-separated
+ * string as LOCAL time, so the same instant renders at a different
+ * wall-clock position depending on the viewer's timezone. Normalize to an
+ * unambiguous UTC ISO string first; a string that already carries a zone
+ * (tests, or any future caller) passes through untouched. Returns `NaN` on
+ * an unparseable input rather than throwing — callers must check.
+ */
+export function parseServerTimestamp(ts: string): number {
+  const iso = HAS_TZ.test(ts) ? ts : `${ts.replace(' ', 'T')}Z`
+  return Date.parse(iso)
+}
+
 /**
  * Build chart rows from aligned actual/predicted points. `sd` is the residual
  * standard deviation the ±1/±2/±3 bands are drawn around the ACTUAL line, so
  * the shaded area strictly wraps the actual data points and the prediction is
- * read against it.
+ * read against it. A point whose timestamp fails to parse is dropped rather
+ * than plotted at epoch 0.
  */
 export function buildMonitoringRows(
   points: EvalPoint[],
   sd: number,
 ): MonitoringRow[] {
-  return points.map(p => {
+  return points.flatMap(p => {
+    const t = parseServerTimestamp(p.timestamp)
+    if (Number.isNaN(t)) return []
     const residual = p.actual - p.predicted
     const percentageError = p.actual !== 0 ? (residual / p.actual) * 100 : 0
-    const t = Date.parse(p.timestamp)
-    return {
-      t,
-      timestamp: p.timestamp,
-      actual: p.actual,
-      predict: p.predicted,
-      residual: round(residual),
-      percentageError: round(percentageError),
-      sd1: [round(p.actual - sd), round(p.actual + sd)],
-      sd2: [round(p.actual - 2 * sd), round(p.actual + 2 * sd)],
-      sd3: [round(p.actual - 3 * sd), round(p.actual + 3 * sd)],
-    }
+    return [
+      {
+        t,
+        timestamp: p.timestamp,
+        actual: p.actual,
+        predict: p.predicted,
+        residual: round(residual),
+        percentageError: round(percentageError),
+        sd1: [round(p.actual - sd), round(p.actual + sd)] as [number, number],
+        sd2: [round(p.actual - 2 * sd), round(p.actual + 2 * sd)] as [
+          number,
+          number,
+        ],
+        sd3: [round(p.actual - 3 * sd), round(p.actual + 3 * sd)] as [
+          number,
+          number,
+        ],
+      },
+    ]
   })
 }
 
