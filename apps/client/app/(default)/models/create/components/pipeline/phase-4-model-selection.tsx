@@ -1,6 +1,6 @@
 'use client'
 
-import { Fragment, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import {
   AlertTriangle,
@@ -71,6 +71,7 @@ import { useCandidateJob } from '@/hooks/model/use-candidate-job'
 import { useCandidatePredictions } from '@/hooks/model/use-candidate-predictions'
 import { useDraftRuns } from '@/hooks/model/use-draft-runs'
 import { useDraftSelection } from '@/hooks/model/use-draft-selection'
+import { useArtifactHoldout } from '@/hooks/dataset/artifact/use-artifact-holdout'
 import { cvScoringPhaseOf } from '@/hooks/model/use-draft-run-evaluation'
 import {
   METRIC_KEYS,
@@ -82,6 +83,9 @@ import {
   METRIC_SOURCE_LABELS,
   holdoutGroupMissingRateText,
   groupAbsenceText,
+  holdoutAbsenceOf,
+  holdoutSeriesAbsenceOf,
+  scoreableRunIds,
   metricValueOf,
   sourcedMetricsOf,
   type CvFoldEstimate,
@@ -109,6 +113,7 @@ import {
 } from '@/lib/run-selection'
 import {
   modelDraftCandidateJobService,
+  modelDraftRunService,
   modelDraftService,
 } from '@/services/model-draft'
 import type {
@@ -160,9 +165,21 @@ function numField(
  * inline), so it is `null` here rather than a fabricated shape — T08's own
  * rule against inventing a value a run row has no source for.
  */
-function candidateFromRun(run: ModelTrainingRunListItem): CandidateResult {
-  const cvPhase = cvScoringPhaseOf(run)
-  const hasHoldout = typeof run.holdoutMetrics?.rmse === 'number'
+/**
+ * `datasetHasHoldout` is the ONE dataset-level fact this run row cannot
+ * answer itself — MODEL-FLOW-019-T20 follow-up. Was derived inline from
+ * `cvScoringPhaseOf(run)` alone, which could never distinguish "this
+ * dataset never had a holdout" from "not recorded yet": every standalone
+ * run read `'not-recorded'` where the job path's own `holdoutAbsenceFor`
+ * could say `'no-dataset-holdout'`. Delegating to the shared
+ * `holdoutAbsenceOf` (`lib/metric-source.ts`) — the same rule the backend's
+ * `holdoutAbsenceFor` mirrors for the job path — retires that drift rather
+ * than fixing it a second time in this file alone.
+ */
+function candidateFromRun(
+  run: ModelTrainingRunListItem,
+  datasetHasHoldout: boolean | null,
+): CandidateResult {
   return {
     algorithm: run.algorithm,
     status: run.status,
@@ -188,13 +205,10 @@ function candidateFromRun(run: ModelTrainingRunListItem): CandidateResult {
     lossHistory: null,
     predictionsKey: run.predictionsKey,
     cvFoldsKey: run.cvFoldsKey,
+    holdoutPredictionsKey: run.holdoutPredictionsKey,
     scoringContainerId: run.scoringContainerId,
     sourcedMetrics: sourcedMetricsOf(run),
-    holdoutAbsence: hasHoldout
-      ? null
-      : cvPhase === 'awaiting-scoring' || cvPhase === 'scoring'
-        ? 'not-scored-yet'
-        : 'not-recorded',
+    holdoutAbsence: holdoutAbsenceOf(run, datasetHasHoldout),
   }
 }
 
@@ -1118,6 +1132,36 @@ function CandidateComparison({
     [compareRunIds, candidateRunIds],
   )
 
+  // MODEL-FLOW-019-T20 follow-up. Same scoring trigger as the standalone
+  // path's own `handleScoreGroup` — see there for the full reasoning.
+  // Duplicated as a CALL, not as a rule: both paths call the same
+  // `modelDraftRunService.score`, `scoreableRunIds` and
+  // `holdoutSeriesAbsenceOf`, just against a job's candidates instead of a
+  // draft's runs.
+  const [scoreSubmitting, setScoreSubmitting] = useState(false)
+  const [scoreError, setScoreError] = useState<string | null>(null)
+  const handleScoreGroup = async (ids: string[]) => {
+    if (ids.length === 0 || scoreSubmitting) return
+    setScoreSubmitting(true)
+    setScoreError(null)
+    try {
+      await Promise.all(ids.map(id => modelDraftRunService.score(draftId, id)))
+      refetch()
+    } catch (err) {
+      setScoreError(
+        err instanceof Error ? err.message : 'Could not start scoring.',
+      )
+    } finally {
+      setScoreSubmitting(false)
+    }
+  }
+  const anyScoring = job?.candidates.some(c => c.scoringContainerId) ?? false
+  useEffect(() => {
+    if (!anyScoring) return
+    const id = setInterval(() => refetch(), 2500)
+    return () => clearInterval(id)
+  }, [anyScoring, refetch])
+
   if (loading) {
     return (
       <div className="grid gap-4 sm:grid-cols-2">
@@ -1182,6 +1226,7 @@ function CandidateComparison({
         </EmptyPanel>
       )}
       {selectError && <p className="text-xs text-red-500">{selectError}</p>}
+      {scoreError && <p className="text-xs text-red-500">{scoreError}</p>}
       <div className="flex justify-end">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -1224,6 +1269,8 @@ function CandidateComparison({
         sortMetric={sortMetric}
         onSortMetric={setSortMetric}
         criteria={acceptanceCriteria}
+        onScoreGroup={ids => void handleScoreGroup(ids)}
+        scoreSubmitting={scoreSubmitting}
       />
     </div>
   )
@@ -1249,6 +1296,8 @@ function CandidateGroups({
   sortMetric,
   onSortMetric,
   criteria,
+  onScoreGroup,
+  scoreSubmitting,
 }: {
   candidates: CandidateResult[]
   resolvedRunId: string | null
@@ -1263,6 +1312,11 @@ function CandidateGroups({
   sortMetric: RankMetricKey
   onSortMetric: (key: RankMetricKey) => void
   criteria?: AcceptanceCriterion[]
+  /** MODEL-FLOW-019-T20 follow-up. Fires with every runId in ONE phase
+   *  group that `scoreableRunIds` names — never the whole job, so a
+   *  Sweep-phase click cannot spawn containers for the Tuning phase too. */
+  onScoreGroup: (runIds: string[]) => void
+  scoreSubmitting: boolean
 }) {
   const phase1 = candidates.filter(c => c.phase !== 2)
   const phase2 = candidates.filter(c => c.phase === 2)
@@ -1277,47 +1331,62 @@ function CandidateGroups({
   // not (MODEL-FLOW-013-T11), and ranking them against each other would
   // lose that. Each group gets its own `CandidateTable` call, its own
   // ranking, its own summary sentence.
-  const section = (group: CandidateResult[]) => (
-    <div className="space-y-4">
-      <CandidateOverlayChart
-        candidates={group}
-        byRunId={byRunId}
-        population="test-split"
-        absenceNote={groupAbsenceText('test-split', group)}
-      />
-      {/* MODEL-FLOW-019-T20. Beside the test-split overlay, never merged
-          into it — the two windows are genuinely different data (the
-          holdout is raw rows split off at BRONZE that no fit ever saw)
-          and mistaking one for the other is what produced T19's report.
+  const section = (group: CandidateResult[]) => {
+    // Structural view `groupAbsenceText` needs, computed once per group so
+    // both charts below read the SAME per-candidate verdict.
+    const groupAbsenceCandidates = group.map(c => ({
+      cvFoldsKey: c.cvFoldsKey,
+      holdoutSeriesAbsence: holdoutSeriesAbsenceOf(c),
+    }))
+    const toScoreIds = scoreableRunIds(group)
+    return (
+      <div className="space-y-4">
+        <CandidateOverlayChart
+          candidates={group}
+          byRunId={byRunId}
+          population="test-split"
+          absenceNote={groupAbsenceText('test-split', groupAbsenceCandidates)}
+        />
+        {/* MODEL-FLOW-019-T20. Beside the test-split overlay, never merged
+            into it — the two windows are genuinely different data (the
+            holdout is raw rows split off at BRONZE that no fit ever saw)
+            and mistaking one for the other is what produced T19's report.
 
-          STATES its absence rather than vanishing when no candidate here
-          has a holdout series. It vanished at first, on the reasoning that
-          a chart must not claim an absence it has not checked — but the
-          absence IS checked: `groupAbsenceText` reads each candidate's own
-          `holdoutAbsence`, the same field AC11 already refuses to leave
-          blank in the table below. Vanishing was not modesty, it was the
-          one state a reader cannot tell apart from a bug. */}
-      <CandidateOverlayChart
-        candidates={group}
-        byRunId={holdoutByRunId}
-        population="holdout"
-        note={holdoutGroupMissingRateText(group.map(c => c.sourcedMetrics))}
-        absenceNote={groupAbsenceText('holdout', group)}
-      />
-      <CandidateTable
-        candidates={group}
-        resolvedRunId={resolvedRunId}
-        selecting={selecting}
-        onSelect={onSelect}
-        selectedMetrics={selectedMetrics}
-        sortMetric={sortMetric}
-        onSortMetric={onSortMetric}
-        byRunId={byRunId}
-        predictionsLoading={predictionsLoading}
-        criteria={criteria}
-      />
-    </div>
-  )
+            STATES its absence rather than vanishing when no candidate here
+            has a holdout series. It vanished at first, on the reasoning that
+            a chart must not claim an absence it has not checked — but the
+            absence IS checked: `groupAbsenceText` reads each candidate's own
+            `holdoutSeriesAbsence`, the same field AC11 already refuses to
+            leave blank in the table below (as `holdoutAbsence`). Vanishing
+            was not modesty, it was the one state a reader cannot tell apart
+            from a bug. */}
+        <CandidateOverlayChart
+          candidates={group}
+          byRunId={holdoutByRunId}
+          population="holdout"
+          note={holdoutGroupMissingRateText(group.map(c => c.sourcedMetrics))}
+          absenceNote={groupAbsenceText('holdout', groupAbsenceCandidates)}
+          onScore={
+            toScoreIds.length > 0 ? () => onScoreGroup(toScoreIds) : undefined
+          }
+          scoreCount={toScoreIds.length}
+          scoring={scoreSubmitting || group.some(c => c.scoringContainerId)}
+        />
+        <CandidateTable
+          candidates={group}
+          resolvedRunId={resolvedRunId}
+          selecting={selecting}
+          onSelect={onSelect}
+          selectedMetrics={selectedMetrics}
+          sortMetric={sortMetric}
+          onSortMetric={onSortMetric}
+          byRunId={byRunId}
+          predictionsLoading={predictionsLoading}
+          criteria={criteria}
+        />
+      </div>
+    )
+  }
 
   if (phase2.length === 0) return section(phase1)
 
@@ -1364,11 +1433,13 @@ function StandaloneComparison({
   runs,
   selectedRunId,
   refetchSelection,
+  refetchRuns,
 }: {
   draftId: string
   runs: ModelTrainingRunListItem[]
   selectedRunId: string | null
   refetchSelection: () => void
+  refetchRuns: () => void
 }) {
   const [selectingRunId, setSelectingRunId] = useState<string | null>(null)
   const [selectError, setSelectError] = useState<string | null>(null)
@@ -1403,6 +1474,56 @@ function StandaloneComparison({
     runIds,
     'holdout',
   )
+
+  // MODEL-FLOW-019-T20 follow-up. The ONE dataset-level fact `candidateFromRun`
+  // needs and a run row cannot answer itself — mirrors the job path's own
+  // ONE lookup for the whole job (`reconcileAndShape`'s `datasetHasHoldout`),
+  // here off the first run rather than a job root, since this view has no
+  // single job to key off. `useArtifactHoldout` only ever CONFIRMS presence
+  // or stays unknown — never a confirmed absence, per its own doc comment
+  // (a 200-with-null payload here can still under-report relative to what
+  // the scoring trigger itself checks, `lib/holdout-artifact.ts`'s wider
+  // filter) — so `missing`/`error`/no-runs-yet all collapse to `null`
+  // ("not recorded") rather than a false `'no-dataset-holdout'` that would
+  // hide a real Score button.
+  const holdoutSampleRun = runs.find(r => r.status === 'SUCCEEDED') ?? null
+  const { holdout: artifactHoldout } = useArtifactHoldout(
+    holdoutSampleRun?.datasetId ?? null,
+    holdoutSampleRun?.goldArtifactId ?? null,
+  )
+  const datasetHasHoldout = artifactHoldout !== null ? true : null
+
+  // MODEL-FLOW-019-T20 follow-up. Triggers holdout scoring for every
+  // SUCCEEDED run in one group that is missing a series for a fixable
+  // reason (`scoreableRunIds`) — mirrors `useDraftRunEvaluation`'s own
+  // `triggerScoring`, but fans out over a group rather than one run, since
+  // this screen compares many at once.
+  const [scoreSubmitting, setScoreSubmitting] = useState(false)
+  const [scoreError, setScoreError] = useState<string | null>(null)
+  const handleScoreGroup = async (ids: string[]) => {
+    if (ids.length === 0 || scoreSubmitting) return
+    setScoreSubmitting(true)
+    setScoreError(null)
+    try {
+      await Promise.all(ids.map(id => modelDraftRunService.score(draftId, id)))
+      refetchRuns()
+    } catch (err) {
+      setScoreError(
+        err instanceof Error ? err.message : 'Could not start scoring.',
+      )
+    } finally {
+      setScoreSubmitting(false)
+    }
+  }
+  // Polls while any run here is mid-scoring, so a container that finishes
+  // without the user touching this screen still resolves into a chart —
+  // same 2.5s cadence `useDraftRunEvaluation`'s own poll uses.
+  const anyScoring = runs.some(r => r.scoringContainerId)
+  useEffect(() => {
+    if (!anyScoring) return
+    const id = setInterval(() => refetchRuns(), 2500)
+    return () => clearInterval(id)
+  }, [anyScoring, refetchRuns])
 
   const handleSelect = async (runId: string) => {
     setSelectingRunId(runId)
@@ -1481,9 +1602,19 @@ function StandaloneComparison({
   return (
     <div className="space-y-4">
       {selectError && <p className="text-xs text-red-500">{selectError}</p>}
+      {scoreError && <p className="text-xs text-red-500">{scoreError}</p>}
       <MetricsPicker />
       {groups.map(([targetY, groupRuns]) => {
-        const groupCandidates = groupRuns.map(candidateFromRun)
+        const groupCandidates = groupRuns.map(run =>
+          candidateFromRun(run, datasetHasHoldout),
+        )
+        // Structural view `groupAbsenceText` needs, computed once per group
+        // so both charts below read the SAME per-candidate verdict.
+        const groupAbsenceCandidates = groupCandidates.map(c => ({
+          cvFoldsKey: c.cvFoldsKey,
+          holdoutSeriesAbsence: holdoutSeriesAbsenceOf(c),
+        }))
+        const toScoreIds = scoreableRunIds(groupCandidates)
         return (
           <div key={targetY} className="space-y-4">
             {multiTarget && (
@@ -1500,7 +1631,10 @@ function StandaloneComparison({
               candidates={groupCandidates}
               byRunId={byRunId}
               population="test-split"
-              absenceNote={groupAbsenceText('test-split', groupCandidates)}
+              absenceNote={groupAbsenceText(
+                'test-split',
+                groupAbsenceCandidates,
+              )}
             />
             <CandidateOverlayChart
               candidates={groupCandidates}
@@ -1509,7 +1643,17 @@ function StandaloneComparison({
               note={holdoutGroupMissingRateText(
                 groupCandidates.map(c => c.sourcedMetrics),
               )}
-              absenceNote={groupAbsenceText('holdout', groupCandidates)}
+              absenceNote={groupAbsenceText('holdout', groupAbsenceCandidates)}
+              onScore={
+                toScoreIds.length > 0
+                  ? () => void handleScoreGroup(toScoreIds)
+                  : undefined
+              }
+              scoreCount={toScoreIds.length}
+              scoring={
+                scoreSubmitting ||
+                groupCandidates.some(c => c.scoringContainerId)
+              }
             />
             <CandidateTable
               candidates={groupCandidates}
@@ -1542,7 +1686,7 @@ function StandaloneComparison({
  * each child fetching its own copy.
  */
 function StandaloneSelection({ draftId }: { draftId: string }) {
-  const { runs, loading, error } = useDraftRuns(draftId)
+  const { runs, loading, error, refetch: refetchRuns } = useDraftRuns(draftId)
   const { selectedRunId, refetch: refetchSelection } =
     useDraftSelection(draftId)
   // MODEL-FLOW-019-T08 part 3. Empty means every run — the same rule
@@ -1580,6 +1724,7 @@ function StandaloneSelection({ draftId }: { draftId: string }) {
       runs={visibleRuns}
       selectedRunId={selectedRunId}
       refetchSelection={refetchSelection}
+      refetchRuns={refetchRuns}
     />
   )
 }

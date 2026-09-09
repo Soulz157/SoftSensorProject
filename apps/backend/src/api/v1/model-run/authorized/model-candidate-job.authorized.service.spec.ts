@@ -1033,6 +1033,56 @@ describe('ModelCandidateJobAuthorizedService', () => {
       return { prisma, service };
     }
 
+    // MODEL-FLOW-019-T20 follow-up. `holdoutPredictionsKey` is a straight
+    // passthrough (no `select` narrows the `runs` query, so every scalar
+    // column already reaches this method) — pinned so the field cannot be
+    // silently dropped from the emission a second time.
+    it("carries a non-CV candidate's own holdoutPredictionsKey", async () => {
+      const { service } = shape([
+        {
+          id: 'run-1',
+          status: 'SUCCEEDED',
+          failureReason: null,
+          metrics: { r2: 0.9, rmse: 0.5, mae: 0.4 },
+          holdoutMetrics: { r2: 0.8, rmse: 0.6, mae: 0.5 },
+          lossHistoryKey: null,
+          cvFoldsKey: null,
+          predictionsKey: 'drafts/d/runs/run-1/predictions.parquet',
+          holdoutPredictionsKey:
+            'drafts/d/runs/run-1/holdout_predictions.parquet',
+        },
+      ]);
+
+      const { candidates } = await service
+        .getJobService('draft-1', 'job-1', 'user-1', 'ADMIN')
+        .then((r) => r.data);
+
+      expect(candidates[0]?.holdoutPredictionsKey).toBe(
+        'drafts/d/runs/run-1/holdout_predictions.parquet',
+      );
+    });
+
+    it("defaults a candidate's holdoutPredictionsKey to null when the run has none", async () => {
+      const { service } = shape([
+        {
+          id: 'run-1',
+          status: 'SUCCEEDED',
+          failureReason: null,
+          metrics: { r2: 0.9, rmse: 0.5, mae: 0.4 },
+          holdoutMetrics: null,
+          lossHistoryKey: null,
+          cvFoldsKey: null,
+          predictionsKey: 'drafts/d/runs/run-1/predictions.parquet',
+        },
+      ]);
+
+      const { candidates } = await service
+        .getJobService('draft-1', 'job-1', 'user-1', 'ADMIN')
+        .then((r) => r.data);
+
+      expect(candidates[0]?.holdoutPredictionsKey).toBeNull();
+    });
+
     it('tags a plain candidate test-split and a scored CV candidate with BOTH of its sources', async () => {
       const { service } = shape(
         [

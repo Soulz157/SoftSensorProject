@@ -9,6 +9,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
+import { Button } from '@/components/ui/button'
 import { parseServerTimestamp, pickTimeFormat } from '@/lib/monitoring'
 import {
   populationTitle,
@@ -87,6 +88,26 @@ interface Props {
    * a caller that has no reason to give does not print a vague one.
    */
   absenceNote?: string
+  /**
+   * MODEL-FLOW-019-T20 follow-up. Rendered as a button inside the empty-
+   * state frame, when present — the caller passes this only when
+   * `scoreableRunIds(candidates)` (`lib/metric-source.ts`) is non-empty, so
+   * a confirmed no-dataset-holdout group or one already `'scoring'` gets no
+   * button that would only 400 or duplicate an in-flight request. Omitted
+   * (`undefined`) renders the frame with no button at all — the caller's
+   * job to decide, same as `absenceNote` above; this component has no
+   * `draftId`/service access of its own to trigger scoring with.
+   */
+  onScore?: () => void
+  /** How many runIds `onScore` will act on — shown in the button's own
+   *  label so a click's blast radius (how many scoring containers spawn)
+   *  is visible before it happens. */
+  scoreCount?: number
+  /** True while a scoring request for this group is in flight OR at least
+   *  one candidate here already carries a `scoringContainerId` — either way
+   *  the button reads "Scoring…" and disables, rather than offering a
+   *  second click that would spawn a second container for the same run. */
+  scoring?: boolean
 }
 
 const OVERLAY_COLORS = [
@@ -164,6 +185,9 @@ export function CandidateOverlayChart({
   population,
   note,
   absenceNote,
+  onScore,
+  scoreCount,
+  scoring,
 }: Props) {
   const entries = candidates
     .filter(c => c.runId && byRunId.has(c.runId))
@@ -185,6 +209,21 @@ export function CandidateOverlayChart({
           </span>
         </p>
         <p className="text-[10px] text-muted-foreground">{absenceNote}</p>
+        {onScore && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 cursor-pointer text-xs"
+            disabled={scoring}
+            onClick={onScore}
+          >
+            {scoring
+              ? 'Scoring…'
+              : scoreCount === 1
+                ? 'Score against holdout'
+                : `Score ${scoreCount ?? ''} candidates against holdout`}
+          </Button>
+        )}
       </div>
     )
   }

@@ -628,6 +628,15 @@ export interface CandidateResult {
    *  client whether a non-null predictionsKey is a test-split series or a
    *  scored holdout — see MODEL-FLOW-016 AC5's 2026-09-04 amendment. */
   cvFoldsKey: string | null
+  /** MODEL-FLOW-019-T20 follow-up. A non-CV candidate's own scored holdout
+   *  series — null until its scoring phase completes, for EITHER run kind
+   *  (a CV candidate's scored holdout still lands in `predictionsKey`
+   *  above; see that field's own doc comment). Never read this to decide
+   *  CV-ness — use `cvFoldsKey`. Feeds `holdoutSeriesAbsenceOf`
+   *  (`lib/metric-source.ts`), which is what tells the holdout overlay
+   *  chart it has a score but no series to plot — the state 188 of this
+   *  system's 252 SUCCEEDED runs are actually in. */
+  holdoutPredictionsKey: string | null
   /** Non-null while a CV candidate's holdout-scoring phase is in flight. */
   scoringContainerId: string | null
   /** MODEL-FLOW-019-T02. Every figure this candidate can honestly show,

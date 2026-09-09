@@ -351,11 +351,113 @@ export function holdoutGroupMissingRateText(
   return `Holdout missing rate differs by candidate: ${[...texts].join('; ')}.`
 }
 
+/**
+ * MODEL-FLOW-019-T20 follow-up. Why a population's overlay CHART has no
+ * SERIES to draw — a different question from `HoldoutAbsence`, which
+ * answers whether a holdout FIGURE (the aggregate r2/rmse/mae) is present.
+ *
+ * The two diverge for the common case: training scores a run's holdout
+ * inline and keeps the aggregate, but discards the per-row frame a chart
+ * needs — 188 of 252 SUCCEEDED runs in this system carry `holdoutMetrics`
+ * with no series, live-counted 2026-09-09. A chart that asked
+ * `HoldoutAbsence` for that case got `null` ("a figure is present, nothing
+ * to explain") and fell through to a generic "nothing recorded" sentence —
+ * exactly wrong, since a score exists and only the frame is missing.
+ *
+ * - `no-dataset-holdout` — nothing to score against; same fact as
+ *   `HoldoutAbsence`'s member of the same name.
+ * - `scoring`            — a scoring container is in flight for at least
+ *   one candidate; the series is coming, not missing.
+ * - `aggregate-only`     — the common case above: a score exists, the
+ *   frame does not. Scoring again (MODEL-FLOW-019-T20's widened trigger)
+ *   produces it.
+ * - `not-scored-yet`     — no figure and no frame. Same remedy as
+ *   `aggregate-only`.
+ */
+export type HoldoutSeriesAbsence =
+  | 'no-dataset-holdout'
+  | 'scoring'
+  | 'aggregate-only'
+  | 'not-scored-yet'
+
+/** The per-candidate facts `holdoutSeriesAbsenceOf` needs. Deliberately
+ *  reads `holdoutAbsence` (the metric-level verdict) rather than a raw
+ *  `datasetHasHoldout` boolean — a SUCCEEDED candidate's `holdoutAbsence`
+ *  is already `null` exactly when `holdoutMetrics` is present (both
+ *  `holdoutAbsenceOf` above and the backend's twin `holdoutAbsenceFor`
+ *  guarantee this), so re-deriving `datasetHasHoldout` here would be a
+ *  second copy of a fact this module already computed once. */
+export interface HoldoutSeriesCandidate {
+  status: string
+  cvFoldsKey: string | null
+  predictionsKey: string | null
+  holdoutPredictionsKey: string | null
+  scoringContainerId: string | null
+  holdoutAbsence: HoldoutAbsence | null
+}
+
+/**
+ * Why this candidate's holdout OVERLAY CHART has no series to plot, or null
+ * when a series exists and there is nothing to explain.
+ *
+ * WHICH COLUMN carries the series is the same asymmetry
+ * `apps/backend/src/lib/run-prediction-source.ts`'s `predictionKeyFor`
+ * owns server-side: a CV run's `predictionsKey` IS its holdout (it never
+ * had a test split); a non-CV run's holdout lands in `holdoutPredictionsKey`
+ * instead, because its `predictionsKey` is already its test split. Restated
+ * here rather than imported — that module is backend-only TypeScript, a
+ * different package this client cannot reach across.
+ */
+export function holdoutSeriesAbsenceOf(
+  candidate: HoldoutSeriesCandidate | null | undefined,
+): HoldoutSeriesAbsence | null {
+  if (!candidate || candidate.status !== 'SUCCEEDED') return null
+  const isCv = Boolean(candidate.cvFoldsKey)
+  const seriesKey = isCv
+    ? candidate.predictionsKey
+    : candidate.holdoutPredictionsKey
+  if (seriesKey) return null
+  if (candidate.scoringContainerId) return 'scoring'
+  if (candidate.holdoutAbsence === 'no-dataset-holdout') {
+    return 'no-dataset-holdout'
+  }
+  // A SUCCEEDED candidate's `holdoutAbsence` is null exactly when a figure
+  // is present (see the interface doc above) — the series is what is
+  // missing, not the score.
+  if (candidate.holdoutAbsence === null) return 'aggregate-only'
+  return 'not-scored-yet'
+}
+
+/** `holdoutSeriesAbsenceOf`'s candidate shape, plus the one field needed to
+ *  name WHICH run to score. */
+export interface ScoreableCandidate extends HoldoutSeriesCandidate {
+  runId: string | null
+}
+
+/**
+ * MODEL-FLOW-019-T20 follow-up. Every runId in this group that a "Score
+ * against holdout" click should act on — SUCCEEDED, with a run to name, and
+ * missing a series for a reason scoring actually fixes
+ * (`'aggregate-only'`/`'not-scored-yet'`). Excludes `'no-dataset-holdout'`
+ * (scoring would 400) and `'scoring'` (already in flight) on purpose, so a
+ * caller can spawn exactly this list without re-deriving the same two
+ * branches.
+ */
+export function scoreableRunIds(candidates: ScoreableCandidate[]): string[] {
+  return candidates
+    .filter((c): c is ScoreableCandidate & { runId: string } => {
+      if (!c.runId) return false
+      const absence = holdoutSeriesAbsenceOf(c)
+      return absence === 'aggregate-only' || absence === 'not-scored-yet'
+    })
+    .map(c => c.runId)
+}
+
 /** The per-candidate facts `groupAbsenceText` needs — the STRUCTURAL
  *  minimum, so both of phase-4's shapes and Step 3's run rows satisfy it. */
 export interface GroupAbsenceCandidate {
   cvFoldsKey: string | null
-  holdoutAbsence: HoldoutAbsence | null
+  holdoutSeriesAbsence: HoldoutSeriesAbsence | null
 }
 
 /**
@@ -401,7 +503,25 @@ export function groupAbsenceText(
     return artifactAbsenceText(population)
   }
 
-  const absences = new Set(candidates.map(c => c.holdoutAbsence))
+  const absences = new Set(candidates.map(c => c.holdoutSeriesAbsence))
+  // Ordered most-informative-first — a mixed group states the most
+  // actionable fact any candidate carries, rather than the first one found.
+  if (absences.has('scoring')) {
+    return (
+      'Holdout scoring is in progress for one or more candidates — this ' +
+      'chart will draw once it finishes.'
+    )
+  }
+  if (absences.has('aggregate-only')) {
+    // The common real case (188 of 252 SUCCEEDED runs, live-counted
+    // 2026-09-09): training scores the holdout inline and keeps the
+    // aggregate, but discards the per-row frame this chart needs.
+    return (
+      'These candidates have a validation-holdout score but no per-row ' +
+      'series — training keeps the aggregate and discards the frame; the ' +
+      'series comes from the separate scoring phase.'
+    )
+  }
   if (absences.size === 1 && absences.has('no-dataset-holdout')) {
     return 'This dataset has no validation holdout, so there is nothing to score against.'
   }

@@ -6,7 +6,7 @@ import { render, screen } from '@testing-library/react'
 // match METRIC_SOURCE_LABELS). What these tests actually pin is WHICH
 // population each panel names, which survives any rewording; a hardcoded
 // literal would fail for a copy edit that broke nothing.
-import { populationTitle, populationLabel } from '@/lib/metric-source'
+import { populationTitle } from '@/lib/metric-source'
 import { createStore, Provider } from 'jotai'
 import { parse } from 'date-fns'
 import {
@@ -32,6 +32,7 @@ import type {
   ModelTrainingRunListItem,
   RunPredictionsBatchItem,
 } from '@/services/model-draft'
+import type { ArtifactHoldout } from '@/services/dataset-version'
 import type { UsePipelineNavResult } from '@/hooks/model/use-model-pipeline-nav'
 
 /**
@@ -72,6 +73,20 @@ const h = vi.hoisted(() => ({
     loading: false,
     error: null as string | null,
   },
+  /** MODEL-FLOW-019-T20 follow-up. `StandaloneComparison`'s own
+   *  `useArtifactHoldout` call — mocked rather than let run for real, the
+   *  same reason every other data hook here is: this component makes NO
+   *  network request of its own in a render test, and the real hook would
+   *  fire one (jsdom's own `fetch`) that resolves after this test's
+   *  synchronous assertions already ran, leaving an unhandled rejection
+   *  behind. `holdout: null` with no `missing`/`error` is the hook's own
+   *  documented "not recorded" default. */
+  artifactHoldoutResult: {
+    holdout: null as ArtifactHoldout | null,
+    loading: false,
+    missing: false,
+    error: null as string | null,
+  },
   predictionsSpy: vi.fn(),
 }))
 
@@ -85,6 +100,10 @@ vi.mock('@/hooks/model/use-draft-runs', () => ({
 
 vi.mock('@/hooks/model/use-draft-selection', () => ({
   useDraftSelection: () => h.selectionResult,
+}))
+
+vi.mock('@/hooks/dataset/artifact/use-artifact-holdout', () => ({
+  useArtifactHoldout: () => h.artifactHoldoutResult,
 }))
 
 // Wraps the fetch hook so the assertion can see exactly which runIds every
@@ -327,9 +346,7 @@ describe('MODEL-FLOW-019-V32 — chart ticks stay inside the plotted window', ()
         note="Holdout 12.5% missing (n=7)."
       />,
     )
-    expect(
-      holdout.getByText(populationTitle('holdout')),
-    ).toBeInTheDocument()
+    expect(holdout.getByText(populationTitle('holdout'))).toBeInTheDocument()
     expect(holdout.container.textContent).toContain('on the validation holdout')
     // AC2 — a holdout chart never renders without its own missing rate.
     expect(holdout.container.textContent).toContain('12.5% missing')
@@ -420,6 +437,7 @@ function candidateResult(
     lossHistory: null,
     predictionsKey: 'predictions.parquet',
     cvFoldsKey: null,
+    holdoutPredictionsKey: null,
     scoringContainerId: null,
     sourcedMetrics: [{ source: 'test-split', r2: 0.9, rmse: 0.5, mae: 0.4 }],
     holdoutAbsence: 'no-dataset-holdout',
@@ -498,6 +516,9 @@ beforeEach(() => {
   h.selectionResult.selectedRunId = null
   h.predictionsResult.byRunId = new Map()
   h.holdoutPredictionsResult.byRunId = new Map()
+  h.artifactHoldoutResult.holdout = null
+  h.artifactHoldoutResult.missing = false
+  h.artifactHoldoutResult.error = null
 })
 
 describe('MODEL-FLOW-019-V33 — a foreign compare id plots nothing, empties nothing', () => {
@@ -553,9 +574,7 @@ describe('MODEL-FLOW-019-V33 — a foreign compare id plots nothing, empties not
     // this fixture's runs carry `holdoutAbsence: 'no-dataset-holdout'`, so
     // the panel must say the dataset has none — not "not scored yet",
     // which would send the reader to a scoring button that cannot help.
-    expect(
-      screen.getByText(/nothing to score against/i),
-    ).toBeInTheDocument()
+    expect(screen.getByText(/nothing to score against/i)).toBeInTheDocument()
     // getAllByText, not getByText: both the overlay chart's own legend AND
     // the candidate table render each algorithm's label, so more than one
     // match is the EXPECTED shape, not a duplicate-content bug.
@@ -622,19 +641,27 @@ describe('MODEL-FLOW-019-V33 — a foreign compare id plots nothing, empties not
     expect(
       screen.getAllByText(populationTitle('holdout')).length,
     ).toBeGreaterThan(0)
-    // The reason is DERIVED from these candidates, not a generic string:
-    // this fixture's runs carry `holdoutAbsence: 'no-dataset-holdout'`, so
-    // the panel must say the dataset has none — not "not scored yet",
-    // which would send the reader to a scoring button that cannot help.
-    // A DIFFERENT branch from the job path above, and deliberately so:
-    // these runs carry `holdoutAbsence: 'not-recorded'` (the dataset-holdout
-    // fact is unknown here), so the panel must state that plainly rather
-    // than claim a dataset has no holdout it never checked for.
+    // A DIFFERENT branch from the job path above, and deliberately so: this
+    // fixture's runs carry no `holdoutMetrics` and `artifactHoldoutResult`
+    // defaults to `holdout: null` (the mocked `useArtifactHoldout`'s own
+    // "not recorded" case — see its own doc comment above), so
+    // `holdoutAbsenceOf` reads `not-recorded`. At the SERIES layer
+    // (`holdoutSeriesAbsenceOf`) that collapses into the same actionable
+    // bucket as a confirmed "not scored yet": either way scoring is the
+    // next action, so the panel offers it — never the job path's "nothing
+    // to score against", which would send the reader to a button that
+    // cannot help.
     expect(
-      screen.getAllByText(
-        new RegExp(`No candidate recorded a ${populationLabel('holdout')}`, 'i'),
-      ).length,
+      screen.getAllByText(/scored against the validation holdout yet/i).length,
     ).toBeGreaterThan(0)
+    // ...and offers the fix: both runs are SUCCEEDED with no series and no
+    // confirmed absence, so `scoreableRunIds` names both and the panel
+    // renders a Score button rather than a dead-end sentence alone.
+    expect(
+      screen.getByRole('button', {
+        name: /score 2 candidates against holdout/i,
+      }),
+    ).toBeInTheDocument()
     // getAllByText, not getByText: both the overlay chart's own legend AND
     // the candidate table render each algorithm's label, so more than one
     // match is the EXPECTED shape, not a duplicate-content bug.

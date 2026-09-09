@@ -31,6 +31,15 @@ export interface DraftRunSummary {
    *  time) on an ordinary run. Distinguishes "not yet scored" from
    *  "scoring produced nothing" for a CV run. */
   predictionsKey: string | null
+  /** MODEL-FLOW-019-T20 follow-up. A non-CV run's own scored holdout
+   *  series — null until its scoring phase completes; see
+   *  `ModelTrainingRun.holdoutPredictionsKey`'s own doc comment
+   *  (services/model-draft.ts) for why this is a separate column from
+   *  `predictionsKey` rather than a second meaning for it. Lets Step 5
+   *  offer "Score against holdout" to an ordinary run too, once it has a
+   *  score (`holdoutMetrics`) but no series yet — the common real case,
+   *  188 of 252 SUCCEEDED runs in this system, live-counted 2026-09-09. */
+  holdoutPredictionsKey: string | null
   /** Non-null only while this run's own separate scoring phase (T07) is
    *  in flight — what Step 5 polls to show "scoring is running" rather
    *  than a dead "trigger scoring" button. */
@@ -194,6 +203,7 @@ async function fetchEvaluation(
     failureReason: run.failureReason,
     cvFoldsKey: run.cvFoldsKey,
     predictionsKey: run.predictionsKey,
+    holdoutPredictionsKey: run.holdoutPredictionsKey,
     scoringContainerId: run.scoringContainerId,
     holdoutMetrics: run.holdoutMetrics,
     cvFolds: run.cvFolds ?? null,

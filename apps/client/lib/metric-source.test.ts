@@ -12,8 +12,11 @@ import {
   sourcedMetricsOf,
   type MetricSource,
   type MetricSourceRun,
+  type HoldoutAbsence,
   groupAbsenceText,
   groupOmittedText,
+  holdoutSeriesAbsenceOf,
+  scoreableRunIds,
 } from './metric-source'
 
 /**
@@ -301,8 +304,8 @@ describe('population label forms', () => {
  * and could not tell "not applicable" from "not scored yet" from "broken".
  */
 describe('groupAbsenceText', () => {
-  const cv = { cvFoldsKey: 'k', holdoutAbsence: null }
-  const nonCv = { cvFoldsKey: null, holdoutAbsence: null }
+  const cv = { cvFoldsKey: 'k', holdoutSeriesAbsence: null }
+  const nonCv = { cvFoldsKey: null, holdoutSeriesAbsence: null }
 
   it('tells an all-CV group its test split does not exist, rather than calling it missing', () => {
     const text = groupAbsenceText('test-split', [cv, cv])
@@ -318,8 +321,8 @@ describe('groupAbsenceText', () => {
 
   it('reports a dataset with no holdout as a dataset fact, not a scoring gap', () => {
     const text = groupAbsenceText('holdout', [
-      { cvFoldsKey: null, holdoutAbsence: 'no-dataset-holdout' },
-      { cvFoldsKey: null, holdoutAbsence: 'no-dataset-holdout' },
+      { cvFoldsKey: null, holdoutSeriesAbsence: 'no-dataset-holdout' },
+      { cvFoldsKey: null, holdoutSeriesAbsence: 'no-dataset-holdout' },
     ])
     expect(text).toMatch(/dataset has no validation holdout/i)
     expect(text).not.toMatch(/yet/i)
@@ -327,12 +330,39 @@ describe('groupAbsenceText', () => {
 
   it('reports an unscored holdout as actionable, never as a defect', () => {
     const text = groupAbsenceText('holdout', [
-      { cvFoldsKey: null, holdoutAbsence: 'not-scored-yet' },
-      { cvFoldsKey: null, holdoutAbsence: 'not-recorded' },
+      { cvFoldsKey: null, holdoutSeriesAbsence: 'not-scored-yet' },
     ])
-    // 'not-scored-yet' anywhere wins: one scoreable candidate makes the
-    // whole group's state one the user can leave.
     expect(text).toMatch(/scored against the validation holdout yet/i)
+  })
+
+  // MODEL-FLOW-019-T20 follow-up. The state 188 of 252 SUCCEEDED runs are
+  // actually in, live-counted 2026-09-09: a holdout SCORE exists, no
+  // per-row SERIES does. This is the sentence the original bug report was
+  // about — the panel fell through to the generic "nothing recorded" text
+  // for exactly this case.
+  it('names the score-exists-but-no-series state, not a generic absence', () => {
+    const text = groupAbsenceText('holdout', [
+      { cvFoldsKey: null, holdoutSeriesAbsence: 'aggregate-only' },
+    ])
+    expect(text).toMatch(/validation-holdout score/i)
+    expect(text).toMatch(/no per-row series/i)
+    expect(text).not.toMatch(/no candidate recorded a/i)
+  })
+
+  it('reports in-flight scoring rather than any other absence, when mixed', () => {
+    const text = groupAbsenceText('holdout', [
+      { cvFoldsKey: null, holdoutSeriesAbsence: 'scoring' },
+      { cvFoldsKey: null, holdoutSeriesAbsence: 'aggregate-only' },
+    ])
+    expect(text).toMatch(/scoring is in progress/i)
+  })
+
+  it('prioritises the aggregate-only state over a mixed no-dataset-holdout reading', () => {
+    const text = groupAbsenceText('holdout', [
+      { cvFoldsKey: null, holdoutSeriesAbsence: 'no-dataset-holdout' },
+      { cvFoldsKey: null, holdoutSeriesAbsence: 'aggregate-only' },
+    ])
+    expect(text).toMatch(/validation-holdout score/i)
   })
 
   it('never returns an empty string, for any population or group', () => {
@@ -341,6 +371,113 @@ describe('groupAbsenceText', () => {
         expect(groupAbsenceText(p, g).length).toBeGreaterThan(0)
       }
     }
+  })
+})
+
+describe('holdoutSeriesAbsenceOf', () => {
+  const base = {
+    status: 'SUCCEEDED',
+    cvFoldsKey: null as string | null,
+    predictionsKey: null as string | null,
+    holdoutPredictionsKey: null as string | null,
+    scoringContainerId: null as string | null,
+    holdoutAbsence: null as HoldoutAbsence | null,
+  }
+
+  it('is null (nothing to explain) once a non-CV run has its own holdout series', () => {
+    expect(
+      holdoutSeriesAbsenceOf({ ...base, holdoutPredictionsKey: 'k' }),
+    ).toBeNull()
+  })
+
+  it("is null once a CV run's predictionsKey carries its holdout series", () => {
+    expect(
+      holdoutSeriesAbsenceOf({
+        ...base,
+        cvFoldsKey: 'cv',
+        predictionsKey: 'k',
+      }),
+    ).toBeNull()
+  })
+
+  it("does not mistake a non-CV run's OWN test-split predictionsKey for a holdout series", () => {
+    // The exact conflation MODEL-FLOW-019 exists to prevent, restated at
+    // the series layer: a non-CV run's `predictionsKey` is its test split,
+    // never its holdout — only `holdoutPredictionsKey` counts here.
+    expect(
+      holdoutSeriesAbsenceOf({ ...base, predictionsKey: 'test-split-key' }),
+    ).not.toBeNull()
+  })
+
+  it('is "scoring" while a container is in flight, even with an aggregate already present', () => {
+    expect(
+      holdoutSeriesAbsenceOf({
+        ...base,
+        scoringContainerId: 'c1',
+        holdoutAbsence: null,
+      }),
+    ).toBe('scoring')
+  })
+
+  it('is "aggregate-only" for the 188-run majority: a score exists, no series does', () => {
+    expect(holdoutSeriesAbsenceOf({ ...base, holdoutAbsence: null })).toBe(
+      'aggregate-only',
+    )
+  })
+
+  it('is "not-scored-yet" when neither a figure nor a series exists', () => {
+    expect(
+      holdoutSeriesAbsenceOf({ ...base, holdoutAbsence: 'not-scored-yet' }),
+    ).toBe('not-scored-yet')
+  })
+
+  it('is "no-dataset-holdout" only when the dataset fact is confirmed absent', () => {
+    expect(
+      holdoutSeriesAbsenceOf({
+        ...base,
+        holdoutAbsence: 'no-dataset-holdout',
+      }),
+    ).toBe('no-dataset-holdout')
+  })
+
+  it('is null for a run that has not SUCCEEDED — nothing to explain yet', () => {
+    expect(holdoutSeriesAbsenceOf({ ...base, status: 'RUNNING' })).toBeNull()
+  })
+})
+
+describe('scoreableRunIds', () => {
+  const base = {
+    runId: 'r1',
+    status: 'SUCCEEDED',
+    cvFoldsKey: null as string | null,
+    predictionsKey: null as string | null,
+    holdoutPredictionsKey: null as string | null,
+    scoringContainerId: null as string | null,
+    holdoutAbsence: null as HoldoutAbsence | null,
+  }
+
+  it('includes an aggregate-only candidate — the actual majority case', () => {
+    expect(scoreableRunIds([base])).toEqual(['r1'])
+  })
+
+  it('excludes a candidate already scoring, so a click cannot double-spawn', () => {
+    expect(scoreableRunIds([{ ...base, scoringContainerId: 'c1' }])).toEqual([])
+  })
+
+  it('excludes a confirmed no-dataset-holdout candidate — scoring would 400', () => {
+    expect(
+      scoreableRunIds([{ ...base, holdoutAbsence: 'no-dataset-holdout' }]),
+    ).toEqual([])
+  })
+
+  it('excludes a candidate that already has its series', () => {
+    expect(scoreableRunIds([{ ...base, holdoutPredictionsKey: 'k' }])).toEqual(
+      [],
+    )
+  })
+
+  it('excludes a candidate with no runId', () => {
+    expect(scoreableRunIds([{ ...base, runId: null }])).toEqual([])
   })
 })
 

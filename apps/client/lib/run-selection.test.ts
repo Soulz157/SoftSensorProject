@@ -22,6 +22,7 @@ function candidate(overrides: Partial<CandidateResult> = {}): CandidateResult {
     lossHistory: null,
     predictionsKey: null,
     cvFoldsKey: null,
+    holdoutPredictionsKey: null,
     scoringContainerId: null,
     // MODEL-FLOW-019-T02. This module's derivations read neither field —
     // the defaults keep the fixture a valid `CandidateResult` without

@@ -1004,6 +1004,14 @@ export class ModelCandidateJobAuthorizedService {
           // split) — see MODEL-FLOW-016 AC5's 2026-09-04 amendment.
           predictionsKey: run?.predictionsKey ?? null,
           cvFoldsKey: run?.cvFoldsKey ?? null,
+          // MODEL-FLOW-019-T20 follow-up. A non-CV candidate's own scored
+          // holdout series — see `ModelTrainingRun.holdoutPredictionsKey`'s
+          // own doc comment (schema.prisma) for why this is a separate
+          // column from `predictionsKey` rather than a second meaning for
+          // it. Read straight off `run` — no `select` narrows this query
+          // (`reconcileAndShape`'s `findMany` above), so every scalar
+          // column, this one included, is already on the row.
+          holdoutPredictionsKey: run?.holdoutPredictionsKey ?? null,
           scoringContainerId: run?.scoringContainerId ?? null,
           // MODEL-FLOW-019-T02. The same numbers as `metrics`/`trainMetrics`
           // above can never be, because each entry here carries the SOURCE

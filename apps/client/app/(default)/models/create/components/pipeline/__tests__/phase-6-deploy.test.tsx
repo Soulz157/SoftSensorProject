@@ -82,6 +82,7 @@ const BASE_RUN: DraftRunSummary = {
   failureReason: null,
   cvFoldsKey: null,
   predictionsKey: 'drafts/draft-1/runs/run-1/predictions.parquet',
+  holdoutPredictionsKey: null,
   scoringContainerId: null,
   holdoutMetrics: null,
   cvFolds: null,

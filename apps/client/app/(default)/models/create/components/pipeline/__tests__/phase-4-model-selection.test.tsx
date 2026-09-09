@@ -106,6 +106,7 @@ function candidate(overrides: Partial<CandidateResult> = {}): CandidateResult {
     lossHistory: null,
     predictionsKey: null,
     cvFoldsKey: null,
+    holdoutPredictionsKey: null,
     scoringContainerId: null,
     // MODEL-FLOW-019-T02. Mirrors what the server sends for this fixture's
     // own `metrics` — the same figure, carrying the source it is a figure
