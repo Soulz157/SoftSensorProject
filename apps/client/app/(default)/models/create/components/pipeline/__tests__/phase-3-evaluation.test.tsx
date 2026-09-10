@@ -48,6 +48,23 @@ vi.mock('@/hooks/model/use-draft-run-evaluation', async importOriginal => {
   }
 })
 
+// MODEL-FLOW-019-T31. The /split-stats fallback the launcher uses when a run
+// carries no frozen splitStats of its own — the case for 187 of this
+// system's 260 SUCCEEDED runs.
+const splitLookup = vi.hoisted(() => ({
+  splitStats: null as { distinct_labelled_values: number } | null,
+  loading: false,
+  missing: null as string | null,
+  refusal: null as string | null,
+  error: null as string | null,
+}))
+vi.mock('@/hooks/dataset/artifact/use-artifact-split-stats', () => ({
+  useArtifactSplitStats: () => splitLookup,
+}))
+// `useRunDistinctLabelled` itself stays REAL — it is the pure prefer-frozen-
+// else-lookup rule these tests are about, and mocking it would assert nothing.
+
+
 const NAV = { goTo: vi.fn() } as unknown as UsePipelineNavResult
 
 // Run 61f9aa28-0c31-4e99-bd52-4674200f72f6 — real values read from MinIO/DB
@@ -309,6 +326,102 @@ describe('Phase5Evaluation feature importance (MODEL-FLOW-019-T09)', () => {
       screen.getByText(/Feature importance: not recorded for this run/),
     ).toBeInTheDocument()
   })
+
+  // MODEL-FLOW-019-T32 / AC70. The method must be NAMED on screen and carry
+  // its OWN caveat — the partial-effect one, never impurity's cardinality
+  // wording, which is the whole reason METHOD_META is a table rather than a
+  // sentence written inline in JSX.
+  it('ranks a standardized-coefficient run under its own method name — AC70', () => {
+    renderStep({
+      run: {
+        ...RUN,
+        featureImportance: {
+          algorithm: 'ridge',
+          method: 'standardized-coefficient',
+          standardized: true,
+          scaling_methods: [],
+          features: [
+            { name: 'tag_1', importance: 0.8, coefficient: 0.4 },
+            { name: 'tag_2', importance: 0.2, coefficient: -0.4 },
+          ],
+        },
+      },
+      fit: FIT,
+      manifest: { derivedFromTarget: [], targetScaled: false },
+    })
+    expect(
+      screen.getByText(/Measured by standardized coefficient/),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(/per one standard deviation of its own input/),
+    ).toBeInTheDocument()
+    // It RANKS: the row is listed rather than refused...
+    expect(screen.getByText('tag_1')).toBeInTheDocument()
+    expect(screen.queryByText(/not ranked/)).not.toBeInTheDocument()
+    // ...and it does NOT borrow impurity's caveat, which names a different
+    // failure entirely.
+    expect(screen.queryByText(/high-cardinality/)).not.toBeInTheDocument()
+  })
+
+  // MODEL-FLOW-019-T31. The obs/feature line had the SAME null-splitStats
+  // defect as the launcher, on the same 187-of-260 runs. One resolution now
+  // feeds both, so the two panels cannot disagree on one screen.
+  it('reports observations per feature for a run with no splitStats, naming the source', () => {
+    splitLookup.splitStats = { distinct_labelled_values: 32 }
+    splitLookup.loading = false
+    renderStep({
+      run: {
+        ...RUN,
+        splitStats: null,
+        datasetId: 'ds-1',
+        goldArtifactId: 'art-1',
+        featureImportance: {
+          algorithm: 'random_forest',
+          method: 'impurity',
+          standardized: null,
+          scaling_methods: [],
+          features: [
+            { name: 'tag_0', importance: 1 },
+            { name: 'tag_1', importance: 0.5 },
+          ],
+        },
+      },
+      fit: FIT,
+      manifest: { derivedFromTarget: [], targetScaled: false },
+    })
+    // 32 distinct / 2 features = 16.0
+    expect(screen.getByText(/16\.0 distinct labelled observations/)).toBeInTheDocument()
+    // An artifact-level read says so rather than passing itself off as this
+    // run's own frozen record.
+    expect(screen.getByText(/froze no split record of its own/)).toBeInTheDocument()
+    expect(
+      screen.queryByText(/Observations per feature: not recorded/),
+    ).not.toBeInTheDocument()
+  })
+
+  it('ranks a scaled plain-coefficient run, which the old predicate refused', () => {
+    // MODEL-FLOW-019-T32's other half. Measured 2026-09-09: four of the five
+    // feature specs in the dev DB are fully minmax-scaled yet reported
+    // `standardized: false`, so every ols/ridge run on them read "not
+    // ranked". The trainer now derives that flag from the fitted
+    // `scalingParams` rather than from the always-empty `scaling` list.
+    renderStep({
+      run: {
+        ...RUN,
+        featureImportance: {
+          algorithm: 'ols',
+          method: 'coefficient',
+          standardized: true,
+          scaling_methods: ['minmax'],
+          features: [{ name: 'tag_1', importance: 0.4, coefficient: -0.4 }],
+        },
+      },
+      fit: FIT,
+      manifest: { derivedFromTarget: [], targetScaled: false },
+    })
+    expect(screen.getByText('tag_1')).toBeInTheDocument()
+    expect(screen.queryByText(/not ranked/)).not.toBeInTheDocument()
+  })
 })
 
 // MODEL-FLOW-019-T13/V21. A non-CV run's parity scatter is drawn from the
@@ -353,5 +466,123 @@ describe('Phase5Evaluation parity scatter (MODEL-FLOW-019-T13)', () => {
     })
     expect(screen.getByText(/Each validation holdout row/)).toBeInTheDocument()
     expect(screen.queryByText(/Each test split row/)).not.toBeInTheDocument()
+  })
+
+  // MODEL-FLOW-019-V28. A run with no recorded prediction range states
+  // WHICH figure is missing — the section must not disappear silently
+  // (the failure every other panel in this file already refuses: absent
+  // holdout, absent importance, absent CV score each name themselves).
+  it("states which figure is missing rather than rendering nothing when the parity range wasn't recorded", () => {
+    renderStep({
+      run: RUN,
+      fit: FIT,
+      manifest: { derivedFromTarget: [], targetScaled: false },
+      parityRange: null,
+    })
+    expect(
+      screen.getByText(/prediction range wasn't recorded/),
+    ).toBeInTheDocument()
+  })
+})
+
+// MODEL-FLOW-019-V25. PROVE THE RENAME IS WHOLE: a non-CV run and a SCORED
+// CV run must each carry ONE population across all four chart panels PLUS
+// the banner, and the two runs must name DIFFERENT populations. Asserting
+// one panel would pass against exactly the half-applied state this file
+// was in before T15/T16.
+describe('Phase5Evaluation — one population, every panel (MODEL-FLOW-019-T15/V25)', () => {
+  const FIT = {
+    r2: METRICS.r2,
+    rmse: METRICS.rmse,
+    mae: METRICS.mae,
+    sd: 0.435277,
+    n: POINTS.length,
+    points: POINTS,
+  }
+  const PARITY_RANGE = {
+    yTrueMin: 0.1,
+    yTrueMax: 0.4,
+    yPredMin: 0.2,
+    yPredMax: 0.5,
+  }
+
+  it('names "test split" everywhere and "validation holdout" nowhere, for a non-CV run', () => {
+    renderStep({
+      run: RUN,
+      fit: FIT,
+      manifest: { derivedFromTarget: [], targetScaled: false },
+      parityRange: PARITY_RANGE,
+    })
+    // Banner.
+    expect(screen.getByText(/3 test split samples/)).toBeInTheDocument()
+    // Actual vs Predicted.
+    expect(screen.getByText(/run's test split rows/)).toBeInTheDocument()
+    // Parity.
+    expect(screen.getByText(/Each test split row/)).toBeInTheDocument()
+    // Residuals over time.
+    expect(screen.getByText(/over the run's test split\./)).toBeInTheDocument()
+    // Diagnostics — heading and body.
+    expect(
+      screen.getByText('Test-split residual diagnostics'),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(/run's test split should be centred/),
+    ).toBeInTheDocument()
+    // The wrong word never appears.
+    expect(screen.queryByText(/validation holdout/)).not.toBeInTheDocument()
+    expect(
+      screen.queryByText('Holdout residual diagnostics'),
+    ).not.toBeInTheDocument()
+  })
+
+  it('names "validation holdout" everywhere and "test split" nowhere, for a SCORED CV run', () => {
+    renderStep({
+      run: { ...RUN, cvFoldsKey: 'cv-folds-key', predictionsKey: 'pred-key' },
+      fit: FIT,
+      manifest: { derivedFromTarget: [], targetScaled: false },
+      parityRange: PARITY_RANGE,
+    })
+    expect(screen.getByText(/3 validation holdout samples/)).toBeInTheDocument()
+    expect(
+      screen.getByText(/run's validation holdout rows/),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/Each validation holdout row/)).toBeInTheDocument()
+    expect(
+      screen.getByText(/over the run's validation holdout\./),
+    ).toBeInTheDocument()
+    expect(screen.getByText('Holdout residual diagnostics')).toBeInTheDocument()
+    expect(
+      screen.getByText(/run's validation holdout should be centred/),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/\btest split\b/)).not.toBeInTheDocument()
+    expect(
+      screen.queryByText('Test-split residual diagnostics'),
+    ).not.toBeInTheDocument()
+  })
+})
+
+// MODEL-FLOW-019-V29. The SD-band copy must state a CONSTANT width and
+// must never use language a reader could mistake for a per-point
+// guarantee — 'predictive interval' and 'confidence' are the two phrases
+// that read that way, and their absence is asserted literally, not just
+// their intended meaning.
+describe('Phase5Evaluation — SD-band copy (MODEL-FLOW-019-T16/V29)', () => {
+  it('states a constant width and never says "predictive interval" or "confidence"', () => {
+    const { container } = renderStep({
+      run: RUN,
+      fit: {
+        r2: METRICS.r2,
+        rmse: METRICS.rmse,
+        mae: METRICS.mae,
+        sd: 0.435277,
+        n: POINTS.length,
+        points: POINTS,
+      },
+      manifest: { derivedFromTarget: [], targetScaled: false },
+    })
+    expect(screen.getByText(/ONE constant width/)).toBeInTheDocument()
+    const text = container.textContent ?? ''
+    expect(text).not.toMatch(/predictive interval/i)
+    expect(text).not.toMatch(/confidence/i)
   })
 })

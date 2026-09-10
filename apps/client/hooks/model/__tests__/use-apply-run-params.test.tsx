@@ -31,6 +31,11 @@ function ridgeRun(overrides: Partial<ModelTrainingRun> = {}): ModelTrainingRun {
     goldArtifactId: 'art-1',
     artifactChecksum: 'sha256:abc',
     featureSpecKey: 'feature_spec.json',
+    // MODEL-FLOW-019-T31: an ordinary run trains on every column and
+    // belongs to no sweep.
+    featureColumns: null,
+    sweepId: null,
+    sweepSeedRunId: null,
     targetY: 'TI-101',
     algorithm: 'ridge',
     hyperparameters: { alpha: 0.037 },

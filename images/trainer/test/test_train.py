@@ -404,5 +404,195 @@ def test_expanding_fold_plan_remainder_lands_in_fold_zero_train():
     assert folds[0]["train_rows"] == n - 5 * test_size  # absorbs the remainder
 
 
+def test_resolve_feature_columns_defaults_to_every_offered_column():
+    """MODEL-FLOW-019-T31. No subset requested is every run to date."""
+    from pipelines.context import resolve_feature_columns
+
+    cols, missing = resolve_feature_columns(["a", "b", "c"], None)
+    assert cols == ["a", "b", "c"]
+    assert missing == []
+    assert resolve_feature_columns(["a", "b"], [])[0] == ["a", "b"]
+
+
+def test_resolve_feature_columns_keeps_the_callers_order():
+    """The sweep sends a ranking PREFIX; the manifest must record it back in
+    the order the ranking put it in, not the artifact's column order."""
+    from pipelines.context import resolve_feature_columns
+
+    cols, missing = resolve_feature_columns(["a", "b", "c"], ["c", "a"])
+    assert cols == ["c", "a"]
+    assert missing == []
+
+
+def test_resolve_feature_columns_reports_missing_rather_than_intersecting():
+    """A row labelled n=3 must never be fit on 2. The caller raises on this."""
+    from pipelines.context import resolve_feature_columns
+
+    cols, missing = resolve_feature_columns(["a", "b"], ["a", "b", "ghost"])
+    assert missing == ["ghost"]
+    # It does NOT silently return the intersection.
+    assert cols == ["a", "b", "ghost"]
+
+
+def test_feature_std_is_population_std_not_the_pandas_sample_default():
+    """MODEL-FLOW-019-T32. ddof=0, matching `_welford_population_std` in
+    packages/py-scaling — the convention the `standard` scaler itself fits
+    with. pandas defaults to ddof=1, and the two differ by sqrt(n/(n-1)):
+    invisible in a ranking, but it would make a standardized coefficient
+    disagree with the figure a refit on scaled inputs reports, which is the
+    identity the whole method claims.
+    """
+    from pipelines.context import feature_std
+
+    frame = pd.DataFrame({"a": [0.0, 2.0], "b": [1.0, 1.0]})
+    out = feature_std(frame, ["a", "b"])
+    assert out["a"] == pytest.approx(1.0)  # ddof=1 would give sqrt(2)
+    assert out["b"] == pytest.approx(0.0)  # a constant column has no width
+
+
+def test_feature_std_omits_rather_than_defaults_what_it_cannot_measure():
+    """An omission becomes a stated absence downstream; a default would become
+    a rank built on an invented number."""
+    from pipelines.context import feature_std
+
+    frame = pd.DataFrame({"a": [0.0, 2.0], "b": [1.0, float("nan")]})
+    out = feature_std(frame, ["a", "b", "missing_column"])
+    assert "a" in out
+    assert "b" not in out  # std of a column holding NaN is not finite
+    assert "missing_column" not in out
+
+
+def test_feature_std_measures_only_the_rows_it_is_given():
+    """The point of the field: chronological passes its TRAIN rows, CV passes
+    the refit frame. A width taken over rows the estimator never saw would
+    describe a different population than the coefficients it rescales."""
+    from pipelines.context import feature_std
+
+    frame = pd.DataFrame({"a": [0.0, 2.0, 100.0, 200.0]})
+    train_only = feature_std(frame.iloc[:2], ["a"])
+    whole = feature_std(frame, ["a"])
+    assert train_only["a"] == pytest.approx(1.0)
+    assert whole["a"] != pytest.approx(train_only["a"])
+
+
+class _DoublingModel:
+    """The smallest thing `score_holdout` will accept — it only ever calls
+    `.predict`. A real estimator would make these tests about sklearn."""
+
+    def predict(self, X):
+        return np.asarray(X["f1"], dtype=float) * 2.0
+
+
+def _holdout_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-01-01", periods=5, freq="D"),
+            "f1": [1.0, 2.0, 3.0, 4.0, 5.0],
+            # Row 2 is unlabelled — a lab target sampled sparser than the PI
+            # grid, which is the ordinary case, not an edge one.
+            "TI-101": [2.0, None, 6.0, 8.0, 10.0],
+        }
+    )
+
+
+def test_score_holdout_returns_a_per_row_frame_beside_the_aggregate():
+    """MODEL-FLOW-019-T26. The frame train-mode used to discard.
+
+    `pipelines/__init__.py` bound `holdout_metrics, _ = score_holdout(...)`,
+    which is the single reason 0 of 252 SUCCEEDED runs carried a holdout
+    SERIES while 188 carried a holdout AGGREGATE — and therefore why a user
+    had to click "Score against holdout" before a Validate chart could draw.
+    This pins that the second element is real, so a future edit cannot go
+    back to discarding it and still pass.
+    """
+    from holdout import score_holdout
+
+    metrics, predictions = score_holdout(
+        _DoublingModel(), _holdout_frame(), "TI-101", ["f1"]
+    )
+
+    # The EXACT schema predictions.parquet already uses — what lets the
+    # Evaluation charts render this series unmodified, reading a key without
+    # knowing which population produced it.
+    assert list(predictions.columns) == ["timestamp", "y_true", "y_pred"]
+    # One row per LABELLED row, not per source row: the unlabelled row is
+    # excluded from both the frame and the aggregate, so the two describe the
+    # same population.
+    assert len(predictions) == metrics["row_count"] == 4
+    assert metrics["dropped_unlabelled"] == 1
+    assert predictions["y_pred"].tolist() == [2.0, 6.0, 8.0, 10.0]
+
+
+def test_score_holdout_frame_for_a_sequence_model_counts_windows_not_rows():
+    """MODEL-FLOW-019-T26. lstm/gru reach this path too (windowed.py sets
+    holdout_eligible=True with a holdout_sequence_length), so they now write
+    this artifact as well — and its rows are WINDOWS, not source rows.
+
+    Worth a test rather than a comment because the two counts differ silently:
+    the schema is identical either way, so a reader comparing a sequence run's
+    holdout row count against its source row count would find a gap with
+    nothing on screen explaining it. The gap is build_windows' own rule — a
+    target row with less than sequence_length rows of history behind it
+    produces no window at all, dropped rather than padded.
+    """
+    from holdout import score_holdout
+
+    class _WindowModel:
+        # X is (n_windows, timesteps, features) here, not a 2-D frame.
+        def predict(self, X):
+            return np.zeros(len(X), dtype=float)
+
+        # Standing in for a fitted sequence estimator; only .predict is used.
+
+    frame = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-01-01", periods=6, freq="D"),
+            "f1": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            "TI-101": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        }
+    )
+    metrics, predictions = score_holdout(
+        _WindowModel(), frame, "TI-101", ["f1"], sequence_length=3
+    )
+
+    # 6 labelled rows, but the first two have too little history to close a
+    # 3-step window — 4 windows, not 6.
+    assert len(predictions) == metrics["row_count"] == 4
+    assert len(predictions) < len(frame)
+    # The schema does NOT change with the population's unit, which is why no
+    # reader downstream needs to know this ran on windows.
+    assert list(predictions.columns) == ["timestamp", "y_true", "y_pred"]
+    # `dropped_unlabelled` is the BROADER count here (rows reaching no window
+    # at all, not merely unlabelled ones) — holdout.py documents that the key
+    # is deliberately shared between the two branches.
+    assert metrics["dropped_unlabelled"] == 2
+
+
+def test_score_holdout_frame_is_writable_as_the_artifact_publish_uploads():
+    """A frame that cannot be serialised would fail INSIDE `_publish`'s
+    best-effort-free upload path, after training already succeeded — so the
+    round-trip is worth pinning here rather than discovering it live."""
+    import tempfile
+    from pathlib import Path
+
+    from artifacts import HOLDOUT_PREDICTIONS_FILENAME, ArtifactSet
+    from holdout import score_holdout
+
+    _, predictions = score_holdout(
+        _DoublingModel(), _holdout_frame(), "TI-101", ["f1"]
+    )
+
+    with tempfile.TemporaryDirectory() as scratch:
+        artifacts = ArtifactSet(Path(scratch))
+        artifacts.add_parquet(HOLDOUT_PREDICTIONS_FILENAME, predictions)
+        # Registered under its OWN name — never PREDICTIONS_FILENAME, which a
+        # non-CV run's TEST split already occupies by this point.
+        assert HOLDOUT_PREDICTIONS_FILENAME in artifacts
+        written = pd.read_parquet(Path(scratch) / HOLDOUT_PREDICTIONS_FILENAME)
+
+    assert list(written.columns) == ["timestamp", "y_true", "y_pred"]
+    assert len(written) == 4
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

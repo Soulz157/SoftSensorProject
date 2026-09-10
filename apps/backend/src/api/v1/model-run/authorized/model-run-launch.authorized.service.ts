@@ -169,6 +169,15 @@ export class ModelRunLaunchAuthorizedService {
       goldObjectKey: artifact.objectKey,
       artifactChecksum: artifact.checksum,
       featureSpecKey: artifact.featureSpecKey,
+      // MODEL-FLOW-019-T31. Both undefined — and so NULL — for every ordinary
+      // launch. Recorded as the REQUEST: what the run actually trained on is
+      // its own manifest's `feature_columns`, and the container refuses
+      // outright when a named column is absent, so the two agree or the run
+      // failed. Never the other way round, which would let a row claim an `n`
+      // it was not fit at.
+      featureColumns: dto.featureColumns ?? undefined,
+      sweepId: dto.sweepId ?? undefined,
+      sweepSeedRunId: dto.sweepSeedRunId ?? undefined,
       targetY: dto.targetY,
       algorithm: dto.algorithm,
       hyperparameters: dto.hyperparameters ?? {},

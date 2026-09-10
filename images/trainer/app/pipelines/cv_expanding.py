@@ -17,7 +17,12 @@ from api import RunApi
 from artifacts import CV_FOLDS_FILENAME
 from metrics import aggregate_fold_metrics, regression_metrics
 from models import build_model
-from pipelines.context import PreparedRun, TrainingResult, labelled_frame
+from pipelines.context import (
+    PreparedRun,
+    TrainingResult,
+    feature_std,
+    labelled_frame,
+)
 from splits import assert_admissible_fold_count, expanding_fold_plan
 
 
@@ -138,4 +143,9 @@ def run(prepared: PreparedRun, api: RunApi) -> TrainingResult:
         },
         # Holdout scoring for a CV run is score.py's job, not this run's.
         holdout_eligible=False,
+        # MODEL-FLOW-019-T32. The REFIT's rows — the full labelled frame — for
+        # the same reason `model` above is the refit and not fold k's model.
+        # A width taken from any single fold would describe a training set that
+        # no persisted estimator was ever fit on.
+        train_feature_std=feature_std(labelled, feature_cols),
     )

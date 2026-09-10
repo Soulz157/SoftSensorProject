@@ -22,10 +22,13 @@ export const AXIS_TICK = { fill: 'var(--muted-foreground)', fontSize: 11 }
  *  once here rather than retyped into a legend swatch by whoever renders
  *  it — a second copy of a colour drifts silently on the first theme or
  *  density change, and is invisible to every test that asserts on text. */
-const ACTUAL_COLOR = 'var(--foreground)'
-const PREDICT_COLOR = 'var(--chart-1)'
-const SD_BAND_COLOR = 'var(--chart-2)'
-const SD_BAND_OPACITY = 0.42
+// MODEL-FLOW-019-V27. Exported so a test can assert the legend and the
+// mark it explains are the SAME binding, not two copies that happen to
+// agree today.
+export const ACTUAL_COLOR = 'var(--foreground)'
+export const PREDICT_COLOR = 'var(--chart-1)'
+export const SD_BAND_COLOR = 'var(--chart-2)'
+export const SD_BAND_OPACITY = 0.42
 
 /** Rendered by the consumer through `ChartLegend`; this component owns the
  *  entries because it owns the marks they explain. The prediction line is

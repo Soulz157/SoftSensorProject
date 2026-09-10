@@ -7,16 +7,15 @@ import {
   Ban,
   Braces,
   CheckCircle2,
+  ChevronDown,
   Clock,
-  Cpu,
-  Gauge,
   Hash,
   History,
   Loader2,
   Package,
-  Percent,
   Ruler,
 } from 'lucide-react'
+import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -33,6 +32,7 @@ import {
 import { useDraftRuns } from '@/hooks/model/use-draft-runs'
 import { useDraftSelection } from '@/hooks/model/use-draft-selection'
 import { useApplyRunParams } from '@/hooks/model/use-apply-run-params'
+import { RunComparisonPanel } from './run-comparison-panel'
 import {
   classifyHyperparams,
   seedConsumedBy,
@@ -102,11 +102,6 @@ function formatRunTimestamp(iso: string): string {
  * against the row to warn about what an action will do; they are never
  * displayed as if they were the run's own values.
  *
- * One card per run, in the DatasetCard zone layout (identity / metrics /
- * provenance / action). The old `Select` existed only because the sidebar had
- * no room for more than one run at a time; its per-run timestamp now sits in
- * each card's identity line.
- *
  * MODEL-FLOW-021 replaced MODEL-FLOW-018-T03's per-card Select with a
  * Compare checkbox — distinct from Apply, which seeds the NEXT run's
  * configuration. Neither changes configuration: neither relocks, clears
@@ -122,6 +117,19 @@ function formatRunTimestamp(iso: string): string {
  * CHECKBOX STILL WRITES NOTHING SERVER-SIDE — `compareRunIds` is client-only
  * view state, lifted to `mpCompareRunIdsAtom` so Step 4 can read the same
  * set and implement the same empty-means-all rule.
+ *
+ * CARDS COLLAPSE (2026-09-08). This panel sits in Step 3's narrow right
+ * column beside SplitDistributionPanel and RuntimeEstimate, and a draft
+ * commonly holds five or more runs — at the previous card height that was a
+ * column a user scrolls past rather than reads. What stays visible is what a
+ * reader scans for and what they act on: identity, status, the headline
+ * metric, the Compare checkbox and Apply. The provenance and hyperparameter
+ * detail MODEL-FLOW-012 exists to record is one click away rather than
+ * removed. Apply deliberately stays in the collapsed header rather than
+ * inside the disclosure — it is this panel's whole purpose, and a card that
+ * must be expanded before it can be acted on hides the one control the
+ * feature was built for. The count line in `Header` went the other way: it
+ * said what the footer already says, twice on one screen.
  */
 export function RunParamsPanel() {
   const draftId = useAtomValue(mpServerDraftIdAtom)
@@ -163,7 +171,7 @@ export function RunParamsPanel() {
   // refetch, not just 'done': it is also what makes the QUEUED/RUNNING
   // Apply-disabled branch reachable for a run just started. A fresh launch
   // also clears `ModelDraft.selectedRunId` server-side (MODEL-FLOW-018-T02),
-  // so the selection footer needs the same refetch.
+  // so the selection badge needs the same refetch.
   useEffect(() => {
     refetch()
     refetchSelection()
@@ -182,9 +190,9 @@ export function RunParamsPanel() {
 
   if (!draftId || loading) {
     return (
-      <section className="space-y-3">
-        <Header comparing={0} total={0} onClear={() => {}} />
-        <Skeleton className="h-28 w-full rounded-xl" />
+      <section className="space-y-2">
+        <Header />
+        <Skeleton className="h-16 w-full rounded-xl" />
       </section>
     )
   }
@@ -192,7 +200,7 @@ export function RunParamsPanel() {
   // `selectedRunId` is server-side draft state written by Step 4's own
   // Select (MODEL-FLOW-019-T08 — Step 3 no longer writes it), not a wizard
   // atom, so MODEL-FLOW-012 AC1's "every value comes from a run row" is
-  // unaffected. Only DISPLAYED here as the "Model Selection" badge below.
+  // unaffected. Only DISPLAYED here as the "Step 4" badge below.
   const terminalRuns = runs.filter(run => run.status === 'SUCCEEDED')
 
   // MODEL-FLOW-019-T08. `mpCompareRunIdsAtom` is never pruned or reset on a
@@ -209,12 +217,8 @@ export function RunParamsPanel() {
   )
 
   return (
-    <section className="space-y-3">
-      <Header
-        comparing={comparedTerminal.length}
-        total={terminalRuns.length}
-        onClear={() => setCompareRunIds(new Set())}
-      />
+    <section className="space-y-2">
+      <Header />
       {error && <EmptyPanel>Could not load training runs — {error}</EmptyPanel>}
       {!error && runs.length === 0 && (
         <EmptyPanel>
@@ -273,7 +277,7 @@ export function RunParamsPanel() {
             <Button
               size="sm"
               variant="ghost"
-              className="h-8 shrink-0 cursor-pointer px-2 text-[11px]"
+              className="h-7 shrink-0 cursor-pointer px-2 text-[11px]"
               onClick={() => setCompareRunIds(new Set())}
             >
               Compare all
@@ -285,67 +289,38 @@ export function RunParamsPanel() {
   )
 }
 
-function Header({
-  comparing,
-  total,
-  onClear,
-}: {
-  comparing: number
-  total: number
-  onClear: () => void
-}) {
+/** Title only — the compare count lives in the footer, which is where
+ *  MODEL-FLOW-019-T08 put it; carrying it here as well stated one fact
+ *  twice on one screen. */
+function Header() {
   return (
-    <div className="flex flex-wrap items-center justify-between gap-2">
-      <p className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-        <History className="h-3 w-3" />
-        Run parameters
-      </p>
-      {total > 1 && (
-        <div className="flex items-center gap-1.5">
-          <p className="text-[10px] text-muted-foreground">
-            {comparing === 0
-              ? `Comparing all ${total} runs — tick Compare to narrow`
-              : `Comparing ${comparing} of ${total}`}
-          </p>
-          {comparing > 0 && (
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-6 cursor-pointer px-2 text-[10px]"
-              onClick={onClear}
-            >
-              Compare all
-            </Button>
-          )}
-        </div>
-      )}
-    </div>
+    <p className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+      <History className="h-3 w-3" />
+      Run parameters
+    </p>
   )
 }
 
-function Metric({
+/** One provenance line: an icon, a mono value, and the full value on hover.
+ *  Every entry is a key, digest or figure whose useful form is the whole
+ *  string, so each truncates rather than wraps. */
+function Provenance({
   icon: Icon,
-  label,
   value,
-  hint,
+  title,
 }: {
   icon: typeof Clock
-  label: string
   value: string
-  hint?: string
+  title: string
 }) {
   return (
-    <div className="min-w-0">
-      <p className="mb-0.5 flex items-center gap-1 text-[11px] text-muted-foreground">
-        <Icon className="h-3 w-3 shrink-0" /> {label}
-      </p>
-      <p className="truncate font-mono text-sm font-medium text-foreground">
-        {value}
-      </p>
-      {hint && (
-        <p className="truncate text-[10px] text-muted-foreground">{hint}</p>
-      )}
-    </div>
+    <span
+      className="flex min-w-0 items-center gap-1 text-[10px] text-muted-foreground"
+      title={title}
+    >
+      <Icon className="h-3 w-3 shrink-0" />
+      <span className="truncate font-mono">{value}</span>
+    </span>
   )
 }
 
@@ -368,24 +343,35 @@ function RunCard({
   onApply: (run: ModelTrainingRunListItem) => void
   onToggleCompare: (run: ModelTrainingRunListItem) => void
 }) {
+  // Initial state only, deliberately: a card the user opened stays open when
+  // a newer run arrives and takes `latest` away from it.
+  const [open, setOpen] = useState(latest)
+  const panelId = `run-detail-${run.id}`
+
   const algorithm = run.algorithm as Algorithm
   const algorithmLabel = ALGORITHM_LABELS[algorithm] ?? run.algorithm
   const status = STATUS_META[run.status]
   const StatusIcon = status.icon
   const nonTerminal = run.status === 'QUEUED' || run.status === 'RUNNING'
+  const runFailed = run.status === 'FAILED' || run.status === 'CANCELED'
   const rows = classifyHyperparams(run.algorithm, run.hyperparameters)
   const seedUsed = seedConsumedBy(run.algorithm)
-  const splitPct = splitPercentFromRun(run.splitSpec)
   const rmse = typeof run.metrics?.rmse === 'number' ? run.metrics.rmse : null
+
+  // Guarded, not assumed finite: a CV run's splitSpec is
+  // {method:'cv_expanding', n_splits} with no `ratio` at all, so this reads
+  // NaN there — the defect the removed Split tile was rendering as
+  // "NaN% / NaN%". Absent rather than wrong.
+  const splitPct = splitPercentFromRun(run.splitSpec)
+  const splitText = Number.isFinite(splitPct)
+    ? `${splitPct}/${100 - splitPct} split`
+    : null
 
   const crossAlgorithm =
     currentAlgorithms.length !== 1 || currentAlgorithms[0] !== run.algorithm
-
   const targetMismatch = datasetTags
     ? !datasetTags.includes(run.targetY)
     : false
-
-  const runFailed = run.status === 'FAILED' || run.status === 'CANCELED'
 
   const compareDisabledReason = nonTerminal
     ? 'Available once this run finishes.'
@@ -395,226 +381,246 @@ function RunCard({
 
   return (
     <div
-      className={`group relative flex flex-col gap-4 rounded-xl bg-card p-4 pt-12 transition-colors sm:pt-4 ${
+      className={cn(
+        'rounded-xl bg-card transition-colors',
         isCompared
           ? 'bg-emerald-500/4 ring-2 ring-emerald-500 dark:ring-emerald-400'
-          : 'ring-1 ring-foreground/10 hover:bg-muted/40'
-      }`}
+          : 'ring-1 ring-foreground/10',
+      )}
     >
-      <label
-        htmlFor={`compare-${run.id}`}
-        className={`absolute right-3 top-3 z-10 flex p-2 items-center gap-2 rounded-full border  text-[11px] font-medium transition-colors focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-1 focus-within:ring-offset-card ${
-          compareDisabledReason
-            ? 'cursor-not-allowed border-border/60 text-muted-foreground/60'
-            : isCompared
-              ? 'cursor-pointer border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
-              : 'cursor-pointer border-border text-muted-foreground hover:bg-muted/60 hover:text-foreground'
-        }`}
-        title={
-          compareDisabledReason ?? 'Include this run in the comparison below'
-        }
-      >
-        <Checkbox
-          id={`compare-${run.id}`}
-          checked={isCompared}
-          disabled={compareDisabledReason !== null}
-          aria-label={`Compare ${algorithmLabel}`}
-          onCheckedChange={() => onToggleCompare(run)}
-          className="cursor-pointer size-5 rounded-full border-border data-[state=checked]:border-emerald-500 data-[state=checked]:bg-emerald-500 data-[state=checked]:text-white dark:data-[state=checked]:border-emerald-400 dark:data-[state=checked]:bg-emerald-400 dark:data-[state=checked]:text-emerald-950"
-        />
-      </label>
+      {/* Header — checkbox, disclosure toggle and Apply as SIBLINGS, never a
+          button inside a button: nesting them would be invalid HTML and
+          would need stopPropagation to behave, which is the tell that the
+          structure was wrong rather than the handler. */}
+      <div className="flex items-start gap-2 p-3">
+        <label
+          htmlFor={`compare-${run.id}`}
+          className={cn(
+            'mt-0.5 flex shrink-0 rounded-full p-1 transition-colors focus-within:ring-2 focus-within:ring-ring',
+            compareDisabledReason ? 'cursor-not-allowed' : 'cursor-pointer',
+          )}
+          title={
+            compareDisabledReason ?? 'Include this run in the comparison below'
+          }
+        >
+          <Checkbox
+            id={`compare-${run.id}`}
+            checked={isCompared}
+            disabled={compareDisabledReason !== null}
+            aria-label={`Compare ${algorithmLabel}`}
+            onCheckedChange={() => onToggleCompare(run)}
+            className="size-4 cursor-pointer rounded-full border-border data-[state=checked]:border-emerald-500 data-[state=checked]:bg-emerald-500 data-[state=checked]:text-white dark:data-[state=checked]:border-emerald-400 dark:data-[state=checked]:bg-emerald-400 dark:data-[state=checked]:text-emerald-950"
+          />
+        </label>
 
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:gap-6 sm:pr-32">
-        {/* Zone 1 — identity */}
-        <div className="flex min-w-0 flex-1 items-start gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-primary/20 bg-primary/10 text-primary">
-            <Cpu className="h-5 w-5" />
-          </div>
-          <div className="flex min-w-0 flex-col gap-1">
-            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-              <span className="min-w-0 truncate text-[15px] font-semibold text-foreground">
-                {algorithmLabel}
-              </span>
-              {latest && (
-                <Badge
-                  variant="secondary"
-                  className="shrink-0 font-medium text-foreground"
-                >
-                  latest
-                </Badge>
-              )}
-              {isCarryForward && (
-                <Badge
-                  variant="outline"
-                  className="shrink-0 gap-1 border-primary/40 font-medium text-primary"
-                  title="This run opens in Model Selection (Step 4)."
-                >
-                  <CheckCircle2 className="h-3 w-3" />
-                  Model Selection
-                </Badge>
-              )}
-            </div>
-            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
-              <span className="flex shrink-0 items-center gap-1">
-                <Clock className="h-3.5 w-3.5 shrink-0" />
-                <span className="font-mono">
-                  {formatRunTimestamp(run.createdAt)}
-                </span>
-              </span>
+        <button
+          type="button"
+          onClick={() => setOpen(v => !v)}
+          aria-expanded={open}
+          aria-controls={panelId}
+          className="min-w-0 flex-1 cursor-pointer space-y-1 rounded-md text-left focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        >
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className="min-w-0 truncate text-sm font-semibold text-foreground">
+              {algorithmLabel}
+            </span>
+            {latest && (
               <Badge
                 variant="secondary"
-                className="shrink-0 gap-1.5 font-medium text-foreground"
+                className="h-4 shrink-0 px-1.5 text-[9px] font-medium"
               >
-                <StatusIcon className={`h-3 w-3 ${status.className}`} />
-                {status.label}
+                latest
               </Badge>
-            </div>
-            <div className="min-w-0 truncate text-[11px] text-muted-foreground">
+            )}
+            {isCarryForward && (
+              <Badge
+                variant="outline"
+                className="h-4 shrink-0 gap-0.5 border-primary/40 px-1.5 text-[9px] font-medium text-primary"
+                title="This run opens in Model Selection (Step 4)."
+              >
+                <CheckCircle2 className="h-2.5 w-2.5" />
+                Step 4
+              </Badge>
+            )}
+            {targetMismatch && !nonTerminal && !open && (
+              <AlertTriangle className="h-3 w-3 shrink-0 text-amber-500" />
+            )}
+            <span className="ml-auto flex shrink-0 items-baseline gap-1">
+              <span className="text-[9px] uppercase text-muted-foreground">
+                rmse
+              </span>
+              <span className="font-mono text-sm font-medium tabular-nums text-foreground">
+                {run.status === 'SUCCEEDED' && rmse !== null
+                  ? METRIC_META.rmse.format(rmse)
+                  : '—'}
+              </span>
+            </span>
+          </div>
+
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
+            <span className="flex shrink-0 items-center gap-1 font-mono">
+              <Clock className="h-3 w-3 shrink-0" />
+              {formatRunTimestamp(run.createdAt)}
+            </span>
+            <span className="flex shrink-0 items-center gap-1">
+              <StatusIcon className={cn('h-3 w-3', status.className)} />
+              {status.label}
+            </span>
+            <span className="min-w-0 truncate">
               y ={' '}
               <span className="font-medium text-foreground">{run.targetY}</span>
-            </div>
+            </span>
           </div>
-        </div>
+        </button>
 
-        {/* Zone 2 — metrics */}
-        <div className="grid shrink-0 grid-cols-2 gap-x-8 border-t border-border pt-4 sm:border-l sm:border-t-0 sm:pl-6 sm:pt-0">
-          <Metric
-            icon={Percent}
-            label="Split"
-            value={`${splitPct}% / ${100 - splitPct}%`}
-            hint="train / test"
-          />
-          <Metric
-            icon={Gauge}
-            label="RMSE"
-            value={
-              run.status === 'SUCCEEDED' && rmse !== null
-                ? METRIC_META.rmse.format(rmse)
-                : '—'
-            }
-          />
-        </div>
-
-        {/* Zone 3 — provenance */}
-        <div className="flex shrink-0 flex-col gap-0.5 text-[11px] text-muted-foreground sm:items-end">
-          <span className="flex items-center gap-1" title={run.imageDigest}>
-            <Package className="h-3 w-3 shrink-0" />
-            <span className="font-mono">{shortDigest(run.imageDigest)}</span>
-          </span>
-          {run.featureSpecKey && (
-            <span
-              className="flex min-w-0 max-w-55 items-center gap-1"
-              title={run.featureSpecKey}
-            >
-              <Braces className="h-3 w-3 shrink-0" />
-              <span className="truncate font-mono">{run.featureSpecKey}</span>
-            </span>
-          )}
-          {seedUsed && (
-            <span className="flex items-center gap-1" title="Estimator seed">
-              <Hash className="h-3 w-3 shrink-0" />
-              <span className="font-mono">{run.seed}</span>
-            </span>
-          )}
-
-          {run.splitStats && (
-            <span
-              className="flex items-center gap-1"
-              title={`Sized against ${run.splitStats.source_rows.toLocaleString()} rows holding ${run.splitStats.distinct_labelled_values.toLocaleString()} distinct labelled values. Model capacity should follow the second number, not the first.`}
-            >
-              <Ruler className="h-3 w-3 shrink-0" />
-              <span className="font-mono">
-                {run.splitStats.source_rows.toLocaleString()} rows ·{' '}
-                {run.splitStats.distinct_labelled_values.toLocaleString()}{' '}
-                distinct
-              </span>
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* Detail row — variable-length content that would break the zone grid */}
-      <div className="space-y-2 border-t border-border pt-3">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-            Hyperparameters
-          </span>
-          {rows.length === 0 ? (
-            <span className="text-[11px] text-muted-foreground">
-              No hyperparameters recorded for this run.
-            </span>
-          ) : (
-            rows.map(r => (
-              <span
-                key={r.key}
-                className="inline-flex items-center gap-1 rounded border border-border/60 bg-muted/40 px-1.5 py-0.5 text-[11px]"
-              >
-                <span className="text-muted-foreground">{r.label}</span>
-                <span className="font-mono tabular-nums text-foreground">
-                  {String(r.value)}
-                </span>
-                {!r.consumed && (
-                  <Badge
-                    variant="outline"
-                    className="h-4 px-1 text-[9px] font-normal"
-                    title={`${algorithmLabel} does not read this hyperparameter — it had no effect on the fit.`}
-                  >
-                    not used
-                  </Badge>
-                )}
-              </span>
-            ))
-          )}
-        </div>
-
-        {run.failureReason && (
-          <p className="text-[11px] text-destructive">{run.failureReason}</p>
-        )}
-
-        {crossAlgorithm && !nonTerminal && (
-          <p className="rounded-md bg-muted/60 px-2 py-1.5 text-[10px] leading-relaxed text-muted-foreground">
-            Applying switches the algorithm to {algorithmLabel} and reduces the
-            candidate list to it alone.
-          </p>
-        )}
-
-        {targetMismatch && !nonTerminal && (
-          <p className="flex items-start gap-1.5 rounded-md bg-amber-500/10 px-2 py-1.5 text-[10px] leading-relaxed text-amber-700 ring-1 ring-amber-500/20 dark:text-amber-400">
-            <AlertTriangle className="mt-px h-3 w-3 shrink-0" />
-            <span>
-              {run.targetY} isn&apos;t a tag on the currently selected dataset —
-              Apply will still set it, and this run can still be compared and
-              opened in Model Selection, but Start Training will reject it until
-              Target variable is corrected.
-            </span>
-          </p>
-        )}
-
-        {nonTerminal && (
-          <p className="text-[10px] text-muted-foreground">
-            Apply and Compare are available once this run finishes.
-          </p>
-        )}
-
-        {!nonTerminal && runFailed && (
-          <p className="text-[10px] text-muted-foreground">
-            Compare is unavailable — this run didn&apos;t succeed, so it has no
-            metrics to compare.
-          </p>
-        )}
-
-        <div className="flex justify-end pt-1">
+        {/* This panel's whole purpose, so it stays reachable without
+            expanding — MODEL-FLOW-012's Apply, unchanged in behaviour. */}
+        <div className="flex shrink-0 items-center gap-0.5">
           <Button
             size="sm"
             variant="outline"
-            className="cursor-pointer"
+            className="h-6 cursor-pointer px-2 text-[10px]"
             disabled={nonTerminal}
+            title={
+              nonTerminal
+                ? 'Available once this run finishes.'
+                : 'Load these parameters into Training Config'
+            }
             onClick={() => onApply(run)}
           >
-            Apply to Training Config
+            Apply
           </Button>
+          <button
+            type="button"
+            onClick={() => setOpen(v => !v)}
+            aria-expanded={open}
+            aria-controls={panelId}
+            aria-label={open ? 'Hide run detail' : 'Show run detail'}
+            className="flex h-6 w-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+          >
+            <ChevronDown
+              className={cn(
+                'h-3.5 w-3.5 transition-transform',
+                open && 'rotate-180',
+              )}
+            />
+          </button>
         </div>
       </div>
+
+      {open && (
+        <div
+          id={panelId}
+          className="space-y-2 border-t border-border/60 px-3 pt-2.5 pb-3"
+        >
+          {/* Hyperparameters — the record MODEL-FLOW-012 exists to keep, so
+              it is disclosed rather than dropped. A value the estimator does
+              not read still shows, labelled, per that feature's own AC2. */}
+          <div className="flex flex-wrap items-center gap-1">
+            {rows.length === 0 ? (
+              <span className="text-[10px] text-muted-foreground">
+                No hyperparameters recorded for this run.
+              </span>
+            ) : (
+              rows.map(r => (
+                <span
+                  key={r.key}
+                  className={cn(
+                    'inline-flex items-center gap-1 rounded border border-border/60 bg-muted/40 px-1.5 py-0.5 text-[10px]',
+                    !r.consumed && 'opacity-60',
+                  )}
+                  title={
+                    r.consumed
+                      ? undefined
+                      : `${algorithmLabel} does not read this hyperparameter — it had no effect on the fit.`
+                  }
+                >
+                  <span className="text-muted-foreground">{r.label}</span>
+                  <span className="font-mono tabular-nums text-foreground">
+                    {String(r.value)}
+                  </span>
+                  {!r.consumed && (
+                    <span className="text-[8px] uppercase text-muted-foreground">
+                      unused
+                    </span>
+                  )}
+                </span>
+              ))
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 gap-x-3 gap-y-0.5 sm:grid-cols-2">
+            <Provenance
+              icon={Package}
+              value={shortDigest(run.imageDigest)}
+              title={`Trainer image ${run.imageDigest}`}
+            />
+            {splitText && (
+              <Provenance
+                icon={Ruler}
+                value={splitText}
+                title={`Train ${splitPct}% / test ${100 - splitPct}% — Apply writes this ratio back into Training Config.`}
+              />
+            )}
+            {seedUsed && (
+              <Provenance
+                icon={Hash}
+                value={`seed ${run.seed}`}
+                title="Estimator seed — this algorithm consumes it."
+              />
+            )}
+            {run.splitStats && (
+              <Provenance
+                icon={Ruler}
+                value={`${run.splitStats.source_rows.toLocaleString()} rows · ${run.splitStats.distinct_labelled_values.toLocaleString()} distinct`}
+                title={`Sized against ${run.splitStats.source_rows.toLocaleString()} rows holding ${run.splitStats.distinct_labelled_values.toLocaleString()} distinct labelled values. Model capacity should follow the second number, not the first.`}
+              />
+            )}
+            {run.featureSpecKey && (
+              <Provenance
+                icon={Braces}
+                value={run.featureSpecKey}
+                title={run.featureSpecKey}
+              />
+            )}
+          </div>
+
+          {run.failureReason && (
+            <p className="text-[10px] text-destructive">{run.failureReason}</p>
+          )}
+
+          {crossAlgorithm && !nonTerminal && (
+            <p className="rounded-md bg-muted/60 px-2 py-1 text-[10px] leading-relaxed text-muted-foreground">
+              Applying switches the algorithm to {algorithmLabel} and reduces
+              the candidate list to it alone.
+            </p>
+          )}
+
+          {targetMismatch && !nonTerminal && (
+            <p className="flex items-start gap-1.5 rounded-md bg-amber-500/10 px-2 py-1 text-[10px] leading-relaxed text-amber-700 ring-1 ring-amber-500/20 dark:text-amber-400">
+              <AlertTriangle className="mt-px h-3 w-3 shrink-0" />
+              <span>
+                {run.targetY} isn&apos;t a tag on the currently selected dataset
+                — Apply will still set it, and this run can still be compared
+                and opened in Model Selection, but Start Training will reject it
+                until Target variable is corrected.
+              </span>
+            </p>
+          )}
+
+          {nonTerminal && (
+            <p className="text-[10px] text-muted-foreground">
+              Apply and Compare are available once this run finishes.
+            </p>
+          )}
+          {!nonTerminal && runFailed && (
+            <p className="text-[10px] text-muted-foreground">
+              Compare is unavailable — this run didn&apos;t succeed, so it has
+              no metrics to compare.
+            </p>
+          )}
+        </div>
+      )}
     </div>
   )
 }

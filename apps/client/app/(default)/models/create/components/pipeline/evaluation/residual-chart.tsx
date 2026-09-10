@@ -21,10 +21,13 @@ import type { LegendEntry } from '@/components/charts/chart-legend'
  *  so the legend beside it cannot claim a colour the chart does not use.
  *  The band multiplier is stated in each LABEL rather than left to the
  *  swatch — meaning is never carried by colour alone. */
-const RESIDUAL_COLOR = 'var(--chart-1)'
-const SD1_COLOR = 'var(--chart-2)'
-const SD2_COLOR = 'var(--chart-3)'
-const SD3_COLOR = 'var(--destructive)'
+// MODEL-FLOW-019-V27. Exported for the same reason `actual-vs-predicted-
+// chart.tsx` exports its colours — a test proves the legend and the drawn
+// mark share one binding.
+export const RESIDUAL_COLOR = 'var(--chart-1)'
+export const SD1_COLOR = 'var(--chart-2)'
+export const SD2_COLOR = 'var(--chart-3)'
+export const SD3_COLOR = 'var(--destructive)'
 
 export const RESIDUAL_LEGEND: LegendEntry[] = [
   { shape: 'square', color: RESIDUAL_COLOR, label: 'Residual' },
@@ -135,18 +138,8 @@ function SdBackground({ sd }: { sd: number }) {
         fill={SD3_COLOR}
         fillOpacity={0.15}
       />
-      <ReferenceArea
-        y1={sd}
-        y2={sd * 2}
-        fill={SD2_COLOR}
-        fillOpacity={0.15}
-      />
-      <ReferenceArea
-        y1={-sd}
-        y2={sd}
-        fill={SD1_COLOR}
-        fillOpacity={0.25}
-      />
+      <ReferenceArea y1={sd} y2={sd * 2} fill={SD2_COLOR} fillOpacity={0.15} />
+      <ReferenceArea y1={-sd} y2={sd} fill={SD1_COLOR} fillOpacity={0.25} />
       <ReferenceArea
         y1={-sd * 2}
         y2={-sd}

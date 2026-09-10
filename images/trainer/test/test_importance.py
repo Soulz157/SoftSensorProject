@@ -51,14 +51,166 @@ def test_ridge_yields_coefficient_with_signed_value_and_abs_importance():
         assert f["importance"] >= 0
 
 
-def test_ridge_standardized_true_when_feature_spec_records_scaling():
+def _minmax_params(cols=FEATURE_COLS) -> dict[str, dict[str, float]]:
+    """`scalingParams` as `to_model_ready` actually records it for the default
+    (minmax) scaler — the shape measured on all four scaled feature specs in
+    the dev DB, 2026-09-09."""
+    return {col: {"min": 0.0, "max": 1.0} for col in cols}
+
+
+def test_ridge_standardized_true_when_every_feature_has_fitted_scaling_params():
+    """MODEL-FLOW-019-T32, replacing a T09 test that asserted the DEFECT.
+
+    That test passed `{"scaling": [{"tag": "a", ...}]}` — one entry for three
+    features — and expected True. It read the wrong field: `scaling` carries
+    only EXPLICIT scaler choices and is empty on every real spec in this
+    system, while `scalingParams` carries what was actually fitted. The old
+    predicate therefore answered False for a fully minmax-scaled ols run
+    (90027dae, 21 of 21 features covered) exactly as for an unscaled one.
+    """
     X, y = _xy()
     model = Ridge(alpha=1.0).fit(X, y)
-    feature_spec = {"scaling": [{"tag": "a", "method": "standard"}]}
+    feature_spec = {"scaling": [], "scalingParams": _minmax_params()}
+    result = extract_feature_importance("ridge", model, FEATURE_COLS, feature_spec)
+    assert result is not None
+    assert result["method"] == "coefficient"
+    assert result["standardized"] is True
+    # Recovered from the PARAM SHAPE, since `scaling` names no method at all.
+    assert result["scaling_methods"] == ["minmax"]
+
+
+def test_explicit_scaling_entry_names_the_method_it_declares():
+    X, y = _xy()
+    model = Ridge(alpha=1.0).fit(X, y)
+    feature_spec = {
+        "scaling": [{"tag": col, "method": "standard"} for col in FEATURE_COLS],
+        "scalingParams": {col: {"mean": 0.0, "std": 1.0} for col in FEATURE_COLS},
+    }
     result = extract_feature_importance("ridge", model, FEATURE_COLS, feature_spec)
     assert result is not None
     assert result["standardized"] is True
     assert result["scaling_methods"] == ["standard"]
+
+
+def test_partially_scaled_frame_is_not_comparable():
+    """Two features scaled and one raw is not 'scaled' — mixing units across
+    features is precisely what makes a coefficient table meaningless."""
+    X, y = _xy()
+    model = Ridge(alpha=1.0).fit(X, y)
+    feature_spec = {"scaling": [], "scalingParams": _minmax_params(["a", "b"])}
+    result = extract_feature_importance("ridge", model, FEATURE_COLS, feature_spec)
+    assert result is not None
+    assert result["method"] == "coefficient"
+    assert result["standardized"] is False
+
+
+def test_unscaled_ridge_ranks_as_standardized_coefficient():
+    """MODEL-FLOW-019-T32 / AC70 / V44 — the figures ARE |coef| * std(X)."""
+    X, y = _xy()
+    model = Ridge(alpha=1.0).fit(X, y)
+    std = {"a": 2.0, "b": 0.5, "c": 4.0}
+    result = extract_feature_importance(
+        "ridge", model, FEATURE_COLS, {}, train_feature_std=std
+    )
+    assert result is not None
+    assert result["method"] == "standardized-coefficient"
+    assert result["standardized"] is True
+    for entry in result["features"]:
+        expected = abs(entry["coefficient"]) * std[entry["name"]]
+        assert entry["importance"] == pytest.approx(expected)
+    # The signed coefficient rides beside it UNCHANGED — only the ranked
+    # magnitude is rescaled.
+    assert result["features"][0]["coefficient"] == pytest.approx(model.coef_[0])
+
+
+def test_an_already_scaled_run_is_untouched_by_the_new_method():
+    """AC70's own limit: T32 does not change what a scaled run reports, even
+    when a width is available to rescale with."""
+    X, y = _xy()
+    model = Ridge(alpha=1.0).fit(X, y)
+    feature_spec = {"scaling": [], "scalingParams": _minmax_params()}
+    result = extract_feature_importance(
+        "ridge",
+        model,
+        FEATURE_COLS,
+        feature_spec,
+        train_feature_std={"a": 2.0, "b": 0.5, "c": 4.0},
+    )
+    assert result is not None
+    assert result["method"] == "coefficient"
+    for entry in result["features"]:
+        assert entry["importance"] == pytest.approx(abs(entry["coefficient"]))
+
+
+def test_one_missing_width_refuses_to_standardize_rather_than_filling_it_in():
+    """All-or-nothing: a gap filled with 1.0 would leave that one feature
+    ranked in its raw unit beside rescaled neighbours — the mis-ranking AC27
+    exists to prevent, wearing the label that says it was fixed."""
+    X, y = _xy()
+    model = Ridge(alpha=1.0).fit(X, y)
+    result = extract_feature_importance(
+        "ridge", model, FEATURE_COLS, {}, train_feature_std={"a": 2.0, "b": 0.5}
+    )
+    assert result is not None
+    assert result["method"] == "coefficient"
+    assert result["standardized"] is False
+
+
+def test_non_finite_width_refuses_to_standardize():
+    X, y = _xy()
+    model = Ridge(alpha=1.0).fit(X, y)
+    result = extract_feature_importance(
+        "ridge",
+        model,
+        FEATURE_COLS,
+        {},
+        train_feature_std={"a": 2.0, "b": math.nan, "c": 4.0},
+    )
+    assert result is not None
+    assert result["standardized"] is False
+
+
+def test_linear_svm_gets_the_standardized_path_too():
+    class _Stub:
+        kernel = "linear"
+        coef_ = np.array([[0.3, -0.1, 0.2]])
+
+    result = extract_feature_importance(
+        "svm",
+        _Stub(),
+        FEATURE_COLS,
+        {},
+        train_feature_std={"a": 2.0, "b": 10.0, "c": 1.0},
+    )
+    assert result is not None
+    assert result["method"] == "standardized-coefficient"
+    # b's coefficient is the SMALLEST but its input is the widest, so
+    # rescaling REORDERS them — which is the whole point of the method.
+    assert result["features"][1]["importance"] == pytest.approx(1.0)
+    assert result["features"][0]["importance"] == pytest.approx(0.6)
+
+
+def test_pls_gets_the_predicate_fix_but_never_the_standardized_method():
+    class _Stub:
+        coef_ = np.array([[0.4, 0.1, -0.2]])
+
+    scaled = extract_feature_importance(
+        "pls", _Stub(), FEATURE_COLS, {"scalingParams": _minmax_params()}
+    )
+    assert scaled is not None
+    assert scaled["standardized"] is True
+    assert scaled["scaling_methods"] == ["minmax"]
+
+    unscaled = extract_feature_importance(
+        "pls",
+        _Stub(),
+        FEATURE_COLS,
+        {},
+        train_feature_std={"a": 2.0, "b": 0.5, "c": 4.0},
+    )
+    assert unscaled is not None
+    assert unscaled["method"] == "pls-coefficient"
+    assert unscaled["standardized"] is False
 
 
 def test_ridge_standardized_false_when_no_scaling_recorded():

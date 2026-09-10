@@ -344,6 +344,28 @@ export interface ModelTrainingRun {
     source_rows: number
     distinct_labelled_values: number
   } | null
+  /**
+   * MODEL-FLOW-019-T31. The feature subset this run was ASKED to train on, in
+   * ranking order — `null` (every ordinary run) means "every column the
+   * artifact offers". This is the REQUEST; what the run actually used is its
+   * manifest's own `feature_columns`, which is where the sweep table reads
+   * each row's `n` from. The container refuses a named column it does not
+   * have, so the two agree or the run failed.
+   */
+  featureColumns: string[] | null
+  /**
+   * MODEL-FLOW-019-T31. Groups the rows of one feature-count sweep; `null`
+   * for every ordinary run. Typed as REQUIRED rather than optional for the
+   * same reason `splitStats` above is — a caller that forgot to map it would
+   * render a sweep member with no ladder beneath it, and nothing would fail.
+   */
+  sweepId: string | null
+  /**
+   * MODEL-FLOW-019-T31 / AC66. The run whose recorded importance produced the
+   * ranking this sweep's rows share — named beside the table so the ordering
+   * is never presented as having come from nowhere. `null` off a sweep.
+   */
+  sweepSeedRunId: string | null
   candidateJobId: string | null
   createdAt: string
   startedAt: string | null
@@ -387,6 +409,16 @@ export interface CreateDraftRunInput {
   /** MODEL-FLOW-014-T06. The Split Distribution panel's tag selection at
    * launch, so the frozen splitStats sidecar matches what was displayed. */
   splitStatsTags?: string[]
+  /** MODEL-FLOW-019-T31. One row of a feature-count sweep: the exact columns
+   * to train on, in ranking order. The container REFUSES a column the
+   * artifact lacks rather than intersecting, so a row's `n` is always the
+   * number it claims. Omitted => every column, which is every other caller. */
+  featureColumns?: string[]
+  /** MODEL-FLOW-019-T31. Groups the runs of one sweep into one curve. */
+  sweepId?: string
+  /** MODEL-FLOW-019-T31 / AC66. The run whose importance produced the shared
+   * ranking, so every row can name its seed. */
+  sweepSeedRunId?: string
 }
 
 const runsBase = (draftId: string) => `${one(draftId)}/runs`

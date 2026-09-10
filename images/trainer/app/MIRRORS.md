@@ -156,13 +156,28 @@ and the run either writes an artifact the container upload allowlist refuses
 | API (TS)    | `artifact-keys.ts` (`RUN_UPLOAD_FILENAMES`)                                                                             |
 
 MODEL-FLOW-019-T20. Same "three copies, not two" shape as entries 4 and 7 —
-miss one and score-mode's upload is refused outright. Deliberately a
+miss one and the upload is refused outright, by name. Deliberately a
 DIFFERENT filename from `PREDICTIONS_FILENAME`, not a third copy of it: a
 non-CV run's `predictions.parquet` already holds its TEST split the moment
-training finishes, and scoring must never overwrite that object. `score.py`
+training finishes, and nothing may overwrite that object. `score.py`
 picks the filename from `spec["isCvRun"]` (`scoreClaimService`'s own field) —
 a CV run still writes `predictions.parquet` (it has no test split to lose),
 a non-CV run writes this one.
+
+MODEL-FLOW-019-T26 adds a SECOND WRITER, and this is the part a reader is
+most likely to get wrong: a non-CV run now writes this file INLINE AT
+TRAINING TIME too, from `pipelines/__init__.py`'s `_publish`, because
+`_score_holdout_if_present` already computes the frame and used to discard
+it. So score-mode is no longer the only path here — it is the only path for
+a CV run, and the BACKFILL path for runs trained before T26 landed.
+
+Both writers reach the same allow-list, by different routes, and BOTH must
+admit the name: score-mode through `scoreUploadUrlsService`'s own extra
+narrowing, train-mode through `RunUploadUrlsDto` (`RunUploadFilenameEnum` =
+`z.enum(RUN_UPLOAD_FILENAMES)`) into `mintUploadUrls`, which has no filename
+gate of its own. Both then land on `_ALLOWED_RUN_UPLOADS` in
+`services/artifact_service.py`. Audited at T26: the train-mode route already
+admitted this filename, so that task needed no allow-list change.
 
 ---
 

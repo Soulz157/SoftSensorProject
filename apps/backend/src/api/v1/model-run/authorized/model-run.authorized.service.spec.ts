@@ -446,6 +446,59 @@ describe('ModelRunAuthorizedService', () => {
       expect(updateCall2[0].data.cvFoldsKey).toBeNull();
     });
 
+    it('MODEL-FLOW-019-T26: sets holdoutPredictionsKey when the TRAINING container uploads holdout_predictions.parquet, null otherwise', async () => {
+      // The point of T26. Before it, this column was written ONLY by
+      // scoreCompleteService, so a freshly trained run always had a null
+      // here and its Validate chart could not draw until a user clicked
+      // "Score against holdout". The trainer now keeps the holdout frame it
+      // used to discard and uploads it inline, so complete() must record the
+      // key — asserted through the SAME `uploaded` path every other run
+      // artifact uses, not a scoring-specific one.
+      const prisma = makePrisma();
+      const service = new ModelRunAuthorizedService(
+        prisma as never,
+        { advanceJobForRun: jest.fn() } as never,
+      );
+
+      await service.complete('run-1', {
+        status: 'SUCCEEDED',
+        metrics: { r2: 0.9 },
+        holdoutMetrics: { r2: 0.4 },
+        uploaded: [
+          'model.joblib',
+          'predictions.parquet',
+          'holdout_predictions.parquet',
+        ],
+      } as never);
+
+      const [updateCall] = prisma.modelTrainingRun.update.mock.calls;
+      expect(updateCall[0].data.holdoutPredictionsKey).toBe(
+        'drafts/draft-1/runs/run-1/holdout_predictions.parquet',
+      );
+      // The test split must survive in its OWN column — the separate-filename
+      // rule this artifact exists for. Two populations, two keys, never one
+      // slot holding whichever was written last.
+      expect(updateCall[0].data.predictionsKey).toBe(
+        'drafts/draft-1/runs/run-1/predictions.parquet',
+      );
+
+      // Absent (no dataset holdout, a CV run, or holdout scoring soft-failed)
+      // → null, the same null-means-not-applicable discipline cvFoldsKey and
+      // lossHistoryKey use. Never undefined: an honest absence the UI can
+      // state, not a field that silently keeps a stale value.
+      const prisma2 = makePrisma();
+      const service2 = new ModelRunAuthorizedService(
+        prisma2 as never,
+        { advanceJobForRun: jest.fn() } as never,
+      );
+      await service2.complete('run-1', {
+        status: 'SUCCEEDED',
+        uploaded: ['model.joblib', 'predictions.parquet'],
+      } as never);
+      const [updateCall2] = prisma2.modelTrainingRun.update.mock.calls;
+      expect(updateCall2[0].data.holdoutPredictionsKey).toBeNull();
+    });
+
     it('MODEL-FLOW-007 regression guard: once modelId is set, resolveRunOwner flips to models/{modelId}/... — a key nothing was ever written to under pointer-only adoption', async () => {
       // Save Model (MODEL-FLOW-007) sets modelId on the winning run WITHOUT
       // moving its bytes — they stay under drafts/{modelDraftId}/runs/... —

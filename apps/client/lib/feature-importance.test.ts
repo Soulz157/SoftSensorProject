@@ -121,6 +121,41 @@ describe('canRank', () => {
     )
     expect(canRank(importance)).toBe(false)
   })
+
+  // MODEL-FLOW-019-T32 / AC70 / V44. The new method ranks — and proving AC27
+  // was not relaxed to get there is the point of the second assertion: a
+  // PLAIN coefficient over inputs with no recorded scaling is still refused,
+  // in the same test, against the same shape.
+  it('a standardized-coefficient run ranks, while a plain unscaled coefficient is still refused — AC70 with AC27 intact', () => {
+    const standardizedCoefficient: RunFeatureImportance = {
+      algorithm: 'ridge',
+      method: 'standardized-coefficient',
+      standardized: true,
+      scaling_methods: [],
+      features: [{ name: 'a', importance: 2, coefficient: 1 }],
+    }
+    expect(canRank(standardizedCoefficient)).toBe(true)
+
+    expect(
+      canRank(
+        coefficient([{ name: 'a', importance: 1, coefficient: 1 }], false),
+      ),
+    ).toBe(false)
+  })
+
+  it('the method name alone never confers rankability — the flag does', () => {
+    // Guards the SHAPE of the fix: an edit that special-cased the string
+    // 'standardized-coefficient' the way 'impurity' is special-cased would
+    // rank a run the trainer explicitly marked as not comparable.
+    const mislabelled: RunFeatureImportance = {
+      algorithm: 'ridge',
+      method: 'standardized-coefficient',
+      standardized: false,
+      scaling_methods: [],
+      features: [{ name: 'a', importance: 2, coefficient: 1 }],
+    }
+    expect(canRank(mislabelled)).toBe(false)
+  })
 })
 
 describe('observationsPerFeature', () => {

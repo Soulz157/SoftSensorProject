@@ -81,6 +81,19 @@ export function tailSummary(
  * this is the gate that keeps that number off a ranked table rather than
  * leaving the render to decide it. "impurity" has no such question
  * (`standardized` is `null` for it) and is always rankable.
+ *
+ * MODEL-FLOW-019-T32 / AC70 adds `standardized-coefficient` and NOTHING ELSE.
+ * That method is |coef| * std(X) over the rows the estimator was fit on —
+ * dimensionless and comparable by construction, which is exactly what
+ * `standardized: true` already asserts, so it needs no branch of its own here
+ * beyond the trainer setting that flag.
+ *
+ * AC27 IS UNCHANGED: a plain `coefficient` whose inputs carry no recorded
+ * scaling is still refused. What the same task also fixed is the trainer's
+ * PREDICATE for that flag — it read `feature_spec.scaling`, which is empty on
+ * every real spec in this system, instead of the fitted `scalingParams` — so
+ * scaled linear runs now rank that were previously refused. A correction to
+ * the reading, not a relaxation of the rule.
  */
 export function canRank(importance: RunFeatureImportance): boolean {
   if (importance.method === 'impurity') return true

@@ -114,8 +114,99 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
   // (run_scoring)` shows the isCvRun branch present. images/trainer's own
   // pytest suite is not runnable in-image (see the 1.0.7 note above); no
   // trainer-level test exists for score.py specifically at this tag.
+  //
+  // 1.0.9 (MODEL-FLOW-019-T31 + T32): TWO changes in one bump, both purely
+  // ADDITIVE and therefore in the SILENT class the 1.0.7 note above exists to
+  // record — a stale image yields a null key and an honest absence sentence,
+  // indistinguishable on screen from the legacy path. One bump for both, per
+  // MODEL-FLOW-016-T07's rule of one bump per sequencing.
+  //
+  //   T32 — importance.py's `standardized` predicate CORRECTED, plus the new
+  //   `standardized-coefficient` method. The old predicate read
+  //   `bool(feature_spec["scaling"])`, the trap packages/py-scaling's own
+  //   `assert_scaling_coverage` documents: `scaling` holds an entry only for
+  //   an EXPLICIT scaler choice, while `to_model_ready` defaults every
+  //   unlisted tag to minmax and records what it fitted in `scalingParams`.
+  //   Measured 2026-09-09 across all five feature specs in the dev DB: every
+  //   one has `scaling: []`, four carry 22 populated `scalingParams` and one
+  //   carries none — so EVERY coefficient run read "not ranked", scaled or
+  //   not. Coverage is now checked per feature column against
+  //   `scalingParams`. The reverse exposure is worth stating: on a stale
+  //   image a scaled linear run keeps reading "not ranked", which is the
+  //   status quo, never a wrong ranking.
+  //
+  //   T31 — the run spec's optional `featureColumns` restricts training to a
+  //   named subset and REFUSES a column the artifact lacks rather than
+  //   intersecting. A stale image IGNORES the field and trains on every
+  //   column, so a sweep row would record feature_count = 21 while its
+  //   request claimed n = 4. That is the one non-silent consequence here: the
+  //   table reads each row's `n` from the run's OWN recorded feature_count,
+  //   so such rows land on the curve at 21 rather than masquerading as the
+  //   count they asked for.
+  //
+  // Verified against this exact tag before the bump landed, in-image, the
+  // same discipline the 1.0.8 note applies: `docker run --entrypoint python
+  // <tag>:1.0.9` imports importance/pipelines.context and confirms
+  // `standardized-coefficient`, the `scalingParams` predicate, `feature_std`,
+  // `resolve_feature_columns` and TrainingResult's `train_feature_std` field
+  // all present; a real Ridge fit returns method `standardized-coefficient`
+  // with figures equal to |coef| * std(X), the live scaled shape (`scaling:
+  // []` with populated `scalingParams`) now ranks as plain `coefficient`
+  // naming minmax, and a run with no coverage and no width is STILL refused
+  // (AC27 intact). images/trainer's pytest suite is not runnable in-image
+  // (see the 1.0.7 note); it passes on the host at 53 tests.
+  //
+  // PUSH PENDING AT THE TIME THIS LANDED — `docker push` returned
+  // `insufficient_scope: authorization failed` for this registry, so 1.0.9
+  // exists LOCALLY on the machine that built it and not yet in the registry.
+  // `resolveDigest` below inspects the local image first and pulls only when
+  // it is absent, so this default is correct where it was built and fails
+  // LOUDLY at boot elsewhere (a warn, then a rejected pull) rather than
+  // silently running old code. Push the tag to close that gap.
+  //
+  // 1.0.10 (MODEL-FLOW-019-T26): purely ADDITIVE, and therefore in the SILENT
+  // class the 1.0.7 note above exists to record — a stale image yields a null
+  // key and an honest absence sentence, indistinguishable on screen from the
+  // legacy path. A NON-CV run now writes `holdout_predictions.parquet` INLINE
+  // at training time: `_score_holdout_if_present` already computed the
+  // per-row holdout frame and bound it to `_`, discarding it, which is the
+  // single reason 0 of 252 SUCCEEDED runs carried a holdout SERIES while 188
+  // carried a holdout AGGREGATE. Nothing else changed — no second predict
+  // pass, no model reload, no new dependency, and CV is untouched
+  // (`holdout_eligible` is False there, so its holdout still arrives through
+  // score.py). Cost is one parquet write plus one PUT.
+  //
+  // WHY 1.0.10 AND NOT 1.0.9, since T26's own ledger detail says 1.0.8 ->
+  // 1.0.9: 1.0.9 was already taken by T31+T32 and its note above records a
+  // specific in-image verification for THAT content. Rebuilding 1.0.9 with a
+  // third task's change would falsify a record that already claims to have
+  // been verified, so the bump goes forward instead of being reused.
+  //
+  // Verified against this exact tag before the bump landed, in-image, the
+  // same discipline the 1.0.8/1.0.9 notes apply — by SOURCE and by BEHAVIOUR,
+  // not by tag: `docker run --entrypoint python <tag>:1.0.10` confirms
+  // `HOLDOUT_PREDICTIONS_FILENAME` reaches `_publish`, `_publish` carries a
+  // `holdout_predictions` parameter, and `_score_holdout_if_present` returns
+  // the PAIR (`holdout_metrics, _ =` is gone). Functionally, a stub estimator
+  // through `score_holdout` returns a {timestamp,y_true,y_pred} frame of 4
+  // rows from a 5-row holdout with one unlabelled row, and that frame
+  // round-trips through `ArtifactSet.add_parquet` at 2,638 bytes.
+  //
+  // CORRECTION TO THE 1.0.7/1.0.9 NOTES ABOVE: images/trainer's pytest suite
+  // IS runnable in-image, contrary to what those notes assert. It needs
+  // `--user root` (the image runs as `trainer`, so the pip install is
+  // otherwise silently ineffective) plus `pip install pytest`, with the test
+  // directory mounted. Measured at this tag: 55 passed (53 inherited, 2 added
+  // by T26). Recorded because that claim has been repeated across three bump
+  // notes and sent every prior verification to the host unnecessarily.
+  //
+  // PUSH FAILED, SAME AS 1.0.9 — `docker push` returned `insufficient_scope:
+  // authorization failed`, so 1.0.10 exists LOCALLY on the machine that built
+  // it and not in the registry. Every environment other than that machine
+  // fails LOUDLY at boot (a warn, then a rejected pull) rather than silently
+  // running old code. Push the tag to close the gap.
   private readonly imageRef =
-    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.8';
+    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.10';
   // private readonly network = process.env.TRAINING_NETWORK ?? 'dslake_default';
   private readonly network = 'monorepo_network';
   private readonly memoryBytes = Number(

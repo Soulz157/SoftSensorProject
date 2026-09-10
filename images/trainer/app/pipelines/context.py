@@ -14,6 +14,7 @@ now a FIELD, so adding a fourth strategy cannot mean forgetting one of the six.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -85,6 +86,79 @@ class TrainingResult:
     # Not None only for lstm/gru, where holdout scoring must window the same
     # way training did.
     holdout_sequence_length: int | None = None
+    # MODEL-FLOW-019-T32. Population std per feature over EXACTLY the rows THIS
+    # strategy fit `model` on — the train split for chronological, the full
+    # labelled frame for CV's refit. A field rather than a computation at the
+    # publish site (which is where importance is otherwise assembled) because
+    # only the strategy knows which rows those were: `PreparedRun` carries the
+    # whole frame and the label mask, never the split. None where no
+    # coefficient exists to standardise (windowed/sequence), and importance
+    # then takes its own honest-absence path rather than ranking on a
+    # fabricated width.
+    train_feature_std: dict[str, float] | None = None
+
+
+def resolve_feature_columns(
+    derived: list[str], requested: Any
+) -> tuple[list[str], list[str]]:
+    """MODEL-FLOW-019-T31. `(columns_to_use, missing)` for an optional subset.
+
+    `derived` is what the artifact itself offers, already stripped of the
+    timestamp, the target and the status columns. `requested` is the run spec's
+    optional `featureColumns`.
+
+    REFUSED, NOT INTERSECTED — the caller raises when `missing` is non-empty.
+    A named column the frame does not have must fail the run rather than
+    quietly training on the remainder: the whole point of a feature-count
+    sweep row is that its `n` IS the number it claims, and a silent narrowing
+    would put a row labelled n=7 on a curve while it was fit on five. That is
+    the same class of failure MODEL-FLOW-013-T05 hit by checking an
+    attribute's presence rather than its length.
+
+    The order returned is the CALLER'S, so the ranking prefix a sweep sends is
+    the order the run manifest records back.
+    """
+    if not requested:
+        return (list(derived), [])
+    available = set(derived)
+    missing = [str(c) for c in requested if c not in available]
+    return ([str(c) for c in requested], missing)
+
+
+def feature_std(frame: pd.DataFrame, feature_cols: list[str]) -> dict[str, float]:
+    """MODEL-FLOW-019-T32. Population std per feature over the rows given.
+
+    `ddof=0`, matching `_welford_population_std` in packages/py-scaling — the
+    convention the `standard` scaler itself fits with — rather than pandas'
+    `ddof=1` default. The two differ by sqrt(n/(n-1)), which is invisible in a
+    ranking but would make a standardized coefficient disagree with the figure
+    a refit on scaled inputs reports, and the whole claim of that method is
+    that the two are the same quantity.
+
+    A column whose std is not finite is OMITTED rather than defaulted to zero
+    or one: `extract_feature_importance` requires a width for EVERY feature
+    before it will standardise, so an omission there becomes a stated absence
+    instead of a rank built on an invented number.
+
+    `skipna=False` for the same reason. pandas' default would compute a width
+    over the NON-missing subset of a column and return a perfectly finite
+    number for it, which is a width for rows the estimator was not fit on
+    wearing the name of one for rows it was. In practice a tabular fit would
+    already have raised on a NaN feature before reaching here, so this is the
+    backstop rather than the load-bearing check — but it is the difference
+    between "cannot measure" and a quiet wrong answer.
+    """
+    out: dict[str, float] = {}
+    for col in feature_cols:
+        if col not in frame.columns:
+            continue
+        try:
+            value = float(frame[col].std(ddof=0, skipna=False))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value):
+            out[col] = value
+    return out
 
 
 def labelled_frame(prepared: PreparedRun, log_fn: LogFn | None = None) -> pd.DataFrame:

@@ -14,9 +14,17 @@
  *   ONLY by the scoring phase, and what it holds is the HOLDOUT series
  *   (MODEL-FLOW-016-T07, unchanged by this task).
  * - A non-CV run's `predictionsKey` is written at training `complete()` time
- *   and holds its TEST split. Its holdout series, when scoring has produced
- *   one, lives in `holdoutPredictionsKey` — a separate column precisely so
- *   scoring cannot overwrite the test split.
+ *   and holds its TEST split. Its holdout series lives in
+ *   `holdoutPredictionsKey` — a separate column precisely so nothing can
+ *   overwrite the test split.
+ *
+ * MODEL-FLOW-019-T26 changed WHEN that second column is populated, and
+ * nothing else here. It was once "only if a user triggered scoring"; a
+ * non-CV run now writes its holdout series inline at training time, so the
+ * column is populated at `complete()` alongside `predictionsKey`. Scoring
+ * remains the backfill path for the 252 runs trained before that landed, so
+ * null is still a common and legitimate answer below — a caller must keep
+ * stating WHY a series is absent rather than assuming a fresh run.
  *
  * So `predictionsKey` alone answers neither question; `cvFoldsKey` is what
  * disambiguates it, and every reader must go through here rather than

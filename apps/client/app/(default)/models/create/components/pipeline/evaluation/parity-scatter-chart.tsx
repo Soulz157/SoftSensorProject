@@ -21,11 +21,14 @@ interface Props {
   population: string
 }
 
-const DOT_COLOR = 'var(--chart-2)'
-const DOT_OPACITY = 0.6
-const IDENTITY_COLOR = 'var(--muted-foreground)'
-const IDENTITY_DASH = '5 4'
-const IDENTITY_WIDTH = 1.5
+// MODEL-FLOW-019-V27. Exported for the same reason the other two charts'
+// colours are — a test proves the legend and the drawn mark share one
+// binding rather than two copies that happen to agree today.
+export const DOT_COLOR = 'var(--chart-2)'
+export const DOT_OPACITY = 0.6
+export const IDENTITY_COLOR = 'var(--muted-foreground)'
+export const IDENTITY_DASH = '5 4'
+export const IDENTITY_WIDTH = 1.5
 
 export const PARITY_LEGEND: LegendEntry[] = [
   {

@@ -251,6 +251,12 @@ export class ModelRunAuthorizedService {
       goldObjectKey: run.goldObjectKey,
       dataUrl: presigned.data_url,
       featureSpecUrl: presigned.sidecar_urls['feature_spec.json'],
+      // MODEL-FLOW-019-T31. Read off the ROW, never from the container's own
+      // request body — the same rule `mintUploadUrls` below states for run
+      // ids: a container must not be able to choose what it trains on.
+      // Undefined for every ordinary run, and the container then derives its
+      // own columns exactly as it always has.
+      featureColumns: run.featureColumns ?? undefined,
       rowCount: presigned.row_count,
       ...(holdout ?? {}),
     };
@@ -317,6 +323,20 @@ export class ModelRunAuthorizedService {
       // quantity from — the same null-means-not-applicable discipline
       // lossHistoryKey/cvFoldsKey use above.
       featureImportanceKey: keyIf('feature_importance.json'),
+      // MODEL-FLOW-019-T26. The run's own holdout series, written INLINE at
+      // training time now that `_score_holdout_if_present` keeps the frame it
+      // used to discard. null for a run whose dataset has no holdout, for a
+      // CV run (whose holdout still arrives through scoring, in
+      // `predictionsKey`), and whenever holdout scoring soft-failed.
+      //
+      // ORDERING, stated rather than left to be re-derived: `keyIf` writes
+      // NULL, not undefined, for anything absent from `uploaded`. That is safe
+      // here ONLY because training `complete()` runs exactly once and always
+      // BEFORE any scoring — scoring requires a SUCCEEDED run — so this can
+      // never null a key the scoring phase wrote. The reverse exposure T09
+      // checked still holds and is unaffected: `scoreCompleteService`'s narrow
+      // update uses `undefined`, so a re-score cannot null this key either.
+      holdoutPredictionsKey: keyIf('holdout_predictions.parquet'),
       finishedAt: new Date(),
       // Close the token with the run. Nothing legitimate needs it after
       // this point.

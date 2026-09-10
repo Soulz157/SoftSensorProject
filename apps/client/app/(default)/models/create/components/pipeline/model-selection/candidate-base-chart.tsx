@@ -78,9 +78,6 @@ export function CandidateBaseChart({
 
   return (
     <div className="space-y-1">
-      <p className="text-[10px] font-medium text-muted-foreground">
-        Does it track reality?
-      </p>
       <p className="text-[10px] text-muted-foreground">
         Actual vs. Predicted values
       </p>

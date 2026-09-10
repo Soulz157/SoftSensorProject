@@ -75,6 +75,14 @@ const NAV = {
 } as unknown as UsePipelineNavResult
 
 const BASE_RUN: DraftRunSummary = {
+  // MODEL-FLOW-019-T31. An ordinary run belongs to no sweep. The field is
+  // required rather than optional on the summary on purpose — this fixture
+  // failing to compile is the mechanism that stops it being silently dropped
+  // on the way from the Prisma column to the screen.
+  sweepId: null,
+  sweepSeedRunId: null,
+  goldArtifactId: 'artifact-1',
+  datasetId: 'dataset-1',
   id: 'run-1',
   status: 'SUCCEEDED',
   algorithm: 'ols',

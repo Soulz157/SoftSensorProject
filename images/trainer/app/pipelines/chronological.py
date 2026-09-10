@@ -10,7 +10,12 @@ from __future__ import annotations
 from api import RunApi
 from metrics import extract_loss_history, regression_metrics
 from models import build_model
-from pipelines.context import PreparedRun, TrainingResult, labelled_frame
+from pipelines.context import (
+    PreparedRun,
+    TrainingResult,
+    feature_std,
+    labelled_frame,
+)
 from splits import chronological_split
 from config import TIMESTAMP_COLUMN
 
@@ -109,4 +114,8 @@ def run(prepared: PreparedRun, api: RunApi) -> TrainingResult:
         loss_history=extract_loss_history(
             prepared.algorithm, model, log_fn=api.log),
         holdout_eligible=True,
+        # MODEL-FLOW-019-T32. The TRAIN rows, not `labelled` — this strategy's
+        # model never saw the test split, so a width measured over it would
+        # describe a different population than the coefficients it rescales.
+        train_feature_std=feature_std(train, feature_cols),
     )

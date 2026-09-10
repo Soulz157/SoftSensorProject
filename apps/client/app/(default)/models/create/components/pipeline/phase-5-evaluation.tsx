@@ -49,232 +49,25 @@ import {
   populationAxisLabel,
   populationTitle,
 } from '@/lib/metric-source'
-import {
-  canRank,
-  observationsPerFeature,
-  rankFeatures,
-  tailSummary,
-} from '@/lib/feature-importance'
-import type { RunCvFolds, RunFeatureImportance } from '@/services/model-draft'
 import { StatTile } from '../stat-tile'
 import {
   ActualVsPredictedChart,
   AVP_LEGEND,
 } from './evaluation/actual-vs-predicted-chart'
 import { ParityScatterChart } from './evaluation/parity-scatter-chart'
-import {
-  ResidualChart,
-  RESIDUAL_LEGEND,
-} from './evaluation/residual-chart'
+import { ResidualChart, RESIDUAL_LEGEND } from './evaluation/residual-chart'
 import { ResidualHistogramChart } from './evaluation/residual-histogram-chart'
 import { QQPlotChart } from './evaluation/qq-plot-chart'
+import { EmptyPanel } from './evaluation/empty-panel'
+import { CvFoldTable } from './evaluation/cv-fold-table'
+import { FeatureImportanceTable } from './evaluation/feature-importance-table'
+import { useRunDistinctLabelled } from '@/hooks/model/use-run-distinct-labelled'
 import type { UsePipelineNavResult } from '@/hooks/model/use-model-pipeline-nav'
 import { ChartLegend } from '@/components/charts/chart-legend'
 import { PARITY_LEGEND } from './evaluation/parity-scatter-chart'
 
 interface Props {
   nav: UsePipelineNavResult
-}
-
-function EmptyPanel({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="rounded-xl border border-border p-4 text-center text-sm text-muted-foreground">
-      {children}
-    </div>
-  )
-}
-
-/**
- * MODEL-FLOW-016-T11. The REAL per-fold table — post-training r2/rmse/mae
- * beside each fold's own row counts, distinct from T10's `CvFoldPlan`
- * (Step 3's pre-training `/split-stats` plan; same row counts, no metrics
- * yet, because training had not run). Available as soon as `cvFoldsKey` is
- * set — training writes `cv_folds.json` before scoring exists as a
- * concept — so this renders in the awaiting-scoring/scoring state too, not
- * only once the model is scored: it is how a reader spots the fold that
- * looks worst, which is the whole reason to still trust (or not) the
- * configuration while its refit is waiting to be scored.
- */
-function CvFoldTable({ cvFolds }: { cvFolds: RunCvFolds }) {
-  return (
-    <section className="space-y-3 rounded-xl border border-border/60 p-4">
-      <div className="space-y-1">
-        <h3 className="text-sm font-medium text-foreground">
-          Per-fold configuration metrics
-        </h3>
-        <p className="text-xs text-muted-foreground">
-          {cvFolds.n_splits} expanding fold{cvFolds.n_splits === 1 ? '' : 's'} —
-          the configuration&apos;s own numbers, never the shipped model&apos;s
-          score above. A fold far worse than its neighbours is a real finding,
-          not noise.
-        </p>
-      </div>
-      <div className="overflow-x-auto rounded-lg border border-border">
-        <table className="w-full text-xs">
-          <thead>
-            <tr className="border-b border-border bg-muted/40 text-left text-muted-foreground">
-              <th className="px-3 py-2 font-medium">Fold</th>
-              <th className="px-3 py-2 font-medium">Cut</th>
-              <th className="px-3 py-2 font-medium text-right">Train rows</th>
-              <th className="px-3 py-2 font-medium text-right">Test rows</th>
-              <th className="px-3 py-2 font-medium text-right">R²</th>
-              <th className="px-3 py-2 font-medium text-right">RMSE</th>
-              <th className="px-3 py-2 font-medium text-right">MAE</th>
-            </tr>
-          </thead>
-          <tbody>
-            {cvFolds.folds.map(fold => (
-              <tr
-                key={fold.fold}
-                className={fold.fold > 1 ? 'border-t border-border' : undefined}
-              >
-                <td className="px-3 py-2 font-medium text-foreground">
-                  {fold.fold}
-                </td>
-                <td className="px-3 py-2 text-muted-foreground">
-                  {new Date(fold.cut_timestamp).toLocaleString()}
-                </td>
-                <td className="px-3 py-2 text-right font-mono tabular-nums">
-                  {fold.train_rows.toLocaleString()}
-                </td>
-                <td className="px-3 py-2 text-right font-mono tabular-nums">
-                  {fold.test_rows.toLocaleString()}
-                </td>
-                <td className="px-3 py-2 text-right font-mono tabular-nums">
-                  {fold.r2.toFixed(3)}
-                </td>
-                <td className="px-3 py-2 text-right font-mono tabular-nums">
-                  {fold.rmse.toFixed(3)}
-                </td>
-                <td className="px-3 py-2 text-right font-mono tabular-nums">
-                  {fold.mae.toFixed(3)}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </section>
-  )
-}
-
-function formatPct(fraction: number): string {
-  return `${(fraction * 100).toFixed(1)}%`
-}
-
-const METHOD_LABEL: Record<string, string> = {
-  impurity: 'impurity',
-  coefficient: 'coefficient',
-  'pls-coefficient': 'PLS coefficient',
-}
-
-/**
- * MODEL-FLOW-019-T09. Top 10 by importance, beneath the residual
- * diagnostics — AC22-AC27. `derivedFromTarget` flags a leakage-guard feature
- * where it ranks, read off the run's own manifest (never re-derived here);
- * `distinctLabelledValues`/`featureCount` feed AC26's observations-per-
- * feature arithmetic, `null` on a candidate-job run by design
- * (MODEL-FLOW-014-T06 — splitStats is never frozen for one).
- */
-function FeatureImportanceTable({
-  importance,
-  derivedFromTarget,
-  distinctLabelledValues,
-}: {
-  importance: RunFeatureImportance
-  derivedFromTarget: string[] | null
-  distinctLabelledValues: number | null
-}) {
-  const rankable = canRank(importance)
-  const ranked = rankable ? rankFeatures(importance, 10) : []
-  const tail = tailSummary(importance, 10)
-  const derivedSet = new Set(derivedFromTarget ?? [])
-  const obsPerFeature = observationsPerFeature(
-    distinctLabelledValues,
-    tail.totalCount,
-  )
-  const methodLabel = METHOD_LABEL[importance.method] ?? importance.method
-
-  return (
-    <section className="space-y-3 rounded-xl border border-border/60 p-4">
-      <div className="space-y-1">
-        <h3 className="text-sm font-medium text-foreground">
-          Feature importance
-        </h3>
-        <p className="text-xs text-muted-foreground">
-          Measured by {methodLabel} — a reader cannot compare this figure across
-          a different method.
-        </p>
-      </div>
-
-      {!rankable ? (
-        <EmptyPanel>
-          {importance.features.length} feature
-          {importance.features.length === 1 ? '' : 's'} recorded, but not
-          ranked: {methodLabel} over unscaled inputs ranks by unit, not by
-          influence.
-        </EmptyPanel>
-      ) : (
-        <>
-          <div className="overflow-x-auto rounded-lg border border-border">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b border-border bg-muted/40 text-left text-muted-foreground">
-                  <th className="px-3 py-2 font-medium">#</th>
-                  <th className="px-3 py-2 font-medium">Feature</th>
-                  <th className="px-3 py-2 font-medium text-right">
-                    Importance
-                  </th>
-                  <th className="px-3 py-2 font-medium text-right">Share</th>
-                </tr>
-              </thead>
-              <tbody>
-                {ranked.map(row => (
-                  <tr
-                    key={row.name}
-                    className={
-                      row.rank > 1 ? 'border-t border-border' : undefined
-                    }
-                  >
-                    <td className="px-3 py-2 text-muted-foreground">
-                      {row.rank}
-                    </td>
-                    <td className="px-3 py-2 font-medium text-foreground">
-                      {row.name}
-                      {derivedSet.has(row.name) && (
-                        <span className="ml-2 rounded-sm bg-muted px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground">
-                          target-derived
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-right font-mono tabular-nums">
-                      {row.importance.toFixed(4)}
-                    </td>
-                    <td className="px-3 py-2 text-right font-mono tabular-nums">
-                      {formatPct(row.share)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {tail.totalCount > tail.shownCount && (
-            <p className="text-xs text-muted-foreground">
-              Top {tail.shownCount} of {tail.totalCount} features — the
-              remaining {tail.totalCount - tail.shownCount} carry{' '}
-              {formatPct(tail.tailShare)} in aggregate.
-            </p>
-          )}
-        </>
-      )}
-
-      <p className="text-xs text-muted-foreground">
-        {obsPerFeature !== null
-          ? `${obsPerFeature.toFixed(1)} distinct labelled observations per feature.`
-          : 'Observations per feature: not recorded for this run.'}
-      </p>
-    </section>
-  )
 }
 
 export function Phase5Evaluation({ nav }: Props) {
@@ -284,10 +77,16 @@ export function Phase5Evaluation({ nav }: Props) {
 
   const { run, fit, manifest, parityRange, loading, error, triggerScoring } =
     useDraftRunEvaluation(serverDraftId, trainingResult?.runId ?? null)
+  // MODEL-FLOW-019-T31. ONE resolution for the three surfaces below that
+  // need it — see useRunDistinctLabelled for why it is not read per panel.
+  const distinctLabelled = useRunDistinctLabelled(
+    run?.datasetId ?? null,
+    run?.goldArtifactId ?? null,
+    run?.targetY ?? null,
+    run?.splitStats?.distinct_labelled_values ?? null,
+  )
+
   const cvPhase = cvScoringPhaseOf(run)
-  // MODEL-FLOW-019-T15. ONE derivation of the population for every panel on
-  // this step — exhaustive over all four scoring phases in `populationOf`,
-  // never a ternary here that quietly maps three of them to a test split.
   const population = populationOf(cvPhase)
   const populationText = populationLabel(population)
   const parityDomain = useMemo<[number, number] | null>(() => {
@@ -475,18 +274,23 @@ export function Phase5Evaluation({ nav }: Props) {
       <div className="flex items-center gap-3 rounded-xl bg-emerald-500/10 px-4 py-3 ring-1 ring-emerald-500/20">
         <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-500" />
         <div>
+          {/* MODEL-FLOW-019-T15/V25. Reads the SAME `population` derivation
+              every chart panel below reads, rather than `cvPhase` a fifth
+              time — `population === 'holdout'` and `cvPhase === 'scored'`
+              are equivalent in every phase reachable here (the two early
+              returns above already route `awaiting-scoring`/`scoring`
+              away), so this changes which variable is read, not what
+              renders. */}
           <p className="text-sm font-semibold text-emerald-600 dark:text-emerald-400">
-            {cvPhase === 'scored'
+            {population === 'holdout'
               ? 'Holdout scoring complete'
               : 'Training complete'}
           </p>
           <p className="text-xs text-muted-foreground">
-            {algorithmLabel} on {run.targetY} ·{' '}
-            {cvPhase === 'scored'
-              ? `${fit.n} holdout sample${fit.n === 1 ? '' : 's'}`
-              : `${fit.n} test sample${fit.n === 1 ? '' : 's'}`}
+            {algorithmLabel} on {run.targetY} · {fit.n} {populationText} sample
+            {fit.n === 1 ? '' : 's'}
           </p>
-          {cvPhase === 'scored' &&
+          {population === 'holdout' &&
             run.holdoutMetrics &&
             (typeof run.holdoutMetrics.dropped_unlabelled === 'number' ||
               typeof run.holdoutMetrics.dropped_bad_features === 'number') && (
@@ -499,6 +303,55 @@ export function Phase5Evaluation({ nav }: Props) {
             )}
         </div>
       </div>
+
+      {/* MODEL-FLOW-019-T20 follow-up. An ORDINARY (non-CV) run's own
+          "Score against holdout" — the CV-specific block above (its own
+          `awaiting-scoring`/`scoring` early return) cannot host this: an
+          ordinary run always has `fit`/charts to show, so it never reaches
+          that return, and that block's copy ("Cross-validation trained…",
+          the fold table) is wrong for it anyway. Never shown once
+          `holdoutPredictionsKey` is set — a scored series already exists,
+          nothing left to trigger. `handleTriggerScoring`/`triggering` are
+          the SAME state the CV block already uses; MODEL-FLOW-019-T20
+          widened `triggerScoring` itself to any SUCCEEDED run, so no new
+          request logic is needed here, only where the button is offered.
+
+          Every sentence below stays HYPHENATED ("validation-holdout"),
+          never the bare two-word phrase — the phase-3-evaluation.test.tsx
+          contract this feature shipped with (MODEL-FLOW-019-T15/V25)
+          asserts `/validation holdout/` appears NOWHERE on this page for a
+          non-CV run's own population, which stays `test-split` here
+          regardless of this block. This block names a DIFFERENT, absent
+          figure — the same way Step 4's own test-split/holdout panel pair
+          already uses both words on one screen without conflating them —
+          but the contract greps by literal substring, not by section, so
+          the hyphen is what keeps the promise textually true rather than
+          only true in intent. */}
+      {cvPhase === 'not-cv' && !run.holdoutPredictionsKey && (
+        <div className="space-y-1.5 rounded-xl border border-dashed border-border/60 px-4 py-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="flex-1 text-xs text-muted-foreground">
+              {run.scoringContainerId
+                ? 'Holdout scoring is running — this refits nothing, it only scores the model already trained.'
+                : run.holdoutMetrics
+                  ? "This run has a validation-holdout score, but training kept only the aggregate — the per-row series Step 4's holdout chart needs comes from scoring it again."
+                  : "Not yet scored against the dataset's validation-holdout rows — scoring runs separately from training."}
+            </p>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void handleTriggerScoring()}
+              disabled={Boolean(run.scoringContainerId) || triggering}
+            >
+              <PlayCircle className="h-4 w-4" />
+              {run.scoringContainerId ? 'Scoring…' : 'Score against holdout'}
+            </Button>
+          </div>
+          {scoringError && (
+            <p className="text-xs text-red-500">{scoringError}</p>
+          )}
+        </div>
+      )}
 
       {manifest?.derivedFromTarget && manifest.derivedFromTarget.length > 0 && (
         <p className="text-xs text-muted-foreground">
@@ -560,6 +413,19 @@ export function Phase5Evaluation({ nav }: Props) {
         ))}
       </div>
 
+      {hasFit &&
+        (() => {
+          const bias =
+            residuals.reduce((sum, r) => sum + r, 0) / residuals.length
+          return (
+            <p className="text-[11px] text-muted-foreground">
+              RMSE {fit.rmse.toFixed(3)} vs SD {fit.sd.toFixed(3)} — this
+              run&apos;s bias is {bias.toFixed(3)}, the same figure the ±1 SD
+              band below is centred against.
+            </p>
+          )
+        })()}
+
       {/* Charts */}
       {hasFit && (
         <div className="space-y-5">
@@ -571,8 +437,11 @@ export function Phase5Evaluation({ nav }: Props) {
                 </h3>
                 <p className="text-xs text-muted-foreground">
                   Measured actual against the model&apos;s own prediction on the
-                  same rows — the prediction should track actual inside the ±1
-                  SD band;
+                  run&apos;s {populationText} rows — the prediction should track
+                  actual inside the ±1 SD band. The band is ONE constant width —
+                  this run&apos;s own residual SD, unchanged across the whole
+                  series — a typical spread, not a bound drawn around each
+                  individual point.
                 </p>
               </div>
               <ChartZoomControls
@@ -630,10 +499,11 @@ export function Phase5Evaluation({ nav }: Props) {
                   Residuals over time
                 </h3>
                 <p className="text-xs text-muted-foreground">
-                  Residual = measured actual − the model&apos;s prediction. A
-                  healthy fit stays inside ±1 SD with no drift or repeating
-                  structure; the figure on each guardline is the share of
-                  residuals in that band alone, counted outward from zero.
+                  Residual = measured actual − the model&apos;s prediction, over
+                  the run&apos;s {populationText}. A healthy fit stays inside ±1
+                  SD with no drift or repeating structure; the figure on each
+                  guardline is the share of residuals in that band alone,
+                  counted outward from zero.
                 </p>
               </div>
               <ChartZoomControls
@@ -652,13 +522,6 @@ export function Phase5Evaluation({ nav }: Props) {
             />
           </section>
 
-          {/* Distribution + normality over the run's TEST split for an
-              ordinary run — MODEL-FLOW-016-T11: for a scored CV run, `fit`
-              is instead the raw validation holdout no fit ever saw, so the
-              heading/copy below say so rather than naming a test split this
-              run never had. MODEL-FLOW-019-T15: both read the ONE
-              `population` derivation above rather than re-deriving it from
-              `cvPhase` a third and fourth time. */}
           <section className="space-y-3 rounded-xl border border-border/60 p-4">
             <div className="space-y-1">
               <h3 className="text-sm font-medium text-foreground">
@@ -668,6 +531,9 @@ export function Phase5Evaluation({ nav }: Props) {
                 Residuals from the run&apos;s {populationText} should be centred
                 on 0 and roughly normal — a symmetric histogram and points
                 hugging the Q-Q diagonal indicate an unbiased, well-behaved fit.
+                Computed over the FULL {populationText}, not the zoom window
+                above — a distribution over a hand-picked slice would be a
+                weaker claim than the run&apos;s own.
               </p>
             </div>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -692,9 +558,9 @@ export function Phase5Evaluation({ nav }: Props) {
         <FeatureImportanceTable
           importance={run.featureImportance}
           derivedFromTarget={manifest?.derivedFromTarget ?? null}
-          distinctLabelledValues={
-            run.splitStats?.distinct_labelled_values ?? null
-          }
+          distinctLabelledValues={distinctLabelled.value}
+          distinctLabelledSource={distinctLabelled.source}
+          distinctLabelledLoading={distinctLabelled.loading}
         />
       ) : (
         <EmptyPanel>

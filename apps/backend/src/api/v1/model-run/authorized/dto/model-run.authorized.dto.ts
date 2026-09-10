@@ -95,6 +95,41 @@ export const CreateTrainingRunSchema = z
      * `splitSpec`, which is the durable record.
      */
     nSplits: z.coerce.number().int().min(2).max(10).optional(),
+
+    /**
+     * MODEL-FLOW-019-T31. The explicit feature subset for one row of a
+     * feature-count sweep, in RANKING order — the container trains on exactly
+     * these columns and REFUSES if any is absent from the artifact rather
+     * than intersecting, so a row labelled n=7 was never fit on five.
+     *
+     * Omitted — every run this system has launched to date — the container
+     * derives the columns itself: every artifact column minus the timestamp,
+     * the target and the status columns. There is no way to express this
+     * through `featureSpecKey`, which is read off the ARTIFACT and is
+     * therefore identical across every row of one sweep.
+     *
+     * The cap has generous headroom over the ~21-column frames this system
+     * actually trains on; it exists so a malformed caller cannot send an
+     * unbounded array, not as a modelling limit.
+     */
+    featureColumns: z.array(z.string().min(1)).min(1).max(500).optional(),
+
+    /**
+     * MODEL-FLOW-019-T31. Groups the runs of one feature-count sweep so the
+     * table can read them back as one curve. Client-generated, because the
+     * sweep is sequenced client-side: a candidate job cannot carry these rows
+     * — it is never CV (`runDtoFor` sets no `nSplits`), so no row would have
+     * the fold spread AC67 requires, and its runs store no `splitStats`, so
+     * no row would have AC68's observations-per-feature either.
+     */
+    sweepId: z.string().uuid().optional(),
+
+    /**
+     * MODEL-FLOW-019-T31 / AC66. The run whose recorded feature importance
+     * produced the ranking every row of this sweep shares — named on screen
+     * so the ordering is not presented as having come from nowhere.
+     */
+    sweepSeedRunId: z.string().uuid().optional(),
   })
   .strict()
   .refine((v) => !(v.nSplits !== undefined && v.trainTestSplit !== undefined), {

@@ -914,6 +914,37 @@ model ModelTrainingRun {
   artifactChecksum String
   featureSpecKey   String?
 
+  /// MODEL-FLOW-019-T31. The explicit feature subset this run was ASKED to
+  /// train on, as a JSON array of column names in the order requested — null
+  /// (the overwhelming majority) means "every column the artifact offers",
+  /// the derivation the container does for itself. Set only by a
+  /// feature-count sweep, whose whole axis is n and which `featureSpecKey`
+  /// cannot express: every row of that ladder shares ONE artifact and one
+  /// feature spec, so nothing else on this row tells them apart.
+  ///
+  /// This is the REQUEST, not the record. What the run actually used is
+  /// `run_manifest.json`'s own `feature_columns`, and the sweep table reads
+  /// its `n` from there — the container refuses outright when a named column
+  /// is absent, so the two agree or the run failed.
+  featureColumns Json?
+  /// MODEL-FLOW-019-T31. Groups the rows of one feature-count sweep. Null for
+  /// every ordinary run. A real column rather than a derived grouping because
+  /// the alternative — matching on artifact + target + algorithm + n — cannot
+  /// tell two sweeps of the same shape apart and would silently merge them
+  /// into one curve.
+  sweepId        String?
+  /// MODEL-FLOW-019-T31 / AC66. The run whose recorded feature importance
+  /// produced the ranking every row of this sweep shares. Null for an
+  /// ordinary run.
+  ///
+  /// A THIRD COLUMN rather than reusing `sweepId` as the seed's own id: a
+  /// second sweep launched from the same seed would then collide with the
+  /// first and silently merge two ladders into one curve, with duplicate
+  /// feature counts reading as scatter. Nor can it be derived from the rows —
+  /// each row records its OWN importance, which is not the ranking that chose
+  /// its columns.
+  sweepSeedRunId String?
+
   /// One run predicts one Y. N targets on one artifact = N runs.
   targetY String
 
@@ -954,21 +985,30 @@ model ModelTrainingRun {
   /// a non-zero exit code the runner observed.
   failureReason String?
 
-  modelKey       String?
-  metricsKey     String?
-  manifestKey    String?
-  predictionsKey String?
-  /// MODEL-FLOW-019-T20. A NON-CV SUCCEEDED run's own scored holdout series
-  /// ({timestamp,y_true,y_pred} over the dataset's raw validation holdout),
-  /// written ONLY by scoreCompleteService — deliberately a SEPARATE column
-  /// from `predictionsKey`, never the same slot: `predictionsKey` is the
-  /// run's TEST-split series and scoring must never overwrite it (a non-CV
-  /// run already has one live in `predictionsKey` the moment training
-  /// finishes). A CV run's scored holdout still lands in `predictionsKey`,
-  /// unchanged from MODEL-FLOW-016-T07 — it has no test split to lose, so
-  /// no second column was needed there; this column stays null for every
-  /// CV run regardless of scoring phase. Null until scoring has run at
-  /// least once; not cleared on a re-score failure, so a prior successful
+  modelKey              String?
+  metricsKey            String?
+  manifestKey           String?
+  predictionsKey        String?
+  /// MODEL-FLOW-019-T20. A NON-CV SUCCEEDED run's own holdout series
+  /// ({timestamp,y_true,y_pred} over the dataset's raw validation holdout)
+  /// — deliberately a SEPARATE column from `predictionsKey`, never the same
+  /// slot: `predictionsKey` is the run's TEST-split series and nothing may
+  /// overwrite it (a non-CV run already has one live in `predictionsKey` the
+  /// moment training finishes). A CV run's scored holdout still lands in
+  /// `predictionsKey`, unchanged from MODEL-FLOW-016-T07 — it has no test
+  /// split to lose, so no second column was needed there; this column stays
+  /// null for every CV run regardless of scoring phase.
+  ///
+  /// MODEL-FLOW-019-T26. TWO writers, not one, and the timing changed with
+  /// it. This was once written ONLY by scoreCompleteService and was
+  /// therefore "null until scoring has run at least once" — the reason a
+  /// user had to click to see a Validate chart. A non-CV run now writes its
+  /// holdout series INLINE at training time, so complete() populates this
+  /// column alongside `predictionsKey` and a fresh run needs no user
+  /// action. Scoring remains the BACKFILL path for runs trained before that
+  /// landed. Still null for: a dataset with no holdout, a CV run, a run
+  /// whose inline holdout scoring soft-failed, and any pre-T26 run never
+  /// backfilled. Not cleared on a re-score failure, so a prior successful
   /// score is not lost by a later attempt that fails.
   holdoutPredictionsKey String?
   /// MODEL-FLOW-013-T05. Set only for the algorithms train.py can extract a
@@ -977,7 +1017,7 @@ model ModelTrainingRun {
   /// (ols/ridge/pls/grp/svm/random_forest), which never writes this
   /// artifact, and null for a series that exceeded MAX_LOSS_HISTORY_POINTS
   /// (soft-skipped, not a training failure).
-  lossHistoryKey String?
+  lossHistoryKey        String?
   /// MODEL-FLOW-016-T04. Per-fold CV metrics (cv_folds.json) — set only for
   /// a CV run (splitSpec.method === "cv_expanding"); null for every other
   /// run, the same honest-legacy-null pattern MODEL-FLOW-010-T06 established
@@ -985,7 +1025,7 @@ model ModelTrainingRun {
   /// capped (MIN_LABELS_PER_FOLD, split_stats_service.py / train.py) before
   /// a fold ever fits, so an oversized artifact is unreachable — no
   /// redundant size guard needed on this column.
-  cvFoldsKey     String?
+  cvFoldsKey            String?
   /// MODEL-FLOW-019-T09. Per-feature importance (feature_importance.json) —
   /// set only for the algorithms images/trainer/app/importance.py can read
   /// a real quantity from (random_forest/lightgbm/xgboost via
@@ -998,13 +1038,13 @@ model ModelTrainingRun {
   /// this run"; never reconstructed on read (that would mean loading
   /// model.joblib outside the trainer image, MODEL-FLOW-016-T07's own
   /// finding that apps/python has no sklearn/joblib at all).
-  featureImportanceKey String?
+  featureImportanceKey  String?
   /// Denormalised from metrics.json for list/sort without an object read —
   /// the same reasoning DatasetArtifact uses for rowCount and missingPct.
   /// MODEL-FLOW-013-T04 added train_r2/train_mae/train_rmse keys alongside
   /// the existing test-split r2/mae/rmse — no schema change needed, this
   /// column is untyped Json.
-  metrics        Json?
+  metrics               Json?
   /// DS-LAKE-018-T05. The SAME shape as `metrics` (r2/mae/rmse/row counts),
   /// scored on the replayed RAW validation holdout instead of the
   /// chronological test split. Deliberately a SEPARATE column, never merged
@@ -1014,7 +1054,7 @@ model ModelTrainingRun {
   /// no holdout (validationRowCount was never set) or the replay failed —
   /// both cases leave training itself unaffected (see model-run.authorized.
   /// service.ts's claim()).
-  holdoutMetrics Json?
+  holdoutMetrics        Json?
   /// MODEL-FLOW-014-T06. The train/test split distribution panel's own
   /// response (SplitStatsResponse, apps/python schemas/preprocess.py),
   /// frozen at RUN CREATION — the record of what the user was actually
@@ -1031,7 +1071,7 @@ model ModelTrainingRun {
   /// on purpose (N candidates sharing one split is N redundant artifact
   /// reads for an identical answer; a candidate's provenance belongs to its
   /// job, not to this column).
-  splitStats     Json?
+  splitStats            Json?
 
   createdAt  DateTime  @default(now())
   startedAt  DateTime?
@@ -1058,6 +1098,10 @@ model ModelTrainingRun {
   @@index([modelDraftId])
   @@index([status])
   @@index([candidateJobId])
+  /// MODEL-FLOW-019-T31. The sweep table's own read: every row of one sweep
+  /// on one draft. Compound with modelDraftId because a sweep is always read
+  /// within the draft that launched it, never across drafts.
+  @@index([modelDraftId, sweepId])
 }
 
 /// Per-run, not per-model: concurrent runs on one model would otherwise

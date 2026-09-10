@@ -38,14 +38,19 @@ CV_FOLDS_FILENAME = "cv_folds.json"
 # artifact-keys.ts — change all three. See MIRRORS.md entry 7.
 FEATURE_IMPORTANCE_FILENAME = "feature_importance.json"
 # MODEL-FLOW-019-T20. A SUCCEEDED run's own holdout series
-# ({timestamp,y_true,y_pred}), written by score-mode ONLY. Deliberately a
-# DIFFERENT filename from PREDICTIONS_FILENAME: for a CV run predictions.parquet
-# is unused until scoring (no test split ever existed), but for a non-CV run
+# ({timestamp,y_true,y_pred}). Deliberately a DIFFERENT filename from
+# PREDICTIONS_FILENAME: for a CV run predictions.parquet is unused until
+# scoring (no test split ever existed), but for a non-CV run
 # predictions.parquet already holds the TEST split the moment training
-# finishes — score-mode must never overwrite it. Mirrored in apps/python's
-# object_store.py (HOLDOUT_PREDICTIONS_FILENAME, also gates
-# _ALLOWED_RUN_UPLOADS) and artifact-keys.ts — change all three. See
-# MIRRORS.md entry 8.
+# finishes — nothing may overwrite it.
+#
+# MODEL-FLOW-019-T26. TWO writers now, not one. Originally score-mode only;
+# a non-CV run also writes it INLINE at training time (pipelines/__init__.py's
+# _publish), because _score_holdout_if_present already computes the frame.
+# Score-mode remains the only writer for a CV run — and the BACKFILL path for
+# runs trained before this landed. Mirrored in apps/python's object_store.py
+# (HOLDOUT_PREDICTIONS_FILENAME, also gates _ALLOWED_RUN_UPLOADS) and
+# artifact-keys.ts — change all three. See MIRRORS.md entry 8.
 HOLDOUT_PREDICTIONS_FILENAME = "holdout_predictions.parquet"
 
 

@@ -73,6 +73,29 @@ export interface DraftRunSummary {
    *  observations-per-feature figure (AC26) cannot be silently dropped by a
    *  caller that forgets to map it. */
   splitStats: { source_rows: number; distinct_labelled_values: number } | null
+  /** MODEL-FLOW-019-T31. Non-null only for a run that is one row of a
+   *  feature-count sweep — what Step 5 keys the sweep table's presence off.
+   *  REQUIRED (never optional), the same enforcement `featureImportance` and
+   *  `splitStats` above get, and here it is load-bearing: a Prisma column
+   *  plus a DTO field does NOT reach this hand-built summary, so a forgotten
+   *  mapping would leave this `undefined` forever, the table would never
+   *  mount, and nothing would error — the silent class that shipped image
+   *  1.0.6 without importance.py for six days. */
+  sweepId: string | null
+  /** MODEL-FLOW-019-T31 / AC66. The run whose importance produced this
+   *  sweep's shared ranking. Not the current run: each row records its OWN
+   *  importance, which is not the ranking that chose its columns — naming the
+   *  current run here would credit the ordering to the wrong fit. */
+  sweepSeedRunId: string | null
+  /** MODEL-FLOW-019-T31. The artifact this run trained on — what a sweep
+   *  launched from this run's ranking must train every row against, since a
+   *  ladder whose rows read different artifacts compares nothing. */
+  goldArtifactId: string
+  /** MODEL-FLOW-019-T31. Needed with `goldArtifactId` to ask /split-stats for
+   *  the distinct labelled count when this run has no frozen `splitStats` of
+   *  its own — the case for 187 of this system's 260 SUCCEEDED runs, since a
+   *  candidate-job run stores none BY DESIGN (MODEL-FLOW-014-T06). */
+  datasetId: string
 }
 
 /**
@@ -209,6 +232,10 @@ async function fetchEvaluation(
     cvFolds: run.cvFolds ?? null,
     featureImportance: run.featureImportance ?? null,
     splitStats: run.splitStats,
+    sweepId: run.sweepId ?? null,
+    sweepSeedRunId: run.sweepSeedRunId ?? null,
+    goldArtifactId: run.goldArtifactId,
+    datasetId: run.datasetId,
   }
 
   if (run.status !== 'SUCCEEDED') {

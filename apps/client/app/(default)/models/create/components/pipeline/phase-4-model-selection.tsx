@@ -212,7 +212,7 @@ function candidateFromRun(
   }
 }
 
-const STATUS_META: Record<
+export const STATUS_META: Record<
   CandidateResult['status'],
   { label: string; icon: typeof Clock; className: string }
 > = {
@@ -390,7 +390,7 @@ function CandidateHyperparams({ candidate }: { candidate: CandidateResult }) {
  * reason" discipline MODEL-FLOW-013-T07 already established for a FAILED
  * candidate's chart frame.
  */
-const UNRANKED_LABELS: Record<UnrankedReason, string> = {
+export const UNRANKED_LABELS: Record<UnrankedReason, string> = {
   'no-run': 'Not launched yet',
   'not-finished': 'Still running',
   failed: 'Did not finish',
@@ -405,7 +405,7 @@ const UNRANKED_LABELS: Record<UnrankedReason, string> = {
  *  `RankMetricKey` still excludes `sd` (`lib/metric-ranking.ts`'s own
  *  `RANK_DIRECTION`) — read directly off that table rather than a second
  *  list, so a metric is rankable here iff it is rankable there. */
-function isRankMetricKey(key: MetricKey): key is RankMetricKey {
+export function isRankMetricKey(key: MetricKey): key is RankMetricKey {
   return key in RANK_DIRECTION
 }
 
@@ -413,7 +413,12 @@ function isRankMetricKey(key: MetricKey): key is RankMetricKey {
  *  `residual_SD <= RMSE` always, and the gap between them IS the model's
  *  bias, readable by eye only when the two are adjacent rather than
  *  separated by `mae`. Independent of pick order in `mpSelectedMetricsAtom`. */
-const STEP4_COLUMN_ORDER: readonly MetricKey[] = ['r2', 'rmse', 'sd', 'mae']
+export const STEP4_COLUMN_ORDER: readonly MetricKey[] = [
+  'r2',
+  'rmse',
+  'sd',
+  'mae',
+]
 
 /**
  * One metric's two source columns — never merged into one cell (finding 3;
@@ -427,9 +432,9 @@ const STEP4_COLUMN_ORDER: readonly MetricKey[] = ['r2', 'rmse', 'sd', 'mae']
  *  border + background, not a loud one: it marks the column, it does not
  *  compete with the pass/fail marks inside it (those stay uncoloured per
  *  AC13's own advisory, never-alarming rule). */
-const VALIDATE_COLUMN_CLASS = 'border-l border-primary/30 bg-primary/5'
+export const VALIDATE_COLUMN_CLASS = 'border-l border-primary/30 bg-primary/5'
 
-function MetricSourceCell({
+export function MetricSourceCell({
   metric,
   metricKey,
   emptyReason,
@@ -1056,7 +1061,7 @@ const HOLDOUT_ABSENCE_TEXT: Record<
   'not-recorded': 'Not recorded',
 }
 
-const RANK_ARIA: Record<RankMetricKey, 'ascending' | 'descending'> = {
+export const RANK_ARIA: Record<RankMetricKey, 'ascending' | 'descending'> = {
   rmse: 'ascending',
   mae: 'ascending',
   r2: 'descending',
