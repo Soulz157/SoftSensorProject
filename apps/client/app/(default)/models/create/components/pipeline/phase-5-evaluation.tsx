@@ -41,6 +41,7 @@ import {
   useDraftRunEvaluation,
   cvScoringPhaseOf,
 } from '@/hooks/model/use-draft-run-evaluation'
+import { useMetricRegistryKeys } from '@/hooks/model/use-metric-registry'
 import { ChartZoomControls } from '@/components/charts/chart-zoom-controls'
 import { residualHistogram, qqPoints } from '@/lib/model-evaluation'
 import {
@@ -72,6 +73,10 @@ interface Props {
 
 export function Phase5Evaluation({ nav }: Props) {
   const [selectedMetrics, setSelectedMetrics] = useAtom(mpSelectedMetricsAtom)
+  // MODEL-SERVE-006-T08. The picker's available OPTIONS now come from the
+  // server registry — falls back to METRIC_KEYS while loading/on error, so
+  // this never blocks or empties the picker.
+  const registryKeys = useMetricRegistryKeys()
   const serverDraftId = useAtomValue(mpServerDraftIdAtom)
   const trainingResult = useAtomValue(mpTrainingResultAtom)
 
@@ -379,7 +384,7 @@ export function Phase5Evaluation({ nav }: Props) {
           <DropdownMenuContent align="end" className="w-full">
             <DropdownMenuLabel>Show metrics</DropdownMenuLabel>
             <DropdownMenuSeparator />
-            {METRIC_KEYS.map(key => (
+            {registryKeys.map(key => (
               <DropdownMenuCheckboxItem
                 key={key}
                 checked={selectedMetrics.includes(key)}

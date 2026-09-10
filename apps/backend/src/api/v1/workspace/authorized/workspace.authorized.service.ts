@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { AppException } from '@softsensor/common';
 import { PrismaService } from '@softsensor/prisma';
+import { deriveDeployStatuses, overlayDeployStatus } from '@/lib/deploy-status';
 import { writeFile, mkdir } from 'fs/promises';
 import { extname, join } from 'path';
 import type { FastifyRequest } from 'fastify';
@@ -197,11 +198,19 @@ export class WorkspaceAuthorizedService {
       orderBy: { updatedAt: 'desc' },
     });
 
+    // MODEL-SERVE-006-T12. Same derived-deployStatus overlay
+    // getModelsService applies — one batched query, keeping this endpoint's
+    // notion of "is this deployed" consistent with the other model-list
+    // response.
+    const statuses = await deriveDeployStatuses(
+      this.prisma,
+      models.map((m) => m.id),
+    );
     return {
       statusCode: 200,
       message: 'Workspace models fetched successfully',
       type: 'SUCCESS' as const,
-      data: models,
+      data: models.map((m) => overlayDeployStatus(m, statuses[m.id])),
     };
   }
 

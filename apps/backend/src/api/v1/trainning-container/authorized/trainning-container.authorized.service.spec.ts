@@ -48,6 +48,7 @@ function buildPrisma(options: {
   runs: RunRow[];
   scoringRuns?: ScoringRunRow[];
   jobs?: RunRow[];
+  windows?: RunRow[];
   findUniqueStatus?: string;
 }) {
   return {
@@ -66,6 +67,16 @@ function buildPrisma(options: {
     },
     predictionJob: {
       findMany: jest.fn().mockResolvedValue(options.jobs ?? []),
+      findUnique: jest
+        .fn()
+        .mockResolvedValue({ status: options.findUniqueStatus ?? 'RUNNING' }),
+      update: jest.fn().mockResolvedValue({}),
+    },
+    // MODEL-SERVE-006. A fourth findMany — inferenceWindow, its own model.
+    // Defaults to `[]` so every existing test above (built with no
+    // `windows` option) is unaffected.
+    inferenceWindow: {
+      findMany: jest.fn().mockResolvedValue(options.windows ?? []),
       findUnique: jest
         .fn()
         .mockResolvedValue({ status: options.findUniqueStatus ?? 'RUNNING' }),

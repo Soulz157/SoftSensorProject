@@ -57,15 +57,22 @@ class RunContext:
         return self.mode == "batch"
 
     @property
+    def is_infer_mode(self) -> bool:
+        return self.mode == "infer"
+
+    @property
     def api(self) -> str:
-        # MODEL-SERVE-003. RUN_ID holds a PredictionJob id in batch mode —
-        # the env var name is generic on purpose (it always meant "this
-        # container's own identity", never specifically a ModelTrainingRun
-        # id), but the entity it addresses is a DIFFERENT one, so the route
-        # BASE must branch here, not just the per-role path _ROUTES already
-        # branches in api.py.
+        # MODEL-SERVE-003/006. RUN_ID holds a PredictionJob id in batch
+        # mode and an InferenceWindow id in infer mode — the env var name
+        # is generic on purpose (it always meant "this container's own
+        # identity", never specifically a ModelTrainingRun id), but the
+        # entity it addresses is a DIFFERENT one each time, so the route
+        # BASE must branch here, not just the per-role path _ROUTES
+        # already branches in api.py.
         if self.is_batch_mode:
             return f"{self.api_base}/api/v1/authorized/prediction-jobs/{self.run_id}"
+        if self.is_infer_mode:
+            return f"{self.api_base}/api/v1/authorized/inference-windows/{self.run_id}"
         return f"{self.api_base}/api/v1/authorized/model/runs/{self.run_id}"
 
     @classmethod

@@ -73,6 +73,12 @@ from schemas.preprocess import (
     PredictionJobUploadPresignResponse,
     PredictionJobObjectPresignRequest,
     PredictionJobObjectPresignResponse,
+    InferenceWindowMaterializeRequest,
+    InferenceWindowMaterializeResponse,
+    InferenceWindowUploadPresignRequest,
+    InferenceWindowUploadPresignResponse,
+    InferenceWindowObjectPresignRequest,
+    InferenceWindowObjectPresignResponse,
     PredictionLogAppendRequest,
     PredictionLogAppendResponse,
     PredictionLogSeriesRequest,
@@ -105,7 +111,7 @@ from schemas.preprocess import (
     ValidateRequest,
     ValidationReportResponse,
 )
-from services import artifact_service, prediction_log_service
+from services import artifact_service, inference_window_service, prediction_log_service
 from services.boxplot_service import build_boxplot
 from services.cleaning_service import CleaningError
 from services.correlation_matrix_service import build_correlation_matrix
@@ -1014,6 +1020,62 @@ async def presign_prediction_job_object(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(artifact_service.presign_prediction_job_object, store, body)
+
+
+@router.post(
+    "/inference-window",
+    response_model=InferenceWindowMaterializeResponse,
+    summary="Materialize one scheduled inference window's scoring input",
+    description=(
+        "MODEL-SERVE-006. Fetch, apply the pinned recipe's features, trim "
+        "to the window's own [windowStart, windowEnd), and drop (never "
+        "impute) any row with a Bad feature cell. Writes a pre-scale "
+        "input.parquet under inference/ — the container applies the "
+        "fitted scaling transform, same as MODEL-SERVE-002/003."
+    ),
+)
+async def materialize_inference_window(
+    body: InferenceWindowMaterializeRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(inference_window_service.materialize_window, store, body)
+
+
+@router.post(
+    "/inference-window/presign-upload",
+    response_model=InferenceWindowUploadPresignResponse,
+    summary="Time-limited write URLs for one inference window's own outputs",
+    description=(
+        "MODEL-SERVE-006-T06. The write half for an infer-mode container's "
+        "two outputs (predictions.parquet, metrics.json) — mirrors "
+        "/prediction-jobs/presign-upload one root over "
+        "(inference/{modelId}/{modelVersionId}/dt=.../hour=.../), refusing "
+        "any key outside that window's own root."
+    ),
+)
+async def presign_inference_window_upload(
+    body: InferenceWindowUploadPresignRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.presign_inference_window_upload, store, body)
+
+
+@router.post(
+    "/inference-window/presign-object",
+    response_model=InferenceWindowObjectPresignResponse,
+    summary="Presign an inference window's predictions for reading",
+    description=(
+        "MODEL-SERVE-006-T06. Today only predictions.parquet. Deliberately "
+        "separate from /artifacts/presign, which is hard-restricted to "
+        "committed dataset artifact data.parquet keys and would refuse a "
+        "window-scoped object outright."
+    ),
+)
+async def presign_inference_window_object(
+    body: InferenceWindowObjectPresignRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.presign_inference_window_object, store, body)
 
 
 @router.post(

@@ -29,6 +29,8 @@ import { ModelVersionModule } from './api/v1/model-version/model-version.module'
 import { ModelServingModule } from './api/v1/model-serving/model-serving.module';
 import { PredictionJobModule } from './api/v1/prediction-job/prediction-job.module';
 import { PredictionLogModule } from './api/v1/prediction-log/prediction-log.module';
+import { InferenceWindowModule } from './api/v1/inference-window/inference-window.module';
+import { MetricRegistryModule } from './api/v1/metric-registry/metric-registry.module';
 
 @Module({
   imports: [
@@ -75,6 +77,8 @@ import { PredictionLogModule } from './api/v1/prediction-log/prediction-log.modu
     ModelVersionModule,
     ModelServingModule,
     PredictionJobModule,
+    InferenceWindowModule,
+    MetricRegistryModule,
     PredictionLogModule,
   ],
   providers: [

@@ -74,6 +74,16 @@ function buildPrisma(model: Record<string, unknown> = MODEL_ROW) {
         .fn()
         .mockResolvedValue({ firstName: 'Ada', lastName: 'Lovelace' }),
     },
+    // MODEL-SERVE-006-T12. updateModelService/appendLogService now derive
+    // deployStatus on every return (lib/deploy-status.ts) — no schedule
+    // means every model in this fixture derives 'stopped', which is what
+    // the pre-existing `data.deployStatus: 'stopped'` fixture value already
+    // implied.
+    inferenceSchedule: { findMany: jest.fn().mockResolvedValue([]) },
+    inferenceWindow: {
+      findMany: jest.fn().mockResolvedValue([]),
+      groupBy: jest.fn().mockResolvedValue([]),
+    },
   };
 }
 
@@ -151,13 +161,17 @@ describe('ModelAuthorizedService — updateModelService config merge', () => {
     expect(config?.frameworkVersions).toEqual({ sklearn: '1.6.0' });
   });
 
-  it('leaves config untouched when the request carries none — Save & Deploy’s follow-up write', async () => {
+  it('leaves config untouched when the request carries no config at all', async () => {
     const prisma = buildPrisma();
     const service = makeService(prisma);
 
+    // MODEL-SERVE-006-T12: `deployStatus` is no longer part of this DTO at
+    // all (it is derived, never caller-set) — `prodStatus` stands in here
+    // as an equally config-free update, preserving this test's actual
+    // point: a request that omits `config` must not touch it.
     await service.updateModelService(
       'model-1',
-      { deployStatus: 'running' },
+      { prodStatus: 'normal' },
       USER_ID,
       ROLE,
     );

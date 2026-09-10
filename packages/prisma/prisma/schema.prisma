@@ -80,6 +80,7 @@ model User {
   loaderJobs            LoaderJob[]
   promotedModelVersions ModelVersion[]
   predictionJobs        PredictionJob[]
+  inferenceSchedules    InferenceSchedule[]
 }
 
 model Account {
@@ -186,6 +187,8 @@ model Model {
   predictionJobs    PredictionJob[]
   candidateJobs     ModelCandidateJob[]
   predictionLogs    PredictionLog[]
+  inferenceWindows  InferenceWindow[]
+  inferenceSchedule InferenceSchedule?
 
   @@unique([workspaceId, name])
   @@index([workspaceId])
@@ -1219,8 +1222,9 @@ model ModelVersion {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  predictionJobs PredictionJob[]
-  predictionLogs PredictionLog[]
+  predictionJobs   PredictionJob[]
+  predictionLogs   PredictionLog[]
+  inferenceWindows InferenceWindow[]
 
   @@unique([modelId, version])
   @@index([modelId, stage])
@@ -1552,4 +1556,197 @@ model PredictionLog {
 
   @@index([modelId, requestedAt])
   @@index([modelVersionId, requestedAt])
+}
+
+enum InferenceWindowStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  SKIPPED
+}
+
+/// MODEL-SERVE-006-T01. THE UNIT IS A TIME WINDOW, NOT A TICK. One row per
+/// (modelVersionId, windowStart), created by the scheduler ahead of any
+/// work and by a backfill range through the SAME insert — never by the
+/// worker. That one unique constraint is the whole design: it is the
+/// idempotency mechanism (so this entity needs no idempotencyKey of the
+/// kind PredictionJob carries), it makes gaps queryable (status !=
+/// 'SUCCEEDED'), and it makes backfill an insert rather than a code path.
+///
+/// SKIPPED IS A REAL TERMINAL STATUS, NOT A SYNONYM FOR FAILED: a window
+/// with too few usable input rows was correctly not attempted, and
+/// conflating it with a failure would make the staleness alarm cry wolf on
+/// a quiet plant. It is also why that alarm measures "the record is still
+/// being written" (SUCCEEDED or SKIPPED) rather than "predictions exist".
+model InferenceWindow {
+  id String @id @default(uuid())
+
+  modelId String
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  /// MODEL-SERVE-006-T07. Pinned at window CREATION, never re-resolved —
+  /// a promote landing mid-series must not retarget windows that already
+  /// exist, or two adjacent points from different model versions render as
+  /// a step change on the same axis as a real process shift. Pinning also
+  /// yields shadow evaluation for free: two rows, one windowStart, two
+  /// versions.
+  modelVersionId String
+  /// NO ACTION, not the implicit Restrict a required relation would
+  /// otherwise get — same footgun and same fix as PredictionJob/
+  /// PredictionLog: deleting a Model cascades onto ModelVersion AND this
+  /// table (via its own direct modelId FK) in the same statement, and
+  /// Restrict is checked per row before ModelVersion's own cascade has
+  /// finished.
+  modelVersion ModelVersion @relation(fields: [modelVersionId], references: [id], onDelete: NoAction, onUpdate: Cascade)
+
+  /// Half-open [windowStart, windowEnd). Both are computed by ONE pure
+  /// helper (lib/inference-windows.ts) that the tick and the backfill route
+  /// both call — an unaligned boundary from either side would mint a second
+  /// row for a window that already exists, and the unique constraint could
+  /// not catch it because the timestamps would differ.
+  windowStart DateTime
+  windowEnd   DateTime
+
+  status InferenceWindowStatus @default(PENDING)
+
+  /// The PRE-SCALE feature frame apps/python materialized for this window
+  /// (raw engineering units, derived feature columns computed, no scaling).
+  /// Same contract MODEL-SERVE-002's /predict and MODEL-SERVE-003's batch
+  /// input already use, so the container applies the identical
+  /// `to_model_ready` and the three paths cannot disagree.
+  inputKey      String?
+  inputChecksum String?
+
+  /// Written server-side on /infer-complete from this row's own ids, never
+  /// trusted from the container's request body — the discipline
+  /// completeJobService already applies to a batch output key.
+  predictionsKey String?
+  metricsKey     String?
+
+  /// MODEL-SERVE-006-T05. ON THE ROW, not only inside the output object, so
+  /// a series query can join them without opening parquet. Without this, a
+  /// prediction series that starts wandering is indistinguishable between
+  /// real process drift and a sensor that stopped reporting — and the
+  /// second is far more common. `inputRows` counts the rows actually
+  /// SCORED (rows carrying a hole are dropped, never imputed);
+  /// `missingPct` is the share of feature cells absent across the window as
+  /// fetched.
+  inputRows  Int?
+  missingPct Float?
+
+  /// Digest, never a tag — same discipline as ModelTrainingRun.imageDigest.
+  /// Null until a container is spawned (a SKIPPED window never runs one).
+  imageDigest String?
+  containerId String?
+
+  /// sha256 of the window token, never the token — same discipline as
+  /// ModelTrainingRun.tokenHash / PredictionJob.tokenHash.
+  tokenHash      String
+  /// Callbacks are refused past this even if the token is right.
+  tokenExpiresAt DateTime
+
+  /// Incremented by the dispatcher on every spawn. Deliberately NOT the
+  /// declared-and-never-written column PredictionJob.attempts is: FAILED is
+  /// terminal here (the dispatcher only ever picks PENDING, so a
+  /// permanently failing window is never re-spawned every tick), and the
+  /// explicit retry route carries this value forward the way
+  /// LoaderJobService.retry does rather than resetting it.
+  attempts Int @default(0)
+
+  /// Present only on FAILED and SKIPPED. On SKIPPED it is not an error: it
+  /// says which threshold was not met, which is what stops a quiet plant
+  /// reading as an outage.
+  failureReason String?
+
+  startedAt  DateTime?
+  finishedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  logs InferenceWindowLog[]
+
+  @@unique([modelVersionId, windowStart])
+  @@index([modelId, windowStart])
+  @@index([status])
+}
+
+/// MODEL-SERVE-006. Per-window container logs, mirroring
+/// ModelTrainingRunLog exactly. PredictionJob deliberately has no such
+/// table (its logs are a console echo), but this feature's acceptance
+/// criteria require per-window logs readable AFTER the container exits —
+/// scheduled work has no caller watching stderr, which is the whole
+/// difference.
+model InferenceWindowLog {
+  id       String          @id @default(uuid())
+  windowId String
+  window   InferenceWindow @relation(fields: [windowId], references: [id], onDelete: Cascade)
+
+  level     String   @default("info")
+  message   String
+  createdAt DateTime @default(now())
+
+  @@index([windowId, createdAt])
+}
+
+/// MODEL-SERVE-006. Per-MODEL schedule (not per-version: the version is
+/// pinned per window at creation from whatever is PRODUCTION then).
+///
+/// `fetchConfig` is a SNAPSHOT taken at enable time, not a live read of
+/// Dataset.pipelineConfig — the recipe a window replays is pinned through
+/// ModelVersion.featureSpecKey, and leaving the fetch half re-derived
+/// through a mutable dataset row would reintroduce exactly the
+/// silently-wrong-for-an-edited-dataset failure MODEL-SERVE-000-T03 found.
+/// It holds the source's own fetch settings (intervalTime, calcType,
+/// calcBasis) plus the base tags to request.
+///
+/// MODEL-SERVE-006-T09 (a later pass) adds the wizard's five existing
+/// deploy fields here — autoRetrain, warnSd, criticalSd, driftMonitor,
+/// driftThresholdPct — under THOSE names, so the wizard and the scheduler
+/// never describe one setting in two vocabularies.
+model InferenceSchedule {
+  id String @id @default(uuid())
+
+  modelId String @unique
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  enabled Boolean @default(false)
+
+  /// Minutes. `lagMinutes` is MODEL-SERVE-006-T04's deliberate ingestion
+  /// lag: windowEnd = now() - lag. It is never zero and never derived from
+  /// the cadence — PI tags do not arrive together, so a window ending at
+  /// now() is structurally complete and factually empty in places, and the
+  /// model scores it without error because the columns exist.
+  cadenceMinutes Int @default(60)
+  lagMinutes     Int @default(15)
+
+  /// The DataSource the window frame is fetched from, resolved against the
+  /// pinned version's own sourceDatasetId rather than Model.datasetId —
+  /// live-verified those two can differ.
+  sourceId    String
+  fetchConfig Json
+
+  /// MODEL-SERVE-006-T09, Pass B. The wizard's five deploy-step guardrails,
+  /// adopted under THEIR names (store/model-pipeline.ts's mpAutoRetrainAtom/
+  /// mpRetrainWarnSdAtom/mpRetrainCriticalSdAtom/mpDriftMonitorAtom/
+  /// mpDriftThresholdPctAtom) rather than a second, parallel vocabulary —
+  /// this row is the ONE place they now persist; `Model.data.config.
+  /// deployment` (lib/model-config.ts's DeploymentConfig) is a SEPARATE,
+  /// pre-existing, still-dead snapshot field this feature deliberately does
+  /// not touch or duplicate into.
+  autoRetrain       Boolean @default(false)
+  /// Invariant enforced client-side (use-model-pipeline-nav.ts's clamped
+  /// setters) and re-checked server-side at write: warnSd < criticalSd.
+  warnSd            Float   @default(1.5)
+  criticalSd        Float   @default(3.0)
+  driftMonitor      Boolean @default(false)
+  driftThresholdPct Float   @default(10)
+
+  createdBy   User   @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  createdById String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([enabled])
 }

@@ -55,9 +55,12 @@ from intergrations.object_store import (
     is_draft_run_key,
     is_model_run_key,
     is_prediction_job_key,
+    is_inference_window_key,
     missing_pct,
     model_run_key,
     prediction_job_key,
+    inference_window_key,
+    INFERENCE_INPUT_FILENAME,
     split_data_key,
     OUTPUT_FILENAME,
     BATCH_MANIFEST_FILENAME,
@@ -2099,6 +2102,100 @@ def presign_prediction_job_object(store: ObjectStore, body) -> dict[str, Any]:
         raise ValueError(
             f"'{key}' is not a well-formed prediction-job output key. Only "
             "predictions/{modelId}/{jobId}/... can be presigned here."
+        )
+
+    return {
+        "data_url": store.presigned_get(key),
+        "sidecar_urls": {},
+        "checksum": store.checksum_of(key),
+        "row_count": None,
+        "expires_at": (
+            datetime.now(timezone.utc) + store.PRESIGN_READ_TTL
+        ).isoformat(),
+    }
+
+
+#: MODEL-SERVE-006-T06. What an infer-mode container may upload — mirrors
+#: _ALLOWED_PREDICTION_JOB_UPLOADS' allow-list discipline one root over.
+#: PREDICTIONS_FILENAME/METRICS_FILENAME are the SAME constants
+#: ModelTrainingRun's own artifacts use — same names, same meaning, a
+#: different root.
+_ALLOWED_INFERENCE_WINDOW_UPLOADS = frozenset(
+    {PREDICTIONS_FILENAME, METRICS_FILENAME}
+)
+
+
+def presign_inference_window_upload(store: ObjectStore, body) -> dict:
+    """MODEL-SERVE-006-T06. Mints WRITE URLs for an infer-mode container's
+    own two outputs — mirrors `presign_prediction_job_upload`'s exact shape
+    one root over (inference/{modelId}/{modelVersionId}/dt=.../hour=.../
+    instead of predictions/{modelId}/{jobId}/). `dt`/`hour` arrive from the
+    caller (NestJS, computed from the window's own windowStart in UTC) —
+    this function never derives them, matching `inference_window_prefix`'s
+    own doc comment.
+    """
+    unknown = sorted(set(body.filenames) - _ALLOWED_INFERENCE_WINDOW_UPLOADS)
+    if unknown:
+        raise ValueError(
+            f"Not part of the inference-window layout: {unknown}. "
+            f"Allowed: {sorted(_ALLOWED_INFERENCE_WINDOW_UPLOADS)}."
+        )
+
+    upload_urls: dict[str, str] = {}
+    for filename in body.filenames:
+        key = inference_window_key(
+            body.model_id, body.model_version_id, body.dt, body.hour, filename
+        )
+        # Belt and braces, same reasoning presign_prediction_job_upload
+        # states on itself: the allow-list above already constrains the
+        # filename, but the ids/dt/hour come from the request too, and this
+        # predicate is the one thing standing between a malformed value and
+        # a write outside inference/.
+        if not is_inference_window_key(key):
+            raise ValueError(
+                f"Refusing to presign a write outside inference/: '{key}'"
+            )
+        upload_urls[filename] = store.presigned_put(key)
+
+    return {
+        "upload_urls": upload_urls,
+        "expires_at": (
+            datetime.now(timezone.utc) + store.PRESIGN_WRITE_TTL
+        ).isoformat(),
+    }
+
+
+#: MODEL-SERVE-006-T06. Prediction output AND input — unlike PredictionJob
+#: (whose input is a committed dataset artifact under a DIFFERENT root,
+#: presigned through /artifacts/presign), an inference window's input.parquet
+#: lives under this SAME root. The infer-mode container reads it at claim
+#: time through this endpoint, not /artifacts/presign, which would refuse it
+#: outright (is_committed_artifact_key would reject an inference/ key).
+_ALLOWED_INFERENCE_WINDOW_OBJECT_PRESIGNS = frozenset(
+    {PREDICTIONS_FILENAME, INFERENCE_INPUT_FILENAME}
+)
+
+
+def presign_inference_window_object(store: ObjectStore, body) -> dict[str, Any]:
+    """MODEL-SERVE-006-T06. Presigns one of an inference window's own
+    objects (input.parquet for the container to download at claim time,
+    predictions.parquet for reading afterward) — mirrors
+    `presign_prediction_job_object`'s exact shape one root over.
+    Deliberately NOT `/artifacts/presign`, for the identical reason that
+    function's own doc comment states one root over.
+    """
+    key = body.source_key
+    filename = key.rsplit("/", 1)[-1]
+    if filename not in _ALLOWED_INFERENCE_WINDOW_OBJECT_PRESIGNS:
+        raise ValueError(
+            f"'{key}' does not name one of "
+            f"{sorted(_ALLOWED_INFERENCE_WINDOW_OBJECT_PRESIGNS)}."
+        )
+    if not is_inference_window_key(key):
+        raise ValueError(
+            f"'{key}' is not a well-formed inference-window output key. "
+            "Only inference/{modelId}/{modelVersionId}/dt=.../hour=.../... "
+            "can be presigned here."
         )
 
     return {

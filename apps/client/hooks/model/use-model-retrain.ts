@@ -2,8 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { appendModelLog, updateModel } from '@/services/model'
-import { useRefreshModels } from '@/hooks/use-all-models'
+import { appendModelLog } from '@/services/model'
 import {
   buildMockMetrics,
   buildRetrainLogs,
@@ -39,7 +38,6 @@ export function useModelRetrain({
   const [phase, setPhase] = useState<RetrainPhase>('idle')
   const [metrics, setMetrics] = useState<EvalMetrics | null>(null)
   const cancelled = useRef(false)
-  const refreshModels = useRefreshModels()
 
   useEffect(() => {
     cancelled.current = false
@@ -63,9 +61,11 @@ export function useModelRetrain({
       setPhase('training')
       const wait = () => new Promise(resolve => setTimeout(resolve, STEP_MS))
       try {
-        await updateModel(model.id, { deployStatus: 'initializing' })
-        refreshModels()
-
+        // MODEL-SERVE-006-T12. deployStatus is derived now, not caller-set —
+        // this mock retrain flow's progress used to fake it through three
+        // states; the model's REAL deployStatus (from InferenceWindow/
+        // InferenceSchedule) is unrelated to this simulation's own phase
+        // state, which is already tracked separately above (`setPhase`).
         // Split the simulated log stream across Training / Validating phases.
         const logs = buildRetrainLogs(m, config)
         const valIdx = logs.findIndex(l => /validat/i.test(l))
@@ -92,8 +92,6 @@ export function useModelRetrain({
         setPhase('evaluating')
         await wait()
         const evalMetrics = buildMockMetrics(model.id, config)
-        await updateModel(model.id, { deployStatus: 'running' })
-        refreshModels()
         await appendModelLog(model.id, {
           level: 'info',
           message: `Eval — RMSE ${evalMetrics.rmse}, R² ${evalMetrics.r2}, MAE ${evalMetrics.mae}`,
@@ -109,12 +107,6 @@ export function useModelRetrain({
         onUpdated?.()
       } catch {
         if (!cancelled.current) setPhase('error')
-        try {
-          await updateModel(model.id, { deployStatus: 'error' })
-          refreshModels()
-        } catch {
-          // best-effort status reset
-        }
         if (!cancelled.current) toast.error('Retrain failed')
         onUpdated?.()
       } finally {
@@ -124,7 +116,7 @@ export function useModelRetrain({
         }
       }
     },
-    [isRetraining, onUpdated, refreshModels, model],
+    [isRetraining, onUpdated, model],
   )
 
   const autoFinetune = useCallback(() => void run('auto'), [run])

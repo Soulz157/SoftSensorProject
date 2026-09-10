@@ -37,7 +37,10 @@ export async function updateModel(
     name?: string
     nodeId?: string | null
     datasetId?: string | null
-    deployStatus?: 'stopped' | 'running' | 'error' | 'initializing'
+    // MODEL-SERVE-006-T12. `deployStatus` removed — it is now DERIVED
+    // server-side (lib/deploy-status.ts) from InferenceWindow/
+    // InferenceSchedule, never caller-set. Use
+    // inferenceWindowService.putSchedule to change what actually drives it.
     prodStatus?: 'normal' | 'warning' | 'alert' | 'offline' | 'frozen'
     statusDetail?: string | null
     config?: ModelConfig

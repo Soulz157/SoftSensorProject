@@ -351,3 +351,37 @@ export function predictionJobKey(
  * would be dead code the next reader has to explain away.
  */
 export const SERVING_LOG_ROOT = 'serving-logs/';
+
+/**
+ * MODEL-SERVE-006-T06. The hourly-window record — the root PREDICTION_ROOT
+ * and SERVING_LOG_ROOT's own doc comments both name and reserve.
+ *
+ * Unlike SERVING_LOG_ROOT (whose key is a fresh uuid python mints, with no
+ * server-side ability to predict it), NestJS DOES need to construct this
+ * key itself: `completeService`'s own discipline (matching
+ * `completeJobService:392` one entity over) is that `predictionsKey` is
+ * built HERE, from the window's own ids, never trusted from the
+ * container's request body. `inferenceWindowKey` below MUST stay
+ * byte-for-byte identical to python's `object_store.inference_window_key`
+ * — change both files together.
+ */
+export const INFERENCE_ROOT = 'inference/';
+
+export function inferenceWindowPrefix(
+  modelId: string,
+  modelVersionId: string,
+  dt: string,
+  hour: string,
+): string {
+  return `${INFERENCE_ROOT}${modelId}/${modelVersionId}/dt=${dt}/hour=${hour}/`;
+}
+
+export function inferenceWindowKey(
+  modelId: string,
+  modelVersionId: string,
+  dt: string,
+  hour: string,
+  filename: string,
+): string {
+  return `${inferenceWindowPrefix(modelId, modelVersionId, dt, hour)}${filename}`;
+}

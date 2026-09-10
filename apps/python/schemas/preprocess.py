@@ -99,8 +99,7 @@ class CleaningOperation(BaseModel):
     # Domain-friendly aliases.
     window: Optional[int] = Field(None, description="smooth{moving_avg}")
     alpha: Optional[float] = Field(None, description="smooth{exponential}")
-    threshold: Optional[float] = Field(
-        None, description="remove_outlier{zscore}")
+    threshold: Optional[float] = Field(None, description="remove_outlier{zscore}")
     value: Optional[float] = Field(None, description="fill_missing{constant}")
     min: Optional[float] = Field(None, description="clip lower bound")
     max: Optional[float] = Field(None, description="clip upper bound")
@@ -299,9 +298,7 @@ class ModelRunPredictionsRequest(BaseModel):
 
     model_config = {"extra": "forbid"}
 
-    source_key: str = Field(
-        ..., description="The run's predictions.parquet key."
-    )
+    source_key: str = Field(..., description="The run's predictions.parquet key.")
     #: Absent means no manifest read — `derived_from_target`/`target_scaled`
     #: come back null, same "missing sidecar is null, not a failure"
     #: convention `presign_artifact`'s `sidecars` uses.
@@ -414,9 +411,7 @@ class ModelObjectVerifyRequest(BaseModel):
 
     model_config = {"extra": "forbid"}
 
-    source_key: str = Field(
-        ..., description="The run's model.joblib key."
-    )
+    source_key: str = Field(..., description="The run's model.joblib key.")
 
 
 class ModelObjectVerifyResponse(BaseModel):
@@ -457,6 +452,50 @@ class RunObjectPresignResponse(BaseModel):
     checksum: str
     #: None for model.joblib — a pickled estimator has no row count.
     #: Real only for validate_ready.parquet.
+    row_count: int | None
+    expires_at: str
+
+
+class InferenceWindowUploadPresignRequest(BaseModel):
+    """MODEL-SERVE-006-T06. Mints WRITE URLs for one inference window's own
+    outputs (predictions.parquet, metrics.json) — mirrors
+    `PredictionJobUploadPresignRequest`'s exact shape one root over
+    (inference/{modelId}/{modelVersionId}/dt=.../hour=.../ instead of
+    predictions/{modelId}/{jobId}/). `dt`/`hour` are supplied by the
+    caller (NestJS, computed from the window's own windowStart in UTC),
+    never derived here — same discipline `inference_window_prefix`'s own
+    doc comment states."""
+
+    model_config = {"extra": "forbid"}
+
+    model_id: str
+    model_version_id: str
+    dt: str = Field(..., examples=["2026-09-10"])
+    hour: str = Field(..., examples=["08"])
+    filenames: list[str] = Field(..., min_length=1, max_length=3)
+
+
+class InferenceWindowUploadPresignResponse(BaseModel):
+    upload_urls: dict[str, str]
+    expires_at: str
+
+
+class InferenceWindowObjectPresignRequest(BaseModel):
+    """MODEL-SERVE-006-T06. Presigns an inference window's own
+    predictions.parquet for READING — deliberately separate from
+    `/artifacts/presign` for the same reason
+    `PredictionJobObjectPresignRequest` is: an inference-window object
+    satisfies neither of `is_committed_artifact_key`'s conditions."""
+
+    model_config = {"extra": "forbid"}
+
+    source_key: str = Field(..., description="The window's predictions.parquet key.")
+
+
+class InferenceWindowObjectPresignResponse(BaseModel):
+    data_url: str
+    sidecar_urls: dict[str, str | None]
+    checksum: str
     row_count: int | None
     expires_at: str
 
@@ -584,9 +623,7 @@ class RunFeatureImportanceRequest(BaseModel):
 
     model_config = {"extra": "forbid"}
 
-    source_key: str = Field(
-        ..., description="The run's feature_importance.json key."
-    )
+    source_key: str = Field(..., description="The run's feature_importance.json key.")
 
 
 class FeatureImportanceEntry(BaseModel):
@@ -752,6 +789,92 @@ class MaterializeRequest(BaseModel):
         return self
 
 
+class InferenceWindowMaterializeRequest(BaseModel):
+    """MODEL-SERVE-006. Fetch, feature, and trim ONE inference window —
+    the scheduled counterpart of `MaterializeRequest`, sourced from a
+    PINNED recipe instead of a fresh caller-supplied one.
+
+    `feature_columns` is resolved by NestJS off the pinned ModelVersion's
+    `run_manifest.json` (the same hop `model-serving.authorized.service.ts`
+    takes for /predict) — this endpoint never re-derives it. `feature_spec_
+    key` is read here for the `features` recipe only; no scaling happens in
+    this service at all (decisions.batch_input_is_pre_scale one entity
+    over: the container applies `to_model_ready`, exactly as
+    MODEL-SERVE-002/003 already do).
+
+    `window_start`/`window_end` are REAL UTC instants (unlike
+    `HoldoutSplitRequest.from_time`/`to_time`, which are already
+    Bangkok-local wall-clock strings passed through unchanged) — see
+    `frame_service.utc_to_wall_clock`'s own doc comment for why this
+    endpoint converts rather than merely strips the timezone marker the
+    way `artifact_service._wall_clock` does for the (different) values
+    that were never really UTC to begin with.
+
+    `interval` is the fetch cadence (e.g. "1m") snapshotted on
+    InferenceSchedule.fetchConfig at enable time — it is what converts
+    the recipe's own compound lookback (`max_replay_lookback`, counted in
+    ROWS) into a widened fetch DURATION. No cadence is recorded anywhere
+    else that this endpoint could derive it from instead.
+
+    NO `target_key` FIELD, unlike `MaterializeRequest` — this endpoint
+    builds its own key via `inference_window_key`, from `model_id`/
+    `model_version_id`/`dt`/`hour`. `inference/` is python's ONLY writer
+    and ONLY key-builder (see `object_store.INFERENCE_ROOT`'s own doc
+    comment, the same arrangement SERVING_LOG_ROOT already has) — handing
+    NestJS a target_key to construct itself would create a second builder
+    for a root only this side is meant to own.
+    """
+
+    feature_spec_key: str
+    feature_columns: list[str] = Field(..., min_length=1)
+    model_id: str
+    model_version_id: str
+    #: `YYYY-MM-DD` / zero-padded `HH`, computed by NestJS from windowStart
+    #: in UTC — same caller-supplied, never-derived-here discipline
+    #: `inference_window_prefix`'s own doc comment states.
+    dt: str = Field(..., examples=["2026-09-10"])
+    hour: str = Field(..., examples=["08"])
+    window_start: str = Field(..., examples=["2026-09-10T08:00:00.000Z"])
+    window_end: str = Field(..., examples=["2026-09-10T09:00:00.000Z"])
+    interval: str = Field(..., examples=["1m"])
+    pi: Optional[PIFetchRequest] = None
+    sql: Optional[SqlMaterializeSpec] = None
+    #: A retry re-materializing the same window writes over its own prior
+    #: (failed) attempt — the window row, not the object key, is this
+    #: entity's immutability boundary (unlike a committed dataset version).
+    overwrite: bool = True
+
+    @model_validator(mode="after")
+    def exactly_one_source(self) -> "InferenceWindowMaterializeRequest":
+        if (self.pi is None) == (self.sql is None):
+            raise ValueError(
+                "Provide exactly one of 'pi' or 'sql'. A materialize with both "
+                "is ambiguous, and one with neither has nothing to read."
+            )
+        return self
+
+
+class InferenceWindowMaterializeResponse(BaseModel):
+    """MODEL-SERVE-006-T05. A dedicated, narrow response — NOT
+    `ArtifactStatsResponse`, which carries several fields (column_stats_key,
+    feature_spec_key, skipped_features, validation_*) that mean nothing for
+    a pre-scale scoring input and would invite a caller to read a field this
+    endpoint never populates meaningfully.
+    """
+
+    object_key: str
+    #: Rows inside [window_start, window_end) after feature computation,
+    #: BEFORE dropping any row with a Bad feature cell — the denominator
+    #: `missing_pct` is computed against.
+    row_count: int
+    #: Rows actually written to `object_key` — after `drop_bad_feature_rows`.
+    #: Never imputed: a row with any Bad kept-feature cell is excluded
+    #: entirely, not filled. This is what `InferenceWindow.inputRows` holds.
+    scored_rows: int
+    missing_pct: float
+    checksum: str
+
+
 class ResplitHoldoutRequest(BaseModel):
     """Re-split an EXISTING, PRISTINE (never-split) BRONZE against a holdout
     window, without re-fetching from the source.
@@ -876,8 +999,7 @@ class FeaturesRequest(BaseModel):
     source_key: str
     target_key: str
     features: list[FeatureConfigRequest] = Field(default_factory=list)
-    selected_columns: Optional[list[str]] = Field(
-        None, alias="selectedColumns")
+    selected_columns: Optional[list[str]] = Field(None, alias="selectedColumns")
     scalers: dict[str, str] = Field(default_factory=dict)
     overwrite: bool = False
     target_y: str | None = Field(
@@ -936,8 +1058,7 @@ class ScaleRequest(BaseModel):
     source_key: str
     target_key: str
     features: list[FeatureConfigRequest] = Field(default_factory=list)
-    selected_columns: Optional[list[str]] = Field(
-        None, alias="selectedColumns")
+    selected_columns: Optional[list[str]] = Field(None, alias="selectedColumns")
     scalers: dict[str, str] = Field(default_factory=dict)
     overwrite: bool = False
     target_y: str | None = Field(
@@ -982,8 +1103,7 @@ class ReplayHoldoutRequest(BaseModel):
     #: scored.
     holdout_from: str
     features: list[FeatureConfigRequest] = Field(default_factory=list)
-    selected_columns: Optional[list[str]] = Field(
-        None, alias="selectedColumns")
+    selected_columns: Optional[list[str]] = Field(None, alias="selectedColumns")
     scalers: dict[str, str] = Field(default_factory=dict)
     scaling_params: dict[str, dict[str, float]] = Field(default_factory=dict)
     target_y: Optional[str] = None
@@ -1346,8 +1466,7 @@ class CleanupRequest(BaseModel):
     @model_validator(mode="after")
     def prefix_is_a_directory(self) -> "CleanupRequest":
         if not self.prefix.endswith("/"):
-            raise ValueError(
-                "prefix must end with '/' so it cannot match a sibling.")
+            raise ValueError("prefix must end with '/' so it cannot match a sibling.")
         if "tmp/" not in self.prefix:
             raise ValueError(
                 "Refusing to clear a prefix outside tmp/. Committed dataset "
@@ -1374,8 +1493,7 @@ class ArtifactReclaimRequest(BaseModel):
     cannot be pointed at `tmp/`, a preset, or a legacy version key by mistake.
     """
 
-    object_key: str = Field(..., examples=[
-        "ds-1/artifacts/art-7/data.parquet"])
+    object_key: str = Field(..., examples=["ds-1/artifacts/art-7/data.parquet"])
 
     @model_validator(mode="after")
     def object_key_is_a_committed_artifact(self) -> "ArtifactReclaimRequest":
@@ -1522,8 +1640,7 @@ class PreviewRequest(BaseModel):
     operations: list[CleaningOperation] = Field(default_factory=list)
     #: Per-tag decimal places. Python has no access to the client's tagMeta, so
     #: this must travel in the request or every value rounds to the default.
-    precision: dict[str, int] = Field(
-        default_factory=dict, examples=[{"TI-101": 1}])
+    precision: dict[str, int] = Field(default_factory=dict, examples=[{"TI-101": 1}])
     sample_rows: int = Field(
         DEFAULT_SAMPLE_ROWS,
         ge=1,
@@ -1573,8 +1690,7 @@ class HistogramRequest(BaseModel):
     of `/preview`'s own scrubber-driven one.
     """
 
-    source_key: str = Field(...,
-                            description="Object key of the source artifact")
+    source_key: str = Field(..., description="Object key of the source artifact")
     operations: list[CleaningOperation] = Field(default_factory=list)
     precision: dict[str, int] = Field(default_factory=dict)
     #: Which tags to overlay — REQUIRED (unlike `PreviewRequest.tags`, which
@@ -1643,8 +1759,7 @@ class BoxplotRequest(BaseModel):
     proved live against real MinIO data, not a second implementation of it.
     """
 
-    source_key: str = Field(...,
-                            description="Object key of the source artifact")
+    source_key: str = Field(..., description="Object key of the source artifact")
     operations: list[CleaningOperation] = Field(default_factory=list)
     precision: dict[str, int] = Field(default_factory=dict)
     #: Tags to summarize — REQUIRED, same rationale as `HistogramRequest.tags`:
@@ -1728,8 +1843,7 @@ class SplitStatsRequest(BaseModel):
     assumed.
     """
 
-    source_key: str = Field(...,
-                            description="Object key of the source artifact")
+    source_key: str = Field(..., description="Object key of the source artifact")
     #: Tags to summarize per side — REQUIRED, same rationale as
     #: `BoxplotRequest.tags`. Refused BY NAME past `MAX_SPLIT_STATS_TAGS`.
     tags: list[str] = Field(..., min_length=1, max_length=MAX_SPLIT_STATS_TAGS)
@@ -1853,8 +1967,7 @@ class ScatterRequest(BaseModel):
     overlay.
     """
 
-    source_key: str = Field(...,
-                            description="Object key of the source artifact")
+    source_key: str = Field(..., description="Object key of the source artifact")
     operations: list[CleaningOperation] = Field(default_factory=list)
     precision: dict[str, int] = Field(default_factory=dict)
     x_tag: str = Field(..., min_length=1)
@@ -1870,9 +1983,7 @@ class ScatterRequest(BaseModel):
     #: Caps the PLOTTED point cloud only — see `n`/regression fields on the
     #: response, which are always computed over the FULL Good-filtered
     #: frame, never the decimated sample (this task's own HARD REQUIREMENT).
-    max_points: int = Field(
-        DEFAULT_SCATTER_MAX_POINTS, ge=10, le=MAX_DOWNSAMPLE_POINTS
-    )
+    max_points: int = Field(DEFAULT_SCATTER_MAX_POINTS, ge=10, le=MAX_DOWNSAMPLE_POINTS)
 
 
 class ScatterPoint(BaseModel):
@@ -1924,8 +2035,7 @@ class CorrelationRequest(BaseModel):
     `len(resolved) <= top_k`, regardless of `len(tags)`.
     """
 
-    source_key: str = Field(...,
-                            description="Object key of the source artifact")
+    source_key: str = Field(..., description="Object key of the source artifact")
     operations: list[CleaningOperation] = Field(default_factory=list)
     precision: dict[str, int] = Field(default_factory=dict)
     tags: list[str] = Field(..., min_length=1)
@@ -1937,9 +2047,7 @@ class CorrelationRequest(BaseModel):
     )
     start_time: Optional[str] = None
     end_time: Optional[str] = None
-    top_k: int = Field(
-        DEFAULT_CORRELATION_TOP_K, ge=2, le=MAX_CORRELATION_TOP_K
-    )
+    top_k: int = Field(DEFAULT_CORRELATION_TOP_K, ge=2, le=MAX_CORRELATION_TOP_K)
 
 
 class CorrelationResponse(BaseModel):

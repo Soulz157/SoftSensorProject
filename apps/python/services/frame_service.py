@@ -214,6 +214,33 @@ def from_sql_response(
     return _finalise(timestamps, values, statuses, selected)
 
 
+def utc_to_wall_clock(value: Any) -> pd.Timestamp:
+    """MODEL-SERVE-006. A caller-supplied REAL UTC instant, CONVERTED to the
+    naive Bangkok-local wall-clock convention every frame in this module
+    stores (see this module's own docstring).
+
+    Deliberately NOT `artifact_service._wall_clock`, despite the similar
+    name and the similar-looking bug that function's own doc comment
+    describes. That function exists for a boundary that was ALREADY
+    Bangkok-local wall-clock digits before it ever left Postgres (a
+    `timestamp WITHOUT time zone` column) and only picked up a `Z` suffix
+    because JS's `toISOString()` appends one unconditionally — stripping
+    the marker there recovers the original digits exactly.
+
+    `InferenceWindow.windowStart`/`windowEnd` are a genuinely different
+    case: they are real UTC instants, computed from `Date.now()` arithmetic
+    on the NestJS side. Stripping their `Z` the way `_wall_clock` does would
+    silently misalign every window boundary against this Bangkok-naive
+    frame by the UTC+7 offset — precisely the class of bug this module's own
+    docstring warns a trainer-side boundary comparison would create the
+    first real instance of.
+    """
+    ts = pd.Timestamp(value)
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    return ts.tz_convert("Asia/Bangkok").tz_localize(None)
+
+
 def mark_questionable(
     frame: pd.DataFrame, tag: str, mask: Sequence[bool]
 ) -> pd.DataFrame:

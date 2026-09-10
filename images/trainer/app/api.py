@@ -24,22 +24,35 @@ from config import RunContext
 
 # role -> {mode: path}. The ONLY place these surfaces are paired; every
 # caller in this codebase asks for a role, never a literal URL. MODEL-SERVE-
-# 003 added the "batch" column — a role missing a "batch" entry (there is
-# none today) would KeyError rather than silently reach a train/score route,
-# which is the same "no code path here that could reach the wrong endpoint
-# even by mistake" guarantee this module's docstring already states.
+# 003 added the "batch" column, MODEL-SERVE-006 the "infer" column — a role
+# missing an entry for a real mode would KeyError rather than silently
+# reach a train/score/batch route, which is the same "no code path here
+# that could reach the wrong endpoint even by mistake" guarantee this
+# module's docstring already states.
 _ROUTES: dict[str, dict[str, str]] = {
-    "claim": {"train": "/claim", "score": "/score-claim", "batch": "/batch-claim"},
-    "log": {"train": "/log", "score": "/score-log", "batch": "/batch-log"},
+    "claim": {
+        "train": "/claim",
+        "score": "/score-claim",
+        "batch": "/batch-claim",
+        "infer": "/infer-claim",
+    },
+    "log": {
+        "train": "/log",
+        "score": "/score-log",
+        "batch": "/batch-log",
+        "infer": "/infer-log",
+    },
     "upload-urls": {
         "train": "/upload-urls",
         "score": "/score-upload-urls",
         "batch": "/batch-upload-urls",
+        "infer": "/infer-upload-urls",
     },
     "complete": {
         "train": "/complete",
         "score": "/score-complete",
         "batch": "/batch-complete",
+        "infer": "/infer-complete",
     },
 }
 

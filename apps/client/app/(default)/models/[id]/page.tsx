@@ -50,7 +50,8 @@ import {
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import { workspacesAtom } from '@/store/workspace'
-import { getModels, updateModel } from '@/services/model'
+import { getModels } from '@/services/model'
+import { inferenceWindowService } from '@/services/inference-window'
 import { useRefreshModels } from '@/hooks/use-all-models'
 import { effectiveProdStatus } from '@/lib/model-status'
 import type { AIModel } from '@/types'
@@ -141,11 +142,20 @@ export default function ModelDetailPage({
   const retrain = useModelRetrain({ model, onUpdated: refresh })
   const refreshModels = useRefreshModels()
 
+  /**
+   * MODEL-SERVE-006-T12. deployStatus is DERIVED now — this toggle changes
+   * what actually drives it (the model's InferenceSchedule), not the
+   * status label itself. "Stop" disables the schedule; "Start" enables it,
+   * which requires a PRODUCTION version to exist (the backend refuses
+   * otherwise, surfaced here as the existing generic failure toast).
+   */
   async function handleToggleDeploy(next: 'running' | 'stopped') {
     if (!model) return
     setIsToggling(true)
     try {
-      await updateModel(model.id, { deployStatus: next })
+      await inferenceWindowService.putSchedule(model.id, {
+        enabled: next === 'running',
+      })
       refreshModels()
       setModel(prev =>
         prev?.data
@@ -156,7 +166,11 @@ export default function ModelDetailPage({
         next === 'running' ? `${model.name} starting` : `${model.name} stopped`,
       )
     } catch {
-      toast.error('Failed to update deploy status')
+      toast.error(
+        next === 'running'
+          ? 'Failed to start — the model needs a PRODUCTION version first.'
+          : 'Failed to update deploy status',
+      )
     } finally {
       setIsToggling(false)
     }

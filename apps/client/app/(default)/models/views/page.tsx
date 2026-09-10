@@ -47,7 +47,8 @@ import {
 } from '@/hooks/use-all-models'
 import { useWorkspacePlants } from '@/hooks/workspace/use-workspace-plants'
 import { AIModel } from '@/types'
-import { deleteModel, updateModel } from '@/services/model'
+import { deleteModel } from '@/services/model'
+import { inferenceWindowService } from '@/services/inference-window'
 import { effectiveProdStatus } from '@/lib/model-status'
 import { ModelTable } from './components/model-table'
 import { WorkTreePanel, type TreeScope } from './components/work-tree-panel'
@@ -142,19 +143,27 @@ export default function ModelsPage() {
     }
   }
 
+  /** MODEL-SERVE-006-T12. Same rewiring as models/[id]/page.tsx's own
+   *  handler — this toggles the schedule, deployStatus itself is derived. */
   async function handleToggleDeploy(
     model: AIModel,
     next: 'running' | 'stopped',
   ) {
     try {
-      await updateModel(model.id, { deployStatus: next })
+      await inferenceWindowService.putSchedule(model.id, {
+        enabled: next === 'running',
+      })
       toast.success(
         next === 'running' ? `${model.name} starting` : `${model.name} stopped`,
       )
       refreshModels()
       await refetch()
     } catch {
-      toast.error('Failed to update deploy status')
+      toast.error(
+        next === 'running'
+          ? 'Failed to start — the model needs a PRODUCTION version first.'
+          : 'Failed to update deploy status',
+      )
     }
   }
 

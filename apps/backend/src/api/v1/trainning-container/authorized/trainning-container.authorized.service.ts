@@ -205,8 +205,39 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
   // it and not in the registry. Every environment other than that machine
   // fails LOUDLY at boot (a warn, then a rejected pull) rather than silently
   // running old code. Push the tag to close the gap.
+  // 1.0.11 (MODEL-SERVE-006-T03): adds a FOURTH container mode, `infer` —
+  // dispatched in pipelines/infer.py, structurally batch.py's own
+  // chunked-scoring shape with a different claim/complete route base
+  // (/authorized/inference-windows/{id}/infer-*) and a different output
+  // layout (inference/{modelId}/{modelVersionId}/dt=.../hour=.../). A MODE
+  // addition is NOT in the 1.0.10 note's "purely additive, SILENT" class —
+  // an image without infer.py fails every scheduled window with a route
+  // 404, not a null-key-and-honest-absence degradation. Verified in-image,
+  // not just by inspection: `docker build` (compileall passed on config.py/
+  // api.py/train.py/pipelines/infer.py), then `docker run --entrypoint
+  // python` confirmed `RunContext.from_env()` with MODE=infer sets
+  // `is_infer_mode`, resolves `api` to `/authorized/inference-windows/
+  // {id}`, and `_ROUTES['claim']['infer']`/`['complete']['infer']` resolve
+  // to `/infer-claim`/`/infer-complete`. Existing pytest suite: 56 passed
+  // (no per-mode dispatch test file exists for batch mode either — this
+  // bump added none for infer, following that same precedent), `docker run
+  // --user root` per the 1.0.10 note's own correction that the suite IS
+  // runnable in-image.
+  //
+  // PUSH STILL PENDING, same unclosed gap the 1.0.9/1.0.10 notes record —
+  // `ghcr.io/soft-sensor-project` (this repo's CI build target) does not
+  // exist as a GitHub org or user (checked 2026-09-10: 404 both ways), and
+  // the deployed tag lives under a DIFFERENT namespace (`scgc/`) that CI
+  // never pushes to. `.github/workflows/trainer-image.yml` builds and
+  // Trivy-scans this Dockerfile on every relevant path change (`push:
+  // false`, confirmed present — the ledger's "nothing in CI builds this"
+  // claim was stale before this pass even started), but the registry gap
+  // means 1.0.11 exists only on the machine that built it until someone
+  // fixes push auth. Every OTHER environment fails LOUDLY at boot (a warn,
+  // then a rejected pull) rather than silently running old code — same
+  // `resolveDigest` behaviour the 1.0.9/1.0.10 notes already describe.
   private readonly imageRef =
-    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.10';
+    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.11';
   // private readonly network = process.env.TRAINING_NETWORK ?? 'dslake_default';
   private readonly network = 'monorepo_network';
   private readonly memoryBytes = Number(
@@ -365,6 +396,56 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
       reconciled += 1;
     }
 
+    // MODEL-SERVE-006. Same existence-check discipline, one entity over —
+    // this is the BOOT-time reconcile (a restart while a window's
+    // container was running); InferenceWindowSchedulerService's own
+    // reconcileStuckWindows is the separate, TICK-time, TIMEOUT-based
+    // reconcile for a window whose container hung without ever posting
+    // /infer-complete, which an existence check alone cannot catch. Same
+    // acceptable QUEUED-forever-equivalent gap as batch's own note above:
+    // a window that dies between row-create and spawn stays PENDING, and
+    // the next tick's dispatch simply picks it up again.
+    const inferOrphans = await this.prisma.inferenceWindow.findMany({
+      where: { status: 'RUNNING' },
+      select: { id: true, containerId: true },
+    });
+    for (const window of inferOrphans) {
+      if (!window.containerId) {
+        await this.prisma.inferenceWindow.update({
+          where: { id: window.id },
+          data: {
+            status: 'FAILED',
+            failureReason:
+              'No container was ever recorded for this window — it never spawned.',
+            finishedAt: new Date(),
+            tokenExpiresAt: new Date(0),
+          },
+        });
+        reconciled += 1;
+        continue;
+      }
+      const container = this.docker.getContainer(window.containerId);
+      try {
+        await container.inspect();
+      } catch {
+        await this.prisma.inferenceWindow.update({
+          where: { id: window.id },
+          data: {
+            status: 'FAILED',
+            failureReason:
+              `Container ${window.containerId} no longer exists — the ` +
+              'server restarted while this window was in flight.',
+            finishedAt: new Date(),
+            tokenExpiresAt: new Date(0),
+          },
+        });
+        reconciled += 1;
+        continue;
+      }
+      void this.watch(window.id, container, 'infer');
+      reconciled += 1;
+    }
+
     if (reconciled > 0) {
       this.log.warn(
         `Reconciled ${reconciled} orphaned run/container(s) at boot.`,
@@ -421,7 +502,7 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
   async spawn(
     id: string,
     token: string,
-    mode: 'train' | 'score' | 'batch' = 'train',
+    mode: 'train' | 'score' | 'batch' | 'infer' = 'train',
   ) {
     const container = await this.docker.createContainer({
       Image: this.imageDigest || this.imageRef,
@@ -438,7 +519,9 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
             ? 'scoring'
             : mode === 'batch'
               ? 'batch-predict'
-              : 'training',
+              : mode === 'infer'
+                ? 'scheduled-inference'
+                : 'training',
         'dslake.runId': id,
       },
       HostConfig: {
@@ -496,6 +579,19 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
           startedAt: new Date(),
         },
       });
+    } else if (mode === 'infer') {
+      // MODEL-SERVE-006. Follows batch's ordering — InferenceWindowToken
+      // Guard accepts PENDING the same way PredictionJobTokenGuard accepts
+      // QUEUED, so there is no equivalent pre-start race to close.
+      await container.start();
+      await this.prisma.inferenceWindow.update({
+        where: { id },
+        data: {
+          status: 'RUNNING',
+          containerId: container.id,
+          startedAt: new Date(),
+        },
+      });
     } else {
       await container.start();
       await this.prisma.modelTrainingRun.update({
@@ -524,7 +620,7 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
   private async watch(
     id: string,
     container: Docker.Container,
-    mode: 'train' | 'score' | 'batch' = 'train',
+    mode: 'train' | 'score' | 'batch' | 'infer' = 'train',
   ) {
     try {
       const { StatusCode } = await container.wait();
@@ -575,6 +671,36 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
                   ? `Container exited 0 without reporting a result. Tail: ${tail}`
                   : `Container exited ${StatusCode}. Tail: ${tail}`,
               finishedAt: new Date(),
+            },
+          });
+        }
+        return;
+      }
+
+      if (mode === 'infer') {
+        const window = await this.prisma.inferenceWindow.findUnique({
+          where: { id },
+          select: { status: true },
+        });
+        // Same "a real report already landed always wins" rule as batch —
+        // a stale exit report for a window already terminal (via a real
+        // /infer-complete, or T02's own stuck-window reconcile) must not
+        // clobber the recorded outcome.
+        if (
+          window &&
+          (window.status === 'RUNNING' || window.status === 'PENDING')
+        ) {
+          const tail = await this.tailLogs(container);
+          await this.prisma.inferenceWindow.update({
+            where: { id },
+            data: {
+              status: 'FAILED',
+              failureReason:
+                StatusCode === 0
+                  ? `Container exited 0 without reporting a result. Tail: ${tail}`
+                  : `Container exited ${StatusCode}. Tail: ${tail}`,
+              finishedAt: new Date(),
+              tokenExpiresAt: new Date(0),
             },
           });
         }
@@ -633,6 +759,22 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
       await this.docker.getContainer(containerId).kill();
     } catch (err) {
       this.log.warn(`kill ${containerId}: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * MODEL-SERVE-006. Exposed for InferenceWindowSchedulerService's own
+   * timeout-based stuck-window reconcile — the same `container.inspect()`
+   * existence check `reconcileOrphanedRuns` already performs inline, made
+   * public rather than duplicated a second time with `getContainer` +
+   * `inspect` repeated in a different file.
+   */
+  async containerExists(containerId: string): Promise<boolean> {
+    try {
+      await this.docker.getContainer(containerId).inspect();
+      return true;
+    } catch {
+      return false;
     }
   }
 }

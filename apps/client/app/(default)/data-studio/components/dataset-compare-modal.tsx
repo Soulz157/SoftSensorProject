@@ -575,8 +575,6 @@ function mergeByTime(
     labels.push(row.t)
     const point = { t: i, __t: row.t } as SeriesPoint
     for (const tag of tags) {
-      // Only the side this row belongs to carries a value; the other stays
-      // undefined so its line BREAKS here rather than bridging across.
       point[row.side === 'train' ? tag : tag + VAL_SUFFIX] = row.src[tag]
     }
     if (boundaryIndex === null && row.side === 'val') boundaryIndex = i

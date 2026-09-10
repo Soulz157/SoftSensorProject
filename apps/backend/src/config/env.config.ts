@@ -135,4 +135,58 @@ export const env = {
   DRIFT_WARN_SD: Number(process.env.DRIFT_WARN_SD ?? 1.5),
   DRIFT_CRITICAL_SD: Number(process.env.DRIFT_CRITICAL_SD ?? 3.0),
   DRIFT_OUT_OF_RANGE_PCT: Number(process.env.DRIFT_OUT_OF_RANGE_PCT ?? 10),
+
+  // MODEL-SERVE-006. The scheduler tick — same `<= 0` disables / `.unref()`
+  // shape ModelDraftCleanupAdminService's own MODEL_DRAFT_SWEEP_INTERVAL_MS
+  // uses. The tick only inserts PENDING rows and reconciles stuck RUNNING
+  // ones; it never scores anything itself (see InferenceWindowScheduler
+  // Service's own doc comment for why that split is load-bearing).
+  INFERENCE_TICK_INTERVAL_MS: Number(
+    process.env.INFERENCE_TICK_INTERVAL_MS ?? 300_000,
+  ),
+  // Per-model defaults when a schedule doesn't set its own — T04's own
+  // ingestion lag is NEVER zero and NEVER derived from the cadence; 15 is a
+  // CHOSEN default (PI unreachable from dev to measure worst-case tag
+  // arrival — see MODEL-SERVE-006-V08), not a measured one.
+  INFERENCE_DEFAULT_CADENCE_MINUTES: Number(
+    process.env.INFERENCE_DEFAULT_CADENCE_MINUTES ?? 60,
+  ),
+  INFERENCE_DEFAULT_LAG_MINUTES: Number(
+    process.env.INFERENCE_DEFAULT_LAG_MINUTES ?? 15,
+  ),
+  // How far back the tick backfills on its own, every tick — bounded so a
+  // schedule enabled after a long outage does not try to insert years of
+  // windows in one pass. Manual backfill (POST /inference/backfill) is
+  // unbounded by this and takes an explicit range instead.
+  INFERENCE_BACKFILL_HORIZON_HOURS: Number(
+    process.env.INFERENCE_BACKFILL_HORIZON_HOURS ?? 48,
+  ),
+  // Containers spawned per tick, across all schedules — bounds a first
+  // boot with a long backfill horizon from spawning dozens at once.
+  INFERENCE_MAX_CONCURRENCY: Number(process.env.INFERENCE_MAX_CONCURRENCY ?? 1),
+  // Below this row count (post drop_bad_feature_rows), a window is SKIPPED
+  // rather than scored — a real terminal status, not a synonym for FAILED
+  // (T01's own finding). Default is half an hourly window at the observed
+  // dataset's 1-minute interval (60 rows/hour); NOT 1, which would make
+  // SKIPPED practically unreachable.
+  INFERENCE_MIN_ROWS: Number(process.env.INFERENCE_MIN_ROWS ?? 30),
+  // T10: no window reaching SUCCEEDED or SKIPPED for this many cadences
+  // raises the staleness alarm. SKIPPED counts — it proves the record is
+  // still being written — but never counts as a live prediction either.
+  INFERENCE_STALE_AFTER_CADENCES: Number(
+    process.env.INFERENCE_STALE_AFTER_CADENCES ?? 3,
+  ),
+  // A RUNNING window whose startedAt is older than this is reconciled to
+  // FAILED at the next tick — the first timeout-based reconcile in this
+  // codebase (reconcileOrphanedRuns's existence check has no clock at all;
+  // see this feature's own plan for why a PENDING->RUNNING gap of a whole
+  // tick interval needs one that batch/training's sub-second gap does not).
+  INFERENCE_WINDOW_STUCK_MS: Number(
+    process.env.INFERENCE_WINDOW_STUCK_MS ?? 30 * 60 * 1000,
+  ),
+  // Same TTL shape as PREDICTION_JOB_TOKEN_TTL_MS — bounded work, not an
+  // open-ended fit.
+  INFERENCE_WINDOW_TOKEN_TTL_MS: Number(
+    process.env.INFERENCE_WINDOW_TOKEN_TTL_MS ?? 2 * 60 * 60 * 1000,
+  ),
 };

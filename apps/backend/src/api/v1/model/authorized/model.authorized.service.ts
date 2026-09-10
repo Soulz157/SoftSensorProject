@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { AppException } from '@softsensor/common';
 import { PrismaService } from '@softsensor/prisma';
 import { z } from 'zod';
+import { deriveDeployStatuses, overlayDeployStatus } from '@/lib/deploy-status';
 import {
   AppendLogSchema,
   CreateModelSchema,
@@ -167,11 +168,17 @@ export class ModelAuthorizedService {
       include: NODE_INCLUDE,
       orderBy: { createdAt: 'desc' },
     });
+    // MODEL-SERVE-006-T12. deployStatus is DERIVED here, not read off the
+    // stored row — one batched query (lib/deploy-status.ts), not N+1.
+    const statuses = await deriveDeployStatuses(
+      this.prisma,
+      models.map((m) => m.id),
+    );
     return {
       statusCode: 200,
       message: 'Models fetched',
       type: 'SUCCESS' as const,
-      data: models,
+      data: models.map((m) => overlayDeployStatus(m, statuses[m.id])),
     };
   }
 
@@ -286,7 +293,7 @@ export class ModelAuthorizedService {
     if (dto.config !== undefined) editedLabels.push('Configuration');
 
     let editorName = '';
-    if (dto.deployStatus === 'running' || editedLabels.length > 0) {
+    if (editedLabels.length > 0) {
       const user = await this.prisma.user.findUnique({
         where: { id: userId },
         select: { firstName: true, lastName: true },
@@ -297,14 +304,12 @@ export class ModelAuthorizedService {
         .trim();
     }
 
-    let deployFields: Partial<ModelData> = {};
-    if (dto.deployStatus === 'running') {
-      deployFields = {
-        deployedAt: new Date().toISOString(),
-        ...(editorName && { deployedBy: editorName }),
-      };
-    }
-
+    // MODEL-SERVE-006-T12. deployStatus/deployedAt/deployedBy no longer
+    // written here — `dto` has no `deployStatus` field anymore (removed
+    // from UpdateModelSchema), and `deployedAt`/`deployedBy` provenance now
+    // stamps at the NEW deploy action (InferenceWindowAuthorizedService.
+    // putScheduleService's `stampDeployed`, on the schedule's OFF -> ON
+    // transition) instead of here.
     const editFields: Partial<ModelData> =
       editedLabels.length > 0
         ? {
@@ -324,7 +329,6 @@ export class ModelAuthorizedService {
 
     const newData: ModelData = {
       ...current,
-      ...(dto.deployStatus && { deployStatus: dto.deployStatus }),
       ...(dto.prodStatus && { prodStatus: dto.prodStatus }),
       ...(dto.statusDetail !== undefined && {
         statusDetail: dto.statusDetail ?? undefined,
@@ -332,7 +336,6 @@ export class ModelAuthorizedService {
       ...(dto.config !== undefined && {
         config: preserveServerDerivedConfig(dto.config, current.config),
       }),
-      ...deployFields,
       ...editFields,
     };
 
@@ -347,12 +350,21 @@ export class ModelAuthorizedService {
       },
       include: NODE_INCLUDE,
     });
+    const status = await this.deployStatusFor(modelId);
     return {
       statusCode: 200,
       message: 'Model updated',
       type: 'SUCCESS' as const,
-      data: updated,
+      data: overlayDeployStatus(updated, status),
     };
+  }
+
+  /** One-model convenience over `deriveDeployStatuses` for the single-row
+   *  return paths (`updateModelService`/`appendLogService`) — same batched
+   *  helper, called with a one-element id list. */
+  private async deployStatusFor(modelId: string) {
+    const statuses = await deriveDeployStatuses(this.prisma, [modelId]);
+    return statuses[modelId];
   }
 
   async appendLogService(
@@ -386,11 +398,12 @@ export class ModelAuthorizedService {
       data: { data: JSON.parse(JSON.stringify(newData)) },
       include: NODE_INCLUDE,
     });
+    const status = await this.deployStatusFor(modelId);
     return {
       statusCode: 200,
       message: 'Log appended',
       type: 'SUCCESS' as const,
-      data: updated,
+      data: overlayDeployStatus(updated, status),
     };
   }
 

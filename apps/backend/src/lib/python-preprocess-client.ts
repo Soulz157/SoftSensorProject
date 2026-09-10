@@ -170,6 +170,87 @@ export async function presignPredictionJobObject(input: {
   return PresignRunObjectSchema.parse(res);
 }
 
+/** Mirrors `InferenceWindowMaterializeResponse` field for field. */
+const InferenceWindowMaterializeSchema = z.object({
+  object_key: z.string().min(1),
+  row_count: z.number().int().nonnegative(),
+  scored_rows: z.number().int().nonnegative(),
+  missing_pct: z.number(),
+  checksum: z.string().min(1),
+});
+
+export type InferenceWindowMaterializeResult = z.infer<
+  typeof InferenceWindowMaterializeSchema
+>;
+
+/**
+ * MODEL-SERVE-006-T04/T05/T06. Materializes one scheduled window's
+ * pre-scale scoring input — the request shape mirrors `InferenceWindow
+ * MaterializeRequest` on the python side. `pi`/`sql` carry PER-REQUEST
+ * credentials already decrypted, same discipline every other data-source
+ * call in this file follows; never logged, never echoed into an error.
+ */
+export async function materializeInferenceWindow(input: {
+  feature_spec_key: string;
+  feature_columns: string[];
+  model_id: string;
+  model_version_id: string;
+  dt: string;
+  hour: string;
+  window_start: string;
+  window_end: string;
+  interval: string;
+  pi?: Record<string, unknown>;
+  sql?: Record<string, unknown>;
+}): Promise<InferenceWindowMaterializeResult> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/inference-window',
+    input,
+    // A real fetch against a source system, not a metadata read — bounded
+    // by the same budget `materialize`'s own call site would need, though
+    // this codebase has no dedicated PYTHON_TIMEOUT entry for it yet.
+    PYTHON_TIMEOUT.preprocess,
+  );
+  return InferenceWindowMaterializeSchema.parse(res);
+}
+
+/**
+ * MODEL-SERVE-006-T06. Time-limited write URLs for an infer-mode
+ * container's own two outputs — mirrors `presignPredictionJobUpload`'s
+ * shape one root over (inference/{modelId}/{modelVersionId}/dt=.../
+ * hour=.../ instead of predictions/{modelId}/{jobId}/).
+ */
+export async function presignInferenceWindowUpload(input: {
+  model_id: string;
+  model_version_id: string;
+  dt: string;
+  hour: string;
+  filenames: string[];
+}): Promise<PresignedUpload> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/inference-window/presign-upload',
+    input,
+    PYTHON_TIMEOUT.test,
+  );
+  return PresignUploadSchema.parse(res);
+}
+
+/**
+ * MODEL-SERVE-006-T06. Presigns an inference window's own
+ * predictions.parquet for reading — mirrors `presignPredictionJobObject`'s
+ * shape one root over.
+ */
+export async function presignInferenceWindowObject(input: {
+  source_key: string;
+}): Promise<PresignedRunObject> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/inference-window/presign-object',
+    { source_key: input.source_key },
+    PYTHON_TIMEOUT.metadata,
+  );
+  return PresignRunObjectSchema.parse(res);
+}
+
 export async function fetchArtifactMetadata(
   sourceKey: string,
 ): Promise<ArtifactMetadata> {

@@ -20,6 +20,7 @@ from api import RunApi
 from config import RunContext
 from pipelines import run_training
 from pipelines.batch import run_batch_scoring
+from pipelines.infer import run_inference
 from pipelines.score import run_scoring
 
 
@@ -35,6 +36,8 @@ def main(context: RunContext, api: RunApi) -> int:
         return run_scoring(context, api)
     if context.is_batch_mode:
         return run_batch_scoring(context, api)
+    if context.is_infer_mode:
+        return run_inference(context, api)
     return run_training(context, api)
 
 

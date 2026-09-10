@@ -12,6 +12,9 @@ import {
   TriangleAlert,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 import {
   ALGORITHM_LABELS,
   mpModeAtom,
@@ -24,7 +27,8 @@ import {
   useDraftRunEvaluation,
 } from '@/hooks/model/use-draft-run-evaluation'
 import { useRefreshModels } from '@/hooks/use-all-models'
-import { updateModel } from '@/services/model'
+import { modelVersionService } from '@/services/model-version'
+import { inferenceWindowService } from '@/services/inference-window'
 import type { UsePipelineNavResult } from '@/hooks/model/use-model-pipeline-nav'
 
 interface Props {
@@ -35,15 +39,21 @@ interface Props {
  * Save Model — the wizard's terminal step. Shows a read-only review of the
  * configured model and persists it via the shared commit.
  *
- * Two exits: Save Model, and Save & Deploy which follows the save with a
- * `deployStatus: 'running'` update on the row it just created. Deploy is a
- * SECOND write, never folded into the commit — the persistence boundary
- * (CLAUDE.md §13) stays exactly where it was, and a deploy that fails leaves a
- * saved model rather than an ambiguous half-failure.
+ * Two exits: Save Model, and Save & Deploy. MODEL-SERVE-006-T12: deploy is
+ * no longer a single `updateModel(..., {deployStatus:'running'})` claim —
+ * it is TWO real actions, still a SECOND write after the commit (the
+ * persistence boundary, CLAUDE.md §13, is unchanged):
+ *   1. Promote the model's version to PRODUCTION (create mode only — Save
+ *      Model always mints version 1; edit mode changes no version, so it
+ *      skips straight to step 2 against whatever is already PRODUCTION).
+ *   2. Enable the model's InferenceSchedule with the five guardrails below.
+ * A failure at either step leaves a SAVED model, reported as "saved but not
+ * deployed" — never an ambiguous half-failure, never a second save attempt.
  *
- * Still no retrain/drift guardrails here: `mpAutoRetrainAtom` and friends
- * survive in the store from the old 4-step flow but nothing persists them, so
- * rendering them would collect settings that go nowhere.
+ * MODEL-SERVE-006-T09: `mpAutoRetrainAtom` and friends, unpersisted since
+ * the old 4-step flow, now have a real home — InferenceSchedule, under
+ * these exact names, adopted rather than duplicated into a second
+ * vocabulary. Rendered below for the first time.
  */
 export function Phase6Deploy({ nav }: Props) {
   const router = useRouter()
@@ -76,6 +86,16 @@ export function Phase6Deploy({ nav }: Props) {
     trainTestSplit,
     findBestModel,
     findBestParams,
+    autoRetrain,
+    setAutoRetrain,
+    warnSd,
+    setWarnSd,
+    criticalSd,
+    setCriticalSd,
+    driftMonitor,
+    setDriftMonitor,
+    driftThresholdPct,
+    setDriftThresholdPct,
   } = nav
 
   const savedLabel = mode === 'edit' ? 'Changes saved' : 'Model saved'
@@ -110,7 +130,25 @@ export function Phase6Deploy({ nav }: Props) {
     if (deploy) {
       try {
         if (!modelId) throw new Error('No model id returned from save')
-        await updateModel(modelId, { deployStatus: 'running' })
+        // MODEL-SERVE-006-T12. Create mode always mints version 1 at Save
+        // Model — promote it before the schedule can be enabled (the
+        // schedule refuses with no PRODUCTION version). Edit mode changes
+        // no version, so it has nothing new to promote; it enables the
+        // schedule against whatever is already PRODUCTION, if anything is.
+        // `promote` is idempotent for an already-PRODUCTION version (the
+        // backend returns success either way), so this never needs an
+        // "already deployed" branch of its own.
+        if (mode !== 'edit') {
+          await modelVersionService.promote(modelId, 1)
+        }
+        await inferenceWindowService.putSchedule(modelId, {
+          enabled: true,
+          autoRetrain,
+          warnSd,
+          criticalSd,
+          driftMonitor,
+          driftThresholdPct,
+        })
         toast.success(`${savedLabel} — deploying`)
       } catch {
         toast.warning(
@@ -187,6 +225,109 @@ export function Phase6Deploy({ nav }: Props) {
           </div>
         ))}
       </dl>
+
+      {/* MODEL-SERVE-006-T09. The wizard's five deploy-step guardrails,
+          rendered for the first time — previously unpersisted, now backed
+          by InferenceSchedule under these exact names. Applies whether or
+          not this save also deploys: a schedule already running picks up
+          an edit-mode change to these values on its next enable. */}
+      <div className="space-y-3 rounded-xl px-4 py-3 ring-1 ring-foreground/10">
+        <h3 className="text-xs font-medium text-foreground">
+          Monitoring &amp; retrain
+        </h3>
+
+        <div className="flex items-center justify-between gap-4">
+          <div className="space-y-0.5">
+            <Label htmlFor="drift-monitor" className="text-xs font-normal">
+              Drift monitor
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              Flag when live input tags deviate from training.
+            </p>
+          </div>
+          <Switch
+            id="drift-monitor"
+            checked={driftMonitor}
+            onCheckedChange={setDriftMonitor}
+          />
+        </div>
+
+        {driftMonitor && (
+          <div className="flex items-center justify-between gap-4 pl-4">
+            <Label
+              htmlFor="drift-threshold"
+              className="text-xs font-normal text-muted-foreground"
+            >
+              Drift alarm threshold (%)
+            </Label>
+            <Input
+              id="drift-threshold"
+              type="number"
+              min={0}
+              max={100}
+              step={1}
+              value={driftThresholdPct}
+              onChange={e => setDriftThresholdPct(Number(e.target.value))}
+              className="h-8 w-20 text-right"
+            />
+          </div>
+        )}
+
+        <div className="flex items-center justify-between gap-4">
+          <div className="space-y-0.5">
+            <Label htmlFor="auto-retrain" className="text-xs font-normal">
+              Auto-retrain
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              Trigger a retrain automatically past the critical SD band.
+            </p>
+          </div>
+          <Switch
+            id="auto-retrain"
+            checked={autoRetrain}
+            onCheckedChange={setAutoRetrain}
+          />
+        </div>
+
+        {autoRetrain && (
+          <div className="grid grid-cols-2 gap-3 pl-4">
+            <div className="space-y-1">
+              <Label
+                htmlFor="warn-sd"
+                className="text-xs font-normal text-muted-foreground"
+              >
+                Warning (±SD)
+              </Label>
+              <Input
+                id="warn-sd"
+                type="number"
+                min={0}
+                step={0.1}
+                value={warnSd}
+                onChange={e => setWarnSd(Number(e.target.value))}
+                className="h-8"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label
+                htmlFor="critical-sd"
+                className="text-xs font-normal text-muted-foreground"
+              >
+                Critical (±SD)
+              </Label>
+              <Input
+                id="critical-sd"
+                type="number"
+                min={0}
+                step={0.1}
+                value={criticalSd}
+                onChange={e => setCriticalSd(Number(e.target.value))}
+                className="h-8"
+              />
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* MODEL-FLOW-016-T12. Saving is one-way for scoring: the phase is
           draft-scoped (assertDraftWritable refuses a SAVED draft), so a CV

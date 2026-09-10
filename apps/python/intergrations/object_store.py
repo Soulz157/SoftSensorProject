@@ -1332,6 +1332,66 @@ def is_serving_log_key(key: str) -> bool:
     return all(segment and segment not in (".", "..") for segment in parts)
 
 
+#: MODEL-SERVE-006-T06. The hourly-window record — the root PREDICTION_ROOT
+#: and SERVING_LOG_ROOT's own doc comments both name and reserve. Hive-style
+#: dt=/hour= partitioning, same layout as SERVING_LOG_ROOT, so a date range
+#: reads without listing everything and a reader is never coupled to
+#: one-file-per-hour. A different owner and cadence from both siblings: one
+#: row per (modelVersionId, windowStart), not per request (serving-logs) and
+#: not per ad-hoc batch job (predictions/). Mirrored in TypeScript at
+#: artifact-keys.ts as a bare constant with no builder — this module is the
+#: only writer and the only key-builder for this root, same arrangement
+#: SERVING_LOG_ROOT already has there.
+INFERENCE_ROOT = "inference/"
+#: The pre-scale scoring input this module's own materialize step writes.
+#: A different filename from PREDICTIONS_FILENAME/METRICS_FILENAME (both
+#: reused as-is here — same names, same meaning, one root over) since an
+#: input object and the window's two OUTPUTS must never collide under one
+#: hour's prefix.
+INFERENCE_INPUT_FILENAME = "input.parquet"
+
+
+def inference_window_prefix(
+    model_id: str, model_version_id: str, dt: str, hour: str
+) -> str:
+    """`dt` is `YYYY-MM-DD`, `hour` is `HH` (zero-padded, 00-23) — both
+    caller-supplied strings, never derived here, same discipline
+    `serving_log_prefix` states on itself: the write and the read side
+    compute the same partition from the same UTC `windowStart` exactly once
+    each, not twice with a chance to disagree."""
+    return f"{INFERENCE_ROOT}{model_id}/{model_version_id}/dt={dt}/hour={hour}/"
+
+
+def inference_window_key(
+    model_id: str, model_version_id: str, dt: str, hour: str, filename: str
+) -> str:
+    """Filename-keyed, NOT a minted uuid — unlike `serving_log_key`, a
+    window has a stable identity (the row's own modelVersionId+windowStart,
+    which this dt/hour pair already encodes at hour granularity) and a
+    fixed, small set of output files (input.parquet, predictions.parquet,
+    metrics.json), so a caller-known filename is the right key rather than
+    a fresh name every write."""
+    return f"{inference_window_prefix(model_id, model_version_id, dt, hour)}{filename}"
+
+
+def is_inference_window_key(key: str) -> bool:
+    """Whether `key` is a well-formed inference-window object.
+
+    Same structural-not-substring discipline as `is_serving_log_key`:
+    `{modelId}/{modelVersionId}/dt={date}/hour={hour}/{filename}` — exactly
+    5 non-empty segments after the root, the 3rd and 4th literally prefixed
+    `dt=`/`hour=`.
+    """
+    if not key.startswith(INFERENCE_ROOT):
+        return False
+    parts = key[len(INFERENCE_ROOT):].split("/")
+    if len(parts) != 5:
+        return False
+    if not parts[2].startswith("dt=") or not parts[3].startswith("hour="):
+        return False
+    return all(segment and segment not in (".", "..") for segment in parts)
+
+
 def is_draft_run_prefix(prefix: str) -> bool:
     """Whether `prefix` is `drafts/{draft_id}/runs/` or `.../runs/{run_id}/`.
 

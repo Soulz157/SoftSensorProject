@@ -168,7 +168,14 @@ export const UpdateModelSchema = z.object({
   name: z.string().min(1).max(100).optional(),
   nodeId: z.string().uuid().nullable().optional(),
   datasetId: z.string().uuid().nullable().optional(),
-  deployStatus: DeployStatusEnum.optional(),
+  // MODEL-SERVE-006-T12. `deployStatus` REMOVED — it is now DERIVED
+  // (lib/deploy-status.ts's classifyDeployStatus, read off InferenceWindow/
+  // InferenceSchedule), never caller-set. This schema has no `.strict()`,
+  // so a stale caller still sending `deployStatus` (the old phase-6-
+  // deploy.tsx behaviour this feature replaces) has it silently stripped,
+  // not rejected — an old client keeps working, it just no longer has any
+  // effect, which is the correct outcome for a field nothing should be
+  // writing anymore.
   prodStatus: ProdStatusEnum.optional(),
   statusDetail: z.string().max(500).nullable().optional(),
   config: ModelConfigSchema.optional(),
