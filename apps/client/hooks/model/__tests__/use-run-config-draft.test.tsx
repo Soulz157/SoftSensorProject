@@ -8,6 +8,8 @@ import {
   mpAlgorithmsAtom,
   mpHighestUnlockedAtom,
   mpHyperparamsAtom,
+  mpLossFunctionAtom,
+  mpSeedAtom,
   mpTargetVariableAtom,
   mpTrainStateAtom,
   mpTrainTestSplitAtom,
@@ -201,6 +203,17 @@ describe('useRunConfigDraft — apply()', () => {
     act(() => result.current.runConfig.apply())
 
     expect(store.get(mpTargetVariableAtom)).toEqual(['TI-101'])
+    // MODEL-FLOW-019-T30. The other three fields this case SETS were never
+    // read back, so "every field" was asserted on one of them. The seed leg
+    // matters most: `setSeed` writes only the local draft, and Apply is the
+    // sole path from there to `mpSeedAtom` — which is what use-model-training
+    // spreads into the launch payload. Without this, a break between the
+    // restored Seed control and the wire would show up as the server's
+    // randomInt fallback silently replacing the user's value, with the whole
+    // suite still green.
+    expect(store.get(mpSeedAtom)).toBe(4242)
+    expect(store.get(mpTrainTestSplitAtom)).toBe(60)
+    expect(store.get(mpLossFunctionAtom)).toBe('mae')
     expect(result.current.runConfig.dirty).toBe(false)
   })
 

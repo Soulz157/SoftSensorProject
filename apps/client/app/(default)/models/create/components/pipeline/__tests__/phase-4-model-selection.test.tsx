@@ -56,6 +56,18 @@ const h = vi.hoisted(() => ({
     loading: false,
     error: null as string | null,
   },
+  // MODEL-FLOW-019-T28. A SEPARATE fixture for the 'holdout' population —
+  // default empty, the real shape for a run never scored. Was one shared
+  // fixture read for both populations (population-BLIND); chart-time-
+  // axis.test.tsx's own mock comment names exactly why that is wrong once a
+  // consumer draws two population-specific charts from one candidate: a
+  // blind mock hands the test series to the holdout chart too, staging the
+  // conflation this feature exists to prevent.
+  holdoutPredictionsResult: {
+    byRunId: new Map<string, RunPredictionsBatchItem>(),
+    loading: false,
+    error: null as string | null,
+  },
 }))
 
 vi.mock('@/hooks/model/use-candidate-job', () => ({
@@ -70,8 +82,15 @@ vi.mock('@/hooks/model/use-draft-selection', () => ({
   useDraftSelection: () => h.selectionResult,
 }))
 
+// MODEL-FLOW-019-T28. Population-AWARE — see `holdoutPredictionsResult`'s
+// own comment above. Matches chart-time-axis.test.tsx's own mock shape.
 vi.mock('@/hooks/model/use-candidate-predictions', () => ({
-  useCandidatePredictions: () => h.predictionsResult,
+  useCandidatePredictions: (
+    _draftId: string,
+    _runIds: string[],
+    population: 'test' | 'holdout' = 'test',
+  ) =>
+    population === 'holdout' ? h.holdoutPredictionsResult : h.predictionsResult,
 }))
 
 vi.mock('@/services/model-draft', async () => {
@@ -175,6 +194,9 @@ beforeEach(() => {
   h.predictionsResult.byRunId = new Map()
   h.predictionsResult.loading = false
   h.predictionsResult.error = null
+  h.holdoutPredictionsResult.byRunId = new Map()
+  h.holdoutPredictionsResult.loading = false
+  h.holdoutPredictionsResult.error = null
   NAV.goTo = vi.fn()
 })
 
@@ -1073,6 +1095,200 @@ describe('Phase4ModelSelection — charts revealed per row, not all at once (MOD
   })
 })
 
+describe('Phase4ModelSelection — per-candidate Test/Validate pair (MODEL-FLOW-019-T28)', () => {
+  function setup(job: ModelCandidateJob) {
+    h.result.job = job
+    return renderStep(store => {
+      store.set(mpTrainingResultAtom, {
+        runId: 'run-1',
+        algorithm: 'ols',
+        metrics: { rmse: 0.5 },
+        trainedAt: '2026-08-28T00:00:00.000Z',
+        cvFoldsKey: null,
+      })
+      store.set(mpCandidateJobIdAtom, 'job-1')
+    })
+  }
+
+  function predictionsItem(
+    overrides: Partial<RunPredictionsBatchItem> = {},
+  ): RunPredictionsBatchItem {
+    return {
+      runId: 'run-1',
+      sourceKey: 'drafts/draft-1/runs/run-1/predictions.parquet',
+      rowCount: 3,
+      residualSd: 0.1,
+      residualRmseCheck: 0.1,
+      yTrueMin: 1,
+      yTrueMax: 3,
+      yPredMin: 1,
+      yPredMax: 3,
+      points: [
+        { timestamp: '2026-01-01 00:00:00', yTrue: 1, yPred: 1.1 },
+        { timestamp: '2026-01-01 00:10:00', yTrue: 2, yPred: 1.9 },
+        { timestamp: '2026-01-01 00:20:00', yTrue: 3, yPred: 3.2 },
+      ],
+      downsampled: false,
+      error: null,
+      ...overrides,
+    }
+  }
+
+  // MODEL-FLOW-019-V39. The case a derived population gets wrong while every
+  // CV fixture passes: a non-CV run's holdout series must caption as
+  // Validate, never Test.
+  it('V39: a non-CV candidate with both series captions each chart by its OWN population', () => {
+    h.predictionsResult.byRunId = new Map([
+      [
+        'run-1',
+        predictionsItem({
+          runId: 'run-1',
+          rowCount: 1670,
+          points: [{ timestamp: '2026-02-21 12:55:00', yTrue: 1, yPred: 1.1 }],
+        }),
+      ],
+    ])
+    h.holdoutPredictionsResult.byRunId = new Map([
+      [
+        'run-1',
+        predictionsItem({
+          runId: 'run-1',
+          sourceKey: 'drafts/draft-1/runs/run-1/holdout_predictions.parquet',
+          rowCount: 1153,
+          points: [{ timestamp: '2026-01-27 00:00:00', yTrue: 2, yPred: 1.8 }],
+        }),
+      ],
+    ])
+    setup(
+      job({
+        candidates: [
+          candidate({
+            runId: 'run-1',
+            algorithm: 'ols',
+            cvFoldsKey: null,
+            holdoutAbsence: null,
+          }),
+        ],
+      }),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /show charts/i }))
+
+    // AC65: each chart carries its own row count — a small holdout frame
+    // must not read as unlabelled just because it was never decimated. Also
+    // the unique anchor scoping each assertion below to the RIGHT chart
+    // instance — the group overlay above the table has its own "Test-split"
+    // and "Validate" headings, so an unscoped query would be ambiguous.
+    const testRowCount = screen.getByText('1 of 1670 points shown')
+    const holdoutRowCount = screen.getByText('1 of 1153 points shown')
+    const testChart = testRowCount.closest('div.space-y-1') as HTMLElement
+    const holdoutChart = holdoutRowCount.closest('div.space-y-1') as HTMLElement
+    expect(testChart).not.toBe(holdoutChart)
+
+    // Each instance names its OWN population — never derived, never shared.
+    expect(within(testChart).getByText('Test-split')).toBeInTheDocument()
+    expect(within(holdoutChart).getByText('Validate')).toBeInTheDocument()
+    expect(
+      within(testChart).getByText('actual vs. predicted values'),
+    ).toBeInTheDocument()
+    expect(
+      within(holdoutChart).getByText('actual vs. predicted values'),
+    ).toBeInTheDocument()
+  })
+
+  // MODEL-FLOW-019-V38. A scored CV candidate's absent Test chart is
+  // definitional (no action); a non-CV candidate's absent Validate chart is
+  // actionable (points at the group's own Score action). Asserting "both
+  // show an absence" cannot tell the two apart — this asserts the two
+  // reasons are different sentences, and which is which.
+  it('V38: a CV candidate and a non-CV candidate give DIFFERENT absence reasons for their missing chart', () => {
+    setup(
+      job({
+        candidates: [
+          candidate({
+            runId: 'run-cv',
+            algorithm: 'random_forest',
+            cvFoldsKey: 'drafts/draft-1/runs/run-cv/cv_folds.json',
+            predictionsKey: 'drafts/draft-1/runs/run-cv/predictions.parquet',
+            holdoutAbsence: null,
+          }),
+          candidate({
+            runId: 'run-noncv',
+            algorithm: 'ols',
+            cvFoldsKey: null,
+            predictionsKey: null,
+            holdoutPredictionsKey: null,
+            holdoutAbsence: null,
+          }),
+        ],
+      }),
+    )
+
+    const toggles = screen.getAllByRole('button', { name: /show charts/i })
+    expect(toggles).toHaveLength(2)
+    fireEvent.click(toggles[0]!)
+    fireEvent.click(toggles[1]!)
+
+    // Definitional: the CV candidate's Test chart never offers an action.
+    const cvReason = screen.getByText(
+      /is cross-validated and has no test split/i,
+    )
+    expect(cvReason).toBeInTheDocument()
+    expect(cvReason.textContent).not.toMatch(/score/i)
+
+    // Actionable: the non-CV candidate's Validate chart names the remedy
+    // and points at the group's own Score action — never a button of its
+    // own (decision: the trigger stays a group action).
+    const nonCvReason = screen.getByText(
+      /has not been scored against the validation holdout/i,
+    )
+    expect(nonCvReason).toBeInTheDocument()
+    expect(nonCvReason.textContent).toMatch(/group's Score action/i)
+
+    expect(cvReason.textContent).not.toEqual(nonCvReason.textContent)
+  })
+
+  // MODEL-FLOW-019-T29. The render-level proof of the guard: a group whose
+  // ONLY candidate is a pre-guard lstm run with no series renders NO Score
+  // button (scoreableRunIds already excludes it) AND its Validate chart's
+  // own reason does not tell the reader that button will help — the exact
+  // dead end caught on review before this task closed.
+  it('renders no Score button for a group whose only candidate is an unscored lstm run, and names it terminal', () => {
+    setup(
+      job({
+        candidates: [
+          candidate({
+            runId: 'run-lstm',
+            algorithm: 'lstm',
+            cvFoldsKey: null,
+            predictionsKey: null,
+            holdoutPredictionsKey: null,
+            holdoutAbsence: null,
+          }),
+        ],
+      }),
+    )
+
+    // No Score button anywhere on the page — scoreableRunIds([lstm]) is
+    // empty, so the group overlay's own onScore is undefined.
+    expect(
+      screen.queryByRole('button', { name: /score.*against holdout/i }),
+    ).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /show charts/i }))
+
+    // Both surfaces agree: the group overlay's own absence text (rendered
+    // before expansion) AND the per-candidate chart's (rendered after) are
+    // both terminal — neither points at a Score action that does not exist.
+    const reasons = screen.getAllByText(/no windowing path/i)
+    expect(reasons.length).toBeGreaterThan(0)
+    for (const reason of reasons) {
+      expect(reason.textContent).not.toMatch(/group's Score action/i)
+      expect(reason.textContent).not.toMatch(/either way/i)
+    }
+  })
+})
+
 describe('Phase4ModelSelection — standalone comparison (MODEL-FLOW-018-T04)', () => {
   function setupNoJob(
     store: ReturnType<typeof createStore>,
@@ -1656,8 +1872,18 @@ describe('Phase4ModelSelection — residual SD, tagged with its population (MODE
         holdoutMetrics: { rmse: 0.35, r2: 0.91 },
       }),
     ]
+    // MODEL-FLOW-019-T33. The CV run's SD moved from the TEST batch to the
+    // HOLDOUT one, and that is the architecture asserting itself rather than
+    // a fixture convenience: a CV run's holdout series is served under the
+    // `holdout` population (`predictionKeyFor` resolves it to that run's own
+    // `predictionsKey` server-side), so the Validate column reads the holdout
+    // batch for BOTH run kinds. Before T33 one cell was derived and routed to
+    // whichever column its source named, so the test batch happened to feed
+    // both columns; now each column reads the batch it belongs to.
     h.predictionsResult.byRunId = new Map([
       ['run-a', predictionsItem({ runId: 'run-a', residualSd: 0.12 })],
+    ])
+    h.holdoutPredictionsResult.byRunId = new Map([
       ['run-cv', predictionsItem({ runId: 'run-cv', residualSd: 0.09 })],
     ])
     renderStep(store => setupNoJob(store))
@@ -1665,6 +1891,59 @@ describe('Phase4ModelSelection — residual SD, tagged with its population (MODE
     // Two different SD figures, each printed exactly once — proving each
     // landed in its OWN column rather than both racing for the same cell.
     expect(screen.getByText('0.120')).toBeInTheDocument()
+    expect(screen.getByText('0.090')).toBeInTheDocument()
+  })
+
+  /**
+   * MODEL-FLOW-019-T33. The column T10 could not fill. A non-CV run now
+   * carries an SD in BOTH columns — its own test split and its scored
+   * validation holdout — which is what makes the bias readable per
+   * population (RMSE >= SD always, and the gap is exactly the bias).
+   */
+  it('fills BOTH SD columns for one non-CV run, from the two batches already fetched', () => {
+    h.runsResult.runs = [
+      trainingRun({
+        id: 'run-a',
+        predictionsKey: 'predictions.parquet',
+        holdoutPredictionsKey: 'holdout.parquet',
+        holdoutMetrics: { rmse: 0.35, r2: 0.91 },
+      }),
+    ]
+    h.predictionsResult.byRunId = new Map([
+      ['run-a', predictionsItem({ runId: 'run-a', residualSd: 0.12 })],
+    ])
+    h.holdoutPredictionsResult.byRunId = new Map([
+      ['run-a', predictionsItem({ runId: 'run-a', residualSd: 0.147 })],
+    ])
+    renderStep(store => setupNoJob(store))
+
+    expect(screen.getByText('0.120')).toBeInTheDocument()
+    expect(screen.getByText('0.147')).toBeInTheDocument()
+  })
+
+  /**
+   * MODEL-FLOW-019-T33. The empty column used to render a bare dash, so a
+   * DEFINITIONAL absence (a CV run has no test split) looked exactly like a
+   * fixable one (this run was never scored). Each column now names its own.
+   */
+  it('names why a CV run’s Test SD is absent, rather than showing a bare dash', () => {
+    h.runsResult.runs = [
+      trainingRun({
+        id: 'run-cv',
+        cvFoldsKey: 'cv_folds.json',
+        predictionsKey: 'predictions.parquet',
+        metrics: { cv_rmse_mean: 0.4, cv_rmse_std: 0.05 },
+        holdoutMetrics: { rmse: 0.35, r2: 0.91 },
+      }),
+    ]
+    h.holdoutPredictionsResult.byRunId = new Map([
+      ['run-cv', predictionsItem({ runId: 'run-cv', residualSd: 0.09 })],
+    ])
+    renderStep(store => setupNoJob(store))
+
+    expect(
+      screen.getByText('No test split (cross-validated)'),
+    ).toBeInTheDocument()
     expect(screen.getByText('0.090')).toBeInTheDocument()
   })
 

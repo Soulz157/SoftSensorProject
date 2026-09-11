@@ -43,16 +43,34 @@
  * same plain-dash treatment every other metric column already gives a
  * non-terminal row.
  */
-import { cvScoringPhaseOf, type CvScoringSignals } from './metric-source'
+import {
+  cvScoringPhaseOf,
+  holdoutSeriesAbsenceOf,
+  type HoldoutSeriesAbsence,
+  type HoldoutSeriesCandidate,
+} from './metric-source'
 import type { MetricSource } from './metric-source'
 import type { RunPredictionsBatchItem } from '@/services/model-draft'
 
+/**
+ * MODEL-FLOW-019-T33. Widened from T10's five, and every addition is BORROWED
+ * rather than invented — T33's own instruction is to depend on T29's absence
+ * vocabulary instead of minting a sixth state of its own, so the non-CV
+ * holdout causes arrive as `HoldoutSeriesAbsence` verbatim and
+ * `holdoutSeriesAbsenceOf` stays their single decider. The only genuinely new
+ * member is `no-test-split`, which names a case that could not arise while
+ * there was one SD cell per row: a CV run's TEST column, definitionally empty
+ * because the run never had a test split. It is terminal and carries no
+ * action, the same asymmetry T28 states for its own two charts.
+ */
 export type ResidualSdAbsence =
   | 'awaiting-scoring'
   | 'scoring'
   | 'no-series'
   | 'unreadable'
   | 'not-recorded'
+  | 'no-test-split'
+  | HoldoutSeriesAbsence
 
 export interface ResidualSdCell {
   value: number | null
@@ -65,7 +83,16 @@ export interface ResidualSdCell {
   errorText?: string
 }
 
-export interface ResidualSdRun extends CvScoringSignals {
+/**
+ * MODEL-FLOW-019-T33. Now `HoldoutSeriesCandidate` rather than bare
+ * `CvScoringSignals` — the extra fields (`algorithm`, `holdoutPredictionsKey`,
+ * `scoringContainerId`, `holdoutAbsence`) are exactly what
+ * `holdoutSeriesAbsenceOf` reads, so the Validate column's absence is decided
+ * by the SAME function T28's Validate chart and T29's Score button already
+ * use. Duplicating that decision here is how a chart and a cell on one screen
+ * come to give different reasons for one missing series.
+ */
+export interface ResidualSdRun extends HoldoutSeriesCandidate {
   status: string
 }
 
@@ -80,29 +107,67 @@ export function residualSdOf(
   run: ResidualSdRun,
   item: RunPredictionsBatchItem | undefined,
   loading: boolean,
+  /**
+   * MODEL-FLOW-019-T33. POPULATION IS AN ARGUMENT, NEVER A DERIVATION, and
+   * this is the fourth place that sentence has had to be written (T20's first
+   * pass added the hazard to the overlay, T20's second removed it, T27/T28
+   * were each warned off it). Deriving it from `cvScoringPhaseOf` returns
+   * `test-split` UNCONDITIONALLY for a non-CV run, so a holdout SD read that
+   * way would caption as Test — a number under the wrong column heading,
+   * which is the one failure this whole feature exists to prevent.
+   *
+   * REQUIRED, not defaulted: every live caller has a column to disambiguate,
+   * and a default would restore exactly the silent mis-captioning above for
+   * the next caller that forgets it.
+   */
+  population: MetricSource,
 ): ResidualSdCell {
   if (run.status !== 'SUCCEEDED') {
     return { value: null, source: null, absence: null }
   }
 
-  const phase = cvScoringPhaseOf(run)
-  if (phase === 'awaiting-scoring') {
-    return { value: null, source: 'holdout', absence: 'awaiting-scoring' }
-  }
-  if (phase === 'scoring') {
-    return { value: null, source: 'holdout', absence: 'scoring' }
-  }
+  const source = population
+  const isCv = Boolean(run.cvFoldsKey)
 
-  // `phase` is now 'not-cv' or 'scored' — both resolve to a defined source,
-  // per MODEL-FLOW-017-T01 finding 5 (module doc above).
-  const source: MetricSource = phase === 'scored' ? 'holdout' : 'test-split'
-
-  if (!run.predictionsKey) {
-    // Reachable only for a non-CV run: `cvScoringPhaseOf` returns 'scored'
-    // (not 'not-cv') exactly when `predictionsKey` is set, so a CV run
-    // never lands here — this is MODEL-FLOW-004's endpoint predating this
-    // run's own training.
-    return { value: null, source, absence: 'no-series' }
+  if (population === 'test-split') {
+    // A CV run has no test split BY DEFINITION — terminal, no action, never
+    // "unscored work" a button could fix. This is the case that could not
+    // arise while one cell was routed to whichever column matched its own
+    // derived source: the other column simply rendered a bare dash, stating
+    // nothing at all.
+    if (isCv) {
+      return { value: null, source, absence: 'no-test-split' }
+    }
+    if (!run.predictionsKey) {
+      // MODEL-FLOW-004's endpoint predating this run's own training.
+      return { value: null, source, absence: 'no-series' }
+    }
+  } else {
+    // HOLDOUT. The two run kinds keep their series in different columns —
+    // a CV run's `predictionsKey` IS its holdout; a non-CV run's holdout
+    // lands in `holdoutPredictionsKey` — but that asymmetry is resolved
+    // SERVER-SIDE by `predictionKeyFor`, so the caller's holdout batch is
+    // already the right series for either kind and nothing here picks a key.
+    // What still differs is the REASON a series is missing.
+    const phase = cvScoringPhaseOf(run)
+    if (phase === 'awaiting-scoring') {
+      return { value: null, source, absence: 'awaiting-scoring' }
+    }
+    if (phase === 'scoring') {
+      return { value: null, source, absence: 'scoring' }
+    }
+    if (isCv) {
+      if (!run.predictionsKey) {
+        return { value: null, source, absence: 'no-series' }
+      }
+    } else {
+      // T33 depends on T29's decision here rather than inventing its own
+      // states: `predates-recording` and `not-scored-yet` stay separate
+      // TYPE members (T29's result says so explicitly, naming this task),
+      // and collapse only in the rendered sentence.
+      const absence = holdoutSeriesAbsenceOf(run)
+      if (absence) return { value: null, source, absence }
+    }
   }
 
   if (loading) {

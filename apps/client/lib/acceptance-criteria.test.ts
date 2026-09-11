@@ -12,6 +12,7 @@ import {
   type AcceptanceCriterion,
   type ComparisonCriterion,
   type ComparisonFigures,
+  NO_RESIDUAL_SD,
   type ComparisonPair,
 } from './acceptance-criteria'
 import type { SourcedMetrics } from './metric-source'
@@ -53,10 +54,21 @@ function cvEstimate(over: Partial<Omit<SourcedMetrics, 'source'>> = {}) {
 function figures(over: Partial<ComparisonFigures> = {}): ComparisonFigures {
   return {
     sourcedMetrics: [],
-    residualSd: null,
+    // MODEL-FLOW-019-T33. A pair now, not one cell — `NO_RESIDUAL_SD` is the
+    // "this surface fetched neither population" default every case here
+    // started from when there was a single nullable cell.
+    residualSd: NO_RESIDUAL_SD,
     holdoutAbsence: null,
     ...over,
   }
+}
+
+/** T33. The common single-population shape these cases used before the pair:
+ *  one cell in its own population's slot, the other genuinely absent. */
+function sdFigures(cell: ResidualSdCell): ComparisonFigures['residualSd'] {
+  return cell.source === 'holdout'
+    ? { 'test-split': null, holdout: cell }
+    : { 'test-split': cell, holdout: null }
 }
 
 function sd(over: Partial<ResidualSdCell> = {}): ResidualSdCell {
@@ -231,11 +243,66 @@ describe('evaluateCriterion — comparisons, both operands negative included (AC
       criterion,
       figures({
         sourcedMetrics: [testSplit({ mae: 0.3 }), holdout({ mae: 0.5 })],
-        residualSd: sd({ value: 0.4, source: 'test-split' }),
+        residualSd: sdFigures(sd({ value: 0.4, source: 'test-split' })),
       }),
     )
     // 0.3 (test mae) < 0.4 (sd), never 0.5 (holdout mae).
     expect(result.left.value).toBeCloseTo(0.3)
+    expect(result.verdict).toBe('pass')
+  })
+})
+
+/**
+ * MODEL-FLOW-019-T33. The pair replaced a single nullable cell, and the claim
+ * made for it is that NO verdict changes: an `sd` operand carries no source of
+ * its own, so it resolves to the population the single cell used to occupy.
+ * These two cases are that claim, not an inspection of it.
+ */
+describe('evaluateCriterion — an unsourced sd operand resolves as the single cell did (T33)', () => {
+  const criterion = comparison({ metric: 'mae' }, 'lt', { metric: 'sd' })
+
+  it('reads the TEST cell on a non-CV run that now has both populations', () => {
+    const result = evaluateCriterion(
+      criterion,
+      figures({
+        sourcedMetrics: [testSplit({ mae: 0.3 })],
+        residualSd: {
+          'test-split': sd({ value: 0.4, source: 'test-split' }),
+          // Present and different — if the fallback picked this, the
+          // comparison below would read 0.9 and the verdict would flip.
+          holdout: sd({ value: 0.9, source: 'holdout' }),
+        },
+      }),
+    )
+    expect(result.right.value).toBeCloseTo(0.4)
+    expect(result.verdict).toBe('pass')
+  })
+
+  it('skips a CV run’s absence-bearing TEST cell and reads the holdout one', () => {
+    const result = evaluateCriterion(
+      criterion,
+      figures({
+        // A holdout `mae` is REQUIRED here, and the requirement is itself the
+        // pre-existing coupling this task had to preserve: an unsourced
+        // RANKABLE operand takes its population from the SD cell's source
+        // too, so once SD resolves to holdout, `mae` does as well. A fixture
+        // with only test-split metrics reads not-evaluated — correctly, and
+        // for a reason that has nothing to do with the pair.
+        sourcedMetrics: [testSplit({ mae: 0.8 }), holdout({ mae: 0.3 })],
+        residualSd: {
+          // Exists, but carries a reason rather than a number — the shape a
+          // scored CV run's Test column now has. It must not win the
+          // fallback just by being non-null.
+          'test-split': sd({
+            value: null,
+            source: 'test-split',
+            absence: 'no-test-split',
+          }),
+          holdout: sd({ value: 0.45, source: 'holdout' }),
+        },
+      }),
+    )
+    expect(result.right.value).toBeCloseTo(0.45)
     expect(result.verdict).toBe('pass')
   })
 })
@@ -271,7 +338,7 @@ describe('evaluateCriterion — not-evaluated is never fail, both absence direct
     expect(
       evaluateCriterion(
         comparison({ metric: 'mae' }, 'lt', { metric: 'sd' }),
-        figures({ sourcedMetrics: [testSplit()], residualSd: null }),
+        figures({ sourcedMetrics: [testSplit()], residualSd: NO_RESIDUAL_SD }),
       ).verdict,
     ).toBe('not-evaluated')
   })
@@ -302,11 +369,11 @@ describe('evaluateCriterion — the CV fold mean is refused AT THE OPERAND, not 
         sourcedMetrics: [
           cvEstimate({ mean: { r2: 0.6, rmse: 0.4, mae: 0.31 } }),
         ],
-        residualSd: {
+        residualSd: sdFigures({
           value: 0.31,
           source: 'cv-fold-estimate' as ResidualSdCell['source'],
           absence: null,
-        },
+        }),
       }),
     )
     expect(result.verdict).toBe('not-evaluated')

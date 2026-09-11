@@ -83,6 +83,7 @@ import {
   METRIC_SOURCE_LABELS,
   holdoutGroupMissingRateText,
   groupAbsenceText,
+  candidateAbsenceText,
   holdoutAbsenceOf,
   holdoutSeriesAbsenceOf,
   scoreableRunIds,
@@ -492,12 +493,28 @@ const RESIDUAL_SD_ABSENCE_TEXT: Record<ResidualSdAbsence, string> = {
   'no-series': 'No predictions series',
   unreadable: 'Unreadable',
   'not-recorded': 'Not recorded',
+  // MODEL-FLOW-019-T33. Terminal and definitional — a cross-validated run
+  // never had a test split, so this is not unscored work with an action
+  // attached. Same asymmetry T28 states for its own two charts.
+  'no-test-split': 'No test split (cross-validated)',
+  'no-dataset-holdout': 'No holdout in this dataset',
+  // MODEL-FLOW-019-T29's collapse, honoured here too: `aggregate-only` and
+  // `not-scored-yet` share ONE remedy, so they read the same on screen while
+  // staying separate type members — the decision T29 recorded, naming this
+  // task as the reason to keep them apart at the type level.
+  'aggregate-only': 'Not scored against the holdout',
+  'not-scored-yet': 'Not scored against the holdout',
+  'sequence-not-scoreable': 'Not available for a sequence model',
 }
 
-/** One SD figure — or its reason — in the column its own `source` names.
- *  Never called for the OTHER column: that one renders a plain dash at the
- *  call site, the same "nothing to show, nothing to explain" treatment a
- *  non-CV run's holdout cell already gets. */
+/** One SD figure — or its reason — for ONE column.
+ *
+ *  MODEL-FLOW-019-T33 removed the call-site branch this used to carry ("never
+ *  called for the OTHER column: that one renders a plain dash"). Both columns
+ *  now call it, each with its own cell, because both now have a reason to
+ *  give: the dash was the only thing a reader ever saw in the empty column,
+ *  and a definitional absence (a CV run has no test split) looked identical
+ *  to a fixable one (this run was never scored). */
 function SdCellBody({ cell }: { cell: ResidualSdCell }) {
   if (cell.value !== null) {
     return (
@@ -530,6 +547,11 @@ const OPERAND_ABSENCE_TEXT: Record<OperandAbsence, string> = {
   'no-series': 'no predictions series',
   unreadable: 'unreadable',
   'cross-validation': 'fold estimate, not a run measurement',
+  // MODEL-FLOW-019-T33. Reached once an SD operand can resolve to the TEST
+  // population on a cross-validated run, which has none.
+  'no-test-split': 'no test split',
+  'aggregate-only': 'awaiting scoring',
+  'sequence-not-scoreable': 'not scoreable for a sequence model',
 }
 
 /**
@@ -689,7 +711,9 @@ function CandidateTable({
   sortMetric,
   onSortMetric,
   byRunId,
+  holdoutByRunId,
   predictionsLoading,
+  holdoutLoading,
   rowNote,
   rowAction,
   chartMode = 'full',
@@ -703,7 +727,12 @@ function CandidateTable({
   sortMetric: RankMetricKey
   onSortMetric: (key: RankMetricKey) => void
   byRunId: Map<string, RunPredictionsBatchItem>
+  /** MODEL-FLOW-019-T28. The same candidates' HOLDOUT series — already
+   *  fetched by every caller for the group overlay above this table; the
+   *  expanded row's Validate chart reads it too, no third fetch. */
+  holdoutByRunId: Map<string, RunPredictionsBatchItem>
   predictionsLoading: boolean
+  holdoutLoading: boolean
   rowNote?: (runId: string) => React.ReactNode
   rowAction?: (runId: string) => React.ReactNode
   chartMode?: 'full' | 'predictions-only'
@@ -855,14 +884,35 @@ function CandidateTable({
               // both the SD column and the Criteria column's ratio
               // evaluation, so the two never disagree about which
               // population this run's SD is a figure of.
-              const sdCell = residualSdOf(
+              // MODEL-FLOW-019-T33. TWO cells, one per column, each read
+              // from the batch its own column belongs to — no third fetch,
+              // since T20 already issues both and T28 already passes both
+              // down. Before this, ONE cell was derived and routed to
+              // whichever column its own source happened to name, leaving
+              // the other column a bare dash that explained nothing: a
+              // non-CV run's Validate SD and a scored CV run's Test SD were
+              // equally silent, though only one of them is definitional.
+              const sdTest = residualSdOf(
                 candidate,
                 candidate.runId ? byRunId.get(candidate.runId) : undefined,
                 predictionsLoading,
+                'test-split',
+              )
+              const sdValidate = residualSdOf(
+                candidate,
+                candidate.runId
+                  ? holdoutByRunId.get(candidate.runId)
+                  : undefined,
+                holdoutLoading,
+                'holdout',
               )
               const comparisonFigures: ComparisonFigures = {
                 sourcedMetrics: candidate.sourcedMetrics,
-                residualSd: sdCell,
+                // Both, so a criterion comparing a Validate SD against a Test
+                // SD reads the same two numbers the row displays. Passing one
+                // cell for both operands is the conflation this feature
+                // exists to prevent, arriving through the criteria path.
+                residualSd: { 'test-split': sdTest, holdout: sdValidate },
                 holdoutAbsence: candidate.holdoutAbsence,
               }
               const canChart =
@@ -952,24 +1002,12 @@ function CandidateTable({
                         // (r2/rmse/mae) takes the branch above.
                         <Fragment key={key}>
                           <TableCell className="border-l text-right">
-                            {sdCell.source === 'test-split' ? (
-                              <SdCellBody cell={sdCell} />
-                            ) : (
-                              <span className="font-mono text-xs text-muted-foreground">
-                                —
-                              </span>
-                            )}
+                            <SdCellBody cell={sdTest} />
                           </TableCell>
                           <TableCell
                             className={cn('text-right', VALIDATE_COLUMN_CLASS)}
                           >
-                            {sdCell.source === 'holdout' ? (
-                              <SdCellBody cell={sdCell} />
-                            ) : (
-                              <span className="font-mono text-xs text-muted-foreground">
-                                —
-                              </span>
-                            )}
+                            <SdCellBody cell={sdValidate} />
                           </TableCell>
                         </Fragment>
                       ),
@@ -1027,10 +1065,32 @@ function CandidateTable({
                     <TableRow>
                       <TableCell colSpan={totalCols} className="bg-muted/30">
                         <div className="grid gap-4 p-2 sm:grid-cols-1">
+                          {/* MODEL-FLOW-019-T28. The same Test/Validate pair
+                              the group overlay above already draws, now per
+                              candidate — two instances of ONE component,
+                              stacked (never side by side: two time-axis
+                              charts squeezed into a table row sized for
+                              metric columns would render both unreadable,
+                              the same aspect-ratio trap T17 recorded for the
+                              parity chart). Each names its own population
+                              and its own absence reason — never a shared,
+                              derived one. */}
                           <CandidateBaseChart
                             runId={candidate.runId}
+                            population="test-split"
                             item={byRunId.get(candidate.runId)}
                             loading={predictionsLoading}
+                            absence={candidateAbsenceText(
+                              candidate,
+                              'test-split',
+                            )}
+                          />
+                          <CandidateBaseChart
+                            runId={candidate.runId}
+                            population="holdout"
+                            item={holdoutByRunId.get(candidate.runId)}
+                            loading={holdoutLoading}
+                            absence={candidateAbsenceText(candidate, 'holdout')}
                           />
                           {chartMode !== 'predictions-only' && (
                             <CandidateChart candidate={candidate} />
@@ -1117,11 +1177,11 @@ function CandidateComparison({
   // separately is what lets each chart state its own source and render its
   // own absence — merging them into one map would need a per-point tag to
   // stay honest, which is the conflation this feature exists to prevent.
-  const { byRunId: holdoutByRunId } = useCandidatePredictions(
-    draftId,
-    candidateRunIds,
-    'holdout',
-  )
+  // MODEL-FLOW-019-T28. `loading` surfaced (was discarded) — the expanded
+  // row's Validate chart needs its own loading state, distinct from the
+  // test-split fetch's.
+  const { byRunId: holdoutByRunId, loading: holdoutLoading } =
+    useCandidatePredictions(draftId, candidateRunIds, 'holdout')
 
   // MODEL-FLOW-019-T08 part 3. Step 3's own compare checkboxes sit on draft
   // runs, and a job-owned run IS a draft run, so a ticked set narrows this
@@ -1270,6 +1330,7 @@ function CandidateComparison({
         byRunId={byRunId}
         holdoutByRunId={holdoutByRunId}
         predictionsLoading={predictionsLoading}
+        holdoutLoading={holdoutLoading}
         selectedMetrics={selectedMetrics}
         sortMetric={sortMetric}
         onSortMetric={setSortMetric}
@@ -1297,6 +1358,7 @@ function CandidateGroups({
   byRunId,
   holdoutByRunId,
   predictionsLoading,
+  holdoutLoading,
   selectedMetrics,
   sortMetric,
   onSortMetric,
@@ -1313,6 +1375,9 @@ function CandidateGroups({
    *  separately — empty for a candidate never scored against one. */
   holdoutByRunId: Map<string, RunPredictionsBatchItem>
   predictionsLoading: boolean
+  /** MODEL-FLOW-019-T28. The holdout fetch's own loading state — the
+   *  expanded row's Validate chart reads this, not `predictionsLoading`. */
+  holdoutLoading: boolean
   selectedMetrics: MetricKey[]
   sortMetric: RankMetricKey
   onSortMetric: (key: RankMetricKey) => void
@@ -1386,7 +1451,9 @@ function CandidateGroups({
           sortMetric={sortMetric}
           onSortMetric={onSortMetric}
           byRunId={byRunId}
+          holdoutByRunId={holdoutByRunId}
           predictionsLoading={predictionsLoading}
+          holdoutLoading={holdoutLoading}
           criteria={criteria}
         />
       </div>
@@ -1474,11 +1541,10 @@ function StandaloneComparison({
   // MODEL-FLOW-019-T20. The standalone path's own holdout fetch — same
   // reasoning as the job path's (see there); duplicated as a CALL, not as
   // a rule, since both go through the one `useCandidatePredictions`.
-  const { byRunId: holdoutByRunId } = useCandidatePredictions(
-    draftId,
-    runIds,
-    'holdout',
-  )
+  // MODEL-FLOW-019-T28. `loading` surfaced for the same reason as the job
+  // path's.
+  const { byRunId: holdoutByRunId, loading: holdoutLoading } =
+    useCandidatePredictions(draftId, runIds, 'holdout')
 
   // MODEL-FLOW-019-T20 follow-up. The ONE dataset-level fact `candidateFromRun`
   // needs and a run row cannot answer itself — mirrors the job path's own
@@ -1669,7 +1735,9 @@ function StandaloneComparison({
               sortMetric={sortMetric}
               onSortMetric={setSortMetric}
               byRunId={byRunId}
+              holdoutByRunId={holdoutByRunId}
               predictionsLoading={predictionsLoading}
+              holdoutLoading={holdoutLoading}
               rowNote={noteFor(groupRuns)}
               rowAction={actionFor}
               chartMode="predictions-only"

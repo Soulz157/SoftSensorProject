@@ -29,6 +29,7 @@ import {
   evaluateCriterion,
   isLegacyCriterion,
   lossAlignedMetric,
+  NO_RESIDUAL_SD,
   offerablePairs,
   operandLabel,
   operatorSymbol,
@@ -41,8 +42,9 @@ import {
   type LegacyAcceptanceCriterion,
 } from '@/lib/acceptance-criteria'
 import type { SourcedMetrics } from '@/lib/metric-source'
+import { seedConsumedBy } from '@/lib/run-params'
 import { useArtifactHoldout } from '@/hooks/dataset/artifact/use-artifact-holdout'
-import { type Algorithm } from '@/store/model-pipeline'
+import { ALGORITHM_LABELS, type Algorithm } from '@/store/model-pipeline'
 import { TargetVariableSelector } from './tag-variable-select'
 import { Button } from '@/components/ui/button'
 
@@ -78,8 +80,8 @@ export function CoreConfig({
   onLossChange,
   trainTestSplit,
   onSplitChange,
-  // seed,
-  // onSeedChange,
+  seed,
+  onSeedChange,
   algorithms,
   nSplits,
   onNSplitsChange,
@@ -177,76 +179,78 @@ export function CoreConfig({
         />
       </div>
 
-      {/* <SeedControl
+      <SeedControl
         seed={seed}
         onSeedChange={onSeedChange}
         algorithms={algorithms}
-      /> */}
+      />
     </div>
   )
 }
 
-// const SEED_MIN = 1
-// const SEED_MAX = 2147483646
+// Bounds mirror CreateTrainingRunSchema.seed — the backend refuses anything
+// outside them, so clamping here turns a 400 into a value the user can see.
+const SEED_MIN = 1
+const SEED_MAX = 2147483646
 
-// function SeedControl({
-//   seed,
-//   onSeedChange,
-//   algorithms,
-// }: {
-//   seed: number | undefined
-//   onSeedChange: (seed: number | undefined) => void
-//   algorithms: Algorithm[]
-// }) {
-//   const ignoring = algorithms.filter(a => !seedConsumedBy(a))
+function SeedControl({
+  seed,
+  onSeedChange,
+  algorithms,
+}: {
+  seed: number | undefined
+  onSeedChange: (seed: number | undefined) => void
+  algorithms: Algorithm[]
+}) {
+  const ignoring = algorithms.filter(a => !seedConsumedBy(a))
 
-//   return (
-//     <div className="space-y-1.5">
-//       <Label className="text-xs font-medium" htmlFor="model-seed">
-//         Seed{' '}
-//         <span className="font-normal text-muted-foreground">(optional)</span>
-//       </Label>
-//       <Input
-//         id="model-seed"
-//         type="number"
-//         inputMode="numeric"
-//         min={SEED_MIN}
-//         max={SEED_MAX}
-//         step={1}
-//         placeholder="auto — server generates one per run"
-//         value={seed ?? ''}
-//         onChange={e => {
-//           const raw = e.target.value
-//           if (raw === '') {
-//             onSeedChange(undefined)
-//             return
-//           }
-//           const parsed = Number(raw)
-//           if (!Number.isFinite(parsed)) return
-//           const clamped = Math.min(
-//             SEED_MAX,
-//             Math.max(SEED_MIN, Math.round(parsed)),
-//           )
-//           onSeedChange(clamped)
-//         }}
-//         className="h-9 text-sm"
-//       />
-//       <p className="text-[11px] text-muted-foreground">
-//         Controls the estimator&apos;s own randomness — bootstrap sampling,
-//         weight initialization, feature subsampling. Does{' '}
-//         <span className="font-medium text-foreground">not</span> control the
-//         train/test boundary: the split is always chronological, so the last rows
-//         by time are the test set regardless of this value.
-//       </p>
-//       {ignoring.length > 0 && (
-//         <p className="text-[11px] text-muted-foreground">
-//           Ignored by {ignoring.map(a => ALGORITHM_LABELS[a]).join(', ')} — this
-//           estimator has no source of randomness a seed could fix.
-//         </p>
-//       )}
-//     </div>
-//   )
-// }
+  return (
+    <div className="space-y-1.5">
+      <Label className="text-xs font-medium" htmlFor="model-seed">
+        Seed{' '}
+        <span className="font-normal text-muted-foreground">(optional)</span>
+      </Label>
+      <Input
+        id="model-seed"
+        type="number"
+        inputMode="numeric"
+        min={SEED_MIN}
+        max={SEED_MAX}
+        step={1}
+        placeholder="auto — server generates one per run"
+        value={seed ?? ''}
+        onChange={e => {
+          const raw = e.target.value
+          if (raw === '') {
+            onSeedChange(undefined)
+            return
+          }
+          const parsed = Number(raw)
+          if (!Number.isFinite(parsed)) return
+          const clamped = Math.min(
+            SEED_MAX,
+            Math.max(SEED_MIN, Math.round(parsed)),
+          )
+          onSeedChange(clamped)
+        }}
+        className="h-9 text-sm"
+      />
+      <p className="text-[11px] text-muted-foreground">
+        Controls the estimator&apos;s own randomness — bootstrap sampling,
+        weight initialization, feature subsampling. Does{' '}
+        <span className="font-medium text-foreground">not</span> control the
+        train/test boundary: the split is always chronological, so the last rows
+        by time are the test set regardless of this value.
+      </p>
+      {ignoring.length > 0 && (
+        <p className="text-[11px] text-muted-foreground">
+          Ignored by {ignoring.map(a => ALGORITHM_LABELS[a]).join(', ')} — this
+          estimator has no source of randomness a seed could fix.
+        </p>
+      )}
+    </div>
+  )
+}
 
 const SPLIT_PRESETS = [90, 80, 70, 60, 50] as const
 
@@ -602,7 +606,11 @@ function AcceptanceCriteriaControl({
               !involvesSd && currentRunMetrics
                 ? evaluateCriterion(criterion, {
                     sourcedMetrics: currentRunMetrics,
-                    residualSd: null,
+                    // MODEL-FLOW-019-T33. Both populations absent, which is
+                    // the truth for this surface — Step 3 fetches no
+                    // predictions batch at all, which is why an SD-bearing
+                    // pair is skipped above rather than evaluated.
+                    residualSd: NO_RESIDUAL_SD,
                     holdoutAbsence: null,
                   })
                 : null

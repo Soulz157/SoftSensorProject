@@ -97,6 +97,19 @@ interface Props {
    * (`undefined`) renders the frame with no button at all — the caller's
    * job to decide, same as `absenceNote` above; this component has no
    * `draftId`/service access of its own to trigger scoring with.
+   *
+   * MODEL-FLOW-019-T29. This button's STANDING is not one thing — checked
+   * before relabelling it, and deliberately left plain rather than
+   * respelled to "backfill": a CV candidate that has never been scored
+   * reaches this same button as its ONLY path to a holdout series (T26
+   * never touches CV runs — "NON-CV ONLY" is that task's own point), while
+   * a pre-T26 NON-CV candidate reaches it as the backfill path for a run
+   * that predates the frame training now keeps inline. Renaming the label
+   * to imply "backfill" would be true for the second case and wrong for
+   * the first. The standing distinction lives in `absenceNote`
+   * (`groupAbsenceText`/`candidateAbsenceText`, `lib/metric-source.ts`)
+   * instead, which already varies per state — this button's own label
+   * stays the one true sentence for both.
    */
   onScore?: () => void
   /** How many runIds `onScore` will act on — shown in the button's own
@@ -203,9 +216,9 @@ export function CandidateOverlayChart({
     return (
       <div className="space-y-1.5 rounded-xl border border-dashed border-border/60 p-3">
         <p className="text-xs font-medium text-foreground">
-          Overall candidate comparison —{' '}
+            {populationTitle(population)} {' - '}
           <span className="font-normal text-muted-foreground">
-            {populationTitle(population)}
+          (Overall candidate comparison)
           </span>
         </p>
         <p className="text-[10px] text-muted-foreground">{absenceNote}</p>
@@ -265,9 +278,9 @@ export function CandidateOverlayChart({
     <div className="space-y-1.5 rounded-xl border border-border/60 p-3">
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
         <p className="text-xs font-medium text-foreground">
-          Overall candidate comparison —{' '}
+            {populationTitle(population)} {' - '}
           <span className="font-normal text-muted-foreground">
-            {populationTitle(population)}
+          (Overall candidate comparison)
           </span>
         </p>
         <div className="flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground">

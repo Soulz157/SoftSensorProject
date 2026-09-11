@@ -139,6 +139,46 @@ describe('triggerScoringService — what it refuses BEFORE spawning a container'
     );
   });
 
+  // MODEL-FLOW-019-T29. Score-mode has no windowing path (score.py never
+  // passes sequence_length) — a backfill against a sequence run would
+  // score it as if every row were independent, and write mismatched
+  // row/window counts against the aggregate training already recorded.
+  it('refuses an lstm run — score-mode has no windowing path', async () => {
+    const { service, runner } = makeDeps({
+      run: { cvFoldsKey: null, algorithm: 'lstm' },
+    });
+
+    await expect(
+      service.triggerScoringService('draft-1', 'run-1', 'u1', 'USER'),
+    ).rejects.toThrow(/no windowing path/);
+    expect(runner.spawn).not.toHaveBeenCalled();
+  });
+
+  it('refuses a gru run for the same reason', async () => {
+    const { service, runner } = makeDeps({
+      run: { cvFoldsKey: null, algorithm: 'gru' },
+    });
+
+    await expect(
+      service.triggerScoringService('draft-1', 'run-1', 'u1', 'USER'),
+    ).rejects.toThrow(/no windowing path/);
+    expect(runner.spawn).not.toHaveBeenCalled();
+  });
+
+  it('still spawns for a non-sequence non-CV run — the guard is algorithm-specific, not a blanket refusal', async () => {
+    const { service, runner } = makeDeps({
+      run: { cvFoldsKey: null, algorithm: 'random_forest' },
+    });
+
+    await service.triggerScoringService('draft-1', 'run-1', 'u1', 'USER');
+
+    expect(runner.spawn).toHaveBeenCalledWith(
+      'run-1',
+      expect.any(String),
+      'score',
+    );
+  });
+
   it('refuses a run already being scored, rather than spawning a second container', async () => {
     const { service, runner } = makeDeps({
       run: { scoringContainerId: 'already-running' },

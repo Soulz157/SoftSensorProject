@@ -302,13 +302,30 @@ export interface CriterionEvaluation {
   right: OperandReading
 }
 
+/**
+ * MODEL-FLOW-019-T33. A run now has an SD figure PER POPULATION, not one
+ * figure whose population it happens to occupy — so this is a pair, and the
+ * pair is what stops the criteria engine reading a Test SD while the table
+ * beside it shows a Validate one. `null` for a population this surface has
+ * not fetched (Step 3's preview fetches neither).
+ */
+export interface ResidualSdFigures {
+  'test-split': ResidualSdCell | null
+  holdout: ResidualSdCell | null
+}
+
+/** Every surface that has no SD at all — Step 3's own criteria preview. */
+export const NO_RESIDUAL_SD: ResidualSdFigures = {
+  'test-split': null,
+  holdout: null,
+}
+
 export interface ComparisonFigures {
   sourcedMetrics: SourcedMetrics[]
-  /** Null when this surface has no residual-SD figure at all (Step 3's own
-   *  preview never fetches the predictions batch). An SD-bearing pair
-   *  reads `not-evaluated` here, honestly, rather than a fabricated
+  /** Both populations' SD cells. An SD-bearing pair on a surface that has
+   *  neither reads `not-evaluated` here, honestly, rather than a fabricated
    *  number. */
-  residualSd: ResidualSdCell | null
+  residualSd: ResidualSdFigures
   /** T02's own reason a HOLDOUT figure is absent for this run
    *  (`CandidateResult.holdoutAbsence`) — carried here so an absent
    *  holdout operand names WHY rather than degrading to a bare "not
@@ -321,6 +338,43 @@ function isRankable(metric: MetricKey): metric is RankMetricKey {
   return metric in RANK_DIRECTION
 }
 
+/**
+ * MODEL-FLOW-019-T33. WHICH population's SD this operand reads.
+ *
+ * An `sd` operand carries no `source` of its own by design (see
+ * `ComparisonOperand`'s doc: it was "OMITTED only for a metric with no
+ * independent per-source figure of its own"). T33 makes that premise false —
+ * SD now has a figure per population — so the resolution order is: the
+ * operand's own pinned source where one exists, then the first population
+ * that actually produced a number.
+ *
+ * The fallback REPRODUCES the single-cell behaviour it replaces rather than
+ * changing any verdict: before T33 a run had exactly one SD cell, test-split
+ * for a non-CV run and holdout for a scored CV run, and "first with a value"
+ * picks that same one in both cases. Widening `allOperands()` so an `sd`
+ * operand can pin a source — now that pinning one would MEAN something — is
+ * deliberately NOT done here: it changes the offerable pair set and the shape
+ * of criteria already persisted on drafts, which is its own task.
+ */
+function residualSdCellFor(
+  operand: ComparisonOperand,
+  figures: ComparisonFigures,
+): ResidualSdCell | null {
+  const { residualSd } = figures
+  if (operand.source === 'holdout') return residualSd.holdout
+  if (operand.source === 'test-split') return residualSd['test-split']
+  // Test-split FIRST, deliberately: on a non-CV run that is the population
+  // the single cell used to resolve to, so an unsourced operand keeps reading
+  // exactly what it read before. On a scored CV run the test-split cell
+  // exists but carries `no-test-split` with a null value, so it is skipped
+  // here and the holdout cell answers — again the population the single cell
+  // used to resolve to. The fallback's job is to change no verdict.
+  const withValue = [residualSd['test-split'], residualSd.holdout].find(
+    cell => cell !== null && cell.value !== null,
+  )
+  return withValue ?? residualSd['test-split'] ?? residualSd.holdout
+}
+
 /** THE single derivation of an operand's value — every surface that shows
  *  a figure beside a criterion, and the verdict itself, both call this
  *  (V14: two derivations of one comparison is how a row marked fail comes
@@ -330,7 +384,7 @@ function readOperand(
   figures: ComparisonFigures,
 ): OperandReading {
   if (operand.metric === 'sd') {
-    const cell = figures.residualSd
+    const cell = residualSdCellFor(operand, figures)
     if (!cell || cell.value === null) {
       return { value: null, absence: cell?.absence ?? 'not-recorded' }
     }
@@ -341,7 +395,8 @@ function readOperand(
     return { value: null, absence: 'not-recorded' }
   }
 
-  const source = operand.source ?? figures.residualSd?.source ?? null
+  const source =
+    operand.source ?? residualSdCellFor(operand, figures)?.source ?? null
   if (!source) {
     return { value: null, absence: figures.holdoutAbsence ?? 'not-recorded' }
   }

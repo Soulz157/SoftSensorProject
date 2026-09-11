@@ -104,6 +104,25 @@ export class ModelRunScoreAuthorizedService {
     if (run.scoringContainerId) {
       throw new BadRequestException(`Run ${runId} is already being scored.`);
     }
+    // MODEL-FLOW-019-T29. Score-mode has no windowing path — score.py calls
+    // score_holdout with no sequence_length (images/trainer/app/pipelines/
+    // score.py, justified there as "CV is TABULAR ONLY"), which takes
+    // holdout.py's TABULAR branch. Training's own inline pass took the
+    // WINDOWED branch for these two algorithms
+    // (result.holdout_sequence_length, pipelines/__init__.py) — the two
+    // branches write row_count/dropped_unlabelled in different units
+    // (windows vs rows, holdout.py's own comment), so a backfill against a
+    // sequence run would either fail loudly or write a mismatched pair
+    // over the aggregate training already recorded. Same convention as
+    // this module's own CV/sequence refusal (model-run-launch
+    // .authorized.service.ts's config-time lstm/gru check).
+    if (run.algorithm === 'lstm' || run.algorithm === 'gru') {
+      throw new BadRequestException(
+        `Run ${runId} trained ${run.algorithm}, and holdout scoring has ` +
+          'no windowing path — it would score the sequence model as if ' +
+          'every row were independent. Not available for this algorithm.',
+      );
+    }
     if (!run.featureSpecKey || !run.modelKey) {
       throw new BadRequestException(
         `Run ${runId} is missing its feature spec or model artifact — ` +

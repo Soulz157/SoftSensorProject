@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import {
   BarChart3,
   BoxSelect,
@@ -443,8 +443,6 @@ type CompareAxis = 'time' | 'overlay'
 
 type SeriesPoint = { t: number } & Record<string, number | null>
 
-/** What both merge functions return. Shared shape so the caller never has to
- * branch on the mode to read the result. */
 interface MergedSeries {
   points: SeriesPoint[]
   /** Absolute timestamp per ordinal position — TIMELINE mode only, empty in
@@ -452,7 +450,6 @@ interface MergedSeries {
    * axis needs this because recharts' `tickFormatter` receives the value
    * alone and cannot reach the point the value came from. */
   labels: number[]
-  /** Ordinal position where the validation side starts — timeline only. */
   boundaryIndex: number | null
 }
 
@@ -913,10 +910,35 @@ function ChartBox({
   axis: CompareAxis
   tickUnit: TickUnit
 }) {
-  const [zoomWindow, setZoomWindow] = useState<[number, number] | null>(null)
-  useEffect(() => {
-    setZoomWindow(null)
-  }, [series])
+  // A zoom window is a pair of INDICES into `series`, so it is only
+  // meaningful for the series it was computed against — the moment `series`
+  // changes those indices address a different (or absent) slice.
+  //
+  // PINNED to that series and DERIVED at read time rather than cleared by an
+  // effect. The effect this replaces reset one render LATE: the render where
+  // `series` had already changed still sliced the NEW series with the OLD
+  // indices, drew that, and only then reset and drew again. Deriving removes
+  // both the wrong frame and the cascading render.
+  const [zoomState, setZoomState] = useState<{
+    series: SeriesPoint[]
+    window: [number, number]
+  } | null>(null)
+  const zoomWindow = zoomState?.series === series ? zoomState.window : null
+
+  /** Keeps every call site below writing plain windows — the series pin is
+   *  applied here, in one place, rather than at each setter. */
+  const setZoomWindow = (
+    next:
+      | [number, number]
+      | null
+      | ((prev: [number, number] | null) => [number, number] | null),
+  ) => {
+    setZoomState(prevState => {
+      const prev = prevState?.series === series ? prevState.window : null
+      const value = typeof next === 'function' ? next(prev) : next
+      return value ? { series, window: value } : null
+    })
+  }
 
   const zoomBy = (factor: number) => {
     setZoomWindow(prev => {
@@ -1442,12 +1464,38 @@ export function DatasetCompareModal({
   // own selection.
   const plottableTagsKey = plottableTags.join(',')
 
-  // Default to the first PLOTTABLE tag once the spec resolves — not on mount,
-  // and not from `availableTags`, which includes tags this view cannot state
-  // honestly. Also drops any selection that is no longer plottable after a
-  // dataset switch, rather than carrying it into a chart that cannot show it.
-  useEffect(() => {
-    if (!open) {
+  // Both selection rules below adjust state on a TRANSITION, during RENDER
+  // rather than in an effect. React re-runs this component immediately with
+  // the adjusted state and commits once; the effect this replaces committed
+  // the stale state first and cascaded a second render.
+  //
+  // `syncKey` collapses the two triggers the old effect had in its own
+  // dependency array (`[open, plottableTagsKey]`) into one value, so a
+  // single comparison covers all three transitions:
+  //   null -> key   opened (or reopened) — default the selection
+  //   key  -> key'  the plottable set changed while open — re-filter it
+  //   key  -> null  closed — reset
+  // Keying the close off the TRANSITION, not off `open` being false, is what
+  // makes it fire exactly once per close no matter which path closed the
+  // dialog (the X, Esc, the overlay, or a parent setting `open` back to
+  // false) — the same coverage the effect had, and strictly more than
+  // wrapping `onOpenChange` would give.
+  const syncKey = open ? plottableTagsKey : null
+  const [syncedKey, setSyncedKey] = useState(syncKey)
+  if (syncedKey !== syncKey) {
+    setSyncedKey(syncKey)
+    if (open) {
+      // Default to the first PLOTTABLE tag once the spec resolves — not on
+      // mount, and not from `availableTags`, which includes tags this view
+      // cannot state honestly. Also drops any selection that is no longer
+      // plottable after a dataset switch, rather than carrying it into a
+      // chart that cannot show it.
+      const plottable = plottableTagsKey ? plottableTagsKey.split(',') : []
+      setSelected(prev => {
+        const kept = prev.filter(t => plottable.includes(t))
+        return kept.length > 0 ? kept : plottable.slice(0, 1)
+      })
+    } else {
       setSelected([])
       // DS-LAKE-026. Otherwise a non-Line tab, and every tab this session
       // already visited, would survive into the NEXT dataset this modal is
@@ -1455,14 +1503,8 @@ export function DatasetCompareModal({
       // immediately even though the user never chose to look at it there.
       setTab('line')
       setVisitedTabs(new Set(['line']))
-      return
     }
-    const plottable = plottableTagsKey ? plottableTagsKey.split(',') : []
-    setSelected(prev => {
-      const kept = prev.filter(t => plottable.includes(t))
-      return kept.length > 0 ? kept : plottable.slice(0, 1)
-    })
-  }, [open, plottableTagsKey])
+  }
 
   const trainArtifactId = selected.length > 0 ? artifactId : null
 

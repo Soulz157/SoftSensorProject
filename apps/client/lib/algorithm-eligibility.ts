@@ -3,9 +3,14 @@
  * `GPR_MAX_TRAIN_ROWS` and its own local `oversizedReason` unexported —
  * MODEL-FLOW-013-T05a's rule about a membership list in the client being a
  * second source of truth applies to an eligibility predicate exactly as it
- * does to a render mode. The tabbed hyperparameter block
- * (`algorithm-param-tabs.tsx`) needs the SAME predicate the selector uses,
- * not a copy of it, so both import from here.
+ * does to a render mode. The per-algorithm hyperparameter block needs the
+ * SAME predicate the selector uses, not a copy of it, so both import from here.
+ *
+ * MODEL-FLOW-019-T30 correction, 2026-09-11: both consumers this comment
+ * originally named are gone. `e9fcdf6` deleted `algorithm-selector.tsx` and
+ * replaced it with `algorithm-stack.tsx`, which merged the tabbed block into
+ * one expandable card per algorithm; `algorithm-param-tabs.tsx` itself was
+ * never committed. `algorithm-stack.tsx` is the sole consumer.
  *
  * Pure module (no React) — same discipline `training-config.ts` states for
  * itself.

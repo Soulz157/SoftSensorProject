@@ -379,6 +379,39 @@ export type HoldoutSeriesAbsence =
   | 'scoring'
   | 'aggregate-only'
   | 'not-scored-yet'
+  | 'sequence-not-scoreable'
+
+/**
+ * MODEL-FLOW-019-T29. Score-mode has no windowing path — `score.py` calls
+ * `score_holdout` with no `sequence_length` (images/trainer/app/
+ * pipelines/score.py, justified there as "CV is TABULAR ONLY"), which
+ * takes the TABULAR branch of `holdout.py`'s two mutually exclusive
+ * branches. Training's own inline pass took the WINDOWED branch for these
+ * two algorithms (`result.holdout_sequence_length`,
+ * images/trainer/app/pipelines/__init__.py) — the two branches write
+ * `row_count`/`dropped_unlabelled` in different units (windows vs rows,
+ * `holdout.py`'s own comment says so), so a backfill against a sequence
+ * run either fails loudly or writes a mismatched pair. `triggerScoringService`
+ * carries the matching server-side refusal; this is the client's half of
+ * one guard, not two independent ones. String literals rather than the
+ * `Algorithm` union — this module stays a pure, dependency-free `lib/`
+ * file (see the module doc comment), and a typo here fails safe (the run
+ * stays offered, the server refusal is the backstop, not this list).
+ *
+ * Declared HERE, ahead of `holdoutSeriesAbsenceOf` below, because that is
+ * the ONE place a sequence run's holdout absence is decided — a check
+ * bolted on separately at `scoreableRunIds` (this feature's first draft)
+ * let the absence TEXT keep telling a reader "scoring fixes this" for a
+ * run `scoreableRunIds` had already excluded from the button. One
+ * decision, not three that can drift.
+ */
+export const SEQUENCE_ALGORITHMS: readonly string[] = ['lstm', 'gru']
+
+export function isSequenceAlgorithm(algorithm: string | null | undefined) {
+  return algorithm !== null && algorithm !== undefined
+    ? SEQUENCE_ALGORITHMS.includes(algorithm)
+    : false
+}
 
 /** The per-candidate facts `holdoutSeriesAbsenceOf` needs. Deliberately
  *  reads `holdoutAbsence` (the metric-level verdict) rather than a raw
@@ -386,9 +419,12 @@ export type HoldoutSeriesAbsence =
  *  is already `null` exactly when `holdoutMetrics` is present (both
  *  `holdoutAbsenceOf` above and the backend's twin `holdoutAbsenceFor`
  *  guarantee this), so re-deriving `datasetHasHoldout` here would be a
- *  second copy of a fact this module already computed once. */
+ *  second copy of a fact this module already computed once. `algorithm`
+ *  added by T29 — the ONLY way `sequence-not-scoreable` below can be told
+ *  apart from an ordinary unscored run. */
 export interface HoldoutSeriesCandidate {
   status: string
+  algorithm: string
   cvFoldsKey: string | null
   predictionsKey: string | null
   holdoutPredictionsKey: string | null
@@ -407,6 +443,13 @@ export interface HoldoutSeriesCandidate {
  * instead, because its `predictionsKey` is already its test split. Restated
  * here rather than imported — that module is backend-only TypeScript, a
  * different package this client cannot reach across.
+ *
+ * MODEL-FLOW-019-T29. `sequence-not-scoreable` is checked BEFORE
+ * `scoringContainerId`/`holdoutAbsence` and is TERMINAL — no remedy, no
+ * button, never confused with an ordinary "not scored yet" a click can
+ * fix. A container already in flight from before this guard existed still
+ * reports `'scoring'` (a real, if legacy, in-progress state); the terminal
+ * check only fires once nothing is already running.
  */
 export function holdoutSeriesAbsenceOf(
   candidate: HoldoutSeriesCandidate | null | undefined,
@@ -418,6 +461,21 @@ export function holdoutSeriesAbsenceOf(
     : candidate.holdoutPredictionsKey
   if (seriesKey) return null
   if (candidate.scoringContainerId) return 'scoring'
+  // MODEL-FLOW-019-T29. Unconditional — no `!isCv` guard — matching
+  // `triggerScoringService`'s own server-side refusal exactly, which
+  // carries no CV exception either. A CV+sequence row cannot exist today
+  // (config-time refused, `model-run-launch.authorized.service.ts`'s own
+  // lstm/gru check fires before a CV run is ever created) — but score.py's
+  // CV branch is "TABULAR ONLY" too, so if one ever did exist, the
+  // server's blanket refusal is the CORRECT one, and a client-side
+  // exception for it would only reopen the dead end this guard exists to
+  // close. Checked BEFORE `no-dataset-holdout` deliberately: both are
+  // terminal, but a sequence run's OWN algorithm is the more specific fact
+  // — the same most-informative-first ordering `groupAbsenceText` already
+  // documents for its own branches.
+  if (isSequenceAlgorithm(candidate.algorithm)) {
+    return 'sequence-not-scoreable'
+  }
   if (candidate.holdoutAbsence === 'no-dataset-holdout') {
     return 'no-dataset-holdout'
   }
@@ -428,6 +486,75 @@ export function holdoutSeriesAbsenceOf(
   return 'not-scored-yet'
 }
 
+/**
+ * MODEL-FLOW-019-T28/T29. Why ONE candidate's OWN chart — for the given
+ * population — has no series to draw, in one sentence. The per-candidate
+ * twin of `groupAbsenceText`, for T28's expanded-row pair: each of the two
+ * charts states its own reason, never the group's.
+ *
+ * `test-split`: a CV candidate has no test split BY DEFINITION — never
+ * unscored work with an action attached, the same rule `groupAbsenceText`
+ * already applies at group level (`:496` above). A non-CV SUCCEEDED
+ * candidate always has one; there is nothing to explain, so this branch
+ * needs no absence lookup of its own.
+ *
+ * `holdout`: delegates to `holdoutSeriesAbsenceOf`, and collapses
+ * `aggregate-only`/`not-scored-yet` into the SAME sentence
+ * `groupAbsenceText` now uses, for the same reason — both share one
+ * remedy. Never renders a per-candidate action: MODEL-FLOW-019-T29 keeps
+ * the "Score against holdout" trigger a GROUP action (one blast radius,
+ * one gate), so this names the remedy and points at it rather than
+ * offering a second button here.
+ */
+export function candidateAbsenceText(
+  candidate: HoldoutSeriesCandidate,
+  population: EvaluationPopulation,
+): string | null {
+  if (population === 'test-split') {
+    if (candidate.cvFoldsKey) {
+      return (
+        'This candidate is cross-validated and has no test split — its ' +
+        'held-out figure comes from the separate holdout scoring phase ' +
+        'instead.'
+      )
+    }
+    return null
+  }
+
+  const absence = holdoutSeriesAbsenceOf(candidate)
+  if (!absence) return null
+  if (absence === 'scoring') {
+    return 'Holdout scoring is in progress for this candidate — this chart will draw once it finishes.'
+  }
+  if (absence === 'no-dataset-holdout') {
+    return 'This dataset has no validation holdout, so there is nothing to score against.'
+  }
+  // MODEL-FLOW-019-T29. TERMINAL, never the actionable sentence below — a
+  // sequence candidate is excluded from `scoreableRunIds` (via this SAME
+  // `holdoutSeriesAbsenceOf` call, so the two can never disagree), and
+  // telling a reader "the group's Score action produces it" for a run
+  // that action explicitly skips would be a chart pointing at a control
+  // that does nothing for it — the exact dead end this feature exists to
+  // prevent, arriving through the one absence path that forgot the
+  // exclusion applies to the TEXT too, not only the button.
+  if (absence === 'sequence-not-scoreable') {
+    return (
+      `This candidate trained ${candidate.algorithm}, and holdout scoring ` +
+      'has no windowing path for a sequence model — not available for ' +
+      'this run.'
+    )
+  }
+  // aggregate-only | not-scored-yet — same collapsed remedy groupAbsenceText
+  // states for the group; see that function's own comment for why the two
+  // are one sentence.
+  return (
+    'This candidate has not been scored against the validation holdout — ' +
+    'either it predates this system keeping a per-row series, or it has ' +
+    "simply never been scored. The group's Score action above produces " +
+    'it either way.'
+  )
+}
+
 /** `holdoutSeriesAbsenceOf`'s candidate shape, plus the one field needed to
  *  name WHICH run to score. */
 export interface ScoreableCandidate extends HoldoutSeriesCandidate {
@@ -435,13 +562,16 @@ export interface ScoreableCandidate extends HoldoutSeriesCandidate {
 }
 
 /**
- * MODEL-FLOW-019-T20 follow-up. Every runId in this group that a "Score
- * against holdout" click should act on — SUCCEEDED, with a run to name, and
- * missing a series for a reason scoring actually fixes
+ * MODEL-FLOW-019-T20 follow-up, narrowed by T29. Every runId in this group
+ * that a "Score against holdout" click should act on — SUCCEEDED, with a
+ * run to name, missing a series for a reason scoring actually fixes
  * (`'aggregate-only'`/`'not-scored-yet'`). Excludes `'no-dataset-holdout'`
- * (scoring would 400) and `'scoring'` (already in flight) on purpose, so a
- * caller can spawn exactly this list without re-deriving the same two
- * branches.
+ * (scoring would 400), `'scoring'` (already in flight) and
+ * `'sequence-not-scoreable'` (score-mode cannot correctly serve lstm/gru —
+ * see `isSequenceAlgorithm`'s own comment) all through the ONE
+ * `holdoutSeriesAbsenceOf` call below, rather than a second, separate
+ * algorithm check that could drift from what the absence TEXT says (T29's
+ * own recorded mistake, caught before this task closed).
  */
 export function scoreableRunIds(candidates: ScoreableCandidate[]): string[] {
   return candidates
@@ -512,25 +642,48 @@ export function groupAbsenceText(
       'chart will draw once it finishes.'
     )
   }
-  if (absences.has('aggregate-only')) {
-    // The common real case (188 of 252 SUCCEEDED runs, live-counted
-    // 2026-09-09): training scores the holdout inline and keeps the
-    // aggregate, but discards the per-row frame this chart needs.
+  // MODEL-FLOW-019-T29. `aggregate-only` and `not-scored-yet` share ONE
+  // sentence, deliberately — both resolve to the SAME "Score against
+  // holdout" button, and T18 part 2's own rule applies here: a distinction
+  // that changes nothing a reader can act on reads as though someone found
+  // a real difference. Kept as separate union members below (T33's SD
+  // columns key on them), collapsed only in this copy.
+  //
+  // `aggregate-only` no longer means "training discarded the frame" — T26
+  // closed that discard for every run trained after the image that keeps
+  // it. What remains is a DISJUNCTION, not one cause, and the copy says so
+  // rather than naming the pre-T26 explanation as if it were the only one:
+  // either this run predates the kept frame, or its inline holdout scoring
+  // soft-failed (`_score_holdout_if_present`'s own best-effort `except`,
+  // images/trainer/app/pipelines/__init__.py). Either way the remedy is the
+  // same separate scoring phase — matches this repo's own shape for the
+  // same kind of fact (`phase-5-evaluation.tsx`'s feature-importance
+  // absence: "not recorded for this run — either it predates X, or Y").
+  if (absences.has('aggregate-only') || absences.has('not-scored-yet')) {
     return (
-      'These candidates have a validation-holdout score but no per-row ' +
-      'series — training keeps the aggregate and discards the frame; the ' +
-      'series comes from the separate scoring phase.'
+      'One or more candidates have not been scored against the validation ' +
+      'holdout — either the run predates this system keeping a per-row ' +
+      'series, or it has simply never been scored. Scoring produces it ' +
+      'either way.'
+    )
+  }
+  // MODEL-FLOW-019-T29. Checked AFTER the actionable branch above on
+  // purpose — a MIXED group with at least one scoreable candidate still
+  // gets the actionable sentence, since scoring genuinely helps that
+  // candidate and `scoreCount` (the caller's own figure, not this
+  // function's) already reflects only the runs the button will touch.
+  // Reached only when EVERY remaining candidate is sequence-not-scoreable:
+  // a distinct, TERMINAL fact — "Scoring produces it either way" would be
+  // false for a group with nothing scoreable in it.
+  if (absences.size === 1 && absences.has('sequence-not-scoreable')) {
+    return (
+      'Every candidate here trained lstm or gru, and holdout scoring has ' +
+      'no windowing path for a sequence model — not available for these ' +
+      'candidates.'
     )
   }
   if (absences.size === 1 && absences.has('no-dataset-holdout')) {
     return 'This dataset has no validation holdout, so there is nothing to score against.'
-  }
-  // ACTIONABLE, and phrased as such: the run is fine, the scoring phase
-  // simply has not run. MODEL-FLOW-019-T20 widened scoring to non-CV runs,
-  // so this is now a state the user can leave, not a defect they are stuck
-  // reading about.
-  if (absences.has('not-scored-yet')) {
-    return 'No candidate has been scored against the validation holdout yet — scoring runs separately from training.'
   }
   return artifactAbsenceText(population)
 }

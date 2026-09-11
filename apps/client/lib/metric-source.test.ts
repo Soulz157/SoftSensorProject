@@ -14,6 +14,7 @@ import {
   type MetricSourceRun,
   type HoldoutAbsence,
   groupAbsenceText,
+  candidateAbsenceText,
   groupOmittedText,
   holdoutSeriesAbsenceOf,
   scoreableRunIds,
@@ -328,25 +329,32 @@ describe('groupAbsenceText', () => {
     expect(text).not.toMatch(/yet/i)
   })
 
+  // MODEL-FLOW-019-T29. `aggregate-only` and `not-scored-yet` now share ONE
+  // sentence — both resolve to the same Score action, and post-T26
+  // `aggregate-only` is no longer "training discarded the frame" (T26
+  // closed that discard). The two are asserted IDENTICAL here rather than
+  // each carrying its own wording — see `groupAbsenceText`'s own comment.
   it('reports an unscored holdout as actionable, never as a defect', () => {
     const text = groupAbsenceText('holdout', [
       { cvFoldsKey: null, holdoutSeriesAbsence: 'not-scored-yet' },
     ])
-    expect(text).toMatch(/scored against the validation holdout yet/i)
+    expect(text).toMatch(/scored against the validation\s?holdout/i)
+    expect(text).not.toMatch(/no candidate recorded a/i)
   })
 
-  // MODEL-FLOW-019-T20 follow-up. The state 188 of 252 SUCCEEDED runs are
-  // actually in, live-counted 2026-09-09: a holdout SCORE exists, no
-  // per-row SERIES does. This is the sentence the original bug report was
-  // about — the panel fell through to the generic "nothing recorded" text
-  // for exactly this case.
-  it('names the score-exists-but-no-series state, not a generic absence', () => {
-    const text = groupAbsenceText('holdout', [
+  it('names the score-exists-but-no-series state with the SAME sentence as not-scored-yet', () => {
+    const aggregateOnly = groupAbsenceText('holdout', [
       { cvFoldsKey: null, holdoutSeriesAbsence: 'aggregate-only' },
     ])
-    expect(text).toMatch(/validation-holdout score/i)
-    expect(text).toMatch(/no per-row series/i)
-    expect(text).not.toMatch(/no candidate recorded a/i)
+    const notScoredYet = groupAbsenceText('holdout', [
+      { cvFoldsKey: null, holdoutSeriesAbsence: 'not-scored-yet' },
+    ])
+    expect(aggregateOnly).toBe(notScoredYet)
+    expect(aggregateOnly).not.toMatch(/no candidate recorded a/i)
+    // Post-T26: this is no longer the ONLY explanation — a soft-failed
+    // inline score is the other. The copy must not assert training always
+    // discards the frame.
+    expect(aggregateOnly).not.toMatch(/training keeps the aggregate/i)
   })
 
   it('reports in-flight scoring rather than any other absence, when mixed', () => {
@@ -362,7 +370,31 @@ describe('groupAbsenceText', () => {
       { cvFoldsKey: null, holdoutSeriesAbsence: 'no-dataset-holdout' },
       { cvFoldsKey: null, holdoutSeriesAbsence: 'aggregate-only' },
     ])
-    expect(text).toMatch(/validation-holdout score/i)
+    expect(text).toMatch(/scored against the validation\s?holdout/i)
+  })
+
+  // MODEL-FLOW-019-T29. A group with NOTHING scoreable in it must never
+  // say "scoring produces it" — the exact case an earlier pass of this
+  // task shipped and caught on review: `scoreableRunIds` already excludes
+  // a sequence candidate from the button, so a homogeneous sequence group
+  // needs its OWN terminal sentence, not the actionable one.
+  it('names a homogeneous sequence-only group as terminal, never actionable', () => {
+    const text = groupAbsenceText('holdout', [
+      { cvFoldsKey: null, holdoutSeriesAbsence: 'sequence-not-scoreable' },
+    ])
+    expect(text).toMatch(/no windowing path/i)
+    expect(text).not.toMatch(/scoring produces it/i)
+  })
+
+  it('still offers the actionable sentence when a scoreable candidate is mixed with a sequence one', () => {
+    // A real button will still spawn for the scoreable candidate here —
+    // scoreCount is the caller's own figure and already reflects only
+    // that one run, so the actionable sentence is not false for the group.
+    const text = groupAbsenceText('holdout', [
+      { cvFoldsKey: null, holdoutSeriesAbsence: 'sequence-not-scoreable' },
+      { cvFoldsKey: null, holdoutSeriesAbsence: 'aggregate-only' },
+    ])
+    expect(text).toMatch(/scored against the validation\s?holdout/i)
   })
 
   it('never returns an empty string, for any population or group', () => {
@@ -377,6 +409,7 @@ describe('groupAbsenceText', () => {
 describe('holdoutSeriesAbsenceOf', () => {
   const base = {
     status: 'SUCCEEDED',
+    algorithm: 'random_forest',
     cvFoldsKey: null as string | null,
     predictionsKey: null as string | null,
     holdoutPredictionsKey: null as string | null,
@@ -431,6 +464,45 @@ describe('holdoutSeriesAbsenceOf', () => {
     ).toBe('not-scored-yet')
   })
 
+  // MODEL-FLOW-019-T29. Checked BEFORE the aggregate-only/not-scored-yet
+  // branches — a sequence run with no series is TERMINAL, never a state
+  // scoring can fix, and must not read as either of those two. This is the
+  // single source of truth `scoreableRunIds` and `candidateAbsenceText`
+  // both now read through, rather than a separate check either could drift
+  // from.
+  it('is "sequence-not-scoreable" for an unscored lstm run, never aggregate-only', () => {
+    expect(
+      holdoutSeriesAbsenceOf({
+        ...base,
+        algorithm: 'lstm',
+        holdoutAbsence: null,
+      }),
+    ).toBe('sequence-not-scoreable')
+  })
+
+  it('is "sequence-not-scoreable" for an unscored gru run too', () => {
+    expect(
+      holdoutSeriesAbsenceOf({
+        ...base,
+        algorithm: 'gru',
+        holdoutAbsence: 'not-scored-yet',
+      }),
+    ).toBe('sequence-not-scoreable')
+  })
+
+  it('is null (nothing to explain) once an lstm run somehow already has its series', () => {
+    // Defensive: score-mode is refused server-side, but a series can still
+    // exist from before this guard shipped. "Already has one" must still
+    // win over the terminal state.
+    expect(
+      holdoutSeriesAbsenceOf({
+        ...base,
+        algorithm: 'lstm',
+        holdoutPredictionsKey: 'k',
+      }),
+    ).toBeNull()
+  })
+
   it('is "no-dataset-holdout" only when the dataset fact is confirmed absent', () => {
     expect(
       holdoutSeriesAbsenceOf({
@@ -449,6 +521,7 @@ describe('scoreableRunIds', () => {
   const base = {
     runId: 'r1',
     status: 'SUCCEEDED',
+    algorithm: 'random_forest',
     cvFoldsKey: null as string | null,
     predictionsKey: null as string | null,
     holdoutPredictionsKey: null as string | null,
@@ -478,6 +551,106 @@ describe('scoreableRunIds', () => {
 
   it('excludes a candidate with no runId', () => {
     expect(scoreableRunIds([{ ...base, runId: null }])).toEqual([])
+  })
+
+  // MODEL-FLOW-019-T29. Score-mode has no windowing path — a backfill
+  // against a sequence run either fails loudly or writes a mismatched
+  // row/window count over the aggregate training already recorded. See
+  // `isSequenceAlgorithm`'s own comment.
+  it('excludes an otherwise-scoreable lstm candidate — score-mode cannot correctly serve it', () => {
+    expect(scoreableRunIds([{ ...base, algorithm: 'lstm' }])).toEqual([])
+  })
+
+  it('excludes an otherwise-scoreable gru candidate for the same reason', () => {
+    expect(scoreableRunIds([{ ...base, algorithm: 'gru' }])).toEqual([])
+  })
+
+  it('still includes a non-sequence candidate otherwise identical to the excluded lstm one', () => {
+    expect(scoreableRunIds([{ ...base, algorithm: 'ridge' }])).toEqual(['r1'])
+  })
+})
+
+describe('candidateAbsenceText', () => {
+  const base = {
+    status: 'SUCCEEDED',
+    algorithm: 'random_forest',
+    cvFoldsKey: null as string | null,
+    predictionsKey: null as string | null,
+    holdoutPredictionsKey: null as string | null,
+    scoringContainerId: null as string | null,
+    holdoutAbsence: null as HoldoutAbsence | null,
+  }
+
+  it("names a CV candidate's absent test split as definitional, no action", () => {
+    const text = candidateAbsenceText(
+      { ...base, cvFoldsKey: 'k', predictionsKey: 'p' },
+      'test-split',
+    )
+    expect(text).toMatch(/cross-validated/i)
+    expect(text).not.toMatch(/score/i)
+  })
+
+  it("is null for a non-CV candidate's test split — nothing to explain", () => {
+    expect(candidateAbsenceText(base, 'test-split')).toBeNull()
+  })
+
+  it("names a non-CV candidate's absent holdout as actionable, pointing at the group action", () => {
+    const text = candidateAbsenceText(base, 'holdout')
+    expect(text).toMatch(/score/i)
+    expect(text).toMatch(/group/i)
+  })
+
+  it('collapses aggregate-only and not-scored-yet to the SAME sentence', () => {
+    const aggregateOnly = candidateAbsenceText(
+      { ...base, holdoutAbsence: null },
+      'holdout',
+    )
+    const notScoredYet = candidateAbsenceText(
+      { ...base, holdoutAbsence: 'not-scored-yet' },
+      'holdout',
+    )
+    expect(aggregateOnly).toBe(notScoredYet)
+  })
+
+  it("names a scored CV candidate's holdout as nothing to explain", () => {
+    expect(
+      candidateAbsenceText(
+        { ...base, cvFoldsKey: 'k', predictionsKey: 'p' },
+        'holdout',
+      ),
+    ).toBeNull()
+  })
+
+  it('differs, for one candidate, between its test-split and holdout reasons', () => {
+    const cvCandidate = { ...base, cvFoldsKey: 'k', predictionsKey: 'p' }
+    expect(candidateAbsenceText(cvCandidate, 'test-split')).not.toBe(
+      candidateAbsenceText(cvCandidate, 'holdout'),
+    )
+  })
+
+  // MODEL-FLOW-019-T29. The exact defect an earlier pass of this same task
+  // shipped and caught on review: `scoreableRunIds` excluded a sequence
+  // candidate from the button while this function still pointed at "the
+  // group's Score action" for it — a chart telling a reader to click a
+  // control that does nothing for that run. TERMINAL wording, never the
+  // actionable sentence, and never the words that name the group action.
+  it("names an lstm candidate's absent holdout as TERMINAL, never pointing at the group's Score action", () => {
+    const text = candidateAbsenceText(
+      { ...base, algorithm: 'lstm', holdoutAbsence: null },
+      'holdout',
+    )
+    expect(text).toMatch(/no windowing path/i)
+    expect(text).not.toMatch(/group's Score action/i)
+    expect(text).not.toMatch(/either way/i)
+  })
+
+  it('differs for an lstm candidate between the actionable and terminal sentence', () => {
+    const actionable = candidateAbsenceText(base, 'holdout')
+    const terminal = candidateAbsenceText(
+      { ...base, algorithm: 'lstm', holdoutAbsence: null },
+      'holdout',
+    )
+    expect(terminal).not.toBe(actionable)
   })
 })
 

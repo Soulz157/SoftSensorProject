@@ -49,6 +49,7 @@ import {
   populationLabel,
   populationAxisLabel,
   populationTitle,
+  isSequenceAlgorithm,
 } from '@/lib/metric-source'
 import { StatTile } from '../stat-tile'
 import {
@@ -62,6 +63,9 @@ import { QQPlotChart } from './evaluation/qq-plot-chart'
 import { EmptyPanel } from './evaluation/empty-panel'
 import { CvFoldTable } from './evaluation/cv-fold-table'
 import { FeatureImportanceTable } from './evaluation/feature-importance-table'
+import { FeatureCountSweepLauncher } from './evaluation/feature-count-sweep-launcher'
+import { FeatureCountSweepTable } from './evaluation/feature-count-sweep-table'
+import { useFeatureCountSweep } from '@/hooks/model/use-feature-count-sweep'
 import { useRunDistinctLabelled } from '@/hooks/model/use-run-distinct-labelled'
 import type { UsePipelineNavResult } from '@/hooks/model/use-model-pipeline-nav'
 import { ChartLegend } from '@/components/charts/chart-legend'
@@ -90,6 +94,17 @@ export function Phase5Evaluation({ nav }: Props) {
     run?.targetY ?? null,
     run?.splitStats?.distinct_labelled_values ?? null,
   )
+
+  // MODEL-FLOW-019-T31. Held in local state rather than derived from the
+  // draft's existing runs, and the reason is not incidental: with local state
+  // the OPEN run is guaranteed to be the sweep's seed, which is what lets the
+  // table name one seed and one method for every row (AC66/V43). Rediscovering
+  // a sweepId from persisted runs would break that guarantee — the open run
+  // need not be the seed — and the table would have to fetch the seed
+  // separately to learn its method. The cost is that the table does not
+  // survive a reload; the sweep's runs do, and relaunching re-finds them.
+  const [sweepId, setSweepId] = useState<string | null>(null)
+  const sweep = useFeatureCountSweep(serverDraftId, sweepId)
 
   const cvPhase = cvScoringPhaseOf(run)
   const population = populationOf(cvPhase)
@@ -332,25 +347,49 @@ export function Phase5Evaluation({ nav }: Props) {
           but the contract greps by literal substring, not by section, so
           the hyphen is what keeps the promise textually true rather than
           only true in intent. */}
+      {/* MODEL-FLOW-019-T29. NEVER gated on `isSequenceAlgorithm` — an
+          earlier pass of this task did exactly that and hid the WHOLE block
+          for a sequence run, which is vanishing, the one outcome this
+          feature exists to prevent (see `groupAbsenceText`'s own doc
+          comment: "the one state a reader cannot tell apart from a bug").
+          The block always renders here; only the BUTTON is conditional. */}
       {cvPhase === 'not-cv' && !run.holdoutPredictionsKey && (
         <div className="space-y-1.5 rounded-xl border border-dashed border-border/60 px-4 py-3">
           <div className="flex flex-wrap items-center gap-2">
             <p className="flex-1 text-xs text-muted-foreground">
-              {run.scoringContainerId
-                ? 'Holdout scoring is running — this refits nothing, it only scores the model already trained.'
-                : run.holdoutMetrics
-                  ? "This run has a validation-holdout score, but training kept only the aggregate — the per-row series Step 4's holdout chart needs comes from scoring it again."
-                  : "Not yet scored against the dataset's validation-holdout rows — scoring runs separately from training."}
+              {isSequenceAlgorithm(run.algorithm)
+                ? // MODEL-FLOW-019-T29. TERMINAL — score-mode has no windowing
+                  // path (see `isSequenceAlgorithm`'s own comment in
+                  // `lib/metric-source.ts`), and `triggerScoringService` now
+                  // refuses this server-side. Never the actionable sentence
+                  // below: offering a button for a run it would only 400 is
+                  // the dead end this feature exists to prevent, this time
+                  // arriving through Step 5 rather than Step 4.
+                  `Holdout scoring has no windowing path for ${run.algorithm} — not available for this run.`
+                : run.scoringContainerId
+                  ? 'Holdout scoring is running — this refits nothing, it only scores the model already trained.'
+                  : // MODEL-FLOW-019-T29. Was "training kept only the aggregate" —
+                    // false post-T26, which keeps this frame at training time for
+                    // every NEW run. Now a disjunction, same collapsed wording
+                    // `candidateAbsenceText`/`groupAbsenceText` use for the
+                    // identical fact in Step 4: two states, one remedy, one
+                    // sentence. Stays HYPHENATED ("validation-holdout"), same
+                    // reason the sentence it replaces did — phase-3-evaluation
+                    // .test.tsx's own contract asserts the bare two-word phrase
+                    // appears NOWHERE on this page for a non-CV run.
+                    "Not yet scored against the dataset's validation-holdout rows — either this run predates keeping a per-row series, or it has simply never been scored. Scoring produces it either way."}
             </p>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => void handleTriggerScoring()}
-              disabled={Boolean(run.scoringContainerId) || triggering}
-            >
-              <PlayCircle className="h-4 w-4" />
-              {run.scoringContainerId ? 'Scoring…' : 'Score against holdout'}
-            </Button>
+            {!isSequenceAlgorithm(run.algorithm) && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => void handleTriggerScoring()}
+                disabled={Boolean(run.scoringContainerId) || triggering}
+              >
+                <PlayCircle className="h-4 w-4" />
+                {run.scoringContainerId ? 'Scoring…' : 'Score against holdout'}
+              </Button>
+            )}
           </div>
           {scoringError && (
             <p className="text-xs text-red-500">{scoringError}</p>
@@ -573,6 +612,31 @@ export function Phase5Evaluation({ nav }: Props) {
           feature-importance recording, or {algorithmLabel} has no such quantity
           to read.
         </EmptyPanel>
+      )}
+
+      {/* MODEL-FLOW-019-T31. The launcher and the curve it fills, beneath the
+          importance table whose ranking both of them depend on. The table
+          appears only once a sweep exists — there is no curve to read before
+          one is launched, and an empty ladder would read as a measured flat
+          line. */}
+      <FeatureCountSweepLauncher
+        draftId={serverDraftId}
+        run={run}
+        distinctLabelledValues={distinctLabelled.value}
+        distinctLabelledLoading={distinctLabelled.loading}
+        distinctLabelledReason={distinctLabelled.reason}
+        onLaunched={setSweepId}
+      />
+
+      {sweepId && run.featureImportance && (
+        <FeatureCountSweepTable
+          runs={sweep.runs}
+          seedRunId={run.id}
+          seedMethod={run.featureImportance.method}
+          distinctLabelledValues={distinctLabelled.value}
+          loading={sweep.loading}
+          error={sweep.error}
+        />
       )}
 
       {cvPhase === 'scored' && run.cvFolds && (
