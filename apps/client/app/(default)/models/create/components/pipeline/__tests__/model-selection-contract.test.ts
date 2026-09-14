@@ -26,6 +26,21 @@ const OVERLAY_CHART_FILE = path.resolve(
   __dirname,
   '../model-selection/candidate-overlay-chart.tsx',
 )
+// The split that moved `CandidateChart`/`CandidateTable` out of STEP_FILE
+// into their own modules (see this project's own split of
+// phase-4-model-selection.tsx) took `renderModeFor` and the per-row
+// algorithm-label lookup with them. Scanning STEP_FILE alone after that
+// move would make this guard vacuous — the file it reads would simply have
+// nothing left to branch on, pass or fail. Both destinations are scanned
+// too, same as BASE_CHART_FILE/OVERLAY_CHART_FILE already are.
+const CANDIDATE_CHART_FILE = path.resolve(
+  __dirname,
+  '../model-selection/candidate-chart.tsx',
+)
+const CANDIDATE_TABLE_FILE = path.resolve(
+  __dirname,
+  '../model-selection/candidate-table.tsx',
+)
 
 function read(file: string): string {
   return readFileSync(file, 'utf-8')
@@ -62,8 +77,20 @@ describe('Model Selection base-chart contract (MODEL-FLOW-017)', () => {
     expect(src).not.toMatch(ALGORITHM_SWITCH_BRANCH)
   })
 
-  it('renderModeFor remains the only mode-branch function imported by the step', () => {
-    const src = read(STEP_FILE)
+  it('the candidate chart component (moved out of the step) has no branch keyed on algorithm equality or switch', () => {
+    const src = read(CANDIDATE_CHART_FILE)
+    expect(src).not.toMatch(ALGORITHM_EQUALITY_BRANCH)
+    expect(src).not.toMatch(ALGORITHM_SWITCH_BRANCH)
+  })
+
+  it('the candidate table component (moved out of the step) has no branch keyed on algorithm equality or switch', () => {
+    const src = read(CANDIDATE_TABLE_FILE)
+    expect(src).not.toMatch(ALGORITHM_EQUALITY_BRANCH)
+    expect(src).not.toMatch(ALGORITHM_SWITCH_BRANCH)
+  })
+
+  it('renderModeFor remains the only mode-branch function, imported by the candidate chart component', () => {
+    const src = read(CANDIDATE_CHART_FILE)
     const importedModeHelpers =
       src.match(/renderModeFor|modeARows|modeBMarks/g) ?? []
     // Present (mode A/B diagnostic still exists) but never duplicated by a

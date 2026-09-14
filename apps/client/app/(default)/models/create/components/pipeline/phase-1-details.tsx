@@ -1,15 +1,13 @@
 'use client'
 
-import { Layers } from 'lucide-react'
 import type { WorkspacePlant } from '@/types'
 import type { CanvasNode } from '@/services/canvas'
 import type { WizardMode } from '@/store/model-pipeline'
-import { useDatasets } from '@/hooks/dataset/use-datasets'
 import type { SavedDataset } from '@/store/datasets'
 import { ModelMetadataSection } from '../model-metadata-section'
 import { DraftResumeSection } from './draft-resume-section'
 import { PresetPicker } from './preset-picker'
-import { DatasetCard } from '../dataset-card'
+import { DatasetPicker } from './dataset-picker'
 
 interface Props {
   mode: WizardMode
@@ -23,6 +21,7 @@ interface Props {
   plantsLoading: boolean
   nameConflict: boolean
   selectedDataset: SavedDataset | null
+  totalSteps: number
   onName: (v: string) => void
   onDescription: (v: string) => void
   onWorkspace: (id: string) => void
@@ -31,76 +30,63 @@ interface Props {
   onSelectDataset: (dataset: SavedDataset) => void
 }
 
+/**
+ * Step 1 — order follows the Laws of UX, not the historical build order:
+ *
+ * 1. Drafts (unscoped) and the preset trigger (gated) sit ABOVE the form —
+ *    Zeigarnik/Serial Position for the accelerators, Von Restorff for the
+ *    primary path they must not visually outrank.
+ * 2. Identity → Location resolves `workspaceId` before anything that reads
+ *    it (Jakob's Law: dependency order should match reading order), rather
+ *    than reordering the accelerators away from the top where recall is
+ *    highest — instead each downstream consumer states its own prerequisite.
+ * 3. DatasetPicker is the last block, and states its own prerequisite
+ *    explicitly instead of rendering nothing (Visibility of System Status).
+ */
 export function Phase1Details({
   mode,
   selectedDataset,
   onSelectDataset,
+  totalSteps,
   ...props
 }: Props) {
-  const { datasets, loading } = useDatasets(props.workspaceId || undefined)
+  // Shared by both accelerators so "does this form already hold work"
+  // means the same thing whichever one is asked (Jakob's Law — the two
+  // should behave consistently, not just look alike).
+  const dirty = props.name.trim() !== '' || selectedDataset !== null
 
   return (
     <div className="space-y-5">
       <div>
-        <h2 className="text-sm font-medium text-foreground">Model details</h2>
+        <div className="flex items-baseline justify-between gap-2">
+          <h2 className="text-sm font-medium text-foreground">Model details</h2>
+          <span className="text-xs text-muted-foreground">
+            Step 1 of {totalSteps}
+          </span>
+        </div>
         <p className="text-xs text-muted-foreground">
           Name your model and choose where it lives.
         </p>
       </div>
+
       {mode === 'create' && (
         <>
           {/* Above the preset picker: picking up unfinished work is a
               different intent from starting new, and it should be offered
               before the choices that assume you are starting new. Edit mode
               is editing a saved Model — there is no draft to resume. */}
-          <DraftResumeSection
-            workspaceId={props.workspaceId}
-            dirty={props.name.trim() !== '' || selectedDataset !== null}
-          />
-          <PresetPicker workspaceId={props.workspaceId} />
+          <DraftResumeSection workspaceId={props.workspaceId} dirty={dirty} />
+          <PresetPicker workspaceId={props.workspaceId} dirty={dirty} />
         </>
       )}
+
       <ModelMetadataSection {...props} disabled={false} />
 
-      <div className="space-y-2">
-        <h2 className="text-sm font-medium text-foreground">
-          Select a dataset
-        </h2>
-        <p className="text-xs text-muted-foreground">
-          Train on a curated dataset built in Data Studio — no need to reconnect
-          or re-clean data.
-        </p>
-        {!props.workspaceId ? null : loading ? (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            {Array.from({ length: 2 }).map((_, i) => (
-              <div
-                key={i}
-                className="h-28 animate-pulse rounded-xl bg-muted"
-                aria-hidden="true"
-              />
-            ))}
-          </div>
-        ) : datasets.length === 0 ? (
-          <div className="flex flex-col items-center gap-2 rounded-xl bg-muted/30 py-8 text-center ring-1 ring-foreground/10">
-            <Layers className="h-7 w-7 text-muted-foreground/30" />
-            <p className="text-xs text-muted-foreground">
-              No datasets yet in this workspace — create one in Data Studio
-              first.
-            </p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            {datasets.map(d => (
-              <DatasetCard
-                key={d.id}
-                dataset={d}
-                selected={selectedDataset?.id === d.id}
-                onSelect={() => onSelectDataset(d)}
-              />
-            ))}
-          </div>
-        )}
-      </div>
+      <DatasetPicker
+        workspaceId={props.workspaceId}
+        selectedDataset={selectedDataset}
+        onSelectDataset={onSelectDataset}
+      />
     </div>
   )
 }

@@ -57,6 +57,7 @@ export function CreateModelForm() {
       body = (
         <Phase1Details
           mode={mode}
+          totalSteps={STEP_LABELS.length}
           name={form.name}
           description={form.description}
           workspaceId={form.workspaceId}

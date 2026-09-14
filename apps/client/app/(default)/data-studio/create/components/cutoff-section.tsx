@@ -355,6 +355,7 @@ export function CutOffSection({
             focusedTag={focus ? [focus] : []}
             range={range}
             hideTagSelector
+            dateOnlyTicks
             loading={chartLoading}
           />
         </div>

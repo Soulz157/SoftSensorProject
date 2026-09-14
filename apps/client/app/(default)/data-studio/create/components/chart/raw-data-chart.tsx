@@ -23,6 +23,7 @@ import {
   chartColorVar,
   type TimeRange,
 } from '@/lib/mock-readings'
+import { formatDayMonth } from '@/lib/chart-format'
 import type { SensorChartRow } from '@/hooks/use-sensor-readings'
 import { RangeDisplay } from './range-display'
 import { TagsSelector } from './tags-selector'
@@ -38,6 +39,13 @@ interface Props {
   focusedTag?: string[]
   /** Master override: when true, every line renders at full opacity. */
   isViewAll?: boolean
+  /**
+   * X-axis ticks as `12 Sep` (date + month, no time) instead of the
+   * range-derived clock format. Opt-in — this component is also used by the
+   * EDA line chart (`data-analysis-card.tsx`), which keeps `rangeConfig`'s
+   * default formatting.
+   */
+  dateOnlyTicks?: boolean
   /**
    * Covers the plot with a spinner while the caller prepares a different
    * `rows`/`tags` set. Nothing here is async — this marks a render the caller
@@ -103,6 +111,7 @@ export function RawTrendChart({
   hideTagSelector = false,
   focusedTag,
   isViewAll = false,
+  dateOnlyTicks = false,
   loading = false,
 }: Props) {
   const reducedMotion = usePrefersReducedMotion()
@@ -366,8 +375,12 @@ export function RawTrendChart({
               tickLine={false}
               axisLine={false}
               tickMargin={8}
-              minTickGap={32}
-              tickFormatter={value => tickFormat(String(value))}
+              minTickGap={dateOnlyTicks ? 56 : 32}
+              tickFormatter={value =>
+                dateOnlyTicks
+                  ? formatDayMonth(String(value))
+                  : tickFormat(String(value))
+              }
             />
             <YAxis
               tickLine={false}

@@ -95,9 +95,25 @@ function renderSection(dirty: boolean) {
   )
 }
 
+/**
+ * Drafts are demoted to a dismissible banner that opens a dialog holding the
+ * unchanged panel (step-1 redesign) — every per-row control now needs the
+ * dialog open first. The banner's own trigger carries a distinct accessible
+ * name ("Show unfinished drafts to resume") precisely so it cannot collide
+ * with the per-row "Resume" buttons this reveals.
+ */
+async function openDraftsDialog() {
+  await act(async () => {
+    await userEvent.click(
+      screen.getByRole('button', { name: /show unfinished drafts to resume/i }),
+    )
+  })
+}
+
 describe('DraftResumeSection (MODEL-FLOW-010-T08, in Step 1)', () => {
   it('hydrates in place on a clean wizard — no confirm, no navigation', async () => {
     renderSection(false)
+    await openDraftsDialog()
 
     await act(async () => {
       await userEvent.click(screen.getByRole('button', { name: /^resume$/i }))
@@ -108,6 +124,7 @@ describe('DraftResumeSection (MODEL-FLOW-010-T08, in Step 1)', () => {
 
   it('asks before replacing work the user has already entered', async () => {
     renderSection(true)
+    await openDraftsDialog()
 
     await act(async () => {
       await userEvent.click(screen.getByRole('button', { name: /^resume$/i }))
@@ -127,6 +144,7 @@ describe('DraftResumeSection (MODEL-FLOW-010-T08, in Step 1)', () => {
 
   it('keeps the current wizard when the confirm is dismissed', async () => {
     renderSection(true)
+    await openDraftsDialog()
 
     await act(async () => {
       await userEvent.click(screen.getByRole('button', { name: /^resume$/i }))
@@ -159,6 +177,7 @@ describe('DraftResumeSection (MODEL-FLOW-010-T08, in Step 1)', () => {
 describe('DraftResumeSection — removing a draft', () => {
   it('confirms first, then abandons and refreshes the list', async () => {
     renderSection(false)
+    await openDraftsDialog()
 
     await act(async () => {
       await userEvent.click(
@@ -178,6 +197,7 @@ describe('DraftResumeSection — removing a draft', () => {
 
   it('leaves the draft alone when the confirm is cancelled', async () => {
     renderSection(false)
+    await openDraftsDialog()
 
     await act(async () => {
       await userEvent.click(
@@ -195,6 +215,7 @@ describe('DraftResumeSection — removing a draft', () => {
     // Closing over a row that is still there would read as success.
     h.abandon.mockRejectedValue(new Error('500'))
     renderSection(false)
+    await openDraftsDialog()
 
     await act(async () => {
       await userEvent.click(
@@ -212,11 +233,12 @@ describe('DraftResumeSection — removing a draft', () => {
     ).toBeInTheDocument()
   })
 
-  it('names the draft in the icon button label', () => {
+  it('names the draft in the icon button label', async () => {
     // Icon-only buttons: without this a screen reader hears N identical
     // "remove" controls with no way to tell them apart.
     h.drafts = manyDrafts(3)
     renderSection(false)
+    await openDraftsDialog()
 
     expect(
       screen.getByRole('button', { name: /remove draft Draft 2/i }),
@@ -228,6 +250,7 @@ describe('DraftResumeSection — bulk removes', () => {
   it('removes every listed draft on Remove all', async () => {
     h.drafts = manyDrafts(3)
     renderSection(false)
+    await openDraftsDialog()
 
     await act(async () => {
       await userEvent.click(screen.getByRole('button', { name: /remove all/i }))
@@ -250,6 +273,7 @@ describe('DraftResumeSection — bulk removes', () => {
   it('removes only the ticked drafts on Remove selected', async () => {
     h.drafts = manyDrafts(3)
     renderSection(false)
+    await openDraftsDialog()
 
     // No bulk control until something is ticked.
     expect(
@@ -284,6 +308,7 @@ describe('DraftResumeSection — bulk removes', () => {
   it('unticking removes a draft from the selection', async () => {
     h.drafts = manyDrafts(2)
     renderSection(false)
+    await openDraftsDialog()
 
     const first = screen.getByRole('checkbox', {
       name: /select draft Draft 1/i,
@@ -310,6 +335,7 @@ describe('DraftResumeSection — bulk removes', () => {
       .mockResolvedValueOnce({ data: DRAFT })
       .mockRejectedValueOnce(new Error('500'))
     renderSection(false)
+    await openDraftsDialog()
 
     await act(async () => {
       await userEvent.click(screen.getByRole('button', { name: /remove all/i }))
@@ -327,6 +353,7 @@ describe('DraftResumeSection — bulk removes', () => {
     h.drafts = manyDrafts(2)
     h.abandon.mockRejectedValue(new Error('500'))
     renderSection(false)
+    await openDraftsDialog()
 
     await act(async () => {
       await userEvent.click(screen.getByRole('button', { name: /remove all/i }))
@@ -343,19 +370,21 @@ describe('DraftResumeSection — bulk removes', () => {
 })
 
 describe('DraftResumeSection — the visible-rows cap', () => {
-  it('lists five drafts without a scroll container', () => {
+  it('lists five drafts without a scroll container', async () => {
     h.drafts = manyDrafts(5)
-    const { container } = renderSection(false)
+    renderSection(false)
+    await openDraftsDialog()
 
-    expect(container.querySelector('[data-slot="scroll-area"]')).toBeNull()
+    expect(document.querySelector('[data-slot="scroll-area"]')).toBeNull()
     expect(screen.getAllByRole('button', { name: /^resume$/i })).toHaveLength(5)
   })
 
-  it('scrolls past five rather than pushing the rest of Step 1 down', () => {
+  it('scrolls past five rather than pushing the rest of Step 1 down', async () => {
     h.drafts = manyDrafts(6)
-    const { container } = renderSection(false)
+    renderSection(false)
+    await openDraftsDialog()
 
-    expect(container.querySelector('[data-slot="scroll-area"]')).not.toBeNull()
+    expect(document.querySelector('[data-slot="scroll-area"]')).not.toBeNull()
     // Every draft is still reachable — capped in height, not truncated.
     expect(screen.getAllByRole('button', { name: /^resume$/i })).toHaveLength(6)
   })

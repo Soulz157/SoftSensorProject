@@ -34,6 +34,12 @@ interface Props {
   onNode: (id: string) => void
 }
 
+/**
+ * Two labelled regions instead of one flat stack (Law of Proximity / Common
+ * Region) — Identity (name, description) is what the user types; Location
+ * (workspace → plant → equipment) is what they pick. Both share one card
+ * treatment so the grouping reads as structural, not decorative.
+ */
 export function ModelMetadataSection({
   name,
   description,
@@ -53,74 +59,102 @@ export function ModelMetadataSection({
 }: Props) {
   const workspaces = useAtomValue(workspacesAtom)
 
+  // Equipment is a real gate (canAdvance(1) requires nodeId !== ''), so the
+  // column stays mounted at all times — never conditionally rendered — and
+  // is only ever disabled with a reason. Mounting it conditionally beside
+  // CascadeSelectors is what made the row jump when a plant was chosen.
+  const equipmentHint = !workspaceId
+    ? 'Pick a workspace first'
+    : !plantId
+      ? 'Pick a plant to list its equipment'
+      : nodes.length === 0
+        ? 'No equipment found in this plant. Add nodes to the canvas first.'
+        : null
+
   return (
-    <div className="space-y-5">
-      <div className="space-y-1.5">
-        <Label htmlFor="model-name">
-          Name <span className="text-destructive">*</span>
-        </Label>
-        <Input
-          id="model-name"
-          placeholder="e.g. Temperature Predictor"
-          value={name}
-          onChange={e => onName(e.target.value)}
-          disabled={disabled}
-          aria-invalid={nameConflict}
-        />
-        {nameConflict && (
-          <p className="text-xs text-destructive">
-            A model with this name already exists in this location.
-          </p>
-        )}
-      </div>
+    <div className="space-y-4">
+      <section className="space-y-4 rounded-xl bg-card p-4 ring-1 ring-border">
+        <h3 className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+          Identity
+        </h3>
 
-      <div className="space-y-1.5">
-        <Label htmlFor="model-description">
-          Description{' '}
-          <span className="text-xs text-muted-foreground">(optional)</span>
-        </Label>
-        <Textarea
-          id="model-description"
-          placeholder="What this model predicts, its target, and any notes…"
-          value={description}
-          onChange={e => onDescription(e.target.value)}
-          disabled={disabled}
-          rows={4}
-        />
-      </div>
-
-      <div className="flex flex-col sm:flex-row gap-4 items-start w-full">
-        <div className="space-y-1.5 flex-1 w-full">
-          <Label>
-            Workspace <span className="text-destructive">*</span> &amp; Plant{' '}
-            <span className="text-destructive">*</span>
+        <div className="space-y-1.5">
+          <Label htmlFor="model-name">
+            Name <span className="text-destructive">*</span>
           </Label>
-          <CascadeSelectors
-            workspaces={workspaces}
-            workspaceId={workspaceId}
-            onWorkspaceChange={onWorkspace}
-            plants={plants}
-            plantId={plantId}
-            onPlantChange={onPlant}
-            plantsLoading={plantsLoading}
+          <Input
+            id="model-name"
+            placeholder="e.g. Temperature Predictor"
+            value={name}
+            onChange={e => onName(e.target.value)}
+            disabled={disabled}
+            aria-invalid={nameConflict}
           />
+          {nameConflict && (
+            <p className="text-xs text-destructive">
+              A model with this name already exists in this location.
+            </p>
+          )}
         </div>
 
-        {workspaceId && plantId && (
+        <div className="space-y-1.5">
+          <Label htmlFor="model-description">
+            Description{' '}
+            <span className="text-xs text-muted-foreground">(optional)</span>
+          </Label>
+          <Textarea
+            id="model-description"
+            placeholder="What this model predicts, its target, and any notes…"
+            value={description}
+            onChange={e => onDescription(e.target.value)}
+            disabled={disabled}
+            rows={4}
+          />
+        </div>
+      </section>
+
+      <section className="space-y-4 rounded-xl bg-card p-4 ring-1 ring-border">
+        <h3 className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+          Location
+        </h3>
+
+        <div className="flex flex-col sm:flex-row gap-4 items-start w-full">
+          <div className="space-y-1.5 flex-1 w-full">
+            <Label>
+              Workspace <span className="text-destructive">*</span> &amp; Plant{' '}
+              <span className="text-destructive">*</span>
+            </Label>
+            <CascadeSelectors
+              workspaces={workspaces}
+              workspaceId={workspaceId}
+              onWorkspaceChange={onWorkspace}
+              plants={plants}
+              plantId={plantId}
+              onPlantChange={onPlant}
+              plantsLoading={plantsLoading}
+            />
+          </div>
+
           <div className="space-y-1.5 flex-1 w-full">
             <Label>
               Equipment<span className="text-destructive">*</span>
             </Label>
+            {/*
+             * `nodeId` has no "unassigned" state — canAdvance(1) requires
+             * `nodeId !== ''`, so offering "— Unassigned —" would let a user
+             * pick a value that silently disables Continue. `''` still
+             * renders the placeholder (Radix Select shows placeholder on an
+             * empty string value) and remains a valid intermediate state.
+             */}
             <Select
-              value={nodeId || 'none'}
-              onValueChange={v => onNode(v === 'none' ? '' : v)}
-              disabled={disabled}
+              value={nodeId}
+              onValueChange={onNode}
+              disabled={disabled || !!equipmentHint}
             >
               <SelectTrigger className="h-9 w-56">
                 <SelectValue placeholder="Select equipment" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="none">— Unassigned —</SelectItem>
                 {nodes.map(n => (
                   <SelectItem key={n.id} value={n.id}>
                     {(n.data as { name?: string }).name ?? n.id}
@@ -128,14 +162,12 @@ export function ModelMetadataSection({
                 ))}
               </SelectContent>
             </Select>
-            {nodes.length === 0 && (
-              <p className="text-xs text-muted-foreground">
-                No equipment found in this plant. Add nodes to the canvas first.
-              </p>
+            {equipmentHint && (
+              <p className="text-xs text-muted-foreground">{equipmentHint}</p>
             )}
           </div>
-        )}
-      </div>
+        </div>
+      </section>
     </div>
   )
 }

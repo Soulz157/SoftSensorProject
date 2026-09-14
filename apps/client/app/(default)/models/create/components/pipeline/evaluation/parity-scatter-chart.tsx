@@ -57,7 +57,7 @@ export function ParityScatterChart({ rows, domain, population }: Props) {
           stroke="var(--border)"
           tickFormatter={v => Number(v).toFixed(1)}
           label={{
-            value: `${population} actual`,
+            value: `actual`,
             position: 'insideBottom',
             offset: -10,
             fill: 'var(--muted-foreground)',

@@ -61,7 +61,7 @@ export function WizardStepIndicator({
               </span>
               <span
                 className={cn(
-                  'whitespace-nowrap text-[10px] font-medium leading-none',
+                  'whitespace-nowrap text-[11px] font-medium leading-none',
                   isActive ? 'text-foreground' : 'text-muted-foreground',
                 )}
               >

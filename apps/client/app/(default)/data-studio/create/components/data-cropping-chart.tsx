@@ -47,6 +47,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { chartColorVar, resolveTagMeta } from '@/lib/mock-readings'
+import { formatDayMonth } from '@/lib/chart-format'
 import type { SensorChartRow } from '@/hooks/use-sensor-readings'
 import { cn } from '@/lib/utils'
 
@@ -762,14 +763,9 @@ export function DataCroppingChart({
               tickLine={false}
               axisLine={false}
               tickMargin={8}
-              minTickGap={32}
+              minTickGap={56}
               height={24}
-              tickFormatter={value =>
-                new Date(String(value)).toLocaleTimeString('en-GB', {
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })
-              }
+              tickFormatter={value => formatDayMonth(String(value))}
             />
             <YAxis
               tickLine={false}

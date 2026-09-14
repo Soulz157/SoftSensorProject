@@ -17,12 +17,8 @@ import {
   type ChartConfig,
 } from '@/components/ui/chart'
 import { cn } from '@/lib/utils'
-import {
-  rangeConfig,
-  resolveTagMeta,
-  chartColorVar,
-  type TimeRange,
-} from '@/lib/mock-readings'
+import { resolveTagMeta, chartColorVar } from '@/lib/mock-readings'
+import { formatDayMonth } from '@/lib/chart-format'
 import type { TagFillPreviewRow } from '@/lib/preprocessing'
 import { SegmentedToggle } from '@/app/(default)/data-visualize/components/segmented-toggle'
 
@@ -31,7 +27,6 @@ interface Props {
   tags: string[]
   isolatedTag: string
   onIsolate: (tag: string) => void
-  range: TimeRange
 }
 
 type View = 'original' | 'cleaned' | 'overlay'
@@ -123,10 +118,8 @@ export function ImputationTrendChart({
   tags,
   isolatedTag,
   onIsolate,
-  range,
 }: Props) {
   const reducedMotion = usePrefersReducedMotion()
-  const { tickFormat } = rangeConfig(range)
   const [view, setView] = useState<View>('overlay')
 
   const [zoomWindow, setZoomWindow] = useState<[number, number] | null>(null)
@@ -366,8 +359,8 @@ export function ImputationTrendChart({
             tickLine={false}
             axisLine={false}
             tickMargin={8}
-            minTickGap={32}
-            tickFormatter={value => tickFormat(String(value))}
+            minTickGap={56}
+            tickFormatter={value => formatDayMonth(String(value))}
           />
           <YAxis
             tickLine={false}

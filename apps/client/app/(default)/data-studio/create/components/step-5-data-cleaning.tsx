@@ -373,7 +373,6 @@ export function Step5DataCleaning({ nav }: Props) {
                 previewIndex={previewIndex}
                 onPreviewIndexChange={setPreviewIndex}
                 previewRows={previewRows}
-                range={range}
                 cleaningTags={cleaningTags}
                 isolatedTag={isolatedTag}
                 onIsolate={setRawIsolated}

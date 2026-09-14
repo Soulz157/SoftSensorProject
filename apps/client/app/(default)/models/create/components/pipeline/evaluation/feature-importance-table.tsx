@@ -119,7 +119,7 @@ export function FeatureImportanceTable({
         </h3>
         <p className="text-xs text-muted-foreground">
           Measured by {methodLabel} — this figure is not comparable across
-          methods, and the percentage is normalised within this run only.
+          methods, and ranks features within this run only.
           {caveat && ` ${caveat}`}
         </p>
       </div>
@@ -157,12 +157,6 @@ export function FeatureImportanceTable({
                 <TableHead className="h-9 px-3 text-right">
                   Importance
                 </TableHead>
-                <TableHead
-                  className="h-9 px-3 text-right"
-                  title="Share of the summed importance of every feature this run used, not only the ten listed"
-                >
-                  % of total
-                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -188,9 +182,6 @@ export function FeatureImportanceTable({
                   </TableCell>
                   <TableCell className="px-3 py-2 text-right font-mono tabular-nums">
                     {row.importance.toFixed(4)}
-                  </TableCell>
-                  <TableCell className="px-3 py-2 text-right font-mono tabular-nums">
-                    {formatPct(row.share)}
                   </TableCell>
                 </TableRow>
               ))}

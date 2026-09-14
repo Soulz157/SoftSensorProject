@@ -49,7 +49,7 @@ import {
   UNRANKED_LABELS,
   VALIDATE_COLUMN_CLASS,
   isRankMetricKey,
-} from '../phase-4-model-selection'
+} from '../model-selection/candidate-table'
 
 /**
  * MODEL-FLOW-021-T03/T22. Step 3's own run comparison — a ranked table plus

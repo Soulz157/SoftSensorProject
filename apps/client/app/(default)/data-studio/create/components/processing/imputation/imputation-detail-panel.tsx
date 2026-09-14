@@ -35,7 +35,7 @@ import {
 } from '@/components/ui/alert-dialog'
 
 import { tagSeverity, type TagQuality } from '@/lib/data-quality'
-import { resolveTagMeta, type TimeRange } from '@/lib/mock-readings'
+import { resolveTagMeta } from '@/lib/mock-readings'
 import type {
   CleaningCategory,
   CleaningMethod,
@@ -53,7 +53,6 @@ interface Props {
   onPreviewIndexChange: (index: number) => void
   /** Before/After rows for `isolatedTag`, truncated to `previewIndex` steps. */
   previewRows: TagFillPreviewRow[]
-  range: TimeRange
   cleaningTags: string[]
   isolatedTag: string
   onIsolate: (tag: string) => void
@@ -173,7 +172,6 @@ export function ImputationDetailPanel({
   previewIndex,
   onPreviewIndexChange,
   previewRows,
-  range,
   cleaningTags,
   isolatedTag,
   onIsolate,
@@ -469,7 +467,6 @@ export function ImputationDetailPanel({
               tags={cleaningTags}
               isolatedTag={isolatedTag}
               onIsolate={onIsolate}
-              range={range}
             />
           </div>
 

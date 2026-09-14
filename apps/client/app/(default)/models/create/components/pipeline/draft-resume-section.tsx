@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { useAtomValue } from 'jotai'
 import { toast } from 'sonner'
+import { FileClock, X } from 'lucide-react'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -13,6 +14,13 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
+import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { workspacesAtom } from '@/store/workspace'
 import { mpServerDraftIdAtom } from '@/store/model-pipeline'
 import { useModelDrafts } from '@/hooks/model/use-model-drafts'
@@ -43,11 +51,22 @@ interface Props {
  * Scoped to the chosen workspace once there is one, unscoped before that — at
  * Step 1 the draft you want may well be the reason you are picking that
  * workspace at all.
+ *
+ * Demoted to a single dismissible banner (Hick's/Miller's Law — the primary
+ * path of name → location → dataset stays visually dominant) that opens a
+ * dialog holding `DraftResumePanel` unchanged: its per-row Resume/remove,
+ * multi-select and Remove all all survive, they are just one click further
+ * in. The banner itself is a pure disclosure trigger, not a shortcut that
+ * resumes a draft directly — `useModelDrafts`' ordering is not a promise
+ * about which draft is "most recent", so a one-click resume could silently
+ * pick the wrong one.
  */
 export function DraftResumeSection({ workspaceId, dirty }: Props) {
   const workspaces = useAtomValue(workspacesAtom)
   const currentDraftId = useAtomValue(mpServerDraftIdAtom)
   const { resume, resuming } = useModelDraftResume()
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const [dismissed, setDismissed] = useState(false)
   const [pendingDraftId, setPendingDraftId] = useState<string | null>(null)
   // ONE confirm serves all three removes — the row X, Remove selected and
   // Remove all differ only in which drafts they hand it. A second and third
@@ -78,7 +97,10 @@ export function DraftResumeSection({ workspaceId, dirty }: Props) {
   async function confirmResume() {
     const draftId = pendingDraftId
     setPendingDraftId(null)
-    if (draftId) await resume(draftId)
+    if (draftId) {
+      await resume(draftId)
+      setDialogOpen(false)
+    }
   }
 
   function toggleSelect(draftId: string) {
@@ -142,25 +164,62 @@ export function DraftResumeSection({ workspaceId, dirty }: Props) {
     }
   }
 
+  if (loading || others.length === 0 || dismissed) return null
+
   return (
     <>
-      <DraftResumePanel
-        drafts={others}
-        loading={loading || resuming}
-        workspaceName={id =>
-          workspaces.find(w => w.id === id)?.name ?? 'Unknown Workspace'
-        }
-        onResume={requestResume}
-        onRemove={draft => setRemoveTargets([draft])}
-        // The intersection, not the raw state: an id can drop out of the list
-        // (its draft was resumed, or removed in another tab) and a count with
-        // nothing behind it would offer "Remove selected (1)" that removes
-        // nothing.
-        selectedIds={selectedDrafts.map(d => d.id)}
-        onToggleSelect={toggleSelect}
-        onRemoveSelected={() => setRemoveTargets(selectedDrafts)}
-        onRemoveAll={() => setRemoveTargets(others)}
-      />
+      <div className="flex items-center gap-2 rounded-xl bg-card p-3 ring-1 ring-border">
+        <FileClock className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <p className="flex-1 text-xs text-foreground">
+          {others.length} unfinished {others.length === 1 ? 'draft' : 'drafts'}
+        </p>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => setDialogOpen(true)}
+          // Distinct accessible name from the per-row "Resume" buttons this
+          // opens onto — three same-labelled "Resume" controls on one page
+          // is ambiguous out of context for a screen reader, trigger vs.
+          // per-draft action, not just for a test query.
+          aria-label="Show unfinished drafts to resume"
+        >
+          Resume
+        </Button>
+        <button
+          type="button"
+          onClick={() => setDismissed(true)}
+          aria-label="Dismiss unfinished drafts"
+          className="-m-2 flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground sm:h-8 sm:w-8"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Drafts in progress</DialogTitle>
+          </DialogHeader>
+          <DraftResumePanel
+            drafts={others}
+            loading={loading || resuming}
+            workspaceName={id =>
+              workspaces.find(w => w.id === id)?.name ?? 'Unknown Workspace'
+            }
+            onResume={requestResume}
+            onRemove={draft => setRemoveTargets([draft])}
+            // The intersection, not the raw state: an id can drop out of the
+            // list (its draft was resumed, or removed in another tab) and a
+            // count with nothing behind it would offer "Remove selected (1)"
+            // that removes nothing.
+            selectedIds={selectedDrafts.map(d => d.id)}
+            onToggleSelect={toggleSelect}
+            onRemoveSelected={() => setRemoveTargets(selectedDrafts)}
+            onRemoveAll={() => setRemoveTargets(others)}
+          />
+        </DialogContent>
+      </Dialog>
 
       {/* Only raised when there is something to lose. Resuming clears the
           wizard, and nothing on screen at Step 1 has been written anywhere
