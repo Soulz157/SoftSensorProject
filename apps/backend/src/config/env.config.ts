@@ -189,4 +189,31 @@ export const env = {
   INFERENCE_WINDOW_TOKEN_TTL_MS: Number(
     process.env.INFERENCE_WINDOW_TOKEN_TTL_MS ?? 2 * 60 * 60 * 1000,
   ),
+
+  // MODEL-SERVE-005-T03. The ground-truth join runs on its OWN sweep, not
+  // inside the scheduler tick — MODEL-SERVE-006-T02's rule is that the tick
+  // inserts windows and reconciles, nothing else. `<= 0` disables, the same
+  // shape as every other sweep in this codebase.
+  //
+  // Slower than the scheduler tick on purpose: truth arrives on a lag
+  // measured in HOURS (InferenceSchedule.truthLagMinutes defaults to a
+  // day), so a faster sweep would re-ask the same sources for rows that
+  // cannot have changed yet.
+  INFERENCE_TRUTH_SWEEP_INTERVAL_MS: Number(
+    process.env.INFERENCE_TRUTH_SWEEP_INTERVAL_MS ?? 15 * 60 * 1000,
+  ),
+  // Windows joined per sweep, across all schedules. Each join is a real
+  // fetch against a source system plus an object read and write, so this
+  // bounds what one pass can cost a historian.
+  INFERENCE_TRUTH_BATCH_SIZE: Number(
+    process.env.INFERENCE_TRUTH_BATCH_SIZE ?? 25,
+  ),
+  // Backoff base after a join that added no new truth. Without it, every
+  // window inside its `truthHorizonHours` would be re-fetched on EVERY
+  // sweep until that horizon elapsed — ~168 round trips per window at the
+  // default horizon — nearly all returning rows already held. Doubles per
+  // idle attempt; the horizon itself is what finally ends re-joining.
+  INFERENCE_TRUTH_RETRY_BACKOFF_MINUTES: Number(
+    process.env.INFERENCE_TRUTH_RETRY_BACKOFF_MINUTES ?? 180,
+  ),
 };

@@ -22,14 +22,33 @@ export function classifyDeployStatus(input: {
   hasEverSucceeded: boolean;
   staleness: 'OK' | 'STALE';
   failing: boolean;
+  /**
+   * Has this schedule produced ANY terminal FAILED window? Required, not
+   * optional-with-a-default: a caller that forgets it would silently get
+   * the old behaviour, which is the bug this field exists to close.
+   */
+  hasFailedWindows: boolean;
 }): DeployStatus {
   if (!input.enabled) return 'stopped';
   if (input.failing) return 'error';
   if (input.staleness === 'STALE') {
-    // Never produced a single window yet — the schedule was just turned
-    // on, not broken. Distinct from the case below: a schedule that WAS
-    // producing and has since gone quiet is a real problem, not a warm-up.
-    return input.hasEverSucceeded ? 'error' : 'initializing';
+    // A schedule that WAS producing and has since gone quiet is a real
+    // problem, not a warm-up.
+    if (input.hasEverSucceeded) return 'error';
+    // Never succeeded. What separates "warming up" from "broken" is not
+    // how LONG it has been quiet but whether it has actually tried and
+    // failed: a warm-up has produced nothing at all yet, while a schedule
+    // whose attempts are coming back FAILED is already failing, however
+    // recently it was enabled.
+    //
+    // `failing` above deliberately needs THREE consecutive failures, which
+    // is the right bar for a mature schedule with history behind it and
+    // the wrong one here — a brand-new schedule reaches three failures
+    // only after three cadences, and until then a completely broken source
+    // was indistinguishable from a healthy warm-up. That gap is what let a
+    // model sit in "initializing" for hours while every window it produced
+    // had already failed.
+    return input.hasFailedWindows ? 'error' : 'initializing';
   }
   return 'running';
 }
@@ -77,6 +96,7 @@ export async function deriveDeployStatuses(
   );
 
   const failingByModel = new Map<string, boolean>();
+  const hasFailedByModel = new Map<string, boolean>();
   await Promise.all(
     enabledIds.map(async (modelId) => {
       const recentTerminal = await prisma.inferenceWindow.findMany({
@@ -89,6 +109,15 @@ export async function deriveDeployStatuses(
         modelId,
         recentTerminal.length >= 3 &&
           recentTerminal.every((w) => w.status === 'FAILED'),
+      );
+      // Free from the query already being made — no extra round trip. Only
+      // consulted for a model that has NEVER succeeded, and for such a
+      // model every terminal window is a FAILED one by definition, so the
+      // three most recent are a sufficient sample: if any window failed at
+      // all, one of these is it.
+      hasFailedByModel.set(
+        modelId,
+        recentTerminal.some((w) => w.status === 'FAILED'),
       );
     }),
   );
@@ -106,6 +135,7 @@ export async function deriveDeployStatuses(
       hasEverSucceeded: lastSucceededAt !== null,
       staleness,
       failing: failingByModel.get(schedule.modelId) ?? false,
+      hasFailedWindows: hasFailedByModel.get(schedule.modelId) ?? false,
     });
   }
 

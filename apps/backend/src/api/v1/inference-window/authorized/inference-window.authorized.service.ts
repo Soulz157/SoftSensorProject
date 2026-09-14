@@ -13,10 +13,16 @@ import {
   windowStartsBetween,
 } from '@/lib/inference-windows';
 import { classifyDeployStatus } from '@/lib/deploy-status';
+import { redactUrls } from '@/lib/redact-urls';
+import { computeLiveError, poolTruthStats } from '@/lib/live-error';
+import { inferenceWindowTruthSeries } from '@/lib/python-preprocess-client';
 import { env } from '@/config/env.config';
 import { ModelServingAuthorizedService } from '../../model-serving/authorized/model-serving.authorized.service';
+import { InferenceTruthSweeperService } from './inference-truth-sweeper.service';
 import type {
   BackfillInferenceWindowsDto,
+  InferenceTruthRangeQueryDto,
+  RejoinInferenceTruthDto,
   InferenceWindowCompleteDto,
   InferenceWindowLogDto,
   InferenceWindowUploadUrlsDto,
@@ -25,6 +31,52 @@ import type {
 
 const METRICS_FILENAME = 'metrics.json';
 const PREDICTIONS_FILENAME = 'predictions.parquet';
+
+/**
+ * MODEL-SERVE-001-T10. The same 500 the training-run read
+ * (`model-run-launch.authorized.service.ts`) and `listWindowsService` both
+ * cap at, but taken from the OPPOSITE end — see `listLogsService`.
+ */
+const WINDOW_LOG_LIMIT = 500;
+
+/** The peek (`models/views`' Console) holds a Model, never a window id. */
+const LATEST_WINDOW = 'latest';
+
+/**
+ * Never a bare `findFirst` here: `InferenceWindow.tokenHash` is the
+ * container's own bearer credential, and an explicit field list is what
+ * keeps it off a client-facing response by construction rather than by
+ * review. Same reason `getRunService` reaches for `omit: { tokenHash }`.
+ */
+/** `ModelVersion.promotionOverride` is `Json?` shaped
+ *  `{actorId, actorName, reason, at}` (T06). Narrow it rather than trusting
+ *  the column, and redact: the reason is operator-authored free text on a
+ *  read boundary. */
+function overrideReasonOf(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null;
+  const reason = (value as { reason?: unknown }).reason;
+  return typeof reason === 'string' ? redactUrls(reason) : null;
+}
+
+const WINDOW_LOG_CONTEXT_SELECT = {
+  id: true,
+  status: true,
+  windowStart: true,
+  windowEnd: true,
+  inputRows: true,
+  missingPct: true,
+  imageDigest: true,
+  // VERIFIED LIVE 2026-09-14 against TM2: 20 of its 50 FAILED windows have a
+  // `containerId` and a `startedAt` while `imageDigest` is STILL NULL. So
+  // imageDigest is not the "did a container run" discriminator the schema
+  // comment reads like — containerId is. Using the wrong one tells an
+  // operator "no container" about 20 windows that had one.
+  containerId: true,
+  failureReason: true,
+  attempts: true,
+  startedAt: true,
+  finishedAt: true,
+} as const;
 
 // Same TTL shape as PREDICTION_JOB_TOKEN_TTL_MS — bounded work.
 const INFERENCE_WINDOW_TOKEN_TTL_MS = env.INFERENCE_WINDOW_TOKEN_TTL_MS;
@@ -43,6 +95,7 @@ export class InferenceWindowAuthorizedService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly descriptor: ModelServingAuthorizedService,
+    private readonly truthSweeper: InferenceTruthSweeperService,
   ) {}
 
   // ── access ───────────────────────────────────────────────────────────────
@@ -260,6 +313,9 @@ export class InferenceWindowAuthorizedService {
         criticalSd: true,
         driftMonitor: true,
         driftThresholdPct: true,
+        truthLagMinutes: true,
+        truthToleranceMinutes: true,
+        truthHorizonHours: true,
       },
     });
     const autoRetrain = dto.autoRetrain ?? existing?.autoRetrain ?? false;
@@ -268,6 +324,15 @@ export class InferenceWindowAuthorizedService {
     const driftMonitor = dto.driftMonitor ?? existing?.driftMonitor ?? false;
     const driftThresholdPct =
       dto.driftThresholdPct ?? existing?.driftThresholdPct ?? 10;
+    // MODEL-SERVE-005-T03, merged the same way and for the same reason: a
+    // partial update flipping one field must not reset the ground-truth
+    // settings to their defaults behind the caller's back.
+    const truthLagMinutes =
+      dto.truthLagMinutes ?? existing?.truthLagMinutes ?? 1440;
+    const truthToleranceMinutes =
+      dto.truthToleranceMinutes ?? existing?.truthToleranceMinutes ?? 30;
+    const truthHorizonHours =
+      dto.truthHorizonHours ?? existing?.truthHorizonHours ?? 168;
     // The DTO's own refine only catches both-in-one-request; a partial
     // update naming just one of the pair against an existing row that
     // would put them out of order must be caught here, against the FINAL
@@ -296,6 +361,9 @@ export class InferenceWindowAuthorizedService {
         criticalSd,
         driftMonitor,
         driftThresholdPct,
+        truthLagMinutes,
+        truthToleranceMinutes,
+        truthHorizonHours,
         createdById: user.id,
       },
       update: {
@@ -309,6 +377,9 @@ export class InferenceWindowAuthorizedService {
         criticalSd,
         driftMonitor,
         driftThresholdPct,
+        truthLagMinutes,
+        truthToleranceMinutes,
+        truthHorizonHours,
       },
     });
 
@@ -438,11 +509,14 @@ export class InferenceWindowAuthorizedService {
           gapCount: 0,
           staleness: 'OK' as const,
           failing: false,
+          lastFailure: null,
+          lastSkipped: null,
           deployStatus: classifyDeployStatus({
             enabled: false,
             hasEverSucceeded: false,
             staleness: 'OK',
             failing: false,
+            hasFailedWindows: false,
           }),
         },
       };
@@ -482,6 +556,32 @@ export class InferenceWindowAuthorizedService {
     const failing =
       recentTerminal.length >= 3 &&
       recentTerminal.every((w) => w.status === 'FAILED');
+    // Distinct from `failing`, and deliberately a much lower bar: this only
+    // matters for a schedule that has never succeeded, where one failed
+    // window is already evidence that it is not merely warming up.
+    const hasFailedWindows = recentTerminal.some((w) => w.status === 'FAILED');
+
+    // MODEL-SERVE-001-T09. TWO separate fields, not "latest window with a
+    // non-null reason" — `failureReason` is set on FAILED *and* SKIPPED,
+    // and a SKIPPED reason (the INFERENCE_MIN_ROWS threshold message) is
+    // NOT an error. Collapsing them would print a threshold message on a
+    // `running` card as though it were a fault — the very "two sources of
+    // truth for one fact" this feature exists to close, recreated here.
+    // `redactUrls` because completeService (this file) stores the infer
+    // container's `str(err)` VERBATIM — the one failureReason writer that
+    // is never sanitized on the way in (see redact-urls.ts's own doc).
+    const [lastFailedWindow, lastSkippedWindow] = await Promise.all([
+      this.prisma.inferenceWindow.findFirst({
+        where: { modelId, status: 'FAILED' },
+        orderBy: { windowStart: 'desc' },
+        select: { windowStart: true, failureReason: true },
+      }),
+      this.prisma.inferenceWindow.findFirst({
+        where: { modelId, status: 'SKIPPED' },
+        orderBy: { windowStart: 'desc' },
+        select: { windowStart: true, failureReason: true },
+      }),
+    ]);
 
     return {
       statusCode: 200,
@@ -495,6 +595,22 @@ export class InferenceWindowAuthorizedService {
         gapCount,
         staleness,
         failing,
+        lastFailure: lastFailedWindow
+          ? {
+              windowStart: lastFailedWindow.windowStart,
+              reason: lastFailedWindow.failureReason
+                ? redactUrls(lastFailedWindow.failureReason)
+                : null,
+            }
+          : null,
+        lastSkipped: lastSkippedWindow
+          ? {
+              windowStart: lastSkippedWindow.windowStart,
+              reason: lastSkippedWindow.failureReason
+                ? redactUrls(lastSkippedWindow.failureReason)
+                : null,
+            }
+          : null,
         // MODEL-SERVE-006-T12. Same classifyDeployStatus every model list/
         // get response now uses (lib/deploy-status.ts) — one state machine,
         // not a second one that could disagree with what the models list
@@ -504,6 +620,7 @@ export class InferenceWindowAuthorizedService {
           hasEverSucceeded: lastSucceeded !== null,
           staleness,
           failing,
+          hasFailedWindows,
         }),
       },
     };
@@ -615,6 +732,34 @@ export class InferenceWindowAuthorizedService {
     };
   }
 
+  /**
+   * MODEL-SERVE-001-T10. One window's container stdout, plus the window's
+   * own facts. Three things here are deliberate and each has cost something
+   * already:
+   *
+   * REDACTED PER LINE, AT THE READ BOUNDARY. `images/trainer/app/train.py`'s
+   * top-level handler passes ONE `str(err)` to two sinks —
+   * `_api.log(str(err), 'error')` and `_api.report_failure(str(err))`.
+   * MODEL-SERVE-001-T09 found that string leaks a presigned URL's
+   * `X-Amz-Signature` (infer.py downloads both the model and the input by
+   * presigned URL, and `requests`' HTTPError embeds the full URL) and
+   * redacted the `failureReason` sink in `getStatusService`. The log sink
+   * was left open, and this endpoint returned `message` raw — against this
+   * ledger's own definition of done: "no result bytes and no presigned URLs
+   * pass through a log." Read-side only, so the stored row keeps full
+   * evidence for server-side logs.
+   *
+   * NEWEST-FIRST, THEN REVERSED — NOT the training read's `asc` + `take`.
+   * `orderBy: 'asc', take: 500` keeps the FIRST 500 lines, which is startup
+   * noise, and drops the tail, which is where a FAILED window's failure
+   * actually is. It also cannot serve the list's peek ("its last lines") at
+   * all. Taking the newest 500 and reversing for display gets both.
+   *
+   * `latest` RESOLVES SERVER-SIDE. `models/views`' Console holds a Model,
+   * not a window id. Resolving it here keeps the peek and the detail tab on
+   * one handler and one shape — the divergence T09 had to close for
+   * deployStatus one screen over, not repeated here.
+   */
   async listLogsService(
     modelId: string,
     windowId: string,
@@ -622,25 +767,357 @@ export class InferenceWindowAuthorizedService {
   ) {
     await this.assertModelAccess(modelId, user);
     const window = await this.prisma.inferenceWindow.findFirst({
-      where: { id: windowId, modelId },
-      select: { id: true },
+      where:
+        windowId === LATEST_WINDOW ? { modelId } : { id: windowId, modelId },
+      orderBy: { windowStart: 'desc' },
+      select: WINDOW_LOG_CONTEXT_SELECT,
     });
     if (!window) {
       throw new AppException({
         statusCode: 404,
-        message: 'Inference window not found',
+        message:
+          windowId === LATEST_WINDOW
+            ? 'This model has no inference windows yet'
+            : 'Inference window not found',
         type: 'ERROR',
       });
     }
-    const logs = await this.prisma.inferenceWindowLog.findMany({
-      where: { windowId },
-      orderBy: { createdAt: 'asc' },
+
+    // One row past the cap is the truncation signal — cheaper than counting
+    // on every read, and the count below only runs when it actually bites.
+    const newestFirst = await this.prisma.inferenceWindowLog.findMany({
+      where: { windowId: window.id },
+      orderBy: { createdAt: 'desc' },
+      take: WINDOW_LOG_LIMIT + 1,
+      select: { id: true, level: true, message: true, createdAt: true },
     });
+    const truncated = newestFirst.length > WINDOW_LOG_LIMIT;
+    const omittedCount = truncated
+      ? (await this.prisma.inferenceWindowLog.count({
+          where: { windowId: window.id },
+        })) - WINDOW_LOG_LIMIT
+      : 0;
+
+    const lines = newestFirst
+      .slice(0, WINDOW_LOG_LIMIT)
+      .reverse()
+      .map((line) => ({ ...line, message: redactUrls(line.message) }));
+
     return {
       statusCode: 200,
       message: 'Window logs',
       type: 'SUCCESS' as const,
-      data: logs,
+      data: {
+        window: {
+          ...window,
+          failureReason: window.failureReason
+            ? redactUrls(window.failureReason)
+            : null,
+        },
+        provenance: await this.windowProvenance(modelId, window.id),
+        lines,
+        truncated,
+        omittedCount,
+      },
+    };
+  }
+
+  /**
+   * MODEL-SERVE-001-T10, the other half of the span the user asked for:
+   * "from the moment Deploy is pressed through to the console output of the
+   * container that scored a window". A container log alone cannot answer
+   * that. Two records precede it and neither is interchangeable with the
+   * window row:
+   *
+   *   1. The schedule's own enable transition — Model.data.deployedAt /
+   *      deployedBy, stamped by `stampDeployed` on the OFF->ON edge ONLY,
+   *      so it is the moment Deploy was pressed and not the last edit.
+   *   2. The promote that preceded it — which version this window is
+   *      pinned to, who promoted it, and the override reason if the r2
+   *      floor was crossed (T06: "an override that left no trace would be
+   *      the same as no floor").
+   *
+   * Read best-effort: a missing schedule stamp or a deleted promoter must
+   * never fail the log read, which is the caller's actual question. Same
+   * soft-read discipline `getDraftRunService` applies to cvFolds.
+   */
+  private async windowProvenance(modelId: string, windowId: string) {
+    const [model, window] = await Promise.all([
+      this.prisma.model.findUnique({
+        where: { id: modelId },
+        select: { data: true },
+      }),
+      this.prisma.inferenceWindow.findUnique({
+        where: { id: windowId },
+        select: {
+          modelVersion: {
+            select: {
+              version: true,
+              stage: true,
+              promotedAt: true,
+              promotionOverride: true,
+              promotedBy: { select: { firstName: true, lastName: true } },
+            },
+          },
+        },
+      }),
+    ]);
+
+    const data = (model?.data ?? {}) as {
+      deployedAt?: unknown;
+      deployedBy?: unknown;
+    };
+    const promoter = window?.modelVersion?.promotedBy;
+
+    return {
+      deployedAt: typeof data.deployedAt === 'string' ? data.deployedAt : null,
+      deployedBy: typeof data.deployedBy === 'string' ? data.deployedBy : null,
+      version: window?.modelVersion?.version ?? null,
+      stage: window?.modelVersion?.stage ?? null,
+      promotedAt: window?.modelVersion?.promotedAt ?? null,
+      promotedBy: promoter
+        ? `${promoter.firstName} ${promoter.lastName}`.trim()
+        : null,
+      // Present only when the promote crossed the r2 floor. Redacted for the
+      // same reason every other free-text field on this response is: the
+      // reason is operator-authored and this is a read boundary.
+      promotionOverrideReason: overrideReasonOf(
+        window?.modelVersion?.promotionOverride,
+      ),
+    };
+  }
+
+  // ── ground truth (MODEL-SERVE-005-T03) ───────────────────────────────────
+
+  /**
+   * Live error for a range, from the joined pairs — plus the coverage that
+   * makes the number readable.
+   *
+   * GROUPED BY VERSION, NEVER POOLED BLIND ACROSS THEM. MODEL-SERVE-006-T07
+   * deliberately allows two windows at one windowStart under two versions
+   * (shadow evaluation), and each version's target comes from its OWN
+   * source run — so two versions in one range can predict DIFFERENT things.
+   * One RMSE over that mixture is a number about nothing. Each group states
+   * its own `targetColumn`, and the top-level `metrics` is filled only when
+   * every joined window in range agrees on one version.
+   *
+   * `metrics` is `null`, never zeros, when nothing has joined — the whole
+   * point of this feature is that "no ground truth yet" and "an error of
+   * zero" must never render the same way.
+   */
+  async getTruthService(
+    modelId: string,
+    query: InferenceTruthRangeQueryDto,
+    user: Auth.UserPayload,
+  ) {
+    await this.assertModelAccess(modelId, user);
+
+    const from = new Date(query.from);
+    const to = new Date(query.to);
+
+    const rows = await this.prisma.inferenceWindowTruth.findMany({
+      where: { modelId, windowStart: { gte: from, lte: to } },
+      orderBy: { windowStart: 'asc' },
+      select: {
+        windowStart: true,
+        modelVersionId: true,
+        targetColumn: true,
+        pairsKey: true,
+        truthRows: true,
+        pairedRows: true,
+        joinedThrough: true,
+        failureReason: true,
+        n: true,
+        sumSe: true,
+        sumAe: true,
+        sumSigned: true,
+        sumActual: true,
+        sumActualSq: true,
+        window: { select: { missingPct: true } },
+      },
+    });
+
+    // Every SUCCEEDED window in range, joined or not — the denominator that
+    // turns "3 joined windows" into a statement about coverage rather than
+    // an unanchored count.
+    const windowsInRange = await this.prisma.inferenceWindow.count({
+      where: {
+        modelId,
+        status: 'SUCCEEDED',
+        windowStart: { gte: from, lte: to },
+      },
+    });
+
+    const joined = rows.filter((r) => r.n > 0);
+    // A row the sweeper wrote because the join FAILED, never because the lab
+    // was quiet. `poolTruthStats` skips these anyway (n = 0); the count
+    // exists so the panel can say which of the two zero states it is in.
+    const failedWindows = rows.filter((r) => r.failureReason !== null).length;
+    const byVersion = new Map<string, typeof rows>();
+    for (const row of joined) {
+      const bucket = byVersion.get(row.modelVersionId) ?? [];
+      bucket.push(row);
+      byVersion.set(row.modelVersionId, bucket);
+    }
+
+    const versions = [...byVersion.entries()].map(
+      ([modelVersionId, group]) => ({
+        modelVersionId,
+        // Non-empty by construction: a bucket is only stored after a push.
+        targetColumn: group[0].targetColumn,
+        metrics: computeLiveError(poolTruthStats(group)),
+        pairedRows: group.reduce((sum, r) => sum + r.pairedRows, 0),
+        windows: group.length,
+      }),
+    );
+
+    // Per-window, NOT a mean. MODEL-SERVE-006-T05's stated reason for
+    // missingPct is telling real drift apart from a sensor that stopped
+    // reporting, and a single averaged number hides the one catastrophic
+    // window that is exactly that signal.
+    const windows = rows.map((row) => ({
+      windowStart: row.windowStart,
+      modelVersionId: row.modelVersionId,
+      targetColumn: row.targetColumn,
+      truthRows: row.truthRows,
+      pairedRows: row.pairedRows,
+      n: row.n,
+      missingPct: row.window?.missingPct ?? null,
+      joinedThrough: row.joinedThrough,
+      // Set only on a row the sweeper wrote because the join FAILED. This is
+      // what separates "the lab has reported nothing yet" (n = 0, no reason)
+      // from "we could not ask" (n = 0, reason) — two states a single zero
+      // would otherwise flatten into one.
+      failureReason: row.failureReason,
+    }));
+    const missingPcts = windows
+      .map((w) => w.missingPct)
+      .filter((v): v is number => typeof v === 'number');
+
+    const keys = joined
+      .map((r) => r.pairsKey)
+      .filter((k): k is string => typeof k === 'string' && k.length > 0);
+
+    let points: Array<{
+      timestamp: string;
+      predicted: number;
+      actual: number;
+      residual: number;
+    }> = [];
+    let truncated = false;
+    if (keys.length > 0) {
+      // A failed object read must not take down the whole panel: the
+      // metrics and coverage above come from Postgres and are still true
+      // and still worth showing without the chart's own points.
+      try {
+        const series = await inferenceWindowTruthSeries({ keys });
+        points = series.points;
+        truncated = series.truncated;
+      } catch (err) {
+        this.log.warn(
+          `Truth series read failed for model ${modelId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+
+    return {
+      statusCode: 200,
+      message: 'Live error',
+      type: 'SUCCESS' as const,
+      data: {
+        points,
+        truncated,
+        // Filled only when the range speaks with ONE voice; otherwise the
+        // caller must read `versions` and say which is which.
+        metrics: versions.length === 1 ? versions[0].metrics : null,
+        mixedVersions: versions.length > 1,
+        versions,
+        // The target any row in range knows about, including rows that
+        // joined NOTHING. `versions` only holds groups with pairs, so a
+        // model still awaiting its first lab sample would otherwise lose the
+        // target label entirely — a fact that is knowable and worth showing
+        // before any truth arrives.
+        targetColumn: rows.find((r) => r.targetColumn)?.targetColumn ?? null,
+        coverage: {
+          windowsInRange,
+          windowsJoined: joined.length,
+          // DISJOINT from windowsFailed, deliberately: a window whose join
+          // failed is not a window waiting on the lab, and counting it in
+          // both would make the two chips contradict each other. Floored at
+          // zero because a failure row can outlive the SUCCEEDED window
+          // count it is subtracted from.
+          windowsAwaitingTruth: Math.max(
+            0,
+            windowsInRange - joined.length - failedWindows,
+          ),
+          // Windows the sweeper could not ask about at all, as distinct from
+          // windows the lab simply has not reported on yet.
+          windowsFailed: failedWindows,
+          truthRows: rows.reduce((sum, r) => sum + r.truthRows, 0),
+          pairedRows: rows.reduce((sum, r) => sum + r.pairedRows, 0),
+          // Max, not mean — see the per-window comment above.
+          maxMissingPct:
+            missingPcts.length > 0 ? Math.max(...missingPcts) : null,
+        },
+        windows,
+      },
+    };
+  }
+
+  /**
+   * Force a re-join over a range, through the SAME sweeper path a scheduled
+   * join uses — no second implementation, the rule MODEL-SERVE-006-T11
+   * applies to backfill.
+   *
+   * Bounded by the same batch size the sweep uses, so a wide range cannot
+   * turn one request into hundreds of historian fetches.
+   */
+  async rejoinTruthService(
+    modelId: string,
+    dto: RejoinInferenceTruthDto,
+    user: Auth.UserPayload,
+  ) {
+    await this.assertModelAccess(modelId, user);
+
+    const windows = await this.prisma.inferenceWindow.findMany({
+      where: {
+        modelId,
+        status: 'SUCCEEDED',
+        predictionsKey: { not: null },
+        windowStart: { gte: new Date(dto.from), lte: new Date(dto.to) },
+      },
+      select: { id: true },
+      orderBy: { windowStart: 'asc' },
+      take: env.INFERENCE_TRUTH_BATCH_SIZE,
+    });
+
+    let rejoined = 0;
+    const failures: string[] = [];
+    for (const window of windows) {
+      try {
+        await this.truthSweeper.joinWindow(window.id);
+        rejoined += 1;
+      } catch (err) {
+        // Reported, not thrown: a caller asking for a range wants to know
+        // what DID join as well as what did not.
+        failures.push(
+          `${window.id}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    return {
+      statusCode: 200,
+      message: 'Ground-truth re-join complete',
+      type: 'SUCCESS' as const,
+      data: {
+        requested: windows.length,
+        rejoined,
+        failed: failures.length,
+        failures,
+      },
     };
   }
 

@@ -28,6 +28,7 @@ three paths cannot disagree about what scaling means.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from typing import Any
 
 from intergrations.object_store import (
@@ -68,6 +69,60 @@ def _as_mapping(response: Any) -> dict[str, Any]:
     would read as reaching into that module's internals for something this
     small and stateless."""
     return response.model_dump() if hasattr(response, "model_dump") else dict(response)
+
+
+def _diagnose_empty_pi_fetch(payload: Mapping[str, Any]) -> str | None:
+    """Why did a PI fetch come back with nothing?
+
+    An empty frame has two completely different causes that used to produce
+    one identical message: the range genuinely holds no samples, or the
+    fetch never reached the historian at all (host unresolvable, credentials
+    refused, timeout). `DataService.fetch` already knows which — it records
+    a per-tag `status` of "ok"/"partial"/"failed" and keeps the first error
+    string for every tag that failed — but `from_pi_response` builds a frame
+    out of the datapoints alone, so by the time the caller saw zero rows
+    that knowledge had been dropped and the caller guessed. It guessed
+    "check the schedule's fetch config and tag selection", which sends
+    someone to audit a config that is fine while the real answer (DNS could
+    not resolve the PI host) sits unread in the response.
+
+    Returns a diagnosis when the SOURCE reported failures, else None —
+    None means the tags really did answer and had nothing to say, which is
+    a legitimate empty window, not an error to dress up.
+    """
+    results = list(payload.get("results") or [])
+    if not results:
+        return None
+
+    failed = [r for r in results if str(r.get("status") or "") == "failed"]
+    if not failed:
+        return None
+
+    # Quoted verbatim, never paraphrased and never pattern-matched into a
+    # category: the connector's own text names the actual failure, and any
+    # guess layered on top would be the very thing this function exists to
+    # remove. De-duplicated because one unreachable host produces the same
+    # sentence once per tag.
+    reasons: list[str] = []
+    for result in failed:
+        reason = str(result.get("error") or "").strip()
+        if reason and reason not in reasons:
+            reasons.append(reason)
+
+    scope = (
+        "every tag"
+        if len(failed) == len(results)
+        else f"{len(failed)} of {len(results)} tags"
+    )
+    if not reasons:
+        return (
+            f"the source reported a failure for {scope} without recording a "
+            "reason"
+        )
+    detail = "; ".join(reasons[:3])
+    if len(reasons) > 3:
+        detail += f"; (+{len(reasons) - 3} more)"
+    return f"the source failed for {scope}: {detail}"
 
 
 def materialize_window(
@@ -112,6 +167,7 @@ def materialize_window(
     window_end_wall = utc_to_wall_clock(request.window_end)
     fetch_start_wall = window_start_wall - required_rows * interval_td
 
+    pi_payload: Mapping[str, Any] | None = None
     if request.pi is not None:
         widened = request.pi.model_copy(
             update={
@@ -125,7 +181,12 @@ def materialize_window(
         response = asyncio.run(
             _pi.fetch(widened, interval=widened.summary_duration or request.interval)
         )
-        frame = from_pi_response(_as_mapping(response))
+        # Kept as a mapping rather than passed straight through: the per-tag
+        # status/error this payload carries is the ONLY record of whether an
+        # empty result means "no samples" or "never reached the historian",
+        # and building the frame discards it.
+        pi_payload = _as_mapping(response)
+        frame = from_pi_response(pi_payload)
     else:
         sql_spec = request.sql
         assert sql_spec is not None  # guaranteed by the request's own validator
@@ -142,10 +203,24 @@ def materialize_window(
         )
 
     if len(frame) == 0:
+        # Two different failures used to share one sentence, and the sentence
+        # described only one of them. A fetch that never reached the
+        # historian is not a tag-selection problem, and telling an operator
+        # to "check the fetch config" while DNS is failing costs them the
+        # afternoon. The source's own error wins whenever it reported one.
+        diagnosis = (
+            _diagnose_empty_pi_fetch(pi_payload) if pi_payload is not None else None
+        )
+        if diagnosis:
+            raise ValueError(
+                "Could not read the source for this window's fetch range "
+                f"[{fetch_start_wall}, {window_end_wall}): {diagnosis}"
+            )
         raise ValueError(
             "The source returned no rows for this window's fetch range "
-            f"[{fetch_start_wall}, {window_end_wall}) — check the "
-            "schedule's fetch config and tag selection."
+            f"[{fetch_start_wall}, {window_end_wall}) — the source answered "
+            "but had no data in that range. Check the tag selection and "
+            "whether the historian actually holds data this far back."
         )
 
     # Feature computation runs on the WIDENED frame (lookback padding

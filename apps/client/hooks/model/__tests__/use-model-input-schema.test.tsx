@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
 import { clearChartRequestCache } from '@/lib/chart-request-cache'
+import { brandModelVersionNumber } from '@/lib/model-version-number'
 import type { ModelInputSchema } from '@/services/model-monitoring'
 
 const inputSchema = vi.fn()
@@ -14,7 +15,7 @@ vi.mock('@/services/model-monitoring', () => ({
 const SCHEMA: ModelInputSchema = {
   modelId: 'model-1',
   versionId: 'version-1',
-  version: 2,
+  version: brandModelVersionNumber(2),
   stage: 'PRODUCTION',
   featureColumns: ['TI-101.PV', 'PI-204.PV'],
   unavailableReason: null,

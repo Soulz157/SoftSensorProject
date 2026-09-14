@@ -44,9 +44,23 @@ export function DriftPanel({ report, loading, unavailableReason }: Props) {
   }
 
   if (!report || report.columns.length === 0) {
+    // MODEL-SERVE-001-T10. Drift is computed over the SAMPLED INPUTS of the
+    // synchronous /predict stream (PredictionLog), so it is empty by
+    // construction for a model that has only ever run on a schedule — the
+    // same absence the Live Predictions chart above states, with the same
+    // cause. The `unavailableReason` rung above is untouched; it is the
+    // precedent this follows.
     return (
-      <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">
-        No sampled predictions in this range to compare.
+      <div className="flex h-32 flex-col items-center justify-center gap-1 px-6 text-center">
+        <p className="text-sm text-muted-foreground">
+          No synchronous /predict traffic in this range to compare against
+          training.
+        </p>
+        <p className="text-xs text-muted-foreground/70">
+          Drift is measured on sampled live request inputs. Scheduled inference
+          does not write them, so a model that only runs on a schedule has
+          nothing to compare here.
+        </p>
       </div>
     )
   }

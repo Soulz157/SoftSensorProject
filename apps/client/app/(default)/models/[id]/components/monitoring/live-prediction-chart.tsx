@@ -24,9 +24,28 @@ interface Props {
  */
 export function LivePredictionChart({ points }: Props) {
   if (points.length === 0) {
+    // MODEL-SERVE-001-T10. This section reads PredictionLog, which ONLY
+    // apps/serving's synchronous /predict path writes. A scheduled window
+    // writes predictions.parquet and an InferenceWindow row instead — two
+    // planes by decision (short_lived_containers_for_scheduled_inference),
+    // not by oversight. So a model that has only ever been scheduled is
+    // empty here BY CONSTRUCTION, and the old flat sentence sent readers
+    // looking for a fault that does not exist. Name the stream, and point
+    // at the sections that DO have data for such a model. It must not read
+    // InferenceWindow to fill itself: a window's input is a different
+    // artifact with a different shape, and merging them would make one
+    // chart claim two provenances.
     return (
-      <div className="flex h-48 items-center justify-center text-sm text-muted-foreground">
-        No sampled predictions in this range yet.
+      <div className="flex h-48 flex-col items-center justify-center gap-1 px-6 text-center">
+        <p className="text-sm text-muted-foreground">
+          No synchronous /predict traffic has been logged for this model in this
+          range.
+        </p>
+        <p className="text-xs text-muted-foreground/70">
+          This chart plots sampled live requests. Scheduled inference does not
+          write here — it writes to the monitoring record, which feeds the
+          Actual vs. Predict and Residual sections above.
+        </p>
       </div>
     )
   }

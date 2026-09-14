@@ -1,4 +1,5 @@
 import { fetchClient } from '@/lib/fetcher'
+import type { ModelVersionNumber } from '@/lib/model-version-number'
 
 /**
  * MODEL-SERVE-005. Sampled synchronous-/predict logging (T01) and the
@@ -66,7 +67,10 @@ export interface DriftReport {
 export interface ModelInputSchema {
   modelId: string
   versionId: string
-  version: number
+  /** MODEL-SERVE-001-T08. Branded — this is the number a caller passes to
+   *  `modelVersionService.promote`, and it must never be typeable as a bare
+   *  literal at the call site. */
+  version: ModelVersionNumber
   stage: 'STAGING' | 'PRODUCTION' | 'ARCHIVED'
   /** Ordered exactly as model.predict expects. Null only alongside a set
    *  `unavailableReason`. */

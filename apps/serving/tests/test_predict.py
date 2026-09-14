@@ -10,6 +10,7 @@ import pytest
 from services.predict import (
     PredictError,
     assert_history_satisfies_target_derivation,
+    check_input_tags,
     required_history_rows,
     rows_to_predictions,
 )
@@ -67,6 +68,61 @@ def test_column_order_is_enforced_regardless_of_request_key_order() -> None:
         _SumModel(), descriptor, [{"b": 10.0, "a": 0.0}]
     )
     assert predictions == pytest.approx([1.0])
+
+
+# ── MODEL-SERVE-002: check_input_tags ──────────────────────────────────────
+#
+# `frame[feature_columns]` in rows_to_predictions silently drops any key a
+# caller sent that isn't a required column — a typo'd or stale tag name
+# never surfaces anywhere. check_input_tags is the pure computation behind
+# the /predict response's `inputTagCheck` field: what did the caller send,
+# and which of it went unused.
+
+
+def test_check_input_tags_flags_an_extra_key_as_unused() -> None:
+    received, unused = check_input_tags([{"a": 1.0, "b": 2.0, "c": 3.0}], ["a", "b"])
+    assert received == ["a", "b", "c"]
+    assert unused == ["c"]
+
+
+def test_check_input_tags_reports_no_unused_when_request_matches_exactly() -> None:
+    received, unused = check_input_tags([{"a": 1.0, "b": 2.0}], ["a", "b"])
+    assert received == ["a", "b"]
+    assert unused == []
+
+
+def test_check_input_tags_preserves_first_seen_order_not_sorted() -> None:
+    # Deliberately NOT alphabetical — "z" arrives before "a" in the request,
+    # and the caller should see it in the order they sent it, not a sorted
+    # rewrite that hides which row a stray key came from.
+    received, unused = check_input_tags([{"z": 1.0, "a": 2.0}], ["a"])
+    assert received == ["z", "a"]
+    assert unused == ["z"]
+
+
+def test_check_input_tags_dedupes_a_repeated_extra_across_rows() -> None:
+    received, unused = check_input_tags(
+        [{"a": 1.0, "c": 9.0}, {"a": 2.0, "c": 9.0}], ["a"]
+    )
+    assert received == ["a", "c"]
+    assert unused == ["c"]
+
+
+def test_check_input_tags_unions_keys_that_only_appear_in_a_later_row() -> None:
+    """One row's extra key does not get lost because an earlier row didn't
+    carry it — check_input_tags looks across the whole request, not just
+    the first row."""
+    received, unused = check_input_tags(
+        [{"a": 1.0}, {"a": 2.0, "d": 5.0}], ["a"]
+    )
+    assert received == ["a", "d"]
+    assert unused == ["d"]
+
+
+def test_check_input_tags_empty_rows_reports_nothing_received() -> None:
+    received, unused = check_input_tags([], ["a", "b"])
+    assert received == []
+    assert unused == []
 
 
 def test_target_history_guard_passes_when_empty_derivation() -> None:

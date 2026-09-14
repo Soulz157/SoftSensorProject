@@ -14,6 +14,7 @@ from services.loader import LoadError
 from services.predict import (
     PredictError,
     assert_history_satisfies_target_derivation,
+    check_input_tags,
     rows_to_predictions,
 )
 
@@ -25,10 +26,24 @@ class PredictRequest(BaseModel):
     rows: list[dict[str, Any]] = Field(..., min_length=1)
 
 
+class InputTagCheck(BaseModel):
+    """What this request sent versus what the model actually used —
+    computed on EVERY call, not a sampled log. `frame[feature_columns]` in
+    `rows_to_predictions` silently projects out anything not a required
+    column; `unusedColumns` is that drop made visible, so a caller can
+    verify their own tag mapping straight off the response they already
+    get back, with no separate log to go check."""
+
+    requiredColumns: list[str]
+    receivedColumns: list[str]
+    unusedColumns: list[str]
+
+
 class PredictResponse(BaseModel):
     predictions: list[float]
     modelId: str
     version: int
+    inputTagCheck: InputTagCheck
 
 
 @router.post("/{model_id}/predict", response_model=PredictResponse)
@@ -85,6 +100,15 @@ async def predict(
             scaled=scaled,
         )
 
+    received, unused = check_input_tags(body.rows, descriptor["featureColumns"])
+
     return PredictResponse(
-        predictions=predictions, modelId=model_id, version=descriptor["version"]
+        predictions=predictions,
+        modelId=model_id,
+        version=descriptor["version"],
+        inputTagCheck=InputTagCheck(
+            requiredColumns=descriptor["featureColumns"],
+            receivedColumns=received,
+            unusedColumns=unused,
+        ),
     )

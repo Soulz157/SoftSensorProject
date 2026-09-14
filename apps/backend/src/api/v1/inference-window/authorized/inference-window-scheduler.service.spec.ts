@@ -381,3 +381,84 @@ describe('InferenceWindowSchedulerService.dispatchOne (MODEL-SERVE-006-T05)', ()
     expect(runner.spawn).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * The claim is global across every model and takes INFERENCE_MAX_CONCURRENCY
+ * rows — 1 by default — so its ORDER decides what the whole system works on
+ * next. Oldest-first made a freshly enabled schedule replay up to 48 hours
+ * of backfill before ever scoring the current hour, which (a) held the
+ * newest SUCCEEDED window in the past and so reported a healthy model as
+ * STALE for the whole drain, and (b) let one model's backlog monopolise the
+ * single slot while every other model's live window waited.
+ */
+describe('InferenceWindowSchedulerService.dispatchDue ordering', () => {
+  function prismaWithPending(rows: Array<{ id: string; windowStart: Date }>) {
+    return buildPrisma({
+      inferenceWindow: {
+        createMany: jest.fn().mockResolvedValue({ count: 0 }),
+        findMany: jest.fn().mockResolvedValue(rows),
+        // dispatchOne re-reads the row and bails when it is not PENDING —
+        // enough to keep this test about the claim, not the dispatch.
+        findUnique: jest.fn().mockResolvedValue(null),
+        update: jest.fn().mockResolvedValue({}),
+      },
+    });
+  }
+
+  it('claims the NEWEST pending window, so live inference beats backfill', async () => {
+    const prisma = prismaWithPending([]);
+    const service = makeService(prisma);
+
+    await service['dispatchDue']();
+
+    expect(prisma.inferenceWindow.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { status: 'PENDING' },
+        orderBy: { windowStart: 'desc' },
+      }),
+    );
+  });
+
+  it('still respects INFERENCE_MAX_CONCURRENCY as the batch bound', async () => {
+    const prisma = prismaWithPending([]);
+    const service = makeService(prisma);
+
+    await service['dispatchDue']();
+
+    expect(prisma.inferenceWindow.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ take: env.INFERENCE_MAX_CONCURRENCY }),
+    );
+  });
+
+  it('dispatches the current hour ahead of a two-day backfill', async () => {
+    // What the ordering is FOR: the row the database would return first
+    // under `desc` is the live one, not the oldest backfill window.
+    const backfill = {
+      id: 'backfill-oldest',
+      windowStart: new Date('2026-09-12T04:00:00.000Z'),
+    };
+    const live = {
+      id: 'live-current',
+      windowStart: new Date('2026-09-14T03:00:00.000Z'),
+    };
+    const ordered = [backfill, live].sort(
+      (a, b) => b.windowStart.getTime() - a.windowStart.getTime(),
+    );
+    const prisma = prismaWithPending(ordered.slice(0, 1));
+    const service = makeService(prisma);
+    const dispatched: string[] = [];
+    jest
+      .spyOn(
+        service as unknown as { dispatchOne: (id: string) => Promise<void> },
+        'dispatchOne',
+      )
+      .mockImplementation((id: string) => {
+        dispatched.push(id);
+        return Promise.resolve();
+      });
+
+    await service['dispatchDue']();
+
+    expect(dispatched).toEqual(['live-current']);
+  });
+});

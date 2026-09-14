@@ -158,11 +158,16 @@ export default function ModelsPage() {
       )
       refreshModels()
       await refetch()
-    } catch {
+    } catch (err) {
+      // The server's own reason — putScheduleService refuses for eight
+      // different causes and this printed one of them for all eight. Same
+      // change as models/[id]/page.tsx's handler, for the same reason.
       toast.error(
-        next === 'running'
-          ? 'Failed to start — the model needs a PRODUCTION version first.'
-          : 'Failed to update deploy status',
+        err instanceof Error && err.message
+          ? err.message
+          : next === 'running'
+            ? 'Failed to start.'
+            : 'Failed to update deploy status',
       )
     }
   }

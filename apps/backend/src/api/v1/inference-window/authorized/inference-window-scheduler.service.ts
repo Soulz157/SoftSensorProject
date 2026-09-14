@@ -190,9 +190,35 @@ export class InferenceWindowSchedulerService
 
   /**
    * Materializes and spawns up to INFERENCE_MAX_CONCURRENCY PENDING
-   * windows, oldest first. Out of band from the tick's own error handling —
+   * windows, NEWEST FIRST. Out of band from the tick's own error handling —
    * a spawn failure marks its OWN row FAILED and must never abort sibling
    * windows in the same batch.
+   *
+   * NEWEST FIRST, NOT OLDEST. This claim is global across every model and
+   * takes INFERENCE_MAX_CONCURRENCY rows (1 by default), so the ordering
+   * decides what the whole system works on next. Oldest-first meant a
+   * freshly enabled schedule spent its entire backfill — up to
+   * INFERENCE_BACKFILL_HORIZON_HOURS of windows, 48 by default, one per
+   * tick — replaying history before it ever scored the CURRENT hour. Two
+   * things followed, both bad:
+   *
+   *   1. `deriveDeployStatuses` measures staleness from the most recent
+   *      SUCCEEDED window. Replaying the oldest windows first leaves that
+   *      maximum sitting in the past, so a perfectly healthy model reports
+   *      STALE for the entire drain — hours of looking broken while
+   *      working correctly.
+   *   2. The claim is not scoped per model, so ONE model's backfill
+   *      monopolised the single slot and every other model's live window
+   *      queued behind it — the same batch-head starvation this ledger
+   *      already had to fix once, in the ground-truth sweeper.
+   *
+   * Newest-first fixes both at once: current-hour windows are the newest
+   * rows in the table for EVERY model, so live inference always wins the
+   * slot and backfill fills in behind it. The trade is that a permanently
+   * saturated queue would leave the oldest backfill windows unclaimed —
+   * accepted deliberately, because in a monitoring system a fresh reading
+   * is worth more than an old one, and a stale-looking healthy model is a
+   * worse failure than a late backfill.
    */
   private async dispatchDue(): Promise<void> {
     if (this.dispatching) return; // one dispatch pass in flight at a time
@@ -200,7 +226,7 @@ export class InferenceWindowSchedulerService
     try {
       const due = await this.prisma.inferenceWindow.findMany({
         where: { status: 'PENDING' },
-        orderBy: { windowStart: 'asc' },
+        orderBy: { windowStart: 'desc' },
         take: env.INFERENCE_MAX_CONCURRENCY,
       });
       for (const window of due) {
@@ -330,7 +356,10 @@ export class InferenceWindowSchedulerService
     });
   }
 
-  private asFetchConfig(value: unknown): {
+  /** Public since MODEL-SERVE-005-T03: the truth sweeper resolves the same
+   *  source from the same stored `fetchConfig`, and must not grow a second
+   *  copy of this mapping to disagree with. */
+  asFetchConfig(value: unknown): {
     intervalTime: string;
     calcType?: string;
     calcBasis?: string;
@@ -365,7 +394,7 @@ export class InferenceWindowSchedulerService
    * tick trusts the stored `sourceId` the same way any other background
    * job trusts a foreign key a request handler already validated.
    */
-  private async resolveSource(
+  async resolveSource(
     sourceId: string,
     fetchConfig: ReturnType<InferenceWindowSchedulerService['asFetchConfig']>,
   ): Promise<{ pi?: Record<string, unknown>; sql?: Record<string, unknown> }> {

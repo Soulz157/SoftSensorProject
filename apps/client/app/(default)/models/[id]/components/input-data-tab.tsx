@@ -84,7 +84,17 @@ export function InputDataTab({ model }: Props) {
               {pointsTruncated && ' · truncated'}
             </>
           ) : (
-            'No sampled requests in range — status columns below show UNKNOWN'
+            // MODEL-SERVE-001-T10. The trained X list below is authoritative
+            // and comes from the model's own feature spec; only the STATUS
+            // columns need traffic, and traffic here means the synchronous
+            // /predict stream (PredictionLog). Scheduled windows do not write
+            // it, so naming the stream is what stops a reader hunting for a
+            // fault in a correctly empty column.
+            <>
+              No synchronous /predict traffic logged in range — scheduled
+              inference does not write this stream, so the status columns below
+              show UNKNOWN
+            </>
           )}
         </div>
         <TimeRangeToggle range={range} onRange={setRange} />

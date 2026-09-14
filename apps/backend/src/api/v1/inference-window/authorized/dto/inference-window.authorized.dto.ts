@@ -29,6 +29,15 @@ export const PutInferenceScheduleSchema = z
     criticalSd: z.number().positive().optional(),
     driftMonitor: z.boolean().optional(),
     driftThresholdPct: z.number().positive().max(100).optional(),
+    // MODEL-SERVE-005-T03. The ground-truth half of the same lag trade.
+    // `truthLagMinutes` is deliberately a much larger number than
+    // `lagMinutes` above — feature freshness and lab latency are different
+    // quantities, which is the distinction MODEL-SERVE-006-T04 drew.
+    // Positive, never zero: a zero truth lag would join a window the
+    // instant it closed, before any lab result could exist.
+    truthLagMinutes: z.number().int().positive().max(43200).optional(),
+    truthToleranceMinutes: z.number().int().positive().max(1440).optional(),
+    truthHorizonHours: z.number().int().positive().max(8760).optional(),
   })
   .strict()
   .refine(
@@ -61,6 +70,46 @@ export const BackfillInferenceWindowsSchema = z
 
 export class BackfillInferenceWindowsDto extends createZodDto(
   BackfillInferenceWindowsSchema,
+) {}
+
+/**
+ * MODEL-SERVE-005-T03. The live-error read's own range — same shape
+ * `PredictionLogRangeQuerySchema` already uses for this page's other two
+ * reads, so the Monitoring tab speaks one range vocabulary throughout.
+ */
+export const InferenceTruthRangeQuerySchema = z
+  .object({
+    from: z.string().datetime(),
+    to: z.string().datetime(),
+  })
+  .strict()
+  .refine((dto) => new Date(dto.from) <= new Date(dto.to), {
+    message: '`from` must be before or equal to `to`.',
+  });
+
+export class InferenceTruthRangeQueryDto extends createZodDto(
+  InferenceTruthRangeQuerySchema,
+) {}
+
+/**
+ * MODEL-SERVE-005-T03. Force a re-join over a range — the same range shape,
+ * driving the same sweeper code path a scheduled join uses. There is no
+ * second implementation for a human-triggered join, for the reason
+ * MODEL-SERVE-006-T11 gives about backfill: a second path is a second set
+ * of bugs, exercised only during incidents.
+ */
+export const RejoinInferenceTruthSchema = z
+  .object({
+    from: z.string().datetime(),
+    to: z.string().datetime(),
+  })
+  .strict()
+  .refine((dto) => new Date(dto.to) > new Date(dto.from), {
+    message: '`to` must be after `from`.',
+  });
+
+export class RejoinInferenceTruthDto extends createZodDto(
+  RejoinInferenceTruthSchema,
 ) {}
 
 /** MODEL-SERVE-006. The infer-mode container's own terminal report —

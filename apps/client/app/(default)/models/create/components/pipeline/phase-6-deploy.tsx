@@ -22,6 +22,7 @@ import {
   mpTrainingResultAtom,
 } from '@/store/model-pipeline'
 import { useModelCommit } from '@/hooks/model/use-model-commit'
+import type { ModelVersionNumber } from '@/lib/model-version-number'
 import {
   cvScoringPhaseOf,
   useDraftRunEvaluation,
@@ -110,8 +111,9 @@ export function Phase6Deploy({ nav }: Props) {
   const handleSave = async (deploy: boolean) => {
     setBusy(deploy ? 'deploy' : 'save')
     let modelId: string | null
+    let version: ModelVersionNumber | null
     try {
-      modelId = await commit()
+      ;({ modelId, version } = await commit())
     } catch (err) {
       // MODEL-FLOW-007. `saveDraftService` returns a specific reason (409
       // already saved, 422 no successful run, 400 name collision) — surface
@@ -130,16 +132,23 @@ export function Phase6Deploy({ nav }: Props) {
     if (deploy) {
       try {
         if (!modelId) throw new Error('No model id returned from save')
-        // MODEL-SERVE-006-T12. Create mode always mints version 1 at Save
-        // Model — promote it before the schedule can be enabled (the
-        // schedule refuses with no PRODUCTION version). Edit mode changes
-        // no version, so it has nothing new to promote; it enables the
+        // MODEL-SERVE-006-T12/MODEL-SERVE-001-T08. Create mode's own save
+        // just minted a version — promote THAT number (never a literal;
+        // MODEL-SERVE-004-T04's retrain path mints max(version)+1, so "Save
+        // Model always mints version 1" was never a fact this call could
+        // lean on, only true incidentally for the mode this branch is
+        // gated to) before the schedule can be enabled (the schedule
+        // refuses with no PRODUCTION version). Edit mode changes no
+        // version, so it has nothing new to promote; it enables the
         // schedule against whatever is already PRODUCTION, if anything is.
         // `promote` is idempotent for an already-PRODUCTION version (the
         // backend returns success either way), so this never needs an
         // "already deployed" branch of its own.
         if (mode !== 'edit') {
-          await modelVersionService.promote(modelId, 1)
+          if (!version) {
+            throw new Error('No version returned from save — cannot deploy.')
+          }
+          await modelVersionService.promote(modelId, version)
         }
         await inferenceWindowService.putSchedule(modelId, {
           enabled: true,
@@ -150,9 +159,17 @@ export function Phase6Deploy({ nav }: Props) {
           driftThresholdPct,
         })
         toast.success(`${savedLabel} — deploying`)
-      } catch {
+      } catch (err) {
+        // The save itself DID succeed, so the framing stays "saved, but not
+        // deployed" — telling someone the whole thing failed invites a
+        // duplicate save. What changes is that the reason now travels with
+        // it. This catch swallowing the promote endpoint's r2-floor refusal
+        // is why models sat in STAGING with no way forward and no clue why.
+        const reason = err instanceof Error && err.message ? err.message : null
         toast.warning(
-          `${savedLabel}, but deployment could not be started. Start it from the models list.`,
+          `${savedLabel}, but deployment could not be started.${
+            reason ? ` ${reason}` : ''
+          } You can promote and start it from the model's page.`,
         )
       }
     } else {

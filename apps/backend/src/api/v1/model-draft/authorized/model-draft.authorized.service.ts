@@ -675,7 +675,7 @@ export class ModelDraftAuthorizedService {
         // `@/lib/model-version-from-run` so a retrain builds the IDENTICAL
         // row with only `version` differing (max+1 there, 1 here). Behaviour
         // unchanged — same fields, same values, same STAGING default.
-        await tx.modelVersion.create({
+        const version = await tx.modelVersion.create({
           data: buildModelVersionData({
             modelId: created.id,
             version: 1,
@@ -686,14 +686,26 @@ export class ModelDraftAuthorizedService {
           }),
         });
 
-        return created;
+        return { model: created, version };
       });
 
       return {
         statusCode: 201,
         message: 'Model saved successfully',
         type: 'SUCCESS' as const,
-        data: model,
+        // MODEL-SERVE-001-T08. The wizard's own Save & Deploy needs THIS
+        // save's version number to promote it — never a literal `1`, which
+        // was only ever correct because this path mints version 1 today,
+        // not because promote's contract guarantees it (MODEL-SERVE-004-T04
+        // mints max(version)+1 for a retrain). Additive alongside the
+        // existing `Model` fields, never replacing them.
+        data: {
+          ...model.model,
+          modelVersion: {
+            id: model.version.id,
+            version: model.version.version,
+          },
+        },
       };
     } catch (err) {
       if (this.isUniqueViolation(err)) {

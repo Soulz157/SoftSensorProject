@@ -5,6 +5,7 @@ import { useAtom, useAtomValue } from 'jotai'
 import { updateModel } from '@/services/model'
 import { modelDraftService } from '@/services/model-draft'
 import { buildModelConfig } from '@/lib/model-config'
+import type { ModelVersionNumber } from '@/lib/model-version-number'
 import {
   mpNameAtom,
   mpDescriptionAtom,
@@ -22,8 +23,18 @@ import {
   mpTrainTestSplitAtom,
   mpSelectedMetricsAtom,
   mpCreatedModelIdAtom,
+  mpCreatedModelVersionAtom,
   mpServerDraftIdAtom,
 } from '@/store/model-pipeline'
+
+/** What Save Model actually produced — `version` is the number THIS commit
+ *  minted (or, for a re-invocation within the same visit, the one an
+ *  earlier commit minted), never a guess. Null in edit mode (no version
+ *  changes) and null if `modelId` is null (commit never ran). */
+export interface ModelCommitResult {
+  modelId: string | null
+  version: ModelVersionNumber | null
+}
 
 /**
  * Single persistence path for the wizard, shared by Phase-6 "Save Model" /
@@ -41,13 +52,17 @@ import {
  *   within the same wizard visit (defensive — both Save buttons already
  *   disable each other while a save is in flight and navigate away on
  *   success, so this should not be reachable in normal use).
- * Returns the persisted model id, or throws on failure (see phase-6-deploy's
- * own catch for how that is surfaced).
+ * Returns the persisted model id AND version (MODEL-SERVE-001-T08 — Save &
+ * Deploy promotes the version THIS save minted, never a literal), or throws
+ * on failure (see phase-6-deploy's own catch for how that is surfaced).
  */
-export function useModelCommit(): () => Promise<string | null> {
+export function useModelCommit(): () => Promise<ModelCommitResult> {
   const mode = useAtomValue(mpModeAtom)
   const editModelId = useAtomValue(mpEditModelIdAtom)
   const [createdModelId, setCreatedModelId] = useAtom(mpCreatedModelIdAtom)
+  const [createdModelVersion, setCreatedModelVersion] = useAtom(
+    mpCreatedModelVersionAtom,
+  )
   const draftId = useAtomValue(mpServerDraftIdAtom)
   const name = useAtomValue(mpNameAtom)
   const description = useAtomValue(mpDescriptionAtom)
@@ -63,7 +78,7 @@ export function useModelCommit(): () => Promise<string | null> {
   const trainTestSplit = useAtomValue(mpTrainTestSplitAtom)
   const selectedMetrics = useAtomValue(mpSelectedMetricsAtom)
 
-  return useCallback(async (): Promise<string | null> => {
+  return useCallback(async (): Promise<ModelCommitResult> => {
     if (mode === 'edit') {
       const config = buildModelConfig({
         description,
@@ -84,10 +99,16 @@ export function useModelCommit(): () => Promise<string | null> {
         datasetId: dataset?.id ?? null,
         config,
       })
-      return editModelId
+      // Edit mode changes no version — nothing to promote, ever.
+      return { modelId: editModelId, version: null }
     }
 
-    if (createdModelId) return createdModelId
+    // Re-invocation within the same wizard visit: carry the SAME version
+    // forward rather than yielding null, or a second Save & Deploy click
+    // would silently stop promoting anything.
+    if (createdModelId) {
+      return { modelId: createdModelId, version: createdModelVersion }
+    }
 
     if (!draftId) {
       throw new Error('No active model draft to save — start over from Step 1.')
@@ -99,11 +120,13 @@ export function useModelCommit(): () => Promise<string | null> {
       description: description || undefined,
     })
     setCreatedModelId(res.data.id)
-    return res.data.id
+    setCreatedModelVersion(res.data.modelVersion.version)
+    return { modelId: res.data.id, version: res.data.modelVersion.version }
   }, [
     mode,
     editModelId,
     createdModelId,
+    createdModelVersion,
     draftId,
     name,
     nodeId,
@@ -119,5 +142,6 @@ export function useModelCommit(): () => Promise<string | null> {
     selectedMetrics,
     targetVariables,
     setCreatedModelId,
+    setCreatedModelVersion,
   ])
 }

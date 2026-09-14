@@ -15,7 +15,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Table,
@@ -28,6 +27,7 @@ import {
 import {
   Activity,
   ArrowLeft,
+  ArrowUpCircle,
   BarChart3,
   Box,
   CheckCircle2,
@@ -61,7 +61,11 @@ import { ModelRetrainDialog } from './components/model-retrain-dialog'
 import { RetrainProgress } from './components/retrain-progress'
 import { InputDataTab } from './components/input-data-tab'
 import { ModelMonitoringTab } from './components/monitoring/model-monitoring-tab'
+import { WindowLogsTab } from './components/window-logs-tab'
 import { useModelRetrain } from '@/hooks/model/use-model-retrain'
+import { useModelPromote } from '@/hooks/model/use-model-promote'
+import { useModelInputSchema } from '@/hooks/model/use-model-input-schema'
+import { useInferenceStatus } from '@/hooks/model/use-inference-status'
 import LoadingModelPage from './loading'
 import ErrorModelPage from './error'
 
@@ -116,12 +120,6 @@ const PROD_CONFIG = {
   },
 } as const
 
-const LOG_CLS = {
-  info: 'text-blue-400',
-  warn: 'text-amber-400',
-  error: 'text-red-400',
-} as const
-
 export default function ModelDetailPage({
   params,
 }: {
@@ -141,13 +139,52 @@ export default function ModelDetailPage({
   const refresh = () => setVersion(v => v + 1)
   const retrain = useModelRetrain({ model, onUpdated: refresh })
   const refreshModels = useRefreshModels()
+  const [overrideReason, setOverrideReason] = useState('')
 
   /**
-   * MODEL-SERVE-006-T12. deployStatus is DERIVED now — this toggle changes
-   * what actually drives it (the model's InferenceSchedule), not the
-   * status label itself. "Stop" disables the schedule; "Start" enables it,
-   * which requires a PRODUCTION version to exist (the backend refuses
-   * otherwise, surfaced here as the existing generic failure toast).
+   * MODEL-SERVE-001-T04/T06. Promotion is the step between a saved model and
+   * a deployable one, and until now the ONLY place in the client that could
+   * take it was the create wizard's final screen — so a model whose deploy
+   * failed there (or that was saved without deploying) had no way forward at
+   * all. `input-schema` already resolves PRODUCTION first and falls back to
+   * the newest version, so the stage it reports is exactly what decides
+   * whether there is anything to promote.
+   */
+  const { schema: versionSchema } = useModelInputSchema(model?.id ?? null)
+  const promote = useModelPromote(() => {
+    setOverrideReason('')
+    refresh()
+    refreshModels()
+  })
+  const canPromote = !!versionSchema && versionSchema.stage !== 'PRODUCTION'
+
+  /**
+   * MODEL-SERVE-001-T09. The word AND its reason, from one payload — never
+   * a second state machine. `status` is null only until the first read
+   * resolves (or the model has no id yet); `model.data?.deployStatus`
+   * below is the fallback for that window alone, same classifier, an
+   * older fetch.
+   */
+  const { status: inferenceStatus, refetch: refetchInferenceStatus } =
+    useInferenceStatus(model?.id ?? null)
+  const deployStatusReady = inferenceStatus !== null
+
+  /**
+   * MODEL-SERVE-006-T12/MODEL-SERVE-001-T09. deployStatus is DERIVED now —
+   * this toggle changes what actually drives it (the model's
+   * InferenceSchedule), not the status label itself. "Stop" disables the
+   * schedule; "Start" enables it, which requires a PRODUCTION version to
+   * exist (the backend refuses otherwise, surfaced here as the existing
+   * generic failure toast).
+   *
+   * NO optimistic `deployStatus` write here anymore — it used to assert
+   * `running` right where the classifier would actually say
+   * `initializing` (a freshly enabled schedule has no windows yet BY
+   * CONSTRUCTION), a second source of truth disagreeing with the first.
+   * ONE refetch after the mutation resolves proves it landed; it does not
+   * and cannot prove the source works, which the card's own wording says
+   * instead of a guess. `refreshModels()` stays — the sidebar dot, Alerts
+   * badge, and models/views list all read the same `useAllModels` atoms.
    */
   async function handleToggleDeploy(next: 'running' | 'stopped') {
     if (!model) return
@@ -157,19 +194,25 @@ export default function ModelDetailPage({
         enabled: next === 'running',
       })
       refreshModels()
-      setModel(prev =>
-        prev?.data
-          ? { ...prev, data: { ...prev.data, deployStatus: next } }
-          : prev,
-      )
+      refresh()
+      refetchInferenceStatus()
       toast.success(
         next === 'running' ? `${model.name} starting` : `${model.name} stopped`,
       )
-    } catch {
+    } catch (err) {
+      // The server's OWN reason, not a guess. putScheduleService refuses for
+      // eight distinct causes (no PRODUCTION version, a feature derived from
+      // the target, a scaled target, no feature columns, a missing dataset,
+      // an ambiguous or foreign sourceId, no recorded fetch config) and
+      // `fetchClient` already carries each message verbatim. Printing one of
+      // them for all eight sent people looking for a version problem they
+      // did not have.
       toast.error(
-        next === 'running'
-          ? 'Failed to start — the model needs a PRODUCTION version first.'
-          : 'Failed to update deploy status',
+        err instanceof Error && err.message
+          ? err.message
+          : next === 'running'
+            ? 'Failed to start.'
+            : 'Failed to update deploy status',
       )
     } finally {
       setIsToggling(false)
@@ -217,7 +260,12 @@ export default function ModelDetailPage({
     return <ErrorModelPage />
   }
 
-  const deployKey = (model.data?.deployStatus ??
+  // MODEL-SERVE-001-T09. `inferenceStatus.deployStatus` when it has
+  // resolved — the SAME classifyDeployStatus every read of this model
+  // shares — falling back to the model's own last-fetched value only for
+  // the brief window before the first status read lands.
+  const deployKey = (inferenceStatus?.deployStatus ??
+    model.data?.deployStatus ??
     'stopped') as keyof typeof DEPLOY_CONFIG
   const prodKey = effectiveProdStatus(model)
   const monitoringDisabled = deployKey === 'stopped' || deployKey === 'error'
@@ -225,13 +273,14 @@ export default function ModelDetailPage({
   const prod = PROD_CONFIG[prodKey]
   const DeployIcon = deploy.icon
   const ProdIcon = prod.icon
+  const lastFailure = inferenceStatus?.lastFailure ?? null
+  const lastSkipped = inferenceStatus?.lastSkipped ?? null
 
   const nodeName = model.nodes
     ? ((model.nodes.data as { name?: string }).name ?? '—')
     : '—'
   const plantName = model.nodes?.plan?.name ?? '—'
 
-  const logs = [...(model.data?.logs ?? [])].reverse()
   const editHistory = [...(model.data?.editHistory ?? [])].reverse()
 
   return (
@@ -302,12 +351,42 @@ export default function ModelDetailPage({
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Shown only while a promotable version exists. A model with no
+                versions at all 404s on input-schema, leaving `schema` null —
+                no button, and Start's own message says what to do instead.
+                Deliberately NOT folded into Start: promotion changes what is
+                in production, which is not a side effect anyone should get
+                from a button labelled "Start". */}
+            {canPromote && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5"
+                disabled={promote.busy}
+                onClick={() =>
+                  void promote.promote(model.id, versionSchema.version)
+                }
+              >
+                <ArrowUpCircle className="h-4 w-4" />
+                Promote v{versionSchema.version}
+              </Button>
+            )}
             {deployKey === 'running' || deployKey === 'initializing' ? (
               <Button
                 variant="outline"
                 size="sm"
                 className="gap-1.5"
-                disabled={isToggling || deployKey === 'initializing'}
+                // MODEL-SERVE-001-T09. `!deployStatusReady` too — before the
+                // first status read resolves, `deployKey` is only the
+                // model's stale last-fetched value, and flipping this
+                // button's disabled state out from under the cursor the
+                // instant the real read lands is worse than a brief
+                // disable.
+                disabled={
+                  isToggling ||
+                  !deployStatusReady ||
+                  deployKey === 'initializing'
+                }
                 onClick={() => setConfirmDeploy('stopped')}
               >
                 <StopCircle className="h-4 w-4" />
@@ -317,7 +396,7 @@ export default function ModelDetailPage({
               <Button
                 size="sm"
                 className="gap-1.5"
-                disabled={isToggling}
+                disabled={isToggling || !deployStatusReady}
                 onClick={() => setConfirmDeploy('running')}
               >
                 <Play className="h-4 w-4" />
@@ -385,6 +464,42 @@ export default function ModelDetailPage({
                 <DeployIcon className="h-3.5 w-3.5" />
                 {deploy.label}
               </div>
+              {/* MODEL-SERVE-001-T09. The word alone cost a real debugging
+                  session hours — `error`/`initializing` are both unreadable
+                  without a reason beside them. Never a second verdict: this
+                  only DESCRIBES the word `deployKey` already carries. */}
+              {deployKey === 'error' && lastFailure && (
+                <p
+                  className="mt-2 line-clamp-2 text-xs text-muted-foreground"
+                  title={lastFailure.reason ?? undefined}
+                >
+                  {lastFailure.reason ?? 'Failed'} ·{' '}
+                  {new Date(lastFailure.windowStart).toLocaleString(undefined, {
+                    month: 'short',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
+                </p>
+              )}
+              {deployKey === 'initializing' && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  No windows yet — first run within{' '}
+                  {inferenceStatus?.cadenceMinutes ?? 60} min
+                </p>
+              )}
+              {/* A SKIPPED window is a threshold message, NOT a fault — kept
+                  visually distinct (muted, no error styling) so it is never
+                  mistaken for one. */}
+              {(deployKey === 'running' || deployKey === 'stopped') &&
+                lastSkipped && (
+                  <p
+                    className="mt-2 line-clamp-2 text-xs text-muted-foreground/70"
+                    title={lastSkipped.reason ?? undefined}
+                  >
+                    Last skipped: {lastSkipped.reason ?? '—'}
+                  </p>
+                )}
             </CardContent>
           </Card>
 
@@ -496,11 +611,11 @@ export default function ModelDetailPage({
               >
                 <Terminal className="h-4 w-4 shrink-0" />
                 <span>Logs</span>
-                {logs.length > 0 && (
-                  <span className="ml-1 flex h-4 items-center justify-center rounded-full bg-muted-foreground/20 px-2 text-[10px] font-semibold tabular-nums text-foreground">
-                    {logs.length}
-                  </span>
-                )}
+                {/* MODEL-SERVE-001-T10. The old count badge read
+                    `model.data.logs.length`, which is 0 for every model, so
+                    it never rendered. A real count would mean fetching every
+                    window's lines just to label a tab — the unbounded read
+                    this task exists to avoid. */}
               </TabsTrigger>
             </TabsList>
           </div>
@@ -567,44 +682,12 @@ export default function ModelDetailPage({
           </TabsContent>
 
           {/* ── Logs ── */}
+          {/* MODEL-SERVE-001-T10. Was `model.data.logs`, a JSON array that
+              is initialized [] and whose only writer has no client caller —
+              permanently empty on every model. Now the container's own
+              stdout, per inference window. */}
           <TabsContent value="logs" className="mt-4">
-            <Card className="border-border bg-card">
-              <ScrollArea className="h-96 rounded-lg">
-                {logs.length === 0 ? (
-                  <div className="flex h-96 items-center justify-center text-sm text-muted-foreground">
-                    No log entries yet
-                  </div>
-                ) : (
-                  <div className="divide-y divide-border/40">
-                    {logs.map((entry, i) => (
-                      <div
-                        key={i}
-                        className={cn(
-                          'flex items-start gap-3 px-4 py-2.5 hover:bg-muted/30',
-                          entry.level === 'error' &&
-                            'border-l-2 border-red-500/50 pl-3',
-                        )}
-                      >
-                        <span className="mt-0.5 min-w-24 shrink-0 font-mono text-[11px] text-muted-foreground/60">
-                          {new Date(entry.timestamp).toLocaleTimeString()}
-                        </span>
-                        <span
-                          className={cn(
-                            'w-12 shrink-0 font-mono text-[11px] font-semibold uppercase',
-                            LOG_CLS[entry.level],
-                          )}
-                        >
-                          {entry.level}
-                        </span>
-                        <span className="break-all font-mono text-[11px] text-foreground/80">
-                          {entry.message}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </ScrollArea>
-            </Card>
+            <WindowLogsTab modelId={model.id} />
           </TabsContent>
         </Tabs>
       </div>
@@ -657,6 +740,60 @@ export default function ModelDetailPage({
               }}
             >
               {confirmDeploy === 'running' ? 'Start' : 'Stop'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* MODEL-SERVE-001-T06. Opened only by a 422 from the promote
+          endpoint, and it quotes that refusal VERBATIM rather than
+          paraphrasing it — the same 422 also covers a missing artifact and a
+          changed checksum, which no reason can override, and only the
+          server's own wording tells those apart. */}
+      <AlertDialog
+        open={promote.overridePrompt !== null}
+        onOpenChange={open => {
+          if (!open) {
+            promote.dismissOverride()
+            setOverrideReason('')
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Promote anyway?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-3">
+                <p className="rounded-md border border-border bg-muted/50 px-3 py-2 text-sm text-foreground">
+                  {promote.overridePrompt}
+                </p>
+                <p>
+                  Promoting past this check is recorded against your name with
+                  the reason you give below.
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <textarea
+            value={overrideReason}
+            onChange={e => setOverrideReason(e.target.value)}
+            rows={3}
+            placeholder="Why should this version go to production anyway?"
+            className="w-full resize-none rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+          />
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={!overrideReason.trim() || promote.busy}
+              onClick={e => {
+                // The dialog must stay open if the retry is refused again
+                // (an artifact refusal cannot be overridden), so the default
+                // close-on-action is suppressed and the hook decides.
+                e.preventDefault()
+                void promote.confirmOverride(overrideReason)
+              }}
+            >
+              Promote
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -875,6 +875,130 @@ class InferenceWindowMaterializeResponse(BaseModel):
     checksum: str
 
 
+class InferenceWindowTruthJoinRequest(BaseModel):
+    """MODEL-SERVE-005-T03. Re-fetch ONE window's TARGET tag on its own,
+    much longer lag and join it to that window's stored predictions.
+
+    The same `pi | sql` fork `InferenceWindowMaterializeRequest` already
+    carries, for the same reason: this side holds the only source
+    credentials in the call. What differs is everything about WHAT is
+    fetched — one column, not the feature set; no recipe replay (the target
+    is a base tag, so `apply_features` and `max_replay_lookback` padding do
+    not apply); and the summary settings are NOT the schedule's own.
+
+    THE SUMMARY SETTINGS ARE OVERRIDDEN, NOT INHERITED — this is the single
+    correctness rule of this endpoint. PI holds a sparse `.lab` tag's last
+    value between samples, so the schedule's `TimeWeighted`/`Average`
+    fetchConfig returns a plausible number for EVERY interval, including
+    every interval in which no lab measurement was ever taken. Joining
+    against that would publish a confident R2 computed against a held
+    value, with nothing anywhere to point at. So the PI branch establishes
+    EVENT PRESENCE first (an `EventWeighted`/`Count` probe) and keeps only
+    intervals that actually carry a lab event.
+
+    `tolerance_seconds` is how near a lab sample must fall to a prediction
+    timestamp to pair with it — the server-side twin of the `toleranceMs`
+    `apps/client/lib/lab-ingestion.ts`'s `alignLabToPredictions` already
+    applies, so both surfaces mean one thing by "aligned".
+
+    NO `target_key` FIELD, same as the materialize request one entity over:
+    `inference/` has exactly one writer and one key-builder, and this
+    endpoint builds `truth.parquet`'s key from `model_id`/`model_version_id`
+    /`dt`/`hour` itself.
+    """
+
+    predictions_key: str
+    target_column: str = Field(..., examples=["S204FBP.lab"])
+    model_id: str
+    model_version_id: str
+    dt: str = Field(..., examples=["2026-09-14"])
+    hour: str = Field(..., examples=["08"])
+    window_start: str = Field(..., examples=["2026-09-14T08:00:00.000Z"])
+    window_end: str = Field(..., examples=["2026-09-14T09:00:00.000Z"])
+    tolerance_seconds: int = Field(..., gt=0, examples=[1800])
+    pi: Optional[PIFetchRequest] = None
+    sql: Optional[SqlMaterializeSpec] = None
+
+    @model_validator(mode="after")
+    def exactly_one_source(self) -> "InferenceWindowTruthJoinRequest":
+        if (self.pi is None) == (self.sql is None):
+            raise ValueError(
+                "Provide exactly one of 'pi' or 'sql'. A truth join with both "
+                "is ambiguous, and one with neither has nothing to read."
+            )
+        return self
+
+
+class InferenceWindowTruthJoinResponse(BaseModel):
+    """SUMS, never finished metrics. NestJS computes r2/rmse/mae/sd from
+    these (`lib/live-error.ts`), exactly as MODEL-SERVE-005-T01 keeps every
+    aggregate on the NestJS side and lets this service see only rows.
+
+    Sufficient statistics rather than a per-window metric because a window
+    typically carries ZERO lab samples and occasionally one: a per-window
+    RMSE over one sample is a single residual wearing a metric's name.
+    Pooled across windows these give an EXACT rolling metric, never an
+    average of averages.
+
+    Sign convention: `residual = predicted - actual`, matching
+    `apps/client/lib/model-evaluation.ts`'s `computeMetrics` exactly, so
+    Monitoring and Evaluation can never report opposite signs.
+    """
+
+    #: None when nothing paired — no object is written for an empty join,
+    #: and the caller must record "no error", never an error of zero.
+    object_key: Optional[str] = None
+    checksum: Optional[str] = None
+    #: Lab samples that survived the event-presence/Bad-status filters in
+    #: the fetch range. Zero here means the lab has not reported yet.
+    truth_rows: int
+    #: Rows in the window's own predictions.parquet.
+    prediction_rows: int
+    #: Lab samples that found a prediction inside `tolerance_seconds`.
+    #: `truth_rows > 0` with `paired_rows == 0` is a real and different
+    #: state: truth arrived, but none of it lands near a scored row.
+    paired_rows: int
+    n: int
+    sum_se: float
+    sum_ae: float
+    sum_signed: float
+    sum_actual: float
+    sum_actual_sq: float
+
+
+class InferenceWindowTruthSeriesRequest(BaseModel):
+    """MODEL-SERVE-005-T03, read side. The joined pairs for a set of
+    windows, for the Monitoring tab's Actual-vs-Predict and Residual charts.
+
+    TAKES EXPLICIT KEYS, unlike `PredictionLogSeriesRequest`, which walks
+    hour partitions with `list_object_keys`. The difference is deliberate
+    and structural: a sampled prediction log writes a uuid-named object per
+    request, so only a listing can find them, whereas every truth object is
+    already indexed by an `InferenceWindowTruth.pairsKey` column NestJS has
+    in hand. Listing here would re-derive, less reliably, something the
+    database already knows.
+    """
+
+    keys: list[str] = Field(..., min_length=1, max_length=2000)
+    #: Rows returned before truncation — a chart cap, not a retention limit,
+    #: the same meaning PREDICTION_LOG_SERIES_CAP has one entity over.
+    limit: int = Field(5000, ge=1, le=20000)
+
+
+class InferenceWindowTruthPoint(BaseModel):
+    timestamp: str
+    predicted: float
+    actual: float
+    residual: float
+
+
+class InferenceWindowTruthSeriesResponse(BaseModel):
+    points: list[InferenceWindowTruthPoint]
+    #: True when `limit` cut the series — stated rather than silently
+    #: returning a shorter chart that looks like a quiet plant.
+    truncated: bool
+
+
 class ResplitHoldoutRequest(BaseModel):
     """Re-split an EXISTING, PRISTINE (never-split) BRONZE against a holdout
     window, without re-fetching from the source.

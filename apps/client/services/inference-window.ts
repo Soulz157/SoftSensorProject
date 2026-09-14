@@ -32,6 +32,14 @@ export interface InferenceSchedule {
   driftThresholdPct: number
 }
 
+/** MODEL-SERVE-001-T09. `reason` already redacted server-side
+ *  (`lib/redact-urls.ts`) — never re-sanitize on this side, and never
+ *  render a raw one from any OTHER source. */
+export interface InferenceWindowFailureNote {
+  windowStart: string
+  reason: string | null
+}
+
 export interface InferenceStatus {
   enabled: boolean
   cadenceMinutes: number | null
@@ -40,6 +48,12 @@ export interface InferenceStatus {
   gapCount: number
   staleness: 'OK' | 'STALE'
   failing: boolean
+  /** Latest FAILED window, if any — the reason `error` means what it says. */
+  lastFailure: InferenceWindowFailureNote | null
+  /** Latest SKIPPED window, if any — NOT an error (a threshold message,
+   *  e.g. below INFERENCE_MIN_ROWS). Render distinctly from `lastFailure`;
+   *  never let a status word imply the wrong one caused it. */
+  lastSkipped: InferenceWindowFailureNote | null
   deployStatus: 'stopped' | 'running' | 'error' | 'initializing'
 }
 
@@ -56,6 +70,157 @@ export interface InferenceWindow {
   createdAt: string
   startedAt: string | null
   finishedAt: string | null
+}
+
+/** MODEL-SERVE-001-T10. One line of the container's own stdout. `message`
+ *  arrives already URL-redacted — see `inferenceWindowService.logs`. */
+export interface WindowLogLine {
+  id: string
+  level: 'info' | 'warn' | 'error'
+  message: string
+  createdAt: string
+}
+
+/**
+ * MODEL-SERVE-001-T10. The window's own facts, carried alongside its log
+ * lines so that ZERO lines is still explainable.
+ *
+ * A container that reaches `claim` always writes at least one line
+ * (`images/trainer/app/pipelines/infer.py` logs "Window claimed." before
+ * it downloads anything), so an empty `lines` is never "the container
+ * chose to print nothing" — it means no container ever got that far. Which
+ * of the four reasons applies is read off `status` plus these fields, and
+ * `imageDigest` is null for any window that never ran one.
+ */
+export interface WindowLogContext {
+  id: string
+  status: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'SKIPPED'
+  windowStart: string
+  windowEnd: string
+  inputRows: number | null
+  missingPct: number | null
+  imageDigest: string | null
+  /** The discriminator for "did a container actually run". NOT
+   *  `imageDigest` — verified live: windows exist with a containerId and a
+   *  startedAt whose imageDigest is still null. */
+  containerId: string | null
+  failureReason: string | null
+  attempts: number
+  startedAt: string | null
+  finishedAt: string | null
+}
+
+/**
+ * MODEL-SERVE-001-T10. The two records that PRECEDE the container, so the
+ * view can answer "from the moment Deploy was pressed" rather than only
+ * "what the container printed". `deployedAt`/`deployedBy` are stamped on
+ * the schedule's OFF→ON edge only; the promote fields belong to the
+ * version this window is pinned to. Every field is nullable — a model
+ * deployed before the stamp existed, or whose promoter was deleted, still
+ * has readable logs.
+ */
+export interface WindowProvenance {
+  deployedAt: string | null
+  deployedBy: string | null
+  version: number | null
+  stage: string | null
+  promotedAt: string | null
+  promotedBy: string | null
+  /** Set only when the promote crossed the r2 floor with an override. */
+  promotionOverrideReason: string | null
+}
+
+export interface WindowLogs {
+  window: WindowLogContext
+  provenance: WindowProvenance
+  lines: WindowLogLine[]
+  /** True when older lines were dropped to stay under the read cap. */
+  truncated: boolean
+  /** How many earlier lines were dropped — 0 when `truncated` is false. */
+  omittedCount: number
+}
+
+/**
+ * MODEL-SERVE-005-T03. One joined (lab sample -> nearest prediction) pair.
+ * `residual = predicted - actual`, the same convention
+ * `lib/model-evaluation.ts` uses, so this can feed `EvalPoint` directly.
+ */
+export interface LiveErrorPoint {
+  timestamp: string
+  predicted: number
+  actual: number
+  residual: number
+}
+
+export interface LiveErrorMetrics {
+  r2: number
+  rmse: number
+  mae: number
+  sd: number
+  bias: number
+  n: number
+}
+
+/** One model version's own error. A range can hold two versions (a
+ *  shadow evaluation), and two versions can predict DIFFERENT targets —
+ *  so each group carries the target it was actually scored against. */
+export interface LiveErrorVersion {
+  modelVersionId: string
+  /** Non-null by construction, unlike `LiveErrorWindow.targetColumn`: a
+   *  group only exists once a window under it carried pairs, and a join
+   *  that produced pairs necessarily resolved its target first. */
+  targetColumn: string
+  metrics: LiveErrorMetrics | null
+  pairedRows: number
+  windows: number
+}
+
+export interface LiveErrorCoverage {
+  windowsInRange: number
+  windowsJoined: number
+  /** DISJOINT from `windowsFailed` — a window whose join failed is not a
+   *  window waiting on the lab, so the two never count the same window. */
+  windowsAwaitingTruth: number
+  truthRows: number
+  pairedRows: number
+  /** Windows the sweeper could not ask about at all — a broken source or an
+   *  unresolvable target — as distinct from windows the lab has simply not
+   *  reported on yet. Both show zero pairs; only one is a problem. */
+  windowsFailed: number
+  /** MAX, not a mean — a mean hides the one window whose sensor stopped,
+   *  which is exactly what this number exists to surface. */
+  maxMissingPct: number | null
+}
+
+export interface LiveErrorWindow {
+  windowStart: string
+  /** Null only on a window whose join FAILED before the target could be
+   *  resolved; any window carrying pairs has one. */
+  targetColumn: string | null
+  modelVersionId: string
+  truthRows: number
+  pairedRows: number
+  n: number
+  missingPct: number | null
+  joinedThrough: string
+  /** Set only when the join itself failed. */
+  failureReason: string | null
+}
+
+export interface LiveErrorResult {
+  points: LiveErrorPoint[]
+  truncated: boolean
+  /** Null when nothing has joined, AND null when the range mixes versions
+   *  (read `versions` then) — never a zero standing in for absence. */
+  metrics: LiveErrorMetrics | null
+  mixedVersions: boolean
+  versions: LiveErrorVersion[]
+  /** The target any window in range knows about, including windows that
+   *  joined nothing — so the label survives while a model waits for its
+   *  first lab sample. Null only when no window knows it yet. */
+  targetColumn: string | null
+  coverage: LiveErrorCoverage
+  windows: LiveErrorWindow[]
 }
 
 function base(modelId: string) {
@@ -93,9 +258,13 @@ export const inferenceWindowService = {
     return res.data
   },
 
-  async getStatus(modelId: string): Promise<InferenceStatus> {
+  async getStatus(
+    modelId: string,
+    signal?: AbortSignal,
+  ): Promise<InferenceStatus> {
     const res: ApiResponse<InferenceStatus> = await fetchClient(
       `${base(modelId)}/inference/status`,
+      { signal },
     )
     return res.data
   },
@@ -131,5 +300,49 @@ export const inferenceWindowService = {
     await fetchClient(`${base(modelId)}/inference/windows/${windowId}/retry`, {
       method: 'POST',
     })
+  },
+
+  /**
+   * MODEL-SERVE-001-T10. One window's container stdout, with the window's
+   * own facts attached so a zero-line window can still say WHY.
+   *
+   * `windowId` accepts the literal `'latest'`. That is what keeps
+   * `models/views`' Console peek and `models/[id]`'s Logs tab on ONE
+   * endpoint — the peek holds a Model and has no window id to send, and a
+   * second endpoint is exactly the divergence T09 had to close for
+   * deployStatus one screen over.
+   *
+   * `lines` are the NEWEST 500, oldest-first for display, already
+   * URL-redacted server-side (`lib/redact-urls.ts`) — never re-sanitize
+   * here, and never render a log line from any other source.
+   */
+  async logs(
+    modelId: string,
+    windowId: string,
+    signal?: AbortSignal,
+  ): Promise<WindowLogs> {
+    const res: ApiResponse<WindowLogs> = await fetchClient(
+      `${base(modelId)}/inference/windows/${windowId}/logs`,
+      { signal },
+    )
+    return res.data
+  },
+
+  /**
+   * MODEL-SERVE-005-T03. Live error over joined ground truth, plus the
+   * coverage that makes it readable. `metrics` is NULL when no lab result
+   * has been joined in the range — never zeros, because "the lab has not
+   * reported yet" and "an error of zero" must not render the same way.
+   */
+  async truth(
+    modelId: string,
+    from: string,
+    to: string,
+  ): Promise<LiveErrorResult> {
+    const query = new URLSearchParams({ from, to })
+    const res: ApiResponse<LiveErrorResult> = await fetchClient(
+      `${base(modelId)}/inference/truth?${query.toString()}`,
+    )
+    return res.data
   },
 }

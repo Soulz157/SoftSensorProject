@@ -1,4 +1,5 @@
 import { fetchClient } from '@/lib/fetcher'
+import type { ModelVersionNumber } from '@/lib/model-version-number'
 
 /**
  * MODEL-SERVE-001/006. Promote — the ONLY client caller of the promote
@@ -20,7 +21,7 @@ export const modelVersionService = {
    *  a clear reason rather than silently promoting a bad model. */
   async promote(
     modelId: string,
-    version: number,
+    version: ModelVersionNumber,
     override?: { reason: string },
   ): Promise<{ id: string; version: number; stage: string }> {
     const res: ApiResponse<{ id: string; version: number; stage: string }> =

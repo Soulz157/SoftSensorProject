@@ -214,6 +214,96 @@ export async function materializeInferenceWindow(input: {
   return InferenceWindowMaterializeSchema.parse(res);
 }
 
+/** Mirrors `InferenceWindowTruthJoinResponse` field for field. */
+const InferenceWindowTruthJoinSchema = z.object({
+  // Null when nothing paired — python writes no object for an empty join.
+  object_key: z.string().min(1).nullable(),
+  checksum: z.string().min(1).nullable(),
+  truth_rows: z.number().int().nonnegative(),
+  prediction_rows: z.number().int().nonnegative(),
+  paired_rows: z.number().int().nonnegative(),
+  n: z.number().int().nonnegative(),
+  sum_se: z.number(),
+  sum_ae: z.number(),
+  sum_signed: z.number(),
+  sum_actual: z.number(),
+  sum_actual_sq: z.number(),
+});
+
+export type InferenceWindowTruthJoinResult = z.infer<
+  typeof InferenceWindowTruthJoinSchema
+>;
+
+/**
+ * MODEL-SERVE-005-T03. Re-fetches one window's TARGET tag on its own,
+ * much longer lag and joins it to that window's stored predictions.
+ *
+ * Returns SUFFICIENT STATISTICS, never a finished metric — `lib/live-
+ * error.ts` turns them into r2/rmse/mae/sd here, the same split T01 draws
+ * for prediction logging (python never computes an aggregate).
+ *
+ * `pi`/`sql` carry per-request decrypted credentials, the same discipline
+ * `materializeInferenceWindow` follows; never logged, never echoed into an
+ * error.
+ */
+export async function joinInferenceWindowTruth(input: {
+  predictions_key: string;
+  target_column: string;
+  model_id: string;
+  model_version_id: string;
+  dt: string;
+  hour: string;
+  window_start: string;
+  window_end: string;
+  tolerance_seconds: number;
+  pi?: Record<string, unknown>;
+  sql?: Record<string, unknown>;
+}): Promise<InferenceWindowTruthJoinResult> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/inference-window/truth-join',
+    input,
+    // A real fetch against a source system plus an object read — the same
+    // budget materializeInferenceWindow takes, for the same reason.
+    PYTHON_TIMEOUT.preprocess,
+  );
+  return InferenceWindowTruthJoinSchema.parse(res);
+}
+
+/** Mirrors `InferenceWindowTruthSeriesResponse` field for field. */
+const InferenceWindowTruthSeriesSchema = z.object({
+  points: z.array(
+    z.object({
+      timestamp: z.string().min(1),
+      predicted: z.number(),
+      actual: z.number(),
+      residual: z.number(),
+    }),
+  ),
+  truncated: z.boolean(),
+});
+
+export type InferenceWindowTruthSeriesResult = z.infer<
+  typeof InferenceWindowTruthSeriesSchema
+>;
+
+/**
+ * MODEL-SERVE-005-T03, read side. The joined pairs behind a set of
+ * windows. Takes the EXPLICIT keys this side already holds on
+ * `InferenceWindowTruth.pairsKey` rather than asking python to list a
+ * prefix — the database is the index for this root.
+ */
+export async function inferenceWindowTruthSeries(input: {
+  keys: string[];
+  limit?: number;
+}): Promise<InferenceWindowTruthSeriesResult> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/inference-window/truth-series',
+    input,
+    PYTHON_TIMEOUT.metadata,
+  );
+  return InferenceWindowTruthSeriesSchema.parse(res);
+}
+
 /**
  * MODEL-SERVE-006-T06. Time-limited write URLs for an infer-mode
  * container's own two outputs — mirrors `presignPredictionJobUpload`'s

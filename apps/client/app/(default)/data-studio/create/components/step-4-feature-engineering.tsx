@@ -1,3 +1,4 @@
+
 'use client'
 
 import { useEffect } from 'react'
@@ -296,21 +297,6 @@ export function Step4FeatureEngineering({ nav }: Props) {
         </div>
 
         <ValidationHoldoutSection
-          // DS-LAKE-023 (edit-mode re-split pass): also gated on the warm
-          // itself being pending. `previewFetchState` reflects a bounded
-          // HEAD-page preview fetch, which can read 'ready' while the
-          // CURRENT recipe's own features job is still in flight — without
-          // this, Apply could fire against a source artifact that is about
-          // to be replaced by that in-flight job.
-          //
-          // DS-LAKE-024-T03: edit mode additionally requires `sourceArtifactId`
-          // — without it, `warmGold` would silently no-op on Apply, the exact
-          // D6 bug this pass exists to fix. `editModeArmed` below is the SAME
-          // condition `featureBearing` uses: the two are armed together or
-          // neither, because a picker that is clickable but not feature-bearing
-          // just routes Apply through the legacy, non-feature-bearing resplit
-          // path instead of silently doing nothing — a different-looking
-          // version of the same defect.
           disabled={
             previewFetchState !== 'ready' ||
             warmState === 'pending' ||

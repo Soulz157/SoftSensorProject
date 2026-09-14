@@ -62,3 +62,18 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
   globalThis.ResizeObserver =
     ResizeObserverStub as unknown as typeof ResizeObserver
 }
+
+// jsdom implements neither pointer-capture nor scrollIntoView, both of which
+// Radix Select (components/ui/select.tsx, used by e.g. DateTimePicker) calls
+// while opening/highlighting items — without these stubs, clicking a Select
+// trigger in a test throws `target.hasPointerCapture is not a function`
+// before the dropdown ever opens.
+if (!Element.prototype.hasPointerCapture) {
+  Element.prototype.hasPointerCapture = () => false
+}
+if (!Element.prototype.releasePointerCapture) {
+  Element.prototype.releasePointerCapture = () => {}
+}
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {}
+}

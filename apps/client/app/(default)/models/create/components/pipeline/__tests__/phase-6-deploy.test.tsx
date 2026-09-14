@@ -1,11 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { createStore, Provider } from 'jotai'
 import {
   mpServerDraftIdAtom,
   mpTrainingResultAtom,
 } from '@/store/model-pipeline'
 import { Phase6Deploy } from '../phase-6-deploy'
+import { brandModelVersionNumber } from '@/lib/model-version-number'
+import { modelVersionService } from '@/services/model-version'
+import { inferenceWindowService } from '@/services/inference-window'
 import type { UsePipelineNavResult } from '@/hooks/model/use-model-pipeline-nav'
 import type { DraftRunSummary } from '@/hooks/model/use-draft-run-evaluation'
 
@@ -53,12 +57,21 @@ vi.mock('@/hooks/model/use-draft-run-evaluation', async importOriginal => {
 })
 
 vi.mock('@/hooks/model/use-model-commit', () => ({
-  useModelCommit: () => async () => 'model-1',
+  useModelCommit: () => async () => ({
+    modelId: 'model-1',
+    version: brandModelVersionNumber(1),
+  }),
 }))
 vi.mock('@/hooks/use-all-models', () => ({
   useRefreshModels: () => () => {},
 }))
 vi.mock('@/services/model', () => ({ updateModel: vi.fn() }))
+vi.mock('@/services/model-version', () => ({
+  modelVersionService: { promote: vi.fn().mockResolvedValue({}) },
+}))
+vi.mock('@/services/inference-window', () => ({
+  inferenceWindowService: { putSchedule: vi.fn().mockResolvedValue({}) },
+}))
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }))
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
@@ -226,5 +239,37 @@ describe('Phase6Deploy — a Cross-Validation run', () => {
     expect(
       screen.queryByText(/scoring cannot be run after saving/i),
     ).not.toBeInTheDocument()
+  })
+})
+
+describe('Phase6Deploy — Save & Deploy promotes the version the save minted', () => {
+  beforeEach(() => {
+    h.result.run = null
+    vi.mocked(modelVersionService.promote).mockClear()
+    vi.mocked(inferenceWindowService.putSchedule).mockClear()
+  })
+
+  // MODEL-SERVE-001-T08. `commit()` now returns the version its OWN save
+  // transaction minted (here, mocked as version 1) — this asserts Save &
+  // Deploy promotes THAT number, never a `1` literal baked into this
+  // component. A regression back to a hardcoded literal would still pass
+  // this assertion by coincidence at version 1, which is exactly the gap
+  // the branded `ModelVersionNumber` type (not this test alone) closes.
+  it('promotes the exact version number `commit()` returned', async () => {
+    h.result.run = BASE_RUN
+    renderPhase6()
+
+    await userEvent.click(
+      screen.getByRole('button', { name: /save & deploy/i }),
+    )
+
+    expect(modelVersionService.promote).toHaveBeenCalledWith(
+      'model-1',
+      brandModelVersionNumber(1),
+    )
+    expect(inferenceWindowService.putSchedule).toHaveBeenCalledWith(
+      'model-1',
+      expect.objectContaining({ enabled: true }),
+    )
   })
 })

@@ -12,8 +12,11 @@ import { useDebouncedAbortableRequest } from '@/hooks/dataset/internal/use-debou
 
 /** One model prediction at a timestamp — no lab/actual counterpart, matching
  *  `lib/mock-lab-data.ts`'s own `PredPoint` shape for the equivalent mock
- *  path. Ground truth is not joined yet (MODEL-SERVE-005-T03, blocked — see
- *  the ledger for what blocks it); this hook never fabricates one.
+ *  path. Ground truth IS joined as of MODEL-SERVE-005-T03, but to scheduled
+ *  INFERENCE WINDOWS (`use-live-error.ts`), not to this sampled per-request
+ *  stream — a `/predict` call is answered from whatever features the caller
+ *  sent, with no window a lab result could be paired against. So this hook
+ *  still has no `actual`, and still never fabricates one.
  *
  *  `features`/`modelVersionId` are carried straight through from
  *  `PredictionSeriesPoint` (the raw logged row) for the Input Data tab,

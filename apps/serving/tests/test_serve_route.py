@@ -92,6 +92,53 @@ def test_predict_happy_path(client: TestClient) -> None:
     assert body["predictions"] == pytest.approx([1.0])
 
 
+def test_predict_response_carries_input_tag_check_on_a_clean_request(
+    client: TestClient,
+) -> None:
+    """Every call, unsampled — this is the response body itself, not a
+    logged/sampled side channel."""
+    response = client.post(
+        "/v1/models/model-1/predict",
+        json={"rows": [{"a": 5.0, "b": 5.0}]},
+    )
+    assert response.status_code == 200
+    check = response.json()["inputTagCheck"]
+    assert check["requiredColumns"] == ["a", "b"]
+    assert check["receivedColumns"] == ["a", "b"]
+    assert check["unusedColumns"] == []
+
+
+def test_predict_response_names_an_unused_tag_the_caller_sent(
+    client: TestClient,
+) -> None:
+    """The gap this feature closes: a stray/typo'd key alongside the real
+    required ones is silently dropped by frame[feature_columns] and today
+    leaves zero trace. This is the trace."""
+    response = client.post(
+        "/v1/models/model-1/predict",
+        json={"rows": [{"a": 5.0, "b": 5.0, "S204FVP": 12.3}]},
+    )
+    assert response.status_code == 200
+    check = response.json()["inputTagCheck"]
+    assert check["receivedColumns"] == ["a", "b", "S204FVP"]
+    assert check["unusedColumns"] == ["S204FVP"]
+
+
+def test_predict_does_not_carry_input_tag_check_on_a_422_refusal(
+    client: TestClient,
+) -> None:
+    """Success-path only, per the approved design — a missing-column 422
+    already names the offending column (T04's own acceptance criterion);
+    this field adds nothing there and the response shape stays a plain
+    error detail string, unchanged."""
+    response = client.post(
+        "/v1/models/model-1/predict",
+        json={"rows": [{"a": 1.0}]},
+    )
+    assert response.status_code == 422
+    assert "inputTagCheck" not in response.json()
+
+
 def test_predict_refuses_over_the_row_cap(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -1349,6 +1349,16 @@ INFERENCE_ROOT = "inference/"
 #: input object and the window's two OUTPUTS must never collide under one
 #: hour's prefix.
 INFERENCE_INPUT_FILENAME = "input.parquet"
+#: MODEL-SERVE-005-T03. The late-arriving ground-truth join for this window:
+#: the (timestamp, predicted, actual, residual) pairs, written long AFTER
+#: predictions.parquet (a lab measurement arrives on its own, much longer
+#: lag). A fourth filename under the SAME hour prefix rather than a root of
+#: its own — it is the same window's record, found by the same range query,
+#: and it must be reclaimed by whatever retention class eventually reclaims
+#: that window. Rewritten in place on a re-join, because truth is
+#: incremental: a window joined at 24h holding one lab sample may hold three
+#: at 72h, and the row's sufficient statistics must move with the object.
+INFERENCE_TRUTH_FILENAME = "truth.parquet"
 
 
 def inference_window_prefix(

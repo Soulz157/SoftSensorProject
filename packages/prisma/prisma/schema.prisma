@@ -1664,11 +1664,115 @@ model InferenceWindow {
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 
-  logs InferenceWindowLog[]
+  logs  InferenceWindowLog[]
+  truth InferenceWindowTruth?
 
   @@unique([modelVersionId, windowStart])
   @@index([modelId, windowStart])
   @@index([status])
+}
+
+/// MODEL-SERVE-005-T03. The late-arriving ground-truth join for ONE window.
+///
+/// One row per window (`windowId @unique`) rather than a key of its own:
+/// InferenceWindow already carries @@unique([modelVersionId, windowStart]),
+/// so this inherits that idempotency instead of minting a second one — the
+/// same reasoning MODEL-SERVE-006-T01 gives for not needing a
+/// PredictionJob-style idempotency key at all.
+///
+/// A JOIN IS NOT ONCE-AND-TERMINAL. Lab truth is late AND incremental: a
+/// window joined at a 24h lag holding one sample may hold three at 72h. So
+/// the sweeper UPDATEs this row rather than inserting beside it, carries a
+/// `joinedThrough` watermark for what it has actually seen, and stops at
+/// the schedule's own `truthHorizonHours`. An insert-once design would
+/// silently freeze every window on its first, thinnest number.
+model InferenceWindowTruth {
+  id String @id @default(uuid())
+
+  /// Cascade: the join is meaningless without the window it scores, and a
+  /// Model delete already cascades onto InferenceWindow.
+  windowId String          @unique
+  window   InferenceWindow @relation(fields: [windowId], references: [id], onDelete: Cascade)
+
+  /// Denormalised for the range read (a monitoring series asks by model and
+  /// time, never by window id), mirroring InferenceWindow's own
+  /// @@index([modelId, windowStart]). Never a second source of truth —
+  /// copied from the window row at join time.
+  modelId        String
+  modelVersionId String
+  windowStart    DateTime
+
+  /// The target these pairs were joined against, resolved from the window's
+  /// OWN pinned version (ModelVersion -> sourceRun -> ModelTrainingRun.
+  /// targetY). ON THE ROW, not re-derived at read time: MODEL-SERVE-006-T07
+  /// deliberately allows two windows at one windowStart under two versions,
+  /// and two versions can carry DIFFERENT targets — so a read must be able
+  /// to see that before it pools them into one RMSE about nothing.
+  ///
+  /// NULL only on a row that exists solely to record a FAILED join (see
+  /// `failureReason`): resolving the target is itself one of the things
+  /// that can fail, so a row written to hold a backoff may not know it yet.
+  /// Every row carrying pairs (`n > 0`) has one.
+  targetColumn String?
+
+  /// Present only on a join that FAILED. Its existence is load-bearing, not
+  /// diagnostic: a failed join must still leave a row, because the
+  /// sweeper's candidate query treats "no truth row" as eligible and orders
+  /// oldest-first — so a window that can never join (a version with no
+  /// target, a deleted DataSource) would otherwise sit at the head of every
+  /// sweep forever, consuming the batch and starving every newer window
+  /// behind it, with log lines as the only symptom.
+  failureReason String?
+
+  /// The joined (timestamp, predicted, actual, residual) pairs.
+  pairsKey      String?
+  pairsChecksum String?
+
+  /// `truthRows` = lab samples found in the fetch range. `pairedRows` =
+  /// those that matched a prediction inside tolerance. `predictionRows` =
+  /// rows in the window's own predictions.parquet. All three, because
+  /// "no error published" has three different causes (no lab sample, no
+  /// sample close enough, no prediction) and a single count hides which.
+  truthRows      Int
+  pairedRows     Int
+  predictionRows Int
+
+  /// SUFFICIENT STATISTICS, not finished metrics — the same trick
+  /// lib/prediction-drift.ts's poolFeatureStats already uses for drift.
+  /// Pooling these across N windows yields an EXACT rolling r2/rmse/mae/sd
+  /// (never an average of averages), and a metric added to the registry
+  /// later is backfillable from them with no second truth fetch.
+  ///
+  /// Sign convention: residual = predicted - actual, matching
+  /// apps/client/lib/model-evaluation.ts's computeMetrics exactly, so
+  /// Monitoring and Evaluation can never report opposite signs.
+  n           Int
+  sumSe       Float
+  sumAe       Float
+  sumSigned   Float
+  sumActual   Float
+  sumActualSq Float
+
+  /// The tolerance actually in force for THIS join, on the row — never
+  /// re-derived from current config when read back later. Same rule and
+  /// same reason as PredictionLog.samplingRate.
+  toleranceSeconds Int
+
+  /// `joinedThrough` is the fetch end this row's numbers reflect.
+  /// `nextJoinAfter` is a backoff: without it the sweeper re-fetches every
+  /// window on every pass until the horizon elapses (~168 round trips per
+  /// window at the default horizon and an hourly cadence), almost all of
+  /// them returning rows it already has.
+  joinedThrough DateTime
+  nextJoinAfter DateTime?
+  joinAttempts  Int       @default(0)
+  lastJoinedAt  DateTime
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([modelId, windowStart])
+  @@index([nextJoinAfter])
 }
 
 /// MODEL-SERVE-006. Per-window container logs, mirroring
@@ -1719,6 +1823,25 @@ model InferenceSchedule {
   /// model scores it without error because the columns exist.
   cadenceMinutes Int @default(60)
   lagMinutes     Int @default(15)
+
+  /// MODEL-SERVE-005-T03. The GROUND-TRUTH half of the same trade, and a
+  /// deliberately different, much larger number than `lagMinutes` — that
+  /// distinction is MODEL-SERVE-006-T04's own ("the lab target's own
+  /// latency is a different and much longer number"). `lagMinutes` buys
+  /// feature completeness for scoring; `truthLagMinutes` is how long after
+  /// a window closes its lab measurement is expected to exist at all.
+  ///
+  /// `truthToleranceMinutes` is how near a lab sample must fall to a
+  /// prediction timestamp to pair with it — the server-side twin of the
+  /// `toleranceMs` `lib/lab-ingestion.ts`'s alignLabToPredictions already
+  /// applies client-side, so both surfaces mean one thing by "aligned".
+  ///
+  /// `truthHorizonHours` ends the re-join. Truth is late AND incremental
+  /// (a window joined at 24h with one sample may have three at 72h), so a
+  /// join is not once-and-terminal; past this the row's numbers are final.
+  truthLagMinutes       Int @default(1440)
+  truthToleranceMinutes Int @default(30)
+  truthHorizonHours     Int @default(168)
 
   /// The DataSource the window frame is fetched from, resolved against the
   /// pinned version's own sourceDatasetId rather than Model.datasetId —

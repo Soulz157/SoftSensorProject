@@ -2,6 +2,7 @@ import { fetchClient } from '@/lib/fetcher'
 import type { AIModel } from '@/types'
 import type { DeploymentConfig } from '@/lib/model-config'
 import type { HoldoutAbsence, SourcedMetrics } from '@/lib/metric-source'
+import type { ModelVersionNumber } from '@/lib/model-version-number'
 
 /**
  * `ModelDraft` — the Model Creation wizard's server-side owner while no
@@ -122,6 +123,10 @@ export const modelDraftService = {
    * choose at Save time; algorithm/hyperparameters/target/split are derived
    * server-side from that run, not sent here. 409s if the draft is already
    * SAVED, 422s if it has no SUCCEEDED run yet.
+   *
+   * MODEL-SERVE-001-T08. `modelVersion` is the version this SAME
+   * transaction minted (always version 1 — a brand-new Model can hold no
+   * other) — the number Save & Deploy must promote, never a literal.
    */
   save: (
     draftId: string,
@@ -131,7 +136,11 @@ export const modelDraftService = {
       description?: string
       deployment?: DeploymentConfig
     },
-  ): Promise<ApiResponse<AIModel>> =>
+  ): Promise<
+    ApiResponse<
+      AIModel & { modelVersion: { id: string; version: ModelVersionNumber } }
+    >
+  > =>
     fetchClient(`${one(draftId)}/save`, {
       method: 'POST',
       body: JSON.stringify(body),

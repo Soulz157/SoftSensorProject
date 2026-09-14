@@ -142,8 +142,8 @@ export function FeatureCountSweepTable({
   return (
     <section className="space-y-3 rounded-xl border border-border/60 p-4">
       <div className="space-y-1">
-        <h3 className="text-sm font-medium text-foreground">
-          How many features
+               <h3 className="text-sm font-medium text-foreground">
+          How many features are essential
         </h3>
         {/* AC66 + AC69 in one sentence, built from data rather than written
             into JSX — the seed run, its method, that method's own bias, and
@@ -153,13 +153,13 @@ export function FeatureCountSweepTable({
         </p>
       </div>
 
-      {error ? (
-        <EmptyPanel>Could not load this sweep — {error}</EmptyPanel>
+           {error ? (
+        <EmptyPanel>Could not load these results — {error}</EmptyPanel>
       ) : rows.length === 0 ? (
         <EmptyPanel>
           {loading
-            ? 'Loading the sweep…'
-            : 'No rows recorded for this sweep yet.'}
+            ? 'Loading the results…'
+            : 'No rows recorded yet.'}
         </EmptyPanel>
       ) : (
         <div className="rounded-lg border border-border">
@@ -201,12 +201,12 @@ export function FeatureCountSweepTable({
                 >
                   R² (fold mean ± SD)
                 </TableHead>
-                <TableHead
-                  className="h-9 px-3 text-right"
-                  title="Distinct labelled observations per feature — the denominator is distinct labelled values, never row count, because the target is a lab sample carried across the frame"
-                >
-                  Obs / feature
-                </TableHead>
+               <TableHead
+  className="h-9 px-3 text-right"
+  title="Distinct labelled observations per feature — the denominator is distinct labelled values, never row count, because the target is a lab sample carried across the frame"
+>
+  Labelled obs / feature
+</TableHead>
                 <TableHead className="h-9 px-3" />
               </TableRow>
             </TableHeader>

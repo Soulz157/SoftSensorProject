@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useAtom, useAtomValue } from 'jotai'
 import { Check, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -108,7 +108,10 @@ export function ValidationHoldoutSection({
     fetchConfig.summaryDuration.trim() ||
     resolveInterval(period, customInterval)
 
-  const [enabled, setEnabled] = useState(holdoutRange !== null)
+  // Defaults OPEN even though no holdout is chosen yet (`holdoutRange` starts
+  // `null`) — only an explicit user toggle-off or a later atom resync (below)
+  // closes it.
+  const [enabled, setEnabled] = useState(true)
   const [draftFrom, setDraftFrom] = useState(holdoutRange?.from ?? '')
   const [draftTo, setDraftTo] = useState(holdoutRange?.to ?? '')
 
@@ -118,8 +121,18 @@ export function ValidationHoldoutSection({
   // syncs LOCAL draft state from the atom; it never writes the atom back,
   // so hydration/reset cannot itself schedule the parent's warm — only
   // `applyHoldout`/`handleToggle` (real user actions) do that.
+  //
+  // `enabled` is skipped on the very first run: this same effect also fires
+  // on mount, and a fresh draft's `holdoutRange` is `null` there, which would
+  // immediately collapse the open-by-default state above. A later run (real
+  // hydration or reset) still syncs `enabled` normally.
+  const mountedRef = useRef(false)
   useEffect(() => {
-    setEnabled(holdoutRange !== null)
+    if (mountedRef.current) {
+      setEnabled(holdoutRange !== null)
+    } else {
+      mountedRef.current = true
+    }
     setDraftFrom(holdoutRange?.from ?? '')
     setDraftTo(holdoutRange?.to ?? '')
   }, [holdoutRange])

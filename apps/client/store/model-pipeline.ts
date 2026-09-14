@@ -33,6 +33,7 @@ import type {
 } from '@/store/data-visualize'
 import { METRIC_KEYS, type MetricKey } from '@/lib/model-metrics'
 import type { AcceptanceCriterion } from '@/lib/acceptance-criteria'
+import type { ModelVersionNumber } from '@/lib/model-version-number'
 
 export type { SavedDataSource }
 
@@ -237,6 +238,16 @@ export const mpTrainStateAtom = atom<TrainState>({
 })
 /** Set once on first successful create; guards against duplicate POSTs on Retrain. */
 export const mpCreatedModelIdAtom = atom<string>('')
+/**
+ * MODEL-SERVE-001-T08. The version Save Model's OWN transaction minted for
+ * `mpCreatedModelIdAtom`, held alongside it for the exact reason that atom
+ * exists: `useModelCommit`'s `if (createdModelId) return createdModelId`
+ * short-circuit would otherwise have no version to hand back on a second
+ * invocation within the same wizard visit, silently reintroducing a
+ * literal-shaped gap one layer down. Null until a create-mode save
+ * succeeds; never meaningful in edit mode.
+ */
+export const mpCreatedModelVersionAtom = atom<ModelVersionNumber | null>(null)
 export const mpSelectedMetricsAtom = atom<MetricKey[]>([...METRIC_KEYS])
 
 export const mpCompareRunIdsAtom = atom<ReadonlySet<string>>(new Set<string>())
@@ -410,6 +421,7 @@ export const resetWizardAtom = atom(null, (_get, set) => {
   set(mpSeedAtom, undefined)
   set(mpTrainStateAtom, { status: 'idle', progress: 0 })
   set(mpCreatedModelIdAtom, '')
+  set(mpCreatedModelVersionAtom, null)
   set(mpSelectedMetricsAtom, [...METRIC_KEYS])
   // MODEL-FLOW-019-T08. Client-only view state, same as its neighbour above
   // — a compare set ticked against the PREVIOUS draft's runs must not

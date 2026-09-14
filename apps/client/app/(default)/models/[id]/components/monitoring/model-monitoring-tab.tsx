@@ -3,9 +3,10 @@
 import { useMemo, useState } from 'react'
 import { Activity } from 'lucide-react'
 import type { AIModel } from '@/types'
-import { useMonitoringData } from '@/hooks/model/use-monitoring-data'
+import { useLiveError } from '@/hooks/model/use-live-error'
 import { usePredictionMonitoring } from '@/hooks/model/use-prediction-monitoring'
 import type { TimeRange } from '@/lib/mock-readings'
+import type { LiveErrorCoverage } from '@/services/inference-window'
 import {
   buildMonitoringRows,
   pickTimeFormat,
@@ -32,6 +33,54 @@ function LegendItem({ color, label }: { color: string; label: string }) {
   )
 }
 
+/**
+ * MODEL-SERVE-005-T03. The honest no-data state, following the rule
+ * `DriftPanel` already applies to its own no-PRODUCTION-version case: name
+ * WHY there is nothing, rather than rendering an empty axis that reads as
+ * a flat, healthy line.
+ *
+ * The three causes are genuinely different and a reader needs to know
+ * which one they are looking at: the range has no scored windows at all,
+ * the windows exist but the lab has not reported yet, or the read failed.
+ */
+function EmptyTruth({
+  error,
+  coverage,
+}: {
+  error: string | null
+  coverage: LiveErrorCoverage | null
+}) {
+  const message = error
+    ? `Could not load ground truth: ${error}`
+    : !coverage || coverage.windowsInRange === 0
+      ? 'No completed inference windows in this range yet.'
+      : // CHECKED BEFORE the "no lab measurement yet" branch, because both
+        // states show zero pairs and only one of them is about the lab. A
+        // window the sweeper could not ask about at all — an unresolvable
+        // target, a deleted data source — must not be reported as a lab
+        // that has not reported, which would be a confident wrong answer
+        // about someone else's system.
+        coverage.windowsFailed > 0 && coverage.truthRows === 0
+        ? `The ground-truth join failed for ${coverage.windowsFailed} ${
+            coverage.windowsFailed === 1 ? 'window' : 'windows'
+          } in this range, so no measurement could be fetched. Check the model's data source and target.`
+        : coverage.truthRows === 0
+          ? 'Windows have been scored, but no lab measurement has arrived for them yet. The join runs again once the configured truth lag has passed.'
+          : 'Lab measurements arrived, but none fell within the configured tolerance of a scored prediction.'
+
+  return (
+    <div className="flex h-48 flex-col items-center justify-center gap-1 px-6 text-center">
+      <p className="text-sm text-muted-foreground">{message}</p>
+      {!error && coverage && coverage.windowsInRange > 0 && (
+        <p className="text-xs text-muted-foreground/70">
+          Nothing is estimated here — this chart stays empty until a real
+          measurement can be paired with a real prediction.
+        </p>
+      )}
+    </div>
+  )
+}
+
 interface Props {
   model: AIModel
 }
@@ -41,20 +90,40 @@ interface Props {
  * `/models/monitoring` route (which carried its own model picker; `[id]`
  * already resolved the model, so that picker and its empty state are gone).
  *
- * Two real-data sections (Live Predictions, Distribution Drift — see
- * MODEL-SERVE-005) and two simulated sections (Actual vs. Predict, Residual
- * Analysis — `useMonitoringData` reads the mock lab layer; ground truth
- * does not exist anywhere in this system yet, MODEL-SERVE-005-T03 is
- * blocked, so these are never wired to fabricate an `actual` value). The
- * simulated section is labelled as such rather than left to read as
- * authoritative.
+ * ALL FOUR SECTIONS ARE REAL DATA as of MODEL-SERVE-005-T03. Actual vs.
+ * Predict and Residual Analysis were simulated (`useMonitoringData`'s mock
+ * lab layer) for as long as T03 was blocked and no ground truth existed
+ * anywhere in this system; they now read the joined (lab sample -> nearest
+ * prediction) pairs the truth sweep writes. Nothing here fabricates an
+ * `actual`: a range with no joined lab result renders an empty state
+ * saying so, never a plausible-looking line.
+ *
+ * The two charts therefore render SPARSELY — one point per lab measurement,
+ * not one per scored interval — which is what a lab-sampled target honestly
+ * looks like. Live Predictions beside them still shows the dense
+ * prediction stream with no counterpart.
  */
 export function ModelMonitoringTab({ model }: Props) {
   const [range, setRange] = useState<TimeRange>('24h')
   const [brush, setBrush] = useState<BrushWindow>({})
   const [residualMode, setResidualMode] = useState<ResidualMode>('abs')
 
-  const { points, tag } = useMonitoringData(model, range)
+  const {
+    points,
+    metrics: liveMetrics,
+    mixedVersions,
+    versions,
+    targetColumn,
+    coverage,
+    loading: truthLoading,
+    error: truthError,
+  } = useLiveError(model, range)
+  // The REAL target this model was scored against, resolved server-side
+  // from the window's own pinned version — not a label chosen client-side.
+  // Taken from the range rather than from `versions`, which holds only
+  // groups that carry pairs: a model still waiting on its first lab sample
+  // knows its target perfectly well and should keep showing it.
+  const tag = targetColumn
   const {
     points: livePoints,
     pointsLoading: livePointsLoading,
@@ -118,9 +187,55 @@ export function ModelMonitoringTab({ model }: Props) {
       <MonitoringRangeBar
         range={range}
         onRange={changeRange}
-        rmse={stats.rmse}
+        // The POOLED figure over every joined pair in the range, not the
+        // visible-brush recompute — a KPI that changed when someone zoomed
+        // would not be the model's error, it would be the zoom's.
+        rmse={liveMetrics?.rmse ?? null}
+        pairCount={liveMetrics?.n ?? null}
         tag={tag}
       />
+
+      {/* MODEL-SERVE-005-T03. Coverage, beside the number rather than
+          behind it: how much of the range actually has ground truth, and
+          the WORST window's missing rate (never a mean — a mean hides the
+          one window whose sensor stopped, which is the case
+          MODEL-SERVE-006-T05 exists to make visible). */}
+      {coverage && coverage.windowsInRange > 0 && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-border bg-muted/40 px-3 py-2 text-[11px] text-muted-foreground">
+          <span>
+            <span className="font-medium text-foreground">
+              {coverage.windowsJoined}
+            </span>{' '}
+            of {coverage.windowsInRange} windows joined
+          </span>
+          <span>
+            {coverage.pairedRows} paired / {coverage.truthRows} lab samples
+          </span>
+          {coverage.windowsAwaitingTruth > 0 && (
+            <span>{coverage.windowsAwaitingTruth} awaiting lab results</span>
+          )}
+          {/* A window the sweeper could not ask about is NOT a window
+              waiting on the lab, and the two must not read as one number.
+              Purple, the data-quality colour — red and amber stay reserved
+              for deployment status (DESIGN_SYSTEM §5). */}
+          {coverage.windowsFailed > 0 && (
+            <span className="rounded bg-purple-500/15 px-1.5 py-0.5 font-medium text-purple-500">
+              {coverage.windowsFailed} join
+              {coverage.windowsFailed === 1 ? '' : 's'} failed
+            </span>
+          )}
+          {coverage.maxMissingPct !== null && (
+            <span>
+              worst window missing {coverage.maxMissingPct.toFixed(2)}%
+            </span>
+          )}
+          {mixedVersions && (
+            <span className="rounded bg-purple-500/15 px-1.5 py-0.5 font-medium text-purple-500">
+              {versions.length} versions in range — per-version error below
+            </span>
+          )}
+        </div>
+      )}
       {/* Top chart — Actual vs Predict */}
       <div className="flex min-h-0 flex-col rounded-xl border border-border bg-card p-4">
         <div className="mb-1 flex flex-wrap items-center justify-between gap-3">
@@ -142,18 +257,28 @@ export function ModelMonitoringTab({ model }: Props) {
           />
         </div>
         <p className="mb-3 text-xs text-muted-foreground">
-          Measured actual against this model&apos;s own prediction over the same
-          period — the shaded band is ±1 SD of the fit residual.
+          Each lab measurement against the prediction it landed nearest, joined
+          on this model&apos;s configured tolerance — the shaded band is ±1 SD
+          of the residual. Sparse by nature: one point per lab result, not one
+          per scored interval.
         </p>
 
         <div className="max-h-full flex-1">
-          <ActualVsPredictChart
-            rows={rows}
-            brush={brush}
-            onBrush={setBrush}
-            tickFormatter={tickFormatter}
-            yDomain={yDomain}
-          />
+          {truthLoading ? (
+            <div className="flex h-48 items-center justify-center text-sm text-muted-foreground">
+              Loading…
+            </div>
+          ) : points.length === 0 ? (
+            <EmptyTruth error={truthError} coverage={coverage} />
+          ) : (
+            <ActualVsPredictChart
+              rows={rows}
+              brush={brush}
+              onBrush={setBrush}
+              tickFormatter={tickFormatter}
+              yDomain={yDomain}
+            />
+          )}
         </div>
       </div>
       <div className="flex min-h-70 flex-col rounded-xl border border-border bg-card p-4">
@@ -185,29 +310,39 @@ export function ModelMonitoringTab({ model }: Props) {
           </ToggleGroup>
         </div>
         <div className="min-h-0 flex-1">
-          <ResidualChart
-            rows={rows}
-            brush={brush}
-            onBrush={setBrush}
-            tickFormatter={tickFormatter}
-            sd={stats.sd}
-            mode={residualMode}
-          />
+          {truthLoading ? (
+            <div className="flex h-48 items-center justify-center text-sm text-muted-foreground">
+              Loading…
+            </div>
+          ) : points.length === 0 ? (
+            <EmptyTruth error={truthError} coverage={coverage} />
+          ) : (
+            <ResidualChart
+              rows={rows}
+              brush={brush}
+              onBrush={setBrush}
+              tickFormatter={tickFormatter}
+              sd={stats.sd}
+              mode={residualMode}
+            />
+          )}
         </div>
       </div>
 
-      {/* MODEL-SERVE-005. Real data — the sampled synchronous-/predict
-          stream and the drift signal built on it. Separate from the charts
-          above: those depend on ground truth this system does not have yet
-          (T03 is blocked), so this section never fabricates an "actual". */}
+      {/* MODEL-SERVE-005-T01/T02. The sampled synchronous-/predict stream
+          and the drift signal built on it. A DIFFERENT stream from the
+          charts above, not a lesser one: these are per-request samples with
+          no lab counterpart, where those are scheduled windows paired with
+          a lab measurement. Neither fabricates an "actual". */}
       <div className="flex min-h-0 flex-col rounded-xl border border-border bg-card p-4">
         <div className="mb-4 space-y-1">
           <h2 className="text-sm font-semibold text-foreground">
             Live Predictions (sampled)
           </h2>
           <p className="text-xs text-muted-foreground">
-            The actual synchronous /predict stream — no ground truth is joined
-            yet, so no actual/residual is shown here.
+            The synchronous /predict stream, sampled. No lab counterpart is
+            joined to these — ground truth is joined to scheduled windows, which
+            is what the two charts above show.
           </p>
         </div>
         {livePointsLoading ? (

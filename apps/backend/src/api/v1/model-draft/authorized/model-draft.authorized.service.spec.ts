@@ -797,6 +797,10 @@ describe('ModelDraftAuthorizedService — saveDraftService (MODEL-FLOW-007)', ()
 
     expect(res.statusCode).toBe(201);
     expect(res.data.id).toBe('model-1');
+    // MODEL-SERVE-001-T08. The version this save's own transaction just
+    // minted, carried on the response — the wizard's Save & Deploy promotes
+    // THIS, never a literal.
+    expect(res.data.modelVersion).toEqual({ id: 'version-1', version: 1 });
   });
 
   // MODEL-FLOW-018-T02/V01. The persistence-boundary half: Save Model must

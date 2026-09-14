@@ -143,8 +143,8 @@ export function FeatureCountSweepLauncher({
       // complete ladder.
       if (launched.length < plan.length) {
         setPartial(
-          `Launched ${launched.length} of ${plan.length} rows — the ladder stopped early, so the curve below is incomplete.`,
-        )
+          `Launched ${launched.length} of ${plan.length} rows — the search
+           stopped early, so the curve below is incomplete.`,        )
       }
       if (launched.length > 0) onLaunched(sweepId, metric)
       else setError('No rows launched.')
@@ -168,13 +168,13 @@ export function FeatureCountSweepLauncher({
    * whatever this row kept, so every count in the new ladder would mean
    * something different from the same count in the old one.
    */
-  if (run.sweepId !== null) {
+    if (run.sweepId !== null) {
     return (
       <EmptyPanel>
-        Sweep the feature count: unavailable — this run is itself one row of a
-        sweep, so its importance describes the features it was given rather than
-        the ranking that chose them. Open the run that seeded this sweep to
-        launch another.
+        Find the number of essential X: unavailable — this run is itself one row
+        of a search, so its importance describes the features it was given
+        rather than the ranking that chose them. Open the run that seeded this
+        search to start another.
       </EmptyPanel>
     )
   }
@@ -182,10 +182,10 @@ export function FeatureCountSweepLauncher({
   if (!canRank(importance)) {
     return (
       <EmptyPanel>
-        Sweep the feature count: unavailable — this run&apos;s importance is a{' '}
-        {importance.method} over features that carry no recorded scaling, so it
-        orders by unit rather than influence. A ladder built on that order would
-        compare the wrong prefixes.
+        Find the number of essential X: unavailable — this run&apos;s importance
+        is a {importance.method} over features that carry no recorded scaling,
+        so it orders by unit rather than influence. A ladder built on that order
+        would compare the wrong prefixes.
       </EmptyPanel>
     )
   }
@@ -193,8 +193,8 @@ export function FeatureCountSweepLauncher({
   if (algorithm === null) {
     return (
       <EmptyPanel>
-        Sweep the feature count: unavailable — {run.algorithm} is not one of the
-        algorithms the trainer can fit on an explicit column list.
+        Find the number of essential X: unavailable — {run.algorithm} is not one
+        of the algorithms the trainer can fit on an explicit column list.
       </EmptyPanel>
     )
   }
@@ -204,11 +204,11 @@ export function FeatureCountSweepLauncher({
   if (folds === null) {
     return (
       <EmptyPanel>
-        {distinctLabelledLoading
-          ? 'Sweep the feature count: checking how many distinct labelled values sit behind this run…'
+               {distinctLabelledLoading
+          ? 'Find the number of essential X: checking how many distinct labelled values sit behind this run…'
           : distinctLabelledReason
-            ? `Sweep the feature count: unavailable — the distinct labelled count could not be read (${distinctLabelledReason}).`
-            : `Sweep the feature count: unavailable — ${
+            ? `Find the number of essential X: unavailable — the distinct labelled count could not be read (${distinctLabelledReason}).`
+            : `Find the number of essential X: unavailable — ${
                 distinctLabelledValues === null
                   ? 'the number of distinct labelled values is not known for this run'
                   : `${distinctLabelledValues} distinct labelled values is too few for even 2 folds`
@@ -222,8 +222,8 @@ export function FeatureCountSweepLauncher({
   return (
     <section className="space-y-3 rounded-xl border border-border/60 p-4">
       <div className="space-y-1">
-        <h3 className="text-sm font-medium text-foreground">
-          Sweep the feature count
+      <h3 className="text-sm font-medium text-foreground">
+          Find the number of essential X
         </h3>
         <p className="text-xs text-muted-foreground">
           Trains one cross-validated run per feature count —{' '}
@@ -283,10 +283,10 @@ export function FeatureCountSweepLauncher({
             </ToggleGroupItem>
           </ToggleGroup>
         </div>
-        <p className="text-xs text-muted-foreground">
-          Fixed on the sweep when it launches, so the ladder cannot be
-          re-decided after its cost is paid. Changing it here affects the next
-          launch, never a table already on screen.
+             <p className="text-xs text-muted-foreground">
+          Fixed when the search starts, so the ladder cannot be re-decided after
+          its cost is paid. Changing it here affects the next search, never a
+          table already on screen.
         </p>
       </div>
 
@@ -297,13 +297,13 @@ export function FeatureCountSweepLauncher({
         onClick={handleLaunch}
       >
         <Layers className="h-4 w-4" />
-        {launching ? 'Launching…' : `Sweep ${plan.length} feature counts`}
+               {launching ? 'Launching…' : `Test ${plan.length} feature counts`}
       </Button>
 
       {partial && <p className="text-xs text-muted-foreground">{partial}</p>}
       {error && (
-        <p className="text-xs text-muted-foreground">
-          Could not launch the sweep — {error}
+             <p className="text-xs text-muted-foreground">
+          Could not start the search — {error}
         </p>
       )}
     </section>

@@ -48,6 +48,34 @@ def _validate_rows(
             )
 
 
+def check_input_tags(
+    rows: list[dict[str, Any]], feature_columns: list[str]
+) -> tuple[list[str], list[str]]:
+    """Every key the request actually sent, across every row, in the order
+    it was first seen — versus which of it `rows_to_predictions` never
+    reads. `frame[feature_columns]` there PROJECTS to the required columns
+    and silently drops anything else: a caller who sent both the right tag
+    and a stale/typo'd one alongside it gets a normal 200 with no hint the
+    extra key was ignored. `unused` is that hint, surfaced in the /predict
+    response itself (routers/serve.py's `inputTagCheck`) so a caller can
+    verify their own tag mapping without a separate log to go check.
+
+    Returns `(received, unused)`, NOT a single combined structure — the
+    router already knows `feature_columns` (== `requiredColumns` in the
+    response) and re-deriving it here would be one more place that value
+    could drift from what `rows_to_predictions` actually used.
+    """
+    received: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for key in row:
+            if key not in seen:
+                seen.add(key)
+                received.append(key)
+    unused = [key for key in received if key not in feature_columns]
+    return received, unused
+
+
 def required_history_rows(descriptor: dict[str, Any]) -> int:
     """T06. How many consecutive prior observations this model's recipe
     reaches back over, computed from the recipe itself with the SAME

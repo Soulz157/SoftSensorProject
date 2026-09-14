@@ -12,6 +12,7 @@ describe('classifyDeployStatus (MODEL-SERVE-006-T12)', () => {
         hasEverSucceeded: true,
         staleness: 'OK',
         failing: false,
+        hasFailedWindows: false,
       }),
     ).toBe('stopped');
   });
@@ -23,6 +24,7 @@ describe('classifyDeployStatus (MODEL-SERVE-006-T12)', () => {
         hasEverSucceeded: true,
         staleness: 'OK',
         failing: false,
+        hasFailedWindows: false,
       }),
     ).toBe('running');
   });
@@ -34,6 +36,7 @@ describe('classifyDeployStatus (MODEL-SERVE-006-T12)', () => {
         hasEverSucceeded: false,
         staleness: 'STALE',
         failing: false,
+        hasFailedWindows: false,
       }),
     ).toBe('initializing');
   });
@@ -45,6 +48,7 @@ describe('classifyDeployStatus (MODEL-SERVE-006-T12)', () => {
         hasEverSucceeded: true,
         staleness: 'STALE',
         failing: false,
+        hasFailedWindows: false,
       }),
     ).toBe('error');
   });
@@ -56,8 +60,68 @@ describe('classifyDeployStatus (MODEL-SERVE-006-T12)', () => {
         hasEverSucceeded: true,
         staleness: 'OK',
         failing: true,
+        hasFailedWindows: true,
       }),
     ).toBe('error');
+  });
+
+  /**
+   * The gap that let a completely broken schedule read as a healthy
+   * warm-up. `failing` needs THREE consecutive failures — right for a
+   * mature schedule, far too slow for a new one, which only reaches three
+   * failures after three cadences. Until then "never succeeded + stale"
+   * returned `initializing` no matter how many windows had already failed.
+   */
+  it('is error when a NEVER-SUCCEEDED schedule has already failed a window', () => {
+    expect(
+      classifyDeployStatus({
+        enabled: true,
+        hasEverSucceeded: false,
+        staleness: 'STALE',
+        // Only one or two failures so far — below the `failing` bar.
+        failing: false,
+        hasFailedWindows: true,
+      }),
+    ).toBe('error');
+  });
+
+  it('is still initializing when nothing has been produced at all', () => {
+    expect(
+      classifyDeployStatus({
+        enabled: true,
+        hasEverSucceeded: false,
+        staleness: 'STALE',
+        failing: false,
+        hasFailedWindows: false,
+      }),
+    ).toBe('initializing');
+  });
+
+  it('a failed window in the past does NOT override a currently fresh schedule', () => {
+    // Recovered: it has succeeded since, and is not stale. An old failure
+    // must not pin a working model to `error` forever — the status is
+    // derived at read time precisely so it can heal.
+    expect(
+      classifyDeployStatus({
+        enabled: true,
+        hasEverSucceeded: true,
+        staleness: 'OK',
+        failing: false,
+        hasFailedWindows: true,
+      }),
+    ).toBe('running');
+  });
+
+  it('is stopped even when failing — a disabled schedule is not an alarm', () => {
+    expect(
+      classifyDeployStatus({
+        enabled: false,
+        hasEverSucceeded: false,
+        staleness: 'STALE',
+        failing: true,
+        hasFailedWindows: true,
+      }),
+    ).toBe('stopped');
   });
 });
 

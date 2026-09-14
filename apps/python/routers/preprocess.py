@@ -75,6 +75,10 @@ from schemas.preprocess import (
     PredictionJobObjectPresignResponse,
     InferenceWindowMaterializeRequest,
     InferenceWindowMaterializeResponse,
+    InferenceWindowTruthJoinRequest,
+    InferenceWindowTruthJoinResponse,
+    InferenceWindowTruthSeriesRequest,
+    InferenceWindowTruthSeriesResponse,
     InferenceWindowUploadPresignRequest,
     InferenceWindowUploadPresignResponse,
     InferenceWindowObjectPresignRequest,
@@ -111,7 +115,12 @@ from schemas.preprocess import (
     ValidateRequest,
     ValidationReportResponse,
 )
-from services import artifact_service, inference_window_service, prediction_log_service
+from services import (
+    artifact_service,
+    ground_truth_service,
+    inference_window_service,
+    prediction_log_service,
+)
 from services.boxplot_service import build_boxplot
 from services.cleaning_service import CleaningError
 from services.correlation_matrix_service import build_correlation_matrix
@@ -1039,6 +1048,48 @@ async def materialize_inference_window(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(inference_window_service.materialize_window, store, body)
+
+
+@router.post(
+    "/inference-window/truth-join",
+    response_model=InferenceWindowTruthJoinResponse,
+    summary="Join one window's late-arriving ground truth to its predictions",
+    description=(
+        "MODEL-SERVE-005-T03. Re-fetch the model's TARGET tag on its own, "
+        "much longer lag and pair each lab sample with the nearest "
+        "prediction inside a stated tolerance, writing truth.parquet beside "
+        "that window's predictions. Returns sufficient statistics, never a "
+        "finished metric — NestJS computes r2/RMSE/MAE/SD from them. The PI "
+        "branch establishes event presence before trusting a value: a "
+        "time-weighted summary of a sparse .lab tag returns the held last "
+        "value for every interval, including intervals in which no "
+        "measurement was ever taken."
+    ),
+)
+async def join_inference_window_truth(
+    body: InferenceWindowTruthJoinRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(ground_truth_service.join_window_truth, store, body)
+
+
+@router.post(
+    "/inference-window/truth-series",
+    response_model=InferenceWindowTruthSeriesResponse,
+    summary="Read the joined ground-truth pairs behind a set of windows",
+    description=(
+        "MODEL-SERVE-005-T03, read side. Takes the EXPLICIT truth.parquet "
+        "keys NestJS already holds on InferenceWindowTruth.pairsKey rather "
+        "than listing a prefix — the database is the index here. A key that "
+        "no longer resolves is skipped, so one reclaimed window is a gap in "
+        "the chart rather than a broken range read."
+    ),
+)
+async def read_inference_window_truth_series(
+    body: InferenceWindowTruthSeriesRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(ground_truth_service.series, store, body)
 
 
 @router.post(

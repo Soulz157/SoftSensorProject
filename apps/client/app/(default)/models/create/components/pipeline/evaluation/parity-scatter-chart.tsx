@@ -92,7 +92,7 @@ export function ParityScatterChart({ rows, domain, population }: Props) {
           }}
           formatter={(value, name) => [
             Number(value).toFixed(3),
-            name === 'actual' ? `${population} actual` : 'Predicted',
+            name === 'actual' ? `actual` : 'Predicted',
           ]}
         />
         {/* Identity line y = x — NOT a fit. See module doc. */}
