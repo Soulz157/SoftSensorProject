@@ -102,6 +102,30 @@ function row(
   })
 }
 
+/** MODEL-FLOW-019-T35. The same row carrying its OWN MAE pair as well — kept
+ *  separate from `row` so every pre-existing case above keeps exercising the
+ *  MAE-absent branch rather than silently gaining a figure it never had. */
+function rowWithMae(
+  id: string,
+  n: number,
+  rmse: [number, number],
+  mae: [number, number],
+): ModelTrainingRunListItem {
+  return cvRun({
+    id,
+    metrics: {
+      feature_count: n,
+      cv_rmse_mean: rmse[0],
+      cv_rmse_std: rmse[1],
+      cv_mae_mean: mae[0],
+      cv_mae_std: mae[1],
+      cv_r2_mean: 0.9,
+      cv_r2_std: 0.01,
+      n_splits: 3,
+    },
+  })
+}
+
 function cellsOf(featureCount: string): string[] {
   const cell = screen.getByRole('cell', { name: featureCount })
   const tr = cell.closest('tr')
@@ -150,8 +174,13 @@ describe('FeatureCountSweepTable — V41, the rule beats the argmin on screen', 
         distinctLabelledValues={32}
       />,
     )
+    // MODEL-FLOW-019-T35 names the metric in this sentence too — "their
+    // spreads" alone left a reader to guess WHICH spreads overlapped once
+    // more than one column could decide.
     expect(
-      screen.getByText(/lowest fold mean is 7 features, but 4 is selected/i),
+      screen.getByText(
+        /best fold mean is 7 features, but 4 is selected: their RMSE spreads overlap/i,
+      ),
     ).toBeInTheDocument()
   })
 
@@ -166,6 +195,106 @@ describe('FeatureCountSweepTable — V41, the rule beats the argmin on screen', 
     )
     expect(
       screen.getByText(/Selected by rule, not by the lowest number/i),
+    ).toBeInTheDocument()
+  })
+})
+
+/**
+ * MODEL-FLOW-019-T35 at render level.
+ *
+ * ONE set of runs, rendered twice under different recorded metrics, selecting
+ * DIFFERENT rows. That disagreement is the whole test: a table that ignored
+ * its `metric` prop and kept deciding on RMSE would pass every other
+ * assertion in this file.
+ *
+ * The rows are shaped the way real ones are — MAE's fold spread is narrower
+ * than RMSE's, since RMSE is dominated by tail residuals — so the MAE ladder
+ * overlaps less and lands closer to the argmin.
+ */
+describe('FeatureCountSweepTable — the recorded metric decides which row wins', () => {
+  const TWO_LADDERS = [
+    rowWithMae('row-4', 4, [0.0526, 0.003], [0.04, 0.001]),
+    rowWithMae('row-7', 7, [0.0522, 0.002], [0.03, 0.001]),
+  ]
+
+  it('selects n=4 when the sweep recorded RMSE', () => {
+    render(
+      <FeatureCountSweepTable
+        runs={TWO_LADDERS}
+        seedRunId="seed-run-0000"
+        seedMethod="impurity"
+        metric="rmse"
+        distinctLabelledValues={32}
+      />,
+    )
+    expect(cellsOf('4').join(' ')).toMatch(/selected by the rule/)
+    expect(cellsOf('7').join(' ')).not.toMatch(/selected by the rule/)
+    expect(screen.getByText(/Decided on RMSE/i)).toBeInTheDocument()
+  })
+
+  it('selects n=7 from the SAME runs when the sweep recorded MAE', () => {
+    render(
+      <FeatureCountSweepTable
+        runs={TWO_LADDERS}
+        seedRunId="seed-run-0000"
+        seedMethod="impurity"
+        metric="mae"
+        distinctLabelledValues={32}
+      />,
+    )
+    expect(cellsOf('7').join(' ')).toMatch(/selected by the rule/)
+    expect(cellsOf('4').join(' ')).not.toMatch(/selected by the rule/)
+    expect(screen.getByText(/Decided on MAE/i)).toBeInTheDocument()
+  })
+
+  // A sweep launched before T35 carries no recorded metric. It must read as
+  // decided on RMSE and SAY so, never be silently re-decided under whatever
+  // a reader has selected since.
+  it('reads as decided on RMSE, named, when no metric was recorded', () => {
+    render(
+      <FeatureCountSweepTable
+        runs={TWO_LADDERS}
+        seedRunId="seed-run-0000"
+        seedMethod="impurity"
+        distinctLabelledValues={32}
+      />,
+    )
+    expect(cellsOf('4').join(' ')).toMatch(/selected by the rule/)
+    expect(screen.getByText(/Decided on RMSE/i)).toBeInTheDocument()
+  })
+
+  it('renders every metric that has data, so the two ladders can be compared at once', () => {
+    render(
+      <FeatureCountSweepTable
+        runs={TWO_LADDERS}
+        seedRunId="seed-run-0000"
+        seedMethod="impurity"
+        metric="mae"
+        distinctLabelledValues={32}
+      />,
+    )
+    const four = cellsOf('4').join(' ')
+    expect(four).toMatch(/0\.0526/)
+    expect(four).toMatch(/0\.0400/)
+    // R² stays a rendered column while being refused as the decider — AC34's
+    // admissible-in-one-role, refused-in-another split, applied here.
+    expect(screen.getByRole('columnheader', { name: /R²/ })).toBeInTheDocument()
+    expect(screen.getByText(/R².*cannot decide/i)).toBeInTheDocument()
+  })
+
+  it('does not claim the rows were trained for the chosen metric', () => {
+    render(
+      <FeatureCountSweepTable
+        runs={TWO_LADDERS}
+        seedRunId="seed-run-0000"
+        seedMethod="impurity"
+        metric="mae"
+        distinctLabelledValues={32}
+      />,
+    )
+    expect(screen.getByText(/not a training objective/i)).toBeInTheDocument()
+    expect(
+      screen.getByText(/does not re-rank candidates in Model Selection/i),
     ).toBeInTheDocument()
   })
 })

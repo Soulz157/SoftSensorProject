@@ -184,9 +184,7 @@ describe('RunParamsPanel (MODEL-FLOW-012)', () => {
     ])
     expect(screen.getByText('Failed')).toBeInTheDocument()
     expect(screen.getByText(/container OOM/)).toBeInTheDocument()
-    expect(
-      screen.getByText('Apply to Training Config').closest('button'),
-    ).not.toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Apply' })).not.toBeDisabled()
   })
 
   // MODEL-FLOW-021. A FAILED run enables Apply (retry with its params) but
@@ -220,9 +218,7 @@ describe('RunParamsPanel (MODEL-FLOW-012)', () => {
     renderPanel([run({ status: 'RUNNING', metrics: null })])
     expect(screen.getByText('Running')).toBeInTheDocument()
     expect(screen.getByText('Ridge Regression')).toBeInTheDocument()
-    expect(
-      screen.getByText('Apply to Training Config').closest('button'),
-    ).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Apply' })).toBeDisabled()
     expect(
       screen.getByRole('checkbox', { name: /Compare Ridge Regression/i }),
     ).toBeDisabled()
@@ -231,27 +227,34 @@ describe('RunParamsPanel (MODEL-FLOW-012)', () => {
     ).toBeInTheDocument()
   })
 
+  // MODEL-FLOW-019-T34. The label is lowercase `rmse` since 991ff47 put the
+  // headline metric in the collapsed card header, where it sits beside the
+  // status and the timestamp rather than heading a tile of its own.
   it('shows RMSE only for a SUCCEEDED run with recorded metrics', () => {
     renderPanel([run()])
-    expect(screen.getByText('RMSE')).toBeInTheDocument()
+    expect(screen.getByText('rmse')).toBeInTheDocument()
     expect(screen.getByText('1.23')).toBeInTheDocument()
   })
 
-  it('labels a hyperparameter build_model does not read for that algorithm as "not used"', () => {
+  it('labels a hyperparameter build_model does not read for that algorithm as "unused"', () => {
     renderPanel([
       run({
         algorithm: 'random_forest',
         hyperparameters: { n_estimators: 100, min_samples_leaf: 5 },
       }),
     ])
-    expect(screen.getByText('not used')).toBeInTheDocument()
+    // random_forest reads `n_estimators` and `max_depth`, so
+    // `min_samples_leaf` is the unconsumed one. It also CONSUMES the seed, so
+    // the seed chip carries no marker here and `getByText` (singular) is the
+    // right query — a second `unused` on screen would fail this outright.
+    expect(screen.getByText('unused')).toBeInTheDocument()
   })
 
   it("Apply writes the run's values into the raw atoms, never the current form's algorithm", () => {
     const { store } = renderPanel([run()])
     store.set(mpAlgorithmAtom, 'svm')
 
-    fireEvent.click(screen.getByText('Apply to Training Config'))
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
 
     expect(store.get(mpAlgorithmAtom)).toBe('ridge')
     expect(
@@ -462,22 +465,45 @@ describe('RunParamsPanel (MODEL-FLOW-012)', () => {
     })
   })
 
-  // MODEL-FLOW-014-T07/V06. Both directions, or the "not used by this
-  // estimator" label is unfalsified — a panel that always shows the hint
-  // (or never does) would pass a one-sided test.
-  it('shows the seed value with NO hint for an algorithm that consumes it (random_forest)', () => {
+  /**
+   * MODEL-FLOW-014-T07/V06, re-established by MODEL-FLOW-019-T34 after
+   * 991ff47 redesigned the panel into cards.
+   *
+   * BOTH DIRECTIONS, and both as POSITIVE assertions. The seed is now ONE
+   * provenance chip reading `seed 4242` — never a 'Seed' label beside a
+   * separate '4242' value — and the difference between an algorithm that
+   * consumes it and one that does not is carried by an `unused` marker on
+   * that chip, not by the chip's presence. T34 rejected inverting these to
+   * `queryByText(...).not.toBeInTheDocument()`: an absent chip cannot
+   * distinguish "this estimator ignores the seed" from "the chip stopped
+   * rendering", and only the first is a fact about the run.
+   *
+   * The two cases must disagree on the marker, or it is unfalsified — a
+   * panel that always marked (or never marked) would pass a one-sided test.
+   * BOTH scope the assertion to the seed chip rather than to the document:
+   * the shared fixture carries `{alpha: 0.037}`, which random_forest does
+   * NOT read, so a bare `queryByText('unused')` would match that
+   * hyperparameter's own marker and report the seed's state wrongly.
+   */
+  it('shows the seed chip with NO unused marker for an algorithm that consumes it (random_forest)', () => {
     renderPanel([run({ algorithm: 'random_forest', seed: 4242 })])
-    expect(screen.getByText('Seed')).toBeInTheDocument()
-    expect(screen.getByText('4242')).toBeInTheDocument()
-    expect(
-      screen.queryByText(/not used by this estimator/i),
-    ).not.toBeInTheDocument()
+    const chip = screen.getByText('seed 4242').closest('span[title]')
+    expect(chip).not.toHaveTextContent('unused')
+    expect(chip).toHaveAttribute(
+      'title',
+      'Estimator seed — this algorithm consumes it.',
+    )
   })
 
-  it('shows the seed value WITH "not used by this estimator" for ridge, which train.py never passes random_state to', () => {
+  it('shows the seed chip MARKED unused for ridge, which train.py never passes random_state to', () => {
     renderPanel([run({ algorithm: 'ridge', seed: 4242 })])
-    expect(screen.getByText('Seed')).toBeInTheDocument()
-    expect(screen.getByText('4242')).toBeInTheDocument()
-    expect(screen.getByText(/not used by this estimator/i)).toBeInTheDocument()
+    const chip = screen.getByText('seed 4242').closest('span[title]')
+    expect(chip).toHaveTextContent('unused')
+    // The marker alone would not say WHY. The title names the estimator, the
+    // same sentence the unconsumed-hyperparameter chips carry.
+    expect(chip).toHaveAttribute(
+      'title',
+      'Ridge Regression does not read the seed — it had no effect on the fit.',
+    )
   })
 })

@@ -66,6 +66,10 @@ import { FeatureImportanceTable } from './evaluation/feature-importance-table'
 import { FeatureCountSweepLauncher } from './evaluation/feature-count-sweep-launcher'
 import { FeatureCountSweepTable } from './evaluation/feature-count-sweep-table'
 import { useFeatureCountSweep } from '@/hooks/model/use-feature-count-sweep'
+import {
+  DEFAULT_SWEEP_METRIC,
+  type SweepMetric,
+} from '@/lib/feature-count-sweep'
 import { useRunDistinctLabelled } from '@/hooks/model/use-run-distinct-labelled'
 import type { UsePipelineNavResult } from '@/hooks/model/use-model-pipeline-nav'
 import { ChartLegend } from '@/components/charts/chart-legend'
@@ -104,6 +108,22 @@ export function Phase5Evaluation({ nav }: Props) {
   // separately to learn its method. The cost is that the table does not
   // survive a reload; the sweep's runs do, and relaunching re-finds them.
   const [sweepId, setSweepId] = useState<string | null>(null)
+  /**
+   * MODEL-FLOW-019-T35. The metric this sweep was LAUNCHED under, held in the
+   * SAME local state as `sweepId` and for the same reason given above — never
+   * a fourth schema column beside featureColumns/sweepId/sweepSeedRunId.
+   *
+   * Persisting it would buy nothing: the table already does not survive a
+   * reload, so there is no later reader to serve, and it would cost a
+   * migration plus a new absence state for every row launched before the
+   * column existed. Held here it is exactly as durable as the `sweepId` it
+   * qualifies, which is the right lifetime for it.
+   *
+   * Set only by `onLaunched`, so the table renders the metric the fits were
+   * actually paid for rather than whatever a control reads at render time.
+   */
+  const [sweepMetric, setSweepMetric] =
+    useState<SweepMetric>(DEFAULT_SWEEP_METRIC)
   const sweep = useFeatureCountSweep(serverDraftId, sweepId)
 
   const cvPhase = cvScoringPhaseOf(run)
@@ -625,7 +645,10 @@ export function Phase5Evaluation({ nav }: Props) {
         distinctLabelledValues={distinctLabelled.value}
         distinctLabelledLoading={distinctLabelled.loading}
         distinctLabelledReason={distinctLabelled.reason}
-        onLaunched={setSweepId}
+        onLaunched={(id, metric) => {
+          setSweepId(id)
+          setSweepMetric(metric)
+        }}
       />
 
       {sweepId && run.featureImportance && (
@@ -633,6 +656,7 @@ export function Phase5Evaluation({ nav }: Props) {
           runs={sweep.runs}
           seedRunId={run.id}
           seedMethod={run.featureImportance.method}
+          metric={sweepMetric}
           distinctLabelledValues={distinctLabelled.value}
           loading={sweep.loading}
           error={sweep.error}

@@ -9,6 +9,7 @@ import { datasetService } from '@/services/dataset'
 import { useModelDraftResume } from '@/hooks/model/use-model-draft-resume'
 import { readModelConfig, configTargets } from '@/lib/model-config'
 import { METRIC_KEYS, type MetricKey } from '@/lib/model-metrics'
+import { normaliseLossFunction } from '@/lib/training-config'
 import type { AIModel } from '@/types'
 import {
   resetWizardAtom,
@@ -146,7 +147,11 @@ export function useModelWizardMode(): UseModelWizardModeResult {
         setFindBestParams(config.findBestParams ?? false)
         setTargetVariable(configTargets(config))
         setHyperparams(config.hyperparameters)
-        setLossFunction(config.lossFunction ?? 'mse')
+        // MODEL-FLOW-019-T37. Was `?? 'mse'` — see `use-model-preset`'s twin
+        // of this line. Opening an existing model for EDIT hit the same blank
+        // control, which is the worse of the two cases: a reader is looking at
+        // a model saved with a recorded preference and sees no value at all.
+        setLossFunction(normaliseLossFunction(config.lossFunction))
         setTrainTestSplit(config.trainTestSplit ?? 80)
         setSelectedMetrics(
           config.selectedMetrics ?? ([...METRIC_KEYS] as MetricKey[]),

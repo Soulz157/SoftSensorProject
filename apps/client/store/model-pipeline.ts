@@ -129,8 +129,18 @@ export const mpHyperparamsAtom = atom<Record<string, HyperparamValue>>({})
 export const mpPerAlgorithmHyperparamsAtom = atom<
   Partial<Record<Algorithm, Record<string, HyperparamValue>>>
 >({})
-/** Evaluation metric optimized during training. See `LOSS_OPTIONS` in `lib/training-config`. */
-export const mpLossFunctionAtom = atom<string>('mse')
+/**
+ * Evaluation metric recorded on the saved model. See `LOSS_OPTIONS` in
+ * `lib/training-config`.
+ *
+ * MODEL-FLOW-019-T37. Was `'mse'`, which `LOSS_OPTIONS` does not offer — so
+ * Step 3's Select matched no item and rendered an EMPTY trigger on every
+ * fresh draft. The literal is inlined rather than imported from
+ * `DEFAULT_LOSS_FUNCTION` to avoid the store → training-config cycle this
+ * file already avoids for `defaultHyperparams` (see `resetWizardAtom`), and
+ * `lib/__tests__/training-config.test.ts` asserts the two stay equal.
+ */
+export const mpLossFunctionAtom = atom<string>('rmse')
 /** Train split percentage (test = 100 − this). Default 80/20. */
 export const mpTrainTestSplitAtom = atom<number>(80)
 /** MODEL-FLOW-014-T06. The Split Distribution panel's own tag selection —
@@ -391,7 +401,10 @@ export const resetWizardAtom = atom(null, (_get, set) => {
   // `defaultHyperparams('ols')`; inlined to avoid a store → training-config cycle).
   set(mpHyperparamsAtom, { fit_intercept: true })
   set(mpPerAlgorithmHyperparamsAtom, {})
-  set(mpLossFunctionAtom, 'mse')
+  // MODEL-FLOW-019-T37. Was 'mse' — not a `LOSS_OPTIONS` member, so a reset
+  // wizard rendered an empty Loss control. Same inlined literal as the atom's
+  // own default above, held equal to `DEFAULT_LOSS_FUNCTION` by test.
+  set(mpLossFunctionAtom, 'rmse')
   set(mpTrainTestSplitAtom, 80)
   set(mpSplitStatsTagsAtom, [])
   set(mpSeedAtom, undefined)

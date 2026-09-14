@@ -3,11 +3,15 @@
 import { useState } from 'react'
 import { Layers } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Label } from '@/components/ui/label'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { canRank } from '@/lib/feature-importance'
 import {
   DEFAULT_SWEEP_COUNTS,
+  DEFAULT_SWEEP_METRIC,
   admissibleFolds,
   prefixesFromSeed,
+  type SweepMetric,
 } from '@/lib/feature-count-sweep'
 import { launchFeatureCountSweep } from '@/hooks/model/use-feature-count-sweep'
 import type { DraftRunSummary } from '@/hooks/model/use-draft-run-evaluation'
@@ -70,7 +74,11 @@ export function FeatureCountSweepLauncher({
   /** Verbatim reason the distinct-labelled lookup could not answer, or null —
    *  kept separate from "too few values" so the refusal can say which. */
   distinctLabelledReason: string | null
-  onLaunched: (sweepId: string) => void
+  /** MODEL-FLOW-019-T35. The metric travels WITH the id, because it is a
+   *  property of the sweep that was just created — reading it from a control
+   *  at render time is the multiple-comparisons hazard this task exists to
+   *  avoid. */
+  onLaunched: (sweepId: string, metric: SweepMetric) => void
 }) {
   // EVERY hook above EVERY early return. A previous pass put `if (!canRank)
   // return null` above a second hook, which was a rules-of-hooks violation the
@@ -78,6 +86,18 @@ export function FeatureCountSweepLauncher({
   const [launching, setLaunching] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [partial, setPartial] = useState<string | null>(null)
+  /**
+   * MODEL-FLOW-019-T35. BOUND AT LAUNCH, not read at render.
+   *
+   * Switching the decision metric after the curve is on screen costs nothing
+   * computationally — same runs, same folds, only which column decides — and
+   * that is precisely what makes it dangerous: a reader can try both and keep
+   * the n they liked, at sample sizes where MODEL-FLOW-020-T03 already
+   * measured three different orderings of the same five settings. So the
+   * choice is made BEFORE the fits are paid for, and the table is told what
+   * this sweep was launched under rather than what is selected now.
+   */
+  const [metric, setMetric] = useState<SweepMetric>(DEFAULT_SWEEP_METRIC)
 
   const importance = run.featureImportance
   const algorithm = sweepableAlgorithm(run.algorithm)
@@ -126,7 +146,7 @@ export function FeatureCountSweepLauncher({
           `Launched ${launched.length} of ${plan.length} rows — the ladder stopped early, so the curve below is incomplete.`,
         )
       }
-      if (launched.length > 0) onLaunched(sweepId)
+      if (launched.length > 0) onLaunched(sweepId, metric)
       else setError('No rows launched.')
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not launch the sweep.')
@@ -216,6 +236,57 @@ export function FeatureCountSweepLauncher({
         <p className="text-xs text-muted-foreground">
           {plan.length} rows × {folds} folds = {fits} fits, run one at a time.
           Each is its own container spawn.
+        </p>
+      </div>
+
+      {/* MODEL-FLOW-019-T35. Chosen BEFORE the fits are paid for, and fixed on
+          the sweep from then on — see the `metric` state's own comment. The
+          cost line above is unchanged by this choice: the same runs launch
+          either way, only which column decides differs.
+
+          THE LABEL SAYS "NEXT" DELIBERATELY. This panel and the sweep TABLE
+          render together once a sweep exists, so a reader who flips this
+          control afterwards would otherwise expect the table above to
+          re-decide — and it will not, by design. Naming the scope as the next
+          launch makes the binding visible instead of leaving it as a control
+          that silently does nothing to what is on screen.
+
+          The full what-this-is-not paragraph lives on the TABLE, next to the
+          metric that actually decided, rather than being printed here as well:
+          two copies of one sentence on one screen is what RunParamsPanel's own
+          header count line was removed for. */}
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between">
+          <Label className="text-xs font-medium">
+            Decide the next ladder on
+          </Label>
+          <ToggleGroup
+            type="single"
+            value={metric}
+            onValueChange={v => {
+              if (!v) return
+              setMetric(v as SweepMetric)
+            }}
+            className="flex justify-start gap-1.5"
+          >
+            <ToggleGroupItem
+              value="rmse"
+              className="h-7 cursor-pointer rounded-md border border-border px-2.5 text-xs font-medium data-[state=on]:border-primary data-[state=on]:bg-primary/10 data-[state=on]:text-primary"
+            >
+              RMSE
+            </ToggleGroupItem>
+            <ToggleGroupItem
+              value="mae"
+              className="h-7 cursor-pointer rounded-md border border-border px-2.5 text-xs font-medium data-[state=on]:border-primary data-[state=on]:bg-primary/10 data-[state=on]:text-primary"
+            >
+              MAE
+            </ToggleGroupItem>
+          </ToggleGroup>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Fixed on the sweep when it launches, so the ladder cannot be
+          re-decided after its cost is paid. Changing it here affects the next
+          launch, never a table already on screen.
         </p>
       </div>
 

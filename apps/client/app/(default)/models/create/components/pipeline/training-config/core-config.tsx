@@ -139,10 +139,33 @@ export function CoreConfig({
       together. */}
       <div className="space-y-3 grid grid-cols-1 gap-3 ">
         <div className="space-y-1.5">
-          <Label className="text-xs font-medium">Loss function</Label>
+          {/* MODEL-FLOW-019-T37. The Label carried no `htmlFor`, so it named
+              this control visually while being attached to nothing — the Seed
+              input beside it has always been properly associated, and this
+              one simply was not. Fixed rather than worked around in the test:
+              a label-based query is the one that keeps working when these
+              controls are reordered.
+
+              The id is a literal rather than `useId()` because `CoreConfig`
+              has exactly ONE production render site
+              (phase-3-training-config.tsx). Two instances on a page would
+              emit duplicate DOM ids and make a label query throw on the
+              ambiguity — so if this component is ever rendered twice, switch
+              to `useId()` here rather than uniquifying by hand. */}
+          <Label htmlFor="loss-function" className="text-xs font-medium">
+            Loss function
+          </Label>
           <Select value={lossFunction} onValueChange={onLossChange}>
-            <SelectTrigger className="h-9 text-sm">
-              <SelectValue />
+            <SelectTrigger id="loss-function" className="h-9 text-sm">
+              {/* MODEL-FLOW-019-T37. A bare `SelectValue` renders NOTHING when
+                  the value matches no item — which is how a default of 'mse',
+                  never a `LOSS_OPTIONS` member, showed as an empty control
+                  rather than as anything a reader could act on. Every write
+                  path now passes through `normaliseLossFunction`, so this
+                  placeholder should be unreachable; it is the backstop that
+                  keeps the failure STATED rather than silent should a path be
+                  added that does not. */}
+              <SelectValue placeholder="Select a metric" />
             </SelectTrigger>
             <SelectContent>
               {LOSS_OPTIONS.map(opt => (

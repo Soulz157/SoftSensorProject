@@ -17,10 +17,14 @@
  *                    without its own row/dropped counts (DS-LAKE-018-T05).
  * - `cv-fold-estimate` — a fold MEAN with a spread, an estimate of the
  *                    CONFIGURATION rather than a measurement of the shipped
- *                    model. It deliberately has no `rmse`/`r2`/`mae` field:
- *                    a single number named like a measurement is exactly the
- *                    conflation MODEL-FLOW-016's finding 3 caught once
- *                    already.
+ *                    model. It deliberately has no TOP-LEVEL `rmse`/`r2`/
+ *                    `mae` field: a single number named like a measurement
+ *                    is exactly the conflation MODEL-FLOW-016's finding 3
+ *                    caught once already. The figures themselves are neither
+ *                    absent nor anonymous — they live in NAMED `mean` and
+ *                    `std` triples, one pair per metric, so a caller asking
+ *                    for MAE gets the MAE fold mean and never another
+ *                    metric's (MODEL-FLOW-019-T36).
  *
  * WHY A TAGGED UNION AND NOT A COLUMN HEADER: a header is a promise the
  * renderer makes; a tag is a fact the renderer cannot drop. MODEL-FLOW-004
@@ -272,9 +276,22 @@ export function headlineMetricOf(
   )
 }
 
-/** One figure out of a sourced value — the fold MEAN for a CV estimate,
- *  which is the only number of that shape it has. Callers that show a CV
- *  mean are responsible for showing the spread beside it (`std[key]`). */
+/**
+ * One figure out of a sourced value, ALWAYS of the metric asked for.
+ *
+ * For a CV estimate that is `mean[key]` — THAT METRIC'S OWN fold mean, not a
+ * single shared one. Callers showing it are responsible for showing the
+ * matching spread, `std[key]`, beside it.
+ *
+ * MODEL-FLOW-019-T36 was filed believing this returned the RMSE fold mean
+ * whatever `key` asked for, and closed on the finding that it never did: the
+ * prior wording here ("the fold MEAN ... the only number of that shape it
+ * has") described the `CvFoldEstimate` shape as holding ONE anonymous mean,
+ * which it has not since MODEL-FLOW-019-T02 created it with `MetricTriple`
+ * `mean`/`std` pairs. Stated positively now, because that sentence alone
+ * cost two ledger entries: there is no metric whose figure this function can
+ * answer with another metric's number.
+ */
 export function metricValueOf(
   metric: SourcedMetrics,
   key: keyof MetricTriple,

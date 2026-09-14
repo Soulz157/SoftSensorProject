@@ -1,6 +1,11 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { CoreConfig } from '../core-config'
+import {
+  DEFAULT_LOSS_FUNCTION,
+  LOSS_OPTIONS,
+  normaliseLossFunction,
+} from '@/lib/training-config'
 import type { Algorithm } from '@/store/model-pipeline'
 
 /** MODEL-FLOW-014-T07. The Seed control's own behaviour — clamping,
@@ -104,5 +109,93 @@ describe('CoreConfig — Seed control', () => {
     render(<CoreConfig {...baseProps()} algorithms={['ridge']} />)
     expect(screen.getByText(/ignored by/i)).toBeInTheDocument()
     expect(screen.getByText(/Ridge Regression/)).toBeInTheDocument()
+  })
+})
+
+/**
+ * MODEL-FLOW-019-T37. The Loss control must SHOW something.
+ *
+ * This is the observation that opened the task, kept as a guard. A Radix
+ * `Select` whose value matches no `SelectItem` renders an EMPTY trigger, and
+ * the wizard's default was `'mse'`, which `LOSS_OPTIONS` does not offer.
+ * Measured before the fix: `'mse'` and `''` both produced `""`,
+ * indistinguishable from each other, while `'rmse'` and `'mae'` produced
+ * their labels.
+ *
+ * Asserted through the rendered TRIGGER rather than through the prop, because
+ * the prop was never the problem — every value here is a perfectly good
+ * string, and only the render told the truth.
+ */
+describe('CoreConfig — Loss function control (MODEL-FLOW-019-T37)', () => {
+  /** The Loss trigger, found by its own label rather than by position — a
+   *  `getAllByRole('combobox')[1]` would silently follow any reordering of
+   *  the controls above it. */
+  function lossTrigger() {
+    return screen.getByLabelText('Loss function')
+  }
+
+  it.each(LOSS_OPTIONS)(
+    'renders the label for the offered value $value',
+    ({ value, label }) => {
+      render(<CoreConfig {...baseProps()} lossFunction={value} />)
+      expect(lossTrigger()).toHaveTextContent(label)
+    },
+  )
+
+  it('renders a label for the wizard default, never an empty control', () => {
+    // The regression itself: with the old default this trigger was blank.
+    render(<CoreConfig {...baseProps()} lossFunction={DEFAULT_LOSS_FUNCTION} />)
+    expect(lossTrigger().textContent?.trim()).not.toBe('')
+    expect(lossTrigger()).toHaveTextContent('RMSE')
+  })
+
+  /**
+   * MEASURED, AND IT DEFEATS THE OBVIOUS BACKSTOP — recorded so the next
+   * reader does not add the same one twice.
+   *
+   * A `SelectValue placeholder` does NOT rescue an unmatched value. Radix
+   * treats a value that is set-but-matching-nothing as "this control has a
+   * value" and renders the (non-existent) item's text, i.e. nothing at all;
+   * the placeholder fires only when the value is genuinely empty. Probed
+   * directly: `'mse'` renders `""` WITH the placeholder present, while `''`
+   * renders `"Select a metric"`.
+   *
+   * So the placeholder is worth having — it converts one silent-blank case
+   * into a stated one — but it is NOT what protects this control. That is
+   * `normaliseLossFunction`, applied at every path that writes the atom. This
+   * pair of cases pins both halves of that finding so the guarantee is not
+   * over-claimed.
+   */
+  it('renders NOTHING for a set-but-unoffered value — the placeholder does not cover this', () => {
+    render(<CoreConfig {...baseProps()} lossFunction="mse" />)
+    expect(lossTrigger().textContent?.trim()).toBe('')
+  })
+
+  it('normalising that same legacy value first is what makes it render', () => {
+    render(
+      <CoreConfig
+        {...baseProps()}
+        lossFunction={normaliseLossFunction('mse')}
+      />,
+    )
+    expect(lossTrigger()).toHaveTextContent('RMSE')
+  })
+
+  it('falls back to the placeholder only when the value is genuinely empty', () => {
+    render(<CoreConfig {...baseProps()} lossFunction="" />)
+    expect(lossTrigger()).toHaveTextContent('Select a metric')
+  })
+
+  it('still reports the user’s own choice upward', () => {
+    const onLossChange = vi.fn()
+    render(
+      <CoreConfig
+        {...baseProps()}
+        lossFunction="rmse"
+        onLossChange={onLossChange}
+      />,
+    )
+    expect(lossTrigger()).toHaveTextContent('RMSE')
+    expect(onLossChange).not.toHaveBeenCalled()
   })
 })

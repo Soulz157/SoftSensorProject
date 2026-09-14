@@ -37,7 +37,10 @@ import {
   type HyperparamValue,
 } from '@/store/model-pipeline'
 import type { AcceptanceCriterion } from '@/lib/acceptance-criteria'
-import { defaultHyperparams } from '@/lib/training-config'
+import {
+  DEFAULT_LOSS_FUNCTION,
+  defaultHyperparams,
+} from '@/lib/training-config'
 
 export interface UsePipelineNavResult {
   currentStep: number
@@ -282,11 +285,15 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     setTargetVariableAtom([])
     setHyperparametersAtom(defaultHyperparams('ols'))
     setPerAlgorithmHyperparametersAtom({})
-    // MODEL-FLOW-012: was 'rmse', diverging from mpLossFunctionAtom's own
-    // default and resetWizardAtom's 'mse' — this fired on every
-    // workspace/plant change (use-create-model.ts) and silently flipped the
-    // displayed loss function.
-    setLossFunctionAtom('rmse')
+    // MODEL-FLOW-019-T37. The comment that stood here described a divergence
+    // and then reproduced it: it said 'rmse' diverged from the atom's own
+    // default and resetWizardAtom's 'mse', then set 'rmse' anyway — leaving a
+    // reader unable to tell whether a fix had been reverted or the note was
+    // simply backwards. The divergence was real, and is now closed the other
+    // way: 'mse' was never a `LOSS_OPTIONS` member and rendered an empty
+    // control, so both store sites moved to 'rmse' and this one reads the
+    // shared constant rather than a third copy of the literal.
+    setLossFunctionAtom(DEFAULT_LOSS_FUNCTION)
     setTrainTestSplitAtom(80)
     setSeedAtom(undefined)
     setNSplitsAtom(undefined)

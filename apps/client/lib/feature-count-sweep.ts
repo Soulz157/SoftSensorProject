@@ -20,6 +20,7 @@
  */
 
 import { observationsPerFeature, rankFeatures } from '@/lib/feature-importance'
+import { RANK_DIRECTION } from '@/lib/metric-ranking'
 import { sourcedMetricsOf } from '@/lib/metric-source'
 import type {
   ModelTrainingRunListItem,
@@ -72,6 +73,40 @@ export function prefixesFromSeed(
   return rows
 }
 
+/**
+ * MODEL-FLOW-019-T35. WHICH FIGURE DECIDES WHICH ROW WINS.
+ *
+ * T31 fixed this at RMSE for a stated reason, but read what the reason
+ * actually rules on: "cv_r2_mean is an average of ratios with a different
+ * denominator per fold, so ONE quiet fold can drag it without limit". That
+ * argument rules R2 OUT. It never once ruled RMSE IN over MAE — which is the
+ * whole of what this union reopens.
+ *
+ * R2 IS DELIBERATELY NOT A MEMBER. It stays a rendered COLUMN and is refused
+ * as the decider — the same admissible-in-one-role, refused-in-another split
+ * AC34 already settled for R2 as a ratio operand. Expressing the refusal in
+ * the TYPE means a caller cannot pass it rather than merely being told not
+ * to, and `sweepRuleText` states it where the reader deciding is looking.
+ *
+ * THIS IS NOT THE TRAINING OBJECTIVE AND MUST NEVER BE DESCRIBED AS ONE.
+ * `lossFunction` never reaches the trainer at all — LOSS_OPTIONS' own doc
+ * comment records MODEL-FLOW-012's audit (train.py reads no loss/objective/
+ * criterion anywhere, and CreateTrainingRunSchema is `.strict()`) — and
+ * `launchFeatureCountSweep` omits it besides, so every row of a sweep trains
+ * on the same defaults. This is therefore the metric a reader CHOOSES TO
+ * READ RESULTS BY, and the copy says exactly that. A control claiming the
+ * estimator was "fit for" the chosen metric would be false for every row of
+ * every sweep, on every algorithm.
+ *
+ * Members stay SEPARATE even where copy collapses them (T29's precedent).
+ */
+export type SweepMetric = 'rmse' | 'mae'
+
+/** What a sweep launched before T35 is read as, and what a new one starts on.
+ *  Unchanged behaviour for an existing sweep — but NAMED now rather than
+ *  implied, which is the whole point of recording it. */
+export const DEFAULT_SWEEP_METRIC: SweepMetric = 'rmse'
+
 /** One row as rendered: its own estimate, its own spread, its own arithmetic. */
 export interface SweepRow {
   runId: string
@@ -87,8 +122,20 @@ export interface SweepRow {
   features: string[]
   /** Fold mean and spread. `std` null => this row makes NO ordering claim. */
   rmse: { mean: number | null; std: number | null }
+  /** MODEL-FLOW-019-T35. Carried for EVERY row whether or not it decides —
+   *  the column renders wherever there is data, and a reader comparing the
+   *  two ladders needs both present at once. */
+  mae: { mean: number | null; std: number | null }
   r2: { mean: number | null; std: number | null }
   obsPerFeature: number | null
+}
+
+/** The one pair `selectByOverlap` orders on, for the metric in force. Kept as
+ *  an accessor rather than a `row[metric]` index at each call site so the
+ *  decidable metrics stay exactly the `SweepMetric` union — indexing would
+ *  silently admit `r2` the moment someone widened the key type. */
+function statFor(row: SweepRow, metric: SweepMetric) {
+  return metric === 'mae' ? row.mae : row.rmse
 }
 
 function featureCountOf(run: ModelTrainingRunListItem): number | null {
@@ -124,6 +171,14 @@ export function buildSweepRows(
         n,
         features: run.featureColumns ?? [],
         rmse: { mean: cv?.mean.rmse ?? null, std: cv?.std.rmse ?? null },
+        // MODEL-FLOW-019-T35. Each metric reads its OWN fold mean and spread
+        // — `CvFoldEstimate` carries named `MetricTriple` pairs, so this is a
+        // widening rather than a re-derivation (MODEL-FLOW-019-T36 audited
+        // the accessor and confirmed no metric can answer with another's
+        // number). All six figures exist on every CV run this system has ever
+        // trained (cv_{r2,mae,rmse}_{mean,std}, pipelines/cv_expanding.py),
+        // so there is no legacy null to design around.
+        mae: { mean: cv?.mean.mae ?? null, std: cv?.std.mae ?? null },
         r2: { mean: cv?.mean.r2 ?? null, std: cv?.std.r2 ?? null },
         // AC68: the denominator is DISTINCT LABELLED VALUES, not row count —
         // y is a lab sample forward-filled across the frame, so the real
@@ -141,16 +196,37 @@ export interface SweepSelection {
   /** The row the RULE picks, or null when nothing can be ordered. */
   chosenRunId: string | null
   chosenN: number | null
-  /** The lowest fold-mean RMSE — shown for transparency, never the answer. */
+  /** The best fold mean under the metric in force — shown for transparency,
+   *  never the answer. "Best" rather than "lowest": `RANK_DIRECTION` decides
+   *  the sense, and nothing here assumes smaller wins. */
   bestRunId: string | null
   bestN: number | null
 }
 
-/** A row can be ordered only when it has BOTH a mean and a spread. */
-function comparable(
-  row: SweepRow,
-): row is SweepRow & { rmse: { mean: number; std: number } } {
-  return row.rmse.mean !== null && row.rmse.std !== null
+/** A row that CAN be ordered, with its pair already resolved to numbers. */
+interface OrderableRow {
+  row: SweepRow
+  mean: number
+  std: number
+}
+
+/**
+ * The rows orderable on the metric IN FORCE, each carrying its resolved pair.
+ *
+ * A row needs BOTH a mean and a spread for THAT metric: one carrying RMSE but
+ * no MAE is unorderable on a MAE ladder and is refused there, exactly as V42
+ * requires — never quietly placed by whichever metric it happens to have.
+ *
+ * Resolving the pair HERE, once, is what keeps the rest of this module free of
+ * non-null assertions: a filter returning `SweepRow[]` would leave every later
+ * read nullable and invite `as number` at four sites, which CLAUDE.md's type
+ * rule forbids and which the pre-T35 type guard did not need either.
+ */
+function orderableRows(rows: SweepRow[], metric: SweepMetric): OrderableRow[] {
+  return rows.flatMap(row => {
+    const { mean, std } = statFor(row, metric)
+    return mean !== null && std !== null ? [{ row, mean, std }] : []
+  })
 }
 
 /**
@@ -167,30 +243,38 @@ function comparable(
  * be the argmin this whole module exists to refuse, arriving through a gap in
  * the data instead of through a decision.
  */
-export function selectByOverlap(rows: SweepRow[]): SweepSelection {
-  const usable = rows.filter(comparable)
+export function selectByOverlap(
+  rows: SweepRow[],
+  metric: SweepMetric = DEFAULT_SWEEP_METRIC,
+): SweepSelection {
+  const usable = orderableRows(rows, metric)
   if (usable.length === 0) {
     return { chosenRunId: null, chosenN: null, bestRunId: null, bestN: null }
   }
 
-  const best = usable.reduce((a, b) => (b.rmse.mean < a.rmse.mean ? b : a))
-  const bestHigh = best.rmse.mean + best.rmse.std
-  const bestLow = best.rmse.mean - best.rmse.std
+  // DIRECTION IS READ, NEVER PASSED AND NEVER COPIED. `RANK_DIRECTION` is the
+  // one table in this codebase that answers min-or-max per metric — built by
+  // T03, reused by T07's comparatorSymbol, read directly by isRankMetricKey
+  // after T10 replaced a maintained exclusion list with it. A direction
+  // parameter here would let a caller order MAE ascending on one screen and
+  // descending on another; a second copy would drift from the first.
+  const direction = RANK_DIRECTION[metric]
+  const better = (a: number, b: number) => (direction === 'min' ? b < a : b > a)
+
+  const best = usable.reduce((a, b) => (better(a.mean, b.mean) ? b : a))
+  const bestHigh = best.mean + best.std
+  const bestLow = best.mean - best.std
 
   const overlapping = usable
-    .filter(row => {
-      const low = row.rmse.mean - row.rmse.std
-      const high = row.rmse.mean + row.rmse.std
-      return low <= bestHigh && bestLow <= high
-    })
-    .sort((a, b) => (a.n ?? Infinity) - (b.n ?? Infinity))
+    .filter(({ mean, std }) => mean - std <= bestHigh && bestLow <= mean + std)
+    .sort((a, b) => (a.row.n ?? Infinity) - (b.row.n ?? Infinity))
 
   const chosen = overlapping[0] ?? best
   return {
-    chosenRunId: chosen.runId,
-    chosenN: chosen.n,
-    bestRunId: best.runId,
-    bestN: best.n,
+    chosenRunId: chosen.row.runId,
+    chosenN: chosen.row.n,
+    bestRunId: best.row.runId,
+    bestN: best.row.n,
   }
 }
 
@@ -225,12 +309,74 @@ export function admissibleFolds(
   return Math.min(k, 10)
 }
 
-/** AC67: the rule is PRINTED beside the table, never implied by a bold row. */
-export function sweepRuleText(): string {
+/** Display spelling per decidable metric. Deliberately not imported from
+ *  metric-ranking's own private `METRIC_LABELS` — that one is not exported,
+ *  and this module already keeps its display vocabulary beside its rules. */
+const SWEEP_METRIC_LABELS: Record<SweepMetric, string> = {
+  rmse: 'RMSE',
+  mae: 'MAE',
+}
+
+export function sweepMetricLabel(metric: SweepMetric): string {
+  return SWEEP_METRIC_LABELS[metric]
+}
+
+/**
+ * AC67: the rule is PRINTED beside the table, never implied by a bold row.
+ *
+ * MODEL-FLOW-019-T35 EXTENDS AC67 rather than amending it — that criterion
+ * names no metric, and a rule stated without one is only half printed. So
+ * this now names the metric AND its direction, with the same discipline that
+ * made T31 print the seed run id and the seed method rather than let the
+ * ranking appear to come from nowhere.
+ *
+ * THE SELECTED n CHANGES WITH THE METRIC, AND THAT IS THE FEATURE — but it
+ * reads as a bug unless said out loud. MAE's fold-to-fold spread is narrower
+ * than RMSE's (RMSE is dominated by tail residuals), so narrower intervals
+ * overlap the best row less often and the rule selects a row CLOSER to the
+ * argmin — frequently a LARGER n than the same ladder decided on RMSE.
+ *
+ * The R2 refusal lives HERE, next to the rule a reader is consulting to
+ * decide, rather than parked in a metadata table they would have to go
+ * looking for.
+ */
+export function sweepRuleText(
+  metric: SweepMetric = DEFAULT_SWEEP_METRIC,
+): string {
+  const label = SWEEP_METRIC_LABELS[metric]
+  const sense = RANK_DIRECTION[metric] === 'min' ? 'lowest' : 'highest'
   return (
-    'Selected by rule, not by the lowest number: the smallest feature count ' +
-    'whose fold spread overlaps that of the best-scoring row. Where two rows ' +
-    'overlap, the extra features bought nothing this data can measure.'
+    `Decided on ${label} (${sense} is better). Selected by rule, not by the ` +
+    `${sense} number: the smallest feature count whose fold spread overlaps ` +
+    `that of the best-scoring row. Where two rows overlap, the extra ` +
+    `features bought nothing this data can measure. R² is shown as a column ` +
+    `but cannot decide the ladder — it is a fold average of ratios whose ` +
+    `denominator changes per fold, so one quiet fold can move it without ` +
+    `limit.`
+  )
+}
+
+/**
+ * What the metric control is and — as importantly — what it is not.
+ *
+ * Two misreadings are available to anyone who sees a metric control on this
+ * screen, and both are stated away rather than left to inference:
+ *
+ * 1. THAT IT RE-RANKS STEP 4. It does not. `rankCandidates` and its
+ *    source-preference order are untouched; this decides which ROW OF THIS
+ *    LADDER wins and nothing else.
+ * 2. THAT THE ROWS WERE FIT FOR IT. They were not, and no run in this system
+ *    ever is — `lossFunction` never reaches the trainer (see `SweepMetric`).
+ *    Every row here trains on identical defaults, which is exactly the
+ *    property that makes the rows comparable to each other.
+ */
+export function sweepMetricScopeText(metric: SweepMetric): string {
+  return (
+    `${SWEEP_METRIC_LABELS[metric]} decides which row of this ladder wins. ` +
+    `It does not re-rank candidates in Model Selection, and it is not a ` +
+    `training objective — every row here trained on the same defaults, which ` +
+    `is what makes them comparable. This is the figure you are choosing to ` +
+    `read the result by.`
   )
 }
 

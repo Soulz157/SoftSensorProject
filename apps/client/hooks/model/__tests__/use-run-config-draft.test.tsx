@@ -3,6 +3,7 @@ import { renderHook, act } from '@testing-library/react'
 import { createStore, Provider } from 'jotai'
 import { useModelPipelineNav } from '../use-model-pipeline-nav'
 import { useRunConfigDraft } from '../use-run-config-draft'
+import { DEFAULT_LOSS_FUNCTION } from '@/lib/training-config'
 import {
   mpAlgorithmAtom,
   mpAlgorithmsAtom,
@@ -48,7 +49,13 @@ describe('useRunConfigDraft — edits stay local until Apply', () => {
   it('starts clean: draft mirrors the committed atoms, dirty is false', () => {
     const { result } = renderDraft()
     expect(result.current.runConfig.draft.trainTestSplit).toBe(80)
-    expect(result.current.runConfig.draft.lossFunction).toBe('mse')
+    // MODEL-FLOW-019-T37. Was the literal 'mse', which pinned the very
+    // default that made Step 3's Loss control render empty — a test can hold
+    // a defect in place as firmly as it holds a guarantee. Reads the shared
+    // constant now, so this case follows the default rather than outliving it.
+    expect(result.current.runConfig.draft.lossFunction).toBe(
+      DEFAULT_LOSS_FUNCTION,
+    )
     expect(result.current.runConfig.draft.algorithms).toEqual(['ols'])
     expect(result.current.runConfig.dirty).toBe(false)
   })

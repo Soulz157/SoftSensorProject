@@ -303,23 +303,34 @@ function Header() {
 
 /** One provenance line: an icon, a mono value, and the full value on hover.
  *  Every entry is a key, digest or figure whose useful form is the whole
- *  string, so each truncates rather than wraps. */
+ *  string, so each truncates rather than wraps.
+ *
+ *  MODEL-FLOW-019-T34. `unused` marks a value RECORDED on the run that the
+ *  estimator never read — dimmed, and labelled with the same `unused` word
+ *  the hyperparameter chips above already use, so one panel states that fact
+ *  one way rather than two. */
 function Provenance({
   icon: Icon,
   value,
   title,
+  unused = false,
 }: {
   icon: typeof Clock
   value: string
   title: string
+  unused?: boolean
 }) {
   return (
     <span
-      className="flex min-w-0 items-center gap-1 text-[10px] text-muted-foreground"
+      className={cn(
+        'flex min-w-0 items-center gap-1 text-[10px] text-muted-foreground',
+        unused && 'opacity-60',
+      )}
       title={title}
     >
       <Icon className="h-3 w-3 shrink-0" />
       <span className="truncate font-mono">{value}</span>
+      {unused && <span className="shrink-0 text-[8px] uppercase">unused</span>}
     </span>
   )
 }
@@ -562,13 +573,23 @@ function RunCard({
                 title={`Train ${splitPct}% / test ${100 - splitPct}% — Apply writes this ratio back into Training Config.`}
               />
             )}
-            {seedUsed && (
-              <Provenance
-                icon={Hash}
-                value={`seed ${run.seed}`}
-                title="Estimator seed — this algorithm consumes it."
-              />
-            )}
+            {/* MODEL-FLOW-019-T34, closing MODEL-FLOW-014-T07/V06's own open
+                question. The seed is RECORDED on every run whatever the
+                algorithm does with it, so the chip renders either way and the
+                marker carries the difference — an absent chip could mean "not
+                consumed" or "not rendered", and only one of those is a fact
+                about the run. Both directions are now positive assertions,
+                which is what V06 asked for and what silence could not give. */}
+            <Provenance
+              icon={Hash}
+              value={`seed ${run.seed}`}
+              unused={!seedUsed}
+              title={
+                seedUsed
+                  ? 'Estimator seed — this algorithm consumes it.'
+                  : `${algorithmLabel} does not read the seed — it had no effect on the fit.`
+              }
+            />
             {run.splitStats && (
               <Provenance
                 icon={Ruler}

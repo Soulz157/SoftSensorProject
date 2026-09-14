@@ -7,6 +7,7 @@ import { getModels } from '@/services/model'
 import { datasetService } from '@/services/dataset'
 import { readModelConfig, configTargets } from '@/lib/model-config'
 import { METRIC_KEYS, type MetricKey } from '@/lib/model-metrics'
+import { normaliseLossFunction } from '@/lib/training-config'
 import type { AIModel } from '@/types'
 import {
   mpNameAtom,
@@ -84,7 +85,13 @@ export function useModelPreset(workspaceId: string): UseModelPresetResult {
       setAlgorithm(config.algorithm)
       setTargetVariable(configTargets(config))
       setHyperparams(config.hyperparameters)
-      setLossFunction(config.lossFunction ?? 'mse')
+      // MODEL-FLOW-019-T37. Was `?? 'mse'`, which is not a `LOSS_OPTIONS`
+      // member — so applying ANY preset whose config predates this field (15
+      // of the 19 saved models) left Step 3's Loss control blank, and the 4
+      // recording 'mse' outright fared no better. `normaliseLossFunction`
+      // resolves absent, legacy and unrecognised alike to a value the control
+      // can actually display.
+      setLossFunction(normaliseLossFunction(config.lossFunction))
       setTrainTestSplit(config.trainTestSplit ?? 80)
       setSelectedMetrics(
         config.selectedMetrics ?? ([...METRIC_KEYS] as MetricKey[]),

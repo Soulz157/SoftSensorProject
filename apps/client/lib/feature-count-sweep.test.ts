@@ -13,6 +13,7 @@ import {
   buildSweepRows,
   prefixesFromSeed,
   selectByOverlap,
+  sweepMetricScopeText,
   sweepProvenanceText,
   sweepRuleText,
   type SweepRow,
@@ -40,6 +41,7 @@ function row(over: Partial<SweepRow>): SweepRow {
     n: 1,
     features: [],
     rmse: { mean: null, std: null },
+    mae: { mean: null, std: null },
     r2: { mean: null, std: null },
     obsPerFeature: null,
     ...over,
@@ -213,6 +215,182 @@ describe('selectByOverlap — V42, a row with no interval makes no claim', () =>
       bestRunId: null,
       bestN: null,
     })
+  })
+})
+
+/**
+ * MODEL-FLOW-019-T35 — the decision metric is chosen, not assumed.
+ *
+ * THE BINDING CASE IS THE FIRST ONE, and it is the reason this block exists:
+ * one set of rows where RMSE and MAE select DIFFERENT n. Without it every
+ * assertion here would pass whatever figure the code actually read, which is
+ * T31's own fixture discipline (it made the argmin and the rule DISAGREE so
+ * the assertion could fail) applied to the metric instead of to the rule.
+ *
+ * The shape is the real one rather than a convenient one: MAE's fold-to-fold
+ * spread is NARROWER than RMSE's, because RMSE is dominated by tail
+ * residuals. Narrower intervals overlap the best row less often, so the MAE
+ * ladder selects a row CLOSER to the argmin — here a LARGER n, which is
+ * exactly the direction the task predicted and the one a reader is most
+ * likely to misread as instability.
+ */
+describe('selectByOverlap — the metric decides, and different metrics decide differently', () => {
+  /** ONE set of rows, read two ways. RMSE's wide spreads overlap and select
+   *  n=2; MAE's narrow ones do not, and select n=5. */
+  const twoLadders = () => [
+    row({
+      runId: 'n2',
+      n: 2,
+      rmse: { mean: 0.0526, std: 0.004 },
+      mae: { mean: 0.04, std: 0.001 },
+    }),
+    row({
+      runId: 'n5',
+      n: 5,
+      rmse: { mean: 0.0522, std: 0.004 },
+      mae: { mean: 0.03, std: 0.001 },
+    }),
+  ]
+
+  it('selects the SMALLER n on RMSE, whose wider spreads overlap', () => {
+    const picked = selectByOverlap(twoLadders(), 'rmse')
+    expect(picked.bestRunId).toBe('n5')
+    expect(picked.chosenRunId).toBe('n2')
+  })
+
+  it('selects the LARGER n on MAE from the SAME rows, whose spreads do not', () => {
+    const picked = selectByOverlap(twoLadders(), 'mae')
+    expect(picked.bestRunId).toBe('n5')
+    expect(picked.chosenRunId).toBe('n5')
+  })
+
+  it('defaults to RMSE, so a sweep that recorded no metric reads as it always did', () => {
+    expect(selectByOverlap(twoLadders())).toEqual(
+      selectByOverlap(twoLadders(), 'rmse'),
+    )
+  })
+
+  // V42, restated per metric. A row unorderable on the metric IN FORCE is
+  // refused there even when it carries a perfectly good figure for the other
+  // one — the absence that matters is the chosen metric's, not any metric's.
+  it('refuses a row missing the CHOSEN metric’s spread, never falling back to its argmin', () => {
+    const rows = [
+      // The lowest MAE mean of the three, and unorderable on MAE: no spread.
+      // It keeps a complete RMSE interval, so a fall-through to "whichever
+      // metric this row can be ordered on" would wrongly select it.
+      row({
+        runId: 'no-mae-spread',
+        n: 2,
+        rmse: { mean: 0.06, std: 0.004 },
+        mae: { mean: 0.01, std: null },
+      }),
+      row({
+        runId: 'n4',
+        n: 4,
+        rmse: { mean: 0.0526, std: 0.004 },
+        mae: { mean: 0.05, std: 0.004 },
+      }),
+      row({
+        runId: 'n7',
+        n: 7,
+        rmse: { mean: 0.0522, std: 0.004 },
+        mae: { mean: 0.048, std: 0.004 },
+      }),
+    ]
+    const picked = selectByOverlap(rows, 'mae')
+    expect(picked.bestRunId).not.toBe('no-mae-spread')
+    expect(picked.chosenRunId).not.toBe('no-mae-spread')
+    expect(picked.chosenRunId).toBe('n4')
+  })
+
+  it('orders nothing on a metric no row carries, rather than switching metrics', () => {
+    const rows = [
+      row({ runId: 'a', n: 1, rmse: { mean: 0.5, std: 0.01 } }),
+      row({ runId: 'b', n: 2, rmse: { mean: 0.4, std: 0.01 } }),
+    ]
+    expect(selectByOverlap(rows, 'mae')).toEqual({
+      chosenRunId: null,
+      chosenN: null,
+      bestRunId: null,
+      bestN: null,
+    })
+    // The same rows ARE orderable on the metric they do carry — proving the
+    // refusal above is about the missing metric and not about the fixture.
+    expect(selectByOverlap(rows, 'rmse').chosenRunId).toBe('b')
+  })
+})
+
+describe('buildSweepRows — every metric reads its own figure', () => {
+  it('carries MAE’s own fold mean and spread beside RMSE’s, never RMSE’s twice', () => {
+    const [built] = buildSweepRows(
+      [
+        cvRun({
+          metrics: {
+            cv_rmse_mean: 0.21,
+            cv_rmse_std: 0.017,
+            cv_mae_mean: 0.17,
+            cv_mae_std: 0.01,
+            cv_r2_mean: 0.42,
+            cv_r2_std: 0.05,
+            feature_count: 4,
+          },
+        }),
+      ],
+      null,
+    )
+    // Every figure distinct, so a row that read one metric's number under
+    // another's name fails here rather than looking plausible.
+    expect(built!.rmse).toEqual({ mean: 0.21, std: 0.017 })
+    expect(built!.mae).toEqual({ mean: 0.17, std: 0.01 })
+    expect(built!.r2).toEqual({ mean: 0.42, std: 0.05 })
+  })
+})
+
+describe('sweepRuleText — the metric and its direction are PRINTED', () => {
+  it('names RMSE and the sense in which it is better', () => {
+    const text = sweepRuleText('rmse')
+    expect(text).toMatch(/RMSE/)
+    expect(text).toMatch(/lowest is better/i)
+  })
+
+  it('names MAE when MAE decides, rather than restating the rule metric-free', () => {
+    const text = sweepRuleText('mae')
+    expect(text).toMatch(/MAE/)
+    expect(text).not.toMatch(/Decided on RMSE/)
+  })
+
+  // AC34's precedent, exactly: admissible in one role, refused in another.
+  // The refusal is printed where the reader deciding is looking — beside the
+  // rule — rather than parked in a metadata table.
+  it('refuses R² as the decider while keeping it a shown column, and says why', () => {
+    const text = sweepRuleText('mae')
+    expect(text).toMatch(/R²/)
+    expect(text).toMatch(/cannot decide/i)
+    expect(text).toMatch(/denominator changes per fold/i)
+  })
+})
+
+describe('sweepMetricScopeText — what the control does NOT govern', () => {
+  it('denies that it re-ranks Model Selection', () => {
+    expect(sweepMetricScopeText('mae')).toMatch(
+      /does not re-rank candidates in Model Selection/i,
+    )
+  })
+
+  /**
+   * The copy must NOT claim the rows were fit for the chosen metric. They
+   * never are: `lossFunction` does not reach the trainer at all (train.py
+   * reads no loss/objective/criterion, and the schema is `.strict()`), and
+   * `launchFeatureCountSweep` omits it besides — every row trains on the
+   * same defaults, which is the property that makes rows comparable to each
+   * other. Asserted rather than trusted to review, because the wrong framing
+   * here would be a confident false statement about every sweep ever run.
+   */
+  it('frames the metric as a reading choice, never as a training objective', () => {
+    const text = sweepMetricScopeText('mae')
+    expect(text).toMatch(/not a training objective/i)
+    expect(text).toMatch(/same defaults/i)
+    expect(text).toMatch(/choosing to read the result by/i)
   })
 })
 

@@ -512,6 +512,65 @@ export const LOSS_OPTIONS: { value: string; label: string }[] = [
   { value: 'mae', label: 'MAE' },
 ]
 
+/**
+ * MODEL-FLOW-019-T37. THE ONE DEFAULT — and it must be a value this list
+ * actually offers.
+ *
+ * It was not, before this task: `mpLossFunctionAtom` and `resetWizardAtom`
+ * both defaulted to `'mse'`, which is not in `LOSS_OPTIONS` and never has
+ * been. A Radix `Select` given a value matching no item renders an EMPTY
+ * trigger, so the control came up blank — observed rather than inferred, and
+ * reaching every one of the 19 saved models in the dev database (4 recorded
+ * `'mse'` outright; the other 15 recorded nothing and met a `?? 'mse'`
+ * fallback on the way in).
+ *
+ * `'rmse'` rather than another member, for reasons this codebase already
+ * settled: `use-model-pipeline-nav`'s own reset already used it, and
+ * `DEFAULT_RANK_METRIC` is `'rmse'` because MODEL-FLOW-005 chose it over R2
+ * after a real run scored r2 = -1,110,858 while its rmse stayed readable.
+ *
+ * `store/model-pipeline.ts` cannot import this — it would close the store →
+ * training-config cycle that file already documents avoiding for
+ * `defaultHyperparams`. It inlines the literal instead, and
+ * `lib/__tests__/training-config.test.ts` asserts the two agree AND that both
+ * are members of `LOSS_OPTIONS`. That test is what the inlining costs;
+ * without it the divergence this task exists to close is free to reopen.
+ */
+export const DEFAULT_LOSS_FUNCTION = 'rmse'
+
+/**
+ * Values that predate `LOSS_OPTIONS`' current membership, mapped to the
+ * member that means the same thing.
+ *
+ * `mse` -> `rmse` is a RENAME rather than a substitution: the two are
+ * monotonically related, so they induce an identical ordering over any set of
+ * models, and this field never reaches the trainer at all (see `LOSS_OPTIONS`'
+ * own doc comment above) — so nothing about a model changes when its recorded
+ * label moves from one to the other. Kept as an explicit MAP rather than
+ * folded into the fallback, so a RECOGNISED legacy value and an unrecognised
+ * one are not recorded as the same fact.
+ */
+const LEGACY_LOSS_ALIASES: Record<string, string> = {
+  mse: 'rmse',
+}
+
+/**
+ * The offered value to display for whatever a record happens to carry.
+ *
+ * Absent, legacy and unrecognised all resolve to something `LOSS_OPTIONS` can
+ * render, because the alternative — the behaviour this task was filed for —
+ * is a control showing nothing at all: indistinguishable from an empty
+ * string, and telling a reader neither what was recorded nor that anything is
+ * wrong.
+ */
+export function normaliseLossFunction(
+  value: string | null | undefined,
+): string {
+  if (!value) return DEFAULT_LOSS_FUNCTION
+  if (LOSS_OPTIONS.some(o => o.value === value)) return value
+  return LEGACY_LOSS_ALIASES[value] ?? DEFAULT_LOSS_FUNCTION
+}
+
 /** Build the clean default hyperparameter record for an algorithm (no leftover keys). */
 export function defaultHyperparams(
   algorithm: Algorithm,

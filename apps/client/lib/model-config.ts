@@ -43,7 +43,16 @@ export interface ModelConfig {
   /** @deprecated pre-multi-select single target; read via `configTargets`. */
   targetVariable?: string
   hyperparameters: Record<string, HyperparamValue>
-  /** Loss / evaluation metric optimized during training (e.g. `mse`). */
+  /**
+   * Evaluation metric recorded against this model — one of `LOSS_OPTIONS`
+   * (`r2`/`rmse`/`mae`). Never sent to the trainer, so it records a
+   * preference rather than an objective.
+   *
+   * MODEL-FLOW-019-T37: this comment read "e.g. `mse`" — an example of a
+   * value `LOSS_OPTIONS` does not offer and Step 3's Select cannot render.
+   * Absent and legacy values both still occur in stored configs, so read this
+   * through `normaliseLossFunction`, never raw.
+   */
   lossFunction?: string
   /** Train split percentage; test = 100 − this. */
   trainTestSplit?: number

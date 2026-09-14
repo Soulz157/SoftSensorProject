@@ -9,10 +9,14 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import {
+  DEFAULT_SWEEP_METRIC,
   buildSweepRows,
   selectByOverlap,
+  sweepMetricLabel,
+  sweepMetricScopeText,
   sweepProvenanceText,
   sweepRuleText,
+  type SweepMetric,
   type SweepRow,
 } from '@/lib/feature-count-sweep'
 import type { ModelTrainingRunListItem } from '@/services/model-draft'
@@ -39,7 +43,7 @@ import { methodMetaOf } from './feature-importance-table'
 /** Four places, matching the reference table's own 0.0522 precision — three
  *  would collapse two rows that differ in the fourth decimal into one number
  *  and invite reading a tie the data does not report. */
-function formatRmse(value: number): string {
+function formatError(value: number): string {
   return value.toFixed(4)
 }
 
@@ -93,6 +97,7 @@ export function FeatureCountSweepTable({
   runs,
   seedRunId,
   seedMethod,
+  metric = DEFAULT_SWEEP_METRIC,
   distinctLabelledValues,
   loading = false,
   error = null,
@@ -104,13 +109,27 @@ export function FeatureCountSweepTable({
    *  V43 asserts and what a per-row lookup could never satisfy. */
   seedRunId: string
   seedMethod: string
+  /**
+   * MODEL-FLOW-019-T35. The metric THIS SWEEP was launched under, passed as a
+   * PROP rather than derived per row — V43's own resolution, for its own
+   * reason: a per-row derivation is unsatisfiable for a row whose metric was
+   * never recorded, and every row of a sweep shares one decision by
+   * construction.
+   *
+   * Optional, and the default is load-bearing rather than convenience: a
+   * sweep launched before this prop existed carries no recorded metric and
+   * must read as decided on RMSE — NAMED, via `sweepRuleText`, never silently
+   * re-decided under whatever a reader has selected since.
+   */
+  metric?: SweepMetric
   distinctLabelledValues: number | null
   loading?: boolean
   error?: string | null
 }) {
   const rows = buildSweepRows(runs, distinctLabelledValues)
-  const selection = selectByOverlap(rows)
+  const selection = selectByOverlap(rows, metric)
   const { label: methodLabel } = methodMetaOf(seedMethod)
+  const metricLabel = sweepMetricLabel(metric)
 
   // The rule picked a row the lowest mean did not. Worth saying out loud —
   // it is the one case where the table's answer visibly differs from the
@@ -148,10 +167,38 @@ export function FeatureCountSweepTable({
             <TableHeader>
               <TableRow className="bg-muted/40 hover:bg-muted/40">
                 <TableHead className="h-9 px-3">Features (X)</TableHead>
+                {/* MODEL-FLOW-019-T35. BOTH metric columns always render and
+                    the decider is NAMED, rather than the chosen metric being
+                    the only figure shown — a reader can then see where the two
+                    ladders disagree without switching to find out.
+
+                    Unconditional rather than data-gated, deliberately: T01
+                    read the real key set and found cv_{r2,mae,rmse}_{mean,std}
+                    on every CV run this system has trained, so a MAE column
+                    hidden for want of data would describe a state that does
+                    not occur. A row that somehow lacks the pair still renders
+                    honestly — `IntervalCell` shows an em dash for a null mean
+                    and "no spread" for a null SD. */}
                 <TableHead className="h-9 px-3 text-right">
                   RMSE (fold mean ± SD)
+                  {metric === 'rmse' && (
+                    <span className="ml-1 font-normal text-muted-foreground">
+                      · decides
+                    </span>
+                  )}
                 </TableHead>
                 <TableHead className="h-9 px-3 text-right">
+                  MAE (fold mean ± SD)
+                  {metric === 'mae' && (
+                    <span className="ml-1 font-normal text-muted-foreground">
+                      · decides
+                    </span>
+                  )}
+                </TableHead>
+                <TableHead
+                  className="h-9 px-3 text-right"
+                  title="R² is shown for reference and cannot decide the ladder — a fold average of ratios whose denominator changes per fold"
+                >
                   R² (fold mean ± SD)
                 </TableHead>
                 <TableHead
@@ -180,7 +227,10 @@ export function FeatureCountSweepTable({
                       {row.n ?? '—'}
                     </TableCell>
                     <TableCell className="px-3 py-2 text-right">
-                      <IntervalCell stat={row.rmse} format={formatRmse} />
+                      <IntervalCell stat={row.rmse} format={formatError} />
+                    </TableCell>
+                    <TableCell className="px-3 py-2 text-right">
+                      <IntervalCell stat={row.mae} format={formatError} />
                     </TableCell>
                     <TableCell className="px-3 py-2 text-right">
                       <IntervalCell stat={row.r2} format={formatR2} />
@@ -223,26 +273,33 @@ export function FeatureCountSweepTable({
         </div>
       )}
 
-      {/* AC67: the rule is PRINTED, never implied by which row is bold. */}
-      <p className="text-xs text-muted-foreground">{sweepRuleText()}</p>
+      {/* AC67: the rule is PRINTED, never implied by which row is bold —
+          extended by T35 to name the metric and its direction, since a rule
+          stated without one is only half printed. */}
+      <p className="text-xs text-muted-foreground">{sweepRuleText(metric)}</p>
 
       {ruleDisagrees && (
         <p className="text-xs text-muted-foreground">
-          The lowest fold mean is {selection.bestN} features, but{' '}
-          {selection.chosenN} is selected: their spreads overlap, so the extra
-          features bought nothing this data can measure.
+          The best fold mean is {selection.bestN} features, but{' '}
+          {selection.chosenN} is selected: their {metricLabel} spreads overlap,
+          so the extra features bought nothing this data can measure.
         </p>
       )}
 
-      {/* R² is an average of ratios with a different denominator per fold, so
-          ONE quiet fold can drag it without limit. Said here rather than in a
-          column header, which has no room for a reason. */}
+      {/* MODEL-FLOW-019-T35. What the control does and does not govern, said
+          where a reader who just changed it is looking. Two misreadings are
+          available here — that it re-ranks Step 4, and that the rows were fit
+          for it — and both are stated away rather than left to inference. */}
       <p className="text-xs text-muted-foreground">
-        Read the ladder on RMSE. R² is a fold average of ratios whose
-        denominator changes per fold, so a single low-variance fold can move it
-        for reasons that are not about feature count. An expanding window also
-        trains the first fold on the least data, so part of every row&apos;s
-        spread is a sample-size artefact rather than instability.
+        {sweepMetricScopeText(metric)}
+      </p>
+
+      {/* The expanding-window caveat applies whichever metric decides, so it
+          is stated separately from the rule rather than folded into it. */}
+      <p className="text-xs text-muted-foreground">
+        An expanding window trains the first fold on the least data, so part of
+        every row&apos;s spread is a sample-size artefact rather than
+        instability.
       </p>
     </section>
   )

@@ -4,6 +4,7 @@ import {
   cvScoringPhaseOf,
   headlineMetricOf,
   holdoutAbsenceOf,
+  metricValueOf,
   populationAxisLabel,
   populationLabel,
   populationOf,
@@ -210,11 +211,67 @@ describe('headlineMetricOf and rmseOf', () => {
     expect(headlineMetricOf([])).toBeNull()
   })
 
-  it('reads a fold estimate rmse from the MEAN, since it has no other', () => {
+  it("reads a fold estimate rmse from RMSE's own fold mean", () => {
     const [cv] = sourcedMetricsOf(
       run({ metrics: REAL_CV_METRICS, cvFoldsKey: 'k', predictionsKey: null }),
     )
     expect(rmseOf(cv!)).toBe(0.21203298)
+  })
+})
+
+/**
+ * MODEL-FLOW-019-T36. A CV estimate answers EACH metric from that metric's
+ * own fold mean — it does not answer every metric with one shared number.
+ *
+ * T36 was filed on the opposite belief, reasoning from two comments rather
+ * than from the code: T02's "no `rmse`/`r2`/`mae` field" (true only of the
+ * top level) and T03's "the only number of that shape it has". Had it been
+ * right, sorting a CV group by MAE would have ordered it by RMSE means, and
+ * `metricValueOf('mae', cv)` would have returned a real number of plausible
+ * magnitude under the wrong metric's name. It never did: `CvFoldEstimate`
+ * has carried `MetricTriple` `mean`/`std` pairs since the commit that
+ * created it.
+ *
+ * EVERY FIGURE IN `REAL_CV_METRICS` IS DISTINCT FROM EVERY OTHER, and that
+ * is load-bearing rather than incidental — a fixture where two metrics
+ * happened to share a value could not fail this test no matter what the
+ * accessor read.
+ */
+describe('metricValueOf — a fold estimate is per-metric, never one shared mean', () => {
+  const cvEstimate = () => {
+    const [cv] = sourcedMetricsOf(
+      run({ metrics: REAL_CV_METRICS, cvFoldsKey: 'k', predictionsKey: null }),
+    )
+    return cv!
+  }
+
+  it('answers each metric from its own fold mean', () => {
+    const cv = cvEstimate()
+    expect(metricValueOf(cv, 'rmse')).toBe(0.21203298)
+    expect(metricValueOf(cv, 'mae')).toBe(0.17)
+    expect(metricValueOf(cv, 'r2')).toBe(0.42)
+  })
+
+  it("never answers one metric with another metric's number", () => {
+    const cv = cvEstimate()
+    expect(metricValueOf(cv, 'mae')).not.toBe(metricValueOf(cv, 'rmse'))
+    expect(metricValueOf(cv, 'r2')).not.toBe(metricValueOf(cv, 'rmse'))
+    expect(metricValueOf(cv, 'mae')).not.toBe(metricValueOf(cv, 'r2'))
+  })
+
+  it('carries a matching per-metric spread, so a caller can show mean ± std', () => {
+    const cv = cvEstimate()
+    expect(cv.source).toBe('cv-fold-estimate')
+    if (cv.source !== 'cv-fold-estimate') return
+    expect(cv.std.rmse).toBe(0.01706996)
+    expect(cv.std.mae).toBe(0.01)
+    expect(cv.std.r2).toBe(0.05)
+  })
+
+  it('reads a test-split source from its own flat field, unchanged', () => {
+    const [test] = sourcedMetricsOf(run())
+    expect(metricValueOf(test!, 'mae')).toBe(0.4)
+    expect(metricValueOf(test!, 'rmse')).toBe(0.5)
   })
 })
 
