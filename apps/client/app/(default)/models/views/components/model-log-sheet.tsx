@@ -84,10 +84,20 @@ export function ModelLogSheet({ model, open, onClose }: Props) {
             >
               {logs.window.status}
             </Badge>
+            {/* T11/V10/V11: same facts, same wording as window-logs-tab.tsx's
+                metadata row — one vocabulary for a window's own numbers
+                across both surfaces, not a second one invented here. */}
             <span>
               Most recent window ·{' '}
-              {new Date(logs.window.windowStart).toLocaleString()}
+              {new Date(logs.window.windowStart).toLocaleString()} –{' '}
+              {new Date(logs.window.windowEnd).toLocaleTimeString()}
             </span>
+            {logs.window.inputRows !== null && (
+              <span>{logs.window.inputRows.toLocaleString()} input rows</span>
+            )}
+            {logs.window.missingPct !== null && (
+              <span>{(logs.window.missingPct * 100).toFixed(1)}% missing</span>
+            )}
           </div>
         )}
 
@@ -117,8 +127,11 @@ export function ModelLogSheet({ model, open, onClose }: Props) {
               {logs.lines.map(line => {
                 // `level` is an unconstrained Prisma String, not an enum:
                 // fall back rather than throw on an unexpected value.
-                const { icon: Icon, cls, bg } =
-                  LEVEL_MAP[line.level] ?? LEVEL_MAP.info
+                const {
+                  icon: Icon,
+                  cls,
+                  bg,
+                } = LEVEL_MAP[line.level] ?? LEVEL_MAP.info
                 return (
                   <div
                     key={line.id}

@@ -26,11 +26,17 @@ import type { AIModel } from '@/types'
 
 const predictions = vi.fn()
 const drift = vi.fn()
+// MODEL-SERVE-001-T13. The hook now fires a THIRD request (`/psi`) — an
+// unmocked call here would throw ("modelMonitoringService.psi is not a
+// function") the moment usePredictionMonitoring mounts, breaking every
+// test in this file regardless of what it actually asserts on.
+const psi = vi.fn()
 
 vi.mock('@/services/model-monitoring', () => ({
   modelMonitoringService: {
     predictions: (...args: unknown[]) => predictions(...args),
     drift: (...args: unknown[]) => drift(...args),
+    psi: (...args: unknown[]) => psi(...args),
   },
 }))
 
@@ -78,8 +84,12 @@ beforeEach(() => {
   clearChartRequestCache()
   predictions.mockReset()
   drift.mockReset()
+  psi.mockReset()
   predictions.mockResolvedValue({ data: PREDICTION_SERIES })
   drift.mockResolvedValue({ data: DRIFT_REPORT })
+  psi.mockResolvedValue({
+    data: { status: 'OK', columns: [], basis: DRIFT_REPORT.basis },
+  })
 })
 
 async function mountOnce() {

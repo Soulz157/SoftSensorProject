@@ -177,6 +177,12 @@ export interface LiveErrorVersion {
 
 export interface LiveErrorCoverage {
   windowsInRange: number
+  /** T11. A FOURTH empty cause: these windows ran, fetched, and were
+   *  deliberately not scored (too few usable rows — a real terminal status,
+   *  never a failure). Disjoint from `windowsInRange`, which counts
+   *  SUCCEEDED only — so an all-SKIPPED range must not read like "the
+   *  scheduler never ran here". */
+  windowsSkipped: number
   windowsJoined: number
   /** DISJOINT from `windowsFailed` — a window whose join failed is not a
    *  window waiting on the lab, so the two never count the same window. */

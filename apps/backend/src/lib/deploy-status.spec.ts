@@ -1,6 +1,7 @@
 import {
   classifyDeployStatus,
   deriveDeployStatuses,
+  isStale,
   overlayDeployStatus,
 } from './deploy-status';
 
@@ -125,6 +126,53 @@ describe('classifyDeployStatus (MODEL-SERVE-006-T12)', () => {
   });
 });
 
+/**
+ * T11. The scheduler now dispatches a window only once `windowStart +
+ * cadence + lag <= now` (the scheduler's own T11 fix) — so that interval is
+ * PROCESSING TIME, not lateness, and must not count against
+ * INFERENCE_STALE_AFTER_CADENCES (default 3). Boundary math below at
+ * cadence=60/lag=15: allowance is 3*60=180min beyond `windowStart + 75min`.
+ *
+ * Not "headroom unchanged": the old inline calc measured staleness purely
+ * from `lastSucceeded.windowStart`, giving 180min of raw allowance from
+ * windowStart. The fix's own 75min processing offset makes the EFFECTIVE
+ * headroom wider (255min from windowStart), not narrower — asserted here as
+ * `isStale`'s own boundary, not as a before/after comparison.
+ */
+describe('isStale (MODEL-SERVE-001-T11)', () => {
+  const NOW = new Date('2026-09-14T12:00:00.000Z');
+
+  beforeEach(() => {
+    jest.useFakeTimers().setSystemTime(NOW);
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('is STALE, unconditionally, when nothing has ever succeeded', () => {
+    expect(isStale(null, 60, 15)).toBe('STALE');
+  });
+
+  it('is OK exactly AT the boundary (windowStart + cadence + lag + STALE*cadence)', () => {
+    // processableAt = 07:45 + 75min = 09:00; now(12:00) - 09:00 = 180min,
+    // the exact allowance (3 * 60min) — NOT strictly greater, so OK.
+    const lastWindowStart = new Date('2026-09-14T07:45:00.000Z');
+    expect(isStale(lastWindowStart, 60, 15)).toBe('OK');
+  });
+
+  it('is STALE one minute past that same boundary', () => {
+    const lastWindowStart = new Date('2026-09-14T07:44:00.000Z');
+    expect(isStale(lastWindowStart, 60, 15)).toBe('STALE');
+  });
+
+  it('does not count the cadence+lag processing interval itself as staleness', () => {
+    // A window that became processable RIGHT NOW (the freshest possible
+    // reading) must never read STALE regardless of cadence/lag size.
+    const lastWindowStart = new Date(NOW.getTime() - (60 + 15) * 60_000);
+    expect(isStale(lastWindowStart, 60, 15)).toBe('OK');
+  });
+});
+
 describe('overlayDeployStatus', () => {
   it('merges deployStatus into existing data without mutating the input', () => {
     const model = { id: 'm1', data: { prodStatus: 'normal' } };
@@ -175,11 +223,14 @@ describe('deriveDeployStatuses (batched)', () => {
   it('derives running for an enabled schedule with a recent succeeded window', async () => {
     const prisma = buildPrisma({
       inferenceSchedule: {
-        findMany: jest
-          .fn()
-          .mockResolvedValue([
-            { modelId: 'm1', enabled: true, cadenceMinutes: 60 },
-          ]),
+        findMany: jest.fn().mockResolvedValue([
+          {
+            modelId: 'm1',
+            enabled: true,
+            cadenceMinutes: 60,
+            lagMinutes: 15,
+          },
+        ]),
       },
       inferenceWindow: {
         groupBy: jest
@@ -203,11 +254,14 @@ describe('deriveDeployStatuses (batched)', () => {
   it('derives error for an enabled schedule whose last 3 terminal windows all failed', async () => {
     const prisma = buildPrisma({
       inferenceSchedule: {
-        findMany: jest
-          .fn()
-          .mockResolvedValue([
-            { modelId: 'm1', enabled: true, cadenceMinutes: 60 },
-          ]),
+        findMany: jest.fn().mockResolvedValue([
+          {
+            modelId: 'm1',
+            enabled: true,
+            cadenceMinutes: 60,
+            lagMinutes: 15,
+          },
+        ]),
       },
       inferenceWindow: {
         groupBy: jest
@@ -231,11 +285,14 @@ describe('deriveDeployStatuses (batched)', () => {
   it('derives initializing for a just-enabled schedule with no windows yet', async () => {
     const prisma = buildPrisma({
       inferenceSchedule: {
-        findMany: jest
-          .fn()
-          .mockResolvedValue([
-            { modelId: 'm1', enabled: true, cadenceMinutes: 60 },
-          ]),
+        findMany: jest.fn().mockResolvedValue([
+          {
+            modelId: 'm1',
+            enabled: true,
+            cadenceMinutes: 60,
+            lagMinutes: 15,
+          },
+        ]),
       },
       inferenceWindow: {
         groupBy: jest.fn().mockResolvedValue([]), // no SUCCEEDED/SKIPPED window yet

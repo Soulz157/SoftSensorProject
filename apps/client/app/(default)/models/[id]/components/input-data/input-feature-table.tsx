@@ -10,6 +10,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { DRIFT_STATUS_CLASS } from '@/lib/drift-status-style'
+import { PI_STATUS_CLASS } from '@/lib/pi-status-style'
 import type { InputFeatureRow } from '@/lib/model-input-features'
 
 interface Props {
@@ -17,15 +18,13 @@ interface Props {
 }
 
 function fmtValue(row: InputFeatureRow): string {
-  if (row.lastValue !== null) {
-    return row.lastValue.toLocaleString(undefined, {
+  // T12. `lastValueRaw` is the /predict request's own value — already
+  // engineering units, no inversion, no second "(scaled)" branch. See
+  // `lib/model-input-features.ts`'s own doc comment for why.
+  if (row.lastValueRaw !== null) {
+    return row.lastValueRaw.toLocaleString(undefined, {
       maximumFractionDigits: 4,
     })
-  }
-  if (row.lastValueScaled !== null) {
-    // Could not be inverted to engineering units — show the scaled figure
-    // rather than nothing, but never claim it is a real measurement.
-    return `${row.lastValueScaled.toFixed(4)} (scaled)`
   }
   return '—'
 }
@@ -50,6 +49,16 @@ export function InputFeatureTable({ rows }: Props) {
         <TableRow>
           <TableHead className="w-10">#</TableHead>
           <TableHead>Feature</TableHead>
+          {/* T12. This column reports DRIFT (OK/WARN/CRITICAL/UNKNOWN vs.
+              training distribution), never per-tag data quality — the old
+              "Status" header let a reader reasonably mistake one for the
+              other. The `/predict` stream carries no per-tag Good/Bad at
+              all (see input-data-tab.tsx's own note above the table). */}
+          <TableHead>Drift</TableHead>
+          {/* MODEL-SERVE-001-T15. PI's OWN quality flag, read live — a
+              different question from Drift, and the one an operator opens
+              this tab to ask. For a derived feature it is its source tags'
+              verdict, with the failing ones named. */}
           <TableHead>Status</TableHead>
           <TableHead className="text-right">Last value</TableHead>
           <TableHead className="text-right">Last seen</TableHead>
@@ -63,6 +72,15 @@ export function InputFeatureTable({ rows }: Props) {
             </TableCell>
             <TableCell className="font-mono text-xs font-medium text-foreground">
               {row.column}
+              {/* T12. The equation behind a derived (formula) feature, under
+                  its name — names which SOURCE COLUMNS feed it, never which
+                  one is Bad (no per-tag status exists on this stream).
+                  Absent entirely for a base tag, no placeholder row. */}
+              {row.equation && (
+                <div className="mt-0.5 font-mono text-[10px] font-normal text-muted-foreground">
+                  {row.equation}
+                </div>
+              )}
             </TableCell>
             <TableCell>
               <Badge
@@ -71,6 +89,21 @@ export function InputFeatureTable({ rows }: Props) {
               >
                 {row.driftStatus}
               </Badge>
+            </TableCell>
+            <TableCell>
+              <Badge
+                className={`border-0 ${PI_STATUS_CLASS[row.piStatus]}`}
+                title={row.piReason}
+              >
+                {row.piStatus}
+              </Badge>
+              {/* The actionable half for a derived feature: WHICH source
+                  tag is not Good. "Bad" alone says nothing at six sources. */}
+              {row.failingSources && row.failingSources.length > 0 && (
+                <div className="mt-0.5 font-mono text-[10px] font-normal text-muted-foreground">
+                  via {row.failingSources.join(', ')}
+                </div>
+              )}
             </TableCell>
             <TableCell className="text-right font-mono text-xs tabular-nums text-foreground">
               {fmtValue(row)}

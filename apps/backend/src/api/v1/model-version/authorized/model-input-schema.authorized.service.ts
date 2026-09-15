@@ -99,7 +99,7 @@ export class ModelInputSchemaAuthorizedService {
 
     const { featureColumns, unavailableReason } =
       await this.resolveFeatureColumns(version.sourceRun.manifestKey);
-    const scalingParams = await this.resolveScalingParams(
+    const { scalingParams, derivedFeatures } = await this.resolveFeatureSpec(
       version.goldObjectKey,
     );
 
@@ -116,6 +116,16 @@ export class ModelInputSchemaAuthorizedService {
         unavailableReason,
         targetY: version.sourceRun.targetY,
         scalingParams,
+        // T12. Named `derivedFeatures`, never `features` — this same
+        // response already carries `featureColumns` (the full trained X
+        // list, 21 strings on the live model); a sibling `features` holding
+        // a handful of objects would be conflated with it by every future
+        // reader. Only `formula` features are included (see
+        // resolveFeatureSpec's own comment) — this tells a reader which
+        // SOURCE COLUMNS feed a derived tag, never which one is Bad: no
+        // status field exists anywhere on the /predict stream this tab
+        // reads (see input-data-tab.tsx's own doc comment).
+        derivedFeatures,
       },
     };
   }
@@ -154,17 +164,49 @@ export class ModelInputSchemaAuthorizedService {
     }
   }
 
-  /** Best-effort only — `scalingParams: null` means the tab shows scaled
-   *  values instead of engineering units, never a broken tab. Same
-   *  try/catch discipline `resolveFeatureColumns` above uses. */
-  private async resolveScalingParams(
-    goldObjectKey: string,
-  ): Promise<Record<string, Record<string, number>> | null> {
+  /** Best-effort only — a failed read means the tab shows raw logged values
+   *  with no equation annotation, never a broken tab. Same try/catch
+   *  discipline `resolveFeatureColumns` above uses.
+   *
+   *  T12. Widened from `resolveScalingParams` (which this replaces) to also
+   *  return each `formula` feature's human-readable equation — one MinIO
+   *  read already made for `scalingParams`, so this is not a second I/O
+   *  call. Scoped to `kind === 'formula'` deliberately: `config.display` and
+   *  `config.vars` are formula's OWN config keys (feature_spec_service.py's
+   *  `build_feature_spec`); `ratio`/`arith`/`lag`/`delta`/`rolling` carry
+   *  different config shapes (feature_service.py's `_compute_feature_column`
+   *  branches) that this display read does not attempt to interpret — a
+   *  non-formula kind is simply omitted rather than guessed at. */
+  private async resolveFeatureSpec(goldObjectKey: string): Promise<{
+    scalingParams: Record<string, Record<string, number>> | null;
+    derivedFeatures: Array<{ name: string; kind: string; display: string }>;
+  }> {
     try {
       const { spec } = await readFeatureSpec(goldObjectKey);
-      return spec.scalingParams ?? null;
+      const derivedFeatures = (spec.features ?? [])
+        .filter(
+          (
+            f,
+          ): f is typeof f & {
+            name: string;
+            kind: 'formula';
+            config: { display: string };
+          } =>
+            f.kind === 'formula' &&
+            typeof f.name === 'string' &&
+            typeof f.config?.display === 'string',
+        )
+        .map((f) => ({
+          name: f.name,
+          kind: f.kind,
+          display: f.config.display,
+        }));
+      return {
+        scalingParams: spec.scalingParams ?? null,
+        derivedFeatures,
+      };
     } catch {
-      return null;
+      return { scalingParams: null, derivedFeatures: [] };
     }
   }
 }

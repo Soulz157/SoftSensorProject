@@ -1,4 +1,5 @@
 import {
+  deriveMinRows,
   formatDtHour,
   windowEndFor,
   windowStartsBetween,
@@ -106,4 +107,57 @@ describe('formatDtHour (MODEL-SERVE-006-T06)', () => {
       hour: '00',
     });
   });
+});
+
+describe('deriveMinRows (MODEL-SERVE-001-T14)', () => {
+  it('reproduces env.INFERENCE_MIN_ROWS default exactly at a 1-minute interval, hourly cadence', () => {
+    // The exact case env.INFERENCE_MIN_ROWS's own comment derives from:
+    // "half an hourly window at the observed dataset's 1-minute interval
+    // (60 rows/hour)" — floor(60 / 1 / 2) = 30.
+    expect(deriveMinRows(60, '1m')).toBe(30);
+  });
+
+  it('derives a SMALLER floor for a 5-minute interval — the case this task exists to fix', () => {
+    // 60-minute window / 5-minute interval = 12 rows in a complete window;
+    // half of that is 6, not the global default's 30. A schedule at this
+    // interval would read SKIPPED forever against the global constant.
+    expect(deriveMinRows(60, '5m')).toBe(6);
+  });
+
+  it('derives from a non-hourly cadence too, not just the 60-minute default', () => {
+    // 15-minute cadence / 1-minute interval = 15 rows; half, floored, is 7.
+    expect(deriveMinRows(15, '1m')).toBe(7);
+  });
+
+  it('accepts seconds and hours, not only minutes', () => {
+    // 60 / 0.5 = 120 rows; half is 60.
+    expect(deriveMinRows(60, '30s')).toBe(60);
+    // 60 / 60 = 1 row; half, floored, is 0 — clamped below.
+    expect(deriveMinRows(60, '1h')).toBe(1);
+  });
+
+  it('clamps to a minimum of 1 — a floor of 0 would make SKIPPED unreachable', () => {
+    // interval (10m) longer than the window itself (5m cadence): the raw
+    // formula floors to 0, which must never mean "any row count passes".
+    expect(deriveMinRows(5, '10m')).toBe(1);
+  });
+
+  it('tolerates surrounding whitespace, matching the client parser it mirrors', () => {
+    expect(deriveMinRows(60, '  5m  ')).toBe(6);
+  });
+
+  it('returns null — never a guess — when intervalTime is absent (a non-PI source)', () => {
+    // SQLConfig/InfluxConfig/etc. carry no `intervalTime` field at all
+    // (store/model-pipeline.ts's own DataSourceConfig union) — the caller
+    // must fall back to env.INFERENCE_MIN_ROWS, not receive a fabricated
+    // per-schedule number derived from nothing.
+    expect(deriveMinRows(60, undefined)).toBeNull();
+  });
+
+  it.each(['', 'bad', 'abc', '5x', '-5m', '0m', '5', 'm5'])(
+    'returns null for an unparseable interval string: %j',
+    (bad) => {
+      expect(deriveMinRows(60, bad)).toBeNull();
+    },
+  );
 });

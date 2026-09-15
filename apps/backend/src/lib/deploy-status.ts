@@ -54,6 +54,54 @@ export function classifyDeployStatus(input: {
 }
 
 /**
+ * T11. Shared staleness input for `classifyDeployStatus`'s two callers
+ * (`deriveDeployStatuses` below and `InferenceWindowAuthorizedService.
+ * getStatusService`'s own single-model read) — the file's own state-machine
+ * sharing above existed to stop the two disagreeing, but the staleness
+ * *input* was still computed twice, inline, against `lastSucceededAt` alone.
+ *
+ * A window cannot reach SUCCEEDED/SKIPPED before `windowStart + cadence +
+ * lag` (T11's own scheduler fix — a window is due only once it has both
+ * elapsed AND cleared its ingestion lag), so that interval is counted as
+ * processing time, not as silence, before `INFERENCE_STALE_AFTER_CADENCES`
+ * starts counting missed cadences.
+ *
+ * THIS IS A REAL BEHAVIOUR CHANGE, STATED PLAINLY RATHER THAN AS "UNCHANGED
+ * MEANING": at cadence=60/lag=15 the old inline calc allowed up to
+ * `STALE_AFTER_CADENCES * cadence` (180min) measured from `windowStart`
+ * alone, i.e. 180min raw. This function measures the same 180min from
+ * `windowStart + cadence + lag` instead, so a genuinely dead schedule now
+ * takes 75min LONGER to alarm (255min from windowStart, not 180). The trade
+ * is deliberate — the scheduler fix pushed every window's own completion
+ * one cadence later, and that interval is processing time a live schedule
+ * always spends, not evidence of trouble — but it is a real widening of the
+ * alarm's silence budget, not a no-op. Not `+1ms` at the boundary: the next
+ * tick (seconds later) is what actually claims a window at the exact edge.
+ *
+ * Fails toward `'STALE'` (refusal, never a false "OK") on a non-finite
+ * input — this ledger's consistent direction for an ungraded input,
+ * matching T01's own SKIPPED-not-silent-pass shape. Load-bearing: three
+ * pre-existing `deriveDeployStatuses` test fixtures were found passing
+ * `lagMinutes: undefined` (fixed alongside this task), which without this
+ * guard would compute `NaN` and silently read as permanently fresh.
+ */
+export function isStale(
+  lastWindowStart: Date | null,
+  cadenceMinutes: number,
+  lagMinutes: number,
+): 'OK' | 'STALE' {
+  if (!lastWindowStart) return 'STALE';
+  if (!Number.isFinite(cadenceMinutes) || !Number.isFinite(lagMinutes)) {
+    return 'STALE';
+  }
+  const processableAt =
+    lastWindowStart.getTime() + (cadenceMinutes + lagMinutes) * 60_000;
+  const staleAfterMs =
+    env.INFERENCE_STALE_AFTER_CADENCES * cadenceMinutes * 60_000;
+  return Date.now() - processableAt > staleAfterMs ? 'STALE' : 'OK';
+}
+
+/**
  * Batched derivation for a LIST of models (`getModelsService`/
  * `getWorkspaceModels`) — avoids N+1 queries. Two non-N+1 reads
  * (schedules, and a `groupBy` for each model's last SUCCEEDED/SKIPPED
@@ -75,7 +123,12 @@ export async function deriveDeployStatuses(
 
   const schedules = await prisma.inferenceSchedule.findMany({
     where: { modelId: { in: modelIds } },
-    select: { modelId: true, enabled: true, cadenceMinutes: true },
+    select: {
+      modelId: true,
+      enabled: true,
+      cadenceMinutes: true,
+      lagMinutes: true,
+    },
   });
   if (schedules.length === 0) return result;
 
@@ -124,12 +177,11 @@ export async function deriveDeployStatuses(
 
   for (const schedule of schedules) {
     const lastSucceededAt = lastSucceededByModel.get(schedule.modelId) ?? null;
-    const staleAfterMs =
-      env.INFERENCE_STALE_AFTER_CADENCES * schedule.cadenceMinutes * 60_000;
-    const staleness: 'OK' | 'STALE' =
-      !lastSucceededAt || Date.now() - lastSucceededAt.getTime() > staleAfterMs
-        ? 'STALE'
-        : 'OK';
+    const staleness = isStale(
+      lastSucceededAt,
+      schedule.cadenceMinutes,
+      schedule.lagMinutes,
+    );
     result[schedule.modelId] = classifyDeployStatus({
       enabled: schedule.enabled,
       hasEverSucceeded: lastSucceededAt !== null,

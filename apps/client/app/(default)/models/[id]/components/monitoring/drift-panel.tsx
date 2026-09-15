@@ -2,7 +2,7 @@
 
 import { Badge } from '@/components/ui/badge'
 import type { DriftReport } from '@/services/model-monitoring'
-import { DRIFT_STATUS_CLASS as STATUS_CLASS } from '@/lib/drift-status-style'
+import { DRIFT_STATUS_CLASS } from '@/lib/drift-status-style'
 
 interface Props {
   report: DriftReport | null
@@ -13,12 +13,25 @@ interface Props {
 /**
  * MODEL-SERVE-005-T02. Live input distribution vs. the PRODUCTION version's
  * own training distribution — z-score + estimated out-of-range rate per
- * column (see apps/backend/src/lib/prediction-drift.ts for the math).
+ * column (apps/backend/src/lib/prediction-drift.ts).
+ *
+ * MODEL-SERVE-001-T16: Population Stability Index used to render as two
+ * extra columns in THIS table (`PSI` / `PSI status`). That shape is exactly
+ * what T13's own DISPLAY SPEC — decided with the user against a rendered
+ * example — REJECTED: z's +/-1.5/+/-3 SD bands and PSI's 0.1/0.25 bands are
+ * different vocabularies, and adjacent colour-coded Status columns assert a
+ * comparability that does not exist. PSI now lives in its own card,
+ * `monitoring/psi/psi-panel.tsx`, with its own three-rung loading/
+ * unavailable/empty ladder — independent of this table's, since the two
+ * metrics can genuinely disagree on availability for the same [from, to]
+ * (PSI needs `binCount * minSamplesPerBin` live samples this table's
+ * z-score has no equivalent floor for).
  *
  * Status colors live in `lib/drift-status-style.ts` — hoisted there once
  * the Input Data tab's feature table became a second consumer of the same
  * palette; see that module for the rationale (not the red/amber
- * deploy-status vocabulary).
+ * deploy-status vocabulary). `PsiPanel` reads the same module's
+ * `PSI_STATUS_CLASS`.
  */
 
 function formatSigned(value: number, digits = 2): string {
@@ -73,7 +86,7 @@ export function DriftPanel({ report, loading, unavailableReason }: Props) {
           {report.basis.sampleRequests === 1 ? '' : 's'} vs. version{' '}
           {report.basis.version}&apos;s training distribution
         </span>
-        <Badge className={`border-0 ${STATUS_CLASS[report.status]}`}>
+        <Badge className={`border-0 ${DRIFT_STATUS_CLASS[report.status]}`}>
           {report.status}
         </Badge>
       </div>
@@ -103,7 +116,7 @@ export function DriftPanel({ report, loading, unavailableReason }: Props) {
                 </td>
                 <td className="px-3 py-2">
                   <Badge
-                    className={`border-0 ${STATUS_CLASS[col.status]}`}
+                    className={`border-0 ${DRIFT_STATUS_CLASS[col.status]}`}
                     title={col.reason}
                   >
                     {col.status}

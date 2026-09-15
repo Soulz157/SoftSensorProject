@@ -124,7 +124,20 @@ export class InferenceWindowSchedulerService
       const from = new Date(
         now.getTime() - env.INFERENCE_BACKFILL_HORIZON_HOURS * 3_600_000,
       );
-      const to = new Date(now.getTime() - schedule.lagMinutes * 60_000);
+      // T11: a window is due once it has ELAPSED and its lag has passed —
+      // windowEnd = now() - lag (schema.prisma's own documented contract
+      // on InferenceSchedule.lagMinutes). Gating on windowStart alone (the
+      // prior code) made a window due at windowStart + lag, one whole
+      // cadence before windowEnd — so the fetch asked the historian for a
+      // window whose end was still up to `cadenceMinutes` in the FUTURE.
+      // Measured live: 20 fully-elapsed windows returned 60/60 rows at
+      // 0% missing while 4 windows read this early returned 19-30 rows,
+      // tracking elapsed minutes linearly. windowEnd = windowStart +
+      // cadenceMinutes, so "due" becomes windowStart <= now - lag - cadence.
+      const to = new Date(
+        now.getTime() -
+          (schedule.lagMinutes + schedule.cadenceMinutes) * 60_000,
+      );
       const starts = windowStartsBetween(from, to, schedule.cadenceMinutes);
       if (starts.length === 0) continue;
 
@@ -313,12 +326,20 @@ export class InferenceWindowSchedulerService
     // T05/T01: too few usable rows is SKIPPED, a real terminal status, not
     // FAILED — a quiet plant is not an incident, and conflating the two
     // would make the staleness alarm cry wolf on it.
-    if (materialized.scored_rows < env.INFERENCE_MIN_ROWS) {
+    //
+    // MODEL-SERVE-001-T14: the floor is THIS schedule's own `minRows`, not
+    // the global `env.INFERENCE_MIN_ROWS` — `putScheduleService` already
+    // derived it from this schedule's real `cadenceMinutes`/`intervalTime`
+    // (falling back to the global default when that is not derivable), so
+    // reading it off the row here is what makes that derivation actually
+    // take effect. A schedule fetching at a 5-minute interval no longer
+    // reads SKIPPED against a floor sized for a 1-minute one.
+    if (materialized.scored_rows < schedule.minRows) {
       await this.prisma.inferenceWindow.update({
         where: { id: window.id },
         data: {
           status: 'SKIPPED',
-          failureReason: `Only ${materialized.scored_rows} usable row(s), below INFERENCE_MIN_ROWS (${env.INFERENCE_MIN_ROWS}).`,
+          failureReason: `Only ${materialized.scored_rows} usable row(s), below this schedule's minRows (${schedule.minRows}).`,
           finishedAt: new Date(),
           tokenExpiresAt: new Date(0),
         },

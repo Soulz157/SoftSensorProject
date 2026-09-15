@@ -136,6 +136,20 @@ export const env = {
   DRIFT_CRITICAL_SD: Number(process.env.DRIFT_CRITICAL_SD ?? 3.0),
   DRIFT_OUT_OF_RANGE_PCT: Number(process.env.DRIFT_OUT_OF_RANGE_PCT ?? 10),
 
+  // MODEL-SERVE-001-T13. PSI thresholds — 0.1/0.25 are the CONVENTIONAL
+  // credit-scoring cutoffs (commonly cited: <0.1 stable, 0.1-0.25 moderate
+  // shift, >0.25 major shift), never measured against this project's own
+  // process data (T13's own explicit warning: writing these on screen as
+  // if measured would be "a guess wearing a formula", the exact defect
+  // MODEL-FLOW-020's finding 3 names) — the UI must label them as
+  // convention, not fact. PSI_MIN_SAMPLES_PER_BIN is T13's own resolved
+  // openDecision #2: below `binCount * PSI_MIN_SAMPLES_PER_BIN` live
+  // samples, a PSI figure is not published at all (INSUFFICIENT_DATA,
+  // never a numeric value at noise-level sample sizes).
+  PSI_WARN: Number(process.env.PSI_WARN ?? 0.1),
+  PSI_CRITICAL: Number(process.env.PSI_CRITICAL ?? 0.25),
+  PSI_MIN_SAMPLES_PER_BIN: Number(process.env.PSI_MIN_SAMPLES_PER_BIN ?? 20),
+
   // MODEL-SERVE-006. The scheduler tick — same `<= 0` disables / `.unref()`
   // shape ModelDraftCleanupAdminService's own MODEL_DRAFT_SWEEP_INTERVAL_MS
   // uses. The tick only inserts PENDING rows and reconciles stuck RUNNING

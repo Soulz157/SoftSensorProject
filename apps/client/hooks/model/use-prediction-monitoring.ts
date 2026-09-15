@@ -7,6 +7,7 @@ import {
   modelMonitoringService,
   type DriftReport,
   type PredictionSeriesResult,
+  type PsiReport,
 } from '@/services/model-monitoring'
 import { useDebouncedAbortableRequest } from '@/hooks/dataset/internal/use-debounced-abortable-request'
 
@@ -45,6 +46,16 @@ interface UsePredictionMonitoringResult {
    *  404 "no PRODUCTION version") — an honest empty state naming why, never
    *  a generic error toast or a stale report. */
   driftUnavailableReason: string | null
+  /** MODEL-SERVE-001-T13. Published ALONGSIDE `drift`, never replacing it —
+   *  fetched over the SAME `[from, to]` this hook's own `range` prop
+   *  already computes for `drift`/`predictions` above. The smallest
+   *  available `range` ('24h') already satisfies T13's own "rolling 24h"
+   *  sample-floor recommendation; a report reading `INSUFFICIENT_DATA` is
+   *  itself the signal to widen the range toggle, not a reason to give
+   *  this metric a second, independent time control. */
+  psi: PsiReport | null
+  psiLoading: boolean
+  psiUnavailableReason: string | null
 }
 
 /**
@@ -87,6 +98,11 @@ export function usePredictionMonitoring(
   const [driftUnavailableReason, setDriftUnavailableReason] = useState<
     string | null
   >(null)
+  const [psi, setPsi] = useState<PsiReport | null>(null)
+  const [psiLoading, setPsiLoading] = useState(false)
+  const [psiUnavailableReason, setPsiUnavailableReason] = useState<
+    string | null
+  >(null)
 
   const enabled = !!model
   // ONE KEY PER ENDPOINT. `lib/chart-request-cache.ts` is a single
@@ -103,6 +119,9 @@ export function usePredictionMonitoring(
     : null
   const driftCacheKey = enabled
     ? `prediction-monitoring|drift|${model!.id}|${range}`
+    : null
+  const psiCacheKey = enabled
+    ? `prediction-monitoring|psi|${model!.id}|${range}`
     : null
 
   useDebouncedAbortableRequest<PredictionSeriesResult>({
@@ -177,6 +196,39 @@ export function usePredictionMonitoring(
     },
   })
 
+  useDebouncedAbortableRequest<PsiReport>({
+    enabled,
+    cacheKey: psiCacheKey,
+    debounceMs: 0,
+    fetcher: signal => {
+      const to = new Date().toISOString()
+      const from = new Date(Date.now() - RANGE_MS[range]).toISOString()
+      return modelMonitoringService
+        .psi(model!.id, from, to, signal)
+        .then(res => res.data)
+    },
+    onLoading: () => {
+      setPsi(null)
+      setPsiUnavailableReason(null)
+      setPsiLoading(true)
+    },
+    onSettled: result => {
+      if (result.status === 'ready') {
+        setPsi(result.data)
+        setPsiUnavailableReason(null)
+      } else {
+        setPsi(null)
+        setPsiUnavailableReason(result.error)
+      }
+      setPsiLoading(false)
+    },
+    onIdle: () => {
+      setPsi(null)
+      setPsiUnavailableReason(null)
+      setPsiLoading(false)
+    },
+  })
+
   return {
     points,
     pointsLoading,
@@ -184,5 +236,8 @@ export function usePredictionMonitoring(
     drift,
     driftLoading,
     driftUnavailableReason,
+    psi,
+    psiLoading,
+    psiUnavailableReason,
   }
 }

@@ -16,6 +16,8 @@ const h = vi.hoisted(() => ({
   pointsTruncated: false,
   drift: null as unknown,
   driftLoading: false,
+  psi: null as unknown,
+  psiLoading: false,
   schema: null as unknown,
   schemaLoading: false,
   schemaError: null as string | null,
@@ -29,6 +31,14 @@ vi.mock('@/hooks/model/use-prediction-monitoring', () => ({
     drift: h.drift,
     driftLoading: h.driftLoading,
     driftUnavailableReason: null,
+    // MODEL-SERVE-001-T13. Kept honest with the real hook's shape — a
+    // missing key here would just read `undefined` at the call site
+    // (no crash), but that silently diverges from what the real hook
+    // returns rather than exercising the left-join fallback this tab's
+    // own table relies on.
+    psi: h.psi,
+    psiLoading: h.psiLoading,
+    psiUnavailableReason: null,
   }),
 }))
 
@@ -88,7 +98,11 @@ describe('InputDataTab', () => {
     expect(screen.getByText('TI-101.PV')).toBeInTheDocument()
     expect(screen.getByText('PI-204.PV')).toBeInTheDocument()
     expect(screen.getByText('FC-310.PV')).toBeInTheDocument()
-    expect(screen.getAllByText('UNKNOWN')).toHaveLength(3)
+    // MODEL-SERVE-001-T15. Two status columns per row again (3 rows x 2 =
+    // 6), but a different pair than T13's: Drift (no traffic to compare)
+    // and Status (PI said nothing — the hook is mocked to null here). PSI
+    // moved to the Monitoring tab's Distribution Drift panel.
+    expect(screen.getAllByText('UNKNOWN')).toHaveLength(6)
   })
 
   it('shows the honest legacy state when the training run recorded no feature columns', () => {

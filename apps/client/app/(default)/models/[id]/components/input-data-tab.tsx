@@ -5,6 +5,7 @@ import { Database } from 'lucide-react'
 import type { AIModel } from '@/types'
 import { usePredictionMonitoring } from '@/hooks/model/use-prediction-monitoring'
 import { useModelInputSchema } from '@/hooks/model/use-model-input-schema'
+import { useModelInputStatus } from '@/hooks/model/use-model-input-status'
 import { readModelConfig, configTargets } from '@/lib/model-config'
 import { buildInputFeatureRows } from '@/lib/model-input-features'
 import type { TimeRange } from '@/lib/mock-readings'
@@ -51,6 +52,10 @@ export function InputDataTab({ model }: Props) {
     loading: schemaLoading,
     error: schemaError,
   } = useModelInputSchema(model.id)
+  // MODEL-SERVE-001-T15. A separate read from the schema above: this one
+  // reaches PI, so it is allowed to fail on its own without blanking the
+  // feature list.
+  const { status: piStatus } = useModelInputStatus(model.id)
 
   const configuredTargets = useMemo(
     () => configTargets(readModelConfig(model)),
@@ -64,9 +69,10 @@ export function InputDataTab({ model }: Props) {
       versionId: schema.versionId,
       points,
       drift,
-      scalingParams: schema.scalingParams,
+      piStatus,
+      derivedFeatures: schema.derivedFeatures,
     })
-  }, [schema, points, drift])
+  }, [schema, points, drift, piStatus])
 
   const latest = points[points.length - 1] ?? null
 
@@ -107,6 +113,24 @@ export function InputDataTab({ model }: Props) {
           stage={schema.stage}
           configuredTargets={configuredTargets}
         />
+      )}
+
+      {/* MODEL-SERVE-001-T15. Two different questions, two columns, said
+          plainly so neither is read as the other. T12's note here used to
+          say a per-tag Good/Bad view could not be shown at all — true of
+          the `/predict` stream, which carries bare numbers, but no longer
+          true of the tab: Status now comes from a live PI snapshot, the one
+          path in this system that carries PI's own quality flag. */}
+      {schema?.featureColumns && (
+        <p className="text-xs text-muted-foreground">
+          Status is PI&apos;s own quality flag for each tag, read live — for a
+          derived feature, its source tags&apos; verdict. Drift is a separate
+          question: how far live inputs have moved from this version&apos;s
+          training distribution.
+          {piStatus?.unavailableReason
+            ? ` Status unavailable: ${piStatus.unavailableReason}`
+            : ''}
+        </p>
       )}
 
       <Card className="overflow-hidden border-border bg-card">

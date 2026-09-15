@@ -64,6 +64,78 @@ export function windowEndFor(windowStart: Date, cadenceMinutes: number): Date {
   return new Date(windowStart.getTime() + cadenceMinutes * MS_PER_MINUTE);
 }
 
+const DURATION_UNIT_MINUTES: Record<string, number> = {
+  s: 1 / 60,
+  m: 1,
+  h: 60,
+  d: 1440,
+};
+
+/**
+ * Parse a PI summary-duration string ("30s", "1m", "10m", "1h") into
+ * MINUTES. Mirrors `apps/client/lib/dataset-fetch.ts`'s own `parseDurationMs`
+ * one unit up (minutes here, milliseconds there) — duplicated rather than
+ * shared: the two live in separate apps (client/backend) with no existing
+ * shared TS package sized for one small format parser, and this codebase's
+ * own convention (packages/py-scaling) reserves a shared package for logic
+ * that must never drift between processes that both COMPUTE with it (train
+ * vs. serve). This is read-only string parsing on one side only; keep the
+ * accepted format (`\d+[smhd]`) in sync with the client's copy if it ever
+ * changes.
+ *
+ * Returns null for anything that does not match — never a wrong guess, per
+ * the client copy's own contract: "so callers can fall back to a known-good
+ * value rather than a wrong one."
+ */
+function parseIntervalMinutes(duration: string): number | null {
+  const match = /^(\d+)\s*([smhd])$/.exec(duration.trim());
+  if (!match) return null;
+  const value = Number(match[1]);
+  const unitMinutes = DURATION_UNIT_MINUTES[match[2]];
+  if (!Number.isFinite(value) || value <= 0 || unitMinutes === undefined) {
+    return null;
+  }
+  return value * unitMinutes;
+}
+
+/**
+ * MODEL-SERVE-001-T14. The per-schedule floor for "too few usable rows ->
+ * SKIPPED" — `env.INFERENCE_MIN_ROWS`'s own derivation ("half an hourly
+ * window at the observed dataset's 1-minute interval, 60 rows/hour") bakes
+ * in ONE sampling interval as a GLOBAL constant, so any schedule fetching
+ * at a different interval than 1 minute has always been evaluated against
+ * the wrong expectation: a 5-minute-interval schedule has 12 rows in a
+ * complete, healthy hourly window and would read SKIPPED against a 30-row
+ * floor forever, for a plant working exactly as intended — the "guess
+ * wearing a formula" shape MODEL-FLOW-020's own finding 3 names, one level
+ * removed (the FORMULA is fine; it was evaluated against the wrong,
+ * globally-assumed interval).
+ *
+ * Returns null — NEVER a wrong guess — when `intervalTime` is absent (a
+ * non-PI source: `SQLConfig`/`InfluxConfig`/etc. carry no interval concept
+ * at all — see `store/model-pipeline.ts`'s own `DataSourceConfig` union,
+ * verified: only `PIConfig` has an `intervalTime` field) or unparseable
+ * (free-text input with no client-side format validation). The caller
+ * falls back to `env.INFERENCE_MIN_ROWS` in that case — the SAME safe
+ * default every schedule already uses today, never a fabricated
+ * per-schedule number derived from a guess at what the interval might be.
+ *
+ * Clamped to a minimum of 1: a floor of 0 would make SKIPPED unreachable
+ * for a degenerate interval (interval >= window length), silently treating
+ * a genuinely EMPTY window as merely sparse rather than as the real
+ * problem it is.
+ */
+export function deriveMinRows(
+  cadenceMinutes: number,
+  intervalTime: string | undefined,
+): number | null {
+  if (!intervalTime) return null;
+  const intervalMinutes = parseIntervalMinutes(intervalTime);
+  if (intervalMinutes === null) return null;
+  const expectedRows = cadenceMinutes / intervalMinutes;
+  return Math.max(1, Math.floor(expectedRows / 2));
+}
+
 /**
  * MODEL-SERVE-006-T06. `{dt, hour}` in UTC — the two values NestJS passes
  * to python's inference-window materialize/presign-upload calls (see

@@ -32,4 +32,17 @@ export class PredictionLogAuthorizedController {
   ) {
     return this.service.getDriftService(modelId, query, user);
   }
+
+  // MODEL-SERVE-001-T13. Same query contract as /drift (a caller passes
+  // whatever [from, to] it wants) — the SEPARATE CADENCE this metric needs
+  // (a wider window to clear the sample floor) is a client-side default
+  // range, not a server-side behaviour difference between the two routes.
+  @Get('/psi')
+  getPsiController(
+    @Param('modelId') modelId: string,
+    @Query() query: PredictionLogRangeQueryDto,
+    @Users() user: Auth.UserPayload,
+  ) {
+    return this.service.getPsiService(modelId, query, user);
+  }
 }

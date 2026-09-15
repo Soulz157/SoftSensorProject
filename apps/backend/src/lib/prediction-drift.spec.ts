@@ -155,6 +155,80 @@ describe('computeDrift', () => {
     expect(report.columns[0].column).toBe('TI202.PV');
   });
 
+  // ── MODEL-SERVE-001-V15 ──────────────────────────────────────────────
+
+  it("V15: the reference is the recorded TRAINING baseline, not the live window's own mean/std — a shift moves z, matching values do not", () => {
+    // A self-referential metric (computed against the CURRENT window's own
+    // mean/spread) would return near-zero for BOTH cases below, looking
+    // like a working stable signal — this is the exact failure this item
+    // exists to catch. The two `baseline` objects are literal, independent
+    // fixtures, constructed with NO reference to `live`'s own values —
+    // that independence is itself the proof `computeDrift` cannot be
+    // secretly deriving trainMean/trainStd from the live population.
+    const trainMean = 0.5;
+    const trainStd = 0.1;
+    const baseline: ColumnBaselineMap = {
+      X: { mean: trainMean, std: trainStd, percentiles: { p1: 0.2, p99: 0.8 } },
+    };
+
+    // Case 1: live values shifted 8 training-SDs away from the SAME fixed
+    // baseline — the figure must MOVE.
+    const shiftedMean = trainMean + 8 * trainStd;
+    const shifted: FeatureStatsMap = {
+      X: {
+        n: 50,
+        sum: shiftedMean * 50,
+        sumsq: (shiftedMean * shiftedMean + 0.0001) * 50,
+        min: shiftedMean - 0.01,
+        max: shiftedMean + 0.01,
+      },
+    };
+    const shiftedReport = computeDrift(shifted, baseline, THRESHOLDS);
+    expect(Math.abs(shiftedReport.columns[0].z as number)).toBeGreaterThan(7);
+    expect(shiftedReport.columns[0].status).toBe('CRITICAL');
+
+    // Case 2: live values drawn FROM the training distribution (same
+    // baseline object, unchanged) — the figure must NOT move.
+    const matching: FeatureStatsMap = {
+      X: {
+        n: 50,
+        sum: trainMean * 50,
+        sumsq: (trainMean * trainMean + trainStd * trainStd) * 50,
+        min: trainMean - trainStd,
+        max: trainMean + trainStd,
+      },
+    };
+    const matchingReport = computeDrift(matching, baseline, THRESHOLDS);
+    expect(matchingReport.columns[0].z as number).toBeCloseTo(0, 5);
+    expect(matchingReport.columns[0].status).toBe('OK');
+  });
+
+  it('V15: sigma is a real recorded value, never a defaulted denominator — asserted separately from the status branch', () => {
+    // DS-LAKE's own record: median/std were silently stripped at a response
+    // boundary once already (fixed in apps/python/schemas/preprocess.py).
+    // A z-score with a DEFAULTED denominator (0, or a fabricated value) is
+    // a number with no meaning, not a weak one — so a missing/invalid std
+    // must produce `z: null` (never a computed-but-meaningless number),
+    // asserted independently of the UNKNOWN status string.
+    const live: FeatureStatsMap = {
+      X: { n: 10, sum: 5, sumsq: 2.5, min: 0.4, max: 0.6 },
+    };
+    const nullStd = computeDrift(
+      live,
+      { X: { mean: 0.5, std: null, percentiles: null } },
+      THRESHOLDS,
+    );
+    const zeroStd = computeDrift(
+      live,
+      { X: { mean: 0.5, std: 0, percentiles: null } },
+      THRESHOLDS,
+    );
+    expect(nullStd.columns[0].z).toBeNull();
+    expect(zeroStd.columns[0].z).toBeNull();
+    expect(nullStd.columns[0].reason).toMatch(/std unavailable or zero/);
+    expect(zeroStd.columns[0].reason).toMatch(/std unavailable or zero/);
+  });
+
   it('overall status is the worst column status, never masked by an UNKNOWN column', () => {
     const live: FeatureStatsMap = {
       OK_COL: { n: 10, sum: 5, sumsq: 2.5, min: 0.4, max: 0.6 },

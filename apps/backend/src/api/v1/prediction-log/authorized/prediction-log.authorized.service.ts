@@ -1,11 +1,12 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { PrismaService } from '@softsensor/prisma';
+import { PrismaService, PrismaTypes } from '@softsensor/prisma';
 import { AppException } from '@softsensor/common';
 import { env } from '@/config/env.config';
 import { postToPython, PYTHON_TIMEOUT } from '@/lib/python-client';
 import {
   appendPredictionLog,
   predictionLogSeries,
+  readFeatureSpec,
 } from '@/lib/python-preprocess-client';
 import { PythonColumnStatsSchema } from '@/api/v1/dataset-version/authorized/dto/dataset-version.authorized.dto';
 import {
@@ -14,6 +15,13 @@ import {
   type ColumnBaselineMap,
   type FeatureStatsMap,
 } from '@/lib/prediction-drift';
+import {
+  computePsi,
+  poolHistograms,
+  PSI_EPSILON,
+  type FeatureHistogramMap,
+  type PsiReferenceMap,
+} from '@/lib/prediction-psi';
 import type {
   IngestPredictionLogDto,
   PredictionLogRangeQueryDto,
@@ -140,6 +148,16 @@ export class PredictionLogAuthorizedService {
         featureStats: JSON.parse(JSON.stringify(dto.featureStats)),
         // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         predictionStats: JSON.parse(JSON.stringify(dto.predictionStats)),
+        // MODEL-SERVE-001-T13. `PrismaTypes.DbNull` is what actually
+        // writes SQL NULL into a nullable Json column — a plain JS `null`
+        // is type-rejected by the generated client (it would instead mean
+        // "store the JSON literal null", only legal on a NOT NULL Json
+        // column, which this is not).
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        featureHistograms:
+          dto.featureHistograms === null
+            ? PrismaTypes.DbNull
+            : JSON.parse(JSON.stringify(dto.featureHistograms)),
         requestedAt: new Date(dto.requestedAt),
       },
       select: { id: true },
@@ -272,6 +290,99 @@ export class PredictionLogAuthorizedService {
   }
 
   /**
+   * MODEL-SERVE-001-T13. The second drift metric, published ALONGSIDE
+   * `getDriftService`'s z-score, never replacing it — same `[from, to]`
+   * query contract as `/drift`, the SAME `PredictionLog` rows (pooled
+   * differently: `featureHistograms`, not `featureStats`), the SAME
+   * PRODUCTION-version resolution. SEPARATE CADENCE (T13's own resolved
+   * openDecision #2): PSI needs `binCount * PSI_MIN_SAMPLES_PER_BIN` live
+   * samples before a figure is even computed, which one z-score request's
+   * `[from, to]` will often not clear — the CALLER is expected to request a
+   * wider range (the client defaults this to a rolling 24h window; this
+   * endpoint itself enforces no particular range, only the sample floor).
+   */
+  async getPsiService(
+    modelId: string,
+    query: PredictionLogRangeQueryDto,
+    user: Auth.UserPayload,
+  ) {
+    await this.assertModelAccess(modelId, user);
+
+    const production = await this.prisma.modelVersion.findFirst({
+      where: { modelId, stage: 'PRODUCTION' },
+    });
+    if (!production) {
+      throw new AppException({
+        statusCode: 404,
+        message: `Model ${modelId} has no PRODUCTION version. Nothing to compare live traffic against.`,
+        type: 'ERROR',
+      });
+    }
+
+    const rows = await this.prisma.predictionLog.findMany({
+      where: {
+        modelVersionId: production.id,
+        requestedAt: { gte: new Date(query.from), lte: new Date(query.to) },
+      },
+      select: { featureHistograms: true },
+    });
+
+    // `featureHistograms` is nullable at the ROW level (a request logged
+    // before T13, or served under a spec that predated it) — `null` here,
+    // never an object with per-tag nulls inside it. Filtered out BEFORE
+    // `poolHistograms`, which expects every array entry to be an object it
+    // can `Object.entries` over; passing a bare `null` through would throw.
+    const histograms = rows
+      .map((r) => r.featureHistograms)
+      .filter((h): h is NonNullable<typeof h> => h !== null);
+
+    const pooled = poolHistograms(
+      histograms.map((h) => h as unknown as FeatureHistogramMap),
+    );
+
+    const reference = await this.resolvePsiReference(production.goldObjectKey);
+
+    const report = computePsi(pooled, reference, {
+      warn: env.PSI_WARN,
+      critical: env.PSI_CRITICAL,
+      minSamplesPerBin: env.PSI_MIN_SAMPLES_PER_BIN,
+    });
+
+    return {
+      statusCode: 200,
+      message: 'PSI report fetched',
+      type: 'SUCCESS' as const,
+      data: {
+        ...report,
+        basis: {
+          modelVersionId: production.id,
+          version: production.version,
+          goldArtifactId: production.goldArtifactId,
+          goldObjectKey: production.goldObjectKey,
+          // MODEL-SERVE-001-T16. `rows.length` is captured BEFORE the
+          // null-`featureHistograms` filter above — it overstates what
+          // actually fed `poolHistograms`. Kept for parity with `/drift`'s
+          // own `sampleRequests`; `histogramRequests` below is the honest
+          // figure a "computed over" readout should actually print.
+          sampleRequests: rows.length,
+          histogramRequests: histograms.length,
+          from: query.from,
+          to: query.to,
+          // T16: the env-derived thresholds/epsilon `computePsi` was just
+          // called with, so the screen's own disclaimer reads real
+          // config rather than a literal that silently drifts from it.
+          thresholds: {
+            warn: env.PSI_WARN,
+            critical: env.PSI_CRITICAL,
+            minSamplesPerBin: env.PSI_MIN_SAMPLES_PER_BIN,
+          },
+          epsilon: PSI_EPSILON,
+        },
+      },
+    };
+  }
+
+  /**
    * Reads column_stats.json for the PRODUCTION version's own training
    * artifact — the SAME sidecar `getArtifactColumnStatsService` serves,
    * called directly via `postToPython` rather than through that
@@ -311,6 +422,60 @@ export class PredictionLogAuthorizedService {
     } catch (err) {
       this.log.warn(
         `column_stats unavailable for ${goldObjectKey}; drift will report every column UNKNOWN: ${(err as Error).message}`,
+      );
+      return {};
+    }
+  }
+
+  /**
+   * MODEL-SERVE-001-T13. Reads `feature_spec.json` for the PRODUCTION
+   * version's own training artifact — via `readFeatureSpec`, the SAME
+   * sidecar read the serving descriptor already uses (`model-serving.
+   * authorized.service.ts`'s `buildDescriptor`) — and un-flattens its four
+   * parallel per-tag maps (`psiRefEdges`/`psiBinCount`/`psiBinMode`/
+   * `psiRefCounts`) back into one `PsiReference` object per tag, the shape
+   * `computePsi` consumes.
+   *
+   * A tag missing ANY of the four (a malformed or partially-written spec)
+   * is skipped entirely, never assembled from whichever fields happen to
+   * be present — an incomplete reference is not a usable one, and
+   * `computePsi` already reports a clean UNKNOWN for a tag with no
+   * reference at all, so silently dropping it here is the same honest
+   * "no reference" outcome, not a lossy one.
+   *
+   * A missing sidecar (legacy artifact, or one that predates T13) is NOT
+   * an error — same discipline `resolveBaseline` uses for a missing
+   * column_stats.json: every column reports UNKNOWN with a named reason.
+   */
+  private async resolvePsiReference(
+    goldObjectKey: string,
+  ): Promise<PsiReferenceMap> {
+    try {
+      const { spec } = await readFeatureSpec(goldObjectKey);
+      const edges = spec.psiRefEdges ?? {};
+      const binCounts = spec.psiBinCount ?? {};
+      const binModes = spec.psiBinMode ?? {};
+      const refCounts = spec.psiRefCounts ?? {};
+
+      const reference: PsiReferenceMap = {};
+      for (const tag of Object.keys(edges)) {
+        const binMode = binModes[tag];
+        const binCount = binCounts[tag];
+        const tagRefCounts = refCounts[tag];
+        if (binMode === undefined || binCount === undefined || !tagRefCounts) {
+          continue;
+        }
+        reference[tag] = {
+          binMode,
+          binCount,
+          edges: edges[tag],
+          refCounts: tagRefCounts,
+        };
+      }
+      return reference;
+    } catch (err) {
+      this.log.warn(
+        `feature_spec unavailable for ${goldObjectKey}; PSI will report every column UNKNOWN: ${(err as Error).message}`,
       );
       return {};
     }

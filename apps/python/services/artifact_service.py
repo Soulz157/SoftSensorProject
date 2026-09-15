@@ -103,7 +103,11 @@ from services.feature_service import (
 )
 from softsensor_scaling import assert_scaling_coverage
 from services.downsample import lttb_indices
-from services.feature_spec_service import build_feature_spec, max_replay_lookback
+from services.feature_spec_service import (
+    build_feature_spec,
+    compute_psi_ref_edges,
+    max_replay_lookback,
+)
 from services.frame_service import from_pi_response, from_sql_response
 from services.preview_service import _finite, sample_rows
 from services.validation_service import run_validation
@@ -868,6 +872,16 @@ def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:
         result, dropped_bad_rows = drop_bad_feature_rows(
             result, tag_columns(result), exclude=request.target_y)
 
+        # MODEL-SERVE-001-T13. BEFORE `to_model_ready`, same placement
+        # reasoning as `drop_bad_feature_rows` immediately above: `result`
+        # here is the TRAIN split's RAW, post-feature-engineering,
+        # Bad-row-dropped frame — exactly the population T13 STEP 1-4
+        # requires (train-split, raw engineering units, derived columns
+        # included). Computing this AFTER `to_model_ready` would freeze
+        # edges in scaled [0,1] units instead of the raw units a live
+        # `/predict` payload actually carries.
+        psi_ref_edges = compute_psi_ref_edges(result, tag_columns(result))
+
         # DS-LAKE-018-T02: `scaling_params` is what each scaler actually FIT
         # on these train rows — recorded below so a later holdout replay
         # (DS-LAKE-018-T04) can scale with these exact numbers instead of
@@ -887,7 +901,8 @@ def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:
         ]
         spec = build_feature_spec(
             computed_configs, effective_selected, request.scalers,
-            request.target_y, scaling_params=scaling_params)
+            request.target_y, scaling_params=scaling_params,
+            psi_ref_edges=psi_ref_edges)
 
     assert_frame_is_usable(result)
 
@@ -995,6 +1010,12 @@ def scale(store: ObjectStore, request: ScaleRequest) -> dict[str, Any]:
     source, dropped_bad_rows = drop_bad_feature_rows(
         source, tag_columns(source), exclude=request.target_y)
 
+    # MODEL-SERVE-001-T13. Same placement as `features()`'s own call: AFTER
+    # `drop_bad_feature_rows`, BEFORE `to_model_ready` — `source` here is
+    # this path's TRAIN-split RAW frame (see this function's own docstring:
+    # "`source` already carries the engineered/selected columns").
+    psi_ref_edges = compute_psi_ref_edges(source, tag_columns(source))
+
     result, scaling_params = to_model_ready(
         source, tag_columns(source), request.scalers)
 
@@ -1005,7 +1026,7 @@ def scale(store: ObjectStore, request: ScaleRequest) -> dict[str, Any]:
 
     spec = build_feature_spec(
         step_configs, effective_selected, request.scalers, request.target_y,
-        scaling_params=scaling_params)
+        scaling_params=scaling_params, psi_ref_edges=psi_ref_edges)
     # `source` here is already the feature-stage frame (post applyFeatures/
     # selectColumns) — no columns are minted by scaling, so `operations=[]`
     # is correct the same way `features()`'s own `column_stats` call already

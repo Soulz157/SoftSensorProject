@@ -220,6 +220,124 @@ describe('InferenceWindowAuthorizedService.putScheduleService — D5 enable-time
       intervalTime: '1m',
       baseTags: ['tag1'],
     });
+    // MODEL-SERVE-001-T14. A 1-minute interval at the default 60-minute
+    // cadence reproduces env.INFERENCE_MIN_ROWS's OWN derivation exactly
+    // (30) — the case this task must not disturb.
+    expect(call.create.minRows).toBe(30);
+    expect(result.data?.minRows).toBe(30);
+  });
+
+  // ── MODEL-SERVE-001-T14 ──────────────────────────────────────────────────
+
+  it('derives a SMALLER per-schedule minRows for a non-1-minute PI interval', async () => {
+    const prisma = buildPrisma({
+      modelVersion: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ id: 'version-1', sourceDatasetId: 'ds-1' }),
+      },
+      dataset: {
+        findUnique: jest.fn().mockResolvedValue({
+          sourceIds: ['src-a'],
+          pipelineConfig: {
+            // 60-minute cadence (the DTO's own default) / 5-minute interval
+            // = 12 rows in a complete window; half of that is 6 — NOT the
+            // global 30 this schedule would have been evaluated against
+            // before this task, which is the whole defect T14 exists to fix.
+            sourceFetchConfigs: { 'src-a': { intervalTime: '5m' } },
+            baseTags: [],
+          },
+        }),
+      },
+    });
+    const service = makeService(prisma);
+    const result = await service.putScheduleService(
+      'model-1',
+      { enabled: true },
+      user,
+    );
+    const call = prisma.inferenceSchedule.upsert.mock.calls[0][0];
+    expect(call.create.minRows).toBe(6);
+    expect(result.data?.minRows).toBe(6);
+  });
+
+  it('falls back to env.INFERENCE_MIN_ROWS for a source with no interval concept (e.g. SQL)', async () => {
+    const prisma = buildPrisma({
+      modelVersion: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ id: 'version-1', sourceDatasetId: 'ds-1' }),
+      },
+      dataset: {
+        findUnique: jest.fn().mockResolvedValue({
+          sourceIds: ['src-a'],
+          pipelineConfig: {
+            // SQLConfig carries no `intervalTime` field at all — never a
+            // fabricated per-schedule number derived from a guess.
+            sourceFetchConfigs: {
+              'src-a': { type: 'sql', connectionString: 'x', query: 'y' },
+            },
+            baseTags: [],
+          },
+        }),
+      },
+    });
+    const service = makeService(prisma);
+    const result = await service.putScheduleService(
+      'model-1',
+      { enabled: true },
+      user,
+    );
+    const call = prisma.inferenceSchedule.upsert.mock.calls[0][0];
+    expect(call.create.minRows).toBe(30);
+    expect(result.data?.minRows).toBe(30);
+  });
+
+  it('recomputes minRows unconditionally on a settings-only update, unlike cadenceMinutes/lagMinutes', async () => {
+    const prisma = buildPrisma({
+      modelVersion: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ id: 'version-1', sourceDatasetId: 'ds-1' }),
+      },
+      dataset: {
+        findUnique: jest.fn().mockResolvedValue({
+          sourceIds: ['src-a'],
+          pipelineConfig: {
+            sourceFetchConfigs: { 'src-a': { intervalTime: '5m' } },
+            baseTags: [],
+          },
+        }),
+      },
+      inferenceSchedule: {
+        upsert: jest.fn().mockResolvedValue({}),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+        // Already enabled at the OLD, global-constant floor — as every
+        // schedule created before this task would be.
+        findUnique: jest.fn().mockResolvedValue({
+          enabled: true,
+          autoRetrain: false,
+          warnSd: 1.5,
+          criticalSd: 3.0,
+          driftMonitor: false,
+          driftThresholdPct: 10,
+        }),
+      },
+    });
+    const service = makeService(prisma);
+    // A settings-only tweak that names neither cadenceMinutes nor minRows.
+    await service.putScheduleService(
+      'model-1',
+      { enabled: true, driftMonitor: true },
+      user,
+    );
+    const call = prisma.inferenceSchedule.upsert.mock.calls[0][0];
+    // cadenceMinutes/lagMinutes are conditionally omitted from `update`
+    // when the DTO does not send them (existing MERGE behaviour) — minRows
+    // must NOT follow that pattern, since it tracks the CURRENT
+    // fetchConfig, which this call resolved fresh regardless.
+    expect(call.update.cadenceMinutes).toBeUndefined();
+    expect(call.update.minRows).toBe(6);
   });
 
   it('stamps deployedAt/deployedBy on a fresh OFF -> ON enable', async () => {
@@ -565,13 +683,25 @@ function buildTruthPrisma(
   rows: Array<ReturnType<typeof truthRow>>,
   windowsInRange = rows.length,
   dueWindows: Array<{ id: string }> = [],
+  // T11: getTruthService now issues a SECOND, distinct `count` — the fourth
+  // empty cause (SKIPPED windows the SUCCEEDED-only windowsInRange count
+  // cannot see). Keyed by `where.status`, same discipline `statusPrisma`
+  // above already applies to its own dual-branch `findFirst` mock, so the
+  // two counts can differ instead of silently sharing one value.
+  windowsSkipped = 0,
 ) {
   return buildPrisma({
     inferenceWindowTruth: { findMany: jest.fn().mockResolvedValue(rows) },
     inferenceWindow: {
       findUniqueOrThrow: jest.fn(),
       update: jest.fn().mockResolvedValue({}),
-      count: jest.fn().mockResolvedValue(windowsInRange),
+      count: jest
+        .fn()
+        .mockImplementation(({ where }: { where: { status: unknown } }) =>
+          Promise.resolve(
+            where.status === 'SKIPPED' ? windowsSkipped : windowsInRange,
+          ),
+        ),
       findMany: jest.fn().mockResolvedValue(dueWindows),
     },
   });
@@ -656,6 +786,22 @@ describe('InferenceWindowAuthorizedService.getTruthService (MODEL-SERVE-005-T03)
     expect(res.data.coverage.windowsInRange).toBe(5);
     expect(res.data.coverage.windowsJoined).toBe(0);
     expect(res.data.coverage.windowsAwaitingTruth).toBe(5);
+  });
+
+  /**
+   * T11. `windowsInRange` counts SUCCEEDED only, so an all-SKIPPED range
+   * read as "no completed windows" — identical to "the scheduler never ran
+   * here" — even though it ran, fetched, and deliberately declined to
+   * score. `windowsSkipped` is the fact that lets a caller tell the two
+   * apart; it must be independent of, not derived from, windowsInRange.
+   */
+  it('reports windowsSkipped independently of windowsInRange (the fourth empty cause)', async () => {
+    const service = makeService(buildTruthPrisma([], 0, [], 3));
+
+    const res = await service.getTruthService('model-1', RANGE, user);
+
+    expect(res.data.coverage.windowsInRange).toBe(0);
+    expect(res.data.coverage.windowsSkipped).toBe(3);
   });
 
   /** A failure row exists to stop the sweeper starving on an unjoinable

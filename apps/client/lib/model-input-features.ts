@@ -3,11 +3,23 @@
  * trained X feature list (`featureColumns`, predict-time order) against
  * live drift status and logged prediction values. No React, no IO,
  * matching the `lib/` convention of `model-config.ts`/`dataset-stats.ts`.
+ *
+ * T12: `points[].features` is the `/predict` request's own RAW values —
+ * `apps/serving/services/prediction_log.py`'s `log_prediction` builds its
+ * ingest body from `rows` (the caller-supplied request), never `scaled`;
+ * `scaled` feeds only the row's `featureStats` aggregates. This file used
+ * to `inverseScale()` these values as though they were a scaled artifact
+ * column — corrupting every displayed reading by the scaler's own span
+ * (e.g. FI001.PV min/max ~180/207: a real ~190 rendered as ~5,309). There
+ * is nothing to invert here; the value already IS engineering units.
  */
-import type { DriftReport, DriftStatus } from '@/services/model-monitoring'
-import type { ArtifactScalingParams } from '@/services/dataset-version'
+import type {
+  DriftReport,
+  DriftStatus,
+  ModelInputStatus,
+  PiTagStatus,
+} from '@/services/model-monitoring'
 import type { LivePredictionPoint } from '@/hooks/model/use-prediction-monitoring'
-import { inverseScale } from '@/lib/inverse-scale'
 
 export interface InputFeatureRow {
   column: string
@@ -15,16 +27,27 @@ export interface InputFeatureRow {
   driftReason?: string
   z: number | null
   outOfRangePct: number | null
-  /** Engineering units when the scaler could be inverted; null otherwise —
-   *  never a scaled 0–1 number presented as a measurement. */
-  lastValue: number | null
-  /** The raw logged (model-ready, scaled) value — always present when a
-   *  point carried this column, regardless of whether it could be
-   *  inverted. Shown as a secondary figure. */
-  lastValueScaled: number | null
+  /** MODEL-SERVE-001-T15. PI's OWN quality flag for this tag, read live —
+   *  a different question from `driftStatus` ("has the distribution moved
+   *  since training"), and the one this tab is actually for. `UNKNOWN`
+   *  when PI said nothing about the tag or could not be reached; never
+   *  assumed Good. */
+  piStatus: PiTagStatus
+  piReason?: string
+  /** For a derived feature, which of its base tags are not Good. */
+  failingSources?: string[]
+  /** The logged request's own value for this column — already engineering
+   *  units (see this file's own doc comment for why no inversion applies
+   *  here). Null only when the column was never logged in range. */
+  lastValueRaw: number | null
   /** ISO timestamp of the newest surviving point carrying this column;
    *  null when the column was never logged in range. */
   lastSeen: string | null
+  /** T12. A derived (formula) feature's human-readable equation, e.g.
+   *  "FIC204.PV/(FY107.CPV+...)" — null for a base tag, which has none.
+   *  Names which SOURCE COLUMNS feed this feature; carries no verdict on
+   *  any of them — no per-tag status exists on this stream at all. */
+  equation: string | null
 }
 
 export interface BuildInputFeatureRowsInput {
@@ -37,32 +60,46 @@ export interface BuildInputFeatureRowsInput {
   versionId: string
   points: LivePredictionPoint[]
   drift: DriftReport | null
-  scalingParams: Record<string, ArtifactScalingParams> | null
+  /** MODEL-SERVE-001-T15. Same left-join role as `drift` above — a column
+   *  absent from `piStatus.features` (PI unreachable, or a tag it said
+   *  nothing about) still renders a row, `piStatus` falling back to
+   *  `UNKNOWN`. */
+  piStatus: ModelInputStatus | null
+  /** T12. Keyed by feature name — only a `formula` feature has an entry
+   *  (`ModelInputSchemaAuthorizedService.resolveFeatureSpec`'s own scope
+   *  fence); a base tag or a non-formula derived kind is simply absent. */
+  derivedFeatures: Array<{ name: string; display: string }> | null
 }
 
 /** Builds one row per `featureColumns` entry, in that exact order — never
  *  re-sorted, since predict-time column order is meaningful. Every column
- *  in the list gets a row even when absent from both `drift` and every
- *  logged point (left join, never inner): `driftStatus` falls back to
- *  `UNKNOWN`, `lastValue`/`lastSeen` fall back to `null`. Nothing in
+ *  in the list gets a row even when absent from `drift` and every logged
+ *  point (left join, never inner): `driftStatus` falls back to `UNKNOWN`,
+ *  `lastValueRaw`/`lastSeen` fall back to `null`. Nothing in
  *  `featureColumns` is ever dropped. */
 export function buildInputFeatureRows({
   featureColumns,
   versionId,
   points,
   drift,
-  scalingParams,
+  piStatus,
+  derivedFeatures,
 }: BuildInputFeatureRowsInput): InputFeatureRow[] {
   const driftByColumn = new Map(
     (drift?.columns ?? []).map(col => [col.column, col]),
+  )
+  const piByColumn = new Map((piStatus?.features ?? []).map(f => [f.column, f]))
+  const equationByColumn = new Map(
+    (derivedFeatures ?? []).map(f => [f.name, f.display]),
   )
 
   const versionPoints = points.filter(p => p.modelVersionId === versionId)
 
   return featureColumns.map(column => {
     const driftCol = driftByColumn.get(column)
+    const piCol = piByColumn.get(column)
 
-    let lastValueScaled: number | null = null
+    let lastValueRaw: number | null = null
     let lastSeen: string | null = null
     // versionPoints is not assumed sorted; scan for the newest point that
     // actually carries this column, not simply the series' last point.
@@ -70,14 +107,9 @@ export function buildInputFeatureRows({
       if (!(column in point.features)) continue
       if (lastSeen === null || point.timestamp > lastSeen) {
         lastSeen = point.timestamp
-        lastValueScaled = point.features[column]!
+        lastValueRaw = point.features[column]!
       }
     }
-
-    const lastValue =
-      lastValueScaled === null
-        ? null
-        : inverseScale(lastValueScaled, scalingParams?.[column])
 
     return {
       column,
@@ -85,9 +117,12 @@ export function buildInputFeatureRows({
       driftReason: driftCol?.reason,
       z: driftCol?.z ?? null,
       outOfRangePct: driftCol?.outOfRangePct ?? null,
-      lastValue,
-      lastValueScaled,
+      piStatus: piCol?.status ?? 'UNKNOWN',
+      piReason: piCol?.reason,
+      failingSources: piCol?.failingSources,
+      lastValueRaw,
       lastSeen,
+      equation: equationByColumn.get(column) ?? null,
     }
   })
 }

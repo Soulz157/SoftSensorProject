@@ -63,6 +63,30 @@ before this task, grepped, confirmed empty):
   direct-read-only check would miss e.g. a rolling window over a lag of
   the target. An empty list there means "no target-derived features", not
   "unknown", so it is computed here rather than ever omitted.
+* `psiRefEdges` / `psiBinCount` / `psiBinMode` / `psiRefCounts` (MODEL-
+  SERVE-001-T13, resolved openDecision) — one entry per tag in each, keyed
+  the same way `scalingParams` is. Frozen PSI reference bins, computed ONCE
+  by `compute_psi_ref_edges` (delegating the actual binning to
+  `softsensor_scaling.psi.quantile_edges` — SHARED with `apps/serving`'s
+  live bucketing, so training and serving can never bucket a value
+  differently) over the TRAIN split's Good, RAW (pre-`to_model_ready`)
+  values — never re-fit per inference window, for the identical reason
+  `scalingParams` is fit-once-and-reused rather than re-derived (see
+  finding above). RAW, not scaled: T13 STEP 4 found the drift z-score's own
+  baseline (`column_stats.json`) is scaled, but PSI's bin edges are NOT
+  scale-invariant the way a z-score is, so they are frozen in the SAME raw
+  engineering units a live `/predict` payload's `rows` actually carries.
+  `psiBinMode` is `"continuous"` (edges are `binCount + 1` quantile
+  boundaries) or `"categorical"` (edges are the sorted distinct Good values
+  themselves, one bin per value) — `quantile_edges`'s own degenerate-tag
+  rule decides which. `psiRefCounts` is the REAL measured reference count
+  per bin — see `softsensor_scaling.psi`'s own module docstring for why
+  this is measured rather than assumed uniform (a categorical split is NOT
+  equal-frequency the way a quantile split is). Like `scalingParams`, NOT
+  part of `featureHash` (the same recipe over the same rows always produces
+  the same edges) and absent for a tag with zero Good values in the
+  observed train split (nothing to bin — never a fabricated single-point
+  edge set).
 """
 
 from __future__ import annotations
@@ -71,8 +95,14 @@ import hashlib
 import json
 from typing import Any, Mapping, Sequence
 
+import pandas as pd
+
+from services.boxplot_service import good_values
 from services.feature_service import feature_column_name
 from softsensor_scaling import _own_lookback, _reads_tags, max_replay_lookback
+from softsensor_scaling import quantile_edges as _quantile_edges
+from softsensor_scaling import tag_columns as _tag_columns
+from softsensor_scaling.psi import DEFAULT_PSI_BIN_COUNT
 
 # MODEL-SERVE-002-T06: `max_replay_lookback` (with `_reads_tags`/
 # `_own_lookback`) moved to softsensor_scaling.features and is imported
@@ -85,12 +115,60 @@ from softsensor_scaling import _own_lookback, _reads_tags, max_replay_lookback
 __all__ = [
     "FEATURE_SPEC_VERSION",
     "build_feature_spec",
+    "compute_psi_ref_edges",
     "max_replay_lookback",
     "_own_lookback",
     "_reads_tags",
 ]
 
-FEATURE_SPEC_VERSION = 2  # DS-LAKE-018-T02: added `scalingParams`
+FEATURE_SPEC_VERSION = 3  # MODEL-SERVE-001-T13: added psiRefEdges/psiBinCount/psiBinMode/psiRefCounts
+
+
+def compute_psi_ref_edges(
+    frame: pd.DataFrame,
+    tags: Sequence[str] | None = None,
+    bin_count: int = DEFAULT_PSI_BIN_COUNT,
+) -> dict[str, dict[str, Any]]:
+    """Per-tag frozen PSI reference bins for one GOLD write — MODEL-SERVE-
+    001-T13. Computed ONCE, over the TRAIN split's Good RAW values, and
+    frozen for the `ModelVersion`'s lifetime; never re-fit per inference
+    window, for the identical reason DS-LAKE-005B-A-V06's shared-bucket-
+    basis rule exists for the scrubber.
+
+    The actual binning (quantile edges, degenerate-tag rule, measured
+    `refCounts`) is `softsensor_scaling.psi.quantile_edges` — SHARED with
+    `apps/serving`'s live-row bucketing, so a value is binned the identical
+    way at training time and at inference time. This function's own job is
+    only the frame-level plumbing: which tags, which Good-cell values.
+
+    CALL THIS AFTER `apply_features`/`drop_bad_feature_rows` (derived
+    columns must have edges too, and a Bad hole must not skew them) and
+    BEFORE `to_model_ready` (T13 STEP 4: calling this on an already-scaled
+    frame would freeze edges in [0,1] model-ready units, but a live
+    `/predict` payload's `rows` are raw engineering units — the same
+    caller-ordering constraint `drop_bad_feature_rows` itself documents).
+
+    Reuses `boxplot_service.good_values` — the same Good-cell filter
+    `column_stats_service.build_column_stats` and `split_stats_service` use
+    — rather than a fourth private copy (`histogram_service`/
+    `correlation_selector` already duplicate it intentionally for
+    module-local one-off use; this call site crosses modules, the case
+    `good_values` was promoted public for — see its own docstring).
+
+    Keyed by tag, `tags=None` meaning "every tag_columns(frame)" — the same
+    default `build_column_stats` uses. A tag absent from `frame` is
+    skipped, not raised: `features()`/`scale()` may pass a tag list from a
+    caller's recipe that does not perfectly match what actually landed.
+    """
+    for_tags = tags if tags is not None else _tag_columns(frame)
+    result: dict[str, dict[str, Any]] = {}
+    for tag in for_tags:
+        if tag not in frame.columns:
+            continue
+        edges = _quantile_edges(good_values(frame, tag), bin_count)
+        if edges is not None:
+            result[tag] = edges
+    return result
 
 
 def _canonical_hash_payload(
@@ -149,6 +227,7 @@ def build_feature_spec(
     scalers: Mapping[str, str],
     target_y: str | None = None,
     scaling_params: Mapping[str, Mapping[str, float]] | None = None,
+    psi_ref_edges: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build `feature_spec.json`'s content for one GOLD write.
 
@@ -168,12 +247,22 @@ def build_feature_spec(
     holdout the way the model was actually trained (see finding: re-fitting
     on the holdout's own statistics is a silently DIFFERENT, wrong
     transform).
+
+    `psi_ref_edges` (MODEL-SERVE-001-T13) — `compute_psi_ref_edges`'s
+    return value, keyed by tag to `{binMode, binCount, edges, refCounts}`.
+    Same not-part-of-`featureHash` treatment as `scaling_params`, for the
+    same reason. Unpacked into four sibling top-level fields below
+    (`psiRefEdges`/`psiBinCount`/`psiBinMode`/`psiRefCounts`) rather than
+    kept nested, matching the literal field names this task's own resolved
+    openDecision names.
     """
     scaling = [
         {"tag": tag, "method": method} for tag, method in sorted(scalers.items())
     ]
     canonical = _canonical_hash_payload(features, selected_columns, scaling)
     feature_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    psi = dict(psi_ref_edges) if psi_ref_edges else {}
 
     spec: dict[str, Any] = {
         "featureVersion": FEATURE_SPEC_VERSION,
@@ -190,6 +279,10 @@ def build_feature_spec(
         "scalingParams": dict(scaling_params) if scaling_params else {},
         "encoding": [],
         "featureHash": feature_hash,
+        "psiRefEdges": {tag: entry["edges"] for tag, entry in psi.items()},
+        "psiBinCount": {tag: entry["binCount"] for tag, entry in psi.items()},
+        "psiBinMode": {tag: entry["binMode"] for tag, entry in psi.items()},
+        "psiRefCounts": {tag: entry["refCounts"] for tag, entry in psi.items()},
     }
 
     if target_y is not None:

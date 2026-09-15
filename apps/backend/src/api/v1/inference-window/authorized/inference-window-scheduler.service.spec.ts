@@ -139,6 +139,68 @@ describe('InferenceWindowSchedulerService.insertDueWindows (MODEL-SERVE-006-T02)
     expect(prisma.modelVersion.findFirst).not.toHaveBeenCalled();
     expect(prisma.inferenceWindow.createMany).not.toHaveBeenCalled();
   });
+
+  /**
+   * T11. A window is due only once it has ELAPSED and cleared its lag —
+   * windowStart + cadence + lag <= now — not merely windowStart + lag, which
+   * dispatched a window a whole cadence before its own windowEnd. Live-
+   * measured: 20 fully-elapsed windows returned 60/60 rows at 0% missing
+   * while 4 windows read this early returned 19-30 rows, tracking elapsed
+   * minutes linearly.
+   *
+   * NEGATIVE CONTROL, confirmed by hand against the pre-fix formula
+   * (`to = now - lag`, no `+ cadence`): at now=10:20 with cadence=60/lag=15,
+   * the pre-fix `to` is 10:05, whose newest aligned windowStart is 10:00 —
+   * a window whose OWN windowEnd (11:00) is still 40 minutes in the future
+   * at dispatch time. This test's exact-boundary assertion (09:00, not
+   * 10:00) fails against that formula and passes only against the fix.
+   */
+  it('T11: never inserts a window whose own windowEnd has not yet elapsed past the lag', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-14T10:20:00.000Z'));
+    try {
+      const prisma = buildPrisma({
+        inferenceSchedule: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              modelId: 'model-1',
+              enabled: true,
+              cadenceMinutes: 60,
+              lagMinutes: 15,
+            },
+          ]),
+        },
+        modelVersion: {
+          findFirst: jest.fn().mockResolvedValue({ id: 'version-1' }),
+        },
+      });
+      const service = makeService(prisma);
+      await (service as unknown as { insertDueWindows(): Promise<void> })[
+        'insertDueWindows'
+      ]();
+
+      const call = prisma.inferenceWindow.createMany.mock.calls[0][0];
+      const starts = call.data.map((row: { windowStart: Date }) =>
+        row.windowStart.getTime(),
+      );
+      const newest = Math.max(...starts);
+
+      // Exact boundary: 09:00, never 10:00 (what the pre-fix formula would
+      // have produced at this same clock).
+      expect(newest).toBe(new Date('2026-09-14T09:00:00.000Z').getTime());
+
+      // The general invariant, for every row this call inserts: windowEnd +
+      // lag must already be in the past at dispatch time.
+      const now = Date.now();
+      for (const row of call.data as Array<{
+        windowStart: Date;
+        windowEnd: Date;
+      }>) {
+        expect(row.windowEnd.getTime() + 15 * 60_000).toBeLessThanOrEqual(now);
+      }
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });
 
 describe('InferenceWindowSchedulerService.reconcileStuckWindows (MODEL-SERVE-006-T02)', () => {
@@ -238,6 +300,11 @@ describe('InferenceWindowSchedulerService.dispatchOne (MODEL-SERVE-006-T05)', ()
           modelId: 'model-1',
           sourceId: 'source-1',
           fetchConfig: { intervalTime: '1m' },
+          // MODEL-SERVE-001-T14: a real InferenceSchedule row always has a
+          // NOT NULL minRows now — every fixture in this describe block
+          // must set it, or `scored_rows < undefined` (always false) would
+          // silently make SKIPPED unreachable in this mock.
+          minRows: env.INFERENCE_MIN_ROWS,
         }),
       },
       modelVersion: {
@@ -268,6 +335,72 @@ describe('InferenceWindowSchedulerService.dispatchOne (MODEL-SERVE-006-T05)', ()
     expect(finalUpdate.data.status).toBe('SKIPPED');
   });
 
+  /**
+   * MODEL-SERVE-001-T14. The regression proof: this row count would have
+   * been marked SKIPPED under the OLD behaviour (reading the global
+   * `env.INFERENCE_MIN_ROWS`, 30) even though it is a COMPLETE, healthy
+   * window for a schedule fetching at a 5-minute interval (12 rows/hour,
+   * so 10 is close to a full window — nowhere near "too few"). Reading
+   * `schedule.minRows` (6, as `putScheduleService` would derive for this
+   * exact interval) is what makes the difference observable here.
+   */
+  it('does NOT skip a per-schedule-appropriate row count, even though it is below the GLOBAL env.INFERENCE_MIN_ROWS', async () => {
+    (materializeInferenceWindow as jest.Mock).mockResolvedValue({
+      object_key:
+        'inference/model-1/version-1/dt=2026-09-10/hour=08/input.parquet',
+      row_count: 10,
+      scored_rows: 10,
+      missing_pct: 1,
+      checksum: 'abc',
+    });
+    const prisma = buildPrisma({
+      inferenceWindow: {
+        findUnique: jest.fn().mockResolvedValue(baseWindow),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      inferenceSchedule: {
+        findUnique: jest.fn().mockResolvedValue({
+          modelId: 'model-1',
+          sourceId: 'source-1',
+          fetchConfig: { intervalTime: '5m' },
+          minRows: 6, // deriveMinRows(60, '5m') — see inference-windows.spec.ts
+        }),
+      },
+      modelVersion: {
+        findUniqueOrThrow: jest
+          .fn()
+          .mockResolvedValue({ featureSpecKey: 'spec-key' }),
+      },
+      dataSource: {
+        findUnique: jest.fn().mockResolvedValue({
+          type: 'sql',
+          host: 'h',
+          username: 'u',
+          dbName: 'd',
+          secretCiphertext: 'enc',
+          config: { driver: 'postgres', port: 5432, table: 't' },
+        }),
+      },
+    });
+    const runner = buildRunner();
+    const service = makeService(prisma, runner);
+    await (service as unknown as { dispatchOne(id: string): Promise<void> })[
+      'dispatchOne'
+    ]('w1');
+
+    // 10 >= this schedule's own 6-row floor — a live container IS spawned.
+    // The SKIPPED branch `return`s before ever reaching spawn, so this
+    // alone proves the window was NOT skipped, even though 10 is below the
+    // global env.INFERENCE_MIN_ROWS (30) that the OLD behaviour compared
+    // every schedule against regardless of its own real interval.
+    expect(runner.spawn).toHaveBeenCalledTimes(1);
+    expect(runner.spawn).toHaveBeenCalledWith(
+      'w1',
+      expect.any(String),
+      'infer',
+    );
+  });
+
   it('marks a window FAILED when materialize throws, and never spawns a container', async () => {
     (materializeInferenceWindow as jest.Mock).mockRejectedValue(
       new Error('source unreachable'),
@@ -282,6 +415,11 @@ describe('InferenceWindowSchedulerService.dispatchOne (MODEL-SERVE-006-T05)', ()
           modelId: 'model-1',
           sourceId: 'source-1',
           fetchConfig: { intervalTime: '1m' },
+          // MODEL-SERVE-001-T14: a real InferenceSchedule row always has a
+          // NOT NULL minRows now — every fixture in this describe block
+          // must set it, or `scored_rows < undefined` (always false) would
+          // silently make SKIPPED unreachable in this mock.
+          minRows: env.INFERENCE_MIN_ROWS,
         }),
       },
       modelVersion: {
@@ -332,6 +470,11 @@ describe('InferenceWindowSchedulerService.dispatchOne (MODEL-SERVE-006-T05)', ()
           modelId: 'model-1',
           sourceId: 'source-1',
           fetchConfig: { intervalTime: '1m' },
+          // MODEL-SERVE-001-T14: a real InferenceSchedule row always has a
+          // NOT NULL minRows now — every fixture in this describe block
+          // must set it, or `scored_rows < undefined` (always false) would
+          // silently make SKIPPED unreachable in this mock.
+          minRows: env.INFERENCE_MIN_ROWS,
         }),
       },
       modelVersion: {

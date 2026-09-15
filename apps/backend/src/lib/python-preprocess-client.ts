@@ -710,6 +710,33 @@ const FeatureSpecSchema = z
         scalingParams: z
           .record(z.string(), z.record(z.string(), z.number()))
           .optional(),
+        /**
+         * MODEL-SERVE-001-T13. Frozen PSI reference bins, one entry per tag
+         * in each — same keying as `scalingParams` above, same "computed
+         * once at training time, never re-fit" lifecycle. `psiRefEdges` is
+         * RAW engineering units (T13 STEP 4), unlike `scalingParams`, which
+         * describes a scaler applied to the model-ready frame. Absent on a
+         * spec written before this task (legacy artifact) — read as "no
+         * PSI reference", never defaulted to an empty-but-present map that
+         * would look like "computed, nothing to report".
+         */
+        psiRefEdges: z.record(z.string(), z.array(z.number())).optional(),
+        psiBinCount: z.record(z.string(), z.number().int()).optional(),
+        psiBinMode: z
+          .record(z.string(), z.enum(['continuous', 'categorical']))
+          .optional(),
+        /**
+         * MODEL-SERVE-001-T13 correction. The REAL measured reference
+         * population per bin — never assumed uniform. A quantile
+         * (continuous) split is equal-frequency by construction, but a
+         * categorical split is NOT (a valve closed 90% of the time has a
+         * 90/10 reference split, not 50/50) — `computePsi`'s expected% term
+         * reads this directly rather than deriving it from `psiBinCount`.
+         * Same per-tag, per-bin-index keying/ordering as `psiRefEdges`.
+         */
+        psiRefCounts: z
+          .record(z.string(), z.array(z.number().int()))
+          .optional(),
         derived_from_target: z.array(z.string()).nullable().optional(),
         /**
          * MODEL-SERVE-002-T06. The recipe itself, passed through to serving

@@ -11,7 +11,14 @@ from __future__ import annotations
 
 import copy
 
-from services.feature_spec_service import build_feature_spec, max_replay_lookback
+import pandas as pd
+
+from services.feature_spec_service import (
+    build_feature_spec,
+    compute_psi_ref_edges,
+    max_replay_lookback,
+)
+from softsensor_scaling import STATUS_BAD, STATUS_GOOD
 
 BASE_FEATURES = [
     {"id": "f1", "kind": "lag", "tag": "TI-101", "k": 3},
@@ -107,6 +114,14 @@ def test_spec_content_matches_the_ac_fields() -> None:
         "scalingParams",
         "encoding",
         "featureHash",
+        # MODEL-SERVE-001-T13: default {} when build_feature_spec is called
+        # with no psi_ref_edges, same "absent -> {}" convention scalingParams
+        # already uses — never omitted outright, so a reader can tell
+        # "computed, nothing to report" from "this spec predates T13".
+        "psiRefEdges",
+        "psiBinCount",
+        "psiBinMode",
+        "psiRefCounts",
     }
     assert spec["features"][0]["name"] == "TI-101__lag3"
     assert spec["features"][1]["name"] == "VI-202__roll5_mean"
@@ -121,7 +136,7 @@ def test_spec_content_matches_the_ac_fields() -> None:
 
 
 def test_target_fields_absent_when_no_target_given() -> None:
-    """The six AC fields are ALWAYS present; the three target fields are
+    """The nine AC fields are ALWAYS present; the three target fields are
     present ONLY when target_y is passed — never as null placeholders."""
     spec = _base_spec()
     assert "target_y" not in spec
@@ -136,8 +151,9 @@ def test_target_fields_present_when_target_given() -> None:
     )
     assert set(spec) == {
         "featureVersion", "features", "selectedColumns", "scaling",
-        "scalingParams", "encoding", "featureHash", "target_y",
-        "target_scaled", "derived_from_target",
+        "scalingParams", "encoding", "featureHash",
+        "psiRefEdges", "psiBinCount", "psiBinMode", "psiRefCounts",
+        "target_y", "target_scaled", "derived_from_target",
     }
     assert spec["target_y"] == "TI-101"
     assert spec["target_scaled"] is True  # TI-101 has a minmax scaler in BASE_SCALERS
@@ -258,3 +274,88 @@ def test_max_replay_lookback_does_not_compound_across_independent_tags() -> None
         {"id": "f2", "kind": "lag", "tag": "VI-202", "k": 3},
     ]
     assert max_replay_lookback(independent) == 60
+
+
+# ── PSI reference edges (MODEL-SERVE-001-T13) ────────────────────────────────
+
+
+def _tag_frame(**tag_values: list[float]) -> pd.DataFrame:
+    """One column + its `__status` sidecar per kwarg, all STATUS_GOOD,
+    matching `compute_psi_ref_edges`'s documented precondition (the caller
+    passes a frame straight out of `apply_features`/`drop_bad_feature_rows`,
+    which already carries status columns for every tag)."""
+    data: dict[str, list[float] | list[int]] = {}
+    for tag, values in tag_values.items():
+        data[tag] = values
+        data[f"{tag}__status"] = [STATUS_GOOD] * len(values)
+    return pd.DataFrame(data)
+
+
+def test_psi_edges_continuous_tag_gets_bin_count_plus_one_edges() -> None:
+    """A tag with plenty of distinct Good values gets the full requested
+    bin count — `binCount + 1` ascending edges, quantile-spaced."""
+    values = [float(i) for i in range(100)]  # 100 distinct values
+    result = compute_psi_ref_edges(_tag_frame(**{"TI-101": values}), ["TI-101"])
+    edges = result["TI-101"]
+    assert edges["binMode"] == "continuous"
+    assert edges["binCount"] == 10
+    assert len(edges["edges"]) == 11
+    assert edges["edges"] == sorted(edges["edges"]), "edges must be ascending"
+
+
+def test_psi_edges_digital_tag_falls_back_to_categorical() -> None:
+    """T13's own named example: a valve open/closed tag has only 2 distinct
+    Good values — not a continuous-binning candidate, one bin per value.
+    `refCounts` is the REAL 40/60 split, not an assumed uniform 50/50 —
+    the exact case `softsensor_scaling.psi`'s own tests pin directly; this
+    test's job is only confirming `compute_psi_ref_edges` wires a frame's
+    Good values into that shared function correctly."""
+    values = [0.0] * 40 + [1.0] * 60
+    result = compute_psi_ref_edges(_tag_frame(**{"VALVE": values}), ["VALVE"])
+    edges = result["VALVE"]
+    assert edges == {
+        "binMode": "categorical", "binCount": 2,
+        "edges": [0.0, 1.0], "refCounts": [40, 60],
+    }
+
+
+def test_psi_edges_single_distinct_value_is_categorical_not_a_crash() -> None:
+    """A tag with exactly one distinct Good value in the whole train split
+    is not a continuous-binning candidate at all (degenerate-tag rule)."""
+    result = compute_psi_ref_edges(_tag_frame(**{"CONST": [5.0] * 10}), ["CONST"])
+    assert result["CONST"] == {
+        "binMode": "categorical", "binCount": 1,
+        "edges": [5.0], "refCounts": [10],
+    }
+
+
+def test_psi_edges_absent_for_a_tag_with_zero_good_values() -> None:
+    """All-Bad tag: nothing to bin. Absent from the result entirely — never
+    a fabricated edge set, same convention `scalingParams` uses for a
+    scaler that fit nothing."""
+    frame = pd.DataFrame({
+        "DEAD": [0.0] * 10,
+        "DEAD__status": [STATUS_BAD] * 10,
+    })
+    result = compute_psi_ref_edges(frame, ["DEAD"])
+    assert "DEAD" not in result
+
+
+def test_psi_edges_are_not_part_of_feature_hash() -> None:
+    """Same non-change-should-not-churn-the-hash contract `scalingParams`
+    already has (see module docstring) — PSI edges are a FIT result of the
+    same recipe, not part of the recipe itself."""
+    without = build_feature_spec(BASE_FEATURES, BASE_SELECTED, BASE_SCALERS)
+    with_edges = build_feature_spec(
+        BASE_FEATURES, BASE_SELECTED, BASE_SCALERS,
+        psi_ref_edges={"TI-101": {
+            "binMode": "continuous", "binCount": 2,
+            "edges": [0.0, 1.0, 2.0], "refCounts": [3, 7],
+        }},
+    )
+    assert without["featureHash"] == with_edges["featureHash"]
+    assert without["psiRefEdges"] == {}
+    assert with_edges["psiRefEdges"] == {"TI-101": [0.0, 1.0, 2.0]}
+    assert with_edges["psiBinCount"] == {"TI-101": 2}
+    assert with_edges["psiBinMode"] == {"TI-101": "continuous"}
+    assert with_edges["psiRefCounts"] == {"TI-101": [3, 7]}

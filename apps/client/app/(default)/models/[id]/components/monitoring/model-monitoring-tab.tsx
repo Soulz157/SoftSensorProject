@@ -20,6 +20,7 @@ import { ActualVsPredictChart } from './actual-vs-predict-chart'
 import { ResidualChart, type ResidualMode } from './residual-chart'
 import { LivePredictionChart } from './live-prediction-chart'
 import { DriftPanel } from './drift-panel'
+import { PsiPanel } from './psi/psi-panel'
 
 function LegendItem({ color, label }: { color: string; label: string }) {
   return (
@@ -43,7 +44,13 @@ function LegendItem({ color, label }: { color: string; label: string }) {
  * which one they are looking at: the range has no scored windows at all,
  * the windows exist but the lab has not reported yet, or the read failed.
  */
-function EmptyTruth({
+// Exported for direct testing, same pattern as this folder's sibling
+// components (LivePredictionChart, DriftPanel) — EmptyTruth itself has no
+// consumer outside this file (models/[id]/page.tsx imports the default
+// ModelMonitoringTab, never this helper directly), so the export exists
+// purely so a test can render one of its four empty-cause branches without
+// mounting the full tab's data hooks.
+export function EmptyTruth({
   error,
   coverage,
 }: {
@@ -52,21 +59,32 @@ function EmptyTruth({
 }) {
   const message = error
     ? `Could not load ground truth: ${error}`
-    : !coverage || coverage.windowsInRange === 0
-      ? 'No completed inference windows in this range yet.'
-      : // CHECKED BEFORE the "no lab measurement yet" branch, because both
-        // states show zero pairs and only one of them is about the lab. A
-        // window the sweeper could not ask about at all — an unresolvable
-        // target, a deleted data source — must not be reported as a lab
-        // that has not reported, which would be a confident wrong answer
-        // about someone else's system.
-        coverage.windowsFailed > 0 && coverage.truthRows === 0
-        ? `The ground-truth join failed for ${coverage.windowsFailed} ${
-            coverage.windowsFailed === 1 ? 'window' : 'windows'
-          } in this range, so no measurement could be fetched. Check the model's data source and target.`
-        : coverage.truthRows === 0
-          ? 'Windows have been scored, but no lab measurement has arrived for them yet. The join runs again once the configured truth lag has passed.'
-          : 'Lab measurements arrived, but none fell within the configured tolerance of a scored prediction.'
+    : // T11: CHECKED BEFORE the bare "no completed windows" branch below —
+      // an all-SKIPPED range ran, fetched, and deliberately declined to
+      // score (too few usable rows), which reads identically to "never ran
+      // here" once windowsInRange (SUCCEEDED only) hits zero. A SKIPPED
+      // window also writes no predictions.parquet, so this is the ONLY
+      // place in range that can say which of the two zero states this is.
+      coverage && coverage.windowsInRange === 0 && coverage.windowsSkipped > 0
+      ? `${coverage.windowsSkipped} ${
+          coverage.windowsSkipped === 1 ? 'window was' : 'windows were'
+        } skipped in this range — too few usable rows to score, so no ` +
+        'prediction was written. The system ran and declined, rather than failed.'
+      : !coverage || coverage.windowsInRange === 0
+        ? 'No completed inference windows in this range yet.'
+        : // CHECKED BEFORE the "no lab measurement yet" branch, because both
+          // states show zero pairs and only one of them is about the lab. A
+          // window the sweeper could not ask about at all — an unresolvable
+          // target, a deleted data source — must not be reported as a lab
+          // that has not reported, which would be a confident wrong answer
+          // about someone else's system.
+          coverage.windowsFailed > 0 && coverage.truthRows === 0
+          ? `The ground-truth join failed for ${coverage.windowsFailed} ${
+              coverage.windowsFailed === 1 ? 'window' : 'windows'
+            } in this range, so no measurement could be fetched. Check the model's data source and target.`
+          : coverage.truthRows === 0
+            ? 'Windows have been scored, but no lab measurement has arrived for them yet. The join runs again once the configured truth lag has passed.'
+            : 'Lab measurements arrived, but none fell within the configured tolerance of a scored prediction.'
 
   return (
     <div className="flex h-48 flex-col items-center justify-center gap-1 px-6 text-center">
@@ -130,6 +148,9 @@ export function ModelMonitoringTab({ model }: Props) {
     drift,
     driftLoading,
     driftUnavailableReason,
+    psi,
+    psiLoading,
+    psiUnavailableReason,
   } = usePredictionMonitoring(model, range)
 
   const start = brush.startIndex ?? 0
@@ -368,6 +389,34 @@ export function ModelMonitoringTab({ model }: Props) {
           report={drift}
           loading={driftLoading}
           unavailableReason={driftUnavailableReason}
+        />
+      </div>
+
+      {/* MODEL-SERVE-001-T13/T16. A SEPARATE card from Distribution Drift
+          above, per T13's own DISPLAY SPEC — never a column bolted onto
+          that table (REJECTED there for mixing two different threshold
+          vocabularies under one Status colour). Independent loading/empty
+          state: this metric has its own sample floor the z-score above has
+          no equivalent of, so the two can genuinely disagree on
+          availability for the identical range. Pooled over the selected
+          range and recomputed on load — not a scheduled rolling 24h job —
+          so "Computed over" inside the card states the real window rather
+          than a cadence word here that could go stale. */}
+      <div className="flex min-h-0 flex-col rounded-xl border border-border bg-card p-4">
+        <div className="mb-4 space-y-1">
+          <h2 className="text-sm font-semibold text-foreground">
+            Population Stability (PSI)
+          </h2>
+          <p className="text-xs text-muted-foreground">
+            Live inputs vs. the production version&apos;s frozen training bins
+            (feature_spec.json) — pooled over the selected range, recomputed on
+            load.
+          </p>
+        </div>
+        <PsiPanel
+          report={psi}
+          loading={psiLoading}
+          unavailableReason={psiUnavailableReason}
         />
       </div>
     </div>

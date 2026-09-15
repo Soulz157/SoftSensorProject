@@ -8,11 +8,12 @@ import {
 } from '@/lib/python-preprocess-client';
 import { inferenceWindowKey } from '@/lib/artifact-keys';
 import {
+  deriveMinRows,
   formatDtHour,
   windowEndFor,
   windowStartsBetween,
 } from '@/lib/inference-windows';
-import { classifyDeployStatus } from '@/lib/deploy-status';
+import { classifyDeployStatus, isStale } from '@/lib/deploy-status';
 import { redactUrls } from '@/lib/redact-urls';
 import { computeLiveError, poolTruthStats } from '@/lib/live-error';
 import { inferenceWindowTruthSeries } from '@/lib/python-preprocess-client';
@@ -289,8 +290,9 @@ export class InferenceWindowAuthorizedService {
         type: 'ERROR',
       });
     }
+    const rawFetchConfigRecord = this.asRecord(rawFetchConfig);
     const fetchConfig = {
-      ...this.asRecord(rawFetchConfig),
+      ...rawFetchConfigRecord,
       baseTags: Array.isArray(pipelineConfig.baseTags)
         ? pipelineConfig.baseTags
         : [],
@@ -299,6 +301,28 @@ export class InferenceWindowAuthorizedService {
     const cadenceMinutes =
       dto.cadenceMinutes ?? env.INFERENCE_DEFAULT_CADENCE_MINUTES;
     const lagMinutes = dto.lagMinutes ?? env.INFERENCE_DEFAULT_LAG_MINUTES;
+
+    // MODEL-SERVE-001-T14. Per-schedule "too few usable rows -> SKIPPED"
+    // floor, replacing the GLOBAL env.INFERENCE_MIN_ROWS every schedule was
+    // evaluated against before this task — that constant assumes a
+    // 1-minute sampling interval, which is wrong for any schedule fetching
+    // at a different one. Recomputed on EVERY enable/update, unconditionally
+    // (never merged against `existing`, unlike autoRetrain/warnSd/etc.
+    // above): `fetchConfig`/`sourceId` are themselves always freshly
+    // resolved from the dataset's CURRENT pipelineConfig on every call, so
+    // a derived-from-fetchConfig value must track that same freshness, not
+    // freeze at whatever interval happened to be recorded the first time
+    // the schedule was enabled. `deriveMinRows` returns null — never a
+    // wrong guess — for a non-PI source (no `intervalTime` concept at all)
+    // or an unparseable one, in which case this falls back to the exact
+    // same global default every schedule already used, never a fabricated
+    // per-schedule number.
+    const intervalTime =
+      typeof rawFetchConfigRecord.intervalTime === 'string'
+        ? rawFetchConfigRecord.intervalTime
+        : undefined;
+    const minRows =
+      deriveMinRows(cadenceMinutes, intervalTime) ?? env.INFERENCE_MIN_ROWS;
 
     // MODEL-SERVE-006-T09. The wizard's five deploy fields, under their own
     // names — merged against the EXISTING row (not the request alone), so
@@ -354,6 +378,7 @@ export class InferenceWindowAuthorizedService {
         enabled: true,
         cadenceMinutes,
         lagMinutes,
+        minRows,
         sourceId,
         fetchConfig,
         autoRetrain,
@@ -370,6 +395,11 @@ export class InferenceWindowAuthorizedService {
         enabled: true,
         ...(dto.cadenceMinutes !== undefined && { cadenceMinutes }),
         ...(dto.lagMinutes !== undefined && { lagMinutes }),
+        // T14: unconditional, unlike cadenceMinutes/lagMinutes above — see
+        // this value's own doc comment for why it must always track the
+        // current fetchConfig rather than survive as a stale partial-update
+        // holdover.
+        minRows,
         sourceId,
         fetchConfig,
         autoRetrain,
@@ -400,6 +430,7 @@ export class InferenceWindowAuthorizedService {
       data: {
         cadenceMinutes,
         lagMinutes,
+        minRows,
         sourceId,
         autoRetrain,
         warnSd,
@@ -536,13 +567,11 @@ export class InferenceWindowAuthorizedService {
       where: { modelId, status: { notIn: ['SUCCEEDED', 'SKIPPED'] } },
     });
 
-    const staleAfterMs =
-      env.INFERENCE_STALE_AFTER_CADENCES * schedule.cadenceMinutes * 60_000;
-    const staleness: 'OK' | 'STALE' =
-      !lastSucceeded ||
-      Date.now() - lastSucceeded.windowStart.getTime() > staleAfterMs
-        ? 'STALE'
-        : 'OK';
+    const staleness = isStale(
+      lastSucceeded?.windowStart ?? null,
+      schedule.cadenceMinutes,
+      schedule.lagMinutes,
+    );
 
     // `failing`: reported separately so a failing schedule is never
     // laundered as merely stale — the last few terminal windows are ALL
@@ -947,6 +976,20 @@ export class InferenceWindowAuthorizedService {
         windowStart: { gte: from, lte: to },
       },
     });
+    // T11: a FOURTH empty cause `EmptyTruth` could not previously name.
+    // `windowsInRange` counts only SUCCEEDED, so a range where every window
+    // was SKIPPED (too few usable rows — T01's real terminal status, not a
+    // failure) reads identically to "the scheduler never ran here" even
+    // though it ran, fetched, and deliberately declined to score. A SKIPPED
+    // window also writes no predictions.parquet, so there is nothing else
+    // in range to distinguish the two.
+    const windowsSkipped = await this.prisma.inferenceWindow.count({
+      where: {
+        modelId,
+        status: 'SKIPPED',
+        windowStart: { gte: from, lte: to },
+      },
+    });
 
     const joined = rows.filter((r) => r.n > 0);
     // A row the sweeper wrote because the join FAILED, never because the lab
@@ -1042,6 +1085,7 @@ export class InferenceWindowAuthorizedService {
         targetColumn: rows.find((r) => r.targetColumn)?.targetColumn ?? null,
         coverage: {
           windowsInRange,
+          windowsSkipped,
           windowsJoined: joined.length,
           // DISJOINT from windowsFailed, deliberately: a window whose join
           // failed is not a window waiting on the lab, and counting it in

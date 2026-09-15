@@ -98,6 +98,13 @@ async def predict(
             rows=body.rows,
             predictions=predictions,
             scaled=scaled,
+            # MODEL-SERVE-001-T13. `.get(...)` — a descriptor for a model
+            # whose spec predates T13 carries none of these; `.get` (not
+            # `[...]`) is what lets that legacy case flow through as "no PSI
+            # reference" rather than a KeyError killing the background task.
+            psi_ref_edges=descriptor.get("psiRefEdges"),
+            psi_bin_count=descriptor.get("psiBinCount"),
+            psi_bin_mode=descriptor.get("psiBinMode"),
         )
 
     received, unused = check_input_tags(body.rows, descriptor["featureColumns"])

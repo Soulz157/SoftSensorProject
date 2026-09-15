@@ -51,7 +51,8 @@ describe('buildInputFeatureRows', () => {
       versionId: VERSION_ID,
       points: [],
       drift: null,
-      scalingParams: null,
+      piStatus: null,
+      derivedFeatures: null,
     })
 
     expect(rows.map(r => r.column)).toEqual([
@@ -67,7 +68,8 @@ describe('buildInputFeatureRows', () => {
       versionId: VERSION_ID,
       points: [],
       drift: DRIFT,
-      scalingParams: null,
+      piStatus: null,
+      derivedFeatures: null,
     })
 
     expect(rows).toHaveLength(2)
@@ -76,6 +78,36 @@ describe('buildInputFeatureRows', () => {
       column: 'FC-310.PV',
       driftStatus: 'UNKNOWN',
     })
+  })
+
+  it('left-joins PI status — a column absent from it gets UNKNOWN, never Good', () => {
+    const rows = buildInputFeatureRows({
+      featureColumns: ['PI-204.PV', 'FC-310.PV'],
+      versionId: VERSION_ID,
+      points: [],
+      drift: null,
+      piStatus: {
+        features: [
+          {
+            column: 'PI-204.PV',
+            status: 'Bad',
+            reason: 'PI reports this tag as Bad.',
+            failingSources: ['PI-204.PV'],
+          },
+        ],
+        unavailableReason: null,
+      },
+      derivedFeatures: null,
+    })
+
+    expect(rows[0]).toMatchObject({
+      column: 'PI-204.PV',
+      piStatus: 'Bad',
+      failingSources: ['PI-204.PV'],
+    })
+    // The absent one must not silently read healthy — PI said nothing
+    // about it, which is not the same as saying it is fine.
+    expect(rows[1]).toMatchObject({ column: 'FC-310.PV', piStatus: 'UNKNOWN' })
   })
 
   it('picks the newest point that actually contains the key, not simply the last point in the array', () => {
@@ -94,11 +126,12 @@ describe('buildInputFeatureRows', () => {
         }),
       ],
       drift: null,
-      scalingParams: null,
+      piStatus: null,
+      derivedFeatures: null,
     })
 
     expect(rows[0]?.lastSeen).toBe('2026-09-06T10:00:00.000Z')
-    expect(rows[0]?.lastValueScaled).toBe(0.5)
+    expect(rows[0]?.lastValueRaw).toBe(0.5)
   })
 
   it('falls back to null when a column was never logged', () => {
@@ -107,41 +140,39 @@ describe('buildInputFeatureRows', () => {
       versionId: VERSION_ID,
       points: [],
       drift: null,
-      scalingParams: null,
+      piStatus: null,
+      derivedFeatures: null,
     })
 
     expect(rows[0]?.lastSeen).toBeNull()
-    expect(rows[0]?.lastValue).toBeNull()
-    expect(rows[0]?.lastValueScaled).toBeNull()
+    expect(rows[0]?.lastValueRaw).toBeNull()
   })
 
-  it('inverts a scaled value to engineering units when scalingParams are recorded', () => {
+  /**
+   * T12. The value this stream carries is the `/predict` request's own RAW
+   * reading — `apps/serving`'s `log_prediction` logs from `rows`, never
+   * `scaled` (see `lib/model-input-features.ts`'s own doc comment for the
+   * full trace). Retargeted 2026-09-14: this case USED TO assert
+   * `buildInputFeatureRows` inverse-scaled a logged value through
+   * `scalingParams` — that behaviour was the bug (a real ~190 reading
+   * rendered as ~5,309 against real min/max params), not a feature to
+   * preserve. There is no scaler input to this function any more; a
+   * logged value survives untouched.
+   */
+  it('never scales a logged value — it is already engineering units', () => {
     const rows = buildInputFeatureRows({
       featureColumns: ['TI-101.PV'],
       versionId: VERSION_ID,
-      points: [point({ features: { 'TI-101.PV': 0.5 } })],
+      points: [point({ features: { 'TI-101.PV': 190.4 } })],
       drift: null,
-      scalingParams: { 'TI-101.PV': { min: 0, max: 100 } },
+      piStatus: null,
+      derivedFeatures: null,
     })
 
-    expect(rows[0]?.lastValue).toBe(50)
-    expect(rows[0]?.lastValueScaled).toBe(0.5)
+    expect(rows[0]?.lastValueRaw).toBe(190.4)
   })
 
-  it('falls back to null (not the raw scaled number) when scalingParams cannot invert it', () => {
-    const rows = buildInputFeatureRows({
-      featureColumns: ['TI-101.PV'],
-      versionId: VERSION_ID,
-      points: [point({ features: { 'TI-101.PV': 0.5 } })],
-      drift: null,
-      scalingParams: null,
-    })
-
-    expect(rows[0]?.lastValue).toBeNull()
-    expect(rows[0]?.lastValueScaled).toBe(0.5)
-  })
-
-  it('excludes points from a different modelVersionId from lastValue/lastSeen', () => {
+  it('excludes points from a different modelVersionId from lastValueRaw/lastSeen', () => {
     const rows = buildInputFeatureRows({
       featureColumns: ['TI-101.PV'],
       versionId: VERSION_ID,
@@ -153,10 +184,33 @@ describe('buildInputFeatureRows', () => {
         }),
       ],
       drift: null,
-      scalingParams: null,
+      piStatus: null,
+      derivedFeatures: null,
     })
 
     expect(rows[0]?.lastSeen).toBeNull()
-    expect(rows[0]?.lastValueScaled).toBeNull()
+    expect(rows[0]?.lastValueRaw).toBeNull()
+  })
+
+  /** T12. The equation-under-the-tag join — keyed by feature NAME, not by
+   *  any relationship to `points`/`drift`, so it applies even to a column
+   *  with zero logged traffic. */
+  it("attaches a derived feature's equation by name; a base tag gets none", () => {
+    const rows = buildInputFeatureRows({
+      featureColumns: ['FIC204.PV', 'Reflux_ratio'],
+      versionId: VERSION_ID,
+      points: [],
+      drift: null,
+      piStatus: null,
+      derivedFeatures: [
+        { name: 'Reflux_ratio', display: 'FIC204.PV/(FY107.CPV+1)' },
+      ],
+    })
+
+    expect(rows[0]).toMatchObject({ column: 'FIC204.PV', equation: null })
+    expect(rows[1]).toMatchObject({
+      column: 'Reflux_ratio',
+      equation: 'FIC204.PV/(FY107.CPV+1)',
+    })
   })
 })

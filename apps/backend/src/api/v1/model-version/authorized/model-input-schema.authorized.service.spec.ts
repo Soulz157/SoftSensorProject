@@ -228,11 +228,69 @@ describe('ModelInputSchemaAuthorizedService.getInputSchemaService', () => {
     const result = await service.getInputSchemaService('model-1', EDITOR_USER);
 
     expect(result.data.scalingParams).toBeNull();
+    expect(result.data.derivedFeatures).toEqual([]);
     expect(result.data.featureColumns).toEqual([
       'TI-101.PV',
       'PI-204.PV',
       'FC-310.PV',
     ]);
+  });
+
+  /** T12. `derivedFeatures` is the equation-under-the-tag read — a formula
+   *  feature's own `config.display`, scoped to `kind: 'formula'` because
+   *  that is the only kind whose config this read interprets. */
+  it('returns derivedFeatures for a formula feature, and omits a non-formula kind', async () => {
+    mockedReadFeatureSpec.mockResolvedValue({
+      source_key: 'x',
+      feature_spec_key: 'x',
+      spec: {
+        scalingParams: { 'TI-101.PV': { min: 0, max: 100 } },
+        features: [
+          {
+            name: 'Reflux_ratio',
+            kind: 'formula',
+            config: {
+              expr: 'c0/c1',
+              vars: { c0: 'FIC204.PV', c1: 'FY107.CPV' },
+              display: 'FIC204.PV/FY107.CPV',
+            },
+          },
+          {
+            name: 'Some_lag_feature',
+            kind: 'lag',
+            config: { tag: 'TI-101.PV', k: 3 },
+          },
+        ],
+      },
+    });
+    const prisma = buildPrisma({
+      productionVersion: null,
+      latestVersion: STAGING_VERSION,
+    });
+    const service = buildService(prisma);
+
+    const result = await service.getInputSchemaService('model-1', EDITOR_USER);
+
+    expect(result.data.derivedFeatures).toEqual([
+      {
+        name: 'Reflux_ratio',
+        kind: 'formula',
+        display: 'FIC204.PV/FY107.CPV',
+      },
+    ]);
+  });
+
+  it('returns derivedFeatures: [] when the spec carries no features key at all', async () => {
+    // The default beforeEach mock — no `features` key on `spec`.
+    const prisma = buildPrisma({
+      productionVersion: null,
+      latestVersion: STAGING_VERSION,
+    });
+    const service = buildService(prisma);
+
+    const result = await service.getInputSchemaService('model-1', EDITOR_USER);
+
+    expect(result.data.derivedFeatures).toEqual([]);
   });
 
   it('404s when the model does not exist', async () => {

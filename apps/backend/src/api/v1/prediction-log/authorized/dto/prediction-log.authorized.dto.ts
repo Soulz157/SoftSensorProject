@@ -29,6 +29,19 @@ const PredictionLogRowSchema = z
   .strict();
 
 /**
+ * MODEL-SERVE-001-T13. One column's live histogram, bucketed at WRITE time
+ * in apps/serving against that column's frozen `psiRefEdges` — matches
+ * `apps/backend/src/lib/prediction-psi.ts`'s own `FeatureHistogram`.
+ */
+const FeatureHistogramSchema = z
+  .object({
+    counts: z.array(z.number().int().min(0)),
+    below: z.number().int().min(0),
+    above: z.number().int().min(0),
+  })
+  .strict();
+
+/**
  * MODEL-SERVE-005-T01. The whole ingest body from apps/serving.
  *
  * Deliberately carries BOTH the capped raw rows (for the Parquet object)
@@ -54,6 +67,13 @@ export const IngestPredictionLogSchema = z
     rows: z.array(PredictionLogRowSchema),
     featureStats: z.record(z.string(), ColumnAggregateSchema),
     predictionStats: ColumnAggregateSchema,
+    // MODEL-SERVE-001-T13. `null` when the descriptor carried no
+    // psiRefEdges (a model whose spec predates T13) or nothing was
+    // bucketable — apps/serving's `log_prediction` ALWAYS sends this key,
+    // never omits it, so it is required-but-nullable here to match, the
+    // same discipline `objectKey`/`objectChecksum` already use for
+    // "not there yet" vs "never happening".
+    featureHistograms: z.record(z.string(), FeatureHistogramSchema).nullable(),
   })
   .strict()
   .refine((body) => body.rows.length === body.loggedRows, {

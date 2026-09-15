@@ -218,6 +218,15 @@ export class ModelServingAuthorizedService {
         // for non-emptiness. See the empty-scaling-array trap finding.
         scalers,
         scalingParams: spec.scalingParams ?? {},
+        // MODEL-SERVE-001-T13. Same defaulted-to-empty convention as
+        // scalingParams above — absent on a spec that predates T13, never
+        // distinguished from "computed, nothing to report" at this layer
+        // (apps/serving's histogram write treats an absent per-tag entry
+        // as "no reference for this tag", which is the same read either
+        // way).
+        psiRefEdges: spec.psiRefEdges ?? {},
+        psiBinCount: spec.psiBinCount ?? {},
+        psiBinMode: spec.psiBinMode ?? {},
         derivedFromTarget: spec.derived_from_target ?? [],
         targetScaled: spec.target_scaled ?? false,
         // MODEL-SERVE-002-T06. The recipe, FLATTENED — feature_spec.json

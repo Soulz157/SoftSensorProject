@@ -1552,6 +1552,31 @@ model PredictionLog {
   /// Same shape, one entry, for the request's own predictions.
   predictionStats Json
 
+  /// MODEL-SERVE-001-T13. Per RAW-engineering-unit feature column, binned
+  /// against that column's frozen `feature_spec.json` psiRefEdges:
+  /// {tag: {counts: number[], below: number, above: number}}. `counts[i]`
+  /// is this request's row count in bin i; `below`/`above` are mass outside
+  /// the trained edge range, kept separate rather than folded into the end
+  /// bins so out-of-range drift is never silently absorbed into them.
+  ///
+  /// NULLABLE, deliberately, unlike `featureStats` above: every row written
+  /// before this column existed has no histogram, and that must read as
+  /// "not recorded" — a real gap — never as an empty/zero distribution. A
+  /// row also reads null when the descriptor it was served under carries
+  /// no psiRefEdges at all (a model whose spec predates T13), for the
+  /// identical reason.
+  ///
+  /// Bucketed from RAW `rows` at write time (apps/serving/services/
+  /// prediction_log.py), never `scaled` — PSI's bin edges are frozen in
+  /// engineering units (T13 STEP 4), unlike `featureStats`/`featureHash`
+  /// above which are model-ready/scaled. Binning at WRITE time against the
+  /// frozen edges, not read time, is what lets `poolHistograms` pool many
+  /// requests by simple elementwise addition without ever re-opening the
+  /// raw-row Parquet object — re-binning per read would let the read-time
+  /// binner contaminate the metric, the same failure DS-LAKE-005B-A-V06's
+  /// shared-bucket-basis rule exists to prevent for the scrubber.
+  featureHistograms Json?
+
   requestedAt DateTime @default(now())
 
   @@index([modelId, requestedAt])
@@ -1823,6 +1848,24 @@ model InferenceSchedule {
   /// model scores it without error because the columns exist.
   cadenceMinutes Int @default(60)
   lagMinutes     Int @default(15)
+
+  /// MODEL-SERVE-001-T14. The "too few usable rows -> SKIPPED" floor for
+  /// THIS schedule — a real per-schedule column, matching `lagMinutes`
+  /// above, rather than the GLOBAL `env.INFERENCE_MIN_ROWS` constant every
+  /// schedule was evaluated against before this task. That global bakes in
+  /// an assumed 1-minute sampling interval; any schedule fetching at a
+  /// different interval read SKIPPED forever at a floor sized for the
+  /// wrong cadence. Always computed and written by `putScheduleService` on
+  /// every enable/update — `lib/inference-windows.ts`'s `deriveMinRows`
+  /// from this row's own `cadenceMinutes` and `fetchConfig.intervalTime`
+  /// when derivable (a PI source with a parseable interval), falling back
+  /// to `env.INFERENCE_MIN_ROWS` otherwise (a non-PI source with no
+  /// interval concept, or an unparseable one) — the SAME safe default
+  /// every schedule already used, never a fabricated per-schedule guess.
+  /// The `@default(30)` below is a schema-level safety net only, matching
+  /// `env.INFERENCE_MIN_ROWS`'s own default; the service always writes an
+  /// explicit computed value, the same discipline `lagMinutes` follows.
+  minRows Int @default(30)
 
   /// MODEL-SERVE-005-T03. The GROUND-TRUTH half of the same trade, and a
   /// deliberately different, much larger number than `lagMinutes` — that

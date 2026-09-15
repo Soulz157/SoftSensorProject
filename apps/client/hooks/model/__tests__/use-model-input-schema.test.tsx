@@ -21,6 +21,7 @@ const SCHEMA: ModelInputSchema = {
   unavailableReason: null,
   targetY: 'TI-900.PV',
   scalingParams: { 'TI-101.PV': { min: 0, max: 100 } },
+  derivedFeatures: [],
 }
 
 beforeEach(() => {

@@ -36,6 +36,13 @@ from .features import (
     feature_column_name,
     max_replay_lookback,
 )
+from .psi import (
+    DEFAULT_PSI_BIN_COUNT,
+    MIN_PSI_BINS,
+    bucket_histogram,
+    bucket_value,
+    quantile_edges,
+)
 from .rounding import _js_round, _median_sorted, _round_to
 from .scaling import (
     DEFAULT_SCALER,
@@ -67,4 +74,9 @@ __all__ = [
     "_welford_population_std",
     "assert_scaling_coverage",
     "to_model_ready",
+    "DEFAULT_PSI_BIN_COUNT",
+    "MIN_PSI_BINS",
+    "bucket_histogram",
+    "bucket_value",
+    "quantile_edges",
 ]
