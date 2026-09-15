@@ -1,20 +1,37 @@
 import { PredictionLogAuthorizedService } from './prediction-log.authorized.service';
 import * as pythonClient from '@/lib/python-preprocess-client';
 import { env } from '@/config/env.config';
+import type { InferenceWindowMonitoringService } from '@/api/v1/inference-window/authorized/inference-window-monitoring.authorized.service';
 
 jest.mock('@/lib/python-preprocess-client');
 // `postToPython` is never called by getPsiService/getDriftService directly
-// (both go through `readFeatureSpec`/`resolveBaseline`'s own postToPython
-// call inside python-preprocess-client, already covered by the mock
-// above) — mocked here only so importing '@/lib/python-client' at all
-// (a transitive import of the service under test) never reaches a real
-// network call during this suite.
+// (both go through `readFeatureSpec`/`resolveColumnBaseline`'s own
+// postToPython call inside python-preprocess-client/lib/artifact-baseline,
+// already covered by the mock above) — mocked here only so importing
+// '@/lib/python-client' at all (a transitive import of the service under
+// test) never reaches a real network call during this suite.
 jest.mock('@/lib/python-client', () => ({
   PYTHON_TIMEOUT: { test: 15_000, metadata: 300_000, fetch: 120_000 },
   postToPython: jest.fn(),
 }));
 
 const mockedReadFeatureSpec = pythonClient.readFeatureSpec as jest.Mock;
+
+// MODEL-SERVE-001-T17. `hasSchedule` defaults `false` so every EXISTING
+// test below (none of which configures a schedule) keeps exercising the
+// exact `/predict`-plane code path it always has — the dispatch this task
+// adds is opt-IN per model, never a change to a model with no schedule.
+// `mockResolvedValue` (not `mockResolvedValueOnce`) survives
+// `jest.clearAllMocks()` below (that clears call history, not the
+// implementation), so this one setup line is enough for the whole file.
+// Typed at the declaration site (rather than `as never` at each of the 8
+// call sites below) so every call site passes it as a plain, pre-typed
+// value — one cast, not eight.
+const mockWindowMonitoring = {
+  hasSchedule: jest.fn().mockResolvedValue(false),
+  getDriftReport: jest.fn(),
+  getPsiReport: jest.fn(),
+} as unknown as InferenceWindowMonitoringService;
 
 const ADMIN: Auth.UserPayload = {
   id: 'u1',
@@ -91,7 +108,10 @@ describe('PredictionLogAuthorizedService.ingestPredictionLogService', () => {
 
   it('writes a real object (not JS null) when featureHistograms is present', async () => {
     const prisma = makePrisma({});
-    const service = new PredictionLogAuthorizedService(prisma as never);
+    const service = new PredictionLogAuthorizedService(
+      prisma as never,
+      mockWindowMonitoring,
+    );
     await service.ingestPredictionLogService({
       ...BASE_DTO,
       featureHistograms: { A: { counts: [1], below: 0, above: 0 } },
@@ -105,7 +125,10 @@ describe('PredictionLogAuthorizedService.ingestPredictionLogService', () => {
 
   it('writes PrismaTypes.DbNull (not a bare JS null) when featureHistograms is null', async () => {
     const prisma = makePrisma({});
-    const service = new PredictionLogAuthorizedService(prisma as never);
+    const service = new PredictionLogAuthorizedService(
+      prisma as never,
+      mockWindowMonitoring,
+    );
     await service.ingestPredictionLogService({
       ...BASE_DTO,
       featureHistograms: null,
@@ -126,7 +149,10 @@ describe('PredictionLogAuthorizedService.ingestPredictionLogService', () => {
 describe('PredictionLogAuthorizedService.getPsiService', () => {
   it('refuses (404) when the model has no PRODUCTION version', async () => {
     const prisma = makePrisma({ productionVersion: null });
-    const service = new PredictionLogAuthorizedService(prisma as never);
+    const service = new PredictionLogAuthorizedService(
+      prisma as never,
+      mockWindowMonitoring,
+    );
     await expect(
       service.getPsiService('model-1', RANGE, ADMIN),
     ).rejects.toMatchObject({ statusCode: 404 });
@@ -150,7 +176,10 @@ describe('PredictionLogAuthorizedService.getPsiService', () => {
       },
     });
 
-    const service = new PredictionLogAuthorizedService(prisma as never);
+    const service = new PredictionLogAuthorizedService(
+      prisma as never,
+      mockWindowMonitoring,
+    );
     const result = await service.getPsiService('model-1', RANGE, ADMIN);
 
     expect(mockedReadFeatureSpec).toHaveBeenCalledWith(
@@ -200,7 +229,10 @@ describe('PredictionLogAuthorizedService.getPsiService', () => {
       },
     });
 
-    const service = new PredictionLogAuthorizedService(prisma as never);
+    const service = new PredictionLogAuthorizedService(
+      prisma as never,
+      mockWindowMonitoring,
+    );
     const result = await service.getPsiService('model-1', RANGE, ADMIN);
 
     expect(result.data.columns[0].status).toBe('OK');
@@ -223,7 +255,10 @@ describe('PredictionLogAuthorizedService.getPsiService', () => {
     });
     mockedReadFeatureSpec.mockRejectedValue(new Error('object not found'));
 
-    const service = new PredictionLogAuthorizedService(prisma as never);
+    const service = new PredictionLogAuthorizedService(
+      prisma as never,
+      mockWindowMonitoring,
+    );
     const result = await service.getPsiService('model-1', RANGE, ADMIN);
 
     expect(result.data.columns[0].status).toBe('UNKNOWN');
@@ -252,7 +287,10 @@ describe('PredictionLogAuthorizedService.getPsiService', () => {
       },
     });
 
-    const service = new PredictionLogAuthorizedService(prisma as never);
+    const service = new PredictionLogAuthorizedService(
+      prisma as never,
+      mockWindowMonitoring,
+    );
     const result = await service.getPsiService('model-1', RANGE, ADMIN);
 
     const complete = result.data.columns.find((c) => c.column === 'COMPLETE');
@@ -260,5 +298,64 @@ describe('PredictionLogAuthorizedService.getPsiService', () => {
     expect(complete?.status).toBe('OK');
     expect(partial?.status).toBe('UNKNOWN');
     expect(partial?.reason).toMatch(/no training reference/);
+  });
+});
+
+// ── MODEL-SERVE-001-T17: plane dispatch ────────────────────────────────────
+
+describe('PredictionLogAuthorizedService plane dispatch', () => {
+  it('getDriftService delegates to the window plane when a schedule exists, and never touches PredictionLog', async () => {
+    const prisma = makePrisma({});
+    const windowMonitoring = {
+      hasSchedule: jest.fn().mockResolvedValue(true),
+      getDriftReport: jest.fn().mockResolvedValue({
+        statusCode: 200,
+        message: 'Drift report fetched',
+        type: 'SUCCESS',
+        data: { status: 'OK', columns: [], basis: { plane: 'window' } },
+      }),
+      getPsiReport: jest.fn(),
+    } as unknown as InferenceWindowMonitoringService;
+
+    const service = new PredictionLogAuthorizedService(
+      prisma as never,
+      windowMonitoring,
+    );
+    const result = await service.getDriftService('model-1', RANGE, ADMIN);
+
+    expect(windowMonitoring.getDriftReport).toHaveBeenCalledWith(
+      'model-1',
+      RANGE.from,
+      RANGE.to,
+    );
+    expect(result.data.basis).toMatchObject({ plane: 'window' });
+    // The defining behaviour of a DISPATCH, not merely an alternative path
+    // that also runs: the /predict-plane query must never fire once the
+    // window plane has been chosen.
+    expect(prisma.modelVersion.findFirst).not.toHaveBeenCalled();
+    expect(prisma.predictionLog.findMany).not.toHaveBeenCalled();
+  });
+
+  it('getPsiService stays on the /predict plane when no schedule exists', async () => {
+    const prisma = makePrisma({ predictionLogs: [] });
+    mockedReadFeatureSpec.mockResolvedValue({
+      source_key: PRODUCTION_VERSION.goldObjectKey,
+      feature_spec_key: 'feature_spec.json',
+      spec: {},
+    });
+    const windowMonitoring = {
+      hasSchedule: jest.fn().mockResolvedValue(false),
+      getDriftReport: jest.fn(),
+      getPsiReport: jest.fn(),
+    } as unknown as InferenceWindowMonitoringService;
+
+    const service = new PredictionLogAuthorizedService(
+      prisma as never,
+      windowMonitoring,
+    );
+    await service.getPsiService('model-1', RANGE, ADMIN);
+
+    expect(windowMonitoring.getPsiReport).not.toHaveBeenCalled();
+    expect(prisma.predictionLog.findMany).toHaveBeenCalled();
   });
 });

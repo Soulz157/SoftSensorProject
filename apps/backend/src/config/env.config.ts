@@ -183,7 +183,7 @@ export const env = {
   // (T01's own finding). Default is half an hourly window at the observed
   // dataset's 1-minute interval (60 rows/hour); NOT 1, which would make
   // SKIPPED practically unreachable.
-  INFERENCE_MIN_ROWS: Number(process.env.INFERENCE_MIN_ROWS ?? 30),
+  INFERENCE_MIN_ROWS: Number(process.env.INFERENCE_MIN_ROWS ?? 15),
   // T10: no window reaching SUCCEEDED or SKIPPED for this many cadences
   // raises the staleness alarm. SKIPPED counts — it proves the record is
   // still being written — but never counts as a live prediction either.

@@ -357,3 +357,70 @@ def test_pi_branch_overrides_the_schedule_s_time_weighted_basis(monkeypatch):
     ground_truth_service.join_window_truth(store, _pi_request())
 
     assert seen == ["EventWeighted", "EventWeighted"]
+
+
+# ── MODEL-SERVE-001-T18: a failed source must never look like a quiet lab ──
+#
+# The single defect this pair of tests exists to catch: `_fetch_truth_frame`
+# used to build an empty-but-column-shaped frame from a DNS/timeout failure
+# the exact same way it builds one from a lab that genuinely reported
+# nothing — `join_window_truth` could not tell the two apart, so a broken
+# source silently returned `_empty_result` and read on screen as "no lab
+# measurement has arrived yet". Both tests must pass for the fix to be
+# proven: one shows the failure case now raises, the other shows the
+# healthy-empty case is UNCHANGED — a fix that also broke the honest empty
+# state would be worse than the defect.
+
+DNS_FAILURE_TEXT = (
+    "HTTPSConnectionPool(host='scgc-piwebapi.scg.com', port=443): Max retries "
+    "exceeded (Caused by NameResolutionError)"
+)
+
+
+def test_a_failed_pi_source_raises_with_the_verbatim_reason(monkeypatch):
+    async def fake_fetch(body, interval):
+        return {
+            "results": [
+                {
+                    "tag_name": TAG,
+                    "status": "failed",
+                    "data": [],
+                    "error": DNS_FAILURE_TEXT,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(ground_truth_service._pi, "fetch", fake_fetch)
+
+    store = RecordingStore()
+    _write_predictions(store, [("2026-09-14 15:00:00", 41.0)])
+
+    with pytest.raises(ValueError, match="Could not read the source") as exc_info:
+        ground_truth_service.join_window_truth(store, _pi_request())
+
+    # Not paraphrased into a category — the connector's own words must be
+    # readable in the raised message, since that message is what the
+    # sweeper writes verbatim into `InferenceWindowTruth.failureReason`.
+    assert DNS_FAILURE_TEXT in str(exc_info.value)
+
+
+def test_a_healthy_but_quiet_pi_source_still_returns_an_honest_empty_result(
+    monkeypatch,
+):
+    """The divergence proof: the SAME shape of response (empty), but with
+    `status: "ok"` instead of `"failed"`, must NOT raise — this is cause
+    (E), a lab that genuinely has not reported, and it is correct
+    behaviour, not a defect to "fix" a second time."""
+
+    async def fake_fetch(body, interval):
+        return {"results": [{"tag_name": TAG, "status": "ok", "data": []}]}
+
+    monkeypatch.setattr(ground_truth_service._pi, "fetch", fake_fetch)
+
+    store = RecordingStore()
+    _write_predictions(store, [("2026-09-14 15:00:00", 41.0)])
+
+    result = ground_truth_service.join_window_truth(store, _pi_request())
+
+    assert result["n"] == 0
+    assert result["truth_rows"] == 0

@@ -16,13 +16,22 @@ one writes a disposable, overwrite-on-retry scoring input under
 over.
 
 decisions.batch_input_is_pre_scale (pipelines/batch.py) applies here
-identically: this module never calls `to_model_ready` — the frame it
-writes carries feature columns in RAW engineering units, plus their
-`__status` sidecars (required by `assert_frame_shape`, and re-derived to
-all-Good by the container's own `to_model_ready` regardless). The
-container applies the fitted transform, exactly as MODEL-SERVE-002's
+identically: this module never calls `to_model_ready` to produce the frame
+it WRITES — that frame carries feature columns in RAW engineering units,
+plus their `__status` sidecars (required by `assert_frame_shape`, and
+re-derived to all-Good by the container's own `to_model_ready` regardless).
+The container applies the fitted transform, exactly as MODEL-SERVE-002's
 synchronous /predict and MODEL-SERVE-003's batch input already do, so the
 three paths cannot disagree about what scaling means.
+
+MODEL-SERVE-001-T17 amendment, narrated rather than silent: this module now
+ALSO computes drift aggregates (`_scaled_feature_stats`) and PSI histograms
+(`_psi_histograms`) from this same cleaned frame before it is written. The
+boundary above is unchanged — `to_model_ready` is called on a THROWAWAY
+SCALED COPY, purely to derive sufficient statistics in the same units
+`column_stats.json` was built in, never to alter what gets persisted to
+`inference/`. See both helpers' own doc comments for why this does not
+reopen the "three paths must agree" question the paragraph above raises.
 """
 
 from __future__ import annotations
@@ -31,6 +40,8 @@ import asyncio
 from collections.abc import Mapping
 from typing import Any
 
+import pandas as pd
+
 from intergrations.object_store import (
     INFERENCE_INPUT_FILENAME,
     TIMESTAMP_COLUMN,
@@ -38,6 +49,7 @@ from intergrations.object_store import (
 )
 from intergrations.object_store import missing_pct as _missing_pct
 from schemas.preprocess import FeatureConfigRequest, InferenceWindowMaterializeRequest
+from services.boxplot_service import good_values
 from services.data_service import parse_interval
 from services.data_source_service import PIDataSourceService, SQLDataSourceService
 from services.feature_service import (
@@ -47,9 +59,16 @@ from services.feature_service import (
 )
 from services.feature_spec_service import max_replay_lookback
 from services.frame_service import (
+    diagnose_empty_pi_fetch,
     from_pi_response,
     from_sql_response,
     utc_to_wall_clock,
+)
+from softsensor_scaling import (
+    DEFAULT_SCALER,
+    assert_scaling_coverage,
+    bucket_histogram,
+    to_model_ready,
 )
 
 _pi = PIDataSourceService()
@@ -71,58 +90,115 @@ def _as_mapping(response: Any) -> dict[str, Any]:
     return response.model_dump() if hasattr(response, "model_dump") else dict(response)
 
 
-def _diagnose_empty_pi_fetch(payload: Mapping[str, Any]) -> str | None:
-    """Why did a PI fetch come back with nothing?
+def _psi_histograms(
+    frame: pd.DataFrame, feature_columns: list[str], spec: Mapping[str, Any]
+) -> dict[str, dict[str, Any]] | None:
+    """MODEL-SERVE-001-T17. Bucket this window's own cleaned, RAW frame
+    against each tag's frozen `feature_spec.json` PSI reference
+    (`psiRefEdges`/`psiBinCount`/`psiBinMode`) — the window-plane
+    counterpart of `apps/serving`'s `prediction_log.bucket_histograms`,
+    delegating to the SAME shared primitive (`softsensor_scaling.
+    bucket_histogram`) so a value bins identically whether it arrived via a
+    live `/predict` request or a scheduled window.
 
-    An empty frame has two completely different causes that used to produce
-    one identical message: the range genuinely holds no samples, or the
-    fetch never reached the historian at all (host unresolvable, credentials
-    refused, timeout). `DataService.fetch` already knows which — it records
-    a per-tag `status` of "ok"/"partial"/"failed" and keeps the first error
-    string for every tag that failed — but `from_pi_response` builds a frame
-    out of the datapoints alone, so by the time the caller saw zero rows
-    that knowledge had been dropped and the caller guessed. It guessed
-    "check the schedule's fetch config and tag selection", which sends
-    someone to audit a config that is fine while the real answer (DNS could
-    not resolve the PI host) sits unread in the response.
+    Called AFTER `drop_bad_feature_rows`, so every kept cell is already
+    Good — `good_values` (the same Good-cell filter `compute_psi_ref_edges`
+    itself uses to FIT the reference) is used anyway, for identical
+    selection semantics on both sides of the comparison rather than a
+    second, merely-equivalent filter.
 
-    Returns a diagnosis when the SOURCE reported failures, else None —
-    None means the tags really did answer and had nothing to say, which is
-    a legitimate empty window, not an error to dress up.
+    A tag missing ANY of the three spec fields is SKIPPED, never given a
+    fabricated all-zero histogram — same discipline `prediction-log.
+    authorized.service.ts`'s `resolvePsiReference` applies one layer up.
+    Returns `None` (not `{}`) when nothing was bucketable at all, so the
+    caller can tell "computed, no tag had a reference" from "present but
+    empty" — the convention `apps/serving`'s own `bucket_histograms`
+    already sets.
     """
-    results = list(payload.get("results") or [])
-    if not results:
-        return None
+    edges_by_tag = spec.get("psiRefEdges") or {}
+    bin_count_by_tag = spec.get("psiBinCount") or {}
+    bin_mode_by_tag = spec.get("psiBinMode") or {}
 
-    failed = [r for r in results if str(r.get("status") or "") == "failed"]
-    if not failed:
-        return None
+    result: dict[str, dict[str, Any]] = {}
+    for column in feature_columns:
+        edges = edges_by_tag.get(column)
+        bin_mode = bin_mode_by_tag.get(column)
+        if not edges or bin_count_by_tag.get(column) is None or bin_mode is None:
+            continue
+        result[column] = bucket_histogram(good_values(frame, column), edges, bin_mode)
 
-    # Quoted verbatim, never paraphrased and never pattern-matched into a
-    # category: the connector's own text names the actual failure, and any
-    # guess layered on top would be the very thing this function exists to
-    # remove. De-duplicated because one unreachable host produces the same
-    # sentence once per tag.
-    reasons: list[str] = []
-    for result in failed:
-        reason = str(result.get("error") or "").strip()
-        if reason and reason not in reasons:
-            reasons.append(reason)
+    return result or None
 
-    scope = (
-        "every tag"
-        if len(failed) == len(results)
-        else f"{len(failed)} of {len(results)} tags"
-    )
-    if not reasons:
-        return (
-            f"the source reported a failure for {scope} without recording a "
-            "reason"
-        )
-    detail = "; ".join(reasons[:3])
-    if len(reasons) > 3:
-        detail += f"; (+{len(reasons) - 3} more)"
-    return f"the source failed for {scope}: {detail}"
+
+def _column_aggregate(values: pd.Series) -> dict[str, float]:
+    """`{n, sum, sumsq, min, max}` — same shape and same `n=0` zero-fill
+    convention as `apps/serving`'s own `prediction_log._column_aggregate`,
+    duplicated rather than cross-imported: apps/python and apps/serving are
+    separate deployables, the same reasoning this module's own `_as_mapping`
+    already gives for its local copy of that adapter."""
+    arr = values.to_numpy(dtype=float)
+    if arr.size == 0:
+        return {"n": 0, "sum": 0.0, "sumsq": 0.0, "min": 0.0, "max": 0.0}
+    return {
+        "n": int(arr.size),
+        "sum": float(arr.sum()),
+        "sumsq": float((arr * arr).sum()),
+        "min": float(arr.min()),
+        "max": float(arr.max()),
+    }
+
+
+def _scaled_feature_stats(
+    frame: pd.DataFrame, feature_columns: list[str], spec: Mapping[str, Any]
+) -> dict[str, dict[str, float]] | None:
+    """MODEL-SERVE-001-T17. Sufficient statistics per feature column, in
+    MODEL-READY (scaled) units — the window-plane counterpart of
+    `PredictionLog.featureStats`, so the drift z-score's baseline
+    (`column_stats.json`, itself built over the SCALED GOLD frame) is
+    compared against a live population in the same units. `None` (not
+    `{}`) exactly when NO tag was coverable — same "absent means nothing
+    computed" convention `_psi_histograms` sets; an all-`n:0` result for a
+    covered-but-empty frame (a SKIPPED window) is a different, legitimate
+    state and stays a real dict.
+
+    Amends this module's own header claim ("never calls `to_model_ready`
+    [to produce the frame it writes]"): what runs here is a THROWAWAY
+    scaled COPY, computed only to derive these aggregates, via the SAME
+    shared `to_model_ready` and the SAME persisted `scalingParams` every
+    other path in this system scales with — never a fourth
+    reimplementation that could silently disagree. Nothing here is
+    written to object storage.
+
+    `fitted_params` (`spec["scalingParams"]`) is load-bearing, not
+    optional: without it `to_model_ready` would FIT on this window's own
+    18-60 rows instead of applying what the model actually trained on —
+    the exact silently-wrong transform DS-LAKE-018-T02 exists to prevent,
+    one layer over.
+
+    A tag whose scaler is not `"none"` but has NO `scalingParams` entry is
+    EXCLUDED from the result, never scaled with re-fit params. This is a
+    real, expected state — `to_model_ready`'s own docstring: a `"none"`-
+    scaled tag and a zero-finite-value `"robust"` tag are both legitimately
+    absent from `scalingParams` — not a corrupt spec. The exclusion is
+    verified via `assert_scaling_coverage` against exactly the tag set
+    about to be scaled (never the full `feature_columns` list — one
+    uncovered tag must not fail the whole window), so a bug in this
+    partition itself raises loudly rather than silently re-fitting.
+    """
+    scalers = {entry["tag"]: entry["method"] for entry in (spec.get("scaling") or [])}
+    fitted_params = spec.get("scalingParams") or {}
+
+    covered = [
+        tag
+        for tag in feature_columns
+        if scalers.get(tag, DEFAULT_SCALER) == "none" or tag in fitted_params
+    ]
+    assert_scaling_coverage(covered, scalers, fitted_params)
+
+    scaled, _used_params = to_model_ready(frame, covered, scalers, fitted_params)
+    return {
+        column: _column_aggregate(scaled[column]) for column in covered
+    } or None
 
 
 def materialize_window(
@@ -209,7 +285,7 @@ def materialize_window(
         # to "check the fetch config" while DNS is failing costs them the
         # afternoon. The source's own error wins whenever it reported one.
         diagnosis = (
-            _diagnose_empty_pi_fetch(pi_payload) if pi_payload is not None else None
+            diagnose_empty_pi_fetch(pi_payload) if pi_payload is not None else None
         )
         if diagnosis:
             raise ValueError(
@@ -257,11 +333,20 @@ def materialize_window(
     # MODEL-FLOW-010-T06's holdout missingPct states on itself, and the
     # exact trap to_model_ready's own docstring names: scaling silently
     # launders a Bad cell holding a real number to Good, with the evidence
-    # gone afterward. This MUST run before any scaling, which is why this
-    # module never calls to_model_ready at all — that call belongs to the
-    # container, on a frame this function has already cleaned.
+    # gone afterward. This MUST run before any scaling — the container
+    # still owns the transform that scores this frame; this module's own
+    # `to_model_ready` calls below (module docstring's T17 amendment) are a
+    # throwaway copy for drift aggregates only, and both run AFTER this
+    # line for the identical reason.
     frame, _dropped = drop_bad_feature_rows(frame, request.feature_columns)
     scored_rows = len(frame)
+
+    # MODEL-SERVE-001-T17. Both derived from this same cleaned, RAW frame —
+    # `None`/`{}` are legitimate ("no reference" / "no covered tag"), never
+    # an error, so a spec that predates T13 (no psiRefEdges) or a window
+    # with zero scored rows still returns cleanly.
+    feature_histograms = _psi_histograms(frame, request.feature_columns, spec)
+    feature_stats = _scaled_feature_stats(frame, request.feature_columns, spec)
 
     # Filename-keyed, built HERE — never accepted from the caller. inference/
     # has exactly one writer and one key-builder (this module), the same
@@ -283,4 +368,6 @@ def materialize_window(
         "scored_rows": scored_rows,
         "missing_pct": rate,
         "checksum": stats.checksum,
+        "feature_histograms": feature_histograms,
+        "feature_stats": feature_stats,
     }

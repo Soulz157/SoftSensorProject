@@ -1,6 +1,7 @@
 'use client'
 
 import { useMemo, useState } from 'react'
+import { format } from 'date-fns'
 import { Activity } from 'lucide-react'
 import type { AIModel } from '@/types'
 import { useLiveError } from '@/hooks/model/use-live-error'
@@ -21,6 +22,14 @@ import { ResidualChart, type ResidualMode } from './residual-chart'
 import { LivePredictionChart } from './live-prediction-chart'
 import { DriftPanel } from './drift-panel'
 import { PsiPanel } from './psi/psi-panel'
+
+/** MODEL-SERVE-001-T18. `truthLagMinutes` is stored in minutes; every real
+ *  schedule sets it to a round hour count (1440 = 24h, 60 = 1h, T03's own
+ *  precedent), so a plain hour/minute split reads naturally without pulling
+ *  in a duration-formatting library for one readout. */
+function formatLagDuration(minutes: number): string {
+  return minutes % 60 === 0 ? `${minutes / 60}h` : `${minutes}m`
+}
 
 function LegendItem({ color, label }: { color: string; label: string }) {
   return (
@@ -83,7 +92,21 @@ export function EmptyTruth({
               coverage.windowsFailed === 1 ? 'window' : 'windows'
             } in this range, so no measurement could be fetched. Check the model's data source and target.`
           : coverage.truthRows === 0
-            ? 'Windows have been scored, but no lab measurement has arrived for them yet. The join runs again once the configured truth lag has passed.'
+            ? // MODEL-SERVE-001-T18. "The join runs again once the truth lag
+              // has passed" reads identically at minute 1 and hour 23 of
+              // that wait. `earliestEligibleAt`/`truthLagMinutes` name the
+              // concrete timing when they are present (a schedule exists
+              // and at least one window is still awaiting); when either is
+              // absent, the original sentence stands rather than printing a
+              // wait that cannot be computed.
+              coverage.earliestEligibleAt && coverage.truthLagMinutes
+              ? `Windows have been scored, but no lab measurement has arrived for them yet. The lab has up to ${formatLagDuration(
+                  coverage.truthLagMinutes,
+                )} to report; the earliest scored window becomes eligible at ${format(
+                  new Date(coverage.earliestEligibleAt),
+                  'MMM d, HH:mm',
+                )}.`
+              : 'Windows have been scored, but no lab measurement has arrived for them yet. The join runs again once the configured truth lag has passed.'
             : 'Lab measurements arrived, but none fell within the configured tolerance of a scored prediction.'
 
   return (

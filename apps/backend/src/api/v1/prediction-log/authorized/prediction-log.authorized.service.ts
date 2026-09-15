@@ -2,17 +2,13 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService, PrismaTypes } from '@softsensor/prisma';
 import { AppException } from '@softsensor/common';
 import { env } from '@/config/env.config';
-import { postToPython, PYTHON_TIMEOUT } from '@/lib/python-client';
 import {
   appendPredictionLog,
   predictionLogSeries,
-  readFeatureSpec,
 } from '@/lib/python-preprocess-client';
-import { PythonColumnStatsSchema } from '@/api/v1/dataset-version/authorized/dto/dataset-version.authorized.dto';
 import {
   computeDrift,
   poolFeatureStats,
-  type ColumnBaselineMap,
   type FeatureStatsMap,
 } from '@/lib/prediction-drift';
 import {
@@ -20,8 +16,12 @@ import {
   poolHistograms,
   PSI_EPSILON,
   type FeatureHistogramMap,
-  type PsiReferenceMap,
 } from '@/lib/prediction-psi';
+import {
+  resolveColumnBaseline,
+  resolvePsiReference,
+} from '@/lib/artifact-baseline';
+import { InferenceWindowMonitoringService } from '@/api/v1/inference-window/authorized/inference-window-monitoring.authorized.service';
 import type {
   IngestPredictionLogDto,
   PredictionLogRangeQueryDto,
@@ -40,7 +40,14 @@ import type {
 export class PredictionLogAuthorizedService {
   private readonly log = new Logger(PredictionLogAuthorizedService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // MODEL-SERVE-001-T17. `getDriftService`/`getPsiService` dispatch to
+    // this for a model with an InferenceSchedule — see
+    // `InferenceWindowMonitoringService.hasSchedule`'s own doc comment for
+    // the full plane-selection rule.
+    private readonly windowMonitoring: InferenceWindowMonitoringService,
+  ) {}
 
   // ── access ───────────────────────────────────────────────────────────────
 
@@ -231,6 +238,17 @@ export class PredictionLogAuthorizedService {
    * [from, to], compared against the training artifact's own
    * column_stats.json — never a separately-computed baseline (the
    * acceptance criterion this ledger states verbatim).
+   *
+   * MODEL-SERVE-001-T17. PLANE DISPATCH, decided with the user 2026-09-15:
+   * a model with an InferenceSchedule reads `InferenceWindow.featureStats`
+   * instead — the SAME reason MODEL-SERVE-001-T10 had to state on the
+   * client (`DriftPanel`'s own empty-state copy): `PredictionLog` is
+   * written by `/predict` ONLY, so a scheduled-only model's PredictionLog
+   * is empty BY CONSTRUCTION, and everything below this check would
+   * correctly compute nothing forever. See `InferenceWindowMonitoring
+   * Service.hasSchedule`'s own doc comment for the full rule. Everything
+   * from here down is the ORIGINAL, UNCHANGED `/predict`-plane
+   * implementation — reached only for a model with no schedule.
    */
   async getDriftService(
     modelId: string,
@@ -238,6 +256,14 @@ export class PredictionLogAuthorizedService {
     user: Auth.UserPayload,
   ) {
     await this.assertModelAccess(modelId, user);
+
+    if (await this.windowMonitoring.hasSchedule(modelId)) {
+      return this.windowMonitoring.getDriftReport(
+        modelId,
+        query.from,
+        query.to,
+      );
+    }
 
     const production = await this.prisma.modelVersion.findFirst({
       where: { modelId, stage: 'PRODUCTION' },
@@ -262,7 +288,7 @@ export class PredictionLogAuthorizedService {
       rows.map((r) => r.featureStats as unknown as FeatureStatsMap),
     );
 
-    const baseline = await this.resolveBaseline(production.goldObjectKey);
+    const baseline = await resolveColumnBaseline(production.goldObjectKey);
 
     const report = computeDrift(pooled, baseline, {
       warnSd: env.DRIFT_WARN_SD,
@@ -284,6 +310,10 @@ export class PredictionLogAuthorizedService {
           sampleRequests: rows.length,
           from: query.from,
           to: query.to,
+          // MODEL-SERVE-001-T17. Named on every basis, on both planes —
+          // see InferenceWindowMonitoringService's own basisOf for the
+          // window-plane counterpart.
+          plane: 'predict' as const,
         },
       },
     };
@@ -300,6 +330,11 @@ export class PredictionLogAuthorizedService {
    * `[from, to]` will often not clear — the CALLER is expected to request a
    * wider range (the client defaults this to a rolling 24h window; this
    * endpoint itself enforces no particular range, only the sample floor).
+   *
+   * MODEL-SERVE-001-T17. PLANE DISPATCH — see `getDriftService`'s own doc
+   * comment immediately above for the full rule and its reason; identical
+   * here. Everything from here down is the ORIGINAL, UNCHANGED `/predict`-
+   * plane implementation, reached only for a model with no schedule.
    */
   async getPsiService(
     modelId: string,
@@ -307,6 +342,10 @@ export class PredictionLogAuthorizedService {
     user: Auth.UserPayload,
   ) {
     await this.assertModelAccess(modelId, user);
+
+    if (await this.windowMonitoring.hasSchedule(modelId)) {
+      return this.windowMonitoring.getPsiReport(modelId, query.from, query.to);
+    }
 
     const production = await this.prisma.modelVersion.findFirst({
       where: { modelId, stage: 'PRODUCTION' },
@@ -340,7 +379,7 @@ export class PredictionLogAuthorizedService {
       histograms.map((h) => h as unknown as FeatureHistogramMap),
     );
 
-    const reference = await this.resolvePsiReference(production.goldObjectKey);
+    const reference = await resolvePsiReference(production.goldObjectKey);
 
     const report = computePsi(pooled, reference, {
       warn: env.PSI_WARN,
@@ -376,108 +415,13 @@ export class PredictionLogAuthorizedService {
             critical: env.PSI_CRITICAL,
             minSamplesPerBin: env.PSI_MIN_SAMPLES_PER_BIN,
           },
+          // MODEL-SERVE-001-T17. Named on every basis, on both planes —
+          // see InferenceWindowMonitoringService's own basisOf for the
+          // window-plane counterpart.
+          plane: 'predict' as const,
           epsilon: PSI_EPSILON,
         },
       },
     };
-  }
-
-  /**
-   * Reads column_stats.json for the PRODUCTION version's own training
-   * artifact — the SAME sidecar `getArtifactColumnStatsService` serves,
-   * called directly via `postToPython` rather than through that
-   * user-scoped service: this call has no `user` to re-authorize with
-   * (access was already checked once, on the Model), the same reasoning
-   * `freezeSplitStats` gives for calling python directly instead of
-   * through a request-scoped service method.
-   *
-   * A missing sidecar (a legacy artifact predating column_stats.json) is
-   * NOT an error here — every column simply reports UNKNOWN with a named
-   * reason (`computeDrift`'s own "no training baseline" branch), the same
-   * honest-empty-state discipline `getArtifactHoldoutService` uses for a
-   * dataset with no holdout.
-   */
-  private async resolveBaseline(
-    goldObjectKey: string,
-  ): Promise<ColumnBaselineMap> {
-    try {
-      const result = PythonColumnStatsSchema.parse(
-        await postToPython(
-          '/v1/preprocess/column-stats',
-          { source_key: goldObjectKey },
-          PYTHON_TIMEOUT.metadata,
-        ),
-      );
-      const baseline: ColumnBaselineMap = {};
-      for (const [tag, stats] of Object.entries(result.stats)) {
-        baseline[tag] = {
-          mean: stats.mean ?? null,
-          std: stats.std ?? null,
-          percentiles: stats.percentiles
-            ? { p1: stats.percentiles.p1, p99: stats.percentiles.p99 }
-            : null,
-        };
-      }
-      return baseline;
-    } catch (err) {
-      this.log.warn(
-        `column_stats unavailable for ${goldObjectKey}; drift will report every column UNKNOWN: ${(err as Error).message}`,
-      );
-      return {};
-    }
-  }
-
-  /**
-   * MODEL-SERVE-001-T13. Reads `feature_spec.json` for the PRODUCTION
-   * version's own training artifact — via `readFeatureSpec`, the SAME
-   * sidecar read the serving descriptor already uses (`model-serving.
-   * authorized.service.ts`'s `buildDescriptor`) — and un-flattens its four
-   * parallel per-tag maps (`psiRefEdges`/`psiBinCount`/`psiBinMode`/
-   * `psiRefCounts`) back into one `PsiReference` object per tag, the shape
-   * `computePsi` consumes.
-   *
-   * A tag missing ANY of the four (a malformed or partially-written spec)
-   * is skipped entirely, never assembled from whichever fields happen to
-   * be present — an incomplete reference is not a usable one, and
-   * `computePsi` already reports a clean UNKNOWN for a tag with no
-   * reference at all, so silently dropping it here is the same honest
-   * "no reference" outcome, not a lossy one.
-   *
-   * A missing sidecar (legacy artifact, or one that predates T13) is NOT
-   * an error — same discipline `resolveBaseline` uses for a missing
-   * column_stats.json: every column reports UNKNOWN with a named reason.
-   */
-  private async resolvePsiReference(
-    goldObjectKey: string,
-  ): Promise<PsiReferenceMap> {
-    try {
-      const { spec } = await readFeatureSpec(goldObjectKey);
-      const edges = spec.psiRefEdges ?? {};
-      const binCounts = spec.psiBinCount ?? {};
-      const binModes = spec.psiBinMode ?? {};
-      const refCounts = spec.psiRefCounts ?? {};
-
-      const reference: PsiReferenceMap = {};
-      for (const tag of Object.keys(edges)) {
-        const binMode = binModes[tag];
-        const binCount = binCounts[tag];
-        const tagRefCounts = refCounts[tag];
-        if (binMode === undefined || binCount === undefined || !tagRefCounts) {
-          continue;
-        }
-        reference[tag] = {
-          binMode,
-          binCount,
-          edges: edges[tag],
-          refCounts: tagRefCounts,
-        };
-      }
-      return reference;
-    } catch (err) {
-      this.log.warn(
-        `feature_spec unavailable for ${goldObjectKey}; PSI will report every column UNKNOWN: ${(err as Error).message}`,
-      );
-      return {};
-    }
   }
 }

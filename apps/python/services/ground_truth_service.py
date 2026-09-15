@@ -53,6 +53,7 @@ from schemas.preprocess import (
 )
 from services.data_source_service import PIDataSourceService, SQLDataSourceService
 from services.frame_service import (
+    diagnose_empty_pi_fetch,
     from_pi_response,
     from_sql_response,
     utc_to_wall_clock,
@@ -127,6 +128,31 @@ def _fetch_truth_frame(
     zero or absent count are dropped before the value is ever looked at —
     that is what keeps PI's held-forever last value out of the join.
 
+    MODEL-SERVE-001-T18. Both PI calls are diagnosed BEFORE any event-
+    presence filtering, not after — `from_pi_response` still builds a
+    frame that CARRIES the requested tag's column even when the fetch
+    never reached the historian at all (a failed single-tag result still
+    registers the tag, just with zero timestamps), so checking `tag not
+    in values.columns` downstream — the shape this branch used to gate
+    on — never actually distinguishes "the source failed" from "the lab
+    was quiet": both end up as a zero-row frame with the column present.
+    Only the SOURCE'S OWN reported per-tag status can tell them apart,
+    which is exactly what `diagnose_empty_pi_fetch` reads. Each call here
+    targets exactly ONE tag, so a diagnosis firing on either payload is
+    unambiguous — never a partial success being misreported as a total
+    failure. RAISES here, mirroring `materialize_window`'s own contract:
+    the sweeper's existing `except` catches this and writes
+    `InferenceWindowTruth.failureReason` with the connector's verbatim
+    text, instead of `join_window_truth` returning a confident
+    `_empty_result` that reads identically to "the lab has not reported
+    yet" — the exact confident-wrong-answer this task exists to close.
+
+    A GENUINELY QUIET LAB IS UNTOUCHED: when both calls answer with
+    `status: "ok"` and simply hold no data (or no event), `diagnose_
+    empty_pi_fetch` returns `None` for both and this function proceeds
+    to the SAME event-presence filtering it always has, honestly
+    producing zero pairs.
+
     SQL branch: one query. A SQL source stores rows, not a held signal, so
     an interval with no lab result carries NULL, which `from_sql_response`
     already turns into a Bad hole — absence survives the fetch on its own.
@@ -149,26 +175,34 @@ def _fetch_truth_frame(
         )
         interval = base.summary_duration or "1m"
 
-        counts = from_pi_response(
-            _as_mapping(
-                asyncio.run(
-                    _pi.fetch(
-                        base.model_copy(update={"summary_type": ["Count"]}),
-                        interval=interval,
-                    )
+        counts_payload = _as_mapping(
+            asyncio.run(
+                _pi.fetch(
+                    base.model_copy(update={"summary_type": ["Count"]}),
+                    interval=interval,
                 )
             )
         )
-        values = from_pi_response(
-            _as_mapping(
-                asyncio.run(
-                    _pi.fetch(
-                        base.model_copy(update={"summary_type": ["Average"]}),
-                        interval=interval,
-                    )
+        values_payload = _as_mapping(
+            asyncio.run(
+                _pi.fetch(
+                    base.model_copy(update={"summary_type": ["Average"]}),
+                    interval=interval,
                 )
             )
         )
+
+        diagnosis = diagnose_empty_pi_fetch(
+            values_payload
+        ) or diagnose_empty_pi_fetch(counts_payload)
+        if diagnosis:
+            raise ValueError(
+                "Could not read the source for this window's truth fetch "
+                f"range [{start}, {end}): {diagnosis}"
+            )
+
+        counts = from_pi_response(counts_payload)
+        values = from_pi_response(values_payload)
 
         if tag not in values.columns:
             return _empty_truth(tag)

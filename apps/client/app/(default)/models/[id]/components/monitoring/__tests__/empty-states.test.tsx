@@ -107,6 +107,7 @@ describe('DriftPanel empty states (MODEL-SERVE-001-T10)', () => {
             },
           ],
           basis: {
+            plane: 'predict',
             modelVersionId: 'v1',
             version: 1,
             goldArtifactId: 'a1',
@@ -128,6 +129,49 @@ describe('DriftPanel empty states (MODEL-SERVE-001-T10)', () => {
       screen.queryByRole('columnheader', { name: 'PSI status' }),
     ).not.toBeInTheDocument()
   })
+
+  // MODEL-SERVE-001-T17: the backend has always sent `col.n`; this table
+  // never rendered it until this task. A z-score pooled from one window
+  // must not look as solid on screen as one from 1,440.
+  it('renders the Samples column with the real pooled count', () => {
+    render(
+      <DriftPanel
+        report={{
+          status: 'OK',
+          columns: [
+            {
+              column: 'TI-101',
+              n: 42,
+              liveMean: 1,
+              liveStd: 1,
+              trainMean: 1,
+              trainStd: 1,
+              z: 0,
+              outOfRangePct: 0,
+              status: 'OK',
+            },
+          ],
+          basis: {
+            plane: 'window',
+            modelVersionId: 'v1',
+            version: 1,
+            goldArtifactId: 'a1',
+            goldObjectKey: 'k1',
+            sampleRequests: 3,
+            from: '2026-01-01T00:00:00.000Z',
+            to: '2026-01-01T01:00:00.000Z',
+          },
+        }}
+        loading={false}
+        unavailableReason={null}
+      />,
+    )
+
+    expect(screen.getByRole('columnheader', { name: 'Samples' })).toBeVisible()
+    expect(screen.getByText('42')).toBeVisible()
+    // Window-plane copy: "window(s)", never "sampled request(s)".
+    expect(screen.getByText(/3 windows vs\. version/i)).toBeVisible()
+  })
 })
 
 function coverage(over: Partial<LiveErrorCoverage> = {}): LiveErrorCoverage {
@@ -140,6 +184,8 @@ function coverage(over: Partial<LiveErrorCoverage> = {}): LiveErrorCoverage {
     pairedRows: 0,
     windowsFailed: 0,
     maxMissingPct: null,
+    truthLagMinutes: null,
+    earliestEligibleAt: null,
     ...over,
   }
 }
@@ -210,5 +256,79 @@ describe('EmptyTruth — the fourth cause (MODEL-SERVE-001-T11)', () => {
     // === 0) must not fire even though windowsSkipped is non-zero.
     expect(screen.queryByText(/windows were skipped/i)).toBeNull()
     expect(screen.getByText(/no lab measurement has arrived/i)).toBeVisible()
+  })
+})
+
+/**
+ * MODEL-SERVE-001-T18. "The join runs again once the configured truth lag
+ * has passed" reads identically at minute 1 and hour 23 of the wait. When
+ * the backend can name a concrete `earliestEligibleAt`, the reader should
+ * see it rather than an indefinite wait.
+ */
+describe('EmptyTruth — naming the wait (MODEL-SERVE-001-T18)', () => {
+  it('names the concrete eligible time when the backend can compute one', () => {
+    render(
+      <EmptyTruth
+        error={null}
+        coverage={coverage({
+          windowsInRange: 3,
+          truthRows: 0,
+          truthLagMinutes: 1440,
+          earliestEligibleAt: '2026-09-15T08:00:00.000Z',
+        })}
+      />,
+    )
+
+    expect(screen.getByText(/up to 24h to report/i)).toBeVisible()
+    expect(screen.getByText(/becomes eligible at/i)).toBeVisible()
+    // The OLD indefinite sentence must not ALSO render — one message, not
+    // a stale one left stacked beside the new one.
+    expect(
+      screen.queryByText(
+        'Windows have been scored, but no lab measurement has arrived for them yet. The join runs again once the configured truth lag has passed.',
+      ),
+    ).toBeNull()
+  })
+
+  it('falls back to the original sentence when earliestEligibleAt is null — no schedule, or nothing awaiting', () => {
+    render(
+      <EmptyTruth
+        error={null}
+        coverage={coverage({
+          windowsInRange: 3,
+          truthRows: 0,
+          truthLagMinutes: null,
+          earliestEligibleAt: null,
+        })}
+      />,
+    )
+
+    expect(
+      screen.getByText(
+        'Windows have been scored, but no lab measurement has arrived for them yet. The join runs again once the configured truth lag has passed.',
+      ),
+    ).toBeVisible()
+    expect(screen.queryByText(/becomes eligible at/i)).toBeNull()
+  })
+
+  it('leaves the other empty-cause branches unaffected (negative-space check)', () => {
+    // A range with no scored windows at all — a DIFFERENT branch — must
+    // never mention a wait it has nothing to do with, even with a
+    // schedule's timing fields populated on the coverage object.
+    render(
+      <EmptyTruth
+        error={null}
+        coverage={coverage({
+          windowsInRange: 0,
+          truthLagMinutes: 1440,
+          earliestEligibleAt: '2026-09-15T08:00:00.000Z',
+        })}
+      />,
+    )
+
+    expect(
+      screen.getByText('No completed inference windows in this range yet.'),
+    ).toBeVisible()
+    expect(screen.queryByText(/becomes eligible at/i)).toBeNull()
   })
 })

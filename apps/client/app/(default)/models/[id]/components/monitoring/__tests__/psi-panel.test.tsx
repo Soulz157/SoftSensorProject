@@ -52,6 +52,7 @@ function makeReport(
     status: columns.some(c => c.status === 'CRITICAL') ? 'CRITICAL' : 'OK',
     columns,
     basis: {
+      plane: 'predict',
       modelVersionId: 'v1',
       version: 1,
       goldArtifactId: 'a1',

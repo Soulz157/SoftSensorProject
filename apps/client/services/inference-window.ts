@@ -196,6 +196,15 @@ export interface LiveErrorCoverage {
   /** MAX, not a mean — a mean hides the one window whose sensor stopped,
    *  which is exactly what this number exists to surface. */
   maxMissingPct: number | null
+  /** MODEL-SERVE-001-T18. This model's own `InferenceSchedule.truthLagMinutes`
+   *  — null when the model has no schedule at all (the wait has no meaning
+   *  without one). */
+  truthLagMinutes: number | null
+  /** The earliest time the NEXT truth check happens for a window in range
+   *  that has not joined yet — null when nothing is awaiting (every window
+   *  already joined or failed, or there is no schedule). Turns an
+   *  indefinite "the join runs again" into a checkable one. */
+  earliestEligibleAt: string | null
 }
 
 export interface LiveErrorWindow {

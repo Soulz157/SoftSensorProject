@@ -170,6 +170,28 @@ export async function presignPredictionJobObject(input: {
   return PresignRunObjectSchema.parse(res);
 }
 
+/** MODEL-SERVE-001-T17. Mirrors apps/python's `_column_aggregate` return
+ *  shape — same as `ColumnAggregateSchema` in `prediction-log.authorized.
+ *  dto.ts`'s own `IngestPredictionLogSchema`, redefined locally rather
+ *  than imported: this file's own established convention is one schema
+ *  per response type, never cross-file reuse of a private DTO-internal
+ *  const (every other schema below is local for the identical reason). */
+const WindowColumnAggregateSchema = z.object({
+  n: z.number().int().min(0),
+  sum: z.number(),
+  sumsq: z.number(),
+  min: z.number(),
+  max: z.number(),
+});
+
+/** Mirrors apps/python's `_psi_histograms` per-tag return shape — same as
+ *  `FeatureHistogramSchema` in `prediction-log.authorized.dto.ts`. */
+const WindowFeatureHistogramSchema = z.object({
+  counts: z.array(z.number().int().min(0)),
+  below: z.number().int().min(0),
+  above: z.number().int().min(0),
+});
+
 /** Mirrors `InferenceWindowMaterializeResponse` field for field. */
 const InferenceWindowMaterializeSchema = z.object({
   object_key: z.string().min(1),
@@ -177,6 +199,16 @@ const InferenceWindowMaterializeSchema = z.object({
   scored_rows: z.number().int().nonnegative(),
   missing_pct: z.number(),
   checksum: z.string().min(1),
+  // MODEL-SERVE-001-T17. `null` — never omitted, matching pydantic's own
+  // `Optional[...] = None` field, which FastAPI still serialises as an
+  // explicit `null` key — means "nothing coverable/referenceable", never
+  // an error. See `_psi_histograms`/`_scaled_feature_stats`'s own doc
+  // comments (apps/python/services/inference_window_service.py) for
+  // exactly when each is null.
+  feature_histograms: z
+    .record(z.string(), WindowFeatureHistogramSchema)
+    .nullable(),
+  feature_stats: z.record(z.string(), WindowColumnAggregateSchema).nullable(),
 });
 
 export type InferenceWindowMaterializeResult = z.infer<

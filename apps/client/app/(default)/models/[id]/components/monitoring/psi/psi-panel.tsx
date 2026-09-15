@@ -92,29 +92,59 @@ export function PsiPanel({ report, loading, unavailableReason }: Props) {
   }
 
   if (!report || report.columns.length === 0) {
+    // MODEL-SERVE-001-T17. Same branch discipline as `DriftPanel`: `report`
+    // (when present) names its own plane — a model with an
+    // InferenceSchedule but no `psiRefEdges` yet (a spec predating T13,
+    // TM2's own live state) lands here too, since `_psi_histograms` writes
+    // `null` for EVERY window when no tag has a frozen reference at all,
+    // which pools to zero columns just like zero /predict traffic does.
+    const onWindowPlane = report?.basis.plane === 'window'
     return (
       <div className="flex h-32 flex-col items-center justify-center gap-1 px-6 text-center">
         <p className="text-sm text-muted-foreground">
-          No PSI-eligible /predict traffic in this range.
+          {onWindowPlane
+            ? 'No PSI-eligible inference windows in this range.'
+            : 'No PSI-eligible /predict traffic in this range.'}
         </p>
         <p className="text-xs text-muted-foreground/70">
-          PSI reads each request&apos;s own bucketed feature histogram, recorded
-          per row since this metric shipped. A request logged before that — or
-          served under a spec with no frozen bins — carries none; the z-score
-          above still covers it.
+          {onWindowPlane
+            ? "PSI reads each window's own bucketed feature histogram, written since this metric shipped on the scheduled plane. A window materialized before that — or one whose model version has no frozen PSI bins yet (rebuild the dataset artifact to mint them) — carries none; the z-score above still covers it."
+            : "PSI reads each request's own bucketed feature histogram, recorded per row since this metric shipped. A request logged before that — or served under a spec with no frozen bins — carries none; the z-score above still covers it."}
         </p>
       </div>
     )
   }
 
-  const windowLabel = formatWindow(report.basis.from, report.basis.to)
+  const onWindowPlane = report.basis.plane === 'window'
+  // MODEL-SERVE-001-T17. `basis.from`/`basis.to` is the REQUESTED range;
+  // the window plane pools at most 24 windows within it (the rolling
+  // horizon T17 itself specifies), so when more exist, the ACTUALLY pooled
+  // span is narrower than what was requested. `windowStartEarliest`/
+  // `windowStartLatest` are the real span — preferred here for the
+  // identical reason "Computed over" replaced T13's own literal "rolling
+  // 24h" text in the first place (this module's own doc comment above):
+  // never print a range the figure was not actually computed over.
+  const windowLabel =
+    onWindowPlane &&
+    report.basis.windowStartEarliest &&
+    report.basis.windowStartLatest
+      ? formatWindow(
+          report.basis.windowStartEarliest,
+          report.basis.windowStartLatest,
+        )
+      : formatWindow(report.basis.from, report.basis.to)
+  // "window(s)" on the window plane, "sampled request(s)" on /predict —
+  // the COUNTS (`histogramRequests`/`sampleRequests`) already carry the
+  // right numbers on both planes.
+  const unitLabel = onWindowPlane ? 'window' : 'sampled request'
+  const unitLabelShort = onWindowPlane ? 'windows' : 'reqs'
 
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between text-xs text-muted-foreground">
         <span>
           {report.basis.histogramRequests} of {report.basis.sampleRequests}{' '}
-          sampled request
+          {unitLabel}
           {report.basis.sampleRequests === 1 ? '' : 's'} carried a histogram,
           vs. version {report.basis.version}&apos;s frozen bins
         </span>
@@ -150,6 +180,7 @@ export function PsiPanel({ report, loading, unavailableReason }: Props) {
                   windowLabel={windowLabel}
                   histogramRequests={report.basis.histogramRequests}
                   sampleRequests={report.basis.sampleRequests}
+                  unitLabelShort={unitLabelShort}
                   onToggle={() =>
                     setExpandedColumn(c =>
                       c === col.column ? null : col.column,
@@ -185,6 +216,7 @@ function PsiRow({
   windowLabel,
   histogramRequests,
   sampleRequests,
+  unitLabelShort,
   onToggle,
 }: {
   col: PsiColumn
@@ -193,6 +225,8 @@ function PsiRow({
   windowLabel: string
   histogramRequests: number
   sampleRequests: number
+  /** "windows" on the window plane, "reqs" on /predict — MODEL-SERVE-001-T17. */
+  unitLabelShort: string
   onToggle: () => void
 }) {
   return (
@@ -244,7 +278,7 @@ function PsiRow({
             {windowLabel}
           </div>
           <div className="text-[10px] text-muted-foreground">
-            {histogramRequests} of {sampleRequests} reqs
+            {histogramRequests} of {sampleRequests} {unitLabelShort}
           </div>
         </td>
       </tr>

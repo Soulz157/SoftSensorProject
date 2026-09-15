@@ -42,10 +42,40 @@ export interface DriftColumn {
   reason?: string
 }
 
+/**
+ * MODEL-SERVE-001-T17. `plane` names which live data source produced this
+ * report — `'window'` for a model with an `InferenceSchedule` (pooled from
+ * `InferenceWindow.featureStats`/`featureHistograms`), `'predict'` for one
+ * without (pooled from `PredictionLog`, MODEL-SERVE-005's original plane).
+ * Decided by schedule PRESENCE server-side, never inferred client-side from
+ * which fields happen to be populated. The five fields below `plane` are
+ * populated ONLY on the window plane — a model with no schedule has no
+ * window pool to describe, so they stay `undefined` there rather than
+ * printing a false zero.
+ */
+export interface MonitoringBasis {
+  plane: 'window' | 'predict'
+  /** Windows fetched in `[from, to]` (≤24, the rolling horizon T17 itself
+   *  specifies) — window plane only. */
+  windowsUsed?: number
+  /** Real earliest/latest `windowStart` in the pool — NEVER a printed
+   *  "rolling 24h": that label would be false whenever the pool holds
+   *  fewer than 24 windows or a shorter span. Window plane only. */
+  windowStartEarliest?: string | null
+  windowStartLatest?: string | null
+  /** Per-`InferenceWindowStatus` counts across the pooled windows — the
+   *  disclosure T17's own no-status-whitelist rule requires: a figure
+   *  computed mostly from windows that never scored must say so. Window
+   *  plane only. */
+  statusBreakdown?: Record<string, number>
+  /** Sum of `inputRows` across the pooled windows — window plane only. */
+  totalInputRows?: number
+}
+
 export interface DriftReport {
   status: DriftStatus
   columns: DriftColumn[]
-  basis: {
+  basis: MonitoringBasis & {
     modelVersionId: string
     version: number
     goldArtifactId: string
@@ -53,6 +83,11 @@ export interface DriftReport {
     sampleRequests: number
     from: string
     to: string
+    /** Windows in the pool whose `featureStats` was non-null and actually
+     *  fed `poolFeatureStats` — window plane only, mirroring `PsiReport`'s
+     *  own `histogramRequests`. `windowsUsed` can exceed this whenever a
+     *  window predates T17 or had no coverable feature column. */
+    statsWindows?: number
   }
 }
 
@@ -131,20 +166,23 @@ export interface PsiColumn {
 export interface PsiReport {
   status: PsiStatus
   columns: PsiColumn[]
-  basis: {
+  basis: MonitoringBasis & {
     modelVersionId: string
     version: number
     goldArtifactId: string
     goldObjectKey: string
-    /** Requests found in [from, to] for the PRODUCTION version, BEFORE the
-     *  null-`featureHistograms` filter — kept for parity with `DriftReport`'s
-     *  own `sampleRequests`. Overstates what actually fed the PSI pool
-     *  whenever a request predates T13 or was served under a pre-T13 spec;
+    /** WINDOW PLANE: windows fetched in [from, to] for the PRODUCTION
+     *  version (≤24), same value as `windowsUsed`. PREDICT PLANE: requests
+     *  found in [from, to], BEFORE the null-`featureHistograms` filter —
+     *  kept for parity with `DriftReport`'s own `sampleRequests`. Either
+     *  way, overstates what actually fed the PSI pool whenever a row
+     *  predates T13/T17 or was served under a pre-T13 spec;
      *  `histogramRequests` below is the honest count for that. */
     sampleRequests: number
-    /** Requests that actually carried a `featureHistograms` row and fed
+    /** Rows (requests on the predict plane, windows on the window plane)
+     *  that actually carried a `featureHistograms` entry and fed
      *  `poolHistograms` — the number a "computed over" readout should
-     *  print, as "N of M requests carried histograms". */
+     *  print. */
     histogramRequests: number
     from: string
     to: string

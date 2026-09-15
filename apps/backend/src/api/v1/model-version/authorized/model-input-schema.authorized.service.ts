@@ -132,7 +132,7 @@ export class ModelInputSchemaAuthorizedService {
 
   /** Never throws — a missing/unreadable manifest is a normal legacy state
    *  for a display read, not an error. Mirrors the honest-null discipline
-   *  `PredictionLogAuthorizedService.resolveBaseline` already applies to
+   *  `lib/artifact-baseline.ts`'s `resolveColumnBaseline` already applies to
    *  its own best-effort python read. */
   private async resolveFeatureColumns(manifestKey: string | null): Promise<{
     featureColumns: string[] | null;

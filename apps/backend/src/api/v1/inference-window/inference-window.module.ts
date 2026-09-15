@@ -6,6 +6,7 @@ import { InferenceWindowCallbackAuthorizedController } from './authorized/infere
 import { InferenceWindowAuthorizedService } from './authorized/inference-window.authorized.service';
 import { InferenceWindowSchedulerService } from './authorized/inference-window-scheduler.service';
 import { InferenceTruthSweeperService } from './authorized/inference-truth-sweeper.service';
+import { InferenceWindowMonitoringService } from './authorized/inference-window-monitoring.authorized.service';
 import { InferenceWindowTokenGuard } from '@/guards/inference-window-token.guard';
 
 /**
@@ -28,6 +29,15 @@ import { InferenceWindowTokenGuard } from '@/guards/inference-window-token.guard
     // and nothing else.
     InferenceTruthSweeperService,
     InferenceWindowTokenGuard,
+    InferenceWindowMonitoringService,
   ],
+  // MODEL-SERVE-001-T17. First export this module has needed — Prediction
+  // LogModule imports this module to read the window-plane drift/PSI
+  // service, never the reverse: this module's own providers touch
+  // TrainningContainerModule/ModelServingModule and neither of those
+  // references PredictionLog in code, so the dependency direction stays
+  // acyclic (verified: PredictionLog -> InferenceWindow ->
+  // {TrainningContainer, ModelServing}).
+  exports: [InferenceWindowMonitoringService],
 })
 export class InferenceWindowModule {}

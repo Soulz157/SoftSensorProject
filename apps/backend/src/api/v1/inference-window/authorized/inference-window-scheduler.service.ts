@@ -5,7 +5,7 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { createHash } from 'node:crypto';
-import { PrismaService } from '@softsensor/prisma';
+import { PrismaService, PrismaTypes } from '@softsensor/prisma';
 import { decryptSecret } from '@/lib/crypto';
 import { mintRunToken } from '@/lib/mint-run-token';
 import {
@@ -320,6 +320,21 @@ export class InferenceWindowSchedulerService
         inputChecksum: materialized.checksum,
         inputRows: materialized.scored_rows,
         missingPct: materialized.missing_pct,
+        // MODEL-SERVE-001-T17. Written in this SAME statement, BEFORE the
+        // SKIPPED branch below — a below-floor window still gets a real
+        // histogram/stats row, per this task's own no-status-whitelist
+        // rule. `PrismaTypes.DbNull`, not a bare JS `null`, for the null
+        // case: a plain `null` is type-rejected on a nullable Json column
+        // (the same trap `ingestPredictionLogService`'s own
+        // featureHistograms write already documents).
+        featureHistograms:
+          materialized.feature_histograms === null
+            ? PrismaTypes.DbNull
+            : materialized.feature_histograms,
+        featureStats:
+          materialized.feature_stats === null
+            ? PrismaTypes.DbNull
+            : materialized.feature_stats,
       },
     });
 

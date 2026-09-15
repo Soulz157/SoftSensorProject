@@ -689,6 +689,16 @@ function buildTruthPrisma(
   // above already applies to its own dual-branch `findFirst` mock, so the
   // two counts can differ instead of silently sharing one value.
   windowsSkipped = 0,
+  // MODEL-SERVE-001-T18: `getTruthService`'s OWN `earliestEligibleAt` query
+  // is a SECOND, differently-shaped `inferenceWindow.findMany` call
+  // (`select: { windowEnd, truth }`, never `select: { id }`) sharing the
+  // same mocked method as `rejoinTruthService`'s `dueWindows` enumeration.
+  // Keyed by `select.id` presence, the same discriminate-by-shape
+  // discipline `count` above already uses for its own two callers.
+  awaitingWindows: Array<{
+    windowEnd: Date;
+    truth: { n: number; failureReason: string | null } | null;
+  }> = [],
 ) {
   return buildPrisma({
     inferenceWindowTruth: { findMany: jest.fn().mockResolvedValue(rows) },
@@ -702,7 +712,11 @@ function buildTruthPrisma(
             where.status === 'SKIPPED' ? windowsSkipped : windowsInRange,
           ),
         ),
-      findMany: jest.fn().mockResolvedValue(dueWindows),
+      findMany: jest
+        .fn()
+        .mockImplementation(({ select }: { select?: { id?: boolean } } = {}) =>
+          Promise.resolve(select?.id ? dueWindows : awaitingWindows),
+        ),
     },
   });
 }
@@ -902,6 +916,82 @@ describe('InferenceWindowAuthorizedService.getTruthService (MODEL-SERVE-005-T03)
     expect(res.data.points).toEqual([]);
     expect(res.data.metrics!.n).toBe(1);
     expect(res.data.coverage.windowsJoined).toBe(1);
+  });
+
+  // ── MODEL-SERVE-001-T18: naming WHEN the next truth check happens ────────
+
+  it('names the earliest eligible time for a window that has not joined yet', async () => {
+    const prisma = buildTruthPrisma([], 1, [], 0, [
+      { windowEnd: new Date('2026-09-14T09:00:00.000Z'), truth: null },
+    ]);
+    prisma.inferenceSchedule.findUnique.mockResolvedValue({
+      truthLagMinutes: 1440,
+    });
+    const service = makeService(prisma);
+
+    const res = await service.getTruthService('model-1', RANGE, user);
+
+    expect(res.data.coverage.truthLagMinutes).toBe(1440);
+    // windowEnd (09:00) + 1440 minutes (24h) = the next day, same clock time.
+    expect(res.data.coverage.earliestEligibleAt).toBe(
+      '2026-09-15T09:00:00.000Z',
+    );
+  });
+
+  it('takes the EARLIEST of several still-awaiting windows, not the first in the array', async () => {
+    const prisma = buildTruthPrisma([], 2, [], 0, [
+      { windowEnd: new Date('2026-09-14T10:00:00.000Z'), truth: null },
+      // A real attempt that found nothing YET (n = 0, no failureReason) is
+      // still "awaiting", same as no truth row at all — and it is earlier.
+      {
+        windowEnd: new Date('2026-09-14T08:00:00.000Z'),
+        truth: { n: 0, failureReason: null },
+      },
+    ]);
+    prisma.inferenceSchedule.findUnique.mockResolvedValue({
+      truthLagMinutes: 60,
+    });
+    const service = makeService(prisma);
+
+    const res = await service.getTruthService('model-1', RANGE, user);
+
+    expect(res.data.coverage.earliestEligibleAt).toBe(
+      '2026-09-14T09:00:00.000Z',
+    );
+  });
+
+  it('is null when every window in range has already joined or failed — nothing is awaiting', async () => {
+    const prisma = buildTruthPrisma([], 1, [], 0, [
+      {
+        windowEnd: new Date('2026-09-14T09:00:00.000Z'),
+        truth: { n: 1, failureReason: null },
+      },
+    ]);
+    prisma.inferenceSchedule.findUnique.mockResolvedValue({
+      truthLagMinutes: 1440,
+    });
+    const service = makeService(prisma);
+
+    const res = await service.getTruthService('model-1', RANGE, user);
+
+    expect(res.data.coverage.earliestEligibleAt).toBeNull();
+  });
+
+  it('is null with no InferenceSchedule row at all — the wait has no meaning without one', async () => {
+    // Every OTHER test in this describe block already exercises the
+    // default `inferenceSchedule.findUnique` -> null (buildPrisma's own
+    // default); this test states that behaviour explicitly rather than
+    // leaving it merely implied by every other test's silence.
+    const service = makeService(
+      buildTruthPrisma([], 1, [], 0, [
+        { windowEnd: new Date('2026-09-14T09:00:00.000Z'), truth: null },
+      ]),
+    );
+
+    const res = await service.getTruthService('model-1', RANGE, user);
+
+    expect(res.data.coverage.truthLagMinutes).toBeNull();
+    expect(res.data.coverage.earliestEligibleAt).toBeNull();
   });
 });
 

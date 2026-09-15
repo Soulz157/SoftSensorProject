@@ -873,6 +873,17 @@ class InferenceWindowMaterializeResponse(BaseModel):
     scored_rows: int
     missing_pct: float
     checksum: str
+    #: MODEL-SERVE-001-T17. Per-tag `{counts, below, above}`, bucketed
+    #: against `feature_spec.json`'s frozen `psiRefEdges` — the window-plane
+    #: counterpart of `PredictionLog.featureHistograms`. `None` exactly when
+    #: no tag in the recipe had a frozen reference (a spec that predates
+    #: MODEL-SERVE-001-T13), never a fabricated empty histogram.
+    feature_histograms: dict[str, dict[str, Any]] | None = None
+    #: MODEL-SERVE-001-T17. Per-tag `{n, sum, sumsq, min, max}` in
+    #: MODEL-READY (scaled) units — the window-plane counterpart of
+    #: `PredictionLog.featureStats`. `None` exactly when no feature column
+    #: had a usable `scalingParams` entry to scale with.
+    feature_stats: dict[str, dict[str, float]] | None = None
 
 
 class InferenceWindowTruthJoinRequest(BaseModel):

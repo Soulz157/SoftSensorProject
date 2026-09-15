@@ -1660,6 +1660,56 @@ model InferenceWindow {
   inputRows  Int?
   missingPct Float?
 
+  /// MODEL-SERVE-001-T17. PSI's window-plane data source — per RAW
+  /// engineering-unit feature column, binned against that column's frozen
+  /// `feature_spec.json` `psiRefEdges` AT MATERIALIZE TIME (never at read
+  /// time, so `poolHistograms` can pool many windows by simple elementwise
+  /// addition without ever re-opening `inputKey`'s Parquet object — the
+  /// same write-time-binning discipline `PredictionLog.featureHistograms`
+  /// already establishes, restated here in full because this is a SEPARATE
+  /// column, not a shared one: `PredictionLog` is /predict-only,
+  /// `InferenceWindow` is scheduled-only, and the two streams are never
+  /// unioned — see decisions.short_lived_containers_for_scheduled_inference
+  /// for why the two planes exist at all): `{tag: {counts: number[],
+  /// below: number, above: number}}`.
+  ///
+  /// NULLABLE, and deliberately never an empty/zero distribution in that
+  /// case — same "absent means not recorded, not measured-and-empty"
+  /// discipline `PredictionLog.featureHistograms`'s own doc comment states.
+  /// Null on every row written before this column existed, and on any row
+  /// whose pinned `ModelVersion` carries a `feature_spec.json` with no
+  /// `psiRefEdges` at all (a spec that predates MODEL-SERVE-001-T13).
+  ///
+  /// SET REGARDLESS OF `status` — including SKIPPED and a container FAILED
+  /// after `inputKey` was already written. `put_frame` runs before either
+  /// outcome is known, so a SKIPPED window (too few rows to SCORE) still
+  /// carries a real, fetched, cleaned input distribution: PSI asks a
+  /// question about the INPUT population, not about a prediction, so a
+  /// window nothing was scored from is still valid PSI evidence. A reader
+  /// pooling these must consult `status` for DISCLOSURE (a figure computed
+  /// mostly from windows that never scored must say so), never as a filter
+  /// on which rows to include.
+  featureHistograms Json?
+
+  /// MODEL-SERVE-001-T17. The window-plane counterpart of
+  /// `PredictionLog.featureStats` — per feature column, in MODEL-READY
+  /// (scaled) units, `{n, sum, sumsq, min, max}`: sufficient statistics for
+  /// an EXACT pooled mean/std across many windows, feeding the Distribution
+  /// Drift z-score the same way `PredictionLog.featureStats` feeds it for
+  /// the /predict-only plane. Computed from a THROWAWAY scaled copy of this
+  /// row's own `inputKey` frame (`inference_window_service.
+  /// _scaled_feature_stats`) — `inputKey` itself stays RAW/pre-scale;
+  /// nothing here changes what the container scores.
+  ///
+  /// NULLABLE with the identical "absent means not recorded" discipline
+  /// `featureHistograms` above carries, and a tag can be absent from this
+  /// JSON's own keys independently of that: a feature column whose scaler
+  /// is not `"none"` but has no recorded `scalingParams` entry is EXCLUDED
+  /// per-tag rather than scaled with re-fit parameters (never the silently
+  /// wrong transform DS-LAKE-018-T02 exists to prevent, one layer over).
+  /// SET REGARDLESS OF `status`, same reasoning as `featureHistograms`.
+  featureStats Json?
+
   /// Digest, never a tag — same discipline as ModelTrainingRun.imageDigest.
   /// Null until a container is spawned (a SKIPPED window never runs one).
   imageDigest String?

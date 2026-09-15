@@ -991,6 +991,47 @@ export class InferenceWindowAuthorizedService {
       },
     });
 
+    // MODEL-SERVE-001-T18. A correctly-empty coverage reads identically at
+    // minute 1 and hour 23 of the wait unless the reader can see WHEN the
+    // next check happens. `earliestEligibleAt` names it: the earliest
+    // SUCCEEDED window in range that has not yet joined — no truth row at
+    // all, or one with n = 0 and no failureReason (a real attempt that
+    // found nothing YET, still eligible for a retry) — plus this
+    // schedule's own truthLagMinutes. A SEPARATE, small query rather than
+    // folding into `windowsInRange` above: that count is proven and
+    // untouched; this one exists purely to read the `truth` relation the
+    // count never needed.
+    const schedule = await this.prisma.inferenceSchedule.findUnique({
+      where: { modelId },
+      select: { truthLagMinutes: true },
+    });
+    const awaitingWindows = schedule
+      ? await this.prisma.inferenceWindow.findMany({
+          where: {
+            modelId,
+            status: 'SUCCEEDED',
+            windowStart: { gte: from, lte: to },
+          },
+          select: {
+            windowEnd: true,
+            truth: { select: { n: true, failureReason: true } },
+          },
+        })
+      : [];
+    const stillAwaiting = awaitingWindows.filter(
+      (w) => !w.truth || (w.truth.n === 0 && w.truth.failureReason === null),
+    );
+    // Null when nothing in range is awaiting — never a guess at a wait
+    // that does not exist (a schedule row missing entirely, or every
+    // SUCCEEDED window already joined or failed).
+    const earliestEligibleAt =
+      schedule && stillAwaiting.length > 0
+        ? new Date(
+            Math.min(...stillAwaiting.map((w) => w.windowEnd.getTime())) +
+              schedule.truthLagMinutes * 60_000,
+          ).toISOString()
+        : null;
+
     const joined = rows.filter((r) => r.n > 0);
     // A row the sweeper wrote because the join FAILED, never because the lab
     // was quiet. `poolTruthStats` skips these anyway (n = 0); the count
@@ -1104,6 +1145,10 @@ export class InferenceWindowAuthorizedService {
           // Max, not mean — see the per-window comment above.
           maxMissingPct:
             missingPcts.length > 0 ? Math.max(...missingPcts) : null,
+          // MODEL-SERVE-001-T18. Null when the model has no InferenceSchedule
+          // row — the wait has no meaning without one.
+          truthLagMinutes: schedule?.truthLagMinutes ?? null,
+          earliestEligibleAt,
         },
         windows,
       },

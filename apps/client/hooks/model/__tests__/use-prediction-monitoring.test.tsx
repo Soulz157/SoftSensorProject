@@ -68,6 +68,7 @@ const DRIFT_REPORT = {
     },
   ],
   basis: {
+    plane: 'predict',
     modelVersionId: 'ver-1',
     version: 1,
     goldArtifactId: 'gold-1',

@@ -22,6 +22,7 @@ const DRIFT: DriftReport = {
     },
   ],
   basis: {
+    plane: 'predict',
     modelVersionId: VERSION_ID,
     version: 1,
     goldArtifactId: 'gold-1',
