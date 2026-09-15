@@ -17,6 +17,11 @@ import {
   resolveColumnBaseline,
   resolvePsiReference,
 } from '@/lib/artifact-baseline';
+import {
+  classifyModelHealth,
+  thresholdsFromSchedule,
+  type HealthStatus,
+} from '@/lib/model-health';
 
 /**
  * MODEL-SERVE-001-T17. Drift/PSI, computed from `InferenceWindow`'s own
@@ -78,11 +83,18 @@ export class InferenceWindowMonitoringService {
    * before SKIPPED or FAILED is ever decided, so both still hold real,
    * cleaned input evidence. Status is DISCLOSURE (`basisOf`'s own
    * `statusBreakdown`), never a filter on which rows count.
+   *
+   * `from`/`to` OPTIONAL — MODEL-SERVE-001-T21's own addition. The two
+   * existing callers (`getDriftReport`/`getPsiReport`) always pass an
+   * explicit user-chosen range; `getHealthStatus` below has none to pass
+   * (it is not answering "how did drift look in this window", it is
+   * answering "what is the CURRENT health reading"), so it calls this with
+   * neither and gets the rolling most-recent-24 with no date floor at all.
    */
   private async resolveProductionWindows(
     modelId: string,
-    from: string,
-    to: string,
+    from?: string,
+    to?: string,
   ) {
     const production = await this.prisma.modelVersion.findFirst({
       where: { modelId, stage: 'PRODUCTION' },
@@ -98,7 +110,14 @@ export class InferenceWindowMonitoringService {
     const windows = await this.prisma.inferenceWindow.findMany({
       where: {
         modelVersionId: production.id,
-        windowStart: { gte: new Date(from), lte: new Date(to) },
+        ...(from || to
+          ? {
+              windowStart: {
+                ...(from && { gte: new Date(from) }),
+                ...(to && { lte: new Date(to) }),
+              },
+            }
+          : {}),
       },
       orderBy: { windowStart: 'desc' },
       take: 24,
@@ -254,6 +273,75 @@ export class InferenceWindowMonitoringService {
           epsilon: PSI_EPSILON,
         },
       },
+    };
+  }
+
+  /**
+   * MODEL-SERVE-001-T21. The health axis — SEPARATE from `deployStatus`,
+   * per `lib/model-health.ts`'s own doc comment. Reuses `computeDrift`
+   * unchanged; the only thing this method changes from `getDriftReport`
+   * above is WHERE the thresholds come from (this schedule's own
+   * warnSd/criticalSd/driftThresholdPct, `lib/model-health.ts`'s
+   * `thresholdsFromSchedule`) rather than the system-wide env vars — the
+   * existing Drift tab/report keeps reading those, untouched by this task.
+   *
+   * NEVER THROWS. `getDriftReport`/`getPsiReport` are explicit,
+   * user-requested reports, so a 404 for "no PRODUCTION version" is the
+   * right response; this is a badge fed by every model detail page load,
+   * decided PURELY INFORMATIONAL by the user (2026-09-15) — a hard error
+   * here would fail the whole `getStatusService` response over a signal
+   * nobody asked to see fail loudly. Every "nothing to classify yet" case
+   * (no schedule, monitoring off, no PRODUCTION version, no windows with
+   * usable stats) is a normal result, not an exception.
+   */
+  async getHealthStatus(modelId: string): Promise<{
+    status: HealthStatus;
+    thresholds: ReturnType<typeof thresholdsFromSchedule> | null;
+  }> {
+    const schedule = await this.prisma.inferenceSchedule.findUnique({
+      where: { modelId },
+    });
+    if (!schedule || !schedule.driftMonitor) {
+      return {
+        status: classifyModelHealth(schedule?.driftMonitor ?? false, null),
+        thresholds: null,
+      };
+    }
+
+    const thresholds = thresholdsFromSchedule(schedule);
+
+    let windows: Awaited<
+      ReturnType<InferenceWindowMonitoringService['resolveProductionWindows']>
+    >['windows'];
+    let production: Awaited<
+      ReturnType<InferenceWindowMonitoringService['resolveProductionWindows']>
+    >['production'];
+    try {
+      ({ production, windows } = await this.resolveProductionWindows(modelId));
+    } catch (err) {
+      if (err instanceof AppException) {
+        // No PRODUCTION version — nothing to compare against yet.
+        return { status: 'UNKNOWN', thresholds };
+      }
+      throw err;
+    }
+
+    const statsRows = windows
+      .map((w) => w.featureStats)
+      .filter((s): s is NonNullable<typeof s> => s !== null);
+    if (statsRows.length === 0) {
+      return { status: 'UNKNOWN', thresholds };
+    }
+
+    const pooled = poolFeatureStats(
+      statsRows.map((s) => s as unknown as FeatureStatsMap),
+    );
+    const baseline = await resolveColumnBaseline(production.goldObjectKey);
+    const report = computeDrift(pooled, baseline, thresholds);
+
+    return {
+      status: classifyModelHealth(schedule.driftMonitor, report.status),
+      thresholds,
     };
   }
 }

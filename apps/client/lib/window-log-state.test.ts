@@ -28,10 +28,32 @@ function windowOf(
 describe('describeEmptyWindowLog (MODEL-SERVE-001-T10)', () => {
   it('gives every status its OWN sentence — the whole point of the task', () => {
     const titles = (
-      ['PENDING', 'RUNNING', 'SKIPPED', 'FAILED', 'SUCCEEDED'] as const
+      [
+        'PENDING',
+        'RUNNING',
+        'SKIPPED',
+        'FAILED',
+        'SUCCEEDED',
+        'CANCELED',
+      ] as const
     ).map(s => describeEmptyWindowLog(windowOf(s)).title)
 
     expect(new Set(titles).size).toBe(titles.length)
+  })
+
+  // MODEL-SERVE-001-T20.
+  it('distinguishes CANCELED (operator stopped it) from SKIPPED (a data threshold)', () => {
+    const { title, detail } = describeEmptyWindowLog(windowOf('CANCELED'))
+    expect(title).toMatch(/cancel/i)
+    expect(`${title} ${detail}`).not.toMatch(/fail/i)
+    expect(`${title} ${detail}`).not.toMatch(/threshold|row/i)
+  })
+
+  it('prefers CANCELED’s own failureReason over the generic sentence', () => {
+    const reason = 'Stopped by ada@example.com'
+    expect(describeEmptyWindowLog(windowOf('CANCELED', reason)).detail).toBe(
+      reason,
+    )
   })
 
   it('does not call a PENDING window a failure', () => {
@@ -79,7 +101,11 @@ describe('describeEmptyWindowLog (MODEL-SERVE-001-T10)', () => {
     // imageDigest is null in BOTH cases on real rows, so keying off it
     // would collapse the distinction entirely.
     const ran = { ...windowOf('FAILED'), containerId: 'abc', imageDigest: null }
-    const never = { ...windowOf('FAILED'), containerId: null, imageDigest: null }
+    const never = {
+      ...windowOf('FAILED'),
+      containerId: null,
+      imageDigest: null,
+    }
     expect(describeEmptyWindowLog(ran).title).not.toBe(
       describeEmptyWindowLog(never).title,
     )

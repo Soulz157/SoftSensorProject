@@ -235,8 +235,21 @@ export function ModelTable({
               const DIcon = ds.icon
               const PIcon = ps.icon
               const isMutating = mutatingId === m.id
+              // MODEL-SERVE-001-T19. The switch's checked state is a
+              // SETTING the operator owns (`enabled`), never the DERIVED
+              // `deployStatus` badge beside it — an enabled-but-failing
+              // schedule reads status 'error' while `enabled` stays true,
+              // and binding checked-state to `deployKey` left that model
+              // with no Stop control anywhere (it read OFF, and the only
+              // action it offered wrote `enabled: true`). `optimisticStates`
+              // still carries the immediate post-press feedback, keyed the
+              // same way it already was, just reinterpreted as the setting
+              // rather than the status.
+              const optimisticEnabled = optimisticStates[m.id]
               const isOn =
-                deployKey === 'running' || deployKey === 'initializing'
+                optimisticEnabled !== undefined
+                  ? optimisticEnabled === 'running'
+                  : (m.data?.enabled ?? false)
               const isFrozen = prodKey === 'frozen'
 
               return (
@@ -268,8 +281,16 @@ export function ModelTable({
                             'data-[state=checked]:bg-emerald-500',
                           deployKey === 'stopped' &&
                             'data-[state=unchecked]:bg-zinc-400',
+                          // MODEL-SERVE-001-T19: checked-only. `checked` now
+                          // comes from `enabled`, so an enabled-but-failing
+                          // model reads ON in red (the point of the fix).
+                          // The unchecked half would only ever apply to a
+                          // model that is BOTH disabled and errored, which
+                          // would render OFF in red — the same one-control-
+                          // two-facts confusion this task removes elsewhere,
+                          // recreated in miniature by the styling alone.
                           deployKey === 'error' &&
-                            'data-[state=unchecked]:bg-red-500 data-[state=checked]:bg-red-500',
+                            'data-[state=checked]:bg-red-500',
                         )}
                       />
                       <span

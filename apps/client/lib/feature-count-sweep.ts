@@ -192,6 +192,15 @@ export function buildSweepRows(
     .sort((a, b) => (a.n ?? Infinity) - (b.n ?? Infinity))
 }
 
+export function seedMetricMeans(
+  seedRun: Parameters<typeof sourcedMetricsOf>[0],
+): { rmse: number | null; mae: number | null } {
+  const cv = sourcedMetricsOf(seedRun).find(
+    m => m.source === 'cv-fold-estimate',
+  )
+  return { rmse: cv?.mean.rmse ?? null, mae: cv?.mean.mae ?? null }
+}
+
 export interface SweepSelection {
   /** The row the RULE picks, or null when nothing can be ordered. */
   chosenRunId: string | null

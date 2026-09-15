@@ -69,15 +69,22 @@ function failedModel(
     workspaceName: 'Repco',
     data: {
       deployStatus: 'error',
+      // classifyDeployStatus never returns 'error' for a disabled schedule
+      // (disabled always reads 'stopped') — true is the only value
+      // consistent with this fixture's own deployStatus.
+      enabled: true,
       prodStatus: 'offline',
       statusDetail: 'R-squared dropped below 0.8',
-      logs: [
-        {
-          level: 'error',
-          message: 'connection timeout to PI database',
-          timestamp: '2026-06-29T10:00:00Z',
-        },
-      ],
+      // MODEL-SERVE-001-T23. The REAL source. This fixture used to carry a
+      // hand-written `logs: [{ level: 'error', ... }]` entry, which made the
+      // old assertion pass against data production never produces — every
+      // appendModelLog call site in the client hardcodes `level: 'info'`.
+      lastFailure: {
+        reason: 'connection timeout to PI database',
+        at: '2026-06-29T10:00:00Z',
+      },
+      editHistory: [],
+      logs: [],
     },
     nodesId: opts.node ? `node-${id}` : null,
     datasetId: null,
@@ -159,7 +166,10 @@ describe('buildAlerts', () => {
     expect(row!.typeLabel).toBe('Deploy Failed')
     expect(row!.typeName).toBe('Model')
     expect(row!.detailError).toBe('R-squared dropped below 0.8')
-    expect(row!.errorLogs).toHaveLength(1)
+    // MODEL-SERVE-001-T23: the real failure reason, and the row's timestamp
+    // is the FAILURE time now, not the model's last-edit time.
+    expect(row!.failureReason).toBe('connection timeout to PI database')
+    expect(row!.timestamp).toBe('2026-06-29T10:00:00Z')
   })
 
   it('handles an unlinked failed model (no equipment)', () => {
@@ -284,12 +294,17 @@ describe('timestamp derivation', () => {
     expect(row!.timestamp).toBe('2026-06-29T10:00:00Z')
   })
 
-  it('falls back to model.updatedAt when there are no error logs', () => {
+  it('falls back to model.updatedAt when no failure reason is recorded', () => {
     const modelNoLogs: ModelWithWorkspace = {
       ...failedModel('m2', 'No Logs Model'),
       data: {
         deployStatus: 'error',
+        enabled: true,
         prodStatus: 'offline',
+        // MODEL-SERVE-001-T23: no FAILED row in the recent-terminal sample
+        // the list payload is derived from.
+        lastFailure: null,
+        editHistory: [],
         logs: [],
       },
     }

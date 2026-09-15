@@ -22,7 +22,12 @@ const MODEL: AIModel = {
   id: 'm1',
   workspaceId: 'w1',
   name: 'Pump A',
-  data: { deployStatus: 'running', prodStatus: 'normal', logs: [] },
+  data: {
+    deployStatus: 'running',
+    enabled: true,
+    prodStatus: 'normal',
+    logs: [],
+  },
   nodesId: null,
   datasetId: null,
   createdAt: '2026-01-01T00:00:00.000Z',

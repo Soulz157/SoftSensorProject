@@ -48,7 +48,26 @@ export interface AIModel {
   name: string
   data: {
     deployStatus: 'stopped' | 'running' | 'error' | 'initializing'
+    /** MODEL-SERVE-001-T19. The setting the operator owns, separate from
+     *  `deployStatus` (derived from it) — a Start/Stop control must bind to
+     *  THIS, never to `deployStatus`, or an enabled-but-failing model has no
+     *  way to offer Stop. See apps/backend/src/lib/deploy-status.ts's
+     *  `DeployState`. */
+    enabled: boolean
     prodStatus: 'normal' | 'warning' | 'alert' | 'offline' | 'frozen'
+    /**
+     * MODEL-SERVE-001-T23. The most recent FAILED InferenceWindow's own
+     * reason, already URL-redacted server-side, derived onto every LIST
+     * payload by `deriveDeployStatuses`/`overlayDeployStatus` (see
+     * apps/backend/src/lib/deploy-status.ts's `DeployState.lastFailure`).
+     *
+     * This is the REAL deploy-failure source. Distinct from `statusDetail`
+     * below, which is a manually operator-typed note explaining a `frozen`
+     * prodStatus — not a failure cause. Absent whenever the model's recent
+     * terminal windows hold no FAILED row, and on any payload older than
+     * this field.
+     */
+    lastFailure?: { reason: string | null; at: string } | null
     statusDetail?: string
     deployedBy?: string
     deployedAt?: string

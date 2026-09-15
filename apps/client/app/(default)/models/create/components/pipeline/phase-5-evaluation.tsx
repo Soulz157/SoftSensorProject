@@ -68,6 +68,7 @@ import { FeatureCountSweepTable } from './evaluation/feature-count-sweep-table'
 import { useFeatureCountSweep } from '@/hooks/model/use-feature-count-sweep'
 import {
   DEFAULT_SWEEP_METRIC,
+  seedMetricMeans,
   type SweepMetric,
 } from '@/lib/feature-count-sweep'
 import { useRunDistinctLabelled } from '@/hooks/model/use-run-distinct-labelled'
@@ -125,6 +126,7 @@ export function Phase5Evaluation({ nav }: Props) {
   const [sweepMetric, setSweepMetric] =
     useState<SweepMetric>(DEFAULT_SWEEP_METRIC)
   const sweep = useFeatureCountSweep(serverDraftId, sweepId)
+  const { rmse: seedRmseMean, mae: seedMaeMean } = seedMetricMeans(run)
 
   const cvPhase = cvScoringPhaseOf(run)
   const population = populationOf(cvPhase)
@@ -314,13 +316,6 @@ export function Phase5Evaluation({ nav }: Props) {
       <div className="flex items-center gap-3 rounded-xl bg-emerald-500/10 px-4 py-3 ring-1 ring-emerald-500/20">
         <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-500" />
         <div>
-          {/* MODEL-FLOW-019-T15/V25. Reads the SAME `population` derivation
-              every chart panel below reads, rather than `cvPhase` a fifth
-              time — `population === 'holdout'` and `cvPhase === 'scored'`
-              are equivalent in every phase reachable here (the two early
-              returns above already route `awaiting-scoring`/`scoring`
-              away), so this changes which variable is read, not what
-              renders. */}
           <p className="text-sm font-semibold text-emerald-600 dark:text-emerald-400">
             {population === 'holdout'
               ? 'Holdout scoring complete'
@@ -378,26 +373,10 @@ export function Phase5Evaluation({ nav }: Props) {
           <div className="flex flex-wrap items-center gap-2">
             <p className="flex-1 text-xs text-muted-foreground">
               {isSequenceAlgorithm(run.algorithm)
-                ? // MODEL-FLOW-019-T29. TERMINAL — score-mode has no windowing
-                  // path (see `isSequenceAlgorithm`'s own comment in
-                  // `lib/metric-source.ts`), and `triggerScoringService` now
-                  // refuses this server-side. Never the actionable sentence
-                  // below: offering a button for a run it would only 400 is
-                  // the dead end this feature exists to prevent, this time
-                  // arriving through Step 5 rather than Step 4.
-                  `Holdout scoring has no windowing path for ${run.algorithm} — not available for this run.`
+                ? `Holdout scoring has no windowing path for ${run.algorithm} — not available for this run.`
                 : run.scoringContainerId
                   ? 'Holdout scoring is running — this refits nothing, it only scores the model already trained.'
-                  : // MODEL-FLOW-019-T29. Was "training kept only the aggregate" —
-                    // false post-T26, which keeps this frame at training time for
-                    // every NEW run. Now a disjunction, same collapsed wording
-                    // `candidateAbsenceText`/`groupAbsenceText` use for the
-                    // identical fact in Step 4: two states, one remedy, one
-                    // sentence. Stays HYPHENATED ("validation-holdout"), same
-                    // reason the sentence it replaces did — phase-3-evaluation
-                    // .test.tsx's own contract asserts the bare two-word phrase
-                    // appears NOWHERE on this page for a non-CV run.
-                    "Not yet scored against the dataset's validation-holdout rows — either this run predates keeping a per-row series, or it has simply never been scored. Scoring produces it either way."}
+                  : "Not yet scored against the dataset's validation-holdout rows — either this run predates keeping a per-row series, or it has simply never been scored. Scoring produces it either way."}
             </p>
             {!isSequenceAlgorithm(run.algorithm) && (
               <Button
@@ -645,6 +624,8 @@ export function Phase5Evaluation({ nav }: Props) {
         distinctLabelledValues={distinctLabelled.value}
         distinctLabelledLoading={distinctLabelled.loading}
         distinctLabelledReason={distinctLabelled.reason}
+        seedRmseMean={seedRmseMean}
+        seedMaeMean={seedMaeMean}
         onLaunched={(id, metric) => {
           setSweepId(id)
           setSweepMetric(metric)

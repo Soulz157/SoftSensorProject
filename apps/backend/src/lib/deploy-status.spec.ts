@@ -174,20 +174,66 @@ describe('isStale (MODEL-SERVE-001-T11)', () => {
 });
 
 describe('overlayDeployStatus', () => {
-  it('merges deployStatus into existing data without mutating the input', () => {
+  it('merges deployStatus AND enabled into existing data without mutating the input', () => {
     const model = { id: 'm1', data: { prodStatus: 'normal' } };
-    const result = overlayDeployStatus(model, 'running');
+    const result = overlayDeployStatus(model, {
+      status: 'running',
+      enabled: true,
+      lastFailure: null,
+    });
     expect(result.data).toEqual({
       prodStatus: 'normal',
       deployStatus: 'running',
+      enabled: true,
+      lastFailure: null,
     });
     expect(model.data).toEqual({ prodStatus: 'normal' }); // unchanged
   });
 
   it('handles a null/non-object data field defensively', () => {
     const model = { id: 'm1', data: null };
-    expect(overlayDeployStatus(model, 'stopped').data).toEqual({
-      deployStatus: 'stopped',
+    expect(
+      overlayDeployStatus(model, {
+        status: 'stopped',
+        enabled: false,
+        lastFailure: null,
+      }).data,
+    ).toEqual({ deployStatus: 'stopped', enabled: false, lastFailure: null });
+  });
+
+  // MODEL-SERVE-001-T23.
+  it('carries a real failure reason through onto the list payload', () => {
+    const at = new Date('2026-09-15T10:00:00.000Z');
+    const model = { id: 'm1', data: {} };
+    const result = overlayDeployStatus(model, {
+      status: 'error',
+      enabled: true,
+      lastFailure: { reason: 'Materialize failed: source unreachable', at },
+    });
+    expect(result.data).toEqual({
+      deployStatus: 'error',
+      enabled: true,
+      lastFailure: { reason: 'Materialize failed: source unreachable', at },
+    });
+  });
+
+  /**
+   * MODEL-SERVE-001-T19. The exact case the fix exists for: a schedule the
+   * operator has enabled but which is failing reads status 'error' while
+   * `enabled` stays true — a Start/Stop control reading `enabled` (not
+   * `status`) is what lets it offer Stop here.
+   */
+  it('carries enabled=true alongside an error status — the enabled-but-failing case', () => {
+    const model = { id: 'm1', data: {} };
+    const result = overlayDeployStatus(model, {
+      status: 'error',
+      enabled: true,
+      lastFailure: null,
+    });
+    expect(result.data).toEqual({
+      deployStatus: 'error',
+      enabled: true,
+      lastFailure: null,
     });
   });
 });
@@ -204,10 +250,13 @@ describe('deriveDeployStatuses (batched)', () => {
     } as unknown as Parameters<typeof deriveDeployStatuses>[0];
   }
 
-  it('returns stopped for every id when nothing has a schedule', async () => {
+  it('returns stopped/disabled for every id when nothing has a schedule', async () => {
     const prisma = buildPrisma();
     const result = await deriveDeployStatuses(prisma, ['m1', 'm2']);
-    expect(result).toEqual({ m1: 'stopped', m2: 'stopped' });
+    expect(result).toEqual({
+      m1: { status: 'stopped', enabled: false, lastFailure: null },
+      m2: { status: 'stopped', enabled: false, lastFailure: null },
+    });
   });
 
   it('returns an empty object for an empty id list without querying', async () => {
@@ -248,9 +297,19 @@ describe('deriveDeployStatuses (batched)', () => {
       },
     });
     const result = await deriveDeployStatuses(prisma, ['m1']);
-    expect(result.m1).toBe('running');
+    expect(result.m1).toEqual({
+      status: 'running',
+      enabled: true,
+      lastFailure: null,
+    });
   });
 
+  /**
+   * MODEL-SERVE-001-T19. The case the Stop-control fix depends on:
+   * `enabled` must stay `true` in the returned state even though `status`
+   * reads 'error' — this is exactly what lets a Start/Stop control tell
+   * the two apart instead of collapsing them.
+   */
   it('derives error for an enabled schedule whose last 3 terminal windows all failed', async () => {
     const prisma = buildPrisma({
       inferenceSchedule: {
@@ -269,17 +328,34 @@ describe('deriveDeployStatuses (batched)', () => {
           .mockResolvedValue([
             { modelId: 'm1', _max: { windowStart: new Date() } },
           ]),
-        findMany: jest
-          .fn()
-          .mockResolvedValue([
-            { status: 'FAILED' },
-            { status: 'FAILED' },
-            { status: 'FAILED' },
-          ]),
+        findMany: jest.fn().mockResolvedValue([
+          {
+            status: 'FAILED',
+            failureReason: 'spawn refused',
+            windowStart: new Date('2026-09-15T12:00:00.000Z'),
+          },
+          {
+            status: 'FAILED',
+            failureReason: 'spawn refused',
+            windowStart: new Date('2026-09-15T11:00:00.000Z'),
+          },
+          {
+            status: 'FAILED',
+            failureReason: 'spawn refused',
+            windowStart: new Date('2026-09-15T10:00:00.000Z'),
+          },
+        ]),
       },
     });
     const result = await deriveDeployStatuses(prisma, ['m1']);
-    expect(result.m1).toBe('error');
+    expect(result.m1).toEqual({
+      status: 'error',
+      enabled: true,
+      lastFailure: {
+        reason: 'spawn refused',
+        at: new Date('2026-09-15T12:00:00.000Z'),
+      },
+    });
   });
 
   it('derives initializing for a just-enabled schedule with no windows yet', async () => {
@@ -300,6 +376,110 @@ describe('deriveDeployStatuses (batched)', () => {
       },
     });
     const result = await deriveDeployStatuses(prisma, ['m1']);
-    expect(result.m1).toBe('initializing');
+    expect(result.m1).toEqual({
+      status: 'initializing',
+      enabled: true,
+      lastFailure: null,
+    });
+  });
+
+  it('derives disabled/stopped for a schedule the operator turned off, even mid-failure', async () => {
+    const prisma = buildPrisma({
+      inferenceSchedule: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            modelId: 'm1',
+            enabled: false,
+            cadenceMinutes: 60,
+            lagMinutes: 15,
+          },
+        ]),
+      },
+    });
+    const result = await deriveDeployStatuses(prisma, ['m1']);
+    expect(result.m1).toEqual({
+      status: 'stopped',
+      enabled: false,
+      lastFailure: null,
+    });
+  });
+
+  /**
+   * MODEL-SERVE-001-T23. The reason the Alerts page can show a real failure
+   * cause without a per-model request: it rides on the recent-terminal
+   * query this function already makes. Redaction is asserted here rather
+   * than trusted, because this column holds the infer container's verbatim
+   * `str(err)` — the one failureReason writer never sanitized on the way in.
+   */
+  it('returns the most recent FAILED window reason, redacted', async () => {
+    const newest = new Date('2026-09-15T12:00:00.000Z');
+    const older = new Date('2026-09-15T11:00:00.000Z');
+    const prisma = buildPrisma({
+      inferenceSchedule: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            modelId: 'm1',
+            enabled: true,
+            cadenceMinutes: 60,
+            lagMinutes: 15,
+          },
+        ]),
+      },
+      inferenceWindow: {
+        groupBy: jest.fn().mockResolvedValue([]),
+        // DESC by windowStart, as the real query orders it.
+        findMany: jest.fn().mockResolvedValue([
+          {
+            status: 'FAILED',
+            failureReason: 'Materialize failed: http://pi.internal/x timed out',
+            windowStart: newest,
+          },
+          {
+            status: 'FAILED',
+            failureReason: 'an older failure',
+            windowStart: older,
+          },
+        ]),
+      },
+    });
+    const result = await deriveDeployStatuses(prisma, ['m1']);
+    expect(result.m1?.lastFailure?.at).toEqual(newest);
+    expect(result.m1?.lastFailure?.reason).not.toContain('pi.internal');
+    expect(result.m1?.lastFailure?.reason).toContain('Materialize failed');
+  });
+
+  it('reports lastFailure null when the recent-terminal sample holds no FAILED row', async () => {
+    const prisma = buildPrisma({
+      inferenceSchedule: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            modelId: 'm1',
+            enabled: true,
+            cadenceMinutes: 60,
+            lagMinutes: 15,
+          },
+        ]),
+      },
+      inferenceWindow: {
+        groupBy: jest
+          .fn()
+          .mockResolvedValue([
+            { modelId: 'm1', _max: { windowStart: new Date() } },
+          ]),
+        findMany: jest.fn().mockResolvedValue([
+          { status: 'SUCCEEDED', failureReason: null, windowStart: new Date() },
+          {
+            status: 'SKIPPED',
+            failureReason: 'below minRows',
+            windowStart: new Date(),
+          },
+        ]),
+      },
+    });
+    const result = await deriveDeployStatuses(prisma, ['m1']);
+    // A SKIPPED window carries a failureReason too, and it is NOT an error —
+    // the same distinction getStatusService's lastFailure/lastSkipped split
+    // already draws. It must not leak into this field.
+    expect(result.m1?.lastFailure).toBeNull();
   });
 });

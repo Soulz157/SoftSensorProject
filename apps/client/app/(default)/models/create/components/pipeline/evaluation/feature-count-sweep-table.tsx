@@ -142,7 +142,7 @@ export function FeatureCountSweepTable({
   return (
     <section className="space-y-3 rounded-xl border border-border/60 p-4">
       <div className="space-y-1">
-               <h3 className="text-sm font-medium text-foreground">
+        <h3 className="text-sm font-medium text-foreground">
           How many features are essential
         </h3>
         {/* AC66 + AC69 in one sentence, built from data rather than written
@@ -153,13 +153,11 @@ export function FeatureCountSweepTable({
         </p>
       </div>
 
-           {error ? (
+      {error ? (
         <EmptyPanel>Could not load these results — {error}</EmptyPanel>
       ) : rows.length === 0 ? (
         <EmptyPanel>
-          {loading
-            ? 'Loading the results…'
-            : 'No rows recorded yet.'}
+          {loading ? 'Loading the results…' : 'No rows recorded yet.'}
         </EmptyPanel>
       ) : (
         <div className="rounded-lg border border-border">
@@ -167,18 +165,6 @@ export function FeatureCountSweepTable({
             <TableHeader>
               <TableRow className="bg-muted/40 hover:bg-muted/40">
                 <TableHead className="h-9 px-3">Features (X)</TableHead>
-                {/* MODEL-FLOW-019-T35. BOTH metric columns always render and
-                    the decider is NAMED, rather than the chosen metric being
-                    the only figure shown — a reader can then see where the two
-                    ladders disagree without switching to find out.
-
-                    Unconditional rather than data-gated, deliberately: T01
-                    read the real key set and found cv_{r2,mae,rmse}_{mean,std}
-                    on every CV run this system has trained, so a MAE column
-                    hidden for want of data would describe a state that does
-                    not occur. A row that somehow lacks the pair still renders
-                    honestly — `IntervalCell` shows an em dash for a null mean
-                    and "no spread" for a null SD. */}
                 <TableHead className="h-9 px-3 text-right">
                   RMSE (fold mean ± SD)
                   {metric === 'rmse' && (
@@ -201,12 +187,6 @@ export function FeatureCountSweepTable({
                 >
                   R² (fold mean ± SD)
                 </TableHead>
-               <TableHead
-  className="h-9 px-3 text-right"
-  title="Distinct labelled observations per feature — the denominator is distinct labelled values, never row count, because the target is a lab sample carried across the frame"
->
-  Labelled obs / feature
-</TableHead>
                 <TableHead className="h-9 px-3" />
               </TableRow>
             </TableHeader>
@@ -234,11 +214,6 @@ export function FeatureCountSweepTable({
                     </TableCell>
                     <TableCell className="px-3 py-2 text-right">
                       <IntervalCell stat={row.r2} format={formatR2} />
-                    </TableCell>
-                    <TableCell className="px-3 py-2 text-right font-mono tabular-nums">
-                      {row.obsPerFeature === null
-                        ? '—'
-                        : row.obsPerFeature.toFixed(1)}
                     </TableCell>
                     <TableCell className="px-3 py-2">
                       <div className="flex flex-wrap items-center gap-1.5">

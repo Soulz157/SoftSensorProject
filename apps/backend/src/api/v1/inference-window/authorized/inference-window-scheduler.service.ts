@@ -145,6 +145,14 @@ export class InferenceWindowSchedulerService
         Date.now() + env.INFERENCE_WINDOW_TOKEN_TTL_MS,
       );
 
+      // MODEL-SERVE-001-T20, decided 2026-09-15: `skipDuplicates` keys on
+      // (modelVersionId, windowStart), the same slot a CANCELED row already
+      // occupies — so re-enabling a schedule does NOT resurrect a window a
+      // Stop cancelled while it fell inside INFERENCE_BACKFILL_HORIZON_HOURS.
+      // That windowStart is permanently skipped here, forever. Deliberate:
+      // "cancelled means cancelled," not "cancelled means paused" — the
+      // rejected alternative was flipping CANCELED back to PENDING on the
+      // enable path instead.
       await this.prisma.inferenceWindow.createMany({
         data: starts.map((windowStart) => {
           const { tokenHash } = mintRunToken();
@@ -237,8 +245,39 @@ export class InferenceWindowSchedulerService
     if (this.dispatching) return; // one dispatch pass in flight at a time
     this.dispatching = true;
     try {
+      // MODEL-SERVE-001-T19. `insertDueWindows` already filters on
+      // `enabled: true` — this claim did not, so a Stop stopped FUTURE
+      // rows and did nothing to whatever was already PENDING, which kept
+      // draining one window per tick as if Stop had no effect. No
+      // InferenceWindow → InferenceSchedule relation exists (they join on
+      // modelId only, per schema.prisma), so this is the same two-step
+      // shape `deriveDeployStatuses` already uses, not a nested `where`.
+      //
+      // T20: this scope is now belt-and-suspenders, not the only guard —
+      // `putScheduleService`'s disable branch resolves every PENDING row to
+      // CANCELED in the same transaction that flips `enabled: false`, so
+      // there is nothing left here for a stopped schedule to claim. Kept
+      // rather than removed: it still protects a schedule disabled between
+      // this query and the CANCELED write actually landing.
+      //
+      // One race this does NOT close, accepted rather than guarded: if a
+      // Stop lands after `dispatchOne`'s own `status !== 'PENDING'` check
+      // (below) but before its container spawns, that container still
+      // runs and `completeService` writes SUCCEEDED over the window —
+      // real, self-consistent data, not corruption, under the same
+      // single-replica assumption this file's own module doc already
+      // documents.
+      const enabledSchedules = await this.prisma.inferenceSchedule.findMany({
+        where: { enabled: true },
+        select: { modelId: true },
+      });
+      if (enabledSchedules.length === 0) return;
+
       const due = await this.prisma.inferenceWindow.findMany({
-        where: { status: 'PENDING' },
+        where: {
+          status: 'PENDING',
+          modelId: { in: enabledSchedules.map((s) => s.modelId) },
+        },
         orderBy: { windowStart: 'desc' },
         take: env.INFERENCE_MAX_CONCURRENCY,
       });

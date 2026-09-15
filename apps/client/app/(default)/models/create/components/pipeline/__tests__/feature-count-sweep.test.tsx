@@ -377,7 +377,11 @@ describe('FeatureCountSweepTable — V43, one seed for every row', () => {
 })
 
 describe('FeatureCountSweepTable — the arithmetic columns', () => {
-  it('carries observations per feature on the distinct labelled count (AC68)', () => {
+  // AC68's own "observations per feature" cell was removed from this table
+  // by request — obsPerFeature is still computed in buildSweepRows (see
+  // lib/feature-count-sweep.test.ts) but is no longer rendered here, so
+  // this table asserts only that no such text leaks back in.
+  it('does not render an observations-per-feature figure', () => {
     render(
       <FeatureCountSweepTable
         runs={[row('row-7', 7, 0.0522, 0.002)]}
@@ -386,9 +390,7 @@ describe('FeatureCountSweepTable — the arithmetic columns', () => {
         distinctLabelledValues={32}
       />,
     )
-    // 32 / 7 = 4.6 — the figure that tells a reader the top row is
-    // interpolating rather than generalising.
-    expect(cellsOf('7').join(' ')).toMatch(/4\.6/)
+    expect(cellsOf('7').join(' ')).not.toMatch(/4\.6/)
   })
 
   it('keeps an unfinished row in the curve, saying what it is doing instead', () => {
@@ -418,6 +420,7 @@ function seedRun(overrides: Partial<DraftRunSummary> = {}): DraftRunSummary {
     predictionsKey: 'predictions.parquet',
     holdoutPredictionsKey: null,
     scoringContainerId: null,
+    metrics: null,
     holdoutMetrics: null,
     cvFolds: null,
     featureImportance: {

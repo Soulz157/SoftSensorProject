@@ -24,18 +24,26 @@ const NODE_PRIORITY: Record<NodeStatus, number> = {
   normal: 3,
 }
 
+// MODEL-SERVE-001-T22. KEYS ARE `error`, NOT `failed` — 'error' is the wire
+// value (types/index.ts's own deployStatus union). Keyed `failed`, a real
+// failing model missed both lookups and took the `?? 'bg-emerald-500'` /
+// `?? 'text-emerald-500'` fallbacks below, rendering the word "error" in
+// GREEN. Those fallbacks are still correct for their actual case (a model
+// with no deployStatus at all, which the adjacent `{deploy ?? 'active'}`
+// already labels "active") — they simply must stop being the path a real
+// status takes.
 const DEPLOY_DOT: Record<string, string> = {
   running: 'bg-emerald-500',
   initializing: 'bg-blue-400',
   stopped: 'bg-zinc-400',
-  failed: 'bg-red-500',
+  error: 'bg-red-500',
 }
 
 const DEPLOY_LABEL: Record<string, string> = {
   running: 'text-emerald-500',
   initializing: 'text-blue-400',
   stopped: 'text-muted-foreground',
-  failed: 'text-red-500',
+  error: 'text-red-500',
 }
 
 const MAX_PREVIEW = 5

@@ -96,6 +96,40 @@ describe('NodeDetailPanel', () => {
     expect(getAllByText(/alarm/i).length).toBeGreaterThan(0)
   })
 
+  // MODEL-SERVE-001-T22. DEPLOY_DOT/DEPLOY_LABEL were keyed `failed` while
+  // the wire sends `error`, so a failing model missed both lookups and took
+  // the green `?? 'bg-emerald-500'` / `?? 'text-emerald-500'` fallbacks —
+  // the word "error" rendered in the healthy colour. A silent fall-through,
+  // so the assertion has to be on the painted class, not the map.
+  it('paints a failing model red, never the green no-status fallback', () => {
+    const failingNode: CanvasNode = {
+      ...mockNode,
+      models: [
+        {
+          id: 'm1',
+          name: 'AnomalyDetect v2',
+          data: { deployStatus: 'error' },
+          nodesId: 'n1',
+        },
+      ],
+    } as unknown as CanvasNode
+
+    const { getByText, container } = render(
+      <NodeDetailPanel
+        viewMode="equipment"
+        node={failingNode}
+        plan={mockPlant}
+        workspaceId="ws1"
+        onClose={() => {}}
+      />,
+    )
+
+    const label = getByText('error')
+    expect(label.className).toContain('text-red-500')
+    expect(label.className).not.toContain('text-emerald-500')
+    expect(container.querySelector('.bg-red-500')).not.toBeNull()
+  })
+
   it('shows "Open Node Canvas" CTA linking to workspace canvas with nodeId', () => {
     const { container } = render(
       <NodeDetailPanel

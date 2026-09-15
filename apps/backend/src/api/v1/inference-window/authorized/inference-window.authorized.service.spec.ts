@@ -42,7 +42,21 @@ function buildPrisma(overrides: Record<string, unknown> = {}) {
     inferenceWindow: {
       findUniqueOrThrow: jest.fn(),
       update: jest.fn().mockResolvedValue({}),
+      // MODEL-SERVE-001-T20: the disable branch's own write.
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      // Present so buildPrisma's OWN return type (inferred once, from this
+      // static shape — TS does not re-infer per call-site override) carries
+      // these keys too; `statusPrisma` below replaces this whole nested
+      // object with its own richer mock at runtime regardless.
+      findFirst: jest.fn().mockResolvedValue(null),
+      findMany: jest.fn().mockResolvedValue([]),
+      count: jest.fn().mockResolvedValue(0),
     },
+    // Array form only — putScheduleService's disable branch is the one
+    // caller in this file, and it passes `[updateMany, updateMany]`, not a
+    // callback. Same shape model-run.authorized.service.spec.ts already
+    // uses for its own array-form $transaction calls.
+    $transaction: jest.fn((ops: unknown[]) => Promise.all(ops)),
     ...overrides,
   };
 }
@@ -73,10 +87,23 @@ function buildTruthSweeper(overrides = {}) {
   return { joinWindow: jest.fn().mockResolvedValue(undefined), ...overrides };
 }
 
+/** MODEL-SERVE-001-T21. `getStatusService` is the only caller — a bare
+ *  OFF/null stub by default so every pre-existing test in this file, none
+ *  of which cares about the health axis, needs no change. */
+function buildMonitoring(overrides = {}) {
+  return {
+    getHealthStatus: jest
+      .fn()
+      .mockResolvedValue({ status: 'OFF', thresholds: null }),
+    ...overrides,
+  };
+}
+
 function makeService(
   prisma: ReturnType<typeof buildPrisma>,
   descriptor: ReturnType<typeof buildDescriptor> = buildDescriptor(),
   truthSweeper: ReturnType<typeof buildTruthSweeper> = buildTruthSweeper(),
+  monitoring: ReturnType<typeof buildMonitoring> = buildMonitoring(),
 ) {
   return new InferenceWindowAuthorizedService(
     prisma as unknown as ConstructorParameters<
@@ -88,6 +115,9 @@ function makeService(
     truthSweeper as unknown as ConstructorParameters<
       typeof InferenceWindowAuthorizedService
     >[2],
+    monitoring as unknown as ConstructorParameters<
+      typeof InferenceWindowAuthorizedService
+    >[3],
   );
 }
 
@@ -459,6 +489,51 @@ describe('InferenceWindowAuthorizedService.putScheduleService — D5 enable-time
     });
     expect(descriptor.getDescriptorByVersionIdService).not.toHaveBeenCalled();
   });
+
+  // MODEL-SERVE-001-T20.
+  it('cancels queued PENDING windows in the same transaction as disable, and only PENDING ones', async () => {
+    // Fake timers, not expect.any(Date) — a full literal match keeps this
+    // test out of the same expect.objectContaining/expect.any `any`-typed
+    // territory the rest of this file's toHaveBeenCalledWith calls already
+    // sit in (@typescript-eslint/no-unsafe-assignment on their return type).
+    const NOW = new Date('2026-09-15T00:00:00.000Z');
+    jest.useFakeTimers().setSystemTime(NOW);
+    try {
+      const prisma = buildPrisma({
+        inferenceWindow: {
+          findUniqueOrThrow: jest.fn(),
+          update: jest.fn().mockResolvedValue({}),
+          updateMany: jest.fn().mockResolvedValue({ count: 3 }),
+        },
+      });
+      const service = makeService(prisma);
+      const result = await service.putScheduleService(
+        'model-1',
+        { enabled: false },
+        user,
+      );
+      expect(result.statusCode).toBe(200);
+      expect(result.message).toContain('3');
+      // Only PENDING is targeted — a RUNNING window's container is already
+      // in flight and stays owned by the reconcile sweep, never cancelled
+      // out from under it.
+      expect(prisma.inferenceWindow.updateMany).toHaveBeenCalledWith({
+        where: { modelId: 'model-1', status: 'PENDING' },
+        data: {
+          status: 'CANCELED',
+          failureReason: 'Schedule stopped before this window was dispatched.',
+          finishedAt: NOW,
+          tokenExpiresAt: new Date(0),
+        },
+      });
+      // Both writes went through the SAME $transaction call — a disable can
+      // never record as having happened while its queued rows are left
+      // stranded PENDING.
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });
 
 describe('InferenceWindowAuthorizedService.getStatusService — reason surfacing (MODEL-SERVE-001-T09)', () => {
@@ -542,6 +617,21 @@ describe('InferenceWindowAuthorizedService.getStatusService — reason surfacing
 
     expect(result.data.lastFailure).toBeNull();
     expect(result.data.lastSkipped?.reason).toBe('below threshold');
+  });
+
+  // MODEL-SERVE-001-T20.
+  it('excludes CANCELED from gapCount — a deliberate stop is not a gap', async () => {
+    const prisma = statusPrisma({ failed: null, skipped: null });
+    const service = makeService(prisma);
+
+    await service.getStatusService('model-1', user);
+
+    expect(prisma.inferenceWindow.count).toHaveBeenCalledWith({
+      where: {
+        modelId: 'model-1',
+        status: { notIn: ['SUCCEEDED', 'SKIPPED', 'CANCELED'] },
+      },
+    });
   });
 });
 

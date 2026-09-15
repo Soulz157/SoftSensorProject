@@ -30,6 +30,9 @@ const STATUS_BADGE = {
   FAILED: 'bg-red-500/15 text-red-500',
   SKIPPED: 'bg-zinc-500/15 text-zinc-400',
   PENDING: 'bg-zinc-500/15 text-zinc-400',
+  // MODEL-SERVE-001-T20. Neutral zinc, same as SKIPPED — a cancel is an
+  // operator action, not an error, so red/amber are not appropriate here.
+  CANCELED: 'bg-zinc-500/15 text-zinc-400',
 } as const
 
 interface Props {

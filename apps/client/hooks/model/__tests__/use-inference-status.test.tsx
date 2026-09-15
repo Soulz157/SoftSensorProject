@@ -22,6 +22,7 @@ const RUNNING: InferenceStatus = {
   lastFailure: null,
   lastSkipped: null,
   deployStatus: 'running',
+  health: { status: 'OFF', thresholds: null },
 }
 
 const INITIALIZING: InferenceStatus = {
@@ -72,5 +73,42 @@ describe('useInferenceStatus', () => {
 
     await waitFor(() => expect(view.result.current.status).toEqual(RUNNING))
     expect(getStatus).toHaveBeenCalledTimes(2)
+  })
+
+  /**
+   * MODEL-SERVE-001-T19. A first-load transport failure must surface as
+   * `error` while `status` stays `null` (not silently retained as some
+   * OTHER value there was never a successful read to produce) — the
+   * consumer this hook exists for (models/[id]/page.tsx) gates BOTH
+   * Start and Stop on `status !== null`, so a caller that drops `error`
+   * on the floor here leaves both buttons disabled forever with nothing
+   * on screen explaining why, indistinguishable from a press that did
+   * nothing.
+   */
+  it('surfaces a transport failure as `error` and leaves `status` null', async () => {
+    getStatus.mockRejectedValue(new Error('Network request failed'))
+    const view = await mountOnce('model-1')
+
+    await waitFor(() =>
+      expect(view.result.current.error).toBe('Network request failed'),
+    )
+    expect(view.result.current.status).toBeNull()
+    expect(view.result.current.loading).toBe(false)
+  })
+
+  it('clears a prior error once a subsequent refetch succeeds', async () => {
+    getStatus
+      .mockRejectedValueOnce(new Error('Network request failed'))
+      .mockResolvedValueOnce(RUNNING)
+    const view = await mountOnce('model-1')
+
+    await waitFor(() =>
+      expect(view.result.current.error).toBe('Network request failed'),
+    )
+
+    act(() => view.result.current.refetch())
+
+    await waitFor(() => expect(view.result.current.status).toEqual(RUNNING))
+    expect(view.result.current.error).toBeNull()
   })
 })

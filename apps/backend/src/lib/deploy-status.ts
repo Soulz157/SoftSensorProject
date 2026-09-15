@@ -1,5 +1,6 @@
 import { PrismaService } from '@softsensor/prisma';
 import { env } from '@/config/env.config';
+import { redactUrls } from '@/lib/redact-urls';
 
 /**
  * MODEL-SERVE-006-T12. Per decisions.deploy_status_currently_asserts_
@@ -102,6 +103,46 @@ export function isStale(
 }
 
 /**
+ * MODEL-SERVE-001-T19. `status` alone cannot drive a Start/Stop control:
+ * `enabled` is the setting the operator owns and writes, `status` is
+ * DERIVED from windows and answers a different question ("is it actually
+ * producing"). A control bound to `status` has no honest position for an
+ * enabled-but-failing schedule — see this task's own audit. Every reader
+ * of `DeployStatus` gets both from here on, so there is one place that
+ * pairs them rather than each call site reaching past this module for the
+ * schedule row itself.
+ */
+export interface DeployState {
+  status: DeployStatus;
+  enabled: boolean;
+  /**
+   * MODEL-SERVE-001-T23. The most recent FAILED window's own reason, for
+   * the Alerts page — which builds its rows as a PURE function over the
+   * models LIST (`apps/client/lib/alerts.ts`'s `buildAlerts`) and so cannot
+   * fetch a per-model status without turning one page into N requests.
+   *
+   * It does not have to: `deriveDeployStatuses` below ALREADY reads the
+   * last 3 terminal windows per enabled model for its `failing` check, so
+   * this rides along on a query that was happening anyway. The fit is
+   * exact rather than approximate — `classifyDeployStatus` only ever
+   * returns 'error' for an ENABLED schedule, and that is precisely the set
+   * the query covers, so every model the Alerts page treats as failed is
+   * one this sample already fetched.
+   *
+   * `reason` is `redactUrls`-sanitized, for the same reason `getStatus
+   * Service` sanitizes the same column: `completeService` stores the infer
+   * container's `str(err)` VERBATIM, the one `failureReason` writer that is
+   * never cleaned on the way in.
+   *
+   * Null when the sample holds no FAILED row at all. Deliberately NOT
+   * sourced from `Model.data.logs` — that was never the deploy-failure
+   * source of truth (this module reads InferenceWindow directly), which is
+   * exactly why the filter T23 replaces was empty by construction.
+   */
+  lastFailure: { reason: string | null; at: Date } | null;
+}
+
+/**
  * Batched derivation for a LIST of models (`getModelsService`/
  * `getWorkspaceModels`) — avoids N+1 queries. Two non-N+1 reads
  * (schedules, and a `groupBy` for each model's last SUCCEEDED/SKIPPED
@@ -110,15 +151,17 @@ export function isStale(
  * how many schedules are actually enabled in the list, not to every model
  * in the system.
  *
- * Returns a status for every id in `modelIds`, defaulting absent entries
- * (no schedule at all) to 'stopped'.
+ * Returns a state for every id in `modelIds`, defaulting absent entries
+ * (no schedule at all) to `{ status: 'stopped', enabled: false }`.
  */
 export async function deriveDeployStatuses(
   prisma: PrismaService,
   modelIds: string[],
-): Promise<Record<string, DeployStatus>> {
-  const result: Record<string, DeployStatus> = {};
-  for (const id of modelIds) result[id] = 'stopped';
+): Promise<Record<string, DeployState>> {
+  const result: Record<string, DeployState> = {};
+  for (const id of modelIds) {
+    result[id] = { status: 'stopped', enabled: false, lastFailure: null };
+  }
   if (modelIds.length === 0) return result;
 
   const schedules = await prisma.inferenceSchedule.findMany({
@@ -150,13 +193,19 @@ export async function deriveDeployStatuses(
 
   const failingByModel = new Map<string, boolean>();
   const hasFailedByModel = new Map<string, boolean>();
+  const lastFailureByModel = new Map<string, DeployState['lastFailure']>();
   await Promise.all(
     enabledIds.map(async (modelId) => {
       const recentTerminal = await prisma.inferenceWindow.findMany({
         where: { modelId, status: { in: ['SUCCEEDED', 'SKIPPED', 'FAILED'] } },
         orderBy: { windowStart: 'desc' },
         take: 3,
-        select: { status: true },
+        // MODEL-SERVE-001-T23: `failureReason`/`windowStart` widen this
+        // SELECT only — same query, same rows, same round trip. See
+        // DeployState.lastFailure's own doc for why this rides here rather
+        // than becoming a per-model status read the Alerts page cannot
+        // afford.
+        select: { status: true, failureReason: true, windowStart: true },
       });
       failingByModel.set(
         modelId,
@@ -172,6 +221,21 @@ export async function deriveDeployStatuses(
         modelId,
         recentTerminal.some((w) => w.status === 'FAILED'),
       );
+      // Already DESC by windowStart, so the first FAILED row is the most
+      // recent one. Redacted here, not at the read site, so no caller can
+      // forget: this column holds the infer container's verbatim `str(err)`.
+      const failed = recentTerminal.find((w) => w.status === 'FAILED');
+      lastFailureByModel.set(
+        modelId,
+        failed
+          ? {
+              reason: failed.failureReason
+                ? redactUrls(failed.failureReason)
+                : null,
+              at: failed.windowStart,
+            }
+          : null,
+      );
     }),
   );
 
@@ -182,32 +246,52 @@ export async function deriveDeployStatuses(
       schedule.cadenceMinutes,
       schedule.lagMinutes,
     );
-    result[schedule.modelId] = classifyDeployStatus({
+    result[schedule.modelId] = {
+      status: classifyDeployStatus({
+        enabled: schedule.enabled,
+        hasEverSucceeded: lastSucceededAt !== null,
+        staleness,
+        failing: failingByModel.get(schedule.modelId) ?? false,
+        hasFailedWindows: hasFailedByModel.get(schedule.modelId) ?? false,
+      }),
       enabled: schedule.enabled,
-      hasEverSucceeded: lastSucceededAt !== null,
-      staleness,
-      failing: failingByModel.get(schedule.modelId) ?? false,
-      hasFailedWindows: hasFailedByModel.get(schedule.modelId) ?? false,
-    });
+      lastFailure: lastFailureByModel.get(schedule.modelId) ?? null,
+    };
   }
 
   return result;
 }
 
 /**
- * Overlays a derived `deployStatus` onto one model row's `data` blob for a
+ * Overlays a derived deploy state onto one model row's `data` blob for a
  * response — the ONE merge shape every read site (`getModelsService`,
  * `updateModelService`, `appendLogService`, `getWorkspaceModels`) now uses,
  * so "derive at read time" means the same thing everywhere it happens.
  * Never mutates the input; returns a new object.
+ *
+ * MODEL-SERVE-001-T19: carries `enabled` alongside `deployStatus` — a
+ * Start/Stop control needs the setting the operator owns, not only the
+ * fact derived from it. See `DeployState`'s own doc for why one cannot
+ * stand in for the other.
  */
 export function overlayDeployStatus<T extends { id: string; data: unknown }>(
   model: T,
-  status: DeployStatus,
+  state: DeployState,
 ): T {
   const current =
     model.data && typeof model.data === 'object' && !Array.isArray(model.data)
       ? (model.data as Record<string, unknown>)
       : {};
-  return { ...model, data: { ...current, deployStatus: status } };
+  return {
+    ...model,
+    data: {
+      ...current,
+      deployStatus: state.status,
+      enabled: state.enabled,
+      // MODEL-SERVE-001-T23. Carried the same way `deployStatus`/`enabled`
+      // already are, so the Alerts page reads a REAL failure reason off the
+      // list payload it already fetches — see DeployState.lastFailure.
+      lastFailure: state.lastFailure,
+    },
+  };
 }

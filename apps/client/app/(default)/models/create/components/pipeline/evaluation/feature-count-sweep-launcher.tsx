@@ -66,6 +66,8 @@ export function FeatureCountSweepLauncher({
   distinctLabelledLoading,
   distinctLabelledReason,
   onLaunched,
+  seedRmseMean = null,
+  seedMaeMean = null,
 }: {
   draftId: string | null
   run: DraftRunSummary
@@ -79,6 +81,8 @@ export function FeatureCountSweepLauncher({
    *  at render time is the multiple-comparisons hazard this task exists to
    *  avoid. */
   onLaunched: (sweepId: string, metric: SweepMetric) => void
+  seedRmseMean?: number | null
+  seedMaeMean?: number | null
 }) {
   // EVERY hook above EVERY early return. A previous pass put `if (!canRank)
   // return null` above a second hook, which was a rules-of-hooks violation the
@@ -98,6 +102,9 @@ export function FeatureCountSweepLauncher({
    * this sweep was launched under rather than what is selected now.
    */
   const [metric, setMetric] = useState<SweepMetric>(DEFAULT_SWEEP_METRIC)
+
+  const hasSeedComparison = seedRmseMean != null && seedMaeMean != null
+  const seedFavorsMae = hasSeedComparison && seedMaeMean! < seedRmseMean!
 
   const importance = run.featureImportance
   const algorithm = sweepableAlgorithm(run.algorithm)
@@ -144,7 +151,8 @@ export function FeatureCountSweepLauncher({
       if (launched.length < plan.length) {
         setPartial(
           `Launched ${launched.length} of ${plan.length} rows — the search
-           stopped early, so the curve below is incomplete.`,        )
+           stopped early, so the curve below is incomplete.`,
+        )
       }
       if (launched.length > 0) onLaunched(sweepId, metric)
       else setError('No rows launched.')
@@ -168,13 +176,13 @@ export function FeatureCountSweepLauncher({
    * whatever this row kept, so every count in the new ladder would mean
    * something different from the same count in the old one.
    */
-    if (run.sweepId !== null) {
+  if (run.sweepId !== null) {
     return (
       <EmptyPanel>
         Find the number of essential X: unavailable — this run is itself one row
-        of a search, so its importance describes the features it was given
-        rather than the ranking that chose them. Open the run that seeded this
-        search to start another.
+        of a sweep, so its importance describes the features it was given rather
+        than the ranking that chose them. Open the run that seeded this sweep to
+        start another.
       </EmptyPanel>
     )
   }
@@ -204,7 +212,7 @@ export function FeatureCountSweepLauncher({
   if (folds === null) {
     return (
       <EmptyPanel>
-               {distinctLabelledLoading
+        {distinctLabelledLoading
           ? 'Find the number of essential X: checking how many distinct labelled values sit behind this run…'
           : distinctLabelledReason
             ? `Find the number of essential X: unavailable — the distinct labelled count could not be read (${distinctLabelledReason}).`
@@ -222,7 +230,7 @@ export function FeatureCountSweepLauncher({
   return (
     <section className="space-y-3 rounded-xl border border-border/60 p-4">
       <div className="space-y-1">
-      <h3 className="text-sm font-medium text-foreground">
+        <h3 className="text-sm font-medium text-foreground">
           Find the number of essential X
         </h3>
         <p className="text-xs text-muted-foreground">
@@ -269,25 +277,27 @@ export function FeatureCountSweepLauncher({
             }}
             className="flex justify-start gap-1.5"
           >
-            <ToggleGroupItem
-              value="rmse"
-              className="h-7 cursor-pointer rounded-md border border-border px-2.5 text-xs font-medium data-[state=on]:border-primary data-[state=on]:bg-primary/10 data-[state=on]:text-primary"
-            >
-              RMSE
-            </ToggleGroupItem>
-            <ToggleGroupItem
-              value="mae"
-              className="h-7 cursor-pointer rounded-md border border-border px-2.5 text-xs font-medium data-[state=on]:border-primary data-[state=on]:bg-primary/10 data-[state=on]:text-primary"
-            >
-              MAE
-            </ToggleGroupItem>
+            {(seedFavorsMae
+              ? (['mae', 'rmse'] as const)
+              : (['rmse', 'mae'] as const)
+            ).map(m => (
+              <ToggleGroupItem
+                key={m}
+                value={m}
+                className="h-7 cursor-pointer rounded-md border border-border px-2.5 text-xs font-medium data-[state=on]:border-primary data-[state=on]:bg-primary/10 data-[state=on]:text-primary"
+              >
+                {m === 'rmse' ? 'RMSE' : 'MAE'}
+              </ToggleGroupItem>
+            ))}
           </ToggleGroup>
         </div>
-             <p className="text-xs text-muted-foreground">
-          Fixed when the search starts, so the ladder cannot be re-decided after
-          its cost is paid. Changing it here affects the next search, never a
-          table already on screen.
-        </p>
+        {hasSeedComparison && (
+          <p className="text-xs text-muted-foreground">
+            {seedFavorsMae ? 'MAE' : 'RMSE'} reads lower on this run&apos;s own
+            fit — shown first. Ordering only; your pick above still decides the
+            ladder.
+          </p>
+        )}
       </div>
 
       <Button
@@ -297,12 +307,12 @@ export function FeatureCountSweepLauncher({
         onClick={handleLaunch}
       >
         <Layers className="h-4 w-4" />
-               {launching ? 'Launching…' : `Test ${plan.length} feature counts`}
+        {launching ? 'Launching…' : `Sweep ${plan.length} feature counts`}
       </Button>
 
       {partial && <p className="text-xs text-muted-foreground">{partial}</p>}
       {error && (
-             <p className="text-xs text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           Could not start the search — {error}
         </p>
       )}

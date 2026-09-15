@@ -38,12 +38,12 @@ import {
   Pencil,
   Play,
   RefreshCw,
-  Settings,
   SlidersHorizontal,
   Snowflake,
   StopCircle,
   Terminal,
   User,
+  Waves,
   WifiOff,
   XCircle,
 } from 'lucide-react'
@@ -54,6 +54,7 @@ import { getModels } from '@/services/model'
 import { inferenceWindowService } from '@/services/inference-window'
 import { useRefreshModels } from '@/hooks/use-all-models'
 import { effectiveProdStatus } from '@/lib/model-status'
+import { DRIFT_STATUS_CLASS } from '@/lib/drift-status-style'
 import type { AIModel } from '@/types'
 import { ModelEvaluation } from '../evaluation/components/model-evaluation'
 import { ModelUpsertDialog } from '../views/components/model-upsert-dialog'
@@ -120,6 +121,44 @@ const PROD_CONFIG = {
   },
 } as const
 
+/**
+ * MODEL-SERVE-001-T21. Deliberately NOT `DEPLOY_CONFIG`'s or `PROD_CONFIG`'s
+ * red/amber vocabulary — this is the same "is the INPUT distribution
+ * shifting" signal `lib/drift-status-style.ts`'s own `DRIFT_STATUS_CLASS`
+ * already renders, reusing its exact palette (neutral for OK/UNKNOWN,
+ * purple for WARN/CRITICAL) with a border added only for visual parity
+ * with this page's other two pill badges. `OFF` gets the same muted
+ * treatment `DEPLOY_CONFIG.stopped` uses — "not configured to look" reads
+ * the same as "not running" here.
+ */
+const HEALTH_CONFIG = {
+  OFF: {
+    icon: Waves,
+    cls: `${DRIFT_STATUS_CLASS.UNKNOWN} border-zinc-500/20`,
+    label: 'Health: Off',
+  },
+  UNKNOWN: {
+    icon: Waves,
+    cls: `${DRIFT_STATUS_CLASS.UNKNOWN} border-zinc-500/20`,
+    label: 'Health: Unknown',
+  },
+  OK: {
+    icon: Waves,
+    cls: `${DRIFT_STATUS_CLASS.OK} border-zinc-500/20`,
+    label: 'Health: OK',
+  },
+  WARN: {
+    icon: Waves,
+    cls: `${DRIFT_STATUS_CLASS.WARN} border-purple-500/20`,
+    label: 'Health: Warning',
+  },
+  CRITICAL: {
+    icon: Waves,
+    cls: `${DRIFT_STATUS_CLASS.CRITICAL} border-purple-500/30`,
+    label: 'Health: Critical',
+  },
+} as const
+
 export default function ModelDetailPage({
   params,
 }: {
@@ -165,8 +204,11 @@ export default function ModelDetailPage({
    * below is the fallback for that window alone, same classifier, an
    * older fetch.
    */
-  const { status: inferenceStatus, refetch: refetchInferenceStatus } =
-    useInferenceStatus(model?.id ?? null)
+  const {
+    status: inferenceStatus,
+    error: inferenceStatusError,
+    refetch: refetchInferenceStatus,
+  } = useInferenceStatus(model?.id ?? null)
   const deployStatusReady = inferenceStatus !== null
 
   /**
@@ -231,7 +273,6 @@ export default function ModelDetailPage({
         const results = await Promise.all(
           workspaces.map(ws => getModels(ws.id)),
         )
-
         if (!ignore) {
           const found = results.flat().find(m => m.id === id) ?? null
           setModel(found)
@@ -267,12 +308,27 @@ export default function ModelDetailPage({
   const deployKey = (inferenceStatus?.deployStatus ??
     model.data?.deployStatus ??
     'stopped') as keyof typeof DEPLOY_CONFIG
+  // MODEL-SERVE-001-T19. Start/Stop must branch on the SETTING the
+  // operator owns, not the derived word above — `deployKey` reads 'error'
+  // for an enabled-but-failing schedule, and branching on it left that
+  // model with a Start button and no way to Stop (see this task's audit).
+  // `inferenceStatus.enabled` already exists on this same payload
+  // (getStatusService's own response); no new endpoint or field needed.
+  const isEnabled = inferenceStatus?.enabled ?? model.data?.enabled ?? false
   const prodKey = effectiveProdStatus(model)
   const monitoringDisabled = deployKey === 'stopped' || deployKey === 'error'
   const deploy = DEPLOY_CONFIG[deployKey] ?? DEPLOY_CONFIG.stopped
   const prod = PROD_CONFIG[prodKey]
   const DeployIcon = deploy.icon
   const ProdIcon = prod.icon
+  // MODEL-SERVE-001-T21. `inferenceStatus` has no fallback in
+  // model.data — this axis is entirely new, so before the first status
+  // read resolves there is nothing stale to fall back to; OFF is the
+  // honest "nothing read yet" default, same word this axis already uses
+  // for "not configured to look".
+  const healthKey = inferenceStatus?.health.status ?? 'OFF'
+  const health = HEALTH_CONFIG[healthKey]
+  const HealthIcon = health.icon
   const lastFailure = inferenceStatus?.lastFailure ?? null
   const lastSkipped = inferenceStatus?.lastSkipped ?? null
 
@@ -325,6 +381,20 @@ export default function ModelDetailPage({
                   <ProdIcon className="h-3 w-3" />
                   {prod.label}
                 </span>
+                {/* MODEL-SERVE-001-T21. A THIRD, separate badge — never
+                    merged into deploy/prod above. Purely informational, per
+                    the user's own 2026-09-15 decision: this reads the
+                    input-drift signal, it does not gate Start/Stop or
+                    promote. */}
+                <span
+                  className={cn(
+                    'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium',
+                    health.cls,
+                  )}
+                >
+                  <HealthIcon className="h-3 w-3" />
+                  {health.label}
+                </span>
               </div>
               <p className="mt-0.5 text-sm text-muted-foreground">
                 {plantName} · {nodeName}
@@ -371,13 +441,13 @@ export default function ModelDetailPage({
                 Promote v{versionSchema.version}
               </Button>
             )}
-            {deployKey === 'running' || deployKey === 'initializing' ? (
+            {isEnabled ? (
               <Button
                 variant="outline"
                 size="sm"
                 className="gap-1.5"
                 // MODEL-SERVE-001-T09. `!deployStatusReady` too — before the
-                // first status read resolves, `deployKey` is only the
+                // first status read resolves, `isEnabled` is only the
                 // model's stale last-fetched value, and flipping this
                 // button's disabled state out from under the cursor the
                 // instant the real read lands is worse than a brief
@@ -464,6 +534,21 @@ export default function ModelDetailPage({
                 <DeployIcon className="h-3.5 w-3.5" />
                 {deploy.label}
               </div>
+              {/* MODEL-SERVE-001-T19. `error` is a TRANSPORT failure on the
+                  status fetch itself (see useInferenceStatus's own doc) —
+                  distinct from `deployKey === 'error'` above, which is a
+                  real deploy state the fetch SUCCEEDED in reading. Render
+                  it only while the fetch has never resolved: it explains
+                  why Start/Stop are disabled with no visible cause,
+                  otherwise indistinguishable from a press that did nothing. */}
+              {!deployStatusReady && inferenceStatusError && (
+                <p
+                  className="mt-2 line-clamp-2 text-xs text-red-500"
+                  title={inferenceStatusError}
+                >
+                  Status unavailable — {inferenceStatusError}
+                </p>
+              )}
               {/* MODEL-SERVE-001-T09. The word alone cost a real debugging
                   session hours — `error`/`initializing` are both unreadable
                   without a reason beside them. Never a second verdict: this
@@ -786,9 +871,6 @@ export default function ModelDetailPage({
             <AlertDialogAction
               disabled={!overrideReason.trim() || promote.busy}
               onClick={e => {
-                // The dialog must stay open if the retry is refused again
-                // (an artifact refusal cannot be overridden), so the default
-                // close-on-action is suppressed and the hook decides.
                 e.preventDefault()
                 void promote.confirmOverride(overrideReason)
               }}

@@ -10,6 +10,12 @@ import {
   Package,
   Settings2,
 } from 'lucide-react'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 import { NODE_BADGE, NODE_DOT } from '@/constants/status'
@@ -27,6 +33,12 @@ interface OverviewAssetTreeProps {
 }
 
 const childIndent = 'ml-4 border-l border-border/40 pl-2'
+const MODEL_NAME_MAX_LENGTH = 10
+
+function truncateModelName(name: string, maxLength = MODEL_NAME_MAX_LENGTH) {
+  if (name.length <= maxLength) return name
+  return `${name.slice(0, maxLength)}…`
+}
 
 function getAbnormalIds(tree: ReturnType<typeof buildOverviewTree>): string[] {
   const ids: string[] = []
@@ -205,91 +217,101 @@ export function OverviewAssetTree({
   }
 
   return (
-    <div className="px-2 py-3">
-      <div className="mb-1 px-2 text-xs font-medium text-muted-foreground">
-        Asset Hierarchy
+    <TooltipProvider delayDuration={200}>
+      <div className="px-2 py-3">
+        <div className="mb-1 px-2 text-xs font-medium text-muted-foreground">
+          Asset Hierarchy
+        </div>
+        {tree.length === 0 ? (
+          <EmptyHint label="No assets in this plant" />
+        ) : (
+          tree.map(plant => (
+            <div key={plant.id}>
+              <DisclosureRow
+                id={plant.id}
+                isOpen={isOpen}
+                toggle={toggle}
+                icon={
+                  <Factory className="h-3 w-3 shrink-0 text-muted-foreground" />
+                }
+                name={plant.name}
+                status={plant.status}
+              />
+
+              {isOpen(plant.id) && (
+                <div className={childIndent}>
+                  {plant.nodes.length === 0 ? (
+                    <EmptyHint label="No equipment" />
+                  ) : (
+                    plant.nodes.map(node => (
+                      <div key={node.id}>
+                        <DisclosureRow
+                          id={node.id}
+                          isOpen={isOpen}
+                          toggle={toggle}
+                          icon={
+                            <Settings2 className="h-3 w-3 shrink-0 text-muted-foreground" />
+                          }
+                          name={node.name}
+                          status={node.status}
+                        />
+
+                        {isOpen(node.id) && (
+                          <div className={cn(childIndent, 'space-y-px py-0.5')}>
+                            {node.models.length === 0 ? (
+                              <EmptyHint label="No models" />
+                            ) : (
+                              node.models.map(model => (
+                                <Tooltip key={model.id}>
+                                  <TooltipTrigger asChild>
+                                    <Link
+                                      href={`/models/${model.id}`}
+                                      ref={el => {
+                                        if (el)
+                                          modelRefs.current.set(model.id, el)
+                                        else modelRefs.current.delete(model.id)
+                                      }}
+                                      className={cn(
+                                        'group flex w-full items-center gap-1.5 rounded py-1 pl-6 pr-2 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground',
+                                        highlightedModelId === model.id &&
+                                          'bg-destructive/10 ring-1 ring-destructive/60',
+                                      )}
+                                    >
+                                      <Package className="h-3 w-3 shrink-0" />
+                                      <span className="min-w-0 flex-1 truncate">
+                                        {truncateModelName(model.name)}
+                                      </span>
+                                      {model.deployFailed ? (
+                                        <span className="ml-auto flex shrink-0 items-center gap-1 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600">
+                                          <AlertTriangle className="h-2.5 w-2.5" />
+                                          Deploy Failed
+                                        </span>
+                                      ) : (
+                                        <StatusTag status={model.status} />
+                                      )}
+                                      <ArrowRight
+                                        aria-hidden="true"
+                                        className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
+                                      />
+                                    </Link>
+                                  </TooltipTrigger>
+                                  <TooltipContent side="right">
+                                    {model.name}
+                                  </TooltipContent>
+                                </Tooltip>
+                              ))
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+          ))
+        )}
       </div>
-      {tree.length === 0 ? (
-        <EmptyHint label="No assets in this plant" />
-      ) : (
-        tree.map(plant => (
-          <div key={plant.id}>
-            <DisclosureRow
-              id={plant.id}
-              isOpen={isOpen}
-              toggle={toggle}
-              icon={
-                <Factory className="h-3 w-3 shrink-0 text-muted-foreground" />
-              }
-              name={plant.name}
-              status={plant.status}
-            />
-
-            {isOpen(plant.id) && (
-              <div className={childIndent}>
-                {plant.nodes.length === 0 ? (
-                  <EmptyHint label="No equipment" />
-                ) : (
-                  plant.nodes.map(node => (
-                    <div key={node.id}>
-                      <DisclosureRow
-                        id={node.id}
-                        isOpen={isOpen}
-                        toggle={toggle}
-                        icon={
-                          <Settings2 className="h-3 w-3 shrink-0 text-muted-foreground" />
-                        }
-                        name={node.name}
-                        status={node.status}
-                      />
-
-                      {isOpen(node.id) && (
-                        <div className={cn(childIndent, 'space-y-px py-0.5')}>
-                          {node.models.length === 0 ? (
-                            <EmptyHint label="No models" />
-                          ) : (
-                            node.models.map(model => (
-                              <Link
-                                key={model.id}
-                                href={`/models/${model.id}`}
-                                title={model.name}
-                                ref={el => {
-                                  if (el) modelRefs.current.set(model.id, el)
-                                  else modelRefs.current.delete(model.id)
-                                }}
-                                className={cn(
-                                  'group flex w-full items-center gap-1.5 rounded py-1 pl-6 pr-2 text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground',
-                                  highlightedModelId === model.id &&
-                                    'bg-destructive/10 ring-1 ring-destructive/60',
-                                )}
-                              >
-                                <Package className="h-3 w-3 shrink-0" />
-                                <span className="truncate">{model.name}</span>
-                                {model.deployFailed ? (
-                                  <span className="ml-auto flex shrink-0 items-center gap-1 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600">
-                                    <AlertTriangle className="h-2.5 w-2.5" />
-                                    Deploy Failed
-                                  </span>
-                                ) : (
-                                  <StatusTag status={model.status} />
-                                )}
-                                <ArrowRight
-                                  aria-hidden="true"
-                                  className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
-                                />
-                              </Link>
-                            ))
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  ))
-                )}
-              </div>
-            )}
-          </div>
-        ))
-      )}
-    </div>
+    </TooltipProvider>
   )
 }

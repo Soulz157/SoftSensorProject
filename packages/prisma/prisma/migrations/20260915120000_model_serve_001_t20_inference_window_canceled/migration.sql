@@ -1,0 +1,11 @@
+-- MODEL-SERVE-001-T20. Adds CANCELED to InferenceWindowStatus: a human
+-- stopped the schedule while this row was still PENDING. Terminal, never
+-- dispatched, never a failure. See schema.prisma's own doc comment on the
+-- enum value for what reads must (and must not) treat it as.
+--
+-- Hand-written, not `prisma migrate dev`-generated: dev database schema has
+-- unrelated drift from a concurrent session (DatasetArtifact.droppedBadRows)
+-- that a shadow-db diff refuses to run through; this migration only adds
+-- the enum value, same `ALTER TYPE ... ADD VALUE` shape as every other
+-- enum addition in this history (e.g. 20260609012949/migration.sql).
+ALTER TYPE "InferenceWindowStatus" ADD VALUE 'CANCELED';

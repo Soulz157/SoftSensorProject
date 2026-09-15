@@ -535,8 +535,19 @@ describe('InferenceWindowSchedulerService.dispatchOne (MODEL-SERVE-006-T05)', ()
  * single slot while every other model's live window waited.
  */
 describe('InferenceWindowSchedulerService.dispatchDue ordering', () => {
-  function prismaWithPending(rows: Array<{ id: string; windowStart: Date }>) {
+  function prismaWithPending(
+    rows: Array<{ id: string; windowStart: Date }>,
+    enabledModelIds: string[] = ['model-1'],
+  ) {
     return buildPrisma({
+      inferenceSchedule: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue(
+            enabledModelIds.map((modelId) => ({ modelId, enabled: true })),
+          ),
+        findUnique: jest.fn().mockResolvedValue(null),
+      },
       inferenceWindow: {
         createMany: jest.fn().mockResolvedValue({ count: 0 }),
         findMany: jest.fn().mockResolvedValue(rows),
@@ -556,7 +567,7 @@ describe('InferenceWindowSchedulerService.dispatchDue ordering', () => {
 
     expect(prisma.inferenceWindow.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { status: 'PENDING' },
+        where: { status: 'PENDING', modelId: { in: ['model-1'] } },
         orderBy: { windowStart: 'desc' },
       }),
     );
@@ -603,5 +614,44 @@ describe('InferenceWindowSchedulerService.dispatchDue ordering', () => {
     await service['dispatchDue']();
 
     expect(dispatched).toEqual(['live-current']);
+  });
+
+  /**
+   * MODEL-SERVE-001-T19 (A1). This is the actual defect: `insertDueWindows`
+   * already filters on `enabled: true`, but `dispatchDue` did not, so
+   * disabling a schedule stopped FUTURE rows and did nothing to whatever
+   * was already PENDING — it kept draining one window per tick as if Stop
+   * had no effect. Regression-proofed two ways: an all-disabled system
+   * never even issues the InferenceWindow query, and an enabled subset
+   * scopes the claim to exactly those schedules' models.
+   */
+  it('never queries PENDING windows when no schedule is enabled', async () => {
+    const prisma = prismaWithPending([], []); // no schedule is enabled
+    const service = makeService(prisma);
+
+    await service['dispatchDue']();
+
+    expect(prisma.inferenceSchedule.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { enabled: true } }),
+    );
+    // Short-circuits before ever asking InferenceWindow for PENDING rows —
+    // there is nothing an enabled-schedule filter could match.
+    expect(prisma.inferenceWindow.findMany).not.toHaveBeenCalled();
+  });
+
+  it('scopes the PENDING claim to only the currently-enabled schedules', async () => {
+    const prisma = prismaWithPending([], ['model-1', 'model-2']);
+    const service = makeService(prisma);
+
+    await service['dispatchDue']();
+
+    expect(prisma.inferenceWindow.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          status: 'PENDING',
+          modelId: { in: ['model-1', 'model-2'] },
+        },
+      }),
+    );
   });
 });

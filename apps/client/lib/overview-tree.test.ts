@@ -33,6 +33,10 @@ function model(
     name,
     data: {
       deployStatus: opts.deployStatus ?? 'running',
+      // Both 'error' and 'running' require enabled=true under
+      // classifyDeployStatus's own invariant (disabled always reads
+      // 'stopped') — every call site here passes one of those two.
+      enabled: true,
       prodStatus: 'normal',
       logs: [],
     },

@@ -7,6 +7,7 @@ import {
   ArrowRight,
   Power,
   RefreshCw,
+  Snowflake,
   StopCircle,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -32,7 +33,15 @@ const DEPLOY_MAP = {
     icon: StopCircle,
     cls: 'bg-zinc-500/15 text-zinc-400',
   },
-  failed: {
+  // MODEL-SERVE-001-T22. KEY IS `error`, NOT `failed` — 'error' is the wire
+  // value (types/index.ts's own deployStatus union) and what every other
+  // deploy-status map in this client already keys on (model-table.tsx,
+  // model-preview-sheet.tsx, models/[id]/page.tsx's DEPLOY_CONFIG). Keyed
+  // `failed`, the lookup below missed and silently fell through to
+  // DEPLOY_MAP.stopped, so this dialog printed "Stopped" directly above its
+  // own `hasError` banner saying the model was in an error state. The LABEL
+  // stays "Failed" — that is what those other maps display for this key.
+  error: {
     label: 'Failed',
     icon: AlertCircle,
     cls: 'bg-red-500/15 text-red-500',
@@ -64,6 +73,16 @@ const PROD_MAP = {
     label: 'Offline',
     icon: Power,
     cls: 'bg-zinc-500/15 text-zinc-400',
+  },
+  // MODEL-SERVE-001-T22. `frozen` is the fifth prodStatus value
+  // (types/index.ts) and was missing here, so a frozen model fell through
+  // to PROD_MAP.normal and read green "Normal" — the same fall-through
+  // defect as DEPLOY_MAP's above, one map over. Purple Snowflake matches
+  // models/[id]/page.tsx's own PROD_CONFIG treatment for this status.
+  frozen: {
+    label: 'Data Frozen',
+    icon: Snowflake,
+    cls: 'bg-purple-500/15 text-purple-600 dark:text-purple-400',
   },
 } as const
 

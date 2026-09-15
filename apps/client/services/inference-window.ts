@@ -55,6 +55,23 @@ export interface InferenceStatus {
    *  never let a status word imply the wrong one caused it. */
   lastSkipped: InferenceWindowFailureNote | null
   deployStatus: 'stopped' | 'running' | 'error' | 'initializing'
+  /**
+   * MODEL-SERVE-001-T21. A SEPARATE axis from `deployStatus` above, never
+   * collapsed into it — a model can be `running` (operationally up) while
+   * its inputs drift, and a `stopped` model has no reading at all (`OFF`).
+   * `thresholds` is this schedule's OWN warnSd/criticalSd/driftThresholdPct
+   * (renamed `outOfRangePct`), not the system-wide env defaults the
+   * separate Drift tab still reads — null exactly when `status` is `OFF`
+   * or `UNKNOWN`.
+   */
+  health: {
+    status: 'OFF' | 'UNKNOWN' | 'OK' | 'WARN' | 'CRITICAL'
+    thresholds: {
+      warnSd: number
+      criticalSd: number
+      outOfRangePct: number
+    } | null
+  }
 }
 
 export interface InferenceWindow {
@@ -63,7 +80,13 @@ export interface InferenceWindow {
   modelVersionId: string
   windowStart: string
   windowEnd: string
-  status: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'SKIPPED'
+  status:
+    | 'PENDING'
+    | 'RUNNING'
+    | 'SUCCEEDED'
+    | 'FAILED'
+    | 'SKIPPED'
+    | 'CANCELED'
   inputRows: number | null
   missingPct: number | null
   failureReason: string | null
@@ -94,7 +117,13 @@ export interface WindowLogLine {
  */
 export interface WindowLogContext {
   id: string
-  status: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'SKIPPED'
+  status:
+    | 'PENDING'
+    | 'RUNNING'
+    | 'SUCCEEDED'
+    | 'FAILED'
+    | 'SKIPPED'
+    | 'CANCELED'
   windowStart: string
   windowEnd: string
   inputRows: number | null

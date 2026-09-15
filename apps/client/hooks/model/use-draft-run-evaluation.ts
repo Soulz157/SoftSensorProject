@@ -44,6 +44,15 @@ export interface DraftRunSummary {
    *  in flight — what Step 5 polls to show "scoring is running" rather
    *  than a dead "trigger scoring" button. */
   scoringContainerId: string | null
+  /** MODEL-FLOW-019-T35. The run's own training-side metrics blob —
+   *  `cv_rmse_mean`/`cv_mae_mean`/etc for a CV run, plain `rmse`/`mae` for
+   *  an ordinary one. Needed so `seedMetricMeans` (lib/feature-count-sweep)
+   *  can read this run's own fold means when it seeds a sweep; every other
+   *  reader of a run's metrics on this hook's OWN fetch path already reads
+   *  `run.metrics` directly inside `fetchEvaluation` before this summary is
+   *  built — this field is that same raw blob, carried through rather than
+   *  re-fetched. */
+  metrics: Record<string, unknown> | null
   /** The refit model's OWN honest number, from a raw validation holdout no
    *  fit ever saw — never the fold mean (`metrics.cv_r2_mean`/etc). Carries
    *  `dropped_unlabelled`/`dropped_bad_features`/`row_count` so the
@@ -228,6 +237,7 @@ async function fetchEvaluation(
     predictionsKey: run.predictionsKey,
     holdoutPredictionsKey: run.holdoutPredictionsKey,
     scoringContainerId: run.scoringContainerId,
+    metrics: run.metrics,
     holdoutMetrics: run.holdoutMetrics,
     cvFolds: run.cvFolds ?? null,
     featureImportance: run.featureImportance ?? null,

@@ -55,7 +55,10 @@ function formatDate(ts: string): string {
 }
 
 function hasExpandableDetail(row: AlertRowData): boolean {
-  return row.kind === 'model' && Boolean(row.errorLogs?.length)
+  // MODEL-SERVE-001-T23: gated on the real failure reason now. The old
+  // `errorLogs?.length` gate could never be true (that list was empty by
+  // construction), so this expander has never once opened in production.
+  return row.kind === 'model' && Boolean(row.failureReason)
 }
 
 function TruncatedText({
@@ -166,25 +169,26 @@ export function AlertRow({ row }: { row: AlertRowData }) {
         <TableRow className="hover:bg-transparent">
           <TableCell colSpan={COLUMN_COUNT} className="bg-muted/20 p-0">
             <div className="space-y-3 px-4 py-3 pl-15">
-              {row.errorLogs && row.errorLogs.length > 0 && (
+              {/* MODEL-SERVE-001-T23. ONE real reason (the most recent
+                  FAILED window's own, redacted server-side), replacing a
+                  "Recent Errors" list built from `model.data.logs` that was
+                  empty by construction — see AlertRow.failureReason. The
+                  timestamp is the row's own, which now IS the failure time
+                  rather than the model's last edit. */}
+              {row.failureReason && (
                 <div className="space-y-1.5">
                   <p className="text-xs font-medium tracking-wider text-muted-foreground uppercase">
-                    Recent Errors
+                    Failure Reason
                   </p>
-                  <ul className="space-y-1.5">
-                    {row.errorLogs.map((log, i) => (
-                      <li key={i} className="flex items-start gap-2 text-xs">
-                        <span className="mt-1.25 h-1.5 w-1.5 shrink-0 rounded-full bg-red-500" />
-                        <span className="flex-1 font-mono leading-relaxed text-foreground">
-                          {log.message}
-                        </span>
-                        <span className="shrink-0 font-mono text-muted-foreground tabular-nums">
-                          {formatTime(log.timestamp)} ·{' '}
-                          {formatDate(log.timestamp)}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
+                  <div className="flex items-start gap-2 text-xs">
+                    <span className="mt-1.25 h-1.5 w-1.5 shrink-0 rounded-full bg-red-500" />
+                    <span className="flex-1 font-mono leading-relaxed text-foreground">
+                      {row.failureReason}
+                    </span>
+                    <span className="shrink-0 font-mono text-muted-foreground tabular-nums">
+                      {formatTime(row.timestamp)} · {formatDate(row.timestamp)}
+                    </span>
+                  </div>
                 </div>
               )}
 

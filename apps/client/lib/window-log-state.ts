@@ -47,6 +47,17 @@ export function describeEmptyWindowLog(
             'was deliberately not attempted. A skipped window is a quiet ' +
             'plant, not a failure, and no container was spawned for it.',
       }
+    case 'CANCELED':
+      // MODEL-SERVE-001-T20. A human stopped the schedule while this row
+      // was still PENDING — same "no container ever ran" shape as SKIPPED,
+      // but the reason is an operator action, not a data threshold.
+      return {
+        title: 'Canceled — schedule stopped',
+        detail:
+          window.failureReason ??
+          'The schedule was stopped before this window was dispatched, so ' +
+            'no container was ever spawned for it.',
+      }
     case 'FAILED':
       // TWO different failures, and TM2 has both: of its 50 FAILED windows,
       // 30 never spawned a container at all and 20 spawned one that was

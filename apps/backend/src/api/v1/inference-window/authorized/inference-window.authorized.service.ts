@@ -20,6 +20,7 @@ import { inferenceWindowTruthSeries } from '@/lib/python-preprocess-client';
 import { env } from '@/config/env.config';
 import { ModelServingAuthorizedService } from '../../model-serving/authorized/model-serving.authorized.service';
 import { InferenceTruthSweeperService } from './inference-truth-sweeper.service';
+import { InferenceWindowMonitoringService } from './inference-window-monitoring.authorized.service';
 import type {
   BackfillInferenceWindowsDto,
   InferenceTruthRangeQueryDto,
@@ -97,6 +98,11 @@ export class InferenceWindowAuthorizedService {
     private readonly prisma: PrismaService,
     private readonly descriptor: ModelServingAuthorizedService,
     private readonly truthSweeper: InferenceTruthSweeperService,
+    // MODEL-SERVE-001-T21. Same module, no cycle: InferenceWindowMonitoring
+    // Service's own constructor only takes PrismaService, so this is a
+    // plain one-directional DI edge, not the cross-module kind this
+    // module's own export comment already reasons about.
+    private readonly monitoring: InferenceWindowMonitoringService,
   ) {}
 
   // ── access ───────────────────────────────────────────────────────────────
@@ -195,13 +201,34 @@ export class InferenceWindowAuthorizedService {
     await this.assertModelAccess(modelId, user);
 
     if (!dto.enabled) {
-      await this.prisma.inferenceSchedule.updateMany({
-        where: { modelId },
-        data: { enabled: false },
-      });
+      // MODEL-SERVE-001-T20. Disabling only stopped FUTURE dispatch (T19's
+      // own fix scopes dispatchDue's claim to enabled schedules) — it left
+      // whatever was already PENDING sitting there forever, permanently
+      // inflating gapCount and, on re-enable, dispatching newest-first
+      // ahead of nothing since the token is re-minted at spawn time, not
+      // checked for staleness. CANCELED only, never RUNNING: a spawned
+      // container is already in flight and stays owned by the reconcile
+      // sweep. One transaction so a disable can never record as having
+      // happened while its queued rows are left stranded PENDING.
+      const [, canceled] = await this.prisma.$transaction([
+        this.prisma.inferenceSchedule.updateMany({
+          where: { modelId },
+          data: { enabled: false },
+        }),
+        this.prisma.inferenceWindow.updateMany({
+          where: { modelId, status: 'PENDING' },
+          data: {
+            status: 'CANCELED',
+            failureReason:
+              'Schedule stopped before this window was dispatched.',
+            finishedAt: new Date(),
+            tokenExpiresAt: new Date(0),
+          },
+        }),
+      ]);
       return {
         statusCode: 200,
-        message: 'Schedule disabled',
+        message: `Schedule disabled (${canceled.count} queued window(s) canceled)`,
         type: 'SUCCESS' as const,
       };
     }
@@ -549,6 +576,9 @@ export class InferenceWindowAuthorizedService {
             failing: false,
             hasFailedWindows: false,
           }),
+          // MODEL-SERVE-001-T21. No schedule row at all — nothing to
+          // evaluate, same OFF this axis reads for driftMonitor: false.
+          health: { status: 'OFF' as const, thresholds: null },
         },
       };
     }
@@ -563,8 +593,19 @@ export class InferenceWindowAuthorizedService {
       orderBy: { windowStart: 'desc' },
       select: { windowStart: true, status: true },
     });
+    // MODEL-SERVE-001-T20: CANCELED excluded, deliberately, even though a
+    // cancelled window's windowStart is PERMANENTLY unfillable (by decision:
+    // insertDueWindows's own `skipDuplicates` never re-creates it on
+    // re-enable — see the enum's own doc comment on schema.prisma). This is
+    // "do not count it," not "there is no hole" — a Stop is an operator
+    // action, not evidence the schedule failed to produce a reading, so it
+    // stays out of the number that drives the staleness/gap story rather
+    // than silently reporting a hole that will never be filled.
     const gapCount = await this.prisma.inferenceWindow.count({
-      where: { modelId, status: { notIn: ['SUCCEEDED', 'SKIPPED'] } },
+      where: {
+        modelId,
+        status: { notIn: ['SUCCEEDED', 'SKIPPED', 'CANCELED'] },
+      },
     });
 
     const staleness = isStale(
@@ -599,7 +640,7 @@ export class InferenceWindowAuthorizedService {
     // `redactUrls` because completeService (this file) stores the infer
     // container's `str(err)` VERBATIM — the one failureReason writer that
     // is never sanitized on the way in (see redact-urls.ts's own doc).
-    const [lastFailedWindow, lastSkippedWindow] = await Promise.all([
+    const [lastFailedWindow, lastSkippedWindow, health] = await Promise.all([
       this.prisma.inferenceWindow.findFirst({
         where: { modelId, status: 'FAILED' },
         orderBy: { windowStart: 'desc' },
@@ -610,6 +651,9 @@ export class InferenceWindowAuthorizedService {
         orderBy: { windowStart: 'desc' },
         select: { windowStart: true, failureReason: true },
       }),
+      // MODEL-SERVE-001-T21. A SEPARATE axis from deployStatus below, never
+      // collapsed into it — see lib/model-health.ts's own doc comment.
+      this.monitoring.getHealthStatus(modelId),
     ]);
 
     return {
@@ -651,6 +695,7 @@ export class InferenceWindowAuthorizedService {
           failing,
           hasFailedWindows,
         }),
+        health,
       },
     };
   }

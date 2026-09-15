@@ -11,6 +11,10 @@ import {
 
 type ModelData = {
   deployStatus: 'stopped' | 'running' | 'error' | 'initializing';
+  /** MODEL-SERVE-001-T19. The setting the operator owns, alongside the fact
+   *  `deployStatus` derives from it — a Start/Stop control binds to THIS,
+   *  never to `deployStatus` (see lib/deploy-status.ts's `DeployState`). */
+  enabled: boolean;
   prodStatus: 'normal' | 'warning' | 'alert' | 'offline' | 'frozen';
   statusDetail?: string;
   deployedBy?: string;
@@ -38,6 +42,15 @@ function normalizeData(raw: unknown): ModelData {
     deployStatus: (r.deployStatus ??
       r.status ??
       'stopped') as ModelData['deployStatus'],
+    // The value READ back off a stored row here is never authoritative —
+    // same shape as `deployStatus` above (T12), same reason: the real
+    // setting lives on InferenceSchedule.enabled. `overlayDeployStatus`
+    // (lib/deploy-status.ts) OVERWRITES this field on every one of its four
+    // call sites with a fresh read; this default only feeds the brief
+    // window between `normalizeData` and that overlay (e.g. a create
+    // response, before any schedule exists). Never trust a value read from
+    // here as the live setting.
+    enabled: typeof r.enabled === 'boolean' ? r.enabled : false,
     prodStatus: (r.prodStatus ?? 'normal') as ModelData['prodStatus'],
     ...(typeof r.statusDetail === 'string' && { statusDetail: r.statusDetail }),
     ...(typeof r.deployedBy === 'string' && { deployedBy: r.deployedBy }),
@@ -219,6 +232,9 @@ export class ModelAuthorizedService {
 
     const initData: ModelData = {
       deployStatus: 'stopped',
+      // A freshly created model has no InferenceSchedule row yet — matches
+      // deriveDeployStatuses's own default for an absent schedule.
+      enabled: false,
       prodStatus: 'normal',
       editHistory: [],
       logs: [],

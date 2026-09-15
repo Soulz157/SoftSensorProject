@@ -1,5 +1,5 @@
 import type { CanvasNode } from '@/services/canvas'
-import type { ModelLog, Workspace, WorkspacePlant } from '@/types'
+import type { Workspace, WorkspacePlant } from '@/types'
 import type { ModelWithWorkspace } from '@/hooks/use-all-models'
 import { failedDeploys } from '@/lib/model-status'
 import { NODE_BADGE, NODE_DOT } from '@/constants/status'
@@ -32,7 +32,21 @@ export interface AlertRow {
   typeName: string
   status: AlertStatus
   detailError: string | null
-  errorLogs?: ModelLog[]
+  /**
+   * MODEL-SERVE-001-T23. The REAL failure cause — the most recent FAILED
+   * InferenceWindow's own redacted `failureReason`, carried on the models
+   * list payload by `deriveDeployStatuses` so this stays a pure function
+   * over that list rather than N per-model status requests.
+   *
+   * REPLACES an `errorLogs: ModelLog[]` field filtered out of
+   * `model.data.logs` on `level === 'error'`. That filter was empty BY
+   * CONSTRUCTION, not by bug: every `appendModelLog` call site in the
+   * client hardcodes `level: 'info'` (and they live in a mock retrain
+   * simulation), so no code path has ever produced the level it looked
+   * for. `model.data.logs` was never the deploy-failure source of truth
+   * either — `classifyDeployStatus` reads InferenceWindow directly.
+   */
+  failureReason: string | null
   affectedNode?: { name: string; planName: string | null }
   href: string
   timestamp: string
@@ -167,6 +181,9 @@ export function buildAlerts({
         typeName: capitalize(node.data.type),
         status,
         detailError: null,
+        // Equipment rows have no deploy to fail — this field is the model
+        // plane's, and a node alert is a different kind of event entirely.
+        failureReason: null,
         href: `/plants/${workspace.id}?nodeId=${node.id}`,
         timestamp: node.updatedAt,
       })
@@ -175,9 +192,9 @@ export function buildAlerts({
 
   // 2) Failed model deploys.
   for (const model of failedDeploys(models)) {
-    const errorLogs = (model.data?.logs ?? [])
-      .filter(l => l.level === 'error')
-      .slice(-3)
+    // MODEL-SERVE-001-T23. The real source, off the list payload — see
+    // AlertRow.failureReason for why `model.data.logs` was never it.
+    const lastFailure = model.data?.lastFailure ?? null
     const nodeData = model.nodes?.data as { name?: string } | undefined
     const equipmentName = model.nodes
       ? (nodeData?.name ?? 'Unknown Node')
@@ -203,12 +220,16 @@ export function buildAlerts({
       typeName: 'Model',
       status: 'failed',
       detailError: model.data?.statusDetail ?? null,
-      errorLogs: errorLogs.length > 0 ? errorLogs : undefined,
+      failureReason: lastFailure?.reason ?? null,
       affectedNode: model.nodes
         ? { name: equipmentName ?? 'Unknown Node', planName: plantName }
         : undefined,
       href: `/models/${model.id}`,
-      timestamp: errorLogs.at(-1)?.timestamp ?? model.updatedAt,
+      // The failing window's own start, not the row's last edit — a model
+      // untouched for a week whose deploy broke an hour ago should sort and
+      // filter by the failure, which is what this column means everywhere
+      // else in this list.
+      timestamp: lastFailure?.at ?? model.updatedAt,
     })
   }
 
