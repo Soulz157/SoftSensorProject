@@ -1143,6 +1143,15 @@ CV_FOLDS_FILENAME = "cv_folds.json"
 # (FEATURE_IMPORTANCE_FILENAME) and artifact-keys.ts — change all three. See
 # images/trainer/app/MIRRORS.md entry 7.
 FEATURE_IMPORTANCE_FILENAME = "feature_importance.json"
+# MODEL-FLOW-023-T10. A SECOND, independent artifact — never a widened
+# feature_importance.json, since a signed population-scored drop and an
+# always-non-negative fit-internal value answer different questions
+# (images/trainer/app/importance.py's own finding). Present only for the one
+# strategy that scores a permutation population today (windowed.run, i.e.
+# lstm/gru). Mirrored in that same file (PERMUTATION_IMPORTANCE_FILENAME) and
+# artifact-keys.ts — change all three. See
+# images/trainer/app/MIRRORS.md entry 7's sibling.
+PERMUTATION_IMPORTANCE_FILENAME = "permutation_importance.json"
 # MODEL-FLOW-019-T20. A SUCCEEDED run's own holdout series
 # ({timestamp,y_true,y_pred}), written by score-mode ONLY — a DIFFERENT
 # filename from PREDICTIONS_FILENAME because a non-CV run's predictions.parquet

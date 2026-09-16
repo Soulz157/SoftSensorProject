@@ -18,6 +18,7 @@ import {
   fetchArtifactMetadata,
   getRunCvFolds,
   getRunFeatureImportance,
+  getRunPermutationImportance,
   runPredictions,
   runPredictionsBatch,
 } from '@/lib/python-preprocess-client';
@@ -702,6 +703,28 @@ export class ModelRunLaunchAuthorizedService {
       }
     }
 
+    // MODEL-FLOW-023-T10. Same soft-read shape as cvFolds/featureImportance
+    // immediately above — a storage hiccup must never fail this whole run
+    // fetch over one auxiliary artifact not every caller needs on every
+    // tick. `null` for every run whose strategy did not score a permutation
+    // population (everything except lstm/gru today), the same
+    // honest-absence the run row's own null column already states.
+    let permutationImportance: Awaited<
+      ReturnType<typeof getRunPermutationImportance>
+    > | null = null;
+    if (run.permutationImportanceKey) {
+      try {
+        permutationImportance = await getRunPermutationImportance(
+          run.permutationImportanceKey,
+        );
+      } catch (err) {
+        this.log.error(
+          `getDraftRunService: could not read permutation_importance for run ${runId}`,
+          err,
+        );
+      }
+    }
+
     // Same envelope fix as createDraftRunService, and arguably the more
     // load-bearing half of it: this is what the 2.5s poll loop
     // (use-model-training.ts pollRun) calls on every tick, so an unwrapped
@@ -711,7 +734,7 @@ export class ModelRunLaunchAuthorizedService {
       statusCode: 200,
       message: 'Training run fetched',
       type: 'SUCCESS' as const,
-      data: { ...run, cvFolds, featureImportance },
+      data: { ...run, cvFolds, featureImportance, permutationImportance },
     };
   }
 

@@ -11,7 +11,10 @@
  * change to that convention has exactly one place to change.
  */
 
-import type { RunFeatureImportance } from '@/services/model-draft'
+import type {
+  RunFeatureImportance,
+  RunPermutationImportance,
+} from '@/services/model-draft'
 
 export interface RankedFeature {
   rank: number
@@ -119,4 +122,86 @@ export function observationsPerFeature(
     return null
   }
   return distinctLabelledValues / featureCount
+}
+
+export interface RankedPermutationFeature {
+  /** `null` when this feature is not rankable — the rank cell carries the
+   *  absence, per T05's own rule, rather than a number. The row still keeps
+   *  its sorted position; only the printed ordinal is withheld. */
+  rank: number | null
+  name: string
+  /** The CLAMPED value (`max(0, importanceRaw)`) — what the row sorts and
+   *  shares by. */
+  importance: number
+  /** The signed mean drop, unclamped — shown beside `importance`, never
+   *  re-derived from it. */
+  importanceRaw: number
+  /** Population std across repeats — a permutation figure never renders
+   *  without its spread. */
+  std: number
+  /** Share of the total importance among RANKABLE features only — an
+   *  unrankable feature always reads 0%, which follows from the clamp
+   *  (its own `importance` is 0) rather than being computed separately. */
+  share: number
+}
+
+/**
+ * MODEL-FLOW-023-T10/T05. A feature is rankable exactly when its CLAMPED
+ * `importance` is positive, i.e. `importanceRaw > 0` — permuting it made the
+ * model measurably worse. `importance === 0` (any `importanceRaw <= 0`) is
+ * "not ranked", the same clamp `extract_permutation_importance` already
+ * applied, not a second decision layered on top of it: the row keeps its
+ * sorted position, its rank cell is `null`, and its share is 0%.
+ *
+ * `std` rides along on every row regardless of rankability — the reader
+ * needs the spread to judge a POSITIVE point estimate too, not only to
+ * explain an absence.
+ */
+export function rankPermutationFeatures(
+  importance: RunPermutationImportance,
+  limit = 10,
+): RankedPermutationFeature[] {
+  const total = importance.features.reduce(
+    (sum, f) => sum + (f.importance > 0 ? f.importance : 0),
+    0,
+  )
+  return [...importance.features]
+    .sort((a, b) => b.importance - a.importance)
+    .slice(0, limit)
+    .map((f, i) => {
+      const rankable = f.importance > 0
+      return {
+        rank: rankable ? i + 1 : null,
+        name: f.name,
+        importance: f.importance,
+        importanceRaw: f.importance_raw,
+        std: f.std,
+        share: rankable && total > 0 ? f.importance / total : 0,
+      }
+    })
+}
+
+/** AC17. `scored_on` is read VERBATIM off the artifact — never derived —
+ *  because one method (permutation) can span two populations across
+ *  different runs (a sequence run's test split vs. a future tabular run's
+ *  holdout). A short, reader-facing label for the figure this module
+ *  already treats as an opaque string everywhere else. */
+/** AC16. The population's own SIZE, unit-labelled — "3,084 windows" for a
+ *  sequence run's `scored_on`, "3,084 rows" for anything else, so a reader
+ *  never assumes row-count uniformity across the twelve algorithms (a
+ *  sequence run's train_rows/test_rows already count windows while
+ *  feature_count counts columns — the same distinction stated wherever
+ *  those numbers surface). */
+export function populationCountLabel(scoredOn: string, n: number): string {
+  const unit = scoredOn.includes('window') ? 'window' : 'row'
+  return `${n.toLocaleString()} ${unit}${n === 1 ? '' : 's'}`
+}
+
+export function populationLabel(scoredOn: string): string {
+  switch (scoredOn) {
+    case 'test_windows':
+      return 'the windowed test split'
+    default:
+      return scoredOn
+  }
 }

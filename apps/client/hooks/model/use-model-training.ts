@@ -72,16 +72,34 @@ interface Deps {
 }
 
 /**
- * train.py's `build_model` (images/trainer/train.py) implements exactly 10
- * of the wizard's 12 catalogue entries — `lstm`/`gru` are the two still
- * deferred (need a windowing pipeline change train.py doesn't have yet).
- * Returns null for those so the caller refuses rather than spawning a
- * container that can only fail (MODEL-FLOW-003-T10).
+ * CORRECTED — this used to refuse lstm/gru unconditionally, on the claim
+ * that train.py's `build_model` implemented only 10 of the wizard's 12
+ * catalogue entries. That shipped before MODEL-FLOW-009-T04 landed the
+ * windowing pipeline; `build_model` (images/trainer/app/models.py) builds a
+ * real `SequenceRegressor` for both now, and a plain single run trains them
+ * live (MODEL-FLOW-023-T10's own verify script) — this function was the
+ * reason the wizard could not reach that path at all.
+ *
+ * `forCandidateJob` is the ONE place the refusal is still real:
+ * model-candidate-job.authorized.service.ts 400s a sequence-algorithm
+ * candidate outright (both ALGORITHM_SWEEP/SWEEP_THEN_TUNE and a direct
+ * HYPERPARAMETER_SEARCH), and no TUNING_GRID entry exists to expand one
+ * into a phase-2 shortlist — the same reason `AlgorithmStack` disables
+ * lstm/gru in the picker whenever Find Best Model or Find Best Parameters
+ * is on. `null` here is this function's own backstop for that case
+ * (MODEL-FLOW-003-T10's original discipline: refuse client-side rather than
+ * send it and let the candidate-job service fail), kept as defense in depth
+ * against stale draft state from before that picker dependency existed —
+ * same pattern the oversized-dataset checks already use.
  */
 function toBackendAlgorithm(
   algorithm: Algorithm,
+  forCandidateJob: boolean,
 ): CreateDraftRunInput['algorithm'] | null {
-  return algorithm === 'lstm' || algorithm === 'gru' ? null : algorithm
+  if (forCandidateJob && (algorithm === 'lstm' || algorithm === 'gru')) {
+    return null
+  }
+  return algorithm
 }
 
 /**
@@ -463,7 +481,7 @@ export function useModelTraining({
             'Select exactly one algorithm to tune it directly, or turn on Find Best Model to sweep first.',
           )
         }
-        const backendAlgorithm = toBackendAlgorithm(algorithm)
+        const backendAlgorithm = toBackendAlgorithm(algorithm, true)
         if (!backendAlgorithm) {
           throw new Error(
             `"${ALGORITHM_LABELS[algorithm]}" isn't supported by the training service yet — pick another algorithm.`,
@@ -506,7 +524,7 @@ export function useModelTraining({
           )
         }
         const candidates = algorithms.map(a => {
-          const backendAlgorithm = toBackendAlgorithm(a)
+          const backendAlgorithm = toBackendAlgorithm(a, true)
           if (!backendAlgorithm) {
             throw new Error(
               `"${ALGORITHM_LABELS[a]}" isn't supported by the training service yet — remove it from the sweep.`,
@@ -541,7 +559,7 @@ export function useModelTraining({
           'Select exactly one algorithm — a run fits one algorithm per model.',
         )
       }
-      const backendAlgorithm = toBackendAlgorithm(algorithm)
+      const backendAlgorithm = toBackendAlgorithm(algorithm, false)
       if (!backendAlgorithm) {
         throw new Error(
           `"${ALGORITHM_LABELS[algorithm]}" isn't supported by the training service yet — pick Linear Regression.`,

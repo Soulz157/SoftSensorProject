@@ -106,6 +106,13 @@ export const RUN_UPLOAD_FILENAMES = [
   // that same importance.py — change all three. See
   // images/trainer/app/MIRRORS.md entry 7.
   'feature_importance.json',
+  // MODEL-FLOW-023-T10. Population-scored importance — a SECOND, independent
+  // artifact from feature_importance.json above, present only for the
+  // strategy that scores a permutation population (windowed.run, i.e.
+  // lstm/gru today). Mirrored from PERMUTATION_IMPORTANCE_FILENAME in
+  // object_store.py and images/trainer/app/artifacts.py — change all three,
+  // and add the MIRRORS.md entry.
+  'permutation_importance.json',
   // MODEL-FLOW-019-T20. A SUCCEEDED run's own holdout series, written by
   // score-mode only — a run's predictions.parquet, if it has one, is
   // always the TEST split, and scoring must never overwrite it. Mirrored

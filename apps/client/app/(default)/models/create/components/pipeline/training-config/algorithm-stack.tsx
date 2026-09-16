@@ -20,6 +20,7 @@ import {
   type HyperparamValue,
 } from '@/store/model-pipeline'
 import { ineligibleReason } from '@/lib/algorithm-eligibility'
+import { SEQUENCE_ALGORITHMS } from '@/lib/metric-source'
 import { DynamicHyperparameters } from './dynamic-hyperparameters'
 
 const MAX = 3
@@ -40,6 +41,7 @@ interface Props {
     value: HyperparamValue,
   ) => void
   findBestParams: boolean
+  findBestModel: boolean
 }
 
 export function AlgorithmStack({
@@ -50,6 +52,7 @@ export function AlgorithmStack({
   hyperparameters,
   onHyperparameterChange,
   findBestParams,
+  findBestModel,
 }: Props) {
   const atCap = algorithms.length >= MAX
   const onlyOne = algorithms.length <= 1
@@ -60,6 +63,28 @@ export function AlgorithmStack({
         (entry): entry is [Algorithm, string] => entry[1] !== null,
       ),
     )
+
+  // [fix]. lstm/gru train fine as a single run (modelDraftRunService.create
+  // — MODEL-FLOW-009-T04's own windowing pipeline), but NEITHER candidate-
+  // job kind accepts them: model-candidate-job.authorized.service.ts 400s a
+  // sequence-algorithm candidate outright, for both ALGORITHM_SWEEP/
+  // SWEEP_THEN_TUNE (findBestModel) and a direct HYPERPARAMETER_SEARCH
+  // (findBestParams alone, one algorithm, no sweep) — TUNING_GRID.lstm/.gru
+  // do not exist, so there is nothing to expand into a phase-2 shortlist
+  // either. Without this, a user could select lstm/gru, turn on Find Best
+  // Model or Find Best Parameters, and only discover the refusal at launch
+  // (use-model-training.ts's own "remove it from the sweep" error) — the
+  // exact gap this closes, one layer up, disabling the selection instead of
+  // failing after it.
+  const candidateJobOnly = findBestModel || findBestParams
+  const sequenceReason: Partial<Record<Algorithm, string>> = candidateJobOnly
+    ? Object.fromEntries(
+        SEQUENCE_ALGORITHMS.map(a => [
+          a,
+          'Not available for Find Best Model or Find Best Parameters — LSTM/GRU can only be trained one at a time.',
+        ]),
+      )
+    : {}
 
   /**
    * Per-algorithm entry wins; the flat field answers for the PRIMARY only,
@@ -98,6 +123,25 @@ export function AlgorithmStack({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trainLabelledRows])
+
+  // [fix]. Same self-correcting shape, for the same reason, one mode
+  // switch later: turning ON Find Best Model or Find Best Parameters while
+  // lstm/gru is already selected must drop it from the selection rather
+  // than wait for a launch-time refusal — the dropdown's `disabled` above
+  // only stops a NEW selection, not one made before the toggle flipped.
+  useEffect(() => {
+    if (!candidateJobOnly || algorithms.length <= 1) return
+    const stillEligible = algorithms.filter(
+      a => !SEQUENCE_ALGORITHMS.includes(a),
+    )
+    if (
+      stillEligible.length !== algorithms.length &&
+      stillEligible.length > 0
+    ) {
+      onAlgorithmsChange(stillEligible)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [candidateJobOnly])
 
   const add = (a: Algorithm) => {
     if (atCap || algorithms.includes(a)) return
@@ -179,8 +223,12 @@ export function AlgorithmStack({
               {addable.map(a => {
                 // DEFERRED_REASON first: "the trainer cannot run this at
                 // all" outranks "this dataset is too big for it" when both
-                // apply.
-                const reason = DEFERRED_REASON[a] ?? oversizedReason[a]
+                // apply. sequenceReason next: "not for this MODE" outranks
+                // a dataset-size refusal too — both could apply to lstm/gru
+                // on a large dataset, and the mode is what the user just
+                // changed, so it is the more useful thing to say.
+                const reason =
+                  DEFERRED_REASON[a] ?? sequenceReason[a] ?? oversizedReason[a]
                 return (
                   <DropdownMenuCheckboxItem
                     key={a}

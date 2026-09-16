@@ -52,6 +52,16 @@ FEATURE_IMPORTANCE_FILENAME = "feature_importance.json"
 # (HOLDOUT_PREDICTIONS_FILENAME, also gates _ALLOWED_RUN_UPLOADS) and
 # artifact-keys.ts — change all three. See MIRRORS.md entry 8.
 HOLDOUT_PREDICTIONS_FILENAME = "holdout_predictions.parquet"
+# MODEL-FLOW-023-T03/T10. A SECOND artifact, never a widened
+# feature_importance.json — importance.py's own finding 6 is explicit that
+# the two methods cannot share one file (a signed permutation drop and an
+# always-non-negative impurity/coefficient value answer different questions).
+# Present only when `TrainingResult.permutation_population` was supplied AND
+# extract_permutation_importance did not refuse (too few windows, or the
+# lstm/gru cost gate). Mirrored in apps/python's object_store.py
+# (PERMUTATION_IMPORTANCE_FILENAME) and artifact-keys.ts — change all three,
+# and add the MIRRORS.md entry.
+PERMUTATION_IMPORTANCE_FILENAME = "permutation_importance.json"
 
 
 class ArtifactSet:

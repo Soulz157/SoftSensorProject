@@ -227,6 +227,7 @@ function trainingRun(
     holdoutMetrics: null,
     cvFoldsKey: null,
     featureImportanceKey: null,
+    permutationImportanceKey: null,
     predictionsKey: null,
     holdoutPredictionsKey: null,
     scoringContainerId: null,

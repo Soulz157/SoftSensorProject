@@ -39,10 +39,13 @@ export interface SweepPlanRow {
 /**
  * ONE ranking, applied to every row — forced, not preferred.
  *
- * MODEL-FLOW-019-T09 records no importance at all for mlp, grp, hgb, a
- * non-linear svm, lstm and gru, so a per-model ranking cannot exist for most
- * of the algorithm catalogue. A table whose row n=4 meant a DIFFERENT four
- * features per model would not be a comparison at all. So the order is
+ * MODEL-FLOW-019-T09 records no importance at all for mlp, grp, hgb and a
+ * non-linear svm — CORRECTED for lstm/gru, which MODEL-FLOW-023-T10 gave a
+ * permutation ranking; the sweep launcher does not consume it yet (a
+ * separate feature, not built here), so those two still cannot seed a row
+ * through THIS module today. A per-model ranking still cannot exist for
+ * most of the algorithm catalogue. A table whose row n=4 meant a DIFFERENT
+ * four features per model would not be a comparison at all. So the order is
  * computed ONCE, from a seed run that has importance, and the same prefix is
  * used for every row.
  *

@@ -428,10 +428,12 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
       suggestedRange: { min: 32, max: 256, note: 'recurrent state width' },
     },
     // MODEL-FLOW-009-T03. Default kept in sync with DEFAULT_SEQUENCE_LENGTH
-    // (images/trainer/train.py) — both are 24, not measured against any
-    // real dataset since no lookback-window convention exists elsewhere in
-    // this codebase yet. Still disabled inline (algorithm-selector.tsx)
-    // until MODEL-FLOW-009-T04 lands the runtime.
+    // (images/trainer/app/windows.py) — both are 24, not measured against
+    // any real dataset since no lookback-window convention exists elsewhere
+    // in this codebase yet. CORRECTED — the "still disabled inline" claim
+    // is stale: `algorithm-selector.tsx` was deleted (commit e9fcdf6),
+    // replaced by `algorithm-stack.tsx`, whose `DEFERRED_REASON` is empty —
+    // lstm/gru are selectable and train live since MODEL-FLOW-009-T04.
     {
       kind: 'number',
       key: 'sequence_length',

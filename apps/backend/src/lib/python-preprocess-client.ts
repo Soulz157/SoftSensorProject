@@ -658,6 +658,61 @@ export async function getRunFeatureImportance(
   return RunFeatureImportanceSchema.parse(res);
 }
 
+/** MODEL-FLOW-023-T10. A SECOND, independent artifact from
+ *  `RunFeatureImportance` above — a signed, population-scored drop, never
+ *  merged into that always-non-negative fit-internal shape. `importance` is
+ *  the CLAMPED value (`max(0, importance_raw)`) a share column can safely
+ *  sum; `importance_raw` rides beside it unclamped, same two-fields-not-one
+ *  shape a coefficient method uses for its own signed value. `std` is
+ *  REQUIRED — a permutation figure never renders without its spread. */
+const PermutationFeatureImportanceEntrySchema = z.object({
+  name: z.string().min(1),
+  importance: z.number(),
+  importance_raw: z.number(),
+  std: z.number(),
+});
+
+const RunPermutationImportanceSchema = z.object({
+  algorithm: z.string().min(1),
+  // Always "permutation" today — a distinct string from
+  // RunFeatureImportance.method's four values.
+  method: z.string().min(1),
+  // The population this run's drops were scored against, read VERBATIM off
+  // the artifact — "test_windows" for lstm/gru today. Never derived
+  // downstream from a run's CV/scoring phase (MODEL-FLOW-019 records that
+  // exact derivation added and removed five times under different names).
+  scored_on: z.string().min(1),
+  // MODEL-FLOW-023-T10/AC16. The scored population's own size — a WINDOW
+  // count for a sequence run, never assumed to be a row count.
+  n: z.number().int().nonnegative(),
+  // "rmse", minimised — MODEL-FLOW-005's own reason (a real run scored
+  // r2 = -1,110,858 while its rmse stayed readable).
+  metric: z.string().min(1),
+  n_repeats: z.number().int().positive(),
+  baseline_score: z.number(),
+  features: z.array(PermutationFeatureImportanceEntrySchema),
+});
+
+export type RunPermutationImportance = z.infer<
+  typeof RunPermutationImportanceSchema
+>;
+
+/**
+ * MODEL-FLOW-023-T10. `source_key` is resolved by the caller off the
+ * `ModelTrainingRun` row (`permutationImportanceKey`) — same discipline
+ * `getRunFeatureImportance` applies to its own key.
+ */
+export async function getRunPermutationImportance(
+  sourceKey: string,
+): Promise<RunPermutationImportance> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/models/runs/permutation-importance',
+    { source_key: sourceKey },
+    PYTHON_TIMEOUT.metadata,
+  );
+  return RunPermutationImportanceSchema.parse(res);
+}
+
 /** MODEL-FLOW-007-T11 / MODEL-SERVE-001-T01. `null` for a run trained before
  *  the trainer image that started recording each field — Save Model and
  *  ModelVersion creation both treat that as "not recorded", never as a

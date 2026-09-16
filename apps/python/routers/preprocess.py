@@ -99,6 +99,8 @@ from schemas.preprocess import (
     RunCvFoldsResponse,
     RunFeatureImportanceRequest,
     RunFeatureImportanceResponse,
+    RunPermutationImportanceRequest,
+    RunPermutationImportanceResponse,
     RunLossHistoryRequest,
     RunLossHistoryResponse,
     RunManifestRequest,
@@ -929,6 +931,28 @@ async def run_feature_importance(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(artifact_service.get_run_feature_importance, store, body)
+
+
+@router.post(
+    "/models/runs/permutation-importance",
+    response_model=RunPermutationImportanceResponse,
+    summary="A training run's permutation_importance.json, read and shape-checked",
+    description=(
+        "MODEL-FLOW-023-T10. `permutation_importance.json` is already "
+        "exactly the response shape "
+        "(images/trainer/app/importance.py's extract_permutation_importance "
+        "writes it that way on purpose) — a read-and-validate, not a "
+        "parse-and-reshape, same discipline as /models/runs/feature-"
+        "importance. `source_key` is guarded the same structural way."
+    ),
+)
+async def run_permutation_importance(
+    body: RunPermutationImportanceRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(
+        artifact_service.get_run_permutation_importance, store, body
+    )
 
 
 @router.post(

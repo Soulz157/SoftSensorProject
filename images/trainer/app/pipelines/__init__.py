@@ -42,12 +42,13 @@ from artifacts import (
     MANIFEST_FILENAME,
     METRICS_FILENAME,
     MODEL_FILENAME,
+    PERMUTATION_IMPORTANCE_FILENAME,
     PREDICTIONS_FILENAME,
 )
 from config import SCRATCH, STATUS_SUFFIX, TIMESTAMP_COLUMN, RunContext
 from guards import assert_no_target_leakage
 from holdout import score_holdout
-from importance import extract_feature_importance
+from importance import extract_feature_importance, extract_permutation_importance
 from labels import labelled_mask
 from manifest import build_run_manifest
 from models import SEQUENCE_ALGORITHMS
@@ -325,6 +326,30 @@ def _publish(
     )
     if importance is not None:
         artifacts.add_json(FEATURE_IMPORTANCE_FILENAME, importance)
+
+    # MODEL-FLOW-023-T10. A SECOND, independent extraction — never merged
+    # into `importance` above, per importance.py's own finding 6 (a signed
+    # drop and an always-non-negative fit-internal value cannot share one
+    # file). Only strategies that populate `permutation_population` offer
+    # anything here; today that is `windowed.run` alone, scored on its own
+    # test split (never the holdout — MODEL-FLOW-023-T10a's own audit found a
+    # windowed holdout has never once scored a real lstm/gru run in this
+    # system's live database).
+    if result.permutation_population is not None:
+        perm_X, perm_y, perm_population = result.permutation_population
+        permutation_importance = extract_permutation_importance(
+            prepared.algorithm,
+            result.model,
+            prepared.feature_cols,
+            perm_X,
+            perm_y,
+            prepared.seed,
+            perm_population,
+            log_fn=api.log,
+        )
+        if permutation_importance is not None:
+            artifacts.add_json(
+                PERMUTATION_IMPORTANCE_FILENAME, permutation_importance)
 
     for filename, payload in result.extra_json.items():
         artifacts.add_json(filename, payload)

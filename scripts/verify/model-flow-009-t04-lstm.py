@@ -323,6 +323,51 @@ def main() -> int:
           f"train loss {loss_history['series']['train'][0]:.4f} -> "
           f"{loss_history['series']['train'][-1]:.4f} (decreased — genuinely fit, not degenerate)")
 
+    # ── Stage 7: permutation importance (MODEL-FLOW-023-T10) ────────────
+    step("STAGE 7 — permutation_importance.json was written and reads back "
+         "through getDraftRunService, not just through MinIO directly")
+    permutation_key = run.get("permutationImportanceKey")
+    assert_true("run has a permutationImportanceKey", bool(permutation_key))
+    print(f"run.permutationImportanceKey = {permutation_key}")
+
+    assert_true(f"permutation_importance.json exists in MinIO ({permutation_key})",
+                store.exists(permutation_key))
+    permutation_object = store.get_json(permutation_key)
+    assert_eq("permutation_importance.algorithm", permutation_object["algorithm"], "lstm")
+    assert_eq("permutation_importance.method", permutation_object["method"], "permutation")
+    assert_eq("permutation_importance.scored_on", permutation_object["scored_on"],
+              "test_windows")
+    assert_eq("permutation_importance.metric", permutation_object["metric"], "rmse")
+    # AC16. n is a WINDOW count, matching splitSpec's own test_rows exactly
+    # — the same population, read the same way.
+    assert_eq("permutation_importance.n matches splitSpec.test_rows",
+              permutation_object["n"], split_spec["test_rows"])
+    assert_true("permutation_importance.n_repeats > 0",
+                permutation_object["n_repeats"] > 0)
+    assert_true("permutation_importance.baseline_score is finite",
+                isinstance(permutation_object["baseline_score"], (int, float)))
+    for f in permutation_object["features"]:
+        assert_true(f"{f['name']}: importance == max(0, importance_raw)",
+                    f["importance"] == max(0.0, f["importance_raw"]))
+        assert_true(f"{f['name']}: std is present and non-negative", f["std"] >= 0)
+    print(f"PASS — permutation_importance.json: {len(permutation_object['features'])} "
+          f"features, scored_on={permutation_object['scored_on']}, "
+          f"n_repeats={permutation_object['n_repeats']}, "
+          f"baseline_score={permutation_object['baseline_score']:.4f}")
+
+    # Re-fetch through the SAME endpoint the 2.5s poll loop / Step 5 use
+    # (getDraftRunService), not a second read path — proves the attach, not
+    # just the object's existence.
+    refetched = api.get(f"/authorized/model-drafts/{draft_id}/runs/{run_id}")["data"]
+    attached = refetched.get("permutationImportance")
+    assert_true("getDraftRunService attaches permutationImportance", attached is not None)
+    assert_eq("attached method matches the MinIO object", attached["method"],
+              permutation_object["method"])
+    assert_eq("attached scored_on matches the MinIO object", attached["scored_on"],
+              permutation_object["scored_on"])
+    print("PASS — getDraftRunService attaches permutationImportance verbatim, "
+          "the same soft-read path featureImportance/cvFolds already use")
+
     total_elapsed = time.time() - started
     print(f"\n{'=' * 70}\nALL STAGES PASSED in {total_elapsed:.1f}s (fit itself: {fit_elapsed:.1f}s)\n{'=' * 70}")
     print(f"draft_id={draft_id}")

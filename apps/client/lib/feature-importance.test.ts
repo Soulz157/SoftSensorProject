@@ -2,10 +2,35 @@ import { describe, it, expect } from 'vitest'
 import {
   canRank,
   observationsPerFeature,
+  populationCountLabel,
   rankFeatures,
+  rankPermutationFeatures,
   tailSummary,
 } from './feature-importance'
-import type { RunFeatureImportance } from '@/services/model-draft'
+import type {
+  RunFeatureImportance,
+  RunPermutationImportance,
+} from '@/services/model-draft'
+
+function permutation(
+  features: {
+    name: string
+    importance: number
+    importance_raw: number
+    std: number
+  }[],
+): RunPermutationImportance {
+  return {
+    algorithm: 'lstm',
+    method: 'permutation',
+    scored_on: 'test_windows',
+    n: 3084,
+    metric: 'rmse',
+    n_repeats: 10,
+    baseline_score: 0.42,
+    features,
+  }
+}
 
 function impurity(
   features: { name: string; importance: number }[],
@@ -171,5 +196,75 @@ describe('observationsPerFeature', () => {
   it('reads null when feature count is missing or zero', () => {
     expect(observationsPerFeature(32, null)).toBeNull()
     expect(observationsPerFeature(32, 0)).toBeNull()
+  })
+})
+
+describe('rankPermutationFeatures — MODEL-FLOW-023-T10', () => {
+  it('ranks only features whose clamped importance is positive; a non-positive one keeps its row with a null rank and 0% share', () => {
+    const importance = permutation([
+      { name: 'TI-101', importance: 0.05, importance_raw: 0.05, std: 0.01 },
+      // importance_raw <= 0 -> clamped to 0 -> not ranked, per the trainer's
+      // own clamp (AC7) — this is the SAME decision, not a second one.
+      { name: 'PI-201', importance: 0, importance_raw: -0.02, std: 0.03 },
+      { name: 'FI-301', importance: 0.03, importance_raw: 0.03, std: 0.005 },
+    ])
+    const ranked = rankPermutationFeatures(importance, 10)
+    expect(ranked.map(r => r.name)).toEqual(['TI-101', 'FI-301', 'PI-201'])
+    expect(ranked[0]!.rank).toBe(1)
+    expect(ranked[1]!.rank).toBe(2)
+    expect(ranked[2]!.rank).toBeNull()
+    expect(ranked[2]!.share).toBe(0)
+    // Share denominator excludes the unranked feature — the two ranked
+    // features' shares sum to 100%.
+    expect(ranked[0]!.share + ranked[1]!.share).toBeCloseTo(1, 6)
+  })
+
+  it('never abs()s importance_raw — the signed value rides beside the clamped one', () => {
+    const importance = permutation([
+      { name: 'PI-201', importance: 0, importance_raw: -0.02, std: 0.03 },
+    ])
+    const [row] = rankPermutationFeatures(importance, 10)
+    expect(row!.importanceRaw).toBe(-0.02)
+    expect(row!.importance).toBe(0)
+  })
+
+  it('limits to the requested count, sorted by clamped importance descending', () => {
+    const importance = permutation(
+      Array.from({ length: 15 }, (_, i) => ({
+        name: `tag-${i}`,
+        importance: 15 - i,
+        importance_raw: 15 - i,
+        std: 0.1,
+      })),
+    )
+    const ranked = rankPermutationFeatures(importance, 10)
+    expect(ranked).toHaveLength(10)
+    expect(ranked[0]!.name).toBe('tag-0')
+    expect(ranked[0]!.importance).toBe(15)
+  })
+
+  it('reads 0% share, not NaN, when every feature is unranked', () => {
+    const importance = permutation([
+      { name: 'PI-201', importance: 0, importance_raw: -0.02, std: 0.03 },
+      { name: 'FI-301', importance: 0, importance_raw: -0.01, std: 0.02 },
+    ])
+    const ranked = rankPermutationFeatures(importance, 10)
+    expect(ranked.every(r => r.rank === null)).toBe(true)
+    expect(ranked.every(r => r.share === 0)).toBe(true)
+  })
+})
+
+describe('populationCountLabel — MODEL-FLOW-023-T10/AC16', () => {
+  it('labels a sequence population in windows, never rows', () => {
+    expect(populationCountLabel('test_windows', 3084)).toBe('3,084 windows')
+  })
+
+  it('labels a non-sequence population in rows', () => {
+    expect(populationCountLabel('holdout', 1153)).toBe('1,153 rows')
+  })
+
+  it('singularises at n=1', () => {
+    expect(populationCountLabel('test_windows', 1)).toBe('1 window')
+    expect(populationCountLabel('holdout', 1)).toBe('1 row')
   })
 })

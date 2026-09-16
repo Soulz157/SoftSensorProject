@@ -499,6 +499,44 @@ describe('ModelRunAuthorizedService', () => {
       expect(updateCall2[0].data.holdoutPredictionsKey).toBeNull();
     });
 
+    it('MODEL-FLOW-023-T10: sets permutationImportanceKey when permutation_importance.json is uploaded, null otherwise', async () => {
+      const prisma = makePrisma();
+      const service = new ModelRunAuthorizedService(
+        prisma as never,
+        { advanceJobForRun: jest.fn() } as never,
+      );
+
+      await service.complete('run-1', {
+        status: 'SUCCEEDED',
+        metrics: { r2: 0.9 },
+        uploaded: [
+          'model.joblib',
+          'predictions.parquet',
+          'permutation_importance.json',
+        ],
+      } as never);
+
+      const [updateCall] = prisma.modelTrainingRun.update.mock.calls;
+      expect(updateCall[0].data.permutationImportanceKey).toBe(
+        'drafts/draft-1/runs/run-1/permutation_importance.json',
+      );
+
+      // Absent (a strategy that does not score a permutation population —
+      // every algorithm except lstm/gru today) → null, the same
+      // null-means-not-applicable discipline every sibling key above uses.
+      const prisma2 = makePrisma();
+      const service2 = new ModelRunAuthorizedService(
+        prisma2 as never,
+        { advanceJobForRun: jest.fn() } as never,
+      );
+      await service2.complete('run-1', {
+        status: 'SUCCEEDED',
+        uploaded: ['model.joblib', 'predictions.parquet'],
+      } as never);
+      const [updateCall2] = prisma2.modelTrainingRun.update.mock.calls;
+      expect(updateCall2[0].data.permutationImportanceKey).toBeNull();
+    });
+
     it('MODEL-FLOW-007 regression guard: once modelId is set, resolveRunOwner flips to models/{modelId}/... — a key nothing was ever written to under pointer-only adoption', async () => {
       // Save Model (MODEL-FLOW-007) sets modelId on the winning run WITHOUT
       // moving its bytes — they stay under drafts/{modelDraftId}/runs/... —

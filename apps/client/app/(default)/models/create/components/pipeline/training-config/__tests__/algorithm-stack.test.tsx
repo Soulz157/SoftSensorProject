@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AlgorithmStack } from '../algorithm-stack'
 import type { Algorithm, HyperparamValue } from '@/store/model-pipeline'
@@ -43,6 +43,7 @@ function stackProps(overrides: Partial<StackProps> = {}): StackProps {
     hyperparameters: {} as Record<string, HyperparamValue>,
     onHyperparameterChange: vi.fn(),
     findBestParams: false,
+    findBestModel: false,
     ...overrides,
   }
 }
@@ -166,6 +167,92 @@ describe('AlgorithmStack — MODEL-FLOW-022 self-correcting eligibility', () => 
     expect(ineligibleReason('grp', OVER)).not.toBeNull()
     expect(ineligibleReason('grp', UNDER)).toBeNull()
     expect(ineligibleReason('ridge', OVER)).toBeNull()
+  })
+})
+
+/**
+ * [fix]. lstm/gru train fine as a plain single run
+ * (modelDraftRunService.create, MODEL-FLOW-009-T04's windowing pipeline),
+ * but NEITHER candidate-job kind accepts them — Find Best Model
+ * (ALGORITHM_SWEEP/SWEEP_THEN_TUNE) and Find Best Parameters alone
+ * (HYPERPARAMETER_SEARCH) both 400 at the backend, since no TUNING_GRID
+ * entry exists to expand one into a phase-2 shortlist. Before this, a user
+ * could select lstm, turn on Find Best Model, and only discover the
+ * refusal at launch ("... isn't supported by the training service yet —
+ * remove it from the sweep").
+ */
+describe('AlgorithmStack — sequence algorithms unavailable for Find Best Model/Parameters', () => {
+  function lstmItem() {
+    // Anchored at the start, no \b: the label and reason spans concatenate
+    // with NO space in the accessible name ("LSTMNot available..."), and
+    // the reason text itself says "LSTM/GRU" — a bare /lstm/i would match
+    // GRU's own item too. ^ alone already disambiguates ("GRUNot..." does
+    // not start with "lstm").
+    return screen.getByRole('menuitemcheckbox', { name: /^lstm/i })
+  }
+
+  it('leaves lstm selectable when neither Find Best Model nor Find Best Parameters is on', async () => {
+    renderStack({ findBestModel: false, findBestParams: false })
+    await openAddMenu()
+
+    expect(lstmItem()).not.toHaveAttribute('aria-disabled', 'true')
+  })
+
+  it('disables lstm in the picker while Find Best Model is on, naming the reason', async () => {
+    renderStack({ findBestModel: true })
+    await openAddMenu()
+
+    expect(lstmItem()).toHaveAttribute('aria-disabled', 'true')
+    // Scoped to lstm's own item — gru's item carries the same reason text
+    // (both are sequence algorithms), so an unscoped query finds two.
+    expect(
+      within(lstmItem()).getByText(/Find Best Model or Find Best Parameters/),
+    ).toBeInTheDocument()
+  })
+
+  it('disables lstm in the picker while Find Best Parameters is on, even without a sweep', async () => {
+    renderStack({ findBestModel: false, findBestParams: true })
+    await openAddMenu()
+
+    expect(lstmItem()).toHaveAttribute('aria-disabled', 'true')
+  })
+
+  it('drops lstm from an existing selection the moment Find Best Model turns on, keeping the rest', () => {
+    const onAlgorithmsChange = vi.fn()
+    const props = stackProps({
+      algorithms: ['lstm', 'ridge'] as Algorithm[],
+      onAlgorithmsChange,
+      findBestModel: false,
+    })
+    const { rerender } = render(<AlgorithmStack {...props} />)
+    expect(onAlgorithmsChange).not.toHaveBeenCalled()
+
+    rerender(<AlgorithmStack {...props} findBestModel={true} />)
+
+    expect(onAlgorithmsChange).toHaveBeenCalledWith(['ridge'])
+  })
+
+  it('never drops the LAST remaining algorithm, even lstm, even under Find Best Model', () => {
+    const onAlgorithmsChange = vi.fn()
+    const props = stackProps({
+      algorithms: ['lstm'] as Algorithm[],
+      onAlgorithmsChange,
+      findBestModel: false,
+    })
+    const { rerender } = render(<AlgorithmStack {...props} />)
+
+    rerender(<AlgorithmStack {...props} findBestModel={true} />)
+
+    expect(onAlgorithmsChange).not.toHaveBeenCalled()
+  })
+
+  it('refuses ONLY lstm/gru — Find Best Model does not disable every algorithm', async () => {
+    renderStack({ findBestModel: true })
+    await openAddMenu()
+
+    expect(
+      screen.getByRole('menuitemcheckbox', { name: 'Random Forest' }),
+    ).not.toHaveAttribute('aria-disabled', 'true')
   })
 })
 

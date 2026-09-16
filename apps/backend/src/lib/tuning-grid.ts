@@ -14,9 +14,14 @@
  * satisfy `HyperparametersSchema`
  * (dto/model-run.authorized.dto.ts) — string, number, boolean, or null only.
  *
- * `lstm`/`gru` have no entry: both are refused before a container is ever
- * spawned (`TrainingAlgorithmEnum` omits them), so a grid for them would be
- * dead code that looks live.
+ * `lstm`/`gru` have no entry. CORRECTED — the earlier claim here ("refused
+ * before a container is ever spawned, `TrainingAlgorithmEnum` omits them")
+ * is stale: MODEL-FLOW-009-T04 widened that enum to include both and they
+ * train live. Their absence from this grid is now a real gap
+ * (`tuningCandidatesFor` returns `[]` for them, `TuningGridAuthorizedService
+ * .get` 404s), not dead code — Find Best Parameters simply does not support
+ * sequence models yet, tracked separately from MODEL-FLOW-023's permutation
+ * work rather than closed here.
  */
 export const TUNE_VARIANTS_PER_JOB = 4;
 

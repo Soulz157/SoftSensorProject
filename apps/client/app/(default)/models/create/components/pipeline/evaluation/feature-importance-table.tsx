@@ -40,23 +40,49 @@ function formatPct(fraction: number): string {
 interface MethodMeta {
   label: string
   caveat: string
+  /** MODEL-FLOW-023-T06. What "% of total" MEANS for this method — the
+   *  column means different things across methods, so this is stated once
+   *  here rather than left for a render site to word each time. */
+  shareCaveat?: string
+  /** MODEL-FLOW-023-T06/AC62. A FIXED caveat for a method that is a
+   *  property of the fitted estimator and carries no evaluation population
+   *  at all — `undefined` for a method whose population varies PER RUN
+   *  (permutation): that one is read off the artifact's own `scored_on`
+   *  at render time, never stored here, never derived from a run's
+   *  CV/scoring phase (MODEL-FLOW-019 records that exact derivation added
+   *  and removed five times under different names). */
+  population?: string
 }
+
+const NOT_SCORED_AGAINST_A_POPULATION =
+  'Measured on the training fit, not scored against any evaluation population.'
 
 const METHOD_META: Record<string, MethodMeta> = {
   impurity: {
     label: 'impurity',
     caveat:
       'Biased toward high-cardinality features — on this system’s own data, process tags carry roughly 1,000 distinct values against a target’s 32 to 97, so the ranking favours the finest-grained sensor over a genuinely predictive coarse one.',
+    // sklearn normalises feature_importances_ to sum to 1 — the stored
+    // quantity reformatted, not a second computation.
+    shareCaveat:
+      'The stored quantity, reformatted — feature_importances_ already sums to 1.',
+    population: NOT_SCORED_AGAINST_A_POPULATION,
   },
   coefficient: {
     label: 'coefficient',
     caveat:
       'A per-feature weight, comparable across features only when the inputs are standardised.',
+    shareCaveat:
+      'Computed from |coefficient|, which has no natural total of its own — two runs’ shares are not comparable to each other.',
+    population: NOT_SCORED_AGAINST_A_POPULATION,
   },
   'pls-coefficient': {
     label: 'PLS coefficient',
     caveat:
       'A projection onto latent components, not a per-input importance in the sense the other rows carry — comparable across features only when the inputs are standardised, same as an ordinary coefficient.',
+    shareCaveat:
+      'Computed from |coefficient|, which has no natural total of its own — two runs’ shares are not comparable to each other.',
+    population: NOT_SCORED_AGAINST_A_POPULATION,
   },
   // MODEL-FLOW-019-T32. Its own caveat, deliberately NOT impurity's wording:
   // the failure here is not cardinality bias but PARTIAL EFFECT. Rescaling by
@@ -68,6 +94,27 @@ const METHOD_META: Record<string, MethodMeta> = {
     label: 'standardized coefficient',
     caveat:
       'The coefficient expressed per one standard deviation of its own input, measured on the rows this model was fitted on — comparable across features without rescaling the data. It is still a linear, additive effect at fixed values of every other feature, so where two tags move together it splits credit between them rather than reporting either one’s total influence.',
+    shareCaveat:
+      'Computed from |coefficient| · std(X), which has no natural total of its own — two runs’ shares are not comparable to each other.',
+    population: NOT_SCORED_AGAINST_A_POPULATION,
+  },
+  // MODEL-FLOW-023-T10. `population` is deliberately ABSENT — permutation's
+  // population varies PER RUN (a sequence run's test split today, a future
+  // tabular run's holdout), so the caller reads it off the artifact's own
+  // `scored_on` (see `populationLabel` in lib/feature-importance.ts) rather
+  // than finding one fixed string here.
+  permutation: {
+    label: 'permutation',
+    caveat:
+      'Scored against a population the fit never saw — a channel is reshuffled and the model is re-scored, so a negative drop means the feature contributed nothing rather than something to subtract.',
+    // Deliberately NOT impurity's wording: impurity inflates with
+    // cardinality, permutation instead UNDERSTATES a tag whose correlated
+    // sibling still carries the signal — permuting one tag while its
+    // sibling carries the signal reports the first as unimportant. Point at
+    // Step 2's own correlated-pairs list rather than recomputing
+    // correlation (MODEL-FLOW-010-T05).
+    shareCaveat:
+      'The sum of drops is not a total of anything — correlated features split credit between them, so shares here do not carry the same meaning as impurity’s.',
   },
 }
 

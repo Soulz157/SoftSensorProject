@@ -68,6 +68,7 @@ function cvRun(
     holdoutMetrics: null,
     cvFoldsKey: 'cv_folds.json',
     featureImportanceKey: null,
+    permutationImportanceKey: null,
     predictionsKey: null,
     holdoutPredictionsKey: null,
     scoringContainerId: null,
@@ -423,6 +424,7 @@ function seedRun(overrides: Partial<DraftRunSummary> = {}): DraftRunSummary {
     metrics: null,
     holdoutMetrics: null,
     cvFolds: null,
+    permutationImportance: null,
     featureImportance: {
       algorithm: 'random_forest',
       method: 'impurity',

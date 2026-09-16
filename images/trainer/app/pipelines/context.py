@@ -96,6 +96,21 @@ class TrainingResult:
     # then takes its own honest-absence path rather than ranking on a
     # fabricated width.
     train_feature_std: dict[str, float] | None = None
+    # MODEL-FLOW-023-T10. `(X, y, population)` for permutation importance —
+    # the SCORING population's feature tensor/target, exactly as the strategy
+    # itself computed it, never re-derived at the publish site (the same
+    # reason `train_feature_std` above is a field rather than a computation
+    # in `_publish`: only the strategy knows which rows/windows those are).
+    # `X`/`y` are whatever shape the strategy's own model.predict() accepts —
+    # a window tensor for windowed, a 2-D frame for chronological/CV, should a
+    # later task extend this to those strategies. `population` is a short
+    # label ("test_windows") the artifact records VERBATIM as `scored_on`,
+    # never derived downstream from a run's CV/scoring phase — MODEL-FLOW-019
+    # records that exact derivation being added and removed five times.
+    # `None` for any strategy that supplies nothing (today: chronological,
+    # cv_expanding), and permutation then takes the same honest-absence path
+    # `extract_feature_importance` already takes for a fourth strategy.
+    permutation_population: tuple[Any, Any, str] | None = None
 
 
 def resolve_feature_columns(

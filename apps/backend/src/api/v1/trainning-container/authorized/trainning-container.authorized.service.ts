@@ -236,8 +236,52 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
   // fixes push auth. Every OTHER environment fails LOUDLY at boot (a warn,
   // then a rejected pull) rather than silently running old code — same
   // `resolveDigest` behaviour the 1.0.9/1.0.10 notes already describe.
+  //
+  // 1.0.12 (MODEL-FLOW-023-T10): permutation importance for lstm/gru.
+  // `importance.extract_permutation_importance` — a SECOND, independent
+  // artifact (`permutation_importance.json`), channel-block permutation on
+  // the windowed strategy's own test split, wired beside the existing
+  // `extract_feature_importance` call in `pipelines/__init__.py._publish`.
+  // Not in the 1.0.10 note's "purely additive, SILENT" class either way: a
+  // stale image simply never writes the new file, which reads as the same
+  // honest null `permutationImportanceKey` a pre-1.0.12 run already has —
+  // additive, therefore silent, same class as 1.0.9/1.0.10's own artifacts.
+  //
+  // COST MEASURED IN-IMAGE, UNDER PRODUCTION LIMITS (`--cpus=2 --memory=8g
+  // -e TRAINER_CPU_BUDGET=2`, matching this service's own
+  // `nanoCpus`/`memoryBytes` defaults below) — the figure the 2026-09-09
+  // exclusion rested on (MODEL-FLOW-009-T04's ">10 minutes") was a FIT,
+  // pre-thread-pool-fix, multiplied for PER-CELL permutation; this measures
+  // the actual PER-CHANNEL predict-only sweep the chosen method performs.
+  // 21 features x 10 repeats = 211 predict calls (210 + 1 baseline), real
+  // fitted `SequenceRegressor`:
+  //   lstm,  500 test windows: fit 2.2s,  permutation sweep 4.5s  (21ms/call)
+  //   lstm, 2000 test windows: fit 6.9s,  permutation sweep 16.4s (78ms/call)
+  //   gru,   500 test windows: fit 21.0s, permutation sweep 19.2s (91ms/call)
+  // Seconds, not minutes, at every scale tried — the exclusion's premise
+  // does not hold for this method. `n_repeats=10`
+  // (`DEFAULT_PERMUTATION_REPEATS`, importance.py) stands as measured
+  // rather than being lowered.
+  //
+  // VERIFIED IN-IMAGE BY BEHAVIOUR, NOT BY TAG: `docker run --user root`
+  // (1.0.10's own correction — the suite needs `--user root` plus a
+  // `pip install pytest` with the test directory mounted) — 65 passed (56
+  // inherited through 1.0.11, 9 added here for
+  // `extract_permutation_importance`: channel isolation — permuting an
+  // UNUSED channel leaves a stub model's score EXACTLY unchanged, proving
+  // the shuffle targets `X[:, :, j]` as a whole axis rather than a cell or
+  // a row — artifact shape, seed reproducibility, the `_MIN_PERMUTATION_
+  // WINDOWS` refusal, a malformed-X refusal, and the best-effort
+  // exception/non-finite-baseline paths writing nothing rather than a
+  // partial table).
+  //
+  // PUSH FAILED, SAME AS EVERY PRIOR BUMP — `docker push` returned
+  // `insufficient_scope: authorization failed`, so 1.0.12 exists LOCALLY on
+  // the build machine only. `resolveDigest` inspects the local image first,
+  // so this default is correct where it was built and fails LOUDLY at boot
+  // elsewhere rather than silently running old code.
   private readonly imageRef =
-    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.11';
+    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.12';
   // private readonly network = process.env.TRAINING_NETWORK ?? 'dslake_default';
   private readonly network = 'monorepo_network';
   private readonly memoryBytes = Number(

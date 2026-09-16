@@ -109,6 +109,7 @@ const BASE_RUN: DraftRunSummary = {
   holdoutMetrics: null,
   cvFolds: null,
   featureImportance: null,
+  permutationImportance: null,
   splitStats: null,
 }
 

@@ -323,6 +323,17 @@ export class ModelRunAuthorizedService {
       // quantity from — the same null-means-not-applicable discipline
       // lossHistoryKey/cvFoldsKey use above.
       featureImportanceKey: keyIf('feature_importance.json'),
+      // MODEL-FLOW-023-T10. null for every run whose strategy does not
+      // supply a permutation population — everything except lstm/gru today
+      // — the same null-means-not-applicable discipline the sibling keys
+      // above use. Re-checked, not assumed: scoreCompleteService's own
+      // narrow update (below) writes only predictionsKey/
+      // holdoutPredictionsKey/holdoutMetrics with `undefined` for anything
+      // absent, so a later scoring phase can never null this key either —
+      // the same property MODEL-FLOW-019-T09 verified for
+      // featureImportanceKey and MODEL-FLOW-019-T20 preserved when it added
+      // holdoutPredictionsKey to that narrower update.
+      permutationImportanceKey: keyIf('permutation_importance.json'),
       // MODEL-FLOW-019-T26. The run's own holdout series, written INLINE at
       // training time now that `_score_holdout_if_present` keeps the frame it
       // used to discard. null for a run whose dataset has no holdout, for a

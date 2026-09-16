@@ -138,4 +138,11 @@ def run(prepared: PreparedRun, api: RunApi) -> TrainingResult:
             prepared.algorithm, model, log_fn=api.log),
         holdout_eligible=True,
         holdout_sequence_length=sequence_length,
+        # MODEL-FLOW-023-T10. The windowed TEST split — X_test/y_test above,
+        # already in hand, not re-windowed. "test_windows" is what
+        # `extract_permutation_importance` writes verbatim as `scored_on`; see
+        # that task's own record for why the holdout was considered and ruled
+        # out this pass (a windowed holdout has never once scored a real
+        # lstm/gru run in this system).
+        permutation_population=(X_test, y_test, "test_windows"),
     )

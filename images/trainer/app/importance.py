@@ -55,6 +55,17 @@ scalers that were actually fitted, so a fully minmax-scaled ols run and a
 genuinely unscaled one both reported `standardized: false` and both rendered
 "not ranked". Coverage is now read per feature column off `scalingParams`, the
 same per-tag check `assert_scaling_coverage` makes in packages/py-scaling.
+
+PERMUTATION (MODEL-FLOW-023, extended to lstm/gru by MODEL-FLOW-023-T10) is a
+SEPARATE function, `extract_permutation_importance` below, not a fifth branch
+here. `extract_feature_importance` reads a quantity the FIT already computed;
+permutation SCORES a population the fit never saw, needs `predict()` rather
+than a fitted attribute, and can be negative — a different question with a
+different shape, kept out of this function's `try/except` so a permutation
+failure can never be confused with "this algorithm has no such quantity to
+read". `lstm`/`gru` still return `None` from THIS function — no impurity, no
+coefficient, no plain reading off the fit exists for a sequence model — and
+get their ranking from the other one instead.
 """
 
 from __future__ import annotations
@@ -64,11 +75,29 @@ from typing import Any, Callable, Mapping
 
 LogFn = Callable[..., None]
 
-# hgb/hist_gradient_boosting, mlp, grp, non-linear svm, lstm/gru have no
-# per-feature quantity this trainer reads — deliberately absent from every
-# branch below, falling through to the final `return None`.
+# hgb/hist_gradient_boosting, mlp, grp, non-linear svm, lstm, gru have no
+# per-feature quantity THIS function reads — deliberately absent from every
+# branch below, falling through to the final `return None`. lstm/gru get a
+# permutation figure from `extract_permutation_importance` instead; the other
+# four remain excluded from both functions (MODEL-FLOW-023's own scope).
 _IMPURITY_ALGORITHMS = ("random_forest", "lightgbm", "xgboost")
 _COEFFICIENT_ALGORITHMS = ("ols", "ridge")
+
+# MODEL-FLOW-023-T02/T10. A window count below this makes a permuted-vs-
+# baseline RMSE drop too noisy to report at all — not a measured threshold,
+# a floor picked to match `windowed.py`'s own 30-window training-side refusal
+# at one order of magnitude down, since the test split is the smaller share
+# of that same floor. Below it, `extract_permutation_importance` returns
+# `None` for the whole run rather than a table built on too few points.
+_MIN_PERMUTATION_WINDOWS = 10
+
+# MODEL-FLOW-023-T02. Forward passes only (never a refit), so the per-feature
+# cost is `n_repeats` calls to `model.predict()` over the already-fitted
+# estimator. Ten repeats matches the number MODEL-FLOW-023's own findings
+# used to illustrate the (corrected) cost arithmetic — revisit once T02's
+# in-image measurement (recorded in the trainer image's own bump log) has run
+# against a real dataset; this is a starting point, not a measured constant.
+DEFAULT_PERMUTATION_REPEATS = 10
 
 
 def extract_feature_importance(
@@ -371,3 +400,134 @@ def _shape(
         "scaling_methods": scaling_methods,
         "features": features,
     }
+
+
+def extract_permutation_importance(
+    algorithm: str,
+    model: Any,
+    feature_cols: list[str],
+    X: Any,
+    y: Any,
+    seed: int,
+    population: str,
+    n_repeats: int = DEFAULT_PERMUTATION_REPEATS,
+    log_fn: LogFn | None = None,
+) -> dict[str, Any] | None:
+    """`{algorithm, method, scored_on, metric, n_repeats, baseline_score,
+    features}` or `None`. Never raises — same best-effort discipline as
+    `extract_feature_importance`.
+
+    MODEL-FLOW-023-T10. `X` is a WINDOW tensor, `(n_windows, sequence_length,
+    len(feature_cols))` — `sklearn.inspection.permutation_importance` does not
+    accept that shape, so this is hand-rolled rather than a call to it.
+
+    THE PERMUTED UNIT IS A FEATURE CHANNEL, NEVER A CELL AND NEVER A ROW. For
+    feature `j`, `X[:, :, j]` — that channel's whole history, across every
+    window — is reassigned window-for-window by a random permutation of the
+    window axis; each window's own internal timestep order is left intact. Two
+    things this is deliberately not: per-CELL permutation across
+    `n_features * sequence_length` cells, which would be a different (larger)
+    experiment and would destroy the temporal structure WITHIN a window; and
+    row-wise shuffling, which this system's own measured lag-1 autocorrelation
+    of 0.9992 (MODEL-FLOW-016 finding 1) would make indistinguishable from
+    noise — a row-wise shuffle measures the shuffle, not the feature.
+
+    THE METRIC IS RMSE, MINIMISED, NOT R² — MODEL-FLOW-005's own reason: a
+    real run once scored r2 = -1,110,858 while its rmse stayed readable. A
+    feature's `importance_raw` is `permuted_rmse - baseline_rmse` averaged
+    over `n_repeats` reshuffles; positive means permuting that channel made
+    the model WORSE, i.e. the channel carried real signal.
+
+    NEGATIVES ARE NOT abs()'d. A negative drop means the feature contributed
+    nothing (permuting it, by chance, IMPROVED the score) — its magnitude
+    would rank a noise feature above a genuinely weak-but-positive one, which
+    is the inversion `abs()` would cause. `importance` is the CLAMPED value
+    (`max(0, importance_raw)`) that a share column can safely sum; the signed
+    `importance_raw` rides beside it, unclamped, the same two-fields-not-one
+    shape `_coefficient_result` already uses for a signed coefficient. `std`
+    (population std across the `n_repeats` reshuffles, `ddof=0`) is REQUIRED,
+    never optional — at this system's 32-97 distinct labelled values the std
+    will often exceed the mean, and that is the method working, not a defect;
+    a reader needs the spread to know whether a positive mean is real. Ranking
+    a feature whose interval spans zero is the CLIENT's decision (it has the
+    display context for "not ranked"), not this function's — this function
+    only ever reports the two numbers a caller needs to make that call.
+
+    `n_windows` below `_MIN_PERMUTATION_WINDOWS` refuses the WHOLE run —
+    write nothing rather than a table built on too few points to mean
+    anything, the same all-or-nothing discipline `_std_vector` already
+    applies for a standardized coefficient.
+    """
+    try:
+        import numpy as np
+
+        from metrics import regression_metrics
+
+        X = np.asarray(X)
+        y = np.asarray(y)
+        if X.ndim != 3 or X.shape[2] != len(feature_cols):
+            return None
+        n_windows = X.shape[0]
+        if n_windows < _MIN_PERMUTATION_WINDOWS:
+            if log_fn:
+                log_fn(
+                    f"permutation importance skipped for {algorithm}: only "
+                    f"{n_windows} {population} windows, too few for a drop "
+                    f"to mean anything (minimum {_MIN_PERMUTATION_WINDOWS}).",
+                    "warn",
+                )
+            return None
+
+        baseline_pred = model.predict(X)
+        baseline_rmse = regression_metrics(y, baseline_pred)["rmse"]
+        if not math.isfinite(baseline_rmse):
+            return None
+
+        rng = np.random.default_rng(seed)
+        features: list[dict[str, Any]] = []
+        for j, name in enumerate(feature_cols):
+            X_perm = X.copy()
+            drops = np.empty(n_repeats)
+            for r in range(n_repeats):
+                order = rng.permutation(n_windows)
+                X_perm[:, :, j] = X[order, :, j]
+                permuted_pred = model.predict(X_perm)
+                drops[r] = (
+                    regression_metrics(y, permuted_pred)["rmse"] - baseline_rmse
+                )
+            raw = float(drops.mean())
+            std = float(drops.std(ddof=0))
+            if not (math.isfinite(raw) and math.isfinite(std)):
+                return None
+            features.append(
+                {
+                    "name": name,
+                    "importance": max(0.0, raw),
+                    "importance_raw": raw,
+                    "std": std,
+                }
+            )
+
+        return {
+            "algorithm": algorithm,
+            "method": "permutation",
+            "scored_on": population,
+            "metric": "rmse",
+            # MODEL-FLOW-023-T10/AC16. The scored population's own size — a
+            # WINDOW count for a sequence run (X.shape[0] here, never a row
+            # count), stated so a reader does not assume uniformity with a
+            # future tabular permutation's row-counted population. The unit
+            # itself is not named here (that reads `scored_on`); this is
+            # only ever the count.
+            "n": n_windows,
+            "n_repeats": n_repeats,
+            "baseline_score": baseline_rmse,
+            "features": features,
+        }
+    except Exception as exc:  
+        if log_fn:
+            log_fn(
+                f"permutation importance extraction failed for {algorithm}: {exc}",
+                "warn",
+            )
+        return None

@@ -13,7 +13,7 @@ import pytest
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import Ridge
 
-from importance import extract_feature_importance
+from importance import extract_feature_importance, extract_permutation_importance
 
 FEATURE_COLS = ["a", "b", "c"]
 
@@ -300,3 +300,163 @@ def test_estimator_that_raises_on_attribute_access_returns_none_and_never_propag
     )
     assert result is None
     assert any("boom" in msg for msg, _ in logs)
+
+
+# ── extract_permutation_importance — MODEL-FLOW-023-T10 ─────────────────────
+
+PERM_FEATURE_COLS = ["channel-a", "channel-b", "channel-c"]
+SEQUENCE_LENGTH = 4
+N_WINDOWS = 40
+
+
+class _ChannelZeroModel:
+    """predict() reads ONLY channel 0's window mean — channels 1/2 are pure
+    noise the model never looks at. This makes the channel-isolation claim
+    exactly checkable: permuting channel 0 must move the score, permuting
+    channel 1/2 must NOT move it by even a float epsilon, because predict()
+    never reads those slices regardless of their values."""
+
+    def predict(self, X):
+        return X[:, :, 0].mean(axis=1)
+
+
+def _perm_xy(seed: int = 0, n_windows: int = N_WINDOWS):
+    rng = np.random.default_rng(seed)
+    X = rng.normal(size=(n_windows, SEQUENCE_LENGTH, len(PERM_FEATURE_COLS)))
+    y = X[:, :, 0].mean(axis=1)  # exactly what _ChannelZeroModel predicts
+    return X, y
+
+
+def test_permutes_a_whole_channel_never_a_cell_and_never_row_wise():
+    """The defining claim of MODEL-FLOW-023-T10: shuffling channel 1 or 2
+    (which predict() never reads) must leave the score EXACTLY unchanged —
+    proving the permutation targets X[:, :, j] as a whole axis-0 shuffle,
+    not a per-cell or per-row operation that could accidentally touch
+    channel 0's own values."""
+    X, y = _perm_xy()
+    result = extract_permutation_importance(
+        "lstm", _ChannelZeroModel(), PERM_FEATURE_COLS, X, y,
+        seed=42, population="test_windows", n_repeats=5,
+    )
+    assert result is not None
+    by_name = {f["name"]: f for f in result["features"]}
+    # channel-a is what the model actually reads — permuting it must hurt.
+    assert by_name["channel-a"]["importance_raw"] > 0
+    assert by_name["channel-a"]["importance"] == by_name["channel-a"]["importance_raw"]
+    # channel-b/channel-c are read by nothing in predict() — the model's
+    # output is bit-for-bit identical whichever window supplies their
+    # values, so the measured drop is EXACTLY zero, not merely small.
+    assert by_name["channel-b"]["importance_raw"] == 0.0
+    assert by_name["channel-b"]["std"] == 0.0
+    assert by_name["channel-c"]["importance_raw"] == 0.0
+
+
+def test_artifact_shape_matches_the_spec_verbatim():
+    X, y = _perm_xy()
+    result = extract_permutation_importance(
+        "gru", _ChannelZeroModel(), PERM_FEATURE_COLS, X, y,
+        seed=1, population="test_windows", n_repeats=3,
+    )
+    assert result is not None
+    assert result["algorithm"] == "gru"
+    assert result["method"] == "permutation"
+    assert result["scored_on"] == "test_windows"
+    assert result["metric"] == "rmse"
+    assert result["n"] == N_WINDOWS
+    assert result["n_repeats"] == 3
+    assert isinstance(result["baseline_score"], float)
+    assert result["baseline_score"] == pytest.approx(0.0, abs=1e-9)  # perfect fit
+    for f in result["features"]:
+        assert set(f.keys()) == {"name", "importance", "importance_raw", "std"}
+        # The clamp invariant, structurally — never abs(), always max(0, raw).
+        assert f["importance"] == max(0.0, f["importance_raw"])
+        assert f["importance"] >= 0.0
+
+
+def test_seed_reproducibility_same_seed_same_fitted_model_identical_vector():
+    X, y = _perm_xy()
+    r1 = extract_permutation_importance(
+        "lstm", _ChannelZeroModel(), PERM_FEATURE_COLS, X, y,
+        seed=7, population="test_windows", n_repeats=4,
+    )
+    r2 = extract_permutation_importance(
+        "lstm", _ChannelZeroModel(), PERM_FEATURE_COLS, X, y,
+        seed=7, population="test_windows", n_repeats=4,
+    )
+    assert r1 == r2
+
+
+def test_different_seeds_are_not_required_to_agree():
+    X, y = _perm_xy()
+    r1 = extract_permutation_importance(
+        "lstm", _ChannelZeroModel(), PERM_FEATURE_COLS, X, y,
+        seed=1, population="test_windows", n_repeats=4,
+    )
+    r2 = extract_permutation_importance(
+        "lstm", _ChannelZeroModel(), PERM_FEATURE_COLS, X, y,
+        seed=2, population="test_windows", n_repeats=4,
+    )
+    assert r1 is not None and r2 is not None
+    # channel-a's raw drop is a random-permutation MEAN, so two seeds need
+    # not agree exactly — only the structural channel-b/c isolation must.
+    a1 = next(f for f in r1["features"] if f["name"] == "channel-a")
+    a2 = next(f for f in r2["features"] if f["name"] == "channel-a")
+    assert a1["importance_raw"] > 0
+    assert a2["importance_raw"] > 0
+
+
+def test_too_few_windows_refuses_the_whole_run():
+    X, y = _perm_xy(n_windows=5)  # below _MIN_PERMUTATION_WINDOWS
+    result = extract_permutation_importance(
+        "lstm", _ChannelZeroModel(), PERM_FEATURE_COLS, X, y,
+        seed=0, population="test_windows",
+    )
+    assert result is None
+
+
+def test_shape_mismatch_between_x_and_feature_cols_returns_none():
+    X, y = _perm_xy()
+    result = extract_permutation_importance(
+        "lstm", _ChannelZeroModel(), ["only-one-col"], X, y,
+        seed=0, population="test_windows",
+    )
+    assert result is None
+
+
+def test_a_2d_x_never_a_window_tensor_returns_none_rather_than_raising():
+    X_2d = np.random.default_rng(0).normal(size=(50, len(PERM_FEATURE_COLS)))
+    y = X_2d[:, 0]
+    result = extract_permutation_importance(
+        "lstm", _ChannelZeroModel(), PERM_FEATURE_COLS, X_2d, y,
+        seed=0, population="test_windows",
+    )
+    assert result is None
+
+
+def test_predict_raising_is_best_effort_never_propagates():
+    class _Explodes:
+        def predict(self, X):
+            raise RuntimeError("torch OOM")
+
+    X, y = _perm_xy()
+    logs = []
+    result = extract_permutation_importance(
+        "lstm", _Explodes(), PERM_FEATURE_COLS, X, y,
+        seed=0, population="test_windows",
+        log_fn=lambda msg, level="info": logs.append((msg, level)),
+    )
+    assert result is None
+    assert any("torch OOM" in msg for msg, _ in logs)
+
+
+def test_write_nothing_never_a_partial_table_on_non_finite_baseline():
+    class _NanModel:
+        def predict(self, X):
+            return np.full(X.shape[0], np.nan)
+
+    X, y = _perm_xy()
+    result = extract_permutation_importance(
+        "lstm", _NanModel(), PERM_FEATURE_COLS, X, y,
+        seed=0, population="test_windows",
+    )
+    assert result is None

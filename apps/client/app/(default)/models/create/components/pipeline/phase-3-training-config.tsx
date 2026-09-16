@@ -186,6 +186,7 @@ export function Phase3TrainingConfig({ nav }: Props) {
             hyperparameters={draft.hyperparameters}
             onHyperparameterChange={runConfigDraft.setHyperparameter}
             findBestParams={draft.findBestParams}
+            findBestModel={draft.findBestModel}
           />
 
           <AutoMlToggles

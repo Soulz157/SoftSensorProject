@@ -651,6 +651,59 @@ class RunFeatureImportanceResponse(BaseModel):
     features: list[FeatureImportanceEntry]
 
 
+class RunPermutationImportanceRequest(BaseModel):
+    """MODEL-FLOW-023-T10. Reads a training run's
+    `permutation_importance.json` verbatim — same discipline as
+    `RunFeatureImportanceRequest`, file for file.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    source_key: str = Field(
+        ..., description="The run's permutation_importance.json key."
+    )
+
+
+class PermutationFeatureImportanceEntry(BaseModel):
+    name: str
+    #: The CLAMPED value (`max(0, importance_raw)`) — safe to sum for a share
+    #: column. Never abs() — a negative drop means "no contribution", and
+    #: abs() would rank that above a genuinely weak-but-positive feature.
+    importance: float
+    #: The signed mean drop across `n_repeats` reshuffles, unclamped — kept
+    #: beside `importance` the same two-fields-not-one shape a coefficient
+    #: method uses for its own signed value.
+    importance_raw: float
+    #: Population std (ddof=0) of the per-repeat drop. REQUIRED, never
+    #: optional — a permutation figure never renders without its spread.
+    std: float
+
+
+class RunPermutationImportanceResponse(BaseModel):
+    algorithm: str
+    #: Always "permutation" today — a distinct string from
+    #: RunFeatureImportanceResponse.method's four values, so a client can
+    #: never mistake one artifact's shape for the other's.
+    method: str
+    #: The population permutation was scored against, read VERBATIM off the
+    #: artifact — "test_windows" for lstm/gru today. Never derived from a
+    #: run's CV/scoring phase client-side (MODEL-FLOW-019 records that
+    #: derivation added and removed five times under different names).
+    scored_on: str
+    #: MODEL-FLOW-023-T10/AC16. The scored population's own size — a WINDOW
+    #: count for a sequence run, never assumed to be a row count. The unit
+    #: is not named here; a reader gets it from `scored_on`.
+    n: int
+    #: "rmse", minimised — MODEL-FLOW-005's reason: r2 read -1,110,858 on a
+    #: real run while rmse stayed readable.
+    metric: str
+    n_repeats: int
+    #: The unpermuted metric this run's drops are measured against — a drop
+    #: of 0.04 means nothing without it.
+    baseline_score: float
+    features: list[PermutationFeatureImportanceEntry]
+
+
 class RunManifestRequest(BaseModel):
     """MODEL-FLOW-007-T11 / MODEL-SERVE-001-T01. Reads a training run's
     `run_manifest.json` for the fields Save Model / ModelVersion creation

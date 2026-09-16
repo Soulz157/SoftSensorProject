@@ -556,6 +556,120 @@ describe('ModelRunLaunchAuthorizedService.getDraftRunService — cv_folds attach
 });
 
 /**
+ * MODEL-FLOW-023-T10. `getDraftRunService` attaches a run's
+ * permutation_importance.json the same soft-read way `cv_folds.json`
+ * attaches above — never a second client-facing endpoint. Same three
+ * claims: skipped entirely when `permutationImportanceKey` is null (every
+ * non-lstm/gru run today), attempted and attached verbatim when set, and a
+ * read failure is soft — logged, `permutationImportance: null`, never a
+ * failed run fetch.
+ */
+describe('ModelRunLaunchAuthorizedService.getDraftRunService — permutation_importance attach', () => {
+  const DRAFT = { id: 'draft-1', workspaceId: 'ws-1', status: 'TRAINED' };
+  const PERMUTATION_IMPORTANCE = {
+    algorithm: 'lstm',
+    method: 'permutation',
+    scored_on: 'test_windows',
+    n: 3084,
+    metric: 'rmse',
+    n_repeats: 10,
+    baseline_score: 0.42,
+    features: [
+      { name: 'TI-101', importance: 0.05, importance_raw: 0.05, std: 0.01 },
+      { name: 'PI-201', importance: 0.0, importance_raw: -0.02, std: 0.03 },
+    ],
+  };
+
+  function makePrisma(run: Record<string, unknown>) {
+    return {
+      modelDraft: { findUnique: jest.fn().mockResolvedValue(DRAFT) },
+      modelTrainingRun: { findFirst: jest.fn().mockResolvedValue(run) },
+    };
+  }
+
+  const mockedGetRunPermutationImportance =
+    pythonClient.getRunPermutationImportance as jest.Mock;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('skips the read entirely when permutationImportanceKey is null', async () => {
+    const prisma = makePrisma({
+      id: 'run-1',
+      permutationImportanceKey: null,
+      logs: [],
+    });
+    const service = new ModelRunLaunchAuthorizedService(
+      prisma as never,
+      {} as never,
+    );
+    const result = await service.getDraftRunService(
+      'draft-1',
+      'run-1',
+      'u1',
+      'ADMIN',
+    );
+    expect(mockedGetRunPermutationImportance).not.toHaveBeenCalled();
+    expect(
+      (result.data as { permutationImportance: unknown }).permutationImportance,
+    ).toBeNull();
+  });
+
+  it('reads and attaches permutation_importance.json verbatim for an lstm/gru run', async () => {
+    mockedGetRunPermutationImportance.mockResolvedValue(PERMUTATION_IMPORTANCE);
+    const prisma = makePrisma({
+      id: 'run-1',
+      permutationImportanceKey:
+        'drafts/draft-1/runs/run-1/permutation_importance.json',
+      logs: [],
+    });
+    const service = new ModelRunLaunchAuthorizedService(
+      prisma as never,
+      {} as never,
+    );
+    const result = await service.getDraftRunService(
+      'draft-1',
+      'run-1',
+      'u1',
+      'ADMIN',
+    );
+    expect(mockedGetRunPermutationImportance).toHaveBeenCalledWith(
+      'drafts/draft-1/runs/run-1/permutation_importance.json',
+    );
+    expect(
+      (result.data as { permutationImportance: unknown }).permutationImportance,
+    ).toEqual(PERMUTATION_IMPORTANCE);
+  });
+
+  it('soft-fails a read error to permutationImportance: null, never failing the run fetch', async () => {
+    mockedGetRunPermutationImportance.mockRejectedValue(
+      new Error('minio unreachable'),
+    );
+    const prisma = makePrisma({
+      id: 'run-1',
+      permutationImportanceKey:
+        'drafts/draft-1/runs/run-1/permutation_importance.json',
+      logs: [],
+    });
+    const service = new ModelRunLaunchAuthorizedService(
+      prisma as never,
+      {} as never,
+    );
+    const result = await service.getDraftRunService(
+      'draft-1',
+      'run-1',
+      'u1',
+      'ADMIN',
+    );
+    expect(
+      (result.data as { permutationImportance: unknown }).permutationImportance,
+    ).toBeNull();
+    expect(result.statusCode).toBe(200);
+  });
+});
+
+/**
  * MODEL-FLOW-014-T06. `freezeSplitStats` is the one fire-and-forget path in
  * this feature — called from inside `launchDraftRun`, never awaited by it,
  * so a wiring bug here is silent by construction (the run itself is

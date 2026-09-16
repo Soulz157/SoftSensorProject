@@ -7,6 +7,7 @@ import {
   type ModelRunStatus,
   type RunCvFolds,
   type RunFeatureImportance,
+  type RunPermutationImportance,
 } from '@/services/model-draft'
 import { fitFromRun, type ModelFit, type FitPoint } from '@/lib/model-metrics'
 import { useDebouncedAbortableRequest } from '@/hooks/dataset/internal/use-debounced-abortable-request'
@@ -75,6 +76,11 @@ export interface DraftRunSummary {
    *  map it — the same enforcement `splitStats` below gets for the same
    *  reason. */
   featureImportance: RunFeatureImportance | null
+  /** MODEL-FLOW-023-T10. `null` means "not recorded for this run" — either
+   *  no strategy scored a permutation population for it (every algorithm
+   *  except lstm/gru today), or it predates this column. REQUIRED, same
+   *  enforcement `featureImportance` above gets. */
+  permutationImportance: RunPermutationImportance | null
   /** MODEL-FLOW-014-T06's frozen split-distribution sidecar — `null` on a
    *  candidate-job run BY DESIGN (N candidates sharing one split is N
    *  redundant artifact reads for an identical answer) and on a run
@@ -241,6 +247,7 @@ async function fetchEvaluation(
     holdoutMetrics: run.holdoutMetrics,
     cvFolds: run.cvFolds ?? null,
     featureImportance: run.featureImportance ?? null,
+    permutationImportance: run.permutationImportance ?? null,
     splitStats: run.splitStats,
     sweepId: run.sweepId ?? null,
     sweepSeedRunId: run.sweepSeedRunId ?? null,

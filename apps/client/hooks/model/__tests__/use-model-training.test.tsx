@@ -519,4 +519,75 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
     expect(store.get(mpCandidateJobIdAtom)).toBeNull()
     expect(modelDraftRunService.create).toHaveBeenCalled()
   })
+
+  // [fix]. toBackendAlgorithm used to refuse lstm/gru unconditionally,
+  // including a plain single run — even though MODEL-FLOW-009-T04's own
+  // windowing pipeline trains them live. A user hit this reported as
+  // "Cannot train because 'LSTM' isn't supported by the training service
+  // yet". Neither toggle is on here, so this is the path that must work.
+  it('[fix] launches a plain lstm single run — no longer refused outside a candidate job', async () => {
+    vi.mocked(modelDraftRunService.create).mockResolvedValue({
+      statusCode: 201,
+      message: 'ok',
+      type: 'SUCCESS',
+      data: { id: 'run-1' } as never,
+    })
+    vi.mocked(modelDraftRunService.get).mockResolvedValue({
+      statusCode: 200,
+      message: 'ok',
+      type: 'SUCCESS',
+      data: { id: 'run-1', status: 'RUNNING', logs: [] } as never,
+    })
+    const { result, store } = renderTraining(s => {
+      s.set(mpAlgorithmsAtom, ['lstm'])
+    })
+
+    await act(async () => {
+      result.current.start()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(modelDraftRunService.create).toHaveBeenCalledWith(
+      'draft-1',
+      expect.objectContaining({ algorithm: 'lstm' }),
+    )
+    expect(store.get(mpTrainStateAtom).status).not.toBe('error')
+  })
+
+  // [fix]. THE OTHER HALF of the same fix: a candidate job genuinely
+  // cannot take lstm/gru (model-candidate-job.authorized.service.ts 400s
+  // it — no TUNING_GRID entry exists to expand one into a phase-2
+  // shortlist), so this refusal is correct and must survive the fix above,
+  // not be relaxed alongside it. Defense in depth for stale draft state —
+  // AlgorithmStack's own picker disables lstm/gru whenever either toggle
+  // is on, but this is the backstop if that state predates the toggle.
+  it('[fix] still refuses lstm in a Find Best Model sweep — the candidate-job path genuinely cannot take it', async () => {
+    const { result, store } = renderTraining(s => {
+      s.set(mpFindBestModelAtom, true)
+      s.set(mpAlgorithmsAtom, ['lstm', 'ridge'])
+    })
+
+    await act(async () => {
+      result.current.start()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(store.get(mpTrainStateAtom).status).toBe('error')
+    expect(modelDraftCandidateJobService.create).not.toHaveBeenCalled()
+  })
+
+  it('[fix] still refuses lstm with Find Best Parameters alone (no sweep) — same candidate-job refusal', async () => {
+    const { result, store } = renderTraining(s => {
+      s.set(mpFindBestParamsAtom, true)
+      s.set(mpAlgorithmsAtom, ['lstm'])
+    })
+
+    await act(async () => {
+      result.current.start()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(store.get(mpTrainStateAtom).status).toBe('error')
+    expect(modelDraftCandidateJobService.create).not.toHaveBeenCalled()
+  })
 })

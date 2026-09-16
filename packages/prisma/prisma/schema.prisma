@@ -1042,6 +1042,15 @@ model ModelTrainingRun {
   /// model.joblib outside the trainer image, MODEL-FLOW-016-T07's own
   /// finding that apps/python has no sklearn/joblib at all).
   featureImportanceKey  String?
+  /// MODEL-FLOW-023-T10. Population-scored importance
+  /// (permutation_importance.json) — set only for lstm/gru today (the one
+  /// strategy that populates `TrainingResult.permutation_population`,
+  /// `windowed.run`), scored on the run's own windowed TEST split. Same
+  /// honest-legacy-null pattern `featureImportanceKey` above uses; a SECOND
+  /// artifact, never a widened `featureImportanceKey` — a signed
+  /// population-scored drop and an always-non-negative fit-internal value
+  /// answer different questions (importance.py's own finding).
+  permutationImportanceKey String?
   /// Denormalised from metrics.json for list/sort without an object read —
   /// the same reasoning DatasetArtifact uses for rowCount and missingPct.
   /// MODEL-FLOW-013-T04 added train_r2/train_mae/train_rmse keys alongside

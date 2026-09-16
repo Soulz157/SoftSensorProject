@@ -251,6 +251,40 @@ export interface RunFeatureImportance {
   features: FeatureImportanceEntry[]
 }
 
+export interface PermutationFeatureImportanceEntry {
+  name: string
+  /** The CLAMPED value (`max(0, importance_raw)`) — safe to sum for a share
+   *  column. Never abs() — a negative drop means "no contribution". */
+  importance: number
+  /** The signed mean drop across `n_repeats` reshuffles, unclamped. */
+  importance_raw: number
+  /** Population std (ddof=0) across repeats. REQUIRED — a permutation
+   *  figure never renders without its spread. */
+  std: number
+}
+
+/**
+ * MODEL-FLOW-023-T10. A SECOND, independent artifact from
+ * `RunFeatureImportance` above — a signed, population-scored drop, never
+ * merged into that always-non-negative fit-internal shape. `scored_on` is
+ * read VERBATIM off the artifact, never derived from a run's CV/scoring
+ * phase — one method can span two populations across different runs
+ * (MODEL-FLOW-019 records that exact derivation added and removed five
+ * times under different names).
+ */
+export interface RunPermutationImportance {
+  algorithm: string
+  method: string
+  scored_on: string
+  /** MODEL-FLOW-023-T10/AC16. The scored population's own size — a WINDOW
+   *  count for a sequence run, never a row count. */
+  n: number
+  metric: string
+  n_repeats: number
+  baseline_score: number
+  features: PermutationFeatureImportanceEntry[]
+}
+
 export interface ModelRunSplitSpec {
   method: 'chronological' | 'chronological_windowed'
   ratio: number
@@ -331,6 +365,14 @@ export interface ModelTrainingRun {
    *  a Step 5 reader has nothing to show in either case, but only `null`
    *  after a `get()` call means "this really was checked". */
   featureImportance?: RunFeatureImportance | null
+  /** MODEL-FLOW-023-T10. Set only for the strategy that scores a
+   *  permutation population — lstm/gru's windowed test split today; null
+   *  for every other run, the same honest-legacy-null pattern
+   *  `featureImportanceKey` above uses. */
+  permutationImportanceKey: string | null
+  /** MODEL-FLOW-023-T10. Attached by `getDraftRunService`, same soft-read
+   *  shape as `featureImportance` immediately above. */
+  permutationImportance?: RunPermutationImportance | null
   /**
    * MODEL-FLOW-014-T06's frozen `/split-stats` sidecar — what the Split
    * Distribution panel was showing when this run was launched. Already sent
@@ -386,11 +428,23 @@ export interface ModelTrainingRun {
 export type ModelTrainingRunListItem = Omit<ModelTrainingRun, 'logs'>
 
 /**
- * `algorithm` is deliberately narrower than `store/model-pipeline.ts`'s full
- * `Algorithm` catalogue — train.py's `build_model` implements exactly these
- * 10 (images/trainer/train.py); `lstm`/`gru` are the two catalogue entries
- * still deferred. Callers must refuse anything else client-side
- * (MODEL-FLOW-003-T10) rather than send it and let the container fail.
+ * CORRECTED — this used to be narrower than `store/model-pipeline.ts`'s full
+ * `Algorithm` catalogue, on the claim that train.py's `build_model`
+ * implemented only 10 of 12 and `lstm`/`gru` were still deferred. That
+ * shipped before MODEL-FLOW-009-T04 landed the windowing pipeline;
+ * `build_model` (images/trainer/app/models.py) has built a real
+ * `SequenceRegressor` for both since, and a plain single run trains them
+ * live (MODEL-FLOW-023-T10's own verify script). All 12 are valid here now.
+ *
+ * The ONE place lstm/gru are still genuinely refused is a candidate job
+ * (`CandidateInput.algorithm` below, which reuses this same type) —
+ * model-candidate-job.authorized.service.ts 400s a sequence-algorithm
+ * candidate outright, and no TUNING_GRID entry exists to expand one into a
+ * phase-2 shortlist. That refusal is real and stays a caller's job to
+ * enforce (use-model-training.ts's `toBackendAlgorithm`,
+ * `forCandidateJob`), same discipline this comment originally named
+ * (MODEL-FLOW-003-T10) — refuse client-side rather than send it and let
+ * the container or the candidate-job service fail.
  */
 export interface CreateDraftRunInput {
   goldArtifactId: string
@@ -406,6 +460,8 @@ export interface CreateDraftRunInput {
     | 'random_forest'
     | 'lightgbm'
     | 'xgboost'
+    | 'lstm'
+    | 'gru'
   hyperparameters?: Record<string, unknown>
   /** A FRACTION (0.5-0.95), never a percentage — same boundary rule as
    * PatchModelDraftInput.splitRatio. Mutually exclusive with `nSplits` —

@@ -63,6 +63,10 @@ import { QQPlotChart } from './evaluation/qq-plot-chart'
 import { EmptyPanel } from './evaluation/empty-panel'
 import { CvFoldTable } from './evaluation/cv-fold-table'
 import { FeatureImportanceTable } from './evaluation/feature-importance-table'
+import {
+  PermutationImportanceTable,
+  FeatureImportanceEmptyPanel,
+} from './evaluation/permutation-importance-table'
 import { FeatureCountSweepLauncher } from './evaluation/feature-count-sweep-launcher'
 import { FeatureCountSweepTable } from './evaluation/feature-count-sweep-table'
 import { useFeatureCountSweep } from '@/hooks/model/use-feature-count-sweep'
@@ -597,7 +601,14 @@ export function Phase5Evaluation({ nav }: Props) {
         </div>
       )}
 
-      {run.featureImportance ? (
+      {/* MODEL-FLOW-023-T10. Two STACKED, independent sections (user,
+          2026-09-15 — openDecision 1) — never one table with a fifth
+          method folded in, and never the old `run.featureImportance ?
+          Table : Empty` branch, which prints "no such quantity to read"
+          directly above a fully populated permutation table for exactly
+          the algorithms (lstm/gru) this feature exists to cover. The empty
+          state now shows only when NEITHER artifact exists. */}
+      {run.featureImportance && (
         <FeatureImportanceTable
           importance={run.featureImportance}
           derivedFromTarget={manifest?.derivedFromTarget ?? null}
@@ -605,12 +616,15 @@ export function Phase5Evaluation({ nav }: Props) {
           distinctLabelledSource={distinctLabelled.source}
           distinctLabelledLoading={distinctLabelled.loading}
         />
-      ) : (
-        <EmptyPanel>
-          Feature importance: not recorded for this run — either it predates
-          feature-importance recording, or {algorithmLabel} has no such quantity
-          to read.
-        </EmptyPanel>
+      )}
+      {run.permutationImportance && (
+        <PermutationImportanceTable
+          importance={run.permutationImportance}
+          derivedFromTarget={manifest?.derivedFromTarget ?? null}
+        />
+      )}
+      {!run.featureImportance && !run.permutationImportance && (
+        <FeatureImportanceEmptyPanel algorithmLabel={algorithmLabel} />
       )}
 
       {/* MODEL-FLOW-019-T31. The launcher and the curve it fills, beneath the

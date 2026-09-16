@@ -30,6 +30,7 @@ from intergrations.object_store import (
     MANIFEST_FILENAME,
     CV_FOLDS_FILENAME,
     FEATURE_IMPORTANCE_FILENAME,
+    PERMUTATION_IMPORTANCE_FILENAME,
     HOLDOUT_PREDICTIONS_FILENAME,
     TIMESTAMP_COLUMN,
     VALIDATE_DATA_FILENAME,
@@ -132,6 +133,11 @@ _ALLOWED_RUN_UPLOADS = frozenset(
         # algorithms images/trainer/app/importance.py can read a real
         # quantity from.
         FEATURE_IMPORTANCE_FILENAME,
+        # MODEL-FLOW-023-T10. Population-scored importance — a second,
+        # independent artifact from FEATURE_IMPORTANCE_FILENAME above,
+        # present only for the strategy that scores a permutation population
+        # (windowed.run, i.e. lstm/gru).
+        PERMUTATION_IMPORTANCE_FILENAME,
         # MODEL-FLOW-019-T20. A SUCCEEDED run's own holdout series, written by
         # score-mode only — never predictions.parquet, which a non-CV run's
         # test split already occupies.
@@ -1870,6 +1876,56 @@ def get_run_feature_importance(store: ObjectStore, body) -> dict[str, Any]:
         "method": data["method"],
         "standardized": data.get("standardized"),
         "scaling_methods": data.get("scaling_methods") or [],
+        "features": data["features"],
+    }
+
+
+def get_run_permutation_importance(store: ObjectStore, body) -> dict[str, Any]:
+    """A training run's `permutation_importance.json`, read and
+    shape-checked — MODEL-FLOW-023-T10.
+
+    Same discipline as `get_run_feature_importance`, file for file:
+    `permutation_importance.json` is already exactly the response shape
+    (`images/trainer/app/importance.py`'s `extract_permutation_importance`
+    writes it that way on purpose), so this is a read-and-validate, not a
+    parse-and-reshape.
+    """
+    key = body.source_key
+    if key.rsplit("/", 1)[-1] != PERMUTATION_IMPORTANCE_FILENAME:
+        raise ValueError(
+            f"'{key}' does not name {PERMUTATION_IMPORTANCE_FILENAME}."
+        )
+    if not (is_draft_run_key(key) or is_model_run_key(key)):
+        raise ValueError(
+            f"'{key}' is not a well-formed training-run output key. Only "
+            "drafts/{draftId}/runs/{runId}/... or "
+            "models/{modelId}/runs/{runId}/... can be read here."
+        )
+
+    data = store.get_json(key)
+    if (
+        not isinstance(data, dict)
+        or not isinstance(data.get("algorithm"), str)
+        or not isinstance(data.get("method"), str)
+        or not isinstance(data.get("scored_on"), str)
+        or not isinstance(data.get("metric"), str)
+        or not isinstance(data.get("n"), int)
+        or not isinstance(data.get("n_repeats"), int)
+        or not isinstance(data.get("baseline_score"), (int, float))
+        or not isinstance(data.get("features"), list)
+    ):
+        raise ValueError(
+            f"'{key}' is not a well-formed permutation_importance.json."
+        )
+
+    return {
+        "algorithm": data["algorithm"],
+        "method": data["method"],
+        "scored_on": data["scored_on"],
+        "n": data["n"],
+        "metric": data["metric"],
+        "n_repeats": data["n_repeats"],
+        "baseline_score": data["baseline_score"],
         "features": data["features"],
     }
 
