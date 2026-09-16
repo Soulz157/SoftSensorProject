@@ -37,6 +37,8 @@ function buildPrisma(overrides: Record<string, unknown> = {}) {
     inferenceSchedule: {
       upsert: jest.fn().mockResolvedValue({}),
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      // MODEL-SERVE-001-T25: the refusal path's evidence write.
+      update: jest.fn().mockResolvedValue({}),
       findUnique: jest.fn().mockResolvedValue(null),
     },
     inferenceWindow: {
@@ -99,11 +101,25 @@ function buildMonitoring(overrides = {}) {
   };
 }
 
+/** MODEL-SERVE-001-T25. `putScheduleService` is the only caller. Defaults to
+ *  a PASSING probe so every pre-existing enable test in this file — none of
+ *  which is about preflight — keeps asserting the refusal it was written for
+ *  rather than tripping over a new one. V18's own cases override it. */
+function buildInputStatus(overrides = {}) {
+  return {
+    preflightSourceService: jest
+      .fn()
+      .mockResolvedValue({ ok: true, reason: null }),
+    ...overrides,
+  };
+}
+
 function makeService(
   prisma: ReturnType<typeof buildPrisma>,
   descriptor: ReturnType<typeof buildDescriptor> = buildDescriptor(),
   truthSweeper: ReturnType<typeof buildTruthSweeper> = buildTruthSweeper(),
   monitoring: ReturnType<typeof buildMonitoring> = buildMonitoring(),
+  inputStatus: ReturnType<typeof buildInputStatus> = buildInputStatus(),
 ) {
   return new InferenceWindowAuthorizedService(
     prisma as unknown as ConstructorParameters<
@@ -118,6 +134,9 @@ function makeService(
     monitoring as unknown as ConstructorParameters<
       typeof InferenceWindowAuthorizedService
     >[3],
+    inputStatus as unknown as ConstructorParameters<
+      typeof InferenceWindowAuthorizedService
+    >[4],
   );
 }
 
@@ -255,6 +274,375 @@ describe('InferenceWindowAuthorizedService.putScheduleService — D5 enable-time
     // (30) — the case this task must not disturb.
     expect(call.create.minRows).toBe(30);
     expect(result.data?.minRows).toBe(30);
+  });
+
+  // ── MODEL-SERVE-001-T25 / V18 ────────────────────────────────────────────
+
+  /**
+   * V18. PROVE PREFLIGHT REFUSES AN UNREACHABLE SOURCE AND PASSES A REACHABLE
+   * ONE.
+   *
+   * ONE ASSERTION HERE IS DELIBERATELY NOT THE ONE V18 ASKED FOR, AND THIS IS
+   * WHY. V18's text says to assert that ZERO InferenceWindow rows were
+   * inserted on the refusal path. Verified against the code rather than
+   * against T25's prose: `putScheduleService` INSERTS NO WINDOWS AT ALL, on
+   * any path — it ends in a single `inferenceSchedule.upsert`, and the 48h
+   * backfill is minted later by the scheduler tick's `insertDueWindows`
+   * (inference-window-scheduler.service.ts). So "no windows were inserted"
+   * passes identically whether or not the refusal works, which is exactly the
+   * kind of cannot-fail assertion T11 and T12 each had to throw out.
+   *
+   * What V18 actually cares about — that no dormant schedule is left behind
+   * for the tick to find — is asserted instead: the `upsert` never runs, so
+   * no row is left `enabled: true`, and the tick has nothing to enumerate.
+   */
+  it('refuses to enable when the live preflight probe fails, with the connector’s own text', async () => {
+    const prisma = buildPrisma({
+      modelVersion: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ id: 'version-1', sourceDatasetId: 'ds-1' }),
+      },
+      dataset: {
+        findUnique: jest.fn().mockResolvedValue({
+          sourceIds: ['src-a'],
+          pipelineConfig: {
+            sourceFetchConfigs: { 'src-a': { intervalTime: '1m' } },
+            baseTags: ['tag1'],
+          },
+        }),
+      },
+    });
+    const connectorText =
+      'Could not read live tag status: PI Web API error: ' +
+      'getaddrinfo ENOTFOUND pi.example.internal';
+    const inputStatus = buildInputStatus({
+      preflightSourceService: jest
+        .fn()
+        .mockResolvedValue({ ok: false, reason: connectorText }),
+    });
+    const service = makeService(
+      prisma,
+      buildDescriptor(),
+      buildTruthSweeper(),
+      buildMonitoring(),
+      inputStatus,
+    );
+
+    await expect(
+      service.putScheduleService('model-1', { enabled: true }, user),
+    ).rejects.toMatchObject({
+      statusCode: 422,
+      // VERBATIM, not a category. V09 exists because a guessed category sent
+      // a reader to audit a config that was already correct.
+      message: expect.stringContaining(connectorText),
+    });
+
+    // The schedule is never written, so nothing is left enabled for the
+    // scheduler tick to pick up and fail on hourly forever.
+    expect(prisma.inferenceSchedule.upsert).not.toHaveBeenCalled();
+  });
+
+  it('probes the source the caller actually chose, not the one already on the row', async () => {
+    // Probing one source and enabling another is the silently-wrong-but-
+    // still-returns-an-answer class this whole feature exists to close.
+    const prisma = buildPrisma({
+      modelVersion: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ id: 'version-1', sourceDatasetId: 'ds-1' }),
+      },
+      dataset: {
+        findUnique: jest.fn().mockResolvedValue({
+          sourceIds: ['src-a', 'src-b'],
+          pipelineConfig: {
+            sourceFetchConfigs: { 'src-b': { intervalTime: '1m' } },
+            baseTags: [],
+          },
+        }),
+      },
+    });
+    const inputStatus = buildInputStatus();
+    const service = makeService(
+      prisma,
+      buildDescriptor(),
+      buildTruthSweeper(),
+      buildMonitoring(),
+      inputStatus,
+    );
+
+    await service.putScheduleService(
+      'model-1',
+      { enabled: true, sourceId: 'src-b' },
+      user,
+    );
+
+    expect(inputStatus.preflightSourceService).toHaveBeenCalledWith(
+      'model-1',
+      user,
+      'src-b',
+    );
+  });
+
+  it('records passing preflight evidence on the row it enables', async () => {
+    const prisma = buildPrisma({
+      modelVersion: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ id: 'version-1', sourceDatasetId: 'ds-1' }),
+      },
+      dataset: {
+        findUnique: jest.fn().mockResolvedValue({
+          sourceIds: ['src-a'],
+          pipelineConfig: {
+            sourceFetchConfigs: { 'src-a': { intervalTime: '1m' } },
+            baseTags: [],
+          },
+        }),
+      },
+    });
+    const service = makeService(prisma);
+
+    await service.putScheduleService('model-1', { enabled: true }, user);
+
+    const call = prisma.inferenceSchedule.upsert.mock.calls[0][0];
+    expect(call.create.preflightOk).toBe(true);
+    expect(call.create.preflightReason).toBeNull();
+    expect(call.create.preflightAt).toBeInstanceOf(Date);
+    expect(call.update.preflightOk).toBe(true);
+  });
+
+  it('does NOT probe a settings-only update on an already-running schedule', async () => {
+    // THE REGRESSION THIS PINS: putScheduleService also serves partial
+    // settings updates (that is what T09's merge logic exists for). If the
+    // probe ran here, a thirty-second PI blip while an operator nudged a
+    // threshold would refuse the update AND write preflightOk:false to a row
+    // that stays enabled and whose windows keep succeeding — pinning a
+    // demonstrably working model to Failed. Refusing the press that STARTS a
+    // schedule is T25's scope; condemning one already RUNNING is the
+    // auto-pause T19 decided against.
+    const prisma = buildPrisma({
+      modelVersion: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ id: 'version-1', sourceDatasetId: 'ds-1' }),
+      },
+      dataset: {
+        findUnique: jest.fn().mockResolvedValue({
+          sourceIds: ['src-a'],
+          pipelineConfig: {
+            sourceFetchConfigs: { 'src-a': { intervalTime: '1m' } },
+            baseTags: [],
+          },
+        }),
+      },
+      inferenceSchedule: {
+        upsert: jest.fn().mockResolvedValue({}),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+        update: jest.fn().mockResolvedValue({}),
+        // ALREADY RUNNING — this is the OFF -> ON discriminator.
+        findUnique: jest.fn().mockResolvedValue({
+          enabled: true,
+          autoRetrain: false,
+          warnSd: 1.5,
+          criticalSd: 3.0,
+          driftMonitor: false,
+          driftThresholdPct: 10,
+          truthLagMinutes: 1440,
+          truthToleranceMinutes: 30,
+          truthHorizonHours: 168,
+        }),
+      },
+    });
+    const inputStatus = buildInputStatus({
+      // Would refuse if it were consulted at all.
+      preflightSourceService: jest
+        .fn()
+        .mockResolvedValue({ ok: false, reason: 'PI blipped' }),
+    });
+    const service = makeService(
+      prisma,
+      buildDescriptor(),
+      buildTruthSweeper(),
+      buildMonitoring(),
+      inputStatus,
+    );
+
+    const result = await service.putScheduleService(
+      'model-1',
+      { enabled: true, driftThresholdPct: 25 },
+      user,
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(inputStatus.preflightSourceService).not.toHaveBeenCalled();
+    // The row's existing observation is left alone, not overwritten with a
+    // probe that never ran, and not nulled back to "not probed".
+    const call = prisma.inferenceSchedule.upsert.mock.calls[0][0];
+    expect(call.update).not.toHaveProperty('preflightOk');
+    expect(call.update).not.toHaveProperty('preflightAt');
+    expect(prisma.inferenceSchedule.update).not.toHaveBeenCalled();
+  });
+
+  it('enables a SQL-sourced schedule with preflightOk NULL — not probed is not a pass, and not a refusal', async () => {
+    // input-status accepts PI only, and sql_connect.py binds the time range
+    // as VARCHAR, so a SQL probe would fail for a CONNECTOR defect rather
+    // than for the operator's config. Refusing a whole source class on that
+    // basis would be manufacturing false refusals.
+    const prisma = buildPrisma({
+      modelVersion: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ id: 'version-1', sourceDatasetId: 'ds-1' }),
+      },
+      dataset: {
+        findUnique: jest.fn().mockResolvedValue({
+          sourceIds: ['src-sql'],
+          pipelineConfig: {
+            sourceFetchConfigs: { 'src-sql': {} },
+            baseTags: [],
+          },
+        }),
+      },
+    });
+    const notProbed =
+      'Not probed: live source checks are available for PI sources only ' +
+      '(this source is "postgres").';
+    const inputStatus = buildInputStatus({
+      preflightSourceService: jest
+        .fn()
+        .mockResolvedValue({ ok: null, reason: notProbed }),
+    });
+    const service = makeService(
+      prisma,
+      buildDescriptor(),
+      buildTruthSweeper(),
+      buildMonitoring(),
+      inputStatus,
+    );
+
+    const result = await service.putScheduleService(
+      'model-1',
+      { enabled: true },
+      user,
+    );
+
+    expect(result.statusCode).toBe(200);
+    const call = prisma.inferenceSchedule.upsert.mock.calls[0][0];
+    expect(call.create.preflightOk).toBeNull();
+    expect(call.create.preflightReason).toBe(notProbed);
+  });
+
+  // ── MODEL-SERVE-001-T28 ──────────────────────────────────────────────────
+
+  it('refuses a merged missingPctWarn >= missingPctAlert, not just a both-in-one-request pair', () => {
+    // THE GAP THIS CLOSES: the DTO's own refine only fires when BOTH arrive
+    // together. A partial update naming just one, against an existing row
+    // that would put them out of order, reaches the service — the exact
+    // hole T09 found for warnSd/criticalSd.
+    const prisma = buildPrisma({
+      modelVersion: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ id: 'version-1', sourceDatasetId: 'ds-1' }),
+      },
+      dataset: {
+        findUnique: jest.fn().mockResolvedValue({
+          sourceIds: ['src-a'],
+          pipelineConfig: {
+            sourceFetchConfigs: { 'src-a': { intervalTime: '1m' } },
+            baseTags: [],
+          },
+        }),
+      },
+      inferenceSchedule: {
+        upsert: jest.fn().mockResolvedValue({}),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+        update: jest.fn().mockResolvedValue({}),
+        findUnique: jest.fn().mockResolvedValue({
+          enabled: true,
+          autoRetrain: false,
+          warnSd: 1.5,
+          criticalSd: 3.0,
+          driftMonitor: false,
+          driftThresholdPct: 10,
+          truthLagMinutes: 1440,
+          truthToleranceMinutes: 30,
+          truthHorizonHours: 168,
+          missingPctWarn: 5,
+          // The stored alert band is 20; the request lifts warn ABOVE it
+          // while naming only warn.
+          missingPctAlert: 20,
+          skipStreakAlert: 3,
+          frozenWindows: 3,
+          frozenTolerancePct: 0,
+        }),
+      },
+    });
+    const service = makeService(prisma);
+    return expect(
+      service.putScheduleService(
+        'model-1',
+        { enabled: true, missingPctWarn: 25 },
+        user,
+      ),
+    ).rejects.toMatchObject({ statusCode: 422 });
+  });
+
+  it('merges the T28 bands — updating one does not reset the others', async () => {
+    const prisma = buildPrisma({
+      modelVersion: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ id: 'version-1', sourceDatasetId: 'ds-1' }),
+      },
+      dataset: {
+        findUnique: jest.fn().mockResolvedValue({
+          sourceIds: ['src-a'],
+          pipelineConfig: {
+            sourceFetchConfigs: { 'src-a': { intervalTime: '1m' } },
+            baseTags: [],
+          },
+        }),
+      },
+      inferenceSchedule: {
+        upsert: jest.fn().mockResolvedValue({}),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+        update: jest.fn().mockResolvedValue({}),
+        findUnique: jest.fn().mockResolvedValue({
+          enabled: true,
+          autoRetrain: false,
+          warnSd: 1.5,
+          criticalSd: 3.0,
+          driftMonitor: false,
+          driftThresholdPct: 10,
+          truthLagMinutes: 1440,
+          truthToleranceMinutes: 30,
+          truthHorizonHours: 168,
+          // Operator-set values already on the row.
+          missingPctWarn: 7,
+          missingPctAlert: 30,
+          skipStreakAlert: 5,
+          frozenWindows: 4,
+          frozenTolerancePct: 0.02,
+        }),
+      },
+    });
+    const service = makeService(prisma);
+
+    await service.putScheduleService(
+      'model-1',
+      { enabled: true, frozenWindows: 6 },
+      user,
+    );
+
+    const call = prisma.inferenceSchedule.upsert.mock.calls[0][0];
+    expect(call.update.frozenWindows).toBe(6);
+    // The other four survive untouched — not reset to their defaults.
+    expect(call.update.missingPctWarn).toBe(7);
+    expect(call.update.missingPctAlert).toBe(30);
+    expect(call.update.skipStreakAlert).toBe(5);
+    expect(call.update.frozenTolerancePct).toBe(0.02);
   });
 
   // ── MODEL-SERVE-001-T14 ──────────────────────────────────────────────────

@@ -23,5 +23,11 @@ import { DataSourceModule } from '@/api/v1/data-source/data-source.module';
     ModelInputSchemaAuthorizedService,
     ModelInputStatusAuthorizedService,
   ],
+  // MODEL-SERVE-001-T25. `InferenceWindowModule` imports this module to run
+  // the enable-time preflight through THIS probe rather than a second one.
+  // Direction stays acyclic: InferenceWindow -> ModelVersion -> DataSource,
+  // and neither DataSource nor this module references InferenceWindow in
+  // code (data-source.module.ts names it only in a comment).
+  exports: [ModelInputStatusAuthorizedService],
 })
 export class ModelVersionModule {}

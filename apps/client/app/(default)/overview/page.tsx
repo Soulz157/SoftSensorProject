@@ -3,7 +3,9 @@ import { useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { usePlantsData } from '@/hooks/plants/use-plants-data'
 import { useAllModels } from '@/hooks/use-all-models'
-import { failedDeploys, failedCountByNodeId } from '@/lib/model-status'
+import { failedDeploys, failedCountByNodeId,
+  monitoringAlerts,
+} from '@/lib/model-status'
 
 import { useWorkspaceFilter } from '@/hooks/workspace/use-workspace-filter'
 import { useWorkspaceSelection } from '@/hooks/workspace/use-workspace-selection'
@@ -28,6 +30,14 @@ export default function PlantsPage() {
     if (!models) return {}
     const map: Record<string, number> = {}
     for (const m of failedDeploys(models)) {
+      map[m.workspaceId] = (map[m.workspaceId] ?? 0) + 1
+    }
+    // MODEL-SERVE-001-T30. Monitoring alerts fold into the SAME map here,
+    // unlike the sidebar's two separate maps, because this one feeds a single
+    // "models needing attention" figure on the map. Since T26 a dead source
+    // reaches only this second loop — without it the Overview map stays blind
+    // to the exact failure class that task moved off the deploy axis.
+    for (const m of monitoringAlerts(models)) {
       map[m.workspaceId] = (map[m.workspaceId] ?? 0) + 1
     }
     return map

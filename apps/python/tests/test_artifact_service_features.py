@@ -80,7 +80,19 @@ def test_features_writes_feature_spec_sidecar_and_returns_its_key() -> None:
     assert result["feature_spec_key"] == "ds-1/artifacts/gold-id/feature_spec.json"
     spec = store.documents["ds-1/artifacts/gold-id/feature_spec.json"]
     assert spec["features"][0]["name"] == "TI-101__lag1"
-    assert spec["scaling"] == [{"tag": "TI-101", "method": "minmax"}]
+    # CORRECTED (DS-LAKE-028-T02): this asserted `scaling` held ONLY the tag
+    # the caller configured explicitly. `scaling` now records the EFFECTIVE
+    # method for every tag that was actually scaled — so the derived column
+    # `TI-101__lag1`, which to_model_ready min-max scaled at the default and
+    # which `scalingParams` has always recorded, appears here too. Asserting
+    # the two fields' tag sets are EQUAL is the point of the change: the old
+    # shape let them disagree about the same artifact, and 21 of the 22 specs
+    # on this system say `scaling: []` about fully-scaled frames because of it.
+    assert spec["scaling"] == [
+        {"tag": "TI-101", "method": "minmax"},
+        {"tag": "TI-101__lag1", "method": "minmax"},
+    ]
+    assert {e["tag"] for e in spec["scaling"]} == set(spec["scalingParams"])
     assert isinstance(spec["featureHash"], str)
     # CORRECTED (DS-LAKE-022-T03): this asserted `column_stats_key is None` on
     # the reading that "column_stats is a cleaning-op concern only". That

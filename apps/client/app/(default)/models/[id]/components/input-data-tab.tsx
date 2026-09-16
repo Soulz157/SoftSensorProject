@@ -17,6 +17,14 @@ import { InputFeatureTable } from './input-data/input-feature-table'
 
 interface Props {
   model: AIModel
+  /**
+   * MODEL-SERVE-001-T30. Frozen tag names from the page's OWN health read
+   * (`useInferenceStatus`), passed down rather than re-fetched here: the
+   * value is already in the parent's scope, so a second read would be a
+   * duplicate request. Defaults to empty, which is also the honest value
+   * when the model has no schedule or has never produced a window.
+   */
+  frozenColumns?: string[]
 }
 
 /**
@@ -43,7 +51,7 @@ interface Props {
  * `buildInputFeatureRows` — a left join, so a column with no traffic still
  * renders (status UNKNOWN, value/seen em-dash) instead of disappearing.
  */
-export function InputDataTab({ model }: Props) {
+export function InputDataTab({ model, frozenColumns }: Props) {
   const [range, setRange] = useState<TimeRange>('24h')
   const { points, pointsLoading, pointsTruncated, drift } =
     usePredictionMonitoring(model, range)
@@ -71,8 +79,9 @@ export function InputDataTab({ model }: Props) {
       drift,
       piStatus,
       derivedFeatures: schema.derivedFeatures,
+      frozenColumns,
     })
-  }, [schema, points, drift, piStatus])
+  }, [schema, points, drift, piStatus, frozenColumns])
 
   const latest = points[points.length - 1] ?? null
 

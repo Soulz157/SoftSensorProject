@@ -57,6 +57,7 @@ export function SidebarWorkspaces({
   const {
     workspaces,
     failedByWorkspace,
+    monitoringByWorkspace,
     activeWorkspace,
     setActiveWorkspace,
     workspaceOpen,
@@ -174,7 +175,8 @@ export function SidebarWorkspaces({
                         )}
                         {isCollapsed &&
                           (ws.status !== 'normal' ||
-                            (failedByWorkspace[ws.id] ?? 0) > 0) && (
+                            (failedByWorkspace[ws.id] ?? 0) > 0 ||
+                            (monitoringByWorkspace[ws.id] ?? 0) > 0) && (
                             <span
                               className={cn(
                                 'absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full ring-1 ring-sidebar',
@@ -192,7 +194,8 @@ export function SidebarWorkspaces({
                             className={cn(
                               'h-2 w-2 shrink-0 rounded-full',
                               ws.status !== 'normal' ||
-                                (failedByWorkspace[ws.id] ?? 0) > 0
+                                (failedByWorkspace[ws.id] ?? 0) > 0 ||
+                                (monitoringByWorkspace[ws.id] ?? 0) > 0
                                 ? 'bg-red-500'
                                 : 'bg-green-500',
                             )}

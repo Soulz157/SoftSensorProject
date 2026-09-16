@@ -21,6 +21,7 @@ import { env } from '@/config/env.config';
 import { ModelServingAuthorizedService } from '../../model-serving/authorized/model-serving.authorized.service';
 import { InferenceTruthSweeperService } from './inference-truth-sweeper.service';
 import { InferenceWindowMonitoringService } from './inference-window-monitoring.authorized.service';
+import { ModelInputStatusAuthorizedService } from '../../model-version/authorized/model-input-status.authorized.service';
 import type {
   BackfillInferenceWindowsDto,
   InferenceTruthRangeQueryDto,
@@ -103,6 +104,10 @@ export class InferenceWindowAuthorizedService {
     // plain one-directional DI edge, not the cross-module kind this
     // module's own export comment already reasons about.
     private readonly monitoring: InferenceWindowMonitoringService,
+    // MODEL-SERVE-001-T25. T15's live probe, reused for the enable-time
+    // preflight. Cross-module (ModelVersionModule exports it) and acyclic —
+    // see this module's own import comment.
+    private readonly inputStatus: ModelInputStatusAuthorizedService,
   ) {}
 
   // ── access ───────────────────────────────────────────────────────────────
@@ -165,6 +170,14 @@ export class InferenceWindowAuthorizedService {
             criticalSd: schedule.criticalSd,
             driftMonitor: schedule.driftMonitor,
             driftThresholdPct: schedule.driftThresholdPct,
+            // MODEL-SERVE-001-T28. Echoed so a settings surface can read
+            // back what it wrote. API-settable today with no editor yet —
+            // see this task's own ledger note.
+            missingPctWarn: schedule.missingPctWarn,
+            missingPctAlert: schedule.missingPctAlert,
+            skipStreakAlert: schedule.skipStreakAlert,
+            frozenWindows: schedule.frozenWindows,
+            frozenTolerancePct: schedule.frozenTolerancePct,
           }
         : {
             enabled: false,
@@ -181,6 +194,13 @@ export class InferenceWindowAuthorizedService {
             criticalSd: 3.0,
             driftMonitor: false,
             driftThresholdPct: 10,
+            // T28, the SAME defaults the schema and the merge above use —
+            // never a second, silently different set.
+            missingPctWarn: 5,
+            missingPctAlert: 20,
+            skipStreakAlert: 3,
+            frozenWindows: 3,
+            frozenTolerancePct: 0,
           },
     };
   }
@@ -367,6 +387,11 @@ export class InferenceWindowAuthorizedService {
         truthLagMinutes: true,
         truthToleranceMinutes: true,
         truthHorizonHours: true,
+        missingPctWarn: true,
+        missingPctAlert: true,
+        skipStreakAlert: true,
+        frozenWindows: true,
+        frozenTolerancePct: true,
       },
     });
     const autoRetrain = dto.autoRetrain ?? existing?.autoRetrain ?? false;
@@ -384,6 +409,17 @@ export class InferenceWindowAuthorizedService {
       dto.truthToleranceMinutes ?? existing?.truthToleranceMinutes ?? 30;
     const truthHorizonHours =
       dto.truthHorizonHours ?? existing?.truthHorizonHours ?? 168;
+    // MODEL-SERVE-001-T28, merged the same way and for the same reason: a
+    // partial update flipping one band must not reset the other four behind
+    // the caller's back.
+    const missingPctWarn = dto.missingPctWarn ?? existing?.missingPctWarn ?? 5;
+    const missingPctAlert =
+      dto.missingPctAlert ?? existing?.missingPctAlert ?? 20;
+    const skipStreakAlert =
+      dto.skipStreakAlert ?? existing?.skipStreakAlert ?? 3;
+    const frozenWindows = dto.frozenWindows ?? existing?.frozenWindows ?? 3;
+    const frozenTolerancePct =
+      dto.frozenTolerancePct ?? existing?.frozenTolerancePct ?? 0;
     // The DTO's own refine only catches both-in-one-request; a partial
     // update naming just one of the pair against an existing row that
     // would put them out of order must be caught here, against the FINAL
@@ -395,8 +431,90 @@ export class InferenceWindowAuthorizedService {
         type: 'ERROR',
       });
     }
+    // T28, the same check against the same MERGED state, for the same reason.
+    if (missingPctWarn >= missingPctAlert) {
+      throw new AppException({
+        statusCode: 422,
+        message: `missingPctWarn (${missingPctWarn}) must be less than missingPctAlert (${missingPctAlert}).`,
+        type: 'ERROR',
+      });
+    }
 
     const wasEnabled = existing?.enabled ?? false;
+
+    // MODEL-SERVE-001-T25. THE NINTH ENABLE-TIME REFUSAL, and the first that
+    // asks the outside world a question instead of reading recorded state.
+    //
+    // THE MEASURED SYMPTOM: T19 read TM2's live rows and found 70 FAILED
+    // windows, every one reading "Materialize failed: Could not read the
+    // source...", and NOT ONE of them ever spawned a container — the raise
+    // happens before runner.spawn. The source was unreachable when someone
+    // pressed Start and nothing asked.
+    //
+    // WHY A REFUSAL AND NOT AN AUTO-HALT: this does NOT reverse T19's
+    // "status only, no backoff, no circuit breaker" decision. That decision
+    // refused to auto-PAUSE a schedule already running; this refuses the
+    // press that starts one. Different boundary, and the failure class
+    // behind T19's decision (PI resolving NXDOMAIN for a period) is exactly
+    // why a refusal the operator can retry is safe where an auto-disable was
+    // not. Rejected alternatives, both recorded on T25: enable-then-auto-halt
+    // (needs halt semantics and a re-enable path nobody asked for), and
+    // insert-but-do-not-dispatch (leaves PENDING rows whose policy T20 has
+    // not settled).
+    //
+    // ORDER MATTERS AND IS NOT INCIDENTAL: the evidence write happens FIRST
+    // and the throw second, so a failed probe never reaches the `upsert`
+    // below. There is therefore no window in which a schedule is enabled
+    // while its own preflight says it should not be — and no transaction
+    // spanning a throw. The evidence row is written with `update`, not
+    // `upsert`: a first enable that fails preflight must leave NO schedule
+    // row at all, or T20's sweep and `deriveDeployStatuses` both inherit a
+    // disabled ghost that no operator created.
+    // SCOPED TO THE OFF -> ON TRANSITION, exactly like stampDeployed below,
+    // and this is load-bearing rather than tidy. This same method serves a
+    // PARTIAL SETTINGS UPDATE on an already-running schedule (that is what
+    // T09's merge logic above exists for). Probing on those calls would mean:
+    // operator nudges driftThresholdPct, PI blips for thirty seconds, the
+    // update is refused AND `preflightOk: false` is written to a row that
+    // stays `enabled: true` and whose windows keep succeeding — pinning a
+    // demonstrably working model to Failed forever, since only a later
+    // successful enable would clear it.
+    //
+    // That is the "deployStatus asserts something untrue" defect T12's module
+    // was built to remove, re-introduced through a new field. It also crosses
+    // the line T25's own openDecision drew: refusing the press that STARTS a
+    // schedule is in scope, condemning one that is already RUNNING is the
+    // auto-pause T19 decided against.
+    const preflight = wasEnabled
+      ? { ok: null, reason: null }
+      : await this.inputStatus.preflightSourceService(modelId, user, sourceId);
+    if (preflight.ok === false) {
+      // No `if (existing)` guard needed: this branch is unreachable when
+      // `wasEnabled`, and a first enable's refusal must leave NO row behind
+      // for T20's sweep or deriveDeployStatuses to inherit.
+      if (existing) {
+        await this.prisma.inferenceSchedule.update({
+          where: { modelId },
+          data: {
+            preflightAt: new Date(),
+            preflightOk: false,
+            preflightReason: preflight.reason,
+          },
+        });
+      }
+      this.log.warn(
+        `preflight refused enable for model ${modelId} via source ${sourceId}: ${preflight.reason}`,
+      );
+      throw new AppException({
+        statusCode: 422,
+        // The connector's OWN TEXT, verbatim. V09 exists precisely because a
+        // guessed category sent a reader to audit a config that was already
+        // correct. Redaction is the READ boundary's job (see getStatusService)
+        // — never here, or the server log loses the evidence too.
+        message: `Cannot start: ${preflight.reason}`,
+        type: 'ERROR',
+      });
+    }
 
     await this.prisma.inferenceSchedule.upsert({
       where: { modelId },
@@ -416,6 +534,20 @@ export class InferenceWindowAuthorizedService {
         truthLagMinutes,
         truthToleranceMinutes,
         truthHorizonHours,
+        missingPctWarn,
+        missingPctAlert,
+        skipStreakAlert,
+        frozenWindows,
+        frozenTolerancePct,
+        // T25. Recorded on every enable, never merged from `existing` like
+        // the settings fields above: this is an OBSERVATION with a time on
+        // it, not a preference. Carrying a previous enable's verdict forward
+        // would be asserting a probe that this press did not run. `ok: null`
+        // (a non-PI source) is stored as null, which the deploy classifier
+        // reads as not-probed rather than as a pass.
+        preflightAt: new Date(),
+        preflightOk: preflight.ok,
+        preflightReason: preflight.reason,
         createdById: user.id,
       },
       update: {
@@ -437,6 +569,24 @@ export class InferenceWindowAuthorizedService {
         truthLagMinutes,
         truthToleranceMinutes,
         truthHorizonHours,
+        missingPctWarn,
+        missingPctAlert,
+        skipStreakAlert,
+        frozenWindows,
+        frozenTolerancePct,
+        // T25. Written ONLY on a real OFF -> ON enable, which is the only
+        // call that actually probed. A settings-only update omits all three
+        // and keeps the row's existing observation — overwriting them with a
+        // probe that never ran would fabricate evidence, and overwriting them
+        // with `null` would drop a live schedule back to "not probed" and
+        // read as initializing.
+        ...(wasEnabled
+          ? {}
+          : {
+              preflightAt: new Date(),
+              preflightOk: preflight.ok,
+              preflightReason: preflight.reason,
+            }),
       },
     });
 
@@ -572,13 +722,26 @@ export class InferenceWindowAuthorizedService {
           deployStatus: classifyDeployStatus({
             enabled: false,
             hasEverSucceeded: false,
-            staleness: 'OK',
-            failing: false,
-            hasFailedWindows: false,
+            // No schedule row, so nothing was ever probed. Moot while
+            // `enabled: false` short-circuits to 'stopped', but passed
+            // honestly rather than as a `false` that would read as a
+            // failed probe if that guard ever moved.
+            preflightOk: null,
           }),
           // MODEL-SERVE-001-T21. No schedule row at all — nothing to
           // evaluate, same OFF this axis reads for driftMonitor: false.
-          health: { status: 'OFF' as const, thresholds: null },
+          // T26: `reason` null, because OFF here is "not watching", not a
+          // fault — the distinction that axis now has to carry.
+          // T29: `frozenColumns` is present-and-empty, never omitted. The
+          // client's `health` type requires it, and this no-schedule branch is
+          // the most common shape on a fresh workspace — an omission here is a
+          // runtime mismatch tsc cannot see through the inferred return type.
+          health: {
+            status: 'OFF' as const,
+            reason: null,
+            frozenColumns: [] as string[],
+            thresholds: null,
+          },
         },
       };
     }
@@ -626,10 +789,12 @@ export class InferenceWindowAuthorizedService {
     const failing =
       recentTerminal.length >= 3 &&
       recentTerminal.every((w) => w.status === 'FAILED');
-    // Distinct from `failing`, and deliberately a much lower bar: this only
-    // matters for a schedule that has never succeeded, where one failed
-    // window is already evidence that it is not merely warming up.
-    const hasFailedWindows = recentTerminal.some((w) => w.status === 'FAILED');
+    // MODEL-SERVE-001-T26. `hasFailedWindows` was REMOVED here, not merely
+    // left unread. It existed only to separate "warming up" from "already
+    // broken" for a never-succeeded schedule — an inference from window
+    // history that T25's recorded preflight evidence now answers directly.
+    // Keeping it computed but unused would leave a reader guessing which
+    // axis it still belonged to.
 
     // MODEL-SERVE-001-T09. TWO separate fields, not "latest window with a
     // non-null reason" — `failureReason` is set on FAILED *and* SKIPPED,
@@ -688,12 +853,15 @@ export class InferenceWindowAuthorizedService {
         // get response now uses (lib/deploy-status.ts) — one state machine,
         // not a second one that could disagree with what the models list
         // shows for this same model.
+        // MODEL-SERVE-001-T26. `staleness` and `failing` are still REPORTED
+        // above — existing readers use them, and they are true facts about
+        // the windows — but they no longer decide this value. They are the
+        // monitoring axis's inputs now, and `health` below carries their
+        // verdict with a reason code attached.
         deployStatus: classifyDeployStatus({
           enabled: schedule.enabled,
           hasEverSucceeded: lastSucceeded !== null,
-          staleness,
-          failing,
-          hasFailedWindows,
+          preflightOk: schedule.preflightOk,
         }),
         health,
       },

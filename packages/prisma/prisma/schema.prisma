@@ -1985,6 +1985,64 @@ model InferenceSchedule {
   driftMonitor      Boolean @default(false)
   driftThresholdPct Float   @default(10)
 
+  /// MODEL-SERVE-001-T28. The monitoring axis's own bands, per schedule
+  /// rather than in env, for the reason T14 MEASURED rather than assumed:
+  /// one global constant is evaluated against the wrong axis the moment two
+  /// schedules differ. INFERENCE_MIN_ROWS assumed a 1-minute sampling
+  /// interval, so a schedule fetching every 5 minutes — 12 rows in a
+  /// complete, healthy hour — read SKIPPED forever against a 30-row floor.
+  ///
+  /// `missingPctWarn`/`missingPctAlert` grade Bad CELLS (the window row's own
+  /// `missingPct`), not missing tags — T25's preflight owns structural
+  /// absence. Ordering `warn < alert` is re-checked SERVER-SIDE against the
+  /// MERGED state, never by the DTO refine alone: a partial update naming
+  /// only one of the pair is exactly the gap T09 found for warnSd/criticalSd.
+  ///
+  /// `skipStreakAlert` counts a CONSECUTIVE RUN, never a total. T01/T10/T11
+  /// each hold that SKIPPED is a legitimate terminal status for a quiet
+  /// plant and must neither raise nor suppress the alarm; a run of them is a
+  /// different fact from a count of them.
+  ///
+  /// `frozenTolerancePct` is a FRACTION OF THE TRAINING RANGE, not an
+  /// absolute value — `featureStats` are in scaled units, so only `0` (exact
+  /// flatness) is meaningful without reference to what the column's spread
+  /// was in training. It defaults to 0 for that reason, and is therefore
+  /// `.nonnegative()` in the DTO, not `.positive()` like its siblings.
+  ///
+  /// NOT ADDED HERE, though T28 names it: the stale-cadence count. Staleness
+  /// already works through env.INFERENCE_STALE_AFTER_CADENCES inside
+  /// `isStale`, and per-scheduling it means changing that function's
+  /// signature and every caller for no behaviour this slice needs.
+  missingPctWarn     Float @default(5)
+  missingPctAlert    Float @default(20)
+  skipStreakAlert    Int   @default(3)
+  frozenWindows      Int   @default(3)
+  frozenTolerancePct Float @default(0)
+
+  /// MODEL-SERVE-001-T25. EVIDENCE FROM THE ENABLE-TIME LIVE PROBE, not a
+  /// status: `classifyDeployStatus` still derives Running/Offline at read
+  /// time (T12's rule), it just reads a recorded fact instead of inferring
+  /// warmup from window history. Same class of field as `promotedAt`.
+  ///
+  /// `preflightOk` is NULLABLE with three meanings, and the null is load-
+  /// bearing: true = the source answered, false = it did not and the enable
+  /// was refused, NULL = NOT PROBED. Null covers both a schedule enabled
+  /// before this migration and a SQL-sourced schedule, which is deliberately
+  /// never probed — `input-status` accepts PI only (rejected at
+  /// data-source.connect.service.ts's `src.type !== 'aveva'`), and
+  /// intergrations/sql_connect.py binds the time range as VARCHAR so a SQL
+  /// probe would fail for a CONNECTOR bug rather than the operator's config.
+  /// Refusing a whole source class for that is worse than not probing it.
+  ///
+  /// `preflightReason` is the connector's OWN TEXT, verbatim, via
+  /// frame_service.diagnose_empty_pi_fetch — V09 exists because a guessed
+  /// category sent a reader to audit a config that was already correct.
+  /// Redacted at the READ boundary with lib/redact-urls.ts (same treatment
+  /// T09 gave failureReason), never at write: server logs keep full evidence.
+  preflightAt     DateTime?
+  preflightOk     Boolean?
+  preflightReason String?
+
   createdBy   User   @relation(fields: [createdById], references: [id], onDelete: Cascade)
   createdById String
 

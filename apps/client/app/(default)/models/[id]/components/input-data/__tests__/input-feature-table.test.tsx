@@ -23,6 +23,7 @@ function row(over: Partial<InputFeatureRow> = {}): InputFeatureRow {
     lastValueRaw: null,
     lastSeen: null,
     equation: null,
+    frozen: false,
     ...over,
   }
 }
@@ -164,5 +165,58 @@ describe('InputFeatureTable (MODEL-SERVE-001-T12)', () => {
     // if an equation rendered here, as long as it didn't match that shape.
     const cell = screen.getByText('FI001.PV').closest('td')
     expect(cell?.textContent).toBe('FI001.PV')
+  })
+})
+
+/**
+ * MODEL-SERVE-001-T29/T30. The frozen badge is a THIRD verdict, and the
+ * negative half is the one that matters: a tag flat in TRAINING (a setpoint,
+ * a held-closed valve) is excluded SERVER-SIDE and must never reach this
+ * table as frozen. A fixture containing only a stuck tag passes against an
+ * implementation that badges every zero-range column.
+ */
+describe('InputFeatureTable — Sensor Frozen (MODEL-SERVE-001-T30)', () => {
+  it('badges a frozen tag', () => {
+    render(<InputFeatureTable rows={[row({ column: 'TI010.PV', frozen: true })]} />)
+    expect(screen.getByText('Frozen')).toBeInTheDocument()
+  })
+
+  it('does NOT badge a tag that is not frozen', () => {
+    render(
+      <InputFeatureTable rows={[row({ column: 'TI010.PV', frozen: false })]} />,
+    )
+    expect(screen.queryByText('Frozen')).not.toBeInTheDocument()
+  })
+
+  it('badges only the frozen tag when both are present', () => {
+    render(
+      <InputFeatureTable
+        rows={[
+          row({ column: 'STUCK.PV', frozen: true }),
+          row({ column: 'MOVING.PV', frozen: false }),
+        ]}
+      />,
+    )
+    expect(screen.getAllByText('Frozen')).toHaveLength(1)
+  })
+
+  /** A frozen tag can read PI-Good and un-drifted at the same time — that is
+   *  the whole reason this badge exists rather than being folded into one of
+   *  its neighbours. */
+  it('badges frozen even while PI reports Good and drift reads OK', () => {
+    render(
+      <InputFeatureTable
+        rows={[
+          row({
+            column: 'TI010.PV',
+            frozen: true,
+            piStatus: 'Good',
+            driftStatus: 'OK',
+          }),
+        ]}
+      />,
+    )
+    expect(screen.getByText('Frozen')).toBeInTheDocument()
+    expect(screen.getByText('Good')).toBeInTheDocument()
   })
 })

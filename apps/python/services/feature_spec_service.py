@@ -20,10 +20,15 @@ before this task, grepped, confirmed empty):
   the same.
 * `selectedColumns` — `null` means "keep every column", the same identity
   meaning `selectColumns(ds, null)` already carries in the client.
-* `scaling` — one `{tag, method}` pair per tag that has an explicit scaler
-  entry. Sorted by tag for readability; the HASH does not depend on this
-  ordering (dict keys are canonicalised before hashing — see
-  `_canonical_hash_payload`), only on the mapping's actual content.
+* `scaling` — one `{tag, method}` pair per tag that was ACTUALLY scaled,
+  DEFAULTS INCLUDED (DS-LAKE-028-T02). A tag the user never configured
+  appears here as `minmax`, resolved the way `to_model_ready` resolves it.
+  Before that task this listed only EXPLICIT config, which is why 21 of the
+  22 specs on disk say `scaling: []` about frames that are fully min-max
+  scaled — two fields contradicting each other about one artifact. Sorted by
+  tag for readability. NOT the value the hash sees: `featureHash` is still
+  computed over the EXPLICIT config, so this correction churned not one
+  recorded hash (see `build_feature_spec`'s own comment).
 * `scalingParams` (DS-LAKE-018-T02) — `{tag: {...fitted params}}` for every
   tag `to_model_ready` actually scaled with real fit state: `{min, max}`
   for minmax, `{mean, std}` for standard, `{median, iqr}` for robust.
@@ -46,7 +51,9 @@ before this task, grepped, confirmed empty):
   artifact's `schemaVersion` — a distinct axis, deliberately named
   differently so the two are never confused at a call site.
 * `featureHash` — sha256 over a canonical (sorted-keys, list-order-
-  preserved) JSON encoding of `features` + `selectedColumns` + `scaling`.
+  preserved) JSON encoding of `features` + `selectedColumns` + the EXPLICIT
+  scaler config (NOT the `scaling` field as written since DS-LAKE-028-T02 —
+  see that field's own note above).
   Stable for an identical configuration; changes when ANY transform,
   scaler, or selection changes (DS-LAKE-006's own acceptance criterion) —
   proven directly in `tests/test_feature_spec_quirks.py`, not merely
@@ -99,6 +106,7 @@ import pandas as pd
 
 from services.boxplot_service import good_values
 from services.feature_service import feature_column_name
+from softsensor_scaling import DEFAULT_SCALER
 from softsensor_scaling import _own_lookback, _reads_tags, max_replay_lookback
 from softsensor_scaling import quantile_edges as _quantile_edges
 from softsensor_scaling import tag_columns as _tag_columns
@@ -121,7 +129,20 @@ __all__ = [
     "_reads_tags",
 ]
 
-FEATURE_SPEC_VERSION = 3  # MODEL-SERVE-001-T13: added psiRefEdges/psiBinCount/psiBinMode/psiRefCounts
+# DS-LAKE-028-T02: `scaling` now records the EFFECTIVE method per tag
+# (defaults materialised), not only the tags the user configured explicitly.
+# (v3 was MODEL-SERVE-001-T13: psiRefEdges/psiBinCount/psiBinMode/psiRefCounts.)
+#
+# READ THIS BEFORE BRANCHING ON `scaling` ANYWHERE. A spec written at
+# featureVersion <= 3 keeps `scaling: []` FOREVER, and all 22 specs on this
+# system are at 1 or 2. So an empty `scaling` is NEVER evidence that nothing
+# was scaled, at any version: resolve a tag's method from `scalingParams`
+# (or from `scalers.get(tag, DEFAULT_SCALER)`, the way `to_model_ready`
+# does), never from whether this list is non-empty. Treating a non-empty
+# `scaling` as proof of scaling and an empty one as proof of none is the
+# exact defect this bump exists to close, and it is just as wrong on the new
+# side of the version boundary as on the old one.
+FEATURE_SPEC_VERSION = 4
 
 
 def compute_psi_ref_edges(
@@ -169,6 +190,31 @@ def compute_psi_ref_edges(
         if edges is not None:
             result[tag] = edges
     return result
+
+
+def _effective_scaling(
+    scalers: Mapping[str, str],
+    scaling_params: Mapping[str, Mapping[str, float]] | None,
+) -> list[dict[str, Any]]:
+    """The method each tag was ACTUALLY scaled with, defaults included.
+
+    Resolved the way `to_model_ready` itself resolves — `scalers.get(tag,
+    DEFAULT_SCALER)` (softsensor_scaling/scaling.py:169) — over the tags
+    `scaling_params` records, plus any tag the user configured explicitly
+    that fitted nothing (a `"none"` tag, or a `robust` column with no finite
+    value, both of which are absent from `scaling_params` by design).
+
+    So a tag the user never touched appears here as `minmax` rather than
+    being absent, which is the whole correction: this list and
+    `scalingParams` now describe the same artifact instead of contradicting
+    each other about it.
+    """
+    params = dict(scaling_params) if scaling_params else {}
+    tags = set(params) | set(scalers)
+    return [
+        {"tag": tag, "method": scalers.get(tag, DEFAULT_SCALER)}
+        for tag in sorted(tags)
+    ]
 
 
 def _canonical_hash_payload(
@@ -256,10 +302,26 @@ def build_feature_spec(
     kept nested, matching the literal field names this task's own resolved
     openDecision names.
     """
-    scaling = [
+    # DS-LAKE-028-T02. TWO LISTS, DELIBERATELY. `explicit_scaling` is the
+    # user's config verbatim — the value this field held before this task —
+    # and it is the ONE that reaches the hash, so every featureHash ever
+    # recorded stays byte-identical (proven by tests/test_feature_spec_quirks
+    # .py, unmodified). `effective_scaling` is what actually happened to the
+    # bytes and is what gets WRITTEN, because `scaling: []` over a frame that
+    # IS min-max scaled is indistinguishable, by that field alone, from
+    # "nothing was scaled" — which is the state 21 of the 22 specs on this
+    # system are in, and which made a trainer warn that the input was
+    # unscaled when it was not.
+    #
+    # DO NOT COLLAPSE THESE INTO ONE VALUE. They differ only in whether the
+    # defaults are materialised, so the asymmetry reads like an oversight; it
+    # is the whole point. Hashing the effective list would churn every
+    # recorded hash to fix a disclosure problem.
+    explicit_scaling = [
         {"tag": tag, "method": method} for tag, method in sorted(scalers.items())
     ]
-    canonical = _canonical_hash_payload(features, selected_columns, scaling)
+    effective_scaling = _effective_scaling(scalers, scaling_params)
+    canonical = _canonical_hash_payload(features, selected_columns, explicit_scaling)
     feature_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     psi = dict(psi_ref_edges) if psi_ref_edges else {}
@@ -275,7 +337,7 @@ def build_feature_spec(
             for cfg in features
         ],
         "selectedColumns": selected_columns,
-        "scaling": scaling,
+        "scaling": effective_scaling,
         "scalingParams": dict(scaling_params) if scaling_params else {},
         "encoding": [],
         "featureHash": feature_hash,

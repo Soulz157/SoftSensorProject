@@ -1,6 +1,10 @@
 import { PrismaService } from '@softsensor/prisma';
 import { env } from '@/config/env.config';
 import { redactUrls } from '@/lib/redact-urls';
+// MODEL-SERVE-001-T26. The monitoring classifier, called from the list path
+// so both axes are derived by ONE implementation each. Acyclic: model-health
+// imports nothing from this module (it names it only in a comment).
+import { classifyModelHealth, type ModelHealth } from '@/lib/model-health';
 
 /**
  * MODEL-SERVE-006-T12. Per decisions.deploy_status_currently_asserts_
@@ -18,38 +22,64 @@ import { redactUrls } from '@/lib/redact-urls';
  */
 export type DeployStatus = 'stopped' | 'running' | 'error' | 'initializing';
 
+/**
+ * MODEL-SERVE-001-T24/T26. THE TWO-AXIS CONTRACT, in one sentence each:
+ * DEPLOY answers "is the schedule alive and dispatching"; MONITORING
+ * (lib/model-health.ts) answers "is the data and the model still right".
+ * One classifier per axis, rendered together, never collapsed — a model that
+ * is healthy-but-drifting, or failing-but-within-thresholds, has no
+ * representable state once operational and health share one value. That is
+ * why this enum is NOT widened with 'warning' or 'frozen', and why T21 put
+ * the health classifier in its own file rather than growing this one.
+ *
+ * THE ENUM'S FOUR WIRE VALUES ARE FROZEN. They are not renamed to
+ * 'failed'/'offline': T22 had just finished repairing three client maps that
+ * keyed on the word 'failed' and fell through a `??` to green/Stopped, and
+ * renaming manufactures a second round of the identical defect. The DISPLAY
+ * labels changed instead ('error' -> "Failed", 'stopped' -> "Offline"), which
+ * costs nothing on the wire.
+ *
+ * WHAT T26 CHANGED HERE, AND WHY THE OLD CONDITION COULD NOT SURVIVE:
+ * `Running` is now STICKY. After preflight passes, only Offline takes the
+ * deploy axis out of Running — an operator Stop, no PRODUCTION version, or no
+ * schedule row. Fetch faults and staleness moved to the monitoring axis,
+ * because "three windows failed" is a fact about the DATA, not about whether
+ * the scheduler is dispatching.
+ *
+ * That made the previous `initializing` test unusable, not merely different.
+ * It read `!hasEverSucceeded && !hasFailedWindows` — an INFERENCE from window
+ * history about an event (did this schedule ever get a chance to work) that
+ * nothing had recorded. Once Running must persist through failures, that
+ * inference cannot separate warm-up from broken at all. T25 records the
+ * evidence instead, so this stays a DERIVED read of a stored FACT — the same
+ * class of thing as `promotedAt`, which is why T12's derive-at-read-time rule
+ * still holds. `preflightOk` is not a status field.
+ */
 export function classifyDeployStatus(input: {
   enabled: boolean;
   hasEverSucceeded: boolean;
-  staleness: 'OK' | 'STALE';
-  failing: boolean;
   /**
-   * Has this schedule produced ANY terminal FAILED window? Required, not
-   * optional-with-a-default: a caller that forgets it would silently get
-   * the old behaviour, which is the bug this field exists to close.
+   * MODEL-SERVE-001-T25's recorded evidence. THE NULL IS LOAD-BEARING and is
+   * emphatically not a soft pass: `true` = the source answered at enable,
+   * `false` = it did not and the enable was refused, `null` = NOT PROBED (a
+   * non-PI source, or a schedule enabled before T25 shipped).
+   *
+   * A `null` must never read as a failure — that would flip every schedule
+   * enabled before this migration to Failed on the day it deploys, which is
+   * the wrong direction in exactly the way this ledger keeps closing: a
+   * verdict asserted from an observation nobody made.
    */
-  hasFailedWindows: boolean;
+  preflightOk: boolean | null;
 }): DeployStatus {
   if (!input.enabled) return 'stopped';
-  if (input.failing) return 'error';
-  if (input.staleness === 'STALE') {
-    // A schedule that WAS producing and has since gone quiet is a real
-    // problem, not a warm-up.
-    if (input.hasEverSucceeded) return 'error';
-    // Never succeeded. What separates "warming up" from "broken" is not
-    // how LONG it has been quiet but whether it has actually tried and
-    // failed: a warm-up has produced nothing at all yet, while a schedule
-    // whose attempts are coming back FAILED is already failing, however
-    // recently it was enabled.
-    //
-    // `failing` above deliberately needs THREE consecutive failures, which
-    // is the right bar for a mature schedule with history behind it and
-    // the wrong one here — a brand-new schedule reaches three failures
-    // only after three cadences, and until then a completely broken source
-    // was indistinguishable from a healthy warm-up. That gap is what let a
-    // model sit in "initializing" for hours while every window it produced
-    // had already failed.
-    return input.hasFailedWindows ? 'error' : 'initializing';
+  // Reachable ONLY from preflight now. A window that fails later is the
+  // monitoring axis's business.
+  if (input.preflightOk === false) return 'error';
+  // Not probed and nothing produced yet: genuinely still warming up. A probed
+  // schedule (`true`) is Running from the press, which is the point — the
+  // operator has already been told the source answers.
+  if (input.preflightOk === null && !input.hasEverSucceeded) {
+    return 'initializing';
   }
   return 'running';
 }
@@ -140,6 +170,14 @@ export interface DeployState {
    * exactly why the filter T23 replaces was empty by construction.
    */
   lastFailure: { reason: string | null; at: Date } | null;
+  /**
+   * MODEL-SERVE-001-T26. The MONITORING axis for the list payload, so the
+   * Alerts page and the workspace failure counts keep seeing fetch faults
+   * after they stopped reaching `status`. Drift is deliberately NOT evaluated
+   * here (it needs a per-model baseline read), so this carries liveness only
+   * — `OFF` on this path means "no fault and no claim", never "healthy".
+   */
+  monitoring: ModelHealth;
 }
 
 /**
@@ -160,7 +198,13 @@ export async function deriveDeployStatuses(
 ): Promise<Record<string, DeployState>> {
   const result: Record<string, DeployState> = {};
   for (const id of modelIds) {
-    result[id] = { status: 'stopped', enabled: false, lastFailure: null };
+    result[id] = {
+      status: 'stopped',
+      enabled: false,
+      lastFailure: null,
+      // No schedule row at all — nothing to watch, and nothing wrong.
+      monitoring: { status: 'OFF', reason: null, frozenColumns: [] },
+    };
   }
   if (modelIds.length === 0) return result;
 
@@ -171,6 +215,15 @@ export async function deriveDeployStatuses(
       enabled: true,
       cadenceMinutes: true,
       lagMinutes: true,
+      // MODEL-SERVE-001-T25/T26. Widens this SELECT only — same query, same
+      // rows, same round trip, the shape T23 already established here.
+      preflightOk: true,
+      // T28's bands. Read here so the list's own monitoring verdict is
+      // graded against the SAME per-schedule thresholds the detail page
+      // uses, never a second set of defaults.
+      skipStreakAlert: true,
+      missingPctWarn: true,
+      missingPctAlert: true,
     },
   });
   if (schedules.length === 0) return result;
@@ -191,9 +244,21 @@ export async function deriveDeployStatuses(
     lastSucceededGroups.map((g) => [g.modelId, g._max.windowStart]),
   );
 
-  const failingByModel = new Map<string, boolean>();
-  const hasFailedByModel = new Map<string, boolean>();
+  // MODEL-SERVE-001-T26. `failingByModel`/`hasFailedByModel` are GONE, not
+  // merely unread: three failed windows no longer says anything about whether
+  // the schedule is dispatching, so computing them here and not using them
+  // would leave a reader guessing which axis they belonged to. The same
+  // signal now feeds the MONITORING axis (lib/model-health.ts) via
+  // `getStatusService`. The take-3 query below stays exactly as it was —
+  // `lastFailure` still needs it, and T30 will ride the monitoring verdict up
+  // this same path for the Alerts page rather than adding a second read.
   const lastFailureByModel = new Map<string, DeployState['lastFailure']>();
+  // T26: the TRAILING run of failures, counted back from the newest and
+  // stopping at the first non-FAILED row — the same rule
+  // `resolveLivenessFaults` applies on the single-model path, so the list and
+  // the detail page cannot disagree about the same three windows. SKIPPED is
+  // not a failure (T01/T10/T11).
+  const consecutiveFailuresByModel = new Map<string, number>();
   await Promise.all(
     enabledIds.map(async (modelId) => {
       const recentTerminal = await prisma.inferenceWindow.findMany({
@@ -207,20 +272,12 @@ export async function deriveDeployStatuses(
         // afford.
         select: { status: true, failureReason: true, windowStart: true },
       });
-      failingByModel.set(
-        modelId,
-        recentTerminal.length >= 3 &&
-          recentTerminal.every((w) => w.status === 'FAILED'),
-      );
-      // Free from the query already being made — no extra round trip. Only
-      // consulted for a model that has NEVER succeeded, and for such a
-      // model every terminal window is a FAILED one by definition, so the
-      // three most recent are a sufficient sample: if any window failed at
-      // all, one of these is it.
-      hasFailedByModel.set(
-        modelId,
-        recentTerminal.some((w) => w.status === 'FAILED'),
-      );
+      let streak = 0;
+      for (const w of recentTerminal) {
+        if (w.status !== 'FAILED') break;
+        streak += 1;
+      }
+      consecutiveFailuresByModel.set(modelId, streak);
       // Already DESC by windowStart, so the first FAILED row is the most
       // recent one. Redacted here, not at the read site, so no caller can
       // forget: this column holds the infer container's verbatim `str(err)`.
@@ -241,21 +298,52 @@ export async function deriveDeployStatuses(
 
   for (const schedule of schedules) {
     const lastSucceededAt = lastSucceededByModel.get(schedule.modelId) ?? null;
-    const staleness = isStale(
-      lastSucceededAt,
-      schedule.cadenceMinutes,
-      schedule.lagMinutes,
-    );
     result[schedule.modelId] = {
       status: classifyDeployStatus({
         enabled: schedule.enabled,
         hasEverSucceeded: lastSucceededAt !== null,
-        staleness,
-        failing: failingByModel.get(schedule.modelId) ?? false,
-        hasFailedWindows: hasFailedByModel.get(schedule.modelId) ?? false,
+        preflightOk: schedule.preflightOk,
       }),
       enabled: schedule.enabled,
       lastFailure: lastFailureByModel.get(schedule.modelId) ?? null,
+      // MODEL-SERVE-001-T26. The monitoring verdict rides THIS payload, from
+      // rows already fetched above — no new query, no N+1. Without it, moving
+      // fetch faults off the deploy axis would have silenced the Alerts page
+      // and the workspace failure counts, which key on `deployStatus ===
+      // 'error'` through `isDeployFailed` (client lib/model-status.ts). That
+      // is the same "both axes read healthy while the scheduler is dead"
+      // failure this task exists to prevent, displaced from the detail page
+      // to the list. T30 owns the full surface; this is the minimum that
+      // keeps the signal from disappearing in the meantime.
+      monitoring: classifyModelHealth({
+        enabled: schedule.enabled,
+        // Drift is NOT evaluated on the list path — it needs a baseline read
+        // per model, which is exactly the per-model request this batched
+        // derivation exists to avoid. `false` here means "this payload makes
+        // no drift claim", and the detail page's own read still does.
+        driftMonitor: false,
+        driftStatus: null,
+        driftEvidence: false,
+        // T27/T29's data-quality bands are likewise the detail page's job:
+        // `missingPct` and frozen detection both need the per-window select
+        // this batched query deliberately does not make. The list carries
+        // LIVENESS only — its OFF means "no fault, no claim", never
+        // "healthy". T30 widens this payload; see its own note.
+        consecutiveSkips: 0,
+        skipStreakAlert: schedule.skipStreakAlert,
+        missingPct: null,
+        missingPctWarn: schedule.missingPctWarn,
+        missingPctAlert: schedule.missingPctAlert,
+        frozenColumns: [],
+        consecutiveFailures:
+          consecutiveFailuresByModel.get(schedule.modelId) ?? 0,
+        staleness: isStale(
+          lastSucceededAt,
+          schedule.cadenceMinutes,
+          schedule.lagMinutes,
+        ),
+        hasEverSucceeded: lastSucceededAt !== null,
+      }),
     };
   }
 
@@ -292,6 +380,10 @@ export function overlayDeployStatus<T extends { id: string; data: unknown }>(
       // already are, so the Alerts page reads a REAL failure reason off the
       // list payload it already fetches — see DeployState.lastFailure.
       lastFailure: state.lastFailure,
+      // MODEL-SERVE-001-T26. Same reasoning, one axis over: the list payload
+      // has to carry the monitoring verdict or the Alerts page cannot see a
+      // fetch fault at all now that `deployStatus` no longer reports one.
+      monitoring: state.monitoring,
     },
   };
 }

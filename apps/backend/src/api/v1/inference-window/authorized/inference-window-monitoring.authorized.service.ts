@@ -21,7 +21,22 @@ import {
   classifyModelHealth,
   thresholdsFromSchedule,
   type HealthStatus,
+  type HealthReason,
 } from '@/lib/model-health';
+// MODEL-SERVE-001-T26. T11's staleness formula, called rather than copied —
+// it moved axes, it did not fork.
+import { isStale } from '@/lib/deploy-status';
+// MODEL-SERVE-001-T29. The frozen-tag detector, pure and co-located with its
+// own spec like the other 13 modules in lib/.
+import { detectFrozenColumns } from '@/lib/sensor-frozen';
+
+/**
+ * `resolveProductionWindows`'s own `take`. Named because T29's
+ * `frozenWindows` is clamped against it: a setting larger than the sample
+ * could never fire, which is precisely the "settings that appear to work and
+ * may do nothing" defect T21's audit found and T28 exists to prevent.
+ */
+const PRODUCTION_WINDOW_TAKE = 24;
 
 /**
  * MODEL-SERVE-001-T17. Drift/PSI, computed from `InferenceWindow`'s own
@@ -120,11 +135,15 @@ export class InferenceWindowMonitoringService {
           : {}),
       },
       orderBy: { windowStart: 'desc' },
-      take: 24,
+      take: PRODUCTION_WINDOW_TAKE,
       select: {
         windowStart: true,
         status: true,
         inputRows: true,
+        // MODEL-SERVE-001-T27. T05's own Bad-CELL share, for the BAD_DATA
+        // band. Absent from this select until now, so the band would have
+        // had no input at all.
+        missingPct: true,
         featureHistograms: true,
         featureStats: true,
       },
@@ -296,52 +315,222 @@ export class InferenceWindowMonitoringService {
    */
   async getHealthStatus(modelId: string): Promise<{
     status: HealthStatus;
+    reason: HealthReason | null;
+    frozenColumns: string[];
     thresholds: ReturnType<typeof thresholdsFromSchedule> | null;
   }> {
     const schedule = await this.prisma.inferenceSchedule.findUnique({
       where: { modelId },
     });
-    if (!schedule || !schedule.driftMonitor) {
+    if (!schedule) {
       return {
-        status: classifyModelHealth(schedule?.driftMonitor ?? false, null),
+        status: 'OFF',
+        reason: null,
+        frozenColumns: [],
         thresholds: null,
       };
     }
 
-    const thresholds = thresholdsFromSchedule(schedule);
+    // MODEL-SERVE-001-T26. The liveness inputs, resolved BEFORE the
+    // driftMonitor gate below: an enabled schedule reports its fetch faults
+    // and its staleness whether or not anyone opted into drift watching. See
+    // `classifyModelHealth`'s own comment for why that gate covers drift only
+    // — `driftMonitor` defaults to false, and gating liveness behind it would
+    // re-create exactly the calm-dashboard blindness T26 exists to remove.
+    const faults = await this.resolveLivenessFaults(schedule);
+    const thresholds = schedule.driftMonitor
+      ? thresholdsFromSchedule(schedule)
+      : null;
 
+    // T27/T28's own bands, read off the schedule rather than env — see
+    // schema.prisma's doc comment for why one global constant is evaluated
+    // against the wrong axis the moment two schedules differ.
+    const bands = {
+      skipStreakAlert: schedule.skipStreakAlert,
+      missingPctWarn: schedule.missingPctWarn,
+      missingPctAlert: schedule.missingPctAlert,
+    };
+
+    // T27/T29. RESOLVED ONCE, feeding BOTH drift and frozen — the previous
+    // shape returned early when driftMonitor was off and never looked at a
+    // window at all, which would have made Sensor Frozen invisible for every
+    // model that had not opted into drift watching (the majority: it defaults
+    // false). Frozen is a liveness fact about an instrument, not a drift
+    // claim, so it follows T26's rule and is NOT gated behind that flag.
     let windows: Awaited<
       ReturnType<InferenceWindowMonitoringService['resolveProductionWindows']>
-    >['windows'];
-    let production: Awaited<
-      ReturnType<InferenceWindowMonitoringService['resolveProductionWindows']>
-    >['production'];
+    >['windows'] = [];
+    let production:
+      | Awaited<
+          ReturnType<
+            InferenceWindowMonitoringService['resolveProductionWindows']
+          >
+        >['production']
+      | null = null;
     try {
       ({ production, windows } = await this.resolveProductionWindows(modelId));
     } catch (err) {
-      if (err instanceof AppException) {
-        // No PRODUCTION version — nothing to compare against yet.
-        return { status: 'UNKNOWN', thresholds };
-      }
-      throw err;
+      // No PRODUCTION version — nothing to compare against yet, and nothing
+      // to read stillness from either. A fault still outranks it: "we cannot
+      // read the source" is a more useful answer than "we have nothing to
+      // compare against".
+      if (!(err instanceof AppException)) throw err;
     }
 
     const statsRows = windows
       .map((w) => w.featureStats)
-      .filter((s): s is NonNullable<typeof s> => s !== null);
-    if (statsRows.length === 0) {
-      return { status: 'UNKNOWN', thresholds };
-    }
+      .filter((s): s is NonNullable<typeof s> => s !== null)
+      .map((s) => s as unknown as FeatureStatsMap);
 
-    const pooled = poolFeatureStats(
-      statsRows.map((s) => s as unknown as FeatureStatsMap),
-    );
-    const baseline = await resolveColumnBaseline(production.goldObjectKey);
-    const report = computeDrift(pooled, baseline, thresholds);
+    // The BASELINE IS FETCHED ONLY WHEN THERE IS SOMETHING TO COMPARE IT TO.
+    // It is an HTTP round trip to apps/python, and both consumers below need
+    // window stats to say anything at all — so a model with no stats costs
+    // nothing extra, which today is every model (no window has succeeded
+    // since T17 added the column).
+    const baseline =
+      production && statsRows.length > 0
+        ? await resolveColumnBaseline(production.goldObjectKey)
+        : {};
+
+    // T29. Newest-first, limited to the schedule's own frozenWindows.
+    // The `frozenWindows <= PRODUCTION_WINDOW_TAKE` bound is owned by the DTO
+    // (`.max(24)`), NOT clamped here: a clamp would silently badge frozen off
+    // FEWER windows than the operator asked for. `detectFrozenColumns` returns
+    // [] when the sample is short, which is the honest answer — not enough
+    // evidence, rather than a quietly weakened threshold.
+    const frozenColumns = detectFrozenColumns({
+      windows: statsRows,
+      baseline,
+      frozenWindows: schedule.frozenWindows,
+      frozenTolerancePct: schedule.frozenTolerancePct,
+    });
+
+    // T27 RULE (2), THE DARK-SHIP GATE. Drift may only speak when there IS
+    // evidence: a non-empty baseline AND at least one window carrying stats.
+    // `resolveColumnBaseline` returns `{}` from its SUCCESS path as well as
+    // its catch path, so without this an artifact whose column_stats read
+    // failed would report healthy.
+    const driftEvidence =
+      statsRows.length > 0 && Object.keys(baseline).length > 0;
+
+    const driftStatus =
+      schedule.driftMonitor && driftEvidence && thresholds
+        ? computeDrift(poolFeatureStats(statsRows), baseline, thresholds).status
+        : null;
 
     return {
-      status: classifyModelHealth(schedule.driftMonitor, report.status),
+      ...classifyModelHealth({
+        enabled: schedule.enabled,
+        driftMonitor: schedule.driftMonitor,
+        driftStatus,
+        driftEvidence,
+        frozenColumns,
+        ...bands,
+        ...faults,
+      }),
       thresholds,
+    };
+  }
+
+  /**
+   * MODEL-SERVE-001-T26. The two liveness signals the deploy axis used to
+   * own, read from the rows they already live on.
+   *
+   * `consecutiveFailures` counts back from the NEWEST terminal window and
+   * stops at the first non-FAILED one — a genuine trailing run, not "3 of the
+   * last 3 happen to be FAILED in any order". The take-3 sample and the
+   * SUCCEEDED/SKIPPED/FAILED filter are the same ones `deriveDeployStatuses`
+   * uses, deliberately: the two axes must not disagree about what the recent
+   * history was.
+   *
+   * SKIPPED IS NOT COUNTED AS A FAILURE. T01/T10/T11 each state that it is a
+   * legitimate terminal status for a quiet plant and must neither raise nor
+   * suppress the alarm; a consecutive SKIPPED run is T27's NO_PREDICTIONS,
+   * with its own reason code, not this one.
+   *
+   * Staleness is measured from the last SUCCEEDED/SKIPPED window, matching
+   * `deriveDeployStatuses`'s own `lastSucceededAt` — a stream of FAILED
+   * windows means the record HAS stopped being written, which is the thing
+   * staleness is asking about.
+   */
+  private async resolveLivenessFaults(schedule: {
+    modelId: string;
+    enabled: boolean;
+    cadenceMinutes: number;
+    lagMinutes: number;
+    skipStreakAlert: number;
+  }): Promise<{
+    consecutiveFailures: number;
+    consecutiveSkips: number;
+    missingPct: number | null;
+    staleness: 'OK' | 'STALE';
+    hasEverSucceeded: boolean;
+  }> {
+    if (!schedule.enabled) {
+      return {
+        consecutiveFailures: 0,
+        consecutiveSkips: 0,
+        missingPct: null,
+        staleness: 'OK',
+        hasEverSucceeded: false,
+      };
+    }
+
+    // WIDENED FROM A HARD-CODED 3 (T27/T28). The failure bar is 3, but
+    // `skipStreakAlert` is operator-set: against a fixed take-3 sample a
+    // setting of 5 could NEVER fire, silently — the "settings that appear to
+    // work and may do nothing" defect T21's audit found. The sample is now
+    // whatever the largest streak in play needs.
+    const sampleSize = Math.max(3, schedule.skipStreakAlert);
+    const recentTerminal = await this.prisma.inferenceWindow.findMany({
+      where: {
+        modelId: schedule.modelId,
+        status: { in: ['SUCCEEDED', 'SKIPPED', 'FAILED'] },
+      },
+      orderBy: { windowStart: 'desc' },
+      take: sampleSize,
+      select: { status: true, missingPct: true },
+    });
+    let consecutiveFailures = 0;
+    for (const w of recentTerminal) {
+      if (w.status !== 'FAILED') break;
+      consecutiveFailures += 1;
+    }
+    // A RUN, counted the same way, for the same reason: "3 of the last 5 were
+    // SKIPPED in any order" is a quiet plant; three in a ROW is predictions
+    // having stopped.
+    let consecutiveSkips = 0;
+    for (const w of recentTerminal) {
+      if (w.status !== 'SKIPPED') break;
+      consecutiveSkips += 1;
+    }
+
+    const lastProduced = await this.prisma.inferenceWindow.findFirst({
+      where: {
+        modelId: schedule.modelId,
+        status: { in: ['SUCCEEDED', 'SKIPPED'] },
+      },
+      orderBy: { windowStart: 'desc' },
+      select: { windowStart: true },
+    });
+
+    return {
+      consecutiveFailures,
+      consecutiveSkips,
+      // THE NEWEST terminal window's own share of Bad cells, not a rollup
+      // across the sample. The band answers "is the data bad RIGHT NOW"; a
+      // rollup answers a different question and disagrees with this one on a
+      // plant that has just recovered.
+      missingPct: recentTerminal[0]?.missingPct ?? null,
+      // Separates "stopped being written" from "has not started yet" — see
+      // classifyModelHealth's own note on why the latter must not alarm.
+      hasEverSucceeded: lastProduced !== null,
+      // T11's function, called — never a third copy of the formula.
+      staleness: isStale(
+        lastProduced?.windowStart ?? null,
+        schedule.cadenceMinutes,
+        schedule.lagMinutes,
+      ),
     };
   }
 }

@@ -361,7 +361,7 @@ export default function ModelsPage() {
                       },
                       {
                         key: 'stopped',
-                        label: 'Stopped',
+                        label: 'Offline',
                         icon: StopCircle,
                         cls: 'bg-zinc-500/10 text-zinc-400',
                         count: deployCounts.stopped,

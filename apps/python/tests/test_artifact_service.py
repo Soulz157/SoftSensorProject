@@ -27,6 +27,7 @@ from intergrations.object_store import (
 )
 from schemas.preprocess import (
     ArtifactAdoptRequest,
+    ArtifactPresignResponse,
     ArtifactReclaimRequest,
     CleaningOperation,
     CleanRequest,
@@ -1368,8 +1369,15 @@ def test_get_run_manifest_returns_framework_versions_when_present() -> None:
         store, RunManifestRequest(source_key=key)
     )
 
+    # All three keys, not just the one this test is named for: `get_run_manifest`
+    # returns `model_sha256` (MODEL-SERVE-001-T01) and `feature_columns`
+    # (MODEL-FLOW-016-T07) too, both null for a manifest that records neither.
+    # Kept as exact equality rather than narrowed to a subset check — the whole
+    # point of this assertion is that a NEW field cannot appear unnoticed.
     assert result == {
-        "framework_versions": {"sklearn": "1.5.1", "lightgbm": "4.3.0"}
+        "framework_versions": {"sklearn": "1.5.1", "lightgbm": "4.3.0"},
+        "model_sha256": None,
+        "feature_columns": None,
     }
 
 
@@ -1384,7 +1392,14 @@ def test_get_run_manifest_returns_none_for_a_legacy_manifest() -> None:
         store, RunManifestRequest(source_key=key)
     )
 
-    assert result == {"framework_versions": None}
+    # A legacy manifest records none of the three, and each is returned as
+    # None rather than raising — the "not recorded, not a failure" contract
+    # this test is named for, now asserted across all three fields.
+    assert result == {
+        "framework_versions": None,
+        "model_sha256": None,
+        "feature_columns": None,
+    }
 
 
 def test_get_run_manifest_accepts_an_adopted_model_run_key_too() -> None:
@@ -1400,7 +1415,11 @@ def test_get_run_manifest_accepts_an_adopted_model_run_key_too() -> None:
         store, RunManifestRequest(source_key=key)
     )
 
-    assert result == {"framework_versions": {"sklearn": "1.5.1"}}
+    assert result == {
+        "framework_versions": {"sklearn": "1.5.1"},
+        "model_sha256": None,
+        "feature_columns": None,
+    }
 
 
 # ── get_run_feature_importance (MODEL-FLOW-019-T09) ─────────────────────
@@ -1539,3 +1558,46 @@ def test_get_run_manifest_refuses_a_malformed_framework_versions() -> None:
 
     with pytest.raises(ValueError, match="malformed framework_versions"):
         artifact_service.get_run_manifest(store, RunManifestRequest(source_key=key))
+
+
+def test_artifact_presign_response_declares_bucket() -> None:
+    """MODEL-SERVE-007-T06. FastAPI filters a handler's return value through
+    this response_model and DROPS any key the model does not declare —
+    silently, with no error at any layer. `bucket` was added to
+    `presign_artifact`'s returned dict first and was being stripped here,
+    which no test of the service function could ever have caught, because the
+    service function was already correct.
+
+    Asserted against the SCHEMA rather than the service for that reason: this
+    is the boundary that decides whether the field reaches the wire at all,
+    and the whole presign -> claim -> run_manifest.gold_bucket chain is dead
+    without it."""
+    filtered = ArtifactPresignResponse.model_validate(
+        {
+            "data_url": "https://minio.example/ds-1/artifacts/a1/data.parquet",
+            "sidecar_urls": {},
+            "checksum": "abc",
+            "row_count": 2,
+            "bucket": "datasets",
+            "expires_at": "2026-09-16T00:00:00+00:00",
+        }
+    ).model_dump()
+
+    assert filtered["bucket"] == "datasets"
+
+
+def test_artifact_presign_response_tolerates_a_missing_bucket() -> None:
+    """A python deployment predating the field, and every manifest written
+    before it: absence must parse, not raise. `class_for_key`'s rootless
+    default is the correct answer for all of them."""
+    filtered = ArtifactPresignResponse.model_validate(
+        {
+            "data_url": "https://minio.example/ds-1/artifacts/a1/data.parquet",
+            "sidecar_urls": {},
+            "checksum": "abc",
+            "row_count": 2,
+            "expires_at": "2026-09-16T00:00:00+00:00",
+        }
+    ).model_dump()
+
+    assert filtered["bucket"] is None

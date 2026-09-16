@@ -103,6 +103,185 @@ function failedModel(
   }
 }
 
+/**
+ * MODEL-SERVE-001-T30. A model that is DISPATCHING FINE by the deploy axis
+ * but whose monitoring axis is raising. Since T26 this is what three
+ * consecutive failed windows look like — `deployStatus` stays 'running'.
+ */
+function monitoringModel(
+  id: string,
+  name: string,
+  monitoring: NonNullable<
+    NonNullable<ModelWithWorkspace['data']>['monitoring']
+  >,
+  over: { deployStatus?: 'running' | 'error' } = {},
+): ModelWithWorkspace {
+  return {
+    id,
+    workspaceId: WS_ID,
+    name,
+    workspaceName: 'Repco',
+    data: {
+      deployStatus: over.deployStatus ?? 'running',
+      enabled: true,
+      prodStatus: 'normal',
+      lastFailure:
+        over.deployStatus === 'error'
+          ? { reason: 'preflight refused', at: '2026-06-29T10:00:00Z' }
+          : null,
+      monitoring,
+      editHistory: [],
+      logs: [],
+    },
+    nodesId: null,
+    datasetId: null,
+    createdAt: '2026-06-29T00:00:00Z',
+    updatedAt: '2026-06-29T12:00:00Z',
+    nodes: null,
+  }
+}
+
+describe('buildAlerts — the monitoring axis (MODEL-SERVE-001-T30/V22)', () => {
+  const base = {
+    workspaces: [workspace()],
+    plantsByWorkspaceId: {
+      [WS_ID]: [plant(PLANT_A, 'Plant 1'), plant(PLANT_B, 'Plant 2')],
+    },
+    nodesByWorkspaceId: { [WS_ID]: [] },
+  }
+
+  /**
+   * THE REGRESSION CASE. Before T30 this model produced NO row at all:
+   * `buildAlerts` saw models only through `failedDeploys`, which keys on
+   * `deployStatus === 'error'`, and T26 stopped three failed windows from
+   * setting that. A dead source was visible on the model detail page and
+   * nowhere else in the product.
+   */
+  it('raises a row for a model whose SOURCE IS DEAD but whose deploy axis reads running', () => {
+    const rows = buildAlerts({
+      ...base,
+      models: [
+        monitoringModel('m-dead', 'Furnace Predictor', {
+          status: 'ALERT',
+          reason: 'SOURCE_UNREACHABLE',
+          frozenColumns: [],
+        }),
+      ],
+    })
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.status).toBe('monitoring')
+    // The reason is CARRIED, not inferred: SOURCE_UNREACHABLE sends a reader
+    // to the connector, STALE to the scheduler. A row reading only
+    // "Monitoring Alert" would send them to both.
+    expect(rows[0]!.monitoringReason).toBe('SOURCE_UNREACHABLE')
+    // It must NOT borrow the deploy vocabulary.
+    expect(rows[0]!.status).not.toBe('failed')
+    expect(rows[0]!.failureReason).toBeNull()
+  })
+
+  it('carries STALE distinctly from SOURCE_UNREACHABLE', () => {
+    const rows = buildAlerts({
+      ...base,
+      models: [
+        monitoringModel('m-stale', 'Stale One', {
+          status: 'ALERT',
+          reason: 'STALE',
+          frozenColumns: [],
+        }),
+      ],
+    })
+    expect(rows[0]!.monitoringReason).toBe('STALE')
+  })
+
+  /**
+   * THE DUPLICATE-KEY GUARD. `alerts-group-list.tsx` keys its React children
+   * on `${row.kind}-${row.id}`. A model can be BOTH deploy-failed (a refused
+   * preflight) and monitoring-alerting, and those are two findings with two
+   * different fixes — so they are two rows, and an unsuffixed id would make
+   * React silently drop one of them.
+   */
+  it('emits TWO rows with distinct ids for a model failing on both axes', () => {
+    const rows = buildAlerts({
+      ...base,
+      models: [
+        monitoringModel(
+          'm-both',
+          'Doubly Broken',
+          { status: 'ALERT', reason: 'STALE', frozenColumns: [] },
+          { deployStatus: 'error' },
+        ),
+      ],
+    })
+
+    expect(rows).toHaveLength(2)
+    const ids = rows.map(r => r.id)
+    expect(new Set(ids).size).toBe(2)
+    expect(rows.map(r => r.status).sort()).toEqual(['failed', 'monitoring'])
+  })
+
+  /**
+   * `OFF` on the LIST payload means "no fault, no claim" — never "healthy",
+   * and never an alert either. Raising a row for it would put every
+   * unmonitored model in the workspace on this page.
+   */
+  it('raises nothing for OFF, UNKNOWN or OK', () => {
+    const rows = buildAlerts({
+      ...base,
+      models: [
+        monitoringModel('m-off', 'Off', {
+          status: 'OFF',
+          reason: null,
+          frozenColumns: [],
+        }),
+        monitoringModel('m-unknown', 'Unknown', {
+          status: 'UNKNOWN',
+          reason: null,
+          frozenColumns: [],
+        }),
+        monitoringModel('m-ok', 'OK', {
+          status: 'OK',
+          reason: null,
+          frozenColumns: [],
+        }),
+      ],
+    })
+    expect(rows).toHaveLength(0)
+  })
+
+  /** A payload older than T26 carries no `monitoring` key at all. */
+  it('raises nothing when the payload predates the monitoring field', () => {
+    const model = monitoringModel('m-old', 'Legacy', {
+      status: 'ALERT',
+      reason: 'STALE',
+      frozenColumns: [],
+    })
+    delete model.data!.monitoring
+    const rows = buildAlerts({ ...base, models: [model] })
+    expect(rows).toHaveLength(0)
+  })
+
+  /** Severity: a monitoring alert outranks a node alarm, and a dead deploy
+   *  outranks it. Sorting is what puts the worst thing on screen first. */
+  it('sorts below a failed deploy and above a node alarm', () => {
+    const rows = buildAlerts({
+      ...base,
+      nodesByWorkspaceId: {
+        [WS_ID]: [node('n1', PLANT_A, { status: 'alarm', name: 'Reactor A' })],
+      },
+      models: [
+        failedModel('m-failed', 'Dead Deploy'),
+        monitoringModel('m-mon', 'Stale One', {
+          status: 'ALERT',
+          reason: 'STALE',
+          frozenColumns: [],
+        }),
+      ],
+    })
+    expect(rows.map(r => r.status)).toEqual(['failed', 'monitoring', 'alarm'])
+  })
+})
+
 describe('buildAlerts', () => {
   const base = {
     workspaces: [workspace()],

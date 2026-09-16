@@ -201,3 +201,40 @@ describe('ModelAuthorizedService — updateModelService config merge', () => {
     expect(writtenConfig(prisma)).toEqual(CLIENT_CONFIG);
   });
 });
+
+/**
+ * MODEL-SERVE-001-T30/V22. THE COMPOSITION, which nothing else asserted.
+ *
+ * Every client test for the Alerts page hand-builds `data.monitoring` on its
+ * fixture, and `deploy-status.spec.ts` proves `deriveDeployStatuses` RETURNS
+ * a monitoring verdict — but neither proves the LIST ENDPOINT actually
+ * overlays it onto what the client receives. `useAllModels` fetches
+ * `GET /api/v1/authorized/model?workspaceId=...`, which lands here.
+ *
+ * If this route ever stops calling `overlayDeployStatus`, `data.monitoring`
+ * is `undefined` on every model, `hasMonitoringAlert` is false for all of
+ * them, and the Alerts page goes exactly as silent as it was before T30 —
+ * with every one of those client cases still green. That is the same shape
+ * of defect as the two false premises T30's own note had to correct: a
+ * payload claim that read true by inspection and was false in code.
+ */
+describe('ModelAuthorizedService.getModelsService — the list payload contract (MODEL-SERVE-001-T30/V22)', () => {
+  it('overlays BOTH axes onto every returned model', async () => {
+    const prisma = buildPrisma();
+    prisma.model.findMany = jest.fn().mockResolvedValue([MODEL_ROW]);
+    const service = makeService(prisma);
+
+    const res = await service.getModelsService('ws-1', USER_ID, ROLE);
+    const first = res.data[0] as { data: Record<string, unknown> };
+
+    // The deploy axis, as before.
+    expect(first.data.deployStatus).toBe('stopped');
+    // The MONITORING axis — the field this whole task depends on reaching
+    // the client. Present-and-shaped, never absent.
+    expect(first.data.monitoring).toEqual({
+      status: 'OFF',
+      reason: null,
+      frozenColumns: [],
+    });
+  });
+});

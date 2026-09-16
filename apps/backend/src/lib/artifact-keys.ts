@@ -392,3 +392,81 @@ export function inferenceWindowKey(
 ): string {
   return `${inferenceWindowPrefix(modelId, modelVersionId, dt, hour)}${filename}`;
 }
+
+/* ── retention classes (MODEL-SERVE-007) ─────────────────────────────── */
+
+/**
+ * The object-tag key python writes on every PUT. T01 chose ONE BUCKET plus a
+ * retention-class tag (Option B), rejecting a separate `inference` bucket
+ * (Option C) because `inference/` already held 31 objects by the time this
+ * landed — MODEL-SERVE-006-T06 shipped first — so its bucket was no longer
+ * free, and rejecting three buckets (Option A) because that reverses
+ * PRESET_ROOT's recorded "a prefix needs no bootstrap" reasoning. See
+ * object_store.py's own RETENTION_TAG_KEY comment, which is authoritative.
+ */
+export const RETENTION_TAG_KEY = 'retention';
+
+/** Reclaimable. Expressible as a tag-filtered lifecycle rule. */
+export const RETENTION_SWEEPABLE = 'sweepable';
+
+/**
+ * Retained while referenced — model run outputs.
+ *
+ * NOT ENFORCEABLE BY ANY LIFECYCLE RULE: "still referenced" is a reference
+ * check, which a bucket rule cannot perform. Only application-level cleanup
+ * (ArtifactCleanupService, plus MODEL-FLOW-011-T05's run-level guard) is
+ * authoritative. This tag is a label for humans and audits — a lifecycle
+ * rule matching it would DELETE on schedule, reference or no reference.
+ */
+export const RETENTION_REFERENCED = 'referenced';
+
+/** Never reclaimed — the operational inference record and serving logs. */
+export const RETENTION_PERMANENT = 'permanent';
+
+export type RetentionClass =
+  | typeof RETENTION_SWEEPABLE
+  | typeof RETENTION_REFERENCED
+  | typeof RETENTION_PERMANENT;
+
+/**
+ * MODEL-SERVE-007-T03. Whether `key` is a well-formed draft-scoped
+ * training-run output object — the TS twin of python's `is_draft_run_key`.
+ *
+ * NEW ON THIS SIDE, and that is the point: this file mirrors python's key
+ * BUILDERS but had no predicates at all, so `classForKey` below had nothing
+ * to discriminate the shared `drafts/` root with. Structural, not a
+ * substring match: exactly 4 non-empty segments after the root with `runs`
+ * second, byte-for-byte the same rule as object_store.py's version — change
+ * both together, since only python's is covered by that module's own tests.
+ */
+export function isDraftRunKey(key: string): boolean {
+  if (!key.startsWith(DRAFT_ROOT)) return false;
+  const parts = key.slice(DRAFT_ROOT.length).split('/');
+  if (parts.length !== 4 || parts[1] !== 'runs') return false;
+  return parts.every((s) => s !== '' && s !== '.' && s !== '..');
+}
+
+/**
+ * MODEL-SERVE-007-T03. The retention class of `key` — python's
+ * `class_for_key` mirrored. Change both together.
+ *
+ * DISPATCHES ON THE NAMED ROOTS, NEVER ON THE FIRST PATH SEGMENT: a dataset
+ * key begins with a bare `{datasetId}` UUID (see `versionKey`) and has no
+ * root to dispatch on, so a first-segment resolver classes every dataset
+ * object by whatever its UUID happens to be.
+ *
+ * `drafts/` is shared by two entities and is the only root whose class
+ * depends on more than the root: a run output is REFERENCED, a dataset
+ * draft artifact SWEEPABLE. The rootless default is NOT a fallback — it is
+ * the historically correct answer for every dataset object ever written.
+ */
+export function classForKey(key: string): RetentionClass {
+  if (key.startsWith(INFERENCE_ROOT) || key.startsWith(SERVING_LOG_ROOT)) {
+    return RETENTION_PERMANENT;
+  }
+  if (key.startsWith(MODEL_ROOT)) return RETENTION_REFERENCED;
+  if (key.startsWith(DRAFT_ROOT)) {
+    return isDraftRunKey(key) ? RETENTION_REFERENCED : RETENTION_SWEEPABLE;
+  }
+  return RETENTION_SWEEPABLE;
+}

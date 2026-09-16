@@ -8,15 +8,23 @@ import { InferenceWindowSchedulerService } from './authorized/inference-window-s
 import { InferenceTruthSweeperService } from './authorized/inference-truth-sweeper.service';
 import { InferenceWindowMonitoringService } from './authorized/inference-window-monitoring.authorized.service';
 import { InferenceWindowTokenGuard } from '@/guards/inference-window-token.guard';
+import { ModelVersionModule } from '../model-version/model-version.module';
 
 /**
  * MODEL-SERVE-006. `TrainningContainerModule` for `spawn`/`containerExists`;
  * `ModelServingModule` reused for the same reason `PredictionJobModule`
  * reuses it — one implementation of "how to build a model descriptor",
  * not a second that could drift.
+ *
+ * MODEL-SERVE-001-T25. `ModelVersionModule` for `ModelInputStatusAuthorized
+ * Service` — the enable-time preflight runs T15's EXISTING live probe, which
+ * already reads PI's snapshot path and resolves derived features' base tags
+ * transitively. A second probe is what T25 forbids by name. Acyclic:
+ * ModelVersionModule imports only DataSourceModule, which references this
+ * module nowhere in code.
  */
 @Module({
-  imports: [TrainningContainerModule, ModelServingModule],
+  imports: [TrainningContainerModule, ModelServingModule, ModelVersionModule],
   controllers: [
     InferenceWindowAuthorizedController,
     InferenceWindowCallbackAuthorizedController,

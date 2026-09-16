@@ -21,6 +21,12 @@ const PresignArtifactSchema = z.object({
   sidecar_urls: z.record(z.string(), z.string().url().nullable()),
   checksum: z.string().min(1),
   row_count: z.number().int().nonnegative(),
+  // MODEL-SERVE-007-T06. The bucket the key is relative to — NestJS has no
+  // S3 configuration of its own, so the connector is the only place this can
+  // come from. OPTIONAL on purpose: a python deployment that predates the
+  // field must not fail this parse, and every consumer already has a correct
+  // answer without it (`classForKey`'s rootless default).
+  bucket: z.string().min(1).optional(),
   expires_at: z.string(),
 });
 

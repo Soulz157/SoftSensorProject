@@ -21,14 +21,21 @@ from intergrations.object_store import (
     STATUS_GOOD,
     STATUS_QUESTIONABLE,
     STATUS_SUFFIX,
+    RETENTION_PERMANENT,
+    RETENTION_REFERENCED,
+    RETENTION_SWEEPABLE,
+    RETENTION_TAG_KEY,
     TMP_LIFECYCLE_EXPIRY_DAYS,
     TMP_LIFECYCLE_RULE_ID,
+    TMP_LIFECYCLE_TAG_KEY,
+    TMP_LIFECYCLE_TAG_VALUE,
     ObjectNotFoundError,
     ObjectStore,
     ObjectStoreError,
     artifact_key,
     artifact_prefix,
     assert_frame_shape,
+    class_for_key,
     assert_tags_are_storable,
     draft_run_key,
     draft_run_prefix,
@@ -317,6 +324,57 @@ def test_is_draft_run_prefix_rejects_traversal_missing_slash_and_wrong_root() ->
     assert not is_draft_run_prefix("drafts/d1/runs//")
     assert not is_draft_run_prefix("models/m1/runs/r1/")
     assert not is_draft_run_prefix("drafts/d1/artifacts/a1/")  # DatasetDraft shape
+
+
+# ── retention classes (MODEL-SERVE-007-T03) ──────────────────────────────
+
+
+def test_shared_drafts_root_resolves_to_two_different_classes() -> None:
+    """V02. `drafts/` is shared by a model RUN output and a dataset DRAFT
+    artifact, and they belong to different retention classes. A resolver
+    dispatching on the first path segment sends both to the same class and
+    still passes any test that checks only one of them, so both are asserted
+    here in one test — they are the same assertion."""
+    run = draft_run_key("d1", "r1", "model.joblib")
+    artifact = "d1/artifacts/a1/data_gold.parquet"
+
+    assert class_for_key(run) == RETENTION_REFERENCED
+    assert class_for_key("drafts/d1/artifacts/a1/data_gold.parquet") == (
+        RETENTION_SWEEPABLE
+    )
+    assert class_for_key(artifact) == RETENTION_SWEEPABLE
+    assert class_for_key(run) != class_for_key(
+        "drafts/d1/artifacts/a1/data_gold.parquet"
+    )
+
+
+def test_rootless_legacy_dataset_key_resolves_to_the_dataset_class() -> None:
+    """V03. `{datasetId}/{versionId}.parquet` — the pre-DS-LAKE-003 layout,
+    still read and never movable. It has NO named root at all, so this is
+    the case a first-segment resolver gets wrong by classing every dataset
+    object on whatever its UUID happens to be."""
+    assert class_for_key(version_key("ds-1", "v-1")) == RETENTION_SWEEPABLE
+    assert class_for_key(
+        artifact_key("ds-1", "art-1", DATA_FILENAME)
+    ) == RETENTION_SWEEPABLE
+    assert class_for_key(
+        tmp_key("ds-1", "job-1", 1)) == RETENTION_SWEEPABLE
+
+
+def test_inference_and_serving_logs_are_permanent() -> None:
+    """The two operational records that are never reclaimed. `inference/`
+    matters most: 31 such objects already existed when this feature landed."""
+    assert class_for_key(
+        "inference/m1/v1/dt=2026-09-12/hour=09/input.parquet"
+    ) == RETENTION_PERMANENT
+    assert class_for_key(
+        "serving-logs/m1/v1/dt=2026-09-12/hour=09/abc.parquet"
+    ) == RETENTION_PERMANENT
+
+
+def test_model_run_outputs_are_referenced() -> None:
+    assert class_for_key(
+        model_run_key("m1", "r1", "model.joblib")) == RETENTION_REFERENCED
 
 
 # ── live MinIO ───────────────────────────────────────────────────────────
@@ -623,7 +681,15 @@ def test_get_frame_column_projection_excludes_the_other_tag(
 def test_tmp_writes_are_tagged_for_lifecycle_expiry(store: ObjectStore) -> None:
     """A tmp/ write must carry the tag `ensure_tmp_lifecycle_rule`'s bucket
     rule matches on — a committed artifact write must NOT, or the bucket
-    rule would expire real data."""
+    rule would expire real data.
+
+    MODEL-SERVE-007-T02 widened what else may be on these objects: every
+    write now also carries a `retention` class tag. The assertions below are
+    deliberately about the LIFECYCLE key only — the two tags are separate
+    (the tmp rule filters on `lifecycle=tmp`, which is narrower than the
+    SWEEPABLE class both these keys belong to), and pinning the whole tag set
+    here would break again the next time any orthogonal tag is added.
+    """
     df = good_frame()
     tmp = tmp_key("pytest-object-store", "job-lifecycle", 1)
     committed = "pytest-object-store/artifacts/art-1/data.parquet"
@@ -631,11 +697,111 @@ def test_tmp_writes_are_tagged_for_lifecycle_expiry(store: ObjectStore) -> None:
     store.put_frame(df, tmp, overwrite=True)
     store.put_frame(df, committed, overwrite=True)
 
-    tmp_tags = store._client.get_object_tags(store.bucket, tmp)
-    committed_tags = store._client.get_object_tags(store.bucket, committed)
+    tmp_tags = dict(store._client.get_object_tags(store.bucket, tmp) or {})
+    committed_tags = dict(
+        store._client.get_object_tags(store.bucket, committed) or {}
+    )
 
-    assert tmp_tags is not None and dict(tmp_tags) == {"lifecycle": "tmp"}
-    assert not committed_tags
+    assert tmp_tags.get(TMP_LIFECYCLE_TAG_KEY) == TMP_LIFECYCLE_TAG_VALUE
+    assert TMP_LIFECYCLE_TAG_KEY not in committed_tags
+
+    store.delete_prefix("pytest-object-store/")
+
+
+def test_put_json_tags_its_sidecar_with_a_retention_class(
+    store: ObjectStore,
+) -> None:
+    """V04. `put_json` calls `put_object` DIRECTLY instead of going through
+    `put_object_stream`, so a tag added only to the shared PUT path leaves
+    every JSON sidecar — run_manifest.json, metrics.json, feature_spec.json —
+    untagged while every Parquet-writing test still passes. This test is the
+    only thing standing between that and a silently half-tagged store."""
+    key = "pytest-object-store/artifacts/art-1/manifest.json"
+    store.put_json(key, {"hello": "world"})
+
+    tags = dict(store._client.get_object_tags(store.bucket, key) or {})
+    assert tags.get(RETENTION_TAG_KEY) == RETENTION_SWEEPABLE
+
+    store.delete_prefix("pytest-object-store/")
+
+
+def test_tag_retention_labels_an_object_the_server_never_wrote(
+    store: ObjectStore,
+) -> None:
+    """The presigned-upload half of MODEL-SERVE-007-T02. A trainer or
+    infer-mode container PUTs straight to MinIO with a presigned URL, so the
+    object exists untagged; `tag_retention` is how the first server-side
+    touch afterwards gives it its class. Stands in for that here by writing
+    the object, stripping its tags, and re-tagging."""
+    key = "pytest-object-store/runs/r1/predictions.parquet"
+    store.put_frame(good_frame(), key, overwrite=True)
+    store._client.delete_object_tags(store.bucket, key)
+    assert not dict(store._client.get_object_tags(store.bucket, key) or {})
+
+    assert store.tag_retention(key) is True
+    tags = dict(store._client.get_object_tags(store.bucket, key) or {})
+    # The LITERAL class, not `class_for_key(key)` — asserting against the same
+    # function the implementation calls would pass even if `tag_retention`
+    # wrote the wrong class, which is the only thing this test exists to catch.
+    assert tags.get(RETENTION_TAG_KEY) == RETENTION_SWEEPABLE
+
+    store.delete_prefix("pytest-object-store/")
+
+
+def test_tag_retention_labels_an_inference_object_permanent(
+    store: ObjectStore,
+) -> None:
+    """The class where a wrong label is most expensive: `inference/` is never
+    reclaimed, and an object mislabelled SWEEPABLE here is one a tag-filtered
+    lifecycle rule would delete. Written under the real root rather than a
+    pytest prefix, because the root IS what is under test."""
+    key = (
+        "inference/pytest-model/pytest-version/"
+        "dt=2026-09-16/hour=00/predictions.parquet"
+    )
+    store.put_frame(good_frame(), key, overwrite=True)
+    store._client.delete_object_tags(store.bucket, key)
+
+    assert store.tag_retention(key) is True
+    tags = dict(store._client.get_object_tags(store.bucket, key) or {})
+    assert tags.get(RETENTION_TAG_KEY) == RETENTION_PERMANENT
+
+    store.delete_prefix("inference/pytest-model/")
+
+
+def test_copy_prefix_tags_the_object_it_mints(store: ObjectStore) -> None:
+    """`copy_prefix` is a THIRD write path: `copy_object` creates a new object
+    without going through `put_object_stream`, and it carries the SOURCE's
+    tags — so a legacy untagged source would otherwise produce an untagged
+    object written after this feature shipped. DS-LAKE-025's Save Dataset copy
+    is an active caller, so this is a live path, not a latent one."""
+    src = "pytest-object-store/src/artifacts/a1/data.parquet"
+    dst_prefix = "pytest-object-store/dst/artifacts/a1/"
+    store.put_frame(good_frame(), src, overwrite=True)
+    store._client.delete_object_tags(store.bucket, src)
+
+    copied = store.copy_prefix("pytest-object-store/src/artifacts/a1/", dst_prefix)
+    assert copied == [f"{dst_prefix}data.parquet"]
+
+    tags = dict(store._client.get_object_tags(store.bucket, copied[0]) or {})
+    assert tags.get(RETENTION_TAG_KEY) == RETENTION_SWEEPABLE
+
+    store.delete_prefix("pytest-object-store/")
+
+
+def test_tag_retention_refuses_a_tmp_key_rather_than_clobber_it(
+    store: ObjectStore,
+) -> None:
+    """`set_object_tags` REPLACES the whole tag set, so pointing this method
+    at a tmp object would drop `lifecycle=tmp` and quietly remove it from the
+    expiry rule's reach. No presigned upload lands under tmp/, so refusing is
+    free; losing the lifecycle tag would not be."""
+    key = tmp_key("pytest-object-store", "job-1", 1)
+    store.put_frame(good_frame(), key, overwrite=True)
+
+    assert store.tag_retention(key) is False
+    tags = dict(store._client.get_object_tags(store.bucket, key) or {})
+    assert tags.get(TMP_LIFECYCLE_TAG_KEY) == TMP_LIFECYCLE_TAG_VALUE
 
     store.delete_prefix("pytest-object-store/")
 

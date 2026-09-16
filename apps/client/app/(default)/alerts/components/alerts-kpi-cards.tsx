@@ -1,4 +1,4 @@
-import { AlertCircle, AlertTriangle, Box, Power } from 'lucide-react'
+import { AlertCircle, AlertTriangle, Box, Power, Waves } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import type { AlertCounts } from '@/lib/alerts'
 
@@ -16,6 +16,15 @@ const KPI_DEFS = [
     icon: Box,
     text: 'text-red-600',
     bg: 'bg-red-500/10',
+  },
+  {
+    // MODEL-SERVE-001-T30. `Waves` + amber, matching the monitoring axis's
+    // own badge — NOT the red the two deploy-side cards above use.
+    key: 'monitoring' as const,
+    label: 'Monitoring',
+    icon: Waves,
+    text: 'text-amber-600',
+    bg: 'bg-amber-500/10',
   },
   {
     key: 'warning' as const,

@@ -12,6 +12,7 @@ import {
   DEFAULT_SWEEP_METRIC,
   buildSweepRows,
   selectByOverlap,
+  selectByBestMean,
   sweepMetricLabel,
   sweepMetricScopeText,
   sweepProvenanceText,
@@ -127,9 +128,18 @@ export function FeatureCountSweepTable({
   error?: string | null
 }) {
   const rows = buildSweepRows(runs, distinctLabelledValues)
-  const selection = selectByOverlap(rows, metric)
+  const selection = selectByBestMean(rows, metric)
+
   const { label: methodLabel } = methodMetaOf(seedMethod)
   const metricLabel = sweepMetricLabel(metric)
+
+  const overlap = selectByOverlap(rows, metric)
+  const overlapNote =
+    overlap.chosenN !== null &&
+    selection.chosenN !== null &&
+    overlap.chosenN < selection.chosenN
+      ? overlap.chosenN
+      : null
 
   // The rule picked a row the lowest mean did not. Worth saying out loud —
   // it is the one case where the table's answer visibly differs from the
@@ -138,6 +148,8 @@ export function FeatureCountSweepTable({
     selection.chosenRunId !== null &&
     selection.bestRunId !== null &&
     selection.chosenRunId !== selection.bestRunId
+
+  const sense = metric === 'rmse' || metric === 'mae' ? 'lowest' : 'highest'
 
   return (
     <section className="space-y-3 rounded-xl border border-border/60 p-4">
@@ -198,12 +210,15 @@ export function FeatureCountSweepTable({
                 return (
                   <TableRow
                     key={row.runId}
-                    // Tonal only. The selected row is a conclusion, not a
-                    // status — red/amber/emerald stay reserved for workspace
-                    // and plant state in this project.
-                    className={cn(chosen && 'bg-muted/40')}
+                    data-selected={chosen || undefined}
+                    className={cn(chosen && 'bg-muted/70 hover:bg-muted/70')}
                   >
-                    <TableCell className="px-3 py-2 font-medium text-foreground">
+                    <TableCell
+                      className={cn(
+                        'px-3 py-2 font-medium text-foreground',
+                        chosen && 'border-l-2 border-l-primary pl-[10px]',
+                      )}
+                    >
                       {row.n ?? '—'}
                     </TableCell>
                     <TableCell className="px-3 py-2 text-right">
@@ -222,15 +237,7 @@ export function FeatureCountSweepTable({
                             variant="secondary"
                             className="px-1.5 py-0 text-[10px] font-normal text-muted-foreground"
                           >
-                            selected by the rule
-                          </Badge>
-                        )}
-                        {lowest && !chosen && (
-                          <Badge
-                            variant="secondary"
-                            className="px-1.5 py-0 text-[10px] font-normal text-muted-foreground"
-                          >
-                            lowest mean
+                            {sense} {metricLabel}
                           </Badge>
                         )}
                         {note && (
@@ -253,11 +260,12 @@ export function FeatureCountSweepTable({
           stated without one is only half printed. */}
       <p className="text-xs text-muted-foreground">{sweepRuleText(metric)}</p>
 
-      {ruleDisagrees && (
+      {overlapNote !== null && (
         <p className="text-xs text-muted-foreground">
-          The best fold mean is {selection.bestN} features, but{' '}
-          {selection.chosenN} is selected: their {metricLabel} spreads overlap,
-          so the extra features bought nothing this data can measure.
+          {overlapNote} features is not distinguishable from {selection.chosenN}
+          : their {metricLabel} fold spreads overlap, so the extra{' '}
+          {selection.chosenN! - overlapNote} may be buying nothing this data can
+          measure.
         </p>
       )}
 

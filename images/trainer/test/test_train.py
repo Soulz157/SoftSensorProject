@@ -596,3 +596,84 @@ def test_score_holdout_frame_is_writable_as_the_artifact_publish_uploads():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# ── DS-LAKE-028-T03: the SVR scaling warning ───────────────────────────────
+
+
+def _svr_warnings(feature_spec) -> list[str]:
+    """Build an SVR and return only the warnings build_model emitted."""
+    from models import build_model
+
+    seen: list[str] = []
+
+    def log_fn(message, level=None, *args, **kwargs):
+        if level == "warn":
+            seen.append(message)
+
+    build_model(
+        algorithm="svm",
+        hyperparameters={},
+        seed=0,
+        n_train_rows=10,
+        feature_spec=feature_spec,
+        log_fn=log_fn,
+    )
+    return seen
+
+
+def test_svr_does_not_warn_on_a_legacy_spec_that_is_actually_scaled():
+    """DS-LAKE-028-V02. The shape of EVERY spec on this system as of
+    2026-09-16: `scaling: []` (pre-T02 that field held the user's EXPLICIT
+    config, and the common path configures nothing) alongside a populated
+    `scalingParams` proving to_model_ready min-max scaled every tag.
+
+    A fixture built AFTER the version bump cannot distinguish a fixed gate
+    from a gate that now merely receives the field it always wanted — and
+    legacy specs are 22 of 22 — so this asserts against the legacy shape
+    specifically.
+    """
+    legacy = {
+        "featureVersion": 2,
+        "scaling": [],
+        "scalingParams": {
+            "AI001A2.PV": {"min": 0.6311102144303611, "max": 0.6520555110485484},
+            "AI001B2.PV": {"min": 0.6112866190396659, "max": 0.6511525162012048},
+        },
+    }
+    assert _svr_warnings(legacy) == []
+
+
+def test_svr_tolerates_a_spec_with_no_scaling_params_key_at_all():
+    """One live artifact (featureVersion 1) has no `scalingParams` KEY, not
+    an empty one. Reading it by index would raise inside the estimator
+    factory; nothing is recorded either way, so the warning is CORRECT here —
+    what must not happen is a crash."""
+    v1 = {"featureVersion": 1, "scaling": []}
+    assert len(_svr_warnings(v1)) == 1
+
+
+def test_svr_warns_on_an_all_none_recipe_which_really_is_unscaled():
+    """DS-LAKE-028-T04 makes `none` reachable from the UI. That produces an
+    empty `scalingParams` and a `scaling` naming every tag as "none" — a
+    genuinely unscaled frame, where the warning is true and must still fire.
+    This is the case that separates "resolve the effective method" from
+    "assume anything recorded means scaled"."""
+    declined = {
+        "featureVersion": 4,
+        "scaling": [{"tag": "TI-101", "method": "none"},
+                    {"tag": "VI-202", "method": "none"}],
+        "scalingParams": {},
+    }
+    assert len(_svr_warnings(declined)) == 1
+
+
+def test_svr_does_not_warn_on_a_new_format_spec_carrying_only_scaling():
+    """A post-T02 spec whose fitted params were not passed through still
+    states the effective method, and that is enough."""
+    new_format = {
+        "featureVersion": 4,
+        "scaling": [{"tag": "TI-101", "method": "minmax"}],
+        "scalingParams": {},
+    }
+    assert _svr_warnings(new_format) == []

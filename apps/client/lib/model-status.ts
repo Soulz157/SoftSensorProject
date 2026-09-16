@@ -62,6 +62,54 @@ export function failedCountByNodeId(models: AIModel[]): Record<string, number> {
   return out
 }
 
+/**
+ * MODEL-SERVE-001-T30. THE MONITORING AXIS, deliberately separate from
+ * `isDeployFailed` above rather than folded into it.
+ *
+ * Since T26 these answer two different questions. `isDeployFailed` means "the
+ * schedule is not dispatching" (wire value 'error', label "Failed"); this
+ * means "it IS dispatching, and what comes back is wrong". Three consecutive
+ * FAILED windows stopped producing `deployStatus === 'error'` in T26 — they
+ * now land here — which is precisely why the Alerts page went quiet for that
+ * failure class until this predicate existed.
+ *
+ * `WARN` and `FROZEN` cannot reach a LIST payload today: `deriveDeployStatuses`
+ * hardcodes `missingPct: null` and `frozenColumns: []`
+ * (apps/backend/src/lib/deploy-status.ts:318-346). They are matched anyway so
+ * that widening the payload later needs no edit here — and so that a reader
+ * does not infer from a narrow predicate that those states are not alerts.
+ *
+ * `OFF`/`UNKNOWN` are NOT alerts, and that asymmetry is load-bearing: on the
+ * list path `OFF` means "no fault, no claim", never "healthy". Raising a row
+ * for it would alert on every unmonitored model in the workspace.
+ */
+export function hasMonitoringAlert(m: AIModel): boolean {
+  const status = m.data?.monitoring?.status
+  return status === 'ALERT' || status === 'WARN' || status === 'FROZEN'
+}
+
+/** Models whose MONITORING axis is raising. Mirrors `failedDeploys`'s shape so
+ *  the Alerts page treats the two axes the same way. */
+export function monitoringAlerts<T extends AIModel>(models: T[]): T[] {
+  return models.filter(hasMonitoringAlert)
+}
+
+/**
+ * Count of monitoring alerts per `workspaceId`, the monitoring-axis twin of
+ * `failedCountByWorkspace`. Kept separate rather than summed into it: the
+ * sidebar dot and the workspace card each decide their own severity, and a
+ * caller that wants the total can add them.
+ */
+export function monitoringCountByWorkspace(
+  models: AIModel[],
+): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const m of monitoringAlerts(models)) {
+    out[m.workspaceId] = (out[m.workspaceId] ?? 0) + 1
+  }
+  return out
+}
+
 export type DeployStatus = 'running' | 'initializing' | 'stopped' | 'error'
 export type DeployCounts = Record<DeployStatus, number>
 

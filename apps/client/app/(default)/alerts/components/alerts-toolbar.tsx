@@ -20,6 +20,9 @@ import { AlertDateRangeFilter } from './alert-date-range-filter'
 
 const STATUS_FILTER_ORDER: AlertStatus[] = [
   'failed',
+  // MODEL-SERVE-001-T30. Omitting a status here makes it unfilterable —
+  // the rows render but cannot be isolated, which is worse than absent.
+  'monitoring',
   'alarm',
   'offline',
   'warning',

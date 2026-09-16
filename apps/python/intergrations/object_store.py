@@ -6,13 +6,23 @@ spelled package would be worse than one consistent typo.
 
 Artifact layout
 ---------------
-    datasets/{datasetId}/artifacts/{artifactId}/data.parquet       committed, IMMUTABLE
-    datasets/{datasetId}/artifacts/{artifactId}/manifest.json      sidecar
-    datasets/{datasetId}/artifacts/{artifactId}/feature_spec.json  GOLD only
-    datasets/{datasetId}/artifacts/{artifactId}/validation_report.json  FINAL only
-    datasets/{datasetId}/tmp/{jobId}/{n}.parquet                   per-op intermediates
+MODEL-SERVE-007-T03: written as `bucket / key`. `datasets` below is the BUCKET
+NAME (`settings.S3_BUCKET`), NOT a key prefix — dataset keys begin with a bare
+`{datasetId}` UUID and have no named root at all. An earlier rendering of this
+block without the separator read as a prefixed key and caused exactly that
+misreading; `class_for_key` depends on the difference, because a resolver
+dispatching on the first path segment finds a UUID there.
 
-    datasets/{datasetId}/{versionId}.parquet                       LEGACY, still read
+    datasets / {datasetId}/artifacts/{artifactId}/data.parquet       committed, IMMUTABLE
+    datasets / {datasetId}/artifacts/{artifactId}/manifest.json      sidecar
+    datasets / {datasetId}/artifacts/{artifactId}/feature_spec.json  GOLD only
+    datasets / {datasetId}/artifacts/{artifactId}/validation_report.json  FINAL only
+    datasets / {datasetId}/tmp/{jobId}/{n}.parquet                   per-op intermediates
+
+    datasets / {datasetId}/{versionId}.parquet                       LEGACY, still read
+
+The only NAMED roots in this bucket are `models/`, `drafts/`, `feature-presets/`,
+`predictions/`, `serving-logs/` and `inference/`.
 
 `version_key` builds the legacy layout and is kept because artifacts written
 before DS-LAKE-003 live there and are immutable — they cannot be moved. Nothing
@@ -125,6 +135,63 @@ TMP_LIFECYCLE_RULE_ID = "ds-lake-009b-tmp-expiry"
 #: straggler that outlives the sweep window. Generous on purpose, since
 #: correctness never depends on it firing promptly.
 TMP_LIFECYCLE_EXPIRY_DAYS = 7
+
+# ── retention classes (MODEL-SERVE-007) ──────────────────────────────────
+#
+# T01 DECISION — ONE BUCKET, RETENTION-CLASS OBJECT TAG (Option B).
+#
+# Rejected Option C (tag everything AND give `inference/` its own bucket):
+# its whole advantage was that `inference/` had no objects yet, so the bucket
+# would be free. It is not — MODEL-SERVE-006-T06 shipped first (007 carried a
+# `must_land_before` on it that was missed) and 31 inference objects already
+# exist in this bucket. C therefore costs a copy migration plus a bucket-aware
+# read path, for the one class that is never swept anyway.
+#
+# Rejected Option A (datasets / models / inference as three buckets): moves
+# every dataset read behind a per-bucket factory, and reverses PRESET_ROOT's
+# recorded reasoning above ("a prefix inside the existing bucket ... a second
+# bucket would need new bootstrap while a prefix needs none") without the
+# evidence that would justify reversing it.
+#
+# What the tag buys: `ensure_tmp_lifecycle_rule` already proves a bucket-wide
+# rule can be targeted by tag where a Prefix filter cannot reach. The same
+# mechanism generalised makes "may this be reclaimed?" answerable by storage
+# tooling instead of only by reading this package.
+RETENTION_TAG_KEY = "retention"
+
+#: Reclaimable: dataset artifacts and drafts, tmp intermediates, imported
+#: presets, batch prediction outputs. EXPRESSIBLE as a tag-filtered lifecycle
+#: rule — the tmp rule is one such rule, narrowed further by its own tag.
+RETENTION_SWEEPABLE = "sweepable"
+
+#: Retained for as long as something references it — model run outputs.
+#:
+#: NOT ENFORCEABLE BY ANY LIFECYCLE RULE. "Still referenced" is a reference
+#: check, and `ensure_tmp_lifecycle_rule`'s own docstring already states that a
+#: bucket lifecycle rule cannot do one — only application-level cleanup
+#: (ArtifactCleanupService, plus MODEL-FLOW-011-T05's run-level guard) is
+#: authoritative here. This tag is a label for humans and audits. Do not write
+#: a lifecycle rule against it and believe the objects are protected: a rule
+#: that matches this tag DELETES on schedule, reference or no reference.
+RETENTION_REFERENCED = "referenced"
+
+#: Never reclaimed: the operational inference record and serving logs. Grows
+#: without bound by design. Expressible as the ABSENCE of any rule matching it.
+RETENTION_PERMANENT = "permanent"
+
+
+def _with_retention_tag(key: str, tags: Tags | None) -> Tags:
+    """Return `tags` with this key's retention class added.
+
+    MODEL-SERVE-007-T02. MERGES rather than replaces: `put_frame` already
+    passes a `Tags` carrying `lifecycle=tmp`, and dropping that would leave
+    the tmp lifecycle rule with nothing to match. `class_for_key` is defined
+    at the bottom of this module beside the other key predicates; it is a
+    pure function of the key, so calling it on every write costs nothing.
+    """
+    merged = tags if tags is not None else Tags.new_object_tags()
+    merged[RETENTION_TAG_KEY] = class_for_key(key)
+    return merged
 
 
 class ObjectStoreError(RuntimeError):
@@ -321,6 +388,38 @@ class ObjectStore:
         except S3Error:
             return False
 
+    def tag_retention(self, key: str) -> bool:
+        """Apply `key`'s retention class to an object already in the store.
+
+        MODEL-SERVE-007-T02, THE PRESIGNED-UPLOAD HALF. The write path tags
+        what this service writes, which is not everything: trainer run
+        outputs, batch prediction outputs and an inference window's
+        predictions.parquet are uploaded DIRECTLY to MinIO by the container
+        holding a presigned PUT URL (see `presigned_put` and
+        artifact_service's presign_* functions). The server never performs
+        those writes and so cannot tag them at write time; this is how they
+        get their class, called from the first server-side touch after the
+        upload.
+
+        Returns whether the tag was applied. NEVER RAISES: a missing label is
+        a bookkeeping loss, and the object is valid with or without it — a
+        caller in the middle of returning a presigned read URL must not fail
+        because tagging did. Replaces the object's whole tag set, which is
+        correct for these roots (nothing else tags them) but would clobber
+        `lifecycle=tmp` if ever pointed at a tmp key, hence the guard.
+        """
+        if "/tmp/" in key:
+            return False
+        try:
+            tags = Tags.new_object_tags()
+            tags[RETENTION_TAG_KEY] = class_for_key(key)
+            self._client.set_object_tags(self.bucket, key, tags)
+            return True
+        except S3Error as err:
+            logger.warning(
+                "retention tag not applied to '%s': %s", key, err.code)
+            return False
+
     # ── write ────────────────────────────────────────────────────────────
 
     def put_frame(
@@ -346,6 +445,12 @@ class ObjectStore:
         # DS-LAKE-009B-T04: tag tmp writes so ensure_tmp_lifecycle_rule's
         # bucket-wide rule can find them — see TMP_LIFECYCLE_TAG_KEY's doc
         # comment for why a tag is used instead of a Prefix filter.
+        #
+        # MODEL-SERVE-007-T02: the retention tag is added by
+        # `put_object_stream` below, for EVERY write rather than only this
+        # one. Kept separate from the lifecycle tag rather than folded into
+        # it: the tmp rule filters on `lifecycle=tmp` specifically, and a tmp
+        # object is a narrower thing than the SWEEPABLE class it belongs to.
         object_tags = None
         if "/tmp/" in key:
             object_tags = Tags.new_object_tags()
@@ -422,7 +527,7 @@ class ObjectStore:
                 stream,
                 length=length,
                 content_type=content_type,
-                tags=tags,
+                tags=_with_retention_tag(key, tags),
             )
         except S3Error as err:
             raise ObjectStoreError(
@@ -442,12 +547,19 @@ class ObjectStore:
         payload = json.dumps(document, indent=2,
                              sort_keys=True, default=str).encode()
         try:
+            # MODEL-SERVE-007-T02: this method still calls `put_object`
+            # directly (see `put_object_bytes`'s note on why it was never
+            # folded in), so the retention tag has to be applied HERE too.
+            # Tagged only in `put_object_stream` it would miss every JSON
+            # sidecar — run_manifest.json, metrics.json, feature_spec.json —
+            # while every Parquet-based test still passed.
             self._client.put_object(
                 self.bucket,
                 key,
                 io.BytesIO(payload),
                 length=len(payload),
                 content_type="application/json",
+                tags=_with_retention_tag(key, None),
             )
         except S3Error as err:
             raise ObjectStoreError(
@@ -793,6 +905,19 @@ class ObjectStore:
                         self.bucket, dst_key, CopySource(
                             self.bucket, src_key)
                     )
+                    # MODEL-SERVE-007-T02. This is the THIRD write path, and
+                    # the one neither half of that task reached: a copy mints
+                    # a NEW object without going through `put_object_stream`,
+                    # and `copy_object` carries the SOURCE's tags — so a
+                    # legacy untagged source produces an untagged object
+                    # written after this feature shipped. Tagged from the
+                    # DESTINATION key, never inherited, because that is the
+                    # key whose class the new object actually has: this
+                    # method's whole purpose (DS-LAKE-025) is moving bytes
+                    # from a `drafts/` prefix into a dataset's own namespace,
+                    # which is a root change and therefore potentially a
+                    # class change.
+                    self.tag_retention(dst_key)
                 copied.append(dst_key)
         except S3Error as err:
             raise ObjectStoreError(
@@ -1431,3 +1556,49 @@ def is_draft_run_prefix(prefix: str) -> bool:
     if len(parts) not in (2, 3) or parts[1] != "runs":
         return False
     return all(segment and segment not in (".", "..") for segment in parts)
+
+
+def class_for_key(key: str) -> str:
+    """The retention class of `key` — see RETENTION_TAG_KEY above.
+
+    MODEL-SERVE-007-T03. The single place a key is mapped to a class, so the
+    write path, the tagging of a presigned upload and any future sweep all
+    agree about one key. Mirrored in TypeScript as `classForKey` in
+    artifact-keys.ts — change both.
+
+    DISPATCHES ON THE NAMED ROOTS, NEVER ON THE FIRST PATH SEGMENT. A dataset
+    key begins with a bare `{datasetId}` UUID (see `version_key` and
+    `artifact_prefix`) and has no root to dispatch on at all, so a
+    first-segment resolver would class every dataset object by whatever its
+    UUID happened to be.
+
+    `drafts/` is SHARED by two entities and is the one root where the class
+    depends on more than the root: `drafts/{id}/runs/{id}/...` is a model run
+    output (REFERENCED) and `drafts/{id}/artifacts/{id}/...` is a dataset
+    draft artifact (SWEEPABLE). The discriminator is `is_draft_run_key`,
+    CALLED rather than re-derived — a second copy of that 4-segment test
+    would be free to disagree with the original about one key, and only the
+    original is under test.
+    """
+    if key.startswith(INFERENCE_ROOT) or key.startswith(SERVING_LOG_ROOT):
+        return RETENTION_PERMANENT
+    if key.startswith(MODEL_ROOT):
+        return RETENTION_REFERENCED
+    if key.startswith(DRAFT_ROOT):
+        return (
+            RETENTION_REFERENCED
+            if is_draft_run_key(key)
+            else RETENTION_SWEEPABLE
+        )
+    # PREDICTION_ROOT and PRESET_ROOT both fall through to the default below,
+    # which is already their class — listed here only so a reader does not
+    # think they were forgotten. A batch score is reproducible from its job,
+    # and an imported preset from its source file.
+    #
+    # The rootless default is NOT a fallback. It is the historically correct
+    # answer for every dataset object ever written: both the committed
+    # `{datasetId}/artifacts/...` layout and the legacy
+    # `{datasetId}/{versionId}.parquet` one are bucket-less and root-less by
+    # construction, and every one of them is dataset-scoped and reclaimable
+    # with its dataset.
+    return RETENTION_SWEEPABLE

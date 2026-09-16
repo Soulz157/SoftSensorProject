@@ -38,6 +38,17 @@ export const PutInferenceScheduleSchema = z
     truthLagMinutes: z.number().int().positive().max(43200).optional(),
     truthToleranceMinutes: z.number().int().positive().max(1440).optional(),
     truthHorizonHours: z.number().int().positive().max(8760).optional(),
+    // MODEL-SERVE-001-T28. The monitoring axis's own bands. `.optional()`
+    // like every sibling, and the object is `.strict()` — omitting them here
+    // would make any request carrying them fail outright.
+    missingPctWarn: z.number().nonnegative().max(100).optional(),
+    missingPctAlert: z.number().nonnegative().max(100).optional(),
+    skipStreakAlert: z.number().int().positive().max(100).optional(),
+    frozenWindows: z.number().int().positive().max(24).optional(),
+    // NONNEGATIVE, not `.positive()` like its sibling driftThresholdPct: 0 is
+    // this field's own DEFAULT and its most meaningful value (exact
+    // flatness), so `.positive()` would make the default unsettable.
+    frozenTolerancePct: z.number().nonnegative().max(100).optional(),
   })
   .strict()
   .refine(
@@ -46,6 +57,16 @@ export const PutInferenceScheduleSchema = z
       dto.criticalSd === undefined ||
       dto.warnSd < dto.criticalSd,
     { message: 'warnSd must be less than criticalSd.' },
+  )
+  // Same shape, same limitation: this only fires when BOTH arrive in one
+  // request. A partial update naming just one is re-checked server-side
+  // against the MERGED state — the exact gap T09 found for warnSd/criticalSd.
+  .refine(
+    (dto) =>
+      dto.missingPctWarn === undefined ||
+      dto.missingPctAlert === undefined ||
+      dto.missingPctWarn < dto.missingPctAlert,
+    { message: 'missingPctWarn must be less than missingPctAlert.' },
   );
 
 export class PutInferenceScheduleDto extends createZodDto(

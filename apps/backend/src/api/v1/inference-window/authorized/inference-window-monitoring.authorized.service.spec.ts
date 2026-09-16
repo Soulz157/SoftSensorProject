@@ -20,7 +20,15 @@ function buildPrisma(overrides: Record<string, unknown> = {}) {
   return {
     inferenceSchedule: { findUnique: jest.fn().mockResolvedValue(null) },
     modelVersion: { findFirst: jest.fn().mockResolvedValue(null) },
-    inferenceWindow: { findMany: jest.fn().mockResolvedValue([]) },
+    inferenceWindow: {
+      findMany: jest.fn().mockResolvedValue([]),
+      // MODEL-SERVE-001-T26. `resolveLivenessFaults` reads the last
+      // SUCCEEDED/SKIPPED window for staleness. `new Date()` = produced just
+      // now, i.e. NOT stale — so every pre-existing case in this file keeps
+      // asserting the drift verdict it was written for rather than tripping
+      // the new ALERT/STALE path. The fault paths get their own cases.
+      findFirst: jest.fn().mockResolvedValue({ windowStart: new Date() }),
+    },
     ...overrides,
   };
 }
@@ -63,6 +71,10 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
     const service = makeService(prisma);
     expect(await service.getHealthStatus('model-1')).toEqual({
       status: 'OFF',
+      // T26: OFF means DELIBERATELY NOT WATCHING, so it carries no reason.
+      reason: null,
+      // T29: no stuck instruments to report either.
+      frozenColumns: [],
       thresholds: null,
     });
     expect(mockedPostToPython).not.toHaveBeenCalled();
@@ -72,6 +84,19 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
     const prisma = buildPrisma({
       inferenceSchedule: {
         findUnique: jest.fn().mockResolvedValue({
+          // MODEL-SERVE-001-T26: an ENABLED schedule, with the cadence/lag
+          // `isStale` needs. Absent before, because nothing on this axis
+          // read them until liveness moved here.
+          enabled: true,
+          cadenceMinutes: 60,
+          lagMinutes: 15,
+          // MODEL-SERVE-001-T28's bands. Quiet defaults, so every case below
+          // still asserts the drift verdict it was written for.
+          skipStreakAlert: 3,
+          missingPctWarn: 5,
+          missingPctAlert: 20,
+          frozenWindows: 3,
+          frozenTolerancePct: 0,
           driftMonitor: false,
           warnSd: 1.5,
           criticalSd: 3.0,
@@ -82,15 +107,98 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
     const service = makeService(prisma);
     expect(await service.getHealthStatus('model-1')).toEqual({
       status: 'OFF',
+      // T26: OFF means DELIBERATELY NOT WATCHING, so it carries no reason.
+      reason: null,
+      // T29: no stuck instruments to report either.
+      frozenColumns: [],
       thresholds: null,
     });
     expect(mockedPostToPython).not.toHaveBeenCalled();
+  });
+
+  /**
+   * MODEL-SERVE-001-T29. THE CASE THAT PINS THE RESTRUCTURING. The case above
+   * now passes for a WEAKER reason than its name claims: `getHealthStatus` no
+   * longer returns early on `driftMonitor: false`, so its baseline is skipped
+   * only because that fixture's `findMany` returns `[]` (`statsRows.length ===
+   * 0`). It therefore proves "no stats, no baseline", NOT "monitoring off, no
+   * baseline".
+   *
+   * This one supplies real `featureStats` with monitoring OFF, and asserts the
+   * split T26 settled: the baseline IS fetched and a stuck instrument IS
+   * reported, because frozen is a LIVENESS fact — while the drift verdict
+   * stays silent, because that is the half `driftMonitor` actually gates.
+   * Without this, re-adding an early return would turn Sensor Frozen off for
+   * the majority of models (`driftMonitor` defaults false) with every test
+   * still green.
+   */
+  it('reports a frozen tag with driftMonitor OFF — liveness is ungated, only the drift verdict is', async () => {
+    mockedPostToPython.mockResolvedValue(COLUMN_STATS_RESPONSE);
+    // Flat across all three windows: min === max === 12. The baseline's own
+    // std is 2, so guard (1) — "already flat in TRAINING" — does not skip it.
+    const FLAT = {
+      windowStart: new Date(),
+      featureStats: {
+        tag_a: { n: 10, sum: 120, sumsq: 1440, min: 12, max: 12 },
+      },
+    };
+    const prisma = buildPrisma({
+      inferenceSchedule: {
+        findUnique: jest.fn().mockResolvedValue({
+          enabled: true,
+          cadenceMinutes: 60,
+          lagMinutes: 15,
+          skipStreakAlert: 3,
+          missingPctWarn: 5,
+          missingPctAlert: 20,
+          frozenWindows: 3,
+          frozenTolerancePct: 0,
+          // The point of the case.
+          driftMonitor: false,
+          warnSd: 1.5,
+          criticalSd: 3.0,
+          driftThresholdPct: 10,
+        }),
+      },
+      modelVersion: {
+        findFirst: jest.fn().mockResolvedValue(PRODUCTION_VERSION),
+      },
+      inferenceWindow: {
+        findMany: jest.fn().mockResolvedValue([FLAT, FLAT, FLAT]),
+        findFirst: jest.fn().mockResolvedValue({ windowStart: new Date() }),
+      },
+    });
+    const service = makeService(prisma);
+    const result = await service.getHealthStatus('model-1');
+
+    expect(result.status).toBe('FROZEN');
+    expect(result.reason).toBe('SENSOR_FROZEN');
+    expect(result.frozenColumns).toEqual(['tag_a']);
+    // The baseline IS fetched with monitoring off — frozen needs it for
+    // guard (1) and for the eps range.
+    expect(mockedPostToPython).toHaveBeenCalled();
+    // ...but no drift claim rides along: `thresholds` is null exactly when
+    // `driftMonitor` is false.
+    expect(result.thresholds).toBeNull();
   });
 
   it('is UNKNOWN when monitoring is on but there is no PRODUCTION version — never throws', async () => {
     const prisma = buildPrisma({
       inferenceSchedule: {
         findUnique: jest.fn().mockResolvedValue({
+          // MODEL-SERVE-001-T26: an ENABLED schedule, with the cadence/lag
+          // `isStale` needs. Absent before, because nothing on this axis
+          // read them until liveness moved here.
+          enabled: true,
+          cadenceMinutes: 60,
+          lagMinutes: 15,
+          // MODEL-SERVE-001-T28's bands. Quiet defaults, so every case below
+          // still asserts the drift verdict it was written for.
+          skipStreakAlert: 3,
+          missingPctWarn: 5,
+          missingPctAlert: 20,
+          frozenWindows: 3,
+          frozenTolerancePct: 0,
           driftMonitor: true,
           warnSd: 1.5,
           criticalSd: 3.0,
@@ -113,6 +221,19 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
     const prisma = buildPrisma({
       inferenceSchedule: {
         findUnique: jest.fn().mockResolvedValue({
+          // MODEL-SERVE-001-T26: an ENABLED schedule, with the cadence/lag
+          // `isStale` needs. Absent before, because nothing on this axis
+          // read them until liveness moved here.
+          enabled: true,
+          cadenceMinutes: 60,
+          lagMinutes: 15,
+          // MODEL-SERVE-001-T28's bands. Quiet defaults, so every case below
+          // still asserts the drift verdict it was written for.
+          skipStreakAlert: 3,
+          missingPctWarn: 5,
+          missingPctAlert: 20,
+          frozenWindows: 3,
+          frozenTolerancePct: 0,
           driftMonitor: true,
           warnSd: 1.5,
           criticalSd: 3.0,
@@ -126,6 +247,8 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
         findMany: jest
           .fn()
           .mockResolvedValue([{ featureStats: null, windowStart: new Date() }]),
+        // Produced just now — not stale, so this case still asserts UNKNOWN.
+        findFirst: jest.fn().mockResolvedValue({ windowStart: new Date() }),
       },
     });
     const service = makeService(prisma);
@@ -139,6 +262,19 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
     const prisma = buildPrisma({
       inferenceSchedule: {
         findUnique: jest.fn().mockResolvedValue({
+          // MODEL-SERVE-001-T26: an ENABLED schedule, with the cadence/lag
+          // `isStale` needs. Absent before, because nothing on this axis
+          // read them until liveness moved here.
+          enabled: true,
+          cadenceMinutes: 60,
+          lagMinutes: 15,
+          // MODEL-SERVE-001-T28's bands. Quiet defaults, so every case below
+          // still asserts the drift verdict it was written for.
+          skipStreakAlert: 3,
+          missingPctWarn: 5,
+          missingPctAlert: 20,
+          frozenWindows: 3,
+          frozenTolerancePct: 0,
           driftMonitor: true,
           // Deliberately tight — a live mean of 12 against a baseline
           // mean 10 / std 2 is z=1; warnSd here is 0.5, well below env's
@@ -161,6 +297,7 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
             },
           },
         ]),
+        findFirst: jest.fn().mockResolvedValue({ windowStart: new Date() }),
       },
     });
     const service = makeService(prisma);

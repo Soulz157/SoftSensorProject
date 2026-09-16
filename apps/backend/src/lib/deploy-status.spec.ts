@@ -5,122 +5,80 @@ import {
   overlayDeployStatus,
 } from './deploy-status';
 
-describe('classifyDeployStatus (MODEL-SERVE-006-T12)', () => {
+describe('classifyDeployStatus (MODEL-SERVE-006-T12, reshaped by T26)', () => {
   it('is stopped when the schedule is not enabled, regardless of history', () => {
     expect(
       classifyDeployStatus({
         enabled: false,
         hasEverSucceeded: true,
-        staleness: 'OK',
-        failing: false,
-        hasFailedWindows: false,
+        preflightOk: true,
       }),
     ).toBe('stopped');
   });
 
-  it('is running when enabled and fresh', () => {
+  it('is running when enabled and preflight passed', () => {
     expect(
       classifyDeployStatus({
         enabled: true,
         hasEverSucceeded: true,
-        staleness: 'OK',
-        failing: false,
-        hasFailedWindows: false,
+        preflightOk: true,
       }),
     ).toBe('running');
   });
 
-  it('is initializing when enabled, stale, but never succeeded yet — a warm-up, not a failure', () => {
+  it('is running from the press — a probed schedule does not sit in initializing', () => {
+    // The operator has already been told the source answers; making them
+    // watch a spinner until the first window lands would report an
+    // uncertainty the system no longer has.
     expect(
       classifyDeployStatus({
         enabled: true,
         hasEverSucceeded: false,
-        staleness: 'STALE',
-        failing: false,
-        hasFailedWindows: false,
-      }),
-    ).toBe('initializing');
-  });
-
-  it('is error when enabled, stale, and it WAS producing before — a real regression', () => {
-    expect(
-      classifyDeployStatus({
-        enabled: true,
-        hasEverSucceeded: true,
-        staleness: 'STALE',
-        failing: false,
-        hasFailedWindows: false,
-      }),
-    ).toBe('error');
-  });
-
-  it('is error when failing, even if not yet stale by the time window', () => {
-    expect(
-      classifyDeployStatus({
-        enabled: true,
-        hasEverSucceeded: true,
-        staleness: 'OK',
-        failing: true,
-        hasFailedWindows: true,
-      }),
-    ).toBe('error');
-  });
-
-  /**
-   * The gap that let a completely broken schedule read as a healthy
-   * warm-up. `failing` needs THREE consecutive failures — right for a
-   * mature schedule, far too slow for a new one, which only reaches three
-   * failures after three cadences. Until then "never succeeded + stale"
-   * returned `initializing` no matter how many windows had already failed.
-   */
-  it('is error when a NEVER-SUCCEEDED schedule has already failed a window', () => {
-    expect(
-      classifyDeployStatus({
-        enabled: true,
-        hasEverSucceeded: false,
-        staleness: 'STALE',
-        // Only one or two failures so far — below the `failing` bar.
-        failing: false,
-        hasFailedWindows: true,
-      }),
-    ).toBe('error');
-  });
-
-  it('is still initializing when nothing has been produced at all', () => {
-    expect(
-      classifyDeployStatus({
-        enabled: true,
-        hasEverSucceeded: false,
-        staleness: 'STALE',
-        failing: false,
-        hasFailedWindows: false,
-      }),
-    ).toBe('initializing');
-  });
-
-  it('a failed window in the past does NOT override a currently fresh schedule', () => {
-    // Recovered: it has succeeded since, and is not stale. An old failure
-    // must not pin a working model to `error` forever — the status is
-    // derived at read time precisely so it can heal.
-    expect(
-      classifyDeployStatus({
-        enabled: true,
-        hasEverSucceeded: true,
-        staleness: 'OK',
-        failing: false,
-        hasFailedWindows: true,
+        preflightOk: true,
       }),
     ).toBe('running');
   });
 
-  it('is stopped even when failing — a disabled schedule is not an alarm', () => {
+  it('is error when preflight FAILED — the only remaining path to error', () => {
+    expect(
+      classifyDeployStatus({
+        enabled: true,
+        hasEverSucceeded: false,
+        preflightOk: false,
+      }),
+    ).toBe('error');
+  });
+
+  it('is initializing when NOT PROBED and nothing has been produced yet', () => {
+    // A non-PI source, or a schedule enabled before T25 shipped.
+    expect(
+      classifyDeployStatus({
+        enabled: true,
+        hasEverSucceeded: false,
+        preflightOk: null,
+      }),
+    ).toBe('initializing');
+  });
+
+  it('a NOT-PROBED schedule that has produced is running, not initializing', () => {
+    // This is the case that carries every pre-T25 schedule across the
+    // migration: never probed, but demonstrably working. A `null` read as a
+    // failure here would flip every live schedule to Failed on deploy day.
+    expect(
+      classifyDeployStatus({
+        enabled: true,
+        hasEverSucceeded: true,
+        preflightOk: null,
+      }),
+    ).toBe('running');
+  });
+
+  it('is stopped even when preflight failed — a disabled schedule is not an alarm', () => {
     expect(
       classifyDeployStatus({
         enabled: false,
         hasEverSucceeded: false,
-        staleness: 'STALE',
-        failing: true,
-        hasFailedWindows: true,
+        preflightOk: false,
       }),
     ).toBe('stopped');
   });
@@ -180,12 +138,14 @@ describe('overlayDeployStatus', () => {
       status: 'running',
       enabled: true,
       lastFailure: null,
+      monitoring: { status: 'OFF', reason: null, frozenColumns: [] },
     });
     expect(result.data).toEqual({
       prodStatus: 'normal',
       deployStatus: 'running',
       enabled: true,
       lastFailure: null,
+      monitoring: { status: 'OFF', reason: null, frozenColumns: [] },
     });
     expect(model.data).toEqual({ prodStatus: 'normal' }); // unchanged
   });
@@ -197,8 +157,14 @@ describe('overlayDeployStatus', () => {
         status: 'stopped',
         enabled: false,
         lastFailure: null,
+        monitoring: { status: 'OFF', reason: null, frozenColumns: [] },
       }).data,
-    ).toEqual({ deployStatus: 'stopped', enabled: false, lastFailure: null });
+    ).toEqual({
+      deployStatus: 'stopped',
+      enabled: false,
+      lastFailure: null,
+      monitoring: { status: 'OFF', reason: null, frozenColumns: [] },
+    });
   });
 
   // MODEL-SERVE-001-T23.
@@ -209,11 +175,13 @@ describe('overlayDeployStatus', () => {
       status: 'error',
       enabled: true,
       lastFailure: { reason: 'Materialize failed: source unreachable', at },
+      monitoring: { status: 'OFF', reason: null, frozenColumns: [] },
     });
     expect(result.data).toEqual({
       deployStatus: 'error',
       enabled: true,
       lastFailure: { reason: 'Materialize failed: source unreachable', at },
+      monitoring: { status: 'OFF', reason: null, frozenColumns: [] },
     });
   });
 
@@ -229,11 +197,13 @@ describe('overlayDeployStatus', () => {
       status: 'error',
       enabled: true,
       lastFailure: null,
+      monitoring: { status: 'OFF', reason: null, frozenColumns: [] },
     });
     expect(result.data).toEqual({
       deployStatus: 'error',
       enabled: true,
       lastFailure: null,
+      monitoring: { status: 'OFF', reason: null, frozenColumns: [] },
     });
   });
 });
@@ -254,9 +224,103 @@ describe('deriveDeployStatuses (batched)', () => {
     const prisma = buildPrisma();
     const result = await deriveDeployStatuses(prisma, ['m1', 'm2']);
     expect(result).toEqual({
-      m1: { status: 'stopped', enabled: false, lastFailure: null },
-      m2: { status: 'stopped', enabled: false, lastFailure: null },
+      m1: {
+        status: 'stopped',
+        enabled: false,
+        lastFailure: null,
+        monitoring: { status: 'OFF', reason: null, frozenColumns: [] },
+      },
+      m2: {
+        status: 'stopped',
+        enabled: false,
+        lastFailure: null,
+        monitoring: { status: 'OFF', reason: null, frozenColumns: [] },
+      },
     });
+  });
+
+  /**
+   * MODEL-SERVE-001-V22. THE NO-N+1 BOUND, which is what lets the Alerts page
+   * stay a pure function over the models list instead of one status request
+   * per model.
+   *
+   * The shape is deliberately asserted as it really is — **2 + E**, E being
+   * the number of ENABLED schedules — not as the "fully batched" the doc
+   * comment on `deriveDeployStatuses` once implied. The two batched reads are
+   * constant; the take-3 terminal-window read fans out over enabled models
+   * only. Pinning the real figure is the point: a future change that adds one
+   * more per-model read (a baseline fetch for drift, a featureStats select for
+   * frozen) breaks this test rather than quietly tripling the list's cost.
+   *
+   * The fixture uses TWO ENABLED schedules on purpose. With everything
+   * disabled the fan-out term is zero and the assertion passes at one query
+   * while proving nothing at all — the exact vacuous-fixture trap this
+   * feature has hit twice before.
+   */
+  it('runs 2 + (one per ENABLED schedule) queries for the list — no per-model fan-out beyond the terminal-window read', async () => {
+    const prisma = buildPrisma({
+      inferenceSchedule: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            modelId: 'm1',
+            enabled: true,
+            // Finite cadence/lag, NOT undefined: `isStale` fails toward
+            // 'STALE' on a missing cadence, and three pre-existing fixtures
+            // in this file were found passing `undefined` (see isStale's own
+            // doc). A vague fixture would make this assert the wrong path.
+            cadenceMinutes: 60,
+            lagMinutes: 15,
+            preflightOk: true,
+            skipStreakAlert: 3,
+            missingPctWarn: 5,
+            missingPctAlert: 20,
+          },
+          {
+            modelId: 'm2',
+            enabled: true,
+            cadenceMinutes: 60,
+            lagMinutes: 15,
+            preflightOk: true,
+            skipStreakAlert: 3,
+            missingPctWarn: 5,
+            missingPctAlert: 20,
+          },
+          // Disabled: contributes NO terminal-window read. Present so the
+          // count below distinguishes "per enabled schedule" from "per model".
+          {
+            modelId: 'm3',
+            enabled: false,
+            cadenceMinutes: 60,
+            lagMinutes: 15,
+            preflightOk: null,
+            skipStreakAlert: 3,
+            missingPctWarn: 5,
+            missingPctAlert: 20,
+          },
+        ]),
+      },
+      inferenceWindow: {
+        groupBy: jest.fn().mockResolvedValue([
+          { modelId: 'm1', _max: { windowStart: new Date() } },
+          { modelId: 'm2', _max: { windowStart: new Date() } },
+        ]),
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+    });
+
+    await deriveDeployStatuses(prisma, ['m1', 'm2', 'm3']);
+
+    const mock = prisma as unknown as {
+      inferenceSchedule: { findMany: jest.Mock };
+      inferenceWindow: { groupBy: jest.Mock; findMany: jest.Mock };
+    };
+    // Batched over every id, once.
+    expect(mock.inferenceSchedule.findMany).toHaveBeenCalledTimes(1);
+    // Batched over the enabled ids, once.
+    expect(mock.inferenceWindow.groupBy).toHaveBeenCalledTimes(1);
+    // TWO enabled schedules => two terminal-window reads. Three models, not
+    // three reads: the disabled one costs nothing.
+    expect(mock.inferenceWindow.findMany).toHaveBeenCalledTimes(2);
   });
 
   it('returns an empty object for an empty id list without querying', async () => {
@@ -278,6 +342,10 @@ describe('deriveDeployStatuses (batched)', () => {
             enabled: true,
             cadenceMinutes: 60,
             lagMinutes: 15,
+            // Real rows always carry this column. Stated explicitly so a
+            // reader cannot conclude it is optional — `undefined` would take
+            // the same branch as `true` here and pass for the wrong reason.
+            preflightOk: true,
           },
         ]),
       },
@@ -301,16 +369,82 @@ describe('deriveDeployStatuses (batched)', () => {
       status: 'running',
       enabled: true,
       lastFailure: null,
+      monitoring: { status: 'OFF', reason: null, frozenColumns: [] },
     });
   });
 
   /**
-   * MODEL-SERVE-001-T19. The case the Stop-control fix depends on:
-   * `enabled` must stay `true` in the returned state even though `status`
-   * reads 'error' — this is exactly what lets a Start/Stop control tell
-   * the two apart instead of collapsing them.
+   * MODEL-SERVE-001-V19. RUNNING IS STICKY — proven on a fixture that HAS
+   * ALREADY SUCCEEDED ONCE, which is the half of V19 that does the work.
+   *
+   * A never-succeeded fixture would pass under the OLD logic too and prove
+   * nothing: that is the exact trap V10 recorded when TM2 could not
+   * demonstrate T12's warmup change because it already held six failed
+   * windows. Here `groupBy` returns a real last-SUCCEEDED window (the model
+   * WAS producing), and only then do three consecutive FAILED windows
+   * arrive.
+   *
+   * BEFORE T26 THIS CASE ASSERTED `status: 'error'`. That is the behaviour
+   * change, stated rather than quietly rewritten: three failed windows say
+   * something about the DATA, not about whether the scheduler is
+   * dispatching, so they moved to the monitoring axis (ALERT/
+   * SOURCE_UNREACHABLE — see model-health.spec.ts). `enabled` staying true
+   * alongside it is still T19's Stop-control requirement, unchanged.
    */
-  it('derives error for an enabled schedule whose last 3 terminal windows all failed', async () => {
+  it('stays running through three consecutive failures on a model that has succeeded before', async () => {
+    const failedWindows = [
+      {
+        status: 'FAILED',
+        failureReason: 'spawn refused',
+        windowStart: new Date('2026-09-15T12:00:00.000Z'),
+      },
+      {
+        status: 'FAILED',
+        failureReason: 'spawn refused',
+        windowStart: new Date('2026-09-15T11:00:00.000Z'),
+      },
+      {
+        status: 'FAILED',
+        failureReason: 'spawn refused',
+        windowStart: new Date('2026-09-15T10:00:00.000Z'),
+      },
+    ];
+
+    // Snapshot the status after EACH failure, not only after the third:
+    // "it ended up running" is compatible with it having flickered through
+    // 'error' in between, which is what an operator would actually see.
+    const statusAfter: string[] = [];
+    for (let n = 1; n <= 3; n += 1) {
+      const prisma = buildPrisma({
+        inferenceSchedule: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              modelId: 'm1',
+              enabled: true,
+              cadenceMinutes: 60,
+              lagMinutes: 15,
+              preflightOk: true,
+            },
+          ]),
+        },
+        inferenceWindow: {
+          // It succeeded once, before any of the failures above.
+          groupBy: jest
+            .fn()
+            .mockResolvedValue([
+              { modelId: 'm1', _max: { windowStart: new Date() } },
+            ]),
+          findMany: jest.fn().mockResolvedValue(failedWindows.slice(3 - n)),
+        },
+      });
+      const result = await deriveDeployStatuses(prisma, ['m1']);
+      statusAfter.push(result.m1.status);
+    }
+
+    expect(statusAfter).toEqual(['running', 'running', 'running']);
+  });
+
+  it('still reports the failure reason while reading running — the fault is not hidden, just re-homed', async () => {
     const prisma = buildPrisma({
       inferenceSchedule: {
         findMany: jest.fn().mockResolvedValue([
@@ -319,6 +453,7 @@ describe('deriveDeployStatuses (batched)', () => {
             enabled: true,
             cadenceMinutes: 60,
             lagMinutes: 15,
+            preflightOk: true,
           },
         ]),
       },
@@ -334,31 +469,24 @@ describe('deriveDeployStatuses (batched)', () => {
             failureReason: 'spawn refused',
             windowStart: new Date('2026-09-15T12:00:00.000Z'),
           },
-          {
-            status: 'FAILED',
-            failureReason: 'spawn refused',
-            windowStart: new Date('2026-09-15T11:00:00.000Z'),
-          },
-          {
-            status: 'FAILED',
-            failureReason: 'spawn refused',
-            windowStart: new Date('2026-09-15T10:00:00.000Z'),
-          },
         ]),
       },
     });
     const result = await deriveDeployStatuses(prisma, ['m1']);
     expect(result.m1).toEqual({
-      status: 'error',
+      status: 'running',
       enabled: true,
       lastFailure: {
         reason: 'spawn refused',
         at: new Date('2026-09-15T12:00:00.000Z'),
       },
+      // ONE failure, below the 3-window bar — a fault is reported, not yet
+      // alarmed. The deploy axis is unmoved either way.
+      monitoring: { status: 'OFF', reason: null, frozenColumns: [] },
     });
   });
 
-  it('derives initializing for a just-enabled schedule with no windows yet', async () => {
+  it('derives initializing for a just-enabled, NOT-PROBED schedule with no windows yet', async () => {
     const prisma = buildPrisma({
       inferenceSchedule: {
         findMany: jest.fn().mockResolvedValue([
@@ -367,6 +495,9 @@ describe('deriveDeployStatuses (batched)', () => {
             enabled: true,
             cadenceMinutes: 60,
             lagMinutes: 15,
+            // T25/T26: not probed (a non-PI source, or enabled before T25).
+            // A PROBED schedule is running from the press instead.
+            preflightOk: null,
           },
         ]),
       },
@@ -380,7 +511,28 @@ describe('deriveDeployStatuses (batched)', () => {
       status: 'initializing',
       enabled: true,
       lastFailure: null,
+      monitoring: { status: 'OFF', reason: null, frozenColumns: [] },
     });
+  });
+
+  it('derives error for a schedule whose enable-time preflight failed', async () => {
+    const prisma = buildPrisma({
+      inferenceSchedule: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            modelId: 'm1',
+            enabled: true,
+            cadenceMinutes: 60,
+            lagMinutes: 15,
+            preflightOk: false,
+          },
+        ]),
+      },
+    });
+    const result = await deriveDeployStatuses(prisma, ['m1']);
+    expect(result.m1?.status).toBe('error');
+    // T19's Stop-control requirement survives the reshape.
+    expect(result.m1?.enabled).toBe(true);
   });
 
   it('derives disabled/stopped for a schedule the operator turned off, even mid-failure', async () => {
@@ -392,6 +544,7 @@ describe('deriveDeployStatuses (batched)', () => {
             enabled: false,
             cadenceMinutes: 60,
             lagMinutes: 15,
+            preflightOk: true,
           },
         ]),
       },
@@ -401,6 +554,7 @@ describe('deriveDeployStatuses (batched)', () => {
       status: 'stopped',
       enabled: false,
       lastFailure: null,
+      monitoring: { status: 'OFF', reason: null, frozenColumns: [] },
     });
   });
 
@@ -422,6 +576,10 @@ describe('deriveDeployStatuses (batched)', () => {
             enabled: true,
             cadenceMinutes: 60,
             lagMinutes: 15,
+            // Real rows always carry this column. Stated explicitly so a
+            // reader cannot conclude it is optional — `undefined` would take
+            // the same branch as `true` here and pass for the wrong reason.
+            preflightOk: true,
           },
         ]),
       },
@@ -457,6 +615,10 @@ describe('deriveDeployStatuses (batched)', () => {
             enabled: true,
             cadenceMinutes: 60,
             lagMinutes: 15,
+            // Real rows always carry this column. Stated explicitly so a
+            // reader cannot conclude it is optional — `undefined` would take
+            // the same branch as `true` here and pass for the wrong reason.
+            preflightOk: true,
           },
         ]),
       },

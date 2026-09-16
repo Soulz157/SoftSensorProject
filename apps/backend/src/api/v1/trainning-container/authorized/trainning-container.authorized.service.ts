@@ -280,8 +280,33 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
   // the build machine only. `resolveDigest` inspects the local image first,
   // so this default is correct where it was built and fails LOUDLY at boot
   // elsewhere rather than silently running old code.
+  //
+  // 1.0.13 (DS-LAKE-028-T03) — the SVR scaling warning no longer branches on
+  // `feature_spec["scaling"]` being non-empty. That field held the user's
+  // EXPLICIT scaler config only, and the common path configures nothing while
+  // to_model_ready min-max scales every tag at the default, so the trainer
+  // asserted "reports no scaling on the input features" over fully-scaled
+  // frames on 21 of the 22 specs that exist. It now resolves from
+  // `scalingParams` first (authoritative at every featureVersion) and falls
+  // back to the effective method list.
+  //
+  // VERIFIED IN-IMAGE BY BEHAVIOUR, NOT BY TAG, same as every prior bump:
+  // `docker run --user root` with the test directory mounted plus a
+  // `pip install pytest` — 69 passed (65 inherited through 1.0.12, 4 added
+  // here for the gate: a REAL legacy spec shape — `scaling: []` with a
+  // populated `scalingParams` — draws no warning; a featureVersion 1 spec
+  // with no `scalingParams` KEY does not crash; an all-"none" recipe, which
+  // DS-LAKE-028-T04 makes reachable, still warns because it really is
+  // unscaled; a post-T02 spec carrying only `scaling` draws none).
+  //
+  // PUSH NOT ATTEMPTED — every prior bump's `docker push` returned
+  // `insufficient_scope: authorization failed`, so like 1.0.9 through 1.0.12
+  // this tag exists LOCALLY on the build machine only. `resolveDigest`
+  // inspects the local image first, so this default is correct where it was
+  // built and fails LOUDLY at boot elsewhere rather than silently running old
+  // code.
   private readonly imageRef =
-    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.12';
+    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.13';
   // private readonly network = process.env.TRAINING_NETWORK ?? 'dslake_default';
   private readonly network = 'monorepo_network';
   private readonly memoryBytes = Number(

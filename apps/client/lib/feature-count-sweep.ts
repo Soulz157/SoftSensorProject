@@ -290,6 +290,30 @@ export function selectByOverlap(
   }
 }
 
+export function selectByBestMean(
+  rows: SweepRow[],
+  metric: SweepMetric = DEFAULT_SWEEP_METRIC,
+): SweepSelection {
+  const usable = rows.flatMap(row => {
+    const { mean } = statFor(row, metric)
+    return mean !== null ? [{ row, mean }] : []
+  })
+  if (usable.length === 0) {
+    return { chosenRunId: null, chosenN: null, bestRunId: null, bestN: null }
+  }
+
+  const direction = RANK_DIRECTION[metric]
+  const better = (a: number, b: number) => (direction === 'min' ? b < a : b > a)
+  const best = usable.reduce((a, b) => (better(a.mean, b.mean) ? b : a))
+
+  return {
+    chosenRunId: best.row.runId,
+    chosenN: best.row.n,
+    bestRunId: best.row.runId,
+    bestN: best.row.n,
+  }
+}
+
 /**
  * k = floor(distinct / MIN_LABELS_PER_FOLD), bounded to the 2-10 the run DTO
  * and the trainer both accept. `null` where no k is admissible.
@@ -358,10 +382,10 @@ export function sweepRuleText(
   const label = SWEEP_METRIC_LABELS[metric]
   const sense = RANK_DIRECTION[metric] === 'min' ? 'lowest' : 'highest'
   return (
-    `Decided on ${label} (${sense} is better). Selected by rule, not by the ` +
-    `${sense} number: the smallest feature count whose fold spread overlaps ` +
-    `that of the best-scoring row. Where two rows overlap, the extra ` +
-    `features bought nothing this data can measure. R² is shown as a column ` +
+    `Decided on ${label} (${sense} is better). The highlighted row is the ` +
+    `${sense} fold mean. At these fold counts the gap between adjacent rows ` +
+    `is often smaller than their own spread, so read the ± beside each ` +
+    `figure before treating the order as settled. R² is shown as a column ` +
     `but cannot decide the ladder — it is a fold average of ratios whose ` +
     `denominator changes per fold, so one quiet fold can move it without ` +
     `limit.`

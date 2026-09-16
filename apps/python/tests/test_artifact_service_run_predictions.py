@@ -128,7 +128,15 @@ def test_refuses_a_traversal_attempt_disguised_as_a_run_key() -> None:
 def test_refuses_a_key_not_named_predictions_parquet() -> None:
     key = "drafts/d1/runs/r1/metrics.json"
     store = RecordingStore({key: predictions_frame()})
-    with pytest.raises(ValueError, match="does not name predictions.parquet"):
+    # The guard became a two-filename ALLOW-LIST (holdout_predictions.parquet
+    # was added alongside predictions.parquet), so the message now names the
+    # set rather than the single filename this regex used to expect. Still
+    # pinned to the allowed filename rather than loosened to the bare "does
+    # not name one of" prefix, which every other allow-list guard in this
+    # service shares and which would therefore match the wrong refusal.
+    with pytest.raises(
+        ValueError, match=r"does not name one of .*'predictions\.parquet'"
+    ):
         artifact_service.run_predictions(
             store, ModelRunPredictionsRequest(source_key=key)
         )

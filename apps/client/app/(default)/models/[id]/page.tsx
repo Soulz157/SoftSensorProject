@@ -79,7 +79,7 @@ const DEPLOY_CONFIG = {
   stopped: {
     icon: StopCircle,
     cls: 'bg-muted text-muted-foreground border-border',
-    label: 'Stopped',
+    label: 'Offline',
   },
   error: {
     icon: XCircle,
@@ -157,6 +157,51 @@ const HEALTH_CONFIG = {
     cls: `${DRIFT_STATUS_CLASS.CRITICAL} border-purple-500/30`,
     label: 'Health: Critical',
   },
+  /**
+   * MODEL-SERVE-001-T26. NOT OPTIONAL: this map has no `??` fallback at its
+   * read site, so omitting a status the server can now send renders
+   * `undefined` and throws.
+   *
+   * Palette is the DRIFT one, deliberately, not the deploy red/amber
+   * vocabulary — this is the monitoring axis, and every monitoring signal in
+   * this codebase already renders in purple/zinc.
+   */
+  ALERT: {
+    icon: Waves,
+    cls: `${DRIFT_STATUS_CLASS.CRITICAL} border-purple-500/30`,
+    label: 'Health: Alert',
+  },
+  /**
+   * MODEL-SERVE-001-T29. "Sensor Frozen", NOT "Frozen": the word already
+   * means something else one badge over. `prodStatus.frozen` is
+   * OPERATOR-SET and renders as "Data Frozen" with the Snowflake treatment
+   * in PROD_CONFIG — two badges on one header both reading "Frozen" is the
+   * same two-contradictory-verdicts-in-one-view defect T22 had to fix in
+   * model-detail-dialog.tsx. Renaming the persisted prodStatus value instead
+   * would be a migration plus every map, for the lower-value half.
+   */
+  FROZEN: {
+    icon: Waves,
+    cls: `${DRIFT_STATUS_CLASS.WARN} border-purple-500/20`,
+    label: 'Health: Sensor Frozen',
+  },
+} as const
+
+/** T26. The reason code in the reader's own terms, kept beside the map it
+ *  annotates so a new code cannot be added to one and forgotten in the other.
+ *  SOURCE_UNREACHABLE and STALE send a reader to two DIFFERENT places, so the
+ *  badge must never read just "Alert". */
+const HEALTH_REASON_LABEL = {
+  SOURCE_UNREACHABLE: 'source unreachable',
+  STALE: 'no recent windows',
+  NO_PREDICTIONS: 'no predictions',
+  BAD_DATA: 'bad input data',
+  SENSOR_FROZEN: 'tag not moving',
+  // T27: z-score is per-window, PSI is rolling-24. The card names WHICH
+  // metric fired rather than printing one merged "drift" figure that would
+  // be one metric wearing another's name.
+  DRIFT_CRITICAL: 'input drift (critical)',
+  DRIFT_WARN: 'input drift',
 } as const
 
 export default function ModelDetailPage({
@@ -328,6 +373,11 @@ export default function ModelDetailPage({
   // for "not configured to look".
   const healthKey = inferenceStatus?.health.status ?? 'OFF'
   const health = HEALTH_CONFIG[healthKey]
+  // T26. Null for every non-ALERT status, so this renders nothing extra on a
+  // healthy badge.
+  const healthReason = inferenceStatus?.health.reason
+    ? HEALTH_REASON_LABEL[inferenceStatus.health.reason]
+    : null
   const HealthIcon = health.icon
   const lastFailure = inferenceStatus?.lastFailure ?? null
   const lastSkipped = inferenceStatus?.lastSkipped ?? null
@@ -394,6 +444,9 @@ export default function ModelDetailPage({
                 >
                   <HealthIcon className="h-3 w-3" />
                   {health.label}
+                  {/* T26: the reason is ON SCREEN, never left to be inferred
+                      from the status word — DS-LAKE-022-T03's own defect. */}
+                  {healthReason && ` · ${healthReason}`}
                 </span>
               </div>
               <p className="mt-0.5 text-sm text-muted-foreground">
@@ -707,7 +760,10 @@ export default function ModelDetailPage({
 
           {/* ── Input Data ── */}
           <TabsContent value="input" className="mt-0">
-            <InputDataTab model={model} />
+            <InputDataTab
+              model={model}
+              frozenColumns={inferenceStatus?.health.frozenColumns ?? []}
+            />
           </TabsContent>
 
           {/* ── Edit History ── */}

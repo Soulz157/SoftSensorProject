@@ -97,6 +97,24 @@ export function InputFeatureTable({ rows }: Props) {
               >
                 {row.piStatus}
               </Badge>
+              {/* MODEL-SERVE-001-T29/T30. A THIRD verdict, beside PI's — a
+                  stuck instrument can report Good and un-drifted while its
+                  value has not changed in hours, so neither neighbouring
+                  badge can carry this.
+
+                  AMBER (`Questionable`), never `Bad`/red: red already means
+                  "PI itself calls this tag bad", and a tag that is reporting
+                  cleanly but not moving is a different finding that wants a
+                  different look. Tags flat in TRAINING are already excluded
+                  server-side, so a setpoint never lands here. */}
+              {row.frozen && (
+                <Badge
+                  className={`ml-1 border-0 ${PI_STATUS_CLASS.Questionable}`}
+                  title="No movement across the schedule's last frozenWindows windows"
+                >
+                  Frozen
+                </Badge>
+              )}
               {/* The actionable half for a derived feature: WHICH source
                   tag is not Good. "Bad" alone says nothing at six sources. */}
               {row.failingSources && row.failingSources.length > 0 && (

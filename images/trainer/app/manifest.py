@@ -60,11 +60,24 @@ def build_run_manifest(
     model_path: Path,
     duration_ms: int,
 ) -> dict[str, Any]:
-    """Keyword-only: this dict has fourteen fields and positional calls to it
+    """Keyword-only: this dict has sixteen fields and positional calls to it
     would be unreadable and reorderable without an error."""
     return {
         "run_id": run_id,
         "gold_object_key": spec["goldObjectKey"],
+        # MODEL-SERVE-007-T06. `gold_object_key` above is a KEY relative to a
+        # bucket, not a location — a reader years from now needs the bucket
+        # to find the object at all, and nothing else in this manifest
+        # carries it. `.get`, not `[...]`: a claim payload from a NestJS that
+        # predates the field must not fail the run, and a manifest missing
+        # this field resolves through `class_for_key`'s rootless default,
+        # which is correct for every manifest written before today.
+        "gold_bucket": spec.get("goldBucket"),
+        # The durable reference to the training artifact. It is ALREADY a
+        # path segment inside `gold_object_key`, so this promotes a substring
+        # to a field: a reference parsed out of a path breaks when the path
+        # shape changes, a field does not.
+        "gold_artifact_id": spec.get("goldArtifactId"),
         "artifact_checksum": artifact_checksum,
         "image_digest": spec["imageDigest"],
         "target_y": target_y,

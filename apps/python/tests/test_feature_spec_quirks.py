@@ -359,3 +359,48 @@ def test_psi_edges_are_not_part_of_feature_hash() -> None:
     assert with_edges["psiBinCount"] == {"TI-101": 2}
     assert with_edges["psiBinMode"] == {"TI-101": "continuous"}
     assert with_edges["psiRefCounts"] == {"TI-101": [3, 7]}
+
+
+def test_scaling_records_the_effective_method_on_a_default_recipe() -> None:
+    """DS-LAKE-028-V01. The defect this feature exists to close, at the shape
+    that produced it: `scalers={}` — the overwhelmingly common path, since
+    `dwScalerConfigsAtom` starts `{}` and the UI had no way to decline —
+    used to write `scaling: []` over a frame every column of which WAS
+    min-max scaled. 21 of the 22 specs in MinIO are in that state.
+
+    Asserting only that `scaling` is non-empty would pass against a writer
+    that records ONE tag, which is the shape of the defect rather than its
+    fix — so this asserts the tag SET equals `scalingParams`' key set
+    exactly, which is the property the two fields were violating.
+    """
+    spec = build_feature_spec(
+        BASE_FEATURES,
+        BASE_SELECTED,
+        {},
+        scaling_params={"TI-101": {"min": 0.0, "max": 1.0},
+                        "TI-102": {"min": 2.0, "max": 4.0}},
+    )
+    assert {e["tag"] for e in spec["scaling"]} == set(spec["scalingParams"])
+    assert all(e["method"] == "minmax" for e in spec["scaling"])
+    assert spec["featureVersion"] == 4
+
+
+def test_correcting_scaling_did_not_move_the_feature_hash() -> None:
+    """DS-LAKE-028-V01B. `scaling` is written from the EFFECTIVE list but
+    HASHED from the EXPLICIT one, precisely so no recorded featureHash moved
+    when T02 corrected the field. Materialising a default must therefore be
+    invisible to the hash, while a real config change must still move it —
+    both halves, because only the pair discriminates a decoupled hash from a
+    hash that stopped depending on scalers at all.
+    """
+    defaulted = build_feature_spec(BASE_FEATURES, BASE_SELECTED, {})
+    with_params = build_feature_spec(
+        BASE_FEATURES, BASE_SELECTED, {},
+        scaling_params={"TI-101": {"min": 0.0, "max": 1.0}},
+    )
+    explicit = build_feature_spec(BASE_FEATURES, BASE_SELECTED, {"TI-101": "robust"})
+
+    assert defaulted["featureHash"] == with_params["featureHash"]
+    assert defaulted["featureHash"] != explicit["featureHash"]
+    assert with_params["scaling"] == [{"tag": "TI-101", "method": "minmax"}]
+    assert defaulted["scaling"] == []

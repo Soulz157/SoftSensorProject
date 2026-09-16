@@ -22,7 +22,15 @@ const RUNNING: InferenceStatus = {
   lastFailure: null,
   lastSkipped: null,
   deployStatus: 'running',
-  health: { status: 'OFF', thresholds: null },
+  // MODEL-SERVE-001-T26: OFF carries no reason — it means deliberately not
+  // watching, never a fault.
+  health: {
+    status: 'OFF',
+    reason: null,
+    // T29: no stuck instruments to report.
+    frozenColumns: [],
+    thresholds: null,
+  },
 }
 
 const INITIALIZING: InferenceStatus = {

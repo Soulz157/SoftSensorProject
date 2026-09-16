@@ -30,6 +30,16 @@ export interface InferenceSchedule {
   criticalSd: number
   driftMonitor: boolean
   driftThresholdPct: number
+  /**
+   * MODEL-SERVE-001-T28. Operational health thresholds. API-settable and read
+   * back by `getSchedule`, but with no editor yet — the wizard deliberately
+   * does not own them (they are runtime tuning, not creation-time choices).
+   */
+  missingPctWarn: number
+  missingPctAlert: number
+  skipStreakAlert: number
+  frozenWindows: number
+  frozenTolerancePct: number
 }
 
 /** MODEL-SERVE-001-T09. `reason` already redacted server-side
@@ -65,7 +75,26 @@ export interface InferenceStatus {
    * or `UNKNOWN`.
    */
   health: {
-    status: 'OFF' | 'UNKNOWN' | 'OK' | 'WARN' | 'CRITICAL'
+    status: 'OFF' | 'UNKNOWN' | 'OK' | 'WARN' | 'CRITICAL' | 'ALERT' | 'FROZEN'
+    /**
+     * MODEL-SERVE-001-T26. Why ALERT carries a code: it collapses faults with
+     * OPPOSITE ACTIONS. SOURCE_UNREACHABLE/STALE send a reader to the
+     * connector or the scheduler; a drift WARN/CRITICAL sends them to the
+     * process or to a retrain. Null for every non-ALERT status.
+     */
+    reason:
+      | 'SOURCE_UNREACHABLE'
+      | 'STALE'
+      | 'NO_PREDICTIONS'
+      | 'BAD_DATA'
+      | 'SENSOR_FROZEN'
+      | 'DRIFT_CRITICAL'
+      | 'DRIFT_WARN'
+      | null
+    /** T29. Which instruments have stopped moving. Rides every status, not
+     *  just FROZEN — a higher-precedence fault outranks the band without
+     *  making the tags un-stuck. */
+    frozenColumns: string[]
     thresholds: {
       warnSd: number
       criticalSd: number

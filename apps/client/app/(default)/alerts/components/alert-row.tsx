@@ -23,6 +23,7 @@ import {
 } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { locationBreadcrumb, type AlertRow as AlertRowData } from '@/lib/alerts'
+import { formatHealthReason } from '@/lib/health-status-style'
 import { AlertStatusBadge } from './alert-status-badge'
 
 const COLUMN_COUNT = 8
@@ -58,7 +59,13 @@ function hasExpandableDetail(row: AlertRowData): boolean {
   // MODEL-SERVE-001-T23: gated on the real failure reason now. The old
   // `errorLogs?.length` gate could never be true (that list was empty by
   // construction), so this expander has never once opened in production.
-  return row.kind === 'model' && Boolean(row.failureReason)
+  // MODEL-SERVE-001-T30: a monitoring row carries a reason CODE instead of a
+  // free-text failure reason, and it is the only thing on the row that says
+  // WHERE to go (connector vs. scheduler) — so it has to open too.
+  return (
+    row.kind === 'model' &&
+    (Boolean(row.failureReason) || Boolean(row.monitoringReason))
+  )
 }
 
 function TruncatedText({
@@ -184,6 +191,28 @@ export function AlertRow({ row }: { row: AlertRowData }) {
                     <span className="mt-1.25 h-1.5 w-1.5 shrink-0 rounded-full bg-red-500" />
                     <span className="flex-1 font-mono leading-relaxed text-foreground">
                       {row.failureReason}
+                    </span>
+                    <span className="shrink-0 font-mono text-muted-foreground tabular-nums">
+                      {formatTime(row.timestamp)} · {formatDate(row.timestamp)}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {/* MODEL-SERVE-001-T30. RENDERED, never inferred from the
+                  status: SOURCE_UNREACHABLE and STALE both read "Monitoring
+                  Alert" on the badge but send a reader to two different
+                  places. Amber dot, matching this row's own badge — not the
+                  red the deploy-failure reason above uses. */}
+              {row.monitoringReason && (
+                <div className="space-y-1.5">
+                  <p className="text-xs font-medium tracking-wider text-muted-foreground uppercase">
+                    Monitoring Reason
+                  </p>
+                  <div className="flex items-start gap-2 text-xs">
+                    <span className="mt-1.25 h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />
+                    <span className="flex-1 leading-relaxed text-foreground">
+                      {formatHealthReason(row.monitoringReason)}
                     </span>
                     <span className="shrink-0 font-mono text-muted-foreground tabular-nums">
                       {formatTime(row.timestamp)} · {formatDate(row.timestamp)}

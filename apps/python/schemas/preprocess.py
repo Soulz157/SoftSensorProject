@@ -248,6 +248,20 @@ class ArtifactPresignResponse(BaseModel):
     #: downloaded against what NestJS recorded on the run row.
     checksum: str
     row_count: int
+    #: MODEL-SERVE-007-T06. The bucket `source_key` is relative to, so a run
+    #: manifest can record a LOCATION rather than half of one. This service is
+    #: the only component that knows the bucket name — NestJS has no S3
+    #: configuration at all — so it has to travel on this response.
+    #:
+    #: DECLARED HERE OR IT DOES NOT EXIST: FastAPI filters the handler's return
+    #: value through this response_model and DROPS any key the model does not
+    #: declare, silently and with no error. A field added only to
+    #: `artifact_service.presign_artifact` never reaches the wire.
+    #:
+    #: Optional so a caller that does not care is unaffected; the consumer
+    #: (run_manifest.json's gold_bucket) already treats absence as "resolve it
+    #: from the key", which is correct for every manifest written before this.
+    bucket: str | None = None
     expires_at: str
 
 

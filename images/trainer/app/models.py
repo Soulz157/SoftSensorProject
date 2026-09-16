@@ -14,7 +14,7 @@ opposite reason (MODEL-FLOW-007-T11) — every run goes through it.
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 LogFn = Callable[..., None]
 
@@ -117,6 +117,39 @@ LSTM_MAX_TRAIN_WINDOWS = 50_000
 SEQUENCE_ALGORITHMS = ("lstm", "gru")
 
 
+def _inputs_are_scaled(feature_spec: Mapping[str, Any]) -> bool:
+    """Was this artifact's INPUT side actually scaled?
+
+    `scalingParams` is authoritative and is checked first: it holds the
+    numbers a scaler actually fitted, so a non-empty mapping is proof, at
+    every featureVersion. `scaling` is only consulted when there is nothing
+    fitted to read.
+
+    WHY NOT JUST READ `scaling`. DS-LAKE-028-T02 corrected that field to
+    record the EFFECTIVE method per tag, but a spec written before the bump
+    keeps `scaling: []` forever — and ALL 22 specs on this system were
+    written before it. A gate reading the corrected field alone would simply
+    narrow the false warning from "every dataset" to "every pre-T02
+    dataset", which is still every dataset that exists today.
+
+    THREE SHAPES, DELIBERATELY DISTINGUISHED:
+      * `scalingParams` populated -> scaled. The legacy majority.
+      * nothing fitted, but `scaling` names a method other than "none" for
+        some tag -> scaled (a new-format spec whose params were not passed).
+      * nothing fitted and every named method is "none", or nothing recorded
+        at all -> not scaled, warn. An all-"none" recipe is now reachable
+        from the UI (DS-LAKE-028-T04) and lands here correctly: it really is
+        unscaled, and SVR really should say so.
+
+    One live spec has no `scalingParams` KEY AT ALL (a featureVersion 1
+    artifact), which is why this reads with `.get`, never by indexing.
+    """
+    if feature_spec.get("scalingParams"):
+        return True
+    scaling = feature_spec.get("scaling") or []
+    return any(entry.get("method", "none") != "none" for entry in scaling)
+
+
 def build_model(
     algorithm: str,
     hyperparameters: dict[str, Any],
@@ -157,17 +190,26 @@ def build_model(
             fit_intercept=bool(hyperparameters.get("fit_intercept", True))
         )
     if algorithm == "svm":
-        # feature_spec["scaling"] is written by the pipeline
+        # feature_spec's scaling record is written by the pipeline
         # (feature_spec_service.py) but otherwise never read by this trainer
         # — only the target's scaling is gated, upstream. SVR is the one
         # algorithm sensitive enough to unscaled inputs that its absence is
         # worth naming. Not fatal: the user may want to see exactly that
         # result.
-        if not feature_spec.get("scaling") and log_fn:
+        #
+        # DS-LAKE-028-T03. This branched on `feature_spec["scaling"]` being
+        # non-empty, which made the warning FALSE on 21 of the 22 specs that
+        # exist: before DS-LAKE-028-T02 that field held the user's EXPLICIT
+        # config only, and the common path configures nothing while
+        # to_model_ready min-max scales every tag at the default. So the
+        # trainer told the user their input was unscaled about frames that
+        # were fully scaled. See _inputs_are_scaled for why the resolution
+        # cannot be "read the new field instead".
+        if not _inputs_are_scaled(feature_spec) and log_fn:
             log_fn(
                 "SVR is scale-sensitive (superlinear in samples, kernel "
                 "distances dominated by feature magnitude) and "
-                "feature_spec.json reports no scaling on the input "
+                "feature_spec.json records no scaler fit for the input "
                 "features — results may be dominated by whichever feature "
                 "has the largest raw magnitude.",
                 "warn",

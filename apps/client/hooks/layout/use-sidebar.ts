@@ -4,7 +4,10 @@ import { useSession } from 'next-auth/react'
 import { useWorkspaces } from '@/hooks/workspace/use-workspaces'
 import { useAlertCount } from '@/hooks/workspace/use-alert-count'
 import { useAllModels } from '@/hooks/use-all-models'
-import { failedCountByWorkspace } from '@/lib/model-status'
+import {
+  failedCountByWorkspace,
+  monitoringCountByWorkspace,
+} from '@/lib/model-status'
 import type { NavItem } from '@/components/layout/sidebar/types'
 
 export function getInitials(name: string): string {
@@ -29,6 +32,10 @@ export function useSidebar() {
   const alertCount = useAlertCount()
   const { models } = useAllModels()
   const failedByWorkspace = failedCountByWorkspace(models ?? [])
+  // MODEL-SERVE-001-T30. The monitoring axis, kept as its own map rather than
+  // summed in: the dot is binary here, but the workspace card and the admin
+  // list may want to tell the two apart, and a caller can always add them.
+  const monitoringByWorkspace = monitoringCountByWorkspace(models ?? [])
   const isAdmin = session?.user?.role === 'ADMIN'
 
   const [openMenus, setOpenMenus] = useState<Record<string, boolean>>({
@@ -70,6 +77,7 @@ export function useSidebar() {
     workspaces,
     alertCount,
     failedByWorkspace,
+    monitoringByWorkspace,
     isAdmin,
     currentWorkspace,
     activeWorkspace,

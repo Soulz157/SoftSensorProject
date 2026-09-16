@@ -48,6 +48,21 @@ export interface InputFeatureRow {
    *  Names which SOURCE COLUMNS feed this feature; carries no verdict on
    *  any of them — no per-tag status exists on this stream at all. */
   equation: string | null
+  /**
+   * MODEL-SERVE-001-T29/T30. This tag has not moved across the schedule's
+   * own `frozenWindows` consecutive windows — a THIRD question, distinct
+   * from both neighbours: `driftStatus` asks "has the distribution moved
+   * since training", `piStatus` asks "does PI call this value good", and a
+   * frozen tag can read Good and un-drifted while the instrument is stuck.
+   *
+   * Computed server-side (apps/backend/src/lib/sensor-frozen.ts), already
+   * excluding tags that were flat in TRAINING — a setpoint or a held-closed
+   * valve is not a fault and must never be badged.
+   *
+   * False whenever the model has no schedule, no successful windows, or
+   * monitoring has not been probed: absence of evidence is not flatness.
+   */
+  frozen: boolean
 }
 
 export interface BuildInputFeatureRowsInput {
@@ -69,6 +84,18 @@ export interface BuildInputFeatureRowsInput {
    *  (`ModelInputSchemaAuthorizedService.resolveFeatureSpec`'s own scope
    *  fence); a base tag or a non-formula derived kind is simply absent. */
   derivedFeatures: Array<{ name: string; display: string }> | null
+  /**
+   * MODEL-SERVE-001-T30. The frozen tag names from the model's own health
+   * read, passed down as a PROP from the detail page rather than fetched
+   * here — that page already holds the value (`useInferenceStatus`), so a
+   * second read would be a duplicate request for data in scope.
+   *
+   * NOT available on the models LIST payload: `deriveDeployStatuses`
+   * hardcodes `frozenColumns: []` because real detection needs a per-window
+   * `featureStats` select plus a baseline read (see
+   * apps/backend/src/lib/deploy-status.ts:318-346). Defaults to empty.
+   */
+  frozenColumns?: string[]
 }
 
 /** Builds one row per `featureColumns` entry, in that exact order — never
@@ -84,11 +111,15 @@ export function buildInputFeatureRows({
   drift,
   piStatus,
   derivedFeatures,
+  frozenColumns,
 }: BuildInputFeatureRowsInput): InputFeatureRow[] {
   const driftByColumn = new Map(
     (drift?.columns ?? []).map(col => [col.column, col]),
   )
   const piByColumn = new Map((piStatus?.features ?? []).map(f => [f.column, f]))
+  // A Set, not an includes() per row: the same left-join shape the two maps
+  // above use, and O(1) per column rather than O(frozen) .
+  const frozenSet = new Set(frozenColumns ?? [])
   const equationByColumn = new Map(
     (derivedFeatures ?? []).map(f => [f.name, f.display]),
   )
@@ -123,6 +154,7 @@ export function buildInputFeatureRows({
       lastValueRaw,
       lastSeen,
       equation: equationByColumn.get(column) ?? null,
+      frozen: frozenSet.has(column),
     }
   })
 }

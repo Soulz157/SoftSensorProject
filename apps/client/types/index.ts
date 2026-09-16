@@ -68,6 +68,48 @@ export interface AIModel {
      * this field.
      */
     lastFailure?: { reason: string | null; at: string } | null
+    /**
+     * MODEL-SERVE-001-T30. The MONITORING axis, carried onto every LIST
+     * payload by `deriveDeployStatuses`/`overlayDeployStatus` alongside
+     * `deployStatus` — so the Alerts page stays a pure function over the
+     * models list instead of N per-model status requests.
+     *
+     * LIVENESS ONLY on this path, and that is not a temporary gap:
+     * `deriveDeployStatuses` hardcodes `driftMonitor: false`,
+     * `driftStatus: null`, `missingPct: null` and `frozenColumns: []`
+     * (apps/backend/src/lib/deploy-status.ts:318-346), because drift needs a
+     * per-model baseline read and frozen needs a per-window `featureStats`
+     * select — the exact per-model cost the batched derivation exists to
+     * avoid. Only `consecutiveFailures`, `staleness` and `hasEverSucceeded`
+     * carry real signal here.
+     *
+     * CONSEQUENCE, and the whole reason this doc comment is long: `OFF` here
+     * means "no fault, no claim" — NEVER "healthy". Do not render it as a
+     * drift verdict, and do not treat its absence as a clean bill of health.
+     * The detail page's own `getStatus` read is what makes a drift claim.
+     *
+     * Optional because any payload older than T26 simply does not carry it.
+     */
+    monitoring?: {
+      status:
+        | 'OFF'
+        | 'UNKNOWN'
+        | 'OK'
+        | 'WARN'
+        | 'CRITICAL'
+        | 'ALERT'
+        | 'FROZEN'
+      reason:
+        | 'SOURCE_UNREACHABLE'
+        | 'STALE'
+        | 'NO_PREDICTIONS'
+        | 'BAD_DATA'
+        | 'SENSOR_FROZEN'
+        | 'DRIFT_CRITICAL'
+        | 'DRIFT_WARN'
+        | null
+      frozenColumns: string[]
+    } | null
     statusDetail?: string
     deployedBy?: string
     deployedAt?: string

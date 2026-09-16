@@ -113,7 +113,84 @@ export class ModelInputStatusAuthorizedService {
     return model;
   }
 
-  async getInputStatusService(modelId: string, user: Auth.UserPayload) {
+  /**
+   * MODEL-SERVE-001-T25. The enable-time preflight, expressed as a THIN READ
+   * OF THIS SAME PROBE rather than a second one. T25 is explicit that a
+   * second probe must not be written: this one already queries PI's snapshot
+   * path (the only path carrying PI's own good/questionable/substituted
+   * flag) and already resolves a derived feature's base tags transitively.
+   *
+   * Returns evidence, never a decision — `putScheduleService` owns the
+   * refusal. `ok: null` means NOT PROBED, which is not a soft pass: it is the
+   * honest answer for a non-PI source, because `tagsCurrentById` accepts PI
+   * only and `intergrations/sql_connect.py` binds the time range as VARCHAR,
+   * so a SQL probe would fail for a CONNECTOR defect rather than for the
+   * operator's config. FLAGGED, NOT FIXED — that bug belongs to the
+   * connector. Refusing every SQL-sourced schedule on its behalf would
+   * manufacture false refusals for a whole source class.
+   *
+   * `sourceId` is passed IN rather than re-resolved, because at enable time
+   * the caller's choice is the authoritative one: `resolveSourceId` reads the
+   * EXISTING schedule row, which on a first enable does not exist yet and on
+   * a source change still holds the old value. Probing one source and then
+   * enabling another is exactly the silently-wrong-but-still-returns-an-
+   * answer class this feature exists to close.
+   */
+  async preflightSourceService(
+    modelId: string,
+    user: Auth.UserPayload,
+    sourceId: string,
+  ): Promise<{ ok: boolean | null; reason: string | null }> {
+    const source = await this.prisma.dataSource.findUnique({
+      where: { id: sourceId },
+      select: { type: true },
+    });
+    if (!source) {
+      return { ok: false, reason: `Data source ${sourceId} not found.` };
+    }
+    // The same guard `tagsCurrentById` applies, read UP FRONT so a non-PI
+    // source is recorded as not-probed rather than as a failure wearing the
+    // connector's rejection text.
+    if (source.type !== 'aveva') {
+      return {
+        ok: null,
+        reason:
+          `Not probed: live source checks are available for PI sources only ` +
+          `(this source is "${source.type}").`,
+      };
+    }
+
+    const res = await this.getInputStatusService(modelId, user, sourceId);
+    const { features, unavailableReason } = res.data;
+
+    // The connector's OWN TEXT, verbatim, straight through. V09 exists
+    // because a guessed category sent a reader to audit a config that was
+    // already correct.
+    if (unavailableReason) return { ok: false, reason: unavailableReason };
+
+    // PI answered, but for nothing this model reads. Every window would fetch
+    // an empty frame and fail hourly — the same 70-FAILED-window outcome as
+    // an unreachable host, reached by a different route. T27 delegates
+    // structural tag-missing to this task by name.
+    const readable = features.filter((f) => f.status !== 'UNKNOWN');
+    if (features.length > 0 && readable.length === 0) {
+      return {
+        ok: false,
+        reason:
+          'PI is reachable but returned no current reading for any of this ' +
+          `model's ${features.length} feature column(s): ` +
+          `${features.map((f) => f.column).join(', ')}.`,
+      };
+    }
+
+    return { ok: true, reason: null };
+  }
+
+  async getInputStatusService(
+    modelId: string,
+    user: Auth.UserPayload,
+    sourceIdOverride?: string,
+  ) {
     await this.assertModelAccess(modelId, user);
 
     const version =
@@ -148,10 +225,9 @@ export class ModelInputStatusAuthorizedService {
     const { baseSourcesByColumn, unresolved } =
       resolveFeatureSources(specFeatures);
 
-    const sourceId = await this.resolveSourceId(
-      modelId,
-      version.sourceDatasetId,
-    );
+    const sourceId =
+      sourceIdOverride ??
+      (await this.resolveSourceId(modelId, version.sourceDatasetId));
     if (!sourceId) {
       return this.unavailable(
         'Could not resolve which data source to read live tag status from — ' +

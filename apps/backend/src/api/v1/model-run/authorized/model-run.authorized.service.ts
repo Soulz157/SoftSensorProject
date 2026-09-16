@@ -249,6 +249,15 @@ export class ModelRunAuthorizedService {
       artifactChecksum: run.artifactChecksum,
       imageDigest: run.imageDigest,
       goldObjectKey: run.goldObjectKey,
+      // MODEL-SERVE-007-T06. Both exist so run_manifest.json can describe
+      // itself without a resolver. `goldBucket` comes from the presign
+      // response because python is the only component that knows the bucket
+      // name — `goldObjectKey` above is a key RELATIVE to it, never a
+      // location on its own. `goldArtifactId` is read off the ROW even
+      // though it is also a segment inside the key: a reference parsed out
+      // of a path breaks when the path shape changes, a field does not.
+      goldBucket: presigned.bucket,
+      goldArtifactId: run.goldArtifactId,
       dataUrl: presigned.data_url,
       featureSpecUrl: presigned.sidecar_urls['feature_spec.json'],
       // MODEL-FLOW-019-T31. Read off the ROW, never from the container's own

@@ -40,11 +40,21 @@ class _PresignStub:
 
     PRESIGN_READ_TTL = timedelta(minutes=15)
 
+    def __init__(self) -> None:
+        #: MODEL-SERVE-007-T02. A run output arrives via presigned PUT, so
+        #: this read is where the server tags it — recorded rather than
+        #: ignored so the test below can prove the call happens at all.
+        self.tagged: list[str] = []
+
     def presigned_get(self, key: str) -> str:
         return f"https://minio.example/{key}"
 
     def checksum_of(self, key: str) -> str:
         return "stub-checksum"
+
+    def tag_retention(self, key: str) -> bool:
+        self.tagged.append(key)
+        return True
 
 
 def test_refuses_a_key_not_named_validate_ready_parquet() -> None:
@@ -58,13 +68,18 @@ def test_refuses_a_key_not_named_validate_ready_parquet() -> None:
 
 
 def test_accepts_model_joblib_with_no_row_count() -> None:
+    store = _PresignStub()
     result = artifact_service.presign_run_object(
-        _PresignStub(),
+        store,
         RunObjectPresignRequest(source_key="drafts/d1/runs/r1/model.joblib"),
     )
     assert result["data_url"] == "https://minio.example/drafts/d1/runs/r1/model.joblib"
     assert result["checksum"] == "stub-checksum"
     assert result["row_count"] is None
+    # MODEL-SERVE-007-T02: the presigned-upload half of the tagging. The
+    # trainer wrote this object directly to MinIO, so if this read does not
+    # tag it nothing ever will.
+    assert store.tagged == ["drafts/d1/runs/r1/model.joblib"]
 
 
 def test_refuses_a_malformed_run_key() -> None:

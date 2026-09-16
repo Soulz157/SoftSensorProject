@@ -247,3 +247,7 @@
   background: #1a1d2e !important;
   border: 1px solid #2d3147 !important;
 }
+
+[data-sonner-toast].cn-toast[data-type='error'] {
+  width: min(560px, calc(100vw - 2rem));
+}

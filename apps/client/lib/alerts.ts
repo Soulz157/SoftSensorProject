@@ -1,10 +1,23 @@
 import type { CanvasNode } from '@/services/canvas'
 import type { Workspace, WorkspacePlant } from '@/types'
 import type { ModelWithWorkspace } from '@/hooks/use-all-models'
-import { failedDeploys } from '@/lib/model-status'
+import { failedDeploys, monitoringAlerts } from '@/lib/model-status'
 import { NODE_BADGE, NODE_DOT } from '@/constants/status'
 
-export type AlertStatus = 'failed' | 'alarm' | 'offline' | 'warning'
+/**
+ * MODEL-SERVE-001-T30. `monitoring` is a SEPARATE value, never a reuse of
+ * `failed`. They mean different things and send a reader to different places:
+ * `failed` is "the schedule is not dispatching" (ALERT_STATUS_LABEL.failed is
+ * "Deploy Failed"), `monitoring` is "it IS dispatching and what comes back is
+ * wrong". T22 recorded the `failed` vocabulary as not-to-be-renamed; this
+ * extends it rather than overloading it.
+ */
+export type AlertStatus =
+  | 'failed'
+  | 'monitoring'
+  | 'alarm'
+  | 'offline'
+  | 'warning'
 export type AlertNodeType =
   | 'sensor'
   | 'machine'
@@ -18,6 +31,7 @@ export const AlertClass: Record<AlertStatus, string> = {
   offline: 'bg-zinc-500/10 text-zinc-500',
   warning: 'bg-amber-500/10 text-amber-500',
   failed: 'bg-red-500/10 text-red-600',
+  monitoring: 'bg-amber-500/10 text-amber-600',
 }
 
 export interface AlertRow {
@@ -47,6 +61,16 @@ export interface AlertRow {
    * either — `classifyDeployStatus` reads InferenceWindow directly.
    */
   failureReason: string | null
+  /**
+   * MODEL-SERVE-001-T30. The MONITORING axis's reason code, raw off the wire
+   * and rendered through `HEALTH_REASON_LABEL` — never inferred from
+   * `status`, because the codes collapse faults with opposite actions
+   * (SOURCE_UNREACHABLE means go to the connector, STALE means go to the
+   * scheduler). Null on every node row and every deploy-failed row: those
+   * carry `failureReason` instead, which is a different axis and a free-text
+   * value rather than an enum.
+   */
+  monitoringReason: string | null
   affectedNode?: { name: string; planName: string | null }
   href: string
   timestamp: string
@@ -55,13 +79,17 @@ export interface AlertRow {
 /** Severity order (lower = more severe) — drives the default sort. */
 export const ALERT_STATUS_PRIORITY: Record<AlertStatus, number> = {
   failed: 0,
-  alarm: 1,
-  offline: 2,
-  warning: 3,
+  // Below a dead deploy, above a node alarm: a model that is dispatching but
+  // reading wrong is a real fault, and a stopped one is a bigger fault.
+  monitoring: 1,
+  alarm: 2,
+  offline: 3,
+  warning: 4,
 }
 
 export const ALERT_STATUS_LABEL: Record<AlertStatus, string> = {
   failed: 'Deploy Failed',
+  monitoring: 'Monitoring Alert',
   alarm: 'Alarm',
   offline: 'Offline',
   warning: 'Warning',
@@ -73,6 +101,10 @@ export const ALERT_STATUS_LABEL: Record<AlertStatus, string> = {
  */
 export const ALERT_STATUS_BADGE: Record<AlertStatus, string> = {
   failed: 'text-destructive',
+  // AMBER, not the destructive red: red is the DEPLOY-failure vocabulary
+  // (§5, docs/DESIGN_SYSTEM.md). Two different faults rendering identically
+  // is the "two contradictory verdicts in one view" defect T22 had to fix.
+  monitoring: NODE_BADGE.warning ?? '',
   alarm: NODE_BADGE.alarm ?? '',
   offline: NODE_BADGE.offline ?? '',
   warning: NODE_BADGE.warning ?? '',
@@ -80,6 +112,7 @@ export const ALERT_STATUS_BADGE: Record<AlertStatus, string> = {
 
 export const ALERT_STATUS_DOT: Record<AlertStatus, string> = {
   failed: 'bg-destructive',
+  monitoring: NODE_DOT.warning ?? '',
   alarm: NODE_DOT.alarm ?? '',
   offline: NODE_DOT.offline ?? '',
   warning: NODE_DOT.warning ?? '',
@@ -88,6 +121,9 @@ export const ALERT_STATUS_DOT: Record<AlertStatus, string> = {
 /** Statuses that get a pulsing dot — the most urgent (Von Restorff). */
 export const ALERT_STATUS_PULSE: Record<AlertStatus, boolean> = {
   failed: true,
+  // No pulse: a stale schedule wants attention, not alarm. Reserve the
+  // motion for the two states that mean something is DOWN.
+  monitoring: false,
   alarm: true,
   offline: false,
   warning: false,
@@ -184,6 +220,7 @@ export function buildAlerts({
         // Equipment rows have no deploy to fail — this field is the model
         // plane's, and a node alert is a different kind of event entirely.
         failureReason: null,
+        monitoringReason: null,
         href: `/plants/${workspace.id}?nodeId=${node.id}`,
         timestamp: node.updatedAt,
       })
@@ -221,6 +258,7 @@ export function buildAlerts({
       status: 'failed',
       detailError: model.data?.statusDetail ?? null,
       failureReason: lastFailure?.reason ?? null,
+      monitoringReason: null,
       affectedNode: model.nodes
         ? { name: equipmentName ?? 'Unknown Node', planName: plantName }
         : undefined,
@@ -230,6 +268,65 @@ export function buildAlerts({
       // filter by the failure, which is what this column means everywhere
       // else in this list.
       timestamp: lastFailure?.at ?? model.updatedAt,
+    })
+  }
+
+  // 3) MODEL-SERVE-001-T30. Monitoring alerts — the axis T26 split off.
+  //
+  // WHY THIS LOOP EXISTS: since T26, three consecutive FAILED windows no
+  // longer set `deployStatus === 'error'`, so `failedDeploys` above stopped
+  // seeing them and this page went silent for that entire failure class. A
+  // dead source was visible on the model detail page and nowhere else.
+  //
+  // Deliberately a SECOND pass rather than a branch inside loop 2: a model
+  // can be BOTH deploy-failed (a refused preflight) and monitoring-alerting
+  // at once, and those are two findings with two different fixes, so they get
+  // two rows.
+  for (const model of monitoringAlerts(models)) {
+    const monitoring = model.data?.monitoring ?? null
+    const nodeData = model.nodes?.data as { name?: string } | undefined
+    const equipmentName = model.nodes
+      ? (nodeData?.name ?? 'Unknown Node')
+      : null
+    const plantName =
+      model.nodes?.plan?.name ??
+      (model.nodes
+        ? (plantNameByWorkspacePlan
+            .get(model.workspaceId)
+            ?.get(model.nodes.planId) ?? null)
+        : null)
+
+    rows.push({
+      // SUFFIXED, and it must stay that way: `alerts-group-list.tsx` keys its
+      // React children on `${row.kind}-${row.id}`, so a model carrying both a
+      // deploy failure and a monitoring alert would render two children with
+      // one key — React drops one, silently, and the page shows a single row
+      // for two separate problems.
+      id: `${model.id}:monitoring`,
+      kind: 'model',
+      equipmentName,
+      modelName: model.name,
+      workspaceId: model.workspaceId,
+      workspaceName:
+        model.workspaceName ?? workspaceNameById.get(model.workspaceId) ?? '—',
+      plantName,
+      typeLabel: ALERT_STATUS_LABEL.monitoring,
+      typeName: 'Model',
+      status: 'monitoring',
+      detailError: model.data?.statusDetail ?? null,
+      // The OTHER axis's value stays null here — a monitoring alert has no
+      // FAILED window reason, and borrowing one would name the wrong cause.
+      failureReason: null,
+      monitoringReason: monitoring?.reason ?? null,
+      affectedNode: model.nodes
+        ? { name: equipmentName ?? 'Unknown Node', planName: plantName }
+        : undefined,
+      href: `/models/${model.id}`,
+      // `model.updatedAt`, NOT `lastFailure.at`: the list payload carries no
+      // monitoring-event timestamp (it would need the per-window read the
+      // batched derivation exists to avoid), and borrowing the deploy axis's
+      // time would date this row by an unrelated event.
+      timestamp: model.updatedAt,
     })
   }
 
@@ -310,13 +407,20 @@ export function typeOptions(rows: AlertRow[]): string[] {
 
 export interface AlertCounts {
   failed: number
+  monitoring: number
   alarm: number
   offline: number
   warning: number
 }
 
 export function countByStatus(rows: AlertRow[]): AlertCounts {
-  const counts: AlertCounts = { failed: 0, alarm: 0, offline: 0, warning: 0 }
+  const counts: AlertCounts = {
+    failed: 0,
+    monitoring: 0,
+    alarm: 0,
+    offline: 0,
+    warning: 0,
+  }
   for (const r of rows) counts[r.status]++
   return counts
 }

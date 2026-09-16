@@ -1449,6 +1449,12 @@ def presign_artifact(store: ObjectStore, body) -> dict:
         # recorded, and reading both from the same place would prove nothing.
         "checksum": store.checksum_of(body.source_key),
         "row_count": meta["row_count"],
+        # MODEL-SERVE-007-T06. The bucket this key is relative to. NestJS has
+        # no S3 configuration of its own — this service is the only component
+        # that knows the bucket name — so a manifest that wants to be
+        # self-describing has to be told it from here, through the claim
+        # payload. A key alone is not a location.
+        "bucket": store.bucket,
         "expires_at": (
             datetime.now(timezone.utc) + store.PRESIGN_READ_TTL
         ).isoformat(),
@@ -2086,6 +2092,11 @@ def presign_run_object(store: ObjectStore, body) -> dict[str, Any]:
         )
 
     data_url = store.presigned_get(key)
+    # MODEL-SERVE-007-T02. A run output is uploaded by the trainer container
+    # through a presigned PUT, so this service never wrote it and never
+    # tagged it. This read is the first server-side touch afterwards — see
+    # `tag_retention`, which swallows its own failures.
+    store.tag_retention(key)
     row_count = (
         store.get_frame_metadata(key)["row_count"]
         if filename == VALIDATE_READY_FILENAME
@@ -2181,6 +2192,11 @@ def presign_prediction_job_object(store: ObjectStore, body) -> dict[str, Any]:
             "predictions/{modelId}/{jobId}/... can be presigned here."
         )
 
+    # MODEL-SERVE-007-T02: uploaded by the batch container via presigned PUT
+    # and therefore untagged at write time — same reasoning as
+    # `presign_run_object`.
+    store.tag_retention(key)
+
     return {
         "data_url": store.presigned_get(key),
         "sidecar_urls": {},
@@ -2274,6 +2290,13 @@ def presign_inference_window_object(store: ObjectStore, body) -> dict[str, Any]:
             "Only inference/{modelId}/{modelVersionId}/dt=.../hour=.../... "
             "can be presigned here."
         )
+
+    # MODEL-SERVE-007-T02: predictions.parquet is uploaded by the infer-mode
+    # container via presigned PUT. input.parquet IS written by this service
+    # (inference_window_service) and is already tagged; re-tagging it here is
+    # idempotent and costs one call, which is cheaper than a branch that has
+    # to stay in step with which filename came from where.
+    store.tag_retention(key)
 
     return {
         "data_url": store.presigned_get(key),
