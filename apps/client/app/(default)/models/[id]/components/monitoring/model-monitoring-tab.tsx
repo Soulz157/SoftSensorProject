@@ -10,7 +10,9 @@ import type { TimeRange } from '@/lib/mock-readings'
 import type { LiveErrorCoverage } from '@/services/inference-window'
 import {
   buildMonitoringRows,
+  formatLagDuration,
   pickTimeFormat,
+  residualDensityNote,
   windowStats,
   type BrushWindow,
 } from '@/lib/monitoring'
@@ -22,14 +24,6 @@ import { ResidualChart, type ResidualMode } from './residual-chart'
 import { LivePredictionChart } from './live-prediction-chart'
 import { DriftPanel } from './drift-panel'
 import { PsiPanel } from './psi/psi-panel'
-
-/** MODEL-SERVE-001-T18. `truthLagMinutes` is stored in minutes; every real
- *  schedule sets it to a round hour count (1440 = 24h, 60 = 1h, T03's own
- *  precedent), so a plain hour/minute split reads naturally without pulling
- *  in a duration-formatting library for one readout. */
-function formatLagDuration(minutes: number): string {
-  return minutes % 60 === 0 ? `${minutes / 60}h` : `${minutes}m`
-}
 
 function LegendItem({ color, label }: { color: string; label: string }) {
   return (
@@ -91,23 +85,39 @@ export function EmptyTruth({
           ? `The ground-truth join failed for ${coverage.windowsFailed} ${
               coverage.windowsFailed === 1 ? 'window' : 'windows'
             } in this range, so no measurement could be fetched. Check the model's data source and target.`
-          : coverage.truthRows === 0
-            ? // MODEL-SERVE-001-T18. "The join runs again once the truth lag
-              // has passed" reads identically at minute 1 and hour 23 of
-              // that wait. `earliestEligibleAt`/`truthLagMinutes` name the
-              // concrete timing when they are present (a schedule exists
-              // and at least one window is still awaiting); when either is
-              // absent, the original sentence stands rather than printing a
-              // wait that cannot be computed.
-              coverage.earliestEligibleAt && coverage.truthLagMinutes
-              ? `Windows have been scored, but no lab measurement has arrived for them yet. The lab has up to ${formatLagDuration(
-                  coverage.truthLagMinutes,
-                )} to report; the earliest scored window becomes eligible at ${format(
-                  new Date(coverage.earliestEligibleAt),
-                  'MMM d, HH:mm',
-                )}.`
-              : 'Windows have been scored, but no lab measurement has arrived for them yet. The join runs again once the configured truth lag has passed.'
-            : 'Lab measurements arrived, but none fell within the configured tolerance of a scored prediction.'
+          : // MODEL-SERVE-008-T01. CHECKED BEFORE the truth-lag branch
+            // below, because both show zero pairs and only one of them is
+            // still a wait. These windows had their FULL lab window and the
+            // lab reported nothing in them — the check already happened, so
+            // naming a next one is a wrong answer about someone else's
+            // system. Measured live: a once-a-day lab against an hourly
+            // schedule leaves most windows here permanently, which is a
+            // fact about the measurement rate, not a fault and not a delay.
+            coverage.truthRows === 0 && (coverage.windowsLapsedTruth ?? 0) > 0
+            ? `${coverage.windowsLapsedTruth} scored ${
+                coverage.windowsLapsedTruth === 1 ? 'window' : 'windows'
+              } passed ${
+                coverage.truthLagMinutes
+                  ? `their full ${formatLagDuration(coverage.truthLagMinutes)} lab window`
+                  : 'their full lab window'
+              } with no measurement reported. The lab reports far less often than this model scores, so most windows never get a pair — this is the measurement rate, not a failure.`
+            : coverage.truthRows === 0
+              ? // MODEL-SERVE-001-T18. "The join runs again once the truth lag
+                // has passed" reads identically at minute 1 and hour 23 of
+                // that wait. `earliestEligibleAt`/`truthLagMinutes` name the
+                // concrete timing when they are present (a schedule exists
+                // and at least one window is still awaiting); when either is
+                // absent, the original sentence stands rather than printing a
+                // wait that cannot be computed.
+                coverage.earliestEligibleAt && coverage.truthLagMinutes
+                ? `Windows have been scored, but no lab measurement has arrived for them yet. The lab has up to ${formatLagDuration(
+                    coverage.truthLagMinutes,
+                  )} to report; the earliest scored window becomes eligible at ${format(
+                    new Date(coverage.earliestEligibleAt),
+                    'MMM d, HH:mm',
+                  )}.`
+                : 'Windows have been scored, but no lab measurement has arrived for them yet. The join runs again once the configured truth lag has passed.'
+              : 'Lab measurements arrived, but none fell within the configured tolerance of a scored prediction.'
 
   return (
     <div className="flex h-48 flex-col items-center justify-center gap-1 px-6 text-center">
@@ -252,11 +262,51 @@ export function ModelMonitoringTab({ model }: Props) {
             </span>{' '}
             of {coverage.windowsInRange} windows joined
           </span>
+          {/* MODEL-SERVE-008-T04. THE ASYMMETRY IS THE POINT. A reader
+              counting the actual points on the chart concludes the model
+              ran that few times; on a once-a-day lab target scored hourly
+              the scored count is ~24x the lab count, and only saying so
+              prevents the wrong reading. Predictions first, because it is
+              the number the chart under-represents. */}
           <span>
-            {coverage.pairedRows} paired / {coverage.truthRows} lab samples
+            <span className="font-medium text-foreground">
+              {coverage.predictionRows ?? 0}
+            </span>{' '}
+            predictions / {coverage.truthRows} lab samples /{' '}
+            {coverage.pairedRows} paired
           </span>
-          {coverage.windowsAwaitingTruth > 0 && (
-            <span>{coverage.windowsAwaitingTruth} awaiting lab results</span>
+          {/* The two RATES, not just the two counts — the reason the counts
+              differ, stated rather than left to be inferred. Rendered only
+              with a schedule, where both numbers have a meaning. */}
+          {coverage.cadenceMinutes && coverage.truthLagMinutes && (
+            <span>
+              scores every {formatLagDuration(coverage.cadenceMinutes)} · lab
+              reports on its own schedule
+            </span>
+          )}
+          {/* MODEL-SERVE-008-T01. "Awaiting" means still inside the lab's
+              own window. A window whose lag has EXPIRED is not awaiting
+              anything and is counted separately — pooling them made a
+              permanent state read as a pending one. Neutral, not a status
+              colour: no lab report in a window is the normal outcome at a
+              once-a-day measurement rate, not a fault.
+
+              `?? 0` because a client can outrun the backend that feeds it:
+              against a server that predates this field the subtraction
+              below would be NaN, and `NaN > 0` is false, so the EXISTING
+              awaiting chip would silently stop rendering — a regression
+              presenting as nothing at all rather than as an error. Falling
+              back to zero degrades to exactly the old behaviour. */}
+          {coverage.windowsAwaitingTruth - (coverage.windowsLapsedTruth ?? 0) >
+            0 && (
+            <span>
+              {coverage.windowsAwaitingTruth -
+                (coverage.windowsLapsedTruth ?? 0)}{' '}
+              awaiting lab results
+            </span>
+          )}
+          {(coverage.windowsLapsedTruth ?? 0) > 0 && (
+            <span>{coverage.windowsLapsedTruth} with no lab report</span>
           )}
           {/* A window the sweeper could not ask about is NOT a window
               waiting on the lab, and the two must not read as one number.
@@ -353,6 +403,26 @@ export function ModelMonitoringTab({ model }: Props) {
             </ToggleGroupItem>
           </ToggleGroup>
         </div>
+        {/* MODEL-SERVE-008-T05, the unconditional half. A residual is
+            predicted − actual (lib/live-error.ts, matching
+            lib/model-evaluation.ts's sign convention), so it cannot exist
+            without a MEASURED actual and this chart can never be denser
+            than the lab — no cadence, driver or refresh rate changes that.
+            Stated ALWAYS, not only when empty: when the chart does hold
+            points the same limit explains why there are so few of them,
+            and the waiting message the empty branch shows otherwise reads
+            as a gap someone forgot to close.
+
+            An uncertainty view (the predicted series against the model's
+            own recorded error band) is deliberately NOT here — it answers
+            "how wrong is this model usually", not "how wrong is it now",
+            and putting that band on a chart titled Residual Analysis is
+            the one-name-two-metrics defect MODEL-SERVE-001-T16 refused for
+            PSI-in-the-z-score-table. It stays blocked on openDecisions[1]
+            and, if adopted, gets its own title. */}
+        <p className="mb-3 text-xs text-muted-foreground">
+          {residualDensityNote(coverage?.cadenceMinutes ?? null)}
+        </p>
         <div className="min-h-0 flex-1">
           {truthLoading ? (
             <div className="flex h-48 items-center justify-center text-sm text-muted-foreground">

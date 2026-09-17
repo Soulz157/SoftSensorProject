@@ -263,6 +263,24 @@ export interface LiveErrorCoverage {
    *  already joined or failed, or there is no schedule). Turns an
    *  indefinite "the join runs again" into a checkable one. */
   earliestEligibleAt: string | null
+  /** MODEL-SERVE-008-T01. Windows whose truth lag has ALREADY EXPIRED with
+   *  no measurement — a SUBSET of `windowsAwaitingTruth`, never a second
+   *  count of the same windows. Distinct from `windowsFailed`: the sweeper
+   *  reached the source here, the lab simply never reported. This is the
+   *  state that must not read as "keep waiting" — at a once-a-day lab
+   *  against an hourly schedule most windows end here, permanently. */
+  windowsLapsedTruth: number
+  /** MODEL-SERVE-008-T04. Predictions PRODUCED in this range, as distinct
+   *  from `pairedRows` (those that found a lab partner). The two differ by
+   *  roughly the ratio of the lab's reporting rate to the scoring cadence —
+   *  about 24x on a once-a-day target scored hourly — so showing only the
+   *  paired count invites a reader to conclude the model barely ran. */
+  predictionRows: number
+  /** MODEL-SERVE-008-T04. This model's `InferenceSchedule.cadenceMinutes`
+   *  — how often it scores. Null when the model has no schedule, where the
+   *  question has no answer rather than a default one. Paired with
+   *  `truthLagMinutes` it lets the strip state two RATES, not two counts. */
+  cadenceMinutes: number | null
 }
 
 export interface LiveErrorWindow {

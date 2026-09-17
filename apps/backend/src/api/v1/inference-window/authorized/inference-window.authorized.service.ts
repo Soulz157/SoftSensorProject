@@ -1167,6 +1167,13 @@ export class InferenceWindowAuthorizedService {
         pairsKey: true,
         truthRows: true,
         pairedRows: true,
+        // MODEL-SERVE-008-T04. How many predictions the window actually
+        // produced, as distinct from how many of them found a partner.
+        // Without it the strip can only report the paired count, and a
+        // reader counting sparse actual points concludes the model ran
+        // that few times — which at a 24h lab cadence understates the
+        // scoring rate by a factor of about 24.
+        predictionRows: true,
         joinedThrough: true,
         failureReason: true,
         n: true,
@@ -1216,7 +1223,11 @@ export class InferenceWindowAuthorizedService {
     // count never needed.
     const schedule = await this.prisma.inferenceSchedule.findUnique({
       where: { modelId },
-      select: { truthLagMinutes: true },
+      // MODEL-SERVE-008-T04. `cadenceMinutes` rides along on the query the
+      // lag already needed: the strip must state the two RATES, not only
+      // the two counts, and how often this model scores is the half a
+      // reader cannot infer from the points in front of them.
+      select: { truthLagMinutes: true, cadenceMinutes: true },
     });
     const awaitingWindows = schedule
       ? await this.prisma.inferenceWindow.findMany({
@@ -1234,14 +1245,34 @@ export class InferenceWindowAuthorizedService {
     const stillAwaiting = awaitingWindows.filter(
       (w) => !w.truth || (w.truth.n === 0 && w.truth.failureReason === null),
     );
-    // Null when nothing in range is awaiting — never a guess at a wait
-    // that does not exist (a schedule row missing entirely, or every
-    // SUCCEEDED window already joined or failed).
+    // MODEL-SERVE-008-T01. A window whose lag has ALREADY EXPIRED is not
+    // waiting on anything — the lab had its full window and reported
+    // nothing. Before this split, `stillAwaiting` kept such a window
+    // forever (it joins honestly with n = 0 and no failureReason, which is
+    // the same shape as a window that has not been asked yet), so
+    // `earliestEligibleAt` named a deadline in the PAST and the panel told
+    // a reader to keep waiting for a check that had already happened.
+    // Measured live on 2026-09-17: three windows sat 42h past a 24h lag,
+    // joined, empty, still rendering "becomes eligible at Sep 15, 08:00".
+    // The two states are counted separately and only the genuinely-pending
+    // one may produce a time.
+    const lagMs = (schedule?.truthLagMinutes ?? 0) * 60_000;
+    const nowMs = Date.now();
+    const pendingLag = stillAwaiting.filter(
+      (w) => w.windowEnd.getTime() + lagMs > nowMs,
+    );
+    // Lag expired, join attempted or due, no measurement. Disjoint from
+    // `windowsFailed`: the sweeper DID reach the source here — the lab
+    // simply never reported in this window. At a 24h lab cadence against an
+    // hourly schedule this is the common case, not an error.
+    const windowsLapsedTruth = stillAwaiting.length - pendingLag.length;
+    // Null when nothing in range is still inside its lag — never a guess at
+    // a wait that does not exist (no schedule row, every SUCCEEDED window
+    // already joined or failed) and never a time that has already passed.
     const earliestEligibleAt =
-      schedule && stillAwaiting.length > 0
+      schedule && pendingLag.length > 0
         ? new Date(
-            Math.min(...stillAwaiting.map((w) => w.windowEnd.getTime())) +
-              schedule.truthLagMinutes * 60_000,
+            Math.min(...pendingLag.map((w) => w.windowEnd.getTime())) + lagMs,
           ).toISOString()
         : null;
 
@@ -1355,13 +1386,26 @@ export class InferenceWindowAuthorizedService {
           windowsFailed: failedWindows,
           truthRows: rows.reduce((sum, r) => sum + r.truthRows, 0),
           pairedRows: rows.reduce((sum, r) => sum + r.pairedRows, 0),
+          // MODEL-SERVE-008-T04. The scored side's own count. Summed over
+          // the SAME rows as truthRows and pairedRows so all three describe
+          // one range and cannot disagree about which windows they cover.
+          predictionRows: rows.reduce((sum, r) => sum + r.predictionRows, 0),
           // Max, not mean — see the per-window comment above.
           maxMissingPct:
             missingPcts.length > 0 ? Math.max(...missingPcts) : null,
           // MODEL-SERVE-001-T18. Null when the model has no InferenceSchedule
           // row — the wait has no meaning without one.
           truthLagMinutes: schedule?.truthLagMinutes ?? null,
+          // MODEL-SERVE-008-T04. How often this model scores — null with no
+          // schedule, where the question has no answer rather than a
+          // default one.
+          cadenceMinutes: schedule?.cadenceMinutes ?? null,
           earliestEligibleAt,
+          // MODEL-SERVE-008-T01. Windows past their lag that the lab never
+          // reported on. A subset of `windowsAwaitingTruth`, not a second
+          // count of the same thing: awaiting = still inside the lag PLUS
+          // lapsed, and only the lapsed half is a fact rather than a wait.
+          windowsLapsedTruth,
         },
         windows,
       },

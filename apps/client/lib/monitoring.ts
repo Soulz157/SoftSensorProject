@@ -138,3 +138,36 @@ export function pickTimeFormat(spanMs: number): (t: number) => string {
 function round(n: number): number {
   return Math.round(n * 100) / 100
 }
+
+/** MODEL-SERVE-001-T18. `truthLagMinutes` and `cadenceMinutes` are stored in
+ *  minutes; every real schedule sets them to a round hour count (1440 = 24h,
+ *  60 = 1h, T03's own precedent), so a plain hour/minute split reads
+ *  naturally without pulling in a duration-formatting library for one
+ *  readout. Lives here rather than in the tab because T05's note below is a
+ *  pure derivation and had to be testable without rendering the page. */
+export function formatLagDuration(minutes: number): string {
+  return minutes % 60 === 0 ? `${minutes / 60}h` : `${minutes}m`
+}
+
+/**
+ * MODEL-SERVE-008-T05, the unconditional half. A residual is
+ * predicted − actual, so it cannot exist without a MEASURED actual and the
+ * Residual chart can never be denser than the lab — no cadence, driver or
+ * refresh rate changes that. The sentence renders in BOTH states on purpose:
+ * empty, it distinguishes a physical limit from a gap someone forgot to
+ * close; populated, it explains why there are so few points.
+ *
+ * Takes the cadence alone, not the whole coverage object: the claim is about
+ * how often the model SCORES versus how often the lab reports, and passing
+ * the scheduling fact it actually reads keeps this callable from a test
+ * without constructing a payload.
+ */
+export function residualDensityNote(cadenceMinutes: number | null): string {
+  const base =
+    'A residual needs a measured actual, so this chart can only ever be as dense as the lab'
+  // No schedule means no scoring rate to contrast against — the limit is
+  // still true, so the sentence still renders, just without the comparison.
+  return cadenceMinutes
+    ? `${base} — the model scores every ${formatLagDuration(cadenceMinutes)}, but each point here needs a lab measurement to pair with.`
+    : `${base}.`
+}

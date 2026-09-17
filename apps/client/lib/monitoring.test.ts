@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { buildMonitoringRows, windowStats } from './monitoring'
+import {
+  buildMonitoringRows,
+  formatLagDuration,
+  residualDensityNote,
+  windowStats,
+} from './monitoring'
 import { buildFitRows } from '@/lib/model-metrics'
 import type { EvalPoint } from '@/lib/model-evaluation'
 
@@ -126,5 +131,49 @@ describe('windowStats', () => {
       rmse: 0,
       sd: 0,
     })
+  })
+})
+
+/**
+ * MODEL-SERVE-008-T05, the unconditional half. The Residual chart's density
+ * is bounded by the lab's reporting rate, not by anything the system can
+ * tune — T01 read 3 measured that rate at a 24h median against a 60-minute
+ * scoring cadence. The sentence states the limit so an empty or sparse
+ * chart cannot read as a gap someone forgot to close.
+ */
+describe('residualDensityNote (MODEL-SERVE-008-T05)', () => {
+  it('states the limit and contrasts it with the scoring cadence when there is a schedule', () => {
+    const note = residualDensityNote(60)
+
+    expect(note).toContain('can only ever be as dense as the lab')
+    expect(note).toContain('scores every 1h')
+    // The REASON the two rates differ, not just the two rates.
+    expect(note).toContain('needs a lab measurement to pair with')
+  })
+
+  it('still states the limit with no schedule — the physics do not depend on a cadence', () => {
+    const note = residualDensityNote(null)
+
+    expect(note).toContain('can only ever be as dense as the lab')
+    // No cadence to contrast against, so no invented one.
+    expect(note).not.toContain('scores every')
+    expect(note.endsWith('.')).toBe(true)
+  })
+
+  it('never promises the chart can become denser — the claim this note exists to prevent', () => {
+    for (const cadence of [null, 5, 60, 1440]) {
+      expect(residualDensityNote(cadence)).not.toMatch(
+        /real-?time|live updates|more frequent/i,
+      )
+    }
+  })
+})
+
+describe('formatLagDuration', () => {
+  it('reads whole hours as hours and anything else as minutes', () => {
+    expect(formatLagDuration(1440)).toBe('24h')
+    expect(formatLagDuration(60)).toBe('1h')
+    expect(formatLagDuration(90)).toBe('90m')
+    expect(formatLagDuration(5)).toBe('5m')
   })
 })

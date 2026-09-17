@@ -3,6 +3,7 @@ import {
   inferenceWindowTruthSeries,
   presignInferenceWindowObject,
 } from '@/lib/python-preprocess-client';
+import { env } from '@/config/env.config';
 
 jest.mock('@/lib/python-preprocess-client');
 
@@ -707,8 +708,15 @@ describe('InferenceWindowAuthorizedService.putScheduleService — D5 enable-time
       user,
     );
     const call = prisma.inferenceSchedule.upsert.mock.calls[0][0];
-    expect(call.create.minRows).toBe(30);
-    expect(result.data?.minRows).toBe(30);
+    // MODEL-SERVE-010-T02. Asserted against `env.INFERENCE_MIN_ROWS` ITSELF,
+    // never a literal: this test hardcoded 30 while the default moved to 15
+    // (env.config.ts), so it failed on the DEFAULT rather than on the
+    // fallback BEHAVIOUR it is named for — a red test that said nothing
+    // about its own subject. Reading the same constant the production path
+    // reads makes the assertion "the fallback is the env default", which is
+    // the actual claim and cannot drift again.
+    expect(call.create.minRows).toBe(env.INFERENCE_MIN_ROWS);
+    expect(result.data?.minRows).toBe(env.INFERENCE_MIN_ROWS);
   });
 
   it('recomputes minRows unconditionally on a settings-only update, unlike cadenceMinutes/lagMinutes', async () => {
@@ -1141,6 +1149,10 @@ function truthRow(overrides: Record<string, unknown> = {}) {
     pairsKey: 'inference/model-1/version-1/dt=2026-09-14/hour=15/truth.parquet',
     truthRows: 1,
     pairedRows: 1,
+    // MODEL-SERVE-008-T04. Deliberately NOT equal to pairedRows: a fixture
+    // where every prediction pairs cannot detect a strip that reports the
+    // paired count where it means the scored one.
+    predictionRows: 60,
     joinedThrough: new Date('2026-09-14T09:00:00.000Z'),
     failureReason: null,
     n: 1,
@@ -1396,7 +1408,54 @@ describe('InferenceWindowAuthorizedService.getTruthService (MODEL-SERVE-005-T03)
     expect(res.data.coverage.windowsJoined).toBe(1);
   });
 
+  // ── MODEL-SERVE-008-T04: the scored count, beside the lab count ──────────
+
+  it('reports predictions PRODUCED separately from predictions PAIRED, so a sparse actual cannot read as a rare run', async () => {
+    // Two windows, 60 predictions each, one lab sample each. This is the
+    // real shape on a once-a-day target scored hourly: the scored side
+    // dwarfs the paired side, and the chart shows only the paired side.
+    const prisma = buildTruthPrisma([truthRow(), truthRow()], 2);
+    prisma.inferenceSchedule.findUnique.mockResolvedValue({
+      truthLagMinutes: 1440,
+      cadenceMinutes: 60,
+    });
+    const service = makeService(prisma);
+
+    const res = await service.getTruthService('model-1', RANGE, user);
+
+    expect(res.data.coverage.predictionRows).toBe(120);
+    expect(res.data.coverage.pairedRows).toBe(2);
+    expect(res.data.coverage.truthRows).toBe(2);
+    // The rate the reader cannot infer from the points themselves.
+    expect(res.data.coverage.cadenceMinutes).toBe(60);
+  });
+
+  it('leaves cadenceMinutes null with no schedule — the question has no answer, not a default one', async () => {
+    const service = makeService(buildTruthPrisma([truthRow()], 1));
+
+    const res = await service.getTruthService('model-1', RANGE, user);
+
+    expect(res.data.coverage.cadenceMinutes).toBeNull();
+    // The scored count is a property of the rows, not of the schedule, so
+    // it survives a model that has none.
+    expect(res.data.coverage.predictionRows).toBe(60);
+  });
+
   // ── MODEL-SERVE-001-T18: naming WHEN the next truth check happens ────────
+
+  // MODEL-SERVE-008-T01. These fixtures describe windows still INSIDE their
+  // lab window, which is now a claim about the clock and not only about the
+  // rows — an expired lag produces a different state on purpose. Pinning
+  // the clock is what keeps them testing their own subject: without it they
+  // passed in 2026-09 and would have started asserting the lapsed branch as
+  // real time moved past the fixture dates.
+  const NOW_INSIDE_LAG = new Date('2026-09-14T12:00:00.000Z');
+  beforeEach(() => {
+    jest.useFakeTimers().setSystemTime(NOW_INSIDE_LAG);
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
 
   it('names the earliest eligible time for a window that has not joined yet', async () => {
     const prisma = buildTruthPrisma([], 1, [], 0, [
@@ -1429,12 +1488,67 @@ describe('InferenceWindowAuthorizedService.getTruthService (MODEL-SERVE-005-T03)
     prisma.inferenceSchedule.findUnique.mockResolvedValue({
       truthLagMinutes: 60,
     });
+    // A one-hour lag puts both fixtures' deadlines (09:00 and 11:00) in the
+    // past under this block's default clock, which is the LAPSED state, not
+    // this test's subject. Stand before the earlier of the two.
+    jest.setSystemTime(new Date('2026-09-14T08:30:00.000Z'));
     const service = makeService(prisma);
 
     const res = await service.getTruthService('model-1', RANGE, user);
 
     expect(res.data.coverage.earliestEligibleAt).toBe(
       '2026-09-14T09:00:00.000Z',
+    );
+    // Both are still inside the lab's window — neither has lapsed.
+    expect(res.data.coverage.windowsLapsedTruth).toBe(0);
+  });
+
+  // ── MODEL-SERVE-008-T01: the lag EXPIRED and the lab never reported ──────
+
+  it('counts a window whose lag has expired as lapsed, and refuses to name a deadline that has already passed', async () => {
+    const prisma = buildTruthPrisma([], 1, [], 0, [
+      // Joined honestly: the sweeper reached the source, the lab had
+      // nothing in this window. Before T01 this row stayed "awaiting"
+      // forever and earliestEligibleAt named a time in the past.
+      {
+        windowEnd: new Date('2026-09-13T09:00:00.000Z'),
+        truth: { n: 0, failureReason: null },
+      },
+    ]);
+    prisma.inferenceSchedule.findUnique.mockResolvedValue({
+      truthLagMinutes: 1440,
+    });
+    const service = makeService(prisma);
+
+    // Deadline was 2026-09-14T09:00Z; the clock stands three hours past it.
+    const res = await service.getTruthService('model-1', RANGE, user);
+
+    expect(res.data.coverage.windowsLapsedTruth).toBe(1);
+    expect(res.data.coverage.earliestEligibleAt).toBeNull();
+  });
+
+  it('separates a lapsed window from one still inside its lag, rather than pooling them', async () => {
+    const prisma = buildTruthPrisma([], 2, [], 0, [
+      // Deadline 2026-09-14T09:00Z — passed.
+      {
+        windowEnd: new Date('2026-09-13T09:00:00.000Z'),
+        truth: { n: 0, failureReason: null },
+      },
+      // Deadline 2026-09-15T06:00Z — still ahead of the clock.
+      { windowEnd: new Date('2026-09-14T06:00:00.000Z'), truth: null },
+    ]);
+    prisma.inferenceSchedule.findUnique.mockResolvedValue({
+      truthLagMinutes: 1440,
+    });
+    const service = makeService(prisma);
+
+    const res = await service.getTruthService('model-1', RANGE, user);
+
+    expect(res.data.coverage.windowsLapsedTruth).toBe(1);
+    // The time named is the PENDING one's, never the lapsed one's earlier
+    // and already-passed deadline.
+    expect(res.data.coverage.earliestEligibleAt).toBe(
+      '2026-09-15T06:00:00.000Z',
     );
   });
 

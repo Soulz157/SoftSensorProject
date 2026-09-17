@@ -186,6 +186,9 @@ function coverage(over: Partial<LiveErrorCoverage> = {}): LiveErrorCoverage {
     maxMissingPct: null,
     truthLagMinutes: null,
     earliestEligibleAt: null,
+    windowsLapsedTruth: 0,
+    predictionRows: 0,
+    cadenceMinutes: null,
     ...over,
   }
 }
@@ -309,6 +312,62 @@ describe('EmptyTruth — naming the wait (MODEL-SERVE-001-T18)', () => {
       ),
     ).toBeVisible()
     expect(screen.queryByText(/becomes eligible at/i)).toBeNull()
+  })
+
+  /**
+   * MODEL-SERVE-008-T01. The SEVENTH empty cause: the lab's whole window
+   * passed and no measurement was reported. Measured live on 2026-09-17 —
+   * three windows sat 42h past a 24h lag, joined, empty, and the panel
+   * still told the reader to wait for a check that had already happened.
+   * The lab reports about once a day (median inter-arrival 24h, read off
+   * the model's own GOLD artifact) against an hourly schedule, so this is
+   * the COMMON end state, not an anomaly.
+   */
+  it('says the lab window passed with no report, instead of naming a deadline that is already gone', () => {
+    render(
+      <EmptyTruth
+        error={null}
+        coverage={coverage({
+          windowsInRange: 3,
+          windowsAwaitingTruth: 3,
+          windowsLapsedTruth: 3,
+          truthRows: 0,
+          truthLagMinutes: 1440,
+          // Null now by construction — the backend refuses to name a
+          // passed deadline. Asserted here so this test still fails if a
+          // future change starts producing one again.
+          earliestEligibleAt: null,
+        })}
+      />,
+    )
+
+    expect(screen.getByText(/passed their full 24h lab window/i)).toBeVisible()
+    expect(screen.getByText(/measurement rate, not a failure/i)).toBeVisible()
+    // Neither wait-sentence may render: one is a deadline that has gone,
+    // the other an indefinite wait that is over.
+    expect(screen.queryByText(/becomes eligible at/i)).toBeNull()
+    expect(
+      screen.queryByText(/The join runs again once the configured truth lag/i),
+    ).toBeNull()
+  })
+
+  it('still names the wait when the lag has NOT expired — lapsed and pending are different states', () => {
+    render(
+      <EmptyTruth
+        error={null}
+        coverage={coverage({
+          windowsInRange: 3,
+          windowsAwaitingTruth: 3,
+          windowsLapsedTruth: 0,
+          truthRows: 0,
+          truthLagMinutes: 1440,
+          earliestEligibleAt: '2026-09-18T08:00:00.000Z',
+        })}
+      />,
+    )
+
+    expect(screen.getByText(/becomes eligible at/i)).toBeVisible()
+    expect(screen.queryByText(/passed their full/i)).toBeNull()
   })
 
   it('leaves the other empty-cause branches unaffected (negative-space check)', () => {
