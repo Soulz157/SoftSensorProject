@@ -5,6 +5,9 @@ import {
   type ColumnBaselineMap,
   type DriftThresholds,
   type FeatureStatsMap,
+  applyConsecutiveBreachRule,
+  type DriftBucket,
+  type ColumnDrift,
 } from './prediction-drift';
 
 const THRESHOLDS: DriftThresholds = {
@@ -241,5 +244,173 @@ describe('computeDrift', () => {
     };
     const report = computeDrift(live, baseline, THRESHOLDS);
     expect(report.status).toBe('CRITICAL');
+  });
+});
+
+// ── MODEL-SERVE-008-T03: the consecutive-breach rule ────────────────────────
+
+function col(
+  column: string,
+  status: ColumnDrift['status'],
+  z: number | null = 2,
+): ColumnDrift {
+  return {
+    column,
+    n: 10,
+    liveMean: 1,
+    liveStd: 1,
+    trainMean: 0,
+    trainStd: 1,
+    z,
+    outOfRangePct: 0,
+    status,
+  };
+}
+
+function bucket(at: string, ...columns: ColumnDrift[]): DriftBucket {
+  return {
+    at,
+    report: {
+      status: columns.some((c) => c.status === 'CRITICAL')
+        ? 'CRITICAL'
+        : columns.some((c) => c.status === 'WARN')
+          ? 'WARN'
+          : 'OK',
+      columns,
+    },
+  };
+}
+
+describe('applyConsecutiveBreachRule (MODEL-SERVE-008-T03)', () => {
+  it('does NOT change state on a single breach when the rule asks for three', () => {
+    const out = applyConsecutiveBreachRule(
+      [
+        bucket('t1', col('TI202.PV', 'OK')),
+        bucket('t2', col('TI202.PV', 'OK')),
+        bucket('t3', col('TI202.PV', 'CRITICAL')),
+      ],
+      3,
+    );
+
+    expect(out.status).toBe('OK');
+    // The breach is REAL and still visible — the panel must not say OK
+    // while z sits above the line.
+    expect(out.columns[0]!.instantStatus).toBe('CRITICAL');
+    expect(out.columns[0]!.consecutive).toBe(1);
+  });
+
+  it('changes state once the run reaches the required length, and names when it began', () => {
+    const out = applyConsecutiveBreachRule(
+      [
+        bucket('t1', col('TI202.PV', 'OK')),
+        bucket('t2', col('TI202.PV', 'CRITICAL')),
+        bucket('t3', col('TI202.PV', 'CRITICAL')),
+        bucket('t4', col('TI202.PV', 'CRITICAL')),
+      ],
+      3,
+    );
+
+    expect(out.status).toBe('CRITICAL');
+    expect(out.columns[0]!.consecutive).toBe(3);
+    expect(out.columns[0]!.since).toBe('t2');
+  });
+
+  it('breaks the run on a clean bucket — an intermittent spike never accumulates', () => {
+    const out = applyConsecutiveBreachRule(
+      [
+        bucket('t1', col('TI202.PV', 'CRITICAL')),
+        bucket('t2', col('TI202.PV', 'OK')),
+        bucket('t3', col('TI202.PV', 'CRITICAL')),
+      ],
+      2,
+    );
+
+    expect(out.status).toBe('OK');
+    expect(out.columns[0]!.consecutive).toBe(1);
+  });
+
+  it('does not promote a CRITICAL on the back of preceding WARNs — the conservative direction', () => {
+    const out = applyConsecutiveBreachRule(
+      [
+        bucket('t1', col('TI202.PV', 'WARN')),
+        bucket('t2', col('TI202.PV', 'WARN')),
+        bucket('t3', col('TI202.PV', 'CRITICAL')),
+      ],
+      3,
+    );
+
+    // Only one bucket reached CRITICAL severity, so CRITICAL is not
+    // sustained — but the WARN-level run behind it is three long.
+    expect(out.status).toBe('OK');
+    expect(out.columns[0]!.consecutive).toBe(1);
+    expect(out.columns[0]!.instantStatus).toBe('CRITICAL');
+  });
+
+  it('treats a sustained WARN preceded by CRITICALs as a sustained WARN', () => {
+    const out = applyConsecutiveBreachRule(
+      [
+        bucket('t1', col('TI202.PV', 'CRITICAL')),
+        bucket('t2', col('TI202.PV', 'CRITICAL')),
+        bucket('t3', col('TI202.PV', 'WARN')),
+      ],
+      3,
+    );
+
+    expect(out.status).toBe('WARN');
+    expect(out.columns[0]!.consecutive).toBe(3);
+  });
+
+  it('NEVER folds UNKNOWN into OK — a missing baseline is not evidence of health', () => {
+    const out = applyConsecutiveBreachRule(
+      [bucket('t1', col('TI202.PV', 'UNKNOWN', null))],
+      3,
+    );
+
+    expect(out.columns[0]!.status).toBe('UNKNOWN');
+    expect(out.status).toBe('UNKNOWN');
+  });
+
+  it('does not let one UNKNOWN column mask another column CRITICAL', () => {
+    const out = applyConsecutiveBreachRule(
+      [
+        bucket('t1', col('A', 'UNKNOWN', null), col('B', 'CRITICAL')),
+        bucket('t2', col('A', 'UNKNOWN', null), col('B', 'CRITICAL')),
+      ],
+      2,
+    );
+
+    expect(out.status).toBe('CRITICAL');
+    expect(out.columns.find((c) => c.column === 'A')!.status).toBe('UNKNOWN');
+  });
+
+  it('breaks a run on an UNKNOWN bucket rather than counting it as a breach', () => {
+    const out = applyConsecutiveBreachRule(
+      [
+        bucket('t1', col('TI202.PV', 'CRITICAL')),
+        bucket('t2', col('TI202.PV', 'UNKNOWN', null)),
+        bucket('t3', col('TI202.PV', 'CRITICAL')),
+      ],
+      2,
+    );
+
+    expect(out.status).toBe('OK');
+    expect(out.columns[0]!.consecutive).toBe(1);
+  });
+
+  it('is UNKNOWN with no buckets at all — never OK, which would claim health from nothing', () => {
+    const out = applyConsecutiveBreachRule([], 3);
+
+    expect(out.status).toBe('UNKNOWN');
+    expect(out.bucketsEvaluated).toBe(0);
+  });
+
+  it('echoes the rule in force so a caller never guesses which threshold produced the status', () => {
+    const out = applyConsecutiveBreachRule(
+      [bucket('t1', col('TI202.PV', 'OK'))],
+      3,
+    );
+
+    expect(out.consecutiveRequired).toBe(3);
+    expect(out.bucketsEvaluated).toBe(1);
   });
 });

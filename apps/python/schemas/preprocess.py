@@ -959,6 +959,16 @@ class InferenceWindowMaterializeResponse(BaseModel):
     #: `PredictionLog.featureStats`. `None` exactly when no feature column
     #: had a usable `scalingParams` entry to scale with.
     feature_stats: dict[str, dict[str, float]] | None = None
+    #: MODEL-SERVE-009-T02. Per-tag `{last_value, last_status, observed_at}`
+    #: as of THIS fetch, read from the frame BEFORE `drop_bad_feature_rows`
+    #: — the only point where a Bad cell is still visible. `last_status` is
+    #: the FETCH PATH's arrival health (the `{tag}__status` the pipeline
+    #: itself acts on), never PI's own good/questionable/substituted flag,
+    #: which reaches this system only on the snapshot path
+    #: (MODEL-SERVE-001-T15) and means a different thing. A tag absent from
+    #: the frame is OMITTED rather than reported null — absence of evidence
+    #: is not evidence of a value. Empty `{}` on an empty frame.
+    tag_observations: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class InferenceWindowTruthJoinRequest(BaseModel):

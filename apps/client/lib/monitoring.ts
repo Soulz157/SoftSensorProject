@@ -171,3 +171,60 @@ export function residualDensityNote(cadenceMinutes: number | null): string {
     ? `${base} — the model scores every ${formatLagDuration(cadenceMinutes)}, but each point here needs a lab measurement to pair with.`
     : `${base}.`
 }
+
+/**
+ * MODEL-SERVE-008-T04. A chart row that may carry the DENSE predicted
+ * series, the joined pair, or both.
+ *
+ * DELIBERATELY NOT `MonitoringRow`, and this is the load-bearing part.
+ * `EvalPoint`'s `actual` and `residual` are non-optional on purpose —
+ * MODEL-SERVE-005 recorded the refusal and its reason: the SD-band and
+ * residual math structurally require ground truth, and satisfying the shape
+ * without it means fabricating an actual value. A dense predicted point has
+ * no lab counterpart, so it CANNOT be a MonitoringRow; widening that type to
+ * fit would quietly re-open the exact hole this ledger closed. It gets its
+ * own key on its own row type instead.
+ */
+export interface LiveOverlayRow extends Partial<MonitoringRow> {
+  t: number
+  timestamp: string
+  /** The dense serving-plane prediction. A DIFFERENT series from `predict`,
+   *  which is the scheduled window's prediction inside a joined pair — two
+   *  provenances, never one series with holes in it. */
+  live?: number
+}
+
+/**
+ * Merge the joined pairs and the dense predicted series onto one time axis.
+ *
+ * Recharts needs a single `data` array, so the two series share rows — but
+ * they never share a KEY: a timestamp that has only a dense prediction
+ * yields a row with `live` and nothing else, and no `actual` is invented for
+ * it. A reader of the result can always tell which provenance a value came
+ * from by which key it is under.
+ *
+ * Exact-timestamp match only, no nearest-neighbour snapping: pairing a
+ * dense prediction to a joined row it did not come from would be the same
+ * fabrication by a subtler route, and the tolerance question already has an
+ * owner server-side (`truthToleranceMinutes`).
+ */
+export function mergeLivePredictions(
+  rows: MonitoringRow[],
+  live: Array<{ timestamp: string; predicted: number }>,
+): LiveOverlayRow[] {
+  const byT = new Map<number, LiveOverlayRow>()
+  for (const row of rows) byT.set(row.t, { ...row })
+
+  for (const point of live) {
+    const t = parseServerTimestamp(point.timestamp)
+    if (Number.isNaN(t)) continue
+    const existing = byT.get(t)
+    if (existing) {
+      existing.live = point.predicted
+    } else {
+      byT.set(t, { t, timestamp: point.timestamp, live: point.predicted })
+    }
+  }
+
+  return [...byT.values()].sort((a, b) => a.t - b.t)
+}

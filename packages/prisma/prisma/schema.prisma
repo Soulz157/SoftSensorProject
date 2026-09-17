@@ -189,6 +189,7 @@ model Model {
   predictionLogs    PredictionLog[]
   inferenceWindows  InferenceWindow[]
   inferenceSchedule InferenceSchedule?
+  tagObservations   TagObservation[]
 
   @@unique([workspaceId, name])
   @@index([workspaceId])
@@ -1910,6 +1911,79 @@ model InferenceWindowLog {
 /// deploy fields here — autoRetrain, warnSd, criticalSd, driftMonitor,
 /// driftThresholdPct — under THOSE names, so the wizard and the scheduler
 /// never describe one setting in two vocabularies.
+model TagObservation {
+  /// MODEL-SERVE-009-T02. The CURRENT per-tag state as of the last fetch —
+  /// one row per (model, tag), UPDATED IN PLACE, never one row per fetch.
+  ///
+  /// NOT A TIMESERIES, DELIBERATELY. feature_list.preprocessing's
+  /// architecture.storage_authority is explicit that MinIO is the single
+  /// source of truth for rows and Postgres holds metadata and pointers only
+  /// — not one of its Prisma models stores timeseries rows. At 21 tags x 24
+  /// fetches x 365 days a per-fetch table would be ~184,000 rows a year to
+  /// answer a question that one current row answers. The history already
+  /// exists anyway: each window's own input.parquet holds the frame and
+  /// featureStats holds its aggregates. What was missing is the CURRENT
+  /// state, which is exactly one row.
+  id      String @id @default(uuid())
+  modelId String
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  /// The feature column this row is about, as it appears in the model's own
+  /// feature_spec — a base tag or a derived one; both are observed the same
+  /// way because both are columns in the materialized frame.
+  tag String
+
+  /// The last value this tag carried, REGARDLESS of `lastStatus`. A Bad cell
+  /// still holds a number; a reader deciding whether the tag moved must read
+  /// both fields, because treating a Bad cell's number as a reading is the
+  /// fabricate-a-plausible-number trade this ledger has refused repeatedly.
+  lastValue Float?
+
+  /// The FETCH PATH's arrival health (`{tag}__status`: 0 Good, 1 Bad,
+  /// 2 Questionable), read BEFORE `drop_bad_feature_rows` — after it, every
+  /// surviving row is Good by construction and a status taken from it is a
+  /// constant dressed as a measurement (MODEL-SERVE-001-T15 measured exactly
+  /// that). This is NOT PI's own good/questionable/substituted flag, which
+  /// reaches this system only on the snapshot path and answers a different
+  /// question; decisions.arrival_health_and_pi_quality_are_two_fields keeps
+  /// them apart on purpose.
+  lastStatus Int?
+
+  /// The most recent fetch that returned this tag AT ALL. Advances even when
+  /// the value is unchanged and even when the cell was Bad — it is about
+  /// arrival, not about movement.
+  lastSeenAt DateTime?
+
+  /// The most recent fetch whose value DIFFERED from the one before it. This
+  /// is the whole feature: `lastSeenAt` minus `lastChangedAt` is how long a
+  /// tag has been flat, measured rather than inferred from a pooled range
+  /// over N windows (MODEL-SERVE-001-T29's shipped signal quantises to whole
+  /// windows and cannot see a run shorter than three of them). Collapsing
+  /// these two fields into one gives that inference straight back.
+  lastChangedAt DateTime?
+
+  /// How the LAST fetch went for this tag: SUCCEEDED, FAILED, SKIPPED.
+  /// A failed fetch MUST write this rather than leaving the row untouched —
+  /// an absent fetch is not a flat tag, and PI is measurably intermittent
+  /// from this environment (MODEL-SERVE-001-V12's NXDOMAIN, and a host
+  /// observed succeeding and failing an hour apart). Without it a multi-hour
+  /// outage is indistinguishable from a multi-hour freeze.
+  lastFetchOutcome String?
+
+  /// The window whose fetch last wrote this row, so a reader can get from
+  /// the current state back to the evidence. Not a relation: a window may be
+  /// deleted by retention while the tag's current state remains true.
+  lastWindowId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// One row per (model, tag) — the constraint that makes "updated in place"
+  /// enforceable by the database rather than by every caller remembering to.
+  @@unique([modelId, tag])
+  @@index([modelId])
+}
+
 model InferenceSchedule {
   id String @id @default(uuid())
 
@@ -2042,6 +2116,35 @@ model InferenceSchedule {
   preflightAt     DateTime?
   preflightOk     Boolean?
   preflightReason String?
+
+  /// MODEL-SERVE-008-T02. The LIVE PREDICTION driver, which is a separate
+  /// switch from `enabled` on purpose: `enabled` governs the SCHEDULED
+  /// plane (windows, containers, InferenceWindow rows) and this governs the
+  /// SERVING plane (synchronous /predict, PredictionLog rows). The two
+  /// planes stay separate per MODEL-SERVE-001-T10 item (6), and a model may
+  /// legitimately run either, both, or neither — turning the dense series
+  /// on must never start scoring windows, and stopping the schedule must
+  /// never silently stop the live chart.
+  ///
+  /// `livePredictCadenceMinutes` has a MEASURED floor, not a chosen one.
+  /// Live PI snapshot ages for this plant's own 18 feature tags on
+  /// 2026-09-17 ran from 1s to 541s — most tags refresh within seconds, the
+  /// slowest (TI205.PV) within about nine minutes. Driving faster than the
+  /// slowest tag re-scores inputs that have not changed and manufactures
+  /// precision the historian does not have, so 10 minutes is the default
+  /// and anything below it is a deliberate override. This also sets the
+  /// storage bill: at 10 minutes one model writes ~144 PredictionLog rows
+  /// and ~144 serving-logs/ objects a day, not the ~1,440 a one-minute
+  /// cadence would.
+  livePredictEnabled        Boolean @default(false)
+  livePredictCadenceMinutes Int     @default(10)
+
+  /// When the driver last completed a scoring pass. Read to decide whether
+  /// this model is due, so a restart cannot replay a burst of catch-up
+  /// calls: the driver scores the CURRENT moment or not at all, and a
+  /// missed tick is a gap in a live chart rather than a backfill debt.
+  /// Null until the first pass.
+  livePredictLastRunAt DateTime?
 
   createdBy   User   @relation(fields: [createdById], references: [id], onDelete: Cascade)
   createdById String

@@ -49,6 +49,7 @@ function makePrisma(overrides: {
   model?: Record<string, unknown> | null;
   productionVersion?: Record<string, unknown> | null;
   predictionLogs?: Array<Record<string, unknown>>;
+  schedule?: Record<string, unknown> | null;
 }) {
   const model =
     overrides.model === undefined ? { id: 'model-1' } : overrides.model;
@@ -64,6 +65,16 @@ function makePrisma(overrides: {
     predictionLog: {
       findMany: jest.fn().mockResolvedValue(predictionLogs),
       create: jest.fn().mockResolvedValue({ id: 'log-1' }),
+    },
+    // MODEL-SERVE-008-T03/T06. Both the live-drift readout and the
+    // prediction series read this row now; `null` is the honest default —
+    // a model with no schedule at all.
+    inferenceSchedule: {
+      findUnique: jest
+        .fn()
+        .mockResolvedValue(
+          overrides.schedule === undefined ? null : overrides.schedule,
+        ),
     },
   };
 }
@@ -357,5 +368,201 @@ describe('PredictionLogAuthorizedService plane dispatch', () => {
 
     expect(windowMonitoring.getPsiReport).not.toHaveBeenCalled();
     expect(prisma.predictionLog.findMany).toHaveBeenCalled();
+  });
+});
+
+// ── MODEL-SERVE-008-T03: the dense live-drift readout ──────────────────────
+
+/**
+ * The consecutive-breach RULE itself is exhaustively covered in
+ * `lib/prediction-drift.spec.ts` (10 cases, including every UNKNOWN path).
+ * These tests own the part only the service can get wrong: bucketing the
+ * dense stream at the model's own live cadence, leaving `/drift`'s plane
+ * dispatch alone, and labelling the basis so a caller cannot render this
+ * readout as the other one.
+ */
+describe('PredictionLogAuthorizedService.getLiveDriftService (MODEL-SERVE-008-T03)', () => {
+  const stats = (mean: number) => ({
+    X: { n: 10, sum: mean * 10, sumsq: mean * mean * 10, min: mean, max: mean },
+  });
+
+  it('buckets the dense stream at the live cadence — four rows ten minutes apart are four buckets, not one pool', async () => {
+    const prisma = makePrisma({
+      schedule: { livePredictEnabled: true, livePredictCadenceMinutes: 10 },
+      predictionLogs: [
+        {
+          featureStats: stats(1),
+          requestedAt: new Date('2026-01-01T00:00:00.000Z'),
+        },
+        {
+          featureStats: stats(1),
+          requestedAt: new Date('2026-01-01T00:10:00.000Z'),
+        },
+        {
+          featureStats: stats(1),
+          requestedAt: new Date('2026-01-01T00:20:00.000Z'),
+        },
+        {
+          featureStats: stats(1),
+          requestedAt: new Date('2026-01-01T00:30:00.000Z'),
+        },
+      ],
+    });
+    const service = new PredictionLogAuthorizedService(
+      prisma as never,
+      mockWindowMonitoring,
+    );
+
+    const result = await service.getLiveDriftService('model-1', RANGE, ADMIN);
+
+    // Pooling the range would report ONE bucket and make "sustained right
+    // now" unanswerable — which is the whole reason this route exists.
+    expect(result.data.bucketsEvaluated).toBe(4);
+    expect(result.data.basis.bucketMinutes).toBe(10);
+  });
+
+  it('pools rows that fall INSIDE one cadence into a single bucket', async () => {
+    const prisma = makePrisma({
+      schedule: { livePredictEnabled: true, livePredictCadenceMinutes: 10 },
+      predictionLogs: [
+        {
+          featureStats: stats(1),
+          requestedAt: new Date('2026-01-01T00:01:00.000Z'),
+        },
+        {
+          featureStats: stats(1),
+          requestedAt: new Date('2026-01-01T00:02:00.000Z'),
+        },
+        {
+          featureStats: stats(1),
+          requestedAt: new Date('2026-01-01T00:03:00.000Z'),
+        },
+      ],
+    });
+    const service = new PredictionLogAuthorizedService(
+      prisma as never,
+      mockWindowMonitoring,
+    );
+
+    const result = await service.getLiveDriftService('model-1', RANGE, ADMIN);
+
+    expect(result.data.bucketsEvaluated).toBe(1);
+    expect(result.data.basis.sampleRequests).toBe(3);
+  });
+
+  it('NEVER dispatches to the window plane, even when a schedule exists — this route is the dense one by definition', async () => {
+    const prisma = makePrisma({
+      schedule: { livePredictEnabled: true, livePredictCadenceMinutes: 10 },
+      predictionLogs: [
+        {
+          featureStats: stats(1),
+          requestedAt: new Date('2026-01-01T00:00:00.000Z'),
+        },
+      ],
+    });
+    const windowMonitoring = {
+      hasSchedule: jest.fn().mockResolvedValue(true),
+      getDriftReport: jest.fn(),
+      getPsiReport: jest.fn(),
+    } as unknown as InferenceWindowMonitoringService;
+    const service = new PredictionLogAuthorizedService(
+      prisma as never,
+      windowMonitoring,
+    );
+
+    const result = await service.getLiveDriftService('model-1', RANGE, ADMIN);
+
+    // /drift keeps T17's dispatch; this route must not inherit it, or the
+    // dense signal would silently become the hourly one.
+    expect(windowMonitoring.getDriftReport).not.toHaveBeenCalled();
+    expect(result.data.basis.plane).toBe('predict-live');
+  });
+
+  it('labels a THIRD plane, never reusing the /drift predict label', async () => {
+    const prisma = makePrisma({
+      schedule: { livePredictEnabled: true, livePredictCadenceMinutes: 10 },
+      predictionLogs: [
+        {
+          featureStats: stats(1),
+          requestedAt: new Date('2026-01-01T00:00:00.000Z'),
+        },
+      ],
+    });
+    const service = new PredictionLogAuthorizedService(
+      prisma as never,
+      mockWindowMonitoring,
+    );
+
+    const result = await service.getLiveDriftService('model-1', RANGE, ADMIN);
+
+    // Same ROWS as /drift's predict plane, different cadence and rule — a
+    // caller that cannot tell them apart will render one as the other.
+    expect(result.data.basis.plane).not.toBe('predict');
+    expect(result.data.basis.plane).not.toBe('window');
+  });
+
+  it('echoes the rule in force and whether the driver is even on', async () => {
+    const prisma = makePrisma({
+      schedule: { livePredictEnabled: false, livePredictCadenceMinutes: 10 },
+      predictionLogs: [],
+    });
+    const service = new PredictionLogAuthorizedService(
+      prisma as never,
+      mockWindowMonitoring,
+    );
+
+    const result = await service.getLiveDriftService('model-1', RANGE, ADMIN);
+
+    expect(result.data.consecutiveRequired).toBe(
+      env.LIVE_DRIFT_CONSECUTIVE_BREACHES,
+    );
+    // Lets a reader tell "no breach" from "this readout is describing
+    // nothing because the driver is off".
+    expect(result.data.basis.livePredictEnabled).toBe(false);
+  });
+
+  it('reports UNKNOWN on an empty range rather than OK — health is never claimed from no data', async () => {
+    const prisma = makePrisma({ predictionLogs: [] });
+    const service = new PredictionLogAuthorizedService(
+      prisma as never,
+      mockWindowMonitoring,
+    );
+
+    const result = await service.getLiveDriftService('model-1', RANGE, ADMIN);
+
+    expect(result.data.status).toBe('UNKNOWN');
+    expect(result.data.bucketsEvaluated).toBe(0);
+  });
+
+  it('404s with no PRODUCTION version — nothing to compare live traffic against', async () => {
+    const prisma = makePrisma({ productionVersion: null });
+    const service = new PredictionLogAuthorizedService(
+      prisma as never,
+      mockWindowMonitoring,
+    );
+
+    await expect(
+      service.getLiveDriftService('model-1', RANGE, ADMIN),
+    ).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it('falls back to a 10-minute bucket when the model has no schedule row at all', async () => {
+    const prisma = makePrisma({
+      predictionLogs: [
+        {
+          featureStats: stats(1),
+          requestedAt: new Date('2026-01-01T00:00:00.000Z'),
+        },
+      ],
+    });
+    const service = new PredictionLogAuthorizedService(
+      prisma as never,
+      mockWindowMonitoring,
+    );
+
+    const result = await service.getLiveDriftService('model-1', RANGE, ADMIN);
+
+    expect(result.data.basis.bucketMinutes).toBe(10);
+    expect(result.data.basis.livePredictEnabled).toBe(false);
   });
 });

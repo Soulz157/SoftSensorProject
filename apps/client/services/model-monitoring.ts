@@ -25,6 +25,14 @@ export interface PredictionSeriesPoint {
 export interface PredictionSeriesResult {
   points: PredictionSeriesPoint[]
   truncated: boolean
+  /** MODEL-SERVE-008-T06. Whether this model's LIVE PREDICTION DRIVER is on
+   *  — the switch that decides which of two empty states this section is
+   *  in. Driver off: empty BY CONSTRUCTION, because only apps/serving's
+   *  synchronous /predict writes here and a schedule never does
+   *  (MODEL-SERVE-001-T10 Part A). Driver ON: something DOES write here, so
+   *  an empty range means no point has landed yet — a different sentence,
+   *  and naming the wrong one is worse than saying nothing. */
+  livePredictEnabled: boolean
 }
 
 export type DriftStatus = 'OK' | 'WARN' | 'CRITICAL' | 'UNKNOWN'

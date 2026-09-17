@@ -14,6 +14,7 @@ import {
 } from '@/lib/python-preprocess-client';
 import { formatDtHour, windowStartsBetween } from '@/lib/inference-windows';
 import { env } from '@/config/env.config';
+import { nextTagObservation, type FetchOutcome } from '@/lib/tag-observation';
 import { TrainningContainerAuthorizedService } from '../../trainning-container/authorized/trainning-container.authorized.service';
 import { ModelServingAuthorizedService } from '../../model-serving/authorized/model-serving.authorized.service';
 
@@ -352,6 +353,18 @@ export class InferenceWindowSchedulerService
       return;
     }
 
+    // MODEL-SERVE-009-T02. Per-tag current state, from the summary python
+    // read BEFORE its own Bad-row drop. Deliberately NOT inside the window
+    // update's transaction: a TagObservation write failing must not cost
+    // the window its input pointer, which is the scored record. Best-effort
+    // in the same spirit as MODEL-SERVE-005-T01's prediction-log ingest.
+    await this.writeTagObservations(
+      window.modelId,
+      window.id,
+      materialized.tag_observations,
+      'SUCCEEDED',
+    );
+
     await this.prisma.inferenceWindow.update({
       where: { id: window.id },
       data: {
@@ -419,8 +432,106 @@ export class InferenceWindowSchedulerService
     }
   }
 
+  /**
+   * MODEL-SERVE-009-T02. Fold one fetch's per-tag readings into the stored
+   * current state, one row per (model, tag), updated in place.
+   *
+   * WHY `updatedAt` ALONE IS NOT ENOUGH, and why a FAILED fetch calls this
+   * too: if a source outage simply skipped the write, a multi-hour NXDOMAIN
+   * would be indistinguishable from a multi-hour freeze — and PI is
+   * measurably intermittent from this environment (MODEL-SERVE-001-V12's
+   * blocker, and the same host observed succeeding and failing an hour
+   * apart). An absent fetch is not a flat tag. On a failure there are no
+   * readings at all, so only `lastFetchOutcome` moves and the two timestamps
+   * stay exactly where they were: nothing arrived, so nothing arrived.
+   *
+   * BEST-EFFORT BY DESIGN: a write failure here is logged and dropped. The
+   * window's own scored record is the thing that must not be lost, and this
+   * is derived state that the next fetch will rewrite anyway.
+   */
+  private async writeTagObservations(
+    modelId: string,
+    windowId: string,
+    readings: Record<
+      string,
+      { last_value: number; last_status: number; observed_at: string }
+    >,
+    outcome: FetchOutcome,
+  ): Promise<void> {
+    try {
+      if (outcome !== 'SUCCEEDED') {
+        // No readings to fold — record only that the fetch failed, on the
+        // rows this model already has. `updateMany` so a model with no rows
+        // yet is a no-op rather than an error.
+        await this.prisma.tagObservation.updateMany({
+          where: { modelId },
+          data: { lastFetchOutcome: outcome, lastWindowId: windowId },
+        });
+        return;
+      }
+
+      // `readings` is guaranteed an object by the zod `.default({})` on the
+      // materialize schema, but the guard stays: a caller that bypasses
+      // that parse (a test mocking the client directly, a future internal
+      // call site) would otherwise throw INSIDE the best-effort catch,
+      // which turns a missing feature into a silent warning rather than a
+      // visible one.
+      const tags = Object.keys(readings ?? {});
+      if (tags.length === 0) return;
+
+      const existing = await this.prisma.tagObservation.findMany({
+        where: { modelId, tag: { in: tags } },
+        select: {
+          tag: true,
+          lastValue: true,
+          lastChangedAt: true,
+          lastSeenAt: true,
+        },
+      });
+      const byTag = new Map(existing.map((r) => [r.tag, r]));
+      const now = new Date();
+
+      for (const tag of tags) {
+        const reading = readings[tag]!;
+        const prior = byTag.get(tag) ?? null;
+        const next = nextTagObservation(
+          {
+            lastValue: reading.last_value,
+            lastStatus: reading.last_status,
+            observedAt: reading.observed_at,
+          },
+          prior
+            ? {
+                lastValue: prior.lastValue,
+                lastChangedAt: prior.lastChangedAt,
+                lastSeenAt: prior.lastSeenAt,
+              }
+            : null,
+          now,
+        );
+        // Null means the reading is OLDER than what is stored — a retry or
+        // a backfill replaying a past window. Current state must not walk
+        // backwards, so this tag is skipped entirely: the window's own
+        // record already holds that history.
+        if (!next) continue;
+        // Upsert on the (modelId, tag) unique key — the constraint is what
+        // makes "updated in place" enforceable by the database rather than
+        // by every caller remembering to.
+        await this.prisma.tagObservation.upsert({
+          where: { modelId_tag: { modelId, tag } },
+          create: { modelId, tag, lastWindowId: windowId, ...next },
+          update: { lastWindowId: windowId, ...next },
+        });
+      }
+    } catch (err) {
+      this.logger.warn(
+        `TagObservation write failed for model ${modelId}: ${msg(err)}`,
+      );
+    }
+  }
+
   private async fail(windowId: string, reason: string): Promise<void> {
-    await this.prisma.inferenceWindow.update({
+    const failed = await this.prisma.inferenceWindow.update({
       where: { id: windowId },
       data: {
         status: 'FAILED',
@@ -429,6 +540,14 @@ export class InferenceWindowSchedulerService
         tokenExpiresAt: new Date(0),
       },
     });
+
+    // MODEL-SERVE-009-T02. A failed fetch is its OWN outcome and must not
+    // leave the per-tag rows untouched: MODEL-SERVE-009's findings[9] —
+    // an absent fetch is not a flat tag, and this host is measurably
+    // intermittent. Timestamps stay where they were (nothing arrived), only
+    // the outcome moves, so a reader can tell "flat for six hours" from
+    // "unreachable for six hours".
+    await this.writeTagObservations(failed.modelId, windowId, {}, 'FAILED');
   }
 
   /** Public since MODEL-SERVE-005-T03: the truth sweeper resolves the same

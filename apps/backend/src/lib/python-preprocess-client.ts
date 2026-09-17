@@ -215,6 +215,28 @@ const InferenceWindowMaterializeSchema = z.object({
     .record(z.string(), WindowFeatureHistogramSchema)
     .nullable(),
   feature_stats: z.record(z.string(), WindowColumnAggregateSchema).nullable(),
+  // MODEL-SERVE-009-T02. Per-tag state as of THIS fetch, read before
+  // `drop_bad_feature_rows` — the only point where a Bad cell is still
+  // visible (after it, every surviving row is Good by construction, which
+  // MODEL-SERVE-001-T15 measured when it evaluated input.parquet as a
+  // status surface). `.default({})` so a python process that predates this
+  // field parses rather than throwing: the caller then writes nothing,
+  // which is the correct behaviour for "this fetch told us nothing per
+  // tag", and is NOT the same as a fetch that reported every tag missing.
+  tag_observations: z
+    .record(
+      z.string(),
+      z.object({
+        // The last row's value REGARDLESS of its status — a Bad cell still
+        // carries a number, and `last_status` is what says which it was.
+        last_value: z.number(),
+        // The FETCH PATH's arrival health (0 Good / 1 Bad / 2 Questionable),
+        // never PI's own quality flag from the snapshot path.
+        last_status: z.number().int(),
+        observed_at: z.string(),
+      }),
+    )
+    .default({}),
 });
 
 export type InferenceWindowMaterializeResult = z.infer<
@@ -946,4 +968,58 @@ export async function predictionLogSeries(input: {
     PYTHON_TIMEOUT.serving,
   );
   return PredictionLogSeriesResultSchema.parse(res);
+}
+
+/** Mirrors python's `PreviewCell`/`PreviewRow`, the shape `/v1/preprocess/rows`
+ *  already returns to the client for artifact hydration. */
+const ArtifactCellSchema = z.object({
+  value: z.number(),
+  status: z.enum(['Good', 'Bad', 'Questionable']),
+});
+
+const ArtifactRowSchema = z.object({
+  timestamp: z.string(),
+  cells: z.record(z.string(), ArtifactCellSchema),
+});
+
+const ArtifactRowsSchema = z.object({
+  source_key: z.string(),
+  total_row_count: z.number().int().nonnegative(),
+  offset: z.number().int().nonnegative(),
+  rows: z.array(ArtifactRowSchema),
+});
+
+export type ArtifactRow = z.infer<typeof ArtifactRowSchema>;
+export type ArtifactRowsResult = z.infer<typeof ArtifactRowsSchema>;
+
+/**
+ * MODEL-SERVE-008-T02. Read a page of rows out of ANY parquet object by key.
+ *
+ * `RowsRequest.source_key` is an arbitrary object key, not an artifact id —
+ * which is what lets the live-prediction driver read back the `input.parquet`
+ * `materializeInferenceWindow` just wrote, instead of teaching NestJS to
+ * parse parquet or adding a second python endpoint that would duplicate the
+ * feature pipeline. Three EXISTING calls, no new input shape.
+ *
+ * The rows come back in RAW ENGINEERING UNITS: `inference_window_service`'s
+ * own module doc states the frame it writes is never passed through
+ * `to_model_ready`, because the container applies the fitted transform — the
+ * same boundary MODEL-SERVE-002's /predict and MODEL-SERVE-003's batch path
+ * hold. So these values are already pre-scale and go to /predict unaltered;
+ * scaling them here would be a fourth opinion about what scaling means.
+ */
+export async function readArtifactRows(input: {
+  source_key: string;
+  offset?: number;
+  limit?: number;
+  tags?: string[];
+}): Promise<ArtifactRowsResult> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/rows',
+    input,
+    // An object-store read, not a source-system fetch — the bounded budget,
+    // not `preprocess`'s five minutes.
+    PYTHON_TIMEOUT.serving,
+  );
+  return ArtifactRowsSchema.parse(res);
 }

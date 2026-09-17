@@ -11,6 +11,7 @@ import type { LiveErrorCoverage } from '@/services/inference-window'
 import {
   buildMonitoringRows,
   formatLagDuration,
+  mergeLivePredictions,
   pickTimeFormat,
   residualDensityNote,
   windowStats,
@@ -178,6 +179,7 @@ export function ModelMonitoringTab({ model }: Props) {
   const {
     points: livePoints,
     pointsLoading: livePointsLoading,
+    livePredictEnabled,
     drift,
     driftLoading,
     driftUnavailableReason,
@@ -197,6 +199,16 @@ export function ModelMonitoringTab({ model }: Props) {
   const rows = useMemo(
     () => buildMonitoringRows(points, stats.sd),
     [points, stats.sd],
+  )
+
+  // MODEL-SERVE-008-T04. The dense serving-plane series joins the SAME time
+  // axis as the joined pairs but keeps its own key — two provenances on one
+  // chart, never one series with holes. `rows` itself stays exactly the
+  // MonitoringRow[] the Residual chart and windowStats read, so the SD-band
+  // and residual math still see only ground-truth-paired points.
+  const rowsWithLive = useMemo(
+    () => mergeLivePredictions(rows, livePoints),
+    [rows, livePoints],
   )
   const tickFormatter = useMemo(() => {
     const first = visible[0]
@@ -340,6 +352,15 @@ export function ModelMonitoringTab({ model }: Props) {
           <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-background px-3 py-1.5 text-[10px] font-medium text-muted-foreground">
             <LegendItem color="var(--foreground)" label="Actual" />
             <LegendItem color="var(--chart-1)" label="Predict" />
+            {/* MODEL-SERVE-008-T04. Named for its PLANE, not called a
+                second "predict": it is the synchronous /predict stream,
+                which is a different artifact from a scheduled window's
+                prediction. Rendered only when there is such a series, so a
+                model without the driver sees no legend entry for a line
+                that will never appear. */}
+            {livePoints.length > 0 && (
+              <LegendItem color="var(--chart-4)" label="Live predict" />
+            )}
             <LegendItem color="var(--chart-2)" label="±1 SD" />
             {/* <LegendItem color="var(--chart-3)" label="±2 SD" />
             <LegendItem color="var(--destructive)" label="±3 SD" /> */}
@@ -366,7 +387,7 @@ export function ModelMonitoringTab({ model }: Props) {
             <EmptyTruth error={truthError} coverage={coverage} />
           ) : (
             <ActualVsPredictChart
-              rows={rows}
+              rows={rowsWithLive}
               brush={brush}
               onBrush={setBrush}
               tickFormatter={tickFormatter}
@@ -453,10 +474,19 @@ export function ModelMonitoringTab({ model }: Props) {
           <h2 className="text-sm font-semibold text-foreground">
             Live Predictions (sampled)
           </h2>
+          {/* MODEL-SERVE-008-T06. The caption states WHO writes this
+              stream, because that changed: until T02's driver, only an
+              external caller did, and MODEL-SERVE-001-T10 Part A's copy was
+              written on that basis. The planes still do not merge — a
+              window's predictions.parquet and a /predict row remain
+              different artifacts, and nothing pools them into one feed. */}
           <p className="text-xs text-muted-foreground">
-            The synchronous /predict stream, sampled. No lab counterpart is
-            joined to these — ground truth is joined to scheduled windows, which
-            is what the two charts above show.
+            The synchronous /predict stream, sampled
+            {livePredictEnabled
+              ? ' — fed by this model’s live prediction driver'
+              : ''}
+            . No lab counterpart is joined to these — ground truth is joined to
+            scheduled windows, which is what the two charts above show.
           </p>
         </div>
         {livePointsLoading ? (
@@ -464,7 +494,10 @@ export function ModelMonitoringTab({ model }: Props) {
             Loading…
           </div>
         ) : (
-          <LivePredictionChart points={livePoints} />
+          <LivePredictionChart
+            points={livePoints}
+            livePredictEnabled={livePredictEnabled}
+          />
         )}
       </div>
 

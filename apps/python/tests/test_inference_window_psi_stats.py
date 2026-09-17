@@ -169,3 +169,69 @@ class TestColumnAggregate:
         result = _column_aggregate(pd.Series([1.0, 2.0, 3.0]))
 
         assert result == {"n": 3, "sum": 6.0, "sumsq": 14.0, "min": 1.0, "max": 3.0}
+
+
+# ── MODEL-SERVE-009-T02: per-tag current state ─────────────────────────────
+
+
+def _frame_with_status(values, statuses):
+    """A frame shaped like the one materialize_window holds just before its
+    own Bad-row drop: one tag column plus its `__status` sidecar."""
+    import pandas as pd
+
+    from intergrations.object_store import TIMESTAMP_COLUMN, status_column
+
+    return pd.DataFrame(
+        {
+            TIMESTAMP_COLUMN: pd.date_range(
+                "2026-09-17 08:00", periods=len(values), freq="1min"
+            ),
+            "TI202.PV": values,
+            status_column("TI202.PV"): statuses,
+        }
+    )
+
+
+def test_tag_observations_reads_the_last_row():
+    from services.inference_window_service import _tag_observations
+
+    frame = _frame_with_status([1.0, 2.0, 3.5], [0, 0, 0])
+    out = _tag_observations(frame, ["TI202.PV"])
+
+    assert out["TI202.PV"]["last_value"] == 3.5
+    assert out["TI202.PV"]["last_status"] == 0
+    assert out["TI202.PV"]["observed_at"].startswith("2026-09-17T08:02")
+
+
+def test_tag_observations_reports_a_bad_last_cell_as_bad():
+    """A Bad cell still carries a NUMBER. The value is reported as-is and the
+    status says which it was — the caller decides, because treating a Bad
+    cell's number as a reading is the trade this ledger keeps refusing."""
+    from services.inference_window_service import _tag_observations
+
+    frame = _frame_with_status([1.0, 2.0, 999.0], [0, 0, 1])
+    out = _tag_observations(frame, ["TI202.PV"])
+
+    assert out["TI202.PV"]["last_value"] == 999.0
+    assert out["TI202.PV"]["last_status"] == 1
+
+
+def test_tag_observations_omits_a_tag_absent_from_the_frame():
+    """Absence of evidence is not evidence — the same rule
+    `detectFrozenColumns` guard (5) applies when it skips an absent column
+    rather than reading it as flat."""
+    from services.inference_window_service import _tag_observations
+
+    frame = _frame_with_status([1.0], [0])
+    out = _tag_observations(frame, ["TI202.PV", "NOT_FETCHED.PV"])
+
+    assert "TI202.PV" in out
+    assert "NOT_FETCHED.PV" not in out
+
+
+def test_tag_observations_is_empty_on_an_empty_frame():
+    import pandas as pd
+
+    from services.inference_window_service import _tag_observations
+
+    assert _tag_observations(pd.DataFrame(), ["TI202.PV"]) == {}

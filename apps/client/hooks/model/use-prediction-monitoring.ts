@@ -40,6 +40,11 @@ interface UsePredictionMonitoringResult {
   points: LivePredictionPoint[]
   pointsLoading: boolean
   pointsTruncated: boolean
+  /** MODEL-SERVE-008-T06. Which EMPTY state this stream is in when it has
+   *  no points: driver off = empty by construction; driver on = nothing has
+   *  landed yet. Defaults false, so a model with no schedule row keeps the
+   *  original by-construction sentence. */
+  livePredictEnabled: boolean
   drift: DriftReport | null
   driftLoading: boolean
   /** The backend's own message on any drift-fetch failure (most commonly a
@@ -93,6 +98,7 @@ export function usePredictionMonitoring(
   const [points, setPoints] = useState<LivePredictionPoint[]>([])
   const [pointsLoading, setPointsLoading] = useState(false)
   const [pointsTruncated, setPointsTruncated] = useState(false)
+  const [livePredictEnabled, setLivePredictEnabled] = useState(false)
   const [drift, setDrift] = useState<DriftReport | null>(null)
   const [driftLoading, setDriftLoading] = useState(false)
   const [driftUnavailableReason, setDriftUnavailableReason] = useState<
@@ -150,15 +156,18 @@ export function usePredictionMonitoring(
           })),
         )
         setPointsTruncated(result.data.truncated)
+        setLivePredictEnabled(result.data.livePredictEnabled)
       } else {
         setPoints([])
         setPointsTruncated(false)
+        setLivePredictEnabled(false)
       }
       setPointsLoading(false)
     },
     onIdle: () => {
       setPoints([])
       setPointsTruncated(false)
+      setLivePredictEnabled(false)
       setPointsLoading(false)
     },
   })
@@ -233,6 +242,7 @@ export function usePredictionMonitoring(
     points,
     pointsLoading,
     pointsTruncated,
+    livePredictEnabled,
     drift,
     driftLoading,
     driftUnavailableReason,

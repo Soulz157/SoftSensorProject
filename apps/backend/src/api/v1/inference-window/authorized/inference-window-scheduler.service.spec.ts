@@ -30,6 +30,15 @@ function buildPrisma(overrides: Record<string, unknown> = {}) {
     dataSource: {
       findUnique: jest.fn().mockResolvedValue(null),
     },
+    // MODEL-SERVE-009-T02. Present by default so the per-tag write path is
+    // EXERCISED rather than swallowed by its own best-effort catch — a
+    // fixture missing this accessor made every existing test pass while the
+    // feature silently did nothing.
+    tagObservation: {
+      findMany: jest.fn().mockResolvedValue([]),
+      upsert: jest.fn().mockResolvedValue({}),
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
     ...overrides,
   };
 }
@@ -653,5 +662,148 @@ describe('InferenceWindowSchedulerService.dispatchDue ordering', () => {
         },
       }),
     );
+  });
+});
+
+// ── MODEL-SERVE-009-T02: per-tag current state ─────────────────────────────
+
+describe('InferenceWindowSchedulerService per-tag observations (MODEL-SERVE-009-T02)', () => {
+  const win = {
+    id: 'w1',
+    status: 'PENDING',
+    modelId: 'model-1',
+    modelVersionId: 'version-1',
+    windowStart: new Date('2026-09-10T08:00:00.000Z'),
+    windowEnd: new Date('2026-09-10T09:00:00.000Z'),
+  };
+  const READINGS = {
+    'TI202.PV': {
+      last_value: 41.5,
+      last_status: 0,
+      observed_at: '2026-09-10T08:59:00.000Z',
+    },
+    'FIC114A.PV': {
+      last_value: 0,
+      last_status: 0,
+      observed_at: '2026-09-10T08:59:00.000Z',
+    },
+  };
+
+  function prismaFor(overrides: Record<string, unknown> = {}) {
+    return buildPrisma({
+      inferenceWindow: {
+        findUnique: jest.fn().mockResolvedValue(win),
+        update: jest.fn().mockResolvedValue({ modelId: 'model-1' }),
+      },
+      inferenceSchedule: {
+        findMany: jest.fn().mockResolvedValue([]),
+        findUnique: jest.fn().mockResolvedValue({
+          modelId: 'model-1',
+          sourceId: 'source-1',
+          fetchConfig: { intervalTime: '1m' },
+          minRows: env.INFERENCE_MIN_ROWS,
+        }),
+      },
+      modelVersion: {
+        findUniqueOrThrow: jest
+          .fn()
+          .mockResolvedValue({ featureSpecKey: 'spec-key' }),
+      },
+      dataSource: {
+        findUnique: jest.fn().mockResolvedValue({
+          type: 'sql',
+          host: 'h',
+          username: 'u',
+          dbName: 'd',
+          secretCiphertext: 'enc',
+          config: { driver: 'postgres', port: 5432, table: 't' },
+        }),
+      },
+      ...overrides,
+    });
+  }
+
+  function materializeWith(tagObservations: Record<string, unknown>) {
+    (materializeInferenceWindow as jest.Mock).mockResolvedValue({
+      object_key:
+        'inference/model-1/version-1/dt=2026-09-10/hour=08/input.parquet',
+      row_count: 60,
+      scored_rows: env.INFERENCE_MIN_ROWS + 10,
+      missing_pct: 1,
+      checksum: 'abc',
+      tag_observations: tagObservations,
+    });
+  }
+
+  async function dispatch(prisma: ReturnType<typeof buildPrisma>) {
+    const service = makeService(prisma, buildRunner());
+    await (service as unknown as { dispatchOne(id: string): Promise<void> })[
+      'dispatchOne'
+    ]('w1');
+  }
+
+  it('upserts one row per tag on a successful fetch, keyed on (model, tag)', async () => {
+    materializeWith(READINGS);
+    const prisma = prismaFor();
+
+    await dispatch(prisma);
+
+    expect(prisma.tagObservation.upsert).toHaveBeenCalledTimes(2);
+    const first = prisma.tagObservation.upsert.mock.calls[0][0];
+    // The unique key is what makes "updated in place" the database's rule
+    // rather than every caller's habit — and what keeps this off the
+    // timeseries-in-Postgres path architecture.storage_authority forbids.
+    expect(first.where).toEqual({
+      modelId_tag: { modelId: 'model-1', tag: 'TI202.PV' },
+    });
+    expect(first.update.lastFetchOutcome).toBe('SUCCEEDED');
+    expect(first.update.lastValue).toBe(41.5);
+  });
+
+  it('records a FAILED fetch on existing rows rather than leaving them untouched', async () => {
+    (materializeInferenceWindow as jest.Mock).mockRejectedValue(
+      new Error('source unreachable'),
+    );
+    const prisma = prismaFor();
+
+    await dispatch(prisma);
+
+    // findings[9]: an absent fetch is NOT a flat tag. Without this a
+    // multi-hour outage reads identically to a multi-hour freeze.
+    expect(prisma.tagObservation.updateMany).toHaveBeenCalled();
+    const call = prisma.tagObservation.updateMany.mock.calls[0][0];
+    expect(call.where).toEqual({ modelId: 'model-1' });
+    expect(call.data.lastFetchOutcome).toBe('FAILED');
+    // Neither timestamp moves: nothing arrived, so nothing arrived.
+    expect(call.data.lastSeenAt).toBeUndefined();
+    expect(call.data.lastChangedAt).toBeUndefined();
+  });
+
+  it('writes nothing per-tag when the fetch reported no tags at all', async () => {
+    materializeWith({});
+    const prisma = prismaFor();
+
+    await dispatch(prisma);
+
+    expect(prisma.tagObservation.upsert).not.toHaveBeenCalled();
+  });
+
+  it('does not cost the window its input pointer when the per-tag write throws', async () => {
+    materializeWith(READINGS);
+    const prisma = prismaFor({
+      tagObservation: {
+        findMany: jest.fn().mockRejectedValue(new Error('db down')),
+        upsert: jest.fn(),
+        updateMany: jest.fn(),
+      },
+    });
+
+    await dispatch(prisma);
+
+    // The window's scored record must not be lost for derived state the
+    // next fetch rewrites anyway.
+    const updates = prisma.inferenceWindow.update.mock.calls;
+    expect(updates.length).toBeGreaterThan(0);
+    expect(updates[0][0].data.inputKey).toContain('input.parquet');
   });
 });

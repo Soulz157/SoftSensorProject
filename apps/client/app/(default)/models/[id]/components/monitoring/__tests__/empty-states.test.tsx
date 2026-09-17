@@ -46,6 +46,43 @@ describe('LivePredictionChart empty state (MODEL-SERVE-001-T10)', () => {
       screen.queryByText('No sampled predictions in this range yet.'),
     ).toBeNull()
   })
+
+  /**
+   * MODEL-SERVE-008-T06. T02's live driver made the by-construction claim
+   * FALSE for any model whose driver is on: scheduled inference still never
+   * writes this stream, but the driver does. A section naming a cause that
+   * no longer applies is worse than one saying nothing, because a reader
+   * trusts it.
+   */
+  it('does NOT claim the stream is empty by construction when the driver is on', () => {
+    render(<LivePredictionChart points={[]} livePredictEnabled />)
+
+    expect(
+      screen.queryByText(/scheduled inference does not write here/i),
+    ).toBeNull()
+    expect(
+      screen.getByText(/live prediction is on for this model/i),
+    ).toBeVisible()
+  })
+
+  it('says why an enabled driver can still show nothing, without blaming the model', () => {
+    render(<LivePredictionChart points={[]} livePredictEnabled />)
+
+    expect(
+      screen.getByText(/scoring pauses whenever the historian is unreachable/i),
+    ).toBeVisible()
+  })
+
+  it('keeps the by-construction sentence when the driver is OFF — the default is unchanged', () => {
+    // No prop at all: a caller that never opted into the new state must not
+    // silently get a different message.
+    render(<LivePredictionChart points={[]} />)
+
+    expect(
+      screen.getByText(/scheduled inference does not write here/i),
+    ).toBeVisible()
+    expect(screen.queryByText(/live prediction is on/i)).toBeNull()
+  })
 })
 
 describe('DriftPanel empty states (MODEL-SERVE-001-T10)', () => {

@@ -238,3 +238,139 @@ export function computeDrift(
 
   return { status: overall, columns };
 }
+
+/** One dense bucket's verdict, before the consecutive-breach rule runs. */
+export interface DriftBucket {
+  /** Bucket start, for ordering and for naming when a breach began. */
+  at: string;
+  report: DriftReport;
+}
+
+export interface SustainedColumnDrift extends ColumnDrift {
+  /** How many consecutive most-recent buckets breached at this column's own
+   *  level. 0 when the newest bucket did not breach. */
+  consecutive: number;
+  /** The status the raw newest bucket reported, BEFORE the rule. Kept so a
+   *  reader can see a breach that is real but not yet sustained, rather
+   *  than a signal that silently says OK while z sits above the line. */
+  instantStatus: DriftStatus;
+  /** Bucket start of the oldest breach in the current run — null when the
+   *  newest bucket did not breach. */
+  since: string | null;
+}
+
+export interface SustainedDriftReport {
+  status: DriftStatus;
+  columns: SustainedColumnDrift[];
+  /** The rule in force, echoed so a caller never has to guess which
+   *  threshold produced the status it is rendering. */
+  consecutiveRequired: number;
+  bucketsEvaluated: number;
+}
+
+/**
+ * MODEL-SERVE-008-T03. Require N CONSECUTIVE dense buckets to breach before
+ * the drift signal changes state.
+ *
+ * WHY THIS EXISTS. `warnSd`/`criticalSd` were chosen against HOURLY windows.
+ * Evaluated every ten minutes against the same unchanged process, the same
+ * numbers fire roughly six times as often — so the cadence would silently
+ * change the effective sensitivity, which is exactly what this feature's
+ * openDecisions[3] refused to let happen by accident. The thresholds keep
+ * their meaning; what changes is how much evidence a state change needs.
+ * REJECTED (recorded here rather than only in the ledger): separate
+ * warnSd/criticalSd for the dense signal — two numbers per schedule that
+ * can silently disagree about one process; and reusing the thresholds
+ * unchanged — simplest, and the accidental-sensitivity change itself.
+ *
+ * UNKNOWN NEVER FOLDS INTO OK, AND IS NEVER "NOT A BREACH". A column whose
+ * baseline is missing or degenerate has NO verdict; the rule cannot count
+ * it toward a breach run and must not silently report it as healthy. It
+ * propagates as UNKNOWN, the rule that `computeDrift` already holds and
+ * that prediction-drift.spec.ts already pins — a new call site is a new
+ * place to break it.
+ *
+ * ONE UNKNOWN COLUMN NEVER MASKS ANOTHER'S CRITICAL: the report status is
+ * the worst REAL verdict present, with UNKNOWN surfacing only when nothing
+ * worse was found.
+ *
+ * `buckets` are oldest-first. The rule reads from the NEWEST backwards,
+ * because the question is "is this breach sustained right now", never "was
+ * there ever a run of breaches in this range".
+ */
+export function applyConsecutiveBreachRule(
+  buckets: DriftBucket[],
+  consecutiveRequired: number,
+): SustainedDriftReport {
+  const required = Math.max(1, Math.floor(consecutiveRequired));
+  if (buckets.length === 0) {
+    return {
+      status: 'UNKNOWN',
+      columns: [],
+      consecutiveRequired: required,
+      bucketsEvaluated: 0,
+    };
+  }
+
+  const newest = buckets[buckets.length - 1]!;
+  const columns: SustainedColumnDrift[] = newest.report.columns.map((col) => {
+    const instantStatus = col.status;
+
+    // No verdict to sustain. UNKNOWN passes straight through with an empty
+    // run — counting it as a non-breach would let a missing baseline read
+    // as evidence of health.
+    if (instantStatus === 'UNKNOWN') {
+      return { ...col, consecutive: 0, instantStatus, since: null };
+    }
+    if (instantStatus === 'OK') {
+      return { ...col, consecutive: 0, instantStatus, since: null };
+    }
+
+    // Walk backwards while each bucket breached AT LEAST as hard as the
+    // newest one. A WARN preceded by CRITICALs is still a sustained WARN;
+    // a CRITICAL preceded by WARNs is not yet a sustained CRITICAL, which
+    // is the conservative direction.
+    const floor = SEVERITY[instantStatus];
+    let consecutive = 0;
+    let since: string | null = null;
+    for (let i = buckets.length - 1; i >= 0; i -= 1) {
+      const bucket = buckets[i]!;
+      const match = bucket.report.columns.find((c) => c.column === col.column);
+      if (!match || match.status === 'UNKNOWN') break;
+      if (SEVERITY[match.status] < floor) break;
+      consecutive += 1;
+      since = bucket.at;
+    }
+
+    // Under the bar: the breach is REAL and is reported as `instantStatus`,
+    // but the acted-on status stays OK. Hiding the instant verdict would
+    // make the panel say OK while z sits above the line, which is the same
+    // confident-wrong-answer this ledger keeps refusing.
+    const status: DriftStatus = consecutive >= required ? instantStatus : 'OK';
+    return {
+      ...col,
+      status,
+      consecutive,
+      instantStatus,
+      since: consecutive > 0 ? since : null,
+    };
+  });
+
+  // Reuses this module's OWN severity scale and its reduce convention
+  // (UNKNOWN 0 < OK 1 < WARN 2 < CRITICAL 3, seeded at UNKNOWN) rather
+  // than defining a second one: one UNKNOWN column cannot mask another's
+  // CRITICAL, and an all-UNKNOWN report stays UNKNOWN instead of
+  // collapsing to OK. A second scale here is a second thing to disagree
+  // with `computeDrift`.
+  const worst = columns.reduce<DriftStatus>(
+    (acc, c) => (SEVERITY[c.status] > SEVERITY[acc] ? c.status : acc),
+    'UNKNOWN',
+  );
+
+  return {
+    status: worst,
+    columns,
+    consecutiveRequired: required,
+    bucketsEvaluated: buckets.length,
+  };
+}

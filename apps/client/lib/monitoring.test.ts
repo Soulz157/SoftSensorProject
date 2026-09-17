@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildMonitoringRows,
   formatLagDuration,
+  mergeLivePredictions,
   residualDensityNote,
   windowStats,
 } from './monitoring'
@@ -175,5 +176,87 @@ describe('formatLagDuration', () => {
     expect(formatLagDuration(60)).toBe('1h')
     expect(formatLagDuration(90)).toBe('90m')
     expect(formatLagDuration(5)).toBe('5m')
+  })
+})
+
+/**
+ * MODEL-SERVE-008-T04. Two series, two provenances, one chart — never one
+ * series with holes in it, and never an `actual` invented to fill a dense
+ * predicted point's row.
+ */
+describe('mergeLivePredictions (MODEL-SERVE-008-T04)', () => {
+  // `sd` is required — the SD band is part of what a joined row carries,
+  // and a fixture that omits it type-checks as a lie even while vitest runs
+  // it happily.
+  const joined = buildMonitoringRows(
+    [
+      point('2026-09-17T00:00:00.000Z', 40, 39),
+      point('2026-09-17T02:00:00.000Z', 42, 41),
+    ],
+    1,
+  )
+
+  it('keeps the dense series under its OWN key, never merged into predict', () => {
+    const out = mergeLivePredictions(joined, [
+      { timestamp: '2026-09-17T00:00:00.000Z', predicted: 39.5 },
+    ])
+
+    const row = out.find(r => r.timestamp === '2026-09-17T00:00:00.000Z')!
+    expect(row.live).toBe(39.5)
+    // The window plane's own prediction is untouched — two provenances.
+    expect(row.predict).toBe(39)
+  })
+
+  it('NEVER invents an actual for a dense-only timestamp', () => {
+    const out = mergeLivePredictions(joined, [
+      { timestamp: '2026-09-17T01:00:00.000Z', predicted: 40.5 },
+    ])
+
+    const denseOnly = out.find(r => r.timestamp === '2026-09-17T01:00:00.000Z')!
+    expect(denseOnly.live).toBe(40.5)
+    // The whole point: no fabricated ground truth, and no residual either.
+    expect(denseOnly.actual).toBeUndefined()
+    expect(denseOnly.residual).toBeUndefined()
+  })
+
+  it('interleaves dense points between sparse pairs, in time order', () => {
+    const out = mergeLivePredictions(joined, [
+      { timestamp: '2026-09-17T00:30:00.000Z', predicted: 1 },
+      { timestamp: '2026-09-17T01:30:00.000Z', predicted: 2 },
+    ])
+
+    expect(out.map(r => r.timestamp)).toEqual([
+      '2026-09-17T00:00:00.000Z',
+      '2026-09-17T00:30:00.000Z',
+      '2026-09-17T01:30:00.000Z',
+      '2026-09-17T02:00:00.000Z',
+    ])
+  })
+
+  it('does not snap a dense point onto a nearby pair — exact timestamps only', () => {
+    const out = mergeLivePredictions(joined, [
+      // One minute off a joined row. Snapping it would attach a prediction
+      // to a pair it did not come from.
+      { timestamp: '2026-09-17T00:01:00.000Z', predicted: 39.9 },
+    ])
+
+    const pair = out.find(r => r.timestamp === '2026-09-17T00:00:00.000Z')!
+    expect(pair.live).toBeUndefined()
+    expect(out).toHaveLength(3)
+  })
+
+  it('returns the joined rows unchanged when there is no dense series at all', () => {
+    const out = mergeLivePredictions(joined, [])
+
+    expect(out).toHaveLength(2)
+    expect(out.every(r => r.live === undefined)).toBe(true)
+  })
+
+  it('survives an unparseable dense timestamp rather than placing it at NaN', () => {
+    const out = mergeLivePredictions(joined, [
+      { timestamp: 'not-a-date', predicted: 5 },
+    ])
+
+    expect(out).toHaveLength(2)
   })
 })

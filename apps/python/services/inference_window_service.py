@@ -44,8 +44,10 @@ import pandas as pd
 
 from intergrations.object_store import (
     INFERENCE_INPUT_FILENAME,
+    STATUS_GOOD,
     TIMESTAMP_COLUMN,
     inference_window_key,
+    status_column,
 )
 from intergrations.object_store import missing_pct as _missing_pct
 from schemas.preprocess import FeatureConfigRequest, InferenceWindowMaterializeRequest
@@ -201,6 +203,74 @@ def _scaled_feature_stats(
     } or None
 
 
+def _tag_observations(
+    frame: pd.DataFrame,
+    feature_columns: list[str],
+) -> dict[str, dict[str, Any]]:
+    """MODEL-SERVE-009-T02. The LAST value and arrival status per tag, as of
+    this fetch.
+
+    COMPUTED BEFORE `drop_bad_feature_rows`, and that ordering is the whole
+    point. MODEL-SERVE-001-T15 measured what happens when `input.parquet` is
+    read as a per-tag status surface: the drop removes every row carrying a
+    Bad kept-feature cell, so what survives is Good BY CONSTRUCTION and a
+    status read off it is the constant `Good` dressed as a measurement.
+    Reading the frame here — after `select_columns`, before the drop — is the
+    only point where a Bad cell is still visible AND the frame is already
+    narrowed to the model's own columns.
+
+    DERIVED FROM THE `{tag}__status` SIDECARS `from_pi_response` ALREADY
+    BUILT, never a second status computed some other way: decisions.
+    arrival_health_and_pi_quality_are_two_fields keeps this the FETCH PATH's
+    arrival health, which is what the pipeline itself acts on. PI's own
+    good/questionable/substituted flag lives only on the snapshot path
+    (MODEL-SERVE-001-T15) and is deliberately NOT merged in here — one column
+    holding whichever flag happened to be available is a field whose meaning
+    depends on which path last wrote it.
+
+    `last_value` is the last row's value REGARDLESS of that row's status, and
+    `last_status` says which it was. A caller deciding whether a tag has
+    changed must read both: a Bad cell still carries a number, and treating
+    it as a reading is the fabricate-a-plausible-number trade this ledger has
+    refused repeatedly.
+
+    A tag absent from the frame entirely is OMITTED rather than reported with
+    a null value — absence of evidence is not evidence, the same rule
+    `detectFrozenColumns`' guard (5) applies when it skips an absent column
+    rather than reading it as flat.
+    """
+    if frame.empty:
+        return {}
+
+    last = frame.iloc[-1]
+    observed_at = last.get(TIMESTAMP_COLUMN)
+    out: dict[str, dict[str, Any]] = {}
+    for tag in feature_columns:
+        if tag not in frame.columns:
+            continue
+        status_col = status_column(tag)
+        raw_status = last.get(status_col)
+        value = last.get(tag)
+        if pd.isna(value):
+            continue
+        out[tag] = {
+            "last_value": float(value),
+            # An absent sidecar is NOT assumed Good — `assert_frame_shape`
+            # requires one per tag, so its absence is a real anomaly and
+            # reporting Good here would launder it.
+            "last_status": (
+                int(raw_status) if raw_status is not None and not pd.isna(raw_status)
+                else int(STATUS_GOOD) + 1
+            ),
+            "observed_at": (
+                observed_at.isoformat()
+                if hasattr(observed_at, "isoformat")
+                else str(observed_at)
+            ),
+        }
+    return out
+
+
 def materialize_window(
     store, request: InferenceWindowMaterializeRequest
 ) -> dict[str, Any]:
@@ -338,6 +408,10 @@ def materialize_window(
     # `to_model_ready` calls below (module docstring's T17 amendment) are a
     # throwaway copy for drift aggregates only, and both run AFTER this
     # line for the identical reason.
+    # MODEL-SERVE-009-T02. Read BEFORE the drop below — see
+    # `_tag_observations`' own docstring for why after it is worthless.
+    tag_observations = _tag_observations(frame, request.feature_columns)
+
     frame, _dropped = drop_bad_feature_rows(frame, request.feature_columns)
     scored_rows = len(frame)
 
@@ -370,4 +444,5 @@ def materialize_window(
         "checksum": stats.checksum,
         "feature_histograms": feature_histograms,
         "feature_stats": feature_stats,
+        "tag_observations": tag_observations,
     }

@@ -7,6 +7,7 @@ import {
   predictionLogSeries,
 } from '@/lib/python-preprocess-client';
 import {
+  applyConsecutiveBreachRule,
   computeDrift,
   poolFeatureStats,
   type FeatureStatsMap,
@@ -224,11 +225,33 @@ export class PredictionLogAuthorizedService {
       .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
     const truncated = results.some((r) => r.truncated);
 
+    // MODEL-SERVE-008-T06. MODEL-SERVE-001-T10 Part A's finding was that
+    // this stream is empty BY CONSTRUCTION for a scheduled-only model, and
+    // the chart says so. T02's live driver makes that implication false for
+    // any model whose driver is on: scheduled inference still never writes
+    // here, but something else now does. A section that names a cause which
+    // no longer applies is worse than one that says nothing, because a
+    // reader trusts it.
+    //
+    // Rides along on this response rather than costing the client a second
+    // request — it is one boolean about the same model over the same range,
+    // and the chart cannot tell the two empty states apart without it.
+    const schedule = await this.prisma.inferenceSchedule.findUnique({
+      where: { modelId },
+      select: { livePredictEnabled: true },
+    });
+
     return {
       statusCode: 200,
       message: 'Prediction series fetched',
       type: 'SUCCESS' as const,
-      data: { points, truncated },
+      data: {
+        points,
+        truncated,
+        // False with no schedule row at all — no driver, so the original
+        // by-construction sentence is the correct one.
+        livePredictEnabled: schedule?.livePredictEnabled ?? false,
+      },
     };
   }
 
@@ -314,6 +337,132 @@ export class PredictionLogAuthorizedService {
           // see InferenceWindowMonitoringService's own basisOf for the
           // window-plane counterpart.
           plane: 'predict' as const,
+        },
+      },
+    };
+  }
+
+  /**
+   * MODEL-SERVE-008-T03. The DENSE drift signal — the same z-score, the same
+   * thresholds, evaluated per short bucket and gated by a consecutive-breach
+   * rule.
+   *
+   * ITS OWN ROUTE, NEVER A REPLACEMENT FOR `/drift`. `getDriftService`
+   * dispatches on InferenceSchedule ROW PRESENCE (MODEL-SERVE-001-T17, whose
+   * tests assert PredictionLog is never touched when a schedule exists) and
+   * that dispatch is deliberately unchanged: a model running BOTH planes
+   * keeps a window-plane drift panel that answers exactly the question its
+   * caption claims. Folding a 10-minute signal into that hourly table would
+   * put two metrics with different cadences in one place, which
+   * MODEL-SERVE-001-T16 already refused for PSI. Two readouts, two cadences,
+   * two captions.
+   *
+   * WHY BUCKETS AND NOT ONE POOL: pooling the whole range into a single
+   * `computeDrift` answers "was the average of this range drifted", which
+   * hides a breach that started twenty minutes ago inside hours of healthy
+   * traffic. Bucketing at the model's own live cadence is what makes
+   * "sustained right now" a question the data can answer at all.
+   *
+   * THE BASELINE IS THE SAME SIDECAR THE WINDOW PLANE READS — `resolve
+   * ColumnBaseline` over the production version's own `goldObjectKey`. T17
+   * extracted it for exactly this: a second plane reads the identical
+   * sidecar the identical way, so the two signals can never disagree about
+   * what "training distribution" means. NOTE THE DILUTION IT INHERITS
+   * (MODEL-SERVE-001-T13, measured): `column_stats.json` spans the WHOLE
+   * committed artifact rather than the train split, so the reference is
+   * systematically wider and this signal UNDER-flags. A denser cadence does
+   * not fix that and this endpoint must not be described as more sensitive
+   * than it is.
+   */
+  async getLiveDriftService(
+    modelId: string,
+    query: PredictionLogRangeQueryDto,
+    user: Auth.UserPayload,
+  ) {
+    await this.assertModelAccess(modelId, user);
+
+    const production = await this.prisma.modelVersion.findFirst({
+      where: { modelId, stage: 'PRODUCTION' },
+    });
+    if (!production) {
+      throw new AppException({
+        statusCode: 404,
+        message: `Model ${modelId} has no PRODUCTION version. Nothing to compare live traffic against.`,
+        type: 'ERROR',
+      });
+    }
+
+    const schedule = await this.prisma.inferenceSchedule.findUnique({
+      where: { modelId },
+      select: { livePredictEnabled: true, livePredictCadenceMinutes: true },
+    });
+
+    const rows = await this.prisma.predictionLog.findMany({
+      where: {
+        modelVersionId: production.id,
+        requestedAt: { gte: new Date(query.from), lte: new Date(query.to) },
+      },
+      select: { featureStats: true, requestedAt: true },
+      orderBy: { requestedAt: 'asc' },
+    });
+
+    const baseline = await resolveColumnBaseline(production.goldObjectKey);
+    const thresholds = {
+      warnSd: env.DRIFT_WARN_SD,
+      criticalSd: env.DRIFT_CRITICAL_SD,
+      outOfRangePct: env.DRIFT_OUT_OF_RANGE_PCT,
+    };
+
+    // One bucket per live cadence, so a "consecutive bucket" means one
+    // scoring interval and the rule counts the thing the operator set.
+    const bucketMs =
+      Math.max(1, schedule?.livePredictCadenceMinutes ?? 10) * 60_000;
+    const byBucket = new Map<number, FeatureStatsMap[]>();
+    for (const row of rows) {
+      const slot = Math.floor(row.requestedAt.getTime() / bucketMs) * bucketMs;
+      const list = byBucket.get(slot) ?? [];
+      list.push(row.featureStats as unknown as FeatureStatsMap);
+      byBucket.set(slot, list);
+    }
+
+    // Oldest-first: `applyConsecutiveBreachRule` reads from the NEWEST
+    // backwards, because the question is "is this breach sustained right
+    // now", never "was there ever a run of breaches in this range".
+    const buckets = [...byBucket.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([slot, stats]) => ({
+        at: new Date(slot).toISOString(),
+        report: computeDrift(poolFeatureStats(stats), baseline, thresholds),
+      }));
+
+    const report = applyConsecutiveBreachRule(
+      buckets,
+      env.LIVE_DRIFT_CONSECUTIVE_BREACHES,
+    );
+
+    return {
+      statusCode: 200,
+      message: 'Live drift report fetched',
+      type: 'SUCCESS' as const,
+      data: {
+        ...report,
+        basis: {
+          modelVersionId: production.id,
+          version: production.version,
+          goldArtifactId: production.goldArtifactId,
+          goldObjectKey: production.goldObjectKey,
+          sampleRequests: rows.length,
+          bucketMinutes: bucketMs / 60_000,
+          // So a reader can tell "no breach" from "the driver is off and
+          // this readout is describing nothing".
+          livePredictEnabled: schedule?.livePredictEnabled ?? false,
+          from: query.from,
+          to: query.to,
+          // A THIRD plane label, not a reuse of 'predict': these are the
+          // same rows as /drift's predict plane but evaluated on a
+          // different cadence under a different rule, and a caller that
+          // cannot tell them apart will eventually render one as the other.
+          plane: 'predict-live' as const,
         },
       },
     };

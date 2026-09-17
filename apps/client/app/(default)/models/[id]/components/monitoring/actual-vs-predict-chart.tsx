@@ -11,13 +11,21 @@ import {
   Brush,
   ResponsiveContainer,
 } from 'recharts'
-import type { BrushWindow, MonitoringRow } from '@/lib/monitoring'
+import type {
+  BrushWindow,
+  LiveOverlayRow,
+  MonitoringRow,
+} from '@/lib/monitoring'
 import { MonitoringTooltip } from './monitoring-tooltip'
 
 export type { BrushWindow }
 
 interface Props {
-  rows: MonitoringRow[]
+  /** MODEL-SERVE-008-T04. `LiveOverlayRow` widens `MonitoringRow` for the
+   *  chart ONLY — a dense predicted point has no lab counterpart, so its row
+   *  carries no `actual` and no `residual`. `EvalPoint` itself is untouched
+   *  and stays non-optional, per MODEL-SERVE-005's recorded refusal. */
+  rows: Array<MonitoringRow | LiveOverlayRow>
   brush: BrushWindow
   onBrush: (w: BrushWindow) => void
   tickFormatter: (t: number) => string
@@ -101,6 +109,27 @@ export function ActualVsPredictChart({
               fillOpacity={0.42}
               isAnimationActive={false}
               activeDot={false}
+            />
+
+            {/* MODEL-SERVE-008-T04. The DENSE serving-plane series, drawn
+                BENEATH the window-plane prediction so the sparse, ground-
+                truth-paired series stays the visually dominant one — this
+                chart's subject is still Actual vs Predict, and the dense
+                line is context for it. `connectNulls` spans the gaps
+                between dense points on purpose: they are one continuous
+                series sampled at its own cadence, not a series with holes.
+                A gap where the historian was unreachable is therefore a
+                straight segment, which is why the coverage strip states the
+                counts rather than leaving a reader to infer them. */}
+            <Line
+              connectNulls
+              type="monotone"
+              dataKey="live"
+              stroke="var(--chart-4)"
+              strokeWidth={1.5}
+              strokeOpacity={0.75}
+              dot={false}
+              isAnimationActive={false}
             />
 
             <Line

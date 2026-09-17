@@ -13,6 +13,11 @@ import type { LivePredictionPoint } from '@/hooks/model/use-prediction-monitorin
 
 interface Props {
   points: LivePredictionPoint[]
+  /** MODEL-SERVE-008-T06. Optional, defaulting to false, so the original
+   *  by-construction sentence stands for any caller that has not been
+   *  taught about the driver yet — a new empty state must not arrive as a
+   *  silent behaviour change in a caller that never opted into it. */
+  livePredictEnabled?: boolean
 }
 
 /**
@@ -22,7 +27,10 @@ interface Props {
  * `ActualVsPredictChart` rather than that component fed a fabricated
  * `actual` value.
  */
-export function LivePredictionChart({ points }: Props) {
+export function LivePredictionChart({
+  points,
+  livePredictEnabled = false,
+}: Props) {
   if (points.length === 0) {
     // MODEL-SERVE-001-T10. This section reads PredictionLog, which ONLY
     // apps/serving's synchronous /predict path writes. A scheduled window
@@ -41,11 +49,25 @@ export function LivePredictionChart({ points }: Props) {
           No synchronous /predict traffic has been logged for this model in this
           range.
         </p>
-        <p className="text-xs text-muted-foreground/70">
-          This chart plots sampled live requests. Scheduled inference does not
-          write here — it writes to the monitoring record, which feeds the
-          Actual vs. Predict and Residual sections above.
-        </p>
+        {livePredictEnabled ? (
+          // MODEL-SERVE-008-T06. The driver IS writing to this stream, so
+          // the by-construction sentence below would name a cause that no
+          // longer applies — and a section a reader trusts is worse wrong
+          // than one that says nothing. The planes still do not merge: this
+          // says only that the /predict plane now HAS a writer for this
+          // model, never that a window wrote here.
+          <p className="text-xs text-muted-foreground/70">
+            Live prediction is on for this model, so this chart fills as
+            predictions are scored. Nothing has landed in this range yet —
+            scoring pauses whenever the historian is unreachable.
+          </p>
+        ) : (
+          <p className="text-xs text-muted-foreground/70">
+            This chart plots sampled live requests. Scheduled inference does not
+            write here — it writes to the monitoring record, which feeds the
+            Actual vs. Predict and Residual sections above.
+          </p>
+        )}
       </div>
     )
   }

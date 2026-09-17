@@ -7,6 +7,7 @@ import { InferenceWindowAuthorizedService } from './authorized/inference-window.
 import { InferenceWindowSchedulerService } from './authorized/inference-window-scheduler.service';
 import { InferenceTruthSweeperService } from './authorized/inference-truth-sweeper.service';
 import { InferenceWindowMonitoringService } from './authorized/inference-window-monitoring.authorized.service';
+import { LivePredictDriverService } from './authorized/live-predict-driver.service';
 import { InferenceWindowTokenGuard } from '@/guards/inference-window-token.guard';
 import { ModelVersionModule } from '../model-version/model-version.module';
 
@@ -38,6 +39,14 @@ import { ModelVersionModule } from '../model-version/model-version.module';
     InferenceTruthSweeperService,
     InferenceWindowTokenGuard,
     InferenceWindowMonitoringService,
+    // MODEL-SERVE-008-T02. Its OWN sweep again, for the same reason the
+    // truth sweeper has one: the scheduler tick inserts and reconciles and
+    // nothing else. This driver never writes an InferenceWindow, never
+    // spawns a container and never claims the scheduler's concurrency slot
+    // — it reuses `InferenceWindowSchedulerService` only for
+    // `asFetchConfig`/`resolveSource`, which are public precisely so a
+    // second copy of the source mapping cannot drift from the first.
+    LivePredictDriverService,
   ],
   // MODEL-SERVE-001-T17. First export this module has needed — Prediction
   // LogModule imports this module to read the window-plane drift/PSI

@@ -126,6 +126,37 @@ export const env = {
   // closed, never silently accept every bearer value.
   SERVING_API_TOKEN: process.env.SERVING_API_TOKEN,
 
+  // MODEL-SERVE-008-T02. The FIRST outbound backend -> serving call in this
+  // system: SERVING_API_TOKEN above only VERIFIES traffic arriving FROM the
+  // serving process, and until the live-prediction driver every call ran in
+  // that direction. apps/serving's /predict carries no auth of its own (it
+  // is an internal service reached over the compose network), so this is a
+  // base URL and not a credential — nothing here fails closed, because
+  // there is nothing to fail closed ON.
+  SERVING_API_URL: process.env.SERVING_API_URL ?? 'http://localhost:8100',
+
+  // How often the driver WAKES, which is not how often a model is scored:
+  // each schedule carries its own `livePredictCadenceMinutes` (default 10,
+  // floored by the slowest tag's real refresh — see schema.prisma) and the
+  // sweep simply asks who is due. Same split `INFERENCE_TICK_INTERVAL_MS`
+  // already draws between the dispatch sweep and a schedule's own cadence,
+  // and the same reason MODEL-SERVE-001-T09 gave for not polling faster
+  // than the tick: anything shorter is load with no information in it.
+  LIVE_PREDICT_TICK_INTERVAL_MS: Number(
+    process.env.LIVE_PREDICT_TICK_INTERVAL_MS ?? 60_000,
+  ),
+
+  // MODEL-SERVE-008-T03. How many CONSECUTIVE dense buckets must breach
+  // before the live drift signal changes state. Three, because warnSd/
+  // criticalSd were chosen against HOURLY windows and the dense stream
+  // evaluates them roughly six times as often on the same unchanged
+  // process — the thresholds keep their meaning, and this is how much
+  // evidence a state change costs. NOT a second threshold: it never
+  // changes what "breached" means, only how long a breach must persist.
+  LIVE_DRIFT_CONSECUTIVE_BREACHES: Number(
+    process.env.LIVE_DRIFT_CONSECUTIVE_BREACHES ?? 3,
+  ),
+
   // MODEL-SERVE-005. Drift thresholds, using the SAME field names the
   // wizard's own deploy atoms already use (mpRetrainWarnSdAtom/
   // mpRetrainCriticalSdAtom/mpDriftThresholdPctAtom — MODEL-FLOW-010-T08's
