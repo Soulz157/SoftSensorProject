@@ -158,9 +158,14 @@ export function Phase2DatasetReview({ nav }: Props) {
     })
   }, [dataset, allSources])
 
+  // DS-LAKE-028-T06. Same inversion the data preview on this step already
+  // applies, for the same reason: the column_stats sidecar is computed on the
+  // post-to_model_ready frame, so its per-tag numbers are in [0,1] until
+  // converted. Leaving the table scaled while the preview beside it was not
+  // would have been the worse of the two states.
   const perTagStats = useMemo(
-    () => perTagStatsOrdered(tags, columnStats?.stats),
-    [columnStats, tags],
+    () => perTagStatsOrdered(tags, columnStats?.stats, scalingParams),
+    [columnStats, tags, scalingParams],
   )
 
   async function confirmEditDataset() {

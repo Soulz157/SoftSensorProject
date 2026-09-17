@@ -406,7 +406,18 @@ export class PreprocessingJobService
         const exportStats = ExportStatsSchema.parse(
           await postToPython(
             '/v1/preprocess/export',
-            { source_key: sourceObjectKey, target_key: committedKey },
+            {
+              source_key: sourceObjectKey,
+              target_key: committedKey,
+              // DS-LAKE-028-T05. The SOURCE artifact's own spec key, so the
+              // export can invert back to engineering units. An EXPORT row
+              // never has a featureSpecKey of its own (0 of 5 live ones do)
+              // but its parent FINAL carries one on 5 of 5, and that parent
+              // IS this job's sourceArtifact — so this is a field already in
+              // hand, not a second query. Null is a legitimate value: a
+              // source that was never scaled exports its bytes as they are.
+              feature_spec_key: job.sourceArtifact?.featureSpecKey ?? null,
+            },
             PYTHON_TIMEOUT.preprocess,
             controller.signal,
           ),

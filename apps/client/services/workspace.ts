@@ -52,7 +52,21 @@ export const workspaceService = {
       method: 'POST',
       body: JSON.stringify(data),
     })
-    return { ...res.data, modelsCount: 0 }
+    // The create endpoint does not run `deriveNodeSummary`, so its response
+    // carries no status and no relation counts. A brand-new workspace is
+    // genuinely empty and genuinely normal, so these are truthful values —
+    // NOT placeholders. Without them the card reads `toBinaryStatus(undefined)`
+    // as `abnormal` and paints a freshly created workspace with a pulsing red
+    // alarm ring, on the one surface DESIGN.md:153 reserves red for.
+    return {
+      ...res.data,
+      status: 'normal' as const,
+      nodeCount: 0,
+      alarmCount: 0,
+      modelsCount: 0,
+      plantsCount: 0,
+      datasetsCount: 0,
+    }
   },
 
   updateWorkspace: async (

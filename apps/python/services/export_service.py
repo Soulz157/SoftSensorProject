@@ -14,6 +14,16 @@ memory scaled with artifact size despite the batched decode.
 __status sidecar columns are dropped from the output; a Bad-status cell
 writes as an empty CSV field, never the raw 0.0 frame_service.MISSING_VALUE
 actually stores in the source Parquet (userDecisions, DS-LAKE-021).
+
+DS-LAKE-028-T05: values are INVERTED back to engineering units before they
+are written. A saved dataset's FINAL is model-ready by construction, so
+this file used to leave the system as a min-max normalized frame presented
+as the dataset's data — the one surface here whose output gets read against
+historian values. The artifact's own bytes are NOT rewritten; the inverse is
+computed on the way out, from the `feature_spec.json` the caller names, and
+is APPROXIMATE by the +/-0.001 * span the scaler's own rounding introduced.
+A column no inverse can recover (robust fitted with iqr == 0) REFUSES the
+export rather than writing a 0.0 that reads as a measurement.
 """
 
 from __future__ import annotations
@@ -21,7 +31,9 @@ from __future__ import annotations
 import hashlib
 import tempfile
 
+import numpy as np
 import pyarrow.parquet as pq
+from softsensor_scaling import NotInvertibleError, inverse_scale_column
 
 from intergrations.object_store import (
     ObjectStore,
@@ -44,6 +56,58 @@ BATCH_ROWS = 50_000
 SPOOL_MAX_BYTES = 16 * 1024 * 1024
 
 
+def _load_scaling_params(
+    store: ObjectStore, feature_spec_key: str | None
+) -> dict[str, dict[str, float]]:
+    """The fitted scaler params for this artifact, or {} when there are none.
+
+    `scalingParams` is the authoritative record of what was fitted and is
+    read directly; `scaling` is NOT consulted, at any featureVersion. Every
+    spec written before DS-LAKE-028-T02 holds `scaling: []` while its data
+    IS fully scaled, so branching on that field would silently export a
+    normalized frame as though it were engineering units — the exact defect
+    this task exists to close.
+
+    A null key is not an error. An EXPORT whose source has no spec (nothing
+    was ever scaled, or the artifact predates the sidecar) exports the bytes
+    as they are, which is correct for an unscaled frame.
+    """
+    if not feature_spec_key:
+        return {}
+    spec = store.get_json(feature_spec_key)
+    params = spec.get("scalingParams") or {}
+    return {tag: dict(entry) for tag, entry in params.items()}
+
+
+def _assert_every_column_is_invertible(
+    value_columns: list[str],
+    scaling_params: dict[str, dict[str, float]],
+) -> None:
+    """Refuse an export carrying a column whose transform cannot be undone.
+
+    Only `robust` fitted with `iqr == 0` qualifies: it stored 0.0 for every
+    row and kept no record of what they held. Writing that 0.0 out under an
+    engineering-unit heading is the same defect DS-LAKE-021's own status
+    column decision already refused once — "a Bad cell reads as a real
+    measurement of zero, and the reader has no way to tell". As of
+    2026-09-16 no live spec has a robust scaler at all (all 462 recorded
+    entries across 22 specs are minmax), so this is a guard with no current
+    instance, not a common path.
+    """
+    refused = []
+    for tag in value_columns:
+        params = scaling_params.get(tag)
+        if params and params.get("iqr") == 0 and "median" in params:
+            refused.append(tag)
+    if refused:
+        raise NotInvertibleError(
+            f"Export refused: {sorted(refused)} were scaled with a robust "
+            "scaler fitted at iqr == 0, which stored 0.0 for every row and "
+            "recorded nothing about the values themselves. Exporting them "
+            "would present 0.0 as a measurement."
+        )
+
+
 def export_artifact_csv(
     store: ObjectStore, request: ExportRequest
 ) -> ExportStatsResponse:
@@ -51,6 +115,14 @@ def export_artifact_csv(
         tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX_BYTES) as src,
         tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX_BYTES) as dst,
     ):
+        # ONE read, BEFORE the stream opens — never per batch. DS-LAKE-021-T01
+        # rewrote this function specifically to keep peak memory independent
+        # of row count (18.2x -> 3.65x growth for a 100x row increase); a
+        # sidecar read inside the loop would not blow memory but would issue
+        # one object GET per 50,000 rows, and the buffered pattern that
+        # rewrite removed is exactly the shape a careless addition restores.
+        scaling_params = _load_scaling_params(store, request.feature_spec_key)
+
         store.download_to_fileobj(request.source_key, src)
         src.seek(0)
         parquet_file = pq.ParquetFile(src)
@@ -69,8 +141,25 @@ def export_artifact_csv(
         size_bytes = 0
         header_written = False
 
+        # Refuse the WHOLE export up front if any column cannot be recovered,
+        # not partway through a stream that has already written rows: a
+        # half-written CSV whose tail is missing is worse than no CSV.
+        _assert_every_column_is_invertible(value_columns, scaling_params)
+
         for record_batch in parquet_file.iter_batches(batch_size=BATCH_ROWS):
             batch_df = record_batch.to_pandas()
+
+            for tag in value_columns:
+                params = scaling_params.get(tag)
+                if params is not None:
+                    # Inverted BEFORE the Bad-cell blanking below, while the
+                    # column is still numeric. Order matters: blanking casts
+                    # to object dtype, and a 0.0 MISSING_VALUE inverts to the
+                    # scaler's own centre — a real-looking number — so it must
+                    # be overwritten with "" afterwards, never before.
+                    batch_df[tag] = inverse_scale_column(
+                        np.asarray(batch_df[tag], dtype=float), params
+                    )
 
             for tag in value_columns:
                 status_col = f"{tag}{STATUS_SUFFIX}"

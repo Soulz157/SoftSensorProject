@@ -20,7 +20,7 @@ import { cn } from '@/lib/utils'
 import { resolveTagMeta, chartColorVar } from '@/lib/mock-readings'
 import { formatDayMonth } from '@/lib/chart-format'
 import type { TagFillPreviewRow } from '@/lib/preprocessing'
-import { SegmentedToggle } from '@/app/(default)/data-visualize/components/segmented-toggle'
+import { SegmentedToggle } from '@/components/segmented-toggle'
 
 interface Props {
   rows: TagFillPreviewRow[]

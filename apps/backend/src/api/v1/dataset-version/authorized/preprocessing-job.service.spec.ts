@@ -695,6 +695,43 @@ describe('EXPORT stage', () => {
     );
   });
 
+  it("EXP-02b: passes the SOURCE artifact's featureSpecKey so the export can invert to engineering units", async () => {
+    post.mockResolvedValue(EXPORT_ARTIFACT);
+    const { service } = makeService(
+      buildExportJob({
+        sourceArtifact: {
+          objectKey: 'ds-1/artifacts/a-1/data.parquet',
+          runId: 'run-1',
+          featureSpecKey: 'ds-1/artifacts/a-1/feature_spec.json',
+        },
+      }),
+    );
+    await (service as unknown as Runnable).run('job-1');
+
+    const [, body] = post.mock.calls.find(
+      ([path]) => path === '/v1/preprocess/export',
+    ) as [string, Record<string, unknown>];
+    // DS-LAKE-028-T05. The FINAL's own key, not the EXPORT's — an EXPORT row
+    // has no featureSpecKey of its own (0 of 5 live ones do). Without this
+    // field Python has nothing to invert from and the CSV leaves the system
+    // as a [0,1] frame labelled as the dataset's data.
+    expect(body.feature_spec_key).toBe('ds-1/artifacts/a-1/feature_spec.json');
+  });
+
+  it('EXP-02c: sends a null feature_spec_key when the source has none, rather than omitting it', async () => {
+    post.mockResolvedValue(EXPORT_ARTIFACT);
+    const { service } = makeService(buildExportJob());
+    await (service as unknown as Runnable).run('job-1');
+
+    const [, body] = post.mock.calls.find(
+      ([path]) => path === '/v1/preprocess/export',
+    ) as [string, Record<string, unknown>];
+    // A source that was never scaled has nothing to invert, and that is a
+    // legitimate export rather than an error — Python's own default handles
+    // it. Asserted explicitly so a future reader does not "fix" the null.
+    expect(body.feature_spec_key).toBeNull();
+  });
+
   it('EXP-03: a CLEAN-shaped payload on an EXPORT-stage job FAILS rather than silently exporting nothing', async () => {
     const { service, prisma, tx } = makeService(
       buildExportJob({

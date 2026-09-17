@@ -10,14 +10,19 @@ empty-`scaling`-array finding, live-verified again in this ledger for run
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from softsensor_scaling import (
     DEFAULT_SCALER,
     FeatureError,
+    NotInvertibleError,
     STATUS_GOOD,
+    _scale_column,
     assert_scaling_coverage,
+    infer_scaler_method,
+    inverse_scale_column,
     status_column,
     to_model_ready,
 )
@@ -82,3 +87,49 @@ def test_unknown_scaler_raises_feature_error():
     df = _frame([1.0, 2.0])
     with pytest.raises(FeatureError, match="bogus"):
         to_model_ready(df, ["TAG1"], scalers={"TAG1": "bogus"})
+
+
+# ── DS-LAKE-028-T05: the inverse ───────────────────────────────────────────
+
+
+def test_every_scaler_round_trips_to_within_the_quantization_bound():
+    """One implementation of the inverse, in the package that owns the
+    forward transform — so a serving-side caller cannot grow a second one
+    that disagrees with this.
+
+    THE BOUND IS ASSERTED, NOT ASSUMED AWAY. `_scale_column` rounds every
+    value it writes to 3 decimals, so the inverse is exact only when the
+    slope is 1 — `standard` here misses by 2e-4 on a span of 2, which is
+    the +/-0.001 * span the docstring states. A default `np.allclose` would
+    FAIL on that (rtol 1e-5), and loosening it to "close enough" would hide
+    the one property every caller has to disclose. So this asserts the
+    recovery lands inside the stated bound and NOT that it is exact.
+    """
+    values = np.array([1.0, 2.0, 3.0])
+    span = float(values.max() - values.min())
+    for method in ("minmax", "standard", "robust"):
+        scaled, params = _scale_column(values, method)
+        recovered = inverse_scale_column(scaled, params)
+        assert np.all(np.abs(recovered - values) <= 0.001 * span), method
+
+
+def test_degenerate_minmax_and_standard_invert_but_robust_refuses():
+    """The three all wrote 0.0 for every row, and they are NOT the same case.
+    minmax/span==0 and standard/std==0 recorded the centre every row actually
+    equalled, so returning it is correct. robust/iqr==0 recorded a median it
+    did not derive from a spread, and nothing recoverable about the rows —
+    so it raises instead of returning a plausible number."""
+    assert inverse_scale_column(np.array([0.0, 0.0]), {"min": 7.0, "max": 7.0}).tolist() == [7.0, 7.0]
+    assert inverse_scale_column(np.array([0.0]), {"mean": 3.0, "std": 0.0}).tolist() == [3.0]
+    with pytest.raises(NotInvertibleError):
+        inverse_scale_column(np.array([0.0]), {"median": 5.0, "iqr": 0.0})
+
+
+def test_method_is_inferred_from_the_params_own_key_shape():
+    """`scalingParams` records numbers, never the method's name — the three
+    shapes are disjoint and that is what makes it readable at all."""
+    assert infer_scaler_method({"min": 0.0, "max": 1.0}) == "minmax"
+    assert infer_scaler_method({"mean": 0.0, "std": 1.0}) == "standard"
+    assert infer_scaler_method({"median": 0.0, "iqr": 1.0}) == "robust"
+    with pytest.raises(FeatureError):
+        infer_scaler_method({"lo": 0.0})

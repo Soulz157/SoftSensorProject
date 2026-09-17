@@ -134,13 +134,24 @@ export class WorkspaceAuthorizedService {
         thumbnailUrl: true,
         ownerId: true,
         updatedAt: true,
-        _count: { select: { members: true, models: true } },
+        _count: {
+          select: {
+            members: true,
+            models: true,
+            plans: true,
+            datasets: true,
+          },
+        },
         nodes: { select: { data: true } },
       },
     });
 
-    const data = workspaces.map(({ nodes, ...ws }) => ({
+    const data = workspaces.map(({ nodes, _count, ...ws }) => ({
       ...ws,
+      _count,
+      modelsCount: _count.models,
+      plantsCount: _count.plans,
+      datasetsCount: _count.datasets,
       ...this.deriveNodeSummary(nodes),
     }));
 

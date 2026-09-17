@@ -25,6 +25,7 @@ function workspace(): Workspace {
     updatedAt: '2026-06-29T00:00:00Z',
     _count: { members: 1, models: 2 },
     modelsCount: 2,
+    status: 'normal',
   }
 }
 
@@ -550,6 +551,7 @@ describe('groupByWorkspace', () => {
       updatedAt: '2026-06-29T00:00:00Z',
       _count: { members: 1, models: 0 },
       modelsCount: 0,
+      status: 'normal',
     }
   }
 

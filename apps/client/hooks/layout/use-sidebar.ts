@@ -40,9 +40,7 @@ export function useSidebar() {
 
   const [openMenus, setOpenMenus] = useState<Record<string, boolean>>({
     models: pathname.startsWith('/models'),
-    'data-management':
-      pathname.startsWith('/analytics') ||
-      pathname.startsWith('/data-visualize'),
+    'data-management': pathname.startsWith('/analytics'),
     admin: pathname.startsWith('/admin'),
   })
 

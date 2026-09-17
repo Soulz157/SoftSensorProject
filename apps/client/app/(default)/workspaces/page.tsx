@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import {
@@ -9,11 +9,9 @@ import {
   BreadcrumbList,
   BreadcrumbPage,
 } from '@/components/ui/breadcrumb'
-import { Activity, BrainCircuit, Plus, Loader2 } from 'lucide-react'
+import { Activity, BrainCircuit, Plus } from 'lucide-react'
 import { useWorkspaces } from '@/hooks/workspace/use-workspaces'
-import { cn } from '@/lib/utils'
 import { CreateWorkspaceDialog } from '@/components/create-workspace'
-import { getNodes, type CanvasNode } from '@/services/canvas'
 import {
   WorkspaceCard,
   WorkspaceCardSkeleton,
@@ -22,49 +20,13 @@ import {
 export default function WorkspacesPage() {
   const { workspaces, loading: workspacesLoading } = useWorkspaces()
   const [isOpen, setIsOpen] = useState(false)
-  const [nodesByWorkspace, setNodesByWorkspace] = useState<Record<
-    string,
-    CanvasNode[]
-  > | null>(null)
 
-  const totalModels = workspaces.reduce((acc, w) => acc + w.modelsCount, 0)
-
-  useEffect(() => {
-    if (workspacesLoading || workspaces.length === 0) return
-
-    let cancelled = false
-
-    Promise.all(workspaces.map(w => getNodes(w.id)))
-      .then(results => {
-        if (cancelled) return
-        const map: Record<string, CanvasNode[]> = {}
-        workspaces.forEach((w, i) => {
-          map[w.id] = results[i] ?? []
-        })
-        setNodesByWorkspace(map)
-      })
-      .catch(() => {
-        if (!cancelled) setNodesByWorkspace({})
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [workspaces, workspacesLoading])
-
-  const nodesLoading =
-    !workspacesLoading && workspaces.length > 0 && nodesByWorkspace === null
-
-  if (workspacesLoading || nodesLoading) {
-    return (
-      <div className="flex min-h-[50vh] flex-1 flex-col items-center justify-center gap-4 text-muted-foreground">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
-        <p className="text-sm font-medium">
-          {workspacesLoading ? 'Loading workspaces...' : 'Loading node data...'}
-        </p>
-      </div>
-    )
-  }
+  // A count the payload does not carry is UNKNOWN, so the total is unknown
+  // too — summing it as zero would silently under-report. `null` renders an
+  // em-dash, exactly as the per-card counts do.
+  const totalModels = workspaces.some(w => typeof w.modelsCount !== 'number')
+    ? null
+    : workspaces.reduce((acc, w) => acc + (w.modelsCount ?? 0), 0)
 
   return (
     <div className="flex-1 overflow-auto bg-background p-6 md:p-8">
@@ -124,8 +86,8 @@ export default function WorkspacesPage() {
                   <BrainCircuit className="h-5 w-5" />
                 </div>
                 <div>
-                  <p className="text-2xl font-bold text-foreground">
-                    {totalModels || '0'}
+                  <p className="text-2xl font-bold text-foreground tabular-nums">
+                    {totalModels ?? '—'}
                   </p>
                   <p className="text-sm text-muted-foreground">Total Models</p>
                 </div>
@@ -134,28 +96,30 @@ export default function WorkspacesPage() {
           </Card>
         </div>
 
-        {/* Workspace Grid */}
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-          {workspacesLoading
-            ? Array.from({ length: 4 }).map((_, i) => (
-                <WorkspaceCardSkeleton key={i} />
-              ))
-            : workspaces.map(workspace => (
-                <WorkspaceCard
-                  key={workspace.id}
-                  workspace={workspace}
-                  nodes={nodesByWorkspace?.[workspace.id] ?? []}
-                />
-              ))}
-        </div>
-
-        {workspaces.length === 0 && (
+        {/* Workspace Grid — loading / empty / populated are ONE branch, so the
+            empty state replaces the grid instead of rendering beneath it. */}
+        {workspacesLoading ? (
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <WorkspaceCardSkeleton key={i} />
+            ))}
+          </div>
+        ) : workspaces.length === 0 ? (
           <div className="flex flex-col items-center gap-3 py-16 text-center text-muted-foreground">
-            <Activity className={cn('h-10 w-10 opacity-30')} />
+            <Activity className="h-10 w-10 opacity-30" />
             <p className="text-base font-medium">No workspaces yet</p>
             <p className="text-sm">
               Create your first workspace to get started.
             </p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            {workspaces.map(workspace => (
+              <WorkspaceCard
+                key={workspace.id}
+                workspace={workspace}
+              />
+            ))}
           </div>
         )}
       </div>

@@ -5,7 +5,7 @@ import type { CorrelatedArtifactPair } from '@/lib/dataset-stats'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { DataTableView } from '@/app/(default)/data-visualize/components/data-table-view'
+import { DataTableView } from '@/components/data-table-view'
 
 interface Props {
   sample: Dataset | null

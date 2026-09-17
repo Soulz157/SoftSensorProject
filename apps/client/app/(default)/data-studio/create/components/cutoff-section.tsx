@@ -28,7 +28,7 @@ import {
   PopoverTrigger,
   Popover,
 } from '@/components/ui/popover'
-import { SegmentedToggle } from '@/app/(default)/data-visualize/components/segmented-toggle'
+import { SegmentedToggle } from '@/components/segmented-toggle'
 
 interface Props {
   raw: Dataset

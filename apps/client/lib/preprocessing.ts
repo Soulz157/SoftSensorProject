@@ -333,7 +333,7 @@ export function preprocess(
 // A per-tag ORDERED list of steps applied in sequence over the wide dataset.
 // Additive engine that shares the same primitives as `preprocess`
 // (`applyFillStrategy`, `median`, `roundTo`); the legacy `preprocess(strategies)`
-// above stays intact for the data-visualize wizard.
+// above stays intact for its remaining callers.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type CleaningCategory = 'missing' | 'outliers' | 'smoothing'

@@ -3,7 +3,7 @@ import type { PiTagStatus } from '@/services/model-monitoring'
 /**
  * MODEL-SERVE-001-T15. PI's own per-tag quality — a HEALTH signal, so it
  * uses the health palette (emerald / amber / red), matching the per-cell
- * quality dots `data-visualize/components/data-table-view.tsx` already
+ * quality dots `components/data-table-view.tsx` already
  * shows for the same Good/Questionable/Bad vocabulary.
  *
  * Deliberately NOT `drift-status-style.ts`'s palette: that module states

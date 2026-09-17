@@ -1,11 +1,18 @@
-import { atom } from 'jotai'
-import type { PiTagMeta, TimeRange } from '@/lib/mock-readings'
-import type { Dataset, FillStrategyConfig } from '@/lib/preprocessing'
+/**
+ * Shared data-pipeline types.
+ *
+ * NAME IS HISTORICAL. This module outlived the /data-visualize page it was
+ * named for — that route was removed on 2026-09-17 and its 18 atoms went with
+ * it. What remains is pure type vocabulary that 15 files across the dataset,
+ * model-pipeline and holdout code still import (CustomDateRange, FetchState,
+ * DiscoveredTag, TagDiscoveryStatus, DataSourceType, DataSourceCredentials).
+ * The filename was kept deliberately: renaming it would churn every importer
+ * for no behavioural gain.
+ */
+import type { PiTagMeta } from '@/lib/mock-readings'
 import type { SavedDataSource } from '@/lib/mock-data-sources'
 
 export type { SavedDataSource }
-
-export const TOTAL_WIZARD_STEPS = 7
 
 export type FetchStatus = 'idle' | 'fetching' | 'done' | 'error'
 
@@ -35,9 +42,7 @@ export interface DiscoveredTag {
   status: TagDiscoveryStatus
 }
 
-const EMPTY_DATASET: Dataset = { tags: [], rows: [] }
-
-/** Selected data-source kind for wizard Step 2. '' = nothing picked yet. */
+/** Selected data-source kind. '' = nothing picked yet. */
 export type DataSourceType = '' | 'aveva' | 'sql' | 'csv' | 'api'
 
 export interface DataSourceCredentials {
@@ -51,23 +56,3 @@ export interface CustomDateRange {
   from: string
   to: string
 }
-
-export const workspaceIdAtom = atom<string>('')
-export const plantIdAtom = atom<string>('')
-export const dataSourceAtom = atom<DataSourceType>('')
-export const dataSourceCredentialsAtom = atom<DataSourceCredentials | null>(
-  null,
-)
-export const customDateRangeAtom = atom<CustomDateRange | null>(null)
-export const piServerIdAtom = atom<string>('')
-export const tagListAtom = atom<DiscoveredTag[]>([])
-export const selectedTagsAtom = atom<string[]>([])
-export const timeRangeAtom = atom<TimeRange>('24h')
-export const fetchStateAtom = atom<FetchState>({ status: 'idle', progress: 0 })
-export const rawDatasetAtom = atom<Dataset>(EMPTY_DATASET)
-export const fillStrategiesAtom = atom<Record<string, FillStrategyConfig>>({})
-export const currentStepAtom = atom<number>(1)
-export const highestUnlockedAtom = atom<number>(1)
-export const selectedModelIdAtom = atom<string>('')
-export const savedDataSourcesAtom = atom<SavedDataSource[]>([])
-export const selectedSavedSourceIdAtom = atom<string>('')

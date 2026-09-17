@@ -212,6 +212,14 @@ class ExportRequest(BaseModel):
 
     source_key: str
     target_key: str
+    #: DS-LAKE-028-T05. The SOURCE artifact's `feature_spec.json` key, so the
+    #: export can invert its columns back to engineering units on the way out.
+    #: NestJS passes the FINAL row's own `featureSpecKey` (EXPORT rows carry
+    #: none of their own — 0 of 5 live ones do — while their parent FINAL
+    #: carries it on 5 of 5, so this is one hop, not a lineage walk).
+    #: Optional and defaulted: a source with no spec exports its bytes as
+    #: they are, which is correct for a frame that was never scaled.
+    feature_spec_key: str | None = None
 
 
 class ExportStatsResponse(BaseModel):

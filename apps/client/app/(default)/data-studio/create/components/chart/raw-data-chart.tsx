@@ -28,7 +28,7 @@ import type { SensorChartRow } from '@/hooks/use-sensor-readings'
 import { RangeDisplay } from './range-display'
 import { TagsSelector } from './tags-selector'
 import { Button } from '@/components/ui/button'
-import { SegmentedToggle } from '@/app/(default)/data-visualize/components/segmented-toggle'
+import { SegmentedToggle } from '@/components/segmented-toggle'
 
 interface Props {
   rows: SensorChartRow[]

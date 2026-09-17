@@ -5,23 +5,17 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
-  Activity,
   BrainCircuit,
-  CheckCircle2,
-  AlertTriangle,
-  AlertCircle,
   Clock,
-  Server,
-  Network,
-  HardDrive,
-  Cpu,
+  Database,
+  Factory,
+  BarChart3,
 } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { workspaceIcons, workspaceColors } from '@/store/workspace'
 import { cn } from '@/lib/utils'
 import { toBinaryStatus, BINARY_STATUS_META } from '@/lib/overview-status'
 import type { Workspace } from '@/types'
-import type { CanvasNode } from '@/services/canvas'
 import type { NodeStatus } from '@/store/status-colors'
 
 function WorkspaceIcon({
@@ -49,111 +43,65 @@ function WorkspaceIcon({
   )
 }
 
-function StatusBadge({ status, text }: { status: string; text?: string }) {
-  switch (status) {
-    case 'normal':
-    case 'healthy':
-      return (
-        <div className="flex items-center gap-1.5 text-xs text-emerald-500">
-          <CheckCircle2 className="h-3.5 w-3.5" />
-          <span className="truncate">{text || 'Normal'}</span>
-        </div>
-      )
-    case 'warning':
-      return (
-        <div className="flex items-center gap-1.5 text-xs text-amber-500">
-          <AlertTriangle className="h-3.5 w-3.5" />
-          <span className="truncate">{text || 'Warning'}</span>
-        </div>
-      )
-    case 'alarm':
-    case 'error':
-      return (
-        <div className="flex items-center gap-1.5 text-xs text-red-500 font-medium">
-          <AlertCircle className="h-3.5 w-3.5" />
-          <span className="truncate">{text || 'Error'}</span>
-        </div>
-      )
-    default:
-      return (
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <Activity className="h-3.5 w-3.5" />
-          <span className="truncate">Unknown</span>
-        </div>
-      )
-  }
-}
-
-// Binary device (equipment) badge — green Normal / red Abnormal. Distinct from
-// the model `StatusBadge` above, which keeps its full multi-state behavior.
-function DeviceStatusBadge({ status }: { status: string }) {
-  const binary = toBinaryStatus((status as NodeStatus) || 'normal')
-  const meta = BINARY_STATUS_META[binary]
-  const Icon = binary === 'abnormal' ? AlertCircle : CheckCircle2
+/**
+ * A count the list payload does not carry is UNKNOWN, not zero. Rendering 0
+ * for an absent count makes a real zero and a not-yet-supplied count identical
+ * on screen — the conflation DS-LAKE-021, DS-LAKE-025-T06 and MODEL-SERVE-005
+ * each refused. An em-dash says "not known" honestly.
+ */
+function CountStat({
+  icon: Icon,
+  label,
+  value,
+}: {
+  icon: typeof BrainCircuit
+  label: string
+  value: number | null | undefined
+}) {
+  const known = typeof value === 'number'
   return (
-    <div className={cn('flex items-center gap-1.5 text-xs', meta.text)}>
-      <Icon className="h-3.5 w-3.5" />
-      <span className="truncate">{meta.label}</span>
+    <div className="flex flex-col gap-1">
+      <span className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+        <Icon className="h-3.5 w-3.5" />
+        {label}
+      </span>
+      <span
+        className={cn(
+          'text-xl font-semibold tabular-nums',
+          known ? 'text-foreground' : 'text-muted-foreground',
+        )}
+        aria-label={known ? `${value} ${label}` : `${label} unknown`}
+      >
+        {known ? value : '—'}
+      </span>
     </div>
   )
 }
 
-export function WorkspaceCard({
-  workspace,
-  nodes = [],
-}: {
-  workspace: Workspace
-  nodes?: CanvasNode[]
-}) {
+/**
+ * The list endpoint always supplies `status` (`deriveNodeSummary` returns it
+ * unconditionally), so this card requires it rather than defaulting an absent
+ * value to `normal` — a green badge is a claim, and an unverified one is the
+ * silent fall-through MODEL-SERVE-001-T22 cost three fixes.
+ */
+export type WorkspaceCardData = Workspace & { status: NodeStatus }
+
+export function WorkspaceCard({ workspace }: { workspace: WorkspaceCardData }) {
   const selectedColor = workspaceColors.find(
     item => item.id === workspace.color,
   )
   const accentClass = selectedColor?.bg || 'bg-blue-500'
 
-  const devices = nodes.map(n => ({
-    id: n.id,
-    name: n.data?.name || `Device ${n.id.slice(0, 4)}`,
-    status: n.data?.status || 'normal',
-  }))
-
-  // Abnormal if any device is non-normal OR any model deploy has failed.
-  const hasFailedDeploy = nodes.some(n =>
-    (n.models ?? []).some(m => m.data?.deployStatus === 'error'),
-  )
-  const wsBinary =
-    devices.some(d => d.status !== 'normal') || hasFailedDeploy
-      ? 'abnormal'
-      : 'normal'
+  // Operating state rides the list payload — `deriveNodeSummary` computes it
+  // server-side from the nodes join already in the query, so the card costs no
+  // request of its own. Collapsed to binary per lib/overview-status.ts, which
+  // names Workspace explicitly, so this card cannot disagree with the
+  // analytics table or the admin list about the same workspace.
+  const wsBinary = toBinaryStatus(workspace.status)
   const wsMeta = BINARY_STATUS_META[wsBinary]
 
-  const allModels = nodes.flatMap(
-    n =>
-      n.models?.map(m => {
-        const rawData = m.data ?? {}
-        return {
-          id: m.id,
-          name: m.name || `Model ${m.id.slice(0, 4)}`,
-          status:
-            typeof rawData.status === 'string' ? rawData.status : 'healthy',
-          errorDetail:
-            typeof rawData.errorDetail === 'string'
-              ? rawData.errorDetail
-              : undefined,
-        }
-      }) || [],
-  )
-
-  const sortedModels = [...allModels].sort((a, b) => {
-    if (a.status === 'error') return -1
-    if (b.status === 'error') return 1
-    if (a.status === 'warning') return -1
-    return 0
-  })
-  //Mockup
-  const resourceMock = { cpu: 42, ram: 68 }
-
   return (
-    <Card className="relative flex flex-col overflow-hidden border-border dark:bg-[#0f1115] transition-all hover:border-primary/50 hover:shadow-lg hover:shadow-primary/5">
+    <Card className="group relative flex flex-col overflow-hidden border-border transition-all hover:border-primary/50">
       <div className={cn('absolute left-0 top-0 h-1 w-full', accentClass)} />
 
       <CardContent className="flex flex-1 flex-col p-6">
@@ -166,9 +114,16 @@ export function WorkspaceCard({
           <div className="min-w-0 flex-1">
             <div className="flex items-start justify-between gap-2">
               <h3 className="truncate text-lg font-semibold text-foreground">
-                {workspace.name}
+                {/* Stretched link: the whole card navigates, without nesting
+                    an anchor around the footer's own buttons. */}
+                <Link
+                  href={`/plants/${workspace.id}`}
+                  className="after:absolute after:inset-0 after:content-[''] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm"
+                >
+                  {workspace.name}
+                </Link>
               </h3>
-              <span className="flex h-6 items-center gap-1.5 rounded-full bg-background px-2.5 text-xs font-medium border border-border">
+              <span className="flex h-6 shrink-0 items-center gap-1.5 rounded-full bg-background px-2.5 text-xs font-medium border border-border">
                 <span
                   className={cn(
                     'h-2 w-2 rounded-full',
@@ -180,121 +135,35 @@ export function WorkspaceCard({
                 {wsMeta.label}
               </span>
             </div>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {workspace.modelsCount} AI model
-              {workspace.modelsCount !== 1 ? 's' : ''} deployed
-            </p>
+            {workspace.description && (
+              <p className="mt-1 truncate text-sm text-muted-foreground">
+                {workspace.description}
+              </p>
+            )}
           </div>
         </div>
 
-        {/* Details Grid */}
-        <div className="mb-6 grid grid-cols-2 gap-6">
-          {/* Devices */}
-          <div className="flex flex-col">
-            <div className="mb-3 flex items-center gap-2 border-b border-border/50 pb-2 text-sm font-medium text-foreground">
-              <Server className="h-4 w-4 text-muted-foreground" />
-              Devices ({devices.length})
-            </div>
-            <div className="space-y-2.5">
-              {devices.slice(0, 3).map(device => (
-                <div
-                  key={device.id}
-                  className="flex items-center justify-between gap-2"
-                >
-                  <span className="truncate text-xs text-muted-foreground">
-                    {device.name}
-                  </span>
-                  <DeviceStatusBadge status={device.status} />
-                </div>
-              ))}
-              {devices.length === 0 && (
-                <span className="text-xs italic text-muted-foreground">
-                  No devices found
-                </span>
-              )}
-              {devices.length > 3 && (
-                <span className="text-xs text-muted-foreground">
-                  +{devices.length - 3} more devices
-                </span>
-              )}
-            </div>
-          </div>
-
-          {/* Models */}
-          <div className="flex flex-col">
-            <div className="mb-3 flex items-center gap-2 border-b border-border/50 pb-2 text-sm font-medium text-foreground">
-              <BrainCircuit className="h-4 w-4 text-muted-foreground" />
-              Models ({allModels.length})
-            </div>
-            <div className="space-y-2.5">
-              {sortedModels.slice(0, 3).map(model => (
-                <div key={model.id} className="flex flex-col gap-0.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="truncate text-xs text-muted-foreground">
-                      {model.name}
-                    </span>
-                    <StatusBadge status={model.status} />
-                  </div>
-                  {model.status === 'error' && (
-                    <span className="truncate text-[10px] text-red-500/80">
-                      {model.errorDetail || 'Connection timeout'}
-                    </span>
-                  )}
-                </div>
-              ))}
-              {allModels.length === 0 && (
-                <span className="text-xs italic text-muted-foreground">
-                  No models deployed
-                </span>
-              )}
-              {allModels.length > 3 && (
-                <span className="mt-1 text-xs text-muted-foreground">
-                  +{allModels.length - 3} more models
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Resources - Mockup */}
-        <div className="mb-6 rounded-lg bg-background/50 p-3 border border-border/50">
-          <h4 className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-            System Resources Allocation
-          </h4>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <div className="mb-1.5 flex items-center justify-between text-xs">
-                <span className="flex items-center gap-1.5 text-muted-foreground">
-                  <Cpu className="h-3 w-3" /> CPU
-                </span>
-                <span className="font-medium">{resourceMock.cpu}%</span>
-              </div>
-              <div className="h-1.5 w-full overflow-hidden rounded-full bg-secondary">
-                <div
-                  className="h-full bg-blue-500 rounded-full"
-                  style={{ width: `${Number(resourceMock.cpu)}%` }}
-                />
-              </div>
-            </div>
-            <div>
-              <div className="mb-1.5 flex items-center justify-between text-xs">
-                <span className="flex items-center gap-1.5 text-muted-foreground">
-                  <HardDrive className="h-3 w-3" /> Memory
-                </span>
-                <span className="font-medium">{resourceMock.ram}%</span>
-              </div>
-              <div className="h-1.5 w-full overflow-hidden rounded-full bg-secondary">
-                <div
-                  className="h-full bg-indigo-500 rounded-full"
-                  style={{ width: `${resourceMock.ram}%` }}
-                />
-              </div>
-            </div>
-          </div>
+        {/* Counts — all three ride the list payload, no per-card fetch */}
+        <div className="mb-6 grid grid-cols-3 gap-4 border-y border-border/50 py-4">
+          <CountStat
+            icon={BrainCircuit}
+            label="Models"
+            value={workspace.modelsCount}
+          />
+          <CountStat
+            icon={Factory}
+            label="Plants"
+            value={workspace.plantsCount}
+          />
+          <CountStat
+            icon={Database}
+            label="Datasets"
+            value={workspace.datasetsCount}
+          />
         </div>
 
         {/* Footer */}
-        <div className="mt-auto flex items-center justify-between border-t border-border pt-4">
+        <div className="mt-auto flex items-center justify-between gap-2 pt-2">
           <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
             <Clock className="h-3.5 w-3.5" />
             Updated{' '}
@@ -302,23 +171,23 @@ export function WorkspaceCard({
               addSuffix: true,
             })}
           </span>
-          <div className="flex items-center gap-2">
+          <div className="relative z-10 flex items-center gap-2">
             <Link href={`/workspaces/${workspace.id}/settings`}>
               <Button
                 variant="ghost"
                 size="sm"
                 className="cursor-pointer h-8 text-xs text-muted-foreground hover:text-foreground"
               >
-                View Details
+                Settings
               </Button>
             </Link>
-            <Link href={`/workspaces/${workspace.id}/canvas`}>
+            <Link href="/models/views">
               <Button
                 size="sm"
-                className="cursor-pointer h-8 gap-1.5 text-xs bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm"
+                className="cursor-pointer h-8 gap-1.5 text-xs bg-primary text-primary-foreground hover:bg-primary/90"
               >
-                <Network className="h-3.5 w-3.5" />
-                Process Pipeline
+                <BarChart3 className="h-3.5 w-3.5" />
+                Models
               </Button>
             </Link>
           </div>
@@ -330,7 +199,7 @@ export function WorkspaceCard({
 
 export function WorkspaceCardSkeleton() {
   return (
-    <Card className="border-border bg-[#0f1115]">
+    <Card className="border-border">
       <CardContent className="flex flex-col p-6">
         <div className="mb-6 flex items-start gap-4">
           <Skeleton className="h-12 w-12 rounded-xl" />
@@ -342,25 +211,25 @@ export function WorkspaceCardSkeleton() {
             <Skeleton className="h-4 w-3/4" />
           </div>
         </div>
-        <div className="mb-6 grid grid-cols-2 gap-6">
-          <div className="space-y-3">
-            <Skeleton className="h-4 w-24" />
-            <Skeleton className="h-3 w-full" />
-            <Skeleton className="h-3 w-full" />
-            <Skeleton className="h-3 w-full" />
+        <div className="mb-6 grid grid-cols-3 gap-4 border-y border-border/50 py-4">
+          <div className="space-y-2">
+            <Skeleton className="h-3 w-16" />
+            <Skeleton className="h-6 w-10" />
           </div>
-          <div className="space-y-3">
-            <Skeleton className="h-4 w-24" />
-            <Skeleton className="h-3 w-full" />
-            <Skeleton className="h-3 w-full" />
-            <Skeleton className="h-3 w-full" />
+          <div className="space-y-2">
+            <Skeleton className="h-3 w-16" />
+            <Skeleton className="h-6 w-10" />
+          </div>
+          <div className="space-y-2">
+            <Skeleton className="h-3 w-16" />
+            <Skeleton className="h-6 w-10" />
           </div>
         </div>
-        <div className="flex items-center justify-between border-t border-border pt-4">
+        <div className="flex items-center justify-between pt-2">
           <Skeleton className="h-4 w-32" />
           <div className="flex gap-2">
+            <Skeleton className="h-8 w-20" />
             <Skeleton className="h-8 w-24" />
-            <Skeleton className="h-8 w-32" />
           </div>
         </div>
       </CardContent>

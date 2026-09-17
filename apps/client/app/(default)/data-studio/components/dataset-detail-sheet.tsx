@@ -37,7 +37,7 @@ import {
   SheetDescription,
 } from '@/components/ui/sheet'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { DataTableView } from '@/app/(default)/data-visualize/components/data-table-view'
+import { DataTableView } from '@/components/data-table-view'
 import type { Dataset } from '@/lib/preprocessing'
 import { inverseScale } from '@/lib/inverse-scale'
 import { useArtifactColumnStats } from '@/hooks/dataset/artifact/use-dataset-artifact-column-stats'
@@ -216,9 +216,15 @@ export function DatasetDetailSheet({
   // sheet disagreeing on order is a bug report waiting to happen. Shared with
   // the Model wizard's Dataset Review step (MODEL-FLOW-010) via
   // `lib/dataset-stats.ts` so both agree on row order for the same artifact.
+  // DS-LAKE-028-T06. `build_column_stats` runs on the frame to_model_ready
+  // RETURNED (artifact_service.py:896 -> :936), so every number in this
+  // sidecar is in [0,1] for a saved dataset — min/max/mean/median, the std,
+  // and DS-LAKE-020-T03's percentiles alike. Inverted here from the same
+  // `scalingParams` the data preview above already uses, so the two halves of
+  // this sheet cannot disagree about the units of the same tag.
   const perTagStats = useMemo(
-    () => perTagStatsOrdered(tags, columnStats?.stats),
-    [columnStats, tags],
+    () => perTagStatsOrdered(tags, columnStats?.stats, scalingParams),
+    [columnStats, tags, scalingParams],
   )
 
   const topPairs = useMemo(
@@ -363,10 +369,25 @@ export function DatasetDetailSheet({
                       </Button>
                     )}
                   </div>
+                  {/*
+                    DS-LAKE-028-T05. This copy was accurate about status
+                    columns and silent about UNITS, on the one surface whose
+                    output leaves the system and gets read against historian
+                    values. The stored artifact is model-ready (scaled); the
+                    export now inverts it back, and "approximate" is stated
+                    rather than implied — the scaler rounds to 3 decimals, so
+                    a recovered value carries ±0.001×span, which is ±45
+                    engineering units on a tag spanning 45,000.
+                  */}
                   <p className="text-xs text-muted-foreground">
                     {rowCount.toLocaleString()} rows, {tags.length} columns.
                     Status columns are not included — a Bad reading exports as a
-                    blank cell.
+                    blank cell. Values are converted back to{' '}
+                    <span className="font-medium text-foreground">
+                      engineering units
+                    </span>{' '}
+                    from the dataset&apos;s recorded scaler fit, so they are
+                    approximate — within ±0.001 of each tag&apos;s own range.
                   </p>
                   {exportHook.status === 'error' && (
                     <p className="text-xs text-destructive">
@@ -489,6 +510,21 @@ export function DatasetDetailSheet({
                     <p className="text-sm font-semibold text-foreground">
                       Per-tag statistics
                     </p>
+                    {/*
+                      Stated where the numbers are, not in a tooltip: the
+                      stored sidecar is scaled and these are converted back, so
+                      they are approximate (the scaler rounds to 3 decimals —
+                      ±0.001 of each tag's own range). Silence here is what
+                      made every number on this screen read as an engineering
+                      value when it was a [0,1] one.
+                    */}
+                    {scalingParams && (
+                      <p className="text-xs text-muted-foreground">
+                        Shown in engineering units, converted from the recorded
+                        scaler fit — approximate to ±0.001 of each tag&apos;s
+                        range.
+                      </p>
+                    )}
                     {statsLoading ? (
                       <div className="space-y-2 rounded-lg border border-border p-3">
                         {Array.from({ length: 5 }).map((_, i) => (

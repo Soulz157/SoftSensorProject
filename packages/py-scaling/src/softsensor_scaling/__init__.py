@@ -47,13 +47,19 @@ from .rounding import _js_round, _median_sorted, _round_to
 from .scaling import (
     DEFAULT_SCALER,
     FeatureError,
+    NotInvertibleError,
     _scale_column,
     _welford_population_std,
     assert_scaling_coverage,
+    infer_scaler_method,
+    inverse_scale_column,
     to_model_ready,
 )
 
 __all__ = [
+    "NotInvertibleError",
+    "infer_scaler_method",
+    "inverse_scale_column",
     "STATUS_BAD",
     "STATUS_GOOD",
     "STATUS_QUESTIONABLE",

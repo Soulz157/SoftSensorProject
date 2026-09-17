@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { TimeRangeToggle } from '@/app/(default)/data-visualize/components/time-range-toggle'
+import { TimeRangeToggle } from '@/components/charts/time-range-toggle'
 import type { TimeRange } from '@/lib/mock-readings'
 import type { Scope } from '@/lib/pipeline-metrics'
 import type { Workspace } from '@/types'

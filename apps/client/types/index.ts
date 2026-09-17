@@ -1,3 +1,4 @@
+import type { NodeStatus } from '@/store/status-colors'
 export interface UserProfile {
   id: string
   email: string
@@ -160,11 +161,25 @@ export interface Workspace {
   _count: {
     members: number
     models: number
+    plans?: number
+    datasets?: number
   }
-  modelsCount: number
+  /**
+   * Relation counts from the workspace list payload. `null`/`undefined` means
+   * the payload did not supply the count — render it as unknown, never as 0.
+   */
+  modelsCount?: number | null
+  plantsCount?: number | null
+  datasetsCount?: number | null
   nodeCount?: number
   alarmCount?: number
-  status?: 'normal' | 'warning' | 'alarm' | 'offline'
+  /**
+   * Operating state, derived server-side by `deriveNodeSummary`. REQUIRED: an
+   * absent status is read as `abnormal` by `toBinaryStatus`, which would paint
+   * a false alarm. Every path that puts a Workspace into `workspacesAtom` must
+   * supply it — see services/workspace.ts:createWorkspace.
+   */
+  status: NodeStatus
 }
 
 export interface WorkspaceIconProps {

@@ -1161,7 +1161,10 @@ async def presign_inference_window_object(
         "DS-LAKE-021. Streams the source artifact's data.parquet into a "
         "sidecar CSV, row-group by row-group. __status columns are "
         "dropped; a Bad-status cell exports as an empty field, never the "
-        "raw 0.0 the Parquet stores."
+        "raw 0.0 the Parquet stores. DS-LAKE-028: values are inverted back "
+        "to engineering units from `feature_spec_key`'s recorded "
+        "scalingParams (approximate to +/-0.001 * span, the scaler's own "
+        "rounding); a column no inverse can recover refuses the export."
     ),
 )
 async def export_pipeline(

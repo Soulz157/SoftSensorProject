@@ -22,13 +22,22 @@ import type { ArtifactScalingParams } from '@/services/dataset-version'
 /**
  * Which transform a params record describes, read from WHICH KEYS it carries.
  *
- * Deliberately not read from `feature_spec.json`'s `scaling` list, which is
- * built from `sorted(scalers.items())` — the user's EXPLICIT config only
- * (feature_spec_service.py:223-224). T06 confirmed live that a dataset scaled
- * entirely by `DEFAULT_SCALER` carries `"scaling": []` alongside a fully
- * populated `scalingParams` of 22 min/max entries. Trusting `scaling` would
- * therefore conclude "not scaled" about a frame that IS scaled — the exact
- * inversion of the truth. The params themselves cannot lie about their shape.
+ * Deliberately not read from `feature_spec.json`'s `scaling` list. Before
+ * DS-LAKE-028-T02 that field was built from `sorted(scalers.items())` — the
+ * user's EXPLICIT config only — so a dataset scaled entirely by
+ * `DEFAULT_SCALER` carried `"scaling": []` alongside a fully populated
+ * `scalingParams`, and trusting it would conclude "not scaled" about a frame
+ * that IS scaled.
+ *
+ * THAT REASONING STILL HOLDS, FOR A DIFFERENT REASON, AND THIS COMMENT WOULD
+ * BE HALF-WRONG WITHOUT THE REST OF IT. T02 corrected the writer to record
+ * the EFFECTIVE method, so a spec at `featureVersion >= 4` does describe its
+ * own scaling truthfully. But every spec written before the bump keeps
+ * `scaling: []` forever — all 22 specs measured on 2026-09-16 are at
+ * featureVersion 1 or 2 — so a reader that switched to `scaling` would be
+ * correct only about artifacts that did not yet exist. `scalingParams` is
+ * authoritative at EVERY version, and the params cannot lie about their own
+ * shape.
  */
 export function inferScalerMethod(
   params: ArtifactScalingParams,

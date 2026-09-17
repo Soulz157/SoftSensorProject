@@ -21,7 +21,7 @@ import {
   type TagHealth,
 } from '@/lib/feature-preset-apply'
 import type { ConditionalRule, RangeExclusion } from '@/lib/precleanse'
-import { SegmentedToggle } from '@/app/(default)/data-visualize/components/segmented-toggle'
+import { SegmentedToggle } from '@/components/segmented-toggle'
 
 interface Props {
   presets: SdtaPreset[]

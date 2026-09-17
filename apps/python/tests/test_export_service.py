@@ -25,6 +25,11 @@ CHUNK_BYTES = 4096
 #: reality (a fresh randomUUID, never the source's own id).
 TARGET_KEY = "ds-1/artifacts/export-1/export.csv"
 
+#: DS-LAKE-028-T05. The SOURCE artifact's spec, not the export's own — an
+#: EXPORT row has no featureSpecKey (0 of 5 live ones do); its parent FINAL
+#: carries it on 5 of 5, and NestJS passes that one hop through.
+SPEC_KEY = "ds-1/artifacts/a-1/feature_spec.json"
+
 
 class RecordingStore:
     """Minimal in-memory ObjectStore stand-in, mirroring the pattern already
@@ -37,9 +42,25 @@ class RecordingStore:
     `export_artifact_csv` is actually memory-bounded.
     """
 
-    def __init__(self, objects: dict[str, bytes] | None = None) -> None:
+    def __init__(
+        self,
+        objects: dict[str, bytes] | None = None,
+        documents: dict[str, object] | None = None,
+    ) -> None:
         self.raw_objects: dict[str, bytes] = dict(objects or {})
         self.writes: list[str] = []
+        # DS-LAKE-028-T05: the feature_spec.json sidecar side. Counted, not
+        # just stored, so a test can assert it is read ONCE per export rather
+        # than once per batch — the regression the streaming rewrite's own
+        # docstring warns about.
+        self.documents: dict[str, object] = dict(documents or {})
+        self.json_reads: list[str] = []
+
+    def get_json(self, key: str):
+        self.json_reads.append(key)
+        if key not in self.documents:
+            raise ObjectStoreError(f"Could not read '{key}': NoSuchKey")
+        return self.documents[key]
 
     def download_to_fileobj(
         self, key: str, fileobj: io.IOBase, *, chunk_bytes: int = CHUNK_BYTES
@@ -85,8 +106,12 @@ class DiscardingStore(RecordingStore):
     memory-bounded.
     """
 
-    def __init__(self, objects: dict[str, bytes] | None = None) -> None:
-        super().__init__(objects)
+    def __init__(
+        self,
+        objects: dict[str, bytes] | None = None,
+        documents: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(objects, documents)
         self.last_write_length = 0
         self.last_write_sha256: str | None = None
 
@@ -263,9 +288,20 @@ def test_peak_memory_does_not_scale_with_row_count(monkeypatch):
     large_bytes = _fixture_bytes(n_rows=20_000)  # 100x the row count
 
     def _peak_for(payload: bytes) -> int:
-        store = DiscardingStore({"ds-1/artifacts/a-1/data.parquet": payload})
+        # DS-LAKE-028-T05: measured WITH the sidecar read and the per-column
+        # inversion in the path. Running this against the un-inverted path
+        # would leave the new code unmeasured by the one test that can catch
+        # a per-batch spec read or a buffered inverse.
+        store = DiscardingStore(
+            {"ds-1/artifacts/a-1/data.parquet": payload},
+            {SPEC_KEY: {"scalingParams": {
+                f"TAG-{i}": {"min": 0.0, "max": 45_000.0} for i in range(5)
+            }}},
+        )
         request = ExportRequest(
-            source_key="ds-1/artifacts/a-1/data.parquet", target_key=TARGET_KEY
+            source_key="ds-1/artifacts/a-1/data.parquet",
+            target_key=TARGET_KEY,
+            feature_spec_key=SPEC_KEY,
         )
         tracemalloc.start()
         try:
@@ -288,3 +324,137 @@ def test_peak_memory_does_not_scale_with_row_count(monkeypatch):
         f"peak_small={peak_small} peak_large={peak_large} "
         f"(ratio={peak_large / peak_small:.1f}x) for a 100x row-count increase"
     )
+
+
+# ── DS-LAKE-028-T05: the export leaves in engineering units ────────────────
+
+
+def _csv_of(store: RecordingStore) -> str:
+    return store.raw_objects[TARGET_KEY].decode("utf-8")
+
+
+def _export_with_spec(df: pd.DataFrame, scaling_params: dict) -> RecordingStore:
+    store = RecordingStore(
+        {"ds-1/artifacts/a-1/data.parquet": _parquet_bytes(df)},
+        {SPEC_KEY: {"featureVersion": 2, "scaling": [],
+                    "scalingParams": scaling_params}},
+    )
+    export_artifact_csv(
+        store,
+        ExportRequest(
+            source_key="ds-1/artifacts/a-1/data.parquet",
+            target_key=TARGET_KEY,
+            feature_spec_key=SPEC_KEY,
+        ),
+    )
+    return store
+
+
+def test_export_inverts_a_legacy_spec_whose_scaling_array_is_empty():
+    """The shape of every spec on this system: `scaling: []` alongside a
+    populated `scalingParams`. A reader that believed `scaling` would export
+    the [0,1] frame unchanged and call it engineering units — which is the
+    defect, not a near miss. 0.25 of a 40,000-wide span is 10,000."""
+    df = pd.DataFrame({
+        "timestamp": pd.to_datetime(["2026-01-01T00:00:00", "2026-01-01T00:01:00"]),
+        "TI-101": [0.0, 0.25],
+        "TI-101__status": [STATUS_GOOD, STATUS_GOOD],
+    })
+    store = _export_with_spec(df, {"TI-101": {"min": 5_000.0, "max": 45_000.0}})
+    rows = _csv_of(store).strip().splitlines()
+    assert rows[1].endswith("5000.0")
+    assert rows[2].endswith("15000.0")
+    # Read ONCE for the whole export, not once per batch.
+    assert store.json_reads == [SPEC_KEY]
+
+
+def test_export_without_a_spec_key_passes_the_bytes_through():
+    """An artifact that was never scaled has no spec to invert from, and
+    that is not an error — it exports as it stands."""
+    df = pd.DataFrame({
+        "timestamp": pd.to_datetime(["2026-01-01T00:00:00"]),
+        "TI-101": [12.5],
+        "TI-101__status": [STATUS_GOOD],
+    })
+    store = RecordingStore({"ds-1/artifacts/a-1/data.parquet": _parquet_bytes(df)})
+    export_artifact_csv(
+        store,
+        ExportRequest(
+            source_key="ds-1/artifacts/a-1/data.parquet", target_key=TARGET_KEY
+        ),
+    )
+    assert _csv_of(store).strip().splitlines()[1].endswith("12.5")
+    assert store.json_reads == []
+
+
+def test_a_bad_cell_stays_blank_even_though_its_0_0_inverts_to_a_real_number():
+    """The ordering trap this task had to get right. A Bad cell stores 0.0,
+    which inverts to the scaler's own `min` — 5,000, a plausible reading. The
+    blanking must therefore run AFTER the inversion, or DS-LAKE-021's
+    'a Bad cell must never read as a measurement' decision is quietly undone
+    by this feature rather than by a change to that rule."""
+    df = pd.DataFrame({
+        "timestamp": pd.to_datetime(["2026-01-01T00:00:00", "2026-01-01T00:01:00"]),
+        "TI-101": [0.25, 0.0],
+        "TI-101__status": [STATUS_GOOD, STATUS_BAD],
+    })
+    store = _export_with_spec(df, {"TI-101": {"min": 5_000.0, "max": 45_000.0}})
+    rows = _csv_of(store).strip().splitlines()
+    assert rows[1].endswith("15000.0")
+    assert rows[2].endswith(",")          # blank field, not 5000.0
+    assert "5000.0" not in rows[2]
+
+
+def test_a_zero_span_column_recovers_its_constant_and_an_ordinary_one_inverts():
+    """DS-LAKE-028-V04, retargeted by T01's census onto the case that has
+    LIVE INSTANCES: 29 minmax columns across the 22 specs have min == max.
+    `_scale_column` wrote 0.0 for every one of their rows, and the inverse
+    correctly returns the constant every row genuinely held — this is NOT
+    the unrecoverable case. Tested alongside an ordinary column in the same
+    pass, because a test over the degenerate column alone cannot tell a
+    working inverse from one that returns `min` for everything."""
+    df = pd.DataFrame({
+        "timestamp": pd.to_datetime(["2026-01-01T00:00:00", "2026-01-01T00:01:00"]),
+        "FLAT": [0.0, 0.0],
+        "FLAT__status": [STATUS_GOOD, STATUS_GOOD],
+        "TI-101": [0.0, 1.0],
+        "TI-101__status": [STATUS_GOOD, STATUS_GOOD],
+    })
+    store = _export_with_spec(df, {
+        "FLAT": {"min": 7.0, "max": 7.0},
+        "TI-101": {"min": 5_000.0, "max": 45_000.0},
+    })
+    body = _csv_of(store).strip().splitlines()[1:]
+    assert [line.split(",")[1] for line in body] == ["7.0", "7.0"]
+    assert [line.split(",")[2] for line in body] == ["5000.0", "45000.0"]
+
+
+def test_export_refuses_a_robust_column_fitted_at_iqr_zero():
+    """The other half of V04. That column stored 0.0 for every row against
+    {median, iqr: 0} and recorded nothing about what they held, so exporting
+    0.0 under an engineering-unit heading is the same 'reads as a real
+    measurement of zero' trap DS-LAKE-021 already refused. No live spec has
+    a robust scaler at all, so this guard has no current instance — which is
+    exactly why it needs a test rather than a look at production."""
+    df = pd.DataFrame({
+        "timestamp": pd.to_datetime(["2026-01-01T00:00:00"]),
+        "TI-101": [0.0],
+        "TI-101__status": [STATUS_GOOD],
+    })
+    with pytest.raises(Exception) as err:
+        _export_with_spec(df, {"TI-101": {"median": 40.0, "iqr": 0.0}})
+    assert "TI-101" in str(err.value)
+    # Refused BEFORE anything was written, not partway through the stream.
+    assert TARGET_KEY not in str(err.value)
+
+
+def test_an_ordinary_robust_column_still_inverts():
+    """Guard-has-an-instance check for the branch above: `robust` itself is
+    not refused, only `iqr == 0`. 1.5 * 20 + 40 = 70."""
+    df = pd.DataFrame({
+        "timestamp": pd.to_datetime(["2026-01-01T00:00:00"]),
+        "TI-101": [1.5],
+        "TI-101__status": [STATUS_GOOD],
+    })
+    store = _export_with_spec(df, {"TI-101": {"median": 40.0, "iqr": 20.0}})
+    assert _csv_of(store).strip().splitlines()[1].endswith("70.0")

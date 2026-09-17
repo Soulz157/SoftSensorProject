@@ -11,7 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { CascadeSelectors } from '@/app/(default)/data-visualize/components/cascade-selectors'
+import { CascadeSelectors } from '@/components/cascade-selectors'
 import { workspacesAtom } from '@/store/workspace'
 import type { WorkspacePlant } from '@/types'
 import type { CanvasNode } from '@/services/canvas'

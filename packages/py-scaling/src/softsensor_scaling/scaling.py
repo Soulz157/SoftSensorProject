@@ -182,6 +182,75 @@ def to_model_ready(
     return out, scaling_params
 
 
+class NotInvertibleError(ValueError):
+    """A recorded scaler whose transform cannot be undone from what it stored.
+
+    Exactly one case reaches this: `robust` fitted with `iqr == 0`, which
+    wrote 0.0 for every row against {median, iqr: 0} and kept no trace of
+    what the rows held. `minmax` with `span == 0` and `standard` with
+    `std == 0` are NOT this case — they also wrote 0.0 for every row, but
+    every row genuinely equalled the recorded centre (`min`/`mean`), so the
+    inverse returns that centre and is correct.
+    """
+
+
+def infer_scaler_method(params: Mapping[str, float]) -> str:
+    """Which scaler fitted these params, from the params' own key shape.
+
+    `scalingParams` records the numbers but not the method's name, and the
+    three shapes are disjoint: {min,max}, {mean,std}, {median,iqr}.
+    """
+    keys = set(params)
+    if keys >= {"min", "max"}:
+        return "minmax"
+    if keys >= {"mean", "std"}:
+        return "standard"
+    if keys >= {"median", "iqr"}:
+        return "robust"
+    raise FeatureError(f"Unrecognised scalingParams shape: {sorted(keys)}")
+
+
+def inverse_scale_column(
+    values: np.ndarray,
+    params: Mapping[str, float],
+) -> np.ndarray:
+    """Undo `_scale_column` for one tag, from its recorded fit.
+
+    THE RESULT IS APPROXIMATE, BY A KNOWN AMOUNT, AND EVERY CALLER MUST SAY
+    SO. `_scale_column` applies `_round_to(x, 3)` to every value it writes,
+    so a recovered value carries +/-0.001 * span of quantization — about
+    +/-45 engineering units on a tag spanning 45,000. Display-adequate;
+    never byte-exact, and never to be presented as the original reading.
+
+    Every scaler here is a positive affine map, so the inverse is one too.
+    Callers inverting a STATISTIC rather than a value must not use this
+    function for a spread (a std, an IQR, a difference of two positions):
+    the offset cancels out of a difference, so a spread scales by the slope
+    ALONE. Adding the offset back produces a plausible, wrong number — the
+    same split `lib/inverse-scale-stats.ts` keeps on the client.
+    """
+    method = infer_scaler_method(params)
+
+    if method == "minmax":
+        lo, hi = float(params["min"]), float(params["max"])
+        # span == 0 is invertible and correct: every row equalled `lo`, so
+        # `lo` is what was there. Not the robust/iqr == 0 case below.
+        return np.array([lo + v * (hi - lo) for v in values])
+
+    if method == "standard":
+        mean, std = float(params["mean"]), float(params["std"])
+        return np.array([mean + v * std for v in values])
+
+    med, iqr = float(params["median"]), float(params["iqr"])
+    if iqr == 0:
+        raise NotInvertibleError(
+            "robust scaler fitted with iqr == 0 stored 0.0 for every row and "
+            "recorded nothing about what those rows held; no inverse can "
+            "recover them."
+        )
+    return np.array([med + v * iqr for v in values])
+
+
 def assert_scaling_coverage(
     tags: list[str],
     scalers: Mapping[str, str],
