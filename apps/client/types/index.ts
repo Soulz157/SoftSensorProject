@@ -110,6 +110,19 @@ export interface AIModel {
         | 'DRIFT_WARN'
         | null
       frozenColumns: string[]
+      /** MODEL-SERVE-009-T03. SINCE WHEN each badged column last changed —
+       *  evidence beside the badge, never a second detector.
+       *  MODEL-SERVE-001-T29 still decides WHICH columns are frozen. A
+       *  badged column with no entry here is UNKNOWN duration (no per-tag
+       *  row yet), which must not render as "just changed": T27's rule is
+       *  that UNKNOWN never folds into a confident value. Optional so a
+       *  backend that predates this field does not make the whole health
+       *  object fail to parse. */
+      frozenSince?: Array<{
+        column: string
+        lastChangedAt: string | null
+        flatMinutes: number | null
+      }>
     } | null
     statusDetail?: string
     deployedBy?: string

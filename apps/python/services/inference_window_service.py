@@ -393,6 +393,21 @@ def materialize_window(
     # sidecars, kept — assert_frame_shape requires every tag to carry one,
     # and to_model_ready's own doc comment states it re-derives them to
     # all-Good regardless, so keeping them costs nothing and loses nothing).
+    # MODEL-SERVE-009-T02/T05. Read BEFORE `select_columns` as well as before
+    # the Bad-row drop, and the ORDER matters twice over. After the drop,
+    # every surviving row is Good by construction (MODEL-SERVE-001-T15
+    # measured that). After `select_columns`, the TARGET tag is gone — it is
+    # not a feature, so it is narrowed away like any other unused base tag —
+    # and the target's own held value is exactly what T05 needs. Here the
+    # frame still carries every fetched tag plus its `__status` sidecar.
+    tag_observations = _tag_observations(
+        frame,
+        [
+            *request.feature_columns,
+            *([request.target_column] if request.target_column else []),
+        ],
+    )
+
     frame = select_columns(frame, request.feature_columns)
 
     row_count = len(frame)
@@ -408,10 +423,6 @@ def materialize_window(
     # `to_model_ready` calls below (module docstring's T17 amendment) are a
     # throwaway copy for drift aggregates only, and both run AFTER this
     # line for the identical reason.
-    # MODEL-SERVE-009-T02. Read BEFORE the drop below — see
-    # `_tag_observations`' own docstring for why after it is worthless.
-    tag_observations = _tag_observations(frame, request.feature_columns)
-
     frame, _dropped = drop_bad_feature_rows(frame, request.feature_columns)
     scored_rows = len(frame)
 

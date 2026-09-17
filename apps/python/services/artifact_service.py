@@ -639,7 +639,12 @@ def replay_holdout(store: ObjectStore, request: ReplayHoldoutRequest) -> dict[st
     # statistics (T02's own finding: that would be a silently DIFFERENT,
     # wrong transform).
     result, _ = to_model_ready(
-        result, tag_columns(result), request.scalers,
+        # MODEL-SERVE-010-T05. The target is excluded HERE TOO. A holdout
+        # replayed with the target scaled and a GOLD written with it raw
+        # would disagree about what the model's own y means, which is the
+        # same class of silently-different transform this call's own comment
+        # above warns about for the FEATURES.
+        result, _scalable_tags(result, request.target_y), request.scalers,
         fitted_params=request.scaling_params,
     )
 
@@ -776,7 +781,12 @@ def prepare_holdout_for_run(
         frame, tag_columns(frame), exclude=target_y)
 
     result, _ = to_model_ready(
-        frame, tag_columns(frame), scalers, fitted_params=scaling_params,
+        # MODEL-SERVE-010-T05. Same exclusion as every other scaling call —
+        # `drop_bad_feature_rows` one line above already excludes the target
+        # for its own reasons, and this keeps the two consistent about which
+        # columns the target is and is not part of.
+        frame, _scalable_tags(frame, target_y), scalers,
+        fitted_params=scaling_params,
     )
     assert_frame_is_usable(result)
 
@@ -894,7 +904,7 @@ def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:
         # re-fitting on itself (see finding: re-fitting is a silently
         # DIFFERENT transform from the one the model learned).
         result, scaling_params = to_model_ready(
-            result, tag_columns(result), request.scalers)
+            result, _scalable_tags(result, request.target_y), request.scalers)
 
         # Exclude collided configs from the sidecar — feature_spec.json must
         # only claim features that were actually computed, not merely
@@ -967,6 +977,33 @@ def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:
     )
 
 
+def _scalable_tags(df, target_y: str | None) -> list[str]:
+    """MODEL-SERVE-010-T05. Every logical tag EXCEPT the target.
+
+    THE TARGET MUST NEVER BE SCALED, and leaving it out of the scaler map was
+    not enough to prevent that: `to_model_ready` reads
+    `scalers.get(tag, DEFAULT_SCALER)` and DEFAULT_SCALER is "minmax", so a
+    tag absent from the map is min-max scaled ANYWAY. That is how a GOLD
+    artifact came to carry a target ranging exactly 0.0-1.0 while its own
+    feature_spec declared `target_scaled: false` — one missing map entry
+    produced both the scaling and the claim that it had not happened.
+
+    Measured consequence before this fix: the model emitted 0.64-0.66 while
+    the lab measured 196 in engineering units, so every comparison between a
+    prediction and a measurement (the Actual-vs-Predict chart, residuals,
+    r2/rmse/mae, the batch path, any error-keyed alert) was apples to
+    oranges. Nothing caught it because no lab pair had ever existed for the
+    model in question.
+
+    Exclusion is BY NAME here rather than by trusting the caller's scaler
+    map, because the map is exactly what proved untrustworthy.
+    """
+    tags = tag_columns(df)
+    if target_y is None:
+        return tags
+    return [t for t in tags if t != target_y]
+
+
 def scale(store: ObjectStore, request: ScaleRequest) -> dict[str, Any]:
     """DS-LAKE-022-T02. The trailing half of the old combined `/features`
     write (`toModelReady` + `feature_spec.json`), split out so a caller can
@@ -1023,7 +1060,7 @@ def scale(store: ObjectStore, request: ScaleRequest) -> dict[str, Any]:
     psi_ref_edges = compute_psi_ref_edges(source, tag_columns(source))
 
     result, scaling_params = to_model_ready(
-        source, tag_columns(source), request.scalers)
+        source, _scalable_tags(source, request.target_y), request.scalers)
 
     assert_frame_is_usable(result)
 

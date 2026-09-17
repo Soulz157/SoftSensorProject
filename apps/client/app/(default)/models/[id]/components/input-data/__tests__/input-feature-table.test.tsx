@@ -24,6 +24,15 @@ function row(over: Partial<InputFeatureRow> = {}): InputFeatureRow {
     lastSeen: null,
     equation: null,
     frozen: false,
+    // MODEL-SERVE-009-T03: required on the row type; null is "unknown
+    // duration", which is the honest default for a non-frozen tag.
+    frozenFlatMinutes: null,
+    // MODEL-SERVE-009-T04: required on the row type. Nulls are the honest
+    // default — a fixture with no scheduled-fetch record.
+    lastChanged: null,
+    fetchStatus: null,
+    lastFetchOutcome: null,
+    fromScheduledFetch: false,
     ...over,
   }
 }
@@ -80,7 +89,15 @@ describe('InputFeatureTable (MODEL-SERVE-001-T12)', () => {
 
     expect(screen.getByText('0.02')).toBeVisible()
     // The never-logged one shows an em-dash, not a zero standing in for one.
-    expect(screen.getByText('—')).toBeVisible()
+    // MODEL-SERVE-009-T04 added a second em-dash cell (unknown "last
+    // changed"), so this asserts the VALUE cell specifically rather than
+    // "some em-dash is on screen" — which would now pass even if the value
+    // cell rendered 0.0.
+    const valueDashes = screen
+      .getAllByText('—')
+      .filter(el => el.closest('td')?.className.includes('font-mono'))
+    expect(valueDashes).toHaveLength(1)
+    expect(valueDashes[0]).toBeVisible()
     expect(screen.queryByText('0.0')).not.toBeInTheDocument()
     expect(screen.queryByText('0')).not.toBeInTheDocument()
   })
@@ -127,7 +144,12 @@ describe('InputFeatureTable (MODEL-SERVE-001-T12)', () => {
   it('renders an em-dash when the column was never logged', () => {
     render(<InputFeatureTable rows={[row({ lastValueRaw: null })]} />)
 
-    expect(screen.getByText('—')).toBeInTheDocument()
+    // Scoped to the value cell — see the note in the V14 case above.
+    expect(
+      screen
+        .getAllByText('—')
+        .filter(el => el.closest('td')?.className.includes('font-mono')),
+    ).toHaveLength(1)
   })
 
   it("shows a derived feature's equation beneath its name", () => {
@@ -177,7 +199,9 @@ describe('InputFeatureTable (MODEL-SERVE-001-T12)', () => {
  */
 describe('InputFeatureTable — Sensor Frozen (MODEL-SERVE-001-T30)', () => {
   it('badges a frozen tag', () => {
-    render(<InputFeatureTable rows={[row({ column: 'TI010.PV', frozen: true })]} />)
+    render(
+      <InputFeatureTable rows={[row({ column: 'TI010.PV', frozen: true })]} />,
+    )
     expect(screen.getByText('Frozen')).toBeInTheDocument()
   })
 
@@ -218,5 +242,49 @@ describe('InputFeatureTable — Sensor Frozen (MODEL-SERVE-001-T30)', () => {
     )
     expect(screen.getByText('Frozen')).toBeInTheDocument()
     expect(screen.getByText('Good')).toBeInTheDocument()
+  })
+})
+
+/**
+ * MODEL-SERVE-009-T03. The duration is EVIDENCE beside T29's badge, never a
+ * second detector — `frozen` still decides whether the badge renders at all.
+ */
+describe('frozen duration evidence (MODEL-SERVE-009-T03)', () => {
+  it('shows how long a frozen tag has been unchanged', () => {
+    render(
+      <InputFeatureTable
+        rows={[row({ frozen: true, frozenFlatMinutes: 252 })]}
+      />,
+    )
+
+    // 252 minutes reads as 4h12m — minutes alone stop being legible past the
+    // first hour, and these numbers are hours-to-days on a real plant.
+    expect(screen.getByText('4h12m')).toBeVisible()
+  })
+
+  it('renders the badge with NO duration when the per-tag row is missing', () => {
+    render(
+      <InputFeatureTable
+        rows={[row({ frozen: true, frozenFlatMinutes: null })]}
+      />,
+    )
+
+    // Unknown stays unstated. Rendering 0 would claim the tag just changed,
+    // which is the UNKNOWN-folds-into-a-confident-value defect T27 forbids.
+    expect(screen.getByText('Frozen')).toBeVisible()
+    expect(screen.queryByText('0m')).toBeNull()
+  })
+
+  it('shows no duration for a tag that is not frozen at all', () => {
+    render(
+      <InputFeatureTable
+        rows={[row({ frozen: false, frozenFlatMinutes: 900 })]}
+      />,
+    )
+
+    // T29 decides the badge; a duration without a badge would be a second
+    // detector rendering its own verdict.
+    expect(screen.queryByText('Frozen')).toBeNull()
+    expect(screen.queryByText('15h')).toBeNull()
   })
 })

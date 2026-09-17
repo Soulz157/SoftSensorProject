@@ -94,6 +94,15 @@ interface UsePredictionMonitoringResult {
 export function usePredictionMonitoring(
   model: AIModel | null,
   range: TimeRange,
+  /**
+   * MODEL-SERVE-011-T08. Bump to re-read the series — the same `tick`
+   * mechanism `use-inference-status.ts` uses, and for the same reason: a
+   * mutation landed and ONE read proves it, so this is a key, not a poll.
+   * Without it a live point scored by Run Predict was invisible until the
+   * user changed the range toggle, because these cache keys carry only the
+   * model id and the range.
+   */
+  refreshKey = 0,
 ): UsePredictionMonitoringResult {
   const [points, setPoints] = useState<LivePredictionPoint[]>([])
   const [pointsLoading, setPointsLoading] = useState(false)
@@ -121,13 +130,13 @@ export function usePredictionMonitoring(
   // 'length')"), and how this hook came to spread a `DriftReport`'s missing
   // `.points`. Regression: use-prediction-monitoring.test.tsx.
   const seriesCacheKey = enabled
-    ? `prediction-monitoring|predictions|${model!.id}|${range}`
+    ? `prediction-monitoring|predictions|${model!.id}|${range}|${refreshKey}`
     : null
   const driftCacheKey = enabled
-    ? `prediction-monitoring|drift|${model!.id}|${range}`
+    ? `prediction-monitoring|drift|${model!.id}|${range}|${refreshKey}`
     : null
   const psiCacheKey = enabled
-    ? `prediction-monitoring|psi|${model!.id}|${range}`
+    ? `prediction-monitoring|psi|${model!.id}|${range}|${refreshKey}`
     : null
 
   useDebouncedAbortableRequest<PredictionSeriesResult>({

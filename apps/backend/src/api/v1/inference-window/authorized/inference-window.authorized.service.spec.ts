@@ -44,6 +44,8 @@ function buildPrisma(overrides: Record<string, unknown> = {}) {
     },
     inferenceWindow: {
       findUniqueOrThrow: jest.fn(),
+      // MODEL-SERVE-011-T02: runNowService's own insert (skipDuplicates).
+      createMany: jest.fn().mockResolvedValue({ count: 1 }),
       update: jest.fn().mockResolvedValue({}),
       // MODEL-SERVE-001-T20: the disable branch's own write.
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
@@ -115,12 +117,38 @@ function buildInputStatus(overrides = {}) {
   };
 }
 
+/** MODEL-SERVE-011-T02. `runNowService` is the only caller. `dispatchOne` is
+ *  fire-and-forget there, so it resolves by default — a test asserting the
+ *  dispatch happened reads the mock's calls, and no other test in this file
+ *  reaches it. */
+function buildScheduler(overrides = {}) {
+  return {
+    dispatchOne: jest.fn().mockResolvedValue(undefined),
+    ...overrides,
+  };
+}
+
+/** MODEL-SERVE-011-T08. `runNowService` awaits ONE live score. Defaults to a
+ *  successful point so the window-plane cases stay about the window. */
+function buildLivePredict(overrides = {}) {
+  return {
+    scoreOne: jest.fn().mockResolvedValue({
+      ok: true,
+      predicted: 42.5,
+      at: '2026-09-17T04:59:00.000Z',
+    }),
+    ...overrides,
+  };
+}
+
 function makeService(
   prisma: ReturnType<typeof buildPrisma>,
   descriptor: ReturnType<typeof buildDescriptor> = buildDescriptor(),
   truthSweeper: ReturnType<typeof buildTruthSweeper> = buildTruthSweeper(),
   monitoring: ReturnType<typeof buildMonitoring> = buildMonitoring(),
   inputStatus: ReturnType<typeof buildInputStatus> = buildInputStatus(),
+  scheduler: ReturnType<typeof buildScheduler> = buildScheduler(),
+  livePredict: ReturnType<typeof buildLivePredict> = buildLivePredict(),
 ) {
   return new InferenceWindowAuthorizedService(
     prisma as unknown as ConstructorParameters<
@@ -138,6 +166,12 @@ function makeService(
     inputStatus as unknown as ConstructorParameters<
       typeof InferenceWindowAuthorizedService
     >[4],
+    scheduler as unknown as ConstructorParameters<
+      typeof InferenceWindowAuthorizedService
+    >[5],
+    livePredict as unknown as ConstructorParameters<
+      typeof InferenceWindowAuthorizedService
+    >[6],
   );
 }
 
@@ -1192,6 +1226,11 @@ function buildTruthPrisma(
 ) {
   return buildPrisma({
     inferenceWindowTruth: { findMany: jest.fn().mockResolvedValue(rows) },
+    // MODEL-SERVE-009-T05. `getTruthService` reads the TARGET's own per-tag
+    // row to publish its held value. Null by default — a model whose
+    // scheduled fetch has not run yet — so `targetHeld` comes back null
+    // rather than the mock throwing and hiding the real behaviour.
+    tagObservation: { findUnique: jest.fn().mockResolvedValue(null) },
     inferenceWindow: {
       findUniqueOrThrow: jest.fn(),
       update: jest.fn().mockResolvedValue({}),
@@ -1406,6 +1445,69 @@ describe('InferenceWindowAuthorizedService.getTruthService (MODEL-SERVE-005-T03)
     expect(res.data.points).toEqual([]);
     expect(res.data.metrics!.n).toBe(1);
     expect(res.data.coverage.windowsJoined).toBe(1);
+  });
+
+  // ── MODEL-SERVE-009-T05: the target's held value, never a pair ───────────
+
+  it("publishes the target's LAST REPORTED value and when it was actually measured", async () => {
+    const prisma = buildTruthPrisma([truthRow()], 1);
+    prisma.tagObservation.findUnique.mockResolvedValue({
+      tag: 'S204FBP.lab',
+      lastValue: 41.5,
+      // Measured two days before it was last SEEN — the gap is the point.
+      lastChangedAt: new Date('2026-09-15T07:59:00.000Z'),
+      lastSeenAt: new Date('2026-09-17T03:59:00.000Z'),
+    });
+    const service = makeService(prisma);
+
+    const res = await service.getTruthService('model-1', RANGE, user);
+
+    expect(res.data.targetHeld).toMatchObject({
+      tag: 'S204FBP.lab',
+      value: 41.5,
+      lastMeasuredAt: '2026-09-15T07:59:00.000Z',
+      lastSeenAt: '2026-09-17T03:59:00.000Z',
+    });
+    // Sep 15 07:59 -> Sep 17 03:59 is 44 hours, not 48: 2640 minutes held
+    // at the same number.
+    expect(res.data.targetHeld!.heldForMinutes).toBe(2640);
+  });
+
+  it('NEVER turns the held value into a pair — metrics stay driven by joined rows alone', async () => {
+    // A range with NO joined pairs but a held target value present. The
+    // target tag is resolved from the PRODUCTION version, because there is
+    // no joined row to read it off — which is the whole point: this is the
+    // state the held value matters in.
+    const prisma = buildTruthPrisma([], 1);
+    prisma.modelVersion.findFirst.mockResolvedValue({
+      sourceRun: { targetY: 'S204FBP.lab' },
+    });
+    prisma.tagObservation.findUnique.mockResolvedValue({
+      tag: 'S204FBP.lab',
+      lastValue: 41.5,
+      lastChangedAt: new Date('2026-09-15T07:59:00.000Z'),
+      lastSeenAt: new Date('2026-09-17T03:59:00.000Z'),
+    });
+    const service = makeService(prisma);
+
+    const res = await service.getTruthService('model-1', RANGE, user);
+
+    // The held number is published, and the error metrics remain absent —
+    // publishing an R2 against a value nobody measured is the specific
+    // defect the EventWeighted Count probe exists to prevent.
+    expect(res.data.targetHeld!.value).toBe(41.5);
+    expect(res.data.metrics).toBeNull();
+    expect(res.data.coverage.pairedRows).toBe(0);
+    expect(res.data.points).toEqual([]);
+  });
+
+  it('is null when no scheduled fetch has recorded the target yet', async () => {
+    const service = makeService(buildTruthPrisma([truthRow()], 1));
+
+    const res = await service.getTruthService('model-1', RANGE, user);
+
+    // Null, not a zero or a fabricated timestamp.
+    expect(res.data.targetHeld).toBeNull();
   });
 
   // ── MODEL-SERVE-008-T04: the scored count, beside the lab count ──────────
@@ -2066,5 +2168,307 @@ describe('InferenceWindowAuthorizedService.listLogsService — containerId is th
     const res = await service.listLogsService('model-1', 'window-1', user);
 
     expect(res.data.window.containerId).toBeNull();
+  });
+});
+
+/**
+ * MODEL-SERVE-011-V01. `runNowService` — the manual bypass of the tick wait.
+ * Every case here asserts a REFUSAL the scheduled path already applies, plus
+ * the one genuinely new thing: the window is inserted at the SAME aligned
+ * boundary `windowStartsBetween` produces, and dispatched exactly once.
+ */
+describe('InferenceWindowAuthorizedService.runNowService (MODEL-SERVE-011)', () => {
+  /** 60-minute cadence, no lag — so `now - cadence` always contains at
+   *  least one aligned boundary and the happy path is not clock-dependent. */
+  const schedule = {
+    modelId: 'model-1',
+    enabled: true,
+    cadenceMinutes: 60,
+    lagMinutes: 0,
+  };
+
+  function serviceWith(
+    prisma: ReturnType<typeof buildPrisma>,
+    scheduler: ReturnType<typeof buildScheduler>,
+    livePredict: ReturnType<typeof buildLivePredict> = buildLivePredict(),
+  ) {
+    return makeService(
+      prisma,
+      buildDescriptor(),
+      buildTruthSweeper(),
+      buildMonitoring(),
+      buildInputStatus(),
+      scheduler,
+      livePredict,
+    );
+  }
+
+  it('refuses when the model has no inference schedule', async () => {
+    const prisma = buildPrisma();
+    prisma.inferenceSchedule.findUnique.mockResolvedValue(null);
+    await expect(
+      makeService(prisma).runNowService('model-1', user),
+    ).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it('refuses a stopped schedule rather than starting it', async () => {
+    const prisma = buildPrisma();
+    prisma.inferenceSchedule.findUnique.mockResolvedValue({
+      ...schedule,
+      enabled: false,
+    });
+    await expect(
+      makeService(prisma).runNowService('model-1', user),
+    ).rejects.toMatchObject({ statusCode: 409 });
+    expect(prisma.inferenceWindow.createMany).not.toHaveBeenCalled();
+  });
+
+  it('refuses when there is no PRODUCTION version to pin the window to', async () => {
+    const prisma = buildPrisma();
+    prisma.inferenceSchedule.findUnique.mockResolvedValue(schedule);
+    prisma.modelVersion.findFirst.mockResolvedValue(null);
+    await expect(
+      makeService(prisma).runNowService('model-1', user),
+    ).rejects.toMatchObject({ statusCode: 422 });
+    expect(prisma.inferenceWindow.createMany).not.toHaveBeenCalled();
+  });
+
+  it('inserts one epoch-aligned PENDING window and dispatches it once', async () => {
+    const prisma = buildPrisma();
+    prisma.inferenceSchedule.findUnique.mockResolvedValue(schedule);
+    prisma.modelVersion.findFirst.mockResolvedValue({ id: 'ver-1' });
+    prisma.inferenceWindow.findUniqueOrThrow.mockResolvedValue({
+      id: 'win-1',
+      status: 'PENDING',
+      windowStart: new Date('2026-09-17T04:00:00.000Z'),
+      windowEnd: new Date('2026-09-17T05:00:00.000Z'),
+    });
+    const scheduler = buildScheduler();
+
+    const res = await serviceWith(prisma, scheduler).runNowService(
+      'model-1',
+      user,
+    );
+
+    expect(res.statusCode).toBe(202);
+    expect(res.data).toMatchObject({ windowId: 'win-1', dispatched: true });
+    expect(scheduler.dispatchOne).toHaveBeenCalledTimes(1);
+    expect(scheduler.dispatchOne).toHaveBeenCalledWith('win-1');
+
+    // ONE row, PENDING, skipDuplicates — and its windowStart is a multiple
+    // of the cadence since the epoch, which is what lets the unique
+    // constraint collapse a repeat call onto the same slot.
+    const insert = (
+      prisma.inferenceWindow.createMany.mock.calls as unknown as [
+        {
+          data: { windowStart: Date; windowEnd: Date; status: string }[];
+          skipDuplicates: boolean;
+        },
+      ][]
+    )[0][0];
+    expect(insert.skipDuplicates).toBe(true);
+    expect(insert.data).toHaveLength(1);
+    expect(insert.data[0].status).toBe('PENDING');
+    expect(insert.data[0].windowStart.getTime() % (60 * 60_000)).toBe(0);
+    expect(insert.data[0].windowEnd.getTime()).toBe(
+      insert.data[0].windowStart.getTime() + 60 * 60_000,
+    );
+  });
+
+  it('reports an already-run window instead of dispatching a second container', async () => {
+    const prisma = buildPrisma();
+    prisma.inferenceSchedule.findUnique.mockResolvedValue(schedule);
+    prisma.modelVersion.findFirst.mockResolvedValue({ id: 'ver-1' });
+    prisma.inferenceWindow.createMany.mockResolvedValue({ count: 0 });
+    prisma.inferenceWindow.findUniqueOrThrow.mockResolvedValue({
+      id: 'win-1',
+      status: 'SUCCEEDED',
+      windowStart: new Date('2026-09-17T04:00:00.000Z'),
+      windowEnd: new Date('2026-09-17T05:00:00.000Z'),
+    });
+    const scheduler = buildScheduler();
+
+    const res = await serviceWith(prisma, scheduler).runNowService(
+      'model-1',
+      user,
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(res.data).toMatchObject({ status: 'SUCCEEDED', dispatched: false });
+    expect(res.message).toContain('SUCCEEDED');
+    expect(scheduler.dispatchOne).not.toHaveBeenCalled();
+  });
+
+  it('does not re-run a FAILED window — it points at the explicit retry path', async () => {
+    const prisma = buildPrisma();
+    prisma.inferenceSchedule.findUnique.mockResolvedValue(schedule);
+    prisma.modelVersion.findFirst.mockResolvedValue({ id: 'ver-1' });
+    prisma.inferenceWindow.createMany.mockResolvedValue({ count: 0 });
+    prisma.inferenceWindow.findUniqueOrThrow.mockResolvedValue({
+      id: 'win-1',
+      status: 'FAILED',
+      windowStart: new Date('2026-09-17T04:00:00.000Z'),
+      windowEnd: new Date('2026-09-17T05:00:00.000Z'),
+    });
+    const scheduler = buildScheduler();
+
+    const res = await serviceWith(prisma, scheduler).runNowService(
+      'model-1',
+      user,
+    );
+
+    expect(res.message).toContain('retry');
+    expect(scheduler.dispatchOne).not.toHaveBeenCalled();
+  });
+
+  it('always picks a FULLY ELAPSED window — never one ending in the future', async () => {
+    const prisma = buildPrisma();
+    prisma.inferenceSchedule.findUnique.mockResolvedValue({
+      ...schedule,
+      cadenceMinutes: 60,
+      lagMinutes: 15,
+    });
+    prisma.modelVersion.findFirst.mockResolvedValue({ id: 'ver-1' });
+    prisma.inferenceWindow.findUniqueOrThrow.mockResolvedValue({
+      id: 'win-1',
+      status: 'PENDING',
+      windowStart: new Date('2026-09-17T04:00:00.000Z'),
+      windowEnd: new Date('2026-09-17T05:00:00.000Z'),
+    });
+    jest
+      .spyOn(Date, 'now')
+      .mockReturnValue(new Date('2026-09-17T06:20:00.000Z').getTime());
+    try {
+      await serviceWith(prisma, buildScheduler()).runNowService(
+        'model-1',
+        user,
+      );
+      const insert = (
+        prisma.inferenceWindow.createMany.mock.calls as unknown as [
+          { data: { windowEnd: Date }[] },
+        ][]
+      )[0][0];
+      // windowEnd is in the PAST by at least the configured lag — the
+      // property MODEL-SERVE-006-T11 measured, restated as an assertion.
+      expect(insert.data[0].windowEnd.getTime()).toBeLessThanOrEqual(
+        Date.now() - 15 * 60_000,
+      );
+    } finally {
+      jest.spyOn(Date, 'now').mockRestore();
+    }
+  });
+});
+
+/**
+ * MODEL-SERVE-011-V01 (T08). The live half of Run Predict. The window plane
+ * is already covered above; these cases exist to pin ONE property: the two
+ * halves are independent, and neither can silently swallow the other.
+ */
+describe('InferenceWindowAuthorizedService.runNowService — live score (MODEL-SERVE-011-T08)', () => {
+  const schedule = {
+    modelId: 'model-1',
+    enabled: true,
+    cadenceMinutes: 60,
+    lagMinutes: 0,
+  };
+
+  function readyPrisma() {
+    const prisma = buildPrisma();
+    prisma.inferenceSchedule.findUnique.mockResolvedValue(schedule);
+    prisma.modelVersion.findFirst.mockResolvedValue({ id: 'ver-1' });
+    prisma.inferenceWindow.findUniqueOrThrow.mockResolvedValue({
+      id: 'win-1',
+      status: 'PENDING',
+      windowStart: new Date('2026-09-17T04:00:00.000Z'),
+      windowEnd: new Date('2026-09-17T05:00:00.000Z'),
+    });
+    return prisma;
+  }
+
+  function serviceWith(
+    prisma: ReturnType<typeof buildPrisma>,
+    livePredict: ReturnType<typeof buildLivePredict>,
+  ) {
+    return makeService(
+      prisma,
+      buildDescriptor(),
+      buildTruthSweeper(),
+      buildMonitoring(),
+      buildInputStatus(),
+      buildScheduler(),
+      livePredict,
+    );
+  }
+
+  it('returns the predicted value and its row timestamp alongside the queued window', async () => {
+    const live = buildLivePredict();
+    const res = await serviceWith(readyPrisma(), live).runNowService(
+      'model-1',
+      user,
+    );
+
+    expect(res.statusCode).toBe(202);
+    expect(res.data.live).toEqual({
+      ok: true,
+      predicted: 42.5,
+      at: '2026-09-17T04:59:00.000Z',
+    });
+    expect(live.scoreOne).toHaveBeenCalledWith('model-1');
+  });
+
+  it('still queues the window when the live plane produced no point', async () => {
+    const live = buildLivePredict({
+      scoreOne: jest
+        .fn()
+        .mockResolvedValue({ ok: false, reason: 'Input not usable — TAG_A' }),
+    });
+    const res = await serviceWith(readyPrisma(), live).runNowService(
+      'model-1',
+      user,
+    );
+
+    // The window half is unaffected: a quiet source is a live-plane fact,
+    // not a reason to withhold the run the operator asked for.
+    expect(res.statusCode).toBe(202);
+    expect(res.data.dispatched).toBe(true);
+    expect(res.data.live).toMatchObject({ ok: false });
+  });
+
+  it('a THROWING live score cannot fail the request — the window is already queued', async () => {
+    const live = buildLivePredict({
+      scoreOne: jest.fn().mockRejectedValue(new Error('Serving unreachable')),
+    });
+    const res = await serviceWith(readyPrisma(), live).runNowService(
+      'model-1',
+      user,
+    );
+
+    expect(res.statusCode).toBe(202);
+    expect(res.data.dispatched).toBe(true);
+    // The server's OWN text, carried through rather than replaced by a
+    // category — a serving outage and a bad input read differently.
+    expect(res.data.live).toEqual({
+      ok: false,
+      reason: 'Serving unreachable',
+    });
+  });
+
+  it('scores the live plane even when the latest window has already run', async () => {
+    const prisma = readyPrisma();
+    prisma.inferenceWindow.createMany.mockResolvedValue({ count: 0 });
+    prisma.inferenceWindow.findUniqueOrThrow.mockResolvedValue({
+      id: 'win-1',
+      status: 'SUCCEEDED',
+      windowStart: new Date('2026-09-17T04:00:00.000Z'),
+      windowEnd: new Date('2026-09-17T05:00:00.000Z'),
+    });
+    const live = buildLivePredict();
+    const res = await serviceWith(prisma, live).runNowService('model-1', user);
+
+    // The window had nothing left to do; the operator still gets a fresh
+    // reading, which is what the button is for on a model between windows.
+    expect(res.statusCode).toBe(200);
+    expect(res.data.dispatched).toBe(false);
+    expect(res.data.live).toMatchObject({ ok: true, predicted: 42.5 });
   });
 });

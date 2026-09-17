@@ -95,6 +95,17 @@ export interface InferenceStatus {
      *  just FROZEN — a higher-precedence fault outranks the band without
      *  making the tags un-stuck. */
     frozenColumns: string[]
+    /** MODEL-SERVE-009-T03. Per-column "unchanged since" — EVIDENCE beside
+     *  the badge, never a second detector: MODEL-SERVE-001-T29 still
+     *  decides which columns are frozen, by its own three-window pooled
+     *  range. A badged column missing from this list has an UNKNOWN
+     *  duration (no per-tag row yet) and must not render as just-changed.
+     *  Optional so a backend predating it does not break the parse. */
+    frozenSince?: Array<{
+      column: string
+      lastChangedAt: string | null
+      flatMinutes: number | null
+    }>
     thresholds: {
       warnSd: number
       criticalSd: number
@@ -298,6 +309,31 @@ export interface LiveErrorWindow {
   failureReason: string | null
 }
 
+/**
+ * MODEL-SERVE-009-T05. The target tag's LAST REPORTED value.
+ *
+ * The target is fetched on every scheduled window — it sits in the
+ * schedule's `baseTags` beside the features — so a number comes back every
+ * interval. Almost none of those intervals contain an actual lab EVENT: PI
+ * holds a sparse `.lab` tag's last value between samples, and the truth
+ * join's EventWeighted Count probe is what tells the two apart (measured:
+ * zero real events across every joined window).
+ *
+ * So this is the lab's last MEASUREMENT, carried forward — not a series of
+ * measurements. It must never feed a residual, an SD band or an R2:
+ * `lastMeasuredAt` is when the number was actually observed, and
+ * `heldForMinutes` is how long it has read the same since.
+ */
+export interface TargetHeldValue {
+  tag: string
+  value: number | null
+  /** When the lab last reported a DIFFERENT number. */
+  lastMeasuredAt: string | null
+  /** When the fetch last returned it at all — held or not. */
+  lastSeenAt: string | null
+  heldForMinutes: number | null
+}
+
 export interface LiveErrorResult {
   points: LiveErrorPoint[]
   truncated: boolean
@@ -311,6 +347,9 @@ export interface LiveErrorResult {
    *  first lab sample. Null only when no window knows it yet. */
   targetColumn: string | null
   coverage: LiveErrorCoverage
+  /** MODEL-SERVE-009-T05. Null until a scheduled fetch has recorded the
+   *  target. Never a pair — see `TargetHeldValue`. */
+  targetHeld: TargetHeldValue | null
   windows: LiveErrorWindow[]
 }
 
@@ -318,7 +357,94 @@ function base(modelId: string) {
   return `/api/v1/authorized/model/${modelId}`
 }
 
+/**
+ * MODEL-SERVE-009-T04. One tag's CURRENT state as of the last scheduled
+ * fetch — the authoritative record, as distinct from the Input Data tab's
+ * previous approach of scanning sampled `/predict` rows in the browser.
+ *
+ * `lastStatus` is the FETCH PATH's arrival health (0 Good / 1 Bad / 2
+ * Questionable), NOT PI's own good/questionable/substituted flag, which
+ * arrives only on `/input-status`' live snapshot. The two answer different
+ * questions and decisions.arrival_health_and_pi_quality_are_two_fields
+ * keeps them in separate fields on purpose.
+ */
+export interface TagObservation {
+  tag: string
+  lastValue: number | null
+  lastStatus: number | null
+  /** The last fetch that returned this tag AT ALL — advances even when the
+   *  value is unchanged, and even when the cell was Bad. */
+  lastSeenAt: string | null
+  /** The last fetch whose value DIFFERED. `lastSeenAt` minus this is how
+   *  long the tag has been flat, measured rather than inferred. */
+  lastChangedAt: string | null
+  /** SUCCEEDED / FAILED / SKIPPED — how the last fetch went. A failed fetch
+   *  records itself here without moving either timestamp, so an outage is
+   *  distinguishable from a freeze. */
+  lastFetchOutcome: string | null
+  /** Null means UNKNOWN (a timestamp is missing), never "changed just now". */
+  flatMinutes: number | null
+}
+
+/**
+ * MODEL-SERVE-011-T07. The live half of a Run Predict, discriminated rather
+ * than `number | null`: every failure is a legitimate state of a working
+ * system (a quiet source, a tag reporting Bad, a model never promoted) and
+ * each sends a reader somewhere different, so the UI must be able to say
+ * WHICH — never a shared "no point this time".
+ */
+export type LiveScoreOutcome =
+  | { ok: true; predicted: number; at: string }
+  | { ok: false; reason: string }
+
+export interface RunNowResult {
+  windowId: string
+  windowStart: string
+  windowEnd: string
+  status: string
+  /** False when the latest window had already run — the live score still
+   *  happened, so this is not a failure. */
+  dispatched: boolean
+  live: LiveScoreOutcome
+  /** The server's own wording. Success answers two ways (202 queued, 200
+   *  already ran) and only this distinguishes them. */
+  message: string
+}
+
+/** MODEL-SERVE-011-T12. One SCHEDULED window, summarised by the figures its
+ *  own metrics.json already carries — never recomputed client-side. */
+export interface ScheduledPoint {
+  windowStart: string
+  windowEnd: string
+  rowCount: number
+  mean: number
+  min: number
+  max: number
+  std: number
+  /** Pinned at window creation; two adjacent points can come from different
+   *  versions when a promote landed mid-range. */
+  modelVersionId: string | null
+}
+
+export interface ScheduledSeriesResult {
+  points: ScheduledPoint[]
+  /** SUCCEEDED windows found in range — the denominator for `missing`. */
+  windows: number
+  /** Windows whose metrics object did not resolve: a gap in the chart, not
+   *  a failed read. */
+  missing: number
+}
+
 export const inferenceWindowService = {
+  /** MODEL-SERVE-009-T04. Never goes blank during a PI outage — unlike
+   *  `/input-status`, which is a live snapshot and blanks by design. */
+  async getTagObservations(modelId: string): Promise<TagObservation[]> {
+    const res: ApiResponse<{ tags: TagObservation[] }> = await fetchClient(
+      `${base(modelId)}/inference/tag-observations`,
+    )
+    return res.data.tags
+  },
+
   async getSchedule(modelId: string): Promise<InferenceSchedule> {
     const res: ApiResponse<InferenceSchedule> = await fetchClient(
       `${base(modelId)}/inference/schedule`,
@@ -387,6 +513,24 @@ export const inferenceWindowService = {
     return res.data
   },
 
+  /**
+   * MODEL-SERVE-011-T04. Run the latest fully-elapsed window NOW instead of
+   * waiting for the scheduler's next tick.
+   *
+   * `message` is returned ALONGSIDE the data, not dropped: the server
+   * answers two different ways on success — 202 when it queued a run, 200
+   * when the latest window had already run — and only its own wording tells
+   * a reader which happened. `dispatched` is the machine-readable half of
+   * the same fact.
+   */
+  async runNow(modelId: string): Promise<RunNowResult> {
+    const res: ApiResponse<Omit<RunNowResult, 'message'>> = await fetchClient(
+      `${base(modelId)}/inference/run-now`,
+      { method: 'POST' },
+    )
+    return { ...res.data, message: res.message }
+  },
+
   async retryWindow(modelId: string, windowId: string): Promise<void> {
     await fetchClient(`${base(modelId)}/inference/windows/${windowId}/retry`, {
       method: 'POST',
@@ -414,6 +558,30 @@ export const inferenceWindowService = {
   ): Promise<WindowLogs> {
     const res: ApiResponse<WindowLogs> = await fetchClient(
       `${base(modelId)}/inference/windows/${windowId}/logs`,
+      { signal },
+    )
+    return res.data
+  },
+
+  /**
+   * MODEL-SERVE-011-T12. The SCHEDULED plane's own hourly series — one
+   * point per SUCCEEDED window, read from that window's metrics.json.
+   *
+   * Separate from `truth` below because it answers a narrower question:
+   * "what did the model predict", with no actual required. `truth` can only
+   * report windows the lab has reported on, which on a daily-sampled target
+   * is almost none of them — so without this the whole scheduled plane is
+   * invisible on the chart.
+   */
+  async scheduledSeries(
+    modelId: string,
+    from: string,
+    to: string,
+    signal?: AbortSignal,
+  ): Promise<ScheduledSeriesResult> {
+    const query = new URLSearchParams({ from, to })
+    const res: ApiResponse<ScheduledSeriesResult> = await fetchClient(
+      `${base(modelId)}/inference/scheduled-series?${query.toString()}`,
       { signal },
     )
     return res.data

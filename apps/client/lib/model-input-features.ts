@@ -63,6 +63,32 @@ export interface InputFeatureRow {
    * monitoring has not been probed: absence of evidence is not flatness.
    */
   frozen: boolean
+  /** MODEL-SERVE-009-T03. How long this tag has been unchanged, in minutes,
+   *  from its per-tag row's own timestamps. NULL means UNKNOWN — no per-tag
+   *  row yet, or a missing timestamp — and must never render as "just
+   *  changed" (MODEL-SERVE-001-T27: UNKNOWN never folds into a confident
+   *  value). This is EVIDENCE beside the badge; `frozen` above is still
+   *  decided server-side by MODEL-SERVE-001-T29. */
+  frozenFlatMinutes: number | null
+  /** MODEL-SERVE-009-T04. When this tag's value last CHANGED, from the
+   *  scheduled fetch's own record. Null means unknown — no per-tag row yet.
+   *  Distinct from `lastSeen`, which is merely when it last ARRIVED. */
+  lastChanged: string | null
+  /** MODEL-SERVE-009-T04. The FETCH PATH's arrival health as of the last
+   *  scheduled fetch (0 Good / 1 Bad / 2 Questionable), a SECOND status
+   *  beside `piStatus` and never merged with it — `piStatus` is PI's own
+   *  quality flag from a live snapshot that blanks during an outage, this
+   *  one is what the pipeline actually acted on and never blanks.
+   *  decisions.arrival_health_and_pi_quality_are_two_fields. */
+  fetchStatus: number | null
+  /** MODEL-SERVE-009-T04. How the last fetch went for this tag. A tag whose
+   *  last fetch FAILED has stale timestamps by design — an absent fetch is
+   *  not a flat tag — and this is what says so. */
+  lastFetchOutcome: string | null
+  /** True when `lastValueRaw`/`lastSeen` came from the authoritative
+   *  scheduled fetch rather than the sampled /predict scan. Lets the UI
+   *  avoid presenting a sample of a sample as the same thing. */
+  fromScheduledFetch: boolean
 }
 
 export interface BuildInputFeatureRowsInput {
@@ -96,6 +122,28 @@ export interface BuildInputFeatureRowsInput {
    * apps/backend/src/lib/deploy-status.ts:318-346). Defaults to empty.
    */
   frozenColumns?: string[]
+  /** MODEL-SERVE-009-T03. Per-column "unchanged since", from the health
+   *  payload. Only badged columns carry an entry; a badged column missing
+   *  from this list is UNKNOWN duration, not zero. */
+  frozenSince?: Array<{
+    column: string
+    lastChangedAt: string | null
+    flatMinutes: number | null
+  }>
+  /** MODEL-SERVE-009-T04. The scheduled fetch's own per-tag record. PREFERRED
+   *  over the sampled `/predict` scan when present: that scan is bounded by
+   *  SERVING_LOG_SAMPLE_RATE, empty for a model with no live driver, and
+   *  blind to a tag that arrived Bad. Optional, so a caller without it keeps
+   *  exactly today's behaviour. */
+  tagObservations?: Array<{
+    tag: string
+    lastValue: number | null
+    lastStatus: number | null
+    lastSeenAt: string | null
+    lastChangedAt: string | null
+    lastFetchOutcome: string | null
+    flatMinutes: number | null
+  }>
 }
 
 /** Builds one row per `featureColumns` entry, in that exact order — never
@@ -112,7 +160,13 @@ export function buildInputFeatureRows({
   piStatus,
   derivedFeatures,
   frozenColumns,
+  frozenSince,
+  tagObservations,
 }: BuildInputFeatureRowsInput): InputFeatureRow[] {
+  const observedByColumn = new Map((tagObservations ?? []).map(o => [o.tag, o]))
+  const flatByColumn = new Map(
+    (frozenSince ?? []).map(e => [e.column, e.flatMinutes]),
+  )
   const driftByColumn = new Map(
     (drift?.columns ?? []).map(col => [col.column, col]),
   )
@@ -142,6 +196,15 @@ export function buildInputFeatureRows({
       }
     }
 
+    // MODEL-SERVE-009-T04. The scheduled fetch's record WINS when present.
+    // The browser scan above stays as the fallback rather than being
+    // deleted: a model with no scheduled fetch yet (never enabled, or
+    // enabled minutes ago) still has whatever /predict logged, and showing
+    // that is better than showing nothing — it is only the WRONG answer
+    // when a better one exists.
+    const observed = observedByColumn.get(column)
+    const fromScheduledFetch = observed?.lastSeenAt != null
+
     return {
       column,
       driftStatus: driftCol?.status ?? 'UNKNOWN',
@@ -151,10 +214,17 @@ export function buildInputFeatureRows({
       piStatus: piCol?.status ?? 'UNKNOWN',
       piReason: piCol?.reason,
       failingSources: piCol?.failingSources,
-      lastValueRaw,
-      lastSeen,
+      lastValueRaw: fromScheduledFetch ? observed!.lastValue : lastValueRaw,
+      lastSeen: fromScheduledFetch ? observed!.lastSeenAt : lastSeen,
+      lastChanged: observed?.lastChangedAt ?? null,
+      fetchStatus: observed?.lastStatus ?? null,
+      lastFetchOutcome: observed?.lastFetchOutcome ?? null,
+      fromScheduledFetch,
       equation: equationByColumn.get(column) ?? null,
       frozen: frozenSet.has(column),
+      // `?? null` rather than `?? 0`: a badged column with no per-tag row
+      // has an UNKNOWN duration, and zero would claim it just changed.
+      frozenFlatMinutes: flatByColumn.get(column) ?? null,
     }
   })
 }

@@ -156,8 +156,42 @@ def test_target_fields_present_when_target_given() -> None:
         "target_y", "target_scaled", "derived_from_target",
     }
     assert spec["target_y"] == "TI-101"
-    assert spec["target_scaled"] is True  # TI-101 has a minmax scaler in BASE_SCALERS
+    # MODEL-SERVE-010-T05. CONTRACT CHANGED, DELIBERATELY. This used to
+    # assert True "because TI-101 has a minmax scaler in BASE_SCALERS" —
+    # i.e. the flag reported what was REQUESTED. That is the defect: the
+    # same map drove `to_model_ready`, which scales any tag absent from it
+    # with DEFAULT_SCALER anyway, so the flag could never contradict the
+    # scaling and in production reported False over a target that had been
+    # min-max scaled to 0-1. The flag now reports what ACTUALLY happened,
+    # read from `scaling_params`, and the pipeline no longer scales the
+    # target at all — so requesting a scaler for it does NOT make it scaled.
+    assert spec["target_scaled"] is False
     assert spec["derived_from_target"] == ["TI-101__lag3"]
+
+
+def test_target_scaled_is_TRUE_when_the_target_really_was_scaled() -> None:
+    """MODEL-SERVE-010-T05. The flag must still be able to say True, or it
+    would be a constant rather than a report. An artifact written before this
+    fix carries fitted params for its target, and reading THAT is what lets a
+    consumer inverse-transform such a model's predictions instead of
+    comparing scaled output to engineering units."""
+    spec = build_feature_spec(
+        copy.deepcopy(BASE_FEATURES), list(BASE_SELECTED), dict(BASE_SCALERS),
+        target_y="TI-101",
+        scaling_params={"TI-101": {"min": 198.5, "max": 210.6}},
+    )
+    assert spec["target_scaled"] is True
+
+
+def test_target_scaled_is_false_when_only_FEATURES_were_scaled() -> None:
+    """The normal post-fix shape: features carry fitted params, the target
+    does not, so the target is unscaled and says so."""
+    spec = build_feature_spec(
+        copy.deepcopy(BASE_FEATURES), list(BASE_SELECTED), dict(BASE_SCALERS),
+        target_y="TI-101",
+        scaling_params={"FC-310": {"min": 0.0, "max": 1.0}},
+    )
+    assert spec["target_scaled"] is False
 
 
 def test_target_scaled_is_explicit_false_when_unscaled() -> None:
@@ -404,3 +438,63 @@ def test_correcting_scaling_did_not_move_the_feature_hash() -> None:
     assert defaulted["featureHash"] != explicit["featureHash"]
     assert with_params["scaling"] == [{"tag": "TI-101", "method": "minmax"}]
     assert defaulted["scaling"] == []
+
+
+# ── MODEL-SERVE-010-T05: the target must never be scaled ────────────────────
+
+
+def test_scalable_tags_excludes_the_target_even_when_absent_from_the_map() -> None:
+    """THE ROOT CAUSE, PINNED. `to_model_ready` reads
+    `scalers.get(tag, DEFAULT_SCALER)` and DEFAULT_SCALER is "minmax", so
+    leaving the target out of the scaler map does NOT leave it unscaled — it
+    scales it with the default. Exclusion has to be by NAME, which is what
+    `_scalable_tags` does.
+
+    Measured before this fix: a GOLD target ranging exactly 0.0-1.0 while its
+    own feature_spec said `target_scaled: false`, and a model emitting
+    0.64-0.66 against a lab measuring 196.
+    """
+    import pandas as pd
+
+    from services.artifact_service import _scalable_tags
+
+    df = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-09-17", periods=2, freq="1min"),
+            "FC-310": [1.0, 2.0],
+            "FC-310__status": [0, 0],
+            "TI-101": [198.5, 210.6],
+            "TI-101__status": [0, 0],
+        }
+    )
+
+    assert _scalable_tags(df, "TI-101") == ["FC-310"]
+    # No target named: every tag is scalable, which is the pre-existing
+    # behaviour for a frame that has no y at all.
+    assert _scalable_tags(df, None) == ["FC-310", "TI-101"]
+
+
+def test_to_model_ready_would_scale_an_unmapped_target_without_the_exclusion() -> None:
+    """The negative control for the test above: this asserts the DEFAULT-scaler
+    behaviour that made the bug possible, so a future change to
+    DEFAULT_SCALER or to `scalers.get` cannot quietly make `_scalable_tags`
+    look unnecessary."""
+    import pandas as pd
+
+    from softsensor_scaling import to_model_ready
+
+    df = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-09-17", periods=2, freq="1min"),
+            "TI-101": [198.5, 210.6],
+            "TI-101__status": [0, 0],
+        }
+    )
+
+    # Target passed in the tag list with NO entry in the scaler map.
+    scaled, params = to_model_ready(df, ["TI-101"], {})
+
+    # It gets min-max scaled anyway — 0.0 and 1.0, exactly the shape found in
+    # the live GOLD artifact.
+    assert scaled["TI-101"].tolist() == [0.0, 1.0]
+    assert "TI-101" in params

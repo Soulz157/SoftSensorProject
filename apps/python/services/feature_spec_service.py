@@ -352,7 +352,20 @@ def build_feature_spec(
         # unscaled" from "never recorded" (feature_spec.json predates this
         # field on any artifact written before T02).
         spec["target_y"] = target_y
-        spec["target_scaled"] = scalers.get(target_y, "none") != "none"
+        # MODEL-SERVE-010-T05. DERIVED FROM WHAT ACTUALLY HAPPENED, not from
+        # the requested scaler map. The old form read
+        # `scalers.get(target_y, "none") != "none"` — the same absent entry
+        # that made `to_model_ready` min-max scale the target by DEFAULT also
+        # made this report False, so the flag confirmed the very thing it
+        # should have contradicted. `scaling_params` only carries a tag that
+        # was actually fitted, so reading it makes the claim evidence-based:
+        # if the target was scaled, this says so, whatever the map intended.
+        # With `_scalable_tags` now excluding the target, this is False
+        # because the target is genuinely unscaled — not because nobody
+        # asked for it.
+        spec["target_scaled"] = bool(
+            scaling_params and target_y in scaling_params
+        )
         spec["derived_from_target"] = _derived_from_target(features, target_y)
 
     return spec

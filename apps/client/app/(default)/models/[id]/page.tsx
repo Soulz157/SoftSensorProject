@@ -35,6 +35,7 @@ import {
   Database,
   Gauge,
   History,
+  Loader2,
   Pencil,
   Play,
   RefreshCw,
@@ -46,6 +47,7 @@ import {
   Waves,
   WifiOff,
   XCircle,
+  Zap,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
@@ -67,6 +69,7 @@ import { useModelRetrain } from '@/hooks/model/use-model-retrain'
 import { useModelPromote } from '@/hooks/model/use-model-promote'
 import { useModelInputSchema } from '@/hooks/model/use-model-input-schema'
 import { useInferenceStatus } from '@/hooks/model/use-inference-status'
+import { useRunPredict } from '@/hooks/model/use-run-predict'
 import LoadingModelPage from './loading'
 import ErrorModelPage from './error'
 
@@ -220,6 +223,7 @@ export default function ModelDetailPage({
   const [editOpen, setEditOpen] = useState(false)
   const [retrainOpen, setRetrainOpen] = useState(false)
   const [version, setVersion] = useState(0)
+  const [monitoringKey, setMonitoringKey] = useState(0)
   const refresh = () => setVersion(v => v + 1)
   const retrain = useModelRetrain({ model, onUpdated: refresh })
   const refreshModels = useRefreshModels()
@@ -255,6 +259,22 @@ export default function ModelDetailPage({
     refetch: refetchInferenceStatus,
   } = useInferenceStatus(model?.id ?? null)
   const deployStatusReady = inferenceStatus !== null
+
+  /**
+   * MODEL-SERVE-011-T06. The SAME refresh trio `handleToggleDeploy` runs —
+   * the new window has to reach the Monitoring and Logs tabs, the header
+   * badges, and the sidebar/Alerts counts that read `useAllModels`. A
+   * queued run is not visible anywhere until these land.
+   */
+  const runPredict = useRunPredict(() => {
+    refreshModels()
+    refresh()
+    refetchInferenceStatus()
+    // MODEL-SERVE-011-T08. The live point lives in the Monitoring tab's own
+    // series, which is cached by model id and range alone — without this it
+    // would not reappear until the user changed the range.
+    setMonitoringKey(k => k + 1)
+  })
 
   /**
    * MODEL-SERVE-006-T12/MODEL-SERVE-001-T09. deployStatus is DERIVED now —
@@ -391,7 +411,15 @@ export default function ModelDetailPage({
 
   return (
     <div className="flex-1 overflow-auto bg-background p-6 md:p-8">
-      <div className="mx-auto max-w-5xl space-y-6">
+      {/* DESIGN_SYSTEM.md's own content width (`max-w-7xl mx-auto`, and the
+          canonical wrapper `mx-auto w-full max-w-7xl space-y-6`). This page
+          had been pinned to `max-w-5xl`, narrower than the system it belongs
+          to, which is why the Monitoring charts scrolled sideways on a wide
+          screen instead of using it. `max-w-7xl` is 80rem, so on anything
+          below that the page is already full-bleed and nothing changes for
+          smaller screens — the extra room only appears where there is room
+          to give. */}
+      <div className="mx-auto w-full max-w-7xl space-y-6">
         {/* Back */}
         <Link
           href="/models/views"
@@ -526,6 +554,40 @@ export default function ModelDetailPage({
                 Start
               </Button>
             )}
+            {/* MODEL-SERVE-011-T06. Skips the wait for the scheduler's next
+                tick, nothing more: it runs the SAME window the tick would
+                have run, through the same dispatch path. Gated on
+                `isEnabled` because a stopped model is the Start button's
+                decision — the server refuses one with a 409 regardless, and
+                a button that always fails is worse than one that is plainly
+                unavailable. `!deployStatusReady` for the same reason Stop
+                carries it: before the first status read, `isEnabled` is only
+                the model's stale last-fetched value. */}
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5"
+              disabled={
+                runPredict.busy ||
+                isToggling ||
+                !deployStatusReady ||
+                !isEnabled
+              }
+              onClick={() => void runPredict.runPredict(model.id)}
+            >
+              {/* The wait is REAL and worth showing: this awaits a warm
+                  /predict round trip (fetch the last few minutes, score it)
+                  before it answers, so a button that only greyed out read as
+                  a press that did nothing. Same Loader2 spinner
+                  settings/account.tsx already uses for an in-flight
+                  mutation. */}
+              {runPredict.busy ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Zap className="h-4 w-4" />
+              )}
+              {runPredict.busy ? 'Predicting…' : 'Run Predict'}
+            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -763,6 +825,7 @@ export default function ModelDetailPage({
             <InputDataTab
               model={model}
               frozenColumns={inferenceStatus?.health.frozenColumns ?? []}
+              frozenSince={inferenceStatus?.health.frozenSince ?? []}
             />
           </TabsContent>
 
@@ -814,7 +877,7 @@ export default function ModelDetailPage({
 
           {/* ── Monitoring ── */}
           <TabsContent value="monitoring" className="mt-4">
-            <ModelMonitoringTab model={model} />
+            <ModelMonitoringTab model={model} refreshKey={monitoringKey} />
           </TabsContent>
 
           {/* ── Evaluation ── */}

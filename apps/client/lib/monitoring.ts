@@ -192,6 +192,36 @@ export interface LiveOverlayRow extends Partial<MonitoringRow> {
    *  which is the scheduled window's prediction inside a joined pair — two
    *  provenances, never one series with holes in it. */
   live?: number
+  /** MODEL-SERVE-009-T05. The target's last REPORTED value, carried forward
+   *  by PI between lab samples — rendered as "Actual" (user decision
+   *  2026-09-17) but kept under its OWN key, never merged into `actual`.
+   *  That separation is the safety property: `actual` is what the residual,
+   *  the SD band and every error metric read, and a held number entering
+   *  those would publish a confident error against a value nobody measured
+   *  in that interval. */
+  held?: number
+  /** MODEL-SERVE-011-T12. The SCHEDULED plane's hourly point —
+   *  `predictionMean` over one window's 60 scored rows, from that window's
+   *  own metrics.json.
+   *
+   *  ITS OWN KEY, like every other series here. It is neither `predict`
+   *  (which exists only inside a JOINED pair and carries a measured actual
+   *  beside it) nor `live` (a single instant through the warm /predict):
+   *  this is an hour of predictions summarised by one number, and merging
+   *  it into either would put two different things under one name. */
+  scheduled?: number
+
+  /** MODEL-SERVE-009-T05 follow-up. `live - held`: the model's prediction
+   *  minus the lab's LAST MEASURED value.
+   *
+   *  THIS IS NOT A RESIDUAL AND MUST NOT BE TREATED AS ONE. A residual is
+   *  predicted − actual where the actual was measured IN THAT INTERVAL; this
+   *  compares against a number carried forward from the last time the lab
+   *  reported, which on this plant is roughly daily. It answers "how far has
+   *  the model drifted from the last thing we actually know" — a real
+   *  operational question — and it is deliberately excluded from RMSE, R2
+   *  and the SD band, all of which assume a measured actual per point. */
+  heldDeviation?: number
 }
 
 /**
@@ -211,6 +241,18 @@ export interface LiveOverlayRow extends Partial<MonitoringRow> {
 export function mergeLivePredictions(
   rows: MonitoringRow[],
   live: Array<{ timestamp: string; predicted: number }>,
+  /** MODEL-SERVE-009-T05. The target's held value, drawn as a flat step
+   *  across every point in the range — it IS one number, so a straight line
+   *  is the honest shape. Omitted entirely when the lab has never reported. */
+  held?: number | null,
+  /** MODEL-SERVE-009-T05. The visible range, used ONLY when the held value
+   *  is the sole thing to draw. A carried-forward reading has no timestamps
+   *  of its own, so with no prediction series to borrow an axis from there
+   *  is nothing to plot it against — two endpoints over the range the user
+   *  is already looking at draws the constant honestly, and invents no
+   *  measurement (the value and its real measured-at are stated in the
+   *  caption either way). */
+  bounds?: { fromMs: number; toMs: number } | null,
 ): LiveOverlayRow[] {
   const byT = new Map<number, LiveOverlayRow>()
   for (const row of rows) byT.set(row.t, { ...row })
@@ -223,6 +265,79 @@ export function mergeLivePredictions(
       existing.live = point.predicted
     } else {
       byT.set(t, { t, timestamp: point.timestamp, live: point.predicted })
+    }
+  }
+
+  const merged = [...byT.values()].sort((a, b) => a.t - b.t)
+
+  // Applied LAST, over whatever timestamps the two prediction series
+  // produced: the held value has no timestamps of its own (it is a single
+  // carried-forward reading), so it borrows the axis rather than inventing
+  // points that would imply repeated measurement.
+  if (held != null) {
+    if (merged.length === 0 && bounds) {
+      return [
+        {
+          t: bounds.fromMs,
+          timestamp: new Date(bounds.fromMs).toISOString(),
+          held,
+        },
+        {
+          t: bounds.toMs,
+          timestamp: new Date(bounds.toMs).toISOString(),
+          held,
+        },
+      ]
+    }
+    for (const row of merged) {
+      row.held = held
+      // Only where a prediction actually exists — never invented for a row
+      // that has no model output to compare.
+      const predicted = row.live ?? row.predict
+      if (typeof predicted === 'number') row.heldDeviation = predicted - held
+    }
+  }
+
+  return merged
+}
+
+/**
+ * MODEL-SERVE-011-T12. Fold the SCHEDULED plane's hourly points into rows
+ * the chart already holds.
+ *
+ * EXACT TIMESTAMP MATCH ONLY, like `mergeLivePredictions` above and for the
+ * same reason: a window's summary belongs at that window's own start, and
+ * snapping it to a nearby joined row would attach an hour's mean to a
+ * measurement it did not come from. A point with no row of its own simply
+ * gets one.
+ *
+ * The point is placed at `windowStart` — the instant the window's data
+ * BEGINS, matching where `InferenceWindow` rows and the Logs tab already
+ * index a window. Placing it at the midpoint would read better on a chart
+ * and would put the series a half-hour away from every other view of the
+ * same window.
+ */
+export function mergeScheduledPredictions(
+  rows: LiveOverlayRow[],
+  scheduled: Array<{ windowStart: string; mean: number }>,
+): LiveOverlayRow[] {
+  if (scheduled.length === 0) return rows
+
+  const byT = new Map<number, LiveOverlayRow>()
+  for (const row of rows) byT.set(row.t, { ...row })
+
+  for (const point of scheduled) {
+    const t = parseServerTimestamp(point.windowStart)
+    if (Number.isNaN(t)) continue
+    const existing = byT.get(t)
+    if (existing) {
+      existing.scheduled = point.mean
+    } else {
+      byT.set(t, {
+        t,
+        timestamp: point.windowStart,
+        scheduled: point.mean,
+      })
     }
   }
 

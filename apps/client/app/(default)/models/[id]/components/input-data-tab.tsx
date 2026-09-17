@@ -1,6 +1,10 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import {
+  inferenceWindowService,
+  type TagObservation,
+} from '@/services/inference-window'
 import { Database } from 'lucide-react'
 import type { AIModel } from '@/types'
 import { usePredictionMonitoring } from '@/hooks/model/use-prediction-monitoring'
@@ -25,6 +29,14 @@ interface Props {
    * when the model has no schedule or has never produced a window.
    */
   frozenColumns?: string[]
+  /** MODEL-SERVE-009-T03. Evidence beside the badge — see
+   *  `buildInputFeatureRows`. Optional so a caller that has not been taught
+   *  about it keeps today's behaviour exactly. */
+  frozenSince?: Array<{
+    column: string
+    lastChangedAt: string | null
+    flatMinutes: number | null
+  }>
 }
 
 /**
@@ -51,7 +63,7 @@ interface Props {
  * `buildInputFeatureRows` — a left join, so a column with no traffic still
  * renders (status UNKNOWN, value/seen em-dash) instead of disappearing.
  */
-export function InputDataTab({ model, frozenColumns }: Props) {
+export function InputDataTab({ model, frozenColumns, frozenSince }: Props) {
   const [range, setRange] = useState<TimeRange>('24h')
   const { points, pointsLoading, pointsTruncated, drift } =
     usePredictionMonitoring(model, range)
@@ -64,6 +76,29 @@ export function InputDataTab({ model, frozenColumns }: Props) {
   // reaches PI, so it is allowed to fail on its own without blanking the
   // feature list.
   const { status: piStatus } = useModelInputStatus(model.id)
+
+  // MODEL-SERVE-009-T04. The scheduled fetch's OWN per-tag record. A THIRD
+  // read beside the schema and the PI snapshot, and separate from both on
+  // purpose: the snapshot blanks whenever PI is unreachable (by design,
+  // MODEL-SERVE-001-T15), and this must keep answering during exactly that
+  // outage — "what did the last fetch see" is still true when "what does PI
+  // say right now" cannot be asked. Failure is swallowed for the same reason
+  // the snapshot's is: a per-tag extra must never blank the feature list.
+  const [tagObservations, setTagObservations] = useState<TagObservation[]>([])
+  useEffect(() => {
+    let cancelled = false
+    inferenceWindowService
+      .getTagObservations(model.id)
+      .then(rows => {
+        if (!cancelled) setTagObservations(rows)
+      })
+      .catch(() => {
+        if (!cancelled) setTagObservations([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [model.id])
 
   const configuredTargets = useMemo(
     () => configTargets(readModelConfig(model)),
@@ -80,6 +115,8 @@ export function InputDataTab({ model, frozenColumns }: Props) {
       piStatus,
       derivedFeatures: schema.derivedFeatures,
       frozenColumns,
+      tagObservations,
+      frozenSince,
     })
   }, [schema, points, drift, piStatus, frozenColumns])
 

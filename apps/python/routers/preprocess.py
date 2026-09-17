@@ -77,6 +77,8 @@ from schemas.preprocess import (
     InferenceWindowMaterializeResponse,
     InferenceWindowTruthJoinRequest,
     InferenceWindowTruthJoinResponse,
+    InferenceWindowMetricsSeriesRequest,
+    InferenceWindowMetricsSeriesResponse,
     InferenceWindowTruthSeriesRequest,
     InferenceWindowTruthSeriesResponse,
     InferenceWindowUploadPresignRequest,
@@ -1114,6 +1116,28 @@ async def read_inference_window_truth_series(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(ground_truth_service.series, store, body)
+
+
+@router.post(
+    "/inference-window/metrics-series",
+    response_model=InferenceWindowMetricsSeriesResponse,
+    summary="One point per scheduled window, from its own metrics.json",
+    description=(
+        "MODEL-SERVE-011-T12. The scheduled plane's hourly series for the "
+        "Actual-vs-Predict chart. Reads metrics.json, never "
+        "predictions.parquet: the infer container already computed "
+        "predictionMean/Min/Max/Std over the rows it scored, so this is one "
+        "small JSON read per window rather than a Parquet open plus a second "
+        "aggregation that could disagree with the first. Without it a window "
+        "whose lab target has not reported is invisible on that chart, "
+        "because the only other read path is the JOINED pairs."
+    ),
+)
+async def read_inference_window_metrics_series(
+    body: InferenceWindowMetricsSeriesRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(ground_truth_service.metrics_series, store, body)
 
 
 @router.post(

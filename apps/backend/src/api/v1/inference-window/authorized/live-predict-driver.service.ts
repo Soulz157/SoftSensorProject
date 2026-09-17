@@ -20,6 +20,22 @@ function msg(err: unknown): string {
 }
 
 /**
+ * MODEL-SERVE-011-T07. One live score's outcome, in the caller's terms.
+ *
+ * DISCRIMINATED, not `number | null`: every failure here is a legitimate,
+ * fail-soft state of a working system (a quiet source, a tag reporting Bad,
+ * a model never promoted), and each one sends a reader somewhere different.
+ * A bare null would collapse them into "nothing happened", which is exactly
+ * what a button cannot say.
+ *
+ * `predicted` is the value the model returned; `at` is the timestamp of the
+ * ROW it scored, never `Date.now()` — the reading is as old as the data.
+ */
+export type LiveScoreOutcome =
+  | { ok: true; predicted: number; at: string }
+  | { ok: false; reason: string };
+
+/**
  * MODEL-SERVE-008-T02. The LIVE PREDICTION driver: scores the current moment
  * through the warm synchronous /predict on a short cadence, so the Monitoring
  * tab has a continuously predicted series between hourly scheduled windows.
@@ -133,12 +149,24 @@ export class LivePredictDriverService
    * produce no point: a model whose source is down would otherwise be
    * retried on every tick, turning a broken connector into a hot loop
    * against it.
+   *
+   * MODEL-SERVE-011-T07. RETURNS ITS OUTCOME, and every non-point path stays
+   * fail-soft exactly as it was — what changed is that each one now NAMES
+   * itself. `tick()` above still ignores the value (a live chart missing a
+   * point is not an incident), but `runNowService` puts it on screen: a
+   * button that reports success and produces nothing, with the reason only
+   * in a server log, is the defect MODEL-SERVE-001-T26 exists to refuse.
+   *
+   * The reasons are written for an operator reading a toast, not for a log
+   * grep — they say what to go look at.
    */
-  async scoreOne(modelId: string): Promise<void> {
+  async scoreOne(modelId: string): Promise<LiveScoreOutcome> {
     const schedule = await this.prisma.inferenceSchedule.findUnique({
       where: { modelId },
     });
-    if (!schedule) return;
+    if (!schedule) {
+      return { ok: false, reason: 'This model has no inference schedule.' };
+    }
 
     try {
       const version = await this.prisma.modelVersion.findFirst({
@@ -147,7 +175,12 @@ export class LivePredictDriverService
       });
       // No production version is a legitimate state, not an error: a model
       // can be saved and never promoted. Nothing to score against.
-      if (!version?.featureSpecKey) return;
+      if (!version?.featureSpecKey) {
+        return {
+          ok: false,
+          reason: 'No PRODUCTION version to score against.',
+        };
+      }
 
       const descriptorResult =
         await this.descriptor.getDescriptorByVersionIdService(version.id);
@@ -183,7 +216,13 @@ export class LivePredictDriverService
       });
       // A quiet source is not an incident — the same judgement T05/T01 made
       // when "too few usable rows" became SKIPPED rather than FAILED.
-      if (materialized.scored_rows < 1 || !materialized.object_key) return;
+      if (materialized.scored_rows < 1 || !materialized.object_key) {
+        return {
+          ok: false,
+          reason:
+            'The source returned no usable rows for the last few minutes.',
+        };
+      }
 
       const page = await readArtifactRows({
         source_key: materialized.object_key,
@@ -191,7 +230,13 @@ export class LivePredictDriverService
         limit: materialized.scored_rows,
       });
       const newest = page.rows.at(-1);
-      if (!newest) return;
+      if (!newest) {
+        return {
+          ok: false,
+          reason:
+            'The source returned no usable rows for the last few minutes.',
+        };
+      }
 
       // A Bad cell is NOT a measurement, and its numeric value is not a
       // reading. This ledger has refused the fabricate-a-plausible-number
@@ -205,7 +250,15 @@ export class LivePredictDriverService
         this.logger.warn(
           `Live prediction skipped for model ${modelId}: ${unusable.length} feature column(s) not Good at ${newest.timestamp}.`,
         );
-        return;
+        // NAMED, not counted: which tag is bad is what a reader acts on.
+        // Capped so one broken source cannot produce an unreadable toast.
+        const named = unusable.slice(0, 3).join(', ');
+        return {
+          ok: false,
+          reason: `Input not usable — ${named}${
+            unusable.length > 3 ? ` +${unusable.length - 3} more` : ''
+          } did not report Good values.`,
+        };
       }
 
       const row: Record<string, number> = {};
@@ -230,6 +283,17 @@ export class LivePredictDriverService
       // task (MODEL-SERVE-005-T01), sampled at SERVING_LOG_SAMPLE_RATE.
       // This driver deliberately writes no row itself — one writer, so the
       // sampling rate on a row always means what it says.
+      //
+      // MODEL-SERVE-011-T07. The returned value therefore comes from the
+      // /predict RESPONSE, never from a read-back of the log: the log write
+      // happens after that response, in the serving process's own
+      // BackgroundTasks, and may be sampled out entirely. The number below
+      // is what the model actually produced, which is true either way.
+      const predicted = result.predictions[0];
+      if (predicted === undefined) {
+        return { ok: false, reason: 'The model returned no prediction.' };
+      }
+      return { ok: true, predicted, at: newest.timestamp };
     } finally {
       await this.prisma.inferenceSchedule.update({
         where: { modelId },

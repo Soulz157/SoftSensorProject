@@ -3,6 +3,7 @@ import {
   buildMonitoringRows,
   formatLagDuration,
   mergeLivePredictions,
+  mergeScheduledPredictions,
   residualDensityNote,
   windowStats,
 } from './monitoring'
@@ -258,5 +259,229 @@ describe('mergeLivePredictions (MODEL-SERVE-008-T04)', () => {
     ])
 
     expect(out).toHaveLength(2)
+  })
+})
+
+/**
+ * MODEL-SERVE-009-T05. The target IS fetched every window, but PI holds a
+ * sparse `.lab` value between samples — measured live: zero real lab events
+ * across every joined window. So the held number is rendered as "Actual"
+ * (operator decision) while staying OUT of `actual`, which is what the
+ * residual and the SD band read.
+ */
+describe('held target series (MODEL-SERVE-009-T05)', () => {
+  const joined = buildMonitoringRows(
+    [
+      point('2026-09-17T00:00:00.000Z', 40, 39),
+      point('2026-09-17T02:00:00.000Z', 42, 41),
+    ],
+    1,
+  )
+
+  it('applies the held value across every point on the axis', () => {
+    const out = mergeLivePredictions(joined, [], 41.5)
+
+    expect(out.every(r => r.held === 41.5)).toBe(true)
+  })
+
+  it('NEVER writes the held value into `actual` — the residual must not see it', () => {
+    const out = mergeLivePredictions(joined, [], 999)
+
+    // `actual` stays the genuinely measured pair. A held number here would
+    // publish a confident residual against a value nobody measured.
+    expect(out[0]!.actual).toBe(40)
+    expect(out[1]!.actual).toBe(42)
+    expect(out[0]!.residual).toBe(40 - 39)
+  })
+
+  it('omits the series entirely when the lab has never reported', () => {
+    const out = mergeLivePredictions(joined, [], null)
+
+    expect(out.every(r => r.held === undefined)).toBe(true)
+  })
+
+  it('borrows the prediction axis rather than inventing its own timestamps', () => {
+    // One dense prediction between the two pairs: the held line should
+    // appear on it too, because it is one carried-forward reading — not a
+    // measurement that happened at that moment.
+    const out = mergeLivePredictions(
+      joined,
+      [{ timestamp: '2026-09-17T01:00:00.000Z', predicted: 40.5 }],
+      41.5,
+    )
+
+    expect(out).toHaveLength(3)
+    expect(out.map(r => r.held)).toEqual([41.5, 41.5, 41.5])
+    // And that middle row still has no actual invented for it.
+    expect(out[1]!.actual).toBeUndefined()
+  })
+})
+
+describe('held-only series gets an axis (MODEL-SERVE-009-T05)', () => {
+  const BOUNDS = {
+    fromMs: Date.parse('2026-09-17T00:00:00.000Z'),
+    toMs: Date.parse('2026-09-18T00:00:00.000Z'),
+  }
+
+  it('draws the held value across the visible range when nothing else exists', () => {
+    // No joined pairs and no dense predictions — the exact state that made
+    // the chart render "no lab measurement has arrived" while a known lab
+    // value sat unused.
+    const out = mergeLivePredictions([], [], 196, BOUNDS)
+
+    expect(out).toHaveLength(2)
+    expect(out.map(r => r.held)).toEqual([196, 196])
+    expect(out[0]!.t).toBe(BOUNDS.fromMs)
+    expect(out[1]!.t).toBe(BOUNDS.toMs)
+  })
+
+  it('invents NO actual and NO predict for those endpoints', () => {
+    const out = mergeLivePredictions([], [], 196, BOUNDS)
+
+    // Only the constant is drawn. A fabricated actual here is exactly what
+    // the Count probe exists to prevent.
+    expect(out.every(r => r.actual === undefined)).toBe(true)
+    expect(out.every(r => r.predict === undefined)).toBe(true)
+    expect(out.every(r => r.live === undefined)).toBe(true)
+  })
+
+  it('prefers a real axis when one exists, rather than the synthetic endpoints', () => {
+    const out = mergeLivePredictions(
+      [],
+      [{ timestamp: '2026-09-17T03:00:00.000Z', predicted: 40 }],
+      196,
+      BOUNDS,
+    )
+
+    expect(out).toHaveLength(1)
+    expect(out[0]!.live).toBe(40)
+    expect(out[0]!.held).toBe(196)
+  })
+
+  it('stays empty with no held value and nothing to draw', () => {
+    expect(mergeLivePredictions([], [], null, BOUNDS)).toEqual([])
+  })
+})
+
+/**
+ * MODEL-SERVE-009-T05 follow-up. `live - held` is DEVIATION FROM THE LAST
+ * MEASURED LAB VALUE, not a residual: the number it subtracts was measured
+ * the last time the lab reported, not in this interval. It is drawn so the
+ * Residual card stays informative while the lab is quiet, and kept out of
+ * everything that assumes a measured actual per point.
+ */
+describe('held deviation is not a residual (MODEL-SERVE-009-T05)', () => {
+  const BOUNDS = {
+    fromMs: Date.parse('2026-09-17T00:00:00.000Z'),
+    toMs: Date.parse('2026-09-18T00:00:00.000Z'),
+  }
+
+  it('computes prediction minus the last measured lab value', () => {
+    const out = mergeLivePredictions(
+      [],
+      [{ timestamp: '2026-09-17T03:00:00.000Z', predicted: 206.9 }],
+      196,
+      BOUNDS,
+    )
+
+    expect(out[0]!.heldDeviation).toBeCloseTo(10.9, 10)
+  })
+
+  it('NEVER writes it into `residual` — the SD band and RMSE read that key', () => {
+    const out = mergeLivePredictions(
+      [],
+      [{ timestamp: '2026-09-17T03:00:00.000Z', predicted: 206.9 }],
+      196,
+      BOUNDS,
+    )
+
+    expect(out[0]!.residual).toBeUndefined()
+    expect(out[0]!.actual).toBeUndefined()
+  })
+
+  it('leaves a genuinely measured residual untouched when a pair exists', () => {
+    const joined = buildMonitoringRows(
+      [point('2026-09-17T00:00:00.000Z', 40, 39)],
+      1,
+    )
+
+    const out = mergeLivePredictions(joined, [], 196, BOUNDS)
+
+    // The real residual survives, and the deviation is computed from the
+    // window-plane prediction on that same row — two different quantities
+    // under two different keys, never merged.
+    expect(out[0]!.residual).toBe(1)
+    expect(out[0]!.heldDeviation).toBeCloseTo(39 - 196, 10)
+  })
+
+  it('computes no deviation for a row with no prediction at all', () => {
+    // Held value present, nothing predicted: there is nothing to deviate.
+    const out = mergeLivePredictions([], [], 196, BOUNDS)
+
+    expect(out.every(r => r.heldDeviation === undefined)).toBe(true)
+  })
+})
+
+/**
+ * MODEL-SERVE-011-T12. The scheduled plane's hourly points, folded onto the
+ * axis the other two prediction series already produced.
+ */
+describe('mergeScheduledPredictions (MODEL-SERVE-011-T12)', () => {
+  const at = (iso: string, extra: Record<string, number> = {}) => ({
+    t: new Date(iso).getTime(),
+    timestamp: iso,
+    ...extra,
+  })
+
+  it('attaches a window summary to an existing row at the SAME instant', () => {
+    const rows = [at('2026-09-17T05:00:00.000Z', { live: 110.1 })]
+    const merged = mergeScheduledPredictions(rows, [
+      { windowStart: '2026-09-17T05:00:00.000Z', mean: 110.11 },
+    ])
+
+    expect(merged).toHaveLength(1)
+    expect(merged[0]!.scheduled).toBe(110.11)
+    // Its own key — an hour's mean is not the live instant it landed beside.
+    expect(merged[0]!.live).toBe(110.1)
+  })
+
+  it('never snaps a window summary onto a nearby row', () => {
+    const rows = [at('2026-09-17T05:00:00.000Z', { live: 110.1 })]
+    const merged = mergeScheduledPredictions(rows, [
+      { windowStart: '2026-09-17T06:00:00.000Z', mean: 110.33 },
+    ])
+
+    // Two rows, not one enriched row: attaching an hour's mean to a reading
+    // it did not come from is the same fabrication the pair join refuses.
+    expect(merged).toHaveLength(2)
+    expect(merged[0]!.scheduled).toBeUndefined()
+    expect(merged[1]!.scheduled).toBe(110.33)
+  })
+
+  it('keeps the axis sorted when a window predates every existing row', () => {
+    const rows = [at('2026-09-17T06:00:00.000Z', { live: 110.3 })]
+    const merged = mergeScheduledPredictions(rows, [
+      { windowStart: '2026-09-17T05:00:00.000Z', mean: 110.11 },
+    ])
+
+    expect(merged.map(r => r.timestamp)).toEqual([
+      '2026-09-17T05:00:00.000Z',
+      '2026-09-17T06:00:00.000Z',
+    ])
+  })
+
+  it('returns the rows untouched when there is nothing scheduled', () => {
+    const rows = [at('2026-09-17T05:00:00.000Z', { live: 110.1 })]
+    expect(mergeScheduledPredictions(rows, [])).toBe(rows)
+  })
+
+  it('skips an unparseable windowStart rather than plotting NaN', () => {
+    const rows = [at('2026-09-17T05:00:00.000Z')]
+    const merged = mergeScheduledPredictions(rows, [
+      { windowStart: 'not-a-date', mean: 1 },
+    ])
+
+    expect(merged).toHaveLength(1)
+    expect(merged[0]!.scheduled).toBeUndefined()
   })
 })

@@ -65,6 +65,19 @@ export class InferenceWindowAuthorizedController {
     return this.service.getStatusService(modelId, user);
   }
 
+  /**
+   * MODEL-SERVE-009-T04. Separate from `/input-status` on purpose — that is
+   * a live PI snapshot that blanks when PI is unreachable; this is the last
+   * fetch's own record, which must still answer during that outage.
+   */
+  @Get('/inference/tag-observations')
+  getTagObservationsController(
+    @Param('modelId') modelId: string,
+    @Users() user: Auth.UserPayload,
+  ) {
+    return this.service.getTagObservationsService(modelId, user);
+  }
+
   @Post('/inference/backfill')
   backfillController(
     @Param('modelId') modelId: string,
@@ -74,6 +87,20 @@ export class InferenceWindowAuthorizedController {
     return this.service.backfillService(modelId, dto, user);
   }
 
+  /**
+   * MODEL-SERVE-011-T03. Bypass the tick wait for ONE window — no body,
+   * because there is nothing to choose: the window is always the latest
+   * fully-elapsed one, computed server-side from this schedule's own
+   * cadence and lag.
+   */
+  @Post('/inference/run-now')
+  runNowController(
+    @Param('modelId') modelId: string,
+    @Users() user: Auth.UserPayload,
+  ) {
+    return this.service.runNowService(modelId, user);
+  }
+
   @Post('/inference/windows/:windowId/retry')
   retryController(
     @Param('modelId') modelId: string,
@@ -81,6 +108,21 @@ export class InferenceWindowAuthorizedController {
     @Users() user: Auth.UserPayload,
   ) {
     return this.service.retryService(modelId, windowId, user);
+  }
+
+  /**
+   * MODEL-SERVE-011-T12. The scheduled plane WITHOUT a ground-truth join —
+   * one point per SUCCEEDED window from its own metrics.json. Separate from
+   * `/inference/truth` on purpose: that route answers "predicted vs
+   * measured" and can only answer for windows the lab has reported on.
+   */
+  @Get('/inference/scheduled-series')
+  getScheduledSeriesController(
+    @Param('modelId') modelId: string,
+    @Query() query: InferenceTruthRangeQueryDto,
+    @Users() user: Auth.UserPayload,
+  ) {
+    return this.service.getScheduledSeriesService(modelId, query, user);
   }
 
   /** MODEL-SERVE-005-T03. Live error over joined ground truth, with the

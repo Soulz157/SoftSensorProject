@@ -7,6 +7,7 @@ import type { EvalPoint } from '@/lib/model-evaluation'
 import {
   inferenceWindowService,
   type LiveErrorCoverage,
+  type TargetHeldValue,
   type LiveErrorMetrics,
   type LiveErrorResult,
   type LiveErrorVersion,
@@ -32,6 +33,9 @@ export interface UseLiveErrorResult {
   /** The target the range was scored against, known even before any lab
    *  sample has joined — `versions` holds only groups that carry pairs. */
   targetColumn: string | null
+  /** MODEL-SERVE-009-T05. The target's last REPORTED value, carried forward
+   *  by PI between lab samples. Never a pair, never an input to a metric. */
+  targetHeld: TargetHeldValue | null
   coverage: LiveErrorCoverage | null
   windows: LiveErrorWindow[]
   truncated: boolean
@@ -48,6 +52,7 @@ const EMPTY: Omit<UseLiveErrorResult, 'loading' | 'error'> = {
   mixedVersions: false,
   versions: [],
   targetColumn: null,
+  targetHeld: null,
   coverage: null,
   windows: [],
   truncated: false,
@@ -108,6 +113,7 @@ export function useLiveError(
           mixedVersions: data.mixedVersions,
           versions: data.versions,
           targetColumn: data.targetColumn,
+          targetHeld: data.targetHeld,
           coverage: data.coverage,
           windows: data.windows,
           truncated: data.truncated,

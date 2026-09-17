@@ -215,3 +215,124 @@ describe('buildInputFeatureRows', () => {
     })
   })
 })
+
+/**
+ * MODEL-SERVE-009-T04. The Input Data tab used to derive last value and last
+ * seen IN THE BROWSER from sampled `/predict` rows — a sample of a sample:
+ * bounded by SERVING_LOG_SAMPLE_RATE, empty for a model with no live driver,
+ * and blind to a tag that arrived Bad. The scheduled fetch's own per-tag
+ * record is authoritative and replaces it when present.
+ */
+describe('tag observations take precedence (MODEL-SERVE-009-T04)', () => {
+  const observation = (over: Record<string, unknown> = {}) => ({
+    tag: 'FC-310.PV',
+    lastValue: 41.5,
+    lastStatus: 0,
+    lastSeenAt: '2026-09-17T03:59:00.000Z',
+    lastChangedAt: '2026-09-15T07:59:00.000Z',
+    lastFetchOutcome: 'SUCCEEDED',
+    flatMinutes: 2640,
+    ...over,
+  })
+
+  it('prefers the scheduled fetch over the sampled /predict scan', () => {
+    const rows = buildInputFeatureRows({
+      featureColumns: ['FC-310.PV'],
+      versionId: VERSION_ID,
+      // The sampled scan says one thing...
+      points: [
+        {
+          timestamp: '2026-09-16T00:00:00.000Z',
+          predicted: 1,
+          features: { 'FC-310.PV': 999 },
+          modelVersionId: VERSION_ID,
+        },
+      ],
+      drift: null,
+      piStatus: null,
+      derivedFeatures: null,
+      // ...the authoritative fetch says another, and wins.
+      tagObservations: [observation()],
+    })
+
+    expect(rows[0]!.lastValueRaw).toBe(41.5)
+    expect(rows[0]!.lastSeen).toBe('2026-09-17T03:59:00.000Z')
+    expect(rows[0]!.fromScheduledFetch).toBe(true)
+  })
+
+  it('falls back to the sampled scan when no scheduled record exists yet', () => {
+    const rows = buildInputFeatureRows({
+      featureColumns: ['FC-310.PV'],
+      versionId: VERSION_ID,
+      points: [
+        {
+          timestamp: '2026-09-16T00:00:00.000Z',
+          predicted: 1,
+          features: { 'FC-310.PV': 999 },
+          modelVersionId: VERSION_ID,
+        },
+      ],
+      drift: null,
+      piStatus: null,
+      derivedFeatures: null,
+      tagObservations: [],
+    })
+
+    // Showing the sample is better than showing nothing — it is only the
+    // wrong answer once a better one exists.
+    expect(rows[0]!.lastValueRaw).toBe(999)
+    expect(rows[0]!.fromScheduledFetch).toBe(false)
+  })
+
+  it('carries last CHANGED separately from last SEEN — the two diverge on a stuck tag', () => {
+    const rows = buildInputFeatureRows({
+      featureColumns: ['FC-310.PV'],
+      versionId: VERSION_ID,
+      points: [],
+      drift: null,
+      piStatus: null,
+      derivedFeatures: null,
+      tagObservations: [observation()],
+    })
+
+    // Arrived 03:59 today, last moved two days ago: that gap IS the signal.
+    expect(rows[0]!.lastSeen).toBe('2026-09-17T03:59:00.000Z')
+    expect(rows[0]!.lastChanged).toBe('2026-09-15T07:59:00.000Z')
+  })
+
+  it('keeps the fetch-path status SEPARATE from PI quality, never merged', () => {
+    const rows = buildInputFeatureRows({
+      featureColumns: ['FC-310.PV'],
+      versionId: VERSION_ID,
+      points: [],
+      drift: null,
+      // PI's snapshot says Good...
+      piStatus: {
+        features: [{ column: 'FC-310.PV', status: 'Good' }],
+      } as never,
+      derivedFeatures: null,
+      // ...while the fetch path recorded a Bad arrival. Both are true about
+      // different questions; one column holding whichever was available is
+      // what decisions.arrival_health_and_pi_quality_are_two_fields forbids.
+      tagObservations: [observation({ lastStatus: 1 })],
+    })
+
+    expect(rows[0]!.piStatus).toBe('Good')
+    expect(rows[0]!.fetchStatus).toBe(1)
+  })
+
+  it('surfaces a FAILED last fetch, so stale timestamps are not read as flatness', () => {
+    const rows = buildInputFeatureRows({
+      featureColumns: ['FC-310.PV'],
+      versionId: VERSION_ID,
+      points: [],
+      drift: null,
+      piStatus: null,
+      derivedFeatures: null,
+      tagObservations: [observation({ lastFetchOutcome: 'FAILED' })],
+    })
+
+    // An absent fetch is not a flat tag (findings[9]).
+    expect(rows[0]!.lastFetchOutcome).toBe('FAILED')
+  })
+})

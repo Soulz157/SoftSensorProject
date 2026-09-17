@@ -902,6 +902,17 @@ class InferenceWindowMaterializeRequest(BaseModel):
 
     feature_spec_key: str
     feature_columns: list[str] = Field(..., min_length=1)
+    #: MODEL-SERVE-009-T05. The model's TARGET tag, when the caller knows it.
+    #: Optional because every existing caller predates it and a window
+    #: materializes perfectly well without it — the target is never a feature
+    #: and is dropped by `select_columns` like any other unused base tag.
+    #: Supplied ONLY so the target's own held value and last-changed time can
+    #: be recorded alongside the features' (`tag_observations`), which is
+    #: what makes "the lab reported the same number again" distinguishable
+    #: from "the lab has not reported". It does NOT enter the scored frame,
+    #: and nothing here pairs it with a prediction: that remains the truth
+    #: join's job, behind its EventWeighted Count probe.
+    target_column: Optional[str] = None
     model_id: str
     model_version_id: str
     #: `YYYY-MM-DD` / zero-padded `HH`, computed by NestJS from windowStart
@@ -1093,6 +1104,49 @@ class InferenceWindowTruthSeriesResponse(BaseModel):
     #: True when `limit` cut the series — stated rather than silently
     #: returning a shorter chart that looks like a quiet plant.
     truncated: bool
+
+
+class InferenceWindowMetricsSeriesRequest(BaseModel):
+    """MODEL-SERVE-011-T12. One point per SCHEDULED window, for the
+    Actual-vs-Predict chart.
+
+    READS metrics.json, NEVER predictions.parquet. Every figure this returns
+    was already computed by the infer container when it wrote the window
+    (`predictionMean/Min/Max/Std`, `rowCount`), so an hourly series costs one
+    small JSON read per window instead of opening a 60-row Parquet frame and
+    re-aggregating it here — a second computation that could drift from the
+    first.
+
+    TAKES EXPLICIT KEYS, for the same reason `InferenceWindowTruthSeries
+    Request` does: NestJS holds every `InferenceWindow.metricsKey` in its own
+    table, so listing a prefix would re-derive, less reliably, what the
+    database already knows.
+    """
+
+    keys: list[str] = Field(..., min_length=1, max_length=2000)
+
+
+class InferenceWindowMetricsPoint(BaseModel):
+    """The window's own boundaries come from INSIDE metrics.json, not from
+    parsing its key's dt=/hour= partition — the container wrote both, and the
+    written value is the one the predictions were actually scored over."""
+
+    key: str
+    window_start: str
+    window_end: str
+    row_count: int
+    prediction_mean: float
+    prediction_min: float
+    prediction_max: float
+    prediction_std: float
+
+
+class InferenceWindowMetricsSeriesResponse(BaseModel):
+    points: list[InferenceWindowMetricsPoint]
+    #: Keys that did not resolve or carried no usable metrics — a reclaimed
+    #: window is a GAP in the chart, never a failed range read, and the count
+    #: is stated rather than left for a reader to infer from a short series.
+    missing: int
 
 
 class ResplitHoldoutRequest(BaseModel):

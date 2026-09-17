@@ -295,7 +295,21 @@ export class InferenceWindowSchedulerService
     }
   }
 
-  private async dispatchOne(windowId: string): Promise<void> {
+  /**
+   * MODEL-SERVE-011-T01. PUBLIC, body unchanged. `dispatchDue` above is no
+   * longer the only caller: `runNowService` dispatches one window the
+   * instant an operator asks for it instead of waiting up to a whole
+   * INFERENCE_TICK_INTERVAL_MS for the next sweep. The `status !== 'PENDING'`
+   * guard below is what makes a second caller safe — a window already
+   * claimed by a sweep (or by a double-click) is a no-op here, so no second
+   * container is ever spawned for one row.
+   *
+   * NOTE the `enabled: true` filter lives in `dispatchDue`, not here, and
+   * therefore does NOT cover this path: `runNowService` refuses a stopped
+   * schedule itself, with a 409 that says so, rather than silently
+   * dispatching one.
+   */
+  async dispatchOne(windowId: string): Promise<void> {
     const window = await this.prisma.inferenceWindow.findUnique({
       where: { id: windowId },
     });
@@ -339,6 +353,10 @@ export class InferenceWindowSchedulerService
       materialized = await materializeInferenceWindow({
         feature_spec_key: version.featureSpecKey,
         feature_columns: d.featureColumns,
+        // MODEL-SERVE-009-T05. The descriptor already resolves the target
+        // through sourceRun, so no extra read. It is NOT added to
+        // feature_columns — the target must never enter the scored frame.
+        target_column: d.targetY,
         model_id: window.modelId,
         model_version_id: window.modelVersionId,
         dt,

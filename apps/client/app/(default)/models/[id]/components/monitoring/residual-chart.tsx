@@ -12,14 +12,21 @@ import {
   ResponsiveContainer,
   ReferenceArea,
 } from 'recharts'
-import type { BrushWindow, MonitoringRow } from '@/lib/monitoring'
+import type {
+  BrushWindow,
+  LiveOverlayRow,
+  MonitoringRow,
+} from '@/lib/monitoring'
 import { MonitoringTooltip } from './monitoring-tooltip'
 import { useMemo } from 'react'
 
 export type ResidualMode = 'abs' | 'pct'
 
 interface Props {
-  rows: MonitoringRow[]
+  /** MODEL-SERVE-009-T05 follow-up. `LiveOverlayRow` widens `MonitoringRow`
+   *  for the chart only — a row carrying a prediction and a HELD lab value
+   *  has no measured `actual` and therefore no true residual. */
+  rows: Array<MonitoringRow | LiveOverlayRow>
   brush: BrushWindow
   onBrush: (w: BrushWindow) => void
   tickFormatter: (t: number) => string
@@ -32,7 +39,7 @@ const SYNC_ID = 'monitoring'
 const AXIS_TICK = { fill: 'var(--muted-foreground)', fontSize: 11 }
 
 function sdCoverage(
-  rows: MonitoringRow[],
+  rows: Array<MonitoringRow | LiveOverlayRow>,
   sd: number,
 ): Record<number, { up: number; down: number }> | null {
   if (!Number.isFinite(sd) || sd <= 0) return null
@@ -170,96 +177,148 @@ export function ResidualChart({
   const isPct = mode === 'pct'
   const dataKey = isPct ? 'percentageError' : 'residual'
 
+  // MODEL-SERVE-009-T05 follow-up. Rendered ONLY when no measured residual
+  // exists in range — a real residual always wins, because it is the thing
+  // this chart is named for. The deviation is the fallback that keeps the
+  // card informative while the lab has not reported, not a second opinion
+  // competing with the real one.
+  const hasMeasuredResidual = rows.some(
+    r => typeof (r as MonitoringRow).residual === 'number',
+  )
+  const showHeldDeviation =
+    !isPct &&
+    !hasMeasuredResidual &&
+    rows.some(r => typeof (r as LiveOverlayRow).heldDeviation === 'number')
+
   const coverage = useMemo(
     () => (isPct ? null : sdCoverage(rows, sd)),
     [isPct, rows, sd],
   )
 
   return (
-    <ResponsiveContainer className="w-full " height={500}>
-      <ComposedChart
-        data={rows}
-        syncId={SYNC_ID}
-        margin={{ top: 8, right: 24, left: 0, bottom: 0 }}
-      >
-        <CartesianGrid
-          strokeDasharray="3 3"
-          stroke="var(--border)"
-          vertical={false}
-        />
-        <XAxis
-          dataKey="t"
-          type="number"
-          domain={['dataMin', 'dataMax']}
-          scale="time"
-          tickFormatter={tickFormatter}
-          tick={AXIS_TICK}
-          stroke="var(--border)"
-          minTickGap={40}
-        />
-        <YAxis
-          domain={['auto', 'auto']}
-          tick={AXIS_TICK}
-          stroke="var(--border)"
-          width={44}
-          tickFormatter={v => (isPct ? `${v}%` : `${v}`)}
-        />
-        <Tooltip
-          content={
-            <MonitoringTooltip
-              variant="residual"
-              residualMode={mode}
-              formatLabel={tickFormatter}
+    // Structurally identical to `ActualVsPredictChart`'s root, deliberately:
+    // the two charts sit in the same card shape, share a `syncId`, and must
+    // size the same way at every breakpoint. This one returned a bare
+    // `ResponsiveContainer` into a `min-h-0 flex-1` parent, which is exactly
+    // the case where a percentage-sized SVG has no definite width to resolve
+    // against — so it did not fill the widened card while its twin did. The
+    // narrow-screen scroller is kept for the same reason as there: a
+    // time-series axis below ~375px is unreadable.
+    <div className="w-full overflow-x-auto overflow-y-hidden">
+      <div className="min-w-375 xl:w-full xl:min-w-0">
+        <ResponsiveContainer className="w-full" height={500}>
+          <ComposedChart
+            data={rows}
+            syncId={SYNC_ID}
+            margin={{ top: 8, right: 24, left: 0, bottom: 0 }}
+          >
+            <CartesianGrid
+              strokeDasharray="3 3"
+              stroke="var(--border)"
+              vertical={false}
             />
-          }
-        />
-
-        {/* Perfect-prediction baseline. */}
-        <ReferenceLine
-          y={0}
-          stroke="var(--muted-foreground)"
-          strokeDasharray="5 5"
-          strokeOpacity={0.6}
-        />
-
-        {!isPct && (
-          <>
-            <SdBackground sd={sd} />
-
-            <SdGuard sd={sd} k={1} color="var(--chart-2)" pct={coverage?.[1]} />
-            <SdGuard sd={sd} k={2} color="var(--chart-3)" pct={coverage?.[2]} />
-            <SdGuard
-              sd={sd}
-              k={3}
-              color="var(--destructive)"
-              pct={coverage?.[3]}
+            <XAxis
+              dataKey="t"
+              type="number"
+              domain={['dataMin', 'dataMax']}
+              scale="time"
+              tickFormatter={tickFormatter}
+              tick={AXIS_TICK}
+              stroke="var(--border)"
+              minTickGap={40}
             />
-          </>
-        )}
+            <YAxis
+              domain={['auto', 'auto']}
+              tick={AXIS_TICK}
+              stroke="var(--border)"
+              width={44}
+              tickFormatter={v => (isPct ? `${v}%` : `${v}`)}
+            />
+            <Tooltip
+              content={
+                <MonitoringTooltip
+                  variant="residual"
+                  residualMode={mode}
+                  formatLabel={tickFormatter}
+                />
+              }
+            />
 
-        <Area
-          type="monotone"
-          dataKey={dataKey}
-          stroke="var(--chart-1)"
-          strokeWidth={2}
-          fill="var(--chart-1)"
-          fillOpacity={0.12}
-          isAnimationActive={false}
-          dot={false}
-        />
+            {/* Perfect-prediction baseline. */}
+            <ReferenceLine
+              y={0}
+              stroke="var(--muted-foreground)"
+              strokeDasharray="5 5"
+              strokeOpacity={0.6}
+            />
 
-        <Brush
-          dataKey="t"
-          height={22}
-          travellerWidth={10}
-          stroke="var(--border)"
-          fill="var(--muted)"
-          tickFormatter={t => tickFormatter(Number(t))}
-          startIndex={brush.startIndex}
-          endIndex={brush.endIndex}
-          onChange={onBrush}
-        />
-      </ComposedChart>
-    </ResponsiveContainer>
+            {!isPct && (
+              <>
+                <SdBackground sd={sd} />
+
+                <SdGuard
+                  sd={sd}
+                  k={1}
+                  color="var(--chart-2)"
+                  pct={coverage?.[1]}
+                />
+                <SdGuard
+                  sd={sd}
+                  k={2}
+                  color="var(--chart-3)"
+                  pct={coverage?.[2]}
+                />
+                <SdGuard
+                  sd={sd}
+                  k={3}
+                  color="var(--destructive)"
+                  pct={coverage?.[3]}
+                />
+              </>
+            )}
+
+            {showHeldDeviation && (
+              // Dashed and unfilled, unlike the measured residual's solid
+              // filled area: the two must never look like the same
+              // measurement. Its own key, so nothing that reads `residual`
+              // — the SD band, RMSE, R2 — can pick it up by accident.
+              <Area
+                type="monotone"
+                dataKey="heldDeviation"
+                stroke="var(--chart-1)"
+                strokeWidth={2}
+                strokeDasharray="5 5"
+                fill="none"
+                isAnimationActive={false}
+                dot={false}
+              />
+            )}
+
+            <Area
+              type="monotone"
+              dataKey={dataKey}
+              stroke="var(--chart-1)"
+              strokeWidth={2}
+              fill="var(--chart-1)"
+              fillOpacity={0.12}
+              isAnimationActive={false}
+              dot={false}
+            />
+
+            <Brush
+              dataKey="t"
+              height={22}
+              travellerWidth={10}
+              stroke="var(--border)"
+              fill="var(--muted)"
+              tickFormatter={t => tickFormatter(Number(t))}
+              startIndex={brush.startIndex}
+              endIndex={brush.endIndex}
+              onChange={onBrush}
+            />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
   )
 }

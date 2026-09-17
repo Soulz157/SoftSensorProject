@@ -16,10 +16,19 @@ import {
 import { classifyDeployStatus, isStale } from '@/lib/deploy-status';
 import { redactUrls } from '@/lib/redact-urls';
 import { computeLiveError, poolTruthStats } from '@/lib/live-error';
-import { inferenceWindowTruthSeries } from '@/lib/python-preprocess-client';
+import {
+  inferenceWindowMetricsSeries,
+  inferenceWindowTruthSeries,
+} from '@/lib/python-preprocess-client';
 import { env } from '@/config/env.config';
+import { flatMinutes } from '@/lib/tag-observation';
 import { ModelServingAuthorizedService } from '../../model-serving/authorized/model-serving.authorized.service';
 import { InferenceTruthSweeperService } from './inference-truth-sweeper.service';
+import { InferenceWindowSchedulerService } from './inference-window-scheduler.service';
+import {
+  LivePredictDriverService,
+  type LiveScoreOutcome,
+} from './live-predict-driver.service';
 import { InferenceWindowMonitoringService } from './inference-window-monitoring.authorized.service';
 import { ModelInputStatusAuthorizedService } from '../../model-version/authorized/model-input-status.authorized.service';
 import type {
@@ -108,6 +117,16 @@ export class InferenceWindowAuthorizedService {
     // preflight. Cross-module (ModelVersionModule exports it) and acyclic —
     // see this module's own import comment.
     private readonly inputStatus: ModelInputStatusAuthorizedService,
+    // MODEL-SERVE-011-T02. Same module, and acyclic: the scheduler's own
+    // constructor takes PrismaService / TrainningContainerAuthorizedService /
+    // ModelServingAuthorizedService and never this service. Injected for
+    // ONE method -- `dispatchOne` -- so a manual run reuses the exact
+    // dispatch path the tick uses rather than a second copy of it.
+    private readonly scheduler: InferenceWindowSchedulerService,
+    // MODEL-SERVE-011-T08. Same module, acyclic for the same reason the
+    // scheduler edge is: this driver's constructor takes Prisma, the
+    // scheduler and the serving descriptor service, and never this one.
+    private readonly livePredict: LivePredictDriverService,
   ) {}
 
   // ── access ───────────────────────────────────────────────────────────────
@@ -928,6 +947,204 @@ export class InferenceWindowAuthorizedService {
     };
   }
 
+  /**
+   * MODEL-SERVE-011-T02. Run the latest due window NOW, instead of waiting
+   * up to one INFERENCE_TICK_INTERVAL_MS for the scheduler to notice it.
+   *
+   * This is a BYPASS OF THE WAIT, NOT OF THE RULES. Every guard the tick
+   * applies still applies here, in the same order and with the same
+   * messages: a schedule must exist, it must be ENABLED (a stopped model is
+   * refused with a 409 rather than quietly started), and a PRODUCTION
+   * ModelVersion must exist to pin the window to.
+   *
+   * The window boundary is computed by the SAME `windowStartsBetween`
+   * helper the tick and the backfill route call, over the same
+   * `now - lag - cadence` upper bound `insertDueWindows` uses. Nothing here
+   * may invent a boundary: `(modelVersionId, windowStart)` is the unique
+   * constraint the whole feature rests on, and a boundary computed any
+   * other way would mint a SECOND row for a window that already exists
+   * (the defect MODEL-SERVE-006-T11 exists to prevent).
+   *
+   * IDEMPOTENT BY CONSTRUCTION. `skipDuplicates` plus `dispatchOne`'s own
+   * `status !== 'PENDING'` guard mean a double-click cannot produce two
+   * rows or two containers; the second call reports what the first one's
+   * window is already doing.
+   */
+  async runNowService(modelId: string, user: Auth.UserPayload) {
+    await this.assertModelAccess(modelId, user);
+
+    const schedule = await this.prisma.inferenceSchedule.findUnique({
+      where: { modelId },
+    });
+    if (!schedule) {
+      throw new AppException({
+        statusCode: 404,
+        message: `Model ${modelId} has no inference schedule.`,
+        type: 'ERROR',
+      });
+    }
+    // Deliberately a 409, not a silent enable: starting inference changes
+    // what the plant is running and is the Start button's decision to make,
+    // never a side effect of asking for one prediction.
+    if (!schedule.enabled) {
+      throw new AppException({
+        statusCode: 409,
+        message: `Model ${modelId} is stopped. Start it before running a prediction.`,
+        type: 'ERROR',
+      });
+    }
+    const version = await this.prisma.modelVersion.findFirst({
+      where: { modelId, stage: 'PRODUCTION' },
+      select: { id: true },
+    });
+    if (!version) {
+      throw new AppException({
+        statusCode: 422,
+        message: `Model ${modelId} has no PRODUCTION version.`,
+        type: 'ERROR',
+      });
+    }
+
+    const now = Date.now();
+    const to = new Date(
+      now - (schedule.lagMinutes + schedule.cadenceMinutes) * 60_000,
+    );
+    const from = new Date(to.getTime() - schedule.cadenceMinutes * 60_000);
+    const windowStart = windowStartsBetween(
+      from,
+      to,
+      schedule.cadenceMinutes,
+    ).at(-1);
+    // UNREACHABLE BY CONSTRUCTION, kept as a defensive narrow rather than a
+    // non-null assertion: `[to - cadence, to)` is exactly one cadence wide,
+    // and `windowStartsBetween` aligns on the epoch, so such a range always
+    // contains exactly one aligned start. The window it yields is always
+    // FULLY ELAPSED — windowEnd = windowStart + cadence < to + cadence =
+    // now - lag — which is the property that matters here: a fetch for a
+    // window whose end has not happened returns a structurally complete,
+    // factually partial frame (measured at 19-30 rows against 60,
+    // MODEL-SERVE-006-T11). If the helper's contract ever changes, this
+    // refuses instead of minting a boundary the tick would never produce.
+    if (!windowStart) {
+      throw new AppException({
+        statusCode: 422,
+        message: 'No fully-elapsed window is available to run yet.',
+        type: 'ERROR',
+      });
+    }
+
+    const windowEnd = windowEndFor(windowStart, schedule.cadenceMinutes);
+    await this.prisma.inferenceWindow.createMany({
+      data: [
+        {
+          modelId,
+          modelVersionId: version.id,
+          windowStart,
+          windowEnd,
+          status: 'PENDING' as const,
+          tokenHash: mintRunToken().tokenHash,
+          tokenExpiresAt: new Date(Date.now() + INFERENCE_WINDOW_TOKEN_TTL_MS),
+        },
+      ],
+      skipDuplicates: true,
+    });
+
+    const window = await this.prisma.inferenceWindow.findUniqueOrThrow({
+      where: {
+        modelVersionId_windowStart: {
+          modelVersionId: version.id,
+          windowStart,
+        },
+      },
+      select: { id: true, status: true, windowStart: true, windowEnd: true },
+    });
+
+    // The window already exists in a non-PENDING state: report WHAT IT IS
+    // rather than re-running it. FAILED is terminal by design (see
+    // `retryService`) -- re-running it here would be a second, undeclared
+    // retry path that does not carry `attempts` forward.
+    if (window.status !== 'PENDING') {
+      const stamp = window.windowStart.toISOString();
+      const live = await this.scoreLive(modelId);
+      return {
+        statusCode: 200,
+        message:
+          window.status === 'FAILED'
+            ? `Latest window (${stamp}) already FAILED — retry it from the Logs tab.`
+            : `Latest window (${stamp}) already ${window.status}.`,
+        type: 'SUCCESS' as const,
+        data: {
+          windowId: window.id,
+          windowStart: stamp,
+          windowEnd: window.windowEnd.toISOString(),
+          status: window.status,
+          dispatched: false,
+          live,
+        },
+      };
+    }
+
+    // NOT awaited. A dispatch spawns a container and materializes a frame;
+    // CLAUDE.md's own rule is that an HTTP request does not block on a
+    // long-running operation. The same fire-and-forget shape `dispatchDue`
+    // uses, with the same error sink -- a failure here writes the window's
+    // own FAILED row via `fail()`, which the status/logs reads already
+    // surface.
+    void this.scheduler.dispatchOne(window.id).catch((err: unknown) => {
+      this.log.error(
+        `Manual dispatch failed for inference window ${window.id}`,
+        err,
+      );
+    });
+
+    // AWAITED, unlike the dispatch above — and deliberately so. The window
+    // plane spawns a container and answers in minutes; this is the warm
+    // /predict, seconds, no container. Firing it and forgetting would let
+    // the client's own refetch race the prediction, which is the entire
+    // reason an operator pressed the button.
+    const live = await this.scoreLive(modelId);
+
+    return {
+      statusCode: 202,
+      message: 'Prediction run queued.',
+      type: 'SUCCESS' as const,
+      data: {
+        windowId: window.id,
+        windowStart: window.windowStart.toISOString(),
+        windowEnd: window.windowEnd.toISOString(),
+        status: window.status,
+        dispatched: true,
+        live,
+      },
+    };
+  }
+
+  /**
+   * MODEL-SERVE-011-T08. One live score, and it CANNOT fail this request.
+   *
+   * By the time this runs the window has already been queued — throwing here
+   * would report a failure for work that is genuinely underway, and would
+   * leave the caller unable to tell which half went wrong. A serving outage
+   * is reported as a live-plane reason beside a queued window, never as the
+   * whole call failing.
+   *
+   * `livePredictEnabled` is deliberately NOT consulted: that flag governs the
+   * every-N-minutes background sweep, and this is one explicit, operator-
+   * initiated score. Per the 2026-09-17 decision the button does not turn the
+   * sweep on either — the only persistent trace is `livePredictLastRunAt`,
+   * which the driver stamps on every outcome and which a disabled schedule's
+   * sweep never reads.
+   */
+  private async scoreLive(modelId: string): Promise<LiveScoreOutcome> {
+    try {
+      return await this.livePredict.scoreOne(modelId);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.log.warn(`Live score failed for model ${modelId}: ${reason}`);
+      return { ok: false, reason };
+    }
+  }
+
   /** D9: FAILED is terminal; a retry is explicit and carries `attempts`
    *  forward — the same carry-forward `LoaderJobService.retry` uses. */
   async retryService(
@@ -1147,6 +1364,104 @@ export class InferenceWindowAuthorizedService {
    * point of this feature is that "no ground truth yet" and "an error of
    * zero" must never render the same way.
    */
+  /**
+   * MODEL-SERVE-011-T12. The SCHEDULED plane's own series — one point per
+   * window, `predictionMean` with the window's `predictionMin/Max` beside
+   * it, read from each window's metrics.json.
+   *
+   * WHY THIS IS NOT PART OF `getTruthService`. That endpoint answers "what
+   * did the model predict AND what was actually measured", and it can only
+   * answer for windows whose lab target reported: no truth rows means no
+   * pairs object, so the window contributes nothing. Correct for a PAIR,
+   * and it made the entire scheduled plane invisible on the Monitoring
+   * chart for any model whose target reports daily — 60 predictions per
+   * hour, correctly computed, stored, and unreadable. This endpoint answers
+   * the narrower question "what did the model predict", which needs no
+   * actual at all.
+   *
+   * SUCCEEDED ONLY, and `metricsKey` NOT NULL. A FAILED or SKIPPED window
+   * has no metrics object, and a CANCELED one never ran — including them
+   * would put a gap in the series that looks like a quiet plant rather than
+   * a window that never produced a number.
+   */
+  async getScheduledSeriesService(
+    modelId: string,
+    query: InferenceTruthRangeQueryDto,
+    user: Auth.UserPayload,
+  ) {
+    await this.assertModelAccess(modelId, user);
+
+    const from = new Date(query.from);
+    const to = new Date(query.to);
+
+    const windows = await this.prisma.inferenceWindow.findMany({
+      where: {
+        modelId,
+        status: 'SUCCEEDED',
+        metricsKey: { not: null },
+        windowStart: { gte: from, lte: to },
+      },
+      orderBy: { windowStart: 'asc' },
+      select: { metricsKey: true, modelVersionId: true, windowStart: true },
+    });
+
+    if (windows.length === 0) {
+      return {
+        statusCode: 200,
+        message: 'No scheduled windows in range',
+        type: 'SUCCESS' as const,
+        data: { points: [], windows: 0, missing: 0 },
+      };
+    }
+
+    const keys = windows.map((w) => w.metricsKey!);
+    let series: Awaited<ReturnType<typeof inferenceWindowMetricsSeries>>;
+    try {
+      series = await inferenceWindowMetricsSeries({ keys });
+    } catch (err) {
+      // Fail SOFT and say so, the same judgement `getTruthService`'s own
+      // object-store read makes: one unreachable object store must not take
+      // down a Monitoring tab whose other panels read Postgres.
+      const reason = err instanceof Error ? err.message : String(err);
+      this.log.warn(
+        `Scheduled series read failed for model ${modelId}: ${reason}`,
+      );
+      return {
+        statusCode: 200,
+        message: `Scheduled series unavailable: ${reason}`,
+        type: 'SUCCESS' as const,
+        data: { points: [], windows: windows.length, missing: windows.length },
+      };
+    }
+
+    // The pinned version travels with the point. A promote mid-range means
+    // two adjacent points came from different models, and MODEL-SERVE-006-
+    // T07 pinned `modelVersionId` per window precisely so a reader can tell.
+    const versionByKey = new Map(
+      windows.map((w) => [w.metricsKey!, w.modelVersionId]),
+    );
+
+    return {
+      statusCode: 200,
+      message: 'Scheduled prediction series',
+      type: 'SUCCESS' as const,
+      data: {
+        points: series.points.map((p) => ({
+          windowStart: p.window_start,
+          windowEnd: p.window_end,
+          rowCount: p.row_count,
+          mean: p.prediction_mean,
+          min: p.prediction_min,
+          max: p.prediction_max,
+          std: p.prediction_std,
+          modelVersionId: versionByKey.get(p.key) ?? null,
+        })),
+        windows: windows.length,
+        missing: series.missing,
+      },
+    };
+  }
+
   async getTruthService(
     modelId: string,
     query: InferenceTruthRangeQueryDto,
@@ -1276,6 +1591,31 @@ export class InferenceWindowAuthorizedService {
           ).toISOString()
         : null;
 
+    // MODEL-SERVE-009-T05. The target's own per-tag row, written by the same
+    // scheduled fetch that writes the features' (T02). Read by TAG rather
+    // than by a flag, because `targetColumn` is already what every row in
+    // this range agrees the target is.
+    // FALLING BACK TO THE VERSION'S OWN TARGET IS THE LOAD-BEARING HALF.
+    // `rows` is empty exactly when nothing has joined — which is the state
+    // this whole surface exists for, and the state in which a reader most
+    // wants to see what the lab last said. Resolving the tag only from a
+    // joined row would publish the held value only once a pair already
+    // existed, i.e. only when it was least needed.
+    const targetTag =
+      rows.find((r) => r.targetColumn)?.targetColumn ??
+      (
+        await this.prisma.modelVersion.findFirst({
+          where: { modelId, stage: 'PRODUCTION' },
+          select: { sourceRun: { select: { targetY: true } } },
+        })
+      )?.sourceRun?.targetY ??
+      null;
+    const targetObservation = targetTag
+      ? await this.prisma.tagObservation.findUnique({
+          where: { modelId_tag: { modelId, tag: targetTag } },
+        })
+      : null;
+
     const joined = rows.filter((r) => r.n > 0);
     // A row the sweeper wrote because the join FAILED, never because the lab
     // was quiet. `poolTruthStats` skips these anyway (n = 0); the count
@@ -1368,6 +1708,35 @@ export class InferenceWindowAuthorizedService {
         // target label entirely — a fact that is knowable and worth showing
         // before any truth arrives.
         targetColumn: rows.find((r) => r.targetColumn)?.targetColumn ?? null,
+        // MODEL-SERVE-009-T05. THE TARGET'S OWN LAST REPORTED VALUE, and
+        // when it was actually measured — not a pair, and never fed into a
+        // residual, an SD band or an R2.
+        //
+        // The target IS fetched on every window: it sits in the schedule's
+        // baseTags beside the features, so a value comes back every
+        // interval. What the Count probe establishes (and measured here:
+        // truthRows 0 across every joined window) is that almost none of
+        // those intervals contained an actual lab EVENT — PI holds a sparse
+        // .lab tag's last value between samples, so the hourly series is
+        // the same measurement repeated. decisions.held_is_recorded_not_
+        // paired: record the verdict, do not pair on it. Publishing this as
+        // a measured actual would put a confident error metric against a
+        // number nobody measured, which is the defect the probe exists to
+        // prevent — so it travels under its own name, with `lastMeasuredAt`
+        // beside it, and the caller must say which it is showing.
+        targetHeld: targetObservation
+          ? {
+              tag: targetObservation.tag,
+              value: targetObservation.lastValue,
+              /** When the lab actually last reported a DIFFERENT number. */
+              lastMeasuredAt:
+                targetObservation.lastChangedAt?.toISOString() ?? null,
+              /** When the fetch last returned it at all — held or not. */
+              lastSeenAt: targetObservation.lastSeenAt?.toISOString() ?? null,
+              /** How long it has read the same number. */
+              heldForMinutes: flatMinutes(targetObservation),
+            }
+          : null,
         coverage: {
           windowsInRange,
           windowsSkipped,
@@ -1420,6 +1789,61 @@ export class InferenceWindowAuthorizedService {
    * Bounded by the same batch size the sweep uses, so a wide range cannot
    * turn one request into hundreds of historian fetches.
    */
+  /**
+   * MODEL-SERVE-009-T04. The per-tag CURRENT state, straight from the rows
+   * the scheduled fetch writes.
+   *
+   * WHY THIS EXISTS RATHER THAN THE TAB DERIVING IT AGAIN. The Input Data
+   * tab computes last value and last seen IN THE BROWSER by scanning
+   * `points[].features` — sampled synchronous-/predict rows. That is a
+   * sample of a sample: it is bounded by SERVING_LOG_SAMPLE_RATE, it is
+   * empty for any model whose live driver is off, and it says nothing about
+   * a tag that arrived Bad, because a logged /predict request only carries
+   * what was scored. These rows are the authoritative fetch's own record:
+   * written on EVERY scheduled window, before the Bad-row drop, and they
+   * never go blank.
+   *
+   * A SEPARATE ROUTE FROM `/input-status`, DELIBERATELY. That endpoint is a
+   * live PI snapshot (MODEL-SERVE-001-T15) answering "is this tag healthy
+   * RIGHT NOW", and it degrades to an empty list with an
+   * `unavailableReason` whenever PI is unreachable — by design. This one
+   * answers "what did the last fetch see", and must keep answering during
+   * exactly the outage that blanks the other. Folding them into one
+   * response would give a field whose meaning depends on which path last
+   * succeeded, which is what decisions.arrival_health_and_pi_quality_are_
+   * two_fields exists to prevent.
+   */
+  async getTagObservationsService(modelId: string, user: Auth.UserPayload) {
+    await this.assertModelAccess(modelId, user);
+
+    const rows = await this.prisma.tagObservation.findMany({
+      where: { modelId },
+      orderBy: { tag: 'asc' },
+    });
+
+    return {
+      statusCode: 200,
+      message: 'Tag observations fetched',
+      type: 'SUCCESS' as const,
+      data: {
+        tags: rows.map((row) => ({
+          tag: row.tag,
+          lastValue: row.lastValue,
+          // The FETCH PATH's arrival health (0 Good / 1 Bad / 2
+          // Questionable) — NOT PI's own quality flag, which reaches this
+          // system only through /input-status' snapshot.
+          lastStatus: row.lastStatus,
+          lastSeenAt: row.lastSeenAt?.toISOString() ?? null,
+          lastChangedAt: row.lastChangedAt?.toISOString() ?? null,
+          lastFetchOutcome: row.lastFetchOutcome,
+          // Null when either timestamp is missing — "we do not know how
+          // long", which is a different answer from "it changed just now".
+          flatMinutes: flatMinutes(row),
+        })),
+      },
+    };
+  }
+
   async rejoinTruthService(
     modelId: string,
     dto: RejoinInferenceTruthDto,

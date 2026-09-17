@@ -42,6 +42,18 @@ function fmtLastSeen(iso: string | null): string {
  * this is the whole point of reading `featureColumns` rather than only the
  * most recent logged request.
  */
+/** MODEL-SERVE-009-T03. A flat run reads as "4h12m", not "252m" — the
+ *  numbers this shows are hours-to-days on a real plant, and minutes alone
+ *  stop being legible past the first hour. Under an hour stays in minutes,
+ *  where that is the natural unit. */
+function formatFlatDuration(minutes: number): string {
+  const whole = Math.floor(minutes)
+  if (whole < 60) return `${whole}m`
+  const h = Math.floor(whole / 60)
+  const m = whole % 60
+  return m === 0 ? `${h}h` : `${h}h${m}m`
+}
+
 export function InputFeatureTable({ rows }: Props) {
   return (
     <Table>
@@ -61,7 +73,13 @@ export function InputFeatureTable({ rows }: Props) {
               verdict, with the failing ones named. */}
           <TableHead>Status</TableHead>
           <TableHead className="text-right">Last value</TableHead>
+          {/* MODEL-SERVE-009-T04. "Last seen" is ARRIVAL; "Last changed" is
+              MOVEMENT. They are different questions and a stuck instrument
+              is exactly the case where they diverge — a tag can arrive
+              every minute for two days and not have moved once. Keeping
+              one column would hide the only signal that says so. */}
           <TableHead className="text-right">Last seen</TableHead>
+          <TableHead className="text-right">Last changed</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody className="divide-y divide-border">
@@ -110,9 +128,24 @@ export function InputFeatureTable({ rows }: Props) {
               {row.frozen && (
                 <Badge
                   className={`ml-1 border-0 ${PI_STATUS_CLASS.Questionable}`}
-                  title="No movement across the schedule's last frozenWindows windows"
+                  title={
+                    // MODEL-SERVE-009-T03. The badge still comes from
+                    // MODEL-SERVE-001-T29's three-window detection; the
+                    // duration is EVIDENCE beside it, measured from the
+                    // per-tag row's own timestamps rather than inferred
+                    // from a pooled range. Unknown stays unstated — a
+                    // missing per-tag row must not read as "just changed".
+                    row.frozenFlatMinutes === null
+                      ? "No movement across the schedule's last frozenWindows windows"
+                      : `No movement across the schedule's last frozenWindows windows — unchanged for ${formatFlatDuration(row.frozenFlatMinutes)}`
+                  }
                 >
                   Frozen
+                  {row.frozenFlatMinutes !== null && (
+                    <span className="ml-1 font-normal opacity-80">
+                      {formatFlatDuration(row.frozenFlatMinutes)}
+                    </span>
+                  )}
                 </Badge>
               )}
               {/* The actionable half for a derived feature: WHICH source
@@ -128,6 +161,31 @@ export function InputFeatureTable({ rows }: Props) {
             </TableCell>
             <TableCell className="text-right text-xs tabular-nums text-muted-foreground">
               {fmtLastSeen(row.lastSeen)}
+            </TableCell>
+            <TableCell className="text-right text-xs tabular-nums text-muted-foreground">
+              {row.lastChanged === null ? (
+                // Em-dash, never a zero duration: no per-tag row yet is
+                // UNKNOWN, and "0m" would claim the tag just changed.
+                <span title="No scheduled fetch has recorded this tag yet">
+                  —
+                </span>
+              ) : (
+                <span
+                  title={
+                    row.lastFetchOutcome === 'FAILED'
+                      ? // An absent fetch is not a flat tag: when the last
+                        // fetch failed these timestamps are deliberately
+                        // stale, and saying so stops a reader counting an
+                        // outage as flatness.
+                        `${fmtLastSeen(row.lastChanged)} — the last fetch FAILED, so this has not been rechecked`
+                      : fmtLastSeen(row.lastChanged)
+                  }
+                >
+                  {row.frozenFlatMinutes !== null
+                    ? formatFlatDuration(row.frozenFlatMinutes)
+                    : fmtLastSeen(row.lastChanged)}
+                </span>
+              )}
             </TableCell>
           </TableRow>
         ))}

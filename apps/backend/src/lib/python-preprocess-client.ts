@@ -253,6 +253,11 @@ export type InferenceWindowMaterializeResult = z.infer<
 export async function materializeInferenceWindow(input: {
   feature_spec_key: string;
   feature_columns: string[];
+  /** MODEL-SERVE-009-T05. The model's TARGET tag. Sent so python can record
+   *  the target's own held value and last-changed time beside the features'
+   *  — it is never scored and never paired here; pairing stays the truth
+   *  join's job, behind its EventWeighted Count probe. */
+  target_column?: string;
   model_id: string;
   model_version_id: string;
   dt: string;
@@ -362,6 +367,49 @@ export async function inferenceWindowTruthSeries(input: {
     PYTHON_TIMEOUT.metadata,
   );
   return InferenceWindowTruthSeriesSchema.parse(res);
+}
+
+const InferenceWindowMetricsSeriesSchema = z.object({
+  points: z.array(
+    z.object({
+      key: z.string().min(1),
+      window_start: z.string().min(1),
+      window_end: z.string().min(1),
+      row_count: z.number().int(),
+      prediction_mean: z.number(),
+      prediction_min: z.number(),
+      prediction_max: z.number(),
+      prediction_std: z.number(),
+    }),
+  ),
+  missing: z.number().int(),
+});
+
+export type InferenceWindowMetricsSeriesResult = z.infer<
+  typeof InferenceWindowMetricsSeriesSchema
+>;
+
+/**
+ * MODEL-SERVE-011-T12. One point per SCHEDULED window, read from the
+ * metrics.json the infer container already wrote — never from
+ * predictions.parquet, and never recomputed on this side.
+ *
+ * Exists because the only other read path for a window's predictions is
+ * `inferenceWindowTruthSeries` above, which serves the JOINED pairs: a
+ * window whose lab target has not reported yet has no pairs object, so its
+ * predictions are invisible on the Monitoring chart despite being correctly
+ * computed and stored. Right for an Actual-vs-Predict PAIR, wrong as the
+ * only way to see the scheduled plane at all.
+ */
+export async function inferenceWindowMetricsSeries(input: {
+  keys: string[];
+}): Promise<InferenceWindowMetricsSeriesResult> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/inference-window/metrics-series',
+    input,
+    PYTHON_TIMEOUT.metadata,
+  );
+  return InferenceWindowMetricsSeriesSchema.parse(res);
 }
 
 /**

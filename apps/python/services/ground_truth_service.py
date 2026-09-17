@@ -48,6 +48,7 @@ from intergrations.object_store import (
     status_column,
 )
 from schemas.preprocess import (
+    InferenceWindowMetricsSeriesRequest,
     InferenceWindowTruthJoinRequest,
     InferenceWindowTruthSeriesRequest,
 )
@@ -428,3 +429,57 @@ def series(store, request: InferenceWindowTruthSeriesRequest) -> dict[str, Any]:
         )
     ]
     return {"points": points, "truncated": truncated}
+
+
+def metrics_series(store, request: InferenceWindowMetricsSeriesRequest) -> dict[str, Any]:
+    """MODEL-SERVE-011-T12. One point per scheduled window, from the
+    metrics.json the infer container already wrote.
+
+    WHY THIS EXISTS AT ALL: a window's predictions reach the Monitoring chart
+    today only through `series` above, which reads the JOINED pairs — so a
+    window whose lab target has not reported yet (truth_rows == 0, no pairs
+    object written) is invisible, even though its 60 predictions are sitting
+    in object storage, correctly computed. That is right for an Actual-vs-
+    Predict PAIR and wrong as the only way to see the scheduled plane.
+
+    NEVER RE-AGGREGATES. `prediction_mean/min/max/std` are read, not
+    computed: the container computed them over the same rows it scored, and
+    a second implementation here could disagree with the first over NaN
+    handling alone.
+
+    A key that does not resolve, or whose JSON is missing a figure, is
+    COUNTED and skipped — a reclaimed or half-written window is a gap in the
+    chart, not a broken range read, the same rule `series` above follows.
+    """
+    points: list[dict[str, Any]] = []
+    missing = 0
+    for key in request.keys:
+        try:
+            raw = store.get_json(key)
+        except Exception:
+            missing += 1
+            continue
+        if not isinstance(raw, dict):
+            missing += 1
+            continue
+        try:
+            point = {
+                "key": key,
+                "window_start": str(raw["windowStart"]),
+                "window_end": str(raw["windowEnd"]),
+                "row_count": int(raw["rowCount"]),
+                "prediction_mean": float(raw["predictionMean"]),
+                "prediction_min": float(raw["predictionMin"]),
+                "prediction_max": float(raw["predictionMax"]),
+                "prediction_std": float(raw["predictionStd"]),
+            }
+        except (KeyError, TypeError, ValueError):
+            # A metrics.json predating one of these fields is not an error
+            # and must not fail the whole range — it simply has nothing to
+            # plot.
+            missing += 1
+            continue
+        points.append(point)
+
+    points.sort(key=lambda p: p["window_start"])
+    return {"points": points, "missing": missing}

@@ -17,6 +17,7 @@ import {
   resolveColumnBaseline,
   resolvePsiReference,
 } from '@/lib/artifact-baseline';
+import { flatMinutes } from '@/lib/tag-observation';
 import {
   classifyModelHealth,
   thresholdsFromSchedule,
@@ -318,6 +319,18 @@ export class InferenceWindowMonitoringService {
     reason: HealthReason | null;
     frozenColumns: string[];
     thresholds: ReturnType<typeof thresholdsFromSchedule> | null;
+    /** MODEL-SERVE-009-T03. SINCE WHEN each badged column last changed —
+     *  evidence beside T29's badge, never a second detector. ANNOTATED
+     *  rather than inferred, and present-and-empty on every early-return
+     *  branch: T29's own review follow-up found that an inferred return
+     *  type let a branch omit `frozenColumns` while the client's type
+     *  required it, so the server silently under-delivered on the most
+     *  common shape there is (a model with no schedule row). */
+    frozenSince: Array<{
+      column: string;
+      lastChangedAt: string | null;
+      flatMinutes: number | null;
+    }>;
   }> {
     const schedule = await this.prisma.inferenceSchedule.findUnique({
       where: { modelId },
@@ -328,6 +341,7 @@ export class InferenceWindowMonitoringService {
         reason: null,
         frozenColumns: [],
         thresholds: null,
+        frozenSince: [],
       };
     }
 
@@ -418,6 +432,44 @@ export class InferenceWindowMonitoringService {
         ? computeDrift(poolFeatureStats(statsRows), baseline, thresholds).status
         : null;
 
+    // MODEL-SERVE-009-T03. EVIDENCE BESIDE THE BADGE, NOT A SECOND DETECTOR.
+    // MODEL-SERVE-001-T29 still decides WHICH columns are frozen, by its own
+    // three-window pooled range and its own five guards — untouched, along
+    // with frozenWindows/frozenTolerancePct and the Offline > Alert > Frozen
+    // > Warning > Normal precedence. What T02's per-tag row adds is SINCE
+    // WHEN, which the pooled range cannot say: it quantises to whole windows
+    // (a tag flat 2h50m reads as moving at a 60-minute cadence) and carries
+    // no timestamp at all.
+    //
+    // DELIBERATELY NOT USED TO DETECT. Replacing T29's evidence was
+    // considered and declined (user decision 2026-09-17): the timestamp data
+    // was still at first sighting, so the quantisation difference could not
+    // be demonstrated on real data, and rewriting a shipped, tested signal
+    // on an undemonstrated difference is the trade this ledger keeps
+    // refusing. The replacement stays open, on evidence.
+    //
+    // A column T29 badges with NO TagObservation row yields no entry rather
+    // than a zero duration — a model whose rows predate this feature, or a
+    // tag never yet fetched, is UNKNOWN, and MODEL-SERVE-001-T27's rule is
+    // that UNKNOWN never folds into a confident value.
+    const frozenSince =
+      frozenColumns.length > 0
+        ? (
+            await this.prisma.tagObservation.findMany({
+              where: { modelId, tag: { in: frozenColumns } },
+              select: { tag: true, lastChangedAt: true, lastSeenAt: true },
+            })
+          )
+            .map((row) => ({
+              column: row.tag,
+              lastChangedAt: row.lastChangedAt?.toISOString() ?? null,
+              flatMinutes: flatMinutes(row),
+            }))
+            // Null flatMinutes means a timestamp is missing — "we do not
+            // know how long", which is not "it changed just now".
+            .filter((e) => e.lastChangedAt !== null)
+        : [];
+
     return {
       ...classifyModelHealth({
         enabled: schedule.enabled,
@@ -429,6 +481,7 @@ export class InferenceWindowMonitoringService {
         ...faults,
       }),
       thresholds,
+      frozenSince,
     };
   }
 

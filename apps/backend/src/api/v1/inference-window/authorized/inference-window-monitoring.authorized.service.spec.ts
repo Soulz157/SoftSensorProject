@@ -19,6 +19,12 @@ afterEach(() => {
 function buildPrisma(overrides: Record<string, unknown> = {}) {
   return {
     inferenceSchedule: { findUnique: jest.fn().mockResolvedValue(null) },
+    // MODEL-SERVE-009-T03/T04. `getHealthStatus` reads the per-tag rows to
+    // attach "unchanged since" beside T29's badge. Present by default so
+    // the evidence path is EXERCISED rather than swallowed — a mock missing
+    // this accessor would make every case here pass while the field
+    // silently came back empty.
+    tagObservation: { findMany: jest.fn().mockResolvedValue([]) },
     modelVersion: { findFirst: jest.fn().mockResolvedValue(null) },
     inferenceWindow: {
       findMany: jest.fn().mockResolvedValue([]),
@@ -75,6 +81,10 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
       reason: null,
       // T29: no stuck instruments to report either.
       frozenColumns: [],
+      // MODEL-SERVE-009-T03: present-and-empty on every branch, the same
+      // discipline T29's own review follow-up applied to frozenColumns
+      // after an inferred return type let a branch omit it.
+      frozenSince: [],
       thresholds: null,
     });
     expect(mockedPostToPython).not.toHaveBeenCalled();
@@ -111,6 +121,10 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
       reason: null,
       // T29: no stuck instruments to report either.
       frozenColumns: [],
+      // MODEL-SERVE-009-T03: present-and-empty on every branch, the same
+      // discipline T29's own review follow-up applied to frozenColumns
+      // after an inferred return type let a branch omit it.
+      frozenSince: [],
       thresholds: null,
     });
     expect(mockedPostToPython).not.toHaveBeenCalled();
