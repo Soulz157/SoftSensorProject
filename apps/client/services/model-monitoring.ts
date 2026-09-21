@@ -264,6 +264,16 @@ export interface ModelInputSchema {
    *  literal at the call site. */
   version: ModelVersionNumber
   stage: 'STAGING' | 'PRODUCTION' | 'ARCHIVED'
+  /** The SERVING version's own recorded metrics — the ModelVersion row's
+   *  snapshot (what promote's r2 floor checks and what serving reports),
+   *  never recomputed client-side and never read off the source run.
+   *  Any field is null when that number was not recorded; render it as
+   *  "not recorded", never as 0. */
+  metrics: {
+    rmse: number | null
+    r2: number | null
+    mae: number | null
+  }
   /** Ordered exactly as model.predict expects. Null only alongside a set
    *  `unavailableReason`. */
   featureColumns: string[] | null

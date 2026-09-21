@@ -2133,6 +2133,258 @@
         "Windows are hourly (observed windowStart values 05:00/06:00/07:00), which is what set TRUTH_POOL_TAKE at 720 rather than 24.",
         "The Alerts page needed NO code change for these codes: hasMonitoringAlert already matched WARN/ALERT/FROZEN, AlertRow.monitoringReason is filled from monitoring.reason, and alert-row.tsx already renders it through the shared formatHealthReason. Widening the list payload is what makes those paths reachable - before T08 the payload could not emit WARN at all."
       ]
+    },
+    {
+      "id": "MODEL-SERVE-013",
+      "title": "A model's live Data Source is visible, and changeable without starting the model",
+      "priority": 13,
+      "status": "completed",
+      "progress": 100,
+      "dependencies": [
+        "MODEL-SERVE-006",
+        "MODEL-SERVE-001"
+      ],
+      "description": "The Edit dialog showed a PI Server picker and a Tag List built from MOCK_PI_SERVERS, with the selection held in local state that nothing ever sent to an API - a control that looked like it named the model's data source while naming nothing at all, and the real binding was visible nowhere in the product. The real binding is InferenceSchedule.sourceId + fetchConfig, resolved from the PINNED version's source dataset. This surfaces it by NAME and lets an operator re-point it. RELINK ONLY: no retrain is triggered, and the dialog says so before it writes - the model keeps the weights it was fitted with.",
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-013-T01",
+          "status": "completed",
+          "progress": 100,
+          "title": "getScheduleService returns currentSource + sourceCandidates",
+          "scope_note": "Resolved SERVER-SIDE and by id only. DataSource rows are owned per USER (createdById) and the client's own list endpoint filters on that, so an id->name join in the browser reads 'unknown' for every source a teammate created; the caller has already passed assertModelAccess, so the rows are read without the ownership filter and only name/type/status leave - host/username/ciphertext are connection material for a row the viewer may not own. Candidates come from the PINNED version's dataset (D8), the same set the write path validates against, or the surface would offer a choice the write then refuses. NEVER THROWS: no production version or no dataset means no candidates, a state to RENDER. Both branches of the existing response ternary carry the two keys so the shape never depends on whether a schedule row exists. A bound id with no row is reported as status 'missing', not as null."
+        },
+        {
+          "id": "MODEL-SERVE-013-T02",
+          "status": "completed",
+          "progress": 100,
+          "title": "resolveSourceBinding extracted; a STOPPED schedule can be relinked",
+          "scope_note": "putScheduleService early-returns for !enabled, so a sourceId sent with enabled:false was silently dropped and the only way to change a source was to START the model. The dataset->sourceId->fetchConfig block is now a private helper shared by both branches, every refusal moved verbatim (same status codes and wording - models/[id]/page.tsx prints those strings). allowSingleSourceFallback is the whole reason it takes an option: on enable, a request naming no source whose dataset has exactly one resolves to that one, as the wizard has always relied on; on a relink that same fallback would turn every plain stop into a write, so the disable branch passes false and only runs at all when a sourceId was actually sent. minRows is RECOMPUTED with the new fetchConfig's intervalTime (T14) - the old floor beside a new source is exactly the stale-derived state that rule forbids. updateMany, never upsert: a model with no row was never deployed and must not get a schedule minted in front of the deploy classifier. No preflight write (T25): a stopped relink probes nothing."
+        },
+        {
+          "id": "MODEL-SERVE-013-T03",
+          "status": "completed",
+          "progress": 100,
+          "title": "Client wire: ScheduleSourceRef on InferenceSchedule",
+          "scope_note": "services/inference-window.ts. getSchedule had no client caller before this feature; putSchedule already accepted sourceId, so no signature change."
+        },
+        {
+          "id": "MODEL-SERVE-013-T04",
+          "status": "completed",
+          "progress": 100,
+          "title": "lib/model-data-source.ts - describeRelink + sourceLabel, with spec",
+          "scope_note": "Five states decided once in a pure function rather than as nested ternaries in the dialog: no-schedule (sourceId is required on the row, so no row IS never-bound), missing-source (the ONE state where the picker stays open - relinking is the repair), no-candidates (nothing pinned, so the legal set is unknown; read-only beats offering a choice the server refuses), single-source, selectable. Every state carries a sentence: a missing picker with nothing beside it reads as a bug. 9 vitest cases."
+        },
+        {
+          "id": "MODEL-SERVE-013-T05",
+          "status": "completed",
+          "progress": 100,
+          "title": "use-model-data-source hook",
+          "scope_note": "Reads only while the dialog is open - a model page whose Edit button is never pressed spends no round trip. ECHOES `enabled` BACK VERBATIM on save: putSchedule takes enabled as a required field and ACTS on it, so a hard-coded false would stop a running model (and cancel its queued windows) as a side effect of changing its source, and a hard-coded true would start a stopped one."
+        },
+        {
+          "id": "MODEL-SERVE-013-T06",
+          "status": "completed",
+          "progress": 100,
+          "title": "Edit dialog section; the mock PI block deleted; two writes reported as two",
+          "scope_note": "EDIT ONLY - the binding lives on the InferenceSchedule, which does not exist until deploy, so a model being created has nothing to show. Links to /data-sources (there is no per-source detail route; opening that page filtered by the source is a follow-up). The relink warning renders BEFORE the write, naming the old source. use-model-form sequences the two independent writes: model row first, relink second and only when dirty; if the relink fails the model edit still landed, so it reports both halves and leaves the dialog OPEN for a retry rather than faking a transaction that does not exist. use-model-tag-selection.ts deleted (zero importers after this). lib/mock-pi-servers.ts KEPT - lib/pipeline-metrics.ts still imports MOCK_PI_SERVERS. pi-server-select.tsx / tag-list-section.tsx now have no importer; deleting files under models/create from a dialog-scoped change is scope creep - named follow-up."
+        }
+      ],
+      "acceptance_criteria": [
+        "The Edit dialog names the data source the model actually fetches from, resolved server-side, including one created by another user.",
+        "Choosing a different source of the pinned version's dataset persists to InferenceSchedule.sourceId with that source's fetchConfig and a recomputed minRows.",
+        "A relink never starts or stops the model: the schedule's own enabled state is echoed back.",
+        "A relink triggers no retrain, and the dialog says so, naming the old source, before it writes.",
+        "A sourceId the pinned dataset does not name is refused 422 with the server's own wording, and nothing is written.",
+        "A model that was never deployed shows a read-only note and no picker.",
+        "A bound source whose DataSource row is gone reads as missing, with the picker left open to repair it."
+      ],
+      "verification": [
+        "pnpm --filter backend exec jest src/api/v1/inference-window - 132 passing on 2026-09-21, of which 12 are this feature's; the 120 pre-existing cases pass UNMODIFIED, which is the proof the resolveSourceBinding extraction preserved behavior.",
+        "pnpm --filter client exec vitest run lib/model-data-source.test.ts - 9 passing on 2026-09-21. hooks/model + lib sweep: 95 passing across 12 files.",
+        "Backend check-types clean for every file this feature touched (the two tagObservation errors in the spec pre-date it and are untouched).",
+        "PENDING: end-to-end against a real deployment. Needs a model whose pinned dataset names two or more sources, which this dev database does not currently have - the relink path is proven by unit tests and by the shared resolution helper, not yet by a live re-point."
+      ]
+    },
+    {
+      "id": "MODEL-SERVE-014",
+      "title": "Model Detail Retrain Workflow",
+      "priority": 14,
+      "status": "in_progress",
+      "progress": 95,
+      "blocked_on": null,
+      "dependencies": [
+        "MODEL-SERVE-004",
+        "MODEL-SERVE-001",
+        "MODEL-FLOW-005"
+      ],
+      "description": "Wire the Model Detail Retrain UI to the existing real retrain backend flow. The workflow is initiated from Models/[id], creates a retrain job backed by the existing ModelCandidateJob and trainer pipeline, tracks progress, exposes candidate evaluation results, and creates a new ModelVersion at STAGING without changing the current PRODUCTION version. The existing retrain backend contract and concurrency/idempotency behavior from MODEL-SERVE-004 are reused rather than reimplemented.",
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-014-T01",
+          "title": "Audit the existing Model Detail retrain client against the real backend contract",
+          "status": "completed",
+          "progress": 100,
+          "detail": "CORRECTED against the real backend contract. TriggerRetrainSchema is .strict() and accepts ONLY idempotencyKey + candidates[] — artifact, target and split are read server-side off the incumbent PRODUCTION version, never accepted from the request (see the DTO's own comment). The legacy client (lib/retrain.ts's buildMockMetrics/buildRetrainLogs, use-model-retrain.ts's setTimeout phases, appendModelLog calls) has been fully replaced — see MODEL-SERVE-014-T02.",
+          "acceptance_criteria": [
+            "The exact request and response contract used by MODEL-SERVE-004 is documented in the client layer (services/model-retrain.ts doc comments).",
+            "The former setTimeout/mock-metrics simulation has been removed — no longer the code path.",
+            "No duplicate retrain orchestration is introduced in the client."
+          ]
+        },
+        {
+          "id": "MODEL-SERVE-014-T02",
+          "title": "Replace simulated retrain with the real retrain job trigger",
+          "status": "completed",
+          "progress": 100,
+          "detail": "CORRECTED against T01's finding: the client does NOT submit a retrain configuration — TriggerRetrainSchema accepts only idempotencyKey and an optional candidates[] (algorithm+hyperparameters only, pinned to the incumbent's own algorithm). Implemented: apps/client/services/model-retrain.ts's modelRetrainService.trigger, consumed by use-model-retrain.ts's start(). The old simulated flow is gone in full.\n\nDEFECT FOUND AND FIXED (Custom Finetune, reported live): the form read `res.data.variants` from `tuningGridService.get`, but `TuningGridAuthorizedController.get` returns the DTO DIRECTLY with no `{statusCode, message, data}` envelope (declared return type is `TuningGridResponse`; Nest wraps nothing and no interceptor does). `res.data` was always undefined, so every algorithm — including random_forest, which has a real grid entry and is what all three PRODUCTION versions on this stack use — failed with 'Could not load hyperparameter variants'. Typed the client against what the endpoint actually returns rather than wrapping the backend (nothing else calls that route; changing a live response shape is the larger change). The pre-existing `use-tuning-grid.ts` had the identical `res => res.data` bug and is fixed in the same pass — it has no UI consumer, which is why nobody had hit it.\nMY TEST DID NOT CATCH THIS: the mock returned an ENVELOPED response, so it validated the wrong contract. Mock corrected to the real unwrapped shape. The form now surfaces the server's own message on failure instead of one generic line.",
+          "acceptance_criteria": [
+            "Submitting retrain creates a real backend retrain job.",
+            "The client no longer generates mock training logs or mock metrics.",
+            "Repeated submission does not bypass backend concurrency or idempotency protection."
+          ]
+        },
+        {
+          "id": "MODEL-SERVE-014-T03",
+          "title": "Implement retrain progress state from the real job lifecycle",
+          "status": "completed",
+          "progress": 100,
+          "detail": "Map the backend retrain job lifecycle into the existing RetrainProgress UI. The UI must derive its state from the server job and associated ModelTrainingRun rather than local timers. Training logs, validation state, failure reason, candidate selection, and completion must remain consistent with backend state.",
+          "acceptance_criteria": [
+            "Progress survives refresh because it is reconstructed from server state.",
+            "Training and evaluation status is not simulated locally.",
+            "Failed or rejected jobs expose the backend failure reason.",
+            "A completed job exposes the winning candidate and result version."
+          ]
+        },
+        {
+          "id": "MODEL-SERVE-014-T04",
+          "title": "Show retrain candidate evaluation and incumbent comparison",
+          "status": "completed",
+          "progress": 100,
+          "detail": "Display the comparison returned by the retrain backend, including the evaluation basis, incumbent RMSE, candidate RMSE, RMSE delta, R2, and comparability state. The evaluation basis must be shown with the metrics so that the UI does not imply a comparison where the backend has marked the bases as incomparable.",
+          "acceptance_criteria": [
+            "Comparable evaluations display the RMSE delta returned by the backend.",
+            "Incomparable evaluations display the reason and do not present an RMSE delta as a valid comparison.",
+            "Raw incumbent and candidate metrics remain visible when comparison is not comparable.",
+            "RMSE remains the primary candidate-selection metric."
+          ]
+        },
+        {
+          "id": "MODEL-SERVE-014-T05",
+          "title": "Integrate monitoring and drift context into the retrain workflow",
+          "status": "completed",
+          "progress": 100,
+          "detail": "Implemented as retrain-monitoring-context.tsx, mounted in the Retrain dialog (only when an incumbent exists — drift/PSI are both computed against the PRODUCTION version). Sourced ENTIRELY from the existing usePredictionMonitoring hook and the existing DRIFT_STATUS_CLASS/PSI_STATUS_CLASS palette — the same hook and same [from, to] the Monitoring tab's DriftPanel/PsiPanel already read. No second drift computation client-side, and no gate: the panel states plainly that monitoring never starts or blocks a retrain. UNKNOWN (no training reference) and INSUFFICIENT_DATA (reference exists, sample floor not cleared) render as distinct explicit states, never as a blank or a false OK; the measured period is printed from the backend's own basis.from/basis.to and names its plane (window vs predict), never a hardcoded 'last 24h'.",
+          "acceptance_criteria": [
+            "The retrain UI can show the relevant monitoring period.",
+            "Available drift and PSI information is sourced from existing monitoring functionality.",
+            "Unknown or insufficient monitoring data is represented explicitly.",
+            "No duplicate or mock drift calculation is introduced."
+          ]
+        },
+        {
+          "id": "MODEL-SERVE-014-T06",
+          "title": "Show the resulting ModelVersion created by retrain",
+          "status": "completed",
+          "progress": 100,
+          "detail": "On successful completion, display the new ModelVersion created by the backend retrain flow, including version identity, STAGING stage, source training run, and relevant metrics. The UI must distinguish the new staging version from the existing production version.\n\nEXTENDED (user request): the result card now offers \"Apply vN to Production\" once the job has minted a STAGING version, and the vocabulary moved from \"incumbent\" to the real version number (\"current v1\"), which is what an operator can actually act on.\nThe promote goes through the EXISTING useModelPromote flow the page's own Promote button uses — including its 422 r2-floor override dialog — so there is one promote implementation, not two. The button appears ONLY for a candidate that is versioned AND still STAGING (promotableCandidateVersion), so a retrain still promotes nothing by itself and the action disappears once the version is live. The branded ModelVersionNumber is minted inside services/model-retrain.ts — the boundary module that parses the server payload carrying it — per lib/model-version-number.ts's own rule, never at the button's call site. On success the page also calls retrain.refresh(), since the job's comparison still reads STAGING until re-read.",
+          "acceptance_criteria": [
+            "Successful retrain shows the newly created ModelVersion.",
+            "The displayed stage is STAGING.",
+            "The current PRODUCTION version remains separately identifiable.",
+            "The completion message never claims that the retrained model was deployed automatically."
+          ]
+        },
+        {
+          "id": "MODEL-SERVE-014-T07",
+          "title": "Handle retrain concurrency, duplicate submission, and stale client state",
+          "status": "completed",
+          "progress": 100,
+          "detail": "Ensure the Model Detail UI behaves correctly when another retrain is already running, when the same idempotency request is retried, or when the page is refreshed while a job is running. The frontend must respect the backend per-model lock and idempotency semantics instead of recreating them independently.",
+          "acceptance_criteria": [
+            "An in-flight retrain disables or guards conflicting UI actions where appropriate.",
+            "A backend conflict identifies the existing in-flight job.",
+            "Retrying an idempotent request reuses the original job.",
+            "Refreshing the page restores the correct retrain state from the backend."
+          ]
+        },
+        {
+          "id": "MODEL-SERVE-014-T08",
+          "title": "Integrate retrain errors and validation responses",
+          "status": "completed",
+          "progress": 100,
+          "detail": "Map backend validation, authorization, conflict, unsupported-training-basis, and execution errors into user-readable states in the Retrain dialog and progress/result views. Error messages must remain attributable to the actual server response.\n\nDEFECT FOUND AND FIXED (TM3, reported live): the dialog's pre-flight was a bare `incumbent === null`, which asserted \"no PRODUCTION version\" for THREE different states — the real one, a still-in-flight fetch, and ANY failed read — while its sibling `error && !noIncumbent` guard hid the actual error. TM3 (PRODUCTION v1) was told to promote a version it already had. Now only a settled, error-free read makes that claim; loading says so; a read failure shows the server's own message. Two regression cases added to retrain-flow.test.tsx.",
+          "acceptance_criteria": [
+            "Validation failures prevent the retrain flow from entering a false running state.",
+            "Conflict responses identify that another retrain is active where applicable.",
+            "Trainer/runtime failures display the backend failure reason.",
+            "The UI does not show success after a failed or incomplete job."
+          ]
+        },
+        {
+          "id": "MODEL-SERVE-014-T09",
+          "title": "Preserve retrain provenance in the Model Detail UI",
+          "status": "completed",
+          "progress": 100,
+          "detail": "Expose sufficient provenance from the retrain result to trace the new model version back to the winning ModelTrainingRun and its pinned artifact lineage. The client should use persisted backend identifiers and keys rather than reconstructing artifact or loss-history paths.",
+          "acceptance_criteria": [
+            "The result identifies the source training run.",
+            "The result identifies the created ModelVersion.",
+            "The displayed evaluation basis matches the persisted training-run basis.",
+            "The client does not rebuild stored object keys from mutable model or dataset state."
+          ]
+        },
+        {
+          "id": "MODEL-SERVE-014-T10",
+          "title": "Complete frontend integration tests and live verification",
+          "status": "blocked",
+          "progress": 75,
+          "detail": "AUTOMATED COVERAGE COMPLETE (46 cases: 13 lib + 13 dialog/progress + 12 hook + 8 backend spec). pnpm check-types + eslint clean on touched files.\n\nROOT CAUSE OF THE TM3 REPORT, and a correction to this task's earlier note: the 401-vs-404 curl check recorded here as \"route ordering verified\" PROVED NOTHING — both /retrain/current and /retrain/:jobId sit behind the same guard, so both answer 401 whichever one matched. The swagger route table showed the truth: /retrain/current was NOT REGISTERED AT ALL. The running backend was serving a dist built at 08:24 while the controller was edited at 09:40, because `nest build` was failing on a PRE-EXISTING, unrelated TS4053 in inference-window.authorized.controller.ts (ScheduleSourceRef not exported, from other in-flight work) — so `nest start --watch` silently kept serving the last good dist for ~2h. Exported that interface; the build is clean and /retrain/current now appears in the route table. Use the swagger route table, never a guarded status code, to prove a route exists.\n\nSTILL NOT DONE: the authenticated V01-V05 run. Minting a dev JWT is refused by the sandbox security classifier and the Claude-in-Chrome extension is not connected, so no authenticated session is reachable from an agent session. The stack is now ready for it: backend serving the current build, client up, 3 models carry a PRODUCTION version, trainer image scgc/soft-sensor-trainer:1.0.13 present locally.",
+          "acceptance_criteria": [
+            "The Model Detail UI successfully starts a real retrain job.",
+            "The UI tracks the real job through completion.",
+            "A successful retrain produces a STAGING ModelVersion.",
+            "The PRODUCTION version remains unchanged.",
+            "Concurrent retrain attempts do not spawn competing jobs.",
+            "Idempotent retries return the original job.",
+            "The comparison shown in the UI matches the backend response.",
+            "No mock retrain metrics or timer-driven completion path remains."
+          ]
+        }
+      ],
+      "verification": [
+        {
+          "id": "MODEL-SERVE-014-V01",
+          "description": "Start retrain from Models/[id] and verify the browser uses the real retrain endpoint rather than the local simulation.",
+          "status": "pending",
+          "note": "Route existence now proven properly via the swagger route table (/retrain/current registered) — the earlier 401-based check was invalid, see T10. Authenticated browser run still outstanding."
+        },
+        {
+          "id": "MODEL-SERVE-014-V02",
+          "description": "Refresh the Model Detail page while a retrain is running and verify the job state is reconstructed from the backend.",
+          "status": "pending",
+          "note": "Covered by unit test (use-model-retrain.test.tsx restores an in-flight job from current() with no trigger). Browser refresh not exercised — see T10's blocked note."
+        },
+        {
+          "id": "MODEL-SERVE-014-V03",
+          "description": "Complete a retrain and verify the UI shows the newly created STAGING ModelVersion while the existing PRODUCTION version remains unchanged.",
+          "status": "pending",
+          "note": "Covered by unit test (poll-to-SUCCEEDED asserts candidate STAGING v4 while incumbent stays PRODUCTION v3) and backend spec. Real trainer run not exercised — see T10."
+        },
+        {
+          "id": "MODEL-SERVE-014-V04",
+          "description": "Submit concurrent retrain requests and verify the frontend correctly reflects the backend per-model lock and does not create multiple competing retrain jobs.",
+          "status": "pending",
+          "note": "Covered by unit test (no second POST while a job is live; 409 resolves the real in-flight job via current(), never by parsing the message). Real concurrent requests not exercised — see T10."
+        },
+        {
+          "id": "MODEL-SERVE-014-V05",
+          "description": "Replay the same idempotency request after completion and verify the UI resolves to the original retrain job and result.",
+          "status": "pending",
+          "note": "Covered by unit test (a 200 idempotent replay is adopted identically to a fresh 201, returning the original job id). Real replay not exercised — see T10."
+        }
+      ],
+      "implementation": "Client integration only. Reuse the existing MODEL-SERVE-004 retrain backend implementation, ModelCandidateJob lifecycle, ModelTrainingRun execution path, comparison endpoint, and ModelVersion creation behavior. Replace the legacy client-side simulation in apps/client/lib/retrain.ts and apps/client/.../use-model-retrain.ts with the real backend contract. Do not create a second trainer/orchestrator in the client and do not modify PRODUCTION promotion behavior."
     }
   ],
   "global_definition_of_done": [

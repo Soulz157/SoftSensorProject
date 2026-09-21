@@ -29,6 +29,18 @@ export class ModelRetrainAuthorizedController {
     return this.service.triggerRetrainService(modelId, dto, user);
   }
 
+  // MODEL-SERVE-014. Declared BEFORE `@Get('/retrain/:jobId')` — the same
+  // static-before-param ordering `model-draft-run.authorized.controller.ts`
+  // already documents for `runs/predictions/batch`: find-my-way would
+  // otherwise match `current` as a `:jobId` value.
+  @Get('/retrain/current')
+  getCurrentController(
+    @Param('modelId') modelId: string,
+    @Users() user: Auth.UserPayload,
+  ) {
+    return this.service.getCurrentRetrainJobService(modelId, user);
+  }
+
   @Get('/retrain/:jobId')
   getJobController(
     @Param('modelId') modelId: string,

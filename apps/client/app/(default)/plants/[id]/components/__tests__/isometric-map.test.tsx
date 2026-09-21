@@ -74,6 +74,10 @@ describe('IsometricMap', () => {
     expect(container.querySelector('svg')).not.toBeNull()
   })
 
+  // The two label layers are MUTUALLY EXCLUSIVE by view mode: zone names
+  // render in `plants`, per-node HUD tags in `equipment`. A render with no
+  // `viewMode` draws neither, so each case below passes the mode whose
+  // labels it is about.
   it('renders a zone label for each workspace', () => {
     const { getByText } = render(
       <IsometricMap
@@ -83,6 +87,7 @@ describe('IsometricMap', () => {
         selectedZoneId={null}
         selectedNodeId={null}
         onNodeClick={vi.fn()}
+        viewMode="plants"
       />,
     )
     expect(getByText('ZONE A')).not.toBeNull()
@@ -98,6 +103,7 @@ describe('IsometricMap', () => {
         selectedZoneId={null}
         selectedNodeId={null}
         onNodeClick={vi.fn()}
+        viewMode="equipment"
       />,
     )
     expect(getByText('CNC-001')).not.toBeNull()
@@ -115,6 +121,7 @@ describe('IsometricMap', () => {
         selectedZoneId={null}
         selectedNodeId={null}
         onNodeClick={onNodeClick}
+        viewMode="equipment"
       />,
     )
     getByText('CNC-001')

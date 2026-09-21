@@ -4,7 +4,6 @@ import { AIModel, WorkspacePlant } from '@/types'
 import { getWorkspacePlants } from '@/services/workspace-plant'
 import { getNodes, type CanvasNode } from '@/services/canvas'
 import { createModel, updateModel } from '@/services/model'
-import { useModelTagSelection } from '@/hooks/model/use-model-tag-selection'
 
 type State = {
   name: string
@@ -92,6 +91,14 @@ interface UseModelFormProps {
   model?: AIModel | null
   onSuccess: () => void
   onClose: () => void
+  /**
+   * MODEL-SERVE-013-T06. The Data Source relink, OWNED BY THE DIALOG and
+   * passed in — this hook does not fetch it. The binding lives on the
+   * model's InferenceSchedule, not on the model row, so it is a second,
+   * independent write that `submitForm` sequences after the model update
+   * (see there for what happens when one of the two fails).
+   */
+  dataSource?: { isDirty: boolean; save: () => Promise<void> }
 }
 
 export function useModelForm({
@@ -99,20 +106,15 @@ export function useModelForm({
   model,
   onSuccess,
   onClose,
+  dataSource,
 }: UseModelFormProps) {
   const [state, dispatch] = useReducer(reducer, initialState)
-
-  // PI server + tag-role selection (shared with the create flow). Tags are
-  // local-only — not loaded from or saved to the model yet (Phase-6 gap).
-  const tagSelection = useModelTagSelection()
-  const { reset: resetTags } = tagSelection
 
   useEffect(() => {
     if (open) {
       dispatch({ type: 'INIT', model })
-      resetTags()
     }
-  }, [open, model, resetTags])
+  }, [open, model])
 
   useEffect(() => {
     if (!state.workspaceId) return
@@ -167,6 +169,33 @@ export function useModelForm({
         await createModel({ workspaceId: state.workspaceId, ...payload })
       }
 
+      /**
+       * MODEL-SERVE-013-T06. TWO INDEPENDENT WRITES, and they are reported
+       * as two. The model row and the InferenceSchedule are different
+       * records behind different endpoints; there is no transaction across
+       * them and faking one would be worse than saying what happened.
+       *
+       * Attempted only AFTER the model update succeeded, and only when the
+       * user actually changed the source. If it fails, the model edit
+       * still landed — so this reports both halves and DELIBERATELY leaves
+       * the dialog open (no `onSuccess`/`onClose`) so the relink can be
+       * retried without retyping the rest.
+       */
+      if (dataSource?.isDirty) {
+        try {
+          await dataSource.save()
+        } catch (err) {
+          toast.error(
+            `Model saved, but the data source was not changed: ${
+              err instanceof Error && err.message
+                ? err.message
+                : 'unknown error'
+            }`,
+          )
+          return
+        }
+      }
+
       toast.success(model ? 'Model updated' : 'Model created')
       onSuccess()
       onClose()
@@ -175,17 +204,14 @@ export function useModelForm({
     } finally {
       dispatch({ type: 'SUBMIT_FINISH' })
     }
-  }, [state, model, onSuccess, onClose])
+  }, [state, model, onSuccess, onClose, dataSource])
 
   return {
     state,
-    tagSelection,
     actions: {
       setName: (name: string) => dispatch({ type: 'SET_NAME', name }),
-      handleWorkspaceChange: (id: string) => {
-        dispatch({ type: 'CHANGE_WORKSPACE', workspaceId: id })
-        resetTags() // workspace change clears the PI server + picked tags
-      },
+      handleWorkspaceChange: (id: string) =>
+        dispatch({ type: 'CHANGE_WORKSPACE', workspaceId: id }),
       handlePlantChange: (id: string) =>
         dispatch({ type: 'CHANGE_PLANT', plantId: id === 'none' ? '' : id }),
       handleNodeChange: (id: string) =>

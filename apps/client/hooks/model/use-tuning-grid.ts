@@ -36,7 +36,7 @@ export function useTuningGrid(algorithm: string | null): UseTuningGridResult {
     enabled,
     cacheKey,
     debounceMs: 0,
-    fetcher: () => tuningGridService.get(algorithm!).then(res => res.data),
+    fetcher: () => tuningGridService.get(algorithm!),
     onLoading: () => {
       setError(null)
       setLoading(true)

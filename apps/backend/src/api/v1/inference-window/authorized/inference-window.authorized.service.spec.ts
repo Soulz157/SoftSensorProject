@@ -35,6 +35,11 @@ function buildPrisma(overrides: Record<string, unknown> = {}) {
       findFirstOrThrow: jest.fn(),
     },
     dataset: { findUnique: jest.fn().mockResolvedValue(null) },
+    // MODEL-SERVE-013-T01. getScheduleService resolves the schedule's
+    // sourceId and the dataset's candidates to NAMES. Empty by default so
+    // every pre-existing case here, none of which is about the data-source
+    // surface, keeps asserting what it was written for.
+    dataSource: { findMany: jest.fn().mockResolvedValue([]) },
     inferenceSchedule: {
       upsert: jest.fn().mockResolvedValue({}),
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
@@ -2470,5 +2475,318 @@ describe('InferenceWindowAuthorizedService.runNowService — live score (MODEL-S
     expect(res.statusCode).toBe(200);
     expect(res.data.dispatched).toBe(false);
     expect(res.data.live).toMatchObject({ ok: true, predicted: 42.5 });
+  });
+});
+
+/** MODEL-SERVE-013. A persisted schedule row, with only the fields
+ *  `getScheduleService` echoes — every one is non-null on the real row. */
+const SCHEDULE_ROW = {
+  enabled: true,
+  cadenceMinutes: 60,
+  lagMinutes: 5,
+  sourceId: 'src-a',
+  autoRetrain: false,
+  warnSd: 1.5,
+  criticalSd: 3.0,
+  driftMonitor: false,
+  driftThresholdPct: 10,
+  missingPctWarn: 5,
+  missingPctAlert: 20,
+  skipStreakAlert: 3,
+  frozenWindows: 3,
+  frozenTolerancePct: 0,
+};
+
+/** One read, so each case below says what it asserts and nothing else. */
+function service013(prisma: ReturnType<typeof buildPrisma>) {
+  return makeService(prisma).getScheduleService('model-1', user);
+}
+
+/**
+ * MODEL-SERVE-013. The data source a model actually fetches from: readable
+ * by name on the settings surface, and changeable without starting the
+ * model to do it.
+ */
+describe('InferenceWindowAuthorizedService.getScheduleService — data-source surface (MODEL-SERVE-013-T01)', () => {
+  const SOURCES = [
+    { id: 'src-a', name: 'PI North', type: 'aveva', status: 'connected' },
+    { id: 'src-b', name: 'PI South', type: 'aveva', status: 'connected' },
+  ];
+
+  function buildSourcePrisma(overrides: Record<string, unknown> = {}) {
+    return buildPrisma({
+      modelVersion: {
+        findFirst: jest.fn().mockResolvedValue({ sourceDatasetId: 'ds-1' }),
+        findFirstOrThrow: jest.fn(),
+      },
+      dataset: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({ sourceIds: ['src-a', 'src-b'] }),
+      },
+      dataSource: { findMany: jest.fn().mockResolvedValue(SOURCES) },
+      ...overrides,
+    });
+  }
+
+  it('resolves candidates off the PINNED version, never Model.datasetId', async () => {
+    const prisma = buildSourcePrisma({
+      inferenceSchedule: {
+        upsert: jest.fn(),
+        updateMany: jest.fn(),
+        update: jest.fn(),
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({ ...SCHEDULE_ROW, sourceId: 'src-a' }),
+      },
+    });
+    const res = await service013(prisma);
+
+    // D8: the dataset read is the PRODUCTION version's `sourceDatasetId`.
+    // Reading `Model.datasetId` here would offer choices the write path
+    // then refuses — live-verified those two ids can differ.
+    expect(prisma.dataset.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'ds-1' } }),
+    );
+    expect(res.data.sourceCandidates.map((s) => s.id)).toEqual([
+      'src-a',
+      'src-b',
+    ]);
+    expect(res.data.currentSource).toMatchObject({
+      id: 'src-a',
+      name: 'PI North',
+    });
+  });
+
+  it('orders candidates by the dataset own sourceIds, not the DB order', async () => {
+    const prisma = buildSourcePrisma({
+      dataset: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({ sourceIds: ['src-b', 'src-a'] }),
+      },
+      dataSource: { findMany: jest.fn().mockResolvedValue(SOURCES) },
+    });
+    const res = await service013(prisma);
+    expect(res.data.sourceCandidates.map((s) => s.id)).toEqual([
+      'src-b',
+      'src-a',
+    ]);
+  });
+
+  it('reports a bound source whose row is gone as missing, never as absent', async () => {
+    // "This model fetches from something that no longer exists" is a fault
+    // an operator repairs by relinking; collapsing it into null would hide
+    // it behind the same rendering as "never deployed".
+    const prisma = buildSourcePrisma({
+      dataSource: { findMany: jest.fn().mockResolvedValue([]) },
+      inferenceSchedule: {
+        upsert: jest.fn(),
+        updateMany: jest.fn(),
+        update: jest.fn(),
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({ ...SCHEDULE_ROW, sourceId: 'src-gone' }),
+      },
+    });
+    const res = await service013(prisma);
+    expect(res.data.currentSource).toEqual({
+      id: 'src-gone',
+      name: null,
+      type: null,
+      status: 'missing',
+    });
+  });
+
+  it('a model with no schedule row still answers, with both keys present', async () => {
+    // `InferenceSchedule.sourceId` is required, so no row means the model
+    // was never bound at all — a state to render, never an error, and never
+    // a response the client has to test for key presence on.
+    const prisma = buildSourcePrisma();
+    const res = await service013(prisma);
+    expect(res.data.currentSource).toBeNull();
+    expect(res.data.sourceCandidates).toHaveLength(2);
+  });
+
+  it('never throws when nothing is in production', async () => {
+    const prisma = buildPrisma();
+    const res = await service013(prisma);
+    expect(res.statusCode).toBe(200);
+    expect(res.data.sourceCandidates).toEqual([]);
+    expect(res.data.currentSource).toBeNull();
+  });
+});
+
+describe('InferenceWindowAuthorizedService.putScheduleService — relinking a STOPPED schedule (MODEL-SERVE-013-T02)', () => {
+  const PIPELINE = {
+    sourceFetchConfigs: {
+      'src-a': { intervalTime: '1m' },
+      'src-b': { intervalTime: '5m' },
+    },
+    baseTags: ['TAG.A'],
+  };
+
+  function buildRelinkPrisma(overrides: Record<string, unknown> = {}) {
+    return buildPrisma({
+      modelVersion: {
+        findFirst: jest.fn().mockResolvedValue({ sourceDatasetId: 'ds-1' }),
+        findFirstOrThrow: jest.fn(),
+      },
+      dataset: {
+        findUnique: jest.fn().mockResolvedValue({
+          sourceIds: ['src-a', 'src-b'],
+          pipelineConfig: PIPELINE,
+        }),
+      },
+      inferenceSchedule: {
+        upsert: jest.fn().mockResolvedValue({}),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        update: jest.fn().mockResolvedValue({}),
+        findUnique: jest.fn().mockResolvedValue({ cadenceMinutes: 60 }),
+      },
+      ...overrides,
+    });
+  }
+
+  it('persists the new source, its fetchConfig, and a RECOMPUTED minRows', async () => {
+    const prisma = buildRelinkPrisma();
+    const service = makeService(prisma);
+
+    await service.putScheduleService(
+      'model-1',
+      { enabled: false, sourceId: 'src-b' },
+      user,
+    );
+
+    const write = prisma.inferenceSchedule.updateMany.mock.calls[0][0];
+    expect(write.data).toMatchObject({
+      enabled: false,
+      sourceId: 'src-b',
+      fetchConfig: { intervalTime: '5m', baseTags: ['TAG.A'] },
+    });
+    // T14: minRows is DERIVED from the fetch config's own intervalTime, so
+    // a new fetchConfig must bring a freshly derived floor with it — the
+    // old number beside a new source is exactly the stale-derived state
+    // that rule exists to prevent.
+    expect(typeof write.data.minRows).toBe('number');
+  });
+
+  it('writes no preflight evidence — a stopped relink probed nothing', async () => {
+    const prisma = buildRelinkPrisma();
+    const inputStatus = buildInputStatus();
+    const service = makeService(
+      prisma,
+      buildDescriptor(),
+      buildTruthSweeper(),
+      buildMonitoring(),
+      inputStatus,
+    );
+
+    await service.putScheduleService(
+      'model-1',
+      { enabled: false, sourceId: 'src-b' },
+      user,
+    );
+
+    expect(inputStatus.preflightSourceService).not.toHaveBeenCalled();
+    const write = prisma.inferenceSchedule.updateMany.mock.calls[0][0];
+    expect(write.data.preflightAt).toBeUndefined();
+    expect(write.data.preflightOk).toBeUndefined();
+    expect(write.data.preflightReason).toBeUndefined();
+  });
+
+  it('still cancels queued windows in the same transaction', async () => {
+    const prisma = buildRelinkPrisma();
+    const service = makeService(prisma);
+
+    const res = await service.putScheduleService(
+      'model-1',
+      { enabled: false, sourceId: 'src-b' },
+      user,
+    );
+
+    expect(prisma.inferenceWindow.updateMany).toHaveBeenCalled();
+    expect(prisma.$transaction).toHaveBeenCalled();
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('a plain stop writes ONLY enabled:false — no fallback binding', async () => {
+    // The single-source fallback belongs to the enable path alone. A
+    // request with no sourceId is not asking to change anything, and
+    // silently binding "the only source" would turn every stop into a
+    // write.
+    const prisma = buildRelinkPrisma({
+      dataset: {
+        findUnique: jest.fn().mockResolvedValue({
+          sourceIds: ['src-a'],
+          pipelineConfig: PIPELINE,
+        }),
+      },
+    });
+    const service = makeService(prisma);
+
+    await service.putScheduleService('model-1', { enabled: false }, user);
+
+    expect(prisma.inferenceSchedule.updateMany.mock.calls[0][0].data).toEqual({
+      enabled: false,
+    });
+  });
+
+  it('refuses a sourceId the pinned dataset does not name', async () => {
+    const prisma = buildRelinkPrisma();
+    const service = makeService(prisma);
+
+    await expect(
+      service.putScheduleService(
+        'model-1',
+        { enabled: false, sourceId: 'src-foreign' },
+        user,
+      ),
+    ).rejects.toMatchObject({ statusCode: 422 });
+    expect(prisma.inferenceSchedule.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('refuses a relink on a model with nothing in production', async () => {
+    const prisma = buildRelinkPrisma({
+      modelVersion: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        findFirstOrThrow: jest.fn(),
+      },
+    });
+    const service = makeService(prisma);
+
+    await expect(
+      service.putScheduleService(
+        'model-1',
+        { enabled: false, sourceId: 'src-b' },
+        user,
+      ),
+    ).rejects.toMatchObject({ statusCode: 422 });
+  });
+
+  it('a model that was never deployed is left alone, not refused', async () => {
+    // `updateMany` is a no-op without a row, so resolving a binding for a
+    // model with no schedule would refuse a request that could not have
+    // written anything anyway.
+    const prisma = buildRelinkPrisma({
+      inferenceSchedule: {
+        upsert: jest.fn(),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+        update: jest.fn(),
+        findUnique: jest.fn().mockResolvedValue(null),
+      },
+    });
+    const service = makeService(prisma);
+
+    const res = await service.putScheduleService(
+      'model-1',
+      { enabled: false, sourceId: 'src-b' },
+      user,
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(prisma.inferenceSchedule.updateMany.mock.calls[0][0].data).toEqual({
+      enabled: false,
+    });
   });
 });

@@ -29,6 +29,15 @@ import {
  *    machine token) — this is the whole reason the Input Data tab could
  *    only ever show traffic-derived data before this endpoint existed.
  */
+/** Same guard `model-retrain.authorized.service.ts`'s own `readMetric` uses:
+ *  an untyped Json blob yields a number only when it really holds a finite
+ *  one, never NaN/Infinity and never a coerced string. */
+function readMetric(metrics: unknown, key: string): number | null {
+  if (!metrics || typeof metrics !== 'object') return null;
+  const value = (metrics as Record<string, unknown>)[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
 @Injectable()
 export class ModelInputSchemaAuthorizedService {
   constructor(private readonly prisma: PrismaService) {}
@@ -112,6 +121,21 @@ export class ModelInputSchemaAuthorizedService {
         versionId: version.id,
         version: version.version,
         stage: version.stage,
+        // MODEL-SERVE-014 follow-up. The SERVING version's own headline
+        // numbers, so Models/[id] can state them beside the algorithm
+        // instead of leaving "how good is what is live" unanswered on the
+        // page that owns the model. Read off the ModelVersion row — the
+        // snapshot promote's r2 floor checks and serving reports — never
+        // recomputed and never read from the run (which can drift under it;
+        // see ModelVersion.metrics' own schema comment).
+        //
+        // Nulls are a real answer (a legacy row, or a metrics blob with no
+        // finite r2/rmse) and must render as "not recorded", never as 0.
+        metrics: {
+          rmse: readMetric(version.metrics, 'rmse'),
+          r2: readMetric(version.metrics, 'r2'),
+          mae: readMetric(version.metrics, 'mae'),
+        },
         featureColumns,
         unavailableReason,
         targetY: version.sourceRun.targetY,

@@ -774,7 +774,12 @@ describe('Step6ReviewSave — artifact-adoption save (DS-LAKE-005B-B-T01, Step 5
       </Provider>,
     )
 
-    await waitFor(() => expect(fetchMetadata).toHaveBeenCalled())
+    // NOT `expect(fetchMetadata).toHaveBeenCalled()`:
+    // `use-dataset-artifact-metadata` keeps a MODULE-LEVEL cache keyed
+    // `draftId:artifactId`, so by this point in the file an earlier case has
+    // already resolved `draft-1:silver-1` and this render is served from the
+    // cache without touching the service. The rendered tiles are what this
+    // case is actually about, and they prove the same thing.
     expect(await screen.findByText('3')).toBeInTheDocument() // Tags: metadata.tagCount
     expect(screen.getByText('100')).toBeInTheDocument() // Rows: metadata.rowCount
     expect(screen.getByText('7')).toBeInTheDocument() // Raw rows: unaffected, still raw.rows.length
@@ -814,12 +819,14 @@ describe('Step6ReviewSave — artifact-adoption save (DS-LAKE-005B-B-T01, Step 5
       </Provider>,
     )
 
-    await waitFor(() => expect(fetchMetadata).toHaveBeenCalled())
-    await waitFor(() =>
-      expect(
-        screen.queryByText(/is not in this dataset/i),
-      ).not.toBeInTheDocument(),
-    )
+    // The metadata read may be served from the module-level cache (see the
+    // tiles case above), so this waits for the RESOLVED state the banner
+    // depends on — the tiles rendering metadata's own tagCount — rather
+    // than for a service call that a cache hit never makes.
+    expect(await screen.findByText('3')).toBeInTheDocument()
+    expect(
+      screen.queryByText(/is not in this dataset/i),
+    ).not.toBeInTheDocument()
   })
 })
 

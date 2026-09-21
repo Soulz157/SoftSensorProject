@@ -366,6 +366,69 @@ export class ModelRetrainAuthorizedService {
   // ── read ─────────────────────────────────────────────────────────────────
 
   /**
+   * MODEL-SERVE-014. The retrain trigger's response carries no persistent
+   * discovery route of its own — a caller who reloads the page, or opens
+   * Model Detail on a second tab, has no `jobId` to poll. Same shape as
+   * `getRetrainJobService`, keyed off the model instead: the live
+   * QUEUED/RUNNING job when one exists, else the most recent job ever run
+   * for this model (so a completed retrain's result — the STAGING version,
+   * the comparison — stays visible after it finishes), else `null` when the
+   * model has never been retrained. No new orchestration — one extra read
+   * before the existing reconcile-and-compare path.
+   */
+  async getCurrentRetrainJobService(modelId: string, user: Auth.UserPayload) {
+    await this.assertModelAccess(modelId, user);
+
+    // Resolved independently of any job: the Retrain dialog needs the
+    // incumbent's algorithm to build a Custom fine-tune form, and needs to
+    // know "no PRODUCTION version" BEFORE the user submits, not as a
+    // rejected POST — neither is available from a job, since the first
+    // retrain for a model has none yet.
+    const incumbentVersion = await this.prisma.modelVersion.findFirst({
+      where: { modelId, stage: 'PRODUCTION' },
+      select: { id: true, version: true, algorithm: true },
+    });
+    const incumbent = incumbentVersion
+      ? {
+          versionId: incumbentVersion.id,
+          version: incumbentVersion.version,
+          algorithm: incumbentVersion.algorithm,
+        }
+      : null;
+
+    const live = await this.prisma.modelCandidateJob.findFirst({
+      where: { modelId, status: { in: ['QUEUED', 'RUNNING'] } },
+      orderBy: { createdAt: 'desc' },
+    });
+    const found =
+      live ??
+      (await this.prisma.modelCandidateJob.findFirst({
+        where: { modelId },
+        orderBy: { createdAt: 'desc' },
+      }));
+
+    if (!found) {
+      return {
+        statusCode: 200,
+        message: 'No retrain job exists for this model',
+        type: 'SUCCESS' as const,
+        data: { incumbent, job: null },
+      };
+    }
+
+    const { job, candidates } =
+      await this.candidateJobs.reconcileAndShape(found);
+    const comparison = await this.buildComparison(job);
+
+    return {
+      statusCode: 200,
+      message: 'Current retrain job fetched',
+      type: 'SUCCESS' as const,
+      data: { incumbent, job: { ...job, candidates, comparison } },
+    };
+  }
+
+  /**
    * MODEL-SERVE-004-T05. The job's live state (reconciled on read through the
    * SAME method the wizard's own job GET uses) plus the candidate-versus-
    * incumbent comparison.
@@ -482,6 +545,16 @@ export class ModelRetrainAuthorizedService {
         ? candidateMetrics.rmse - incumbentMetrics.rmse
         : null;
 
+    // MODEL-SERVE-014-T06. The version the job actually minted, once it has
+    // one — there is no versions-list endpoint to look this up from later,
+    // so the retrain UI names it here or not at all.
+    const candidateVersion = job.resultVersionId
+      ? await this.prisma.modelVersion.findUnique({
+          where: { id: job.resultVersionId },
+          select: { version: true, stage: true },
+        })
+      : null;
+
     return {
       // The BASIS both sides were scored on, published beside the numbers —
       // never a delta presented alone.
@@ -504,6 +577,8 @@ export class ModelRetrainAuthorizedService {
         runId: candidateRun?.id ?? null,
         // Set once the job has completed and minted its STAGING version.
         versionId: job.resultVersionId,
+        version: candidateVersion?.version ?? null,
+        stage: candidateVersion?.stage ?? null,
         algorithm: candidateRun?.algorithm ?? null,
         metrics: candidateMetrics,
       },

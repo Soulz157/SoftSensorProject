@@ -1,98 +1,24 @@
 /**
- * Retrain configuration + log scripting (single source of truth).
+ * Retrain view derivations (single source of truth).
  *
- * Pure module — no React, no IO. Backs the Auto/Custom Finetune retrain flow.
- * Retraining is a simulation today (no training infra yet): the hook drives real
- * `deployStatus` + appends real logs, but the regression-model choice and
- * hyperparameters defined here are client-side only (no backend persistence).
+ * Pure module — no React, no IO. Backs the Model Detail retrain flow.
+ *
+ * MODEL-SERVE-014. Everything here used to be a client-side SIMULATION:
+ * `buildMockMetrics` hashed the model id into fake numbers, `buildRetrainLogs`
+ * scripted log lines nothing produced, and `REGRESSION_MODELS`/`RetrainConfig`
+ * offered 5 client-only algorithm names against a real 12-value
+ * `TrainingAlgorithmEnum`, plus a `testSplit` the backend never reads (it is
+ * always the incumbent's own split — `TriggerRetrainSchema` is `.strict()`
+ * and accepts only `idempotencyKey`/`candidates`). All of that is gone. What
+ * remains derives view state from the REAL `RetrainJob`/`RetrainComparison`
+ * (`services/model-retrain.ts`) returned by MODEL-SERVE-004's backend.
  */
 
-export type RegressionModel =
-  | 'linear'
-  | 'ridge'
-  | 'lasso'
-  | 'random_forest'
-  | 'xgboost'
+import type { RetrainComparison, RetrainJob } from '@/services/model-retrain'
 
-export type RetrainParam =
-  | 'testSplit'
-  | 'learningRate'
-  | 'nEstimators'
-  | 'alpha'
-
-export interface RetrainConfig {
-  model: RegressionModel
-  testSplit: number
-  learningRate: number
-  nEstimators: number
-  alpha: number
-}
-
-export interface RegressionModelMeta {
-  value: RegressionModel
-  label: string
-  /** Hyperparameters relevant to this model (drives which inputs render). */
-  params: RetrainParam[]
-}
-
-export const REGRESSION_MODELS: RegressionModelMeta[] = [
-  { value: 'linear', label: 'Linear Regression', params: ['testSplit'] },
-  { value: 'ridge', label: 'Ridge Regression', params: ['testSplit', 'alpha'] },
-  { value: 'lasso', label: 'Lasso Regression', params: ['testSplit', 'alpha'] },
-  {
-    value: 'random_forest',
-    label: 'Random Forest',
-    params: ['testSplit', 'nEstimators'],
-  },
-  {
-    value: 'xgboost',
-    label: 'XGBoost',
-    params: ['testSplit', 'nEstimators', 'learningRate'],
-  },
-]
-
-export const DEFAULT_RETRAIN_CONFIG: RetrainConfig = {
-  model: 'xgboost',
-  testSplit: 0.2,
-  learningRate: 0.1,
-  nEstimators: 200,
-  alpha: 1.0,
-}
-
-export interface ParamMeta {
-  label: string
-  min: number
-  max: number
-  step: number
-}
-
-export const PARAM_META: Record<RetrainParam, ParamMeta> = {
-  testSplit: { label: 'Test Split', min: 0.1, max: 0.5, step: 0.05 },
-  learningRate: { label: 'Learning Rate', min: 0.01, max: 1, step: 0.01 },
-  nEstimators: { label: 'Estimators', min: 50, max: 1000, step: 50 },
-  alpha: { label: 'Regularization α', min: 0, max: 10, step: 0.1 },
-}
-
-export function modelLabel(model: RegressionModel): string {
-  return REGRESSION_MODELS.find(m => m.value === model)?.label ?? model
-}
-
-/** Phases of a (simulated) retrain run, in order. */
-export type RetrainPhase =
-  | 'idle'
-  | 'training'
-  | 'validating'
-  | 'evaluating'
-  | 'done'
-  | 'error'
-
-export interface EvalMetrics {
-  rmse: number
-  r2: number
-  mae: number
-}
-
-/** Ordered stage boxes shown in the retrain progress UI. */
+/** Ordered stage boxes shown in the retrain progress UI — unchanged shape
+ *  from the old simulation's `RETRAIN_STAGES`, now driven by job status
+ *  instead of a timer. */
 export const RETRAIN_STAGES: {
   key: 'training' | 'validating' | 'evaluating'
   label: string
@@ -102,62 +28,95 @@ export const RETRAIN_STAGES: {
   { key: 'evaluating', label: 'Result' },
 ]
 
+export type RetrainPhase =
+  | 'idle'
+  | 'training'
+  | 'validating'
+  | 'evaluating'
+  | 'done'
+  | 'error'
+
+type StageBoxState = 'pending' | 'active' | 'done'
+
 /**
- * Deterministic mock eval metrics, seeded from model id (+ regression model).
- * No real evaluation infra yet — stable per model so re-runs match.
+ * MODEL-SERVE-014-T03. Derived from the job's own `status`/`completedRuns`/
+ * `totalRuns` — never a local timer. `validating` has no direct backend
+ * counterpart (a candidate is QUEUED/RUNNING/SUCCEEDED/FAILED, nothing
+ * in-between); it is folded into "training" here since the UI's 3-box
+ * layout is retained but nothing server-side distinguishes a validation
+ * sub-phase from training itself.
  */
-export function buildMockMetrics(
-  modelId: string,
-  config?: RetrainConfig,
-): EvalMetrics {
-  const seedStr = `${modelId}:${config?.model ?? 'auto'}`
-  let h = 0
-  for (let i = 0; i < seedStr.length; i++) {
-    h = (h << 5) - h + seedStr.charCodeAt(i)
-    h |= 0
+export function retrainPhase(job: RetrainJob | null): RetrainPhase {
+  if (!job) return 'idle'
+  switch (job.status) {
+    case 'QUEUED':
+    case 'RUNNING':
+      return job.completedRuns > 0 ? 'evaluating' : 'training'
+    case 'SUCCEEDED':
+      return 'done'
+    case 'FAILED':
+    case 'CANCELED':
+      return 'error'
+    default:
+      return 'idle'
   }
-  // three independent pseudo-random fractions in [0, 1)
-  const frac = (n: number) => {
-    const x = Math.sin(h + n * 97.13) * 43758.5453
-    return x - Math.floor(x)
-  }
-  const round = (v: number, d = 3) => Math.round(v * 10 ** d) / 10 ** d
+}
+
+export function stageBoxState(
+  stageKey: 'training' | 'validating' | 'evaluating',
+  phase: RetrainPhase,
+): StageBoxState {
+  if (phase === 'done') return 'done'
+  if (phase === 'idle' || phase === 'error') return 'pending'
+  const order: RetrainPhase[] = ['training', 'validating', 'evaluating']
+  const cur = order.indexOf(phase)
+  const stage = order.indexOf(stageKey)
+  if (cur > stage) return 'done'
+  if (cur === stage) return 'active'
+  return 'pending'
+}
+
+export interface MetricTriple {
+  rmse: number | null
+  r2: number | null
+  mae: number | null
+}
+
+/**
+ * MODEL-SERVE-014-T04. RMSE is the primary, always-shown figure — the
+ * backend's own selection metric, and the one that stayed sane while a real
+ * run on this system scored r2 = -1,110,858 (MODEL-FLOW-004's finding).
+ * R² and MAE render beside it, never used to decide "better". A delta is
+ * only ever returned when `basis.comparable` — otherwise both raw triples
+ * are shown with the reason the comparison could not be made.
+ */
+export interface ComparisonView {
+  comparable: boolean
+  reason: string | null
+  incumbentMetrics: MetricTriple
+  candidateMetrics: MetricTriple
+  /** Negative = the candidate is better (lower RMSE). Null unless comparable. */
+  rmseDelta: number | null
+}
+
+export function comparisonView(
+  comparison: RetrainComparison | null,
+): ComparisonView | null {
+  if (!comparison) return null
   return {
-    rmse: round(0.05 + frac(1) * 0.45),
-    r2: round(0.85 + frac(2) * 0.14),
-    mae: round(0.04 + frac(3) * 0.36),
+    comparable: comparison.basis.comparable,
+    reason: comparison.basis.reason,
+    incumbentMetrics: comparison.incumbent.metrics,
+    candidateMetrics: comparison.candidate.metrics,
+    rmseDelta: comparison.rmseDelta,
   }
 }
 
-export function paramsFor(model: RegressionModel): RetrainParam[] {
-  return REGRESSION_MODELS.find(m => m.value === model)?.params ?? ['testSplit']
-}
-
-/** Ordered log lines emitted (one per tick) during a simulated retrain run. */
-export function buildRetrainLogs(
-  mode: 'auto' | 'custom',
-  config?: RetrainConfig,
-): string[] {
-  if (mode === 'custom' && config) {
-    const parts = paramsFor(config.model).map(
-      p => `${PARAM_META[p].label}=${config[p]}`,
-    )
-    return [
-      `Custom fine-tune started — ${modelLabel(config.model)}`,
-      'Loading training dataset…',
-      `Hyperparameters: ${parts.join(', ')}`,
-      'Training in progress…',
-      'Validation RMSE improved over previous checkpoint',
-      'Deploying updated model…',
-    ]
-  }
-
-  return [
-    'Auto fine-tune started — searching for the best regression model',
-    'Loading training dataset…',
-    'Cross-validating candidate models (Linear, Ridge, Random Forest, XGBoost)…',
-    'Selected best model by validation RMSE',
-    'Training in progress…',
-    'Deploying updated model…',
-  ]
+/** A fresh idempotency key for one trigger attempt — held by the caller
+ *  across a retry (never regenerated per attempt) so a dropped response
+ *  resolves to the SAME job instead of a second one. */
+export function newIdempotencyKey(): string {
+  return typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `retrain-${Date.now()}-${Math.random().toString(36).slice(2)}`
 }

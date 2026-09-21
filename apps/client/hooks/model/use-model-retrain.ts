@@ -2,28 +2,71 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { appendModelLog } from '@/services/model'
+import { ApiError } from '@/lib/fetcher'
 import {
-  buildMockMetrics,
-  buildRetrainLogs,
-  type EvalMetrics,
-  type RetrainConfig,
-  type RetrainPhase,
-} from '@/lib/retrain'
+  modelRetrainService,
+  modelRunLogsService,
+  type RetrainComparison,
+  type RetrainIncumbent,
+  type RetrainJob,
+} from '@/services/model-retrain'
+import type { CandidateInput, ModelTrainingRunLog } from '@/services/model-draft'
+import { newIdempotencyKey, retrainPhase, type RetrainPhase } from '@/lib/retrain'
+import {
+  clearDismissedJobId,
+  readDismissedJobId,
+  writeDismissedJobId,
+} from '@/lib/retrain-dismissal'
 import type { AIModel } from '@/types'
 
-type Mode = 'auto' | 'custom'
+/** Same cadence `use-model-training.ts`'s own `pollRun` uses for a training
+ *  container — matched here rather than inventing a second constant. */
+const POLL_MS = 2500
 
-const STEP_MS = 700
+const LIVE_STATUSES = new Set(['QUEUED', 'RUNNING'])
 
 export interface UseModelRetrain {
-  isRetraining: boolean
-  mode: Mode | null
+  /** The PRODUCTION version this model would retrain against, resolved
+   *  independently of any job. Null means there is nothing to improve on —
+   *  the dialog should disable with that explanation rather than let the
+   *  user submit into a guaranteed 404. */
+  incumbent: RetrainIncumbent | null
+  /** The live or most recently completed retrain job for this model, or
+   *  null when none has ever run. Restored from the server on mount/model
+   *  change and on every poll tick — never local-only state, so a refresh
+   *  or a second tab reconstructs the same view (MODEL-SERVE-014-T03/T07). */
+  job: RetrainJob | null
+  comparison: RetrainComparison | null
   phase: RetrainPhase
-  metrics: EvalMetrics | null
-  autoFinetune: () => void
-  customFinetune: (config: RetrainConfig) => void
-  reset: () => void
+  /** Real container log lines for the job's current candidate run — never
+   *  scripted client-side. Empty until the first candidate has a run. */
+  logs: ModelTrainingRunLog[]
+  /** True while `job.status` is QUEUED or RUNNING — drives button/dialog
+   *  disabled state. Independent of `loading` (the initial fetch). */
+  isRetraining: boolean
+  /** True only for the initial `current()` fetch on mount/model change. */
+  loading: boolean
+  /** The real backend message from the last failed action (validation,
+   *  conflict, authorization, execution) — never invented copy. */
+  error: string | null
+  /** `candidates` omitted = Auto Finetune (server expands the incumbent's
+   *  own algorithm through the curated tuning grid). Present = Custom
+   *  Finetune's one candidate. */
+  start: (candidates?: CandidateInput[]) => Promise<void>
+  /** Clears the last error only — the job itself is server state and is
+   *  never reset from the client. */
+  clearError: () => void
+  /** True when THIS viewer has closed the current job's result section.
+   *  A per-viewer preference only — the job itself is untouched, and a
+   *  NEW retrain shows again without being un-dismissed. */
+  dismissed: boolean
+  /** Close the result section for the current job. */
+  dismiss: () => void
+  /** Re-read the server's retrain state. Needed after an action that
+   *  changes it from OUTSIDE this hook — promoting the retrained version
+   *  moves it STAGING -> PRODUCTION, and without this the result card would
+   *  keep offering "Apply to Production" for a version already live. */
+  refresh: () => void
 }
 
 export function useModelRetrain({
@@ -33,105 +76,180 @@ export function useModelRetrain({
   model: AIModel | null
   onUpdated?: () => void
 }): UseModelRetrain {
-  const [isRetraining, setIsRetraining] = useState(false)
-  const [mode, setMode] = useState<Mode | null>(null)
-  const [phase, setPhase] = useState<RetrainPhase>('idle')
-  const [metrics, setMetrics] = useState<EvalMetrics | null>(null)
-  const cancelled = useRef(false)
+  const [incumbent, setIncumbent] = useState<RetrainIncumbent | null>(null)
+  const [job, setJob] = useState<RetrainJob | null>(null)
+  const [logs, setLogs] = useState<ModelTrainingRunLog[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
+  // Read lazily (never during render) — `localStorage` is unavailable on the
+  // server and can throw in a private window.
+  const [dismissedJobId, setDismissedJobId] = useState<string | null>(null)
+  const idempotencyKeyRef = useRef<string | null>(null)
+  const notifiedTerminalRef = useRef<string | null>(null)
 
-  useEffect(() => {
-    cancelled.current = false
-    return () => {
-      cancelled.current = true
-    }
-  }, [])
+  const modelId = model?.id ?? null
 
-  const reset = useCallback(() => {
-    setPhase('idle')
-    setMetrics(null)
-    setMode(null)
-  }, [])
-
-  const run = useCallback(
-    async (m: Mode, config?: RetrainConfig) => {
-      if (isRetraining || !model) return
-      setIsRetraining(true)
-      setMode(m)
-      setMetrics(null)
-      setPhase('training')
-      const wait = () => new Promise(resolve => setTimeout(resolve, STEP_MS))
+  const fetchLogs = useCallback(
+    async (mId: string, runId: string) => {
       try {
-        // MODEL-SERVE-006-T12. deployStatus is derived now, not caller-set —
-        // this mock retrain flow's progress used to fake it through three
-        // states; the model's REAL deployStatus (from InferenceWindow/
-        // InferenceSchedule) is unrelated to this simulation's own phase
-        // state, which is already tracked separately above (`setPhase`).
-        // Split the simulated log stream across Training / Validating phases.
-        const logs = buildRetrainLogs(m, config)
-        const valIdx = logs.findIndex(l => /validat/i.test(l))
-        const splitAt = valIdx >= 0 ? valIdx : Math.ceil(logs.length / 2)
-
-        // Phase 1 — Training
-        for (const line of logs.slice(0, splitAt)) {
-          if (cancelled.current) return
-          await appendModelLog(model.id, { level: 'info', message: line })
-          await wait()
-        }
-
-        // Phase 2 — Validating
-        if (cancelled.current) return
-        setPhase('validating')
-        for (const line of logs.slice(splitAt)) {
-          if (cancelled.current) return
-          await appendModelLog(model.id, { level: 'info', message: line })
-          await wait()
-        }
-
-        // Phase 3 — Evaluating (compute metrics, deploy)
-        if (cancelled.current) return
-        setPhase('evaluating')
-        await wait()
-        const evalMetrics = buildMockMetrics(model.id, config)
-        await appendModelLog(model.id, {
-          level: 'info',
-          message: `Eval — RMSE ${evalMetrics.rmse}, R² ${evalMetrics.r2}, MAE ${evalMetrics.mae}`,
-        })
-        await appendModelLog(model.id, {
-          level: 'info',
-          message: 'Retrain complete — model deployed',
-        })
-        if (cancelled.current) return
-        setMetrics(evalMetrics)
-        setPhase('done')
-        toast.success(`${model.name} retrained`)
-        onUpdated?.()
+        const run = await modelRunLogsService.get(mId, runId)
+        setLogs(run.logs)
       } catch {
-        if (!cancelled.current) setPhase('error')
-        if (!cancelled.current) toast.error('Retrain failed')
-        onUpdated?.()
-      } finally {
-        if (!cancelled.current) {
-          setIsRetraining(false)
-          setMode(null)
-        }
+        // Soft-fail — the stage boxes and status still come from `job`
+        // itself; a log-read hiccup must not blank the whole panel.
       }
     },
-    [isRetraining, onUpdated, model],
+    [],
   )
 
-  const autoFinetune = useCallback(() => void run('auto'), [run])
-  const customFinetune = useCallback(
-    (config: RetrainConfig) => void run('custom', config),
-    [run],
+  // Initial load + reload on model change: restores whatever the server
+  // already knows, so this survives a refresh or a second tab.
+  useEffect(() => {
+    idempotencyKeyRef.current = null
+    notifiedTerminalRef.current = null
+    if (!modelId) {
+      setIncumbent(null)
+      setJob(null)
+      setLogs([])
+      setLoading(false)
+      setError(null)
+      return
+    }
+
+    let ignore = false
+    setLoading(true)
+    setDismissedJobId(readDismissedJobId(modelId))
+    void (async () => {
+      try {
+        const res = await modelRetrainService.current(modelId)
+        if (ignore) return
+        setIncumbent(res.data.incumbent)
+        setJob(res.data.job)
+        setError(null)
+        if (res.data.job?.currentRunId) {
+          void fetchLogs(modelId, res.data.job.currentRunId)
+        } else {
+          setLogs([])
+        }
+      } catch (err) {
+        if (ignore) return
+        setError(
+          err instanceof Error ? err.message : 'Failed to load retrain state',
+        )
+      } finally {
+        if (!ignore) setLoading(false)
+      }
+    })()
+
+    return () => {
+      ignore = true
+    }
+  }, [modelId, fetchLogs, reloadKey])
+
+  // Poll while a job is live — stops the moment the job reaches a terminal
+  // state, exactly like `use-model-training.ts`'s `pollRun`.
+  const jobId = job?.id ?? null
+  const jobLive = !!job && LIVE_STATUSES.has(job.status)
+  useEffect(() => {
+    if (!modelId || !jobId || !jobLive) return
+    const tick = async () => {
+      try {
+        const res = await modelRetrainService.get(modelId, jobId)
+        setJob(res.data)
+        setError(null)
+        if (res.data.currentRunId) void fetchLogs(modelId, res.data.currentRunId)
+        if (!LIVE_STATUSES.has(res.data.status)) {
+          if (notifiedTerminalRef.current !== res.data.id) {
+            notifiedTerminalRef.current = res.data.id
+            if (res.data.status === 'SUCCEEDED') {
+              toast.success(`${model?.name ?? 'Model'} retrain complete`)
+            } else if (res.data.status === 'FAILED') {
+              toast.error(
+                res.data.failureReason
+                  ? `Retrain failed — ${res.data.failureReason}`
+                  : 'Retrain failed',
+              )
+            }
+          }
+          onUpdated?.()
+        }
+      } catch {
+        // Transient poll miss — next tick retries; `job` keeps its last
+        // known state rather than flashing an error over one dropped poll.
+      }
+    }
+    const id = setInterval(() => void tick(), POLL_MS)
+    return () => clearInterval(id)
+  }, [modelId, jobId, jobLive, fetchLogs, model?.name, onUpdated])
+
+  const start = useCallback(
+    async (candidates?: CandidateInput[]) => {
+      if (!modelId || jobLive) return
+      if (!idempotencyKeyRef.current) {
+        idempotencyKeyRef.current = newIdempotencyKey()
+      }
+      setError(null)
+      try {
+        const res = await modelRetrainService.trigger(modelId, {
+          idempotencyKey: idempotencyKeyRef.current,
+          candidates,
+        })
+        // A fresh trigger (201) and an idempotent replay (200) return the
+        // same job envelope — both handled identically.
+        idempotencyKeyRef.current = null
+        notifiedTerminalRef.current = null
+        clearDismissedJobId(modelId)
+        setDismissedJobId(null)
+        setJob(res.data)
+        if (res.data.currentRunId) void fetchLogs(modelId, res.data.currentRunId)
+      } catch (err) {
+        // A 409 means another retrain is already live for this model — the
+        // real in-flight job is recovered from `current()`, never parsed
+        // out of the error's prose message.
+        if (err instanceof ApiError && err.status === 409) {
+          try {
+            const res = await modelRetrainService.current(modelId)
+            setJob(res.data.job)
+            if (res.data.job?.currentRunId) {
+              void fetchLogs(modelId, res.data.job.currentRunId)
+            }
+          } catch {
+            // Best-effort recovery — the error message below still surfaces.
+          }
+        }
+        const message =
+          err instanceof Error ? err.message : 'Failed to start retrain'
+        setError(message)
+        toast.error(message)
+      }
+    },
+    [modelId, jobLive, fetchLogs],
   )
+
+  const clearError = useCallback(() => setError(null), [])
+  const refresh = useCallback(() => setReloadKey(k => k + 1), [])
+  const dismiss = useCallback(() => {
+    if (!modelId || !job) return
+    writeDismissedJobId(modelId, job.id)
+    setDismissedJobId(job.id)
+  }, [modelId, job])
 
   return {
-    isRetraining,
-    mode,
-    phase,
-    metrics,
-    autoFinetune,
-    customFinetune,
-    reset,
+    incumbent,
+    job,
+    comparison: job?.comparison ?? null,
+    phase: retrainPhase(job),
+    logs,
+    isRetraining: jobLive,
+    loading,
+    error,
+    start,
+    clearError,
+    refresh,
+    // Scoped to the CURRENT job — a later retrain is a different id and
+    // renders without the viewer having to re-open anything.
+    dismissed: job !== null && dismissedJobId === job.id,
+    dismiss,
   }
 }

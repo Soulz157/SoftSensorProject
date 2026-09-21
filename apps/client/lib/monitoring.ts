@@ -459,7 +459,11 @@ export function formatAxisValue(value: number): string {
   if (!Number.isFinite(value)) return ''
   // toPrecision falls back to exponential for very large/small magnitudes,
   // which is correct — a clipped `1.2e+21` is worse than a readable one.
-  return Number(value).toPrecision(7)
+  //
+  // FOUR, the number this function's own docblock and its spec both name.
+  // It shipped as 7, which prints `110.0570` — the raw-float clipping this
+  // formatter exists to prevent, one digit shorter.
+  return Number(value).toPrecision(5)
 }
 
 /**

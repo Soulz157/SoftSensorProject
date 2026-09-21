@@ -20,11 +20,31 @@ interface ApiResponse<T> {
  * mpRetrainWarnSdAtom/mpRetrainCriticalSdAtom/mpDriftMonitorAtom/
  * mpDriftThresholdPctAtom) — this is the ONE place they now persist.
  */
+/**
+ * MODEL-SERVE-013-T03. One data source as the schedule surface sees it.
+ * Resolved SERVER-SIDE: `DataSource` rows are owned per user, so a name
+ * looked up in the browser reads "unknown" for any source a teammate
+ * created. `name`/`type` are null only when `status` is 'missing' — the
+ * bound id no longer has a row.
+ */
+export interface ScheduleSourceRef {
+  id: string
+  name: string | null
+  type: string | null
+  status: string
+}
+
 export interface InferenceSchedule {
   enabled: boolean
   cadenceMinutes: number | null
   lagMinutes: number | null
   sourceId: string | null
+  /** Null when the model was never deployed — `sourceId` is required on the
+   *  row, so no row means no binding has ever existed. */
+  currentSource: ScheduleSourceRef | null
+  /** The pinned PRODUCTION version's dataset's sources, in the dataset's own
+   *  order. Empty when nothing is in production. */
+  sourceCandidates: ScheduleSourceRef[]
   autoRetrain: boolean
   warnSd: number
   criticalSd: number

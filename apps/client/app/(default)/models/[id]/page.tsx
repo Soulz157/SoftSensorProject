@@ -64,6 +64,7 @@ import { monitoringStatusFromHealth } from '@/lib/model-status'
 // renders a reason next).
 import { HEALTH_REASON_LABEL } from '@/lib/health-status-style'
 import { ALGORITHM_LABELS } from '@/store/model-pipeline'
+import { formatMetricValue } from '@/lib/model-evaluation'
 import { DRIFT_STATUS_CLASS } from '@/lib/drift-status-style'
 import type { AIModel } from '@/types'
 import { ModelEvaluation } from '../evaluation/components/model-evaluation'
@@ -174,6 +175,11 @@ export default function ModelDetailPage({
     setOverrideReason('')
     refresh()
     refreshModels()
+    // MODEL-SERVE-014. The retrain result card reads the job's own
+    // comparison, where the promoted version is still STAGING until re-read
+    // — without this it would keep offering "Apply to Production" for a
+    // version that is already live.
+    retrain.refresh()
   })
   const canPromote = !!versionSchema && versionSchema.stage !== 'PRODUCTION'
 
@@ -457,6 +463,33 @@ export default function ModelDetailPage({
                   )}
                 </p>
               )}
+              {/* The SERVING version's own recorded numbers, stated beside
+                  the algorithm — "what is live, and how good is it" answered
+                  in one place. RMSE leads because it is the metric the whole
+                  system selects on (a real run here once scored
+                  r2 = -1,110,858 while RMSE stayed sane, MODEL-FLOW-004);
+                  R² sits beside it and never ranks anything. A figure the
+                  version never recorded reads "not recorded", never 0. */}
+              {versionSchema && (
+                <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+                  <span className="inline-flex items-center gap-1">
+                    <Activity className="h-3 w-3 shrink-0" />
+                    <span>v{versionSchema.version}</span>
+                  </span>
+                  <span>
+                    RMSE{' '}
+                    <span className="font-medium tabular-nums text-foreground/80">
+                      {formatMetricValue(versionSchema.metrics.rmse)}
+                    </span>
+                  </span>
+                  <span>
+                    R²{' '}
+                    <span className="font-medium tabular-nums text-foreground/80">
+                      {formatMetricValue(versionSchema.metrics.r2)}
+                    </span>
+                  </span>
+                </p>
+              )}
               {model.data?.lastEditedBy && (
                 <p className="mt-0.5 text-xs text-muted-foreground/70">
                   Last edited by {model.data.lastEditedBy}
@@ -608,7 +641,18 @@ export default function ModelDetailPage({
         )}
 
         {/* Retrain progress (stage boxes + eval metrics) */}
-        <RetrainProgress phase={retrain.phase} metrics={retrain.metrics} />
+        <RetrainProgress
+          job={retrain.dismissed ? null : retrain.job}
+          phase={retrain.dismissed ? 'idle' : retrain.phase}
+          logs={retrain.logs}
+          onDismiss={retrain.dismiss}
+          applying={promote.busy}
+          onApplyToProduction={version => {
+            // The SAME promote flow the header's own Promote button uses —
+            // including its 422 override dialog, already mounted below.
+            void promote.promote(model.id, version)
+          }}
+        />
 
         {/* Stat cards */}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -758,7 +802,6 @@ export default function ModelDetailPage({
                 <span>Input Data</span>
               </TabsTrigger>
 
-
               <TabsTrigger
                 value="monitoring"
                 className="flex items-center gap-2 px-4"
@@ -787,18 +830,18 @@ export default function ModelDetailPage({
                     window's lines just to label a tab — the unbounded read
                     this task exists to avoid. */}
               </TabsTrigger>
-                    <TabsTrigger
-                      value="history"
-                      className="flex items-center gap-2 px-4"
-                    >
-                      <History className="h-4 w-4 shrink-0" />
-                      <span>Edit History</span>
-                      {editHistory.length > 0 && (
-                        <span className="ml-1 flex h-4 items-center justify-center rounded-full bg-muted-foreground/20 px-2 text-[10px] font-semibold tabular-nums text-foreground">
-                          {editHistory.length}
-                        </span>
-                      )}
-                    </TabsTrigger>
+              <TabsTrigger
+                value="history"
+                className="flex items-center gap-2 px-4"
+              >
+                <History className="h-4 w-4 shrink-0" />
+                <span>Edit History</span>
+                {editHistory.length > 0 && (
+                  <span className="ml-1 flex h-4 items-center justify-center rounded-full bg-muted-foreground/20 px-2 text-[10px] font-semibold tabular-nums text-foreground">
+                    {editHistory.length}
+                  </span>
+                )}
+              </TabsTrigger>
             </TabsList>
           </div>
 
@@ -889,15 +932,12 @@ export default function ModelDetailPage({
         open={retrainOpen}
         onClose={() => setRetrainOpen(false)}
         model={model}
+        incumbent={retrain.incumbent}
+        loading={retrain.loading}
         isRetraining={retrain.isRetraining}
-        mode={retrain.mode}
-        onAuto={() => {
-          retrain.autoFinetune()
-          setRetrainOpen(false)
-        }}
-        onCustom={config => {
-          retrain.customFinetune(config)
-          setRetrainOpen(false)
+        error={retrain.error}
+        onStart={candidates => {
+          void retrain.start(candidates)
         }}
       />
       <AlertDialog

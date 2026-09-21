@@ -1,12 +1,5 @@
 import { fetchClient } from '@/lib/fetcher'
 
-interface ApiResponse<T> {
-  data: T
-  statusCode: number
-  message: string
-  type: string
-}
-
 export interface TuningGridResponse {
   algorithm: string
   variants: Array<Record<string, string | number | boolean | null>>
@@ -20,7 +13,23 @@ export interface TuningGridResponse {
  * client-side (`use-model-training.ts`'s own no-duplication rule for it).
  */
 export const tuningGridService = {
-  get: (algorithm: string): Promise<ApiResponse<TuningGridResponse>> =>
+  /**
+   * CORRECTED (MODEL-SERVE-014). This was typed `ApiResponse<
+   * TuningGridResponse>` and both callers read `res.data` — but
+   * `TuningGridAuthorizedController.get` returns the DTO directly, with no
+   * `{statusCode, message, data}` envelope (its declared return type is
+   * `TuningGridResponse`, and Nest wraps nothing on its own). So `res.data`
+   * was always `undefined`, and reading `.variants` off it threw. The
+   * Custom Finetune form surfaced that as "Could not load hyperparameter
+   * variants for this algorithm" for an algorithm whose grid exists.
+   *
+   * Typed against what the endpoint ACTUALLY returns rather than "fixed"
+   * by wrapping the backend: nothing else calls this route, and changing a
+   * live response shape is the larger change. The same unwrapped-outlier
+   * note is on `modelRunLogsService` (services/model-retrain.ts) for
+   * `GET /authorized/model/:modelId/runs/:runId`.
+   */
+  get: (algorithm: string): Promise<TuningGridResponse> =>
     fetchClient(
       `/api/v1/authorized/training/tuning-grid/${encodeURIComponent(algorithm)}`,
       { method: 'GET' },

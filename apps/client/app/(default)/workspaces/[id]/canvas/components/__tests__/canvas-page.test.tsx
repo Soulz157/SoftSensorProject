@@ -1,6 +1,6 @@
 import { Suspense, type ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import type { CanvasData } from '@/hooks/canvas/use-canvas'
 
 const { mockCanvasNode } = vi.hoisted(() => {
@@ -53,9 +53,12 @@ vi.mock('@/hooks/workspace/use-workspace-by', () => ({
   useWorkspace: () => ({ workspace: { name: 'Acme Refinery' } }),
 }))
 
-vi.mock('@/hooks/workspace/use-workspace-plans', () => ({
-  useWorkspacePlans: () => ({
-    plans: [{ id: 'plant1', name: 'Plant Alpha' }],
+// The page reads `use-workspace-plantS`; this mock named the older
+// `use-workspace-plans`, so the REAL hook ran and its fetch left the route
+// suspended on its fallback forever.
+vi.mock('@/hooks/workspace/use-workspace-plants', () => ({
+  useWorkspacePlants: () => ({
+    plants: [{ id: 'plant1', name: 'Plant Alpha' }],
   }),
 }))
 
@@ -130,11 +133,16 @@ import CanvasPage from '../../page'
 
 describe('CanvasPage', () => {
   it('opens the matching node detail panel from nodeId search param', async () => {
-    render(
-      <Suspense fallback={<div>Loading route</div>}>
-        <CanvasPage params={Promise.resolve({ id: 'ws1' })} />
-      </Suspense>,
-    )
+    // `await act` because the page suspends on `use(params)`: React 19 needs
+    // the resume flushed inside act, and without it the tree stays parked on
+    // the Suspense fallback for the whole assertion window.
+    await act(async () => {
+      render(
+        <Suspense fallback={<div>Loading route</div>}>
+          <CanvasPage params={Promise.resolve({ id: 'ws1' })} />
+        </Suspense>,
+      )
+    })
 
     expect(await screen.findByText('Selected CNC-001')).toBeInTheDocument()
   })

@@ -1,6 +1,6 @@
 'use client'
 
-import { use, useState, useCallback, useMemo } from 'react'
+import { use, useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import {
   ReactFlow,
   Background,
@@ -11,6 +11,7 @@ import {
   type Node,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
+import { useSearchParams } from 'next/navigation'
 import { cn } from '@/lib/utils'
 
 import { useCanvas } from '@/hooks/canvas/use-canvas'
@@ -81,6 +82,32 @@ export default function CanvasPage({
   )
 
   const onPaneClick = useCallback(() => setSelectedNode(null), [])
+
+  /**
+   * DEEP LINK: `?nodeId=…` opens that node's detail panel.
+   *
+   * Three live surfaces still send people here with that parameter —
+   * `plants/[id]/page.tsx` (the map, and its selected-node card) and
+   * `plants/[id]/components/node-detail-panel.tsx` — so the link existed
+   * with nothing reading it: every one of them landed on a bare canvas,
+   * no panel, and the node the reader asked for unremarked.
+   *
+   * APPLIED ONCE, via the latch. The parameter is an ARRIVAL intent, not a
+   * binding: re-applying it would re-open the panel every time the user
+   * closed it or clicked the pane, leaving the URL as state they cannot
+   * dismiss. Matched against the editor's own `nodes`, so it waits for the
+   * canvas to have loaded instead of missing against an empty list.
+   */
+  const deepLinkedNodeId = useSearchParams().get('nodeId')
+  const deepLinkApplied = useRef(false)
+  useEffect(() => {
+    if (deepLinkApplied.current || !deepLinkedNodeId || nodes.length === 0)
+      return
+    const match = nodes.find(n => n.id === deepLinkedNodeId)
+    if (!match) return
+    deepLinkApplied.current = true
+    setSelectedNode(match as CanvasRFNode)
+  }, [deepLinkedNodeId, nodes])
 
   return (
     <div className="flex w-full h-full overflow-hidden bg-background relative">

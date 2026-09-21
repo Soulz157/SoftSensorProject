@@ -23,6 +23,7 @@ const PRODUCTION_VERSION = {
   id: 'version-prod',
   version: 2,
   stage: 'PRODUCTION',
+  metrics: { rmse: 0.4211, r2: 0.9312, mae: 0.301 } as unknown,
   goldObjectKey: 'ds-1/artifacts/gold-2/data_gold.parquet',
   sourceRun: {
     targetY: 'TI-900.PV',
@@ -34,6 +35,7 @@ const STAGING_VERSION = {
   id: 'version-staging',
   version: 1,
   stage: 'STAGING',
+  metrics: null as unknown,
   goldObjectKey: 'ds-1/artifacts/gold-1/data_gold.parquet',
   sourceRun: {
     targetY: 'TI-900.PV',
@@ -113,6 +115,45 @@ describe('ModelInputSchemaAuthorizedService.getInputSchemaService', () => {
 
     expect(result.data.versionId).toBe('version-prod');
     expect(result.data.stage).toBe('PRODUCTION');
+  });
+
+  it("publishes the serving version's own recorded metrics", async () => {
+    const prisma = buildPrisma({ productionVersion: PRODUCTION_VERSION });
+    const service = buildService(prisma);
+
+    const result = await service.getInputSchemaService('model-1', EDITOR_USER);
+
+    expect(result.data.metrics).toEqual({
+      rmse: 0.4211,
+      r2: 0.9312,
+      mae: 0.301,
+    });
+  });
+
+  it('reports nulls for a version that recorded no metrics — never a false 0', async () => {
+    const prisma = buildPrisma({
+      productionVersion: null,
+      latestVersion: STAGING_VERSION,
+    });
+    const service = buildService(prisma);
+
+    const result = await service.getInputSchemaService('model-1', EDITOR_USER);
+
+    expect(result.data.metrics).toEqual({ rmse: null, r2: null, mae: null });
+  });
+
+  it('refuses a non-finite recorded metric rather than publishing NaN', async () => {
+    const prisma = buildPrisma({
+      productionVersion: {
+        ...PRODUCTION_VERSION,
+        metrics: { rmse: Number.NaN, r2: 'high', mae: 0.2 } as unknown,
+      },
+    });
+    const service = buildService(prisma);
+
+    const result = await service.getInputSchemaService('model-1', EDITOR_USER);
+
+    expect(result.data.metrics).toEqual({ rmse: null, r2: null, mae: 0.2 });
   });
 
   it('falls back to the latest version when there is no PRODUCTION version', async () => {

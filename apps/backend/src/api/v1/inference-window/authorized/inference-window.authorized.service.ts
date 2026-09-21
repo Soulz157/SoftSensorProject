@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { PrismaService } from '@softsensor/prisma';
+import { PrismaService, PrismaTypes } from '@softsensor/prisma';
 import { AppException } from '@softsensor/common';
 import { mintRunToken } from '@/lib/mint-run-token';
 import {
@@ -40,6 +40,26 @@ import type {
   InferenceWindowUploadUrlsDto,
   PutInferenceScheduleDto,
 } from './dto/inference-window.authorized.dto';
+
+/**
+ * MODEL-SERVE-013-T01. One data source, as a SETTINGS surface may see it.
+ * `name`/`type` are null only for the `missing` status — an id whose
+ * `DataSource` row is gone. `host`, `username` and the secret ciphertext are
+ * deliberately absent: see `resolveScheduleSources`.
+ *
+ * EXPORTED because it reaches `getScheduleController`'s inferred return
+ * type — a non-exported interface there fails the build's declaration emit
+ * with TS4053, which is a BUILD failure, not merely a lint rule (the same
+ * reason `model-retrain.authorized.service.ts`'s own `MetricTriple` is
+ * exported). Left unexported, `nest build` fails and `nest start --watch`
+ * silently keeps serving the last good dist.
+ */
+export interface ScheduleSourceRef {
+  id: string;
+  name: string | null;
+  type: string | null;
+  status: string;
+}
 
 const METRICS_FILENAME = 'metrics.json';
 const PREDICTIONS_FILENAME = 'predictions.parquet';
@@ -169,11 +189,92 @@ export class InferenceWindowAuthorizedService {
 
   // ── schedule ─────────────────────────────────────────────────────────────
 
+  /**
+   * MODEL-SERVE-013-T01. The data sources this model may be bound to, BY
+   * NAME, resolved server-side.
+   *
+   * SERVER-SIDE ON PURPOSE. `DataSource` is owned per USER (`createdById`)
+   * and the client's own list endpoint filters on exactly that — so an
+   * id -> name join done in the browser renders "unknown" for every source
+   * a teammate created. The caller has already passed `assertModelAccess`,
+   * so this reads the rows by id WITHOUT the ownership filter, and returns
+   * only `name`/`type`/`status`: `host`, `username` and the ciphertext are
+   * connection material for a row the viewer may not own and never leave
+   * here.
+   *
+   * CANDIDATES COME FROM THE PINNED VERSION'S DATASET, never
+   * `Model.datasetId` — the same D8 rule `putScheduleService` documents on
+   * itself and validates the write against, or this surface would offer a
+   * choice the write would then refuse.
+   *
+   * NEVER THROWS. It is a read on a settings surface: a model with no
+   * PRODUCTION version, or whose dataset is gone, simply has no candidates
+   * — a state to RENDER, not an error to raise.
+   */
+  private async resolveScheduleSources(
+    modelId: string,
+    currentSourceId: string | null,
+  ): Promise<{
+    currentSource: ScheduleSourceRef | null;
+    sourceCandidates: ScheduleSourceRef[];
+  }> {
+    const version = await this.prisma.modelVersion.findFirst({
+      where: { modelId, stage: 'PRODUCTION' },
+      select: { sourceDatasetId: true },
+    });
+    const dataset = version
+      ? await this.prisma.dataset.findUnique({
+          where: { id: version.sourceDatasetId },
+          select: { sourceIds: true },
+        })
+      : null;
+
+    const candidateIds = dataset?.sourceIds ?? [];
+    const ids = Array.from(
+      new Set(
+        currentSourceId ? [...candidateIds, currentSourceId] : candidateIds,
+      ),
+    );
+    const rows = ids.length
+      ? await this.prisma.dataSource.findMany({
+          where: { id: { in: ids } },
+          select: { id: true, name: true, type: true, status: true },
+        })
+      : [];
+    const byId = new Map(rows.map((r) => [r.id, r]));
+
+    // Ordered by the dataset's own `sourceIds` so the picker lists them the
+    // way the dataset records them, not the way the database returned them.
+    const sourceCandidates: ScheduleSourceRef[] = candidateIds
+      .map((id) => byId.get(id))
+      .filter((r): r is NonNullable<typeof r> => !!r)
+      .map((r) => ({ id: r.id, name: r.name, type: r.type, status: r.status }));
+
+    let currentSource: ScheduleSourceRef | null = null;
+    if (currentSourceId) {
+      const row = byId.get(currentSourceId);
+      currentSource = row
+        ? { id: row.id, name: row.name, type: row.type, status: row.status }
+        : // The bound row is GONE. Reported as its own status rather than as
+          // null: "this model fetches from something that no longer exists"
+          // is a fault an operator repairs by relinking, and collapsing it
+          // into "no source" would hide it.
+          { id: currentSourceId, name: null, type: null, status: 'missing' };
+    }
+
+    return { currentSource, sourceCandidates };
+  }
+
   async getScheduleService(modelId: string, user: Auth.UserPayload) {
     await this.assertModelAccess(modelId, user);
     const schedule = await this.prisma.inferenceSchedule.findUnique({
       where: { modelId },
     });
+    // On BOTH branches below, so the response shape never depends on whether
+    // a schedule row exists — a client that had to test for the key's
+    // presence would be reading "never deployed" from the wrong signal.
+    const { currentSource, sourceCandidates } =
+      await this.resolveScheduleSources(modelId, schedule?.sourceId ?? null);
     return {
       statusCode: 200,
       message: 'Schedule',
@@ -184,6 +285,8 @@ export class InferenceWindowAuthorizedService {
             cadenceMinutes: schedule.cadenceMinutes,
             lagMinutes: schedule.lagMinutes,
             sourceId: schedule.sourceId,
+            currentSource,
+            sourceCandidates,
             autoRetrain: schedule.autoRetrain,
             warnSd: schedule.warnSd,
             criticalSd: schedule.criticalSd,
@@ -203,6 +306,15 @@ export class InferenceWindowAuthorizedService {
             cadenceMinutes: null,
             lagMinutes: null,
             sourceId: null,
+            // MODEL-SERVE-013-T01. `currentSource` is null here BY
+            // CONSTRUCTION: `InferenceSchedule.sourceId` is required with no
+            // default, so a model with no row has never been bound to a
+            // source at all. `sourceCandidates` can still be non-empty — the
+            // model may have a PRODUCTION version whose dataset names
+            // sources — and the client renders those read-only rather than
+            // offering a relink there is nothing to relink.
+            currentSource,
+            sourceCandidates,
             // MODEL-SERVE-006-T09. Defaults mirror the wizard atoms' own
             // defaults (store/model-pipeline.ts) exactly, so a model with
             // no schedule row yet shows the SAME starting values the
@@ -225,6 +337,112 @@ export class InferenceWindowAuthorizedService {
   }
 
   /**
+   * MODEL-SERVE-013-T02. The dataset a relink must validate against — the
+   * PRODUCTION version's own `sourceDatasetId`, the same one the enable
+   * path resolves and for the same D8 reason. 422, not a silent skip: a
+   * model with nothing in production has no binding to change, and saying
+   * so is better than accepting a write that would go nowhere.
+   */
+  private async pinnedSourceDatasetId(modelId: string): Promise<string> {
+    const version = await this.prisma.modelVersion.findFirst({
+      where: { modelId, stage: 'PRODUCTION' },
+      select: { sourceDatasetId: true },
+    });
+    if (!version) {
+      throw new AppException({
+        statusCode: 422,
+        message: `Model ${modelId} has no PRODUCTION version. Cannot change its data source.`,
+        type: 'ERROR',
+      });
+    }
+    return version.sourceDatasetId;
+  }
+
+  /**
+   * MODEL-SERVE-013-T02. D8's resolution, lifted out of the enable path so
+   * the DISABLE path can reuse it verbatim: dataset -> sourceId -> that
+   * source's recorded fetch config. Every refusal below is the one the
+   * enable path already raised, with its status code and wording unchanged
+   * — `models/[id]/page.tsx` prints these strings to the operator.
+   *
+   * `allowSingleSourceFallback` IS THE WHOLE REASON THIS TAKES AN OPTION.
+   * On enable, a request that names no source and whose dataset has exactly
+   * one is resolved to that one — the wizard has always relied on it. On a
+   * RELINK of a stopped schedule that same fallback would be wrong twice
+   * over: a request with no `sourceId` is not asking to change anything,
+   * and silently binding "the only source" would turn every plain stop into
+   * a write. The disable path therefore calls this ONLY when a `sourceId`
+   * was actually sent, and with the fallback off.
+   */
+  private async resolveSourceBinding(
+    sourceDatasetId: string,
+    requestedSourceId: string | undefined,
+    opts: { allowSingleSourceFallback: boolean },
+  ): Promise<{
+    sourceId: string;
+    // The Prisma WRITE type, not a bare record: this value goes straight
+    // into `InferenceSchedule.fetchConfig` on both the enable and the
+    // relink path, and `Record<string, unknown>` is not assignable to a
+    // Json column input.
+    fetchConfig: PrismaTypes.InputJsonObject;
+    rawFetchConfigRecord: Record<string, unknown>;
+  }> {
+    const dataset = await this.prisma.dataset.findUnique({
+      where: { id: sourceDatasetId },
+      select: { sourceIds: true, pipelineConfig: true },
+    });
+    if (!dataset) {
+      throw new AppException({
+        statusCode: 404,
+        message: `Source dataset ${sourceDatasetId} not found.`,
+        type: 'ERROR',
+      });
+    }
+
+    // D8: resolved off the PINNED version's own source dataset, never
+    // Model.datasetId — live-verified those two can differ.
+    let sourceId = requestedSourceId;
+    if (!sourceId) {
+      if (!opts.allowSingleSourceFallback || dataset.sourceIds.length !== 1) {
+        throw new AppException({
+          statusCode: 422,
+          message: `This dataset has ${dataset.sourceIds.length} source(s) — sourceId is required.`,
+          type: 'ERROR',
+        });
+      }
+      sourceId = dataset.sourceIds[0];
+    } else if (!dataset.sourceIds.includes(sourceId)) {
+      throw new AppException({
+        statusCode: 422,
+        message: `sourceId ${sourceId} is not one of this dataset's sources.`,
+        type: 'ERROR',
+      });
+    }
+
+    const pipelineConfig = this.asRecord(dataset.pipelineConfig);
+    const sourceFetchConfigs = this.asRecord(pipelineConfig.sourceFetchConfigs);
+    const rawFetchConfig = sourceFetchConfigs[sourceId];
+    if (!rawFetchConfig) {
+      throw new AppException({
+        statusCode: 422,
+        message: `No fetch config recorded for source ${sourceId} on this dataset.`,
+        type: 'ERROR',
+      });
+    }
+    const rawFetchConfigRecord = this.asRecord(rawFetchConfig);
+    return {
+      sourceId,
+      rawFetchConfigRecord,
+      fetchConfig: {
+        ...rawFetchConfigRecord,
+        baseTags: Array.isArray(pipelineConfig.baseTags)
+          ? pipelineConfig.baseTags
+          : [],
+      },
+    };
+  }
+
+  /**
    * MODEL-SERVE-006-T09 (partial). D5: a schedule whose model needs the
    * target to build its own features cannot be scheduled at all — refused
    * HERE, at enable time, rather than per window, or a demoted model would
@@ -240,6 +458,54 @@ export class InferenceWindowAuthorizedService {
     await this.assertModelAccess(modelId, user);
 
     if (!dto.enabled) {
+      /**
+       * MODEL-SERVE-013-T02. A RELINK of a stopped schedule. Until this
+       * task a `sourceId` arriving with `enabled: false` was silently
+       * dropped by the early return below, so the only way to change a
+       * model's data source was to start it — which is exactly what an
+       * operator repointing a stopped model does not want to do.
+       *
+       * ONLY when a `sourceId` was actually sent, and with the
+       * single-source fallback OFF: a plain stop must keep writing nothing
+       * but `enabled: false`.
+       *
+       * NO PREFLIGHT, and no `preflightAt/Ok/Reason` write. T25's rule is
+       * that those three record a probe that actually ran; a relink of a
+       * stopped schedule probes nothing, and carrying the previous
+       * enable's verdict forward — or clearing it — would both be claims
+       * this call cannot make. The next Start probes, as it always did.
+       */
+      const existing =
+        dto.sourceId !== undefined
+          ? await this.prisma.inferenceSchedule.findUnique({
+              where: { modelId },
+              select: { cadenceMinutes: true },
+            })
+          : null;
+      // `updateMany` below is a no-op without a row, so resolving a binding
+      // for a model that was never deployed would refuse a request that
+      // could not have written anything anyway.
+      const relink =
+        dto.sourceId !== undefined && existing
+          ? await this.resolveSourceBinding(
+              await this.pinnedSourceDatasetId(modelId),
+              dto.sourceId,
+              { allowSingleSourceFallback: false },
+            )
+          : null;
+      // T14: `minRows` is DERIVED from the fetch config's own
+      // `intervalTime`, so a new fetchConfig must bring a freshly derived
+      // floor with it. Leaving the old number beside a new source is
+      // precisely the stale-derived state that rule exists to prevent.
+      const relinkMinRows = relink
+        ? (deriveMinRows(
+            existing!.cadenceMinutes,
+            typeof relink.rawFetchConfigRecord.intervalTime === 'string'
+              ? relink.rawFetchConfigRecord.intervalTime
+              : undefined,
+          ) ?? env.INFERENCE_MIN_ROWS)
+        : null;
+
       // MODEL-SERVE-001-T20. Disabling only stopped FUTURE dispatch (T19's
       // own fix scopes dispatchDue's claim to enabled schedules) — it left
       // whatever was already PENDING sitting there forever, permanently
@@ -252,7 +518,14 @@ export class InferenceWindowAuthorizedService {
       const [, canceled] = await this.prisma.$transaction([
         this.prisma.inferenceSchedule.updateMany({
           where: { modelId },
-          data: { enabled: false },
+          data: {
+            enabled: false,
+            ...(relink && {
+              sourceId: relink.sourceId,
+              fetchConfig: relink.fetchConfig,
+              minRows: relinkMinRows!,
+            }),
+          },
         }),
         this.prisma.inferenceWindow.updateMany({
           where: { modelId, status: 'PENDING' },
@@ -267,7 +540,9 @@ export class InferenceWindowAuthorizedService {
       ]);
       return {
         statusCode: 200,
-        message: `Schedule disabled (${canceled.count} queued window(s) canceled)`,
+        message: `Schedule disabled (${canceled.count} queued window(s) canceled)${
+          relink ? `; data source set to ${relink.sourceId}` : ''
+        }`,
         type: 'SUCCESS' as const,
       };
     }
@@ -314,55 +589,14 @@ export class InferenceWindowAuthorizedService {
       });
     }
 
-    const dataset = await this.prisma.dataset.findUnique({
-      where: { id: version.sourceDatasetId },
-      select: { sourceIds: true, pipelineConfig: true },
-    });
-    if (!dataset) {
-      throw new AppException({
-        statusCode: 404,
-        message: `Source dataset ${version.sourceDatasetId} not found.`,
-        type: 'ERROR',
-      });
-    }
-
-    // D8: resolved off the PINNED version's own source dataset, never
-    // Model.datasetId — live-verified those two can differ.
-    let sourceId = dto.sourceId;
-    if (!sourceId) {
-      if (dataset.sourceIds.length !== 1) {
-        throw new AppException({
-          statusCode: 422,
-          message: `This dataset has ${dataset.sourceIds.length} source(s) — sourceId is required.`,
-          type: 'ERROR',
-        });
-      }
-      sourceId = dataset.sourceIds[0];
-    } else if (!dataset.sourceIds.includes(sourceId)) {
-      throw new AppException({
-        statusCode: 422,
-        message: `sourceId ${sourceId} is not one of this dataset's sources.`,
-        type: 'ERROR',
-      });
-    }
-
-    const pipelineConfig = this.asRecord(dataset.pipelineConfig);
-    const sourceFetchConfigs = this.asRecord(pipelineConfig.sourceFetchConfigs);
-    const rawFetchConfig = sourceFetchConfigs[sourceId];
-    if (!rawFetchConfig) {
-      throw new AppException({
-        statusCode: 422,
-        message: `No fetch config recorded for source ${sourceId} on this dataset.`,
-        type: 'ERROR',
-      });
-    }
-    const rawFetchConfigRecord = this.asRecord(rawFetchConfig);
-    const fetchConfig = {
-      ...rawFetchConfigRecord,
-      baseTags: Array.isArray(pipelineConfig.baseTags)
-        ? pipelineConfig.baseTags
-        : [],
-    };
+    const { sourceId, fetchConfig, rawFetchConfigRecord } =
+      await this.resolveSourceBinding(
+        version.sourceDatasetId,
+        dto.sourceId,
+        // The ENABLE path, and the only caller allowed the fallback — see
+        // the helper's own doc for why the disable path is not.
+        { allowSingleSourceFallback: true },
+      );
 
     const cadenceMinutes =
       dto.cadenceMinutes ?? env.INFERENCE_DEFAULT_CADENCE_MINUTES;
