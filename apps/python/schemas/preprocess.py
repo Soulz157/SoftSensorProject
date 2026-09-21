@@ -1431,6 +1431,107 @@ class PrepareHoldoutForRunRequest(BaseModel):
     overwrite: bool = False
 
 
+class PassthroughHoldoutForRunRequest(BaseModel):
+    """MODEL-SERVE-015-T04. The THIRD holdout shape, beside
+    `ReplayHoldoutForRunRequest` (BRONZE, raw) and
+    `PrepareHoldoutForRunRequest` (SILVER/edit-mode GOLD, feature-bearing
+    but unscaled) — for a holdout that is ALREADY model-ready: a retrain-
+    augmentation candidate's frozen-eval slice, cut straight out of the
+    already-scaled base FINAL artifact (`ModelRetrainAugmentAuthorizedService.
+    buildCombinedArtifact`). Running it through `prepare_holdout_for_run`'s
+    `to_model_ready(fitted_params=...)` would double-scale it — checked and
+    ruled out, along with inverse-scaling it back to raw form, which
+    `inverse_scale_column`'s own docstring warns is never byte-exact and
+    never meant to be fed back into another transform.
+
+    No `feature_spec_key`, no scalers, no `drop_bad_feature_rows` — there is
+    nothing to apply. This function COPIES, it does not TRANSFORM; every
+    other holdout endpoint's `feature_spec_key`/refuse-if-target-scaled
+    guard exists only because those endpoints run `to_model_ready`, which
+    this one deliberately never does.
+
+    `NestJS`'s `tryReplayHoldout` (model-run.authorized.service.ts) chooses
+    this endpoint over `prepare_holdout_for_run` by reading
+    `DatasetArtifact.validationAlreadyScaled` — false for every existing
+    holdout shape, true only for a combined artifact.
+    """
+
+    source_key: str
+    target_key: str
+    overwrite: bool = False
+
+
+class CombineForRetrainRequest(BaseModel):
+    """MODEL-SERVE-015-T03. Merges a base FINAL artifact's own train-side
+    rows with a newly selected dataset's rows, reusing the base's exact
+    feature/scaling recipe — NEVER re-fit, the retrain-augmentation
+    feature's own decision — and carves the base's OWN frozen test rows out
+    as a passthrough holdout, so a candidate trained on the combined data can
+    still be scored on precisely the rows the incumbent version was scored
+    on.
+
+    `base_data_key`/`base_feature_spec_key` point at the INCUMBENT's own
+    FINAL artifact — already fully feature-engineered and scaled; its rows
+    before `cut_timestamp` and at/after it are used AS-IS, with no transform
+    at all (re-scaling an already-scaled slice is exactly the double-scale
+    bug this feature's own design note rules out).
+
+    `new_data_key` points at the newly selected dataset's nearest SILVER
+    ancestor — cleaned, but pre-feature-engineering and pre-scaling. That is
+    the correct source to apply the base's pinned recipe onto: the new
+    dataset's OWN FINAL was feature-engineered and scaled under ITS OWN
+    fitted params, which disagree with the base's by construction (each
+    dataset's scaler was fit on its own rows) — using it here would silently
+    combine two different feature spaces into one.
+
+    `cut_timestamp` is the incumbent's own resolved split boundary
+    (`ModelTrainingRun.splitSpec`'s computed value, not a fresh ratio). This
+    endpoint re-derives the new dataset's own start time from the frame it
+    actually loads (never trusts a caller-supplied value for that) and
+    refuses — the SAME "no uncontaminated eval window" rule NestJS's own
+    pre-flight check enforces — if the new dataset starts at or before
+    `cut_timestamp`; belt-and-suspenders, since NestJS validates this before
+    ever calling here but this is the endpoint that can see the real data.
+    """
+
+    base_data_key: str
+    base_feature_spec_key: str
+    new_data_key: str
+    target_key: str
+    target_y: str
+    cut_timestamp: str
+    overwrite: bool = False
+
+
+class CombineForRetrainResponse(ArtifactStatsResponse):
+    """`ArtifactStatsResponse`'s shape already describes the combined GOLD's
+    own `data.parquet` write, reused by inheritance rather than duplicated —
+    NestJS persists the resulting `DatasetArtifact` row the same way
+    `commit()` (preprocessing-job.service.ts) already does for every other
+    GOLD write. `validation_row_count`/`validation_holdout_from`/
+    `validation_missing_pct` (inherited) carry the frozen-eval slice's own
+    figures, the same fields `features()`'s holdout branch already
+    populates — `frozen_eval_checksum` is the one figure that shape has no
+    slot for, since a plain holdout replay never needed to publish it
+    separately from the row it lands on.
+    """
+
+    #: sha256 of the frozen-eval parquet, independent of the combined GOLD's
+    #: own `checksum` (that one covers `data.parquet`, the TRAIN side).
+    frozen_eval_checksum: str
+    #: Rows dropped because their timestamp collided with a new-dataset row
+    #: at the same instant (new wins — `combine_for_retrain`'s own
+    #: docstring). 0 for the overwhelming majority of merges, where the two
+    #: datasets' time ranges are simply disjoint.
+    dedupe_dropped: int
+    #: Diagnostic row counts so NestJS can build an honest `operations`
+    #: entry without re-deriving them from the merged frame — `row_count`
+    #: (inherited) equals `base_train_row_count + new_train_row_count -
+    #: dedupe_dropped`.
+    base_train_row_count: int
+    new_train_row_count: int
+
+
 class ValidateRequest(BaseModel):
     """DS-LAKE-007-T02. Read-only against `source_key` — validation writes
     no data artifact and mutates no frame (feature AC); the ONE write this

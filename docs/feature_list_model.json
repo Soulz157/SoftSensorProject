@@ -2385,6 +2385,103 @@
         }
       ],
       "implementation": "Client integration only. Reuse the existing MODEL-SERVE-004 retrain backend implementation, ModelCandidateJob lifecycle, ModelTrainingRun execution path, comparison endpoint, and ModelVersion creation behavior. Replace the legacy client-side simulation in apps/client/lib/retrain.ts and apps/client/.../use-model-retrain.ts with the real backend contract. Do not create a second trainer/orchestrator in the client and do not modify PRODUCTION promotion behavior."
+    },
+    {
+      "id": "MODEL-SERVE-015",
+      "title": "Model Retrain: Data Augmentation Workflow",
+      "priority": 15,
+      "status": "in_progress",
+      "progress": 85,
+      "blocked_on": null,
+      "dependencies": [
+        "MODEL-SERVE-014"
+      ],
+      "description": "Extend the established real retrain workflow (MODEL-SERVE-014) to support Data Augmentation. This introduces a new execution path ('AUGMENT_DATA') allowing operators to combine existing production training data with a newly selected dataset to create an immutable Combined Artifact for retraining, while enforcing strict schema compatibility and preserving comparability of evaluation metrics.",
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-015-T01",
+          "title": "Implement Training Data Strategy Selection UI",
+          "status": "completed",
+          "detail": "Add a data strategy selector to the ModelRetrainDialog (built in 014). Users can choose between 'Keep Existing Data' (default, uses 014 flow) and 'Keep Existing + New Data'. For the latter, provide a dataset selector that lists available DatasetVersions with committed artifacts. Base Dataset must reference the actual ModelTrainingRun data, not just Model.datasetId.\n\nMODEL-SERVE-015 IMPLEMENTATION NOTE: RetrainDataStrategy component built (models/[id]/components/retrain-data-strategy.tsx), sits between RetrainMonitoringContext and the Auto/Custom tabs so one strategy applies to both. Dataset selector reuses useDatasets()/datasetVersionService.list(), filtered to versions with a committed artifactId. Base dataset shown read-only from the NEW getCurrentRetrainJobService field RetrainIncumbent.baseDataset, resolved server-side off the incumbent's own ModelTrainingRun -> goldArtifactId -> DatasetVersion, never Model.datasetId. Covered by retrain-flow.test.tsx (49 client tests passing). NOT live-browser-verified (no authenticated session reachable from this agent session, same gap MODEL-SERVE-014-T10 recorded).",
+          "acceptance_criteria": [
+            "User can select 'Keep Existing + New Data' strategy.",
+            "Dataset selector lists valid saved datasets.",
+            "Existing dataset information is displayed and immutable."
+          ],
+          "progress": 100
+        },
+        {
+          "id": "MODEL-SERVE-015-T02",
+          "title": "Validate New Dataset compatibility before job creation",
+          "status": "completed",
+          "detail": "Implement strict validation when 'Keep Existing + New Data' is selected. The backend must reject the request before creating a trainer job if the new dataset is incompatible with the base dataset (different target, mismatched feature columns, missing artifact, or incompatible schema).\n\nMODEL-SERVE-015 IMPLEMENTATION NOTE: ModelRetrainAugmentAuthorizedService.assertCompatible (model-retrain-augment.authorized.service.ts) — refuses BEFORE any ModelCandidateJob row or Python call: missing cut_timestamp, missing base featureSpecKey, dataset version not found / no committed FINAL / reclaimed / no checksum, no SILVER ancestor (never cleaned), target absent from new dataset, tag-set mismatch (names both sides), and the T04 leakage guard (new dataset starts at/before the incumbent's split boundary). 10 unit tests (model-retrain-augment.authorized.service.spec.ts), all passing, asserting zero Python calls on every rejection. UI surfaces the server's own message through the dialog's existing error banner (mechanism reused, not a new one) — not separately live-verified.",
+          "acceptance_criteria": [
+            "Rejects if target Y is different.",
+            "Rejects if feature columns do not match.",
+            "Rejects if the selected artifact is unavailable or reclaimed.",
+            "Validation error messages are surfaced clearly in the UI."
+          ],
+          "progress": 100
+        },
+        {
+          "id": "MODEL-SERVE-015-T03",
+          "title": "Build Combined Training Artifact (Backend)",
+          "status": "completed",
+          "detail": "Implement the core AUGMENT_DATA backend logic. Create a new, immutable Combined Training Artifact by merging the existing dataset with the new dataset. Apply existing feature engineering and scaling specs to the new combined data. Do NOT append rows to the existing FINAL artifact (which would mutate historical records).\n\nMODEL-SERVE-015 IMPLEMENTATION NOTE: Python combine_for_retrain (artifact_service.py) + POST /v1/preprocess/combine-for-retrain: base rows before cut_timestamp kept AS-IS (no re-scale), only the new dataset's rows are feature-engineered+scaled with the base's pinned, never-refit scalingParams, concatenated+deduped (new wins on timestamp collision), frozen-eval slice re-cut to [cut_timestamp, new_dataset_start) and written as the combined GOLD's own validate_data.parquet. NestJS (ModelRetrainAugmentAuthorizedService.buildCombinedArtifact) mints the GOLD+FINAL pair under the BASE dataset's id, sharing one runId (the exact fact findHoldoutArtifact depends on), validationAlreadyScaled: true. 5 Python tests (test_artifact_service_combine_for_retrain.py) prove the base FINAL is untouched (same checksum) and the double-scale guard holds; 1 NestJS test proves the GOLD/FINAL transaction shape. Full Python suite (907 passed/74 skipped) and backend suite (960/969 passed, 9 pre-existing unrelated DI-fixture failures) both green after this change.",
+          "acceptance_criteria": [
+            "Existing FINAL artifact remains completely unchanged.",
+            "New combined artifact generates a new checksum.",
+            "Both old and new data rows are successfully merged.",
+            "Feature engineering uses the exact same basis for both datasets."
+          ],
+          "progress": 100
+        },
+        {
+          "id": "MODEL-SERVE-015-T04",
+          "title": "Define Training and Evaluation Basis for Augmented Retrain",
+          "status": "completed",
+          "detail": "Ensure metric deltas (like rmseDelta) remain mathematically sound. Since the training dataset changes, the evaluation must be performed against a 'Frozen Evaluation Set' (the production evaluation basis) to allow direct comparison with the incumbent version. Report new dataset evaluation separately.\n\nMODEL-SERVE-015 IMPLEMENTATION NOTE: New DatasetArtifact.validationAlreadyScaled + ModelTrainingRun.evalSetKind/frozenEvalChecksum (migration 20260921100000_model_serve_015_augment_data, applied). tryReplayHoldout (model-run.authorized.service.ts) gets a passthrough branch (new Python passthrough-holdout-for-run endpoint, verbatim copy, no to_model_ready) chosen via validationAlreadyScaled, and persists evalSetKind/frozenEvalChecksum on the run row at claim time. buildComparison's AUGMENT_DATA branch requires evalSetKind===FROZEN_INCUMBENT_TEST (not goldArtifactId/checksum/split equality) before publishing an rmseDelta; the candidate's own test-split score is reported separately as newRegimeMetrics, never blended into the delta. basis.strategy/basis.evalSet surfaced to the client and rendered in retrain-progress.tsx. 3 new backend tests + all existing buildComparison tests passing (21/21 in this spec file).",
+          "acceptance_criteria": [
+            "Both old and new models are evaluated on a common evaluation set to generate comparative metrics.",
+            "The comparison basis is explicitly displayed in the UI.",
+            "Prevents misleading delta metrics from mismatched test splits."
+          ],
+          "progress": 100
+        },
+        {
+          "id": "MODEL-SERVE-015-T05",
+          "title": "Persist and Display Augmented Provenance",
+          "status": "in_progress",
+          "detail": "Update the ModelVersion creation and Retrain Result UI to persist and display augmented provenance. The created ModelVersion must store the Retrain Strategy (AUGMENT_DATA), Base Dataset Version, Additional Dataset Version, and the Combined Artifact Checksum.\n\nMODEL-SERVE-015 IMPLEMENTATION NOTE: DONE: ModelCandidateJob.retrainStrategy/baseDatasetVersionId/additionalDatasetVersionId/combinedArtifactId persisted at trigger time; ModelVersion.retrainStrategy copied off the winning job at completeModelOwnedJob; Retrain Result UI shows 'existing + new dataset' as the strategy label (retrain-progress.tsx). NOT DONE: (1) 'Total training rows reflect the combined row count' — RetrainJob/RetrainComparison carry no row-count field today, so the client never fetches or displays the combined artifact's actual row count (only base_train_row_count/new_train_row_count/dedupe_dropped exist, server-side only, inside the DatasetArtifact.operations JSON blob). (2) 'The new ModelVersion... retains references to both source datasets' is only INDIRECTLY true — the two DatasetVersion ids live on ModelCandidateJob, not on ModelVersion itself; a reader must join via job.resultVersionId, not a direct FK on the version row. Needs a follow-up task: either surface a combined-row-count field through RetrainComparison, or accept the indirect job-join path and document it as the design (a product/design call, not something to guess).",
+          "acceptance_criteria": [
+            "The Retrain Result UI clearly shows 'Existing + New Dataset' as the training data source.",
+            "Total training rows reflect the combined row count.",
+            "The new ModelVersion (STAGING) retains references to both source datasets and the combined artifact."
+          ],
+          "progress": 70
+        }
+      ],
+      "verification": [
+        {
+          "id": "MODEL-SERVE-015-V01",
+          "description": "Trigger an AUGMENT_DATA retrain end-to-end on a real model with a PRODUCTION version and confirm the base FINAL artifact's row/checksum are unchanged after the run.",
+          "status": "pending",
+          "note": "Covered at the unit level (combine_for_retrain's own tests prove base rows byte-identical; buildCombinedArtifact's own test proves the transaction shape). Real trainer/MinIO run not exercised — no authenticated browser session reachable from this agent session, the same gap MODEL-SERVE-014-T10 recorded."
+        },
+        {
+          "id": "MODEL-SERVE-015-V02",
+          "description": "Verify the resulting comparison shows comparable:true with a real rmseDelta once the candidate's holdoutMetrics (scored via the passthrough channel) land, and comparable:false with a named reason before they do.",
+          "status": "pending",
+          "note": "Covered by unit tests (model-retrain.authorized.service.spec.ts's AUGMENT_DATA describe block, 3 cases). Real candidate run not exercised."
+        },
+        {
+          "id": "MODEL-SERVE-015-V03",
+          "description": "Confirm the PRODUCTION version is unchanged and the result is a STAGING ModelVersion carrying retrainStrategy: 'AUGMENT_DATA'.",
+          "status": "pending",
+          "note": "Code path in place (completeModelOwnedJob copies job.retrainStrategy onto the created version); not exercised end-to-end."
+        }
+      ],
+      "implementation": "Client + NestJS + Python, all three layers. New: ModelRetrainAugmentAuthorizedService (model-retrain-augment.authorized.service.ts) for T02 validation + T03 orchestration; combine_for_retrain + passthrough_holdout_for_run in artifact_service.py for T03/T04; RetrainDataStrategy component for T01. Schema: DatasetArtifact.validationAlreadyScaled, ModelTrainingRun.evalSetKind/frozenEvalChecksum, ModelCandidateJob.retrainStrategy/baseDatasetVersionId/additionalDatasetVersionId/combinedArtifactId, ModelVersion.retrainStrategy (migration 20260921100000_model_serve_015_augment_data). No images/trainer change and no queue infrastructure introduced, per CLAUDE.md §11. Full design record: ~/.claude/plans/continue-in-model-serve-015-to-indexed-blossom.md."
     }
   ],
   "global_definition_of_done": [

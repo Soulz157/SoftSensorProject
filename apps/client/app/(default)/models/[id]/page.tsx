@@ -936,8 +936,8 @@ export default function ModelDetailPage({
         loading={retrain.loading}
         isRetraining={retrain.isRetraining}
         error={retrain.error}
-        onStart={candidates => {
-          void retrain.start(candidates)
+        onStart={(candidates, options) => {
+          void retrain.start(candidates, options)
         }}
       />
       <AlertDialog

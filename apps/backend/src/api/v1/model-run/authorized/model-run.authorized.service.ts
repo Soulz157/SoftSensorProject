@@ -15,6 +15,7 @@ import {
   presignRunObject,
   PresignedArtifact,
   presignModelRunUpload,
+  passthroughHoldoutForRun,
   prepareHoldoutForRun,
   replayHoldoutForRun,
   runPredictions,
@@ -111,9 +112,19 @@ export class ModelRunAuthorizedService {
       // DS-LAKE-023-T05. Only `prepareHoldoutForRun` ever populates
       // `dropped_bad_rows` — the legacy `replayHoldoutForRun` path does not
       // run `drop_bad_feature_rows` (out of this task's scope; see that
-      // function's own module doc). Null for a BRONZE (legacy) holdout.
+      // function's own module doc). Null for a BRONZE (legacy) holdout, and
+      // for a passthrough one (MODEL-SERVE-015-T04 — nothing is dropped
+      // because nothing is transformed).
       let holdoutDroppedBadRows: number | null = null;
-      if (holdoutArtifact.type === 'BRONZE') {
+      if (holdoutArtifact.validationAlreadyScaled) {
+        // MODEL-SERVE-015-T04. A retrain-augmentation combined GOLD's
+        // frozen-eval slice — already feature-engineered AND scaled, cut
+        // straight out of the incumbent's own already-scaled base FINAL.
+        // Routing it through `prepareHoldoutForRun`'s `to_model_ready`
+        // would double-scale it (checked and ruled out — see this
+        // feature's own design note), so this copies it verbatim instead.
+        await passthroughHoldoutForRun(commonInput);
+      } else if (holdoutArtifact.type === 'BRONZE') {
         // Legacy raw holdout — needs the full recipe replayed, and the
         // resolved boundary to trim lead-in rows afterward.
         if (!holdoutArtifact.validationHoldoutFrom) return null;
@@ -149,6 +160,27 @@ export class ModelRunAuthorizedService {
           `Presigned holdout object ${targetKey} reported no row_count.`,
         );
       }
+
+      // MODEL-SERVE-015-T04. Persisted here, not derived later: this is the
+      // one place that already knows WHICH holdout shape this run actually
+      // scored against, and `buildComparison`
+      // (model-retrain.authorized.service.ts) has no other way to tell a
+      // plain dataset holdout from an augmented retrain's frozen-incumbent-
+      // test slice. Best-effort — inside the SAME soft-fail try/catch as
+      // the rest of this method: a write failure here degrades to "not
+      // comparable" on read (buildComparison sees evalSetKind stay null),
+      // never to a false claim of comparability.
+      await this.prisma.modelTrainingRun.update({
+        where: { id: run.id },
+        data: {
+          evalSetKind: holdoutArtifact.validationAlreadyScaled
+            ? 'FROZEN_INCUMBENT_TEST'
+            : 'DATASET_HOLDOUT',
+          frozenEvalChecksum: holdoutArtifact.validationAlreadyScaled
+            ? holdoutPresigned.checksum
+            : null,
+        },
+      });
 
       return {
         holdoutDataUrl: holdoutPresigned.data_url,

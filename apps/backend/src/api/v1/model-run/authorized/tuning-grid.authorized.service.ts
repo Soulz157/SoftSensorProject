@@ -1,11 +1,21 @@
 import { Injectable } from '@nestjs/common';
 import { AppException } from '@softsensor/common';
-import { TUNE_VARIANTS_PER_JOB, TUNING_GRID } from '@/lib/tuning-grid';
+import {
+  TUNE_VARIANTS_PER_JOB,
+  TUNING_GRID,
+  sizeTierFor,
+  tuningVariantsFor,
+  type DatasetSize,
+  type SizeTier,
+} from '@/lib/tuning-grid';
 
 export interface TuningGridResponse {
   algorithm: string;
   variants: Array<Record<string, string | number | boolean | null>>;
   maxVariantsPerJob: number;
+  /** MODEL-FLOW-024. The size tier the variants were chosen for; `medium`
+   *  when no figure was sent. */
+  tier: SizeTier;
 }
 
 /**
@@ -15,12 +25,16 @@ export interface TuningGridResponse {
  * client can SHOW which variants a search will try without copying the grid
  * (use-model-training.ts's own no-duplication rule for it). No Prisma, no
  * mutation, no auth beyond the standard JWT guard the controller applies.
+ *
+ * MODEL-FLOW-024. Optionally sized: with a `DatasetSize` it serves the tier's
+ * variants from the SAME `tuningVariantsFor` the job builder calls, so what
+ * the client previews is what a job would run. Without one it is
+ * `TUNING_GRID[algorithm]` exactly as before.
  */
 @Injectable()
 export class TuningGridAuthorizedService {
-  get(algorithm: string): TuningGridResponse {
-    const variants = TUNING_GRID[algorithm];
-    if (!variants) {
+  get(algorithm: string, size?: DatasetSize): TuningGridResponse {
+    if (!TUNING_GRID[algorithm]) {
       throw new AppException({
         statusCode: 404,
         message: `No tuning grid for "${algorithm}" — it may not support Find Best Parameters.`,
@@ -29,8 +43,9 @@ export class TuningGridAuthorizedService {
     }
     return {
       algorithm,
-      variants,
+      variants: tuningVariantsFor(algorithm, size),
       maxVariantsPerJob: TUNE_VARIANTS_PER_JOB,
+      tier: sizeTierFor(size?.distinctLabelled),
     };
   }
 }

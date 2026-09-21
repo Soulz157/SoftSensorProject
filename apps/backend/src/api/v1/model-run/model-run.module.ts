@@ -13,6 +13,7 @@ import { ModelCandidateJobAuthorizedController } from './authorized/model-candid
 import { ModelCandidateJobAuthorizedService } from './authorized/model-candidate-job.authorized.service';
 import { ModelRetrainAuthorizedController } from './authorized/model-retrain.authorized.controller';
 import { ModelRetrainAuthorizedService } from './authorized/model-retrain.authorized.service';
+import { ModelRetrainAugmentAuthorizedService } from './authorized/model-retrain-augment.authorized.service';
 import { TuningGridAuthorizedController } from './authorized/tuning-grid.authorized.controller';
 import { TuningGridAuthorizedService } from './authorized/tuning-grid.authorized.service';
 
@@ -39,6 +40,7 @@ import { TuningGridAuthorizedService } from './authorized/tuning-grid.authorized
     ModelRunAuthorizedService,
     ModelCandidateJobAuthorizedService,
     ModelRetrainAuthorizedService,
+    ModelRetrainAugmentAuthorizedService,
     ModelRunScoreAuthorizedService,
     TuningGridAuthorizedService,
     RunTokenGuard,

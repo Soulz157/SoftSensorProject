@@ -32,6 +32,7 @@ interface Props {
    *  that used to apply it is gone. */
   brush: BrushWindow
   tickFormatter: (t: number) => string
+  tooltipFormatter: (t: number) => string
   /** Window residual SD — drives the ±1/±2/±3 guardlines (absolute mode). */
   sd: number
   /**
@@ -202,6 +203,7 @@ export function ResidualChart({
   rows,
   brush,
   tickFormatter,
+  tooltipFormatter,
   sd,
   sdBasis = 'residual',
   mode,
@@ -293,7 +295,7 @@ export function ResidualChart({
                 <MonitoringTooltip
                   variant="residual"
                   residualMode={mode}
-                  formatLabel={tickFormatter}
+                  formatLabel={tooltipFormatter}
                 />
               }
             />

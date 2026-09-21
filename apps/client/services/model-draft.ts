@@ -676,7 +676,10 @@ export interface CreateCandidateJobInput {
    *  its `distinct_labelled_values` — the only two fields that endpoint
    *  guarantees in both ratio and CV mode.
    *
-   *  SENT TOGETHER OR NOT AT ALL; the server refuses one without the other.
+   *  `sizedDistinctLabelled` NEEDS `sizedRowCount`; the server refuses the
+   *  distinct count on its own. The reverse is allowed since MODEL-FLOW-024:
+   *  a direct lstm/gru search sends the dataset's row count alone, because the
+   *  split-stats fetch is never made while a sequence model is selected.
    *  Both absent is a real, accepted case: the panel's fetch is gated on
    *  Apply (MODEL-FLOW-014-T08), so a user who starts a job without ever
    *  pressing Apply genuinely has no figures to send, and the job records

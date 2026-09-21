@@ -53,6 +53,15 @@ export async function findHoldoutArtifact(
       objectKey: true,
       validationRowCount: true,
       validationHoldoutFrom: true,
+      // MODEL-SERVE-015-T04. False for every holdout shape above — even a
+      // GOLD row's, whose validate_data.parquet is captured BEFORE the
+      // scale step inside `features()` (see that function's own ordering),
+      // so it is feature-bearing but still unscaled like every other shape
+      // here. True only for a retrain-augmentation combined GOLD, whose
+      // frozen-eval slice is cut straight out of an ALREADY-scaled FINAL —
+      // see this column's own schema comment for why re-scaling it would
+      // be wrong.
+      validationAlreadyScaled: true,
     },
   });
   if (!holdoutArtifact || holdoutArtifact.validationRowCount == null) {

@@ -31,6 +31,10 @@ function job(overrides: Partial<RetrainJob> = {}): RetrainJob {
     finishedAt: null,
     candidates: [],
     comparison: null,
+    retrainStrategy: null,
+    baseDatasetVersionId: null,
+    additionalDatasetVersionId: null,
+    combinedArtifactId: null,
     ...overrides,
   }
 }
@@ -48,6 +52,8 @@ function comparison(
       split: { method: 'chronological', ratio: 0.8 },
       comparable: true,
       reason: null,
+      strategy: 'KEEP_EXISTING',
+      evalSet: null,
     },
     incumbent: {
       versionId: 'version-1',
@@ -63,6 +69,7 @@ function comparison(
       stage: null,
       algorithm: 'xgboost',
       metrics: { rmse: 0.5, r2: 0.95, mae: 0.3 },
+      newRegimeMetrics: null,
     },
     rmseDelta: -0.5,
     selectionMetric: 'rmse',
@@ -134,6 +141,9 @@ describe('comparisonView', () => {
       incumbentMetrics: METRICS,
       candidateMetrics: { rmse: 0.5, r2: 0.95, mae: 0.3 },
       rmseDelta: -0.5,
+      strategy: 'KEEP_EXISTING',
+      evalSet: null,
+      newRegimeMetrics: null,
     })
   })
 
@@ -147,6 +157,8 @@ describe('comparisonView', () => {
           split: { method: 'chronological', ratio: 0.8 },
           comparable: false,
           reason: 'different training artifact',
+          strategy: 'KEEP_EXISTING',
+          evalSet: null,
         },
         rmseDelta: null,
       }),

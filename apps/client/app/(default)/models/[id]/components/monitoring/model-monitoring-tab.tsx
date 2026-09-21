@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { format } from 'date-fns'
 import { Activity } from 'lucide-react'
 import type { AIModel } from '@/types'
@@ -18,7 +18,6 @@ import {
   heldEvalPoints,
   mergeLivePredictions,
   mergeScheduledPredictions,
-  pickTimeFormat,
   residualDensityNote,
   windowStats,
   type BrushWindow,
@@ -353,8 +352,17 @@ export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
       first && last
         ? Date.parse(last.timestamp) - Date.parse(first.timestamp)
         : 0
-    return pickTimeFormat(spanMs)
+    // Axis ticks always carry day + month; under two days the ticks would
+    // repeat one date, so the clock time is added.
+    const pattern = spanMs > 2 * 24 * 60 * 60 * 1000 ? 'd MMM' : 'd MMM HH:mm'
+    return (t: number) => format(t, pattern)
   }, [visible])
+
+  // Tooltip keeps the full date-time whatever the zoom level.
+  const tooltipFormatter = useCallback(
+    (t: number) => format(t, 'd MMM yyyy HH:mm:ss'),
+    [],
+  )
 
   const yDomain = useMemo<[number, number]>(() => {
     // MODEL-SERVE-011-T19. EVERY SERIES THE CHART ACTUALLY DRAWS, read off
@@ -579,6 +587,7 @@ export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
               rows={rowsWithBand}
               brush={brush}
               tickFormatter={tickFormatter}
+              tooltipFormatter={tooltipFormatter}
               yDomain={yDomain}
             />
           )}
@@ -684,6 +693,7 @@ export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
               rows={rowsWithBand}
               brush={brush}
               tickFormatter={tickFormatter}
+              tooltipFormatter={tooltipFormatter}
               // MODEL-SERVE-011-T16. The guardlines had nothing to draw with
               // before the lab joins: `stats.sd` is the residual SD, which is
               // 0 until there are at least two measured pairs. Fall back to
@@ -765,7 +775,7 @@ export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
       <div className="flex min-h-0 flex-col rounded-xl border border-border bg-card p-4">
         <div className="mb-4 space-y-1">
           <h2 className="text-sm font-semibold text-foreground">
-            Population Stability (PSI)
+            Population Stability Index (PSI)
           </h2>
           <p className="text-xs text-muted-foreground">
             Live inputs vs. the production version&apos;s frozen training bins

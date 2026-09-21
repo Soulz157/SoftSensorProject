@@ -172,16 +172,18 @@ describe('AlgorithmStack — MODEL-FLOW-022 self-correcting eligibility', () => 
 
 /**
  * [fix]. lstm/gru train fine as a plain single run
- * (modelDraftRunService.create, MODEL-FLOW-009-T04's windowing pipeline),
- * but NEITHER candidate-job kind accepts them — Find Best Model
- * (ALGORITHM_SWEEP/SWEEP_THEN_TUNE) and Find Best Parameters alone
- * (HYPERPARAMETER_SEARCH) both 400 at the backend, since no TUNING_GRID
- * entry exists to expand one into a phase-2 shortlist. Before this, a user
- * could select lstm, turn on Find Best Model, and only discover the
- * refusal at launch ("... isn't supported by the training service yet —
- * remove it from the sweep").
+ * (modelDraftRunService.create, MODEL-FLOW-009-T04's windowing pipeline).
+ *
+ * MODEL-FLOW-024 CORRECTS what this block used to say. It claimed NEITHER
+ * candidate-job kind accepts them and that the backend 400s a sequence
+ * candidate outright. It does not check for one at all: what 400ed a direct
+ * Find Best Parameters was the empty `TUNING_GRID` for them, which now
+ * exists. So Find Best Parameters alone (HYPERPARAMETER_SEARCH, one
+ * algorithm) is allowed; a SWEEP (Find Best Model) still refuses them, so a
+ * user cannot select lstm, turn on Find Best Model, and only discover the
+ * refusal at launch.
  */
-describe('AlgorithmStack — sequence algorithms unavailable for Find Best Model/Parameters', () => {
+describe('AlgorithmStack — sequence algorithms: unavailable for Find Best Model, allowed for Find Best Parameters', () => {
   function lstmItem() {
     // Anchored at the start, no \b: the label and reason spans concatenate
     // with NO space in the accessible name ("LSTMNot available..."), and
@@ -206,15 +208,30 @@ describe('AlgorithmStack — sequence algorithms unavailable for Find Best Model
     // Scoped to lstm's own item — gru's item carries the same reason text
     // (both are sequence algorithms), so an unscoped query finds two.
     expect(
-      within(lstmItem()).getByText(/Find Best Model or Find Best Parameters/),
+      within(lstmItem()).getByText(/Not available for Find Best Model/),
     ).toBeInTheDocument()
   })
 
-  it('disables lstm in the picker while Find Best Parameters is on, even without a sweep', async () => {
+  it('leaves lstm selectable while Find Best Parameters is on without a sweep — a direct search can tune it', async () => {
+    // MODEL-FLOW-024. This case used to assert the opposite.
     renderStack({ findBestModel: false, findBestParams: true })
     await openAddMenu()
 
-    expect(lstmItem()).toHaveAttribute('aria-disabled', 'true')
+    expect(lstmItem()).not.toHaveAttribute('aria-disabled', 'true')
+  })
+
+  it('does not drop lstm when only Find Best Parameters turns on', () => {
+    const onAlgorithmsChange = vi.fn()
+    const props = stackProps({
+      algorithms: ['lstm', 'ridge'] as Algorithm[],
+      onAlgorithmsChange,
+      findBestParams: false,
+    })
+    const { rerender } = render(<AlgorithmStack {...props} />)
+
+    rerender(<AlgorithmStack {...props} findBestParams={true} />)
+
+    expect(onAlgorithmsChange).not.toHaveBeenCalled()
   })
 
   it('drops lstm from an existing selection the moment Find Best Model turns on, keeping the rest', () => {
@@ -349,5 +366,66 @@ describe('AlgorithmStack — per-algorithm hyperparameters', () => {
         ),
       ),
     ).toBeInTheDocument()
+  })
+})
+
+/**
+ * MODEL-FLOW-024. The size reaches the hint under each field. Uses the real
+ * measured pair (8,350 rows, 32 distinct values): the band must follow the 32,
+ * and the copy must say so without letting the row count size anything.
+ */
+describe('AlgorithmStack — suggested ranges follow the dataset size (MODEL-FLOW-024)', () => {
+  it('shows the estimator’s general range, and says it is not sized, before a size is known', () => {
+    renderStack({ algorithms: ['xgboost'] as Algorithm[] })
+
+    expect(screen.getByText('100–500')).toBeInTheDocument()
+    expect(screen.getByText(/apply the train\/test split/i)).toBeInTheDocument()
+    expect(screen.queryByText(/Sized to your/)).not.toBeInTheDocument()
+  })
+
+  it('shrinks XGBoost’s n_estimators band for 32 distinct values, not for 8,350 rows', () => {
+    renderStack({
+      algorithms: ['xgboost'] as Algorithm[],
+      datasetSize: { distinctLabelled: 32, rows: 8_350 },
+    })
+
+    expect(screen.getByText('30–150')).toBeInTheDocument()
+    expect(screen.queryByText('100–500')).not.toBeInTheDocument()
+    expect(
+      screen.getByText(/Sized to your 32 distinct lab values/),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/not your 8,350 rows/)).toBeInTheDocument()
+  })
+
+  it('widens the band for a large dataset', () => {
+    renderStack({
+      algorithms: ['xgboost'] as Algorithm[],
+      datasetSize: { distinctLabelled: 900 },
+    })
+
+    expect(screen.getByText('200–1000')).toBeInTheDocument()
+  })
+
+  it('caps the LSTM batch size by rows and leaves its other bands alone', () => {
+    renderStack({
+      algorithms: ['lstm'] as Algorithm[],
+      datasetSize: { distinctLabelled: null, rows: 400 },
+    })
+
+    expect(screen.getByText('12–50')).toBeInTheDocument()
+    expect(screen.getByText('10–200')).toBeInTheDocument() // epochs, unsized
+    expect(
+      screen.getByText(/capped at an eighth of your 400 rows/),
+    ).toBeInTheDocument()
+  })
+
+  it('never claims sizing for an algorithm no size changes', () => {
+    renderStack({
+      algorithms: ['pls'] as Algorithm[],
+      datasetSize: { distinctLabelled: 32, rows: 8_350 },
+    })
+
+    expect(screen.queryByText(/Sized to your/)).not.toBeInTheDocument()
+    expect(screen.getByText(/no size-dependent range/)).toBeInTheDocument()
   })
 })

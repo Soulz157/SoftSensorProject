@@ -1,10 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { renderHook, waitFor, act } from '@testing-library/react'
 import { ApiError } from '@/lib/fetcher'
-import type {
-  CurrentRetrainState,
-  RetrainJob,
-} from '@/services/model-retrain'
+import type { CurrentRetrainState, RetrainJob } from '@/services/model-retrain'
 import type { AIModel } from '@/types'
 
 const trigger = vi.fn()
@@ -55,6 +52,10 @@ function job(overrides: Partial<RetrainJob> = {}): RetrainJob {
     finishedAt: null,
     candidates: [],
     comparison: null,
+    retrainStrategy: null,
+    baseDatasetVersionId: null,
+    additionalDatasetVersionId: null,
+    combinedArtifactId: null,
     ...overrides,
   }
 }
@@ -63,6 +64,7 @@ const INCUMBENT = {
   versionId: 'version-1',
   version: 3,
   algorithm: 'xgboost' as const,
+  baseDataset: null,
 }
 
 function currentState(
@@ -84,7 +86,9 @@ beforeEach(() => {
     id: 'run-1',
     status: 'RUNNING',
     failureReason: null,
-    logs: [{ id: 'log-1', level: 'info', message: 'fit started', createdAt: '' }],
+    logs: [
+      { id: 'log-1', level: 'info', message: 'fit started', createdAt: '' },
+    ],
   })
 })
 
@@ -172,7 +176,9 @@ describe('useModelRetrain — closing the section (per-viewer)', () => {
   })
 
   it('does NOT suppress a different job — a later retrain is new information', async () => {
-    current.mockResolvedValueOnce(ok(currentState({ job: job({ id: 'job-1' }) })))
+    current.mockResolvedValueOnce(
+      ok(currentState({ job: job({ id: 'job-1' }) })),
+    )
 
     const first = renderHook(() => useModelRetrain({ model: MODEL }))
     await waitFor(() => expect(first.result.current.job).not.toBeNull())
@@ -186,8 +192,13 @@ describe('useModelRetrain — closing the section (per-viewer)', () => {
   })
 
   it('re-opens the section when the viewer starts a new retrain', async () => {
-    current.mockResolvedValue(ok(currentState({ job: job({ status: 'FAILED' }) })))
-    trigger.mockResolvedValue({ ...ok(job({ id: 'job-new' })), statusCode: 201 })
+    current.mockResolvedValue(
+      ok(currentState({ job: job({ status: 'FAILED' }) })),
+    )
+    trigger.mockResolvedValue({
+      ...ok(job({ id: 'job-new' })),
+      statusCode: 201,
+    })
 
     const { result } = renderHook(() => useModelRetrain({ model: MODEL }))
     await waitFor(() => expect(result.current.job).not.toBeNull())
@@ -239,17 +250,17 @@ describe('useModelRetrain — triggering (T02, V05)', () => {
       await result.current.start(candidates)
     })
 
-    const [, body] = trigger.mock.calls[0] as [
-      string,
-      { candidates?: unknown },
-    ]
+    const [, body] = trigger.mock.calls[0] as [string, { candidates?: unknown }]
     expect(body.candidates).toEqual(candidates)
   })
 
   it('treats a 200 idempotent replay exactly like a fresh 201', async () => {
     current.mockResolvedValue(ok(currentState()))
     // The backend returns the ORIGINAL job with 200 on an idempotency-key replay.
-    trigger.mockResolvedValue({ ...ok(job({ id: 'original-job' })), statusCode: 200 })
+    trigger.mockResolvedValue({
+      ...ok(job({ id: 'original-job' })),
+      statusCode: 200,
+    })
 
     const { result } = renderHook(() => useModelRetrain({ model: MODEL }))
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -369,6 +380,8 @@ describe('useModelRetrain — polling to completion (T03, V03)', () => {
               split: { method: 'chronological', ratio: 0.8 },
               comparable: true,
               reason: null,
+              strategy: 'KEEP_EXISTING',
+              evalSet: null,
             },
             incumbent: {
               versionId: 'version-1',
@@ -384,6 +397,7 @@ describe('useModelRetrain — polling to completion (T03, V03)', () => {
               stage: 'STAGING',
               algorithm: 'xgboost',
               metrics: { rmse: 0.5, r2: 0.95, mae: 0.3 },
+              newRegimeMetrics: null,
             },
             rmseDelta: -0.5,
             selectionMetric: 'rmse',

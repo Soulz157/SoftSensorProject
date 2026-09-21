@@ -163,6 +163,18 @@ export function RetrainProgress({
             )}
           </div>
 
+          {view.strategy === 'AUGMENT_DATA' && (
+            <p className="text-xs text-muted-foreground">
+              Training data: existing + new dataset. Compared on the{' '}
+              <span className="font-medium text-foreground">
+                incumbent&apos;s own frozen test rows
+              </span>
+              {view.evalSet?.kind !== 'FROZEN_INCUMBENT_TEST' &&
+                ' (not yet scored on that set)'}
+              .
+            </p>
+          )}
+
           {!view.comparable && view.reason && (
             <p className="text-xs text-muted-foreground">
               Not directly comparable to current v{currentVersion}:{' '}
@@ -189,6 +201,29 @@ export function RetrainProgress({
               </div>
             ))}
           </div>
+
+          {/* MODEL-SERVE-015-T04. "Report new dataset evaluation
+              separately" — the candidate's OWN test split over the combined
+              (mixed-regime) data. Never folded into the grid above, which is
+              the frozen-incumbent-test score the delta below is computed
+              from. */}
+          {view.newRegimeMetrics && (
+            <div className="space-y-1.5 rounded-md border border-border bg-muted/10 p-3">
+              <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                New-regime evaluation (combined data&apos;s own test split)
+              </p>
+              <div className="grid grid-cols-3 gap-2">
+                {METRICS.map(({ key, label }) => (
+                  <div key={key} className="flex flex-col gap-0.5">
+                    <p className="text-[10px] text-muted-foreground">{label}</p>
+                    <p className="text-sm font-medium tabular-nums text-foreground">
+                      {formatMetricValue(view.newRegimeMetrics![key])}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* MODEL-SERVE-014. The explicit decision — a retrain lands a
               STAGING version and stops, so putting v{candidateVersion} live

@@ -202,11 +202,6 @@ export function CoreConfig({
         />
       </div>
 
-      <SeedControl
-        seed={seed}
-        onSeedChange={onSeedChange}
-        algorithms={algorithms}
-      />
     </div>
   )
 }

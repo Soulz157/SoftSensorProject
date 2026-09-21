@@ -2,6 +2,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService, PrismaTypes, PrismaModels } from '@softsensor/prisma';
 import { AppException } from '@softsensor/common';
 import { ModelCandidateJobAuthorizedService } from './model-candidate-job.authorized.service';
+import { ModelRetrainAugmentAuthorizedService } from './model-retrain-augment.authorized.service';
 import type { TriggerRetrainDto } from './dto/model-retrain.authorized.dto';
 
 /** The split a retrain reuses. `chronological` carries the ratio the
@@ -64,6 +65,7 @@ export class ModelRetrainAuthorizedService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly candidateJobs: ModelCandidateJobAuthorizedService,
+    private readonly augment: ModelRetrainAugmentAuthorizedService,
   ) {}
 
   // ── access ───────────────────────────────────────────────────────────────
@@ -195,10 +197,56 @@ export class ModelRetrainAuthorizedService {
 
     const split = this.resolveSplit(sourceRun.splitSpec, incumbent.version);
 
+    // MODEL-SERVE-015. AUGMENT_DATA fast-path: an idempotent retry must not
+    // re-run `assertCompatible`/re-combine a second time before reaching the
+    // DB's own idempotency check below — that check only fires AFTER a
+    // wasted Python round trip and a wasted DatasetArtifact pair. Checked
+    // here, before any augmentation work, exactly like a real idempotent-
+    // POST short-circuit; the DB check remains the authoritative backstop
+    // for a genuine race between two concurrent requests.
+    if (dto.strategy === 'AUGMENT_DATA' && dto.idempotencyKey) {
+      const existing = await this.prisma.modelCandidateJob.findFirst({
+        where: { modelId, idempotencyKey: dto.idempotencyKey },
+      });
+      if (existing) {
+        return {
+          statusCode: 200,
+          message: 'A retrain already exists for this idempotency key',
+          type: 'SUCCESS' as const,
+          data: this.triggerView(existing),
+        };
+      }
+    }
+
+    // MODEL-SERVE-015. The AUGMENT_DATA path's own training artifact — a
+    // combined GOLD+FINAL pair minted BEFORE the job row, so the job's
+    // `goldArtifactId` never points at a row that does not exist yet. Every
+    // refusal here (assertCompatible) costs nothing beyond a few metadata
+    // reads; only buildCombinedArtifact spends the real Python round trip.
+    let augmentedArtifact: Awaited<
+      ReturnType<ModelRetrainAugmentAuthorizedService['buildCombinedArtifact']>
+    > | null = null;
+    let augmentCtx: Awaited<
+      ReturnType<ModelRetrainAugmentAuthorizedService['assertCompatible']>
+    > | null = null;
+    if (dto.strategy === 'AUGMENT_DATA') {
+      // .strict() + the DTO's own refine already guarantee this is set.
+      augmentCtx = await this.augment.assertCompatible(
+        sourceRun,
+        dto.additionalDatasetVersionId!,
+      );
+      augmentedArtifact = await this.augment.buildCombinedArtifact(
+        augmentCtx,
+        user,
+      );
+    }
+
     // Candidates: the operator's own list, or the incumbent's configuration
     // expanded through the SAME curated grid the wizard's search uses. Either
     // way every candidate shares the incumbent's artifact, target and split —
     // that shared basis is what makes T05's comparison a real comparison.
+    // (AUGMENT_DATA candidates share the COMBINED artifact instead — the
+    // basis that changes is training data, never algorithm/hyperparameters.)
     const requested =
       dto.candidates ??
       this.candidateJobs.expandSearchCandidates({
@@ -226,13 +274,23 @@ export class ModelRetrainAuthorizedService {
           sourceVersionId: incumbent.id,
           idempotencyKey: dto.idempotencyKey ?? null,
           targetY: sourceRun.targetY,
-          goldArtifactId: incumbent.goldArtifactId,
+          goldArtifactId:
+            augmentedArtifact?.combinedFinalArtifactId ??
+            incumbent.goldArtifactId,
           trainTestSplit: split.ratio,
           kind: 'HYPERPARAMETER_SEARCH',
           candidates: candidatesJson,
           totalRuns: candidates.length,
           createdById: user.id,
           status: 'QUEUED',
+          ...(augmentedArtifact && augmentCtx
+            ? {
+                retrainStrategy: 'AUGMENT_DATA',
+                baseDatasetVersionId: augmentCtx.baseDatasetVersionId,
+                additionalDatasetVersionId: augmentCtx.newDatasetVersionId,
+                combinedArtifactId: augmentedArtifact.combinedFinalArtifactId,
+              }
+            : {}),
         },
       });
     } catch (err) {
@@ -386,13 +444,47 @@ export class ModelRetrainAuthorizedService {
     // retrain for a model has none yet.
     const incumbentVersion = await this.prisma.modelVersion.findFirst({
       where: { modelId, stage: 'PRODUCTION' },
-      select: { id: true, version: true, algorithm: true },
+      select: {
+        id: true,
+        version: true,
+        algorithm: true,
+        goldArtifactId: true,
+        sourceDatasetId: true,
+      },
     });
+    // MODEL-SERVE-015-T01. The base dataset a data-augmentation retrain
+    // would merge NEW data with — resolved off the incumbent's OWN pinned
+    // artifact (`goldArtifactId`, one hop off the version, itself one hop
+    // off the source run), NEVER off `Model.datasetId`: a dataset can be
+    // renamed/re-versioned after training and that field can point
+    // somewhere else entirely by the time a retrain is triggered. Null
+    // whenever no incumbent exists, or its artifact's DatasetVersion row
+    // was never created (a legacy row, or a draft-only artifact).
+    const baseDataset = incumbentVersion
+      ? await (async () => {
+          const version = await this.prisma.datasetVersion.findFirst({
+            where: { artifactId: incumbentVersion.goldArtifactId },
+            select: { id: true, versionNumber: true },
+          });
+          const dataset = await this.prisma.dataset.findUnique({
+            where: { id: incumbentVersion.sourceDatasetId },
+            select: { id: true, name: true },
+          });
+          if (!dataset) return null;
+          return {
+            datasetId: dataset.id,
+            datasetName: dataset.name,
+            versionId: version?.id ?? null,
+            versionNumber: version?.versionNumber ?? null,
+          };
+        })()
+      : null;
     const incumbent = incumbentVersion
       ? {
           versionId: incumbentVersion.id,
           version: incumbentVersion.version,
           algorithm: incumbentVersion.algorithm,
+          baseDataset,
         }
       : null;
 
@@ -508,11 +600,35 @@ export class ModelRetrainAuthorizedService {
         ratio?: number;
       } | null) ?? null;
 
+    // MODEL-SERVE-015-T04. AUGMENT_DATA amends the comparability rule, it
+    // does not drop it: the OLD invariant was "one basis, therefore one
+    // artifact" (checked below via goldArtifactId/checksum/split equality).
+    // The NEW one is "one EVALUATION basis; the training artifact may
+    // differ" — a combined artifact differs from the incumbent's on
+    // artifact/checksum BY CONSTRUCTION, so those checks would always fail
+    // it. What proves the basis instead: the candidate's `evalSetKind` must
+    // be `FROZEN_INCUMBENT_TEST` (scored via the passthrough holdout
+    // channel on the incumbent's own frozen test rows, never re-derived —
+    // see `ModelTrainingRun.evalSetKind`'s own comment) and it must carry a
+    // `frozenEvalChecksum` (proves the scoring actually ran, never soft-
+    // failed to null).
+    const isAugmented = job.retrainStrategy === 'AUGMENT_DATA';
     const mismatches: string[] = [];
     if (!candidateRun) {
       mismatches.push('no candidate has produced a result yet');
     } else if (!incumbentRun) {
       mismatches.push("the incumbent's source run no longer exists");
+    } else if (isAugmented) {
+      if (candidateRun.targetY !== incumbentRun.targetY) {
+        mismatches.push('different target');
+      }
+      if (candidateRun.evalSetKind !== 'FROZEN_INCUMBENT_TEST') {
+        mismatches.push(
+          "candidate not yet scored on the incumbent's frozen test rows",
+        );
+      } else if (!candidateRun.frozenEvalChecksum) {
+        mismatches.push('frozen evaluation checksum missing');
+      }
     } else {
       if (candidateRun.goldArtifactId !== incumbentRun.goldArtifactId) {
         mismatches.push('different training artifact');
@@ -537,7 +653,19 @@ export class ModelRetrainAuthorizedService {
     // reports, and it must not drift under a run row nothing else is touching
     // (ModelVersion.metrics' own schema comment).
     const incumbentMetrics = metricTriple(incumbent.metrics);
-    const candidateMetrics = metricTriple(candidateRun?.metrics ?? null);
+    // AUGMENT_DATA compares against `holdoutMetrics` — the candidate's score
+    // on the incumbent's OWN frozen test rows — never `metrics`, which is
+    // the candidate's own test split over the COMBINED (mixed-regime) data
+    // and answers a different question (T04's "report new dataset
+    // evaluation separately", carried below as `newRegimeMetrics`).
+    const candidateMetrics = metricTriple(
+      isAugmented
+        ? (candidateRun?.holdoutMetrics ?? null)
+        : (candidateRun?.metrics ?? null),
+    );
+    const newRegimeMetrics = isAugmented
+      ? metricTriple(candidateRun?.metrics ?? null)
+      : null;
     const rmseDelta =
       comparable &&
       candidateMetrics.rmse !== null &&
@@ -565,6 +693,22 @@ export class ModelRetrainAuthorizedService {
         split: incumbentSplit,
         comparable,
         reason: comparable ? null : mismatches.join('; '),
+        // MODEL-SERVE-015-T04. Which invariant `comparable` is actually
+        // proving — 'KEEP_EXISTING' means one shared artifact/checksum/
+        // split; 'AUGMENT_DATA' means the candidate was scored on the
+        // incumbent's own frozen test rows regardless of what it trained
+        // on. The UI must state which basis a delta belongs to (plan's own
+        // requirement) rather than imply one universal meaning of
+        // "comparable".
+        strategy: (job.retrainStrategy ?? 'KEEP_EXISTING') as
+          | 'KEEP_EXISTING'
+          | 'AUGMENT_DATA',
+        evalSet: isAugmented
+          ? ({
+              kind: candidateRun?.evalSetKind ?? null,
+              checksum: candidateRun?.frozenEvalChecksum ?? null,
+            } as const)
+          : null,
       },
       incumbent: {
         versionId: incumbent.id,
@@ -581,6 +725,12 @@ export class ModelRetrainAuthorizedService {
         stage: candidateVersion?.stage ?? null,
         algorithm: candidateRun?.algorithm ?? null,
         metrics: candidateMetrics,
+        // MODEL-SERVE-015-T04. "Report new dataset evaluation separately" —
+        // the candidate's OWN test-split score, over the COMBINED
+        // (mixed-regime) data. Never used for `rmseDelta`; null for a plain
+        // (014) retrain, where `metrics` above already carries this exact
+        // number and a second copy would just invite the two to drift.
+        newRegimeMetrics,
       },
       // Negative = the candidate is better (lower RMSE). Null whenever the
       // bases differ — both raw numbers above are still present.

@@ -523,6 +523,81 @@ export async function prepareHoldoutForRun(input: {
   return ReplayHoldoutForRunSchema.parse(res);
 }
 
+/**
+ * MODEL-SERVE-015-T04. The THIRD holdout shape — for a retrain-augmentation
+ * candidate's frozen-eval slice, which is already model-ready (cut straight
+ * out of the already-scaled base FINAL by `combineForRetrain`). No
+ * transform runs on the python side; this is a verbatim copy to the run's
+ * own prefix. `tryReplayHoldout` (model-run.authorized.service.ts) chooses
+ * this over `prepareHoldoutForRun` by reading
+ * `DatasetArtifact.validationAlreadyScaled`.
+ */
+export async function passthroughHoldoutForRun(input: {
+  source_key: string;
+  target_key: string;
+  overwrite?: boolean;
+}): Promise<ReplayHoldoutForRunResult> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/passthrough-holdout-for-run',
+    input,
+    PYTHON_TIMEOUT.preprocess,
+  );
+  return ReplayHoldoutForRunSchema.parse(res);
+}
+
+/**
+ * MODEL-SERVE-015-T03. What `combineForRetrain` returns — `ArtifactStats`'s
+ * usual shape (the combined GOLD's own `data.parquet`) plus the frozen-eval
+ * slice's own row count/boundary (via the SAME `validation_row_count`/
+ * `validation_holdout_from`/`validation_missing_pct` fields every other
+ * holdout-carrying artifact write already uses) and its checksum, which
+ * that shape has no slot for.
+ */
+const CombineForRetrainSchema = z.object({
+  object_key: z.string().min(1),
+  row_count: z.number().int().nonnegative(),
+  column_count: z.number().int().nonnegative(),
+  size_bytes: z.number().int().nonnegative(),
+  missing_pct: z.number(),
+  checksum: z.string().min(1),
+  column_stats_key: z.string().nullable().optional(),
+  feature_spec_key: z.string().nullable().optional(),
+  validation_row_count: z.number().int().nonnegative().nullable().optional(),
+  validation_holdout_from: z.string().nullable().optional(),
+  validation_missing_pct: z.number().nullable().optional(),
+  dropped_bad_rows: z.number().int().nonnegative().nullable().optional(),
+  frozen_eval_checksum: z.string().min(1),
+  dedupe_dropped: z.number().int().nonnegative(),
+  base_train_row_count: z.number().int().nonnegative(),
+  new_train_row_count: z.number().int().nonnegative(),
+});
+
+export type CombineForRetrainResult = z.infer<typeof CombineForRetrainSchema>;
+
+/**
+ * MODEL-SERVE-015-T03. Merges the base FINAL's own train-side rows with a
+ * newly selected dataset's rows, reusing the base's pinned feature/scaling
+ * recipe — never re-fit — and carves the base's own frozen test rows out as
+ * a passthrough holdout. See `combine_for_retrain`'s own docstring
+ * (artifact_service.py) for the full ordering and every refusal case.
+ */
+export async function combineForRetrain(input: {
+  base_data_key: string;
+  base_feature_spec_key: string;
+  new_data_key: string;
+  target_key: string;
+  target_y: string;
+  cut_timestamp: string;
+  overwrite?: boolean;
+}): Promise<CombineForRetrainResult> {
+  const res = await postToPython<unknown>(
+    '/v1/preprocess/combine-for-retrain',
+    input,
+    PYTHON_TIMEOUT.preprocess,
+  );
+  return CombineForRetrainSchema.parse(res);
+}
+
 /** MODEL-FLOW-004. Snake_case on the wire, matching every other schema here. */
 const RunPredictionsSchema = z.object({
   source_key: z.string().min(1),

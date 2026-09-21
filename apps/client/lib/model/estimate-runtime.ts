@@ -33,7 +33,15 @@ export const ALGO_LABEL: Record<string, string> = {
   svr: 'SVR',
 }
 
-const ALL_ALGO_COST = Object.values(ALGO_COST).reduce((s, v) => s + v, 0)
+/**
+ * MODEL-FLOW-024. Fits a Find Best Parameters phase adds on top of the run it
+ * tunes. Mirrors the backend's `TUNE_VARIANTS_PER_JOB` (tuning-grid.ts): a
+ * search is the base fit plus at most this many variants of ONE algorithm, no
+ * cross-validation. It is an ESTIMATE's input, not a contract — the real cap
+ * is the backend's, so if that moves this drifts by a constant factor inside
+ * a range the panel already shows as 0.6x-2x.
+ */
+const TUNE_VARIANTS = 4
 
 export const SUPERLINEAR = new Set(['svr', 'knn', 'mlp'])
 
@@ -44,24 +52,38 @@ export interface AlgoShare {
   pct: number
 }
 
+/** Relative cost of each SELECTED algorithm; an id the table does not know
+ *  costs 1, the same fallback the estimate has always used. */
+function selectedCosts(algorithms: string[]): number[] {
+  return algorithms.map(a => ALGO_COST[a] ?? 1)
+}
+
+/**
+ * Each selected algorithm's share of the headline estimate. Shares are
+ * proportional to cost and scaled to the SAME total `estimateRuntimeSeconds`
+ * returns, so they sum to the headline by construction — the old version
+ * re-ran the estimate per algorithm, and its per-call 2s floor could push the
+ * shares past the total.
+ *
+ * MODEL-FLOW-024. Only the SELECTED algorithms appear. A sweep used to list
+ * every entry of `ALGO_COST` (14, several of which — lasso, catboost — this
+ * catalogue does not have), on the belief a sweep tries them all. It tries
+ * the ones the user ticked, one candidate each.
+ */
 export function breakdownRuntime(input: RuntimeInput): AlgoShare[] {
-  const ids = input.findBestModel ? Object.keys(ALGO_COST) : input.algorithms
+  const ids = input.algorithms
   if (ids.length === 0) return []
 
-  // Reuse the single-algorithm path so shares always sum to the headline number
-  const rows = ids.map(id => ({
-    id,
-    label: ALGO_LABEL[id] ?? id,
-    seconds: estimateRuntimeSeconds({
-      ...input,
-      algorithms: [id],
-      findBestModel: false,
-    }),
-  }))
-
-  const total = rows.reduce((s, r) => s + r.seconds, 0) || 1
-  return rows
-    .map(r => ({ ...r, pct: (r.seconds / total) * 100 }))
+  const weights = selectedCosts(ids)
+  const sum = weights.reduce((s, w) => s + w, 0) || 1
+  const total = estimateRuntimeSeconds(input)
+  return ids
+    .map((id, i) => ({
+      id,
+      label: ALGO_LABEL[id] ?? id,
+      seconds: (total * weights[i]!) / sum,
+      pct: (weights[i]! / sum) * 100,
+    }))
     .sort((a, b) => b.seconds - a.seconds)
 }
 
@@ -77,28 +99,49 @@ export interface RuntimeInput {
   nEstimators?: number
 }
 
+/**
+ * MODEL-FLOW-024. CORRECTED — this priced Find Best Parameters as "random
+ * search ≈ 10 candidates × 5-fold CV" and a sweep as every algorithm in
+ * `ALGO_COST`. Neither exists: the backend runs the base fit plus at most
+ * `TUNE_VARIANTS_PER_JOB` variants with no cross-validation, and a sweep runs
+ * one candidate per SELECTED algorithm. So the cost is additive, not a
+ * multiplier:
+ *
+ *   base   = sum of the selected algorithms' costs (each fits once)
+ *   tuning = TUNE_VARIANTS x the AVERAGE selected cost — one algorithm's
+ *            variants, and which one wins a sweep is unknown until it ends
+ *
+ * A single algorithm with Find Best Parameters is therefore 5x one fit, not
+ * 10x. `findBestModel` no longer changes the number: a sweep costs what
+ * fitting its selected algorithms costs. It stays on `RuntimeInput` because
+ * callers still pass it. Left alone: `ALGO_COST` is keyed on ids this
+ * catalogue does not have (rf, svr, gbr...), so `random_forest`, `svm`,
+ * `hist_gradient_boosting`, `grp`, `pls`, `lstm` and `gru` all fall back to
+ * cost 1 — the numbers are invented, and inventing more is not this change.
+ */
 export function estimateRuntimeSeconds({
   rows,
   features,
   algorithms,
   targets,
-  findBestModel,
   findBestParams,
   nEstimators,
 }: RuntimeInput): number {
   const cells = Math.max(rows, 1) * Math.max(features, 1)
   const trees = (nEstimators ?? 100) / 100
 
-  const algoCost = findBestModel
-    ? ALL_ALGO_COST
-    : algorithms.reduce((s, a) => s + (ALGO_COST[a] ?? 1), 0) || 1
-
-  // Random search ≈ 10 candidates × 5-fold CV, but folds are on smaller splits
-  const tuning = findBestParams ? 10 : 1
+  const costs = selectedCosts(algorithms)
+  const baseCost = costs.reduce((s, c) => s + c, 0) || 1
+  const meanCost = costs.length > 0 ? baseCost / costs.length : 1
+  const tuningCost = findBestParams ? TUNE_VARIANTS * meanCost : 0
 
   return Math.max(
     2,
-    cells * SEC_PER_CELL * trees * algoCost * tuning * Math.max(targets, 1),
+    cells *
+      SEC_PER_CELL *
+      trees *
+      (baseCost + tuningCost) *
+      Math.max(targets, 1),
   )
 }
 

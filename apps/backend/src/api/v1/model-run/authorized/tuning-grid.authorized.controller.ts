@@ -1,8 +1,9 @@
-import { Controller, Get, Param, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAccessGuard } from '@/guards/jwt-access.guard';
 import { TuningGridAuthorizedService } from './tuning-grid.authorized.service';
 import type { TuningGridResponse } from './tuning-grid.authorized.service';
+import { TuningGridQueryDto } from './dto/tuning-grid.authorized.dto';
 
 /**
  * MODEL-FLOW-022-T03b. Read-only — lets the client show the exact variants
@@ -21,7 +22,13 @@ export class TuningGridAuthorizedController {
     summary:
       'The curated hyperparameter variants Find Best Parameters searches for one algorithm',
   })
-  get(@Param('algorithm') algorithm: string): TuningGridResponse {
-    return this.tuningGrid.get(algorithm);
+  get(
+    @Param('algorithm') algorithm: string,
+    @Query() query: TuningGridQueryDto,
+  ): TuningGridResponse {
+    return this.tuningGrid.get(algorithm, {
+      distinctLabelled: query.distinctLabelled,
+      rows: query.rows,
+    });
   }
 }

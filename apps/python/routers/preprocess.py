@@ -38,6 +38,8 @@ from schemas.preprocess import (
     ArtifactReclaimRequest,
     ArtifactReclaimResponse,
     ArtifactStatsResponse,
+    CombineForRetrainRequest,
+    CombineForRetrainResponse,
     DraftRunReclaimRequest,
     DraftRunReclaimResponse,
     ArtifactPresignRequest,
@@ -93,6 +95,7 @@ from schemas.preprocess import (
     PreviewResponse,
     CorrelationRequest,
     CorrelationResponse,
+    PassthroughHoldoutForRunRequest,
     PrepareHoldoutForRunRequest,
     ReplayHoldoutForRunRequest,
     ReplayHoldoutRequest,
@@ -531,6 +534,49 @@ async def prepare_holdout_for_run(
     store: ObjectStore = Depends(get_object_store),
 ):
     return await _run(artifact_service.prepare_holdout_for_run, store, body)
+
+
+@router.post(
+    "/passthrough-holdout-for-run",
+    response_model=ArtifactStatsResponse,
+    summary="Copy an already model-ready holdout to a run's own prefix",
+    description=(
+        "MODEL-SERVE-015-T04. The THIRD holdout shape — for a retrain-"
+        "augmentation candidate's frozen-eval slice, which is already "
+        "feature-engineered AND scaled (cut straight out of the incumbent's "
+        "own already-scaled FINAL artifact). No transform runs: copies "
+        "source_key to target_key verbatim. Chosen over prepare-holdout-for-"
+        "run by NestJS reading DatasetArtifact.validationAlreadyScaled."
+    ),
+)
+async def passthrough_holdout_for_run(
+    body: PassthroughHoldoutForRunRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.passthrough_holdout_for_run, store, body)
+
+
+@router.post(
+    "/combine-for-retrain",
+    response_model=CombineForRetrainResponse,
+    summary="Merge a base FINAL artifact with a newly selected dataset",
+    description=(
+        "MODEL-SERVE-015-T03. Builds a retrain-augmentation candidate's "
+        "training artifact: the base FINAL's own pre-cut rows, plus the new "
+        "dataset's rows run through the base's exact pinned feature/scaling "
+        "recipe (never re-fit). Also carves out the base's own frozen test "
+        "rows, re-cut against the new dataset's start time, as a "
+        "passthrough holdout — see combine_for_retrain's own docstring for "
+        "the full ordering. Refuses with a 422-shaped ValueError when the "
+        "two datasets disagree on tag columns, when the base's target is "
+        "scaled, or when no uncontaminated frozen-eval window exists."
+    ),
+)
+async def combine_for_retrain(
+    body: CombineForRetrainRequest,
+    store: ObjectStore = Depends(get_object_store),
+):
+    return await _run(artifact_service.combine_for_retrain, store, body)
 
 
 @router.post(

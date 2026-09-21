@@ -51,6 +51,7 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
     algorithm: 'ridge',
     sourceRunId: 'run-incumbent',
     goldArtifactId: 'gold-1',
+    sourceDatasetId: 'dataset-base',
     hyperparameters: { alpha: 1 },
     metrics: { rmse: 1.25, r2: 0.9, mae: 0.5 },
   };
@@ -120,6 +121,19 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
           return Promise.resolve(runs[where.id as string] ?? null);
         }),
       },
+      // MODEL-SERVE-015-T01. getCurrentRetrainJobService's own base-dataset
+      // resolution — irrelevant to every pre-015 test here, so a fixed
+      // stand-in is enough.
+      datasetVersion: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ id: 'version-base-1', versionNumber: 2 }),
+      },
+      dataset: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({ id: 'dataset-base', name: 'Base Dataset' }),
+      },
     };
   }
 
@@ -139,12 +153,23 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
       const service = new ModelRetrainAuthorizedService(
         prisma as never,
         makeCandidateJobs(JOB_BASE) as never,
+        {} as never,
       );
 
       const res = await service.getCurrentRetrainJobService('model-1', ADMIN);
 
       expect(res.data).toEqual({
-        incumbent: { versionId: 'version-1', version: 3, algorithm: 'ridge' },
+        incumbent: {
+          versionId: 'version-1',
+          version: 3,
+          algorithm: 'ridge',
+          baseDataset: {
+            datasetId: 'dataset-base',
+            datasetName: 'Base Dataset',
+            versionId: 'version-base-1',
+            versionNumber: 2,
+          },
+        },
         job: null,
       });
     });
@@ -154,6 +179,7 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
       const service = new ModelRetrainAuthorizedService(
         prisma as never,
         makeCandidateJobs(JOB_BASE) as never,
+        {} as never,
       );
 
       const res = await service.getCurrentRetrainJobService('model-1', ADMIN);
@@ -168,6 +194,7 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
       const service = new ModelRetrainAuthorizedService(
         prisma as never,
         candidateJobs as never,
+        {} as never,
       );
 
       const res = await service.getCurrentRetrainJobService('model-1', ADMIN);
@@ -175,9 +202,11 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
       // Only the live lookup ran — no fallback read was needed.
       expect(prisma.modelCandidateJob.findFirst).toHaveBeenCalledTimes(1);
       expect(
-        (prisma.modelCandidateJob.findFirst.mock.calls[0] as [
-          { where: { status?: unknown } },
-        ])[0].where.status,
+        (
+          prisma.modelCandidateJob.findFirst.mock.calls[0] as [
+            { where: { status?: unknown } },
+          ]
+        )[0].where.status,
       ).toEqual({ in: ['QUEUED', 'RUNNING'] });
       expect(res.data?.job?.id).toBe('live-job');
     });
@@ -195,6 +224,7 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
       const service = new ModelRetrainAuthorizedService(
         prisma as never,
         makeCandidateJobs(finished) as never,
+        {} as never,
       );
 
       const res = await service.getCurrentRetrainJobService('model-1', ADMIN);
@@ -209,6 +239,7 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
       const service = new ModelRetrainAuthorizedService(
         makePrisma({ liveJob: live }) as never,
         candidateJobs as never,
+        {} as never,
       );
 
       await service.getCurrentRetrainJobService('model-1', ADMIN);
@@ -240,6 +271,7 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
       const service = new ModelRetrainAuthorizedService(
         prisma as never,
         makeCandidateJobs(finished) as never,
+        {} as never,
       );
 
       const res = await service.getCurrentRetrainJobService('model-1', ADMIN);
@@ -268,6 +300,7 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
       const service = new ModelRetrainAuthorizedService(
         prisma as never,
         makeCandidateJobs(live) as never,
+        {} as never,
       );
 
       const res = await service.getCurrentRetrainJobService('model-1', ADMIN);
@@ -305,6 +338,7 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
       const service = new ModelRetrainAuthorizedService(
         prisma as never,
         makeCandidateJobs(finished) as never,
+        {} as never,
       );
 
       const res = await service.getCurrentRetrainJobService('model-1', ADMIN);
@@ -316,6 +350,129 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
       // Both raw numbers survive — an incomparable basis is not a blank.
       expect(comparison?.incumbent.metrics.rmse).toBe(1.25);
       expect(comparison?.candidate.metrics.rmse).toBe(0.75);
+    });
+  });
+
+  describe('buildComparison — MODEL-SERVE-015 AUGMENT_DATA basis', () => {
+    it('is comparable when the candidate is scored on the frozen incumbent test rows, even on a different artifact', async () => {
+      const finished = {
+        ...JOB_BASE,
+        status: 'SUCCEEDED',
+        resultVersionId: 'version-4',
+        bestRunId: 'run-candidate',
+        retrainStrategy: 'AUGMENT_DATA',
+      };
+      const prisma = makePrisma({
+        liveJob: finished,
+        resultVersion: { version: 4, stage: 'STAGING' },
+        runsById: {
+          'run-incumbent': RUN_BASE,
+          'run-candidate': {
+            ...RUN_BASE,
+            id: 'run-candidate',
+            // A DIFFERENT artifact/checksum — the whole point of the
+            // amendment: this must not fail comparability on its own.
+            goldArtifactId: 'combined-gold-1',
+            artifactChecksum: 'combined-sha',
+            evalSetKind: 'FROZEN_INCUMBENT_TEST',
+            frozenEvalChecksum: 'frozen-sha',
+            holdoutMetrics: { rmse: 0.9, r2: 0.85, mae: 0.4 },
+            // The candidate's OWN test split, over the combined data —
+            // must never feed rmseDelta.
+            metrics: { rmse: 5.0, r2: -2.0, mae: 3.0 },
+          },
+        },
+      });
+      const service = new ModelRetrainAuthorizedService(
+        prisma as never,
+        makeCandidateJobs(finished) as never,
+        {} as never,
+      );
+
+      const res = await service.getCurrentRetrainJobService('model-1', ADMIN);
+      const comparison = res.data?.job?.comparison;
+
+      expect(comparison?.basis.comparable).toBe(true);
+      expect(comparison?.basis.strategy).toBe('AUGMENT_DATA');
+      expect(comparison?.basis.evalSet).toEqual({
+        kind: 'FROZEN_INCUMBENT_TEST',
+        checksum: 'frozen-sha',
+      });
+      // Delta is incumbent.metrics (1.25) vs candidate.holdoutMetrics
+      // (0.9) — NEVER candidate.metrics (5.0).
+      expect(comparison?.rmseDelta).toBeCloseTo(0.9 - 1.25);
+      expect(comparison?.candidate.metrics.rmse).toBe(0.9);
+      expect(comparison?.candidate.newRegimeMetrics?.rmse).toBe(5.0);
+    });
+
+    it('refuses a delta when the candidate has not yet been scored on the frozen set', async () => {
+      const live = {
+        ...JOB_BASE,
+        bestRunId: 'run-candidate',
+        retrainStrategy: 'AUGMENT_DATA',
+      };
+      const prisma = makePrisma({
+        liveJob: live,
+        runsById: {
+          'run-incumbent': RUN_BASE,
+          'run-candidate': {
+            ...RUN_BASE,
+            id: 'run-candidate',
+            goldArtifactId: 'combined-gold-1',
+            evalSetKind: null,
+            frozenEvalChecksum: null,
+            holdoutMetrics: null,
+            metrics: { rmse: 5.0, r2: -2.0, mae: 3.0 },
+          },
+        },
+      });
+      const service = new ModelRetrainAuthorizedService(
+        prisma as never,
+        makeCandidateJobs(live) as never,
+        {} as never,
+      );
+
+      const res = await service.getCurrentRetrainJobService('model-1', ADMIN);
+      const comparison = res.data?.job?.comparison;
+
+      expect(comparison?.basis.comparable).toBe(false);
+      expect(comparison?.basis.reason).toContain('frozen test rows');
+      expect(comparison?.rmseDelta).toBeNull();
+      // The new-regime number is still visible, never blanked.
+      expect(comparison?.candidate.newRegimeMetrics?.rmse).toBe(5.0);
+    });
+
+    it('a plain (KEEP_EXISTING) retrain never carries newRegimeMetrics', async () => {
+      const finished = {
+        ...JOB_BASE,
+        status: 'SUCCEEDED',
+        resultVersionId: 'version-4',
+        bestRunId: 'run-candidate',
+      };
+      const prisma = makePrisma({
+        liveJob: finished,
+        resultVersion: { version: 4, stage: 'STAGING' },
+        runsById: {
+          'run-incumbent': RUN_BASE,
+          'run-candidate': {
+            ...RUN_BASE,
+            id: 'run-candidate',
+            metrics: { rmse: 0.75, r2: 0.95, mae: 0.3 },
+          },
+        },
+      });
+      const service = new ModelRetrainAuthorizedService(
+        prisma as never,
+        makeCandidateJobs(finished) as never,
+        {} as never,
+      );
+
+      const res = await service.getCurrentRetrainJobService('model-1', ADMIN);
+      const comparison = res.data?.job?.comparison;
+
+      expect(comparison?.basis.strategy).toBe('KEEP_EXISTING');
+      expect(comparison?.basis.evalSet).toBeNull();
+      expect(comparison?.candidate.newRegimeMetrics).toBeNull();
     });
   });
 });

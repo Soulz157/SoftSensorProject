@@ -32,6 +32,7 @@ interface Props {
    *  buttons would change state and nothing on screen. */
   brush: BrushWindow
   tickFormatter: (t: number) => string
+  tooltipFormatter: (t: number) => string
   actualAsLine?: boolean
   yDomain?: [number, number] | undefined
 }
@@ -43,6 +44,7 @@ export function ActualVsPredictChart({
   rows,
   brush,
   tickFormatter,
+  tooltipFormatter,
   actualAsLine = true,
   yDomain,
 }: Props) {
@@ -96,7 +98,7 @@ export function ActualVsPredictChart({
             />
             <Tooltip
               content={
-                <MonitoringTooltip variant="main" formatLabel={tickFormatter} />
+                <MonitoringTooltip variant="main" formatLabel={tooltipFormatter} />
               }
             />
 

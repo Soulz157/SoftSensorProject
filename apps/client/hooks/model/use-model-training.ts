@@ -11,6 +11,7 @@ import {
 } from '@/services/model-draft'
 import type { DraftSplitStatsResult } from '@/services/dataset-version'
 import { defaultHyperparams } from '@/lib/training-config'
+import { isSequenceAlgorithm } from '@/lib/metric-source'
 import {
   mpTrainStateAtom,
   mpServerDraftIdAtom,
@@ -80,23 +81,28 @@ interface Deps {
  * live (MODEL-FLOW-023-T10's own verify script) — this function was the
  * reason the wizard could not reach that path at all.
  *
- * `forCandidateJob` is the ONE place the refusal is still real:
- * model-candidate-job.authorized.service.ts 400s a sequence-algorithm
- * candidate outright (both ALGORITHM_SWEEP/SWEEP_THEN_TUNE and a direct
- * HYPERPARAMETER_SEARCH), and no TUNING_GRID entry exists to expand one
- * into a phase-2 shortlist — the same reason `AlgorithmStack` disables
- * lstm/gru in the picker whenever Find Best Model or Find Best Parameters
- * is on. `null` here is this function's own backstop for that case
- * (MODEL-FLOW-003-T10's original discipline: refuse client-side rather than
- * send it and let the candidate-job service fail), kept as defense in depth
- * against stale draft state from before that picker dependency existed —
- * same pattern the oversized-dataset checks already use.
+ * CORRECTED AGAIN (MODEL-FLOW-024). `forSweep` is the ONE place the refusal
+ * is still real, and it is a scope decision, not a backend limit. This
+ * comment used to say model-candidate-job.authorized.service.ts 400s a
+ * sequence-algorithm candidate outright; it does not — that file never
+ * mentions lstm/gru, `CandidateSchema.algorithm` accepts both, and the only
+ * explicit refusal (model-run-launch) is for a CV run. What actually 400ed a
+ * direct HYPERPARAMETER_SEARCH was `expandSearchCandidates` finding NO
+ * `TUNING_GRID` entry, which MODEL-FLOW-024 added. A direct Find Best
+ * Parameters on one lstm/gru is therefore allowed. A SWEEP (Find Best Model,
+ * with or without tuning) still refuses them: it would launch up to three
+ * sequence fits before any tuning, and whether it should is an open decision
+ * on MODEL-FLOW-024, not something to enable by accident. `null` here is this
+ * function's own backstop for that case (MODEL-FLOW-003-T10's original
+ * discipline: refuse client-side rather than send it and let the service
+ * fail), kept as defense in depth against stale draft state — same pattern
+ * the oversized-dataset checks already use.
  */
 function toBackendAlgorithm(
   algorithm: Algorithm,
-  forCandidateJob: boolean,
+  forSweep: boolean,
 ): CreateDraftRunInput['algorithm'] | null {
-  if (forCandidateJob && (algorithm === 'lstm' || algorithm === 'gru')) {
+  if (forSweep && isSequenceAlgorithm(algorithm)) {
     return null
   }
   return algorithm
@@ -481,12 +487,21 @@ export function useModelTraining({
             'Select exactly one algorithm to tune it directly, or turn on Find Best Model to sweep first.',
           )
         }
-        const backendAlgorithm = toBackendAlgorithm(algorithm, true)
+        const backendAlgorithm = toBackendAlgorithm(algorithm, false)
         if (!backendAlgorithm) {
           throw new Error(
             `"${ALGORITHM_LABELS[algorithm]}" isn't supported by the training service yet — pick another algorithm.`,
           )
         }
+        // MODEL-FLOW-024. The split-stats fetch is never made while lstm/gru
+        // is selected, so `sizedFigures` is `{}` for exactly the algorithms
+        // whose batch-size band keys on rows. The dataset's own row count
+        // stands in — rows ALONE, never a distinct-value count it cannot
+        // supply (the schema accepts rows without it, not the reverse).
+        const sequenceRows =
+          isSequenceAlgorithm(algorithm) && (selectedDataset.rowCount ?? 0) > 0
+            ? { sizedRowCount: selectedDataset.rowCount }
+            : {}
 
         const created = await modelDraftCandidateJobService.create(draftId, {
           goldArtifactId: selectedDataset.currentArtifactId,
@@ -502,6 +517,7 @@ export function useModelTraining({
               hyperparameters: hyperparametersFor(algorithm),
             },
           ],
+          ...sequenceRows,
           ...sizedFigures,
         })
 

@@ -17,10 +17,9 @@ import type { RetrainComparison, RetrainJob } from '@/services/model-retrain'
  */
 
 const h = vi.hoisted(() => ({
-  variants: [
-    { alpha: 0.01 },
-    { alpha: 10 },
-  ] as Array<Record<string, string | number | boolean | null>>,
+  variants: [{ alpha: 0.01 }, { alpha: 10 }] as Array<
+    Record<string, string | number | boolean | null>
+  >,
 }))
 
 vi.mock('@/services/tuning-grid', () => ({
@@ -29,7 +28,11 @@ vi.mock('@/services/tuning-grid', () => ({
     // is exactly why the broken `res.data.variants` read passed its test
     // while failing against the live server.
     get: (algorithm: string) =>
-      Promise.resolve({ algorithm, variants: h.variants, maxVariantsPerJob: 4 }),
+      Promise.resolve({
+        algorithm,
+        variants: h.variants,
+        maxVariantsPerJob: 4,
+      }),
   },
 }))
 
@@ -37,14 +40,34 @@ vi.mock('../retrain-monitoring-context', () => ({
   RetrainMonitoringContext: () => <div data-testid="monitoring-context" />,
 }))
 
+// MODEL-SERVE-015-T01. RetrainDataStrategy's own dataset list — mocked out
+// the same way tuningGridService is above: this file's subject is the
+// dialog/progress shell, not the dataset picker's own fetch (no server is
+// reachable from these tests).
+vi.mock('@/hooks/dataset/use-datasets', () => ({
+  useDatasets: () => ({
+    datasets: [],
+    loading: false,
+    refetch: vi.fn(),
+    createDataset: vi.fn(),
+    deleteDataset: vi.fn(),
+    updateDataset: vi.fn(),
+  }),
+}))
+
 import { ModelRetrainDialog } from '../model-retrain-dialog'
 import { RetrainProgress } from '../retrain-progress'
 
-const MODEL = { id: 'model-1', name: 'Reactor Temp' } as AIModel
+const MODEL = {
+  id: 'model-1',
+  name: 'Reactor Temp',
+  workspaceId: 'ws-1',
+} as AIModel
 const INCUMBENT = {
   versionId: 'version-1',
   version: 3,
   algorithm: 'ridge' as const,
+  baseDataset: null,
 }
 
 function job(overrides: Partial<RetrainJob> = {}): RetrainJob {
@@ -71,6 +94,10 @@ function job(overrides: Partial<RetrainJob> = {}): RetrainJob {
     finishedAt: null,
     candidates: [],
     comparison: null,
+    retrainStrategy: null,
+    baseDatasetVersionId: null,
+    additionalDatasetVersionId: null,
+    combinedArtifactId: null,
     ...overrides,
   }
 }
@@ -86,6 +113,8 @@ function comparison(
       split: { method: 'chronological', ratio: 0.8 },
       comparable: true,
       reason: null,
+      strategy: 'KEEP_EXISTING',
+      evalSet: null,
     },
     incumbent: {
       versionId: 'version-1',
@@ -101,6 +130,7 @@ function comparison(
       stage: 'STAGING',
       algorithm: 'ridge',
       metrics: { rmse: 0.75, r2: 0.95, mae: 0.3 },
+      newRegimeMetrics: null,
     },
     rmseDelta: -0.5,
     selectionMetric: 'rmse',
@@ -124,9 +154,7 @@ describe('ModelRetrainDialog — pre-flight (T08)', () => {
       />,
     )
 
-    expect(
-      screen.getByText(/no PRODUCTION version yet/i),
-    ).toBeInTheDocument()
+    expect(screen.getByText(/no PRODUCTION version yet/i)).toBeInTheDocument()
     expect(
       screen.getByRole('button', { name: /Start Auto Finetune/i }),
     ).toBeDisabled()
@@ -166,9 +194,7 @@ describe('ModelRetrainDialog — pre-flight (T08)', () => {
       />,
     )
 
-    expect(
-      screen.getByRole('button', { name: /Retraining…/i }),
-    ).toBeDisabled()
+    expect(screen.getByRole('button', { name: /Retraining…/i })).toBeDisabled()
   })
 
   it('does NOT claim "no PRODUCTION version" while the incumbent is still loading', () => {
@@ -239,7 +265,7 @@ describe('ModelRetrainDialog — pre-flight (T08)', () => {
     await user.click(
       screen.getByRole('button', { name: /Start Auto Finetune/i }),
     )
-    expect(onStart).toHaveBeenCalledWith(undefined)
+    expect(onStart).toHaveBeenCalledWith(undefined, undefined)
   })
 
   it('pins a Custom Finetune candidate to the incumbent algorithm and a real grid variant', async () => {
@@ -265,9 +291,10 @@ describe('ModelRetrainDialog — pre-flight (T08)', () => {
     await user.click(
       screen.getByRole('button', { name: /Start Custom Finetune/i }),
     )
-    expect(onStart).toHaveBeenCalledWith([
-      { algorithm: 'ridge', hyperparameters: { alpha: 0.01 } },
-    ])
+    expect(onStart).toHaveBeenCalledWith(
+      [{ algorithm: 'ridge', hyperparameters: { alpha: 0.01 } }],
+      undefined,
+    )
   })
 })
 
@@ -362,6 +389,7 @@ describe('RetrainProgress — result (T04/T06)', () => {
               stage: null,
               algorithm: 'ridge',
               metrics: { rmse: 0.75, r2: 0.95, mae: 0.3 },
+              newRegimeMetrics: null,
             },
           }),
         })}
@@ -389,6 +417,7 @@ describe('RetrainProgress — result (T04/T06)', () => {
               stage: 'PRODUCTION',
               algorithm: 'ridge',
               metrics: { rmse: 0.75, r2: 0.95, mae: 0.3 },
+              newRegimeMetrics: null,
             },
           }),
         })}
@@ -422,7 +451,12 @@ describe('RetrainProgress — result (T04/T06)', () => {
     unmount()
 
     render(
-      <RetrainProgress job={job()} phase="training" logs={[]} onDismiss={onDismiss} />,
+      <RetrainProgress
+        job={job()}
+        phase="training"
+        logs={[]}
+        onDismiss={onDismiss}
+      />,
     )
     await user.click(
       screen.getByRole('button', { name: /Close retrain section/i }),
@@ -503,6 +537,8 @@ describe('RetrainProgress — result (T04/T06)', () => {
               split: { method: 'chronological', ratio: 0.8 },
               comparable: false,
               reason: 'different training artifact',
+              strategy: 'KEEP_EXISTING',
+              evalSet: null,
             },
             rmseDelta: null,
           }),
@@ -512,9 +548,7 @@ describe('RetrainProgress — result (T04/T06)', () => {
       />,
     )
 
-    expect(
-      screen.getByText(/different training artifact/i),
-    ).toBeInTheDocument()
+    expect(screen.getByText(/different training artifact/i)).toBeInTheDocument()
     expect(screen.queryByText(/improved|regressed/i)).not.toBeInTheDocument()
     // Both raw metric triples stay on screen even with no delta.
     expect(screen.getByText('0.7500')).toBeInTheDocument()

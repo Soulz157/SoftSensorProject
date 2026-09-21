@@ -26,6 +26,12 @@ interface ApiResponse<T> {
  * shown; a delta is only ever rendered when the basis says the two sides
  * were actually scored on the same thing.
  */
+type MetricTriple = {
+  rmse: number | null
+  r2: number | null
+  mae: number | null
+}
+
 export interface RetrainComparison {
   basis: {
     goldArtifactId: string | null
@@ -34,13 +40,23 @@ export interface RetrainComparison {
     split: { method?: string; ratio?: number } | null
     comparable: boolean
     reason: string | null
+    /** MODEL-SERVE-015. Which invariant `comparable` is proving —
+     *  'KEEP_EXISTING' means one shared artifact/checksum/split;
+     *  'AUGMENT_DATA' means the candidate was scored on the incumbent's own
+     *  frozen test rows regardless of what it trained on. State this
+     *  alongside a delta — "comparable" does not mean one universal thing. */
+    strategy: 'KEEP_EXISTING' | 'AUGMENT_DATA'
+    /** Non-null only for an AUGMENT_DATA job. `kind` mirrors the backend's
+     *  `ModelTrainingRun.evalSetKind` — null means the candidate has not
+     *  been scored against the frozen set yet. */
+    evalSet: { kind: string | null; checksum: string | null } | null
   }
   incumbent: {
     versionId: string
     version: number
     stage: string
     algorithm: string
-    metrics: { rmse: number | null; r2: number | null; mae: number | null }
+    metrics: MetricTriple
   }
   candidate: {
     runId: string | null
@@ -49,7 +65,12 @@ export interface RetrainComparison {
     version: number | null
     stage: string | null
     algorithm: string | null
-    metrics: { rmse: number | null; r2: number | null; mae: number | null }
+    metrics: MetricTriple
+    /** MODEL-SERVE-015-T04. AUGMENT_DATA only — the candidate's OWN test
+     *  split over the COMBINED (mixed-regime) data, reported separately
+     *  from `metrics` (which is the frozen-incumbent-test score `rmseDelta`
+     *  is computed from). Null for a plain (014) retrain. */
+    newRegimeMetrics: MetricTriple | null
   }
   /** Negative = the candidate is better (lower RMSE). Null when the bases
    *  differ — see `basis.reason`. */
@@ -87,6 +108,11 @@ export interface RetrainJob {
   finishedAt: string | null
   candidates: CandidateResult[]
   comparison: RetrainComparison | null
+  /** MODEL-SERVE-015. Null for every plain (014) retrain job. */
+  retrainStrategy: 'AUGMENT_DATA' | null
+  baseDatasetVersionId: string | null
+  additionalDatasetVersionId: string | null
+  combinedArtifactId: string | null
 }
 
 /** The incumbent PRODUCTION version — resolved independently of any job, so
@@ -99,6 +125,19 @@ export interface RetrainIncumbent {
   /** The real 12-value enum, not a client-invented subset — this is what
    *  `custom-finetune-form.tsx` pins Custom Finetune's one candidate to. */
   algorithm: CreateDraftRunInput['algorithm']
+  /** MODEL-SERVE-015-T01. The dataset the incumbent was ACTUALLY trained on
+   *  — resolved server-side off the incumbent's own pinned artifact, never
+   *  `Model.datasetId` (which can point somewhere else by the time a
+   *  retrain is triggered). Shown read-only as the augmentation strategy's
+   *  "Base Dataset". Null when the incumbent's artifact has no DatasetVersion
+   *  row (a legacy or draft-only artifact) — data augmentation is
+   *  unavailable in that case; Keep Existing Data still works. */
+  baseDataset: {
+    datasetId: string
+    datasetName: string
+    versionId: string | null
+    versionNumber: number | null
+  } | null
 }
 
 export interface CurrentRetrainState {
@@ -116,6 +155,12 @@ export interface TriggerRetrainInput {
    *  algorithm (see `custom-finetune-form.tsx`'s own note on why the
    *  algorithm picker was dropped). */
   candidates?: CandidateInput[]
+  /** MODEL-SERVE-015-T01. Omitted = 'KEEP_EXISTING' (the 014 default) —
+   *  every pre-015 caller is unaffected. 'AUGMENT_DATA' requires
+   *  `additionalDatasetVersionId`; the server's own `.strict()` schema
+   *  refuses one without the other. */
+  strategy?: 'KEEP_EXISTING' | 'AUGMENT_DATA'
+  additionalDatasetVersionId?: string
 }
 
 /**

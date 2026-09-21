@@ -21,6 +21,7 @@ import {
 } from '@/store/model-pipeline'
 import { ineligibleReason } from '@/lib/algorithm-eligibility'
 import { SEQUENCE_ALGORITHMS } from '@/lib/metric-source'
+import type { DatasetSize } from '@/lib/hyperparam-ranges'
 import { DynamicHyperparameters } from './dynamic-hyperparameters'
 
 const MAX = 3
@@ -42,6 +43,12 @@ interface Props {
   ) => void
   findBestParams: boolean
   findBestModel: boolean
+  /**
+   * MODEL-FLOW-024. The two size figures from the split stats Step 3 fetched;
+   * sizes the suggested ranges under each field. Omitted (or unresolved) shows
+   * the estimator's general ranges.
+   */
+  datasetSize?: DatasetSize
 }
 
 export function AlgorithmStack({
@@ -53,6 +60,7 @@ export function AlgorithmStack({
   onHyperparameterChange,
   findBestParams,
   findBestModel,
+  datasetSize,
 }: Props) {
   const atCap = algorithms.length >= MAX
   const onlyOne = algorithms.length <= 1
@@ -64,24 +72,22 @@ export function AlgorithmStack({
       ),
     )
 
-  // [fix]. lstm/gru train fine as a single run (modelDraftRunService.create
-  // — MODEL-FLOW-009-T04's own windowing pipeline), but NEITHER candidate-
-  // job kind accepts them: model-candidate-job.authorized.service.ts 400s a
-  // sequence-algorithm candidate outright, for both ALGORITHM_SWEEP/
-  // SWEEP_THEN_TUNE (findBestModel) and a direct HYPERPARAMETER_SEARCH
-  // (findBestParams alone, one algorithm, no sweep) — TUNING_GRID.lstm/.gru
-  // do not exist, so there is nothing to expand into a phase-2 shortlist
-  // either. Without this, a user could select lstm/gru, turn on Find Best
-  // Model or Find Best Parameters, and only discover the refusal at launch
-  // (use-model-training.ts's own "remove it from the sweep" error) — the
-  // exact gap this closes, one layer up, disabling the selection instead of
-  // failing after it.
-  const candidateJobOnly = findBestModel || findBestParams
-  const sequenceReason: Partial<Record<Algorithm, string>> = candidateJobOnly
+  // MODEL-FLOW-024. lstm/gru train as a single run and, since this feature,
+  // Find Best Parameters can tune one directly (one algorithm, no sweep — a
+  // HYPERPARAMETER_SEARCH over `TUNING_GRID.lstm/.gru`). A SWEEP (Find Best
+  // Model, with or without tuning) still refuses them. That is a scope
+  // decision, not a backend limit: this comment used to say the candidate-job
+  // service 400s a sequence-algorithm candidate outright, and it does not —
+  // what 400ed a direct search was the empty tuning grid. A sweep would launch
+  // up to three sequence fits before any tuning, and whether it should is an
+  // open decision on MODEL-FLOW-024. Disabling the selection here, one layer
+  // above `toBackendAlgorithm`'s backstop, means a user cannot select lstm,
+  // turn on Find Best Model, and only discover the refusal at launch.
+  const sequenceReason: Partial<Record<Algorithm, string>> = findBestModel
     ? Object.fromEntries(
         SEQUENCE_ALGORITHMS.map(a => [
           a,
-          'Not available for Find Best Model or Find Best Parameters — LSTM/GRU can only be trained one at a time.',
+          'Not available for Find Best Model — LSTM/GRU can be trained, or tuned with Find Best Parameters, one at a time.',
         ]),
       )
     : {}
@@ -125,12 +131,13 @@ export function AlgorithmStack({
   }, [trainLabelledRows])
 
   // [fix]. Same self-correcting shape, for the same reason, one mode
-  // switch later: turning ON Find Best Model or Find Best Parameters while
-  // lstm/gru is already selected must drop it from the selection rather
-  // than wait for a launch-time refusal — the dropdown's `disabled` above
-  // only stops a NEW selection, not one made before the toggle flipped.
+  // switch later: turning ON Find Best Model while lstm/gru is already
+  // selected must drop it from the selection rather than wait for a
+  // launch-time refusal — the dropdown's `disabled` above only stops a NEW
+  // selection, not one made before the toggle flipped. Find Best Parameters
+  // alone no longer does this (MODEL-FLOW-024): it can tune a sequence model.
   useEffect(() => {
-    if (!candidateJobOnly || algorithms.length <= 1) return
+    if (!findBestModel || algorithms.length <= 1) return
     const stillEligible = algorithms.filter(
       a => !SEQUENCE_ALGORITHMS.includes(a),
     )
@@ -141,7 +148,7 @@ export function AlgorithmStack({
       onAlgorithmsChange(stillEligible)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [candidateJobOnly])
+  }, [findBestModel])
 
   const add = (a: Algorithm) => {
     if (atCap || algorithms.includes(a)) return
@@ -198,6 +205,7 @@ export function AlgorithmStack({
             removeDisabled={onlyOne}
             hyperparameters={paramsFor(a, i)}
             onChange={(key, value) => onHyperparameterChange(a, key, value)}
+            datasetSize={datasetSize}
           />
         ))}
       </ul>
@@ -277,6 +285,7 @@ function AlgorithmCard({
   removeDisabled,
   hyperparameters,
   onChange,
+  datasetSize,
 }: {
   algorithm: Algorithm
   index: number
@@ -287,6 +296,7 @@ function AlgorithmCard({
   removeDisabled: boolean
   hyperparameters: Record<string, HyperparamValue>
   onChange: (key: string, value: HyperparamValue) => void
+  datasetSize: DatasetSize | undefined
 }) {
   const label = ALGORITHM_LABELS[algorithm]
   const panelId = `algorithm-params-${algorithm}`
@@ -372,6 +382,7 @@ function AlgorithmCard({
             algorithm={algorithm}
             hyperparameters={hyperparameters}
             onChange={onChange}
+            size={datasetSize}
           />
         </div>
       )}

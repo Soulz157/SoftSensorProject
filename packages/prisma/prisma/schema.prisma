@@ -489,6 +489,20 @@ model DatasetArtifact {
 
   droppedBadRows Int?
 
+  /// MODEL-SERVE-015-T04. False for every existing holdout shape (BRONZE
+  /// legacy replay, SILVER/GOLD DS-LAKE-023 prepare) — both still need
+  /// `to_model_ready` applied because their `validate_data.parquet` is
+  /// feature-bearing but UNSCALED. True only for a retrain-augmentation
+  /// combined GOLD's frozen-eval slice: it is cut straight out of the
+  /// already-scaled base FINAL artifact, so re-running it through
+  /// `prepare_holdout_for_run`'s `to_model_ready(fitted_params=...)` would
+  /// double-scale it (checked and ruled out, along with inverse-scaling it
+  /// back to raw form, which `inverse_scale_column`'s own docstring warns
+  /// is never byte-exact and never meant to be fed back into another
+  /// transform). `tryReplayHoldout` reads this flag to choose a passthrough
+  /// copy over the prepare/replay transform; nothing else reads it.
+  validationAlreadyScaled Boolean @default(false)
+
   sizeBytes BigInt @default(0)
 
   operations Json
@@ -788,6 +802,13 @@ enum ModelRunStatus {
   CANCELED
 }
 
+/// MODEL-SERVE-015-T04. What a run's `holdoutMetrics` was scored against —
+/// see `ModelTrainingRun.evalSetKind`'s own comment for the two meanings.
+enum ModelEvalSetKind {
+  DATASET_HOLDOUT
+  FROZEN_INCUMBENT_TEST
+}
+
 model ModelTrainingRun {
   id           String      @id @default(uuid())
   modelId      String?
@@ -944,6 +965,24 @@ model ModelTrainingRun {
   /// both cases leave training itself unaffected (see model-run.authorized.
   /// service.ts's claim()).
   holdoutMetrics           Json?
+  /// MODEL-SERVE-015-T04. What `holdoutMetrics` above was actually scored
+  /// against — nullable, and null for every run predating this feature
+  /// (DATASET_HOLDOUT is the implicit legacy meaning). `DATASET_HOLDOUT`:
+  /// the dataset's own raw validation holdout, unchanged behavior.
+  /// `FROZEN_INCUMBENT_TEST`: an AUGMENT_DATA retrain candidate, scored on
+  /// the incumbent's own frozen test rows so its `holdoutMetrics` is
+  /// directly comparable to the incumbent's `ModelVersion.metrics` — see
+  /// `buildComparison` in model-retrain.authorized.service.ts, which
+  /// requires this discriminant (not just artifact/checksum equality) to
+  /// mark an augmented retrain `comparable`.
+  evalSetKind              ModelEvalSetKind?
+  /// sha256 of the frozen-eval parquet the candidate was actually scored
+  /// against, set only alongside `evalSetKind: FROZEN_INCUMBENT_TEST`.
+  /// `buildComparison` checks this against the incumbent's own derived
+  /// frozen-eval checksum before publishing an `rmseDelta` — the same
+  /// checksum-drift discipline `claim()` already applies to the training
+  /// artifact, applied here to the eval artifact instead.
+  frozenEvalChecksum       String?
   /// MODEL-FLOW-014-T06. The train/test split distribution panel's own
   /// response (SplitStatsResponse, apps/python schemas/preprocess.py),
   /// frozen at RUN CREATION — the record of what the user was actually
@@ -1078,6 +1117,16 @@ model ModelVersion {
   /// run after creation: this row is what promote's r2 floor (T06) checks
   /// against, and it must not change under a row nothing else is touching.
   metrics Json?
+
+  /// MODEL-SERVE-015. Copied off the winning candidate's
+  /// `ModelCandidateJob.retrainStrategy` at version-creation time — null for
+  /// every version created by Save Model or a plain (014) retrain,
+  /// `'AUGMENT_DATA'` for one minted from a combined artifact. No join
+  /// needed to answer "how was this version produced" from the version row
+  /// alone; `goldArtifactId` above already IS the combined artifact for
+  /// that case, and its own `parentArtifactId`/`operations` carry both
+  /// source datasets.
+  retrainStrategy String?
 
   /// MODEL-SERVE-001-T06. Set only when a promote crossed the r2<=0 floor
   /// with an explicit override — {actorId, actorName, reason, at}. Absent
@@ -1260,6 +1309,34 @@ model ModelCandidateJob {
   /// after a dropped response return the original job instead of a second
   /// one once the first has finished.
   idempotencyKey  String?
+
+  /// MODEL-SERVE-015. Null for every ordinary retrain (014's KEEP_EXISTING
+  /// path) and for every draft-owned job. `'AUGMENT_DATA'` when this job
+  /// was triggered against a combined artifact — a caller-facing label, NOT
+  /// a `ModelCandidateJobKind`: `kind` describes how candidates vary
+  /// (algorithm vs hyperparameters, see the enum's own comment) and
+  /// `advanceJobForRun` switches on it, while augmentation is orthogonal —
+  /// an AUGMENT_DATA retrain can still be a hyperparameter search over N
+  /// candidates. Bare String, not an enum, matching `sourceVersionId`'s own
+  /// reasoning: this is intent metadata carried on a row already
+  /// constrained by the Model cascade diamond, not a value anything
+  /// switches control flow on inside this service.
+  retrainStrategy            String?
+  /// The dataset VERSION the incumbent was actually trained on (resolved
+  /// from the incumbent's ModelTrainingRun, never from `Model.datasetId` —
+  /// 015-T01's own finding that the latter can have moved since). Set only
+  /// alongside `retrainStrategy: 'AUGMENT_DATA'`.
+  baseDatasetVersionId       String?
+  /// The operator-selected DatasetVersion merged in. Set only alongside
+  /// `retrainStrategy: 'AUGMENT_DATA'`.
+  additionalDatasetVersionId String?
+  /// The combined GOLD DatasetArtifact this job trains its candidates
+  /// against — set only alongside `retrainStrategy: 'AUGMENT_DATA'`, at job
+  /// creation, before any candidate launches. Bare String for the same
+  /// no-FK reason as the ids above; `goldArtifactId` below is a copy of
+  /// this value once the strategy is AUGMENT_DATA, kept in step for every
+  /// other reader of this row that never learns about augmentation.
+  combinedArtifactId         String?
 
   /// The fixed spec every candidate shares — validated once, the same way
   /// buildRunData validates a single run's spec. `algorithm` moved INTO

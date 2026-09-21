@@ -68,6 +68,10 @@ describe('ModelCandidateJobAuthorizedService', () => {
     createdAt: new Date(),
     startedAt: new Date(),
     finishedAt: null,
+    // MODEL-FLOW-020-T04 columns. Null is what a job created before Step 3's
+    // Apply carries; MODEL-FLOW-024 reads them to pick the grid's size tier.
+    sizedRowCount: null as number | null,
+    sizedDistinctLabelled: null as number | null,
   };
 
   function makePrisma(
@@ -205,9 +209,11 @@ describe('ModelCandidateJobAuthorizedService', () => {
     });
 
     /**
-     * MODEL-FLOW-020-T04. The size figures are optional, but never HALF
-     * supplied — the pair exists to show how far the two diverge (up to 260x
-     * on this system's own data), and one alone carries no such comparison.
+     * MODEL-FLOW-020-T04. The size figures are optional. A distinct count
+     * never travels without a row count — the pair exists to show how far the
+     * two diverge (up to 260x on this system's own data). MODEL-FLOW-024
+     * allows the reverse: a sequence job has a row count and, since the
+     * split-stats fetch is skipped for lstm/gru, no distinct count.
      */
     it('accepts both size figures together', () => {
       const result = CreateCandidateJobSchema.safeParse({
@@ -227,17 +233,20 @@ describe('ModelCandidateJobAuthorizedService', () => {
       expect(result.success).toBe(true);
     });
 
-    it.each([
-      ['sizedRowCount without sizedDistinctLabelled', { sizedRowCount: 8350 }],
-      [
-        'sizedDistinctLabelled without sizedRowCount',
-        { sizedDistinctLabelled: 32 },
-      ],
-    ])('refuses %s', (_label, half) => {
+    it('accepts a row count alone — the sequence-model case (MODEL-FLOW-024)', () => {
       const result = CreateCandidateJobSchema.safeParse({
         ...BASE,
         kind: 'HYPERPARAMETER_SEARCH',
-        ...half,
+        sizedRowCount: 400,
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('still refuses a distinct count without a row count', () => {
+      const result = CreateCandidateJobSchema.safeParse({
+        ...BASE,
+        kind: 'HYPERPARAMETER_SEARCH',
+        sizedDistinctLabelled: 32,
       });
       expect(result.success).toBe(false);
     });
@@ -285,9 +294,11 @@ describe('ModelCandidateJobAuthorizedService', () => {
         'ADMIN',
       );
 
-      expect(mockedTuningCandidatesFor).toHaveBeenCalledWith('ridge', {
-        alpha: 1,
-      });
+      expect(mockedTuningCandidatesFor).toHaveBeenCalledWith(
+        'ridge',
+        { alpha: 1 },
+        { distinctLabelled: undefined, rows: undefined },
+      );
       const createCall = prisma.modelCandidateJob.create.mock.calls[0][0];
       expect(createCall.data.totalRuns).toBe(3);
       expect(createCall.data.candidates).toEqual([
@@ -295,6 +306,42 @@ describe('ModelCandidateJobAuthorizedService', () => {
         { algorithm: 'ridge', hyperparameters: { alpha: 0.01 }, phase: 1 },
         { algorithm: 'ridge', hyperparameters: { alpha: 10 }, phase: 1 },
       ]);
+    });
+
+    /**
+     * MODEL-FLOW-024. The pair the client carried from Step 3 picks the
+     * grid's size tier, so it must reach `tuningCandidatesFor` under the
+     * right names — a service that swapped the two would size capacity off
+     * the ROW count (8,350) instead of the 32 independent observations, which
+     * is exactly the mistake this feature exists to avoid. The fixture is the
+     * real measured pair for that reason.
+     */
+    it('passes the sized figures to the grid, distinct values for capacity and rows for batch size', async () => {
+      mockedTuningCandidatesFor.mockReturnValue([{ alpha: 3 }]);
+      const service = new ModelCandidateJobAuthorizedService(
+        makePrisma() as never,
+        makeRunLaunch() as never,
+      );
+
+      await service.createJob(
+        'draft-1',
+        {
+          goldArtifactId: 'gold-1',
+          targetY: 'TI-101',
+          kind: 'HYPERPARAMETER_SEARCH',
+          candidates: [{ algorithm: 'ridge', hyperparameters: { alpha: 1 } }],
+          sizedRowCount: 8350,
+          sizedDistinctLabelled: 32,
+        } as never,
+        'user-1',
+        'ADMIN',
+      );
+
+      expect(mockedTuningCandidatesFor).toHaveBeenCalledWith(
+        'ridge',
+        { alpha: 1 },
+        { distinctLabelled: 32, rows: 8350 },
+      );
     });
 
     /**
@@ -623,9 +670,12 @@ describe('ModelCandidateJobAuthorizedService', () => {
 
       await service.advanceJobForRun('run-1', 'job-1');
 
-      expect(mockedTuningCandidatesFor).toHaveBeenCalledWith('ridge', {
-        alpha: 1.0,
-      });
+      // A job with no recorded figures builds phase 2 from the medium tier.
+      expect(mockedTuningCandidatesFor).toHaveBeenCalledWith(
+        'ridge',
+        { alpha: 1.0 },
+        { distinctLabelled: null, rows: null },
+      );
       expect(launchDraftRun).toHaveBeenCalledWith(
         'draft-1',
         expect.objectContaining({
@@ -661,6 +711,56 @@ describe('ModelCandidateJobAuthorizedService', () => {
       );
       // Not the job-complete write — no finishedAt, no SUCCEEDED status.
       expect(prisma.modelDraft.update).not.toHaveBeenCalled();
+    });
+
+    /**
+     * MODEL-FLOW-024. Phase 2 has no request to read a figure from — it runs
+     * minutes later off a job row — so the figures `createJob` stored are the
+     * only way the tier survives to here. The fixture is the same measured
+     * pair as above.
+     */
+    it('builds phase 2 from the figures the job row recorded', async () => {
+      mockedTuningCandidatesFor.mockReturnValue([{ alpha: 3 }]);
+      const prisma = makePrisma({
+        job: {
+          kind: 'SWEEP_THEN_TUNE',
+          completedRuns: 1,
+          totalRuns: 2,
+          candidates: [
+            {
+              algorithm: 'ols',
+              hyperparameters: { fit_intercept: true },
+              phase: 1,
+            },
+            { algorithm: 'ridge', hyperparameters: { alpha: 1.0 }, phase: 1 },
+          ],
+          bestRunId: 'run-0',
+          bestRmse: 0.9,
+          sizedRowCount: 8350,
+          sizedDistinctLabelled: 32,
+        },
+        run: {
+          id: 'run-1',
+          status: 'SUCCEEDED',
+          metrics: { rmse: 0.5 },
+          algorithm: 'ridge',
+          hyperparameters: { alpha: 1.0 },
+        },
+      });
+      const service = new ModelCandidateJobAuthorizedService(
+        prisma as never,
+        makeRunLaunch({
+          launchDraftRun: jest.fn().mockResolvedValue({ id: 'run-tune-1' }),
+        }) as never,
+      );
+
+      await service.advanceJobForRun('run-1', 'job-1');
+
+      expect(mockedTuningCandidatesFor).toHaveBeenCalledWith(
+        'ridge',
+        { alpha: 1.0 },
+        { distinctLabelled: 32, rows: 8350 },
+      );
     });
 
     it('completes normally when the winner has nothing left to tune', async () => {

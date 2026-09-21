@@ -60,11 +60,15 @@ export const CreateCandidateJobSchema = z
     // requires a FULL artifact read, and
     // model-run-launch.authorized.service.ts:174-182 already carries a
     // reasoned refusal to add one to the launch path. The client is the only
-    // participant that has these free. They are RECORD, never authority —
-    // nothing branches on them today, and when MODEL-FLOW-020-T03's
-    // derivation lands it must decide whether a client-supplied figure is
-    // trustworthy enough to size a grid from, or whether that call needs the
-    // server's own read.
+    // participant that has these free. They were RECORD, never authority,
+    // until MODEL-FLOW-024 settled the question this comment used to leave
+    // open: `sizedDistinctLabelled` now picks the tuning grid's size tier
+    // (and `sizedRowCount` the LSTM/GRU batch-size band). A client-supplied
+    // figure is trusted for that, and only that, because it selects among
+    // fixed declared variant lists and grants nothing the client cannot
+    // already do by sending arbitrary hyperparameters itself. The figures are
+    // stored on the job row so a later reader can recompute which tier a
+    // job's phase 2 was built from.
     //
     // Both optional: a job started before the user pressed Apply on Step 3
     // genuinely has no figures to send (the panel's fetch is Apply-gated),
@@ -82,18 +86,22 @@ export const CreateCandidateJobSchema = z
       path: ['candidates'],
     },
   )
-  // TOGETHER OR NEITHER. The pair exists to show a reader how far apart the
-  // two figures are (on this system's own data, up to 260x); one of them
-  // alone carries no such comparison and would read as a captured job whose
-  // other half was lost. Refused here rather than silently nulled, so a
-  // client that starts sending one and not the other is told.
+  // DISTINCT NEEDS ROWS, BUT NOT THE REVERSE. The pair exists to show a
+  // reader how far apart the two figures are (on this system's own data, up
+  // to 260x), so a distinct count with no row count beside it carries no such
+  // comparison and would read as a captured job whose other half was lost —
+  // refused here rather than silently nulled. Rows WITHOUT a distinct count is
+  // allowed since MODEL-FLOW-024: the split-stats fetch is never made while
+  // lstm/gru is selected (a ratio split means nothing for windows), so a
+  // sequence job has a row count from the dataset but no distinct count to
+  // send, and LSTM/GRU `batch_size` is the one thing that keys on rows.
   .refine(
     (data) =>
-      (data.sizedRowCount === undefined) ===
-      (data.sizedDistinctLabelled === undefined),
+      data.sizedDistinctLabelled === undefined ||
+      data.sizedRowCount !== undefined,
     {
       message:
-        'sizedRowCount and sizedDistinctLabelled are sent together or not at all — one without the other cannot show how far the two figures diverge.',
+        'sizedDistinctLabelled cannot be sent without sizedRowCount — a distinct count with no row count beside it cannot show how far the two figures diverge.',
       path: ['sizedDistinctLabelled'],
     },
   );

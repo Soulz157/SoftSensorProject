@@ -10,8 +10,15 @@ import {
   type RetrainIncumbent,
   type RetrainJob,
 } from '@/services/model-retrain'
-import type { CandidateInput, ModelTrainingRunLog } from '@/services/model-draft'
-import { newIdempotencyKey, retrainPhase, type RetrainPhase } from '@/lib/retrain'
+import type {
+  CandidateInput,
+  ModelTrainingRunLog,
+} from '@/services/model-draft'
+import {
+  newIdempotencyKey,
+  retrainPhase,
+  type RetrainPhase,
+} from '@/lib/retrain'
 import {
   clearDismissedJobId,
   readDismissedJobId,
@@ -51,8 +58,16 @@ export interface UseModelRetrain {
   error: string | null
   /** `candidates` omitted = Auto Finetune (server expands the incumbent's
    *  own algorithm through the curated tuning grid). Present = Custom
-   *  Finetune's one candidate. */
-  start: (candidates?: CandidateInput[]) => Promise<void>
+   *  Finetune's one candidate. MODEL-SERVE-015: `options.strategy` omitted
+   *  = 'KEEP_EXISTING' (014's own behavior, unaffected); 'AUGMENT_DATA'
+   *  requires `options.additionalDatasetVersionId`. */
+  start: (
+    candidates?: CandidateInput[],
+    options?: {
+      strategy?: 'KEEP_EXISTING' | 'AUGMENT_DATA'
+      additionalDatasetVersionId?: string
+    },
+  ) => Promise<void>
   /** Clears the last error only — the job itself is server state and is
    *  never reset from the client. */
   clearError: () => void
@@ -90,18 +105,15 @@ export function useModelRetrain({
 
   const modelId = model?.id ?? null
 
-  const fetchLogs = useCallback(
-    async (mId: string, runId: string) => {
-      try {
-        const run = await modelRunLogsService.get(mId, runId)
-        setLogs(run.logs)
-      } catch {
-        // Soft-fail — the stage boxes and status still come from `job`
-        // itself; a log-read hiccup must not blank the whole panel.
-      }
-    },
-    [],
-  )
+  const fetchLogs = useCallback(async (mId: string, runId: string) => {
+    try {
+      const run = await modelRunLogsService.get(mId, runId)
+      setLogs(run.logs)
+    } catch {
+      // Soft-fail — the stage boxes and status still come from `job`
+      // itself; a log-read hiccup must not blank the whole panel.
+    }
+  }, [])
 
   // Initial load + reload on model change: restores whatever the server
   // already knows, so this survives a refresh or a second tab.
@@ -158,7 +170,8 @@ export function useModelRetrain({
         const res = await modelRetrainService.get(modelId, jobId)
         setJob(res.data)
         setError(null)
-        if (res.data.currentRunId) void fetchLogs(modelId, res.data.currentRunId)
+        if (res.data.currentRunId)
+          void fetchLogs(modelId, res.data.currentRunId)
         if (!LIVE_STATUSES.has(res.data.status)) {
           if (notifiedTerminalRef.current !== res.data.id) {
             notifiedTerminalRef.current = res.data.id
@@ -184,7 +197,13 @@ export function useModelRetrain({
   }, [modelId, jobId, jobLive, fetchLogs, model?.name, onUpdated])
 
   const start = useCallback(
-    async (candidates?: CandidateInput[]) => {
+    async (
+      candidates?: CandidateInput[],
+      options?: {
+        strategy?: 'KEEP_EXISTING' | 'AUGMENT_DATA'
+        additionalDatasetVersionId?: string
+      },
+    ) => {
       if (!modelId || jobLive) return
       if (!idempotencyKeyRef.current) {
         idempotencyKeyRef.current = newIdempotencyKey()
@@ -194,6 +213,8 @@ export function useModelRetrain({
         const res = await modelRetrainService.trigger(modelId, {
           idempotencyKey: idempotencyKeyRef.current,
           candidates,
+          strategy: options?.strategy,
+          additionalDatasetVersionId: options?.additionalDatasetVersionId,
         })
         // A fresh trigger (201) and an idempotent replay (200) return the
         // same job envelope — both handled identically.
@@ -202,7 +223,8 @@ export function useModelRetrain({
         clearDismissedJobId(modelId)
         setDismissedJobId(null)
         setJob(res.data)
-        if (res.data.currentRunId) void fetchLogs(modelId, res.data.currentRunId)
+        if (res.data.currentRunId)
+          void fetchLogs(modelId, res.data.currentRunId)
       } catch (err) {
         // A 409 means another retrain is already live for this model — the
         // real in-flight job is recovered from `current()`, never parsed

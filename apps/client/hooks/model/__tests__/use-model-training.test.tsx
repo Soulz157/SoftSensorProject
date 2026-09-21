@@ -554,14 +554,14 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
     expect(store.get(mpTrainStateAtom).status).not.toBe('error')
   })
 
-  // [fix]. THE OTHER HALF of the same fix: a candidate job genuinely
-  // cannot take lstm/gru (model-candidate-job.authorized.service.ts 400s
-  // it — no TUNING_GRID entry exists to expand one into a phase-2
-  // shortlist), so this refusal is correct and must survive the fix above,
-  // not be relaxed alongside it. Defense in depth for stale draft state —
-  // AlgorithmStack's own picker disables lstm/gru whenever either toggle
-  // is on, but this is the backstop if that state predates the toggle.
-  it('[fix] still refuses lstm in a Find Best Model sweep — the candidate-job path genuinely cannot take it', async () => {
+  // [fix]. A SWEEP is the half that still refuses lstm/gru. MODEL-FLOW-024
+  // CORRECTS the reason this comment used to give: the candidate-job service
+  // does not 400 a sequence candidate (it never mentions them) — the refusal
+  // is a scope decision, kept because a sweep would launch up to three
+  // sequence fits before any tuning. Defense in depth for stale draft state —
+  // AlgorithmStack's own picker disables lstm/gru whenever Find Best Model is
+  // on, but this is the backstop if that state predates the toggle.
+  it('[fix] still refuses lstm in a Find Best Model sweep — a sweep of sequence models is not enabled', async () => {
     const { result, store } = renderTraining(s => {
       s.set(mpFindBestModelAtom, true)
       s.set(mpAlgorithmsAtom, ['lstm', 'ridge'])
@@ -576,18 +576,110 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
     expect(modelDraftCandidateJobService.create).not.toHaveBeenCalled()
   })
 
-  it('[fix] still refuses lstm with Find Best Parameters alone (no sweep) — same candidate-job refusal', async () => {
+  /**
+   * MODEL-FLOW-024. This case used to assert the OPPOSITE ("still refuses lstm
+   * with Find Best Parameters alone"), on the claim the job service cannot
+   * take a sequence candidate. What refused it was the empty tuning grid,
+   * which now exists. The job goes out as a HYPERPARAMETER_SEARCH of ONE lstm
+   * candidate, expanded server-side like any other.
+   */
+  it('launches a HYPERPARAMETER_SEARCH for lstm with Find Best Parameters alone', async () => {
+    vi.mocked(modelDraftCandidateJobService.create).mockResolvedValue({
+      statusCode: 201,
+      message: 'ok',
+      type: 'SUCCESS',
+      data: { id: 'job-1' } as never,
+    })
+    vi.mocked(modelDraftCandidateJobService.get).mockResolvedValue({
+      statusCode: 200,
+      message: 'ok',
+      type: 'SUCCESS',
+      data: {
+        id: 'job-1',
+        status: 'RUNNING',
+        completedRuns: 0,
+        totalRuns: 5,
+        candidates: [],
+      } as never,
+    })
     const { result, store } = renderTraining(s => {
       s.set(mpFindBestParamsAtom, true)
       s.set(mpAlgorithmsAtom, ['lstm'])
-    })
+    }, null)
 
     await act(async () => {
       result.current.start()
       await vi.advanceTimersByTimeAsync(0)
     })
 
-    expect(store.get(mpTrainStateAtom).status).toBe('error')
-    expect(modelDraftCandidateJobService.create).not.toHaveBeenCalled()
+    expect(modelDraftCandidateJobService.create).toHaveBeenCalledWith(
+      'draft-1',
+      expect.objectContaining({
+        kind: 'HYPERPARAMETER_SEARCH',
+        candidates: [expect.objectContaining({ algorithm: 'lstm' })],
+      }),
+    )
+    expect(store.get(mpTrainStateAtom).status).toBe('training')
+  })
+
+  it('sends the dataset row count ALONE for a sequence search — split stats are never fetched for lstm/gru, so there is no distinct count to send', async () => {
+    vi.mocked(modelDraftCandidateJobService.create).mockResolvedValue({
+      statusCode: 201,
+      message: 'ok',
+      type: 'SUCCESS',
+      data: { id: 'job-1' } as never,
+    })
+    vi.mocked(modelDraftCandidateJobService.get).mockResolvedValue({
+      statusCode: 200,
+      message: 'ok',
+      type: 'SUCCESS',
+      data: {
+        id: 'job-1',
+        status: 'RUNNING',
+        completedRuns: 0,
+        totalRuns: 5,
+        candidates: [],
+      } as never,
+    })
+    const { result } = renderTraining(s => {
+      s.set(mpSelectedDatasetAtom, {
+        ...DATASET,
+        rowCount: 400,
+      } as SavedDataset)
+      s.set(mpFindBestParamsAtom, true)
+      s.set(mpAlgorithmsAtom, ['gru'])
+    }, null)
+
+    await act(async () => {
+      result.current.start()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    const [, body] = vi.mocked(modelDraftCandidateJobService.create).mock
+      .calls[0]!
+    expect(body).toHaveProperty('sizedRowCount', 400)
+    // The schema refuses a distinct count without rows; the reverse is the
+    // sequence case. It must not be invented from the row count.
+    expect(body).not.toHaveProperty('sizedDistinctLabelled')
+  })
+
+  it('does NOT send the dataset row count for a tabular job before Apply — that null path is unchanged', async () => {
+    const { result } = renderTraining(s => {
+      s.set(mpSelectedDatasetAtom, {
+        ...DATASET,
+        rowCount: 400,
+      } as SavedDataset)
+      s.set(mpFindBestParamsAtom, true)
+      s.set(mpAlgorithmsAtom, ['ridge'])
+    }, null)
+
+    await act(async () => {
+      result.current.start()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    const [, body] = vi.mocked(modelDraftCandidateJobService.create).mock
+      .calls[0]!
+    expect(body).not.toHaveProperty('sizedRowCount')
   })
 })

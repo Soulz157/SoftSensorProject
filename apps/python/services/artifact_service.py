@@ -72,6 +72,7 @@ from schemas.preprocess import (
     CleanRequest,
     CleanupRequest,
     ColumnStatsRequest,
+    CombineForRetrainRequest,
     DraftRunReclaimRequest,
     FeatureConfigRequest,
     FeatureSpecRequest,
@@ -81,6 +82,7 @@ from schemas.preprocess import (
     MAX_PREDICTION_BATCH_RUNS,
     MAX_PREDICTION_POINTS,
     MetadataRequest,
+    PassthroughHoldoutForRunRequest,
     PrepareHoldoutForRunRequest,
     ReplayHoldoutForRunRequest,
     ReplayHoldoutRequest,
@@ -796,6 +798,186 @@ def prepare_holdout_for_run(
         store, stats, started, parent_key=request.source_key,
         dropped_bad_rows=dropped_bad_rows,
     )
+
+
+def passthrough_holdout_for_run(
+    store: ObjectStore, request: PassthroughHoldoutForRunRequest
+) -> dict[str, Any]:
+    """MODEL-SERVE-015-T04. The THIRD holdout shape — see
+    `PassthroughHoldoutForRunRequest`'s own docstring for why this exists
+    beside `replay_holdout_for_run`/`prepare_holdout_for_run` rather than
+    being folded into either. `source_key` is already model-ready (a
+    retrain-augmentation candidate's frozen-eval slice, cut out of the
+    already-scaled base FINAL by `combine_for_retrain`), so this copies it
+    to the run's own `target_key` verbatim — no `apply_features`, no
+    `select_columns`, no `to_model_ready`, nothing to drop. `claim()`'s
+    caller-side contract is unchanged: the same `presign_run_object` read
+    that resolves `prepare_holdout_for_run`'s output resolves this one.
+    """
+    started = time.perf_counter()
+    frame = store.get_frame(request.source_key)
+    assert_frame_is_usable(frame)
+    stats = store.put_frame(
+        frame, request.target_key, overwrite=request.overwrite)
+    return _commit(store, stats, started, parent_key=request.source_key)
+
+
+def combine_for_retrain(
+    store: ObjectStore, request: CombineForRetrainRequest
+) -> dict[str, Any]:
+    """MODEL-SERVE-015-T03. See `CombineForRetrainRequest`'s own docstring
+    for the shape of what each input names. Order of operations, and why:
+
+    1. The base FINAL's rows split at `cut_timestamp` into `base_train`
+       (kept as-is) and `base_frozen_raw` (candidate frozen-eval rows,
+       still needing the re-cut below). NEITHER is re-scaled — both are
+       slices of an already-scaled artifact, and scaling either again is
+       the double-scale bug this feature's design note rules out.
+    2. The new dataset's own start time is read off the frame THIS call
+       actually loaded (never trusted from the caller) and the frozen-eval
+       window is re-cut to `[cut_timestamp, new_start)` — rows at/after
+       `new_start` are dropped from BOTH train and eval: they are part of
+       the incumbent's own original test split, so they may not join
+       train, and they are not provably ahead of every new-dataset row, so
+       they may not stay in the frozen eval set either. Refuses outright
+       when that window is empty (`new_start <= cut_timestamp`) — the same
+       "no uncontaminated eval window" rule NestJS's own pre-flight check
+       enforces, re-verified here against the real data.
+    3. ONLY the new dataset's rows are feature-engineered (`apply_features`
+       -> `select_columns`), bad-row-dropped, and scaled — with the base's
+       own FITTED `scaling_params`, never re-fit (T02's decision, mirrored
+       from `replay_holdout_for_run`/`prepare_holdout_for_run`'s own
+       `fitted_params=` calls).
+    4. `base_train` and the newly-scaled rows are concatenated, deduplicated
+       on `timestamp` keeping the LAST row (the new dataset's, since it was
+       appended after `base_train` — "new wins"), and sorted.
+    5. The combined frame commits as a new GOLD; the re-cut frozen-eval
+       slice commits as its `validate_data.parquet` sidecar, in the same
+       call, via `_commit`'s existing `validation_row_count`/
+       `validation_holdout_from` fields (the same convention `features()`'s
+       own holdout branch already uses) — NestJS marks the created row
+       `validationAlreadyScaled: true`, which is what routes a future
+       `claim()` through `passthrough_holdout_for_run` instead of
+       `prepare_holdout_for_run` for this artifact.
+    """
+    started = time.perf_counter()
+    cut_ts = _wall_clock(request.cut_timestamp)
+
+    base = store.get_frame(request.base_data_key)
+    assert_frame_is_usable(base)
+    base_train = base[base[TIMESTAMP_COLUMN] < cut_ts].reset_index(drop=True)
+    base_frozen_raw = (
+        base[base[TIMESTAMP_COLUMN] >= cut_ts]
+        .sort_values(TIMESTAMP_COLUMN)
+        .reset_index(drop=True)
+    )
+    if len(base_frozen_raw) == 0:
+        raise ValueError(
+            f"No base rows at or after cut_timestamp {cut_ts} — the "
+            "incumbent's own test split is empty; nothing to freeze."
+        )
+
+    new_frame = store.get_frame(request.new_data_key)
+    assert_frame_is_usable(new_frame)
+    new_start = new_frame[TIMESTAMP_COLUMN].min()
+    if new_start <= cut_ts:
+        raise ValueError(
+            f"New dataset starts at {new_start}, at or before the "
+            f"incumbent's test window start {cut_ts} — no uncontaminated "
+            "frozen evaluation window exists. Pick a dataset whose data "
+            "begins after the incumbent's own split boundary."
+        )
+
+    base_frozen = base_frozen_raw[
+        base_frozen_raw[TIMESTAMP_COLUMN] < new_start
+    ].reset_index(drop=True)
+    if len(base_frozen) == 0:
+        raise ValueError(
+            f"Every base row at or after cut_timestamp {cut_ts} falls at or "
+            f"after the new dataset's own start {new_start} — the re-cut "
+            "frozen evaluation window is empty."
+        )
+
+    spec = store.get_json(request.base_feature_spec_key)
+    if spec.get("target_scaled"):
+        # Mirrors `replay_holdout_for_run`/`prepare_holdout_for_run`'s own
+        # refusal: no inverse transform is recorded for a scaled target, and
+        # this feature's evaluation-basis claim depends on the target
+        # meaning the same thing on both sides of the merge.
+        raise ValueError(
+            f"target_y '{spec.get('target_y')}' is scaled in the base "
+            "artifact's feature_spec.json — refusing to combine (no "
+            "inverse transform recorded)."
+        )
+
+    step_configs = [
+        FeatureConfigRequest(
+            id=entry.get("name") or f"f{i}", name=entry.get("name"),
+            **entry.get("config", {}),
+        ).to_step()
+        for i, entry in enumerate(spec.get("features", []))
+    ]
+    effective_selected = force_keep_target(
+        spec.get("selectedColumns"), request.target_y)
+    scalers = {row["tag"]: row["method"] for row in spec.get("scaling", [])}
+    scaling_params = spec.get("scalingParams") or {}
+
+    skipped_columns: list[str] = []
+    new_engineered = apply_features(new_frame, step_configs, skipped=skipped_columns)
+    new_engineered = select_columns(new_engineered, effective_selected)
+
+    base_tags = set(tag_columns(base_train))
+    new_tags = set(tag_columns(new_engineered))
+    if base_tags != new_tags:
+        only_base = sorted(base_tags - new_tags)
+        only_new = sorted(new_tags - base_tags)
+        raise ValueError(
+            "Base and new artifact disagree on tag columns after applying "
+            f"the base's recipe — only in base: {only_base or 'none'}; "
+            f"only in new: {only_new or 'none'}. The two datasets are not "
+            "schema-compatible for augmentation."
+        )
+
+    assert_scaling_coverage(list(new_tags), scalers, scaling_params)
+    new_engineered, dropped_bad_rows = drop_bad_feature_rows(
+        new_engineered, tag_columns(new_engineered), exclude=request.target_y)
+    new_scaled, _ = to_model_ready(
+        new_engineered, _scalable_tags(new_engineered, request.target_y),
+        scalers, fitted_params=scaling_params,
+    )
+
+    before_dedupe = len(base_train) + len(new_scaled)
+    combined = pd.concat([base_train, new_scaled], ignore_index=True)
+    combined = combined.drop_duplicates(
+        subset=[TIMESTAMP_COLUMN], keep="last"
+    ).sort_values(TIMESTAMP_COLUMN).reset_index(drop=True)
+    dedupe_dropped = before_dedupe - len(combined)
+    assert_frame_is_usable(combined)
+
+    stats = store.put_frame(
+        combined, request.target_key, overwrite=request.overwrite)
+    column_stats = build_column_stats(combined, operations=[], parent_frame=base_train)
+    frozen_key = sidecar_key(stats.object_key, VALIDATE_DATA_FILENAME)
+    frozen_stats = store.put_frame(
+        base_frozen, frozen_key, overwrite=request.overwrite)
+
+    payload = _commit(
+        store, stats, started,
+        parent_key=request.base_data_key,
+        operations=step_configs,
+        column_stats=column_stats,
+        feature_spec=spec,
+        skipped_features=skipped_columns,
+        validation_row_count=len(base_frozen),
+        validation_holdout_from=str(cut_ts),
+        validation_missing_pct=missing_pct(base_frozen),
+        dropped_bad_rows=dropped_bad_rows,
+    )
+    payload["frozen_eval_checksum"] = frozen_stats.checksum
+    payload["dedupe_dropped"] = dedupe_dropped
+    payload["base_train_row_count"] = len(base_train)
+    payload["new_train_row_count"] = len(new_scaled)
+    return payload
 
 
 def features(store: ObjectStore, request: FeaturesRequest) -> dict[str, Any]:

@@ -9,12 +9,24 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import type { RetrainIncumbent } from '@/services/model-retrain'
 import type { CandidateInput } from '@/services/model-draft'
 import type { AIModel } from '@/types'
 import { CustomFinetuneForm } from './custom-finetune-form'
 import { RetrainMonitoringContext } from './retrain-monitoring-context'
+import { cn } from '@/lib/utils'
+import {
+  RetrainBaseDataset,
+  RetrainDataStrategy,
+  type RetrainDataStrategy as RetrainDataStrategyValue,
+} from './retrain-data-strategy'
+
+export interface StartRetrainOptions {
+  strategy?: RetrainDataStrategyValue
+  additionalDatasetVersionId?: string
+}
 
 export function ModelRetrainDialog({
   open,
@@ -38,12 +50,31 @@ export function ModelRetrainDialog({
   loading: boolean
   isRetraining: boolean
   error: string | null
-  onStart: (candidates?: CandidateInput[]) => void
+  onStart: (
+    candidates?: CandidateInput[],
+    options?: StartRetrainOptions,
+  ) => void
 }) {
   const [hyperparameters, setHyperparameters] = useState<Record<
     string,
     unknown
   > | null>(null)
+  // MODEL-SERVE-015-T01. Reset to the 014 default whenever the dialog
+  // (re)opens for a different model — a strategy chosen for one model must
+  // never leak into the next dialog open.
+  const [dataStrategy, setDataStrategy] =
+    useState<RetrainDataStrategyValue>('KEEP_EXISTING')
+  const [additionalDatasetVersionId, setAdditionalDatasetVersionId] = useState<
+    string | null
+  >(null)
+
+  const startOptions: StartRetrainOptions | undefined =
+    dataStrategy === 'AUGMENT_DATA' && additionalDatasetVersionId
+      ? {
+          strategy: 'AUGMENT_DATA',
+          additionalDatasetVersionId,
+        }
+      : undefined
 
   // MODEL-SERVE-014-T08. A model with no PRODUCTION version 404s the trigger
   // — refused BEFORE the user submits, matching triggerRetrainService's own
@@ -58,87 +89,135 @@ export function ModelRetrainDialog({
   // a settled, error-free read is allowed to make that claim now.
   const noIncumbent = !loading && error === null && incumbent === null
   const disabled = isRetraining || loading || incumbent === null
+  // AUGMENT_DATA chosen but no version picked yet — a retrain still trains
+  // nothing without one.
+  const augmentIncomplete =
+    dataStrategy === 'AUGMENT_DATA' && !additionalDatasetVersionId
 
   return (
     <Dialog open={open} onOpenChange={o => !o && !isRetraining && onClose()}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[90vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+        <DialogHeader className="border-b border-border p-6 pb-4">
           <DialogTitle>Retrain {model.name}</DialogTitle>
         </DialogHeader>
 
-        {loading && (
-          <p className="text-xs text-muted-foreground">
-            Checking the current production version…
-          </p>
-        )}
+        <ScrollArea className="min-h-0 flex-1">
+          {/* Landscape: decisions on the left, read-only context on the
+              right (base dataset + drift/PSI). Stacks below `md`. The right
+              column exists only once an incumbent does — with none, there is
+              no base dataset or monitoring to show, and an empty 17rem track
+              would just squeeze the left. */}
+          <div
+            className={cn(
+              'grid gap-6 p-6',
+              incumbent !== null && 'md:grid-cols-[minmax(0,1fr)_17rem]',
+            )}
+          >
+            <div className="min-w-0 space-y-4">
+              {loading && (
+                <p className="text-xs text-muted-foreground">
+                  Checking the current production version…
+                </p>
+              )}
 
-        {noIncumbent && (
-          <div className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-xs font-medium text-amber-700 dark:text-amber-300">
-            <AlertTriangle aria-hidden="true" className="h-4 w-4 shrink-0" />
-            This model has no PRODUCTION version yet — promote a version
-            before retraining. A retrain improves on what is live.
+              {noIncumbent && (
+                <div className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-xs font-medium text-amber-700 dark:text-amber-300">
+                  <AlertTriangle
+                    aria-hidden="true"
+                    className="h-4 w-4 shrink-0"
+                  />
+                  This model has no PRODUCTION version yet — promote a version
+                  before retraining. A retrain improves on what is live.
+                </div>
+              )}
+
+              {error && (
+                <div className="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-xs font-medium text-destructive">
+                  <AlertTriangle
+                    aria-hidden="true"
+                    className="h-4 w-4 shrink-0"
+                  />
+                  {error}
+                </div>
+              )}
+
+              {incumbent !== null && (
+                <RetrainDataStrategy
+                  workspaceId={model.workspaceId}
+                  incumbent={incumbent}
+                  strategy={dataStrategy}
+                  onStrategyChange={setDataStrategy}
+                  additionalDatasetVersionId={additionalDatasetVersionId}
+                  onAdditionalDatasetVersionChange={
+                    setAdditionalDatasetVersionId
+                  }
+                  disabled={disabled}
+                />
+              )}
+
+              <Tabs defaultValue="auto" className="flex w-full flex-col">
+                <TabsList className="flex h-10 w-full flex-row items-center rounded-md bg-muted p-1">
+                  <TabsTrigger value="auto" className="flex-1">
+                    Auto Finetune
+                  </TabsTrigger>
+                  <TabsTrigger value="custom" className="flex-1">
+                    Custom Finetune
+                  </TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="auto" className="space-y-4 pt-4">
+                  <p className="text-sm text-muted-foreground">
+                    Searches the current production algorithm&apos;s own curated
+                    hyperparameter shortlist and keeps the best result by RMSE.
+                    No configuration needed.
+                  </p>
+                  <Button
+                    className="w-full gap-2"
+                    onClick={() => {
+                      onStart(undefined, startOptions)
+                      onClose()
+                    }}
+                    disabled={disabled || augmentIncomplete}
+                  >
+                    <Sparkles className="h-4 w-4" />
+                    {isRetraining ? 'Retraining…' : 'Start Auto Finetune'}
+                  </Button>
+                </TabsContent>
+
+                <TabsContent value="custom" className="space-y-4 pt-4">
+                  <CustomFinetuneForm
+                    algorithm={incumbent?.algorithm ?? null}
+                    hyperparameters={hyperparameters}
+                    onChange={setHyperparameters}
+                    disabled={disabled}
+                  />
+                  <Button
+                    className="w-full gap-2"
+                    onClick={() => {
+                      if (!incumbent || !hyperparameters) return
+                      onStart(
+                        [{ algorithm: incumbent.algorithm, hyperparameters }],
+                        startOptions,
+                      )
+                      onClose()
+                    }}
+                    disabled={disabled || augmentIncomplete || !hyperparameters}
+                  >
+                    <Wand2 className="h-4 w-4" />
+                    {isRetraining ? 'Retraining…' : 'Start Custom Finetune'}
+                  </Button>
+                </TabsContent>
+              </Tabs>
+            </div>
+
+            {incumbent !== null && (
+              <aside className="min-w-0 space-y-4">
+                <RetrainBaseDataset incumbent={incumbent} />
+                <RetrainMonitoringContext model={model} />
+              </aside>
+            )}
           </div>
-        )}
-
-        {error && (
-          <div className="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-xs font-medium text-destructive">
-            <AlertTriangle aria-hidden="true" className="h-4 w-4 shrink-0" />
-            {error}
-          </div>
-        )}
-
-        {incumbent !== null && <RetrainMonitoringContext model={model} />}
-
-        <Tabs defaultValue="auto" className="flex w-full flex-col">
-          <TabsList className="flex h-10 w-full flex-row items-center rounded-md bg-muted p-1">
-            <TabsTrigger value="auto" className="flex-1">
-              Auto Finetune
-            </TabsTrigger>
-            <TabsTrigger value="custom" className="flex-1">
-              Custom Finetune
-            </TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="auto" className="space-y-4 pt-4">
-            <p className="text-sm text-muted-foreground">
-              Searches the current production algorithm&apos;s own curated
-              hyperparameter shortlist and keeps the best result by RMSE. No
-              configuration needed.
-            </p>
-            <Button
-              className="w-full gap-2"
-              onClick={() => {
-                onStart(undefined)
-                onClose()
-              }}
-              disabled={disabled}
-            >
-              <Sparkles className="h-4 w-4" />
-              {isRetraining ? 'Retraining…' : 'Start Auto Finetune'}
-            </Button>
-          </TabsContent>
-
-          <TabsContent value="custom" className="space-y-4 pt-4">
-            <CustomFinetuneForm
-              algorithm={incumbent?.algorithm ?? null}
-              hyperparameters={hyperparameters}
-              onChange={setHyperparameters}
-              disabled={disabled}
-            />
-            <Button
-              className="w-full gap-2"
-              onClick={() => {
-                if (!incumbent || !hyperparameters) return
-                onStart([{ algorithm: incumbent.algorithm, hyperparameters }])
-                onClose()
-              }}
-              disabled={disabled || !hyperparameters}
-            >
-              <Wand2 className="h-4 w-4" />
-              {isRetraining ? 'Retraining…' : 'Start Custom Finetune'}
-            </Button>
-          </TabsContent>
-        </Tabs>
+        </ScrollArea>
       </DialogContent>
     </Dialog>
   )

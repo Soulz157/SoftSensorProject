@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect } from 'react'
+import { useEffect, useMemo } from 'react'
 import { useAtomValue } from 'jotai'
 import { AlertTriangle, Cpu, Loader2, Timer, Upload } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -15,6 +15,7 @@ import {
   mpSplitStatsTagsAtom,
 } from '@/store/model-pipeline'
 import { sourcedMetricsOf } from '@/lib/metric-source'
+import { datasetSizeFrom } from '@/lib/hyperparam-ranges'
 import { CoreConfig } from './training-config/core-config'
 import { AutoMlToggles } from './training-config/automl-toggles'
 import { RuntimeEstimate } from './training-config/runtime-estimate'
@@ -55,14 +56,15 @@ export function Phase3TrainingConfig({ nav }: Props) {
     splitStats: splitStats.splitStats,
   })
 
-  // MODEL-FLOW-019-T11 AC31. The draft's most recent SUCCEEDED run's own
-  // figures, for the "current ratio" preview beside each acceptance
-  // criterion's input — one extra GET on this screen (the run list is
-  // already fetched separately by `RunParamsPanel`; deduping the two is a
-  // follow-up, not this task). No `useCandidatePredictions` call here: SD
-  // is not on the run row, and fetching a predictions batch to calibrate
-  // one advisory input isn't worth a second request — an SD-bearing pair
-  // states that plainly in `CoreConfig` instead of showing a number.
+  // MODEL-FLOW-024. The size the suggested ranges are chosen by. Distinct
+  // labelled values come only from the split stats; the dataset's own row count
+  // stands in for rows alone, because that fetch is skipped while lstm/gru is
+  // selected and their batch cap keys on rows (see `datasetSizeFrom`).
+  const datasetSize = useMemo(
+    () => datasetSizeFrom(splitStats.splitStats, selectedDataset?.rowCount),
+    [splitStats.splitStats, selectedDataset?.rowCount],
+  )
+
   const serverDraftId = useAtomValue(mpServerDraftIdAtom)
   const { runs: draftRuns } = useDraftRuns(serverDraftId)
   const mostRecentRun = draftRuns
@@ -187,6 +189,7 @@ export function Phase3TrainingConfig({ nav }: Props) {
             onHyperparameterChange={runConfigDraft.setHyperparameter}
             findBestParams={draft.findBestParams}
             findBestModel={draft.findBestModel}
+            datasetSize={datasetSize}
           />
 
           <AutoMlToggles

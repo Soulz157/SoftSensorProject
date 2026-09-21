@@ -1,6 +1,10 @@
 import { AppException } from '@softsensor/common';
 import { TuningGridAuthorizedService } from './tuning-grid.authorized.service';
-import { TUNE_VARIANTS_PER_JOB, TUNING_GRID } from '@/lib/tuning-grid';
+import {
+  TUNE_VARIANTS_PER_JOB,
+  TUNING_GRID,
+  tuningVariantsFor,
+} from '@/lib/tuning-grid';
 
 /**
  * MODEL-FLOW-022-T03b. Read-only view over `tuning-grid.ts` — asserts it
@@ -19,7 +23,30 @@ describe('TuningGridAuthorizedService', () => {
   });
 
   it('throws an AppException for an algorithm with no grid entry', () => {
-    expect(() => service.get('lstm')).toThrow(AppException);
+    expect(() => service.get('not-a-real-algorithm')).toThrow(AppException);
+  });
+
+  it('serves lstm and gru now that they have a grid (MODEL-FLOW-024), by reference like every other algorithm', () => {
+    for (const algorithm of ['lstm', 'gru']) {
+      const { variants } = service.get(algorithm);
+      expect(variants.length).toBeGreaterThan(0);
+      expect(variants).toBe(TUNING_GRID[algorithm]);
+    }
+  });
+
+  it('reports the medium tier and the exact medium table when no size is sent', () => {
+    const result = service.get('xgboost');
+    expect(result.tier).toBe('medium');
+    expect(result.variants).toBe(TUNING_GRID.xgboost);
+  });
+
+  it('serves the size tier the figure selects, from the same source the job builder reads', () => {
+    const tiny = service.get('xgboost', { distinctLabelled: 32 });
+    expect(tiny.tier).toBe('tiny');
+    expect(tiny.variants).toBe(
+      tuningVariantsFor('xgboost', { distinctLabelled: 32 }),
+    );
+    expect(tiny.variants).not.toEqual(TUNING_GRID.xgboost);
   });
 
   it('returns a fresh reference each call rather than sharing TUNING_GRID mutably', () => {

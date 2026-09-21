@@ -11,7 +11,7 @@ import {
   getRunLossHistory,
   getRunManifest,
 } from '@/lib/python-preprocess-client';
-import { tuningCandidatesFor } from '@/lib/tuning-grid';
+import { tuningCandidatesFor, type DatasetSize } from '@/lib/tuning-grid';
 import {
   buildModelVersionData,
   nextModelVersionNumber,
@@ -299,14 +299,22 @@ export class ModelCandidateJobAuthorizedService {
    * hyperparameters through the IDENTICAL grid rather than a second copy of
    * it — the grid stays declared in exactly one place, and so does the
    * refusal when an algorithm has no variants to try.
+   *
+   * MODEL-FLOW-024. `size` picks the grid's size tier; omitted (the retrain
+   * path carries no figure) means the medium table that shipped before
+   * sizing existed.
    */
-  expandSearchCandidates(base: {
-    algorithm: string;
-    hyperparameters: Record<string, unknown>;
-  }): Array<{ algorithm: string; hyperparameters: Record<string, unknown> }> {
+  expandSearchCandidates(
+    base: {
+      algorithm: string;
+      hyperparameters: Record<string, unknown>;
+    },
+    size?: DatasetSize,
+  ): Array<{ algorithm: string; hyperparameters: Record<string, unknown> }> {
     const variants = tuningCandidatesFor(
       base.algorithm,
       base.hyperparameters as Record<string, string | number | boolean | null>,
+      size,
     );
     if (variants.length === 0) {
       throw new AppException({
@@ -364,9 +372,17 @@ export class ModelCandidateJobAuthorizedService {
     // own hyperparameters — the same "don't repeat what's already covered"
     // exclusion phase 2 relies on, applied here to the search's own starting
     // point instead of a sweep's winner.
+    // MODEL-FLOW-024. The two figures the client already carried from Step 3's
+    // /split-stats (and that `createJob` records on the job row below) now
+    // also pick the grid's size tier. Accepted for that purpose only: they
+    // choose among fixed declared variant lists and grant nothing the client
+    // cannot already do by sending arbitrary hyperparameters.
     const requestedCandidates =
       dto.kind === 'HYPERPARAMETER_SEARCH' && dto.candidates.length === 1
-        ? this.expandSearchCandidates(dto.candidates[0])
+        ? this.expandSearchCandidates(dto.candidates[0], {
+            distinctLabelled: dto.sizedDistinctLabelled,
+            rows: dto.sizedRowCount,
+          })
         : dto.candidates;
 
     // Every candidate a client sends is phase 1 — `CandidateSchema` has no
@@ -601,6 +617,12 @@ export class ModelCandidateJobAuthorizedService {
               string,
               string | number | boolean | null
             >,
+            // MODEL-FLOW-024. Read off the job row `createJob` filled — no
+            // artifact read here, which is why the figures are stored.
+            {
+              distinctLabelled: job.sizedDistinctLabelled,
+              rows: job.sizedRowCount,
+            },
           )
         : [];
 
@@ -667,7 +689,11 @@ export class ModelCandidateJobAuthorizedService {
     // why that cannot be a second statement after the compare-and-swap.
     if (job.modelId) {
       await this.completeModelOwnedJob(
-        { id: jobId, modelId: job.modelId },
+        {
+          id: jobId,
+          modelId: job.modelId,
+          retrainStrategy: job.retrainStrategy,
+        },
         { runId, completedRuns, finalBestRunId, finalBestRmse },
       );
       return;
@@ -728,7 +754,7 @@ export class ModelCandidateJobAuthorizedService {
    * of failing with a P2002 the caller cannot act on.
    */
   private async completeModelOwnedJob(
-    job: { id: string; modelId: string },
+    job: { id: string; modelId: string; retrainStrategy: string | null },
     outcome: {
       runId: string;
       completedRuns: number;
@@ -807,14 +833,21 @@ export class ModelCandidateJobAuthorizedService {
         existing?.id ??
         (
           await tx.modelVersion.create({
-            data: buildModelVersionData({
-              modelId: job.modelId,
-              version: await nextModelVersionNumber(tx, job.modelId),
-              run: winner,
-              modelObjectKey,
-              modelChecksum,
-              frameworkVersions,
-            }),
+            data: {
+              ...buildModelVersionData({
+                modelId: job.modelId,
+                version: await nextModelVersionNumber(tx, job.modelId),
+                run: winner,
+                modelObjectKey,
+                modelChecksum,
+                frameworkVersions,
+              }),
+              // MODEL-SERVE-015-T05. Copied off the winning candidate's
+              // job, not re-derived — null for every plain (014) retrain
+              // and for Save Model (buildModelVersionData's other caller,
+              // which never touches this field).
+              retrainStrategy: job.retrainStrategy,
+            },
             select: { id: true },
           })
         ).id;

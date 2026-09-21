@@ -6,6 +6,7 @@ import {
   type TuningGridResponse,
 } from '@/services/tuning-grid'
 import { useDebouncedAbortableRequest } from '@/hooks/dataset/internal/use-debounced-abortable-request'
+import type { DatasetSize } from '@/lib/hyperparam-ranges'
 
 interface UseTuningGridResult {
   grid: TuningGridResponse | null
@@ -24,19 +25,27 @@ interface UseTuningGridResult {
  * while Find Best Parameters is on, so `algorithm` is expected to arrive as
  * `null` otherwise rather than this hook re-deriving that condition.
  */
-export function useTuningGrid(algorithm: string | null): UseTuningGridResult {
+export function useTuningGrid(
+  algorithm: string | null,
+  size?: DatasetSize,
+): UseTuningGridResult {
   const [grid, setGrid] = useState<TuningGridResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const enabled = !!algorithm
-  const cacheKey = enabled ? `tuning-grid|${algorithm}` : null
+  // MODEL-FLOW-024. Both figures are part of the key: the same algorithm at
+  // 32 and at 900 distinct values serves different variants, so a key that
+  // ignored them would show one dataset's search to another.
+  const cacheKey = enabled
+    ? `tuning-grid|${algorithm}|${size?.distinctLabelled ?? ''}|${size?.rows ?? ''}`
+    : null
 
   useDebouncedAbortableRequest<TuningGridResponse>({
     enabled,
     cacheKey,
     debounceMs: 0,
-    fetcher: () => tuningGridService.get(algorithm!),
+    fetcher: () => tuningGridService.get(algorithm!, size),
     onLoading: () => {
       setError(null)
       setLoading(true)

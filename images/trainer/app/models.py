@@ -257,7 +257,7 @@ def build_model(
             max_iter=int(hyperparameters.get("max_iter", 500)),
         )
     if algorithm == "random_forest":
-        # `max_depth` is a nullable-number in the UI (null = unlimited
+        # `max_depth` is a nullable-numberx in the UI (null = unlimited
         # depth, training-config.ts:176-181) — None must stay None, never
         # be coerced through int().
         max_depth = hyperparameters.get("max_depth")
