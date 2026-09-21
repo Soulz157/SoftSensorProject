@@ -222,6 +222,14 @@ export interface LiveOverlayRow extends Partial<MonitoringRow> {
    *  operational question — and it is deliberately excluded from RMSE, R2
    *  and the SD band, all of which assume a measured actual per point. */
   heldDeviation?: number
+  /** MODEL-SERVE-011-T17. `heldDeviation` as a share of the held value, so
+   *  the Residual chart's PERCENT mode has something to draw for a row with
+   *  no measured pair — `percentageError` needs an `actual`, which these
+   *  rows by definition do not have. Same caveat as `heldDeviation`: this is
+   *  distance from the last REPORTED value, not an error percentage, and it
+   *  enters no metric. Omitted when the held value is 0, where a percentage
+   *  is not defined rather than infinite. */
+  heldDeviationPct?: number
 }
 
 /**
@@ -274,31 +282,64 @@ export function mergeLivePredictions(
   // produced: the held value has no timestamps of its own (it is a single
   // carried-forward reading), so it borrows the axis rather than inventing
   // points that would imply repeated measurement.
-  if (held != null) {
-    if (merged.length === 0 && bounds) {
-      return [
-        {
-          t: bounds.fromMs,
-          timestamp: new Date(bounds.fromMs).toISOString(),
-          held,
-        },
-        {
-          t: bounds.toMs,
-          timestamp: new Date(bounds.toMs).toISOString(),
-          held,
-        },
-      ]
-    }
-    for (const row of merged) {
-      row.held = held
-      // Only where a prediction actually exists — never invented for a row
-      // that has no model output to compare.
-      const predicted = row.live ?? row.predict
-      if (typeof predicted === 'number') row.heldDeviation = predicted - held
+  return applyHeldValue(merged, held, bounds)
+}
+
+/**
+ * MODEL-SERVE-009-T05 / MODEL-SERVE-011-T14. Draw the target's held value
+ * across an axis the prediction series already produced.
+ *
+ * EXTRACTED so it can run LAST, after every prediction series has been
+ * merged. It used to live inside `mergeLivePredictions`, which was correct
+ * while that function produced the final axis — and became wrong the moment
+ * `mergeScheduledPredictions` started adding hourly rows afterwards: those
+ * rows carried no `held`, so the Actual step spanned only the timestamps the
+ * live points happened to land on (a few minutes wide) and stopped short of
+ * every hourly prediction it was supposed to be compared against.
+ *
+ * Idempotent, so calling it through `mergeLivePredictions` and again over a
+ * widened axis writes the same value twice rather than compounding.
+ */
+export function applyHeldValue(
+  rows: LiveOverlayRow[],
+  held?: number | null,
+  bounds?: { fromMs: number; toMs: number } | null,
+): LiveOverlayRow[] {
+  if (held == null) return rows
+
+  // Nothing to borrow an axis from: two endpoints over the visible range
+  // draw the constant honestly and invent no measurement.
+  if (rows.length === 0 && bounds) {
+    return [
+      {
+        t: bounds.fromMs,
+        timestamp: new Date(bounds.fromMs).toISOString(),
+        held,
+      },
+      {
+        t: bounds.toMs,
+        timestamp: new Date(bounds.toMs).toISOString(),
+        held,
+      },
+    ]
+  }
+
+  for (const row of rows) {
+    row.held = held
+    // Only where a prediction actually exists — never invented for a row
+    // that has no model output to compare. `scheduled` joins the other two
+    // here: with the live series off the Actual-vs-Predict chart, an hourly
+    // point is often the ONLY prediction on its row, and omitting it left
+    // the deviation blank exactly where a reader is looking.
+    const predicted = row.live ?? row.predict ?? row.scheduled
+    if (typeof predicted === 'number') {
+      const deviation = predicted - held
+      row.heldDeviation = round(deviation)
+      if (held !== 0) row.heldDeviationPct = round((deviation / held) * 100)
     }
   }
 
-  return merged
+  return rows
 }
 
 /**
@@ -342,4 +383,119 @@ export function mergeScheduledPredictions(
   }
 
   return [...byT.values()].sort((a, b) => a.t - b.t)
+}
+
+/**
+ * MODEL-SERVE-011-T15. The spread of `predicted - held` across the visible
+ * range, for a band the chart can draw BEFORE any lab sample has joined.
+ *
+ * NOT THE RESIDUAL SD, and the difference is the whole reason this is a
+ * separate function rather than a second call into `windowStats`. That one
+ * measures `actual - predicted` where the actual was MEASURED IN THAT
+ * INTERVAL; this measures distance from a value carried forward since the
+ * lab last reported, which on this plant is roughly daily. It answers "how
+ * consistently is the model sitting away from the last thing we actually
+ * know", which is a real operational question and is NOT model error.
+ *
+ * It therefore feeds no metric: RMSE, R2 and the residual SD keep reading
+ * joined pairs only, exactly as they did.
+ *
+ * `n < 2` returns 0 — one point has no spread, and a zero-width band is
+ * honest where an invented one would not be.
+ */
+export function heldDeviationStats(rows: LiveOverlayRow[]): {
+  sd: number
+  n: number
+} {
+  const deviations = rows
+    .map(r => r.heldDeviation)
+    .filter((d): d is number => typeof d === 'number')
+  const n = deviations.length
+  if (n < 2) return { sd: 0, n }
+  const mean = deviations.reduce((acc, d) => acc + d, 0) / n
+  const variance = deviations.reduce((acc, d) => acc + (d - mean) ** 2, 0) / n
+  return { sd: round(Math.sqrt(variance)), n }
+}
+
+/**
+ * MODEL-SERVE-011-T15. Draw that spread as a band around the held Actual.
+ *
+ * ONLY on rows that have no `sd1` already: a row carrying a joined pair
+ * keeps the REAL residual band `buildMonitoringRows` gave it. The two never
+ * overwrite each other, so a range that gains its first lab sample shows the
+ * true band there and this one elsewhere, rather than one quietly replacing
+ * the other.
+ */
+export function applyHeldDeviationBand(
+  rows: LiveOverlayRow[],
+  sd: number,
+): LiveOverlayRow[] {
+  if (!(sd > 0)) return rows
+  for (const row of rows) {
+    if (row.sd1 !== undefined) continue
+    const centre = row.held
+    if (typeof centre !== 'number') continue
+    row.sd1 = [round(centre - sd), round(centre + sd)]
+    row.sd2 = [round(centre - 2 * sd), round(centre + 2 * sd)]
+    row.sd3 = [round(centre - 3 * sd), round(centre + 3 * sd)]
+  }
+  return rows
+}
+
+/**
+ * MODEL-SERVE-011-T21. A Y-axis tick in FOUR SIGNIFICANT DIGITS.
+ *
+ * The Actual-vs-Predict axis had no formatter at all, so recharts printed
+ * the raw float — `110.05700050354004` — into a 44px gutter that clipped it.
+ * A fixed number of DECIMALS would not do: this axis carries a process value
+ * whose magnitude is unknown here (110.1, or 0.4821, or 1204), and two
+ * decimals is either noise or nothing depending on which. Significant digits
+ * keep the same information density at every scale.
+ *
+ * Trailing zeros are kept (`110.0`, not `110`) so the tick column stays the
+ * same width and the labels line up.
+ */
+export function formatAxisValue(value: number): string {
+  if (!Number.isFinite(value)) return ''
+  // toPrecision falls back to exponential for very large/small magnitudes,
+  // which is correct — a clipped `1.2e+21` is worse than a readable one.
+  return Number(value).toPrecision(7)
+}
+
+/**
+ * MODEL-SERVE-011-T22. The rows that can carry a metric before any lab
+ * sample has joined, shaped as the pairs `computeMetrics` already consumes.
+ *
+ * NO FOURTH RMSE. `lib/model-evaluation.ts`'s `computeMetrics` is this
+ * codebase's canonical client-side error math (the backend's `live-error.ts`
+ * header states it mirrors that function exactly), and a held-based figure
+ * is the SAME arithmetic with `actual = held`. Mapping into its input is
+ * therefore the whole job; a second formula here could drift from the one
+ * the evaluation screen shows for the same model.
+ *
+ * ROWS WITH A MEASURED `actual` ARE EXCLUDED, deliberately. Those already
+ * feed the real pooled metric, and pooling a measured pair together with a
+ * carried-forward one would produce a single number that is neither — the
+ * shape this ledger has refused since MODEL-SERVE-009-T05 gave `held` its
+ * own key.
+ *
+ * The prediction precedence is the same one `applyHeldValue` uses for
+ * `heldDeviation`, so the deviation on screen and the figure in the header
+ * are computed from the same value on every row.
+ */
+export function heldEvalPoints(rows: LiveOverlayRow[]): EvalPoint[] {
+  const points: EvalPoint[] = []
+  for (const row of rows) {
+    if (typeof row.actual === 'number') continue
+    const held = row.held
+    const predicted = row.predict ?? row.scheduled ?? row.live
+    if (typeof held !== 'number' || typeof predicted !== 'number') continue
+    points.push({
+      timestamp: row.timestamp,
+      predicted,
+      actual: held,
+      residual: round(predicted - held),
+    })
+  }
+  return points
 }

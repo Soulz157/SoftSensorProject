@@ -8,10 +8,10 @@ import {
   CartesianGrid,
   Tooltip,
   ReferenceLine,
-  Brush,
   ResponsiveContainer,
   ReferenceArea,
 } from 'recharts'
+import { formatAxisValue } from '@/lib/monitoring'
 import type {
   BrushWindow,
   LiveOverlayRow,
@@ -27,13 +27,39 @@ interface Props {
    *  for the chart only — a row carrying a prediction and a HELD lab value
    *  has no measured `actual` and therefore no true residual. */
   rows: Array<MonitoringRow | LiveOverlayRow>
+  /** MODEL-SERVE-011-T20. The visible index window from
+   *  `ChartZoomControls`; the chart slices its own data now that the Brush
+   *  that used to apply it is gone. */
   brush: BrushWindow
-  onBrush: (w: BrushWindow) => void
   tickFormatter: (t: number) => string
   /** Window residual SD — drives the ±1/±2/±3 guardlines (absolute mode). */
   sd: number
+  /**
+   * MODEL-SERVE-011-T16. WHICH spread `sd` describes.
+   *
+   * `residual` is the real one: `actual − predicted` where the actual was
+   * measured in that interval. `held` is the fallback the chart can draw
+   * before any lab sample has joined — the spread of `predicted − held`,
+   * i.e. distance from the last value the lab reported, which is model
+   * CONSISTENCY and not model error. The guardlines look identical, so the
+   * basis has to be stated rather than inferred from the picture.
+   */
+  sdBasis?: 'residual' | 'held'
   mode: ResidualMode
 }
+
+/**
+ * MODEL-SERVE-011-T16. The colours this chart draws with, named ONCE here so
+ * the legend beside it cannot claim a colour the chart does not use — the
+ * same binding `create/components/pipeline/evaluation/residual-chart.tsx`
+ * establishes for the evaluation flow (its own MODEL-FLOW-019-T17). The tab
+ * had these five literals a second time, which is exactly the drift that
+ * discipline exists to prevent.
+ */
+export const RESIDUAL_COLOR = 'var(--chart-1)'
+export const SD1_COLOR = 'var(--chart-2)'
+export const SD2_COLOR = 'var(--chart-3)'
+export const SD3_COLOR = 'var(--destructive)'
 
 const SYNC_ID = 'monitoring'
 const AXIS_TICK = { fill: 'var(--muted-foreground)', fontSize: 11 }
@@ -41,11 +67,17 @@ const AXIS_TICK = { fill: 'var(--muted-foreground)', fontSize: 11 }
 function sdCoverage(
   rows: Array<MonitoringRow | LiveOverlayRow>,
   sd: number,
+  basis: 'residual' | 'held' = 'residual',
 ): Record<number, { up: number; down: number }> | null {
   if (!Number.isFinite(sd) || sd <= 0) return null
 
+  // MODEL-SERVE-011-T16. Reads the series the guardlines were computed FROM,
+  // never a mix: counting measured residuals against a held-based SD (or the
+  // reverse) would put a percentage under a line it does not describe.
   const residuals = rows
-    .map(r => r.residual)
+    .map(r =>
+      basis === 'held' ? (r as LiveOverlayRow).heldDeviation : r.residual,
+    )
     .filter((v): v is number => typeof v === 'number' && Number.isFinite(v))
   if (residuals.length === 0) return null
 
@@ -67,7 +99,13 @@ function sdCoverage(
   return out
 }
 
-/** A ±k·SD guardline pair (absolute-error mode only). */
+/**
+ * Room reserved to the RIGHT of the plot for the SD labels, which sit in the
+ * margin rather than over the data. Wide enough for the longest string these
+ * labels produce (`-3 SD  100.0%`) at 12px.
+ */
+const SD_LABEL_GUTTER = 104
+
 /** A ±k·SD guardline pair (absolute-error mode only). */
 function SdGuard({
   sd,
@@ -81,7 +119,27 @@ function SdGuard({
   pct?: { up: number; down: number }
 }) {
   const y = sd * k
-  const dx = (k - 2) * 90
+
+  /**
+   * Both labels of a pair share this shape. `position: 'right'` puts each one
+   * at its OWN line's end, in the right-hand gutter.
+   *
+   * REPLACES an insideTop/insideBottom pair staggered by `dx = (k - 2) * 90`.
+   * That stagger existed only because all three positive labels were pinned
+   * to the top of the plot and would otherwise have stacked on each other —
+   * it spread them sideways ACROSS the data, so a label could sit far from
+   * the line it described and on top of the residual series. Anchoring each
+   * label to its own line's height separates the three vertically for free,
+   * with no offset arithmetic and nothing drawn over the data.
+   */
+  const label = (value: string) => ({
+    value,
+    position: 'right' as const,
+    offset: 8,
+    fill: color,
+    fontSize: 12,
+    fontWeight: 600,
+  })
 
   return (
     <>
@@ -91,15 +149,7 @@ function SdGuard({
         strokeDasharray="3 3"
         strokeOpacity={0.6}
         ifOverflow="extendDomain"
-        label={{
-          value: pct ? `+${k} SD  ${pct.up.toFixed(1)}%` : `+${k} SD`,
-          position: 'insideTop',
-          offset: 6,
-          dx,
-          fill: color,
-          fontSize: 12,
-          fontWeight: 600,
-        }}
+        label={label(pct ? `+${k} SD  ${pct.up.toFixed(1)}%` : `+${k} SD`)}
       />
       <ReferenceLine
         y={-y}
@@ -107,15 +157,7 @@ function SdGuard({
         strokeDasharray="3 3"
         strokeOpacity={0.6}
         ifOverflow="extendDomain"
-        label={{
-          value: pct ? `-${k} SD  ${pct.down.toFixed(1)}%` : `-${k} SD`,
-          position: 'insideBottom',
-          offset: 6,
-          dx,
-          fill: color,
-          fontSize: 12,
-          fontWeight: 600,
-        }}
+        label={label(pct ? `-${k} SD  ${pct.down.toFixed(1)}%` : `-${k} SD`)}
       />
     </>
   )
@@ -127,31 +169,21 @@ function SdBackground({ sd }: { sd: number }) {
       <ReferenceArea
         y1={sd * 2}
         y2={sd * 3}
-        fill="var(--destructive)"
+        fill={SD3_COLOR}
         fillOpacity={0.15}
       />
 
       {/* Positive: +1 SD → +2 SD */}
-      <ReferenceArea
-        y1={sd}
-        y2={sd * 2}
-        fill="var(--chart-3)"
-        fillOpacity={0.15}
-      />
+      <ReferenceArea y1={sd} y2={sd * 2} fill={SD2_COLOR} fillOpacity={0.15} />
 
       {/* Normal: -1 SD → +1 SD */}
-      <ReferenceArea
-        y1={-sd}
-        y2={sd}
-        fill="var(--chart-2)"
-        fillOpacity={0.25}
-      />
+      <ReferenceArea y1={-sd} y2={sd} fill={SD1_COLOR} fillOpacity={0.25} />
 
       {/* Negative: -2 SD → -1 SD */}
       <ReferenceArea
         y1={-sd * 2}
         y2={-sd}
-        fill="var(--chart-3)"
+        fill={SD2_COLOR}
         fillOpacity={0.15}
       />
 
@@ -159,7 +191,7 @@ function SdBackground({ sd }: { sd: number }) {
       <ReferenceArea
         y1={-sd * 3}
         y2={-sd * 2}
-        fill="var(--destructive)"
+        fill={SD3_COLOR}
         fillOpacity={0.15}
       />
     </>
@@ -169,12 +201,19 @@ function SdBackground({ sd }: { sd: number }) {
 export function ResidualChart({
   rows,
   brush,
-  onBrush,
   tickFormatter,
   sd,
+  sdBasis = 'residual',
   mode,
 }: Props) {
   const isPct = mode === 'pct'
+  // MODEL-SERVE-011-T20. Same inclusive-endIndex convention the zoom
+  // controls use; sliced here because the Brush that used to apply the
+  // window is gone.
+  const visible = rows.slice(
+    brush.startIndex ?? 0,
+    (brush.endIndex ?? Math.max(0, rows.length - 1)) + 1,
+  )
   const dataKey = isPct ? 'percentageError' : 'residual'
 
   // MODEL-SERVE-009-T05 follow-up. Rendered ONLY when no measured residual
@@ -185,14 +224,17 @@ export function ResidualChart({
   const hasMeasuredResidual = rows.some(
     r => typeof (r as MonitoringRow).residual === 'number',
   )
+  // MODEL-SERVE-011-T17. Drawn in BOTH modes now: percent mode used to be
+  // excluded because these rows carry no `percentageError` (that needs a
+  // measured actual), which left the chart empty for exactly the ranges this
+  // series exists to cover. `heldDeviationPct` is its own percent counterpart.
   const showHeldDeviation =
-    !isPct &&
     !hasMeasuredResidual &&
     rows.some(r => typeof (r as LiveOverlayRow).heldDeviation === 'number')
 
   const coverage = useMemo(
-    () => (isPct ? null : sdCoverage(rows, sd)),
-    [isPct, rows, sd],
+    () => (isPct ? null : sdCoverage(rows, sd, sdBasis)),
+    [isPct, rows, sd, sdBasis],
   )
 
   return (
@@ -208,9 +250,17 @@ export function ResidualChart({
       <div className="min-w-375 xl:w-full xl:min-w-0">
         <ResponsiveContainer className="w-full" height={500}>
           <ComposedChart
-            data={rows}
+            data={visible}
             syncId={SYNC_ID}
-            margin={{ top: 8, right: 24, left: 0, bottom: 0 }}
+            // The right margin carries the SD labels in absolute mode. Percent
+            // mode draws no guardlines, so it keeps the narrow gutter and the
+            // plot stays as wide as it was.
+            margin={{
+              top: 8,
+              right: isPct ? 24 : SD_LABEL_GUTTER,
+              left: 0,
+              bottom: 0,
+            }}
           >
             <CartesianGrid
               strokeDasharray="3 3"
@@ -231,8 +281,12 @@ export function ResidualChart({
               domain={['auto', 'auto']}
               tick={AXIS_TICK}
               stroke="var(--border)"
-              width={44}
-              tickFormatter={v => (isPct ? `${v}%` : `${v}`)}
+              width={68}
+              tickFormatter={v =>
+                isPct
+                  ? `${formatAxisValue(Number(v))}%`
+                  : formatAxisValue(Number(v))
+              }
             />
             <Tooltip
               content={
@@ -256,24 +310,9 @@ export function ResidualChart({
               <>
                 <SdBackground sd={sd} />
 
-                <SdGuard
-                  sd={sd}
-                  k={1}
-                  color="var(--chart-2)"
-                  pct={coverage?.[1]}
-                />
-                <SdGuard
-                  sd={sd}
-                  k={2}
-                  color="var(--chart-3)"
-                  pct={coverage?.[2]}
-                />
-                <SdGuard
-                  sd={sd}
-                  k={3}
-                  color="var(--destructive)"
-                  pct={coverage?.[3]}
-                />
+                <SdGuard sd={sd} k={1} color={SD1_COLOR} pct={coverage?.[1]} />
+                <SdGuard sd={sd} k={2} color={SD2_COLOR} pct={coverage?.[2]} />
+                <SdGuard sd={sd} k={3} color={SD3_COLOR} pct={coverage?.[3]} />
               </>
             )}
 
@@ -284,8 +323,8 @@ export function ResidualChart({
               // — the SD band, RMSE, R2 — can pick it up by accident.
               <Area
                 type="monotone"
-                dataKey="heldDeviation"
-                stroke="var(--chart-1)"
+                dataKey={isPct ? 'heldDeviationPct' : 'heldDeviation'}
+                stroke={RESIDUAL_COLOR}
                 strokeWidth={2}
                 strokeDasharray="5 5"
                 fill="none"
@@ -297,24 +336,12 @@ export function ResidualChart({
             <Area
               type="monotone"
               dataKey={dataKey}
-              stroke="var(--chart-1)"
+              stroke={RESIDUAL_COLOR}
               strokeWidth={2}
-              fill="var(--chart-1)"
+              fill={RESIDUAL_COLOR}
               fillOpacity={0.12}
               isAnimationActive={false}
               dot={false}
-            />
-
-            <Brush
-              dataKey="t"
-              height={22}
-              travellerWidth={10}
-              stroke="var(--border)"
-              fill="var(--muted)"
-              tickFormatter={t => tickFormatter(Number(t))}
-              startIndex={brush.startIndex}
-              endIndex={brush.endIndex}
-              onChange={onBrush}
             />
           </ComposedChart>
         </ResponsiveContainer>

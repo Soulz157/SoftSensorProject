@@ -90,11 +90,36 @@ export interface InferenceStatus {
       | 'SENSOR_FROZEN'
       | 'DRIFT_CRITICAL'
       | 'DRIFT_WARN'
+      /** MODEL-SERVE-012. The OUTPUT-ERROR codes: the model's own residual
+       *  spread has widened against the error its run was accepted with.
+       *  Separate from DRIFT_*, which is a claim about the INPUTS — these
+       *  can fire with perfectly stationary inputs and send a reader to the
+       *  model rather than to the plant. */
+      | 'RESIDUAL_SD_CRITICAL'
+      | 'RESIDUAL_SD_WARN'
       | null
     /** T29. Which instruments have stopped moving. Rides every status, not
      *  just FROZEN — a higher-precedence fault outranks the band without
      *  making the tags un-stuck. */
     frozenColumns: string[]
+    /**
+     * MODEL-SERVE-012. BOTH HALVES of the output-error comparison, beside
+     * the verdict rather than folded into it: the pooled live residual
+     * spread, the reference SD from the model's own run, their ratio, and
+     * the pair count behind them.
+     *
+     * Rides every status. `status: 'UNKNOWN'` with null figures is the
+     * honest reading for a model whose lab has not reported enough joined
+     * pairs yet — which is every model on this deployment as of
+     * 2026-09-17 — and must never be rendered as a zero.
+     */
+    residualSd: {
+      status: 'UNKNOWN' | 'OK' | 'WARN' | 'ALERT'
+      liveSd: number | null
+      ratio: number | null
+      baselineSd: number | null
+      n: number
+    }
     /** MODEL-SERVE-009-T03. Per-column "unchanged since" — EVIDENCE beside
      *  the badge, never a second detector: MODEL-SERVE-001-T29 still
      *  decides which columns are frozen, by its own three-window pooled

@@ -30,6 +30,15 @@ const RUNNING: InferenceStatus = {
     // T29: no stuck instruments to report.
     frozenColumns: [],
     thresholds: null,
+    // MODEL-SERVE-012: nothing scored, so no spread to report — UNKNOWN
+    // with nulls, never a zero ratio.
+    residualSd: {
+      status: 'UNKNOWN' as const,
+      liveSd: null,
+      ratio: null,
+      baselineSd: null,
+      n: 0,
+    },
   },
 }
 

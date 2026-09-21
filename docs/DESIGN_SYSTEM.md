@@ -346,7 +346,9 @@ Active tabs use the primary blue pattern:
 
 ### Toast (Sonner)
 
-Import from `@/components/ui/sonner`. Use `toast.success()`, `toast.error()`, `toast.loading()`. Sonner is registered once in `app/layout.tsx`.
+Import from `@/components/ui/sonner`. Use `toast.success()`, `toast.error()`, `toast.loading()`. Sonner is registered once in `components/providers/session-provider.tsx` (not `app/layout.tsx`).
+
+Width is decided by CONTENT, not by toast type (`app/globals.css`): the toaster is capped at `min(560px, calc(100vw - 2rem))` and each toast is `fit-content` between a `--width` floor (380px, set in `sonner.tsx`) and that cap. Do not add per-type width rules — an error is not wide because it is an error, it is wide because its text is long. A multi-line message may be passed as the title; `[data-title]` is `white-space: pre-line`.
 
 ```tsx
 import { toast } from 'sonner'

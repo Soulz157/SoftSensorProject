@@ -3,8 +3,11 @@ import { useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { usePlantsData } from '@/hooks/plants/use-plants-data'
 import { useAllModels } from '@/hooks/use-all-models'
-import { failedDeploys, failedCountByNodeId,
+import {
+  failedDeploys,
+  failedCountByNodeId,
   monitoringAlerts,
+  monitoringCountByNodeId,
 } from '@/lib/model-status'
 
 import { useWorkspaceFilter } from '@/hooks/workspace/use-workspace-filter'
@@ -43,10 +46,32 @@ export default function PlantsPage() {
     return map
   }, [models])
 
-  const failedByNodeId = useMemo(
-    () => (models ? failedCountByNodeId(models) : {}),
-    [models],
-  )
+  /**
+   * MODEL-SERVE-012. BOTH model axes per node, summed — not just the deploy
+   * one.
+   *
+   * THE BUG THIS FIXES: the workspace figure above already folded
+   * `monitoringAlerts` in, but this node-level map read `failedCountByNodeId`
+   * alone. So a model alerting on the MONITORING axis (dead source, bad data,
+   * frozen tag, widened residual spread) left its node's dot on the tower
+   * name badge GREEN, while the same model raised a row on the Alerts page.
+   * The deploy half worked, which is why it read as live rather than broken.
+   *
+   * Summed rather than merged: the two axes are counted separately by design
+   * (see `monitoringCountByWorkspace`), and a model can legitimately be in
+   * both, but this map feeds one "models needing attention here" figure whose
+   * only question is whether the count is above zero.
+   */
+  const failedByNodeId = useMemo(() => {
+    if (!models) return {}
+    const deployFaults = failedCountByNodeId(models)
+    const monitoringFaults = monitoringCountByNodeId(models)
+    const out: Record<string, number> = { ...deployFaults }
+    for (const [nodeId, count] of Object.entries(monitoringFaults)) {
+      out[nodeId] = (out[nodeId] ?? 0) + count
+    }
+    return out
+  }, [models])
 
   // Same two signals the navbar's alert count is built from (buildAlerts:
   // node hardware status in {alarm,offline,warning} + failed model

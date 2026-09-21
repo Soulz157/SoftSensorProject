@@ -17,6 +17,16 @@ interface Props {
    *  lab samples should not present itself like one computed from three
    *  hundred. */
   pairCount?: number | null
+  /**
+   * MODEL-SERVE-011-T22. WHICH actual the figure was squared against.
+   *
+   * `pairs` is the real one — joined lab measurements. `held` is the
+   * fallback shown before any lab sample has joined: the same predictions
+   * against the LAST REPORTED lab value, which is consistency rather than
+   * error. The number renders identically either way, so the basis has to
+   * be stated; it rides in the suffix this readout already has.
+   */
+  rmseBasis?: 'pairs' | 'held'
 }
 
 /** Time-range selector + RMSE KPI for the Monitoring tab. Same as the old
@@ -28,6 +38,7 @@ export function MonitoringRangeBar({
   rmse,
   tag,
   pairCount,
+  rmseBasis = 'pairs',
 }: Props) {
   return (
     <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
@@ -57,9 +68,15 @@ export function MonitoringRangeBar({
             <span className="text-xs text-muted-foreground">
               {rmse === null
                 ? 'awaiting lab results'
-                : pairCount
-                  ? `units · ${pairCount} lab ${pairCount === 1 ? 'sample' : 'samples'}`
-                  : 'units'}
+                : rmseBasis === 'held'
+                  ? `units · vs last reported${
+                      pairCount
+                        ? ` · ${pairCount} ${pairCount === 1 ? 'window' : 'windows'}`
+                        : ''
+                    }`
+                  : pairCount
+                    ? `units · ${pairCount} lab ${pairCount === 1 ? 'sample' : 'samples'}`
+                    : 'units'}
             </span>
           </div>
         </div>

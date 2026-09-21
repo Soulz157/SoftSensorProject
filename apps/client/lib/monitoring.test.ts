@@ -2,12 +2,19 @@ import { describe, expect, it } from 'vitest'
 import {
   buildMonitoringRows,
   formatLagDuration,
+  applyHeldDeviationBand,
+  applyHeldValue,
+  formatAxisValue,
+  heldDeviationStats,
+  heldEvalPoints,
   mergeLivePredictions,
   mergeScheduledPredictions,
   residualDensityNote,
   windowStats,
 } from './monitoring'
+import type { LiveOverlayRow } from '@/lib/monitoring'
 import { buildFitRows } from '@/lib/model-metrics'
+import { computeMetrics } from '@/lib/model-evaluation'
 import type { EvalPoint } from '@/lib/model-evaluation'
 
 function point(
@@ -483,5 +490,247 @@ describe('mergeScheduledPredictions (MODEL-SERVE-011-T12)', () => {
 
     expect(merged).toHaveLength(1)
     expect(merged[0]!.scheduled).toBeUndefined()
+  })
+})
+
+/**
+ * MODEL-SERVE-011-T14. The held "Actual" step must be drawn over the FINAL
+ * axis, after every prediction series has contributed its timestamps.
+ *
+ * FOUND ON SCREEN, not in a test: Actual appeared only across 14:13-14:23 —
+ * the few minutes three Run Predict live scores happened to occupy — while
+ * the hourly predictions sat at 14:00 and 15:00 with no Actual beside them,
+ * so there was nothing to compare at the only timestamps that mattered.
+ */
+describe('applyHeldValue over a widened axis (MODEL-SERVE-011-T14)', () => {
+  const at = (iso: string, extra: Record<string, number> = {}) => ({
+    t: new Date(iso).getTime(),
+    timestamp: iso,
+    ...extra,
+  })
+
+  it('reaches rows added AFTER the live merge', () => {
+    const live = mergeLivePredictions(
+      [],
+      [{ timestamp: '2026-09-17T07:13:00.000Z', predicted: 110.2 }],
+    )
+    const widened = mergeScheduledPredictions(live, [
+      { windowStart: '2026-09-17T06:00:00.000Z', mean: 110.33 },
+    ])
+
+    const out = applyHeldValue(widened, 114)
+
+    // BOTH rows, not just the live one — this is the defect.
+    expect(out.map(r => r.held)).toEqual([114, 114])
+  })
+
+  it('computes the deviation for an hourly point with no live value', () => {
+    const rows = mergeScheduledPredictions(
+      [],
+      [{ windowStart: '2026-09-17T06:00:00.000Z', mean: 110 }],
+    )
+
+    const out = applyHeldValue(rows, 114)
+
+    // `scheduled` is often the ONLY prediction on its row now that the live
+    // series is off this chart; reading only live/predict left it blank.
+    expect(out[0]!.heldDeviation).toBe(-4)
+  })
+
+  it('prefers a real pair over the hourly summary for the deviation', () => {
+    const rows = [
+      at('2026-09-17T06:00:00.000Z', { predict: 112, scheduled: 110 }),
+    ]
+
+    const out = applyHeldValue(rows, 114)
+
+    expect(out[0]!.heldDeviation).toBe(-2)
+  })
+
+  it('is idempotent, so running it twice does not compound', () => {
+    const rows = [at('2026-09-17T06:00:00.000Z', { scheduled: 110 })]
+
+    const once = applyHeldValue(rows, 114)
+    const twice = applyHeldValue(once, 114)
+
+    expect(twice[0]!.heldDeviation).toBe(-4)
+    expect(twice[0]!.held).toBe(114)
+  })
+
+  it('still draws two endpoints when there is no axis to borrow', () => {
+    const out = applyHeldValue([], 114, { fromMs: 1000, toMs: 2000 })
+
+    expect(out.map(r => r.t)).toEqual([1000, 2000])
+    expect(out.every(r => r.held === 114)).toBe(true)
+  })
+})
+
+/**
+ * MODEL-SERVE-011-T15. A band drawn from Predict-vs-held-Actual, so the
+ * chart has one before any lab sample joins.
+ *
+ * Every case here guards the same property: this must never be mistaken for,
+ * or allowed to overwrite, the REAL residual band.
+ */
+describe('held-deviation band (MODEL-SERVE-011-T15)', () => {
+  const row = (extra: Partial<LiveOverlayRow>): LiveOverlayRow => ({
+    t: 1,
+    timestamp: '2026-09-17T06:00:00.000Z',
+    ...extra,
+  })
+
+  it('measures the spread of predicted - held, not of a residual', () => {
+    const rows = [
+      row({ heldDeviation: -4 }),
+      { ...row({ heldDeviation: -2 }), t: 2 },
+      { ...row({ heldDeviation: -6 }), t: 3 },
+    ]
+
+    const { sd, n } = heldDeviationStats(rows)
+
+    expect(n).toBe(3)
+    // population SD of [-4,-2,-6] = sqrt(8/3)
+    expect(sd).toBeCloseTo(Math.sqrt(8 / 3), 2)
+  })
+
+  it('reports zero spread for a single point rather than inventing one', () => {
+    expect(heldDeviationStats([row({ heldDeviation: -4 })])).toEqual({
+      sd: 0,
+      n: 1,
+    })
+  })
+
+  it('centres the band on the held value', () => {
+    const rows = [row({ held: 114, scheduled: 110 })]
+
+    applyHeldDeviationBand(rows, 2)
+
+    expect(rows[0]!.sd1).toEqual([112, 116])
+    expect(rows[0]!.sd2).toEqual([110, 118])
+  })
+
+  it('NEVER overwrites a real residual band on a joined row', () => {
+    const rows = [row({ held: 114, actual: 100, predict: 101, sd1: [99, 101] })]
+
+    applyHeldDeviationBand(rows, 2)
+
+    // The joined row keeps the band computed from its measured actual.
+    expect(rows[0]!.sd1).toEqual([99, 101])
+  })
+
+  it('draws nothing when the spread is zero or there is no held value', () => {
+    const noSpread = [row({ held: 114 })]
+    applyHeldDeviationBand(noSpread, 0)
+    expect(noSpread[0]!.sd1).toBeUndefined()
+
+    const noHeld = [row({ scheduled: 110 })]
+    applyHeldDeviationBand(noHeld, 2)
+    expect(noHeld[0]!.sd1).toBeUndefined()
+  })
+})
+
+describe('heldDeviationPct (MODEL-SERVE-011-T17)', () => {
+  it('expresses the deviation as a share of the held value', () => {
+    const rows: LiveOverlayRow[] = [{ t: 1, timestamp: 'x', scheduled: 110 }]
+
+    applyHeldValue(rows, 114)
+
+    expect(rows[0]!.heldDeviation).toBe(-4)
+    // -4 / 114 * 100
+    expect(rows[0]!.heldDeviationPct).toBeCloseTo(-3.51, 2)
+  })
+
+  it('leaves the percentage undefined when the held value is zero', () => {
+    const rows: LiveOverlayRow[] = [{ t: 1, timestamp: 'x', scheduled: 5 }]
+
+    applyHeldValue(rows, 0)
+
+    // Undefined, never Infinity — a percentage of nothing is not a number a
+    // reader can act on.
+    expect(rows[0]!.heldDeviation).toBe(5)
+    expect(rows[0]!.heldDeviationPct).toBeUndefined()
+  })
+})
+
+describe('formatAxisValue (MODEL-SERVE-011-T21)', () => {
+  it('prints four significant digits, not four decimals', () => {
+    // The raw float this axis used to print, clipped by a 44px gutter.
+    expect(formatAxisValue(110.05700050354004)).toBe('110.1')
+    // Same four digits at a completely different magnitude — which is why
+    // significant digits, not decimals.
+    expect(formatAxisValue(0.482137)).toBe('0.4821')
+    expect(formatAxisValue(1204.7)).toBe('1205')
+  })
+
+  it('keeps trailing zeros so the tick column stays aligned', () => {
+    expect(formatAxisValue(110)).toBe('110.0')
+    expect(formatAxisValue(-4)).toBe('-4.000')
+  })
+
+  it('returns an empty label rather than NaN', () => {
+    expect(formatAxisValue(Number.NaN)).toBe('')
+    expect(formatAxisValue(Number.POSITIVE_INFINITY)).toBe('')
+  })
+})
+
+/**
+ * MODEL-SERVE-011-T22. The pairs behind the header's Live RMSE before any
+ * lab sample has joined.
+ */
+describe('heldEvalPoints (MODEL-SERVE-011-T22)', () => {
+  it('pairs each prediction with the held value as its actual', () => {
+    const rows: LiveOverlayRow[] = [
+      { t: 1, timestamp: 'a', scheduled: 110, held: 114 },
+      { t: 2, timestamp: 'b', scheduled: 112, held: 114 },
+    ]
+
+    const points = heldEvalPoints(rows)
+
+    expect(points).toEqual([
+      { timestamp: 'a', predicted: 110, actual: 114, residual: -4 },
+      { timestamp: 'b', predicted: 112, actual: 114, residual: -2 },
+    ])
+    // Hand-computed: sqrt(((-4)^2 + (-2)^2) / 2) = sqrt(10)
+    // computeMetrics rounds to 2dp by design (lib/model-evaluation.ts), so
+    // this asserts the rounded value rather than pretending otherwise.
+    expect(computeMetrics(points).rmse).toBe(3.16)
+  })
+
+  it('EXCLUDES a row that has a measured actual', () => {
+    const rows: LiveOverlayRow[] = [
+      { t: 1, timestamp: 'a', predict: 101, actual: 100, held: 114 },
+      { t: 2, timestamp: 'b', scheduled: 110, held: 114 },
+    ]
+
+    // A measured pair already feeds the REAL pooled metric; pooling it with a
+    // carried-forward one would produce a number that is neither.
+    expect(heldEvalPoints(rows).map(p => p.timestamp)).toEqual(['b'])
+  })
+
+  it('prefers a real pair prediction over the hourly summary', () => {
+    const rows: LiveOverlayRow[] = [
+      {
+        t: 1,
+        timestamp: 'a',
+        predict: 111,
+        scheduled: 110,
+        live: 109,
+        held: 114,
+      },
+    ]
+
+    // Same precedence `applyHeldValue` uses for `heldDeviation`, so the
+    // deviation on screen and the header figure agree on every row.
+    expect(heldEvalPoints(rows)[0]!.predicted).toBe(111)
+  })
+
+  it('drops rows missing either side of the pair', () => {
+    const rows: LiveOverlayRow[] = [
+      { t: 1, timestamp: 'a', scheduled: 110 },
+      { t: 2, timestamp: 'b', held: 114 },
+      { t: 3, timestamp: 'c' },
+    ]
+
+    expect(heldEvalPoints(rows)).toEqual([])
   })
 })

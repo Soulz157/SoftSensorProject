@@ -30,6 +30,12 @@ import { isStale } from '@/lib/deploy-status';
 // MODEL-SERVE-001-T29. The frozen-tag detector, pure and co-located with its
 // own spec like the other 13 modules in lib/.
 import { detectFrozenColumns } from '@/lib/sensor-frozen';
+import {
+  classifyResidualSd,
+  truthPoolSince,
+  type ResidualSdVerdict,
+} from '@/lib/residual-sd-health';
+import { baselineResidualSd } from '@/lib/model-version-residual-sd';
 
 /**
  * `resolveProductionWindows`'s own `take`. Named because T29's
@@ -331,6 +337,14 @@ export class InferenceWindowMonitoringService {
       lastChangedAt: string | null;
       flatMinutes: number | null;
     }>;
+    /** MODEL-SERVE-012. Both halves of the output-error comparison beside
+     *  the verdict — the live spread, the reference it was measured
+     *  against, their ratio, and the pair count behind it. ANNOTATED and
+     *  present on every branch, for the reason the comment above records:
+     *  an inferred return type let an early branch omit a field the client
+     *  required. A no-schedule model reports UNKNOWN with nulls, never a
+     *  zero ratio. */
+    residualSd: ResidualSdVerdict;
   }> {
     const schedule = await this.prisma.inferenceSchedule.findUnique({
       where: { modelId },
@@ -342,6 +356,15 @@ export class InferenceWindowMonitoringService {
         frozenColumns: [],
         thresholds: null,
         frozenSince: [],
+        // No schedule means nothing has ever been scored, so there is no
+        // spread to report — UNKNOWN with nulls, never a zero.
+        residualSd: {
+          status: 'UNKNOWN',
+          liveSd: null,
+          ratio: null,
+          baselineSd: null,
+          n: 0,
+        },
       };
     }
 
@@ -470,6 +493,56 @@ export class InferenceWindowMonitoringService {
             .filter((e) => e.lastChangedAt !== null)
         : [];
 
+    // MODEL-SERVE-012. THE OUTPUT-ERROR AXIS. One query over the SAME
+    // production version the drift half already resolved —
+    // `InferenceWindowTruth` carries sufficient statistics per window, so the
+    // pooled live residual SD needs no object read and no second HTTP round
+    // trip.
+    //
+    // Runs even when `driftMonitor` is off, and even when there is no
+    // baseline artifact: this axis compares the model against ITS OWN
+    // recorded error, not against a column baseline, so nothing above gates
+    // it. `classifyResidualSd` answers UNKNOWN whenever the comparison
+    // cannot be made.
+    const residualSd = classifyResidualSd({
+      windows: production
+        ? await this.prisma.inferenceWindowTruth.findMany({
+            // A TIME horizon, not a row count, and the SAME one
+            // `deriveDeployStatuses` bounds its grouped aggregate by — see
+            // `TRUTH_POOL_DAYS`. A row-count `take` cannot be expressed as a
+            // group-by bound, so the list could not have matched it, and two
+            // bounds would let the list badge and this badge grade the same
+            // model from different samples.
+            //
+            // DELIBERATELY NOT `PRODUCTION_WINDOW_TAKE`: that is 24 windows
+            // because drift reads a rolling day of feature stats. A residual
+            // needs a MEASURED lab actual, which arrives at roughly daily
+            // cadence, so a one-day horizon could never reach
+            // `MIN_RESIDUAL_SD_PAIRS` and the axis would report UNKNOWN
+            // forever — a silent no-op no test would catch, since every test
+            // supplies its own rows.
+            where: {
+              modelVersionId: production.id,
+              windowStart: { gte: truthPoolSince() },
+            },
+            orderBy: { windowStart: 'desc' },
+            select: {
+              n: true,
+              sumSe: true,
+              sumAe: true,
+              sumSigned: true,
+              sumActual: true,
+              sumActualSq: true,
+            },
+          })
+        : [],
+      baselineSd: baselineResidualSd(production?.metrics ?? null),
+      thresholds: {
+        warnSd: schedule.warnSd,
+        criticalSd: schedule.criticalSd,
+      },
+    });
+
     return {
       ...classifyModelHealth({
         enabled: schedule.enabled,
@@ -477,11 +550,15 @@ export class InferenceWindowMonitoringService {
         driftStatus,
         driftEvidence,
         frozenColumns,
+        residualSdStatus: residualSd.status,
         ...bands,
         ...faults,
       }),
       thresholds,
       frozenSince,
+      // The two halves of the comparison, beside the verdict — a reader can
+      // see WHICH numbers produced it rather than being handed a word.
+      residualSd,
     };
   }
 

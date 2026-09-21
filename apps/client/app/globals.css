@@ -248,6 +248,50 @@
   border: 1px solid #2d3147 !important;
 }
 
-[data-sonner-toast].cn-toast[data-type='error'] {
+/* Toast sizing — BY CONTENT, NOT BY TYPE.
+ *
+ * This replaced a `[data-type='error']` rule that widened errors to 560px and
+ * left every other toast at the 380px `--width`. An error is not wide because
+ * it is an error; it is wide because its text is long, and those are different
+ * questions: `use-run-predict.ts` deliberately reports a live-plane failure as
+ * `toast.info` (the window run may be perfectly underway) while carrying the
+ * same verbatim server text an error would, and it was being squeezed into
+ * 380px for that classification alone.
+ *
+ * THE CEILING GOES ON THE CONTAINER, not only on the toast. Sonner positions
+ * every toast `absolute` inside `[data-sonner-toaster]`, which is itself
+ * `width: var(--width)` — so the old rule's 560px toast overflowed its own
+ * 380px container and anchored to the container's left edge instead of staying
+ * centred under `position="bottom-center"`. Widening the container and letting
+ * the toast size itself inside it keeps the centring the position prop asks
+ * for.
+ *
+ * `[data-styled='true']` is not decoration: sonner's own `width: var(--width)`
+ * sits on `[data-sonner-toast][data-styled='true']`, and a selector without it
+ * merely TIES on specificity and is settled by stylesheet order. The old rule
+ * won because `[data-type='error']` gave it a third attribute; this one earns
+ * the same weight honestly. */
+[data-sonner-toaster].toaster {
+  /* `.toaster` (from `sonner.tsx`'s own className) is what makes this
+   * deterministic: sonner's `width: var(--width)` sits on a bare
+   * `[data-sonner-toaster]`, so a bare selector here would only TIE and be
+   * settled by stylesheet order — and sonner injects its styles at runtime. */
   width: min(560px, calc(100vw - 2rem));
+}
+
+[data-sonner-toast][data-styled='true'].cn-toast {
+  /* `left/right: 0` plus auto inline margins is how an absolutely positioned
+   * box centres itself — the same shape sonner's own mobile media query uses. */
+  left: 0;
+  right: 0;
+  margin-inline: auto;
+  width: fit-content;
+  /* The floor keeps a one-word confirmation from shrinking to a chip; the
+   * ceiling is the container, which already holds the 2rem phone gutter. */
+  min-width: min(var(--width), 100%);
+  max-width: 100%;
+}
+
+[data-sonner-toast].cn-toast [data-title] {
+  white-space: pre-line;
 }

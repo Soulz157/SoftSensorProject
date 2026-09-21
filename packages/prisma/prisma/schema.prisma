@@ -476,110 +476,37 @@ model DatasetArtifact {
   checksum      String @default("")
   schemaVersion Int    @default(1)
 
-  /// LOGICAL tag count — excludes `timestamp` and every `__status` sidecar.
   columnCount  Int   @default(0)
   featureCount Int   @default(0)
   rowCount     Int   @default(0)
   missingPct   Float @default(0)
 
-  /// DS-LAKE-018-T03. Rows written to the `validate_data.parquet` sidecar
-  /// (holdout window + lead-in), on a BRONZE artifact whose materialize
-  /// request included a holdout selection. Null means no holdout — the
-  /// overwhelming majority of rows, and every artifact written before this
-  /// task. `rowCount` above keeps meaning "rows in data.parquet"
-  /// unconditionally; this is a deliberately SEPARATE field so that meaning
-  /// never has to be inferred from whether a holdout happened to be picked.
   validationRowCount Int?
 
-  /// DS-LAKE-018-T05. The resolved holdout boundary (canonicalised by
-  /// `pd.Timestamp` at materialize time) — the exact cut used to derive
-  /// `validation_row_count` above. Null under the same condition. Persisted
-  /// here, not re-derived later, because nothing else stores the ORIGINAL
-  /// holdout request once materialize returns; a post-training replay
-  /// needs this exact value to know where the holdout window starts.
   validationHoldoutFrom DateTime?
 
-  /// MODEL-FLOW-010-T06. Share of `validate_data.parquet` cells that are not
-  /// Good (`missing_pct(validate_frame)`), captured at write time alongside
-  /// `validationRowCount`/`validationHoldoutFrom` above. Null under the same
-  /// condition as those — no holdout, or a holdout written before this task.
-  /// DS-LAKE-018's resolved no-imputation decision means the holdout stays
-  /// raw, so a MISSING_VALUE hole reaches predict() with no other trace —
-  /// this is what lets the Model wizard's Dataset Review step (Step 2) say
-  /// so before training, not just after a depressed score.
   validationMissingPct Float?
 
-  /// DS-LAKE-023-T05. Rows the Python write path dropped (`drop_bad_feature_rows`)
-  /// because at least one kept feature tag was Bad, BEFORE scaling ran —
-  /// `to_model_ready` scales every finite value regardless of status and
-  /// always forces Good afterward, so this is the row's only remaining
-  /// trace once written. Null on any artifact that never scales
-  /// (BRONZE/materialize, SILVER/clean) or predates this column; set on a
-  /// GOLD row from `scale`/`features(scale=True)` and on a scored holdout
-  /// artifact from `prepare_holdout_for_run`. Reported beside the metric it
-  /// affects, same convention `validationMissingPct` above already uses.
   droppedBadRows Int?
 
-  /// 64-bit on purpose: DatasetVersion.sizeBytes is a 32-bit Int, and a 396 MB
-  /// artifact is already documented (preview_service.py), so the old column
-  /// tops out around 2.1 GB.
   sizeBytes BigInt @default(0)
 
-  /// Operations that produced THIS artifact from its parent.
   operations Json
 
-  /// column_stats.json sidecar key, written beside the data at write time
-  /// (DS-LAKE-005B-A-T07) — NOT the stats themselves. Per-tag coverage/
-  /// outlier/drift/etc. for an 8,000-tag artifact is not something Postgres
-  /// should hold as JSONB; MinIO already holds the data these stats
-  /// describe, and this column is a pointer into the same layout
-  /// featureSpecKey/validationKey below use. Null for an artifact written
-  /// before this task or via a write path this task did not reach.
   columnStatsKey String?
 
-  /// Sidecar object keys written beside the data. featureSpecKey is set on GOLD
-  /// (DS-LAKE-006), validationKey on FINAL (DS-LAKE-007).
   featureSpecKey String?
   validationKey  String?
   durationMs     Int?
 
-  /// DS-LAKE-022-T03. Which pipeline ORDER produced this artifact — NOT a
-  /// schema/format version. Null means pre-reorder (cleaning ran before
-  /// features, SILVER meant "cleaned"); 2 means post-reorder (features run
-  /// before cleaning, SILVER means "feature-engineered", GOLD means
-  /// "cleaned+scaled"). DatasetArtifactType itself is unchanged and gets no
-  /// new members — it is positional, and this column is what makes that
-  /// position's MEANING legible instead of an unmarked shift: the same
-  /// `data_silver.parquet` filename (DS-LAKE-016) means two different things
-  /// on either side of the reorder, and a committed object can never be
-  /// renamed to say which.
-  ///
-  /// DELIBERATELY HAS NO COLUMN DEFAULT, and that is the point. This value is
-  /// a function of WHICH CODE PATH RAN, not of when the row was created. Both
-  /// orders are live simultaneously — a client that sends the new-order
-  /// fields gets the new order, every existing client keeps the old one (see
-  /// DS-LAKE-022 decisions.both_orders_coexist_server_side) — so a
-  /// `@default(2)` would stamp "post-reorder" onto artifacts the OLD order
-  /// produced. That was this column's first shipped form and it was wrong: it
-  /// would have turned the one field meant to make the shift readable into a
-  /// second, more confident lie than the filename it exists to explain.
-  /// Written explicitly by the two stage-decision sites
-  /// (preprocessing-job.service.ts and dataset-draft.authorized.service.ts)
-  /// and carried onto FINAL by the finalize path.
   pipelineVersion Int?
 
   createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
   createdById String
   createdAt   DateTime @default(now())
 
-  /// DS-LAKE-009B-T09: set when ArtifactCleanupService has deleted this
-  /// artifact's MinIO objects. The row itself is NEVER deleted — it is the
-  /// audit trail and the only place `operations` (the recipe that produced
-  /// it) survives, per decisions.cleanup_scope. Null means the bytes are
-  /// still in MinIO; non-null means only the row remains.
   objectReclaimedAt DateTime?
 
-  /// Back-relation for Dataset.currentArtifactId.
   currentOf Dataset[] @relation("DatasetCurrentArtifact")
 
   jobsAsSource PreprocessingJob[] @relation("JobSourceArtifact")
@@ -820,54 +747,24 @@ model ModelDraft {
   workspaceId String
   workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
-  /// Cascade selection from Step 1. plantId has no direct home on the final
-  /// Model (which stores only nodesId, itself resolving to a plant via
-  /// Nodes.planId) — kept here so the wizard can hydrate the cascade
-  /// selector on reload before a node is necessarily chosen yet.
   plantId String?
   nodeId  String?
 
   datasetId String?
 
-  /// One run predicts one Y — a multi-target selection maps to null here,
-  /// never to an arbitrary first entry, so a multi-target draft fails
-  /// loudly at training-create rather than silently training on whichever
-  /// target sorted first.
   targetY         String?
   algorithm       String?
   hyperparameters Json    @default("{}")
-  /// FRACTION (0.5-0.95), never a percentage — chronological_split
-  /// multiplies by row count, so a UI percentage (e.g. 80) would slice at
-  /// 80x the intended length. Converted once, at the client boundary.
   splitRatio      Float?
 
   status ModelDraftStatus @default(ACTIVE)
 
-  /// Latest/winning run, for wizard hydration — same role
-  /// DatasetDraft.currentArtifactId plays for the dataset wizard.
   currentRunId String?
 
-  /// MODEL-FLOW-018-T02. The user's explicit choice of which run carries
-  /// forward, for runs no ModelCandidateJob owns (a standalone launch, or
-  /// any CV run — CV and Find Best Model are mutually exclusive, so a CV
-  /// run can never belong to a sweep). Null means "resolve by the default
-  /// rules" — see resolveActiveRunId's precedence comment. CLEARED
-  /// whenever a newer explicit choice is made (a job selection) or new
-  /// training starts (launchDraftRun), so the user's most recent choice
-  /// always wins regardless of which mechanism made it.
   selectedRunId String?
 
-  /// Set when the draft is promoted, so a saved Model is traceable back to
-  /// the draft that produced it.
   savedModelId String?
 
-  /// MODEL-FLOW-011-T01. Null until ModelDraftCleanupAdminService deletes
-  /// this draft's run objects under drafts/{id}/runs/ — the retry-on-
-  /// failure marker DatasetArtifact.objectReclaimedAt already uses on the
-  /// dataset side. Only meaningful once status is ABANDONED: an ACTIVE
-  /// draft the sweep reclaims flips status AND stamps this in the same
-  /// write, so a failed byte-delete leaves the stamp null and the next
-  /// tick retries rather than silently giving up.
   objectsReclaimedAt DateTime?
 
   createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
@@ -892,13 +789,7 @@ enum ModelRunStatus {
 }
 
 model ModelTrainingRun {
-  id String @id @default(uuid())
-
-  /// EXACTLY ONE of modelId / modelDraftId is set at creation — enforced by
-  /// a CHECK constraint in the migration, same "never neither" shape
-  /// DatasetArtifact.datasetId/draftId already uses. A run created from the
-  /// wizard has modelDraftId and a null modelId until Save Model adopts it
-  /// (modelId set, modelDraftId KEPT for traceability — never cleared).
+  id           String      @id @default(uuid())
   modelId      String?
   model        Model?      @relation(fields: [modelId], references: [id], onDelete: Cascade)
   modelDraftId String?
@@ -931,22 +822,7 @@ model ModelTrainingRun {
   /// its `n` from there — the container refuses outright when a named column
   /// is absent, so the two agree or the run failed.
   featureColumns Json?
-  /// MODEL-FLOW-019-T31. Groups the rows of one feature-count sweep. Null for
-  /// every ordinary run. A real column rather than a derived grouping because
-  /// the alternative — matching on artifact + target + algorithm + n — cannot
-  /// tell two sweeps of the same shape apart and would silently merge them
-  /// into one curve.
   sweepId        String?
-  /// MODEL-FLOW-019-T31 / AC66. The run whose recorded feature importance
-  /// produced the ranking every row of this sweep shares. Null for an
-  /// ordinary run.
-  ///
-  /// A THIRD COLUMN rather than reusing `sweepId` as the seed's own id: a
-  /// second sweep launched from the same seed would then collide with the
-  /// first and silently merge two ladders into one curve, with duplicate
-  /// feature counts reading as scatter. Nor can it be derived from the rows —
-  /// each row records its OWN importance, which is not the ranking that chose
-  /// its columns.
   sweepSeedRunId String?
 
   /// One run predicts one Y. N targets on one artifact = N runs.
@@ -989,10 +865,10 @@ model ModelTrainingRun {
   /// a non-zero exit code the runner observed.
   failureReason String?
 
-  modelKey              String?
-  metricsKey            String?
-  manifestKey           String?
-  predictionsKey        String?
+  modelKey                 String?
+  metricsKey               String?
+  manifestKey              String?
+  predictionsKey           String?
   /// MODEL-FLOW-019-T20. A NON-CV SUCCEEDED run's own holdout series
   /// ({timestamp,y_true,y_pred} over the dataset's raw validation holdout)
   /// — deliberately a SEPARATE column from `predictionsKey`, never the same
@@ -1014,14 +890,14 @@ model ModelTrainingRun {
   /// whose inline holdout scoring soft-failed, and any pre-T26 run never
   /// backfilled. Not cleared on a re-score failure, so a prior successful
   /// score is not lost by a later attempt that fails.
-  holdoutPredictionsKey String?
+  holdoutPredictionsKey    String?
   /// MODEL-FLOW-013-T05. Set only for the algorithms train.py can extract a
   /// real iteration-by-iteration loss trajectory from (mlp, lightgbm,
   /// xgboost, hist_gradient_boosting) — null for a closed-form algorithm
   /// (ols/ridge/pls/grp/svm/random_forest), which never writes this
   /// artifact, and null for a series that exceeded MAX_LOSS_HISTORY_POINTS
   /// (soft-skipped, not a training failure).
-  lossHistoryKey        String?
+  lossHistoryKey           String?
   /// MODEL-FLOW-016-T04. Per-fold CV metrics (cv_folds.json) — set only for
   /// a CV run (splitSpec.method === "cv_expanding"); null for every other
   /// run, the same honest-legacy-null pattern MODEL-FLOW-010-T06 established
@@ -1029,7 +905,7 @@ model ModelTrainingRun {
   /// capped (MIN_LABELS_PER_FOLD, split_stats_service.py / train.py) before
   /// a fold ever fits, so an oversized artifact is unreachable — no
   /// redundant size guard needed on this column.
-  cvFoldsKey            String?
+  cvFoldsKey               String?
   /// MODEL-FLOW-019-T09. Per-feature importance (feature_importance.json) —
   /// set only for the algorithms images/trainer/app/importance.py can read
   /// a real quantity from (random_forest/lightgbm/xgboost via
@@ -1042,7 +918,7 @@ model ModelTrainingRun {
   /// this run"; never reconstructed on read (that would mean loading
   /// model.joblib outside the trainer image, MODEL-FLOW-016-T07's own
   /// finding that apps/python has no sklearn/joblib at all).
-  featureImportanceKey  String?
+  featureImportanceKey     String?
   /// MODEL-FLOW-023-T10. Population-scored importance
   /// (permutation_importance.json) — set only for lstm/gru today (the one
   /// strategy that populates `TrainingResult.permutation_population`,
@@ -1057,7 +933,7 @@ model ModelTrainingRun {
   /// MODEL-FLOW-013-T04 added train_r2/train_mae/train_rmse keys alongside
   /// the existing test-split r2/mae/rmse — no schema change needed, this
   /// column is untyped Json.
-  metrics               Json?
+  metrics                  Json?
   /// DS-LAKE-018-T05. The SAME shape as `metrics` (r2/mae/rmse/row counts),
   /// scored on the replayed RAW validation holdout instead of the
   /// chronological test split. Deliberately a SEPARATE column, never merged
@@ -1067,7 +943,7 @@ model ModelTrainingRun {
   /// no holdout (validationRowCount was never set) or the replay failed —
   /// both cases leave training itself unaffected (see model-run.authorized.
   /// service.ts's claim()).
-  holdoutMetrics        Json?
+  holdoutMetrics           Json?
   /// MODEL-FLOW-014-T06. The train/test split distribution panel's own
   /// response (SplitStatsResponse, apps/python schemas/preprocess.py),
   /// frozen at RUN CREATION — the record of what the user was actually
@@ -1084,7 +960,7 @@ model ModelTrainingRun {
   /// on purpose (N candidates sharing one split is N redundant artifact
   /// reads for an identical answer; a candidate's provenance belongs to its
   /// job, not to this column).
-  splitStats            Json?
+  splitStats               Json?
 
   createdAt  DateTime  @default(now())
   startedAt  DateTime?
@@ -1142,18 +1018,6 @@ enum ModelVersionStage {
   ARCHIVED
 }
 
-/// MODEL-SERVE-001. The row that decides what is in production. Created
-/// ONLY by Save Model (MODEL-SERVE-001-T03, one row per saved Model, STAGING)
-/// and by a future retrain (MODEL-SERVE-004, STAGING, promotes nothing).
-/// IMMUTABLE except stage/promotedById/promotedAt/archivedAt/
-/// promotionOverride — every other field is a snapshot of what the source
-/// run actually produced, recorded once, per MODEL-FLOW-007-T10's
-/// adopt-by-pointer discipline: this row references the source run's own
-/// bytes by their pinned key, it never copies them (see MODEL-SERVE-000-T07
-/// and decisions.open_question_pin_by_pointer_or_copy_bytes, resolved
-/// pointer — the FINAL artifact every run trains against is already
-/// unconditionally excluded from cleanup, so a copy would duplicate storage
-/// against a risk that does not exist).
 model ModelVersion {
   id      String @id @default(uuid())
   modelId String
@@ -1651,7 +1515,7 @@ model InferenceWindow {
   /// table (via its own direct modelId FK) in the same statement, and
   /// Restrict is checked per row before ModelVersion's own cascade has
   /// finished.
-  modelVersion ModelVersion @relation(fields: [modelVersionId], references: [id], onDelete: NoAction, onUpdate: Cascade)
+  modelVersion   ModelVersion @relation(fields: [modelVersionId], references: [id], onDelete: NoAction, onUpdate: Cascade)
 
   /// Half-open [windowStart, windowEnd). Both are computed by ONE pure
   /// helper (lib/inference-windows.ts) that the tick and the backfill route

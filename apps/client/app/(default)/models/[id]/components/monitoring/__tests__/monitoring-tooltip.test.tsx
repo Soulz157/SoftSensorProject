@@ -132,7 +132,7 @@ describe('MonitoringTooltip — live-overlay points (MODEL-SERVE-011-T09)', () =
     expect(screen.getAllByText('—')).toHaveLength(2)
   })
 
-  it('does not claim an uncomputable residual on a live-overlay point', () => {
+  it('shows the held deviation under Residual rather than a dash', () => {
     render(
       <MonitoringTooltip
         active
@@ -143,12 +143,12 @@ describe('MonitoringTooltip — live-overlay points (MODEL-SERVE-011-T09)', () =
       />,
     )
 
-    // A residual and an error % exist only for a MEASURED pair. Two dashes
-    // beside a visible point say "this could not be computed" about a point
-    // that was never in that calculation.
-    expect(screen.queryByText('Residual')).toBeNull()
-    expect(screen.queryByText('Error %')).toBeNull()
-    expect(screen.getByText('Vs last reported')).toBeVisible()
+    // MODEL-SERVE-011-T18 (user decision): same wording as a measured pair.
+    // The point is still that a row with nothing to show must not print a
+    // dash beside a visible line — it now has a real number instead.
+    expect(screen.getByText('Residual')).toBeVisible()
+    expect(screen.getByText('-3.25')).toBeVisible()
+    expect(screen.queryByText('—')).toBeNull()
   })
 
   it('keeps the dashed residual pair on a row that carries nothing at all', () => {
@@ -166,7 +166,47 @@ describe('MonitoringTooltip — live-overlay points (MODEL-SERVE-011-T09)', () =
     expect(screen.getByText('Error %')).toBeVisible()
   })
 
-  it('reports a held deviation without calling it a residual', () => {
+  it('reports the held deviation under the SAME labels as a measured pair', () => {
+    render(
+      <MonitoringTooltip
+        active
+        label={1}
+        variant="residual"
+        formatLabel={fmtLabel}
+        payload={payload({ t: 1, heldDeviation: -4, heldDeviationPct: -3.51 })}
+      />,
+    )
+
+    // MODEL-SERVE-011-T17. A 4-unit gap on a 114 reading and one on a 12
+    // reading are not the same thing; the percentage is what separates them,
+    // and the measured rows already get that pair.
+    // MODEL-SERVE-011-T18 (user decision): the same words the measured pair
+    // uses. What the number IS lives in the chart caption, not in a longer
+    // label.
+    expect(screen.getByText('Residual')).toBeVisible()
+    expect(screen.getByText('-4.00')).toBeVisible()
+    expect(screen.getByText('Error %')).toBeVisible()
+    expect(screen.getByText('-3.51%')).toBeVisible()
+  })
+
+  it('omits the percentage when the held value made it undefined', () => {
+    render(
+      <MonitoringTooltip
+        active
+        label={1}
+        variant="residual"
+        formatLabel={fmtLabel}
+        payload={payload({ t: 1, heldDeviation: -4 })}
+      />,
+    )
+
+    // A held value of 0 yields no percentage — undefined, not infinite.
+    expect(screen.getByText('Residual')).toBeVisible()
+    // Only the absolute row: a held value of 0 yields no percentage.
+    expect(screen.queryByText('Error %')).toBeNull()
+  })
+
+  it('never shows two Residual rows — a measured pair excludes the held one', () => {
     render(
       <MonitoringTooltip
         active
@@ -177,10 +217,9 @@ describe('MonitoringTooltip — live-overlay points (MODEL-SERVE-011-T09)', () =
       />,
     )
 
-    // `live - held` is measured against a value carried forward since the
-    // lab last reported — excluded from RMSE/R2/SD for that reason, so its
-    // label must not borrow the residual's name.
-    expect(screen.getByText('Vs last reported')).toBeVisible()
+    // The collision is avoided by EXCLUSION, mirroring the chart itself:
+    // the held series is drawn only when no measured residual exists.
+    expect(screen.getAllByText('Residual')).toHaveLength(1)
     expect(screen.getByText('-3.25')).toBeVisible()
   })
 })

@@ -40,6 +40,18 @@ export const HEALTH_REASON_LABEL: Record<HealthReason, string> = {
   // wearing another's name.
   DRIFT_CRITICAL: 'input drift (critical)',
   DRIFT_WARN: 'input drift',
+  // MODEL-SERVE-012. Named for the BAND the reader already sees on the
+  // Residual chart, so the badge and the chart speak the same language. Two
+  // codes rather than one for the same reason the drift pair is two: 1–2 SD
+  // is "watch this", beyond 3 SD is "act", and a merged label would put both
+  // under one word.
+  //
+  // These reach the global Alerts page through `AlertRow.monitoringReason`
+  // with no wiring of their own — that field is filled from
+  // `monitoring.reason` and rendered through this very map, which is why the
+  // map has one home and two readers.
+  RESIDUAL_SD_WARN: 'residual 1–2SD',
+  RESIDUAL_SD_CRITICAL: 'residual beyond 3SD',
 }
 
 /** Sentence-case, for a standalone row rather than a badge suffix. */

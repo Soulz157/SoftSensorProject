@@ -41,7 +41,10 @@ export async function updateModel(
     // server-side (lib/deploy-status.ts) from InferenceWindow/
     // InferenceSchedule, never caller-set. Use
     // inferenceWindowService.putSchedule to change what actually drives it.
-    prodStatus?: 'normal' | 'warning' | 'alert' | 'offline' | 'frozen'
+    // MODEL-SERVE-012-T09. `prodStatus` removed — the Monitoring badge is
+    // DERIVED from the measured health axis (lib/model-status.ts's
+    // monitoringStatusFromHealth), so the hand-set column drives no display
+    // and nothing should be writing it from here.
     statusDetail?: string | null
     config?: ModelConfig
   },

@@ -13,6 +13,7 @@ import {
 import { cn } from '@/lib/utils'
 import { AIModel } from '@/types'
 import { Button } from '@/components/ui/button'
+import { monitoringStatus } from '@/lib/model-status'
 import {
   Sheet,
   SheetContent,
@@ -81,7 +82,9 @@ export function ModelPreviewSheet({ model, open, onClose }: Props) {
   if (!model) return null
 
   const ds = DEPLOY_MAP[(model.data?.deployStatus ?? 'stopped') as DS]
-  const ps = PROD_MAP[(model.data?.prodStatus ?? 'normal') as PS]
+  // MODEL-SERVE-012. The MEASURED monitoring verdict, not the hand-set
+  // `prodStatus` column — see the same note in model-detail-dialog.tsx.
+  const ps = PROD_MAP[monitoringStatus(model) as PS] ?? PROD_MAP.normal
   const DIcon = ds.icon
   const PIcon = ps.icon
   const recentLogs = [...(model.data?.logs ?? [])].reverse().slice(0, 5)
@@ -90,7 +93,7 @@ export function ModelPreviewSheet({ model, open, onClose }: Props) {
     : '—'
   const plantName = model.nodes?.plan?.name ?? '—'
   const hasError =
-    model.data?.deployStatus === 'error' || model.data?.prodStatus === 'alert'
+    model.data?.deployStatus === 'error' || monitoringStatus(model) === 'alert'
 
   return (
     <Sheet open={open} onOpenChange={o => !o && onClose()}>
@@ -120,7 +123,7 @@ export function ModelPreviewSheet({ model, open, onClose }: Props) {
             </div>
             <div className="rounded-lg border border-border p-3">
               <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                Production
+                Monitoring
               </p>
               <span
                 className={cn(

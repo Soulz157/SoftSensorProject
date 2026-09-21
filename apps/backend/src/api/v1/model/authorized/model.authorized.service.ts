@@ -304,7 +304,6 @@ export class ModelAuthorizedService {
     if (dto.name !== undefined) editedLabels.push('Name');
     if ('nodeId' in dto) editedLabels.push('Assigned node');
     if ('datasetId' in dto) editedLabels.push('Dataset');
-    if (dto.prodStatus !== undefined) editedLabels.push('Production status');
     if (dto.statusDetail !== undefined) editedLabels.push('Status detail');
     if (dto.config !== undefined) editedLabels.push('Configuration');
 
@@ -345,7 +344,6 @@ export class ModelAuthorizedService {
 
     const newData: ModelData = {
       ...current,
-      ...(dto.prodStatus && { prodStatus: dto.prodStatus }),
       ...(dto.statusDetail !== undefined && {
         statusDetail: dto.statusDetail ?? undefined,
       }),

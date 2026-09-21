@@ -12,6 +12,10 @@ import type { LiveErrorCoverage } from '@/services/inference-window'
 import {
   buildMonitoringRows,
   formatLagDuration,
+  applyHeldDeviationBand,
+  applyHeldValue,
+  heldDeviationStats,
+  heldEvalPoints,
   mergeLivePredictions,
   mergeScheduledPredictions,
   pickTimeFormat,
@@ -21,21 +25,28 @@ import {
 } from '@/lib/monitoring'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { ChartZoomControls } from '@/components/charts/chart-zoom-controls'
+import { computeMetrics } from '@/lib/model-evaluation'
 import { MonitoringRangeBar } from './monitoring-range-bar'
 import { ActualVsPredictChart } from './actual-vs-predict-chart'
-import { ResidualChart, type ResidualMode } from './residual-chart'
+import {
+  ResidualChart,
+  SD1_COLOR,
+  SD2_COLOR,
+  SD3_COLOR,
+  type ResidualMode,
+} from './residual-chart'
 import { LivePredictionChart } from './live-prediction-chart'
 import { DriftPanel } from './drift-panel'
 import { PsiPanel } from './psi/psi-panel'
 
-/** MODEL-SERVE-009-T05. The same spans `useLiveError` requests, so the held
- *  series is drawn over exactly the window the data was fetched for. */
-const RANGE_MS: Record<TimeRange, number> = {
-  '24h': 24 * 60 * 60 * 1000,
-  '7d': 7 * 24 * 60 * 60 * 1000,
-  '1m': 30 * 24 * 60 * 60 * 1000,
-  '1y': 365 * 24 * 60 * 60 * 1000,
-}
+/* MODEL-SERVE-009-T05. A local `RANGE_MS` used to live here so the held
+ * series could be drawn over "exactly the window the data was fetched for".
+ * It only ever APPROXIMATED that: it was multiplied by a `Date.now()` read
+ * in the render body, a different instant from the one the request used.
+ * `usePredictionMonitoring` now reports its real fetched window as
+ * `seriesBounds`, which is the same intent actually delivered — so this
+ * second copy of the spans is gone rather than left to drift from the one
+ * the hooks request with. */
 
 function LegendItem({ color, label }: { color: string; label: string }) {
   return (
@@ -194,6 +205,7 @@ export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
   const tag = targetColumn
   const {
     points: livePoints,
+    seriesBounds,
     pointsLoading: livePointsLoading,
     livePredictEnabled,
     drift,
@@ -233,19 +245,107 @@ export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
   // MonitoringRow[] the Residual chart and windowStats read, so the SD-band
   // and residual math still see only ground-truth-paired points.
   const rowsWithLive = useMemo(() => {
-    const toMs = Date.now()
-    const merged = mergeLivePredictions(
-      rows,
-      livePoints,
+    // The window the series was ACTUALLY fetched over, reported by the hook
+    // that fetched it. This used to be `Date.now()` read right here, which
+    // `react-hooks/purity` refuses — an impure read in the render body gives
+    // a different answer on every incidental re-render, so the fallback axis
+    // could drift away from the points drawn beside it. Null until the first
+    // request settles, and `applyHeldValue` already treats a missing bounds
+    // as "nothing to draw the constant against" rather than inventing one.
+    const bounds = seriesBounds
+    // MODEL-SERVE-011-T14. ORDER MATTERS, and getting it wrong was visible
+    // on screen: the held "Actual" step must be drawn over the FINAL axis,
+    // after every prediction series has contributed its timestamps.
+    // Applying it inside `mergeLivePredictions` (as before) meant the
+    // hourly rows added below carried no `held`, so Actual spanned only the
+    // few minutes the live points occupied and never reached the hourly
+    // predictions it exists to be compared against.
+    const withLive = mergeLivePredictions(rows, livePoints)
+    // Folded in at each window's own `windowStart`, on its own key — an
+    // hour of predictions summarised by one number is not the same thing as
+    // a joined pair's `predict` or a single instant's `live`.
+    const withScheduled = mergeScheduledPredictions(withLive, scheduledPoints)
+    const withHeld = applyHeldValue(
+      withScheduled,
       targetHeld?.value ?? null,
-      { fromMs: toMs - RANGE_MS[range], toMs },
+      bounds,
     )
-    // MODEL-SERVE-011-T12. Folded in LAST, at each window's own
-    // `windowStart`, on its own key — an hour of predictions summarised by
-    // one number is not the same thing as a joined pair's `predict` or a
-    // single instant's `live`, and nothing here pools them.
-    return mergeScheduledPredictions(merged, scheduledPoints)
-  }, [rows, livePoints, targetHeld, range, scheduledPoints])
+    return withHeld
+  }, [rows, livePoints, targetHeld, seriesBounds, scheduledPoints])
+
+  /**
+   * MODEL-SERVE-011-T15/T16. ONE spread, shared by both charts: the band on
+   * Actual-vs-Predict and the ±SD guardlines on Residual Analysis must be the
+   * same number, or two views of one range disagree about how far the model
+   * is sitting from the last reported value.
+   *
+   * It is NOT the residual SD — `stats.sd` stays that, computed from measured
+   * pairs only — and it feeds no metric.
+   */
+  const heldSd = useMemo(
+    () => heldDeviationStats(rowsWithLive).sd,
+    [rowsWithLive],
+  )
+
+  const rowsWithBand = useMemo(
+    // Rows carrying a REAL joined pair keep the residual band
+    // `buildMonitoringRows` already gave them; this only fills rows that have
+    // none, so the two never overwrite each other.
+    () => applyHeldDeviationBand(rowsWithLive, heldSd),
+    [rowsWithLive, heldSd],
+  )
+
+  /**
+   * MODEL-SERVE-011-T22. The header's Live RMSE, computed from the held
+   * actual when no lab pair exists — the same basis the band, the guardrails
+   * and the Residual line already use.
+   *
+   * Through `computeMetrics`, the canonical client error math, NOT a fourth
+   * RMSE formula. Only `rmse` is read from it: R² against a near-constant
+   * held actual is degenerate (ssTot tends to 0) and would render a
+   * confident number that means nothing.
+   */
+  const heldMetrics = useMemo(
+    () => computeMetrics(heldEvalPoints(rowsWithBand)),
+    [rowsWithBand],
+  )
+  const latest = useMemo(() => {
+    let actual: { value: number; at: string } | null = null
+    let predict: { value: number; at: string } | null = null
+
+    for (let i = rowsWithBand.length - 1; i >= 0; i--) {
+      const r = rowsWithBand[i]
+      // `noUncheckedIndexedAccess` types an indexed read as possibly
+      // undefined, and it is right to: nothing in the type system ties `i` to
+      // this array's length. The index is in range by construction here, so
+      // this guard never fires — but it is the narrowing the compiler needs,
+      // and it costs one comparison per row. Deliberately not a `!` assertion:
+      // that would silence the question rather than answer it, and this
+      // codebase's own rule is to narrow rather than bypass.
+      if (!r) continue
+      if (
+        !actual &&
+        typeof r.actual === 'number' &&
+        Number.isFinite(r.actual)
+      ) {
+        actual = { value: r.actual, at: r.timestamp }
+      }
+      if (!predict) {
+        const p = [r.predict, r.scheduled, r.live].find(
+          (v): v is number => typeof v === 'number' && Number.isFinite(v),
+        )
+        if (p !== undefined) predict = { value: p, at: r.timestamp }
+      }
+      if (actual && predict) break
+    }
+
+    const actualHeld = actual === null && targetHeld?.value != null
+    if (actualHeld && targetHeld?.value != null) {
+      actual = { value: targetHeld.value, at: targetHeld.lastMeasuredAt ?? '' }
+    }
+    return { actual, predict, actualHeld }
+  }, [rowsWithBand, targetHeld])
+
   const tickFormatter = useMemo(() => {
     const first = visible[0]
     const last = visible[visible.length - 1]
@@ -257,8 +357,17 @@ export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
   }, [visible])
 
   const yDomain = useMemo<[number, number]>(() => {
-    const values = rows.flatMap(r =>
-      [r.actual, r.predict].filter(
+    // MODEL-SERVE-011-T19. EVERY SERIES THE CHART ACTUALLY DRAWS, read off
+    // the rows it is actually handed.
+    //
+    // This used to read `actual`/`predict` out of `rows` — the JOINED pairs
+    // alone — which had two consequences once the chart grew other series:
+    // with no lab pair in range `values` was empty and the domain fell back
+    // to [0, 1], putting lines that live around 110 completely off screen;
+    // and even with pairs, the hourly `scheduled` series and the `held` step
+    // could not influence the domain, so they could sit outside it.
+    const values = rowsWithBand.flatMap(r =>
+      [r.actual, r.predict, r.scheduled, r.held].filter(
         (v): v is number => typeof v === 'number' && Number.isFinite(v),
       ),
     )
@@ -267,17 +376,15 @@ export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
     const lo = Math.min(...values)
     const hi = Math.max(...values)
 
-    // Guarantee the band is on screen even when actual and predict track each
-    // other almost exactly — otherwise a very good model produces a
-    // zero-height domain and nothing renders at all.
-    const bandSpan = stats.sd * 2
+    const effectiveSd = stats.sd > 0 ? stats.sd : heldSd
+    const bandSpan = effectiveSd * 2
     const dataSpan = hi - lo
     const span = Math.max(dataSpan, bandSpan * 3)
     const pad = span * 0.12
     const mid = (lo + hi) / 2
 
     return [mid - span / 2 - pad, mid + span / 2 + pad]
-  }, [rows, stats.sd])
+  }, [rowsWithBand, stats.sd, heldSd])
 
   const changeRange = (r: TimeRange) => {
     setRange(r)
@@ -289,19 +396,14 @@ export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
       <MonitoringRangeBar
         range={range}
         onRange={changeRange}
-        // The POOLED figure over every joined pair in the range, not the
-        // visible-brush recompute — a KPI that changed when someone zoomed
-        // would not be the model's error, it would be the zoom's.
-        rmse={liveMetrics?.rmse ?? null}
-        pairCount={liveMetrics?.n ?? null}
+        rmse={
+          liveMetrics?.rmse ?? (heldMetrics.n > 1 ? heldMetrics.rmse : null)
+        }
+        rmseBasis={liveMetrics?.rmse != null ? 'pairs' : 'held'}
+        pairCount={liveMetrics?.n ?? heldMetrics.n}
         tag={tag}
       />
 
-      {/* MODEL-SERVE-005-T03. Coverage, beside the number rather than
-          behind it: how much of the range actually has ground truth, and
-          the WORST window's missing rate (never a mean — a mean hides the
-          one window whose sensor stopped, which is the case
-          MODEL-SERVE-006-T05 exists to make visible). */}
       {coverage && coverage.windowsInRange > 0 && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-border bg-muted/40 px-3 py-2 text-[11px] text-muted-foreground">
           <span>
@@ -310,12 +412,6 @@ export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
             </span>{' '}
             of {coverage.windowsInRange} windows joined
           </span>
-          {/* MODEL-SERVE-009-T05. The Actual line is the lab's LAST
-              MEASUREMENT carried forward, not a stream of measurements —
-              the target is fetched every window, but PI holds a sparse
-              .lab tag's value between samples, so saying when it was
-              actually measured is what stops a flat line reading as a
-              steady process. Rendered only when a value exists. */}
           {targetHeld?.value != null && (
             <span>
               actual {targetHeld.value.toFixed(2)}
@@ -328,12 +424,6 @@ export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
                 : ''}
             </span>
           )}
-          {/* MODEL-SERVE-008-T04. THE ASYMMETRY IS THE POINT. A reader
-              counting the actual points on the chart concludes the model
-              ran that few times; on a once-a-day lab target scored hourly
-              the scored count is ~24x the lab count, and only saying so
-              prevents the wrong reading. Predictions first, because it is
-              the number the chart under-represents. */}
           <span>
             <span className="font-medium text-foreground">
               {coverage.predictionRows ?? 0}
@@ -341,28 +431,12 @@ export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
             predictions / {coverage.truthRows} lab samples /{' '}
             {coverage.pairedRows} paired
           </span>
-          {/* The two RATES, not just the two counts — the reason the counts
-              differ, stated rather than left to be inferred. Rendered only
-              with a schedule, where both numbers have a meaning. */}
           {coverage.cadenceMinutes && coverage.truthLagMinutes && (
             <span>
               scores every {formatLagDuration(coverage.cadenceMinutes)} · lab
               reports on its own schedule
             </span>
           )}
-          {/* MODEL-SERVE-008-T01. "Awaiting" means still inside the lab's
-              own window. A window whose lag has EXPIRED is not awaiting
-              anything and is counted separately — pooling them made a
-              permanent state read as a pending one. Neutral, not a status
-              colour: no lab report in a window is the normal outcome at a
-              once-a-day measurement rate, not a fault.
-
-              `?? 0` because a client can outrun the backend that feeds it:
-              against a server that predates this field the subtraction
-              below would be NaN, and `NaN > 0` is false, so the EXISTING
-              awaiting chip would silently stop rendering — a regression
-              presenting as nothing at all rather than as an error. Falling
-              back to zero degrades to exactly the old behaviour. */}
           {coverage.windowsAwaitingTruth - (coverage.windowsLapsedTruth ?? 0) >
             0 && (
             <span>
@@ -405,40 +479,68 @@ export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
 
           <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-background px-3 py-1.5 text-[10px] font-medium text-muted-foreground">
             <LegendItem color="var(--chart-1)" label="Actual" />
-            {/* MODEL-SERVE-011-T13. ONE Predict entry, and it is the WINDOW
-                plane's: both series behind it come from the same
-                predictions.parquet — the joined pair's per-row `predict`
-                and the hourly `scheduled` summary of the same rows. The
-                live serving-plane series no longer appears on this chart at
-                all (user decision 2026-09-17), so there is no second
-                provenance for this label to hide. */}
-            <LegendItem color="var(--chart-4)" label="Predict" />
-            {/* MODEL-SERVE-008-T04 named the dense series for its PLANE
-                ("Live predict"). SUPERSEDED 2026-09-17 by operator
-                decision: both series are the model's own predictions, so
-                the legend carries ONE "Predict" entry covering both rather
-                than asking a reader to hold two names for one idea. The
-                data keys stay separate — provenance is preserved where it
-                matters, in the payload and the tooltip, not in the legend.
-                The sampled stream also keeps its own section below,
-                unchanged. */}
-
-            <LegendItem color="var(--chart-2)" label="±1 SD" />
-            {/* <LegendItem color="var(--chart-3)" label="±2 SD" />
-            <LegendItem color="var(--destructive)" label="±3 SD" /> */}
+            <LegendItem color="var(--foreground)" label="Predict" />
+            <LegendItem color={SD1_COLOR} label="±1 SD" />
           </div>
           <ChartZoomControls
             brush={brush}
-            total={points.length}
+            total={rowsWithBand.length}
             onChange={setBrush}
           />
         </div>
-        <p className="mb-3 text-xs text-muted-foreground">
-          Each lab measurement against the prediction it landed nearest, joined
-          on this model&apos;s configured tolerance — the shaded band is ±1 SD
-          of the residual. Sparse by nature: one point per lab result, not one
-          per scored interval.
+        <p className="mb-2 text-xs text-muted-foreground">
+          Actual comes from the data source; Predict comes from the model. The
+          shaded ±1 SD band around them is the monitoring threshold — a point
+          drifting outside it is the signal to look at.
+          {/* MODEL-SERVE-011-T18. The sentence above describes the band a
+      JOINED range has. With no pairs the band is drawn from a
+      different spread entirely, and leaving the original wording
+      would have the caption describe a band that is not on screen. */}
+          {points.length === 0 && heldSd > 0 && (
+            <>
+              {' '}
+              No pair in this range, so the band is ±1 SD of the
+              prediction&apos;s distance from the last measured value —
+              consistency, not error.
+            </>
+          )}
         </p>
+
+        {(latest.actual || latest.predict) && (
+          <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+            {latest.actual && (
+              <span className="flex items-center gap-1.5">
+                <span
+                  className="h-2 w-2 rounded-sm"
+                  style={{ backgroundColor: 'var(--chart-1)' }}
+                />
+                Latest Actual{' '}
+                <span className="font-medium tabular-nums text-foreground">
+                  {latest.actual.value.toFixed(2)}
+                </span>
+                {latest.actual.at
+                  ? ` · ${format(new Date(latest.actual.at), 'MMM d, HH:mm')}`
+                  : ''}
+                {/* Not a point in this window — labelled so the two readouts
+            are not read as a live pair. */}
+                {latest.actualHeld ? ' · last measured, no pair in range' : ''}
+              </span>
+            )}
+            {latest.predict && (
+              <span className="flex items-center gap-1.5">
+                <span
+                  className="h-2 w-2 rounded-sm"
+                  style={{ backgroundColor: 'var(--foreground)' }}
+                />
+                Latest Predict{' '}
+                <span className="font-medium tabular-nums text-foreground">
+                  {latest.predict.value.toFixed(2)}
+                </span>
+                {` · ${format(new Date(latest.predict.at), 'MMM d, HH:mm')}`}
+              </span>
+            )}
+          </div>
+        )}
         {/* MODEL-SERVE-011-T12. A window whose metrics object no longer
             resolves is a GAP in the hourly series, and saying so is the
             difference between "the model did not run then" and "that
@@ -474,9 +576,8 @@ export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
             <EmptyTruth error={truthError} coverage={coverage} />
           ) : (
             <ActualVsPredictChart
-              rows={rowsWithLive}
+              rows={rowsWithBand}
               brush={brush}
-              onBrush={setBrush}
               tickFormatter={tickFormatter}
               yDomain={yDomain}
             />
@@ -497,10 +598,23 @@ export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
                 colours. */}
             <LegendItem color="var(--chart-1)" label="Actual" />
             <LegendItem color="var(--foreground)" label="Predict" />
-            <LegendItem color="var(--chart-2)" label="±1 SD" />
-            <LegendItem color="var(--chart-3)" label="±2 SD" />
-            <LegendItem color="var(--destructive)" label="±3 SD" />
+            {/* MODEL-SERVE-011-T16. Bound to the chart's OWN exported
+                colours, so the legend cannot name a colour the chart does
+                not draw. */}
+            <LegendItem color={SD1_COLOR} label="±1 SD" />
+            <LegendItem color={SD2_COLOR} label="±2 SD" />
+            <LegendItem color={SD3_COLOR} label="±3 SD" />
           </div>
+          {/* MODEL-SERVE-011-T20. This section lost its only zoom affordance
+              when the Brush was removed. The control writes the SAME `brush`
+              state the chart above uses — the two charts already share a
+              recharts `syncId`, so one window over both is the existing
+              behaviour, now with a second place to drive it from. */}
+          <ChartZoomControls
+            brush={brush}
+            total={rowsWithBand.length}
+            onChange={setBrush}
+          />
           <ToggleGroup
             type="single"
             value={residualMode}
@@ -535,23 +649,19 @@ export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
             and, if adopted, gets its own title. */}
         <p className="mb-3 text-xs text-muted-foreground">
           {residualDensityNote(coverage?.cadenceMinutes ?? null)}
-          {/* MODEL-SERVE-009-T05 follow-up. When no pair exists the drawn
-              line is prediction minus the LAST MEASURED lab value, which is
-              a different quantity from a residual and is named as one.
-              Stating it here is what stops a dashed line being read as the
-              solid one — and it carries when that measurement was taken,
-              because a deviation is only as current as the number it is
-              measured against. */}
+          {/* MODEL-SERVE-009-T05 follow-up. Shortened, but the two facts that
+      stop a dashed line being read as the solid one stay: WHICH
+      quantity is drawn, and WHEN its reference value was measured. */}
           {points.length === 0 && targetHeld?.value != null && (
             <>
               {' '}
-              No lab pair in this range, so the line shown is the prediction
-              minus the last measured lab value
+              No pair in range — the line is Predict minus the last measured
+              value
               {targetHeld.lastMeasuredAt
-                ? ` (${targetHeld.value.toFixed(2)}, measured ${format(new Date(targetHeld.lastMeasuredAt), 'MMM d, HH:mm')})`
-                : ''}{' '}
-              — a deviation from the last known value, not a residual, and
-              excluded from RMSE, R² and the SD band.
+                ? ` (${targetHeld.value.toFixed(2)}, ${format(new Date(targetHeld.lastMeasuredAt), 'MMM d, HH:mm')})`
+                : ` (${targetHeld.value.toFixed(2)})`}
+              : a deviation, not a residual. Excluded from RMSE and R², and the
+              ±SD guardrails here are the spread of these deviations.
             </>
           )}
         </p>
@@ -571,11 +681,17 @@ export function ModelMonitoringTab({ model, refreshKey = 0 }: Props) {
             <EmptyTruth error={truthError} coverage={coverage} />
           ) : (
             <ResidualChart
-              rows={rowsWithLive}
+              rows={rowsWithBand}
               brush={brush}
-              onBrush={setBrush}
               tickFormatter={tickFormatter}
-              sd={stats.sd}
+              // MODEL-SERVE-011-T16. The guardlines had nothing to draw with
+              // before the lab joins: `stats.sd` is the residual SD, which is
+              // 0 until there are at least two measured pairs. Fall back to
+              // the SAME held-deviation spread the Actual-vs-Predict band
+              // uses, and say which basis is on screen rather than leaving
+              // two different meanings behind one identical picture.
+              sd={stats.sd > 0 ? stats.sd : heldSd}
+              sdBasis={stats.sd > 0 ? 'residual' : 'held'}
               mode={residualMode}
             />
           )}

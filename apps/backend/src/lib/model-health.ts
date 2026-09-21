@@ -1,4 +1,5 @@
 import type { DriftStatus, DriftThresholds } from './prediction-drift';
+import type { ResidualSdStatus } from './residual-sd-health';
 
 /**
  * MODEL-SERVE-001-T21. The HEALTH axis — a SEPARATE signal from
@@ -55,7 +56,18 @@ export type HealthReason =
   | 'BAD_DATA'
   | 'SENSOR_FROZEN'
   | 'DRIFT_CRITICAL'
-  | 'DRIFT_WARN';
+  | 'DRIFT_WARN'
+  /**
+   * MODEL-SERVE-012. THE OUTPUT-ERROR CODES, and deliberately not folded
+   * into `DRIFT_*`. Drift says the model's INPUTS have moved away from what
+   * it was fitted on — a claim about the process, answered by looking at the
+   * plant or by retraining. These say the model's PREDICTIONS have got wider
+   * relative to the error it was accepted with, which can happen with
+   * perfectly stationary inputs and sends a reader to the model itself.
+   * `lib/residual-sd-health.ts` owns the verdict; this is only its name.
+   */
+  | 'RESIDUAL_SD_CRITICAL'
+  | 'RESIDUAL_SD_WARN';
 
 export interface ModelHealth {
   status: HealthStatus;
@@ -189,6 +201,23 @@ export function classifyModelHealth(input: {
    * all, so this is the live case, not a hypothetical.
    */
   driftEvidence: boolean;
+  /**
+   * MODEL-SERVE-012. `classifyResidualSd`'s verdict, passed in ALREADY
+   * DECIDED — this function stays a pure precedence table over verdicts and
+   * never does error math of its own.
+   *
+   * NOT GATED BEHIND `driftMonitor`, for the same reason liveness is not
+   * (see the header's own note): `driftMonitor` governs whether the system
+   * watches the INPUT distribution, and was never a claim about whether the
+   * model's own error is allowed to be measured. Gating this behind a
+   * false-by-default flag would leave the output-error axis dark on the
+   * majority of models — the calm-dashboard failure T26 spent a whole task
+   * removing.
+   *
+   * 'UNKNOWN' is the correct value whenever the comparison cannot be made
+   * (no reference SD, too few joined pairs); it never becomes OK here.
+   */
+  residualSdStatus: ResidualSdStatus;
 }): ModelHealth {
   const frozenColumns = input.frozenColumns;
   const off = (reason: HealthReason | null = null): ModelHealth => ({
@@ -248,6 +277,15 @@ export function classifyModelHealth(input: {
       return { status: 'ALERT', reason: 'DRIFT_CRITICAL', frozenColumns };
     }
   }
+  // MODEL-SERVE-012. BELOW `DRIFT_CRITICAL` in the same tier, deliberately:
+  // when both fire, drifted inputs EXPLAIN a widened error, so naming the
+  // upstream cause sends a reader somewhere that can actually be fixed.
+  // Below the data faults above for the older reason this file already
+  // states — an error computed from bad or stale readings is a measurement
+  // of nothing.
+  if (input.residualSdStatus === 'ALERT') {
+    return { status: 'ALERT', reason: 'RESIDUAL_SD_CRITICAL', frozenColumns };
+  }
 
   // ── Sensor Frozen ────────────────────────────────────────────────────────
   // Below Alert, above Warning: a stuck instrument is a real fault, but a
@@ -267,8 +305,20 @@ export function classifyModelHealth(input: {
   ) {
     return { status: 'WARN', reason: 'DRIFT_WARN', frozenColumns };
   }
+  // Same ordering argument as the ALERT tier above.
+  if (input.residualSdStatus === 'WARN') {
+    return { status: 'WARN', reason: 'RESIDUAL_SD_WARN', frozenColumns };
+  }
 
   // ── Normal / nothing to say ──────────────────────────────────────────────
+  // MODEL-SERVE-012. A MEASURED, in-spec error is positive evidence of
+  // health and is reported as such EVEN WHEN drift watching is off. Falling
+  // through to the `!driftMonitor` OFF below would throw away the one real
+  // measurement this axis has — and OFF means "deliberately not watching",
+  // which stops being true the moment joined pairs are being graded.
+  if (input.residualSdStatus === 'OK') {
+    return { status: 'OK', reason: null, frozenColumns };
+  }
   // Drift watching off: no drift CLAIM is made either way. Liveness above
   // already ran, unconditionally, which is the T26 decision this preserves.
   if (!input.driftMonitor) return off();

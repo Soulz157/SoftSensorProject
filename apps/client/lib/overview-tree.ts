@@ -3,7 +3,7 @@ import type { AIModel, WorkspacePlant } from '@/types'
 import type { NodeStatus } from '@/store/status-colors'
 import { NODE_STATUS_PRIORITY } from '@/constants/status'
 import {
-  effectiveProdStatus,
+  monitoringStatus,
   failedDeploys,
   isDeployFailed,
 } from '@/lib/model-status'
@@ -38,7 +38,7 @@ const UNASSIGNED_ID = '__unassigned__'
 // (NODE_STATUS_PRIORITY: offline=3 > normal=2, so offline never beats normal.)
 export function normalizeModelStatus(m: AIModel): NodeStatus {
   if (isDeployFailed(m)) return 'warning'
-  const s = effectiveProdStatus(m)
+  const s = monitoringStatus(m)
   if (s === 'alert') return 'alarm'
   // The overview map has no purple state — a frozen model reads as offline
   // (no live data) for rollup purposes.

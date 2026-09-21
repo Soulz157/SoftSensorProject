@@ -1828,6 +1828,76 @@
           "progress": 100,
           "title": "Actual vs Predict becomes the WINDOW plane only",
           "scope_note": "User decision 2026-09-17: the live serving-plane series is removed from this chart and the window plane's series takes the plain 'Predict' identity, so the chart compares an actual and a prediction that came from the SAME window at the SAME time -- both out of predictions.parquet -- rather than putting a per-instant series and an hourly one on one axis. Removed: the live Line from actual-vs-predict-chart.tsx and the 'Predict (live)' tooltip row. Renamed: legend 'Predict (hourly)' -> 'Predict' (chart-4, dotted line with visible dots, since it is hourly against the rest); tooltip 'Predict (hour avg)' -> 'Predict'. The paired per-row predict Line was recoloured from foreground to chart-4 to sit under that one legend entry -- both series behind it ARE the same plane's predictions, so one label hides no second provenance; the dash still separates a per-row pair from the hourly summary. THE ONE QUALIFICATION KEPT: when a paired prediction and an hourly summary land on the same row, the hourly one reads 'Predict (hour avg)' -- two identical labels holding different numbers is worse than a longer one. NOT removed: LiveOverlayRow.live and mergeLivePredictions, which the Residual chart still populates, and the Live Predictions section below, which is unchanged."
+        },
+        {
+          "id": "MODEL-SERVE-011-T14",
+          "status": "completed",
+          "progress": 100,
+          "title": "The held Actual step is applied over the FINAL axis, not a partial one",
+          "scope_note": "FOUND ON SCREEN by the operator, not by a test: Actual appeared only across 14:13-14:23 local -- the few minutes three Run Predict live scores happened to occupy -- while the hourly Predict points sat at 14:00 and 15:00 with no Actual beside them, so there was nothing to compare at the only timestamps that mattered. CAUSE, introduced by T12: the held value was applied INSIDE mergeLivePredictions, which was correct while that function produced the final axis and became wrong the moment mergeScheduledPredictions began adding hourly rows afterwards -- those rows carried no held. FIX: extracted applyHeldValue and called it LAST in the tab (live merge, then scheduled merge, then held). Second defect in the same place: heldDeviation read row.live ?? row.predict and did not know about scheduled, so with the live series now off this chart an hourly point -- often the ONLY prediction on its row -- had a blank deviation exactly where a reader looks. Now live ?? predict ?? scheduled, preferring a real pair over a summary. applyHeldValue is idempotent so the path through mergeLivePredictions and a second call over a widened axis cannot compound."
+        },
+        {
+          "id": "MODEL-SERVE-011-T15",
+          "status": "completed",
+          "progress": 100,
+          "title": "A band the chart can draw before the lab joins",
+          "scope_note": "Operator reported the SD area not working. It was not broken, it was UNDEFINED: sd1/2/3 are built only in buildMonitoringRows, as [actual +/- k*sd] where sd is the RESIDUAL SD from windowStats -- both inputs come from joined pairs, and windowStats returns 0 below 2 pairs, so with zero pairs no row carries a band at all while the legend kept promising one. The operator asked for it computed from Actual and Predict out of the parquet rather than from a lab join; stated plainly first that predictions.parquet holds no actual (timestamp + prediction only, input.parquet is features only), so the only pre-join actual is the HELD tag value. Added heldDeviationStats (spread of predicted - held across the visible range) and applyHeldDeviationBand (that spread drawn around the held Actual). NOT the residual SD and never merged with it: it measures distance from a value carried forward since the lab last reported, so it is model CONSISTENCY, not model error, and it feeds no metric -- RMSE, R2 and the residual SD still read joined pairs only. A row that already carries a real band keeps it, so a range gaining its first lab sample shows the true band there and this one elsewhere. The legend switches to plus/minus 1 SD (vs last reported) while there are no pairs, because one band shape meaning two different things must say which is on screen."
+        },
+        {
+          "id": "MODEL-SERVE-011-T16",
+          "status": "completed",
+          "progress": 100,
+          "title": "Residual Analysis draws its SD guardrails before the lab joins, and binds its own colours",
+          "scope_note": "The monitoring ResidualChart already MATCHED the evaluation-flow reference structurally (SdBackground layers, SdGuard pairs labelled with each band own coverage counted from zero outward, zero baseline, filled residual Area) -- it drew nothing because sd came from stats.sd, the residual SD, which is 0 until there are two measured pairs, and sdCoverage counted r.residual only. Now the tab passes the SAME held-deviation spread the Actual-vs-Predict band uses when no residual SD exists, with a new sdBasis prop (residual | held) so the two meanings behind one identical picture are stated rather than inferred; sdCoverage reads the series the guardlines were computed FROM, never a mix -- counting measured residuals against a held-based SD would put a percentage under a line it does not describe. heldSd and the banded rows were lifted into shared memos so the band on one chart and the guardlines on the other are ONE number. Also ported the reference own colour-binding discipline (its MODEL-FLOW-019-T17): RESIDUAL_COLOR/SD1/SD2/SD3_COLOR are exported from the chart and consumed by both its marks and the tab legend, which had carried the same five literals a second time."
+        },
+        {
+          "id": "MODEL-SERVE-011-T17",
+          "status": "completed",
+          "progress": 100,
+          "title": "The held-deviation line gets both readouts, and a percent mode to live in",
+          "scope_note": "Two gaps behind one request. (1) The Residual chart PERCENT mode excluded the held-deviation series entirely, because those rows carry no percentageError -- that needs a measured actual -- so switching to Percentage emptied the chart for exactly the ranges this series exists to cover. Added heldDeviationPct (deviation as a share of the held value, computed in applyHeldValue beside heldDeviation) and the series now draws in both modes. (2) The tooltip showed only the absolute gap; it now shows both forms, mirroring Residual / Error % above, because a 4-unit gap on a 114 reading and one on a 12 reading are not the same thing. Undefined rather than Infinity when the held value is 0. Neither figure is a residual or an error and neither enters a metric -- the labels stay Vs last reported / Vs last reported %. Also bound the tooltip Residual swatch to the chart own exported RESIDUAL_COLOR, finishing T16 binding."
+        },
+        {
+          "id": "MODEL-SERVE-011-T18",
+          "status": "completed",
+          "progress": 100,
+          "title": "Held-deviation readouts use the measured pair own wording",
+          "scope_note": "User decision 2026-09-17, overriding the qualifier this ledger had argued for: the tooltip rows read Residual and Error %, not Vs last reported. The collision is prevented by EXCLUSION rather than by a longer label -- they render only when no measured residual is on the row, mirroring the chart, where showHeldDeviation draws the series only when no measured residual exists in range, so two rows named Residual holding different numbers cannot appear. Legend drops its conditional suffix for the same reason. Meaning moved to the captions, which is also where two STALE claims were corrected: the residual caption said the deviation is excluded from RMSE, R2 AND THE SD BAND, which stopped being true at T15 when the band began to be computed from these very deviations (now: excluded from RMSE and R2, and the guardrails are the spread of these deviations, not of measured error); and the Actual-vs-Predict caption asserted the shaded band is plus/minus 1 SD OF THE RESIDUAL unconditionally, so with no pairs it described a band that was not on screen."
+        },
+        {
+          "id": "MODEL-SERVE-011-T19",
+          "status": "completed",
+          "progress": 100,
+          "title": "The Actual-vs-Predict Y domain spans every series it draws",
+          "scope_note": "Operator asked for the chart to span its values with the lines centred. The centring arithmetic was already right -- the domain is symmetric about the data midpoint -- but it was computed from the WRONG INPUT: actual/predict read out of rows, the JOINED pairs alone. Two consequences once the chart grew other series. With no lab pair in range the value list was empty and the domain fell back to [0, 1], putting lines that live around 110 entirely off screen -- which is what the operator was seeing. And even with pairs, the hourly scheduled series and the held step could not influence the domain at all, so they could sit outside it. Now read from rowsWithBand across actual, predict, scheduled and held. The zero-height guard also had to follow T15: it sized the domain with stats.sd, the residual SD, while the band on screen may have been drawn from the held-deviation spread -- it now uses whichever spread the band actually came from."
+        },
+        {
+          "id": "MODEL-SERVE-011-T20",
+          "status": "completed",
+          "progress": 100,
+          "title": "Brush removed; ChartZoomControls is the only zoom affordance",
+          "scope_note": "Removed the recharts Brush from both monitoring charts. THE BRUSH WAS THE ONLY THING APPLYING THE WINDOW: the charts received `brush` and handed its indices straight to the Brush component, so deleting it alone would have left the zoom buttons changing state with nothing happening on screen. Each chart now slices its own data over [startIndex, endIndex] -- endIndex INCLUSIVE, the convention the controls and the Brush both used, hence the +1. The dead `onBrush` prop is gone from both components and both call sites. The zoom controls total was `points.length` (joined pairs) while the charts draw `rowsWithBand`; indexing a window over one array and slicing another is off-by-however-many-unpaired-rows, so it now counts the rows actually drawn. The Residual section lost its only zoom affordance with its Brush, so it gains a ChartZoomControls of its own -- writing the SAME brush state, which is not a second window: the two charts already share a recharts syncId."
+        },
+        {
+          "id": "MODEL-SERVE-011-T21",
+          "status": "completed",
+          "progress": 100,
+          "title": "Y-axis ticks in four significant digits, in a gutter wide enough to hold them",
+          "scope_note": "The Actual-vs-Predict Y axis had NO tickFormatter at all, so recharts printed the raw float -- 110.05700050354004 -- into width 44 and clipped it. Added formatAxisValue (shared, lib/monitoring.ts) and widened both axes to 68. SIGNIFICANT DIGITS, NOT DECIMALS: this axis carries a process value whose magnitude is unknown to the component (110.1, or 0.4821, or 1204) and a fixed decimal count is either noise or nothing depending on which; four significant digits keep the same information density at every scale. Trailing zeros are kept (110.0, not 110) so the tick column stays one width and the labels align. Non-finite returns an empty label rather than NaN. The residual axis kept its percent suffix and now formats the number the same way."
+        },
+        {
+          "id": "MODEL-SERVE-011-T22",
+          "status": "completed",
+          "progress": 100,
+          "title": "Live RMSE against the held actual, so the header stops reading a dash",
+          "scope_note": "The header KPI had read -- awaiting lab results -- since the model started: its only source is liveMetrics.rmse, pooled from JOINED lab pairs, and this plant has none (truthRows 0 everywhere; the sweeper runs 24h after a window closes). Now falls back to the same basis the band, guardrails and Residual line use: predictions squared against the last reported lab value. NO FOURTH RMSE FORMULA -- heldEvalPoints maps the rows into the pairs computeMetrics already consumes (lib/model-evaluation.ts, the canonical client math the backend live-error.ts says it mirrors), so the header and the evaluation screen cannot drift. Rows with a MEASURED actual are excluded: they already feed the real pooled metric and mixing the two yields a number that is neither. Prediction precedence matches applyHeldValue (predict, then scheduled, then live) so the deviation on screen and the header agree row by row. ONLY rmse is read -- R2 against a near-constant held actual is degenerate (ssTot tends to 0) and would render a confident meaningless number. The real metric always wins; n>1 required. Basis stated via a new rmseBasis prop on MonitoringRangeBar, riding the suffix that already existed (units, vs last reported, N windows). Computed client-side by decision: the deviations are already in memory, so it is one pass over 24-720 rows with no request, versus a round trip plus an object re-read per range change."
+        },
+        {
+          "id": "MODEL-SERVE-011-T23",
+          "status": "completed",
+          "progress": 100,
+          "title": "The model detail header names the algorithm",
+          "scope_note": "Rendered under the model name beside plant and node, from model.data.config.algorithm through ALGORITHM_LABELS -- the SAME map the wizard Step 3 and the deploy summary render from, so Random Forest cannot come to mean two different things on two screens. A candidate sweep also shows chosen from N candidates, from config.algorithms, so a primary that was SELECTED reads differently from one that was the only option. SOURCE CAVEAT, recorded rather than hidden: data.config is the saved wizard configuration. The version actually serving traffic carries its own sourceRun.algorithm, which is the stronger answer, but NO client endpoint exposes it today (checked model-version authorized controllers). Verified in the database that the two agree on both live models (TM2 and TM3, both random_forest, config and PRODUCTION sourceRun); they can only diverge if a retrain lands a different algorithm than the one configured. Exposing the running version algorithm on input-schema would retire the caveat and is the obvious follow-up."
         }
       ],
       "acceptance_criteria": [
@@ -1866,6 +1936,58 @@
           "status": "completed",
           "description": "Live probe of POST /v1/preprocess/inference-window/metrics-series against the real object store, plus unit coverage of the client-side merge (exact-timestamp attach, never snapping onto a nearby row, sort order when a window predates every row, untouched rows when nothing is scheduled, unparseable windowStart skipped rather than plotted as NaN).",
           "result_2026_09_17": "RAN LIVE against MinIO with two real metrics.json keys for model 3c52ecf9 (hours 05 and 06) plus one bogus key: returned both points sorted by window_start with rowCount 60 and predictionMean 110.107 / 110.326, and missing:1 for the bogus key. Unit: 37/37 in lib/monitoring.test.ts including the 5 new merge cases; 71/71 across the monitoring suites. Backend boots with the route mapped: GET /api/v1/authorized/model/:modelId/inference/scheduled-series."
+        },
+        {
+          "id": "MODEL-SERVE-011-V06",
+          "status": "completed",
+          "description": "Unit: the held value reaches rows added after the live merge (both rows carry it, which is the defect); an hourly point with no live value gets a deviation; a real pair still wins over the hourly summary for that deviation; applying twice does not compound; and the no-axis two-endpoint fallback still works.",
+          "result_2026_09_17": "RAN: 42/42 in lib/monitoring.test.ts (5 new cases) and 41/41 in the monitoring component suites."
+        },
+        {
+          "id": "MODEL-SERVE-011-V07",
+          "status": "completed",
+          "description": "Unit: the spread is the population SD of the deviations (not of residuals); a single point reports zero rather than inventing a width; the band is centred on the held value; a joined row NEVER has its real residual band overwritten; and nothing is drawn when the spread is zero or no held value exists.",
+          "result_2026_09_17": "RAN: 47/47 in lib/monitoring.test.ts (5 new cases)."
+        },
+        {
+          "id": "MODEL-SERVE-011-V08",
+          "status": "completed",
+          "description": "Existing suites after the refactor (rows now flow through shared heldSd/rowsWithBand memos and both charts read the exported colours).",
+          "result_2026_09_17": "RAN: 88/88 across lib/monitoring.test.ts and the monitoring component suites; tsc clean. NOT YET VERIFIED ON SCREEN: that the guardlines and coverage percentages actually render for a range with no joined pairs."
+        },
+        {
+          "id": "MODEL-SERVE-011-V09",
+          "status": "completed",
+          "description": "Unit: the percentage is the deviation over the held value; a zero held value yields undefined, never Infinity; the tooltip renders both rows with their own labels; and it omits the percentage row when the value is absent.",
+          "result_2026_09_17": "RAN: 92/92 across lib/monitoring.test.ts and the monitoring component suites (4 new cases)."
+        },
+        {
+          "id": "MODEL-SERVE-011-V10",
+          "status": "completed",
+          "description": "Unit: the held rows carry the measured pair labels; the percentage row is absent when undefined; and a row holding BOTH a measured residual and a held deviation renders exactly one Residual row.",
+          "result_2026_09_17": "RAN: 92/92 across lib/monitoring.test.ts and the monitoring component suites. One earlier case (does not claim an uncomputable residual) asserted the OLD contract and was rewritten rather than deleted -- it now pins that the row shows a real number instead of a dash."
+        },
+        {
+          "id": "MODEL-SERVE-011-V11",
+          "status": "pending",
+          "description": "LIVE, not yet run: on a range with NO joined pairs, confirm the Actual step and the hourly Predict dots are both on screen and vertically centred with roughly even margins, that the SD band is visible around them, and that a range WITH pairs is unchanged."
+        },
+        {
+          "id": "MODEL-SERVE-011-V12",
+          "status": "pending",
+          "description": "LIVE, not yet run: zoom in/out/pan/reset from EITHER control and confirm both charts narrow together and the axis labels follow; confirm no brush strip remains under either chart; and confirm a full-range reset shows every point again."
+        },
+        {
+          "id": "MODEL-SERVE-011-V13",
+          "status": "completed",
+          "description": "Unit: four significant digits at three magnitudes (110.05700050354004 to 110.1, 0.482137 to 0.4821, 1204.7 to 1205); trailing zeros kept for column alignment; non-finite yields an empty string.",
+          "result_2026_09_17": "RAN: 52/52 in lib/monitoring.test.ts (3 new cases), 92/92 with the component suites."
+        },
+        {
+          "id": "MODEL-SERVE-011-V14",
+          "status": "completed",
+          "description": "Unit: each prediction pairs with held as its actual and the RMSE over a hand-computed set is sqrt(10) rounded to 3.16; a row with a measured actual is excluded; the prediction precedence prefers a real pair over the hourly summary; rows missing either side are dropped.",
+          "result_2026_09_17": "RAN: 99/99 across lib/monitoring.test.ts and the monitoring component suites (4 new cases)."
         }
       ],
       "implementation": {
@@ -1892,6 +2014,125 @@
         "note": "No schema change and no migration: the manual path writes the same InferenceWindow row the tick writes. No new module, queue or background infrastructure -- the existing scheduler dispatch is reused by making one already-safe method public. Increment 2 adds no writer and no table: PredictionLog keeps ONE writer (the serving process, sampled), per prediction_log.py own contract, so samplingRate on a row always means what it says."
       },
       "status_note_2026_09_17": "Code and unit verification complete (V01, 80/80). NOT completed: V02 is the live end-to-end check — PENDING -> RUNNING off the tick boundary, container stdout in the Logs tab, the point appearing in Monitoring, and the 409 on a stopped model. Same convention MODEL-SERVE-001/008/009 follow: every task can be done while the feature stays in_progress until its verification has actually been run."
+    },
+    {
+      "id": "MODEL-SERVE-012",
+      "title": "Residual-SD health axis, and ONE Monitoring Status badge",
+      "priority": 12,
+      "status": "in_progress",
+      "progress": 97,
+      "dependencies": [
+        "MODEL-SERVE-001",
+        "MODEL-SERVE-005",
+        "MODEL-SERVE-011"
+      ],
+      "description": "Every health signal watched the model's INPUTS or its plumbing; nothing graded whether the model was still RIGHT, so a model fetching cleanly from live instruments with un-drifted inputs rendered a green pill while predicting badly. Adds the output-error axis: the pooled live residual SD over joined truth pairs, measured against the run's own test-split residual SD, reported as Warning at 1-2x and Alert beyond 3x. Also collapses the separate Health pill into the Monitoring Status badge (normal/warning/alert/frozen/offline), which until now was driven by the hand-set prodStatus column and could read Normal beside a Health pill reading Alert.",
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-012-T01",
+          "status": "completed",
+          "progress": 100,
+          "title": "baselineResidualSd resolver (lib/model-version-residual-sd.ts)",
+          "scope_note": "Precedence sd -> residual_sd -> rmse. The rmse fallback is safe in one direction only: rmse = sqrt(sd^2 + bias^2) >= sd, so a fallback baseline is WIDER, the ratio SMALLER and the verdict QUIETER. It can miss a real degradation; it cannot invent one. Null (no usable metric) maps to UNKNOWN, never OK."
+        },
+        {
+          "id": "MODEL-SERVE-012-T02",
+          "status": "completed",
+          "progress": 100,
+          "title": "Record the reference residual SD at training-run completion",
+          "scope_note": "Written in ModelRunAuthorizedService.complete, best-effort after the durable write, from python run_predictions' residual_sd. NOT in the trainer (it emits r2/rmse/mae only and nothing in CI builds that image, so a trainer-side addition is a silent no-op) and NOT at Save Model (an HTTP round trip inside the one atomic commit boundary). Reaches ModelVersion.metrics for free through model-version-from-run.ts."
+        },
+        {
+          "id": "MODEL-SERVE-012-T03",
+          "status": "completed",
+          "progress": 100,
+          "title": "classifyResidualSd (lib/residual-sd-health.ts) + spec",
+          "scope_note": "Grades liveSd/baselineSd against the schedule's own warnSd/criticalSd. REJECTED: share-of-points-outside-the-band, which is scale-invariant when the SD is recomputed from the residuals being graded (10x the error, identical verdict); and counting window MEANS, whose null spread is baselineSd/sqrt(n), making a >32% threshold unreachable dead code at ~60 rows per window. Computes no error math of its own - poolTruthStats/computeLiveError own that. MIN_RESIDUAL_SD_PAIRS = 30."
+        },
+        {
+          "id": "MODEL-SERVE-012-T04",
+          "status": "completed",
+          "progress": 100,
+          "title": "RESIDUAL_SD_WARN / RESIDUAL_SD_CRITICAL folded into classifyModelHealth",
+          "scope_note": "Ranks BELOW DRIFT_* in both tiers: drifted inputs EXPLAIN a widened error, so the upstream cause leads. BAD_DATA and STALE keep outranking both - an error computed from bad or stale readings measures nothing. NOT gated behind driftMonitor (false by default), for the same reason liveness is not. A measured in-spec error returns OK even with drift watching off, rather than falling through to OFF."
+        },
+        {
+          "id": "MODEL-SERVE-012-T05",
+          "status": "completed",
+          "progress": 100,
+          "title": "getHealthStatus pools InferenceWindowTruth and returns residualSd",
+          "scope_note": "One query over the production version already resolved for drift. No object read and no second HTTP round trip - InferenceWindowTruth carries sufficient statistics. Return type ANNOTATED and present on every branch, per the T29 follow-up that found an inferred type let a branch omit a field the client required. TRUTH_POOL_TAKE is 720 windows (30 days hourly), DELIBERATELY NOT PRODUCTION_WINDOW_TAKE (24): a residual needs a measured lab actual, those arrive roughly daily, and MIN_RESIDUAL_SD_PAIRS is 30 - so a 24-window horizon would have made the axis structurally unable to fire, a silent no-op no test would catch since every test supplies its own rows."
+        },
+        {
+          "id": "MODEL-SERVE-012-T06",
+          "status": "completed",
+          "progress": 100,
+          "title": "Client wire unions + shared HEALTH_REASON_LABEL",
+          "scope_note": "Also DELETED the duplicate HEALTH_REASON_LABEL that models/[id]/page.tsx kept locally - the copy had already drifted from the shared map by missing both new codes. The Alerts page picks the codes up for free through AlertRow.monitoringReason."
+        },
+        {
+          "id": "MODEL-SERVE-012-T07",
+          "status": "completed",
+          "progress": 100,
+          "title": "ONE Monitoring Status badge: monitoringStatus() replaces the Health pill",
+          "scope_note": "monitoringStatus() derives normal/warning/alert/frozen/offline from the MEASURED health axis; the hand-set prodStatus column stops driving the badge. UNKNOWN maps to offline, never normal. Infra-first precedence kept verbatim from effectiveProdStatus. The reason suffix survived the merge and renders as 'Monitoring: Warning - residual 1-2SD'. The badge reads inferenceStatus.health.status, NOT model.data.monitoring.status: the list payload carries liveness only, so reading it would badge a healthy running model 'Offline' and a warning one 'Offline - residual 1-2SD'. monitoringStatusFromHealth() is the shared mapping; monitoringStatus() wraps it for the list and carries that warning in its own doc."
+        },
+        {
+          "id": "MODEL-SERVE-012-T08",
+          "status": "completed",
+          "progress": 100,
+          "title": "Model LIST payload carries the residual-SD verdict",
+          "scope_note": "TWO batched queries for the WHOLE page, never per-model: modelVersion.findMany over the production versions, then ONE inferenceWindowTruth.groupBy summing their sufficient statistics. That batchability is exactly why this axis can ride the list path while DRIFT cannot - drift needs a gold-artifact baseline read per model. Bounded by the SHARED TRUTH_POOL_DAYS (30) horizon, a TIME bound rather than a row count, because a row-count take cannot be expressed as a group-by bound and two different bounds would let the list badge and the detail badge grade the same model from different samples. getHealthStatus was switched to the same bound in this task (it briefly used a 720-row take). Covered by a spec asserting the aggregate runs ONCE for three models, and that a model with 40 pairs at 4x its reference SD reaches ALERT/RESIDUAL_SD_CRITICAL on the LIST payload - which before this task could only ever emit OFF or a liveness ALERT."
+        },
+        {
+          "id": "MODEL-SERVE-012-T09",
+          "status": "completed",
+          "progress": 100,
+          "title": "Retire prodStatus as a display source (client side done)",
+          "scope_note": "DONE (client): models/views/page.tsx (filters + counts), model-table.tsx, lib/overview-tree.ts, models/[id]/page.tsx, and - found while renaming the labels on 2026-09-18 - model-detail-dialog.tsx and model-preview-sheet.tsx, which were still reading data.prodStatus directly and so could show Normal for a model the table row behind them badged Alert. Their hasError gate (deployStatus error OR prodStatus alert) moved to the measured verdict too. DONE (2026-09-21, the remainder): effectiveProdStatus DELETED from lib/model-status.ts - it had zero callers, and the type EffectiveProdStatus stays as the shared five-word vocabulary; prodStatus removed from the edit DTO on BOTH sides (UpdateModelSchema plus ProdStatusEnum, whose only reference it was, and the updateModel dto in services/model.ts) and from updateModelService's editedLabels and newData spread. Treated like deployStatus before it: REMOVED with an explanatory comment rather than left live under a @deprecated tag, and since UpdateModelSchema has no .strict() a stale caller still sending the field is silently stripped, not 400'd. NO UI ever offered the field - the grep for an editor found none, so 'stop offering it in the UI' needed no change. OUT OF SCOPE and deliberately untouched: the data.prodStatus COLUMN and any migration. model.authorized.service.ts and model-draft.authorized.service.ts still stamp prodStatus:'normal' at creation, normalizeData still defaults it, and every test fixture carrying it in a stored data object is unchanged. ONE TEST retargeted: model.authorized.service.spec.ts's 'leaves config untouched when the request carries no config at all' passed {prodStatus:'normal'} as a config-free update (itself a retarget from when deployStatus was removed); now {statusDetail: null}, which lands in editedLabels identically so the edit-history branch it also exercises is unchanged. VERIFIED: backend jest src/lib + model.authorized.service.spec.ts = 275 passing; client vitest lib/model-status.test.ts lib/alerts.test.ts lib/overview-tree.test.ts = 39 passing. check-types reports only pre-existing failures in files this task never touched (dataset-compare-modal.tsx, model-evaluation.test.ts, overview-tree.test.ts fixtures, and a model.authorized.service.spec.ts prisma-mock findMany error present at HEAD)."
+        },
+        {
+          "id": "MODEL-SERVE-012-T10",
+          "status": "pending",
+          "progress": 0,
+          "title": "Show the baseline SD and live ratio in the Monitoring tab",
+          "scope_note": "The wire field residualSd {status, liveSd, ratio, baselineSd, n} is populated and typed on the client, but nothing renders it yet. A reader can see the verdict on the badge and the per-point sdCoverage percentages on the Residual chart, but not WHICH two numbers produced the verdict. Do not recompute it client-side - render the served figures."
+        },
+        {
+          "id": "MODEL-SERVE-012-T11",
+          "status": "completed",
+          "progress": 100,
+          "title": "BUG: overview tower node dots stayed green while a model alerted",
+          "scope_note": "Reported by the user against overview-tower.tsx PlantNameBadge. ROOT CAUSE, found by comparing the two rollup levels: lib/model-status.ts had failedCountByWorkspace, monitoringCountByWorkspace and failedCountByNodeId - but NO monitoringCountByNodeId. The Overview page folded BOTH axes into its per-workspace figure and only the DEPLOY axis into its per-node map, so a model raising on the monitoring axis (dead source, bad data, frozen tag, widened residual spread) never reached the per-node dots. They rendered from the backing Nodes.data.status alone, which is normal for both nodes on this deployment (verified in the DB), so the dots read green while the same model raised a row on the Alerts page. The deploy half worked, which is why it looked live rather than broken. FIX: added monitoringCountByNodeId and summed both axes in the overview page memo. Regression-tested in lib/model-status.test.ts (new file): a running model with monitoring ALERT yields {} from failedCountByNodeId and {node-a: 1} from the new one."
+        },
+        {
+          "id": "MODEL-SERVE-012-T12",
+          "status": "completed",
+          "progress": 100,
+          "title": "Label the axis Monitoring, and stop repeating it inside the pill",
+          "scope_note": "User request 2026-09-18. The models/[id] KPI card and the two list-side detail surfaces read Production, a name left over from the hand-set prodStatus column they no longer read - so the label named the wrong axis. All three now read Monitoring. The header pill dropped the Monitoring: prefix added in T07 and shows the status word alone: the axis is already named by the KPI beneath it and by the list column, and the prefix only repeated it inside a pill that has to stay narrow."
+        }
+      ],
+      "acceptance_criteria": [
+        "A model whose live residual spread exceeds its reference SD by warnSd reports Warning with reason RESIDUAL_SD_WARN; beyond criticalSd, Alert with RESIDUAL_SD_CRITICAL.",
+        "Scaling every live residual by 10 against a fixed baseline MUST change the verdict.",
+        "Fewer than MIN_RESIDUAL_SD_PAIRS joined pairs, or no reference SD, reports UNKNOWN - never OK.",
+        "A drift fault of the same severity outranks the residual-SD one; BAD_DATA and STALE outrank both.",
+        "models/[id] shows exactly ONE monitoring badge, carrying the reason as a suffix, and no separate Health pill.",
+        "The global Alerts page raises a row with the new reason codes carried, not inferred."
+      ],
+      "verification": [
+        "pnpm --filter backend test src/lib/residual-sd-health.spec.ts src/lib/model-health.spec.ts - 82 passing as of 2026-09-17.",
+        "pnpm --filter client exec vitest run lib/alerts.test.ts - 27 passing as of 2026-09-17.",
+        "Backend and client check-types clean for every file this feature touches.",
+        "PENDING, and BLOCKED rather than skipped: end-to-end against a real model cannot be run until ground truth joins at least MIN_RESIDUAL_SD_PAIRS (30) pairs. Today every truth row has n=0, so no WARN/ALERT verdict can be produced on this deployment.",
+        "pnpm --filter backend test src/lib - 27 deploy-status cases pass including the new ONE-aggregate and list-verdict assertions, 2026-09-17."
+      ],
+      "findings_2026_09_17": [
+        "LIVE CHECK, not inferred: InferenceWindowTruth on this deployment holds 7 rows and EVERY ONE has n=0 - no ground truth has ever joined. The output-error axis therefore reports UNKNOWN on every model here today, which is correct behaviour and not a defect, but it also means the WARN/ALERT paths have NOT been exercised against real data. They are covered by unit tests only.",
+        "Windows are hourly (observed windowStart values 05:00/06:00/07:00), which is what set TRUTH_POOL_TAKE at 720 rather than 24.",
+        "The Alerts page needed NO code change for these codes: hasMonitoringAlert already matched WARN/ALERT/FROZEN, AlertRow.monitoringReason is filled from monitoring.reason, and alert-row.tsx already renders it through the shared formatHealthReason. Widening the list payload is what makes those paths reachable - before T08 the payload could not emit WARN at all."
+      ]
     }
   ],
   "global_definition_of_done": [

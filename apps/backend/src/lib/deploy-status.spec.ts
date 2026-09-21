@@ -216,6 +216,13 @@ describe('deriveDeployStatuses (batched)', () => {
         groupBy: jest.fn().mockResolvedValue([]),
         findMany: jest.fn().mockResolvedValue([]),
       },
+      // MODEL-SERVE-012-T08. The output-error axis's two batched reads.
+      // Present by default and EMPTY, so every pre-existing case here keeps
+      // asserting the deploy verdict it was written for: no production
+      // version and no joined pairs both mean UNKNOWN, which this axis
+      // defines as silent.
+      modelVersion: { findMany: jest.fn().mockResolvedValue([]) },
+      inferenceWindowTruth: { groupBy: jest.fn().mockResolvedValue([]) },
       ...overrides,
     } as unknown as Parameters<typeof deriveDeployStatuses>[0];
   }
@@ -274,6 +281,8 @@ describe('deriveDeployStatuses (batched)', () => {
             skipStreakAlert: 3,
             missingPctWarn: 5,
             missingPctAlert: 20,
+            warnSd: 1.5,
+            criticalSd: 3.0,
           },
           {
             modelId: 'm2',
@@ -284,6 +293,8 @@ describe('deriveDeployStatuses (batched)', () => {
             skipStreakAlert: 3,
             missingPctWarn: 5,
             missingPctAlert: 20,
+            warnSd: 1.5,
+            criticalSd: 3.0,
           },
           // Disabled: contributes NO terminal-window read. Present so the
           // count below distinguishes "per enabled schedule" from "per model".
@@ -296,6 +307,8 @@ describe('deriveDeployStatuses (batched)', () => {
             skipStreakAlert: 3,
             missingPctWarn: 5,
             missingPctAlert: 20,
+            warnSd: 1.5,
+            criticalSd: 3.0,
           },
         ]),
       },
@@ -313,6 +326,8 @@ describe('deriveDeployStatuses (batched)', () => {
     const mock = prisma as unknown as {
       inferenceSchedule: { findMany: jest.Mock };
       inferenceWindow: { groupBy: jest.Mock; findMany: jest.Mock };
+      modelVersion: { findMany: jest.Mock };
+      inferenceWindowTruth: { groupBy: jest.Mock };
     };
     // Batched over every id, once.
     expect(mock.inferenceSchedule.findMany).toHaveBeenCalledTimes(1);
@@ -321,6 +336,86 @@ describe('deriveDeployStatuses (batched)', () => {
     // TWO enabled schedules => two terminal-window reads. Three models, not
     // three reads: the disabled one costs nothing.
     expect(mock.inferenceWindow.findMany).toHaveBeenCalledTimes(2);
+    // MODEL-SERVE-012-T08. THE OUTPUT-ERROR AXIS COSTS TWO QUERIES FOR THE
+    // WHOLE PAGE, not two per model — the property that let it ride this
+    // path at all while drift (an artifact round trip per model) could not.
+    // Three models here, still one call each.
+    expect(mock.modelVersion.findMany).toHaveBeenCalledTimes(1);
+    // ZERO, not one: no model has a production version in this fixture, and
+    // the aggregate is skipped entirely rather than sent with an empty `in`.
+    expect(mock.inferenceWindowTruth.groupBy).toHaveBeenCalledTimes(0);
+  });
+
+  /**
+   * MODEL-SERVE-012-T08. The same count with production versions present —
+   * the case above proves the skip, this one proves the aggregate is ONE
+   * query for every version rather than one per model.
+   */
+  it('pools truth rows for every production version in ONE aggregate', async () => {
+    const schedule = (modelId: string) => ({
+      modelId,
+      enabled: true,
+      cadenceMinutes: 60,
+      lagMinutes: 15,
+      preflightOk: true,
+      skipStreakAlert: 3,
+      missingPctWarn: 5,
+      missingPctAlert: 20,
+      warnSd: 1.5,
+      criticalSd: 3.0,
+    });
+    const prisma = buildPrisma({
+      inferenceSchedule: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([schedule('m1'), schedule('m2')]),
+      },
+      inferenceWindow: {
+        groupBy: jest.fn().mockResolvedValue([
+          { modelId: 'm1', _max: { windowStart: new Date() } },
+          { modelId: 'm2', _max: { windowStart: new Date() } },
+        ]),
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+      modelVersion: {
+        findMany: jest.fn().mockResolvedValue([
+          { id: 'v1', modelId: 'm1', metrics: { sd: 2 } },
+          { id: 'v2', modelId: 'm2', metrics: { sd: 2 } },
+        ]),
+      },
+      inferenceWindowTruth: {
+        groupBy: jest.fn().mockResolvedValue([
+          {
+            modelVersionId: 'v1',
+            // 40 pairs whose residual SD is 8 -> ratio 4 against a
+            // reference of 2, which is past criticalSd.
+            _sum: {
+              n: 40,
+              sumSe: 40 * 64,
+              sumAe: 40 * 8,
+              sumSigned: 0,
+              sumActual: 4000,
+              sumActualSq: 401000,
+            },
+          },
+        ]),
+      },
+    });
+
+    const result = await deriveDeployStatuses(prisma, ['m1', 'm2']);
+
+    const mock = prisma as unknown as {
+      inferenceWindowTruth: { groupBy: jest.Mock };
+    };
+    expect(mock.inferenceWindowTruth.groupBy).toHaveBeenCalledTimes(1);
+    // m1 has the pairs: the list now carries a REAL graded verdict, which is
+    // the whole point of T08 — before it, this payload could only ever emit
+    // OFF or a liveness ALERT.
+    expect(result.m1!.monitoring.status).toBe('ALERT');
+    expect(result.m1!.monitoring.reason).toBe('RESIDUAL_SD_CRITICAL');
+    // m2 has a production version but NO joined pairs — UNKNOWN, never OK,
+    // and so it stays OFF on this liveness-only payload.
+    expect(result.m2!.monitoring.status).toBe('OFF');
   });
 
   it('returns an empty object for an empty id list without querying', async () => {

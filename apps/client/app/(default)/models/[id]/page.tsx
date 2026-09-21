@@ -55,7 +55,15 @@ import { workspacesAtom } from '@/store/workspace'
 import { getModels } from '@/services/model'
 import { inferenceWindowService } from '@/services/inference-window'
 import { useRefreshModels } from '@/hooks/use-all-models'
-import { effectiveProdStatus } from '@/lib/model-status'
+import { monitoringStatusFromHealth } from '@/lib/model-status'
+// MODEL-SERVE-012. The SHARED label map, not a local copy. This page used to
+// keep its own duplicate of it; a copied map is free to drift from its
+// original the moment either side adds a code — which is exactly what
+// happened when the residual-SD codes were added to one and not the other.
+// One map, three readers (this page, the Alerts page, and anything that
+// renders a reason next).
+import { HEALTH_REASON_LABEL } from '@/lib/health-status-style'
+import { ALGORITHM_LABELS } from '@/store/model-pipeline'
 import { DRIFT_STATUS_CLASS } from '@/lib/drift-status-style'
 import type { AIModel } from '@/types'
 import { ModelEvaluation } from '../evaluation/components/model-evaluation'
@@ -96,6 +104,12 @@ const DEPLOY_CONFIG = {
   },
 } as const
 
+/**
+ * MODEL-SERVE-012. Now the MONITORING badge's palette, not a manual
+ * production-status one: `monitoringStatus` derives these five words from
+ * the measured health axis. The colours are unchanged — the vocabulary and
+ * its meanings are the same five states, only their source moved.
+ */
 const PROD_CONFIG = {
   normal: {
     icon: Activity,
@@ -122,89 +136,6 @@ const PROD_CONFIG = {
     cls: 'bg-purple-500/10 text-purple-600 border-purple-500/20 dark:text-purple-400',
     label: 'Data Frozen',
   },
-} as const
-
-/**
- * MODEL-SERVE-001-T21. Deliberately NOT `DEPLOY_CONFIG`'s or `PROD_CONFIG`'s
- * red/amber vocabulary — this is the same "is the INPUT distribution
- * shifting" signal `lib/drift-status-style.ts`'s own `DRIFT_STATUS_CLASS`
- * already renders, reusing its exact palette (neutral for OK/UNKNOWN,
- * purple for WARN/CRITICAL) with a border added only for visual parity
- * with this page's other two pill badges. `OFF` gets the same muted
- * treatment `DEPLOY_CONFIG.stopped` uses — "not configured to look" reads
- * the same as "not running" here.
- */
-const HEALTH_CONFIG = {
-  OFF: {
-    icon: Waves,
-    cls: `${DRIFT_STATUS_CLASS.UNKNOWN} border-zinc-500/20`,
-    label: 'Health: Off',
-  },
-  UNKNOWN: {
-    icon: Waves,
-    cls: `${DRIFT_STATUS_CLASS.UNKNOWN} border-zinc-500/20`,
-    label: 'Health: Unknown',
-  },
-  OK: {
-    icon: Waves,
-    cls: `${DRIFT_STATUS_CLASS.OK} border-zinc-500/20`,
-    label: 'Health: OK',
-  },
-  WARN: {
-    icon: Waves,
-    cls: `${DRIFT_STATUS_CLASS.WARN} border-purple-500/20`,
-    label: 'Health: Warning',
-  },
-  CRITICAL: {
-    icon: Waves,
-    cls: `${DRIFT_STATUS_CLASS.CRITICAL} border-purple-500/30`,
-    label: 'Health: Critical',
-  },
-  /**
-   * MODEL-SERVE-001-T26. NOT OPTIONAL: this map has no `??` fallback at its
-   * read site, so omitting a status the server can now send renders
-   * `undefined` and throws.
-   *
-   * Palette is the DRIFT one, deliberately, not the deploy red/amber
-   * vocabulary — this is the monitoring axis, and every monitoring signal in
-   * this codebase already renders in purple/zinc.
-   */
-  ALERT: {
-    icon: Waves,
-    cls: `${DRIFT_STATUS_CLASS.CRITICAL} border-purple-500/30`,
-    label: 'Health: Alert',
-  },
-  /**
-   * MODEL-SERVE-001-T29. "Sensor Frozen", NOT "Frozen": the word already
-   * means something else one badge over. `prodStatus.frozen` is
-   * OPERATOR-SET and renders as "Data Frozen" with the Snowflake treatment
-   * in PROD_CONFIG — two badges on one header both reading "Frozen" is the
-   * same two-contradictory-verdicts-in-one-view defect T22 had to fix in
-   * model-detail-dialog.tsx. Renaming the persisted prodStatus value instead
-   * would be a migration plus every map, for the lower-value half.
-   */
-  FROZEN: {
-    icon: Waves,
-    cls: `${DRIFT_STATUS_CLASS.WARN} border-purple-500/20`,
-    label: 'Health: Sensor Frozen',
-  },
-} as const
-
-/** T26. The reason code in the reader's own terms, kept beside the map it
- *  annotates so a new code cannot be added to one and forgotten in the other.
- *  SOURCE_UNREACHABLE and STALE send a reader to two DIFFERENT places, so the
- *  badge must never read just "Alert". */
-const HEALTH_REASON_LABEL = {
-  SOURCE_UNREACHABLE: 'source unreachable',
-  STALE: 'no recent windows',
-  NO_PREDICTIONS: 'no predictions',
-  BAD_DATA: 'bad input data',
-  SENSOR_FROZEN: 'tag not moving',
-  // T27: z-score is per-window, PSI is rolling-24. The card names WHICH
-  // metric fired rather than printing one merged "drift" figure that would
-  // be one metric wearing another's name.
-  DRIFT_CRITICAL: 'input drift (critical)',
-  DRIFT_WARN: 'input drift',
 } as const
 
 export default function ModelDetailPage({
@@ -380,27 +311,62 @@ export default function ModelDetailPage({
   // `inferenceStatus.enabled` already exists on this same payload
   // (getStatusService's own response); no new endpoint or field needed.
   const isEnabled = inferenceStatus?.enabled ?? model.data?.enabled ?? false
-  const prodKey = effectiveProdStatus(model)
+  // MODEL-SERVE-012. ONE monitoring verdict, derived from the MEASURED
+  // health axis rather than the hand-set `prodStatus` column — see
+  // `monitoringStatusFromHealth`'s own comment for why the two badges merged.
+  //
+  // FROM `inferenceStatus`, NOT from `model.data.monitoring`. The list
+  // payload carries LIVENESS ONLY (`deriveDeployStatuses` passes
+  // driftMonitor: false and residualSdStatus: 'UNKNOWN'), so it can never
+  // report OK or WARN — reading it here would badge a healthy running model
+  // "Offline", and a warning one "Offline · residual 1–2SD". This is also
+  // the same source the reason code below comes from, so the two halves of
+  // the pill can never disagree.
   const monitoringDisabled = deployKey === 'stopped' || deployKey === 'error'
+  const prodKey = monitoringStatusFromHealth(
+    inferenceStatus?.health.status,
+    deployKey,
+  )
   const deploy = DEPLOY_CONFIG[deployKey] ?? DEPLOY_CONFIG.stopped
   const prod = PROD_CONFIG[prodKey]
   const DeployIcon = deploy.icon
   const ProdIcon = prod.icon
-  // MODEL-SERVE-001-T21. `inferenceStatus` has no fallback in
-  // model.data — this axis is entirely new, so before the first status
-  // read resolves there is nothing stale to fall back to; OFF is the
-  // honest "nothing read yet" default, same word this axis already uses
-  // for "not configured to look".
-  const healthKey = inferenceStatus?.health.status ?? 'OFF'
-  const health = HEALTH_CONFIG[healthKey]
-  // T26. Null for every non-ALERT status, so this renders nothing extra on a
-  // healthy badge.
+  // MODEL-SERVE-012. The reason code survived the badge merge: it is what
+  // distinguishes faults with OPPOSITE fixes, so it renders beside the
+  // status word rather than being inferred from it. Null for every state
+  // that carries no fault, so a healthy badge shows nothing extra.
+  //
+  // Read from `inferenceStatus` (the detail-page status call), which is also
+  // where the residual-SD verdict arrives — the list payload carries the
+  // same codes under `data.monitoring.reason` for the Alerts page.
   const healthReason = inferenceStatus?.health.reason
     ? HEALTH_REASON_LABEL[inferenceStatus.health.reason]
     : null
-  const HealthIcon = health.icon
   const lastFailure = inferenceStatus?.lastFailure ?? null
   const lastSkipped = inferenceStatus?.lastSkipped ?? null
+
+  /**
+   * MODEL-SERVE-011-T23. The algorithm this model was configured with, in
+   * the words the wizard uses — `ALGORITHM_LABELS` is the SAME map Step 3
+   * and the deploy summary render from, so "Random Forest" cannot come to
+   * mean two different things in two screens.
+   *
+   * SOURCE IS `data.config`, the saved wizard configuration. The version
+   * actually serving traffic carries its own `sourceRun.algorithm`, which is
+   * the stronger answer but is exposed by no client endpoint today; the two
+   * agree on every model in this database, and they can only diverge if a
+   * retrain lands a different algorithm than the one configured. Rendered as
+   * "configured" rather than "running" for that reason.
+   */
+  const algorithmLabel = model.data?.config?.algorithm
+    ? (ALGORITHM_LABELS[model.data.config.algorithm] ??
+      model.data.config.algorithm)
+    : null
+  // A candidate sweep keeps every algorithm it was allowed to try; the extra
+  // count says the primary was CHOSEN rather than the only option.
+  const algorithmAlternatives = (model.data?.config?.algorithms ?? []).filter(
+    a => a !== model.data?.config?.algorithm,
+  ).length
 
   const nodeName = model.nodes
     ? ((model.nodes.data as { name?: string }).name ?? '—')
@@ -449,6 +415,11 @@ export default function ModelDetailPage({
                   <DeployIcon className="h-3 w-3" />
                   {deploy.label}
                 </span>
+                {/* MODEL-SERVE-012. THE monitoring badge — the Health pill
+                    that used to sit beside this one is gone, and this one is
+                    now derived from that same measured axis. Labelled
+                    "Monitoring:" so a reader knows WHICH axis it speaks for;
+                    the deploy pill to its left keeps its own word. */}
                 <span
                   className={cn(
                     'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium',
@@ -457,29 +428,35 @@ export default function ModelDetailPage({
                   )}
                 >
                   <ProdIcon className="h-3 w-3" />
+                  {/* The status word alone. The axis is already named by the
+                      "Monitoring" KPI below and by the list column, so a
+                      "Monitoring:" prefix here only repeats it inside a pill
+                      that has to stay narrow. */}
                   {prod.label}
-                </span>
-                {/* MODEL-SERVE-001-T21. A THIRD, separate badge — never
-                    merged into deploy/prod above. Purely informational, per
-                    the user's own 2026-09-15 decision: this reads the
-                    input-drift signal, it does not gate Start/Stop or
-                    promote. */}
-                <span
-                  className={cn(
-                    'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium',
-                    health.cls,
-                  )}
-                >
-                  <HealthIcon className="h-3 w-3" />
-                  {health.label}
-                  {/* T26: the reason is ON SCREEN, never left to be inferred
-                      from the status word — DS-LAKE-022-T03's own defect. */}
+                  {/* The reason is ON SCREEN, never left to be inferred from
+                      the status word — Alert collapses faults with opposite
+                      fixes (the connector, one instrument, the model itself).
+                      Same rule the Health pill carried, kept through the
+                      merge. */}
                   {healthReason && ` · ${healthReason}`}
                 </span>
               </div>
               <p className="mt-0.5 text-sm text-muted-foreground">
                 {plantName} · {nodeName}
               </p>
+              {algorithmLabel && (
+                <p className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Cpu className="h-3 w-3 shrink-0" />
+                  <span className="font-medium text-foreground/80">
+                    {algorithmLabel}
+                  </span>
+                  {algorithmAlternatives > 0 && (
+                    <span>
+                      · chosen from {algorithmAlternatives + 1} candidates
+                    </span>
+                  )}
+                </p>
+              )}
               {model.data?.lastEditedBy && (
                 <p className="mt-0.5 text-xs text-muted-foreground/70">
                   Last edited by {model.data.lastEditedBy}
@@ -705,8 +682,13 @@ export default function ModelDetailPage({
 
           <Card className="border-border bg-card">
             <CardContent className="pt-5">
+              {/* MODEL-SERVE-012. "Monitoring", not "Production": this KPI
+                  stopped reading the hand-set `prodStatus` column when the
+                  badges merged — it is the same measured verdict the header
+                  pill and the list column show, so it carries the same
+                  name. */}
               <p className="text-xs font-medium text-muted-foreground">
-                Production
+                Monitoring
               </p>
               <div
                 className={cn(
@@ -776,18 +758,6 @@ export default function ModelDetailPage({
                 <span>Input Data</span>
               </TabsTrigger>
 
-              <TabsTrigger
-                value="history"
-                className="flex items-center gap-2 px-4"
-              >
-                <History className="h-4 w-4 shrink-0" />
-                <span>Edit History</span>
-                {editHistory.length > 0 && (
-                  <span className="ml-1 flex h-4 items-center justify-center rounded-full bg-muted-foreground/20 px-2 text-[10px] font-semibold tabular-nums text-foreground">
-                    {editHistory.length}
-                  </span>
-                )}
-              </TabsTrigger>
 
               <TabsTrigger
                 value="monitoring"
@@ -817,6 +787,18 @@ export default function ModelDetailPage({
                     window's lines just to label a tab — the unbounded read
                     this task exists to avoid. */}
               </TabsTrigger>
+                    <TabsTrigger
+                      value="history"
+                      className="flex items-center gap-2 px-4"
+                    >
+                      <History className="h-4 w-4 shrink-0" />
+                      <span>Edit History</span>
+                      {editHistory.length > 0 && (
+                        <span className="ml-1 flex h-4 items-center justify-center rounded-full bg-muted-foreground/20 px-2 text-[10px] font-semibold tabular-nums text-foreground">
+                          {editHistory.length}
+                        </span>
+                      )}
+                    </TabsTrigger>
             </TabsList>
           </div>
 

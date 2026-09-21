@@ -1,6 +1,7 @@
 'use client'
 
 import type { LiveOverlayRow, MonitoringRow } from '@/lib/monitoring'
+import { RESIDUAL_COLOR } from './residual-chart'
 
 /** MODEL-SERVE-011-T09. `LiveOverlayRow` widens `MonitoringRow` with the
  *  keys the chart ALREADY draws — `live`, `held`, `heldDeviation`. The
@@ -86,6 +87,7 @@ export function MonitoringTooltip({
   const scheduled = scalar(payload, 'scheduled')
   const held = scalar(payload, 'held')
   const heldDeviation = scalar(payload, 'heldDeviation')
+  const heldDeviationPct = scalar(payload, 'heldDeviationPct')
   const fmt = (n: number | undefined) => (n === undefined ? '—' : n.toFixed(2))
   // A live-overlay point carries no measured pair by construction. Showing
   // its own values INSTEAD of two dashes is the whole fix; showing both
@@ -118,7 +120,7 @@ export function MonitoringTooltip({
                   value={fmt(actual)}
                 />
                 <Row
-                  color="var(--chart-4)"
+                  color="var(--foreground)"
                   label="Predict"
                   value={fmt(predict)}
                 />
@@ -147,7 +149,7 @@ export function MonitoringTooltip({
                 worse than a longer one. */}
             {scheduled !== undefined && (
               <Row
-                color="var(--chart-4)"
+                color="var(--foreground)"
                 label={predict === undefined ? 'Predict' : 'Predict (hour avg)'}
                 value={fmt(scheduled)}
               />
@@ -169,17 +171,31 @@ export function MonitoringTooltip({
                 />
               </>
             )}
-            {/* NEVER called a residual. This is `live - held`: the model
-                against the last value the lab reported, which on this plant
-                is roughly daily. It is excluded from RMSE, R2 and the SD
-                band for exactly that reason, and its label has to keep
-                saying so. The residual chart already DRAWS this series — it
-                simply had no row here either. */}
-            {heldDeviation !== undefined && (
+            {/* MODEL-SERVE-011-T18. THE SAME WORDS the measured pair uses
+                (user decision 2026-09-17), and the collision is avoided by
+                EXCLUSION rather than by a qualifier: these render only when
+                there is no measured residual on the row, which mirrors the
+                chart itself — `showHeldDeviation` draws this series only
+                when no measured residual exists in range. Two rows labelled
+                "Residual" holding different numbers can therefore never
+                appear.
+
+                What the number IS has not changed: `predicted - held`,
+                distance from the last value the lab reported, still excluded
+                from RMSE, R2 and the SD band. The caption and the legend
+                carry that meaning now instead of the row label. */}
+            {residual === undefined && heldDeviation !== undefined && (
               <Row
-                color="var(--chart-5)"
-                label="Vs last reported"
+                color={RESIDUAL_COLOR}
+                label="Residual"
                 value={fmt(heldDeviation)}
+              />
+            )}
+            {pct === undefined && heldDeviationPct !== undefined && (
+              <Row
+                color="var(--muted-foreground)"
+                label="Error %"
+                value={`${heldDeviationPct.toFixed(2)}%`}
               />
             )}
           </>

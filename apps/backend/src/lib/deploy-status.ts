@@ -5,6 +5,15 @@ import { redactUrls } from '@/lib/redact-urls';
 // so both axes are derived by ONE implementation each. Acyclic: model-health
 // imports nothing from this module (it names it only in a comment).
 import { classifyModelHealth, type ModelHealth } from '@/lib/model-health';
+// MODEL-SERVE-012-T08. The output-error classifier and its horizon, called
+// rather than reimplemented, so the list and the detail page grade a model by
+// one rule over one sample. Acyclic: neither module imports this one.
+import {
+  classifyResidualSd,
+  truthPoolSince,
+  type ResidualSdStatus,
+} from '@/lib/residual-sd-health';
+import { baselineResidualSd } from '@/lib/model-version-residual-sd';
 
 /**
  * MODEL-SERVE-006-T12. Per decisions.deploy_status_currently_asserts_
@@ -224,6 +233,12 @@ export async function deriveDeployStatuses(
       skipStreakAlert: true,
       missingPctWarn: true,
       missingPctAlert: true,
+      // MODEL-SERVE-012-T08. The output-error axis's own thresholds, read
+      // here for the same reason the bands above are: the list's verdict is
+      // graded against the SAME per-schedule numbers the detail page uses,
+      // never a second set of defaults.
+      warnSd: true,
+      criticalSd: true,
     },
   });
   if (schedules.length === 0) return result;
@@ -296,6 +311,76 @@ export async function deriveDeployStatuses(
     }),
   );
 
+  // MODEL-SERVE-012-T08. THE OUTPUT-ERROR AXIS ON THE LIST, in two grouped
+  // queries for the whole page — never a per-model read.
+  //
+  // This is why it can ride here while DRIFT cannot: drift needs the gold
+  // artifact's column baseline, an HTTP round trip to apps/python per model.
+  // The residual-SD verdict needs only `InferenceWindowTruth`'s sufficient
+  // statistics and the version's own metrics blob, both of which group.
+  const productionVersions = await prisma.modelVersion.findMany({
+    where: { modelId: { in: modelIds }, stage: 'PRODUCTION' },
+    select: { id: true, modelId: true, metrics: true },
+  });
+  const versionByModel = new Map(
+    productionVersions.map((v) => [v.modelId, v]),
+  );
+
+  // ONE aggregate over every production version at once. Bounded by the SAME
+  // `TRUTH_POOL_DAYS` horizon `getHealthStatus` uses, so the list badge and
+  // the detail badge grade the same model from the same sample — two
+  // different bounds would let them disagree, which is the contradiction
+  // this feature exists to remove.
+  const truthGroups = productionVersions.length
+    ? await prisma.inferenceWindowTruth.groupBy({
+        by: ['modelVersionId'],
+        where: {
+          modelVersionId: { in: productionVersions.map((v) => v.id) },
+          windowStart: { gte: truthPoolSince() },
+        },
+        _sum: {
+          n: true,
+          sumSe: true,
+          sumAe: true,
+          sumSigned: true,
+          sumActual: true,
+          sumActualSq: true,
+        },
+      })
+    : [];
+  const truthByVersion = new Map(
+    truthGroups.map((g) => [
+      g.modelVersionId,
+      {
+        // A group with no rows sums to null, which is zero pairs — and
+        // `poolTruthStats` skips an n <= 0 row rather than adding its zeros.
+        n: g._sum.n ?? 0,
+        sumSe: g._sum.sumSe ?? 0,
+        sumAe: g._sum.sumAe ?? 0,
+        sumSigned: g._sum.sumSigned ?? 0,
+        sumActual: g._sum.sumActual ?? 0,
+        sumActualSq: g._sum.sumActualSq ?? 0,
+      },
+    ]),
+  );
+
+  const residualSdByModel = new Map<string, ResidualSdStatus>();
+  for (const schedule of schedules) {
+    const version = versionByModel.get(schedule.modelId);
+    const pooled = version ? truthByVersion.get(version.id) : undefined;
+    residualSdByModel.set(
+      schedule.modelId,
+      classifyResidualSd({
+        windows: pooled ? [pooled] : [],
+        baselineSd: baselineResidualSd(version?.metrics ?? null),
+        thresholds: {
+          warnSd: schedule.warnSd,
+          criticalSd: schedule.criticalSd,
+        },
+      }).status,
+    );
+  }
+
   for (const schedule of schedules) {
     const lastSucceededAt = lastSucceededByModel.get(schedule.modelId) ?? null;
     result[schedule.modelId] = {
@@ -343,6 +428,12 @@ export async function deriveDeployStatuses(
           schedule.lagMinutes,
         ),
         hasEverSucceeded: lastSucceededAt !== null,
+        // MODEL-SERVE-012-T08. THE ONE monitoring signal on this path that is
+        // a real graded verdict rather than a "no claim": pooled above in two
+        // grouped queries for the whole page. UNKNOWN when the model has no
+        // production version, no reference SD, or too few joined pairs — and
+        // UNKNOWN never becomes OK.
+        residualSdStatus: residualSdByModel.get(schedule.modelId) ?? 'UNKNOWN',
       }),
     };
   }

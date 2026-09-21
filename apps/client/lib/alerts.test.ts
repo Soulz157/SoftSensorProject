@@ -181,6 +181,47 @@ describe('buildAlerts — the monitoring axis (MODEL-SERVE-001-T30/V22)', () => 
     expect(rows[0]!.failureReason).toBeNull()
   })
 
+  /**
+   * MODEL-SERVE-012. The OUTPUT-ERROR codes reach this page with no wiring
+   * of their own — `monitoringReason` is filled from `monitoring.reason` and
+   * rendered through the shared `HEALTH_REASON_LABEL`. This test exists to
+   * keep that true: a future predicate that whitelisted reason codes, rather
+   * than statuses, would silence these two without failing anything else.
+   */
+  it('raises a row for a WIDENED RESIDUAL SPREAD, carrying its own reason', () => {
+    const rows = buildAlerts({
+      ...base,
+      models: [
+        monitoringModel('m-residual', 'Drifting Error', {
+          status: 'WARN',
+          reason: 'RESIDUAL_SD_WARN',
+          frozenColumns: [],
+        }),
+      ],
+    })
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.status).toBe('monitoring')
+    expect(rows[0]!.monitoringReason).toBe('RESIDUAL_SD_WARN')
+    // The model is DISPATCHING fine — this is not the deploy axis.
+    expect(rows[0]!.status).not.toBe('failed')
+    expect(rows[0]!.failureReason).toBeNull()
+  })
+
+  it('carries the 3SD breach distinctly from the 1-2SD warning', () => {
+    const rows = buildAlerts({
+      ...base,
+      models: [
+        monitoringModel('m-residual-bad', 'Broken Error', {
+          status: 'ALERT',
+          reason: 'RESIDUAL_SD_CRITICAL',
+          frozenColumns: [],
+        }),
+      ],
+    })
+    expect(rows[0]!.monitoringReason).toBe('RESIDUAL_SD_CRITICAL')
+  })
+
   it('carries STALE distinctly from SOURCE_UNREACHABLE', () => {
     const rows = buildAlerts({
       ...base,

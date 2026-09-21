@@ -23,6 +23,11 @@ const healthy = {
   // There IS evidence to judge drift on unless a test says otherwise —
   // the no-evidence case is its own describe block below.
   driftEvidence: true,
+  // MODEL-SERVE-012. UNKNOWN by default, NOT OK: these tests are about the
+  // drift and liveness tiers, and a default of OK would let this axis answer
+  // for them. UNKNOWN makes it silent, which is what "this test is not about
+  // the output-error axis" means.
+  residualSdStatus: 'UNKNOWN',
 } as const;
 
 describe('classifyModelHealth (MODEL-SERVE-001-T21)', () => {
@@ -409,5 +414,103 @@ describe('thresholdsFromSchedule (MODEL-SERVE-001-T21)', () => {
       criticalSd: 4.0,
       outOfRangePct: 25,
     });
+  });
+});
+
+describe('the output-error axis (MODEL-SERVE-012)', () => {
+  it('reports RESIDUAL_SD_CRITICAL as an Alert', () => {
+    expect(
+      classifyModelHealth({ ...healthy, residualSdStatus: 'ALERT' }),
+    ).toEqual({
+      status: 'ALERT',
+      reason: 'RESIDUAL_SD_CRITICAL',
+      frozenColumns: [],
+    });
+  });
+
+  it('reports RESIDUAL_SD_WARN as a Warning', () => {
+    expect(
+      classifyModelHealth({ ...healthy, residualSdStatus: 'WARN' }),
+    ).toEqual({
+      status: 'WARN',
+      reason: 'RESIDUAL_SD_WARN',
+      frozenColumns: [],
+    });
+  });
+
+  it('lets DRIFT_CRITICAL lead when both fire — drifted inputs EXPLAIN a widened error', () => {
+    expect(
+      classifyModelHealth({
+        ...healthy,
+        driftStatus: 'CRITICAL',
+        residualSdStatus: 'ALERT',
+      }),
+    ).toEqual({
+      status: 'ALERT',
+      reason: 'DRIFT_CRITICAL',
+      frozenColumns: [],
+    });
+  });
+
+  it('lets DRIFT_WARN lead over RESIDUAL_SD_WARN, same ordering argument', () => {
+    expect(
+      classifyModelHealth({
+        ...healthy,
+        driftStatus: 'WARN',
+        residualSdStatus: 'WARN',
+      }),
+    ).toEqual({ status: 'WARN', reason: 'DRIFT_WARN', frozenColumns: [] });
+  });
+
+  it('keeps BAD_DATA above it — an error computed from bad readings measures nothing', () => {
+    expect(
+      classifyModelHealth({
+        ...healthy,
+        missingPct: 30,
+        residualSdStatus: 'ALERT',
+      }),
+    ).toEqual({ status: 'ALERT', reason: 'BAD_DATA', frozenColumns: [] });
+  });
+
+  it('keeps STALE above it, for the same reason', () => {
+    expect(
+      classifyModelHealth({
+        ...healthy,
+        staleness: 'STALE',
+        residualSdStatus: 'ALERT',
+      }),
+    ).toEqual({ status: 'ALERT', reason: 'STALE', frozenColumns: [] });
+  });
+
+  it('stays silent on UNKNOWN rather than reporting health it cannot measure', () => {
+    expect(
+      classifyModelHealth({
+        ...healthy,
+        driftMonitor: false,
+        residualSdStatus: 'UNKNOWN',
+      }),
+    ).toEqual({ status: 'OFF', reason: null, frozenColumns: [] });
+  });
+
+  it('REPORTS OK on a measured in-spec error even with drift watching off', () => {
+    // The one case that must not fall through to OFF: OFF means "deliberately
+    // not watching", which stops being true once joined pairs are graded.
+    expect(
+      classifyModelHealth({
+        ...healthy,
+        driftMonitor: false,
+        residualSdStatus: 'OK',
+      }),
+    ).toEqual({ status: 'OK', reason: null, frozenColumns: [] });
+  });
+
+  it('is outranked by a disabled schedule, like every other signal', () => {
+    expect(
+      classifyModelHealth({
+        ...healthy,
+        enabled: false,
+        residualSdStatus: 'ALERT',
+      }),
+    ).toEqual({ status: 'OFF', reason: null, frozenColumns: [] });
   });
 });

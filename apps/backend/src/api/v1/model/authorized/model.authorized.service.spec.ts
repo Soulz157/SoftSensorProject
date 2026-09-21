@@ -165,13 +165,16 @@ describe('ModelAuthorizedService — updateModelService config merge', () => {
     const prisma = buildPrisma();
     const service = makeService(prisma);
 
-    // MODEL-SERVE-006-T12: `deployStatus` is no longer part of this DTO at
-    // all (it is derived, never caller-set) — `prodStatus` stands in here
-    // as an equally config-free update, preserving this test's actual
-    // point: a request that omits `config` must not touch it.
+    // MODEL-SERVE-006-T12 removed `deployStatus` from this DTO (derived,
+    // never caller-set) and MODEL-SERVE-012-T09 removed `prodStatus` for the
+    // same reason, each time retargeting this call. `statusDetail` is the
+    // remaining config-free field and stands in here, preserving this test's
+    // actual point: a request that omits `config` must not touch it. Like
+    // the fields before it, it lands in `editedLabels`, so the edit-history
+    // branch this case also exercises is unchanged.
     await service.updateModelService(
       'model-1',
-      { prodStatus: 'normal' },
+      { statusDetail: null },
       USER_ID,
       ROLE,
     );

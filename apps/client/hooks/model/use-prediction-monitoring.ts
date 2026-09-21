@@ -40,6 +40,10 @@ interface UsePredictionMonitoringResult {
   points: LivePredictionPoint[]
   pointsLoading: boolean
   pointsTruncated: boolean
+  /** The window the series was actually fetched over, or null before the
+   *  first request. Null is a real state and must not be replaced with a
+   *  render-time "now" — see `seriesBounds`' own note below. */
+  seriesBounds: { fromMs: number; toMs: number } | null
   /** MODEL-SERVE-008-T06. Which EMPTY state this stream is in when it has
    *  no points: driver off = empty by construction; driver on = nothing has
    *  landed yet. Defaults false, so a model with no schedule row keeps the
@@ -107,6 +111,22 @@ export function usePredictionMonitoring(
   const [points, setPoints] = useState<LivePredictionPoint[]>([])
   const [pointsLoading, setPointsLoading] = useState(false)
   const [pointsTruncated, setPointsTruncated] = useState(false)
+  /**
+   * The window the series was ACTUALLY fetched over, captured inside the
+   * fetcher closure below.
+   *
+   * Exists because `model-monitoring-tab.tsx` needs these bounds to draw the
+   * held "Actual" step when there is no prediction series to borrow an axis
+   * from, and was computing them with its own `Date.now()` in the render body
+   * — which `react-hooks/purity` refuses, and rightly: a value re-read on
+   * every incidental re-render is not the range the data came from. Reporting
+   * the fetched window instead makes the fallback axis agree with the points
+   * beside it.
+   */
+  const [seriesBounds, setSeriesBounds] = useState<{
+    fromMs: number
+    toMs: number
+  } | null>(null)
   const [livePredictEnabled, setLivePredictEnabled] = useState(false)
   const [drift, setDrift] = useState<DriftReport | null>(null)
   const [driftLoading, setDriftLoading] = useState(false)
@@ -144,8 +164,14 @@ export function usePredictionMonitoring(
     cacheKey: seriesCacheKey,
     debounceMs: 0,
     fetcher: signal => {
-      const to = new Date().toISOString()
-      const from = new Date(Date.now() - RANGE_MS[range]).toISOString()
+      // Read here, in the fetcher closure, never in the render body — the
+      // rule this file's header already states. Kept so the bounds reported
+      // back are the ones this request used.
+      const toMs = Date.now()
+      const fromMs = toMs - RANGE_MS[range]
+      const to = new Date(toMs).toISOString()
+      const from = new Date(fromMs).toISOString()
+      setSeriesBounds({ fromMs, toMs })
       return modelMonitoringService
         .predictions(model!.id, from, to, signal)
         .then(res => res.data)
@@ -251,6 +277,7 @@ export function usePredictionMonitoring(
     points,
     pointsLoading,
     pointsTruncated,
+    seriesBounds,
     livePredictEnabled,
     drift,
     driftLoading,

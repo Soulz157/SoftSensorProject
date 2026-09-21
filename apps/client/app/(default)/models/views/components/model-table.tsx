@@ -19,7 +19,7 @@ import {
 import { cn } from '@/lib/utils'
 import { AIModel } from '@/types'
 import { type ModelWithWorkspace } from '@/hooks/use-all-models'
-import { effectiveProdStatus } from '@/lib/model-status'
+import { monitoringStatus } from '@/lib/model-status'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { ModelDetailDialog } from './model-detail-dialog'
@@ -227,7 +227,12 @@ export function ModelTable({
                 actualDeployKey) as DS
 
               const ds = DEPLOY_MAP[deployKey] ?? DEPLOY_MAP.stopped
-              const prodKey = effectiveProdStatus(m)
+              // MODEL-SERVE-012-T08. The MEASURED monitoring verdict off the
+              // list payload — no longer the hand-set `prodStatus` column,
+              // which could read "Normal" for a model the detail page badged
+              // Alert. `deriveDeployStatuses` now grades the output-error
+              // axis in two batched queries for the whole page.
+              const prodKey = monitoringStatus(m)
               const ps = PROD_MAP[prodKey]
 
               const monitoringDisabled =

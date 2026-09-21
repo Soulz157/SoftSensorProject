@@ -17,7 +17,12 @@ import {
   presignModelRunUpload,
   prepareHoldoutForRun,
   replayHoldoutForRun,
+  runPredictions,
 } from '@/lib/python-preprocess-client';
+import {
+  hasReferenceResidualSd,
+  RESIDUAL_SD_METRIC_KEY,
+} from '@/lib/model-version-residual-sd';
 import { buildRunKey, resolveRunOwner, RunOwner } from '@/lib/model-run-owner';
 import { findHoldoutArtifact } from '@/lib/holdout-artifact';
 import { RunCompleteDto } from './dto/model-run.authorized.dto';
@@ -413,6 +418,74 @@ export class ModelRunAuthorizedService {
       }
     }
 
+    await this.recordReferenceResidualSd(updatedRun);
+
     return updatedRun;
+  }
+
+  /**
+   * MODEL-SERVE-012-T02. Record the run's own residual SD on its metrics
+   * blob, so live monitoring has a FROZEN reference to grade against
+   * (`lib/model-version-residual-sd.ts` explains why a frozen one is the
+   * only kind that tests anything).
+   *
+   * HERE, NOT IN THE TRAINER. The trainer emits r2/rmse/mae only
+   * (images/trainer/app/metrics.py) and nothing in CI builds that image, so
+   * a trainer-side addition is a silent no-op until someone rebuilds and
+   * bumps the tag. The same number is already derivable from the run's own
+   * predictions.parquet through python's `run_predictions` (`residual_sd`),
+   * which needs no image change and works for historical runs too.
+   *
+   * HERE, NOT AT SAVE MODEL. Save Model is this system's single atomic
+   * commit boundary (CLAUDE.md §13); an HTTP round trip inside it would put
+   * a remote failure in the path of the one write that must not half-happen.
+   * Written onto the RUN, it reaches the version for free through the
+   * existing metrics copy in `lib/model-version-from-run.ts`.
+   *
+   * BEST EFFORT, exactly like the candidate-job nudge above and for the same
+   * reason: the run row is already durable, and a missing reference SD is a
+   * state the reader already handles — `baselineResidualSd` falls back to
+   * `rmse` (wider, so quieter) and, failing that, the verdict is UNKNOWN.
+   * Never a fabricated value, and never a failed response to the container.
+   */
+  private async recordReferenceResidualSd(run: {
+    id: string;
+    status: string;
+    metrics: unknown;
+    manifestKey: string | null;
+    predictionsKey: string | null;
+  }): Promise<void> {
+    if (run.status !== 'SUCCEEDED') return;
+    // Nothing to read the pairs from. A closed-form or failed run simply has
+    // no reference SD; that is a fact about the run, not an error.
+    if (!run.predictionsKey) return;
+    // Already carries one — re-scoring must not overwrite the value the
+    // model was accepted on.
+    if (hasReferenceResidualSd(run.metrics)) return;
+    if (!run.metrics || typeof run.metrics !== 'object') return;
+
+    try {
+      const predictions = await runPredictions({
+        source_key: run.predictionsKey,
+        manifest_key: run.manifestKey,
+      });
+      const sd = predictions.residual_sd;
+      if (typeof sd !== 'number' || !Number.isFinite(sd) || sd <= 0) return;
+
+      await this.prisma.modelTrainingRun.update({
+        where: { id: run.id },
+        data: {
+          metrics: {
+            ...(run.metrics as Record<string, unknown>),
+            [RESIDUAL_SD_METRIC_KEY]: sd,
+          },
+        },
+      });
+    } catch (err) {
+      this.log.error(
+        `could not record reference residual SD for run ${run.id}`,
+        err,
+      );
+    }
   }
 }

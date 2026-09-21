@@ -8,9 +8,9 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
-  Brush,
   ResponsiveContainer,
 } from 'recharts'
+import { formatAxisValue } from '@/lib/monitoring'
 import type {
   BrushWindow,
   LiveOverlayRow,
@@ -26,8 +26,11 @@ interface Props {
    *  carries no `actual` and no `residual`. `EvalPoint` itself is untouched
    *  and stays non-optional, per MODEL-SERVE-005's recorded refusal. */
   rows: Array<MonitoringRow | LiveOverlayRow>
+  /** MODEL-SERVE-011-T20. The visible index window, owned by
+   *  `ChartZoomControls`. The Brush used to be the only thing that APPLIED
+   *  it — with the Brush gone the chart slices its own data, or the zoom
+   *  buttons would change state and nothing on screen. */
   brush: BrushWindow
-  onBrush: (w: BrushWindow) => void
   tickFormatter: (t: number) => string
   actualAsLine?: boolean
   yDomain?: [number, number] | undefined
@@ -39,13 +42,15 @@ const AXIS_TICK = { fill: 'var(--muted-foreground)', fontSize: 11 }
 export function ActualVsPredictChart({
   rows,
   brush,
-  onBrush,
   tickFormatter,
   actualAsLine = true,
   yDomain,
 }: Props) {
   const startIndex = brush.startIndex ?? 0
   const endIndex = brush.endIndex ?? Math.max(0, rows.length - 1)
+  // `endIndex` is INCLUSIVE, the convention `ChartZoomControls` and recharts'
+  // Brush both use, hence the +1.
+  const visible = rows.slice(startIndex, endIndex + 1)
 
   return (
     <div className="w-full overflow-x-auto overflow-y-hidden">
@@ -60,7 +65,7 @@ export function ActualVsPredictChart({
       <div className="min-w-375 xl:w-full xl:min-w-0">
         <ResponsiveContainer className="w-full" height={500}>
           <ComposedChart
-            data={rows}
+            data={visible}
             syncId={SYNC_ID}
             margin={{ top: 8, right: 24, left: 0, bottom: 0 }}
           >
@@ -83,7 +88,11 @@ export function ActualVsPredictChart({
               domain={yDomain ?? ['auto', 'auto']}
               tick={AXIS_TICK}
               stroke="var(--border)"
-              width={44}
+              // MODEL-SERVE-011-T21. Wide enough for four significant digits
+              // plus a sign; the previous 44px clipped the unformatted float
+              // this axis used to print.
+              width={78}
+              tickFormatter={formatAxisValue}
             />
             <Tooltip
               content={
@@ -179,12 +188,17 @@ export function ActualVsPredictChart({
               connectNulls
               type="monotone"
               dataKey="scheduled"
-              stroke="var(--chart-4)"
+              stroke="var(--foreground)"
               strokeWidth={2}
-              dot={{ r: 3, fill: 'var(--chart-4)', strokeWidth: 0 }}
+              // Dotted, not dashed: at one point per hour the stroke between
+              // markers is interpolation, not measurement. It also keeps this
+              // series readable beside `predict`'s longer dash now that both
+              // wear the same Predict colour.
+              strokeDasharray="2 4"
+              dot={{ r: 3, fill: 'var(--foreground)', strokeWidth: 0 }}
               activeDot={{
                 r: 5,
-                fill: 'var(--chart-4)',
+                fill: 'var(--foreground)',
                 stroke: 'var(--background)',
                 strokeWidth: 2,
               }}
@@ -199,7 +213,7 @@ export function ActualVsPredictChart({
               // series wears: both are this window plane's own predictions,
               // and the legend now carries one entry for them. The dash
               // still separates per-row pairs from the hourly summary.
-              stroke="var(--chart-4)"
+              stroke="var(--foreground)"
               strokeWidth={2}
               strokeDasharray="5 5"
               dot={false}
@@ -226,20 +240,6 @@ export function ActualVsPredictChart({
               }}
               isAnimationActive={false}
             />
-
-            {rows.length > 0 && (
-              <Brush
-                dataKey="t"
-                height={22}
-                travellerWidth={10}
-                stroke="var(--border)"
-                fill="var(--muted)"
-                tickFormatter={t => tickFormatter(Number(t))}
-                startIndex={startIndex}
-                endIndex={endIndex}
-                onChange={onBrush}
-              />
-            )}
           </ComposedChart>
         </ResponsiveContainer>
       </div>

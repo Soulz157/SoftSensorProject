@@ -49,7 +49,7 @@ import { useWorkspacePlants } from '@/hooks/workspace/use-workspace-plants'
 import { AIModel } from '@/types'
 import { deleteModel } from '@/services/model'
 import { inferenceWindowService } from '@/services/inference-window'
-import { effectiveProdStatus } from '@/lib/model-status'
+import { monitoringStatus } from '@/lib/model-status'
 import { ModelTable } from './components/model-table'
 import { WorkTreePanel, type TreeScope } from './components/work-tree-panel'
 import { ModelUpsertDialog } from './components/model-upsert-dialog'
@@ -103,12 +103,12 @@ export default function ModelsPage() {
   // Table rows: all active filters applied.
   const filtered: ModelWithWorkspace[] = preStatus
     .filter(m => !deployFilter || m.data?.deployStatus === deployFilter)
-    .filter(m => !prodFilter || effectiveProdStatus(m) === prodFilter)
+    .filter(m => !prodFilter || monitoringStatus(m) === prodFilter)
 
   // Deploy badge counts: respect prodFilter but NOT deployFilter so that
   // selecting one deploy status doesn't zero out the others.
   const deployBase = preStatus.filter(
-    m => !prodFilter || effectiveProdStatus(m) === prodFilter,
+    m => !prodFilter || monitoringStatus(m) === prodFilter,
   )
   const deployCounts = {
     running: deployBase.filter(m => m.data?.deployStatus === 'running').length,
@@ -126,11 +126,11 @@ export default function ModelsPage() {
     m => !deployFilter || m.data?.deployStatus === deployFilter,
   )
   const prodCounts = {
-    normal: prodBase.filter(m => effectiveProdStatus(m) === 'normal').length,
-    warning: prodBase.filter(m => effectiveProdStatus(m) === 'warning').length,
-    alert: prodBase.filter(m => effectiveProdStatus(m) === 'alert').length,
-    offline: prodBase.filter(m => effectiveProdStatus(m) === 'offline').length,
-    frozen: prodBase.filter(m => effectiveProdStatus(m) === 'frozen').length,
+    normal: prodBase.filter(m => monitoringStatus(m) === 'normal').length,
+    warning: prodBase.filter(m => monitoringStatus(m) === 'warning').length,
+    alert: prodBase.filter(m => monitoringStatus(m) === 'alert').length,
+    offline: prodBase.filter(m => monitoringStatus(m) === 'offline').length,
+    frozen: prodBase.filter(m => monitoringStatus(m) === 'frozen').length,
   }
 
   async function handleDelete(model: AIModel) {

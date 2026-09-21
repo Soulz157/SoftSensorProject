@@ -108,6 +108,10 @@ export interface AIModel {
         | 'SENSOR_FROZEN'
         | 'DRIFT_CRITICAL'
         | 'DRIFT_WARN'
+        /** MODEL-SERVE-012. The output-error codes — see the same union in
+         *  `services/inference-window.ts` for why they are not DRIFT_*. */
+        | 'RESIDUAL_SD_CRITICAL'
+        | 'RESIDUAL_SD_WARN'
         | null
       frozenColumns: string[]
       /** MODEL-SERVE-009-T03. SINCE WHEN each badged column last changed —

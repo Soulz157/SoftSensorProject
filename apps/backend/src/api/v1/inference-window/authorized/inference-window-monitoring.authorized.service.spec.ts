@@ -35,6 +35,11 @@ function buildPrisma(overrides: Record<string, unknown> = {}) {
       // the new ALERT/STALE path. The fault paths get their own cases.
       findFirst: jest.fn().mockResolvedValue({ windowStart: new Date() }),
     },
+    // MODEL-SERVE-012. `getHealthStatus` pools these sums for the
+    // output-error axis. Present by default and EMPTY, so every pre-existing
+    // case here keeps asserting the drift verdict it was written for: no
+    // joined pairs means UNKNOWN, which this axis defines as silent.
+    inferenceWindowTruth: { findMany: jest.fn().mockResolvedValue([]) },
     ...overrides,
   };
 }
@@ -86,6 +91,15 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
       // after an inferred return type let a branch omit it.
       frozenSince: [],
       thresholds: null,
+      // MODEL-SERVE-012. UNKNOWN with nulls, never a zero ratio: nothing has
+      // been scored, so there is no spread to report.
+      residualSd: {
+        status: 'UNKNOWN',
+        liveSd: null,
+        ratio: null,
+        baselineSd: null,
+        n: 0,
+      },
     });
     expect(mockedPostToPython).not.toHaveBeenCalled();
   });
@@ -126,6 +140,15 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
       // after an inferred return type let a branch omit it.
       frozenSince: [],
       thresholds: null,
+      // MODEL-SERVE-012. UNKNOWN with nulls, never a zero ratio: nothing has
+      // been scored, so there is no spread to report.
+      residualSd: {
+        status: 'UNKNOWN',
+        liveSd: null,
+        ratio: null,
+        baselineSd: null,
+        n: 0,
+      },
     });
     expect(mockedPostToPython).not.toHaveBeenCalled();
   });

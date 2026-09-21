@@ -8,13 +8,6 @@ export const DeployStatusEnum = z.enum([
   'error',
   'initializing',
 ]);
-export const ProdStatusEnum = z.enum([
-  'normal',
-  'warning',
-  'alert',
-  'offline',
-  'frozen',
-]);
 
 /**
  * MODEL-FLOW-006. Retrain/drift-monitoring settings — collected nowhere yet
@@ -176,7 +169,15 @@ export const UpdateModelSchema = z.object({
   // not rejected — an old client keeps working, it just no longer has any
   // effect, which is the correct outcome for a field nothing should be
   // writing anymore.
-  prodStatus: ProdStatusEnum.optional(),
+  // MODEL-SERVE-012-T09. `prodStatus` REMOVED, and `ProdStatusEnum` with it —
+  // the Monitoring badge is DERIVED from the measured health axis
+  // (classifyModelHealth -> monitoringStatusFromHealth), never from this
+  // hand-set column, which could read Normal beside an Alert verdict about
+  // the same model. Same treatment as `deployStatus` above and for the same
+  // reason: no `.strict()`, so a stale caller still sending it has the field
+  // silently stripped rather than rejected — an old client keeps working, it
+  // just no longer has any effect. The `data.prodStatus` COLUMN itself stays
+  // (creation paths still stamp 'normal'); only the edit path is retired.
   statusDetail: z.string().max(500).nullable().optional(),
   config: ModelConfigSchema.optional(),
 });
