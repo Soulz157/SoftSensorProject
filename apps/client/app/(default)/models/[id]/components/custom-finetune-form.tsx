@@ -24,6 +24,7 @@ export function CustomFinetuneForm({
   hyperparameters,
   onChange,
   disabled,
+  modelId,
 }: {
   /** The incumbent PRODUCTION version's algorithm — null while it has not
    *  loaded yet (`useModelRetrain().incumbent`). */
@@ -31,16 +32,26 @@ export function CustomFinetuneForm({
   hyperparameters: Record<string, unknown> | null
   onChange: (hyperparameters: Record<string, unknown>) => void
   disabled?: boolean
+  /**
+   * MODEL-FLOW-024. The Model being retrained. With it the server sizes the
+   * variant list to that Model's own data — the same figures an automatic
+   * retrain inherits — so this list matches what Auto Finetune would try.
+   * Without it (or with a Model that has nothing to inherit) the list is the
+   * general one, as before.
+   */
+  modelId?: string
 }) {
   const [variants, setVariants] = useState<
     Array<Record<string, string | number | boolean | null>>
   >([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [sized, setSized] = useState(false)
 
   useEffect(() => {
     if (!algorithm) {
       setVariants([])
+      setSized(false)
       return
     }
     let ignore = false
@@ -50,9 +61,10 @@ export function CustomFinetuneForm({
       try {
         // Unwrapped — this endpoint returns the DTO directly, with no
         // `{data}` envelope (see `tuningGridService`'s own note).
-        const grid = await tuningGridService.get(algorithm)
+        const grid = await tuningGridService.get(algorithm, undefined, modelId)
         if (ignore) return
         setVariants(grid.variants)
+        setSized(grid.sized)
         // Default to the first variant so the dialog's submit button is
         // immediately actionable rather than starting on an empty selection.
         if (grid.variants.length > 0 && !hyperparameters) {
@@ -77,7 +89,7 @@ export function CustomFinetuneForm({
       ignore = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [algorithm])
+  }, [algorithm, modelId])
 
   if (!algorithm) {
     return (
@@ -104,8 +116,8 @@ export function CustomFinetuneForm({
   if (variants.length === 0) {
     return (
       <p className="text-sm text-muted-foreground">
-        No curated hyperparameter variants exist for {algorithm} yet — use
-        Auto Finetune instead.
+        No curated hyperparameter variants exist for {algorithm} yet — use Auto
+        Finetune instead.
       </p>
     )
   }
@@ -125,6 +137,15 @@ export function CustomFinetuneForm({
 
       <div className="space-y-1.5">
         <Label>Hyperparameter variant</Label>
+        {/* MODEL-FLOW-024. Said only when the list really differs from the
+            general one (`sized`, read off array identity server-side), so a
+            reader who compares it with another model's list is told why. */}
+        {sized && (
+          <p className="text-[10px] leading-tight text-muted-foreground">
+            Sized to this model’s own data, so these differ from the general
+            list.
+          </p>
+        )}
         <RadioGroup
           value={selectedIndex >= 0 ? String(selectedIndex) : undefined}
           onValueChange={v => {

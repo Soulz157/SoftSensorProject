@@ -558,6 +558,73 @@ describe('Phase4ModelSelection (MODEL-FLOW-013)', () => {
     expect(h.result.refetch).toHaveBeenCalled()
   })
 
+  it('lists the draft’s runs from an EARLIER training under "Earlier runs", selected at draft level', async () => {
+    const { modelDraftService, modelDraftCandidateJobService } =
+      await import('@/services/model-draft')
+    h.result.job = job({
+      bestRunId: 'run-1',
+      candidates: [candidate({ runId: 'run-1', algorithm: 'ridge' })],
+    })
+    // run-1 is the job's own run (also in the draft list); run-old is not.
+    h.runsResult.runs = [
+      trainingRun({ id: 'run-1', candidateJobId: 'job-1' }),
+      trainingRun({ id: 'run-old', algorithm: 'svm', candidateJobId: 'job-0' }),
+    ]
+    renderStep(store => {
+      store.set(mpTrainingResultAtom, {
+        runId: 'run-1',
+        algorithm: 'ridge',
+        metrics: { rmse: 0.5 },
+        trainedAt: '2026-08-28T00:00:00.000Z',
+        cvFoldsKey: null,
+      })
+      store.set(mpCandidateJobIdAtom, 'job-1')
+    })
+
+    expect(screen.getByText('Earlier runs')).toBeInTheDocument()
+    // The job's winner stays Selected; only the earlier run offers Select.
+    expect(screen.getByText('Selected')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Select'))
+
+    await waitFor(() => {
+      expect(modelDraftService.selectRun).toHaveBeenCalledWith(
+        'draft-1',
+        'run-old',
+      )
+    })
+    expect(modelDraftCandidateJobService.select).not.toHaveBeenCalledWith(
+      'draft-1',
+      'job-1',
+      'run-old',
+    )
+    expect(h.selectionResult.refetch).toHaveBeenCalled()
+  })
+
+  it('a draft-level selection outranks the job winner for the Selected badge', () => {
+    h.result.job = job({
+      bestRunId: 'run-1',
+      candidates: [candidate({ runId: 'run-1', algorithm: 'ridge' })],
+    })
+    h.runsResult.runs = [
+      trainingRun({ id: 'run-old', algorithm: 'svm', candidateJobId: 'job-0' }),
+    ]
+    h.selectionResult.selectedRunId = 'run-old'
+    renderStep(store => {
+      store.set(mpTrainingResultAtom, {
+        runId: 'run-1',
+        algorithm: 'ridge',
+        metrics: { rmse: 0.5 },
+        trainedAt: '2026-08-28T00:00:00.000Z',
+        cvFoldsKey: null,
+      })
+      store.set(mpCandidateJobIdAtom, 'job-1')
+    })
+
+    // Exactly one Selected (run-old), and run-1 now offers Select.
+    expect(screen.getAllByText('Selected')).toHaveLength(1)
+    expect(screen.getAllByText('Select')).toHaveLength(1)
+  })
+
   it('shows a running-sweep state honestly rather than an empty table', () => {
     h.result.job = job({ status: 'RUNNING', completedRuns: 1, totalRuns: 3 })
     renderStep(store => {

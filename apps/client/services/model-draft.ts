@@ -677,13 +677,12 @@ export interface CreateCandidateJobInput {
    *  guarantees in both ratio and CV mode.
    *
    *  `sizedDistinctLabelled` NEEDS `sizedRowCount`; the server refuses the
-   *  distinct count on its own. The reverse is allowed since MODEL-FLOW-024:
-   *  a direct lstm/gru search sends the dataset's row count alone, because the
-   *  split-stats fetch is never made while a sequence model is selected.
-   *  Both absent is a real, accepted case: the panel's fetch is gated on
-   *  Apply (MODEL-FLOW-014-T08), so a user who starts a job without ever
-   *  pressing Apply genuinely has no figures to send, and the job records
-   *  null rather than the client guessing or forcing a second artifact read
+   *  distinct count on its own. The reverse is the common case since
+   *  MODEL-FLOW-024-T10: the size tier keys on rows, so until Apply has
+   *  fetched split-stats (and always for lstm/gru, which never fetch them) the
+   *  job sends the dataset's own row count alone, the figure the form sized
+   *  its ranges from. Both absent now means a dataset with no row count on
+   *  record — the honest null rather than a guess or a second artifact read
    *  onto the Start Training path. */
   sizedRowCount?: number
   sizedDistinctLabelled?: number

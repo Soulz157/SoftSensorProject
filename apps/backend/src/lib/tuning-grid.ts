@@ -26,15 +26,17 @@
  *
  * MODEL-FLOW-024. The table below is the MEDIUM tier — what shipped before
  * sizing existed, and what an unknown dataset size resolves to. A dataset
- * with fewer or more independent lab observations picks one of the
- * `TUNING_GRID_OVERRIDES` instead. Those overrides are DECLARED PRIORS, not
- * measured optima: MODEL-FLOW-020-T03 measured capacity against real holdouts
- * at 32 and 59 distinct labelled values and found no size-dependent ordering,
- * and this scaling was added at the user's request regardless. The tier keys
- * on DISTINCT LABELLED VALUES, never row count — a lab target forward-filled
- * onto a fine grid makes 8,350 rows hold 32 observations (MODEL-FLOW-020
- * finding 1). Only LSTM/GRU `batch_size` keys on rows, because it sets steps
- * per epoch, a compute quantity.
+ * with fewer or more ROWS picks one of the `TUNING_GRID_OVERRIDES` instead.
+ * Those overrides are DECLARED PRIORS, not measured optima: MODEL-FLOW-020-T03
+ * measured capacity against real holdouts at 32 and 59 distinct labelled
+ * values and found no size-dependent ordering, and this scaling was added at
+ * the user's request regardless. The tier keys on ROW COUNT (`sizeTierFor`,
+ * the user's decision of 2026-09-21), reversing its first design on distinct
+ * labelled values: a lab target forward-filled onto a fine grid makes 8,350
+ * rows hold 32 observations (MODEL-FLOW-020 finding 1), and those
+ * distinct-value tiers are what the override values below were written for.
+ * LSTM/GRU `batch_size` keys on rows as well, because it sets steps per
+ * epoch, a compute quantity.
  *
  * Every override value MUST sit inside the band the client form shows for the
  * same algorithm, key and tier (`apps/client/lib/hyperparam-ranges.ts`);
@@ -111,48 +113,65 @@ export const TUNING_GRID: Record<string, HyperparamRecord[]> = {
 };
 
 /**
- * MODEL-FLOW-024. How many independent lab observations the dataset holds,
- * cut into four tiers. `medium` is today's table; `tiny`/`small` shrink
- * capacity, `large` widens it. The edges are round numbers, declared, not
- * measured: the real datasets seen so far hold 19, 32, 59 and 97 distinct
- * values, so they land in `tiny` and `small`.
+ * MODEL-FLOW-024. How many ROWS the dataset holds, cut into four tiers.
+ * `medium` is today's table; `tiny`/`small` shrink capacity, `large` widens
+ * it. The edges are declared, not measured, and were chosen by the user as
+ * durations of HOURLY data: tiny < 6 months, small 6-12 months, medium
+ * 1-3 years, large > 3 years — 4,380 / 8,760 / 26,280 rows.
+ *
+ * The tier keys on the row COUNT, not the duration: the pipeline's interval is
+ * per-dataset (`data_service.py` accepts `1d`/`1h`/`5m`/`30s`), so a 5-minute
+ * dataset of 4,380 rows is 15 days, not 6 months. The months above are the
+ * hourly reading of a row threshold, nothing more.
+ *
+ * MODEL-FLOW-020 measured that on this system rows and distinct labelled
+ * values diverge by up to 260x (8,350 rows hold 32 distinct lab values), and
+ * that a row tier therefore lands real datasets (4,470-15,441 rows) in
+ * `small`/`medium` where a distinct-value tier put them in `tiny`/`small`.
+ * The user chose rows anyway (2026-09-21); `distinctLabelled` is still
+ * recorded on the job row but no longer picks anything.
  *
  * Mirrored in `apps/client/lib/hyperparam-ranges.ts`; the agreement test
  * compares the two at every boundary.
  */
 export type SizeTier = 'tiny' | 'small' | 'medium' | 'large';
 
-/** Lower bound of each tier above `tiny`, in distinct labelled values. */
+/** Lower bound of each tier above `tiny`, in rows (hourly: 6 months, 1 year, 3 years). */
 export const SIZE_TIER_LOWER_BOUNDS = {
-  small: 50,
-  medium: 150,
-  large: 500,
+  small: 4380,
+  medium: 8760,
+  large: 26280,
 } as const;
 
 /** `null`/`undefined`/non-finite resolve to `medium`: no figure means today's table. */
-export function sizeTierFor(
-  distinctLabelled: number | null | undefined,
-): SizeTier {
-  if (distinctLabelled == null || !Number.isFinite(distinctLabelled)) {
-    return 'medium';
-  }
-  if (distinctLabelled < SIZE_TIER_LOWER_BOUNDS.small) return 'tiny';
-  if (distinctLabelled < SIZE_TIER_LOWER_BOUNDS.medium) return 'small';
-  if (distinctLabelled < SIZE_TIER_LOWER_BOUNDS.large) return 'medium';
+export function sizeTierFor(rows: number | null | undefined): SizeTier {
+  if (rows == null || !Number.isFinite(rows)) return 'medium';
+  if (rows < SIZE_TIER_LOWER_BOUNDS.small) return 'tiny';
+  if (rows < SIZE_TIER_LOWER_BOUNDS.medium) return 'small';
+  if (rows < SIZE_TIER_LOWER_BOUNDS.large) return 'medium';
   return 'large';
 }
 
 /**
- * The dataset's two size figures, both optional. `distinctLabelled` drives
- * every capacity choice; `rows` drives only LSTM/GRU `batch_size`. Both come
- * off the candidate job row (`sizedDistinctLabelled` / `sizedRowCount`),
- * which the client filled from its own /split-stats response — accepted for
- * tier selection only. They pick among fixed declared lists and grant nothing
- * the client cannot already do by sending arbitrary hyperparameters itself.
+ * The dataset's size figures, all optional. `rows` drives every capacity
+ * choice (the tier) and LSTM/GRU `batch_size`; `distinctLabelled` is carried
+ * for the record only. Both come off the candidate job row (`sizedRowCount` /
+ * `sizedDistinctLabelled`), which the client filled from its own /split-stats
+ * response — accepted for tier selection only. They pick among fixed declared
+ * lists and grant nothing the client cannot already do by sending arbitrary
+ * hyperparameters itself.
  */
 export interface DatasetSize {
+  /** Recorded, never read for a tier since the user's row-count decision. */
   distinctLabelled?: number | null;
   rows?: number | null;
+  /**
+   * How many feature columns the training artifact has. Read only by `pls`,
+   * whose `n_components` cannot exceed it (sklearn raises rather than
+   * clamping — the trainer's own note in models.py), and read off the
+   * artifact row (`DatasetArtifact.featureCount`), never the request.
+   */
+  features?: number | null;
 }
 
 /**
@@ -167,8 +186,11 @@ export interface DatasetSize {
  * forests, 1,000 boosting rounds and 255 leaves, and none of it was run
  * against the trainer container's limits — unlike `GPR_MAX_TRAIN_ROWS` and
  * `LSTM_MAX_TRAIN_WINDOWS`, which were each set to a value actually measured.
- * No dataset in this system reaches `large` (500+ distinct labelled values; the
- * most ever measured is 97), so it cannot fire today. Measure before one does.
+ * `large` (26,280+ rows, three years of hourly data) IS reachable today: the
+ * biggest GOLD artifact on this system holds 46,070 rows (MODEL-FLOW-020
+ * finding 1), which the distinct-value tier this replaced never sent there.
+ * The datasets measured for capacity (4,470-15,441 rows) are not that big, so
+ * none of `large` has run against real data. Measure before a search does.
  */
 export const TUNING_GRID_OVERRIDES: Record<
   Exclude<SizeTier, 'medium'>,
@@ -295,6 +317,46 @@ export const TUNING_GRID_OVERRIDES: Record<
 
 const SEQUENCE_ALGORITHMS = new Set(['lstm', 'gru']);
 
+/**
+ * MODEL-FLOW-024. PLS cannot fit more components than the data has features:
+ * `PLSRegression(n_components > n_features)` raises at fit time, and
+ * `build_model` deliberately does not clamp (models.py: "sklearn already
+ * raises a clear ValueError"). A variant asking for 6 components on a
+ * 4-feature dataset is therefore a container spawn that dies on arrival —
+ * and a candidate failure fails the WHOLE job. So the grid is capped here,
+ * where the feature count is known, and any variant that becomes an EXACT
+ * duplicate of an earlier one is dropped.
+ *
+ * Returns `table` itself, unchanged, when nothing needs capping (feature
+ * count unknown, or already at least the largest `n_components`) — the same
+ * "served, not copied" rule every other path here keeps.
+ */
+function capComponents(
+  table: HyperparamRecord[],
+  features: number | null | undefined,
+): HyperparamRecord[] {
+  if (features == null || !Number.isFinite(features) || features < 1) {
+    return table;
+  }
+  const cap = Math.floor(features);
+  if (table.every((variant) => Number(variant.n_components) <= cap)) {
+    return table;
+  }
+  const seen = new Set<string>();
+  const capped: HyperparamRecord[] = [];
+  for (const variant of table) {
+    const next = {
+      ...variant,
+      n_components: Math.min(Number(variant.n_components), cap),
+    };
+    const key = JSON.stringify(next);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    capped.push(next);
+  }
+  return capped;
+}
+
 const clamp = (n: number, lo: number, hi: number): number =>
   Math.min(hi, Math.max(lo, n));
 
@@ -307,9 +369,9 @@ const clamp = (n: number, lo: number, hi: number): number =>
  * (4,470-15,441 source rows) this cap does not bind. It matters only for
  * small data.
  *
- * Keyed on rows and not on distinct labelled values on purpose: batch size
- * sets steps per epoch, a compute quantity, and every row is a training
- * window whether or not its target repeats its neighbour's. Uses SOURCE rows
+ * Keyed on rows, like the size tier: batch size sets steps per epoch, a
+ * compute quantity, and every row is a training window whether or not its
+ * target repeats its neighbour's. Uses SOURCE rows
  * (the figure the job row records) rather than training windows; that
  * overstates the cap by at most the split ratio.
  */
@@ -329,16 +391,27 @@ export function batchSizeBand(rows: number | null | undefined): {
  * `size` (or a `medium` figure) this IS `TUNING_GRID[algorithm]`, the same
  * array — "served, not copied" — so the endpoint and the job builder cannot
  * disagree. `[]` for an unknown algorithm.
+ *
+ * THE IDENTITY IS LOAD-BEARING, NOT A NICETY. `TuningGridAuthorizedService.get`
+ * derives its `sized` flag from `variants !== TUNING_GRID[algorithm]`, and the
+ * Custom Finetune form tells the operator "sized to this model's own data" on
+ * that flag alone. So every path that applies NO sizing must return `table`
+ * itself — non-sequence passthrough, the unbound batch-cap shortcut and
+ * `capComponents`' early return — and a new branch that returns a fresh but
+ * EQUAL array would flip the flag to `true` and make the form claim sizing that
+ * is not there. `tuning-grid.authorized.service.spec.ts` pins the current
+ * cases; this comment is what stops the next branch being written wrongly.
  */
 export function tuningVariantsFor(
   algorithm: string,
   size?: DatasetSize,
 ): HyperparamRecord[] {
-  const tier = sizeTierFor(size?.distinctLabelled);
+  const tier = sizeTierFor(size?.rows);
   const table =
     (tier === 'medium' ? undefined : TUNING_GRID_OVERRIDES[tier][algorithm]) ??
     TUNING_GRID[algorithm];
   if (!table) return [];
+  if (algorithm === 'pls') return capComponents(table, size?.features);
   if (!SEQUENCE_ALGORITHMS.has(algorithm)) return table;
   const band = batchSizeBand(size?.rows);
   // An unbound cap (rows unknown, or 1,024+) is the 16-128 band every static

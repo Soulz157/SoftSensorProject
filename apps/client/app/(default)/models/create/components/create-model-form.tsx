@@ -98,7 +98,7 @@ export function CreateModelForm() {
 
   return (
     <div className="flex-1 overflow-auto bg-background p-6 md:p-8">
-      <div className="mx-auto max-w-7xl space-y-6">
+      <div className="mx-auto max-w-7xl space-y-6 xl:max-w-[96rem]">
         {/* Header */}
         <div className="space-y-1">
           <Button

@@ -141,7 +141,7 @@ export function RuntimeEstimate({ status, progress, ...input }: Props) {
                     ? `${top.label} accounts for ${top.pct.toFixed(0)}% of the estimate — dropping it saves roughly ${formatDuration(top.seconds)}.`
                     : stacked
                       ? `${shares.length} algorithms run sequentially, so runtime is the sum, not the max. Trim the list to shorten the run.`
-                      : `Find Best Parameters multiplies runtime by roughly 10× — turn it off for a first pass.`}
+                      : `Find Best Parameters adds up to ${Math.max(0, ...input.algorithms.map(a => input.tuningVariants?.[a] ?? 4))} extra fits on top of this run — turn it off for a first pass.`}
               </span>
             </p>
           )}

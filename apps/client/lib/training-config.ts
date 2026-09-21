@@ -36,14 +36,15 @@ import type { Algorithm, HyperparamValue } from '@/store/model-pipeline'
  * reason that a form cannot ship a default it simultaneously calls out of
  * range.
  *
- * THIS FIELD IS THE MEDIUM TIER — what a dataset of 150-499 distinct labelled
- * values, or an unknown size, is shown. It was NOT derived from dataset size
+ * THIS FIELD IS THE MEDIUM TIER — what a dataset of 8,760-26,279 rows (1-3
+ * years of hourly data), or an unknown size, is shown. It was NOT derived from dataset size
  * when written: MODEL-FLOW-020-T03 measured capacity against real holdouts at
  * 32 and 59 distinct labelled values, found no size-dependent ordering, and
  * closed as a no-op. MODEL-FLOW-024 sizes the bands anyway, at the user's
  * request: `lib/hyperparam-ranges.ts` overrides this range per size tier,
- * keyed on DISTINCT LABELLED VALUES and never row count (a forward-filled lab
- * target makes 8,350 rows hold 32 observations). Those overrides are declared
+ * keyed on ROW COUNT (the user's decision of 2026-09-21; it first keyed on
+ * distinct labelled values, since a forward-filled lab target makes 8,350
+ * rows hold 32 observations). Those overrides are declared
  * priors, not measured optima, and the form says so. Read a field's band
  * through `suggestedRangeFor`, not off this property, or it will show the
  * medium band to a dataset it was not chosen for.

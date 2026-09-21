@@ -4,6 +4,7 @@ import { AppException } from '@softsensor/common';
 import { ModelCandidateJobAuthorizedService } from './model-candidate-job.authorized.service';
 import { ModelRetrainAugmentAuthorizedService } from './model-retrain-augment.authorized.service';
 import type { TriggerRetrainDto } from './dto/model-retrain.authorized.dto';
+import type { DatasetSize } from '@/lib/tuning-grid';
 
 /** The split a retrain reuses. `chronological` carries the ratio the
  *  incumbent was actually fitted on; `cv_expanding` is refused (see
@@ -107,6 +108,78 @@ export class ModelRetrainAuthorizedService {
       });
     }
     return model;
+  }
+
+  /**
+   * MODEL-FLOW-024. The size figures the incumbent was trained under, read off
+   * the candidate job that produced its source run
+   * (`ModelTrainingRun.candidateJobId` -> `sizedRowCount` /
+   * `sizedDistinctLabelled`, which Step 3 filled from its own /split-stats
+   * or, for the row count alone, the dataset's own count before Apply).
+   * A DB row, never the artifact: a fresh count would mean re-reading the
+   * artifact, which the trigger path has no business paying for.
+   *
+   * `undefined` when there is nothing to inherit — a run that was not part of
+   * a job (a plain single run), a job whose row was deleted (`onDelete:
+   * SetNull` clears the link), or a job started before Step 3's Apply — and
+   * the search then resolves to the medium grid, exactly what a retrain did
+   * before sizing existed.
+   *
+   * For AUGMENT_DATA the inherited figure describes the BASE dataset, so it
+   * understates the combined artifact by however many new rows the added
+   * data brings. That errs toward the smaller-capacity tier, the safe
+   * direction, and is recorded rather than recomputed: a recompute is a full
+   * read of the combined artifact.
+   */
+  private async sizeOfSourceRun(sourceRun: {
+    candidateJobId: string | null;
+  }): Promise<DatasetSize | undefined> {
+    if (!sourceRun.candidateJobId) return undefined;
+    const job = await this.prisma.modelCandidateJob.findUnique({
+      where: { id: sourceRun.candidateJobId },
+      select: { sizedRowCount: true, sizedDistinctLabelled: true },
+    });
+    if (!job) return undefined;
+    if (job.sizedRowCount === null && job.sizedDistinctLabelled === null) {
+      return undefined;
+    }
+    return {
+      distinctLabelled: job.sizedDistinctLabelled,
+      rows: job.sizedRowCount,
+    };
+  }
+
+  /**
+   * MODEL-FLOW-024. The size a retrain's curated search runs at, for
+   * `algorithm` on this Model's incumbent — what the Custom Finetune form
+   * needs to preview the SAME variants an automatic retrain would try. Editor
+   * access, like triggering: the figures describe a dataset the caller must
+   * be able to work on. `{}` (the medium grid) when the Model has no
+   * PRODUCTION version to inherit from — a preview has no reason to fail
+   * over that.
+   */
+  async resolveTuningSizeService(
+    modelId: string,
+    algorithm: string,
+    user: Auth.UserPayload,
+  ): Promise<DatasetSize> {
+    await this.assertModelAccess(modelId, user);
+    const incumbent = await this.prisma.modelVersion.findFirst({
+      where: { modelId, stage: 'PRODUCTION' },
+    });
+    if (!incumbent) return {};
+    const sourceRun = await this.prisma.modelTrainingRun.findUnique({
+      where: { id: incumbent.sourceRunId },
+      select: { candidateJobId: true },
+    });
+    const inherited = sourceRun
+      ? await this.sizeOfSourceRun(sourceRun)
+      : undefined;
+    return this.candidateJobs.withFeatureCount(
+      algorithm,
+      incumbent.goldArtifactId,
+      inherited ?? {},
+    );
   }
 
   /**
@@ -247,15 +320,35 @@ export class ModelRetrainAuthorizedService {
     // that shared basis is what makes T05's comparison a real comparison.
     // (AUGMENT_DATA candidates share the COMBINED artifact instead — the
     // basis that changes is training data, never algorithm/hyperparameters.)
+    //
+    // MODEL-FLOW-024. The automatic search is SIZED, from the figures the
+    // incumbent's own job recorded (see `sizeOfSourceRun`), so a retrain tunes
+    // in the same tier the wizard's Find Best Parameters did instead of always
+    // falling back to the medium grid. Custom candidates skip the expansion
+    // and so the feature-count lookup; the inherited figures are still carried
+    // onto the new job row below so the NEXT retrain can inherit them in turn.
+    const trainingArtifactId =
+      augmentedArtifact?.combinedFinalArtifactId ?? incumbent.goldArtifactId;
+    const inheritedSize = await this.sizeOfSourceRun(sourceRun);
+    const searchSize = dto.candidates
+      ? undefined
+      : await this.candidateJobs.withFeatureCount(
+          incumbent.algorithm,
+          trainingArtifactId,
+          inheritedSize ?? {},
+        );
     const requested =
       dto.candidates ??
-      this.candidateJobs.expandSearchCandidates({
-        algorithm: incumbent.algorithm,
-        hyperparameters: (incumbent.hyperparameters ?? {}) as Record<
-          string,
-          unknown
-        >,
-      });
+      this.candidateJobs.expandSearchCandidates(
+        {
+          algorithm: incumbent.algorithm,
+          hyperparameters: (incumbent.hyperparameters ?? {}) as Record<
+            string,
+            unknown
+          >,
+        },
+        searchSize,
+      );
     const candidates = requested.map((candidate) => ({
       ...candidate,
       phase: 1,
@@ -274,9 +367,17 @@ export class ModelRetrainAuthorizedService {
           sourceVersionId: incumbent.id,
           idempotencyKey: dto.idempotencyKey ?? null,
           targetY: sourceRun.targetY,
-          goldArtifactId:
-            augmentedArtifact?.combinedFinalArtifactId ??
-            incumbent.goldArtifactId,
+          goldArtifactId: trainingArtifactId,
+          // MODEL-FLOW-024. Inherited from the incumbent's own job, so the
+          // chain of retrains keeps its figures (a retrain job's row is the
+          // next retrain's `sourceRun.candidateJobId` target). Omitted, not
+          // nulled, when there was nothing to inherit.
+          ...(inheritedSize
+            ? {
+                sizedRowCount: inheritedSize.rows ?? null,
+                sizedDistinctLabelled: inheritedSize.distinctLabelled ?? null,
+              }
+            : {}),
           trainTestSplit: split.ratio,
           kind: 'HYPERPARAMETER_SEARCH',
           candidates: candidatesJson,

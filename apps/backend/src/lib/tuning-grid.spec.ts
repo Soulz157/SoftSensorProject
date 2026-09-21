@@ -142,18 +142,36 @@ describe('TUNING_GRID matches images/trainer/app/models.py, read live', () => {
   });
 });
 
+// One representative row count per tier, derived from the bounds so moving a
+// bound moves every fixture below with it.
+const ROWS = {
+  tiny: Math.floor(SIZE_TIER_LOWER_BOUNDS.small / 2),
+  small: SIZE_TIER_LOWER_BOUNDS.small,
+  medium: SIZE_TIER_LOWER_BOUNDS.medium,
+  large: SIZE_TIER_LOWER_BOUNDS.large * 2,
+};
+
 describe('sizeTierFor', () => {
   it.each([
     [0, 'tiny'],
-    [49, 'tiny'],
+    [SIZE_TIER_LOWER_BOUNDS.small - 1, 'tiny'],
     [SIZE_TIER_LOWER_BOUNDS.small, 'small'],
-    [149, 'small'],
+    [SIZE_TIER_LOWER_BOUNDS.medium - 1, 'small'],
     [SIZE_TIER_LOWER_BOUNDS.medium, 'medium'],
-    [499, 'medium'],
+    [SIZE_TIER_LOWER_BOUNDS.large - 1, 'medium'],
     [SIZE_TIER_LOWER_BOUNDS.large, 'large'],
-    [46_070, 'large'],
-  ] as [number, SizeTier][])('%d distinct labelled values is %s', (n, tier) => {
+    [100_000, 'large'],
+  ] as [number, SizeTier][])('%d rows is %s', (n, tier) => {
     expect(sizeTierFor(n)).toBe(tier);
+  });
+
+  it('pins the bounds to the user’s durations of hourly data: 6 months, 1 year, 3 years', () => {
+    const HOURS_PER_YEAR = 24 * 365;
+    expect(SIZE_TIER_LOWER_BOUNDS).toEqual({
+      small: HOURS_PER_YEAR / 2,
+      medium: HOURS_PER_YEAR,
+      large: HOURS_PER_YEAR * 3,
+    });
   });
 
   it('resolves an unknown figure to medium, never to a tighter tier', () => {
@@ -162,12 +180,11 @@ describe('sizeTierFor', () => {
     expect(sizeTierFor(Number.NaN)).toBe('medium');
   });
 
-  it('puts every dataset this system has measured (19, 32, 59, 97) in a low tier', () => {
-    expect([19, 32, 59, 97].map((n) => sizeTierFor(n))).toEqual([
-      'tiny',
-      'tiny',
+  it('puts every dataset this system has measured (4,470-15,441 rows) in small or medium', () => {
+    expect([4_470, 8_350, 15_441].map((n) => sizeTierFor(n))).toEqual([
       'small',
       'small',
+      'medium',
     ]);
   });
 });
@@ -198,22 +215,35 @@ describe('batchSizeBand', () => {
 describe('tuningVariantsFor', () => {
   it('is TUNING_GRID itself, by reference, when no size is given or the tier is medium', () => {
     expect(tuningVariantsFor('ridge')).toBe(TUNING_GRID.ridge);
-    expect(tuningVariantsFor('ridge', { distinctLabelled: 200 })).toBe(
+    expect(tuningVariantsFor('ridge', { rows: ROWS.medium })).toBe(
       TUNING_GRID.ridge,
     );
   });
 
-  it('serves the tier override where one exists, and the medium table where it does not', () => {
+  it('never tiers on the distinct labelled count — rows alone pick the tier', () => {
+    // 32 distinct values used to mean `tiny`. It is recorded, not read.
     expect(tuningVariantsFor('ridge', { distinctLabelled: 32 })).toBe(
+      TUNING_GRID.ridge,
+    );
+    expect(
+      tuningVariantsFor('ridge', { rows: ROWS.medium, distinctLabelled: 32 }),
+    ).toBe(TUNING_GRID.ridge);
+    expect(
+      tuningVariantsFor('ridge', { rows: ROWS.tiny, distinctLabelled: 900 }),
+    ).toBe(TUNING_GRID_OVERRIDES.tiny.ridge);
+  });
+
+  it('serves the tier override where one exists, and the medium table where it does not', () => {
+    expect(tuningVariantsFor('ridge', { rows: ROWS.tiny })).toBe(
       TUNING_GRID_OVERRIDES.tiny.ridge,
     );
-    expect(tuningVariantsFor('ridge', { distinctLabelled: 900 })).toBe(
+    expect(tuningVariantsFor('ridge', { rows: ROWS.large })).toBe(
       TUNING_GRID_OVERRIDES.large.ridge,
     );
     // ols, grp and pls have no size prior — every tier reads the medium table.
     for (const algorithm of ['ols', 'grp', 'pls']) {
-      for (const distinctLabelled of [10, 100, 300, 900]) {
-        expect(tuningVariantsFor(algorithm, { distinctLabelled })).toBe(
+      for (const rows of Object.values(ROWS)) {
+        expect(tuningVariantsFor(algorithm, { rows })).toBe(
           TUNING_GRID[algorithm],
         );
       }
@@ -222,6 +252,55 @@ describe('tuningVariantsFor', () => {
 
   it('returns [] for an unknown algorithm', () => {
     expect(tuningVariantsFor('not-a-real-algorithm')).toEqual([]);
+  });
+
+  describe('pls n_components is capped at the feature count', () => {
+    const componentsOf = (features: number | null | undefined) =>
+      tuningVariantsFor('pls', { features }).map((v) => Number(v.n_components));
+
+    it('is TUNING_GRID.pls itself when the feature count is unknown or ample', () => {
+      expect(tuningVariantsFor('pls')).toBe(TUNING_GRID.pls);
+      expect(tuningVariantsFor('pls', { features: null })).toBe(
+        TUNING_GRID.pls,
+      );
+      expect(tuningVariantsFor('pls', { features: 6 })).toBe(TUNING_GRID.pls);
+      expect(tuningVariantsFor('pls', { features: 40 })).toBe(TUNING_GRID.pls);
+    });
+
+    it.each([1, 2, 3, 4, 5])(
+      'never asks for more components than %d features',
+      (features) => {
+        for (const n of componentsOf(features)) {
+          expect(n).toBeGreaterThanOrEqual(1);
+          expect(n).toBeLessThanOrEqual(features);
+        }
+      },
+    );
+
+    it('drops an exact duplicate a cap creates, and keeps variants that still differ', () => {
+      // 1 feature: every n_components becomes 1; {1,500} appears twice.
+      const one = tuningVariantsFor('pls', { features: 1 });
+      const keys = one.map((v) => JSON.stringify(v));
+      expect(new Set(keys).size).toBe(keys.length);
+      // 3 features: {3,500} vs {3,1000} vs {3,250} differ on max_iter — kept.
+      expect(tuningVariantsFor('pls', { features: 3 }).length).toBe(4);
+    });
+
+    it('does not touch any other algorithm', () => {
+      expect(tuningVariantsFor('ridge', { features: 1 })).toBe(
+        TUNING_GRID.ridge,
+      );
+    });
+
+    it('reaches tuningCandidatesFor: no candidate can exceed the feature count', () => {
+      for (const v of tuningCandidatesFor(
+        'pls',
+        { n_components: 2, max_iter: 500 },
+        { features: 3 },
+      )) {
+        expect(Number(v.n_components)).toBeLessThanOrEqual(3);
+      }
+    });
   });
 
   it('is TUNING_GRID itself for lstm/gru too whenever the batch cap does not bind — served, not copied', () => {
@@ -242,11 +321,9 @@ describe('tuningVariantsFor', () => {
   });
 
   it('shrinks tree capacity on small data and grows it on large data', () => {
-    const maxOf = (algorithm: string, key: string, distinctLabelled: number) =>
+    const maxOf = (algorithm: string, key: string, rows: number) =>
       Math.max(
-        ...tuningVariantsFor(algorithm, { distinctLabelled }).map((v) =>
-          Number(v[key]),
-        ),
+        ...tuningVariantsFor(algorithm, { rows }).map((v) => Number(v[key])),
       );
     for (const [algorithm, key] of [
       ['xgboost', 'n_estimators'],
@@ -255,9 +332,9 @@ describe('tuningVariantsFor', () => {
       ['hist_gradient_boosting', 'num_leaves'],
       ['random_forest', 'n_estimators'],
     ] as const) {
-      const tiny = maxOf(algorithm, key, 32);
-      const medium = maxOf(algorithm, key, 200);
-      const large = maxOf(algorithm, key, 900);
+      const tiny = maxOf(algorithm, key, ROWS.tiny);
+      const medium = maxOf(algorithm, key, ROWS.medium);
+      const large = maxOf(algorithm, key, ROWS.large);
       // Jest's expect takes no message argument, so the offender is carried in
       // the compared value instead — a failure names the algorithm and key.
       expect([algorithm, key, tiny < medium]).toEqual([algorithm, key, true]);
@@ -277,10 +354,13 @@ describe('tuningVariantsFor', () => {
     }
   });
 
-  it('does not size lstm/gru capacity from distinct labelled values, only batch_size from rows', () => {
+  it('does not size lstm/gru capacity by tier, only batch_size from rows', () => {
     const noFigure = tuningVariantsFor('lstm');
-    const tiny = tuningVariantsFor('lstm', { distinctLabelled: 20 });
-    expect(tiny).toEqual(noFigure);
+    // Once the batch cap stops binding (1,024+ rows) every tier serves the
+    // same list: the tier changes nothing for a sequence model.
+    for (const rows of [ROWS.tiny, ROWS.small, ROWS.medium, ROWS.large]) {
+      expect(tuningVariantsFor('lstm', { rows })).toEqual(noFigure);
+    }
   });
 });
 
@@ -326,18 +406,18 @@ describe('tuningCandidatesFor', () => {
   });
 
   it('builds the variants from the tier the size figure selects', () => {
-    expect(
-      tuningCandidatesFor('xgboost', {}, { distinctLabelled: 32 }),
-    ).toEqual(TUNING_GRID_OVERRIDES.tiny.xgboost);
-    expect(
-      tuningCandidatesFor('xgboost', {}, { distinctLabelled: 900 }),
-    ).toEqual(TUNING_GRID_OVERRIDES.large.xgboost);
+    expect(tuningCandidatesFor('xgboost', {}, { rows: ROWS.tiny })).toEqual(
+      TUNING_GRID_OVERRIDES.tiny.xgboost,
+    );
+    expect(tuningCandidatesFor('xgboost', {}, { rows: ROWS.large })).toEqual(
+      TUNING_GRID_OVERRIDES.large.xgboost,
+    );
   });
 
   it('still never re-runs the base setting inside a tier', () => {
     const base = TUNING_GRID_OVERRIDES.tiny.xgboost[0];
     const result = tuningCandidatesFor('xgboost', base, {
-      distinctLabelled: 32,
+      rows: ROWS.tiny,
     });
     expect(result).not.toContainEqual(base);
     expect(result).toHaveLength(3);

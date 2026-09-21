@@ -54,6 +54,9 @@ export const CreateCandidateJobSchema = z
     // is that response's `source_rows`, `sizedDistinctLabelled` its
     // `distinct_labelled_values`. Those two specifically because they are
     // the only fields /split-stats guarantees in BOTH ratio and CV mode.
+    // Before Apply (and for lstm/gru, which never fetch it) `sizedRowCount`
+    // is instead the saved dataset's own row count, sent alone
+    // (MODEL-FLOW-024-T10).
     //
     // ACCEPTED FROM THE CLIENT rather than read here, which is unusual
     // enough in this file to state plainly: `distinct_labelled_values`
@@ -62,9 +65,10 @@ export const CreateCandidateJobSchema = z
     // reasoned refusal to add one to the launch path. The client is the only
     // participant that has these free. They were RECORD, never authority,
     // until MODEL-FLOW-024 settled the question this comment used to leave
-    // open: `sizedDistinctLabelled` now picks the tuning grid's size tier
-    // (and `sizedRowCount` the LSTM/GRU batch-size band). A client-supplied
-    // figure is trusted for that, and only that, because it selects among
+    // open: `sizedRowCount` now picks the tuning grid's size tier and the
+    // LSTM/GRU batch-size band (the user chose a row-count tier on
+    // 2026-09-21; `sizedDistinctLabelled` is recorded but picks nothing). A
+    // client-supplied figure is trusted for that, and only that, because it selects among
     // fixed declared variant lists and grants nothing the client cannot
     // already do by sending arbitrary hyperparameters itself. The figures are
     // stored on the job row so a later reader can recompute which tier a
@@ -94,7 +98,8 @@ export const CreateCandidateJobSchema = z
   // allowed since MODEL-FLOW-024: the split-stats fetch is never made while
   // lstm/gru is selected (a ratio split means nothing for windows), so a
   // sequence job has a row count from the dataset but no distinct count to
-  // send, and LSTM/GRU `batch_size` is the one thing that keys on rows.
+  // send — and rows is the figure the size tier and LSTM/GRU `batch_size`
+  // key on, so that job is still sized.
   .refine(
     (data) =>
       data.sizedDistinctLabelled === undefined ||

@@ -10,7 +10,8 @@ import {
   type ModelCandidateJob,
 } from '@/services/model-draft'
 import type { DraftSplitStatsResult } from '@/services/dataset-version'
-import { defaultHyperparams } from '@/lib/training-config'
+import { datasetSizeFrom } from '@/lib/hyperparam-ranges'
+import { baseHyperparamsFor } from '@/lib/tuning-preview'
 import { isSequenceAlgorithm } from '@/lib/metric-source'
 import {
   mpTrainStateAtom,
@@ -63,8 +64,8 @@ interface Deps {
    *
    * `null` whenever that fetch has not resolved — no Apply yet, a sequence
    * algorithm selected (the parent declines to fetch for lstm/gru), or still
-   * in flight. The job then records NEITHER figure, which is the honest
-   * state rather than a guess.
+   * in flight. The job then records the dataset's own row count alone (see
+   * `sizedFigures`), never a distinct count it cannot supply.
    */
   splitStats: Pick<
     DraftSplitStatsResult,
@@ -373,21 +374,23 @@ export function useModelTraining({
    * must record the same thing, and three copies of `?? undefined` is how
    * they would eventually stop doing so.
    *
-   * `{}` when the fetch has not resolved: the server's own schema refuses one
-   * figure without the other, so the pair is spread whole or not at all,
-   * which makes a half-captured job unrepresentable here rather than merely
-   * rejected downstream.
+   * The rows figure picks the tuning grid's size tier, so it comes from
+   * `datasetSizeFrom` — the SAME rule the Step 3 form sizes its ranges with
+   * (`/split-stats` `source_rows`, else the dataset's own row count) — and the
+   * ranges the form shows cannot disagree with the variants a search tries,
+   * before Apply or for lstm/gru, which never fetch split stats. The distinct
+   * count exists only with the fetch and is sent beside it for the record;
+   * the server's schema refuses it WITHOUT rows, which this cannot produce.
    */
-  const sizedFigures = useMemo(
-    () =>
-      splitStats
-        ? {
-            sizedRowCount: splitStats.source_rows,
-            sizedDistinctLabelled: splitStats.distinct_labelled_values,
-          }
-        : {},
-    [splitStats],
-  )
+  const sizedFigures = useMemo(() => {
+    const size = datasetSizeFrom(splitStats, selectedDataset?.rowCount)
+    return {
+      ...(size.rows != null ? { sizedRowCount: size.rows } : {}),
+      ...(size.distinctLabelled != null
+        ? { sizedDistinctLabelled: size.distinctLabelled }
+        : {}),
+    }
+  }, [splitStats, selectedDataset?.rowCount])
 
   /**
    * MODEL-FLOW-022-T04. `mpPerAlgorithmHyperparamsAtom` deliberately omits
@@ -403,14 +406,18 @@ export function useModelTraining({
    * is ever reachable, but kept as the same defense-in-depth every other
    * algorithm entry already gets, not a special case for this one.
    */
+  // MODEL-FLOW-025. The rule itself lives in `lib/tuning-preview.ts`, so Step
+  // 3's variant preview computes the very base this launch sends — a Find Best
+  // Parameters search excludes variants against it, and a second copy of the
+  // rule here would let the preview and the job disagree.
   const hyperparametersFor = useCallback(
     (algorithm: Algorithm): Record<string, HyperparamValue> =>
-      algorithm === algorithms[0]
-        ? Object.keys(hyperparameters).length > 0
-          ? hyperparameters
-          : defaultHyperparams(algorithm)
-        : (perAlgorithmHyperparameters[algorithm] ??
-          defaultHyperparams(algorithm)),
+      baseHyperparamsFor(
+        algorithm,
+        algorithms,
+        hyperparameters,
+        perAlgorithmHyperparameters,
+      ),
     [algorithms, hyperparameters, perAlgorithmHyperparameters],
   )
 
@@ -493,16 +500,6 @@ export function useModelTraining({
             `"${ALGORITHM_LABELS[algorithm]}" isn't supported by the training service yet — pick another algorithm.`,
           )
         }
-        // MODEL-FLOW-024. The split-stats fetch is never made while lstm/gru
-        // is selected, so `sizedFigures` is `{}` for exactly the algorithms
-        // whose batch-size band keys on rows. The dataset's own row count
-        // stands in — rows ALONE, never a distinct-value count it cannot
-        // supply (the schema accepts rows without it, not the reverse).
-        const sequenceRows =
-          isSequenceAlgorithm(algorithm) && (selectedDataset.rowCount ?? 0) > 0
-            ? { sizedRowCount: selectedDataset.rowCount }
-            : {}
-
         const created = await modelDraftCandidateJobService.create(draftId, {
           goldArtifactId: selectedDataset.currentArtifactId,
           targetY,
@@ -517,7 +514,6 @@ export function useModelTraining({
               hyperparameters: hyperparametersFor(algorithm),
             },
           ],
-          ...sequenceRows,
           ...sizedFigures,
         })
 

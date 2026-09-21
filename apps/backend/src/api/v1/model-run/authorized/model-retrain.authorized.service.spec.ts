@@ -95,6 +95,19 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
       workspaceMember: { findFirst: jest.fn().mockResolvedValue(null) },
       modelCandidateJob: {
         findFirst: jobFindFirst,
+        // MODEL-FLOW-024. The trigger path's own reads and writes. `findUnique`
+        // is the source job's recorded figures (null = the link was cleared).
+        findUnique: jest.fn().mockResolvedValue(null),
+        create: jest
+          .fn()
+          .mockImplementation(({ data }: { data: Record<string, unknown> }) =>
+            Promise.resolve({ ...JOB_BASE, ...data, status: 'QUEUED' }),
+          ),
+        update: jest
+          .fn()
+          .mockImplementation(({ data }: { data: Record<string, unknown> }) =>
+            Promise.resolve({ ...JOB_BASE, ...data }),
+          ),
       },
       modelVersion: {
         findFirst: jest
@@ -144,6 +157,14 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
         .mockResolvedValue({ job, candidates: [{ runId: 'run-1' }] }),
       expandSearchCandidates: jest.fn(),
       launchForJob: jest.fn(),
+      // MODEL-FLOW-024. Pass-through by default: the real one only adds the
+      // artifact's feature count for pls, which its own spec covers.
+      withFeatureCount: jest
+        .fn()
+        .mockImplementation(
+          (_algorithm: string, _artifactId: string, size = {}) =>
+            Promise.resolve(size),
+        ),
     };
   }
 
@@ -473,6 +494,210 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
       expect(comparison?.basis.strategy).toBe('KEEP_EXISTING');
       expect(comparison?.basis.evalSet).toBeNull();
       expect(comparison?.candidate.newRegimeMetrics).toBeNull();
+    });
+  });
+
+  /**
+   * MODEL-FLOW-024. A retrain's curated search inherits the size figures the
+   * incumbent's own job recorded, so it tunes in the same tier the wizard did.
+   * The fixture is the measured pair (8,350 rows holding 32 distinct values):
+   * a service that swapped the two would size capacity off the row count.
+   */
+  describe('triggerRetrainService — sized search (MODEL-FLOW-024)', () => {
+    const SOURCE_RUN = { ...RUN_BASE, candidateJobId: 'job-src' };
+
+    function setup(opts: { withSourceJob: boolean; sourceJob?: unknown }) {
+      const prisma = makePrisma({
+        runsById: {
+          'run-incumbent': opts.withSourceJob ? SOURCE_RUN : RUN_BASE,
+        },
+      });
+      prisma.modelCandidateJob.findUnique.mockResolvedValue(
+        opts.sourceJob === undefined
+          ? { sizedRowCount: 8350, sizedDistinctLabelled: 32 }
+          : opts.sourceJob,
+      );
+      const candidateJobs = makeCandidateJobs(JOB_BASE);
+      candidateJobs.expandSearchCandidates.mockReturnValue([
+        { algorithm: 'ridge', hyperparameters: { alpha: 1 } },
+        { algorithm: 'ridge', hyperparameters: { alpha: 3 } },
+      ]);
+      candidateJobs.launchForJob.mockResolvedValue({ id: 'run-new-1' });
+      const service = new ModelRetrainAuthorizedService(
+        prisma as never,
+        candidateJobs as never,
+        {} as never,
+      );
+      return { prisma, candidateJobs, service };
+    }
+
+    it('sizes the automatic search from the incumbent’s job figures and records them on the new job', async () => {
+      const { prisma, candidateJobs, service } = setup({ withSourceJob: true });
+
+      await service.triggerRetrainService('model-1', {} as never, ADMIN);
+
+      expect(prisma.modelCandidateJob.findUnique).toHaveBeenCalledWith({
+        where: { id: 'job-src' },
+        select: { sizedRowCount: true, sizedDistinctLabelled: true },
+      });
+      expect(candidateJobs.expandSearchCandidates).toHaveBeenCalledWith(
+        { algorithm: 'ridge', hyperparameters: { alpha: 1 } },
+        { distinctLabelled: 32, rows: 8350 },
+      );
+      // Carried onto the row so the NEXT retrain can inherit in turn.
+      const data = (
+        prisma.modelCandidateJob.create.mock.calls[0] as [
+          { data: Record<string, unknown> },
+        ]
+      )[0].data;
+      expect(data.sizedRowCount).toBe(8350);
+      expect(data.sizedDistinctLabelled).toBe(32);
+    });
+
+    it('asks for the feature count of the artifact the retrain actually trains on', async () => {
+      const { candidateJobs, service } = setup({ withSourceJob: true });
+
+      await service.triggerRetrainService('model-1', {} as never, ADMIN);
+
+      expect(candidateJobs.withFeatureCount).toHaveBeenCalledWith(
+        'ridge',
+        'gold-1',
+        { distinctLabelled: 32, rows: 8350 },
+      );
+    });
+
+    it('falls back to the medium grid and records nothing when the run was not part of a job', async () => {
+      const { prisma, candidateJobs, service } = setup({
+        withSourceJob: false,
+      });
+
+      await service.triggerRetrainService('model-1', {} as never, ADMIN);
+
+      expect(prisma.modelCandidateJob.findUnique).not.toHaveBeenCalled();
+      expect(candidateJobs.expandSearchCandidates).toHaveBeenCalledWith(
+        expect.anything(),
+        {},
+      );
+      const data = (
+        prisma.modelCandidateJob.create.mock.calls[0] as [
+          { data: Record<string, unknown> },
+        ]
+      )[0].data;
+      expect(data).not.toHaveProperty('sizedRowCount');
+      expect(data).not.toHaveProperty('sizedDistinctLabelled');
+    });
+
+    it.each([
+      ['its job row is gone (the link is SetNull)', null],
+      [
+        'its job recorded neither figure',
+        { sizedRowCount: null, sizedDistinctLabelled: null },
+      ],
+    ])('inherits nothing when %s', async (_label, sourceJob) => {
+      const { prisma, candidateJobs, service } = setup({
+        withSourceJob: true,
+        sourceJob,
+      });
+
+      await service.triggerRetrainService('model-1', {} as never, ADMIN);
+
+      expect(candidateJobs.expandSearchCandidates).toHaveBeenCalledWith(
+        expect.anything(),
+        {},
+      );
+      const data = (
+        prisma.modelCandidateJob.create.mock.calls[0] as [
+          { data: Record<string, unknown> },
+        ]
+      )[0].data;
+      expect(data).not.toHaveProperty('sizedRowCount');
+    });
+
+    it('still carries the figures forward for a CUSTOM candidate list, without expanding or looking up features', async () => {
+      const { prisma, candidateJobs, service } = setup({ withSourceJob: true });
+
+      await service.triggerRetrainService(
+        'model-1',
+        {
+          candidates: [{ algorithm: 'ridge', hyperparameters: { alpha: 3 } }],
+        } as never,
+        ADMIN,
+      );
+
+      expect(candidateJobs.expandSearchCandidates).not.toHaveBeenCalled();
+      expect(candidateJobs.withFeatureCount).not.toHaveBeenCalled();
+      const data = (
+        prisma.modelCandidateJob.create.mock.calls[0] as [
+          { data: Record<string, unknown> },
+        ]
+      )[0].data;
+      expect(data.sizedDistinctLabelled).toBe(32);
+    });
+  });
+
+  describe('resolveTuningSizeService (MODEL-FLOW-024)', () => {
+    it('returns the incumbent’s inherited figures plus the feature count for the algorithm asked about', async () => {
+      const prisma = makePrisma({
+        runsById: {
+          'run-incumbent': { ...RUN_BASE, candidateJobId: 'job-src' },
+        },
+      });
+      prisma.modelCandidateJob.findUnique.mockResolvedValue({
+        sizedRowCount: 8350,
+        sizedDistinctLabelled: 32,
+      });
+      const candidateJobs = makeCandidateJobs(JOB_BASE);
+      candidateJobs.withFeatureCount.mockResolvedValue({
+        distinctLabelled: 32,
+        rows: 8350,
+        features: 4,
+      });
+      const service = new ModelRetrainAuthorizedService(
+        prisma as never,
+        candidateJobs as never,
+        {} as never,
+      );
+
+      const size = await service.resolveTuningSizeService(
+        'model-1',
+        'pls',
+        ADMIN,
+      );
+
+      expect(candidateJobs.withFeatureCount).toHaveBeenCalledWith(
+        'pls',
+        'gold-1',
+        { distinctLabelled: 32, rows: 8350 },
+      );
+      expect(size).toEqual({ distinctLabelled: 32, rows: 8350, features: 4 });
+    });
+
+    it('is the empty size (the medium grid) when the model has no PRODUCTION version, not an error', async () => {
+      const prisma = makePrisma({ productionVersion: null });
+      const service = new ModelRetrainAuthorizedService(
+        prisma as never,
+        makeCandidateJobs(JOB_BASE) as never,
+        {} as never,
+      );
+
+      await expect(
+        service.resolveTuningSizeService('model-1', 'ridge', ADMIN),
+      ).resolves.toEqual({});
+    });
+
+    it('checks editor access before revealing anything', async () => {
+      const prisma = makePrisma();
+      prisma.model.findUnique.mockResolvedValue(null);
+      const service = new ModelRetrainAuthorizedService(
+        prisma as never,
+        makeCandidateJobs(JOB_BASE) as never,
+        {} as never,
+      );
+
+      await expect(
+        service.resolveTuningSizeService('model-1', 'ridge', ADMIN),
+      ).rejects.toThrow();
+      expect(prisma.modelVersion.findFirst).not.toHaveBeenCalled();
     });
   });
 });

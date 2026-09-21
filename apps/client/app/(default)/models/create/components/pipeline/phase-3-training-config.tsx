@@ -16,6 +16,7 @@ import {
 } from '@/store/model-pipeline'
 import { sourcedMetricsOf } from '@/lib/metric-source'
 import { datasetSizeFrom } from '@/lib/hyperparam-ranges'
+import { useTuningVariantCounts } from '@/hooks/model/use-tuning-variant-counts'
 import { CoreConfig } from './training-config/core-config'
 import { AutoMlToggles } from './training-config/automl-toggles'
 import { RuntimeEstimate } from './training-config/runtime-estimate'
@@ -56,14 +57,35 @@ export function Phase3TrainingConfig({ nav }: Props) {
     splitStats: splitStats.splitStats,
   })
 
-  // MODEL-FLOW-024. The size the suggested ranges are chosen by. Distinct
-  // labelled values come only from the split stats; the dataset's own row count
-  // stands in for rows alone, because that fetch is skipped while lstm/gru is
-  // selected and their batch cap keys on rows (see `datasetSizeFrom`).
+  // MODEL-FLOW-024. The size the suggested ranges are chosen by. `rows` picks
+  // the tier and the LSTM/GRU batch cap: the split stats' `source_rows` once
+  // Apply has fetched them, else the dataset's own row count (that fetch waits
+  // for Apply and is skipped while lstm/gru is selected). `useModelTraining`
+  // sends the job the same figure through `datasetSizeFrom`. Distinct labelled
+  // values come only from the split stats and pick nothing.
+  //
+  // `featureCount` is the figure the runtime estimate already used: dataset tags
+  // minus the target(s). Only pls reads it (its components cannot exceed it).
+  const featureCount = Math.max(tags.length - draft.targetVariables.length, 1)
   const datasetSize = useMemo(
-    () => datasetSizeFrom(splitStats.splitStats, selectedDataset?.rowCount),
-    [splitStats.splitStats, selectedDataset?.rowCount],
+    () =>
+      datasetSizeFrom(
+        splitStats.splitStats,
+        selectedDataset?.rowCount,
+        featureCount,
+      ),
+    [splitStats.splitStats, selectedDataset?.rowCount, featureCount],
   )
+
+  // MODEL-FLOW-025-T06. The variants a search would actually run per
+  // algorithm, so the runtime estimate prices that rather than the cap.
+  const tuningVariants = useTuningVariantCounts({
+    enabled: draft.findBestParams,
+    algorithms: draft.algorithms,
+    hyperparameters: draft.hyperparameters,
+    perAlgorithmHyperparameters: draft.perAlgorithmHyperparameters,
+    size: datasetSize,
+  })
 
   const serverDraftId = useAtomValue(mpServerDraftIdAtom)
   const { runs: draftRuns } = useDraftRuns(serverDraftId)
@@ -242,12 +264,13 @@ export function Phase3TrainingConfig({ nav }: Props) {
 
           <RuntimeEstimate
             rows={rowCount}
-            features={Math.max(tags.length - draft.targetVariables.length, 1)}
+            features={featureCount}
             algorithms={draft.algorithms}
             targets={draft.targetVariables.length}
             findBestModel={draft.findBestModel}
             findBestParams={draft.findBestParams}
             nEstimators={nEstimators}
+            tuningVariants={tuningVariants}
             status={training.status}
             progress={training.progress}
           />

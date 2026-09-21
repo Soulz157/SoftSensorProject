@@ -34,6 +34,10 @@ import { EmptyPanel } from './empty-panel'
 import { CandidateOverlayChart } from './candidate-overlay-chart'
 import { CandidateTable } from './candidate-table'
 import { MetricsPicker } from './metrics-picker'
+import { useDraftRuns } from '@/hooks/model/use-draft-runs'
+import { useDraftSelection } from '@/hooks/model/use-draft-selection'
+import { candidateFromRun } from '@/lib/candidate-from-run'
+import { modelDraftService } from '@/services/model-draft'
 
 function resolvedRunIdFor(job: ModelCandidateJob): string | null {
   return job.selectedRunId ?? job.bestRunId
@@ -66,12 +70,35 @@ export function CandidateComparison({
   // to fetch, not an error (CandidateBaseChart's own `!runId` early return
   // covers it). `job?.candidates` is a fresh array reference per fetch, not
   // per render, since it comes straight off `useCandidateJob`'s own state.
-  const candidateRunIds = useMemo(
+  const jobRunIds = useMemo(
     () =>
       job?.candidates
         .map(c => c.runId)
         .filter((id): id is string => id !== null) ?? [],
     [job],
+  )
+  // Every Start Training mints a NEW job, so a job-scoped table alone hid
+  // every earlier run of the same draft (2026-09-21). Those runs render as
+  // their own "Earlier runs" section, adapted the same way the standalone
+  // path adapts a draft run. `datasetHasHoldout` is `null` ("not recorded")
+  // — this path makes no holdout-presence lookup of its own.
+  const { runs: draftRuns, refetch: refetchRuns } = useDraftRuns(draftId)
+  const { selectedRunId: draftSelectedRunId, refetch: refetchSelection } =
+    useDraftSelection(draftId)
+  const earlierCandidates = useMemo(() => {
+    const own = new Set(jobRunIds)
+    return draftRuns
+      .filter(run => !own.has(run.id))
+      .map(run => candidateFromRun(run, null))
+  }, [draftRuns, jobRunIds])
+  const candidateRunIds = useMemo(
+    () => [
+      ...jobRunIds,
+      ...earlierCandidates
+        .map(c => c.runId)
+        .filter((id): id is string => id !== null),
+    ],
+    [jobRunIds, earlierCandidates],
   )
   const { byRunId, loading: predictionsLoading } = useCandidatePredictions(
     draftId,
@@ -120,6 +147,7 @@ export function CandidateComparison({
     try {
       await Promise.all(ids.map(id => modelDraftRunService.score(draftId, id)))
       refetch()
+      refetchRuns()
     } catch (err) {
       setScoreError(
         err instanceof Error ? err.message : 'Could not start scoring.',
@@ -128,12 +156,17 @@ export function CandidateComparison({
       setScoreSubmitting(false)
     }
   }
-  const anyScoring = job?.candidates.some(c => c.scoringContainerId) ?? false
+  const anyScoring =
+    (job?.candidates.some(c => c.scoringContainerId) ?? false) ||
+    earlierCandidates.some(c => c.scoringContainerId)
   useEffect(() => {
     if (!anyScoring) return
-    const id = setInterval(() => refetch(), 2500)
+    const id = setInterval(() => {
+      refetch()
+      refetchRuns()
+    }, 2500)
     return () => clearInterval(id)
-  }, [anyScoring, refetch])
+  }, [anyScoring, refetch, refetchRuns])
 
   if (loading) {
     return (
@@ -163,24 +196,34 @@ export function CandidateComparison({
     )
   }
 
-  const resolvedRunId = resolvedRunIdFor(job)
+  // A draft-level Select wins over the job's own (backend
+  // `resolveActiveRunId` reads `ModelDraft.selectedRunId` first, and a job
+  // Select clears it), so the badge resolves in the same order.
+  const resolvedRunId = draftSelectedRunId ?? resolvedRunIdFor(job)
 
   // Empty means every candidate — the same rule Step 3's own footer states
   // in words. `resolvedRunId` above stays computed off the FULL job
   // (selection is server-side draft state, not a view of the narrowed set).
-  const visibleCandidates =
+  const narrow = (list: CandidateResult[]) =>
     activeCompareIds.size === 0
-      ? job.candidates
-      : job.candidates.filter(
-          c => c.runId !== null && activeCompareIds.has(c.runId),
-        )
+      ? list
+      : list.filter(c => c.runId !== null && activeCompareIds.has(c.runId))
+  const visibleCandidates = narrow(job.candidates)
+  const visibleEarlier = narrow(earlierCandidates)
 
   const handleSelect = async (runId: string) => {
     setSelecting(true)
     setSelectError(null)
     try {
-      await modelDraftCandidateJobService.select(draftId, jobId, runId)
+      // The job route refuses a run it does not own, so an earlier run is
+      // selected at draft level instead.
+      if (jobRunIds.includes(runId)) {
+        await modelDraftCandidateJobService.select(draftId, jobId, runId)
+      } else {
+        await modelDraftService.selectRun(draftId, runId)
+      }
       refetch()
+      refetchSelection()
     } catch (err) {
       setSelectError(
         err instanceof Error ? err.message : 'Could not record that selection.',
@@ -203,6 +246,7 @@ export function CandidateComparison({
       <MetricsPicker />
       <CandidateGroups
         candidates={visibleCandidates}
+        earlier={visibleEarlier}
         resolvedRunId={resolvedRunId}
         selecting={selecting}
         onSelect={runId => void handleSelect(runId)}
@@ -231,6 +275,7 @@ export function CandidateComparison({
  */
 function CandidateGroups({
   candidates,
+  earlier,
   resolvedRunId,
   selecting,
   onSelect,
@@ -246,6 +291,8 @@ function CandidateGroups({
   scoreSubmitting,
 }: {
   candidates: CandidateResult[]
+  /** This draft's runs from EARLIER trainings — not owned by this job. */
+  earlier: CandidateResult[]
   resolvedRunId: string | null
   selecting: boolean
   onSelect: (runId: string) => void
@@ -339,16 +386,35 @@ function CandidateGroups({
     )
   }
 
-  if (phase2.length === 0) return section(phase1)
+  // Ranked in their own group, never against this job's rows — an earlier
+  // training may differ in split or config, so one ranking would mislead.
+  const earlierSection =
+    earlier.length > 0 ? (
+      <>
+        <p className="text-xs font-medium text-muted-foreground">
+          Earlier runs
+        </p>
+        {section(earlier)}
+      </>
+    ) : null
+
+  if (phase2.length === 0 && !earlierSection) return section(phase1)
 
   return (
     <div className="space-y-4">
-      <p className="text-xs font-medium text-muted-foreground">Sweep</p>
-      {section(phase1)}
-      <p className="text-xs font-medium text-muted-foreground">
-        Tuning {tunedLabel}
-      </p>
-      {section(phase2)}
+      {phase2.length === 0 ? (
+        section(phase1)
+      ) : (
+        <>
+          <p className="text-xs font-medium text-muted-foreground">Sweep</p>
+          {section(phase1)}
+          <p className="text-xs font-medium text-muted-foreground">
+            Tuning {tunedLabel}
+          </p>
+          {section(phase2)}
+        </>
+      )}
+      {earlierSection}
     </div>
   )
 }

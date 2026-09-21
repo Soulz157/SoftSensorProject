@@ -3,14 +3,19 @@
  * chosen by dataset size. Pure module (no React / IO), the size-aware half of
  * `lib/training-config.ts`.
  *
- * TWO FIGURES, TWO JOBS. Capacity bands (`n_estimators`, `num_leaves`,
- * `max_depth`, `alpha`, `C`, hidden size) tier on DISTINCT LABELLED VALUES,
- * never row count: a lab target forward-filled onto a fine grid makes 8,350
- * rows hold 32 independent observations (MODEL-FLOW-020 finding 1), so a row
- * tier would have put every dataset measured so far in `medium` or `large`
- * and widened the bands exactly where they should narrow. LSTM/GRU
- * `batch_size` is the one band keyed on rows: it sets steps per epoch, a
- * compute quantity, and every row is a training window whether or not its
+ * ONE FIGURE: ROWS. Capacity bands (`n_estimators`, `num_leaves`,
+ * `max_depth`, `alpha`, `C`, hidden size) tier on the dataset's ROW COUNT —
+ * the user's decision of 2026-09-21, given as durations of hourly data:
+ * tiny < 6 months, small 6-12 months, medium 1-3 years, large > 3 years
+ * (4,380 / 8,760 / 26,280 rows). It reverses this module's first design,
+ * which tiered on DISTINCT LABELLED VALUES because a lab target
+ * forward-filled onto a fine grid makes 8,350 rows hold 32 independent
+ * observations (MODEL-FLOW-020 finding 1); a row tier lands the datasets
+ * measured so far (4,470-15,441 rows) in `small`/`medium` instead of
+ * `tiny`/`small`. The threshold is a row count, not a duration: the
+ * pipeline's interval is per-dataset, so "months" is true for hourly data
+ * only. LSTM/GRU `batch_size` keys on rows as well: it sets steps per epoch,
+ * a compute quantity, and every row is a training window whether or not its
  * target repeats its neighbour's.
  *
  * MEDIUM IS `HYPERPARAMS`' OWN `suggestedRange`, so nothing is duplicated for
@@ -31,38 +36,46 @@
  * which tier a figure belongs to.
  */
 import type { Algorithm } from '@/store/model-pipeline'
-import type { HyperparamField, SuggestedRange } from '@/lib/training-config'
+import {
+  HYPERPARAMS,
+  type HyperparamField,
+  type SuggestedRange,
+} from '@/lib/training-config'
 
 export type SizeTier = 'tiny' | 'small' | 'medium' | 'large'
 
-/** Lower bound of each tier above `tiny`, in distinct labelled values. */
+/** Lower bound of each tier above `tiny`, in rows (hourly: 6 months, 1 year, 3 years). */
 export const SIZE_TIER_LOWER_BOUNDS = {
-  small: 50,
-  medium: 150,
-  large: 500,
+  small: 4380,
+  medium: 8760,
+  large: 26280,
 } as const
 
 /** `null`/`undefined`/non-finite resolve to `medium`: no figure means today's bands. */
-export function sizeTierFor(
-  distinctLabelled: number | null | undefined,
-): SizeTier {
-  if (distinctLabelled == null || !Number.isFinite(distinctLabelled)) {
-    return 'medium'
-  }
-  if (distinctLabelled < SIZE_TIER_LOWER_BOUNDS.small) return 'tiny'
-  if (distinctLabelled < SIZE_TIER_LOWER_BOUNDS.medium) return 'small'
-  if (distinctLabelled < SIZE_TIER_LOWER_BOUNDS.large) return 'medium'
+export function sizeTierFor(rows: number | null | undefined): SizeTier {
+  if (rows == null || !Number.isFinite(rows)) return 'medium'
+  if (rows < SIZE_TIER_LOWER_BOUNDS.small) return 'tiny'
+  if (rows < SIZE_TIER_LOWER_BOUNDS.medium) return 'small'
+  if (rows < SIZE_TIER_LOWER_BOUNDS.large) return 'medium'
   return 'large'
 }
 
 /**
- * The dataset's two size figures, both from the `/split-stats` response Step 3
- * already fetches: `distinctLabelled` is its `distinct_labelled_values`,
- * `rows` its `source_rows`. Both optional.
+ * The dataset's size figures. `rows` drives the tier and the LSTM/GRU batch
+ * cap: the `/split-stats` response's `source_rows` once Step 3 has fetched it,
+ * else the saved dataset's own row count (see `datasetSizeFrom`).
+ * `distinctLabelled`, its `distinct_labelled_values`, is carried for display
+ * and the record only — it no longer picks a tier. All optional.
  */
 export interface DatasetSize {
   distinctLabelled?: number | null
   rows?: number | null
+  /**
+   * The feature columns the model trains on. Read only by `pls`, whose
+   * `n_components` cannot exceed it — a size-independent cap, so it applies at
+   * every tier.
+   */
+  features?: number | null
 }
 
 const clamp = (n: number, lo: number, hi: number): number =>
@@ -176,7 +189,21 @@ export function suggestedRangeFor(
     }
   }
 
-  const tier = sizeTierFor(size.distinctLabelled)
+  // MODEL-FLOW-024. PLS cannot fit more components than the data has
+  // features (sklearn raises, and `build_model` deliberately does not clamp),
+  // so the band's ceiling follows the feature count whatever the tier. Below
+  // the general ceiling only; at or above it the general band is returned
+  // untouched, by reference, like every other unsized case.
+  if (algorithm === 'pls' && field.key === 'n_components') {
+    const features = size.features
+    if (features == null || !Number.isFinite(features) || features < 1) {
+      return medium
+    }
+    const max = Math.max(1, Math.min(medium.max, Math.floor(features)))
+    return max >= medium.max ? medium : { ...medium, max }
+  }
+
+  const tier = sizeTierFor(size.rows)
   if (tier === 'medium') return medium
   const band = TIER_BANDS[algorithm]?.[field.key]?.[tier]
   return band ? { ...medium, min: band[0], max: band[1] } : medium
@@ -185,20 +212,22 @@ export function suggestedRangeFor(
 /**
  * True when this size actually changes at least one band for the algorithm —
  * what decides whether the form says "sized to N values" or the honest
- * "not sized" line. `ols`/`grp`/`pls` are never sized, whatever the tier.
+ * "not sized" line. Derived from `suggestedRangeFor` itself (a band it left
+ * untouched is returned BY REFERENCE), so the two cannot drift: the moment a
+ * new way of sizing a band is added there, this reports it.
  */
 export function isSizedFor(
   algorithm: Algorithm,
   size: DatasetSize = {},
 ): boolean {
-  if (SEQUENCE.includes(algorithm)) {
-    return batchSizeBand(size.rows).max < 128
-  }
-  if (sizeTierFor(size.distinctLabelled) === 'medium') return false
-  return TIER_BANDS[algorithm] !== undefined
+  return (HYPERPARAMS[algorithm] ?? []).some(
+    f =>
+      (f.kind === 'number' || f.kind === 'nullable-number') &&
+      suggestedRangeFor(algorithm, f, size) !== f.suggestedRange,
+  )
 }
 
-const TIER_LABELS: Record<SizeTier, string> = {
+export const SIZE_TIER_LABELS: Record<SizeTier, string> = {
   tiny: 'very small',
   small: 'small',
   medium: 'mid-size',
@@ -217,10 +246,9 @@ const grouped = (n: number): string => n.toLocaleString('en-US')
  * as soon as a range is sized, and a "sized to your data" line would be false
  * for `ols`, `grp` and `pls`, which no size ever changes.
  *
- * Says DISTINCT lab values and names the row count only to disown it: a lab
- * value held across thousands of forward-filled rows is one observation, and
- * a reader who sees "8,350 rows" beside a "very small dataset" needs that
- * reconciled on the spot.
+ * Names the row count and the row span of the tier it fell in, with the
+ * hourly-data reading of that span: the tier keys on rows, and the months are
+ * true only where a row is an hour, so the row span is the figure to trust.
  */
 export function describeSizing(
   algorithm: Algorithm,
@@ -231,35 +259,63 @@ export function describeSizing(
       ? `Batch size is capped at an eighth of your ${grouped(size.rows ?? 0)} rows, so an epoch is at least ~8 gradient steps. The other ranges describe the estimator, not your dataset. ${PRIOR_CAVEAT}`
       : `Suggested ranges describe the estimator, not your dataset. ${PRIOR_CAVEAT}`
   }
-  const known = size.distinctLabelled != null
-  if (!known) {
-    return `Suggested ranges describe each estimator, not your dataset — apply the train/test split to size them to your data. ${PRIOR_CAVEAT}`
+  if (algorithm === 'pls' && isSizedFor(algorithm, size)) {
+    return `N-components is capped at your ${grouped(size.features ?? 0)} features — PLS cannot fit more components than features. The other range describes the estimator, not your dataset. ${PRIOR_CAVEAT}`
   }
-  const n = grouped(size.distinctLabelled ?? 0)
-  const tier = sizeTierFor(size.distinctLabelled)
+  // Before the "apply the split" line: an algorithm no tier sizes has nothing
+  // for a split to size, so telling its reader to apply one would be false.
   if (TIER_BANDS[algorithm] === undefined) {
     return `This algorithm has no size-dependent range, so these describe the estimator in general. ${PRIOR_CAVEAT}`
   }
-  if (tier === 'medium') {
-    return `Your ${n} distinct lab values fall in the mid-size tier, so these are the estimator's general ranges. ${PRIOR_CAVEAT}`
+  if (size.rows == null) {
+    return `Suggested ranges describe each estimator, not your dataset — apply the train/test split to size them to your data. ${PRIOR_CAVEAT}`
   }
-  const rows =
-    size.rows != null
-      ? `, not your ${grouped(size.rows)} rows — a lab value held across many rows is one observation`
-      : ''
-  return `Sized to your ${n} distinct lab values (${TIER_LABELS[tier]} dataset)${rows}. ${PRIOR_CAVEAT}`
+  const n = grouped(size.rows)
+  const tier = sizeTierFor(size.rows)
+  if (tier === 'medium') {
+    return `Your ${n} rows fall in the mid-size tier (${describeTier(tier)}), so these are the estimator's general ranges. ${PRIOR_CAVEAT}`
+  }
+  return `Sized to your ${n} rows — a ${SIZE_TIER_LABELS[tier]} dataset (${describeTier(tier)}). ${PRIOR_CAVEAT}`
+}
+
+/**
+ * The hourly-data reading of each tier's row span. Static text, guarded by a
+ * test that pins `SIZE_TIER_LOWER_BOUNDS` to 6 months / 1 year / 3 years of
+ * hourly rows, so changing a bound without rewording this fails loudly.
+ */
+const TIER_HOURLY_READING: Record<SizeTier, string> = {
+  tiny: 'under 6 months',
+  small: '6-12 months',
+  medium: '1-3 years',
+  large: 'over 3 years',
+}
+
+/** "4,380-8,759 rows, 6-12 months of hourly data" — the span comes from the bounds, so it cannot drift from them. */
+function describeTier(tier: SizeTier): string {
+  const { small, medium, large } = SIZE_TIER_LOWER_BOUNDS
+  const span: Record<SizeTier, string> = {
+    tiny: `under ${grouped(small)} rows`,
+    small: `${grouped(small)}-${grouped(medium - 1)} rows`,
+    medium: `${grouped(medium)}-${grouped(large - 1)} rows`,
+    large: `${grouped(large)}+ rows`,
+  }
+  return `${span[tier]}, ${TIER_HOURLY_READING[tier]} of hourly data`
 }
 
 /**
  * The size the form should use, from what Step 3 actually has.
  * `distinctLabelled` and `rows` come from the `/split-stats` response when it
- * resolved. That fetch is NEVER made while an lstm/gru is selected (its ratio
- * split means nothing for windows), so for a sequence model both would be
- * missing and the LSTM/GRU batch cap could never apply — `datasetRowCount`,
- * the saved dataset's own count, stands in for `rows` only. It does not stand
- * in for `distinctLabelled`: distinct values need a full artifact read the
- * client does not have, and nothing but a sequence model's batch band reads
- * `rows`, so the fallback cannot size a capacity band by accident.
+ * resolved. That fetch waits for Apply, and is NEVER made while an lstm/gru is
+ * selected (its ratio split means nothing for windows), so `datasetRowCount`,
+ * the saved dataset's own count, stands in for `rows`: the tier and the
+ * LSTM/GRU batch cap both key on rows, so the size is known from the moment a
+ * dataset is picked. It does not stand in for `distinctLabelled` — distinct
+ * values need a full artifact read the client does not have — and nothing
+ * reads `distinctLabelled` for a tier any more.
+ *
+ * `useModelTraining` sends the job its rows through this same function, so
+ * the ranges the form shows and the variants a search tries come from one
+ * figure and cannot disagree before Apply.
  */
 export function datasetSizeFrom(
   stats:
@@ -270,11 +326,17 @@ export function datasetSizeFrom(
     | null
     | undefined,
   datasetRowCount?: number | null,
+  featureCount?: number | null,
 ): DatasetSize {
   const fallbackRows =
     datasetRowCount != null && datasetRowCount > 0 ? datasetRowCount : null
   return {
     distinctLabelled: stats?.distinct_labelled_values ?? null,
     rows: stats?.source_rows ?? fallbackRows,
+    // The wizard's own count (dataset tags minus targets — the same figure the
+    // runtime estimate uses). Read only by pls; the backend caps the grid off
+    // the artifact row's `featureCount`, and where the two differ (engineered
+    // features) the form's band is the more conservative of the pair.
+    features: featureCount != null && featureCount >= 1 ? featureCount : null,
   }
 }

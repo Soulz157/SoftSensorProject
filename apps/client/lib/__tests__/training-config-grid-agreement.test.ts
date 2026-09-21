@@ -39,9 +39,11 @@ import {
  * suggested range contains every value the DERIVED grid can produce for that
  * algorithm at that size"; MODEL-FLOW-020-T03 closed as a no-op so there was
  * no derived grid and no "at that size". There is one now: the backend picks
- * a tier's variants from the dataset's distinct-labelled-value count and the
- * form picks that tier's band, and this file is what keeps the two on the
- * same side of every boundary.
+ * a tier's variants from the dataset's ROW count and the form picks that
+ * tier's band, and this file is what keeps the two on the same side of every
+ * boundary. (It tiered on distinct labelled values until the user chose rows,
+ * 2026-09-21; a fixture still passing `distinctLabelled` would quietly test the
+ * medium table alone, which is why every fixture below is a row count.)
  */
 const grid = TUNING_GRID as Record<
   string,
@@ -154,10 +156,21 @@ describe('MODEL-FLOW-020-T05: the suggested range agrees with the real tuning gr
   })
 })
 
+/**
+ * One representative row count per tier, derived from the bounds so moving a
+ * bound moves every fixture with it.
+ */
+const TIER_ROWS: Record<SizeTier, number> = {
+  tiny: Math.floor(SIZE_TIER_LOWER_BOUNDS.small / 2),
+  small: SIZE_TIER_LOWER_BOUNDS.small,
+  medium: SIZE_TIER_LOWER_BOUNDS.medium,
+  large: SIZE_TIER_LOWER_BOUNDS.large * 2,
+}
+
 /** Every variant an algorithm can be tuned over at ANY size, medium included. */
 function everyVariant(algorithm: Algorithm) {
-  return [10, 100, 300, 900].flatMap(distinctLabelled =>
-    tuningVariantsFor(algorithm, { distinctLabelled }),
+  return Object.values(TIER_ROWS).flatMap(rows =>
+    tuningVariantsFor(algorithm, { rows }),
   )
 }
 
@@ -209,19 +222,24 @@ describe('MODEL-FLOW-020-T06: HYPERPARAMS and TUNING_GRID name the same keys', (
  * sides of every boundary, so an off-by-one in either module's edges fails
  * here rather than in front of a user.
  */
+const {
+  small: SMALL_AT,
+  medium: MEDIUM_AT,
+  large: LARGE_AT,
+} = SIZE_TIER_LOWER_BOUNDS
 const TIER_FIGURES: [SizeTier, number][] = [
   ['tiny', 0],
-  ['tiny', 32],
-  ['tiny', 49],
-  ['small', 50],
-  ['small', 100],
-  ['small', 149],
-  ['medium', 150],
-  ['medium', 300],
-  ['medium', 499],
-  ['large', 500],
-  ['large', 900],
-  ['large', 46_070],
+  ['tiny', TIER_ROWS.tiny],
+  ['tiny', SMALL_AT - 1],
+  ['small', SMALL_AT],
+  ['small', Math.floor((SMALL_AT + MEDIUM_AT) / 2)],
+  ['small', MEDIUM_AT - 1],
+  ['medium', MEDIUM_AT],
+  ['medium', Math.floor((MEDIUM_AT + LARGE_AT) / 2)],
+  ['medium', LARGE_AT - 1],
+  ['large', LARGE_AT],
+  ['large', TIER_ROWS.large],
+  ['large', 200_000],
 ]
 
 describe('MODEL-FLOW-024: both sides agree on which tier a figure belongs to', () => {
@@ -229,7 +247,7 @@ describe('MODEL-FLOW-024: both sides agree on which tier a figure belongs to', (
     expect(SIZE_TIER_LOWER_BOUNDS).toEqual(BACKEND_TIER_BOUNDS)
   })
 
-  it.each(TIER_FIGURES)('%s: %d distinct labelled values', (tier, n) => {
+  it.each(TIER_FIGURES)('%s: %d rows', (tier, n) => {
     expect(sizeTierFor(n)).toBe(tier)
     expect(backendSizeTierFor(n)).toBe(tier)
   })
@@ -266,7 +284,7 @@ describe('MODEL-FLOW-024: every variant a tier can try sits inside that tier’s
     if (!grid[algorithm]) continue
     for (const [tier, n] of TIER_FIGURES) {
       it(`${algorithm} @ ${tier} (${n}): every tried value is inside the band the form shows`, () => {
-        const size = { distinctLabelled: n }
+        const size = { rows: n }
         const perKey = numericValues(tuningVariantsFor(algorithm, size))
         for (const field of numericFields(algorithm)) {
           const values = perKey[field.key]
@@ -276,7 +294,7 @@ describe('MODEL-FLOW-024: every variant a tier can try sits inside that tier’s
             expect(
               value,
               `${algorithm}.${field.key} @ ${tier}: the tuning phase tries ${value}, ` +
-                `outside the ${range.min}-${range.max} the form shows for ${n} distinct labelled values`,
+                `outside the ${range.min}-${range.max} the form shows for ${n} rows`,
             ).toBeGreaterThanOrEqual(range.min)
             expect(value).toBeLessThanOrEqual(range.max)
           }
@@ -305,10 +323,7 @@ describe('MODEL-FLOW-024: every variant a tier can try sits inside that tier’s
       for (const key of ['epochs', 'hidden_size']) {
         const field = numericFields(algorithm).find(f => f.key === key)!
         const range = field.suggestedRange!
-        for (const variant of tuningVariantsFor(algorithm, {
-          distinctLabelled: 20,
-          rows: 100,
-        })) {
+        for (const variant of tuningVariantsFor(algorithm, { rows: 100 })) {
           expect(Number(variant[key])).toBeGreaterThanOrEqual(range.min)
           expect(Number(variant[key])).toBeLessThanOrEqual(range.max)
         }
@@ -328,12 +343,51 @@ describe('MODEL-FLOW-024: every variant a tier can try sits inside that tier’s
       'lightgbm',
       'xgboost',
     ] as const) {
-      const medium = tuningVariantsFor(algorithm, { distinctLabelled: 300 })
-      for (const n of [32, 100, 900]) {
-        expect(
-          tuningVariantsFor(algorithm, { distinctLabelled: n }),
-        ).not.toEqual(medium)
+      const medium = tuningVariantsFor(algorithm, { rows: TIER_ROWS.medium })
+      for (const n of [TIER_ROWS.tiny, TIER_ROWS.small, TIER_ROWS.large]) {
+        expect(tuningVariantsFor(algorithm, { rows: n })).not.toEqual(medium)
       }
     }
+  })
+})
+
+/**
+ * MODEL-FLOW-024. PLS cannot fit more components than the data has features,
+ * and the backend caps its grid off the artifact's feature count while the form
+ * caps its band off the wizard's. The two must agree for the SAME count at
+ * every size tier: a variant asking for more components than the band allows
+ * would either die on arrival (the container) or be advertised as out of range
+ * (the form).
+ */
+describe('MODEL-FLOW-024: pls variants sit inside the feature-capped band', () => {
+  const components = numericFields('pls').find(f => f.key === 'n_components')!
+
+  it.each([1, 2, 3, 4, 5, 6, 12, null])(
+    'pls with %s features: every variant is inside the band, at every tier',
+    features => {
+      for (const rows of Object.values(TIER_ROWS)) {
+        const size = { rows, features }
+        const range = suggestedRangeFor('pls', components, size)!
+        for (const variant of tuningVariantsFor('pls', size)) {
+          expect(Number(variant.n_components)).toBeGreaterThanOrEqual(range.min)
+          expect(Number(variant.n_components)).toBeLessThanOrEqual(range.max)
+        }
+      }
+    },
+  )
+
+  it('actually bites: a 3-feature dataset cannot be offered the general 6 components', () => {
+    // Vacuity guard — without it the containment test above would pass by
+    // comparing the uncapped grid to the uncapped band.
+    const general = Math.max(
+      ...tuningVariantsFor('pls').map(v => Number(v.n_components)),
+    )
+    expect(general).toBeGreaterThan(3)
+    const capped = Math.max(
+      ...tuningVariantsFor('pls', { features: 3 }).map(v =>
+        Number(v.n_components),
+      ),
+    )
+    expect(capped).toBe(3)
   })
 })

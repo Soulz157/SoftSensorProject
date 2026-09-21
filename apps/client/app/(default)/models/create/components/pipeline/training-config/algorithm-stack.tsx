@@ -22,7 +22,9 @@ import {
 import { ineligibleReason } from '@/lib/algorithm-eligibility'
 import { SEQUENCE_ALGORITHMS } from '@/lib/metric-source'
 import type { DatasetSize } from '@/lib/hyperparam-ranges'
+import { baseHyperparamsFor } from '@/lib/tuning-preview'
 import { DynamicHyperparameters } from './dynamic-hyperparameters'
+import { VariantPreview, type VariantPreviewMode } from './variant-preview'
 
 const MAX = 3
 
@@ -168,6 +170,18 @@ export function AlgorithmStack({
 
   const addable = ALGORITHMS.filter(a => !algorithms.includes(a))
 
+  // MODEL-FLOW-025. With Find Best Parameters on, each open card lists the
+  // variants that search will try for it. Find Best Model on top of it (a sweep
+  // then a tune) tunes only the algorithm that WINS, so there the list reads
+  // "if this wins"; with Find Best Model off it is a direct search on the one
+  // selected algorithm. With Find Best Parameters off there is nothing to show
+  // — a sweep alone runs each algorithm once with its own values.
+  const variantMode: VariantPreviewMode | undefined = findBestParams
+    ? findBestModel
+      ? 'sweep-then-tune'
+      : 'direct'
+    : undefined
+
   return (
     <div className="space-y-2.5 rounded-lg border border-border p-3">
       <div className="space-y-1">
@@ -185,7 +199,7 @@ export function AlgorithmStack({
               Trains in the order below, one at a time — not together. Expect{' '}
               {algorithms.length} fits
               {findBestParams &&
-                ", plus a curated set of hyperparameter variants tried against whichever algorithm wins (Find Best Parameters' phase 2, decided after phase 1 finishes)"}
+                ", plus a curated set of hyperparameter variants tried against whichever algorithm wins (Find Best Parameters' phase 2, decided after phase 1 finishes) — open an algorithm to see them"}
               .
             </>
           )}
@@ -204,8 +218,15 @@ export function AlgorithmStack({
             onRemove={() => remove(a)}
             removeDisabled={onlyOne}
             hyperparameters={paramsFor(a, i)}
+            launchHyperparameters={baseHyperparamsFor(
+              a,
+              algorithms,
+              hyperparameters,
+              perAlgorithmHyperparameters,
+            )}
             onChange={(key, value) => onHyperparameterChange(a, key, value)}
             datasetSize={datasetSize}
+            variantMode={variantMode}
           />
         ))}
       </ul>
@@ -284,8 +305,10 @@ function AlgorithmCard({
   onRemove,
   removeDisabled,
   hyperparameters,
+  launchHyperparameters,
   onChange,
   datasetSize,
+  variantMode,
 }: {
   algorithm: Algorithm
   index: number
@@ -295,8 +318,12 @@ function AlgorithmCard({
   onRemove: () => void
   removeDisabled: boolean
   hyperparameters: Record<string, HyperparamValue>
+  /** What a launch would send for this algorithm — the base a search excludes
+   *  variants against. Not `hyperparameters`: see `baseHyperparamsFor`. */
+  launchHyperparameters: Record<string, HyperparamValue>
   onChange: (key: string, value: HyperparamValue) => void
   datasetSize: DatasetSize | undefined
+  variantMode: VariantPreviewMode | undefined
 }) {
   const label = ALGORITHM_LABELS[algorithm]
   const panelId = `algorithm-params-${algorithm}`
@@ -384,6 +411,14 @@ function AlgorithmCard({
             onChange={onChange}
             size={datasetSize}
           />
+          {variantMode && (
+            <VariantPreview
+              algorithm={algorithm}
+              base={launchHyperparameters}
+              size={datasetSize}
+              mode={variantMode}
+            />
+          )}
         </div>
       )}
     </li>

@@ -19,17 +19,26 @@ function field(algorithm: Algorithm, key: string): HyperparamField {
   return found
 }
 
+// One representative row count per tier, derived from the bounds so moving a
+// bound moves every fixture below with it.
+const ROWS = {
+  tiny: Math.floor(SIZE_TIER_LOWER_BOUNDS.small / 2),
+  small: SIZE_TIER_LOWER_BOUNDS.small,
+  medium: SIZE_TIER_LOWER_BOUNDS.medium,
+  large: SIZE_TIER_LOWER_BOUNDS.large * 2,
+}
+
 describe('MODEL-FLOW-024: sizeTierFor', () => {
   it.each([
     [0, 'tiny'],
-    [49, 'tiny'],
+    [SIZE_TIER_LOWER_BOUNDS.small - 1, 'tiny'],
     [SIZE_TIER_LOWER_BOUNDS.small, 'small'],
-    [149, 'small'],
+    [SIZE_TIER_LOWER_BOUNDS.medium - 1, 'small'],
     [SIZE_TIER_LOWER_BOUNDS.medium, 'medium'],
-    [499, 'medium'],
+    [SIZE_TIER_LOWER_BOUNDS.large - 1, 'medium'],
     [SIZE_TIER_LOWER_BOUNDS.large, 'large'],
-    [46_070, 'large'],
-  ] as [number, SizeTier][])('%d distinct labelled values is %s', (n, tier) => {
+    [100_000, 'large'],
+  ] as [number, SizeTier][])('%d rows is %s', (n, tier) => {
     expect(sizeTierFor(n)).toBe(tier)
   })
 
@@ -39,14 +48,22 @@ describe('MODEL-FLOW-024: sizeTierFor', () => {
     expect(sizeTierFor(Number.NaN)).toBe('medium')
   })
 
-  it('puts every dataset this system has measured (19, 32, 59, 97) in a low tier, whatever its row count', () => {
-    // The point of keying on distinct values: 8,350 rows hold 32 of them, so
-    // the row count must not be able to move the tier at all.
-    expect([19, 32, 59, 97].map(n => sizeTierFor(n))).toEqual([
-      'tiny',
-      'tiny',
+  it('pins the bounds to the user’s durations of hourly data: 6 months, 1 year, 3 years', () => {
+    // The row copy in `describeSizing` states these durations; changing a
+    // bound without rewording it must fail here.
+    const HOURS_PER_YEAR = 24 * 365
+    expect(SIZE_TIER_LOWER_BOUNDS).toEqual({
+      small: HOURS_PER_YEAR / 2,
+      medium: HOURS_PER_YEAR,
+      large: HOURS_PER_YEAR * 3,
+    })
+  })
+
+  it('puts every dataset this system has measured (4,470-15,441 rows) in small or medium', () => {
+    expect([4_470, 8_350, 15_441].map(n => sizeTierFor(n))).toEqual([
       'small',
       'small',
+      'medium',
     ])
   })
 })
@@ -81,7 +98,7 @@ describe('MODEL-FLOW-024: suggestedRangeFor', () => {
         if (f.kind !== 'number' && f.kind !== 'nullable-number') continue
         expect(suggestedRangeFor(algorithm, f)).toBe(f.suggestedRange)
         expect(suggestedRangeFor(algorithm, f, {})).toBe(f.suggestedRange)
-        expect(suggestedRangeFor(algorithm, f, { distinctLabelled: 300 })).toBe(
+        expect(suggestedRangeFor(algorithm, f, { rows: ROWS.medium })).toBe(
           f.suggestedRange,
         )
       }
@@ -90,29 +107,43 @@ describe('MODEL-FLOW-024: suggestedRangeFor', () => {
 
   it('shrinks a capacity band for a tiny dataset and widens it for a large one', () => {
     const f = field('xgboost', 'n_estimators')
-    const tiny = suggestedRangeFor('xgboost', f, { distinctLabelled: 32 })
-    const medium = suggestedRangeFor('xgboost', f, { distinctLabelled: 300 })
-    const large = suggestedRangeFor('xgboost', f, { distinctLabelled: 900 })
+    const tiny = suggestedRangeFor('xgboost', f, { rows: ROWS.tiny })
+    const medium = suggestedRangeFor('xgboost', f, { rows: ROWS.medium })
+    const large = suggestedRangeFor('xgboost', f, { rows: ROWS.large })
     expect(tiny?.max).toBeLessThan(medium!.max)
     expect(large?.max).toBeGreaterThan(medium!.max)
     // What the parameter DOES does not change with size.
     expect(tiny?.note).toBe(medium?.note)
   })
 
-  it('does not read the row count for a capacity band', () => {
-    // 8,350 rows holding 32 distinct values is `tiny`: rows must not widen it.
+  it('does not read the distinct labelled count for a capacity band', () => {
+    // 8,350 rows hold 32 distinct values. That used to make it `tiny`; rows
+    // alone pick the tier now, so the distinct count moves nothing.
     const f = field('xgboost', 'n_estimators')
+    const general = (f as { suggestedRange: unknown }).suggestedRange
+    expect(suggestedRangeFor('xgboost', f, { distinctLabelled: 32 })).toBe(
+      general,
+    )
     expect(
-      suggestedRangeFor('xgboost', f, { distinctLabelled: 32, rows: 8_350 }),
-    ).toEqual(suggestedRangeFor('xgboost', f, { distinctLabelled: 32 }))
+      suggestedRangeFor('xgboost', f, {
+        rows: ROWS.medium,
+        distinctLabelled: 32,
+      }),
+    ).toBe(general)
+    expect(
+      suggestedRangeFor('xgboost', f, {
+        rows: ROWS.tiny,
+        distinctLabelled: 900,
+      }),
+    ).toEqual(suggestedRangeFor('xgboost', f, { rows: ROWS.tiny }))
   })
 
   it('leaves algorithms with no size prior on their own band in every tier', () => {
     for (const algorithm of ['ols', 'grp', 'pls'] as const) {
       for (const f of HYPERPARAMS[algorithm]) {
         if (f.kind !== 'number' && f.kind !== 'nullable-number') continue
-        for (const distinctLabelled of [10, 100, 300, 900]) {
-          expect(suggestedRangeFor(algorithm, f, { distinctLabelled })).toBe(
+        for (const rows of Object.values(ROWS)) {
+          expect(suggestedRangeFor(algorithm, f, { rows })).toBe(
             f.suggestedRange,
           )
         }
@@ -162,9 +193,11 @@ describe('MODEL-FLOW-024: suggestedRangeFor', () => {
 describe('MODEL-FLOW-024: isSizedFor', () => {
   it('is false until a size is known, and always false for an algorithm with no size prior', () => {
     expect(isSizedFor('xgboost')).toBe(false)
-    expect(isSizedFor('xgboost', { distinctLabelled: 300 })).toBe(false)
-    expect(isSizedFor('xgboost', { distinctLabelled: 32 })).toBe(true)
-    expect(isSizedFor('pls', { distinctLabelled: 32 })).toBe(false)
+    expect(isSizedFor('xgboost', { rows: ROWS.medium })).toBe(false)
+    expect(isSizedFor('xgboost', { rows: ROWS.tiny })).toBe(true)
+    // The distinct count sizes nothing any more.
+    expect(isSizedFor('xgboost', { distinctLabelled: 32 })).toBe(false)
+    expect(isSizedFor('pls', { rows: ROWS.tiny })).toBe(false)
   })
 
   it('is true for lstm/gru only when the rows cap binds', () => {
@@ -203,11 +236,10 @@ describe('MODEL-FLOW-024: TIER_BANDS is well-formed', () => {
     for (const algorithm of ALGORITHMS) {
       for (const f of HYPERPARAMS[algorithm]) {
         if (!capacity.has(f.key)) continue
-        const at = (n: number) =>
-          suggestedRangeFor(algorithm, f, { distinctLabelled: n })
-        const tiny = at(10)
-        const medium = at(300)
-        const large = at(900)
+        const at = (rows: number) => suggestedRangeFor(algorithm, f, { rows })
+        const tiny = at(ROWS.tiny)
+        const medium = at(ROWS.medium)
+        const large = at(ROWS.large)
         if (!tiny || !medium || !large) continue
         expect([
           algorithm,
@@ -227,25 +259,36 @@ describe('MODEL-FLOW-024: describeSizing tells the truth in every state', () => 
     expect(line).not.toContain('Sized to')
   })
 
-  it('names the distinct-value count and disowns the row count when the ranges are sized', () => {
-    const line = describeSizing('xgboost', {
+  it('names the row count, its tier and the hourly reading when the ranges are sized', () => {
+    // 8,350 rows hold 32 distinct lab values; the copy speaks in rows only.
+    const small = describeSizing('xgboost', {
       distinctLabelled: 32,
       rows: 8_350,
     })
-    expect(line).toContain('Sized to your 32 distinct lab values')
-    expect(line).toContain('very small dataset')
-    expect(line).toContain('not your 8,350 rows')
+    expect(small).toContain('Sized to your 8,350 rows')
+    expect(small).toContain('small dataset')
+    expect(small).toContain('4,380-8,759 rows, 6-12 months of hourly data')
+    expect(small).not.toContain('distinct')
+
+    const tiny = describeSizing('xgboost', { rows: 2_000 })
+    expect(tiny).toContain('very small dataset')
+    expect(tiny).toContain('under 4,380 rows, under 6 months of hourly data')
+
+    const large = describeSizing('xgboost', { rows: 30_000 })
+    expect(large).toContain('large dataset')
+    expect(large).toContain('26,280+ rows, over 3 years of hourly data')
   })
 
   it('says the general ranges apply for the mid-size tier, where nothing is adjusted', () => {
-    const line = describeSizing('xgboost', { distinctLabelled: 300 })
-    expect(line).toContain('mid-size tier')
+    const line = describeSizing('xgboost', { rows: 12_000 })
+    expect(line).toContain('Your 12,000 rows fall in the mid-size tier')
+    expect(line).toContain('8,760-26,279 rows, 1-3 years of hourly data')
     expect(line).not.toContain('Sized to')
   })
 
   it('never claims sizing for an algorithm no size changes', () => {
     for (const algorithm of ['ols', 'grp', 'pls'] as const) {
-      const line = describeSizing(algorithm, { distinctLabelled: 32 })
+      const line = describeSizing(algorithm, { rows: ROWS.tiny })
       expect(line).toContain('no size-dependent range')
       expect(line).not.toContain('Sized to')
     }
@@ -263,7 +306,7 @@ describe('MODEL-FLOW-024: describeSizing tells the truth in every state', () => 
       for (const size of [
         {},
         { distinctLabelled: 32, rows: 400 },
-        { distinctLabelled: 900 },
+        { rows: ROWS.large },
       ]) {
         expect(describeSizing(algorithm, size)).toContain('not measured optima')
       }
@@ -278,17 +321,17 @@ describe('MODEL-FLOW-024: datasetSizeFrom', () => {
         { distinct_labelled_values: 32, source_rows: 8_350 },
         9_000,
       ),
-    ).toEqual({ distinctLabelled: 32, rows: 8_350 })
+    ).toEqual({ distinctLabelled: 32, rows: 8_350, features: null })
   })
 
   it('falls back to the dataset row count for rows ONLY, never for distinct values', () => {
-    // The split-stats fetch is never made while lstm/gru is selected, so
-    // without this the batch cap could never apply to the algorithms it exists
-    // for. Distinct values cannot be faked from a row count — that is exactly
-    // the confusion the feature exists to avoid.
+    // The split-stats fetch waits for Apply and is never made while lstm/gru
+    // is selected, so the dataset's own count stands in for rows. Distinct
+    // values cannot be faked from a row count and are left null.
     expect(datasetSizeFrom(null, 400)).toEqual({
       distinctLabelled: null,
       rows: 400,
+      features: null,
     })
     expect(datasetSizeFrom(undefined, 400).distinctLabelled).toBeNull()
   })
@@ -297,18 +340,93 @@ describe('MODEL-FLOW-024: datasetSizeFrom', () => {
     expect(datasetSizeFrom(null)).toEqual({
       distinctLabelled: null,
       rows: null,
+      features: null,
     })
     expect(datasetSizeFrom(null, 0)).toEqual({
       distinctLabelled: null,
       rows: null,
+      features: null,
     })
   })
 
-  it('a row-count fallback cannot size a capacity band', () => {
-    const f = HYPERPARAMS.xgboost.find(x => x.key === 'n_estimators')!
-    const size = datasetSizeFrom(null, 50)
-    expect(suggestedRangeFor('xgboost', f, size)).toBe(
+  it('a row-count fallback sizes a capacity band exactly as the split-stats rows do', () => {
+    // The tier keys on rows, so the dataset's own count must size the form
+    // before Apply the same way `source_rows` does after it — the job sends
+    // this same figure, and the two must not disagree.
+    const f = field('xgboost', 'n_estimators')
+    const fromFallback = suggestedRangeFor(
+      'xgboost',
+      f,
+      datasetSizeFrom(null, ROWS.tiny),
+    )
+    const fromStats = suggestedRangeFor(
+      'xgboost',
+      f,
+      datasetSizeFrom({
+        distinct_labelled_values: 900,
+        source_rows: ROWS.tiny,
+      }),
+    )
+    expect(fromFallback).toEqual(fromStats)
+    expect(fromFallback).not.toBe(
       (f as { suggestedRange: unknown }).suggestedRange,
     )
+  })
+})
+
+describe('MODEL-FLOW-024: pls n_components follows the feature count', () => {
+  const comp = HYPERPARAMS.pls.find(f => f.key === 'n_components')!
+
+  it('is the general band, by reference, when the feature count is unknown or ample', () => {
+    const general = (comp as { suggestedRange: unknown }).suggestedRange
+    expect(suggestedRangeFor('pls', comp)).toBe(general)
+    expect(suggestedRangeFor('pls', comp, { features: null })).toBe(general)
+    expect(suggestedRangeFor('pls', comp, { features: 6 })).toBe(general)
+    expect(suggestedRangeFor('pls', comp, { features: 40 })).toBe(general)
+  })
+
+  it.each([1, 2, 3, 4, 5])('caps the ceiling at %d features', features => {
+    const range = suggestedRangeFor('pls', comp, { features })
+    expect(range?.min).toBe(1)
+    expect(range?.max).toBe(features)
+  })
+
+  it('applies at every size tier — it is not a size prior', () => {
+    for (const rows of Object.values(ROWS)) {
+      expect(suggestedRangeFor('pls', comp, { rows, features: 3 })?.max).toBe(3)
+    }
+  })
+
+  it('leaves pls’s other band alone', () => {
+    const iter = HYPERPARAMS.pls.find(f => f.key === 'max_iter')!
+    expect(suggestedRangeFor('pls', iter, { features: 2 })).toBe(
+      (iter as { suggestedRange: unknown }).suggestedRange,
+    )
+  })
+
+  it('reports itself as sized only when the cap actually binds', () => {
+    expect(isSizedFor('pls', { features: 3 })).toBe(true)
+    expect(isSizedFor('pls', { features: 12 })).toBe(false)
+    expect(isSizedFor('pls', { rows: ROWS.tiny })).toBe(false)
+  })
+
+  it('says so in words, and never claims tier sizing', () => {
+    const line = describeSizing('pls', { rows: ROWS.tiny, features: 3 })
+    expect(line).toContain('capped at your 3 features')
+    expect(line).not.toContain('Sized to')
+  })
+
+  it('says an algorithm no size changes needs no split, before or after one is applied', () => {
+    for (const algorithm of ['ols', 'grp', 'pls'] as const) {
+      const line = describeSizing(algorithm, {})
+      expect(line).toContain('no size-dependent range')
+      expect(line).not.toContain('apply the train/test split')
+    }
+  })
+
+  it('datasetSizeFrom carries the feature count, and drops a nonsense one', () => {
+    expect(datasetSizeFrom(null, null, 7).features).toBe(7)
+    expect(datasetSizeFrom(null, null, 0).features).toBeNull()
+    expect(datasetSizeFrom(null, null, null).features).toBeNull()
   })
 })

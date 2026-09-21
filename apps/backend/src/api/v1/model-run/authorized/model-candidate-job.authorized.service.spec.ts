@@ -345,6 +345,74 @@ describe('ModelCandidateJobAuthorizedService', () => {
     });
 
     /**
+     * MODEL-FLOW-024. PLS cannot fit more components than the artifact has
+     * features, so a direct search over pls reads the artifact ROW's
+     * `featureCount` and hands it to the grid. Only pls: every other
+     * algorithm must not pay for the lookup.
+     */
+    it('reads the artifact feature count for a pls search and hands it to the grid', async () => {
+      mockedTuningCandidatesFor.mockReturnValue([{ n_components: 3 }]);
+      const prisma = makePrisma();
+      prisma.datasetArtifact.findUnique.mockResolvedValue({ featureCount: 3 });
+      const service = new ModelCandidateJobAuthorizedService(
+        prisma as never,
+        makeRunLaunch() as never,
+      );
+
+      await service.createJob(
+        'draft-1',
+        {
+          goldArtifactId: 'gold-1',
+          targetY: 'TI-101',
+          kind: 'HYPERPARAMETER_SEARCH',
+          candidates: [
+            {
+              algorithm: 'pls',
+              hyperparameters: { n_components: 2, max_iter: 500 },
+            },
+          ],
+          sizedRowCount: 8350,
+          sizedDistinctLabelled: 32,
+        } as never,
+        'user-1',
+        'ADMIN',
+      );
+
+      expect(prisma.datasetArtifact.findUnique).toHaveBeenCalledWith({
+        where: { id: 'gold-1' },
+        select: { featureCount: true },
+      });
+      expect(mockedTuningCandidatesFor).toHaveBeenCalledWith(
+        'pls',
+        { n_components: 2, max_iter: 500 },
+        { distinctLabelled: 32, rows: 8350, features: 3 },
+      );
+    });
+
+    it('does not look the artifact up for any other algorithm', async () => {
+      mockedTuningCandidatesFor.mockReturnValue([{ alpha: 3 }]);
+      const prisma = makePrisma();
+      const service = new ModelCandidateJobAuthorizedService(
+        prisma as never,
+        makeRunLaunch() as never,
+      );
+
+      await service.createJob(
+        'draft-1',
+        {
+          goldArtifactId: 'gold-1',
+          targetY: 'TI-101',
+          kind: 'HYPERPARAMETER_SEARCH',
+          candidates: [{ algorithm: 'ridge', hyperparameters: { alpha: 1 } }],
+        } as never,
+        'user-1',
+        'ADMIN',
+      );
+
+      expect(prisma.datasetArtifact.findUnique).not.toHaveBeenCalled();
+    });
+
+    /**
      * MODEL-FLOW-020-T04. What the client sent reaches the ROW — the schema
      * tests above only prove the request parses.
      *
@@ -760,6 +828,57 @@ describe('ModelCandidateJobAuthorizedService', () => {
         'ridge',
         { alpha: 1.0 },
         { distinctLabelled: 32, rows: 8350 },
+      );
+    });
+
+    it('caps a pls winner’s tuning at the artifact feature count', async () => {
+      mockedTuningCandidatesFor.mockReturnValue([
+        { n_components: 3, max_iter: 250 },
+      ]);
+      const prisma = makePrisma({
+        job: {
+          kind: 'SWEEP_THEN_TUNE',
+          completedRuns: 1,
+          totalRuns: 2,
+          candidates: [
+            {
+              algorithm: 'ols',
+              hyperparameters: { fit_intercept: true },
+              phase: 1,
+            },
+            {
+              algorithm: 'pls',
+              hyperparameters: { n_components: 2, max_iter: 500 },
+              phase: 1,
+            },
+          ],
+          bestRunId: 'run-0',
+          bestRmse: 0.9,
+          sizedRowCount: 8350,
+          sizedDistinctLabelled: 32,
+        },
+        run: {
+          id: 'run-1',
+          status: 'SUCCEEDED',
+          metrics: { rmse: 0.5 },
+          algorithm: 'pls',
+          hyperparameters: { n_components: 2, max_iter: 500 },
+        },
+      });
+      prisma.datasetArtifact.findUnique.mockResolvedValue({ featureCount: 4 });
+      const service = new ModelCandidateJobAuthorizedService(
+        prisma as never,
+        makeRunLaunch({
+          launchDraftRun: jest.fn().mockResolvedValue({ id: 'run-tune-1' }),
+        }) as never,
+      );
+
+      await service.advanceJobForRun('run-1', 'job-1');
+
+      expect(mockedTuningCandidatesFor).toHaveBeenCalledWith(
+        'pls',
+        { n_components: 2, max_iter: 500 },
+        { distinctLabelled: 32, rows: 8350, features: 4 },
       );
     });
 
@@ -1686,5 +1805,53 @@ describe('ModelCandidateJobAuthorizedService', () => {
       );
       expect(runLaunch.launchDraftRun).not.toHaveBeenCalled();
     });
+  });
+
+  /**
+   * MODEL-FLOW-024. `withFeatureCount` in isolation: the one place the
+   * artifact's feature count enters a size.
+   */
+  describe('withFeatureCount', () => {
+    function build(featureCount: number | null | 'missing') {
+      const prisma = makePrisma();
+      prisma.datasetArtifact.findUnique.mockResolvedValue(
+        featureCount === 'missing' ? null : { featureCount },
+      );
+      const service = new ModelCandidateJobAuthorizedService(
+        prisma as never,
+        makeRunLaunch() as never,
+      );
+      return { prisma, service };
+    }
+
+    it('leaves the size alone, with no query, for anything but pls', async () => {
+      const { prisma, service } = build(9);
+      const size = { distinctLabelled: 32, rows: 8350 };
+      expect(await service.withFeatureCount('xgboost', 'gold-1', size)).toBe(
+        size,
+      );
+      expect(prisma.datasetArtifact.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('adds the feature count for pls, keeping the other figures', async () => {
+      const { service } = build(9);
+      expect(
+        await service.withFeatureCount('pls', 'gold-1', {
+          distinctLabelled: 32,
+          rows: 8350,
+        }),
+      ).toEqual({ distinctLabelled: 32, rows: 8350, features: 9 });
+    });
+
+    it.each([0, null, 'missing'] as const)(
+      'adds nothing when the artifact reports %s — no cap is better than a wrong one',
+      async (featureCount) => {
+        const { service } = build(featureCount);
+        const size = { distinctLabelled: 32 };
+        expect(await service.withFeatureCount('pls', 'gold-1', size)).toBe(
+          size,
+        );
+      },
+    );
   });
 });

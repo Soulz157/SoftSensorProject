@@ -292,6 +292,29 @@ export class ModelCandidateJobAuthorizedService {
   }
 
   /**
+   * MODEL-FLOW-024. Adds the training artifact's feature count to a size, when
+   * and only when the algorithm reads it — PLS, whose `n_components` cannot
+   * exceed it. Read off the artifact ROW (`DatasetArtifact.featureCount`), one
+   * indexed lookup with no object-store read, and skipped entirely for every
+   * other algorithm. An artifact that is missing or reports zero features
+   * leaves the size as it was: no cap is better than a wrong one.
+   */
+  async withFeatureCount(
+    algorithm: string,
+    goldArtifactId: string,
+    size: DatasetSize = {},
+  ): Promise<DatasetSize> {
+    if (algorithm !== 'pls') return size;
+    const artifact = await this.prisma.datasetArtifact.findUnique({
+      where: { id: goldArtifactId },
+      select: { featureCount: true },
+    });
+    return artifact && artifact.featureCount > 0
+      ? { ...size, features: artifact.featureCount }
+      : size;
+  }
+
+  /**
    * MODEL-FLOW-013 / MODEL-SERVE-004. A HYPERPARAMETER_SEARCH names ONE
    * starting candidate and relies on the curated `TUNING_GRID` shortlist for
    * the rest. Extracted from `createJob` so the retrain path
@@ -372,18 +395,29 @@ export class ModelCandidateJobAuthorizedService {
     // own hyperparameters — the same "don't repeat what's already covered"
     // exclusion phase 2 relies on, applied here to the search's own starting
     // point instead of a sweep's winner.
-    // MODEL-FLOW-024. The two figures the client already carried from Step 3's
-    // /split-stats (and that `createJob` records on the job row below) now
-    // also pick the grid's size tier. Accepted for that purpose only: they
-    // choose among fixed declared variant lists and grant nothing the client
-    // cannot already do by sending arbitrary hyperparameters.
-    const requestedCandidates =
-      dto.kind === 'HYPERPARAMETER_SEARCH' && dto.candidates.length === 1
-        ? this.expandSearchCandidates(dto.candidates[0], {
-            distinctLabelled: dto.sizedDistinctLabelled,
-            rows: dto.sizedRowCount,
-          })
-        : dto.candidates;
+    // MODEL-FLOW-024. The size figures the client carried (`sizedRowCount`:
+    // Step 3's /split-stats `source_rows`, or the dataset's own row count
+    // before Apply; `sizedDistinctLabelled`: /split-stats only), which
+    // `createJob` records on the job row below. `sizedRowCount` alone picks
+    // the grid's size tier; the distinct count is recorded, not read.
+    // Accepted for that purpose only: they choose among fixed declared
+    // variant lists and grant nothing the client cannot already do by sending
+    // arbitrary hyperparameters.
+    const expandsOneCandidate =
+      dto.kind === 'HYPERPARAMETER_SEARCH' && dto.candidates.length === 1;
+    const requestedCandidates = expandsOneCandidate
+      ? this.expandSearchCandidates(
+          dto.candidates[0],
+          await this.withFeatureCount(
+            dto.candidates[0].algorithm,
+            dto.goldArtifactId,
+            {
+              distinctLabelled: dto.sizedDistinctLabelled,
+              rows: dto.sizedRowCount,
+            },
+          ),
+        )
+      : dto.candidates;
 
     // Every candidate a client sends is phase 1 — `CandidateSchema` has no
     // `phase` field, so this is the ONLY place phase 1 is stamped.
@@ -610,6 +644,15 @@ export class ModelCandidateJobAuthorizedService {
               where: { id: finalBestRunId },
             });
 
+      // MODEL-FLOW-024. The size figures are read off the job row `createJob`
+      // filled — no artifact read here, which is why they are stored. The
+      // feature count (PLS only) comes off the artifact ROW, not its bytes.
+      const tuneSize = winnerRun
+        ? await this.withFeatureCount(winnerRun.algorithm, job.goldArtifactId, {
+            distinctLabelled: job.sizedDistinctLabelled,
+            rows: job.sizedRowCount,
+          })
+        : undefined;
       const tuneVariants = winnerRun
         ? tuningCandidatesFor(
             winnerRun.algorithm,
@@ -617,12 +660,7 @@ export class ModelCandidateJobAuthorizedService {
               string,
               string | number | boolean | null
             >,
-            // MODEL-FLOW-024. Read off the job row `createJob` filled — no
-            // artifact read here, which is why the figures are stored.
-            {
-              distinctLabelled: job.sizedDistinctLabelled,
-              rows: job.sizedRowCount,
-            },
+            tuneSize,
           )
         : [];
 

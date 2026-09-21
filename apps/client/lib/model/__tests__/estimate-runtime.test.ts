@@ -125,3 +125,41 @@ describe('breakdownRuntime (MODEL-FLOW-024-T05)', () => {
     expect(breakdownRuntime({ ...BASE, algorithms: [] })).toEqual([])
   })
 })
+
+describe('estimateRuntimeSeconds — real variant counts (MODEL-FLOW-025-T06)', () => {
+  const one = est()
+
+  it('with no count known, prices a search at the cap: base + 4 fits', () => {
+    expect(est({ findBestParams: true })).toBeCloseTo(one * 5, 6)
+  })
+
+  it('prices a direct search at the variants the preview says will run', () => {
+    const tune = (n: number) =>
+      est({ findBestParams: true, tuningVariants: { lightgbm: n } })
+    expect(tune(3)).toBeCloseTo(one * 4, 6)
+    expect(tune(0)).toBeCloseTo(one, 6)
+  })
+
+  it('averages each algorithm’s own count x cost for a sweep, whose winner is unknown', () => {
+    // lightgbm costs 1.0 and xgboost 1.3. Base = 2.3; tuning = mean(2x1.0, 4x1.3).
+    const sweep = est({
+      algorithms: ['lightgbm', 'xgboost'],
+      findBestParams: true,
+      tuningVariants: { lightgbm: 2, xgboost: 4 },
+    })
+    expect(sweep).toBeCloseTo(one * (2.3 + (2 * 1.0 + 4 * 1.3) / 2), 6)
+  })
+
+  it('falls back to the cap only for the algorithm with no count', () => {
+    const partial = est({
+      algorithms: ['lightgbm', 'xgboost'],
+      findBestParams: true,
+      tuningVariants: { lightgbm: 2 },
+    })
+    expect(partial).toBeCloseTo(one * (2.3 + (2 * 1.0 + 4 * 1.3) / 2), 6)
+  })
+
+  it('ignores counts while Find Best Parameters is off', () => {
+    expect(est({ tuningVariants: { lightgbm: 3 } })).toBeCloseTo(one, 6)
+  })
+})

@@ -1,10 +1,15 @@
 import { AppException } from '@softsensor/common';
 import { TuningGridAuthorizedService } from './tuning-grid.authorized.service';
 import {
+  SIZE_TIER_LOWER_BOUNDS,
   TUNE_VARIANTS_PER_JOB,
   TUNING_GRID,
   tuningVariantsFor,
 } from '@/lib/tuning-grid';
+
+// Rows in the tiny and medium tiers, derived so a moved bound moves them too.
+const TINY_ROWS = SIZE_TIER_LOWER_BOUNDS.small - 1;
+const MEDIUM_ROWS = SIZE_TIER_LOWER_BOUNDS.medium;
 
 /**
  * MODEL-FLOW-022-T03b. Read-only view over `tuning-grid.ts` — asserts it
@@ -40,11 +45,26 @@ describe('TuningGridAuthorizedService', () => {
     expect(result.variants).toBe(TUNING_GRID.xgboost);
   });
 
+  it('says `sized` only when the served list actually differs from the general one', () => {
+    expect(service.get('xgboost').sized).toBe(false);
+    expect(service.get('xgboost', { rows: MEDIUM_ROWS }).sized).toBe(false);
+    expect(service.get('xgboost', { rows: TINY_ROWS }).sized).toBe(true);
+    // The distinct labelled count sizes nothing any more — rows alone do.
+    expect(service.get('xgboost', { distinctLabelled: 32 }).sized).toBe(false);
+    // A tier alone does not size an algorithm no tier changes...
+    expect(service.get('ols', { rows: TINY_ROWS }).sized).toBe(false);
+    expect(service.get('lstm', { rows: TINY_ROWS }).sized).toBe(false);
+    // ...but the sequence batch cap and the PLS component cap do.
+    expect(service.get('lstm', { rows: 400 }).sized).toBe(true);
+    expect(service.get('pls', { features: 3 }).sized).toBe(true);
+    expect(service.get('pls', { features: 12 }).sized).toBe(false);
+  });
+
   it('serves the size tier the figure selects, from the same source the job builder reads', () => {
-    const tiny = service.get('xgboost', { distinctLabelled: 32 });
+    const tiny = service.get('xgboost', { rows: TINY_ROWS });
     expect(tiny.tier).toBe('tiny');
     expect(tiny.variants).toBe(
-      tuningVariantsFor('xgboost', { distinctLabelled: 32 }),
+      tuningVariantsFor('xgboost', { rows: TINY_ROWS }),
     );
     expect(tiny.variants).not.toEqual(TUNING_GRID.xgboost);
   });

@@ -1355,6 +1355,13 @@ model ModelCandidateJob {
   /// labelled rows). Both come from one `/split-stats` response the Step 3
   /// panel had already fetched; neither is recomputed here.
   ///
+  /// SINCE MODEL-FLOW-024-T10 `sizedRowCount` HAS TWO SOURCES. The size tier
+  /// keys on rows, so a job created before Apply (and any lstm/gru job, which
+  /// never fetches split stats) records the saved dataset's own row count
+  /// there instead, with `sizedDistinctLabelled` null. The two counts were not
+  /// compared; a reader recomputing which tier a job's phase 2 came from
+  /// should not assume `source_rows`.
+  ///
   /// THOSE TWO FIELDS SPECIFICALLY because they are the only two that
   /// /split-stats guarantees in BOTH ratio and CV mode —
   /// train/test_labelled_rows are null in n_splits mode
@@ -1372,20 +1379,20 @@ model ModelCandidateJob {
   /// whole reason MODEL-FLOW-020 exists — a reader shown only one figure
   /// cannot see why any bound derived from it is what it is.
   ///
-  /// NAMED `sized*`, NOT `derivedFrom*`: as of MODEL-FLOW-020-T04 nothing is
-  /// derived from them — TUNING_GRID is still the fixed table, and T03 (the
-  /// derivation) is BLOCKED for want of a measurable range. A name promising
-  /// a derivation the code does not perform is the trap MODEL-FLOW-018's
-  /// "Carrying forward" copy fell into. T03 adds the derivation without
-  /// renaming these.
+  /// NAMED `sized*`, NOT `derivedFrom*`: they are the figures the client saw,
+  /// not a derivation. Since MODEL-FLOW-024 `sizedRowCount` picks the tuning
+  /// grid's size tier (and LSTM/GRU `batch_size`); `sizedDistinctLabelled` is
+  /// recorded and picks nothing. A name promising a derivation the code does
+  /// not perform is the trap MODEL-FLOW-018's "Carrying forward" copy fell
+  /// into.
   ///
   /// NULLABLE, and null means "not captured", never "reconstruct it" — the
   /// honest-legacy-null pattern MODEL-FLOW-010-T06 established for
-  /// validationMissingPct. Two live sources of null, both correct: a job
-  /// created before this migration, and a job started before the user ever
-  /// pressed Apply on Step 3 (the panel's fetch is gated on Apply, so the
-  /// client genuinely has no figures to send). They are written together or
-  /// not at all — one populated and the other null is a bug, not a state.
+  /// validationMissingPct. Live sources of null, both correct: a job created
+  /// before this migration, and (for `sizedRowCount`) a dataset with no row
+  /// count on record. `sizedDistinctLabelled` is also null whenever split
+  /// stats were not fetched — before Apply, and for lstm/gru — but is never
+  /// populated without `sizedRowCount`: the job schema refuses that pair.
   sizedRowCount         Int?
   sizedDistinctLabelled Int?
 

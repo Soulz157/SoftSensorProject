@@ -34,11 +34,13 @@ export function useTuningGrid(
   const [error, setError] = useState<string | null>(null)
 
   const enabled = !!algorithm
-  // MODEL-FLOW-024. Both figures are part of the key: the same algorithm at
-  // 32 and at 900 distinct values serves different variants, so a key that
-  // ignored them would show one dataset's search to another.
+  // MODEL-FLOW-024. Every figure is part of the key: the same algorithm at
+  // 3,000 and at 30,000 rows serves different variants, so a key that ignored
+  // them would show one dataset's search to another. `distinctLabelled` no
+  // longer changes what is served but stays in the key, which costs at most a
+  // duplicate cache entry.
   const cacheKey = enabled
-    ? `tuning-grid|${algorithm}|${size?.distinctLabelled ?? ''}|${size?.rows ?? ''}`
+    ? `tuning-grid|${algorithm}|${size?.distinctLabelled ?? ''}|${size?.rows ?? ''}|${size?.features ?? ''}`
     : null
 
   useDebouncedAbortableRequest<TuningGridResponse>({

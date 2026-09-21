@@ -190,6 +190,7 @@ export function ModelRetrainDialog({
                     hyperparameters={hyperparameters}
                     onChange={setHyperparameters}
                     disabled={disabled}
+                    modelId={model.id}
                   />
                   <Button
                     className="w-full gap-2"

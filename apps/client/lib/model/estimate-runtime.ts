@@ -97,6 +97,14 @@ export interface RuntimeInput {
   findBestModel: boolean
   findBestParams: boolean
   nEstimators?: number
+  /**
+   * MODEL-FLOW-025-T06. How many variants Find Best Parameters would actually
+   * run for each algorithm — the Step 3 preview's count, after excluding what
+   * the base already covers. An algorithm missing here falls back to
+   * `TUNE_VARIANTS`, the cap, so an unknown count still over- rather than
+   * under-estimates.
+   */
+  tuningVariants?: Partial<Record<string, number>>
 }
 
 /**
@@ -108,8 +116,10 @@ export interface RuntimeInput {
  * multiplier:
  *
  *   base   = sum of the selected algorithms' costs (each fits once)
- *   tuning = TUNE_VARIANTS x the AVERAGE selected cost — one algorithm's
- *            variants, and which one wins a sweep is unknown until it ends
+ *   tuning = the AVERAGE over selected algorithms of (its variant count x its
+ *            cost) — one algorithm's variants, and which one wins a sweep is
+ *            unknown until it ends. The count is the preview's when known
+ *            (MODEL-FLOW-025-T06), else TUNE_VARIANTS
  *
  * A single algorithm with Find Best Parameters is therefore 5x one fit, not
  * 10x. `findBestModel` no longer changes the number: a sweep costs what
@@ -126,14 +136,26 @@ export function estimateRuntimeSeconds({
   targets,
   findBestParams,
   nEstimators,
+  tuningVariants,
 }: RuntimeInput): number {
   const cells = Math.max(rows, 1) * Math.max(features, 1)
   const trees = (nEstimators ?? 100) / 100
 
   const costs = selectedCosts(algorithms)
   const baseCost = costs.reduce((s, c) => s + c, 0) || 1
-  const meanCost = costs.length > 0 ? baseCost / costs.length : 1
-  const tuningCost = findBestParams ? TUNE_VARIANTS * meanCost : 0
+  // MODEL-FLOW-025-T06. Each algorithm's tuning cost is ITS variant count times
+  // its cost; the mean over the selection stands for "whichever wins". With one
+  // algorithm (a direct search) that is exact rather than 4x by assumption.
+  const tuningCost =
+    findBestParams && costs.length > 0
+      ? costs.reduce(
+          (s, c, i) =>
+            s + (tuningVariants?.[algorithms[i]!] ?? TUNE_VARIANTS) * c,
+          0,
+        ) / costs.length
+      : findBestParams
+        ? TUNE_VARIANTS
+        : 0
 
   return Math.max(
     2,

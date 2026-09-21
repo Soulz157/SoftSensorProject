@@ -16,6 +16,13 @@ export interface TuningGridResponse {
   /** MODEL-FLOW-024. The size tier the variants were chosen for; `medium`
    *  when no figure was sent. */
   tier: SizeTier;
+  /** MODEL-FLOW-024. True when the variants differ from the general list for
+   *  this algorithm — a tier override, a PLS component cap or an LSTM/GRU
+   *  batch cap. Read off array identity (`tuningVariantsFor` returns the
+   *  general table itself when nothing applies), so it cannot say "sized" for
+   *  a list that is not. `tier` alone cannot: an lstm at a `tiny` tier is not
+   *  sized by it. */
+  sized: boolean;
 }
 
 /**
@@ -41,11 +48,13 @@ export class TuningGridAuthorizedService {
         type: 'ERROR',
       });
     }
+    const variants = tuningVariantsFor(algorithm, size);
     return {
       algorithm,
-      variants: tuningVariantsFor(algorithm, size),
+      variants,
       maxVariantsPerJob: TUNE_VARIANTS_PER_JOB,
-      tier: sizeTierFor(size?.distinctLabelled),
+      tier: sizeTierFor(size?.rows),
+      sized: variants !== TUNING_GRID[algorithm],
     };
   }
 }

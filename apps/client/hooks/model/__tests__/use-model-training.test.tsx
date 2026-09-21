@@ -433,7 +433,7 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
       )
     })
 
-    it('sends NEITHER figure when split-stats has not resolved — the Apply-gated null path, not a bug', async () => {
+    it('sends NEITHER figure when split-stats has not resolved and the dataset carries no row count — the honest null, not a bug', async () => {
       const { result } = renderTraining(s => {
         s.set(mpFindBestModelAtom, true)
         s.set(mpAlgorithmsAtom, ['ols', 'ridge'])
@@ -663,7 +663,51 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
     expect(body).not.toHaveProperty('sizedDistinctLabelled')
   })
 
-  it('does NOT send the dataset row count for a tabular job before Apply — that null path is unchanged', async () => {
+  // The size tier keys on rows (the user's decision, 2026-09-21), and the Step 3
+  // form sizes its ranges from the dataset's own count before Apply. The job
+  // must send that same figure, or the form would show one tier while the
+  // search ran another. These two used to assert the opposite — a tabular job
+  // before Apply sent nothing — when the tier keyed on a distinct count that
+  // only the split-stats fetch could supply.
+  it.each([
+    [
+      'a tabular HYPERPARAMETER_SEARCH',
+      (s: ReturnType<typeof createStore>) => {
+        s.set(mpFindBestParamsAtom, true)
+        s.set(mpAlgorithmsAtom, ['ridge'])
+      },
+    ],
+    [
+      'an ALGORITHM_SWEEP',
+      (s: ReturnType<typeof createStore>) => {
+        s.set(mpFindBestModelAtom, true)
+        s.set(mpAlgorithmsAtom, ['ols', 'ridge'])
+      },
+    ],
+  ])(
+    'sends the dataset row count ALONE for %s before Apply, the same figure the form sizes from',
+    async (_label, configure) => {
+      const { result } = renderTraining(s => {
+        s.set(mpSelectedDatasetAtom, {
+          ...DATASET,
+          rowCount: 400,
+        } as SavedDataset)
+        configure(s)
+      }, null)
+
+      await act(async () => {
+        result.current.start()
+        await vi.advanceTimersByTimeAsync(0)
+      })
+
+      const [, body] = vi.mocked(modelDraftCandidateJobService.create).mock
+        .calls[0]!
+      expect(body).toHaveProperty('sizedRowCount', 400)
+      expect(body).not.toHaveProperty('sizedDistinctLabelled')
+    },
+  )
+
+  it('prefers the split-stats source_rows over the dataset row count once Apply resolved', async () => {
     const { result } = renderTraining(s => {
       s.set(mpSelectedDatasetAtom, {
         ...DATASET,
@@ -671,7 +715,7 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
       } as SavedDataset)
       s.set(mpFindBestParamsAtom, true)
       s.set(mpAlgorithmsAtom, ['ridge'])
-    }, null)
+    })
 
     await act(async () => {
       result.current.start()
@@ -680,6 +724,7 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
 
     const [, body] = vi.mocked(modelDraftCandidateJobService.create).mock
       .calls[0]!
-    expect(body).not.toHaveProperty('sizedRowCount')
+    expect(body).toHaveProperty('sizedRowCount', 8350)
+    expect(body).toHaveProperty('sizedDistinctLabelled', 32)
   })
 })
