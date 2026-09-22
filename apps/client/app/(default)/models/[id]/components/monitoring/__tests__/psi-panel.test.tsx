@@ -89,6 +89,27 @@ describe('PsiPanel', () => {
     ).toBeVisible()
   })
 
+  // The monitoring tab's two cards were given the traffic-light vocabulary
+  // (Good / WARN / CRITICAL) while the INLINE badges — the Input Data
+  // feature table, the retrain dialog's context strip — deliberately kept
+  // the raw `OK` token, because there a drift badge sits beside a PI health
+  // badge that already owns the word "Good". Nothing else pins the card's
+  // side of that split, so a revert to the old pass-through label would
+  // have shipped silently.
+  it('renders the wire status OK as "Good" on the card', () => {
+    render(
+      <PsiPanel
+        report={makeReport([makeColumn({ status: 'OK', psi: 0.01 })])}
+        loading={false}
+        unavailableReason={null}
+      />,
+    )
+
+    // Header badge and the one column row: both read Good, neither reads OK.
+    expect(screen.getAllByText('Good')).toHaveLength(2)
+    expect(screen.queryByText('OK')).toBeNull()
+  })
+
   it('renders its own loading rung, independent of any drift state', () => {
     render(<PsiPanel report={null} loading={true} unavailableReason={null} />)
     expect(screen.getByText(/loading psi report/i)).toBeVisible()
@@ -192,6 +213,30 @@ describe('PsiPanel', () => {
     expect(screen.getByText('[0, 10)')).toBeVisible()
     // The last bin is closed on the right, per psi.py's own convention.
     expect(screen.getByText('[90, 100]')).toBeVisible()
+  })
+
+  // The status badge became a real <button> when the explanation tooltip
+  // was added, and `onToggle` lives on the <tr> — so without
+  // stopPropagation, reaching for the badge would silently open the bin
+  // drill-down. Hovering to read a verdict is not a row action.
+  it('clicking the status badge does not toggle the drill-down', () => {
+    render(
+      <PsiPanel
+        report={makeReport([makeColumn()])}
+        loading={false}
+        unavailableReason={null}
+      />,
+    )
+
+    // Scoped to the ROW's badge — the card header carries an identically
+    // worded one, and only the row's sits inside the clickable <tr>.
+    const row = screen.getByText('TI-101').closest('tr')
+    expect(row).not.toBeNull()
+    fireEvent.click(within(row!).getByText('CRITICAL'))
+
+    expect(
+      screen.queryByRole('columnheader', { name: 'Bin' }),
+    ).not.toBeInTheDocument()
   })
 
   it('second click closes the drill-down', () => {

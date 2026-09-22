@@ -1,8 +1,11 @@
 'use client'
 
-import { Badge } from '@/components/ui/badge'
 import type { DriftReport } from '@/services/model-monitoring'
-import { DRIFT_STATUS_CLASS } from '@/lib/drift-status-style'
+import {
+  explainDriftColumn,
+  explainDriftReport,
+} from '@/lib/monitoring-status-explain'
+import { StatusBadgeWithExplanation } from './status-badge-with-explanation'
 
 interface Props {
   report: DriftReport | null
@@ -27,11 +30,12 @@ interface Props {
  * (PSI needs `binCount * minSamplesPerBin` live samples this table's
  * z-score has no equivalent floor for).
  *
- * Status colors live in `lib/drift-status-style.ts` — hoisted there once
- * the Input Data tab's feature table became a second consumer of the same
- * palette; see that module for the rationale (not the red/amber
- * deploy-status vocabulary). `PsiPanel` reads the same module's
- * `PSI_STATUS_CLASS`.
+ * Status colours and wording are no longer applied here at all —
+ * `StatusBadgeWithExplanation` derives both from the status it is given
+ * (`lib/drift-status-style.ts`), so this table cannot pair one verdict's
+ * word with another's colour. That treatment is now shared by every
+ * drift and PSI badge in the app: this card, `PsiPanel`, the Input Data
+ * feature table and the retrain dialog.
  *
  * MODEL-SERVE-001-T17: this z-score is no longer /predict-only. A model
  * with an InferenceSchedule now reads pooled `InferenceWindow.featureStats`
@@ -101,9 +105,10 @@ export function DriftPanel({ report, loading, unavailableReason }: Props) {
           {report.basis.sampleRequests === 1 ? '' : 's'} vs. version{' '}
           {report.basis.version}&apos;s training distribution
         </span>
-        <Badge className={`border-0 ${DRIFT_STATUS_CLASS[report.status]}`}>
-          {report.status}
-        </Badge>
+        <StatusBadgeWithExplanation
+          status={report.status}
+          explanation={explainDriftReport(report)}
+        />
       </div>
       <div className="overflow-x-auto rounded-lg border border-border">
         <table className="w-full text-xs">
@@ -138,12 +143,17 @@ export function DriftPanel({ report, loading, unavailableReason }: Props) {
                 </td>
                 <td className="px-3 py-2 text-right font-mono">{col.n}</td>
                 <td className="px-3 py-2">
-                  <Badge
-                    className={`border-0 ${DRIFT_STATUS_CLASS[col.status]}`}
-                    title={col.reason}
-                  >
-                    {col.status}
-                  </Badge>
+                  {/* `col.reason` is no longer a native `title` — it is
+                      folded into the tooltip body by `explainDriftColumn`,
+                      alongside the measured-vs-threshold lines a `title`
+                      could never render. */}
+                  <StatusBadgeWithExplanation
+                    status={col.status}
+                    explanation={explainDriftColumn(
+                      col,
+                      report.basis.thresholds,
+                    )}
+                  />
                 </td>
               </tr>
             ))}

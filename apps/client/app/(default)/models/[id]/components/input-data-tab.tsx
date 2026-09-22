@@ -212,7 +212,10 @@ export function InputDataTab({ model, frozenColumns, frozenSince }: Props) {
           // resolved — so the table renders immediately and its status
           // column fills in as drift/traffic loads, rather than blocking
           // the whole X list behind a second spinner.
-          <InputFeatureTable rows={rows} />
+          <InputFeatureTable
+            rows={rows}
+            driftThresholds={drift?.basis.thresholds}
+          />
         )}
       </Card>
     </div>

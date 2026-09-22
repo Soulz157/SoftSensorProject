@@ -38,6 +38,12 @@ import {
   type BoundedSample,
 } from '@/lib/preprocessing'
 import { tagDistribution } from '@/lib/data-quality'
+import { CHART_MAX_POINTS, downsampleRows } from '@/lib/downsample'
+import {
+  describePreviewWindow,
+  windowLabel,
+  type EdaWindowControl,
+} from '@/lib/time-window'
 import type { TimeRange } from '@/lib/mock-readings'
 import {
   dwDraftIdAtom,
@@ -67,6 +73,7 @@ import { TagBoxplotChart } from '../chart/tag-boxplot-chart'
 import { TagScatterChart } from '../chart/tag-scatter-chart'
 import { TagCorrelationChart } from '../chart/tag-correlation-chart'
 import { CompareTagsPopover } from './compare-tags-popover'
+import { MonthWindowSelect } from './month-window-select'
 import { FeatureTransformDialog } from '../feature-engineering/transformation-panel'
 import { ScrollArea } from '@/components/ui/scroll-area'
 
@@ -116,6 +123,14 @@ interface Props {
    * `isolated` (see `explicit` below).
    */
   showTagSelector?: boolean
+  /**
+   * Period picker, plus what is needed to caption the loaded page honestly.
+   * The CALLER owns the window because it also owns the fetch of `dataset`:
+   * this card can re-scope only its own server-computed tabs (histogram, box,
+   * scatter, correlation), not the rows it is handed. Leaving it off shows no
+   * picker and every tab reads the whole artifact, as before.
+   */
+  edaWindow?: EdaWindowControl
 }
 type TabStatus = 'no-tags' | 'pending' | 'loading' | 'ready' | 'unavailable'
 
@@ -185,6 +200,7 @@ export function DataAnalysisCard({
   artifactId,
   showTransforms = true,
   showTagSelector = false,
+  edaWindow,
 }: Props) {
   // Declared before the tag-selection hook because it also decides WHERE that
   // selection lives, not just which artifact routes are read: a caller naming
@@ -271,6 +287,7 @@ export function DataAnalysisCard({
   const draftMeta = useDatasetArtifactMetadata(dfId, dfArtifactId)
   const dsMeta = useArtifactMetadata(dsId, dsArtifactId)
   const analysisMetadata = useDatasetLeg ? dsMeta.metadata : draftMeta.metadata
+  const timeWindow = edaWindow?.value ?? null
 
   const artifactTags = useMemo(() => {
     if (!analysisMetadata) return []
@@ -299,15 +316,40 @@ export function DataAnalysisCard({
             ? 'loading'
             : 'ready'
 
-  const draftHist = useDatasetHistogram(dfId, dfArtifactId, compareTags)
-  const dsHist = useArtifactHistogram(dsId, dsArtifactId, compareTags)
+  const draftHist = useDatasetHistogram(
+    dfId,
+    dfArtifactId,
+    compareTags,
+    undefined,
+    timeWindow,
+  )
+  const dsHist = useArtifactHistogram(
+    dsId,
+    dsArtifactId,
+    compareTags,
+    undefined,
+    timeWindow,
+  )
   const { histogram, loading: histogramLoading } = useDatasetLeg
     ? dsHist
     : draftHist
   const histogramStatus = statusFor(compareTags.length > 0, histogramLoading)
 
-  const draftBox = useDatasetBoxplot(dfId, dfArtifactId, compareTags)
-  const dsBox = useArtifactBoxplot(dsId, dsArtifactId, compareTags)
+  const draftBox = useDatasetBoxplot(
+    dfId,
+    dfArtifactId,
+    compareTags,
+    undefined,
+    undefined,
+    timeWindow,
+  )
+  const dsBox = useArtifactBoxplot(
+    dsId,
+    dsArtifactId,
+    compareTags,
+    undefined,
+    timeWindow,
+  )
   const { boxplot, loading: boxplotLoading } = useDatasetLeg ? dsBox : draftBox
   const boxplotStatus = statusFor(compareTags.length > 0, boxplotLoading)
 
@@ -350,12 +392,16 @@ export function DataAnalysisCard({
     dfArtifactId,
     scatterXTag,
     scatterYTag,
+    undefined,
+    undefined,
+    timeWindow,
   )
   const dsScatter = useArtifactScatter(
     dsId,
     dsArtifactId,
     scatterXTag,
     scatterYTag,
+    timeWindow,
   )
   const { scatter, loading: scatterLoading } = useDatasetLeg
     ? dsScatter
@@ -374,8 +420,22 @@ export function DataAnalysisCard({
   // + hard cap (DS-LAKE-005B-D-T05a/T05b) over whatever candidate list is
   // sent, so sending more than will be shown is by design, not waste.
 
-  const draftCorr = useDatasetCorrelation(dfId, dfArtifactId, artifactTags)
-  const dsCorr = useArtifactCorrelation(dsId, dsArtifactId, artifactTags)
+  const draftCorr = useDatasetCorrelation(
+    dfId,
+    dfArtifactId,
+    artifactTags,
+    undefined,
+    undefined,
+    timeWindow,
+  )
+  const dsCorr = useArtifactCorrelation(
+    dsId,
+    dsArtifactId,
+    artifactTags,
+    undefined,
+    undefined,
+    timeWindow,
+  )
   const { correlation, loading: correlationLoading } = useDatasetLeg
     ? dsCorr
     : draftCorr
@@ -424,6 +484,22 @@ export function DataAnalysisCard({
   const showScaled = scaledView && scaledTagCount > 0
 
   const chartRows = useMemo(() => toChartRows(dataset), [dataset])
+  // Recharts draws one SVG path per tag, so a 10,000-row page is thinned to
+  // what the chart can draw without lagging (peaks kept). The raw table is
+  // virtualised and the stat table is arithmetic, so both still read every
+  // loaded row.
+  const trend = useMemo(
+    () => downsampleRows(chartRows, activeTags, CHART_MAX_POINTS),
+    [chartRows, activeTags],
+  )
+  const previewCaption = describePreviewWindow({
+    loadedRows: edaWindow?.loadedRows ?? dataset.rows.length,
+    totalRows: edaWindow?.totalRows ?? null,
+    window: timeWindow,
+  })
+  // Suffix for the tabs the SERVER computes: they read the saved artifact
+  // inside the window, not the loaded page.
+  const serverScope = timeWindow ? ` for ${windowLabel(timeWindow)}` : ''
   const statRows = useMemo(
     () => activeTags.map(tag => ({ tag, ...tagDistribution(dataset, tag) })),
     [dataset, activeTags],
@@ -451,6 +527,16 @@ export function DataAnalysisCard({
         <h2 className="text-sm font-semibold text-foreground">
           Data Analysis &amp; Visualization
         </h2>
+        {edaWindow && (
+          <MonthWindowSelect
+            className="ml-auto"
+            startTime={analysisMetadata?.startTime}
+            endTime={analysisMetadata?.endTime}
+            value={edaWindow.value}
+            onChange={edaWindow.onChange}
+            loading={edaWindow.loading}
+          />
+        )}
       </div>
 
       {artifactUnavailable && (
@@ -575,10 +661,12 @@ export function DataAnalysisCard({
         <div className="min-w-0">
           <TabsContent value="line" className="mt-0">
             <p className="mb-3 text-[11px] text-muted-foreground">
-              Preview window — a bounded sample, not the full artifact.
+              {previewCaption}
+              {trend.downsampled &&
+                ` The chart draws ${trend.rows.length.toLocaleString('en-US')} of them, keeping peaks — pick a month for full detail.`}
             </p>
             <RawTrendChart
-              rows={chartRows}
+              rows={trend.rows}
               tags={activeTags}
               range={range}
               hideTagSelector={!showTagSelector}
@@ -594,7 +682,7 @@ export function DataAnalysisCard({
           </TabsContent>
           <TabsContent value="raw-table" className="mt-0">
             <p className="mb-3 text-[11px] text-muted-foreground">
-              Preview window — a bounded sample, not the full artifact.
+              {previewCaption}
             </p>
             <RawReadingsTable
               dataset={showScaled ? scaledDataset : dataset}
@@ -604,8 +692,8 @@ export function DataAnalysisCard({
           <TabsContent value="histogram" className="mt-0">
             {histogramStatus === 'ready' && (
               <p className="mb-3 text-[11px] text-muted-foreground">
-                Computed on the saved artifact — crop and outlier rules below
-                are not reflected here yet.
+                Computed on the saved artifact{serverScope} — crop and outlier
+                rules below are not reflected here yet.
               </p>
             )}
             <TagHistogramChart
@@ -617,8 +705,8 @@ export function DataAnalysisCard({
           <TabsContent value="boxplot" className="mt-0">
             {boxplotStatus === 'ready' && (
               <p className="mb-3 text-[11px] text-muted-foreground">
-                Computed on the saved artifact — crop and outlier rules below
-                are not reflected here yet.
+                Computed on the saved artifact{serverScope} — crop and outlier
+                rules below are not reflected here yet.
               </p>
             )}
             <TagBoxplotChart
@@ -630,8 +718,8 @@ export function DataAnalysisCard({
           <TabsContent value="scatter" className="mt-0">
             {scatterStatus === 'ready' && (
               <p className="mb-3 text-[11px] text-muted-foreground">
-                Computed on the saved artifact — crop and outlier rules below
-                are not reflected here yet.
+                Computed on the saved artifact{serverScope} — crop and outlier
+                rules below are not reflected here yet.
               </p>
             )}
             <TagScatterChart
@@ -644,8 +732,8 @@ export function DataAnalysisCard({
           <TabsContent value="correlation" className="mt-0">
             {correlationStatus === 'ready' && (
               <p className="mb-3 text-[11px] text-muted-foreground">
-                Computed on the saved artifact — crop and outlier rules below
-                are not reflected here yet.
+                Computed on the saved artifact{serverScope} — crop and outlier
+                rules below are not reflected here yet.
                 {pendingFeatureCount > 0 && (
                   <>
                     {' '}
@@ -668,9 +756,9 @@ export function DataAnalysisCard({
       {statRows.length > 0 && (
         <div className="space-y-2">
           <p className="text-[11px] text-muted-foreground">
-            Computed over the preview window shown above — a bounded sample, not
-            the full artifact. Per-tag statistics elsewhere on this page may
-            differ; those are computed over the entire artifact.
+            Computed over the loaded rows — {previewCaption} Per-tag statistics
+            elsewhere on this page may differ; those are computed over the
+            entire artifact.
           </p>
           <div className="rounded-lg border border-border overflow-hidden">
             <ScrollArea className="h-90 w-full overflow-auto">

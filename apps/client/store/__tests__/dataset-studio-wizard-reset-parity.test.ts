@@ -3,6 +3,9 @@ import { createStore } from 'jotai'
 import {
   initDatasetWizardAtom,
   initDatasetWizardForEditAtom,
+  resetDatasetWizardAtom,
+  dwEdaSampleTotalAtom,
+  dwEdaWindowAtom,
   dwFeaturePreviewSampleAtom,
   dwFeaturePreviewSampleStateAtom,
   dwFeaturedDatasetAtom,
@@ -17,6 +20,7 @@ import {
 } from '@/store/dataset-studio'
 import { brandBoundedSample } from '@/lib/preprocessing'
 import { EMPTY_PIPELINE_CONFIG } from '@/lib/pipeline-config'
+import { monthWindow } from '@/lib/time-window'
 
 /**
  * Bug: editing a dataset, then opening Create New Dataset, showed the prior
@@ -176,5 +180,56 @@ describe('initDatasetWizardAtom clears the draft-first server state group', () =
     store.set(initDatasetWizardAtom, SEED)
 
     expect(store.get(dwFeaturedDatasetAtom).tags).toEqual([])
+  })
+
+  it('clears the EDA period and its row total — a month left over would filter the next dataset to nothing', () => {
+    const store = createStore()
+    store.set(dwEdaWindowAtom, monthWindow(2026, 3))
+    store.set(dwEdaSampleTotalAtom, 43_200)
+
+    store.set(initDatasetWizardAtom, SEED)
+
+    expect(store.get(dwEdaWindowAtom)).toBeNull()
+    expect(store.get(dwEdaSampleTotalAtom)).toBeNull()
+  })
+
+  it('resetDatasetWizardAtom and initDatasetWizardForEditAtom clear the EDA period too', () => {
+    const seeded = () => {
+      const store = createStore()
+      store.set(dwEdaWindowAtom, monthWindow(2026, 3))
+      store.set(dwEdaSampleTotalAtom, 43_200)
+      return store
+    }
+
+    const reset = seeded()
+    reset.set(resetDatasetWizardAtom)
+    expect(reset.get(dwEdaWindowAtom)).toBeNull()
+    expect(reset.get(dwEdaSampleTotalAtom)).toBeNull()
+
+    const edit = seeded()
+    edit.set(initDatasetWizardForEditAtom, {
+      dataset: {
+        id: 'ds-1',
+        name: 'Edited',
+        description: null,
+        workspaceId: 'ws-2',
+        sourceIds: [],
+        tags: ['TI-200'],
+        pipelineConfig: EMPTY_PIPELINE_CONFIG,
+        fileUrl: null,
+        rowCount: 0,
+        missingPct: 0,
+        currentVersionId: null,
+        currentArtifactId: null,
+        currentArtifactType: null,
+        adoptedBronzeArtifactId: null,
+        createdAt: '2026-01-01T00:00:00Z',
+        updatedAt: '2026-01-01T00:00:00Z',
+        createdBy: 'user-1',
+      },
+      sources: [],
+    })
+    expect(edit.get(dwEdaWindowAtom)).toBeNull()
+    expect(edit.get(dwEdaSampleTotalAtom)).toBeNull()
   })
 })

@@ -29,6 +29,50 @@ const log = new Logger('ArtifactBaseline');
  */
 
 /**
+ * MODEL-SERVE-001-T30 (list-payload frozen detection). `goldObjectKey` names
+ * an IMMUTABLE artifact — a production version's GOLD parquet never changes
+ * once trained, and re-promoting a model onto a new artifact produces a NEW
+ * key rather than mutating the old one. So a successful read here can never
+ * go stale, which is what makes caching by this key safe rather than merely
+ * convenient.
+ *
+ * WHY THIS EXISTS NOW, NOT WHEN THE FUNCTION WAS WRITTEN. Every existing
+ * caller reads a baseline for ONE model, once, inside a single request —
+ * `getDriftService`/`getPsiService`/`getHealthStatus`. `deriveDeployStatuses`
+ * (deploy-status.ts) is the first caller to run this on the LIST path, which
+ * means the SAME set of models' SAME keys get re-fetched on every Alerts/
+ * Overview/sidebar poll. Uncached, that is an HTTP round trip to apps/python
+ * per enabled model, repeated on a timer, for data that cannot have changed.
+ *
+ * CACHES THE PROMISE, NOT ONLY THE RESOLVED VALUE — collapses concurrent
+ * callers asking for the same key (the batched derivation's own
+ * `Promise.all` over enabled models, plus overlapping requests) into one
+ * in-flight sidecar call rather than one each.
+ *
+ * A FAILURE IS NEVER CACHED. A missing/unreachable sidecar returns `{}` (see
+ * below) so the caller degrades gracefully — but `{}` is a fact about THIS
+ * attempt, not about the artifact, and remembering it would turn a transient
+ * outage into a permanent one until process restart. Only a resolved,
+ * successfully-parsed result is stored.
+ *
+ * UNBOUNDED BY DESIGN, NOT BY OVERSIGHT: bounded by the number of DISTINCT
+ * production GOLD artifacts this process ever serves, not by request volume
+ * — a small, slowly-growing set in practice. Add eviction if that stops
+ * being true; it is not a problem this task has evidence of.
+ */
+const columnBaselineCache = new Map<string, Promise<ColumnBaselineMap>>();
+
+/** Test-only. Every existing spec that mocks the sidecar call reuses one
+ *  literal `goldObjectKey` across several `it()` blocks with DIFFERENT mock
+ *  configurations for the same key — exactly the case a persistent cache
+ *  would poison (a later test silently seeing an earlier test's cached
+ *  result instead of its own mock). Call this from `afterEach`/`beforeEach`
+ *  in any spec that configures `postToPython` for column-stats. */
+export function resetColumnBaselineCacheForTests(): void {
+  columnBaselineCache.clear();
+}
+
+/**
  * Reads `column_stats.json` for a PRODUCTION version's own training
  * artifact — the SAME sidecar `getArtifactColumnStatsService` serves.
  *
@@ -41,7 +85,10 @@ const log = new Logger('ArtifactBaseline');
 export async function resolveColumnBaseline(
   goldObjectKey: string,
 ): Promise<ColumnBaselineMap> {
-  try {
+  const cached = columnBaselineCache.get(goldObjectKey);
+  if (cached) return cached;
+
+  const attempt = (async () => {
     const result = PythonColumnStatsSchema.parse(
       await postToPython(
         '/v1/preprocess/column-stats',
@@ -60,7 +107,16 @@ export async function resolveColumnBaseline(
       };
     }
     return baseline;
+  })();
+
+  // Cached BEFORE it settles, so concurrent callers share the one in-flight
+  // attempt — then evicted on failure so the next call retries fresh rather
+  // than replaying a rejection nothing here would otherwise clear.
+  columnBaselineCache.set(goldObjectKey, attempt);
+  try {
+    return await attempt;
   } catch (err) {
+    columnBaselineCache.delete(goldObjectKey);
     log.warn(
       `column_stats unavailable for ${goldObjectKey}; drift will report every column UNKNOWN: ${(err as Error).message}`,
     );

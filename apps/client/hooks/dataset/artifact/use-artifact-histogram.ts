@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { datasetArtifactService } from '@/services/dataset-version'
 import type { DraftHistogramResult } from '@/services/dataset-draft'
+import type { TimeWindow } from '@/lib/time-window'
 
 export interface ArtifactHistogramState {
   histogram: DraftHistogramResult | null
@@ -34,6 +35,8 @@ export function useArtifactHistogram(
    * their data, rather than one side's head window covering less of itself
    * than the other's. */
   sampleRows?: number,
+  /** Inclusive window applied server-side. `null`/omitted = whole artifact. */
+  timeWindow?: TimeWindow | null,
 ): ArtifactHistogramState {
   const [histogram, setHistogram] = useState<DraftHistogramResult | null>(null)
   const [loading, setLoading] = useState(false)
@@ -43,6 +46,9 @@ export function useArtifactHistogram(
   // `tags` is a fresh array identity every render — key the effect on the
   // joined string, or it re-fires forever.
   const tagsKey = tags.join(',')
+  // Primitives, not the object: a `TimeWindow` is a fresh identity per render.
+  const startTime = timeWindow?.startTime
+  const endTime = timeWindow?.endTime
 
   useEffect(() => {
     const token = ++tokenRef.current
@@ -64,6 +70,8 @@ export function useArtifactHistogram(
         {
           tags: tagsKey.split(','),
           ...(sampleRows && { sampleRows }),
+          ...(startTime && { startTime }),
+          ...(endTime && { endTime }),
         },
         ac.signal,
       )
@@ -82,7 +90,7 @@ export function useArtifactHistogram(
       })
 
     return () => ac.abort()
-  }, [datasetId, artifactId, tagsKey, sampleRows])
+  }, [datasetId, artifactId, tagsKey, sampleRows, startTime, endTime])
 
   return { histogram, loading, error }
 }

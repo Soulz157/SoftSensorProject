@@ -677,6 +677,46 @@ describe('DatasetVersionAuthorizedService — getArtifactValidationRowsService (
     );
   });
 
+  it('forwards a startTime/endTime window to Python, so the compare view can page one month of the holdout', async () => {
+    const prisma = buildPrisma();
+    prisma.datasetArtifact.findFirst
+      .mockResolvedValueOnce({ runId: 'run-1' })
+      .mockResolvedValueOnce({
+        objectKey: 'ds-1/artifacts/silver-1/data_silver.parquet',
+        validationRowCount: 576,
+        validationHoldoutFrom: new Date('2026-01-27T17:00:00.000Z'),
+        validationMissingPct: 0,
+      });
+    post.mockResolvedValue(ROW_PAGE);
+    const { service } = makeService(prisma);
+
+    await service.getArtifactValidationRowsService(
+      USER,
+      'ds-1',
+      'artifact-final',
+      {
+        offset: 0,
+        limit: 10000,
+        tags: ['TI-101'],
+        startTime: '2026-03-01 00:00:00',
+        endTime: '2026-03-31 23:59:59.999999',
+      } as never,
+    );
+
+    expect(post).toHaveBeenCalledWith(
+      '/v1/preprocess/rows',
+      {
+        source_key: 'ds-1/artifacts/silver-1/validate_data.parquet',
+        offset: 0,
+        limit: 10000,
+        tags: ['TI-101'],
+        start_time: '2026-03-01 00:00:00',
+        end_time: '2026-03-31 23:59:59.999999',
+      },
+      expect.any(Number),
+    );
+  });
+
   it('404s when the run has no validation holdout, never returning rows: null', async () => {
     const prisma = buildPrisma();
     prisma.datasetArtifact.findFirst

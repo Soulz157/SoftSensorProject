@@ -4,6 +4,17 @@ import {
   isStale,
   overlayDeployStatus,
 } from './deploy-status';
+import { resolveColumnBaseline } from '@/lib/artifact-baseline';
+
+// MODEL-SERVE-001-T30. `deriveDeployStatuses` now calls `resolveColumnBaseline`
+// (an HTTP round trip to apps/python, in the real implementation) whenever an
+// enabled schedule has a production version AND a window carrying
+// `featureStats`. Mocked here so a fixture that reaches that branch cannot
+// make a real network call during this suite — every OTHER existing test in
+// this file has empty `inferenceWindow.findMany`/`modelVersion.findMany`
+// fixtures and never reaches it at all.
+jest.mock('@/lib/artifact-baseline');
+const mockedResolveColumnBaseline = resolveColumnBaseline as jest.Mock;
 
 describe('classifyDeployStatus (MODEL-SERVE-006-T12, reshaped by T26)', () => {
   it('is stopped when the schedule is not enabled, regardless of history', () => {
@@ -366,9 +377,7 @@ describe('deriveDeployStatuses (batched)', () => {
     });
     const prisma = buildPrisma({
       inferenceSchedule: {
-        findMany: jest
-          .fn()
-          .mockResolvedValue([schedule('m1'), schedule('m2')]),
+        findMany: jest.fn().mockResolvedValue([schedule('m1'), schedule('m2')]),
       },
       inferenceWindow: {
         groupBy: jest.fn().mockResolvedValue([
@@ -411,11 +420,11 @@ describe('deriveDeployStatuses (batched)', () => {
     // m1 has the pairs: the list now carries a REAL graded verdict, which is
     // the whole point of T08 — before it, this payload could only ever emit
     // OFF or a liveness ALERT.
-    expect(result.m1!.monitoring.status).toBe('ALERT');
-    expect(result.m1!.monitoring.reason).toBe('RESIDUAL_SD_CRITICAL');
+    expect(result.m1.monitoring.status).toBe('ALERT');
+    expect(result.m1.monitoring.reason).toBe('RESIDUAL_SD_CRITICAL');
     // m2 has a production version but NO joined pairs — UNKNOWN, never OK,
     // and so it stays OFF on this liveness-only payload.
-    expect(result.m2!.monitoring.status).toBe('OFF');
+    expect(result.m2.monitoring.status).toBe('OFF');
   });
 
   it('returns an empty object for an empty id list without querying', async () => {
@@ -738,5 +747,242 @@ describe('deriveDeployStatuses (batched)', () => {
     // the same distinction getStatusService's lastFailure/lastSkipped split
     // already draws. It must not leak into this field.
     expect(result.m1?.lastFailure).toBeNull();
+  });
+});
+
+/**
+ * MODEL-SERVE-001-T30. Frozen detection on the LIST path, wired into the
+ * SAME per-model window read `lastFailure` already used — see that
+ * describe block's own query-count test for why this does not add a new
+ * query beyond widening the existing one.
+ *
+ * `resolveColumnBaseline` is mocked at the top of this file; every fixture
+ * below sets `featureStats` EXPLICITLY (never omits it) on every window,
+ * because `null` — not "the field happens to be absent" — is what the real
+ * Prisma client always returns for a JSON column with no value, and the
+ * production filter (`s !== null`) relies on exactly that guarantee.
+ */
+describe('deriveDeployStatuses — frozen detection (MODEL-SERVE-001-T30)', () => {
+  // `mockedResolveColumnBaseline` is declared ONCE at module scope (the
+  // `jest.mock` above), unlike `prisma`, which every test rebuilds fresh via
+  // `buildPrisma()` — so its call history survives between `it()` blocks
+  // unless cleared here.
+  afterEach(() => {
+    mockedResolveColumnBaseline.mockClear();
+  });
+
+  function buildPrisma(overrides: Record<string, unknown> = {}) {
+    return {
+      inferenceSchedule: { findMany: jest.fn().mockResolvedValue([]) },
+      inferenceWindow: {
+        groupBy: jest.fn().mockResolvedValue([]),
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+      modelVersion: { findMany: jest.fn().mockResolvedValue([]) },
+      inferenceWindowTruth: { groupBy: jest.fn().mockResolvedValue([]) },
+      ...overrides,
+    } as unknown as Parameters<typeof deriveDeployStatuses>[0];
+  }
+
+  const SCHEDULE = {
+    modelId: 'm1',
+    enabled: true,
+    cadenceMinutes: 60,
+    lagMinutes: 15,
+    preflightOk: true,
+    skipStreakAlert: 3,
+    missingPctWarn: 5,
+    missingPctAlert: 20,
+    warnSd: 1.5,
+    criticalSd: 3.0,
+    frozenWindows: 3,
+    frozenTolerancePct: 0,
+  };
+
+  const PRODUCTION_VERSION = {
+    id: 'v1',
+    modelId: 'm1',
+    metrics: null,
+    goldObjectKey: 'models/m1/versions/v1/gold/data.parquet',
+  };
+
+  const BASELINE = {
+    tag_a: { mean: 10, std: 2, percentiles: { p1: 4, p99: 16 } },
+  };
+
+  it('reports the same FROZEN verdict the single-model path would, from windows this batched query already fetches', async () => {
+    mockedResolveColumnBaseline.mockResolvedValue(BASELINE);
+    // Flat across all three windows: min === max === 12. The baseline's own
+    // std is 2 (not near-zero), so guard (1) — "already flat in training" —
+    // does not skip it. Mirrors sensor-frozen.spec.ts's own fixture.
+    const FLAT = {
+      status: 'SUCCEEDED',
+      failureReason: null,
+      windowStart: new Date(),
+      featureStats: {
+        tag_a: { n: 10, sum: 120, sumsq: 1440, min: 12, max: 12 },
+      },
+    };
+    const prisma = buildPrisma({
+      inferenceSchedule: { findMany: jest.fn().mockResolvedValue([SCHEDULE]) },
+      inferenceWindow: {
+        groupBy: jest
+          .fn()
+          .mockResolvedValue([
+            { modelId: 'm1', _max: { windowStart: new Date() } },
+          ]),
+        findMany: jest.fn().mockResolvedValue([FLAT, FLAT, FLAT]),
+      },
+      modelVersion: {
+        findMany: jest.fn().mockResolvedValue([PRODUCTION_VERSION]),
+      },
+    });
+
+    const result = await deriveDeployStatuses(prisma, ['m1']);
+
+    expect(mockedResolveColumnBaseline).toHaveBeenCalledWith(
+      'models/m1/versions/v1/gold/data.parquet',
+    );
+    expect(result.m1?.monitoring.status).toBe('FROZEN');
+    expect(result.m1?.monitoring.reason).toBe('SENSOR_FROZEN');
+    expect(result.m1?.monitoring.frozenColumns).toEqual(['tag_a']);
+  });
+
+  it('never calls resolveColumnBaseline when the model has no production version', async () => {
+    const FLAT = {
+      status: 'SUCCEEDED',
+      failureReason: null,
+      windowStart: new Date(),
+      featureStats: {
+        tag_a: { n: 10, sum: 120, sumsq: 1440, min: 12, max: 12 },
+      },
+    };
+    const prisma = buildPrisma({
+      inferenceSchedule: { findMany: jest.fn().mockResolvedValue([SCHEDULE]) },
+      inferenceWindow: {
+        groupBy: jest
+          .fn()
+          .mockResolvedValue([
+            { modelId: 'm1', _max: { windowStart: new Date() } },
+          ]),
+        findMany: jest.fn().mockResolvedValue([FLAT, FLAT, FLAT]),
+      },
+      // Default modelVersion.findMany: [] — no production version.
+    });
+
+    const result = await deriveDeployStatuses(prisma, ['m1']);
+
+    expect(mockedResolveColumnBaseline).not.toHaveBeenCalled();
+    expect(result.m1?.monitoring.frozenColumns).toEqual([]);
+  });
+
+  it('never calls resolveColumnBaseline when no window in the sample carries featureStats', async () => {
+    const NO_STATS = {
+      status: 'SUCCEEDED',
+      failureReason: null,
+      windowStart: new Date(),
+      featureStats: null,
+    };
+    const prisma = buildPrisma({
+      inferenceSchedule: { findMany: jest.fn().mockResolvedValue([SCHEDULE]) },
+      inferenceWindow: {
+        groupBy: jest
+          .fn()
+          .mockResolvedValue([
+            { modelId: 'm1', _max: { windowStart: new Date() } },
+          ]),
+        findMany: jest.fn().mockResolvedValue([NO_STATS, NO_STATS, NO_STATS]),
+      },
+      modelVersion: {
+        findMany: jest.fn().mockResolvedValue([PRODUCTION_VERSION]),
+      },
+    });
+
+    const result = await deriveDeployStatuses(prisma, ['m1']);
+
+    expect(mockedResolveColumnBaseline).not.toHaveBeenCalled();
+    expect(result.m1?.monitoring.frozenColumns).toEqual([]);
+  });
+
+  it('calls resolveColumnBaseline but reports no frozen columns when the tag is genuinely moving', async () => {
+    mockedResolveColumnBaseline.mockResolvedValue(BASELINE);
+    const windows = [
+      {
+        status: 'SUCCEEDED',
+        failureReason: null,
+        windowStart: new Date(),
+        featureStats: {
+          tag_a: { n: 10, sum: 100, sumsq: 1005, min: 9, max: 11 },
+        },
+      },
+      {
+        status: 'SUCCEEDED',
+        failureReason: null,
+        windowStart: new Date(),
+        featureStats: {
+          tag_a: { n: 10, sum: 110, sumsq: 1220, min: 10, max: 12 },
+        },
+      },
+      {
+        status: 'SUCCEEDED',
+        failureReason: null,
+        windowStart: new Date(),
+        featureStats: {
+          tag_a: { n: 10, sum: 90, sumsq: 815, min: 8, max: 10 },
+        },
+      },
+    ];
+    const prisma = buildPrisma({
+      inferenceSchedule: { findMany: jest.fn().mockResolvedValue([SCHEDULE]) },
+      inferenceWindow: {
+        groupBy: jest
+          .fn()
+          .mockResolvedValue([
+            { modelId: 'm1', _max: { windowStart: new Date() } },
+          ]),
+        findMany: jest.fn().mockResolvedValue(windows),
+      },
+      modelVersion: {
+        findMany: jest.fn().mockResolvedValue([PRODUCTION_VERSION]),
+      },
+    });
+
+    const result = await deriveDeployStatuses(prisma, ['m1']);
+
+    expect(mockedResolveColumnBaseline).toHaveBeenCalled();
+    expect(result.m1?.monitoring.frozenColumns).toEqual([]);
+    expect(result.m1?.monitoring.status).not.toBe('FROZEN');
+  });
+
+  it("widens take to the schedule's own frozenWindows, not a flat 3", async () => {
+    mockedResolveColumnBaseline.mockResolvedValue(BASELINE);
+    const findMany = jest.fn().mockResolvedValue([]);
+    const prisma = buildPrisma({
+      inferenceSchedule: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([{ ...SCHEDULE, frozenWindows: 10 }]),
+      },
+      inferenceWindow: {
+        groupBy: jest
+          .fn()
+          .mockResolvedValue([
+            { modelId: 'm1', _max: { windowStart: new Date() } },
+          ]),
+        findMany,
+      },
+      modelVersion: {
+        findMany: jest.fn().mockResolvedValue([PRODUCTION_VERSION]),
+      },
+    });
+
+    await deriveDeployStatuses(prisma, ['m1']);
+
+    // A fixed 3 against an operator-set 10 could never gather enough
+    // evidence to badge anything — the exact "settings that appear to work
+    // and may do nothing" defect T21's audit found, now on the list path.
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ take: 10 }),
+    );
   });
 });

@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { datasetDraftService } from '@/services/dataset-draft'
 import type { DraftHistogramResult } from '@/services/dataset-draft'
 import type { CleaningOperationInput } from '@/services/dataset-version'
+import { windowKey, windowParams, type TimeWindow } from '@/lib/time-window'
 import { useDebouncedAbortableRequest } from './internal/use-debounced-abortable-request'
 
 export interface DatasetHistogramState {
@@ -38,6 +39,8 @@ export function useDatasetHistogram(
   artifactId: string | null,
   tags: string[],
   operations: CleaningOperationInput[] = [],
+  /** Inclusive window applied server-side. `null`/omitted = whole artifact. */
+  timeWindow?: TimeWindow | null,
 ): DatasetHistogramState {
   const [histogram, setHistogram] = useState<DraftHistogramResult | null>(null)
   const [loading, setLoading] = useState(false)
@@ -53,7 +56,7 @@ export function useDatasetHistogram(
   // CACHE KEY DISCIPLINE (chart-request-cache.ts's own header): every field
   // that determines the response must be in the key, not just `opsKey`.
   const cacheKey = enabled
-    ? `histogram|${draftId}|${artifactId}|${tagsKey}|${opsKey}`
+    ? `histogram|${draftId}|${artifactId}|${tagsKey}|${opsKey}|${windowKey(timeWindow)}`
     : null
 
   useDebouncedAbortableRequest<DraftHistogramResult>({
@@ -61,7 +64,12 @@ export function useDatasetHistogram(
     cacheKey,
     fetcher: signal =>
       datasetDraftService
-        .histogram(draftId!, artifactId!, { operations, tags }, signal)
+        .histogram(
+          draftId!,
+          artifactId!,
+          { operations, tags, ...windowParams(timeWindow) },
+          signal,
+        )
         .then(res => res.data),
     onLoading: () => {
       setHistogram(null)

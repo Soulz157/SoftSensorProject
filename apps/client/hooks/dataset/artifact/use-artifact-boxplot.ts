@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { datasetArtifactService } from '@/services/dataset-version'
 import type { DraftBoxplotResult } from '@/services/dataset-draft'
+import type { TimeWindow } from '@/lib/time-window'
 
 export interface ArtifactBoxplotState {
   boxplot: DraftBoxplotResult | null
@@ -31,6 +32,8 @@ export function useArtifactBoxplot(
   /** DS-LAKE-026. Optional — see `useArtifactHistogram`'s own doc comment
    * for why the compare modal needs this and the wizard's callers do not. */
   sampleRows?: number,
+  /** Inclusive window applied server-side. `null`/omitted = whole artifact. */
+  timeWindow?: TimeWindow | null,
 ): ArtifactBoxplotState {
   const [boxplot, setBoxplot] = useState<DraftBoxplotResult | null>(null)
   const [loading, setLoading] = useState(false)
@@ -40,6 +43,9 @@ export function useArtifactBoxplot(
   // `tags` is a fresh array identity every render — key the effect on the
   // joined string, or it re-fires forever.
   const tagsKey = tags.join(',')
+  // Primitives, not the object: a `TimeWindow` is a fresh identity per render.
+  const startTime = timeWindow?.startTime
+  const endTime = timeWindow?.endTime
 
   useEffect(() => {
     const token = ++tokenRef.current
@@ -61,6 +67,8 @@ export function useArtifactBoxplot(
         {
           tags: tagsKey.split(','),
           ...(sampleRows && { sampleRows }),
+          ...(startTime && { startTime }),
+          ...(endTime && { endTime }),
         },
         ac.signal,
       )
@@ -77,7 +85,7 @@ export function useArtifactBoxplot(
       })
 
     return () => ac.abort()
-  }, [datasetId, artifactId, tagsKey, sampleRows])
+  }, [datasetId, artifactId, tagsKey, sampleRows, startTime, endTime])
 
   return { boxplot: boxplot, loading, error }
 }

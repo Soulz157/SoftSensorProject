@@ -51,11 +51,19 @@ import type {
   ArtifactScalingParams,
 } from '@/services/dataset-version'
 import { useArtifactFeatureSpec } from '@/hooks/dataset/artifact/use-artifact-feature-spec'
+import { useArtifactMetadata } from '@/hooks/dataset/artifact/use-dataset-artifact-metadata'
 import { useArtifactRows } from '@/hooks/dataset/artifact/use-artifact-rows'
+import { useArtifactValidationRows } from '@/hooks/dataset/artifact/use-artifact-validation-rows'
 import {
-  useArtifactValidationRows,
-  COMPARE_ROWS,
-} from '@/hooks/dataset/artifact/use-artifact-validation-rows'
+  CHART_MAX_POINTS,
+  PREVIEW_MAX_ROWS,
+  downsampleBy,
+} from '@/lib/downsample'
+import {
+  describePreviewWindow,
+  toWallClock,
+  type TimeWindow,
+} from '@/lib/time-window'
 import { useArtifactHistogram } from '@/hooks/dataset/artifact/use-artifact-histogram'
 import { useArtifactBoxplot } from '@/hooks/dataset/artifact/use-artifact-boxplot'
 import { useArtifactCorrelation } from '@/hooks/dataset/artifact/use-artifact-correlation'
@@ -74,6 +82,7 @@ import type {
   DraftCorrelationResult,
 } from '@/services/dataset-draft'
 import { RawReadingsTable } from '../create/components/raw-readings-table'
+import { MonthWindowSelect } from '../create/components/processing/month-window-select'
 import { TagHistogramChart } from '../create/components/chart/tag-histogram-chart'
 import { TagBoxplotChart } from '../create/components/chart/tag-boxplot-chart'
 import { TagCorrelationChart } from '../create/components/chart/tag-correlation-chart'
@@ -94,6 +103,12 @@ import {
  * Outside single-tag overlay mode, colour carries the TAG and stroke style
  * carries the SIDE, so one tag costs one colour rather than two. */
 const MAX_TAGS = 5
+
+/** Points DRAWN per side. The chart holds train and validation together, so
+ * each side gets half of what one trend chart can draw without lagging; the
+ * loaded rows (up to `PREVIEW_MAX_ROWS`) are thinned to this, peaks kept. The
+ * Raw Table is virtualised and still reads every loaded row. */
+const SIDE_MAX_POINTS = CHART_MAX_POINTS / 2
 
 /** Stable empty ref for the chart-tab gating below — a fresh `[]` literal
  * each render would give `histogramTags`/`boxplotTags`/`correlationTags` a
@@ -537,8 +552,8 @@ function fmtNum(n: number | null): string {
 /**
  * Timeline: the two sides adjacent, ordered by date.
  *
- * X IS AN ORDINAL POSITION, NOT A CLOCK. Each side is capped at
- * COMPARE_ROWS from its OWN start, so on a real time scale the two sit at
+ * X IS AN ORDINAL POSITION, NOT A CLOCK. Each side is capped at the fetch
+ * limit from its OWN start (of its period), so on a real time scale the two sit at
  * opposite ends of the fetch window with a large empty stretch between them.
  * That stretch is the row cap, not missing data, and it dominated the chart.
  * Plotting sorted POSITION instead closes it while keeping the two sides in
@@ -1421,6 +1436,12 @@ export function DatasetCompareModal({
   const [draft, setDraft] = useState<string[]>([])
   const [axis, setAxis] = useState<CompareAxis>('time')
   const [tickUnit, setTickUnit] = useState<TickUnit>('auto')
+  // One period per SIDE: train and validation cover different spans, and
+  // comparing them is often exactly setting one month against another.
+  const [trainPeriod, setTrainPeriod] = useState<TimeWindow | null>(null)
+  const [validationPeriod, setValidationPeriod] = useState<TimeWindow | null>(
+    null,
+  )
 
   // DS-LAKE-026. `tab` drives which of Histogram/Box Plot/Correlation's six
   // requests are actually live (see `handleTabChange` below); `visitedTabs`
@@ -1497,6 +1518,9 @@ export function DatasetCompareModal({
       })
     } else {
       setSelected([])
+      // A month picked for one dataset would filter the next one to nothing.
+      setTrainPeriod(null)
+      setValidationPeriod(null)
       // DS-LAKE-026. Otherwise a non-Line tab, and every tab this session
       // already visited, would survive into the NEXT dataset this modal is
       // opened for — a stale `visitedTabs` would let a chart tab fetch
@@ -1508,28 +1532,74 @@ export function DatasetCompareModal({
 
   const trainArtifactId = selected.length > 0 ? artifactId : null
 
+  // The train artifact's own span drives its period picker. Gated on `open`
+  // like the feature spec above, so a closed modal leaves no fetch in flight.
+  const { metadata: trainMeta } = useArtifactMetadata(
+    open ? datasetId : null,
+    open ? artifactId : null,
+  )
+
   const {
     sample: trainSample,
+    totalRowCount: trainTotal,
     loading: trainLoading,
     error: trainError,
-  } = useArtifactRows(datasetId, trainArtifactId, selected)
+  } = useArtifactRows(datasetId, trainArtifactId, selected, {
+    maxRows: PREVIEW_MAX_ROWS,
+    timeWindow: trainPeriod,
+  })
 
   const {
     sample: validationSample,
+    totalRowCount: validationTotal,
     loading: validationLoading,
     missing: validationMissing,
     error: validationError,
-  } = useArtifactValidationRows(datasetId, artifactId, selected)
+  } = useArtifactValidationRows(datasetId, artifactId, selected, {
+    maxRows: PREVIEW_MAX_ROWS,
+    timeWindow: validationPeriod,
+  })
 
   // Train inverted to engineering units; validation already raw on disk.
-  const trainSeries = useMemo(
-    () => toSeries(trainSample, selected, scalingParams),
+  // Thinned per side for DRAWING only (peaks kept); the tables below read the
+  // full loaded rows.
+  const trainTrend = useMemo(
+    () =>
+      downsampleBy(
+        toSeries(trainSample, selected, scalingParams),
+        selected,
+        SIDE_MAX_POINTS,
+        (point, tag) => point[tag],
+      ),
     [trainSample, selected, scalingParams],
   )
-  const validationSeries = useMemo(
-    () => toSeries(validationSample, selected, null),
+  const validationTrend = useMemo(
+    () =>
+      downsampleBy(
+        toSeries(validationSample, selected, null),
+        selected,
+        SIDE_MAX_POINTS,
+        (point, tag) => point[tag],
+      ),
     [validationSample, selected],
   )
+  const trainSeries = trainTrend.rows
+  const validationSeries = validationTrend.rows
+
+  const trainSummary = trainSample
+    ? describePreviewWindow({
+        loadedRows: trainSample.rows.length,
+        totalRows: trainTotal,
+        window: trainPeriod,
+      })
+    : null
+  const validationSummary = validationSample
+    ? describePreviewWindow({
+        loadedRows: validationSample.rows.length,
+        totalRows: validationTotal,
+        window: validationPeriod,
+      })
+    : null
 
   const trainTable = useMemo(
     () => inverseDataset(trainSample, scalingParams),
@@ -1947,6 +2017,47 @@ export function DatasetCompareModal({
           </div>
         </div>
 
+        {/* One period per side. Both feed the Line Chart and the Raw Table;
+            the Histogram / Box Plot / Correlation tabs keep their own sample
+            (see their caption). Each summary states what is loaded — a page
+            can be the head of a much longer series. */}
+        <div className="flex flex-wrap items-start gap-x-8 gap-y-3">
+          <div className="flex flex-col gap-1">
+            <MonthWindowSelect
+              label="Train period"
+              startTime={trainMeta?.startTime}
+              endTime={trainMeta?.endTime}
+              value={trainPeriod}
+              onChange={setTrainPeriod}
+              loading={trainLoading}
+            />
+            {trainSummary && (
+              <p className="text-[11px] text-muted-foreground">
+                Train: {trainSummary}
+              </p>
+            )}
+          </div>
+          {holdout && (
+            <div className="flex flex-col gap-1">
+              <MonthWindowSelect
+                label="Validation period"
+                // The holdout bounds arrive as UTC instants; the picker's
+                // months are read off the artifact's own (Bangkok) wall clock.
+                startTime={toWallClock(holdout.holdoutFrom)}
+                endTime={toWallClock(holdout.holdoutTo) ?? trainMeta?.endTime}
+                value={validationPeriod}
+                onChange={setValidationPeriod}
+                loading={validationLoading}
+              />
+              {validationSummary && (
+                <p className="text-[11px] text-muted-foreground">
+                  Validation: {validationSummary}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+
         {/* DS-LAKE-025-T06. Without the scaler fit there is no way to state
             the train side in engineering units, and plotting its scaled values
             against the raw holdout is the defect this whole path exists to
@@ -2048,9 +2159,9 @@ export function DatasetCompareModal({
                     <strong className="font-semibold">
                       distance along the axis is order, not elapsed time
                     </strong>{' '}
-                    — each side shows only its first {COMPARE_ROWS} rows, and
-                    the unloaded stretch between them is closed rather than
-                    drawn.
+                    — each side shows the rows loaded for its period, and any
+                    stretch between them that is not loaded is closed rather
+                    than drawn.
                   </>
                 ) : (
                   <>
@@ -2063,6 +2174,8 @@ export function DatasetCompareModal({
                     timestamps. Switch to Timeline for dates.
                   </>
                 )}{' '}
+                {(trainTrend.downsampled || validationTrend.downsampled) &&
+                  'A side with more rows than the chart can draw is thinned, keeping peaks — pick a period for full detail. '}
                 Gaps inside a line are Bad-status readings, not zero.
               </p>
             </TabsContent>
@@ -2072,7 +2185,7 @@ export function DatasetCompareModal({
                 title="Dataset (train)"
                 subtitle={
                   trainTable
-                    ? `${trainTable.rows.length.toLocaleString()} rows shown (chronological, capped at ${COMPARE_ROWS}) · engineering units`
+                    ? `${trainSummary ?? `${trainTable.rows.length.toLocaleString()} rows loaded.`} · engineering units`
                     : 'Training artifact · engineering units'
                 }
                 loading={trainLoading || specLoading}
@@ -2086,7 +2199,7 @@ export function DatasetCompareModal({
                 title="Validation"
                 subtitle={
                   validationTable
-                    ? `${validationTable.rows.length.toLocaleString()} rows shown (chronological, capped at ${COMPARE_ROWS}) · engineering units`
+                    ? `${validationSummary ?? `${validationTable.rows.length.toLocaleString()} rows loaded.`} · engineering units`
                     : 'Validation holdout · engineering units'
                 }
                 loading={validationLoading}
@@ -2100,10 +2213,10 @@ export function DatasetCompareModal({
               <p className="text-[11px] text-muted-foreground">
                 Engineering units · computed on the saved artifact, over up to{' '}
                 {CHART_SAMPLE_ROWS.toLocaleString()} rows per side — a different
-                window than the {COMPARE_ROWS}-row chronological prefix shown in
-                Line Chart and Raw Table above; per-tag statistics elsewhere on
-                this page may differ, since those are computed over the entire
-                artifact.
+                window than the rows loaded for Line Chart and Raw Table above,
+                and not affected by the period pickers; per-tag statistics
+                elsewhere on this page may differ, since those are computed over
+                the entire artifact.
               </p>
               {validationHistogramMessage && (
                 <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">

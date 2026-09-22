@@ -9,12 +9,20 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { DRIFT_STATUS_CLASS } from '@/lib/drift-status-style'
 import { PI_STATUS_CLASS } from '@/lib/pi-status-style'
 import type { InputFeatureRow } from '@/lib/model-input-features'
+import { explainDriftColumn } from '@/lib/monitoring-status-explain'
+import type { DriftReport } from '@/services/model-monitoring'
+import { StatusBadgeWithExplanation } from '../monitoring/status-badge-with-explanation'
 
 interface Props {
   rows: InputFeatureRow[]
+  /** The drift report's OWN thresholds, for the Drift badge's tooltip.
+   *  Optional at two levels — the tab may not have loaded a report yet,
+   *  and a pre-`basis.thresholds` backend sends none — and in either case
+   *  `explainDriftColumn` prints the meaning with NO criteria rather than
+   *  inventing 1.5/3.0. */
+  driftThresholds?: DriftReport['basis']['thresholds']
 }
 
 function fmtValue(row: InputFeatureRow): string {
@@ -54,7 +62,7 @@ function formatFlatDuration(minutes: number): string {
   return m === 0 ? `${h}h` : `${h}h${m}m`
 }
 
-export function InputFeatureTable({ rows }: Props) {
+export function InputFeatureTable({ rows, driftThresholds }: Props) {
   return (
     <Table>
       <TableHeader>
@@ -101,12 +109,27 @@ export function InputFeatureTable({ rows }: Props) {
               )}
             </TableCell>
             <TableCell>
-              <Badge
-                className={`border-0 ${DRIFT_STATUS_CLASS[row.driftStatus]}`}
-                title={row.driftReason}
-              >
-                {row.driftStatus}
-              </Badge>
+              {/* The SAME label, palette and explanation the Monitoring
+                  tab's drift card shows. This badge briefly kept a
+                  neutral/purple treatment and the raw `OK` token, to stay
+                  clear of the PI health badge in the next cell — but that
+                  only made one verdict render two ways on two tabs. The
+                  Drift / PI column headers are what separates the two
+                  questions now; the tooltip says which is which.
+                  `row.driftReason` moves from `title` into that tooltip
+                  body, which the native attribute could never render. */}
+              <StatusBadgeWithExplanation
+                status={row.driftStatus}
+                explanation={explainDriftColumn(
+                  {
+                    z: row.z,
+                    outOfRangePct: row.outOfRangePct,
+                    status: row.driftStatus,
+                    reason: row.driftReason,
+                  },
+                  driftThresholds,
+                )}
+              />
             </TableCell>
             <TableCell>
               <Badge

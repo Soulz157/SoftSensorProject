@@ -337,6 +337,17 @@ export class PredictionLogAuthorizedService {
           // see InferenceWindowMonitoringService's own basisOf for the
           // window-plane counterpart.
           plane: 'predict' as const,
+          // The thresholds `computeDrift` was ACTUALLY called with, echoed
+          // for the same reason `PsiReport.basis.thresholds` already is
+          // (see its own doc comment): the panel now explains a verdict by
+          // naming the number that produced it, and a client-side literal
+          // would silently disagree with this service the moment
+          // DRIFT_WARN_SD moves. Additive — no existing reader breaks.
+          thresholds: {
+            warnSd: env.DRIFT_WARN_SD,
+            criticalSd: env.DRIFT_CRITICAL_SD,
+            outOfRangePct: env.DRIFT_OUT_OF_RANGE_PCT,
+          },
         },
       },
     };

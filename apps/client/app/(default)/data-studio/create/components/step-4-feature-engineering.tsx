@@ -1,4 +1,3 @@
-
 'use client'
 
 import { useEffect } from 'react'
@@ -25,6 +24,7 @@ import {
 import type { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipeline-nav'
 import { useDatasetGoldWarm } from '@/hooks/dataset/use-dataset-gold-warm'
 import { useDatasetFeaturePreviewSample } from '@/hooks/dataset/use-dataset-feature-preview-sample'
+import { useEdaWindowControl } from '@/hooks/dataset/use-eda-window-control'
 import { ExtractionPanel } from './feature-engineering/extraction-panel'
 import { CreationPanel } from './feature-engineering/creation-panel'
 import { DataAnalysisCard } from './processing/data-analysis-card'
@@ -51,6 +51,7 @@ export function Step4FeatureEngineering({ nav }: Props) {
   const targetTag = useAtomValue(dwTargetTagAtom)
   const holdoutRange = useAtomValue(dwHoldoutRangeAtom)
   const previewFetchState = useAtomValue(dwFeaturePreviewSampleStateAtom)
+  const edaWindow = useEdaWindowControl()
   const mode = useAtomValue(dwModeAtom)
   const sourceArtifactId = useAtomValue(dwDraftArtifactIdAtom)
   // DS-LAKE-024-T03: create mode has no equivalent gate at all (it always
@@ -298,7 +299,10 @@ export function Step4FeatureEngineering({ nav }: Props) {
 
         <ValidationHoldoutSection
           disabled={
-            previewFetchState !== 'ready' ||
+            // 'refreshing' is the EDA period changing under a sample that is
+            // already loaded — unrelated to whether a holdout can be picked.
+            (previewFetchState !== 'ready' &&
+              previewFetchState !== 'refreshing') ||
             warmState === 'pending' ||
             !editModeArmed ||
             !editRootIsPristine
@@ -309,7 +313,11 @@ export function Step4FeatureEngineering({ nav }: Props) {
           error={warmError}
         />
 
-        <DataAnalysisCard dataset={featured} range={range} />
+        <DataAnalysisCard
+          dataset={featured}
+          range={range}
+          edaWindow={edaWindow}
+        />
       </Tabs>
     </div>
   )

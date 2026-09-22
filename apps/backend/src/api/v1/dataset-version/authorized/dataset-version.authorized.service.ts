@@ -1033,6 +1033,10 @@ export class DatasetVersionAuthorizedService {
       offset: query.offset,
       limit: query.limit,
       ...(query.tags && { tags: query.tags }),
+      // `ListRowsDto` already accepts these and Python's `RowsRequest` applies
+      // them before paging, exactly as `listRowsService` forwards them above.
+      ...(query.startTime && { start_time: query.startTime }),
+      ...(query.endTime && { end_time: query.endTime }),
     };
 
     let page: ReturnType<typeof PythonRowsSchema.parse>;

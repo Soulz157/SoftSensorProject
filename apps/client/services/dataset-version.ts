@@ -6,6 +6,7 @@ import {
   type Dataset,
   type DataRow,
 } from '@/lib/preprocessing'
+import { timeQuery } from '@/lib/time-window'
 import {
   DraftArtifactMetadata,
   DraftBoxplotResult,
@@ -276,14 +277,22 @@ export const datasetArtifactService = {
   rows: (
     datasetId: string,
     artifactId: string,
-    params: { offset: number; limit: number; tags?: string[] },
+    params: {
+      offset: number
+      limit: number
+      tags?: string[]
+      /** Inclusive bounds, applied BEFORE `offset`/`limit`. See `TimeWindow`. */
+      startTime?: string
+      endTime?: string
+    },
   ): Promise<ApiResponse<DraftRowsPage>> =>
     fetchClient(
       `${artifact(datasetId, artifactId)}/rows` +
         `?offset=${params.offset}&limit=${params.limit}` +
         (params.tags?.length
           ? `&tags=${params.tags.map(encodeURIComponent).join(',')}`
-          : ''),
+          : '') +
+        timeQuery(params),
       { method: 'GET' },
     ),
 
@@ -293,7 +302,13 @@ export const datasetArtifactService = {
   correlation: (
     datasetId: string,
     artifactId: string,
-    body: { tags: string[]; topK?: number; sampleRows?: number },
+    body: {
+      tags: string[]
+      topK?: number
+      sampleRows?: number
+      startTime?: string
+      endTime?: string
+    },
     signal?: AbortSignal,
   ): Promise<ApiResponse<DraftCorrelationResult>> =>
     fetchClient(`${artifact(datasetId, artifactId)}/correlation`, {
@@ -310,6 +325,8 @@ export const datasetArtifactService = {
       kdeSamples?: number
       binCount?: number
       sampleRows?: number
+      startTime?: string
+      endTime?: string
     },
     signal?: AbortSignal,
   ): Promise<ApiResponse<DraftHistogramResult>> =>
@@ -322,7 +339,13 @@ export const datasetArtifactService = {
   boxplot: (
     datasetId: string,
     artifactId: string,
-    body: { tags: string[]; outlierCap?: number; sampleRows?: number },
+    body: {
+      tags: string[]
+      outlierCap?: number
+      sampleRows?: number
+      startTime?: string
+      endTime?: string
+    },
     signal?: AbortSignal,
   ): Promise<ApiResponse<DraftBoxplotResult>> =>
     fetchClient(`${artifact(datasetId, artifactId)}/boxplot`, {
@@ -383,7 +406,13 @@ export const datasetArtifactService = {
   scatter: (
     datasetId: string,
     artifactId: string,
-    body: { xTag: string; yTag: string; maxPoints?: number },
+    body: {
+      xTag: string
+      yTag: string
+      maxPoints?: number
+      startTime?: string
+      endTime?: string
+    },
     signal?: AbortSignal,
   ): Promise<ApiResponse<DraftScatterResult>> =>
     fetchClient(`${artifact(datasetId, artifactId)}/scatter`, {
@@ -446,14 +475,21 @@ export const datasetArtifactService = {
   validationRows: (
     datasetId: string,
     artifactId: string,
-    params: { offset: number; limit: number; tags?: string[] },
+    params: {
+      offset: number
+      limit: number
+      tags?: string[]
+      startTime?: string
+      endTime?: string
+    },
   ): Promise<ApiResponse<DraftRowsPage>> =>
     fetchClient(
       `${artifact(datasetId, artifactId)}/validation-rows` +
         `?offset=${params.offset}&limit=${params.limit}` +
         (params.tags?.length
           ? `&tags=${params.tags.map(encodeURIComponent).join(',')}`
-          : ''),
+          : '') +
+        timeQuery(params),
       { method: 'GET' },
     ),
 }

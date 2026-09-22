@@ -22,6 +22,7 @@ import {
   lockedPresetRangeCandidates,
 } from '@/store/dataset-studio'
 import { useDatasetFeaturePreviewSample } from '@/hooks/dataset/use-dataset-feature-preview-sample'
+import { useEdaWindowControl } from '@/hooks/dataset/use-eda-window-control'
 import { useDelayedFlag } from '@/hooks/use-delayed-flag'
 import { useStageSdtaPreset } from '@/hooks/use-sdta-preset'
 import type { DatasetTagRow } from '@/hooks/dataset/use-dataset-tag-table'
@@ -51,6 +52,7 @@ export function Step31EDA({ nav }: Props) {
   // the shared atom earlier, before Step 4 ever mounts.
   useDatasetFeaturePreviewSample()
   const sample = useAtomValue(dwFeaturePreviewSampleAtom)
+  const edaWindow = useEdaWindowControl()
 
   // DS-LAKE-015-T03: the windows between Step 2 finishing and this card
   // having anything real to draw. `fetchRequired` matters because a
@@ -234,7 +236,11 @@ export function Step31EDA({ nav }: Props) {
       )}
 
       {readiness.phase === 'ready' && (
-        <DataAnalysisCard dataset={precleansedSample} range={range} />
+        <DataAnalysisCard
+          dataset={precleansedSample}
+          range={range}
+          edaWindow={edaWindow}
+        />
       )}
 
       {emptied && readiness.phase === 'ready' && (

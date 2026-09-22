@@ -1,25 +1,28 @@
 'use client'
 
 import { useEffect, useRef } from 'react'
-import { useAtom, useAtomValue } from 'jotai'
+import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import { datasetDraftService } from '@/services/dataset-draft'
 import { datasetArtifactService } from '@/services/dataset-version'
 import { brandBoundedSample } from '@/lib/preprocessing'
+import { previewRowLimit } from '@/lib/downsample'
 import {
   dwDraftIdAtom,
   dwDraftArtifactIdAtom,
+  dwEdaSampleTotalAtom,
+  dwEdaWindowAtom,
   dwEditingDatasetAtom,
   dwFeaturePreviewSampleAtom,
   dwFeaturePreviewSampleStateAtom,
   dwSelectedTagsAtom,
 } from '@/store/dataset-studio'
 
-const FEATURE_PREVIEW_SAMPLE_ROWS = 1_000
-
-/** Mirrors `useArtifactRows`' own tag bound. Without a `tags` list the
- * server's `ListRowsSchema` reads "every tag" — tens of megabytes on a wide
- * artifact for a 1,000-row preview, exactly what `datasetArtifactService.rows`'
- * own doc comment warns callers against. */
+/** Mirrors `useArtifactRows`' own tag bound, and only bounds the DATASET leg:
+ * `datasetArtifactService.rows` projects to this many tags. The DRAFT leg
+ * (`datasetDraftService.rows`) sends no `tags`, so it returns EVERY column of
+ * the artifact whatever this is — which is why the row limit below is sized
+ * from the full selected count, not this capped one. This DB holds an
+ * 8,000-column BRONZE; 10,000 rows of that would be hundreds of megabytes. */
 const PREVIEW_TAG_CAP = 50
 
 /**
@@ -43,8 +46,10 @@ export function useDatasetFeaturePreviewSample(): void {
   const sourceArtifactId = useAtomValue(dwDraftArtifactIdAtom)
   const editingDataset = useAtomValue(dwEditingDatasetAtom)
   const selectedTags = useAtomValue(dwSelectedTagsAtom)
+  const timeWindow = useAtomValue(dwEdaWindowAtom)
   const [, setSample] = useAtom(dwFeaturePreviewSampleAtom)
   const [, setFetchState] = useAtom(dwFeaturePreviewSampleStateAtom)
+  const setSampleTotal = useSetAtom(dwEdaSampleTotalAtom)
   const tokenRef = useRef(0)
 
   const datasetId = editingDataset?.id ?? null
@@ -52,6 +57,16 @@ export function useDatasetFeaturePreviewSample(): void {
   // Fresh array identity every render — key the effect on the joined string,
   // the same discipline every artifact hook in this folder already uses.
   const tagsKey = selectedTags.slice(0, PREVIEW_TAG_CAP).join(',')
+  // Rows are sized to the WIDTH of what comes back, not a flat count — see
+  // `previewRowLimit`. On the draft leg that width is every column of the
+  // artifact, which in create mode is the selected tags, UNCAPPED. Sizing from
+  // the capped list would let a 200-tag selection ask for 8,000 rows × 200
+  // columns. (Conservative for the dataset leg, which does project to the cap.)
+  // No selected tags reads as "unknown width", so assume the cap.
+  const limit = previewRowLimit(selectedTags.length || PREVIEW_TAG_CAP)
+  // Primitives, not the object: a `TimeWindow` is a fresh identity per render.
+  const startTime = timeWindow?.startTime
+  const endTime = timeWindow?.endTime
 
   useEffect(() => {
     // Prefer the draft leg whenever a draft artifact exists — once Apply
@@ -62,12 +77,18 @@ export function useDatasetFeaturePreviewSample(): void {
     if (!canFetch) return
 
     const token = ++tokenRef.current
-    setFetchState('loading')
+    // A sample already on screen stays there while the next one loads
+    // ('refreshing'), so changing the window does not read as a first load:
+    // Step 3.1 unmounts the whole analysis card on 'loading', which would
+    // throw away the open tab, the scatter axes and the window picker itself.
+    setFetchState(prev => (prev === 'ready' ? 'refreshing' : 'loading'))
 
     const params = {
       offset: 0,
-      limit: FEATURE_PREVIEW_SAMPLE_ROWS,
+      limit,
       ...(tagsKey && { tags: tagsKey.split(',') }),
+      ...(startTime && { startTime }),
+      ...(endTime && { endTime }),
     }
 
     void (async () => {
@@ -107,6 +128,7 @@ export function useDatasetFeaturePreviewSample(): void {
           setSample(
             brandBoundedSample({ tags: res.data.tags, rows: res.data.rows }),
           )
+          setSampleTotal(res.data.totalRowCount)
           setFetchState('ready')
         }
       } catch {
@@ -120,7 +142,11 @@ export function useDatasetFeaturePreviewSample(): void {
     datasetId,
     adoptedBronzeId,
     tagsKey,
+    limit,
+    startTime,
+    endTime,
     setSample,
+    setSampleTotal,
     setFetchState,
   ])
 }

@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { datasetDraftService } from '@/services/dataset-draft'
 import type { DraftBoxplotResult } from '@/services/dataset-draft'
 import type { CleaningOperationInput } from '@/services/dataset-version'
+import { windowKey, windowParams, type TimeWindow } from '@/lib/time-window'
 import { useDebouncedAbortableRequest } from './internal/use-debounced-abortable-request'
 
 export interface DatasetBoxplotState {
@@ -33,6 +34,8 @@ export function useDatasetBoxplot(
    * this yet — `undefined` lets the server apply its own default
    * (`DEFAULT_BOXPLOT_OUTLIER_CAP = 50`). */
   outlierCap?: number,
+  /** Inclusive window applied server-side. `null`/omitted = whole artifact. */
+  timeWindow?: TimeWindow | null,
 ): DatasetBoxplotState {
   const [boxplot, setBoxplot] = useState<DraftBoxplotResult | null>(null)
   const [loading, setLoading] = useState(false)
@@ -43,7 +46,7 @@ export function useDatasetBoxplot(
 
   const enabled = !!draftId && !!artifactId && tags.length > 0
   const cacheKey = enabled
-    ? `boxplot|${draftId}|${artifactId}|${tagsKey}|${opsKey}|${outlierCap ?? ''}`
+    ? `boxplot|${draftId}|${artifactId}|${tagsKey}|${opsKey}|${outlierCap ?? ''}|${windowKey(timeWindow)}`
     : null
 
   useDebouncedAbortableRequest<DraftBoxplotResult>({
@@ -54,7 +57,12 @@ export function useDatasetBoxplot(
         .boxplot(
           draftId!,
           artifactId!,
-          { operations, tags, ...(outlierCap !== undefined && { outlierCap }) },
+          {
+            operations,
+            tags,
+            ...(outlierCap !== undefined && { outlierCap }),
+            ...windowParams(timeWindow),
+          },
           signal,
         )
         .then(res => res.data),

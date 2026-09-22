@@ -52,10 +52,12 @@ const config = {
  * categorical tag (`resolvePsiOverflow` returns `null`): that bucketing has
  * no "out of range" concept, so a flanking bar would be noise.
  *
- * NO STATUS COLORS in the bars — red/amber/purple are reserved operating-
- * state infrastructure (DESIGN.md), and this signal already opts out of
- * that vocabulary (`drift-status-style.ts`'s own rationale). Status stays
- * in the summary card's badge; these bars use chart tokens only.
+ * NO STATUS COLORS in the bars. The summary card's badge now DOES carry
+ * the traffic-light vocabulary (`MONITORING_STATUS_CLASS`), which makes
+ * this rule matter more, not less: a per-bin bar tinted green or red
+ * would assert a per-bin verdict PSI never produces — the status is a
+ * property of the whole column. Status stays in the badge; these bars use
+ * chart tokens only.
  */
 export function PsiBinChart({ bins, liveTotal }: Props) {
   const binRows = resolvePsiBins(bins)

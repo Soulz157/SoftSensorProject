@@ -25,6 +25,8 @@ import { useArtifactRows } from '@/hooks/dataset/artifact/use-artifact-rows'
 import { useArtifactHoldout } from '@/hooks/dataset/artifact/use-artifact-holdout'
 import { useArtifactFeatureSpec } from '@/hooks/dataset/artifact/use-artifact-feature-spec'
 import { inverseScale } from '@/lib/inverse-scale'
+import { PREVIEW_MAX_ROWS } from '@/lib/downsample'
+import type { EdaWindowControl, TimeWindow } from '@/lib/time-window'
 import type { Dataset } from '@/lib/preprocessing'
 import { perTagStatsOrdered } from '@/lib/dataset-stats'
 import { SourceIdentityPanel } from './dataset-review/source-identity-panel'
@@ -93,9 +95,33 @@ export function Phase2DatasetReview({ nav }: Props) {
 
   // Still fetched here, not inside the card: the card's `dataset` prop is the
   // bounded frame its Line/Raw Table tabs render, and this is the step's own
-  // bounded read (200 rows x 50 tags — MODEL-FLOW-010-V03's cap). Correlation
-  // is no longer fetched here at all; the card asks the server itself.
-  const { sample } = useArtifactRows(datasetId, artifactId, tags)
+  // bounded read. Bounded on BOTH axes (MODEL-FLOW-010-V03): at most 50 tags,
+  // and rows sized to that width by `previewRowLimit` — up to 10,000 for a
+  // narrow selection, fewer for a wide one — inside the chosen period.
+  // Correlation is no longer fetched here at all; the card asks the server
+  // itself.
+  //
+  // The period lives in local state, not a `dw*` atom: this step configures
+  // nothing and reads no data-studio store (see the contract test).
+  const [period, setPeriod] = useState<TimeWindow | null>(null)
+  const {
+    sample,
+    totalRowCount,
+    loading: sampleLoading,
+  } = useArtifactRows(datasetId, artifactId, tags, {
+    maxRows: PREVIEW_MAX_ROWS,
+    timeWindow: period,
+  })
+  const edaWindow = useMemo<EdaWindowControl>(
+    () => ({
+      value: period,
+      onChange: setPeriod,
+      loading: sampleLoading,
+      totalRows: totalRowCount,
+      loadedRows: sample?.rows.length ?? 0,
+    }),
+    [period, sampleLoading, totalRowCount, sample],
+  )
 
   // DS-LAKE-025-T06. `artifactId` here is the saved dataset's FINAL — the
   // post-`to_model_ready` frame, scaled to [0,1] by default with no UI
@@ -257,6 +283,7 @@ export function Phase2DatasetReview({ nav }: Props) {
             artifactId={artifactId}
             showTransforms={false}
             showTagSelector
+            edaWindow={edaWindow}
           />
         </>
       ) : (

@@ -14,6 +14,17 @@ import {
   type ResidualSdStatus,
 } from '@/lib/residual-sd-health';
 import { baselineResidualSd } from '@/lib/model-version-residual-sd';
+// MODEL-SERVE-001-T30 (list-payload frozen detection). THE SAME detector the
+// single-model path uses (`InferenceWindowMonitoringService.getHealthStatus`)
+// — one rule for "is this tag frozen", not a second one that could disagree
+// with the detail page about the same tag.
+import { detectFrozenColumns } from '@/lib/sensor-frozen';
+// `resolveColumnBaseline`'s OWN caching (by `goldObjectKey`, an immutable
+// artifact key) is what makes calling it here affordable — see its own doc
+// comment. Without that cache this read would be an uncached HTTP round trip
+// to apps/python per enabled model, on every Alerts/Overview/sidebar load.
+import { resolveColumnBaseline } from '@/lib/artifact-baseline';
+import type { FeatureStatsMap } from '@/lib/prediction-drift';
 
 /**
  * MODEL-SERVE-006-T12. Per decisions.deploy_status_currently_asserts_
@@ -180,23 +191,32 @@ export interface DeployState {
    */
   lastFailure: { reason: string | null; at: Date } | null;
   /**
-   * MODEL-SERVE-001-T26. The MONITORING axis for the list payload, so the
-   * Alerts page and the workspace failure counts keep seeing fetch faults
-   * after they stopped reaching `status`. Drift is deliberately NOT evaluated
-   * here (it needs a per-model baseline read), so this carries liveness only
-   * — `OFF` on this path means "no fault and no claim", never "healthy".
+   * MODEL-SERVE-001-T26/T30. The MONITORING axis for the list payload, so
+   * the Alerts page and the workspace failure counts keep seeing fetch
+   * faults after they stopped reaching `status`. Drift is deliberately NOT
+   * evaluated here — a drift VERDICT needs `warnSd`/`criticalSd` thresholds
+   * this payload does not carry for that purpose, and reusing the frozen
+   * detection's baseline call to also compute one would be a second
+   * classifier decision this batched path was never asked to make. Frozen
+   * detection IS evaluated here (T30): it reuses the SAME baseline read,
+   * costing nothing extra once that call is already made for the window
+   * query below. `OFF` on this path therefore means "no LIVE fault or
+   * frozen tag, and no drift claim", never "healthy".
    */
   monitoring: ModelHealth;
 }
 
 /**
  * Batched derivation for a LIST of models (`getModelsService`/
- * `getWorkspaceModels`) — avoids N+1 queries. Two non-N+1 reads
- * (schedules, and a `groupBy` for each model's last SUCCEEDED/SKIPPED
- * window) plus one bounded `findMany` per ENABLED schedule for the
- * "failing" check (last 3 terminal windows all FAILED) — proportional to
- * how many schedules are actually enabled in the list, not to every model
- * in the system.
+ * `getWorkspaceModels`) — avoids N+1 queries. Non-N+1 reads (schedules, a
+ * `groupBy` for each model's last SUCCEEDED/SKIPPED window, and a
+ * `groupBy` for pooled output-error truth) plus, per ENABLED schedule: one
+ * bounded `findMany` (widened by T30 to also carry `featureStats`, sized to
+ * `frozenWindows`) and, when that window sample carries stats, one call to
+ * `resolveColumnBaseline` — cached by `goldObjectKey` (see its own doc
+ * comment), so repeat list loads for the same models cost no sidecar round
+ * trip after the first. All of this is proportional to how many schedules
+ * are actually enabled in the list, not to every model in the system.
  *
  * Returns a state for every id in `modelIds`, defaulting absent entries
  * (no schedule at all) to `{ status: 'stopped', enabled: false }`.
@@ -239,10 +259,17 @@ export async function deriveDeployStatuses(
       // never a second set of defaults.
       warnSd: true,
       criticalSd: true,
+      // MODEL-SERVE-001-T30 (list-payload frozen detection). The SAME two
+      // numbers `detectFrozenColumns` needs on the single-model path — read
+      // here so the list grades a tag frozen by the SAME rule the detail
+      // page does, never a second set of defaults that could disagree.
+      frozenWindows: true,
+      frozenTolerancePct: true,
     },
   });
   if (schedules.length === 0) return result;
 
+  const scheduleByModel = new Map(schedules.map((s) => [s.modelId, s]));
   const enabledIds = schedules.filter((s) => s.enabled).map((s) => s.modelId);
 
   const lastSucceededGroups = enabledIds.length
@@ -259,14 +286,30 @@ export async function deriveDeployStatuses(
     lastSucceededGroups.map((g) => [g.modelId, g._max.windowStart]),
   );
 
+  // MODEL-SERVE-012-T08 / MODEL-SERVE-001-T30. THE PRODUCTION VERSION READ,
+  // moved ahead of the per-model window query below (it used to sit after
+  // it) because frozen detection now needs `goldObjectKey` INSIDE that loop.
+  // Still one query for the whole page, never a per-model read — this is
+  // why the output-error axis could always ride here while drift could not:
+  // drift needs a per-model HTTP round trip to apps/python for the SAME
+  // baseline this task now fetches too, made affordable by
+  // `resolveColumnBaseline`'s own `goldObjectKey` cache (see its doc
+  // comment) rather than by avoiding the call.
+  const productionVersions = await prisma.modelVersion.findMany({
+    where: { modelId: { in: modelIds }, stage: 'PRODUCTION' },
+    select: { id: true, modelId: true, metrics: true, goldObjectKey: true },
+  });
+  const versionByModel = new Map(productionVersions.map((v) => [v.modelId, v]));
+
   // MODEL-SERVE-001-T26. `failingByModel`/`hasFailedByModel` are GONE, not
   // merely unread: three failed windows no longer says anything about whether
   // the schedule is dispatching, so computing them here and not using them
   // would leave a reader guessing which axis they belonged to. The same
   // signal now feeds the MONITORING axis (lib/model-health.ts) via
-  // `getStatusService`. The take-3 query below stays exactly as it was —
-  // `lastFailure` still needs it, and T30 will ride the monitoring verdict up
-  // this same path for the Alerts page rather than adding a second read.
+  // `getStatusService`. The window query below still serves `lastFailure`
+  // exactly as it did — T30 widens its `take`/`select` to also serve frozen
+  // detection, rather than adding a second per-model read for the Alerts
+  // page to pay for.
   const lastFailureByModel = new Map<string, DeployState['lastFailure']>();
   // T26: the TRAILING run of failures, counted back from the newest and
   // stopping at the first non-FAILED row — the same rule
@@ -274,18 +317,36 @@ export async function deriveDeployStatuses(
   // the detail page cannot disagree about the same three windows. SKIPPED is
   // not a failure (T01/T10/T11).
   const consecutiveFailuresByModel = new Map<string, number>();
+  // MODEL-SERVE-001-T30. Per-model frozen columns, computed in the SAME loop
+  // as `lastFailure`/`consecutiveFailures` — one Promise.all over enabled
+  // models, not a second one.
+  const frozenColumnsByModel = new Map<string, string[]>();
   await Promise.all(
     enabledIds.map(async (modelId) => {
+      const schedule = scheduleByModel.get(modelId)!;
+      // `take` widened from a flat 3 to whatever `frozenWindows` needs, the
+      // same `Math.max(3, ...)` shape T27/T28 already used for
+      // `skipStreakAlert` on the single-model path (resolveLivenessFaults) —
+      // a fixed 3 against an operator-set 10 could never gather enough
+      // evidence to badge anything, silently. Bounded by the DTO's own
+      // `.max(24)` on `frozenWindows`, not clamped here, for the same reason
+      // the single-model path does not clamp it: clamping would badge frozen
+      // off FEWER windows than the operator asked for.
       const recentTerminal = await prisma.inferenceWindow.findMany({
         where: { modelId, status: { in: ['SUCCEEDED', 'SKIPPED', 'FAILED'] } },
         orderBy: { windowStart: 'desc' },
-        take: 3,
-        // MODEL-SERVE-001-T23: `failureReason`/`windowStart` widen this
-        // SELECT only — same query, same rows, same round trip. See
-        // DeployState.lastFailure's own doc for why this rides here rather
-        // than becoming a per-model status read the Alerts page cannot
-        // afford.
-        select: { status: true, failureReason: true, windowStart: true },
+        take: Math.max(3, schedule.frozenWindows),
+        // MODEL-SERVE-001-T23/T30: widens this SELECT only — same query,
+        // same rows, same round trip. `featureStats` rides here for the
+        // SAME reason `failureReason`/`windowStart` already do: a per-model
+        // status read is what the Alerts page cannot afford, and this query
+        // already runs per enabled model regardless.
+        select: {
+          status: true,
+          failureReason: true,
+          windowStart: true,
+          featureStats: true,
+        },
       });
       let streak = 0;
       for (const w of recentTerminal) {
@@ -308,22 +369,37 @@ export async function deriveDeployStatuses(
             }
           : null,
       );
-    }),
-  );
 
-  // MODEL-SERVE-012-T08. THE OUTPUT-ERROR AXIS ON THE LIST, in two grouped
-  // queries for the whole page — never a per-model read.
-  //
-  // This is why it can ride here while DRIFT cannot: drift needs the gold
-  // artifact's column baseline, an HTTP round trip to apps/python per model.
-  // The residual-SD verdict needs only `InferenceWindowTruth`'s sufficient
-  // statistics and the version's own metrics blob, both of which group.
-  const productionVersions = await prisma.modelVersion.findMany({
-    where: { modelId: { in: modelIds }, stage: 'PRODUCTION' },
-    select: { id: true, modelId: true, metrics: true },
-  });
-  const versionByModel = new Map(
-    productionVersions.map((v) => [v.modelId, v]),
+      // MODEL-SERVE-001-T30. THE SAME `statsRows` SHAPE the single-model
+      // path builds (`getHealthStatus`'s own filter) — a window with no
+      // stats is not a window with flat stats, so it is dropped before
+      // `detectFrozenColumns` ever sees it, never coerced into a zero range.
+      const statsRows = recentTerminal
+        .map((w) => w.featureStats)
+        .filter((s): s is NonNullable<typeof s> => s !== null)
+        .map((s) => s as unknown as FeatureStatsMap);
+
+      const production = versionByModel.get(modelId);
+      // THE SAME DARK-SHIP GATE the single-model path applies: the baseline
+      // is fetched ONLY when there is something to compare it to. A model
+      // with no production version, or no window carrying stats, costs
+      // nothing extra here — no sidecar call, no `detectFrozenColumns` call.
+      if (!production || statsRows.length === 0) {
+        frozenColumnsByModel.set(modelId, []);
+        return;
+      }
+
+      const baseline = await resolveColumnBaseline(production.goldObjectKey);
+      frozenColumnsByModel.set(
+        modelId,
+        detectFrozenColumns({
+          windows: statsRows,
+          baseline,
+          frozenWindows: schedule.frozenWindows,
+          frozenTolerancePct: schedule.frozenTolerancePct,
+        }),
+      );
+    }),
   );
 
   // ONE aggregate over every production version at once. Bounded by the SAME
@@ -409,17 +485,22 @@ export async function deriveDeployStatuses(
         driftMonitor: false,
         driftStatus: null,
         driftEvidence: false,
-        // T27/T29's data-quality bands are likewise the detail page's job:
-        // `missingPct` and frozen detection both need the per-window select
-        // this batched query deliberately does not make. The list carries
-        // LIVENESS only — its OFF means "no fault, no claim", never
-        // "healthy". T30 widens this payload; see its own note.
+        // T27's `missingPct` band is STILL the detail page's job alone: it
+        // reads the NEWEST terminal window's own missingPct ("is the data
+        // bad RIGHT NOW"), which this batched query has no per-model reason
+        // to fetch. `null` here means "this payload makes no BAD_DATA
+        // claim", same discipline as drift above.
         consecutiveSkips: 0,
         skipStreakAlert: schedule.skipStreakAlert,
         missingPct: null,
         missingPctWarn: schedule.missingPctWarn,
         missingPctAlert: schedule.missingPctAlert,
-        frozenColumns: [],
+        // MODEL-SERVE-001-T30. NO LONGER HARDCODED. Computed above in the
+        // same Promise.all as `lastFailure`/`consecutiveFailures`, by the
+        // SAME `detectFrozenColumns` the detail page calls, against the
+        // SAME `frozenWindows`/`frozenTolerancePct` — so the list and the
+        // detail page cannot disagree about which tags are frozen.
+        frozenColumns: frozenColumnsByModel.get(schedule.modelId) ?? [],
         consecutiveFailures:
           consecutiveFailuresByModel.get(schedule.modelId) ?? 0,
         staleness: isStale(
@@ -428,11 +509,13 @@ export async function deriveDeployStatuses(
           schedule.lagMinutes,
         ),
         hasEverSucceeded: lastSucceededAt !== null,
-        // MODEL-SERVE-012-T08. THE ONE monitoring signal on this path that is
-        // a real graded verdict rather than a "no claim": pooled above in two
-        // grouped queries for the whole page. UNKNOWN when the model has no
-        // production version, no reference SD, or too few joined pairs — and
-        // UNKNOWN never becomes OK.
+        // MODEL-SERVE-012-T08. A real graded verdict rather than a "no
+        // claim", pooled above in two grouped queries for the whole page —
+        // frozenColumns above is the other one, computed per-model instead
+        // because `detectFrozenColumns` needs per-window identity, not an
+        // aggregate. UNKNOWN when the model has no production version, no
+        // reference SD, or too few joined pairs — and UNKNOWN never becomes
+        // OK.
         residualSdStatus: residualSdByModel.get(schedule.modelId) ?? 'UNKNOWN',
       }),
     };

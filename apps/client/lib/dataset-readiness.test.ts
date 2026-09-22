@@ -91,6 +91,20 @@ describe('describeAnalysisReadiness (DS-LAKE-015-T03)', () => {
     expect(result).toEqual({ phase: 'ready' })
   })
 
+  it('a sample refreshing for a new time window reads as ready, so the card is not unmounted mid-change', () => {
+    // 'loading' drops Step 3.1 to a skeleton and unmounts the card, taking the
+    // open tab, the scatter axes and the period picker with it. 'refreshing'
+    // is the same fetch over a sample that is already on screen.
+    expect(
+      describeAnalysisReadiness({
+        ...BASE,
+        bronzeWarmState: 'ready',
+        previewFetchState: 'refreshing',
+        sampleTagCount: 3,
+      }),
+    ).toEqual({ phase: 'ready' })
+  })
+
   it('materializing outranks a stale loading/error preview state from a prior draft', () => {
     expect(
       describeAnalysisReadiness({
@@ -113,6 +127,7 @@ describe('describeAnalysisReadiness (DS-LAKE-015-T03)', () => {
   const PREVIEW_STATES: PreviewSampleFetchState[] = [
     'idle',
     'loading',
+    'refreshing',
     'ready',
     'error',
   ]

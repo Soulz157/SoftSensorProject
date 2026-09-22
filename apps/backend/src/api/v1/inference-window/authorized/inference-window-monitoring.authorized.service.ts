@@ -256,6 +256,18 @@ export class InferenceWindowMonitoringService {
           // fetched (`windowsUsed`) can exceed this whenever a window
           // predates T17 or had no coverable feature column.
           statsWindows: statsRows.length,
+          // Echoed for the panel's status tooltip, exactly as the
+          // /predict plane does — see that service's own note. These are
+          // the env thresholds `computeDrift` ran with; deliberately NOT
+          // the schedule's `warnSd`/`criticalSd`, which carry the same
+          // names but threshold a DIFFERENT metric (the residual-SD ratio
+          // in lib/residual-sd-health.ts) and must never be printed as
+          // this z-score's criteria.
+          thresholds: {
+            warnSd: env.DRIFT_WARN_SD,
+            criticalSd: env.DRIFT_CRITICAL_SD,
+            outOfRangePct: env.DRIFT_OUT_OF_RANGE_PCT,
+          },
         },
       },
     };

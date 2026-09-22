@@ -2,7 +2,10 @@
 
 import { Badge } from '@/components/ui/badge'
 import { usePredictionMonitoring } from '@/hooks/model/use-prediction-monitoring'
-import { DRIFT_STATUS_CLASS, PSI_STATUS_CLASS } from '@/lib/drift-status-style'
+import {
+  MONITORING_STATUS_CLASS,
+  MONITORING_STATUS_LABEL,
+} from '@/lib/drift-status-style'
 import type { AIModel } from '@/types'
 
 /**
@@ -13,7 +16,7 @@ import type { AIModel } from '@/types'
  *
  * Sourced entirely from `usePredictionMonitoring` — the SAME hook and the
  * same `[from, to]` the Monitoring tab's own `DriftPanel`/`PsiPanel` read,
- * and the same `DRIFT_STATUS_CLASS`/`PSI_STATUS_CLASS` palette. No second
+ * and the same `MONITORING_STATUS_CLASS` palette. No second
  * drift computation is introduced client-side, and no figure here is
  * derived from anything this component fetched on its own.
  *
@@ -78,9 +81,9 @@ export function RetrainMonitoringContext({ model }: { model: AIModel }) {
             ) : drift ? (
               <>
                 <Badge
-                  className={`${DRIFT_STATUS_CLASS[drift.status]} border-0 text-[10px]`}
+                  className={`${MONITORING_STATUS_CLASS[drift.status]} border-0 text-[10px]`}
                 >
-                  {drift.status}
+                  {MONITORING_STATUS_LABEL[drift.status]}
                 </Badge>
                 {driftFlagged > 0 && (
                   <span className="text-[11px] text-muted-foreground">
@@ -104,11 +107,9 @@ export function RetrainMonitoringContext({ model }: { model: AIModel }) {
             ) : psi ? (
               <>
                 <Badge
-                  className={`${PSI_STATUS_CLASS[psi.status]} border-0 text-[10px]`}
+                  className={`${MONITORING_STATUS_CLASS[psi.status]} border-0 text-[10px]`}
                 >
-                  {psi.status === 'INSUFFICIENT_DATA'
-                    ? 'INSUFFICIENT DATA'
-                    : psi.status}
+                  {MONITORING_STATUS_LABEL[psi.status]}
                 </Badge>
                 {psiFlagged > 0 && (
                   <span className="text-[11px] text-muted-foreground">

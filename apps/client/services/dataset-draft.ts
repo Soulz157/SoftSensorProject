@@ -2,6 +2,7 @@ import { fetchClient } from '@/lib/fetcher'
 import type { DataRow, ScalerMethod } from '@/lib/preprocessing'
 import type { FeatureConfig } from '@/lib/feature-engineering'
 import type { PipelineConfig } from '@/lib/pipeline-config'
+import { timeQuery } from '@/lib/time-window'
 import type {
   CleaningOperationInput,
   CreateRawVersionInput,
@@ -526,14 +527,23 @@ export const datasetDraftService = {
       { method: 'POST', body: JSON.stringify(body), signal },
     ),
 
+  /** No `tags` here — this leg has always read every column of the artifact,
+   * and adding a projection would turn a tag the draft no longer carries into
+   * a 422. `startTime`/`endTime` are inclusive and applied before paging. */
   rows: (
     draftId: string,
     artifactId: string,
-    params: { offset: number; limit: number },
+    params: {
+      offset: number
+      limit: number
+      startTime?: string
+      endTime?: string
+    },
   ): Promise<ApiResponse<DraftRowsPage>> =>
     fetchClient(
       `${one(draftId)}/artifacts/${encodeURIComponent(artifactId)}/rows` +
-        `?offset=${params.offset}&limit=${params.limit}`,
+        `?offset=${params.offset}&limit=${params.limit}` +
+        timeQuery(params),
       { method: 'GET' },
     ),
 

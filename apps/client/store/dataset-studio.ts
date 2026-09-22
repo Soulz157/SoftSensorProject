@@ -12,6 +12,7 @@ import {
   type FeatureConfig,
 } from '@/lib/feature-engineering'
 import { EMPTY_PIPELINE_CONFIG } from '@/lib/pipeline-config'
+import type { TimeWindow } from '@/lib/time-window'
 import type { SavedDataset } from '@/store/datasets'
 import type { DatasetArtifactStage } from '@/services/dataset-draft'
 import type { SyntheticCause } from '@/hooks/dataset/use-dataset-version-rows'
@@ -313,9 +314,29 @@ export const dwFeaturePreviewSampleAtom = atom<BoundedSample>(
 // only adds the ABILITY to distinguish the three windows. 'ready' covers a
 // successfully resolved fetch whether or not `dwFeaturePreviewSampleAtom` ends
 // up with rows — Step 3.1 derives "ready but empty" itself by reading both.
-export type PreviewSampleFetchState = 'idle' | 'loading' | 'ready' | 'error'
+// 'refreshing' is 'loading' for a sample that is ALREADY on screen (the EDA
+// time window changed). `describeAnalysisReadiness` reads it as ready, so the
+// analysis card stays mounted instead of dropping to a skeleton.
+export type PreviewSampleFetchState =
+  | 'idle'
+  | 'loading'
+  | 'refreshing'
+  | 'ready'
+  | 'error'
 export const dwFeaturePreviewSampleStateAtom =
   atom<PreviewSampleFetchState>('idle')
+
+// The EDA time window (a month, today). Read by `useDatasetFeaturePreviewSample`
+// — the bounded page above is fetched WITHIN it — and by `DataAnalysisCard`,
+// which forwards it to the four server-computed tabs so every view agrees on
+// what is being shown. `null` means the whole artifact (the overview).
+// Cleared alongside the sample on every wizard reset: a month left over from a
+// previous dataset would otherwise filter a new one to nothing.
+export const dwEdaWindowAtom = atom<TimeWindow | null>(null)
+// Rows the server holds INSIDE that window — the whole match, not the loaded
+// page. The page is capped, so this is what lets the card say "first N of M"
+// instead of implying the sample is everything. `null` until a fetch resolves.
+export const dwEdaSampleTotalAtom = atom<number | null>(null)
 
 // Feature-engineered preview for Step 4's own UI (panels, analysis card,
 // tag sidebar) — recomputed live from the recipe, but over the BOUNDED
@@ -616,6 +637,8 @@ export const initDatasetWizardAtom = atom(
     set(dwDraftSyncStateAtom, { status: 'idle' })
     set(dwFeaturePreviewSampleAtom, brandBoundedSample({ tags: [], rows: [] }))
     set(dwFeaturePreviewSampleStateAtom, 'idle')
+    set(dwEdaWindowAtom, null)
+    set(dwEdaSampleTotalAtom, null)
     set(dwHiddenTagsAtom, [])
     set(dwFocusedTagAtom, '')
     set(dwTagSidebarCollapsedAtom, false)
@@ -704,6 +727,8 @@ export const resetDatasetWizardAtom = atom(null, (_get, set) => {
   set(dwDraftSyncStateAtom, { status: 'idle' })
   set(dwFeaturePreviewSampleAtom, brandBoundedSample({ tags: [], rows: [] }))
   set(dwFeaturePreviewSampleStateAtom, 'idle')
+  set(dwEdaWindowAtom, null)
+  set(dwEdaSampleTotalAtom, null)
 
   // Analysis selection
   set(dwHiddenTagsAtom, [])
@@ -776,6 +801,8 @@ export const initDatasetWizardForEditAtom = atom(
     set(dwDraftSyncStateAtom, { status: 'idle' })
     set(dwFeaturePreviewSampleAtom, brandBoundedSample({ tags: [], rows: [] }))
     set(dwFeaturePreviewSampleStateAtom, 'idle')
+    set(dwEdaWindowAtom, null)
+    set(dwEdaSampleTotalAtom, null)
 
     set(dwNameAtom, dataset.name)
     set(dwDescriptionAtom, dataset.description ?? '')

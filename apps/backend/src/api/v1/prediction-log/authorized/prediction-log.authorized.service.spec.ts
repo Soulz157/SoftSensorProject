@@ -1,4 +1,5 @@
 import { PredictionLogAuthorizedService } from './prediction-log.authorized.service';
+import { resetColumnBaselineCacheForTests } from '@/lib/artifact-baseline';
 import * as pythonClient from '@/lib/python-preprocess-client';
 import { env } from '@/config/env.config';
 import type { InferenceWindowMonitoringService } from '@/api/v1/inference-window/authorized/inference-window-monitoring.authorized.service';
@@ -100,6 +101,11 @@ function createCallArgs(prisma: ReturnType<typeof makePrisma>): {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  // `resolveColumnBaseline`'s cache is MODULE-LEVEL and outlives per-test
+  // mock clearing. Every drift test in this file reuses one literal
+  // `goldObjectKey` (`PRODUCTION_VERSION.goldObjectKey`) — see the same
+  // note in inference-window-monitoring.authorized.service.spec.ts.
+  resetColumnBaselineCacheForTests();
 });
 
 // ── ingestPredictionLogService: featureHistograms round-trip ──────────────
@@ -368,6 +374,28 @@ describe('PredictionLogAuthorizedService plane dispatch', () => {
 
     expect(windowMonitoring.getPsiReport).not.toHaveBeenCalled();
     expect(prisma.predictionLog.findMany).toHaveBeenCalled();
+  });
+
+  // The drift basis echoes the thresholds `computeDrift` actually ran
+  // with, exactly as the PSI basis above already does. The panel's status
+  // tooltip reads THESE to explain a verdict, and the client type makes
+  // them optional — so a service that silently stopped sending them would
+  // degrade every tooltip to no criteria at all with nothing failing
+  // anywhere. This is that failure.
+  it('getDriftService publishes the thresholds the comparison used', async () => {
+    const prisma = makePrisma({ predictionLogs: [] });
+    const service = new PredictionLogAuthorizedService(
+      prisma as never,
+      mockWindowMonitoring,
+    );
+
+    const result = await service.getDriftService('model-1', RANGE, ADMIN);
+
+    expect(result.data.basis.thresholds).toEqual({
+      warnSd: env.DRIFT_WARN_SD,
+      criticalSd: env.DRIFT_CRITICAL_SD,
+      outOfRangePct: env.DRIFT_OUT_OF_RANGE_PCT,
+    });
   });
 });
 

@@ -64,11 +64,26 @@ describe('InputFeatureTable (MODEL-SERVE-001-T12)', () => {
     )
 
     expect(screen.getByRole('columnheader', { name: 'Status' })).toBeVisible()
-    // Two different questions, two different answers on the same row: a tag
-    // can be Bad in PI while its distribution has not drifted at all.
-    expect(screen.getByText('Good')).toBeVisible()
-    expect(screen.getByText('Bad')).toBeVisible()
-    expect(screen.getAllByText('OK')).toHaveLength(2)
+
+    // Two different questions, two different answers on the same row: a
+    // tag can be Bad in PI while its distribution has not drifted at all.
+    //
+    // Both columns now render the word "Good" — drift's `OK` is displayed
+    // as "Good" everywhere since the palette was unified, and PI has
+    // always had its own `Good`. So this can no longer be asserted by
+    // text alone; each verdict is read from ITS OWN CELL, which is what
+    // the test was always really about.
+    const badRow = screen.getByText('BAD.PV').closest('tr')!
+    const cells = badRow.querySelectorAll('td')
+    // Column order: #, Feature, Drift, Status(PI), ... — note the leading
+    // row-number cell, so Drift is index 2 and PI is index 3.
+    expect(cells[2]?.textContent).toBe('Good')
+    expect(cells[3]?.textContent).toBe('Bad')
+
+    const goodRow = screen.getByText('GOOD.PV').closest('tr')!
+    const goodCells = goodRow.querySelectorAll('td')
+    expect(goodCells[2]?.textContent).toBe('Good')
+    expect(goodCells[3]?.textContent).toBe('Good')
   })
 
   it('MODEL-SERVE-001-V14: a Bad row never renders its value as 0.0', () => {
@@ -132,6 +147,32 @@ describe('InputFeatureTable (MODEL-SERVE-001-T12)', () => {
       screen.queryByRole('columnheader', { name: 'PSI' }),
     ).not.toBeInTheDocument()
     expect(screen.getByRole('columnheader', { name: 'Drift' })).toBeVisible()
+  })
+
+  // The Drift badge carries the same explanation tooltip, wording and
+  // palette as the Monitoring tab's card. It briefly kept the raw `OK`
+  // token and a neutral treatment to stay clear of the PI badge beside
+  // it, which made one verdict render two different ways on two tabs.
+  it('renders the Drift verdict as a tooltip trigger, worded like the card', () => {
+    render(
+      <InputFeatureTable
+        rows={[row({ column: 'TI010.PV', driftStatus: 'OK', z: 0.4 })]}
+        driftThresholds={{ warnSd: 1.5, criticalSd: 3, outOfRangePct: 10 }}
+      />,
+    )
+
+    const driftCell = screen
+      .getByText('TI010.PV')
+      .closest('tr')!
+      .querySelectorAll('td')[2]! // #, Feature, Drift
+
+    // Same wording as the Monitoring card — never the raw wire token.
+    expect(driftCell.textContent).toBe('Good')
+    expect(driftCell.textContent).not.toBe('OK')
+    // Radix marks its trigger; a plain <Badge> would have no such button.
+    expect(
+      driftCell.querySelector('[data-slot="tooltip-trigger"]'),
+    ).not.toBeNull()
   })
 
   it('renders a logged value untouched — no inversion, no "(scaled)" suffix', () => {
@@ -241,7 +282,18 @@ describe('InputFeatureTable — Sensor Frozen (MODEL-SERVE-001-T30)', () => {
       />,
     )
     expect(screen.getByText('Frozen')).toBeInTheDocument()
-    expect(screen.getByText('Good')).toBeInTheDocument()
+
+    // Both neighbours read "Good" — drift's `OK` displays as "Good" since
+    // the palette was unified, and PI has its own. Read each from its own
+    // cell; the point is that a frozen instrument is invisible to BOTH.
+    const cells = screen
+      .getByText('TI010.PV')
+      .closest('tr')!
+      .querySelectorAll('td')
+    expect(cells[2]?.textContent).toBe('Good') // drift
+    // The Frozen badge lives INSIDE the PI cell, so this reads
+    // "GoodFrozen" — PI itself still says Good, which is the point.
+    expect(cells[3]?.textContent).toBe('GoodFrozen')
   })
 })
 

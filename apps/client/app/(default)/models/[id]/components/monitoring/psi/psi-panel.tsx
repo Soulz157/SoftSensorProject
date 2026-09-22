@@ -3,14 +3,13 @@
 import { Fragment, useState } from 'react'
 import { format } from 'date-fns'
 import { ChevronDown, ChevronRight } from 'lucide-react'
-import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
-import type {
-  PsiColumn,
-  PsiReport,
-  PsiStatus,
-} from '@/services/model-monitoring'
-import { PSI_STATUS_CLASS } from '@/lib/drift-status-style'
+import type { PsiColumn, PsiReport } from '@/services/model-monitoring'
+import {
+  explainPsiColumn,
+  explainPsiReport,
+} from '@/lib/monitoring-status-explain'
+import { StatusBadgeWithExplanation } from '../status-badge-with-explanation'
 import { PsiBinChart } from './psi-bin-chart'
 import { PsiBinTable } from './psi-bin-table'
 
@@ -32,15 +31,6 @@ function formatPsi(value: number): string {
  *  a reader outside this codebase has no reason to know `binMode`. */
 function binModeLabel(mode: 'continuous' | 'categorical'): string {
   return mode === 'continuous' ? 'quantile' : 'categorical'
-}
-
-/** `INSUFFICIENT_DATA` reads as "Insufficient data" per T13's own DISPLAY
- *  SPEC wording; every other status keeps the raw token, matching the
- *  z-score table's existing convention (`DriftPanel` prints `col.status`
- *  as-is) — this is the ONE status this table renders in prose rather than
- *  as a bare enum, because T13 quotes that exact phrase. */
-function psiStatusLabel(status: PsiStatus): string {
-  return status === 'INSUFFICIENT_DATA' ? 'Insufficient data' : status
 }
 
 function formatWindow(fromIso: string, toIso: string): string {
@@ -148,9 +138,10 @@ export function PsiPanel({ report, loading, unavailableReason }: Props) {
           {report.basis.sampleRequests === 1 ? '' : 's'} carried a histogram,
           vs. version {report.basis.version}&apos;s frozen bins
         </span>
-        <Badge className={`border-0 ${PSI_STATUS_CLASS[report.status]}`}>
-          {psiStatusLabel(report.status)}
-        </Badge>
+        <StatusBadgeWithExplanation
+          status={report.status}
+          explanation={explainPsiReport(report)}
+        />
       </div>
       <div className="overflow-x-auto rounded-lg border border-border">
         <table className="w-full text-xs">
@@ -181,6 +172,7 @@ export function PsiPanel({ report, loading, unavailableReason }: Props) {
                   histogramRequests={report.basis.histogramRequests}
                   sampleRequests={report.basis.sampleRequests}
                   unitLabelShort={unitLabelShort}
+                  thresholds={report.basis.thresholds}
                   onToggle={() =>
                     setExpandedColumn(c =>
                       c === col.column ? null : col.column,
@@ -217,6 +209,7 @@ function PsiRow({
   histogramRequests,
   sampleRequests,
   unitLabelShort,
+  thresholds,
   onToggle,
 }: {
   col: PsiColumn
@@ -225,6 +218,11 @@ function PsiRow({
   windowLabel: string
   histogramRequests: number
   sampleRequests: number
+  /** The report's OWN thresholds, threaded down so the status tooltip
+   *  quotes the numbers `computePsi` actually ran with rather than a
+   *  literal — `PsiReport.basis.thresholds`'s own doc comment requires
+   *  this. */
+  thresholds: PsiReport['basis']['thresholds']
   /** "windows" on the window plane, "reqs" on /predict — MODEL-SERVE-001-T17. */
   unitLabelShort: string
   onToggle: () => void
@@ -253,12 +251,13 @@ function PsiRow({
           {col.psi === null ? '—' : formatPsi(col.psi)}
         </td>
         <td className="px-3 py-2">
-          <Badge
-            className={`border-0 ${PSI_STATUS_CLASS[col.status]}`}
-            title={col.reason}
-          >
-            {psiStatusLabel(col.status)}
-          </Badge>
+          {/* `col.reason` moved from a native `title` into the tooltip
+              body (`explainPsiColumn`), which also carries the
+              measured-vs-threshold line a `title` could not render. */}
+          <StatusBadgeWithExplanation
+            status={col.status}
+            explanation={explainPsiColumn(col, thresholds)}
+          />
           {/* First-class INSUFFICIENT_DATA readout — rows-vs-floor, never a
               bare badge with no shape to it. T13: publish "insufficient
               data", never a numeric PSI computed from too few samples. */}

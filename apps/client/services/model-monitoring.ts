@@ -96,6 +96,22 @@ export interface DriftReport {
      *  own `histogramRequests`. `windowsUsed` can exceed this whenever a
      *  window predates T17 or had no coverable feature column. */
     statsWindows?: number
+    /** The thresholds `computeDrift` was ACTUALLY called with, on both
+     *  planes. Read these for the status tooltip rather than a hardcoded
+     *  1.5/3.0/10, exactly as `PsiReport.basis.thresholds`'s own comment
+     *  instructs for PSI — otherwise moving `DRIFT_WARN_SD` would leave
+     *  the panel explaining a verdict with a number that did not produce
+     *  it. OPTIONAL: a backend deployed before this field shipped sends
+     *  nothing, and the tooltip must then explain the status without
+     *  inventing criteria. */
+    thresholds?: {
+      warnSd: number
+      criticalSd: number
+      /** Percent, 0-100. Can raise a column to WARN but never to
+       *  CRITICAL — see `statusFor` in the backend's
+       *  lib/prediction-drift.ts. */
+      outOfRangePct: number
+    }
   }
 }
 

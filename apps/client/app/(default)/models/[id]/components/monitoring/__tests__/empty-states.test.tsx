@@ -209,6 +209,51 @@ describe('DriftPanel empty states (MODEL-SERVE-001-T10)', () => {
     // Window-plane copy: "window(s)", never "sampled request(s)".
     expect(screen.getByText(/3 windows vs\. version/i)).toBeVisible()
   })
+
+  // This CARD reads Good / WARN / CRITICAL; the Input Data feature table's
+  // inline badge deliberately still reads the raw `OK` token, because there
+  // it sits beside a PI health badge that already owns the word "Good"
+  // (see input-feature-table.test.tsx's "two different questions" case and
+  // lib/drift-status-style.ts). Pinning the card side here keeps that split
+  // from collapsing back into one vocabulary unnoticed.
+  it('renders the wire status OK as "Good" on the card', () => {
+    render(
+      <DriftPanel
+        report={{
+          status: 'OK',
+          columns: [
+            {
+              column: 'TI-101',
+              n: 42,
+              liveMean: 1,
+              liveStd: 1,
+              trainMean: 1,
+              trainStd: 1,
+              z: 0,
+              outOfRangePct: 0,
+              status: 'OK',
+            },
+          ],
+          basis: {
+            plane: 'window',
+            modelVersionId: 'v1',
+            version: 1,
+            goldArtifactId: 'a1',
+            goldObjectKey: 'k1',
+            sampleRequests: 3,
+            from: '2026-01-01T00:00:00.000Z',
+            to: '2026-01-01T01:00:00.000Z',
+          },
+        }}
+        loading={false}
+        unavailableReason={null}
+      />,
+    )
+
+    // Header badge and the one column row.
+    expect(screen.getAllByText('Good')).toHaveLength(2)
+    expect(screen.queryByText('OK')).toBeNull()
+  })
 })
 
 function coverage(over: Partial<LiveErrorCoverage> = {}): LiveErrorCoverage {

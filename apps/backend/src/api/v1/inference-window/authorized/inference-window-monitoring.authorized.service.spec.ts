@@ -1,5 +1,7 @@
 import { InferenceWindowMonitoringService } from './inference-window-monitoring.authorized.service';
 import { postToPython } from '@/lib/python-client';
+import { env } from '@/config/env.config';
+import { resetColumnBaselineCacheForTests } from '@/lib/artifact-baseline';
 
 // MODEL-SERVE-001-T21. `resolveColumnBaseline` (lib/artifact-baseline.ts)
 // calls `postToPython` directly for `/v1/preprocess/column-stats` — mocked
@@ -14,6 +16,13 @@ const mockedPostToPython = postToPython as jest.Mock;
 
 afterEach(() => {
   jest.clearAllMocks();
+  // `resolveColumnBaseline`'s cache is MODULE-LEVEL and outlives `afterEach`
+  // clearing mock CALL HISTORY — every fixture below reuses one literal
+  // `goldObjectKey` across several `it()` blocks, so without this a later
+  // test would silently see an earlier test's cached baseline (or its
+  // `toHaveBeenCalled()` assertion on `mockedPostToPython` would fail
+  // because the cache served the answer instead of calling it).
+  resetColumnBaselineCacheForTests();
 });
 
 function buildPrisma(overrides: Record<string, unknown> = {}) {
@@ -340,5 +349,46 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
     const service = makeService(prisma);
     const result = await service.getHealthStatus('model-1');
     expect(result.status).toBe('WARN');
+  });
+});
+
+describe('InferenceWindowMonitoringService.getDriftReport', () => {
+  // The window-plane twin of the assertion in
+  // prediction-log.authorized.service.spec.ts. The panel's status tooltip
+  // explains a verdict by naming the threshold that produced it, and the
+  // client type makes `basis.thresholds` optional — so a plane that
+  // quietly stopped sending them would leave every tooltip on THIS plane
+  // (the one a scheduled model uses) with no criteria and no failure.
+  it('publishes the thresholds the comparison used', async () => {
+    mockedPostToPython.mockResolvedValue(COLUMN_STATS_RESPONSE);
+    const prisma = buildPrisma({
+      modelVersion: {
+        findFirst: jest.fn().mockResolvedValue(PRODUCTION_VERSION),
+      },
+      inferenceWindow: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            windowStart: new Date(),
+            featureStats: {
+              tag_a: { n: 10, sum: 100, sumsq: 1040, min: 8, max: 12 },
+            },
+          },
+        ]),
+        findFirst: jest.fn().mockResolvedValue({ windowStart: new Date() }),
+      },
+    });
+
+    const service = makeService(prisma);
+    const result = await service.getDriftReport(
+      'model-1',
+      '2026-01-01T00:00:00.000Z',
+      '2026-01-01T01:00:00.000Z',
+    );
+
+    expect(result.data.basis.thresholds).toEqual({
+      warnSd: env.DRIFT_WARN_SD,
+      criticalSd: env.DRIFT_CRITICAL_SD,
+      outOfRangePct: env.DRIFT_OUT_OF_RANGE_PCT,
+    });
   });
 });

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { datasetArtifactService } from '@/services/dataset-version'
 import type { DraftScatterResult } from '@/services/dataset-draft'
+import type { TimeWindow } from '@/lib/time-window'
 
 export interface ArtifactScatterState {
   scatter: DraftScatterResult | null
@@ -29,11 +30,16 @@ export function useArtifactScatter(
   artifactId: string | null,
   xTag: string | null,
   yTag: string | null,
+  /** Inclusive window applied server-side. `null`/omitted = whole artifact. */
+  timeWindow?: TimeWindow | null,
 ): ArtifactScatterState {
   const [scatter, setScatter] = useState<DraftScatterResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const tokenRef = useRef(0)
+  // Primitives, not the object: a `TimeWindow` is a fresh identity per render.
+  const startTime = timeWindow?.startTime
+  const endTime = timeWindow?.endTime
 
   useEffect(() => {
     // Cleared at the start of every run so a stale result from a previous
@@ -52,7 +58,17 @@ export function useArtifactScatter(
     setLoading(true)
 
     datasetArtifactService
-      .scatter(datasetId, artifactId, { xTag, yTag }, ac.signal)
+      .scatter(
+        datasetId,
+        artifactId,
+        {
+          xTag,
+          yTag,
+          ...(startTime && { startTime }),
+          ...(endTime && { endTime }),
+        },
+        ac.signal,
+      )
       .then(res => {
         if (tokenRef.current !== token) return
         setScatter(res.data)
@@ -68,7 +84,7 @@ export function useArtifactScatter(
       })
 
     return () => ac.abort()
-  }, [datasetId, artifactId, xTag, yTag])
+  }, [datasetId, artifactId, xTag, yTag, startTime, endTime])
 
   return { scatter, loading, error }
 }
