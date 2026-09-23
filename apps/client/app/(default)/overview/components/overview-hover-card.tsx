@@ -12,6 +12,7 @@ import type { AIModel, Workspace } from '@/types'
 import type { NodeStatus } from '@/store/status-colors'
 import { BINARY_STATUS_META, STATUS_META } from '@/lib/overview-status'
 import { abnormalEquipment } from '@/lib/overview-tree'
+import { HEALTH_REASON_LABEL } from '@/lib/health-status-style'
 
 const SECTION_ORDER: NodeStatus[] = ['alarm', 'warning', 'offline']
 const MAX_PER_SECTION = 3
@@ -225,6 +226,37 @@ export function OverviewHoverCard({
                                             failed
                                           </Badge>
                                         )}
+                                        {/* MODEL-SERVE-012-T13. WHY, not
+                                            just a coloured dot. The reason
+                                            code is the monitoring axis's
+                                            own word for the fault, run
+                                            through the SAME label map the
+                                            model page and the Alerts page
+                                            use — three surfaces, one
+                                            vocabulary. Absent whenever the
+                                            axis made no claim, which is
+                                            every model this map draws as
+                                            normal, so it never appears as
+                                            an empty dash. Deploy failure
+                                            already has its own badge above
+                                            and is not repeated here. */}
+                                        {!m.deployFailed &&
+                                          m.monitoringReason && (
+                                            <span
+                                              className={cn(
+                                                'shrink-0 truncate text-[9px]',
+                                                isDark
+                                                  ? 'text-white/40'
+                                                  : 'text-muted-foreground/70',
+                                              )}
+                                            >
+                                              {
+                                                HEALTH_REASON_LABEL[
+                                                  m.monitoringReason
+                                                ]
+                                              }
+                                            </span>
+                                          )}
                                       </div>
                                     )
                                   })}

@@ -261,9 +261,19 @@ def build_model(
         # depth, training-config.ts:176-181) — None must stay None, never
         # be coerced through int().
         max_depth = hyperparameters.get("max_depth")
+        # `max_leaf_nodes` is the same nullable shape (null = unlimited leaves).
+        max_leaf_nodes = hyperparameters.get("max_leaf_nodes")
+        # MODEL-FLOW-026. sklearn also accepts a float in (0,1) for both
+        # `min_samples_*` (a fraction of n), but the UI exposes the integer
+        # count only, so int() here is not lossy for anything the form can send.
         return RandomForestRegressor(
             n_estimators=int(hyperparameters.get("n_estimators", 100)),
             max_depth=int(max_depth) if max_depth is not None else None,
+            max_leaf_nodes=(
+                int(max_leaf_nodes) if max_leaf_nodes is not None else None
+            ),
+            min_samples_leaf=int(hyperparameters.get("min_samples_leaf", 1)),
+            min_samples_split=int(hyperparameters.get("min_samples_split", 2)),
             random_state=seed,
         )
     if algorithm == "lightgbm":

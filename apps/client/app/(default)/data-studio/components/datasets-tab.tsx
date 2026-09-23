@@ -18,6 +18,7 @@ import {
 import type { SavedDataset } from '@/store/datasets'
 import type { CreateDatasetInput } from '@/services/dataset'
 import type { useDataStudio } from '@/hooks/dataset/use-data-studio'
+import { useDatasetDependents } from '@/hooks/dataset/use-dataset-dependents'
 import { EditDatasetDialog } from './edit-dataset-dialog'
 import { DatasetCard } from './dataset-card'
 import { DatasetConfigDialog } from './dataset-config-dialog'
@@ -64,6 +65,12 @@ export function DatasetsTab({
   const [deleteTarget, setDeleteTarget] = useState<SavedDataset | null>(null)
   const [detailTarget, setDetailTarget] = useState<SavedDataset | null>(null)
   const [configTarget, setConfigTarget] = useState<SavedDataset | null>(null)
+  // DS-LAKE-030-T02. Fires only while the confirm dialog is open — see the
+  // hook's own doc for why this is not prefetched per card.
+  const { models: dependents, state: dependentsState } = useDatasetDependents(
+    deleteTarget?.id ?? null,
+  )
+  const [deleting, setDeleting] = useState(false)
   const [page, setPage] = useState(1)
 
   // A filter narrowed the list to zero, vs. there being no datasets at all —
@@ -204,18 +211,93 @@ export function DatasetsTab({
               This cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
+
+          {/* DS-LAKE-030-T02. The dependents, NAMED. A model keeps serving
+              after its dataset is deleted — it holds its own pinned GOLD
+              object — so this is a warning, not a refusal (D01), and Delete
+              below stays enabled in every branch including the error one. */}
+          {dependentsState === 'loading' && (
+            <p className="text-xs text-muted-foreground">
+              Checking which models use this dataset…
+            </p>
+          )}
+          {dependentsState === 'error' && (
+            <p className="text-xs text-muted-foreground">
+              Could not check which models use this dataset. You can still
+              delete it.
+            </p>
+          )}
+          {dependentsState === 'ready' && dependents.length > 0 && (
+            <div className="space-y-2 rounded-lg border border-border bg-muted/30 p-3">
+              <p className="text-xs font-medium text-foreground">
+                {dependents.length} model
+                {dependents.length === 1 ? '' : 's'} use
+                {dependents.length === 1 ? 's' : ''} this dataset
+              </p>
+              <ul className="space-y-1">
+                {dependents.map(model => (
+                  <li
+                    key={model.id}
+                    className="flex items-center justify-between gap-3 text-xs"
+                  >
+                    <span className="truncate text-foreground">
+                      {model.name}
+                    </span>
+                    <span className="shrink-0 text-muted-foreground">
+                      {/* Plain words, not the monitoring palette: this is a
+                          "how much will you care" hint, and borrowing the
+                          red/amber status vocabulary here would assert a
+                          health verdict this dialog never computed. */}
+                      {model.scheduleEnabled
+                        ? 'running'
+                        : model.hasProductionVersion
+                          ? 'deployed'
+                          : 'not deployed'}
+                      {/* Only worth saying when it is the ONLY reason the
+                          model is listed — otherwise the current pointer
+                          already explains why it is here. */}
+                      {model.viaPinnedVersion && !model.viaCurrentPointer && (
+                        <span className="ml-1 opacity-70">
+                          · pinned by a saved version
+                        </span>
+                      )}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <p className="text-xs text-muted-foreground">
+                They keep running on the data they were trained with, but lose
+                their link back to this dataset — retraining from it will no
+                longer be possible.
+              </p>
+            </div>
+          )}
+
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              onClick={() => {
-                if (deleteTarget) {
-                  void onDeleteDataset(deleteTarget.id)
+              disabled={deleting}
+              onClick={async event => {
+                // DS-LAKE-030-T03. The dialog used to close itself and toast
+                // success in the same tick as an unawaited `void` call, so a
+                // failed delete said "Dataset deleted". Held open until the
+                // request resolves, and the toast now reports what actually
+                // happened.
+                event.preventDefault()
+                if (!deleteTarget) return
+                setDeleting(true)
+                try {
+                  await onDeleteDataset(deleteTarget.id)
                   toast.success('Dataset deleted')
+                  setDeleteTarget(null)
+                } catch {
+                  toast.error('Could not delete dataset')
+                } finally {
+                  setDeleting(false)
                 }
-                setDeleteTarget(null)
               }}
             >
-              Delete
+              {deleting ? 'Deleting…' : 'Delete'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

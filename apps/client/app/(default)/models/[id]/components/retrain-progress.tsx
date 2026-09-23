@@ -163,9 +163,19 @@ export function RetrainProgress({
             )}
           </div>
 
-          {view.strategy === 'AUGMENT_DATA' && (
+          {/* MODEL-SERVE-017. NEW_DATA_ONLY needs this line MORE than
+              AUGMENT_DATA does, not less: a candidate that dropped the
+              incumbent's training rows is the one whose basis a reader is
+              most likely to misread. Gating on AUGMENT_DATA alone left it
+              silent on exactly that case. */}
+          {(view.strategy === 'AUGMENT_DATA' ||
+            view.strategy === 'NEW_DATA_ONLY') && (
             <p className="text-xs text-muted-foreground">
-              Training data: existing + new dataset. Compared on the{' '}
+              Training data:{' '}
+              {view.strategy === 'AUGMENT_DATA'
+                ? 'existing + new dataset'
+                : 'new dataset only — the existing training data was not used'}
+              . Compared on the{' '}
               <span className="font-medium text-foreground">
                 incumbent&apos;s own frozen test rows
               </span>

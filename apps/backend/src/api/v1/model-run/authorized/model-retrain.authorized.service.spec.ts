@@ -374,6 +374,58 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
     });
   });
 
+  describe('buildComparison — MODEL-SERVE-017 NEW_DATA_ONLY basis', () => {
+    it('is comparable on the same frozen-eval rule as AUGMENT_DATA, and reports its own strategy', async () => {
+      // The regression this guards: NEW_DATA_ONLY's training artifact
+      // differs from the incumbent's by construction, so if it fell through
+      // to the old artifact-equality path it would read "not comparable"
+      // for a comparison that is genuinely valid — the candidate was scored
+      // on the incumbent's own frozen test rows.
+      const finished = {
+        ...JOB_BASE,
+        status: 'SUCCEEDED',
+        resultVersionId: 'version-4',
+        bestRunId: 'run-candidate',
+        retrainStrategy: 'NEW_DATA_ONLY',
+      };
+      const prisma = makePrisma({
+        liveJob: finished,
+        resultVersion: { version: 4, stage: 'STAGING' },
+        runsById: {
+          'run-incumbent': RUN_BASE,
+          'run-candidate': {
+            ...RUN_BASE,
+            id: 'run-candidate',
+            goldArtifactId: 'new-only-gold-1',
+            artifactChecksum: 'new-only-sha',
+            evalSetKind: 'FROZEN_INCUMBENT_TEST',
+            frozenEvalChecksum: 'frozen-sha',
+            holdoutMetrics: { rmse: 0.9, r2: 0.85, mae: 0.4 },
+            metrics: { rmse: 5.0, r2: -2.0, mae: 3.0 },
+          },
+        },
+      });
+      const service = new ModelRetrainAuthorizedService(
+        prisma as never,
+        makeCandidateJobs(finished) as never,
+        {} as never,
+      );
+
+      const res = await service.getCurrentRetrainJobService('model-1', ADMIN);
+      const comparison = res.data?.job?.comparison;
+
+      expect(comparison?.basis.comparable).toBe(true);
+      // Its OWN strategy — never reported as AUGMENT_DATA, which would tell
+      // the reader the candidate also trained on the incumbent's rows.
+      expect(comparison?.basis.strategy).toBe('NEW_DATA_ONLY');
+      expect(comparison?.basis.evalSet).toEqual({
+        kind: 'FROZEN_INCUMBENT_TEST',
+        checksum: 'frozen-sha',
+      });
+      expect(comparison?.rmseDelta).toBeCloseTo(0.9 - 1.25);
+    });
+  });
+
   describe('buildComparison — MODEL-SERVE-015 AUGMENT_DATA basis', () => {
     it('is comparable when the candidate is scored on the frozen incumbent test rows, even on a different artifact', async () => {
       const finished = {

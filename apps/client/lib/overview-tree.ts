@@ -1,6 +1,7 @@
 import type { CanvasNode } from '@/services/canvas'
 import type { AIModel, WorkspacePlant } from '@/types'
 import type { NodeStatus } from '@/store/status-colors'
+import type { HealthReason } from '@/lib/health-status-style'
 import { NODE_STATUS_PRIORITY } from '@/constants/status'
 import {
   monitoringStatus,
@@ -13,6 +14,15 @@ export interface OverviewTreeModel {
   name: string
   status: NodeStatus
   deployFailed: boolean
+  /**
+   * The monitoring axis's own reason code, when it has one — the WHY behind
+   * a non-normal status, carried so the hover card can name the fault
+   * instead of showing a coloured dot and leaving the operator to open the
+   * model to find out. Null whenever the axis made no claim (`OFF`,
+   * `UNKNOWN`, or a payload predating MODEL-SERVE-001-T26), which is also
+   * every model this map now renders as normal.
+   */
+  monitoringReason: HealthReason | null
 }
 
 export interface OverviewTreeNode {
@@ -40,10 +50,49 @@ export function normalizeModelStatus(m: AIModel): NodeStatus {
   if (isDeployFailed(m)) return 'warning'
   const s = monitoringStatus(m)
   if (s === 'alert') return 'alarm'
-  // The overview map has no purple state — a frozen model reads as offline
-  // (no live data) for rollup purposes.
-  if (s === 'frozen') return 'offline'
+  // A FROZEN MODEL IS ABNORMAL, NOT ABSENT.
+  //
+  // This used to return 'offline' ("the overview map has no purple state"),
+  // and the choice of substitute quietly decided whether anyone would ever
+  // see it: `worstStatus` ranks offline (3) BELOW normal (2), so a frozen
+  // model could not lift its equipment out of normal, `abnormalEquipment`
+  // filters on exactly that, and the hover card reads `abnormalEquipment`.
+  // A stuck instrument therefore raised a row on the Alerts page — which
+  // treats FROZEN as an alert via `hasMonitoringAlert` — while the overview
+  // stayed green about the same model. Two surfaces, one fact, opposite
+  // answers.
+  //
+  // 'warning' is the honest substitute: a frozen tag is a real fault the
+  // operator must act on, and it is less severe than an ALERT, which is
+  // precisely what amber means here. The map still has no purple; what it
+  // no longer has is a fault that hides in the one rank nothing escalates
+  // out of.
+  if (s === 'frozen') return 'warning'
+  // A RUNNING MODEL IS NEVER OFFLINE ON THIS MAP.
+  //
+  // `monitoringStatus` collapses two unrelated facts into 'offline': the
+  // model is STOPPED, and the model is running but the health axis made NO
+  // CLAIM. The second is the common case rather than an edge — the list
+  // payload passes `driftMonitor: false`, and `residualSdStatus` is UNKNOWN
+  // for any model with no joined truth pairs, so `classifyModelHealth`
+  // reaches OFF and never OK (see `monitoringStatus`'s own doc comment,
+  // which states this outright).
+  //
+  // On a pill, 'offline' meaning "no claim" is survivable. On this map it is
+  // not: a dot labelled offline beside a model the operator can see running
+  // asserts the plant is down. 'normal' is the honest rendering of "it is up
+  // and nothing has been reported against it" — and it smuggles in no health
+  // claim, because a real WARN/ALERT from any axis is handled above and
+  // still bubbles up through `worstStatus`.
+  if (s === 'offline' && isDeployLive(m)) return 'normal'
   return s
+}
+
+/** Up, as far as the DEPLOY axis is concerned. `initializing` counts: the
+ *  schedule is on and warming up, which is not "no live data" either. */
+function isDeployLive(m: AIModel): boolean {
+  const deploy = m.data?.deployStatus
+  return deploy === 'running' || deploy === 'initializing'
 }
 
 // Worst (most severe) status wins — lower NODE_STATUS_PRIORITY is more severe.
@@ -88,6 +137,7 @@ export function buildOverviewTree(
       name: m.name,
       status: normalizeModelStatus(m),
       deployFailed: isDeployFailed(m),
+      monitoringReason: m.data?.monitoring?.reason ?? null,
     }))
     const ownStatus = (n.data.status ?? 'normal') as NodeStatus
     return {
@@ -116,6 +166,7 @@ export function buildOverviewTree(
     name: m.name,
     status: normalizeModelStatus(m),
     deployFailed: isDeployFailed(m),
+    monitoringReason: m.data?.monitoring?.reason ?? null,
   }))
 
   if (orphanNodes.length > 0 || orphanModelRows.length > 0) {

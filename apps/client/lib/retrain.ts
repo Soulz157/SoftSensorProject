@@ -100,7 +100,7 @@ export interface ComparisonView {
   /** MODEL-SERVE-015. Which invariant `comparable` proves — the UI must
    *  state this alongside a delta rather than imply one universal meaning
    *  of "comparable" (see `RetrainComparison.basis.strategy`'s own note). */
-  strategy: 'KEEP_EXISTING' | 'AUGMENT_DATA'
+  strategy: 'KEEP_EXISTING' | 'AUGMENT_DATA' | 'NEW_DATA_ONLY'
   /** Non-null only for an AUGMENT_DATA job. */
   evalSet: { kind: string | null; checksum: string | null } | null
   /** MODEL-SERVE-015-T04. The candidate's OWN test-split score over the

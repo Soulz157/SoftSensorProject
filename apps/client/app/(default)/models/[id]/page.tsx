@@ -34,6 +34,7 @@ import {
   Cpu,
   Database,
   Gauge,
+  GitBranch,
   History,
   Loader2,
   Pencil,
@@ -73,6 +74,7 @@ import { RetrainProgress } from './components/retrain-progress'
 import { InputDataTab } from './components/input-data-tab'
 import { ModelMonitoringTab } from './components/monitoring/model-monitoring-tab'
 import { WindowLogsTab } from './components/window-logs-tab'
+import { VersionsTab } from './components/versions-tab'
 import { useModelRetrain } from '@/hooks/model/use-model-retrain'
 import { useModelPromote } from '@/hooks/model/use-model-promote'
 import { useModelInputSchema } from '@/hooks/model/use-model-input-schema'
@@ -817,6 +819,19 @@ export default function ModelDetailPage({
                 <span>Evaluation</span>
               </TabsTrigger>
 
+              {/* MODEL-SERVE-016-T02. Between Evaluation and Logs on
+                  purpose: it answers the same question Evaluation does
+                  (how good is this model) for a DIFFERENT moment in time,
+                  so the two sit together rather than being separated by
+                  the operational tabs. */}
+              <TabsTrigger
+                value="versions"
+                className="flex items-center gap-2 px-4"
+              >
+                <GitBranch className="h-4 w-4 shrink-0" />
+                <span>Versions</span>
+              </TabsTrigger>
+
               <TabsTrigger
                 value="logs"
                 className="flex items-center gap-2 px-4"
@@ -907,6 +922,11 @@ export default function ModelDetailPage({
           {/* ── Evaluation ── */}
           <TabsContent value="evaluation" className="mt-4">
             <ModelEvaluation model={model} />
+          </TabsContent>
+
+          {/* ── Versions ── */}
+          <TabsContent value="versions" className="mt-4">
+            <VersionsTab modelId={model.id} />
           </TabsContent>
 
           {/* ── Logs ── */}

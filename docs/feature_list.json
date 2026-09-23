@@ -2751,6 +2751,14 @@
             "RECOMMENDATION ON RECORD, NOT ADOPTED: CHANNEL-BLOCK AND TIME-BAND PERMUTATION INSTEAD OF SHAP FOR THIS GROUP. Permuting a whole feature's entire sequence channel is well-defined for a recurrent model, needs NO baseline, needs NO framework support for the cell type, and answers the operational question directly -- 'if this sensor dies, what do I lose' -- which is a question this project asks weekly, given windows already SKIP when a base tag goes missing. Permuting all features within a time band answers 'which lag matters'. Both require block permutation rather than row-wise shuffling, because lag-1 autocorrelation was measured at 0.9992 and a row-wise shuffle destroys temporal structure for reasons unrelated to information content. The cost is no per-sample explanation, which is the one thing SHAP is uniquely good for and the reason it was wanted. Decide explicitly whether this group gets per-sample explanation at all, or whether global operational importance is enough for it.",
             "WHAT IS THE BASELINE FOR A SEQUENCE, AND WHO CHOSE IT? Every gradient-based SHAP variant attributes relative to a background, and for a sequence the background is itself a SEQUENCE. A zero sequence is off-manifold -- no plant reads zero flow -- and a mean sequence is a flat line no process ever produces, so a model asked to score it is being asked about a state it was never fitted on. WORSE, AND SPECIFIC TO THIS SYSTEM: to_model_ready scales every FINITE value and forces Good afterward, and a Bad cell is stored as 0.0, so a zero baseline in scaled space is not neutral -- it may coincide with the exact value a hole takes. At n_eff = 32 to 97 the background choice will determine the ranking more than the model does. Choose it, state it in the sidecar, and see V61."
           ]
+        },
+        {
+          "id": "MODEL-FLOW-019-T39",
+          "title": "A holdout the user cut is never scored unless someone finds the Score button — score every candidate automatically when its job finishes",
+          "status": "completed",
+          "progress": 100,
+          "detail": "MEASURED, NOT ASSUMED. A dataset created 2026-09-23 carried a perfectly good holdout — two SILVER artifacts on its runId chain with validationRowCount 721 then 743, both with validationHoldoutFrom set — and all six of its SUCCEEDED training runs had holdoutMetrics NULL. Nothing was broken: findHoldoutArtifact walks the chain and resolves the 743-row SILVER correctly, and the candidate comparison's 'has not been scored' copy was literally true. Scoring was simply a separate, user-triggered phase that nobody triggered. A split the user deliberately chose and never scored is a silently wasted split.\n\nINVESTIGATED AND REJECTED FIRST: that some surface read FINAL.validationRowCount (null, by design — the cut lands on SILVER because Step 5's commitCleaningScale sends its scaleRecipe without a holdout) instead of walking the chain. It does not. Every consumer — model-run-launch's CV gate, model-run-score, model-candidate-job's scoreable flag — goes through findHoldoutArtifact, and the client never reads validationRowCount for this at all.\n\nIMPLEMENTATION. `ModelRunScoreAuthorizedService.autoScoreRunsService(runIds)` — system-triggered, no user in the call, so no assertDraftWritable: authorization happened at job launch and this spawns nothing the user did not already pay for. Every precondition triggerScoringService enforces still applies, but each is a LOG-AND-SKIP rather than a throw (already scored, already being scored, not SUCCEEDED, lstm/gru's missing windowing path, no holdout on the chain, missing artifacts). Sequential, not Promise.all — a 12-candidate sweep would otherwise spawn twelve containers the instant training ended.\n\nTRIGGER. ModelCandidateJobAuthorizedService's draft-owned completion branch, detached (void + .catch) so a scoring spawn can never fail or slow job completion. The model-owned (retrain) branch returns earlier and is deliberately NOT hooked: its winner is scored by its own version-minting path, and a second trigger would score it twice.\n\nCIRCULAR DEPENDENCY, AVOIDED DELIBERATELY: ModelRunScoreAuthorizedService depends on ModelRunAuthorizedService, which depends on ModelCandidateJobAuthorizedService — so the score service is resolved LAZILY through ModuleRef at call time (once per finished job) rather than taken in the constructor, which would have needed forwardRef on both ends.",
+          "result": "9 new cases in model-run-auto-score.authorized.service.spec.ts, all passing: spawns for the happy path; skips already-scored, already-scoring, non-SUCCEEDED, lstm, gru, and no-holdout; never throws when a spawn fails; and keeps going after one run throws so a bad candidate cannot silence the rest. Backend jest 523/524 across model-run + lib — the 1 failure is the pre-existing Nest DI error in model-run.authorized.controller.spec.ts, confirmed against HEAD in a worktree earlier this session. `nest build` clean (the check that matters: tsc --noEmit does not run declaration emit).\n\nNOT VERIFIED LIVE: no training job has been run end to end since, so no container has actually been spawned by this path. The ID was also corrected pre-commit from T33 to T39 — T33 was already taken by the Validate column's residual-SD task.\n\nBOOT FAILURE AND CORRECTION (2026-09-23). The first shape put autoScoreRunsService ON ModelRunScoreAuthorizedService and had the candidate-job service reach it lazily through ModuleRef. It compiled, `nest build` passed, and 9/9 unit tests passed — and the app did not start: 'Nest can't resolve dependencies of the ModelRunScoreAuthorizedService (PrismaService, ?, ...)'. ModuleRef does not break a require cycle, because the cycle is created by the IMPORT STATEMENT (candidate-job -> score -> runs -> candidate-job), not by when the instance is requested. Corrected by extracting ModelRunAutoScoreAuthorizedService, whose only dependencies are PrismaService and the container runner — nothing that depends back — so candidate-job injects it normally. Verified by actually booting: 'ModelRunModule dependencies initialized' + 'Nest application successfully started'.\n\nLESSON RECORDED: for a Nest change, neither `tsc --noEmit` nor `nest build` nor unit tests prove the container can wire itself. Only starting the app does."
         }
       ],
       "acceptance_criteria": [
@@ -3983,6 +3991,61 @@
           "status": "blocked",
           "description": "Real-browser look at Step 3 in both modes, or recorded as not run. NOT RUN 2026-09-21: the browser extension is not connected (see T04.blocked)."
         }
+      ]
+    },
+    {
+      "id": "MODEL-FLOW-026",
+      "title": "Random forest exposes the knobs that actually control its capacity",
+      "priority": "medium",
+      "status": "completed",
+      "progress": 100,
+      "dependencies": [
+        "MODEL-FLOW-020",
+        "MODEL-FLOW-024"
+      ],
+      "description": "User request 2026-09-23: Step 2 showed only n_estimators and max_depth for random_forest, so the knobs a forest is actually tuned with were unreachable. Adds max_leaf_nodes (nullable-number, null = unlimited, mirroring max_depth), min_samples_leaf and min_samples_split, wired through all five layers: the trainer's build_model, CONSUMED_HYPERPARAM_KEYS, the HYPERPARAMS catalogue with medium bands, TIER_BANDS, and TUNING_GRID plus all three tier overrides. SCOPE IS random_forest ONLY — the user asked for all six additive algorithms, and the other five are MODEL-FLOW-027.",
+      "userDecisions": [
+        "ALSO IN THE TUNING GRID, NOT MANUAL CONFIG ONLY (2026-09-23). New keys join the Find Best Parameters variants. Grid cost is flat: variants are hand-declared complete records capped at TUNE_VARIANTS_PER_JOB = 4, so extra keys enrich each record instead of multiplying them.",
+        "INT ONLY FOR THE min_samples_* PAIR (2026-09-23). sklearn also accepts a float in (0,1) as a fraction of n, deliberately excluded: a dual-mode field would make the suggestedRange band and the T05 containment assertion incoherent.",
+        "LOCAL REBUILD, NO REGISTRY FIX (2026-09-23). Verify by rebuilding the trainer on the build host; the broken scgc/ push credential stays out of scope."
+      ],
+      "findings": [
+        "The min_samples_* tier bands run OPPOSITE to every other band in TIER_BANDS: they are a floor against leaves that memorise a few rows, so a bigger dataset wants a SMALLER floor. tiny gets [2,40]/[4,60] and large [1,10]/[2,20].",
+        "A half-wired key fails SILENTLY: build_model reads by name with no **kwargs, HyperparametersSchema is z.record(string, scalar), and the class-validator ValidationPipe with forbidNonWhitelisted is commented out in main.ts:51-57. Nothing in the request path rejects an unknown key.",
+        "run-params.test.ts's classifyHyperparams case used min_samples_leaf as its example of an IGNORED key. Retargeted to max_features — a real RandomForestRegressor argument build_model still does not pass — which keeps the case's intent (plausible key, no effect) rather than a nonsense key.",
+        "PRE-EXISTING, NOT FROM THIS WORK: pnpm check-types is red on model.authorized.service.spec.ts:227 (fails at HEAD, confirmed in a detached worktree) and on model-candidate-job.authorized.service.spec.ts (another session's uncommitted constructor change). This work introduces no signature changes."
+      ],
+      "acceptanceCriteria": [
+        "The three fields render in Step 2 for random_forest and carry no 'unused' badge.",
+        "max_leaf_nodes offers the unlimited toggle and sends null, not 0.",
+        "Find Best Parameters variants include the new keys at every size tier, each value inside that tier's band.",
+        "A run with min_samples_leaf raised fits a measurably different forest than one without."
+      ],
+      "verification": [
+        "backend jest src/lib/tuning-grid.spec.ts — 78 passed.",
+        "client vitest run-params + training-config-grid-agreement + hyperparam-ranges + tuning-preview — 458 passed.",
+        "Trainer image 1.0.14 built from the repo root; 69 Python tests passed inside it.",
+        "IN-IMAGE BEHAVIOURAL PROOF on a 400-row synthetic frame at seed 42: min_samples_leaf=50 takes the forest from 12,590 leaves/depth 19 to 199/2; min_samples_split=100 to 205/3; max_leaf_nodes=8 to exactly 400 (8 per tree x 50 trees); all three predict differently from the baseline, and max_leaf_nodes=null reproduces it bit-identically — proving the nullable path is not coerced to int.",
+        "NOT DONE: no run has been launched through the wizard UI against 1.0.14, and the image is not pushed, so only this build host has it.",
+        "SCOPE OF THE IMAGE BUMP: imageRef 1.0.13 -> 1.0.14 changes the container EVERY algorithm trains in, but the behavioural proof above is random_forest only. The change is additive (each new `.get()` keeps its sklearn default) and the 69 inherited Python tests pass in-image, which is why the other eleven algorithms were not re-verified — do not read 1.0.14 as validated across the board."
+      ]
+    },
+    {
+      "id": "MODEL-FLOW-027",
+      "title": "The remaining five additive algorithms get their capacity knobs",
+      "priority": "medium",
+      "status": "pending",
+      "progress": 0,
+      "dependencies": [
+        "MODEL-FLOW-026"
+      ],
+      "description": "The other five algorithms from the 2026-09-23 audit, same five-layer pattern MODEL-FLOW-026 established: xgboost (subsample, colsample_bytree, min_child_weight), lightgbm (n_estimators, max_depth, min_child_samples), hist_gradient_boosting (max_depth, min_samples_leaf, l2_regularization), ridge (fit_intercept, solver), svm (tol, max_iter). Field lists are proposals, to be confirmed against each library's signature. One algorithm per commit; a red exact-equality test cannot say which algorithm broke. Needs one more trainer rebuild at the end.",
+      "userDecisions": [
+        "OUT OF SCOPE, EACH NEEDS ITS OWN DESIGN (2026-09-23): mlp (hidden_layer_sizes is a scalar wrapped to a 1-tuple; multi-layer is a type change), lstm/gru (architecture hardcoded, fixed Adam/MSE — knobs need constructor params), svm degree/gamma (kernel-conditional, needs a new catalogue kind), grp and pls (no size-tier bands by design), ols (one boolean)."
+      ],
+      "findings": [
+        "Order matters: bands FIRST, then grid values, because T05 and the MODEL-FLOW-024 assertions require every tier's variant values to sit inside that tier's band.",
+        "Watch the checkbox alignment when adding ridge's fit_intercept — dynamic-hyperparameters.tsx gives the checkbox case a hand-tuned pt-6 to line up with a labelled Input sibling, which misaligns beside a field that carries a RangeHint."
       ]
     }
   ],

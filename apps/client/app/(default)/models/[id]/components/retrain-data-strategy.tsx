@@ -16,7 +16,20 @@ import { datasetVersionService } from '@/services/dataset-version'
 import type { DatasetVersion } from '@/services/dataset-version'
 import type { RetrainIncumbent } from '@/services/model-retrain'
 
-export type RetrainDataStrategy = 'KEEP_EXISTING' | 'AUGMENT_DATA'
+export type RetrainDataStrategy =
+  | 'KEEP_EXISTING'
+  | 'AUGMENT_DATA'
+  | 'NEW_DATA_ONLY'
+
+/**
+ * MODEL-SERVE-017. The strategies that need a dataset selected. Mirrors the
+ * server's own `usesNewData` (model-retrain.authorized.dto.ts) — the DTO
+ * refuses a strategy/id mismatch in either direction, so the form must use
+ * the same rule or it would submit a request the server rejects.
+ */
+export function retrainUsesNewData(strategy: RetrainDataStrategy): boolean {
+  return strategy === 'AUGMENT_DATA' || strategy === 'NEW_DATA_ONLY'
+}
 
 /**
  * MODEL-SERVE-015-T01. Sits ABOVE the Auto/Custom tabs in
@@ -123,10 +136,26 @@ export function RetrainDataStrategy({
               </span>
             </span>
           </label>
+          <label className="flex cursor-pointer items-start gap-2.5 rounded-md border border-border p-2.5 text-xs has-[[data-checked]]:border-primary has-[[data-checked]]:bg-primary/5">
+            <RadioGroupItem
+              value="NEW_DATA_ONLY"
+              className="mt-0.5"
+              disabled={!incumbent?.baseDataset}
+            />
+            <span>
+              <span className="block font-medium text-foreground">
+                New Data Only
+              </span>
+              <span className="block text-muted-foreground">
+                Train on the newly selected dataset alone. Still scored on the
+                incumbent&apos;s own test rows, so the comparison holds.
+              </span>
+            </span>
+          </label>
         </RadioGroup>
       </div>
 
-      {strategy === 'AUGMENT_DATA' && (
+      {retrainUsesNewData(strategy) && (
         <div className="space-y-3 border-t border-border pt-3">
           <div className="space-y-1.5">
             <Label>Additional dataset</Label>

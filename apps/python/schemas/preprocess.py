@@ -1501,6 +1501,16 @@ class CombineForRetrainRequest(BaseModel):
     target_y: str
     cut_timestamp: str
     overwrite: bool = False
+    # MODEL-SERVE-017. False is the "New Data Only" retrain strategy: the
+    # new rows are prepared EXACTLY as described above — the base's pinned
+    # recipe and its already-fitted scalers, never re-fit — but `base_train`
+    # is not concatenated, so the candidate trains on the new data alone.
+    # Every other guarantee is deliberately unchanged, above all the frozen
+    # evaluation slice: it still comes from the BASE's own test rows, which
+    # is what keeps a New-Data-Only candidate scorable against the incumbent
+    # on identical rows. Defaults True so every existing caller keeps the
+    # augmentation behaviour with no change.
+    combine: bool = True
 
 
 class CombineForRetrainResponse(ArtifactStatsResponse):

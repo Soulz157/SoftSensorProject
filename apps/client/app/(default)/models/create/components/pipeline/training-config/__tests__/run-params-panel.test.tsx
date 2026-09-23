@@ -241,13 +241,15 @@ describe('RunParamsPanel (MODEL-FLOW-012)', () => {
     renderPanel([
       run({
         algorithm: 'random_forest',
-        hyperparameters: { n_estimators: 100, min_samples_leaf: 5 },
+        hyperparameters: { n_estimators: 100, max_features: 0.5 },
       }),
     ])
-    // random_forest reads `n_estimators` and `max_depth`, so
-    // `min_samples_leaf` is the unconsumed one. It also CONSUMES the seed, so
-    // the seed chip carries no marker here and `getByText` (singular) is the
-    // right query — a second `unused` on screen would fail this outright.
+    // `max_features` is a real RandomForestRegressor argument that build_model
+    // does not pass, so it is the unconsumed one — it replaced
+    // `min_samples_leaf`, which MODEL-FLOW-026 made genuinely consumed.
+    // random_forest also CONSUMES the seed, so the seed chip carries no marker
+    // here and `getByText` (singular) is the right query — a second `unused` on
+    // screen would fail this outright.
     expect(screen.getByText('unused')).toBeInTheDocument()
   })
 

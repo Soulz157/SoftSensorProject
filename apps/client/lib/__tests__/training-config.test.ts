@@ -37,7 +37,14 @@ describe('defaultHyperparams', () => {
     mlp: ['hidden_layer_sizes', 'alpha', 'max_iter'],
     grp: ['alpha', 'n_restarts_optimizer'],
     pls: ['n_components', 'max_iter'],
-    random_forest: ['n_estimators', 'max_depth'],
+    // MODEL-FLOW-026: the three capacity knobs joined the original pair.
+    random_forest: [
+      'n_estimators',
+      'max_depth',
+      'max_leaf_nodes',
+      'min_samples_leaf',
+      'min_samples_split',
+    ],
     lightgbm: ['learning_rate', 'num_leaves', 'boosting_type'],
     xgboost: ['n_estimators', 'learning_rate', 'max_depth'],
     // MODEL-FLOW-009-T03: sequence_length added alongside the existing

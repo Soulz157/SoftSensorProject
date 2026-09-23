@@ -589,6 +589,13 @@ export async function combineForRetrain(input: {
   target_y: string;
   cut_timestamp: string;
   overwrite?: boolean;
+  /**
+   * MODEL-SERVE-017. Omitted or true combines the base's training rows with
+   * the new ones (AUGMENT_DATA). False prepares the new rows alone through
+   * the same recipe and the same never-re-fit scalers (NEW_DATA_ONLY); the
+   * base's frozen evaluation slice is written either way.
+   */
+  combine?: boolean;
 }): Promise<CombineForRetrainResult> {
   const res = await postToPython<unknown>(
     '/v1/preprocess/combine-for-retrain',

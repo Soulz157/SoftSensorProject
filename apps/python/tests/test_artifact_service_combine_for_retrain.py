@@ -120,6 +120,78 @@ def test_combine_keeps_base_rows_untouched_and_scales_only_new_rows() -> None:
     )
 
 
+def test_new_data_only_trains_on_new_rows_but_keeps_the_base_frozen_window() -> None:
+    """MODEL-SERVE-017. `combine=False` is the "New Data Only" strategy.
+
+    Two things must hold at once, and they pull in opposite directions:
+    the base's TRAIN rows must be absent from the written artifact, while
+    the base's FROZEN rows must still be written to the sidecar — dropping
+    those too would leave a New-Data-Only candidate with nothing to be
+    scored against the incumbent on, which is the whole basis of the
+    comparison.
+
+    The new rows must also still be scaled with the BASE's recorded params,
+    exactly as in the combine case: `combine=False` changes which rows are
+    trained on, never the feature space they live in.
+    """
+    base = _daily_frame(20)
+    base["PT-201"] = [float(i) for i in range(20)]
+    base["PT-201__status"] = base["TI-101__status"]
+    new = _daily_frame(5)
+    new["timestamp"] = pd.Timestamp("2026-01-26") + pd.to_timedelta(range(5), unit="D")
+    new["PT-201"] = [100.0, 101.0, 102.0, 103.0, 104.0]
+    new["PT-201__status"] = new["TI-101__status"]
+
+    store = RecordingStore({
+        "base-ds/artifacts/final-1/data.parquet": base,
+        "new-ds/artifacts/silver-1/data_silver.parquet": new,
+    })
+    _seed_feature_spec(
+        store,
+        "base-ds/artifacts/final-1/feature_spec.json",
+        selectedColumns=["TI-101", "PT-201"],
+        scaling=[
+            {"tag": "PT-201", "method": "minmax"},
+            {"tag": "TI-101", "method": "none"},
+        ],
+        scalingParams={"PT-201": {"min": 0.0, "max": 19.0}},
+    )
+
+    result = artifact_service.combine_for_retrain(
+        store,
+        CombineForRetrainRequest(
+            base_data_key="base-ds/artifacts/final-1/data.parquet",
+            base_feature_spec_key="base-ds/artifacts/final-1/feature_spec.json",
+            new_data_key="new-ds/artifacts/silver-1/data_silver.parquet",
+            target_key="base-ds/artifacts/newonly-1/data_gold.parquet",
+            target_y="TI-101",
+            cut_timestamp="2026-01-16",
+            combine=False,
+        ),
+    )
+
+    written = store.objects["base-ds/artifacts/newonly-1/data_gold.parquet"]
+    # The new rows ALONE — 15 base train rows deliberately left out.
+    assert len(written) == 5
+    assert written["timestamp"].min() == pd.Timestamp("2026-01-26")
+
+    # Still the base's recorded params (min=0, max=19), not re-fit on
+    # [100,104] — identical to the combine case's expectation.
+    expected = [round(v / 19.0, 3) for v in [100.0, 101.0, 102.0, 103.0, 104.0]]
+    assert sorted(written["PT-201"].tolist()) == sorted(expected)
+
+    # The frozen evaluation slice is the BASE's own test rows, unchanged —
+    # this is what the candidate gets scored on.
+    frozen = store.objects["base-ds/artifacts/newonly-1/validate_data.parquet"]
+    assert sorted(frozen["TI-101"].tolist()) == [15.0, 16.0, 17.0, 18.0, 19.0]
+
+    assert result["validation_row_count"] == 5
+    assert result["frozen_eval_checksum"]
+    # Reports rows that actually reached training, so no base rows did.
+    assert result["base_train_row_count"] == 0
+    assert result["new_train_row_count"] == 5
+
+
 def test_combine_refuses_when_new_dataset_overlaps_the_frozen_window() -> None:
     """T02/T04's own leakage guard, re-verified against the real data: a new
     dataset starting AT OR BEFORE the incumbent's own split boundary would

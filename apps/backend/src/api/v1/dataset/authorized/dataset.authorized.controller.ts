@@ -69,6 +69,21 @@ export class DatasetAuthorizedController {
     return this.service.updateDatasetService(user, id, body);
   }
 
+  // DS-LAKE-030-T01. Read BEFORE the delete, by the confirm dialog. A GET
+  // rather than a field on the delete response, for the obvious reason: the
+  // point is to show the list while the delete can still be called off.
+  @Get('/:id/dependents')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Models that depend on this dataset (does not block deletion)',
+  })
+  async listDatasetDependentsController(
+    @Users() user: Auth.UserPayload,
+    @Param('id') id: string,
+  ) {
+    return this.service.listDatasetDependentsService(user, id);
+  }
+
   @Delete('/:id')
   @HttpCode(200)
   @ApiOperation({ summary: 'Delete a dataset' })

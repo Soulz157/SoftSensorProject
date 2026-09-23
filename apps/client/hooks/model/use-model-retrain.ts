@@ -64,7 +64,7 @@ export interface UseModelRetrain {
   start: (
     candidates?: CandidateInput[],
     options?: {
-      strategy?: 'KEEP_EXISTING' | 'AUGMENT_DATA'
+      strategy?: 'KEEP_EXISTING' | 'AUGMENT_DATA' | 'NEW_DATA_ONLY'
       additionalDatasetVersionId?: string
     },
   ) => Promise<void>
@@ -200,7 +200,7 @@ export function useModelRetrain({
     async (
       candidates?: CandidateInput[],
       options?: {
-        strategy?: 'KEEP_EXISTING' | 'AUGMENT_DATA'
+        strategy?: 'KEEP_EXISTING' | 'AUGMENT_DATA' | 'NEW_DATA_ONLY'
         additionalDatasetVersionId?: string
       },
     ) => {

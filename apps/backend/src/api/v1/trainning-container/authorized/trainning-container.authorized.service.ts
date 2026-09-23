@@ -305,8 +305,34 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
   // inspects the local image first, so this default is correct where it was
   // built and fails LOUDLY at boot elsewhere rather than silently running old
   // code.
+  //
+  // 1.0.14 (MODEL-FLOW-026) — `build_model`'s random_forest branch reads three
+  // more keys: `max_leaf_nodes` (nullable, null = unlimited, the same shape as
+  // `max_depth`), `min_samples_leaf` and `min_samples_split`. ADDITIVE: every
+  // key keeps its sklearn default, so a run launched with the old four-key
+  // payload builds a bit-identical estimator. The bump is still required,
+  // because on 1.0.13 the new keys reach the container and are SILENTLY
+  // IGNORED — `build_model` reads by name and never inspects extra keys — so
+  // the form would offer knobs that do nothing.
+  //
+  // VERIFIED IN-IMAGE BY BEHAVIOUR, NOT BY TAG, same as every prior bump:
+  // `docker run --user root` with the test directory mounted plus a
+  // `pip install pytest` — 69 passed (all inherited; this change adds no
+  // Python test). The keys were then proven to reach the estimator by fitting
+  // a 400-row synthetic frame at seed 42 and reading the forest back:
+  // min_samples_leaf=50 collapses 12,590 leaves to 199 (depth 19 -> 2),
+  // min_samples_split=100 to 205 (depth 3), max_leaf_nodes=8 to exactly 400
+  // (8 per tree x 50 trees), each predicting differently from the baseline —
+  // and max_leaf_nodes=null reproduces the baseline BIT-IDENTICALLY, which is
+  // what proves the nullable path is not coerced through int().
+  //
+  // PUSH NOT ATTEMPTED — every bump from 1.0.9 through 1.0.13 returned
+  // `insufficient_scope: authorization failed`, so like those this tag exists
+  // LOCALLY on the build machine only. `resolveDigest` inspects the local
+  // image first, so this default is correct where it was built and fails
+  // LOUDLY at boot elsewhere rather than silently running old code.
   private readonly imageRef =
-    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.13';
+    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.14';
   // private readonly network = process.env.TRAINING_NETWORK ?? 'dslake_default';
   private readonly network = 'monorepo_network';
   private readonly memoryBytes = Number(

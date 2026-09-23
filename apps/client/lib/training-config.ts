@@ -362,6 +362,43 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
         note: 'unlimited grows each tree until its leaves are pure',
       },
     },
+    {
+      kind: 'nullable-number',
+      key: 'max_leaf_nodes',
+      label: 'Max leaf nodes',
+      defaultValue: null,
+      suggestedRange: {
+        min: 16,
+        max: 256,
+        note: 'caps tree size by leaf count instead of depth — a shape-independent capacity limit',
+      },
+    },
+    {
+      kind: 'number',
+      key: 'min_samples_leaf',
+      label: 'Min samples per leaf',
+      defaultValue: 1,
+      step: 1,
+      min: 1,
+      suggestedRange: {
+        min: 1,
+        max: 20,
+        note: 'raise it to stop leaves that memorise a handful of rows',
+      },
+    },
+    {
+      kind: 'number',
+      key: 'min_samples_split',
+      label: 'Min samples to split',
+      defaultValue: 2,
+      step: 1,
+      min: 2,
+      suggestedRange: {
+        min: 2,
+        max: 40,
+        note: 'the smallest node still allowed to branch; blunter than the leaf floor',
+      },
+    },
   ],
   lightgbm: [
     {

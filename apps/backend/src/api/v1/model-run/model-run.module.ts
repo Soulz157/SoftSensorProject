@@ -9,6 +9,7 @@ import { ModelDraftRunAuthorizedController } from './authorized/model-draft-run.
 import { ModelRunLaunchAuthorizedService } from './authorized/model-run-launch.authorized.service';
 import { ModelRunScoreAuthorizedController } from './authorized/model-run-score.authorized.controller';
 import { ModelRunScoreAuthorizedService } from './authorized/model-run-score.authorized.service';
+import { ModelRunAutoScoreAuthorizedService } from './authorized/model-run-auto-score.authorized.service';
 import { ModelCandidateJobAuthorizedController } from './authorized/model-candidate-job.authorized.controller';
 import { ModelCandidateJobAuthorizedService } from './authorized/model-candidate-job.authorized.service';
 import { ModelRetrainAuthorizedController } from './authorized/model-retrain.authorized.controller';
@@ -42,6 +43,10 @@ import { TuningGridAuthorizedService } from './authorized/tuning-grid.authorized
     ModelRetrainAuthorizedService,
     ModelRetrainAugmentAuthorizedService,
     ModelRunScoreAuthorizedService,
+    // MODEL-FLOW-019-T39. The system-triggered half of scoring, kept out of
+    // the service above so job completion can import it without closing a
+    // cycle — see its own doc comment.
+    ModelRunAutoScoreAuthorizedService,
     TuningGridAuthorizedService,
     RunTokenGuard,
     ScoreTokenGuard,

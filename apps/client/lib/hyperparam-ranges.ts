@@ -142,6 +142,12 @@ export const TIER_BANDS: Partial<Record<Algorithm, Record<string, TierBands>>> =
     random_forest: {
       n_estimators: { tiny: [50, 200], small: [100, 300], large: [200, 800] },
       max_depth: { tiny: [3, 8], small: [4, 12], large: [8, 30] },
+      // MODEL-FLOW-026. The two `min_samples_*` floors run the opposite way to
+      // every other band here: they are a guard against leaves that memorise a
+      // few rows, so a bigger dataset needs a SMALLER floor, not a larger one.
+      max_leaf_nodes: { tiny: [8, 64], small: [16, 128], large: [64, 1024] },
+      min_samples_leaf: { tiny: [2, 40], small: [1, 20], large: [1, 10] },
+      min_samples_split: { tiny: [4, 60], small: [2, 40], large: [2, 20] },
     },
     lightgbm: {
       learning_rate: {

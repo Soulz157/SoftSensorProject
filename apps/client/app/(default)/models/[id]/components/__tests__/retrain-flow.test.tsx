@@ -268,6 +268,50 @@ describe('ModelRetrainDialog — pre-flight (T08)', () => {
     expect(onStart).toHaveBeenCalledWith(undefined, undefined)
   })
 
+  // MODEL-SERVE-017. The operator's first decision is what the training data
+  // IS; picking where it comes from is the second, separate step.
+  it('offers New Data Only beside the two existing strategies, and blocks start until a dataset is chosen', async () => {
+    const user = userEvent.setup()
+    const onStart = vi.fn()
+    render(
+      <ModelRetrainDialog
+        open
+        onClose={() => {}}
+        model={MODEL}
+        // A resolved base dataset is what makes either new-data strategy
+        // selectable at all — without one there is nothing to be compatible
+        // WITH, and both options stay disabled by design.
+        incumbent={{
+          ...INCUMBENT,
+          baseDataset: {
+            datasetId: 'ds-1',
+            datasetName: 'Reactor tags',
+            versionId: 'dv-1',
+            versionNumber: 3,
+          },
+        }}
+        loading={false}
+        isRetraining={false}
+        error={null}
+        onStart={onStart}
+      />,
+    )
+
+    expect(screen.getByText('Keep Existing Data')).toBeInTheDocument()
+    expect(screen.getByText('Keep Existing + New Data')).toBeInTheDocument()
+    expect(screen.getByText('New Data Only')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('radio', { name: /New Data Only/i }))
+
+    // Chosen but no dataset picked yet — starting now would submit a
+    // strategy the server refuses (its .strict() schema requires the id),
+    // so the action stays disabled rather than round-tripping to a 400.
+    expect(
+      screen.getByRole('button', { name: /Start Auto Finetune/i }),
+    ).toBeDisabled()
+    expect(onStart).not.toHaveBeenCalled()
+  })
+
   it('pins a Custom Finetune candidate to the incumbent algorithm and a real grid variant', async () => {
     const user = userEvent.setup()
     const onStart = vi.fn()

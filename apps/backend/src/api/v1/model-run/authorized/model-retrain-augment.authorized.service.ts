@@ -243,9 +243,18 @@ export class ModelRetrainAugmentAuthorizedService {
    * for an existing job by `idempotencyKey` BEFORE calling this (the
    * trigger does).
    */
+  /**
+   * MODEL-SERVE-017. `combine: false` is the NEW_DATA_ONLY strategy — the
+   * new rows are prepared through the identical recipe and the base's own
+   * never-re-fit scalers, but the base's training rows are left out. The
+   * artifact still lives in the BASE dataset's lineage and still carries the
+   * base's frozen evaluation rows as its sidecar, because the candidate is
+   * still scored against the incumbent on exactly those rows.
+   */
   async buildCombinedArtifact(
     ctx: AugmentContext,
     user: Auth.UserPayload,
+    combine = true,
   ): Promise<{
     combinedFinalArtifactId: string;
     combinedGoldArtifactId: string;
@@ -271,6 +280,7 @@ export class ModelRetrainAugmentAuthorizedService {
       target_key: targetKey,
       target_y: ctx.targetY,
       cut_timestamp: ctx.cutTimestamp,
+      combine,
     });
 
     const combinedFinalArtifactId = randomUUID();
@@ -283,7 +293,7 @@ export class ModelRetrainAugmentAuthorizedService {
     const sharedRunId = randomUUID();
     const operations = [
       {
-        op: 'retrain_augment_combine',
+        op: combine ? 'retrain_augment_combine' : 'retrain_new_data_only',
         baseArtifactId: ctx.baseFinal.id,
         newArtifactId: ctx.newFinal.id,
         newDatasetVersionId: ctx.newDatasetVersionId,

@@ -7,6 +7,7 @@ import {
 } from './dto/model-candidate-job.authorized.dto';
 import { CreateTrainingRunDto } from './dto/model-run.authorized.dto';
 import { ModelRunLaunchAuthorizedService } from './model-run-launch.authorized.service';
+import { ModelRunAutoScoreAuthorizedService } from './model-run-auto-score.authorized.service';
 import {
   getRunLossHistory,
   getRunManifest,
@@ -127,7 +128,43 @@ export class ModelCandidateJobAuthorizedService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly runLaunch: ModelRunLaunchAuthorizedService,
+    // MODEL-FLOW-019-T39. An ordinary injection, and it has to be a
+    // service that depends on NOTHING in this file's own import graph —
+    // see `ModelRunAutoScoreAuthorizedService`'s doc comment for the cycle
+    // that an earlier shape (the method on the score service, resolved
+    // lazily through ModuleRef) could not escape.
+    private readonly autoScore: ModelRunAutoScoreAuthorizedService,
   ) {}
+
+  /**
+   * MODEL-FLOW-019-T39. Score every candidate of a finished job against the
+   * dataset's holdout, without waiting for anyone to find the Score action.
+   *
+   * DETACHED ON PURPOSE. Job completion is the caller, and a scoring spawn
+   * must never be able to fail it or slow it down — `autoScoreRunsService`
+   * already swallows and logs per-run failures, and this `.catch` covers
+   * the resolution itself.
+   */
+  private autoScoreJobRuns(jobId: string) {
+    void (async () => {
+      const runs = await this.prisma.modelTrainingRun.findMany({
+        where: {
+          candidateJobId: jobId,
+          status: 'SUCCEEDED',
+          holdoutMetrics: { equals: PrismaTypes.DbNull },
+        },
+        select: { id: true },
+      });
+      if (runs.length === 0) return;
+      await this.autoScore.autoScoreRunsService(runs.map((r) => r.id));
+    })().catch((err: unknown) => {
+      this.log.warn(
+        `auto-score sweep failed for job ${jobId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    });
+  }
 
   private isUniqueViolation(err: unknown): boolean {
     return (
@@ -752,6 +789,11 @@ export class ModelCandidateJobAuthorizedService {
         finishedAt: new Date(),
       },
     });
+    // MODEL-FLOW-019-T39. The draft-owned branch only. A model-owned job
+    // (a retrain) returns above, and its winner is scored by its own
+    // version-minting path — adding a second trigger here would score it
+    // twice.
+    if (result.count > 0) this.autoScoreJobRuns(jobId);
     if (result.count > 0 && finalBestRunId && job.modelDraftId) {
       // Point the draft at the metric's winner — the SAME single writer of
       // ModelDraft.currentRunId this branch has always been (MODEL-FLOW-013

@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Get,
   Param,
   ParseIntPipe,
   Post,
@@ -18,6 +19,17 @@ import {
 @UseGuards(JwtAccessGuard)
 export class ModelVersionAuthorizedController {
   constructor(private readonly service: ModelVersionAuthorizedService) {}
+
+  // MODEL-SERVE-016-T01. The read that promote below has been missing since
+  // the registry shipped — a client could move PRODUCTION to a version it
+  // had no way to enumerate.
+  @Get('/versions')
+  listVersionsController(
+    @Param('modelId') modelId: string,
+    @Users() user: Auth.UserPayload,
+  ) {
+    return this.service.listVersionsService(user, modelId);
+  }
 
   @Post('/versions/:version/promote')
   promoteVersionController(

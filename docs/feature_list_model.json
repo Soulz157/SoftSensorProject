@@ -2125,6 +2125,13 @@
           "progress": 100,
           "title": "Label the axis Monitoring, and stop repeating it inside the pill",
           "scope_note": "User request 2026-09-18. The models/[id] KPI card and the two list-side detail surfaces read Production, a name left over from the hand-set prodStatus column they no longer read - so the label named the wrong axis. All three now read Monitoring. The header pill dropped the Monitoring: prefix added in T07 and shows the status word alone: the axis is already named by the KPI beneath it and by the list column, and the prefix only repeated it inside a pill that has to stay narrow."
+        },
+        {
+          "id": "MODEL-SERVE-012-T13",
+          "status": "completed",
+          "progress": 100,
+          "title": "BUG: the asset tree drew a RUNNING model as offline — 'no health claim' and 'stopped' share one wire value",
+          "scope_note": "Reported live: the model detail page showed running while overview-asset-tree drew the same model offline. `monitoringStatus` collapses two unrelated facts into 'offline' — the model is STOPPED, and the model is running but the health axis made NO CLAIM. The second is the COMMON case, not an edge: `deriveDeployStatuses` passes driftMonitor false, and residualSdStatus is UNKNOWN for any model without joined truth pairs (InferenceWindowTruth is empty everywhere locally), so classifyModelHealth reaches OFF and can never reach OK. `monitoringStatus`'s own doc comment says this outright: it 'returns offline for a perfectly healthy running model'.\n\nOn a pill that is survivable. On the overview map it is not — a dot labelled offline beside a model the operator can see running asserts the plant is down. Fixed in `normalizeModelStatus` (tree-local, NOT in the shared model-status vocabulary): a monitoring 'offline' verdict on a model whose DEPLOY axis says running/initializing renders as 'normal'. No health claim is smuggled in — alert/warn/frozen are all handled above this branch and still bubble through worstStatus, and a stopped model still reads offline.\n\nThe inverse of T11 (dots stayed green while a model alerted); same surface, opposite direction. 5 new cases including both halves of the conflation. Also fixed a PRE-EXISTING tsc error in the same spec (its model() fixture omitted the required editHistory) — client tsc goes 6 -> 5. NOT VERIFIED IN A BROWSER.\n\nFOLLOW-UP (same request): overview-hover-card.tsx needed no status fix of its own — it reads abnormalEquipment -> buildOverviewTree -> normalizeModelStatus, so the running/offline correction reached it already. What it could not do was say WHY: OverviewTreeModel carried status and deployFailed but no reason. Added `monitoringReason` to that row (populated at both construction sites) and rendered it in the hover card through HEALTH_REASON_LABEL — the SAME map the model detail page and the Alerts page use, so three surfaces share one vocabulary. Null whenever the axis made no claim, so it never renders as an empty dash, and a deploy failure keeps its existing badge rather than being named twice. 3 further tests: reason carried onto the row, null when no claim, and surfacing through abnormalEquipment (13 in the file total).\n\nPARITY PASS (same request): audited the Alerts page against the overview. `hasMonitoringAlert` raises on ALERT | WARN | FROZEN, and buildAlerts emits a row for each. The overview agreed on the first two and SILENTLY DROPPED THE THIRD: normalizeModelStatus mapped frozen -> 'offline', and NODE_STATUS_PRIORITY ranks offline (3) BELOW normal (2), so worstStatus could never lift the equipment out of normal, abnormalEquipment filters on exactly that, and the hover card reads abnormalEquipment. A stuck instrument therefore raised an Alerts row while the overview stayed green about the same model. frozen -> 'warning' now: a real fault, less severe than ALERT, which is what amber means here. The map still has no purple; it just no longer has a fault hiding in the one rank nothing escalates out of. 5 further tests pin the parity directly (ALERT/WARN/FROZEN each make their equipment abnormal; OFF/UNKNOWN each do not) — 18 in the file.\n\nKNOWN REMAINING ASYMMETRY, NOT FIXED: buildAlerts treats an equipment node whose OWN canvas status is 'offline' as an alert row (NODE_ALERT_STATUSES includes it), while worstStatus still ranks that below normal, so such a node is absent from the overview's abnormal list. Left alone deliberately — the request was that ALERT and WARNING reach the overview, and node-offline is neither. Worth its own decision later."
         }
       ],
       "acceptance_criteria": [
@@ -2496,6 +2503,80 @@
         }
       ],
       "implementation": "Client + NestJS + Python, all three layers. New: ModelRetrainAugmentAuthorizedService (model-retrain-augment.authorized.service.ts) for T02 validation + T03 orchestration; combine_for_retrain + passthrough_holdout_for_run in artifact_service.py for T03/T04; RetrainDataStrategy component for T01. Schema: DatasetArtifact.validationAlreadyScaled, ModelTrainingRun.evalSetKind/frozenEvalChecksum, ModelCandidateJob.retrainStrategy/baseDatasetVersionId/additionalDatasetVersionId/combinedArtifactId, ModelVersion.retrainStrategy (migration 20260921100000_model_serve_015_augment_data). No images/trainer change and no queue infrastructure introduced, per CLAUDE.md §11. Full design record: ~/.claude/plans/continue-in-model-serve-015-to-indexed-blossom.md."
+    },
+    {
+      "id": "MODEL-SERVE-016",
+      "title": "A model's versions are invisible: list v1..vN with their training metrics, and let PRODUCTION be chosen from there",
+      "priority": 16,
+      "status": "completed",
+      "progress": 100,
+      "dependencies": [
+        "MODEL-SERVE-001"
+      ],
+      "description": "`ModelVersion.metrics` has carried the r2/mae/rmse snapshot taken at version-creation time since the registry shipped, and `promoteVersionService`/`rollbackService` have existed just as long — but NOTHING LISTS VERSIONS. The only version endpoints are POST promote and POST rollback, so a client can move production to a version it has no way to enumerate, and a user cannot answer 'did the retrain actually improve anything' without reading the database. The model detail page's Evaluation tab is not that answer either: `use-model-evaluation.ts` computes its metrics LIVE from applied lab points, which is a different question (how is production doing right now) from the frozen training-time score this feature surfaces. Both are legitimate; showing them without distinguishing them would not be.",
+      "decisions": [
+        {
+          "id": "MODEL-SERVE-016-D01",
+          "decision": "Its own Versions tab, beside Input Data / Monitoring / Evaluation / Logs / Edit History.",
+          "why": "User's call 2026-09-23 against two alternatives. A header dropdown re-pointing the WHOLE page was rejected as the larger change: every other tab would then have to state which version it is showing, or a reader takes live monitoring for historical. Putting the picker inside the Evaluation tab was rejected because that tab's numbers are live-computed, and two different kinds of metric on one screen is the confusion this feature exists to remove."
+        },
+        {
+          "id": "MODEL-SERVE-016-D02",
+          "decision": "The table also PROMOTES — a per-row action onto the existing POST /versions/:version/promote, behind its own confirm.",
+          "why": "User's call 2026-09-23, choosing this over view-only. Accepted with the cost stated: a comparison screen becomes a deploy control, so the confirm must name what changes (which version stops serving) rather than asking a bare 'are you sure'."
+        },
+        {
+          "id": "MODEL-SERVE-016-D03",
+          "decision": "Metrics are labelled as TRAINING-TIME, on the surface itself.",
+          "why": "They are a snapshot frozen at version creation, not a live measurement. Unlabelled beside a Monitoring tab full of live numbers, a reader would reasonably assume they were current."
+        }
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-016-T01",
+          "title": "GET /authorized/model/:modelId/versions — enumerate, with the frozen metrics",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "Reuses `assertModelAccess`, the same guard promote/rollback already call — no new authorization path. Newest first. `metrics` is Json on the row: parse defensively and return nulls rather than assuming r2/mae/rmse are present, since legacy rows predate the shape.",
+          "result": "GET /authorized/model/:modelId/versions, reusing assertModelAccess. Newest first. readTrainingMetrics() resolves rmse/r2/mae independently and maps a missing key, a non-object blob, NaN and Infinity all to null — never 0, since 0 reads as a perfect score."
+        },
+        {
+          "id": "MODEL-SERVE-016-T02",
+          "title": "The Versions tab: the table, with PRODUCTION marked and training-time metrics labelled",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "Stage word uses the stage vocabulary, NOT the monitoring red/amber palette, which is reserved for workspace/plant status. A version with no metrics renders an em dash, never a zero.",
+          "result": "New Versions tab between Evaluation and Logs (same question, different moment in time). hooks/model/use-model-versions.ts keys results by modelId so a stale response cannot render under another model, and so a refetch keeps the old rows on screen instead of blanking the table. Stage chip is neutral/primary, NOT the reserved monitoring red/amber. Caption states the metrics are training-time and points at the Evaluation tab for live numbers."
+        },
+        {
+          "id": "MODEL-SERVE-016-T03",
+          "title": "Promote from the row, behind a confirm that names the outgoing version",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "The existing endpoint is already idempotent on an in-production version and refuses non-promotable stages, so this adds no policy — only the call, the confirm and a refresh. The confirm names which version STOPS serving, per D02.",
+          "result": "Per-row 'Make production' reusing the existing useModelPromote hook, so the r2-floor 422 path and its server-quoted refusal text come along for free. Confirm names the OUTGOING version ('v2 is serving now and will be archived'), per D02."
+        }
+      ],
+      "acceptance_criteria": [
+        "Every version of a model appears with its version number, stage, and training-time RMSE / R2 / MAE.",
+        "The PRODUCTION version is identifiable at a glance.",
+        "A version whose metrics Json is absent or partial renders em dashes, never zeros.",
+        "Promoting from the table moves PRODUCTION and the table reflects it without a manual reload.",
+        "The metrics are labelled as training-time, distinct from the Evaluation tab's live numbers."
+      ],
+      "verification": [
+        {
+          "id": "MODEL-SERVE-016-V01",
+          "description": "Unit: a version row with metrics null, and one with a partial object, both yield nulls rather than 0.",
+          "result": "PASS — model-version-list.authorized.service.spec.ts, 4 cases (null blob, partial object, NaN/Infinity, non-object)."
+        },
+        {
+          "id": "MODEL-SERVE-016-V02",
+          "description": "Unit: versions are returned newest-first and carry their stage.",
+          "result": "PASS — same spec asserts orderBy version desc and all three stages passing through."
+        }
+      ],
+      "carried_forward": "NOT VERIFIED IN A BROWSER. Backend jest 32/32 across model-version, tsc at the pinned baselines (8 backend, 5 client), eslint clean on touched files. The table has not been rendered against a real multi-version model, and the promote path has not been exercised end to end from this surface."
     }
   ],
   "global_definition_of_done": [

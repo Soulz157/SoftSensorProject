@@ -849,6 +849,13 @@ def combine_for_retrain(
        from `replay_holdout_for_run`/`prepare_holdout_for_run`'s own
        `fitted_params=` calls).
     4. `base_train` and the newly-scaled rows are concatenated, deduplicated
+       — UNLESS `combine` is False (MODEL-SERVE-017's "New Data Only"
+       strategy), in which case `base_train` is dropped here and the newly
+       scaled rows stand alone as the training frame. Steps 1-3 and 5 are
+       identical either way; in particular the frozen-eval slice below still
+       comes from the BASE's own test rows, which is what keeps a
+       New-Data-Only candidate scorable against the incumbent. The rest of
+       this step reads as written once the frame is chosen: deduplicated
        on `timestamp` keeping the LAST row (the new dataset's, since it was
        appended after `base_train` — "new wins"), and sorted.
     5. The combined frame commits as a new GOLD; the re-cut frozen-eval
@@ -946,8 +953,17 @@ def combine_for_retrain(
         scalers, fitted_params=scaling_params,
     )
 
-    before_dedupe = len(base_train) + len(new_scaled)
-    combined = pd.concat([base_train, new_scaled], ignore_index=True)
+    # MODEL-SERVE-017. `combine=False` is the "New Data Only" strategy: the
+    # base's train-side rows are left out and the candidate trains on the new
+    # data alone. Everything above this line is deliberately shared — the same
+    # recipe, the same never-re-fit scalers, the same refusals — because the
+    # ONLY difference between the two strategies is which rows reach training.
+    # `base_frozen` still commits below either way: a New-Data-Only candidate
+    # is still scored on the incumbent's own frozen rows, which is what keeps
+    # the RMSE comparison honest.
+    train_parts = [base_train, new_scaled] if request.combine else [new_scaled]
+    before_dedupe = sum(len(part) for part in train_parts)
+    combined = pd.concat(train_parts, ignore_index=True)
     combined = combined.drop_duplicates(
         subset=[TIMESTAMP_COLUMN], keep="last"
     ).sort_values(TIMESTAMP_COLUMN).reset_index(drop=True)
@@ -956,7 +972,15 @@ def combine_for_retrain(
 
     stats = store.put_frame(
         combined, request.target_key, overwrite=request.overwrite)
-    column_stats = build_column_stats(combined, operations=[], parent_frame=base_train)
+    # `parent_frame` is what the stats are compared AGAINST. Under
+    # `combine=False` the base's training rows are not this frame's parent in
+    # any sense — nothing of them is in it — so the comparison is dropped
+    # rather than computed against an unrelated frame.
+    column_stats = build_column_stats(
+        combined,
+        operations=[],
+        parent_frame=base_train if request.combine else None,
+    )
     frozen_key = sidecar_key(stats.object_key, VALIDATE_DATA_FILENAME)
     frozen_stats = store.put_frame(
         base_frozen, frozen_key, overwrite=request.overwrite)
@@ -975,7 +999,9 @@ def combine_for_retrain(
     )
     payload["frozen_eval_checksum"] = frozen_stats.checksum
     payload["dedupe_dropped"] = dedupe_dropped
-    payload["base_train_row_count"] = len(base_train)
+    # Reports rows that actually reached TRAINING, so New Data Only reports 0
+    # base rows rather than the count of rows it deliberately left out.
+    payload["base_train_row_count"] = len(base_train) if request.combine else 0
     payload["new_train_row_count"] = len(new_scaled)
     return payload
 

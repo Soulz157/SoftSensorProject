@@ -20,6 +20,7 @@ import { cn } from '@/lib/utils'
 import {
   RetrainBaseDataset,
   RetrainDataStrategy,
+  retrainUsesNewData,
   type RetrainDataStrategy as RetrainDataStrategyValue,
 } from './retrain-data-strategy'
 
@@ -68,10 +69,13 @@ export function ModelRetrainDialog({
     string | null
   >(null)
 
+  // MODEL-SERVE-017. Forwards whichever new-data strategy was chosen rather
+  // than a hardcoded AUGMENT_DATA, so NEW_DATA_ONLY cannot silently submit as
+  // an augmentation and train on rows the operator asked to leave out.
   const startOptions: StartRetrainOptions | undefined =
-    dataStrategy === 'AUGMENT_DATA' && additionalDatasetVersionId
+    retrainUsesNewData(dataStrategy) && additionalDatasetVersionId
       ? {
-          strategy: 'AUGMENT_DATA',
+          strategy: dataStrategy,
           additionalDatasetVersionId,
         }
       : undefined
@@ -92,7 +96,7 @@ export function ModelRetrainDialog({
   // AUGMENT_DATA chosen but no version picked yet — a retrain still trains
   // nothing without one.
   const augmentIncomplete =
-    dataStrategy === 'AUGMENT_DATA' && !additionalDatasetVersionId
+    retrainUsesNewData(dataStrategy) && !additionalDatasetVersionId
 
   return (
     <Dialog open={open} onOpenChange={o => !o && !isRetraining && onClose()}>

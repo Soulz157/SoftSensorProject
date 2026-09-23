@@ -60,6 +60,24 @@ type DatasetResponsePayload = Prisma.DatasetGetPayload<{
   select: typeof datasetSelect;
 }>;
 
+/**
+ * DS-LAKE-030-T01. One model affected by deleting a dataset.
+ *
+ * MODULE SCOPE, AND EXPORTED, deliberately: this is the return type of a
+ * PUBLIC method, and `nest build` emits declarations. Declared inside the
+ * method body it compiled under `tsc --noEmit` and then failed the real
+ * build with TS4055 ("has or is using private name"), which left dist stale
+ * and the server unable to start.
+ */
+export interface DatasetDependentModel {
+  id: string;
+  name: string;
+  scheduleEnabled: boolean;
+  hasProductionVersion: boolean;
+  viaCurrentPointer: boolean;
+  viaPinnedVersion: boolean;
+}
+
 @Injectable()
 export class DatasetAuthorizedService {
   constructor(private readonly prisma: PrismaService) {}
@@ -228,6 +246,116 @@ export class DatasetAuthorizedService {
       message: 'Dataset updated successfully',
       type: 'SUCCESS' as const,
       data: this.mapToResponse(item),
+    };
+  }
+
+  /**
+   * DS-LAKE-030-T01. Which models would be affected by deleting this
+   * dataset — read-only, and deliberately NOT a gate: `deleteDatasetService`
+   * below still deletes whatever it is asked to (D01). A dependent model
+   * keeps serving after the delete; what it loses is the LINK back here, and
+   * this endpoint exists so the confirm dialog can say so by name instead of
+   * the user finding out afterwards.
+   *
+   * TWO SOURCES, UNIONED BY MODEL (D03). `Model.datasetId` alone
+   * under-reports: it is the model's CURRENT pointer, it is nullable, and a
+   * retrained model can point somewhere else entirely while its PRODUCTION
+   * version stays pinned to THIS dataset through
+   * `ModelVersion.sourceDatasetId` (schema.prisma:1989 draws exactly that
+   * distinction). That second path has no FK at all — it is a plain String —
+   * so those rows are neither cascaded nor nulled by the delete; they simply
+   * survive holding an id that no longer resolves. Listing only the current
+   * pointer would omit the model a user most needs to see.
+   *
+   * ONE ROW PER MODEL, never one per version, with `via*` naming which path
+   * found it — a model pinned through five versions is one line in a dialog,
+   * not five.
+   */
+  async listDatasetDependentsService(user: Auth.UserPayload, id: string) {
+    const dataset = await this.prisma.dataset.findUnique({
+      where: { id, createdById: user.id },
+      select: { id: true },
+    });
+    if (!dataset) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Dataset not found',
+        type: 'ERROR',
+      });
+    }
+
+    const [byPointer, byVersion] = await Promise.all([
+      this.prisma.model.findMany({
+        where: { datasetId: id },
+        select: {
+          id: true,
+          name: true,
+          inferenceSchedule: { select: { enabled: true } },
+          // `stage`, not `status` — ModelVersionStage is STAGING /
+          // PRODUCTION / ARCHIVED.
+          versions: { where: { stage: 'PRODUCTION' }, select: { id: true } },
+        },
+      }),
+      // No relation to traverse — `sourceDatasetId` is an unconstrained
+      // String, so the model is reached through the version's own `model`.
+      this.prisma.modelVersion.findMany({
+        where: { sourceDatasetId: id },
+        select: {
+          model: {
+            select: {
+              id: true,
+              name: true,
+              inferenceSchedule: { select: { enabled: true } },
+              versions: {
+                where: { stage: 'PRODUCTION' },
+                select: { id: true },
+              },
+            },
+          },
+        },
+      }),
+    ]);
+
+    const merged = new Map<string, DatasetDependentModel>();
+
+    const upsert = (
+      model: {
+        id: string;
+        name: string;
+        inferenceSchedule: { enabled: boolean } | null;
+        versions: { id: string }[];
+      },
+      via: 'viaCurrentPointer' | 'viaPinnedVersion',
+    ) => {
+      const existing = merged.get(model.id);
+      if (existing) {
+        existing[via] = true;
+        return;
+      }
+      merged.set(model.id, {
+        id: model.id,
+        name: model.name,
+        scheduleEnabled: model.inferenceSchedule?.enabled ?? false,
+        hasProductionVersion: model.versions.length > 0,
+        viaCurrentPointer: via === 'viaCurrentPointer',
+        viaPinnedVersion: via === 'viaPinnedVersion',
+      });
+    };
+
+    for (const model of byPointer) upsert(model, 'viaCurrentPointer');
+    for (const row of byVersion) {
+      if (row.model) upsert(row.model, 'viaPinnedVersion');
+    }
+
+    const models = [...merged.values()].sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
+
+    return {
+      statusCode: 200,
+      message: 'Dataset dependents fetched',
+      type: 'SUCCESS' as const,
+      data: { models },
     };
   }
 

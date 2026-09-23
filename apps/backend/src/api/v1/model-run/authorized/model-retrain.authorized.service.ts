@@ -4,6 +4,7 @@ import { AppException } from '@softsensor/common';
 import { ModelCandidateJobAuthorizedService } from './model-candidate-job.authorized.service';
 import { ModelRetrainAugmentAuthorizedService } from './model-retrain-augment.authorized.service';
 import type { TriggerRetrainDto } from './dto/model-retrain.authorized.dto';
+import { usesNewData } from './dto/model-retrain.authorized.dto';
 import type { DatasetSize } from '@/lib/tuning-grid';
 
 /** The split a retrain reuses. `chronological` carries the ratio the
@@ -277,7 +278,7 @@ export class ModelRetrainAuthorizedService {
     // here, before any augmentation work, exactly like a real idempotent-
     // POST short-circuit; the DB check remains the authoritative backstop
     // for a genuine race between two concurrent requests.
-    if (dto.strategy === 'AUGMENT_DATA' && dto.idempotencyKey) {
+    if (usesNewData(dto.strategy) && dto.idempotencyKey) {
       const existing = await this.prisma.modelCandidateJob.findFirst({
         where: { modelId, idempotencyKey: dto.idempotencyKey },
       });
@@ -302,15 +303,22 @@ export class ModelRetrainAuthorizedService {
     let augmentCtx: Awaited<
       ReturnType<ModelRetrainAugmentAuthorizedService['assertCompatible']>
     > | null = null;
-    if (dto.strategy === 'AUGMENT_DATA') {
+    if (usesNewData(dto.strategy)) {
       // .strict() + the DTO's own refine already guarantee this is set.
       augmentCtx = await this.augment.assertCompatible(
         sourceRun,
         dto.additionalDatasetVersionId!,
       );
+      // MODEL-SERVE-017. Both new-data strategies run the IDENTICAL
+      // compatibility gate — same tags, same target, and above all the
+      // cut-timestamp guard, which NEW_DATA_ONLY needs even more than
+      // AUGMENT_DATA does: it is what keeps the incumbent's frozen
+      // evaluation rows out of the candidate's training data. Only the
+      // concatenation differs.
       augmentedArtifact = await this.augment.buildCombinedArtifact(
         augmentCtx,
         user,
+        dto.strategy === 'AUGMENT_DATA',
       );
     }
 
@@ -329,7 +337,24 @@ export class ModelRetrainAuthorizedService {
     // onto the new job row below so the NEXT retrain can inherit them in turn.
     const trainingArtifactId =
       augmentedArtifact?.combinedFinalArtifactId ?? incumbent.goldArtifactId;
-    const inheritedSize = await this.sizeOfSourceRun(sourceRun);
+    const inherited = await this.sizeOfSourceRun(sourceRun);
+    // MODEL-SERVE-017. `sizeOfSourceRun` returns the INCUMBENT's figures, and
+    // its own comment justifies that for AUGMENT_DATA on the grounds that a
+    // base-sized figure UNDERSTATES the combined artifact — the safe
+    // direction, since it picks a smaller-capacity grid tier.
+    //
+    // NEW_DATA_ONLY inverts that argument exactly. The base figure now
+    // OVERSTATES what the candidate trains on — a 26,280-row incumbent plus a
+    // 500-row new range would size the search at the `large` tier and fit
+    // 800-tree, depth-30 forests to 500 rows. So this path uses the row count
+    // of the artifact actually being trained on, which Python already
+    // returned and `buildCombinedArtifact` recorded; no extra read. The
+    // inherited `distinctLabelled` is dropped rather than carried, because it
+    // describes the base dataset's labels and nothing here re-derives it.
+    const inheritedSize =
+      dto.strategy === 'NEW_DATA_ONLY' && augmentedArtifact
+        ? { rows: augmentedArtifact.combinedRowCount, distinctLabelled: null }
+        : inherited;
     const searchSize = dto.candidates
       ? undefined
       : await this.candidateJobs.withFeatureCount(
@@ -386,7 +411,11 @@ export class ModelRetrainAuthorizedService {
           status: 'QUEUED',
           ...(augmentedArtifact && augmentCtx
             ? {
-                retrainStrategy: 'AUGMENT_DATA',
+                // The strategy actually requested, not a hardcoded literal —
+                // NEW_DATA_ONLY must not be recorded as AUGMENT_DATA, or the
+                // comparison UI would claim the candidate trained on the
+                // incumbent's rows when it deliberately did not.
+                retrainStrategy: dto.strategy,
                 baseDatasetVersionId: augmentCtx.baseDatasetVersionId,
                 additionalDatasetVersionId: augmentCtx.newDatasetVersionId,
                 combinedArtifactId: augmentedArtifact.combinedFinalArtifactId,
@@ -713,7 +742,14 @@ export class ModelRetrainAuthorizedService {
     // see `ModelTrainingRun.evalSetKind`'s own comment) and it must carry a
     // `frozenEvalChecksum` (proves the scoring actually ran, never soft-
     // failed to null).
-    const isAugmented = job.retrainStrategy === 'AUGMENT_DATA';
+    // MODEL-SERVE-017. NEW_DATA_ONLY rests on the SAME amended rule: it
+    // trains on different rows again (all of them new, this time) and is
+    // scored on the incumbent's own frozen test rows. Gating this on
+    // AUGMENT_DATA alone would push every NEW_DATA_ONLY candidate down the
+    // old artifact-equality path, which it fails by construction — the
+    // result would read "not comparable" for a comparison that is in fact
+    // valid.
+    const isAugmented = usesNewData(job.retrainStrategy);
     const mismatches: string[] = [];
     if (!candidateRun) {
       mismatches.push('no candidate has produced a result yet');
@@ -803,7 +839,8 @@ export class ModelRetrainAuthorizedService {
         // "comparable".
         strategy: (job.retrainStrategy ?? 'KEEP_EXISTING') as
           | 'KEEP_EXISTING'
-          | 'AUGMENT_DATA',
+          | 'AUGMENT_DATA'
+          | 'NEW_DATA_ONLY',
         evalSet: isAugmented
           ? ({
               kind: candidateRun?.evalSetKind ?? null,

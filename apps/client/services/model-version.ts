@@ -15,7 +15,42 @@ interface ApiResponse<T> {
   type: string
 }
 
+/**
+ * MODEL-SERVE-016. One row of the Versions tab. `metrics` are the numbers
+ * this version FROZE when it was created — not a live measurement, and not
+ * the same thing the Evaluation tab computes from applied lab points. Any
+ * of the three can be null: legacy rows predate the shape, and a training
+ * run can legitimately produce a non-finite R².
+ */
+export interface ModelVersionRow {
+  id: string
+  version: number
+  stage: 'STAGING' | 'PRODUCTION' | 'ARCHIVED'
+  algorithm: string
+  retrainStrategy: string | null
+  createdAt: string
+  archivedAt: string | null
+  metrics: {
+    rmse: number | null
+    r2: number | null
+    mae: number | null
+  }
+}
+
 export const modelVersionService = {
+  /**
+   * MODEL-SERVE-016-T01. Newest first. Until this shipped nothing could
+   * enumerate versions — `promote` below could target one the UI had no way
+   * to show.
+   */
+  async list(modelId: string): Promise<ModelVersionRow[]> {
+    const res: ApiResponse<{ versions: ModelVersionRow[] }> = await fetchClient(
+      `/api/v1/authorized/model/${modelId}/versions`,
+      { method: 'GET' },
+    )
+    return res.data.versions
+  },
+
   /** `override` is only needed past the r2<=0 promote floor (MODEL-SERVE-
    *  001-T06) — omitted in the common case, where the backend refuses with
    *  a clear reason rather than silently promoting a bad model. */

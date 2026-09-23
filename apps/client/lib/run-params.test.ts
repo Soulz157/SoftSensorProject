@@ -278,15 +278,21 @@ describe('seedConsumedBy', () => {
 
 describe('classifyHyperparams', () => {
   it('labels a key build_model does not read for that algorithm as unconsumed', () => {
+    // `max_features` is a real RandomForestRegressor argument that
+    // `build_model` does not pass — the point of this case is a key that looks
+    // plausible and silently does nothing, not a nonsense one. It replaced
+    // `min_samples_leaf`, which MODEL-FLOW-026 made genuinely consumed.
     const rows = classifyHyperparams('random_forest', {
       n_estimators: 100,
       max_depth: null,
       min_samples_leaf: 5,
+      max_features: 0.5,
     })
     const byKey = Object.fromEntries(rows.map(r => [r.key, r.consumed]))
     expect(byKey.n_estimators).toBe(true)
     expect(byKey.max_depth).toBe(true)
-    expect(byKey.min_samples_leaf).toBe(false)
+    expect(byKey.min_samples_leaf).toBe(true)
+    expect(byKey.max_features).toBe(false)
   })
 
   it('falls back to the raw key when no catalogue label exists', () => {

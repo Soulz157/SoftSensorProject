@@ -4134,6 +4134,78 @@
         "apps/backend workspace.plant.authorized.controller.spec.ts and workspace.plant.authorized.service.spec.ts — both fail at DI resolution; workspace.authorized.controller.spec.ts fails at import with 'TypeError: (0 , swagger_1.ApiBearerAuth) is not a function'. All three are import-time failures in files this feature did not modify.",
         "apps/client tsc reports 4 errors outside this feature: dataset-compare-modal.tsx(575,683,684) and the missing `editHistory` fixture property in lib/model-evaluation.test.ts(25) and lib/overview-tree.test.ts(34). None of those files reference Workspace, and none is modified by this feature."
       ]
+    },
+    {
+      "id": "DS-LAKE-030",
+      "title": "Deleting a dataset silently orphans every model built on it — name the dependents before the confirm",
+      "priority": 30,
+      "status": "completed",
+      "progress": 100,
+      "dependencies": [],
+      "description": "Today `deleteDatasetService` (dataset.authorized.service.ts:234) checks ownership, calls `prisma.dataset.delete`, and returns 200. Nothing looks at who depends on the row. Three things then happen with no warning anywhere: (1) `Model.dataset Dataset? @relation(...)` declares NO `onDelete`, and Prisma's default for an OPTIONAL relation is SetNull — so every model built on that dataset quietly has `datasetId` set to null; (2) DatasetVersion / DatasetArtifact / PreprocessingJob / LoaderJob all cascade away; (3) `ModelVersion.sourceDatasetId` is a PLAIN String with no relation at all, so those rows survive holding a dangling id — which is the case that matters most, since a PRODUCTION version can be pinned to a dataset the model's own current pointer has already moved off (schema.prisma:1989 makes exactly that distinction).\n\nA deployed model keeps SERVING through this: `model-run-launch.authorized.service.ts:170` pins `goldObjectKey` to the dataset artifact's own objectKey, and while the DatasetArtifact ROW cascades away, the MinIO object does not — the reclaimer only ever deletes bytes for rows it can still see, so the object is orphaned rather than collected. Monitoring therefore survives a dataset delete BY ACCIDENT, not by design. Worth writing down: it means this feature is a warning, not a data-loss guard, and it also means a dataset delete leaks storage.",
+      "decisions": [
+        {
+          "id": "DS-LAKE-030-D01",
+          "decision": "WARN AND PROCEED, never refuse.",
+          "why": "User's call 2026-09-23, offered against two stricter alternatives (block when a dependent has a running/PRODUCTION version; block on any dependent at all). Chosen because a dependent model keeps working after the delete — it loses a LINK, not its bytes — so refusing would trade a real capability for a cosmetic risk, and a stale draft model would be able to block cleanup forever."
+        },
+        {
+          "id": "DS-LAKE-030-D02",
+          "decision": "The null-link behaviour is SURFACED, not changed. No schema change, no migration in this pass.",
+          "why": "Same call. Making `onDelete: SetNull` explicit would write the intent down but change nothing at runtime, and it costs a migration. The defect being fixed is that the behaviour is INVISIBLE, so the dialog saying it out loud closes it."
+        },
+        {
+          "id": "DS-LAKE-030-D03",
+          "decision": "Dependents are collected from BOTH `Model.datasetId` AND `ModelVersion.sourceDatasetId`, unioned by model.",
+          "why": "`Model.datasetId` alone under-reports. It is the model's CURRENT pointer and it is nullable; a retrained model can point elsewhere while its PRODUCTION version stays pinned to this dataset. Listing only the current pointer would omit precisely the model a user most needs to see."
+        }
+      ],
+      "tasks": [
+        {
+          "id": "DS-LAKE-030-T01",
+          "title": "GET /datasets/:id/dependents — the union, with each model's live status",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "Owner-scoped exactly like `deleteDatasetService` itself. Returns one row per MODEL (id, name, deployStatus, and how it depends: current pointer, a pinned version, or both), never one row per version. Read-only; it must not be the thing that decides whether the delete is allowed, per D01.",
+          "result": "GET /authorized/dataset/:id/dependents. Owner-scoped 404 first, then two parallel reads unioned by model id: Model.datasetId, and ModelVersion.sourceDatasetId -> version.model. One row per model with {id,name,scheduleEnabled,hasProductionVersion,viaCurrentPointer,viaPinnedVersion}, sorted by name. NOTE: ModelVersion's production filter is `stage`, not `status` (ModelVersionStage = STAGING/PRODUCTION/ARCHIVED) — the first draft used `status` and tsc caught it."
+        },
+        {
+          "id": "DS-LAKE-030-T02",
+          "title": "The confirm dialog names them, on BOTH delete surfaces",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "data-studio/components/datasets-tab.tsx AND datasets/page.tsx — fixing one leaves the other able to orphan silently. Copy states the consequence in the user's own terms: the models keep running but lose their link back to this dataset. Empty dependents list renders the existing plain confirm, not an empty section.",
+          "result": "Both delete surfaces were ONE component — /datasets/page.tsx renders the same DatasetsTab — so the dialog change covers both. hooks/dataset/use-dataset-dependents.ts fetches on open only. Status words are plain ('running'/'deployed'/'not deployed'), deliberately NOT the monitoring red/amber palette, which is reserved and would assert a health verdict this dialog never computed. A model listed ONLY via a pinned version is marked as such."
+        },
+        {
+          "id": "DS-LAKE-030-T03",
+          "title": "BUG: the delete dialog reports success before the request resolves",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "datasets-tab.tsx:209-215 does `void onDeleteDataset(id)` then `toast.success('Dataset deleted')` unconditionally — no await, no error branch. A failed delete currently says it succeeded. Found while reading for T01; fixed here because any future refusal would otherwise be invisible.",
+          "result": "Delete now awaits, holds the dialog open with a 'Deleting…' label, closes on success and toasts an error on failure. event.preventDefault() is required — AlertDialogAction closes the dialog on click by default."
+        }
+      ],
+      "acceptance_criteria": [
+        "Opening the delete dialog for a dataset with dependents lists every affected model by name.",
+        "A model whose CURRENT datasetId points elsewhere but whose PRODUCTION version is pinned to this dataset still appears in the list.",
+        "The delete itself is never blocked by the list.",
+        "A failed delete no longer renders a success toast.",
+        "Both delete surfaces show the same list."
+      ],
+      "verification": [
+        {
+          "id": "DS-LAKE-030-V01",
+          "description": "Unit: a model pinned only through ModelVersion.sourceDatasetId appears in the dependents result.",
+          "result": "PASS — dataset.authorized.service.spec.ts, pinned-version-only model appears with viaPinnedVersion true."
+        },
+        {
+          "id": "DS-LAKE-030-V02",
+          "description": "Unit: a model appearing through BOTH paths is returned once, not twice.",
+          "result": "PASS — same spec, a model found through both paths returns once carrying both flags."
+        }
+      ],
+      "carried_forward": "NOT VERIFIED IN A BROWSER. Backend jest 7/7 on the dataset service spec, client vitest 64/64 across data-studio, tsc at the pinned baselines (8 backend, 5 client), eslint clean on touched files. The dialog's rendering of a non-empty dependents list has not been seen against a real API response."
     }
   ],
   "deferred": [

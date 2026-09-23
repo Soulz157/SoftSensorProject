@@ -233,8 +233,8 @@ export function CandidateOverlayChart({
             {scoring
               ? 'Scoring…'
               : scoreCount === 1
-                ? 'Score against holdout'
-                : `Score ${scoreCount ?? ''} candidates against holdout`}
+                ? 'Score against validation'
+                : `Score ${scoreCount ?? ''} candidates against validation`}
           </Button>
         )}
       </div>

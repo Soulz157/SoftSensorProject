@@ -31,7 +31,31 @@ import { CandidateSchema } from './model-candidate-job.authorized.dto';
  * frozen test rows regardless of what it trained on — see `buildComparison`
  * and `ModelTrainingRun.evalSetKind`'s own comments.
  */
-export const RetrainStrategyEnum = z.enum(['KEEP_EXISTING', 'AUGMENT_DATA']);
+export const RetrainStrategyEnum = z.enum([
+  'KEEP_EXISTING',
+  'AUGMENT_DATA',
+  // MODEL-SERVE-017. Train on the newly selected data ALONE, leaving the
+  // incumbent's own training rows out. This overturns the recorded decision
+  // `retrain_is_blocked_on_the_same_definition_as_fine_tuning` ("not a
+  // retrain on different/widened data"), at the user's explicit request on
+  // 2026-09-23. It stays comparable because the candidate is still scored on
+  // the incumbent's own frozen test rows — the new data must start strictly
+  // after the incumbent's cut timestamp, so those rows never reach training.
+  'NEW_DATA_ONLY',
+]);
+
+/**
+ * The strategies that carry an `additionalDatasetVersionId`. Both the DTO's
+ * refinements and the service branch on this rather than naming
+ * `AUGMENT_DATA` directly, so a fourth strategy cannot half-land.
+ */
+export const NEW_DATA_STRATEGIES = ['AUGMENT_DATA', 'NEW_DATA_ONLY'] as const;
+
+export function usesNewData(
+  strategy: string | null | undefined,
+): strategy is (typeof NEW_DATA_STRATEGIES)[number] {
+  return (NEW_DATA_STRATEGIES as readonly string[]).includes(strategy ?? '');
+}
 
 export const TriggerRetrainSchema = z
   .object({
@@ -62,20 +86,20 @@ export const TriggerRetrainSchema = z
   })
   .strict()
   .refine(
-    (body) =>
-      body.strategy !== 'AUGMENT_DATA' || !!body.additionalDatasetVersionId,
+    (body) => !usesNewData(body.strategy) || !!body.additionalDatasetVersionId,
     {
-      message: "strategy 'AUGMENT_DATA' requires additionalDatasetVersionId.",
+      message:
+        "strategy 'AUGMENT_DATA' and 'NEW_DATA_ONLY' require " +
+        'additionalDatasetVersionId.',
       path: ['additionalDatasetVersionId'],
     },
   )
   .refine(
-    (body) =>
-      body.strategy === 'AUGMENT_DATA' || !body.additionalDatasetVersionId,
+    (body) => usesNewData(body.strategy) || !body.additionalDatasetVersionId,
     {
       message:
-        "additionalDatasetVersionId requires strategy: 'AUGMENT_DATA' — " +
-        'omit one or the other.',
+        "additionalDatasetVersionId requires strategy: 'AUGMENT_DATA' or " +
+        "'NEW_DATA_ONLY' — omit one or the other.",
       path: ['additionalDatasetVersionId'],
     },
   );

@@ -241,6 +241,59 @@ export class ModelVersionAuthorizedService {
     }
   }
 
+  /**
+   * MODEL-SERVE-016-T01. Enumerate a model's versions with the metrics each
+   * one FROZE at creation time.
+   *
+   * Nothing listed versions before this: the registry shipped with promote
+   * and rollback only, so a client could move PRODUCTION to a version it had
+   * no way to discover. Same `assertModelAccess` guard those two already
+   * call — one authorization path, not a second one written for a read.
+   *
+   * `metrics` is Json on the row and is READ DEFENSIVELY. Legacy versions
+   * predate today's shape, and a partially-written object is indistinguishable
+   * from a complete one at the type level, so each key is resolved
+   * independently and a missing or non-finite value becomes `null`. Never 0:
+   * an RMSE of 0 is a perfect model, which is exactly the wrong thing to
+   * render for "we do not know".
+   */
+  async listVersionsService(user: Auth.UserPayload, modelId: string) {
+    await this.assertModelAccess(modelId, user);
+
+    const versions = await this.prisma.modelVersion.findMany({
+      where: { modelId },
+      orderBy: { version: 'desc' },
+      select: {
+        id: true,
+        version: true,
+        stage: true,
+        algorithm: true,
+        metrics: true,
+        retrainStrategy: true,
+        createdAt: true,
+        archivedAt: true,
+      },
+    });
+
+    return {
+      statusCode: 200,
+      message: 'Model versions fetched',
+      type: 'SUCCESS' as const,
+      data: {
+        versions: versions.map((v) => ({
+          id: v.id,
+          version: v.version,
+          stage: v.stage,
+          algorithm: v.algorithm,
+          retrainStrategy: v.retrainStrategy,
+          createdAt: v.createdAt.toISOString(),
+          archivedAt: v.archivedAt?.toISOString() ?? null,
+          metrics: readTrainingMetrics(v.metrics),
+        })),
+      },
+    };
+  }
+
   async promoteVersionService(
     user: Auth.UserPayload,
     modelId: string,
@@ -316,4 +369,33 @@ export class ModelVersionAuthorizedService {
       data: promoted,
     };
   }
+}
+
+/**
+ * MODEL-SERVE-016-T01. The three headline numbers out of an untyped
+ * `ModelVersion.metrics` blob, each resolved on its own so a partial object
+ * yields partial truth rather than being discarded whole.
+ *
+ * NaN and Infinity are treated as absent: both are reachable from a real
+ * training run (an R2 over a constant target divides by zero) and both
+ * serialize to `null` through JSON anyway, so admitting them would only
+ * move the problem to the client.
+ */
+function readTrainingMetrics(raw: unknown): {
+  rmse: number | null;
+  r2: number | null;
+  mae: number | null;
+} {
+  const source =
+    raw !== null && typeof raw === 'object' && !Array.isArray(raw)
+      ? (raw as Record<string, unknown>)
+      : {};
+  const num = (value: unknown): number | null =>
+    typeof value === 'number' && Number.isFinite(value) ? value : null;
+
+  return {
+    rmse: num(source.rmse),
+    r2: num(source.r2),
+    mae: num(source.mae),
+  };
 }

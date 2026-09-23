@@ -45,7 +45,7 @@ export interface RetrainComparison {
      *  'AUGMENT_DATA' means the candidate was scored on the incumbent's own
      *  frozen test rows regardless of what it trained on. State this
      *  alongside a delta — "comparable" does not mean one universal thing. */
-    strategy: 'KEEP_EXISTING' | 'AUGMENT_DATA'
+    strategy: 'KEEP_EXISTING' | 'AUGMENT_DATA' | 'NEW_DATA_ONLY'
     /** Non-null only for an AUGMENT_DATA job. `kind` mirrors the backend's
      *  `ModelTrainingRun.evalSetKind` — null means the candidate has not
      *  been scored against the frozen set yet. */
@@ -159,7 +159,10 @@ export interface TriggerRetrainInput {
    *  every pre-015 caller is unaffected. 'AUGMENT_DATA' requires
    *  `additionalDatasetVersionId`; the server's own `.strict()` schema
    *  refuses one without the other. */
-  strategy?: 'KEEP_EXISTING' | 'AUGMENT_DATA'
+  /** MODEL-SERVE-017. 'NEW_DATA_ONLY' trains on the selected dataset ALONE,
+   *  leaving the incumbent's own rows out; it carries the same
+   *  `additionalDatasetVersionId` requirement as 'AUGMENT_DATA'. */
+  strategy?: 'KEEP_EXISTING' | 'AUGMENT_DATA' | 'NEW_DATA_ONLY'
   additionalDatasetVersionId?: string
 }
 
