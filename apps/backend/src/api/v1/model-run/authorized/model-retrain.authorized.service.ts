@@ -308,6 +308,11 @@ export class ModelRetrainAuthorizedService {
       augmentCtx = await this.augment.assertCompatible(
         sourceRun,
         dto.additionalDatasetVersionId!,
+        // The DTO's own refinements already guarantee these are both set or
+        // both absent, and that they appear only on a new-data strategy.
+        dto.newValidationFrom && dto.newValidationTo
+          ? { from: dto.newValidationFrom, to: dto.newValidationTo }
+          : undefined,
       );
       // MODEL-SERVE-017. Both new-data strategies run the IDENTICAL
       // compatibility gate — same tags, same target, and above all the
@@ -580,8 +585,26 @@ export class ModelRetrainAuthorizedService {
         algorithm: true,
         goldArtifactId: true,
         sourceDatasetId: true,
+        // MODEL-SERVE-017. Carries the computed split boundary out to the
+        // dialog — see `cutTimestamp` below.
+        sourceRun: { select: { splitSpec: true } },
       },
     });
+    // MODEL-SERVE-017. The incumbent's own computed split boundary. The
+    // client needs it to CLAMP the new-data range picker: `assertCompatible`
+    // refuses any dataset starting at or before this instant (it is what
+    // keeps the frozen evaluation rows out of training), so offering an
+    // earlier range would be offering a choice the server always rejects —
+    // after a slow fetch, not before it. Null when the source run recorded
+    // no boundary, which is the same condition `assertCompatible` itself
+    // 422s on; the dialog then falls back to an unclamped picker and lets
+    // the server speak.
+    const cutTimestamp =
+      (
+        incumbentVersion?.sourceRun?.splitSpec as {
+          cut_timestamp?: string;
+        } | null
+      )?.cut_timestamp ?? null;
     // MODEL-SERVE-015-T01. The base dataset a data-augmentation retrain
     // would merge NEW data with — resolved off the incumbent's OWN pinned
     // artifact (`goldArtifactId`, one hop off the version, itself one hop
@@ -615,6 +638,7 @@ export class ModelRetrainAuthorizedService {
           version: incumbentVersion.version,
           algorithm: incumbentVersion.algorithm,
           baseDataset,
+          cutTimestamp,
         }
       : null;
 
@@ -869,6 +893,17 @@ export class ModelRetrainAuthorizedService {
         // (014) retrain, where `metrics` above already carries this exact
         // number and a second copy would just invite the two to drift.
         newRegimeMetrics,
+        // The operator's NEW-DATA validation window. Reported on its own
+        // and deliberately NOT folded into `rmseDelta`: the incumbent was
+        // never scored on these rows, so differencing the two would produce
+        // a number that looks like a comparison and is not one.
+        newDataHoldoutMetrics: candidateRun?.newDataHoldoutMetrics
+          ? metricTriple(candidateRun.newDataHoldoutMetrics)
+          : null,
+        newDataHoldoutRowCount: candidateRun?.newDataHoldoutRowCount ?? null,
+        newDataHoldoutFrom:
+          candidateRun?.newDataHoldoutFrom?.toISOString() ?? null,
+        newDataHoldoutTo: candidateRun?.newDataHoldoutTo?.toISOString() ?? null,
       },
       // Negative = the candidate is better (lower RMSE). Null whenever the
       // bases differ — both raw numbers above are still present.

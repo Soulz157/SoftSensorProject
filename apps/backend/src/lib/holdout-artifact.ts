@@ -62,10 +62,66 @@ export async function findHoldoutArtifact(
       // see this column's own schema comment for why re-scaling it would
       // be wrong.
       validationAlreadyScaled: true,
+      // Carries the new-data validation window's own facts when an
+      // augmented retrain carved one out (`newValidationRowCount` and
+      // friends, written by `buildCombinedArtifact`). Selected here so the
+      // claim path can tell "a second holdout sidecar exists" from "none
+      // was requested" without probing object storage — there is no
+      // existence-check helper on this side, and a recorded fact is a
+      // better source of truth than a store round trip anyway.
+      operations: true,
     },
   });
   if (!holdoutArtifact || holdoutArtifact.validationRowCount == null) {
     return null;
   }
   return holdoutArtifact;
+}
+
+/**
+ * Whether this artifact's `operations` record an operator-defined new-data
+ * validation window — i.e. whether a `validate_new_data.parquet` sidecar
+ * was actually written beside it.
+ *
+ * Reads the recorded row count rather than any "requested" flag, and treats
+ * a count of 0 as no window: python refuses to commit an empty window, so a
+ * recorded 0 could only come from a malformed blob, and attempting to
+ * passthrough a sidecar that does not exist would fail the claim's nested
+ * handler for nothing.
+ *
+ * Deliberately tolerant of shape: `operations` is untyped JSON written by
+ * several different producers, so anything unexpected reads as "no window"
+ * rather than throwing inside the claim path.
+ */
+export function readNewDataValidationWindow(operations: unknown): {
+  rowCount: number;
+  from: Date | null;
+  to: Date | null;
+} | null {
+  if (!Array.isArray(operations)) return null;
+  for (const entry of operations) {
+    if (!entry || typeof entry !== 'object') continue;
+    const op = entry as Record<string, unknown>;
+    const rowCount = op.newValidationRowCount;
+    if (typeof rowCount !== 'number' || rowCount <= 0) continue;
+    // The boundaries are informational; a malformed or missing one must not
+    // cost the caller the window itself, so they degrade to null
+    // independently of the row count that proves the sidecar exists.
+    const parse = (v: unknown): Date | null => {
+      if (typeof v !== 'string') return null;
+      const d = new Date(v);
+      return Number.isNaN(d.getTime()) ? null : d;
+    };
+    return {
+      rowCount,
+      from: parse(op.newValidationFrom),
+      to: parse(op.newValidationTo),
+    };
+  }
+  return null;
+}
+
+/** Convenience predicate over {@link readNewDataValidationWindow}. */
+export function hasNewDataValidationWindow(operations: unknown): boolean {
+  return readNewDataValidationWindow(operations) !== null;
 }

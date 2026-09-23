@@ -104,6 +104,15 @@ DATA_FILENAME = "data.parquet"
 #: `VALIDATE_DATA_FILENAME` — change both.
 VALIDATE_DATA_FILENAME = "validate_data.parquet"
 
+#: The SECOND validation holdout an augmented retrain may carve out, cut
+#: from the NEW dataset over an operator-chosen date range and held out of
+#: training. Deliberately a separate filename: `VALIDATE_DATA_FILENAME`
+#: beside a combined GOLD carries the FROZEN incumbent-test slice, which is
+#: what keeps `rmseDelta` comparable against the incumbent, and overwriting
+#: it would silently destroy that comparison. Mirrored in artifact-keys.ts
+#: as `VALIDATE_NEW_DATA_FILENAME` — change both.
+VALIDATE_NEW_DATA_FILENAME = "validate_new_data.parquet"
+
 #: DS-LAKE-021-T01. The CSV export sidecar, written beside a committed
 #: artifact's data key via `sidecar_key()` — same mechanism as
 #: VALIDATE_DATA_FILENAME above. Mirrored in artifact-keys.ts as
@@ -1294,6 +1303,14 @@ HOLDOUT_PREDICTIONS_FILENAME = "holdout_predictions.parquet"
 # below can name-check it, the same way every other run-scoped reader here
 # checks its own filename. Mirrored in TypeScript at artifact-keys.ts.
 VALIDATE_READY_FILENAME = "validate_ready.parquet"
+
+# The run-scoped, model-ready copy of an augmented retrain's NEW-DATA
+# validation window, written server-side beside VALIDATE_READY_FILENAME so
+# one run can carry BOTH holdouts: the frozen incumbent-test slice it is
+# compared against, and the new-data window it is reported on. Same
+# server-side-write discipline as its sibling above, so likewise absent from
+# _ALLOWED_RUN_UPLOADS. Mirrored in TypeScript at artifact-keys.ts.
+VALIDATE_NEW_READY_FILENAME = "validate_new_ready.parquet"
 
 
 def model_run_prefix(model_id: str, run_id: str) -> str:

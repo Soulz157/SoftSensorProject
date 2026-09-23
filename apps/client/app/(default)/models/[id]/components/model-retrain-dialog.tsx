@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { AlertTriangle, Sparkles, Wand2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -27,6 +27,9 @@ import {
 export interface StartRetrainOptions {
   strategy?: RetrainDataStrategyValue
   additionalDatasetVersionId?: string
+  /** Both or neither — the server refuses a half-open window. ISO-8601. */
+  newValidationFrom?: string
+  newValidationTo?: string
 }
 
 export function ModelRetrainDialog({
@@ -37,6 +40,7 @@ export function ModelRetrainDialog({
   loading,
   isRetraining,
   error,
+  resumed,
   onStart,
 }: {
   open: boolean
@@ -51,6 +55,17 @@ export function ModelRetrainDialog({
   loading: boolean
   isRetraining: boolean
   error: string | null
+  /**
+   * MODEL-SERVE-017. Present when the operator has just come back from the
+   * Data Studio wizard, having built a dataset for this retrain — restores
+   * the strategy they chose and preselects what they made. Null on a normal
+   * open.
+   */
+  resumed?: {
+    strategy: 'AUGMENT_DATA' | 'NEW_DATA_ONLY'
+    datasetId: string | null
+    versionId: string | null
+  } | null
   onStart: (
     candidates?: CandidateInput[],
     options?: StartRetrainOptions,
@@ -63,11 +78,29 @@ export function ModelRetrainDialog({
   // MODEL-SERVE-015-T01. Reset to the 014 default whenever the dialog
   // (re)opens for a different model — a strategy chosen for one model must
   // never leak into the next dialog open.
-  const [dataStrategy, setDataStrategy] =
-    useState<RetrainDataStrategyValue>('KEEP_EXISTING')
+  const [dataStrategy, setDataStrategy] = useState<RetrainDataStrategyValue>(
+    resumed?.strategy ?? 'KEEP_EXISTING',
+  )
+  // Null until the operator has filled in BOTH bounds; the strategy
+  // component owns that rule so a half-typed range never reaches here.
+  const [validationWindow, setValidationWindow] = useState<{
+    from: string
+    to: string
+  } | null>(null)
   const [additionalDatasetVersionId, setAdditionalDatasetVersionId] = useState<
     string | null
-  >(null)
+  >(resumed?.versionId ?? null)
+
+  // MODEL-SERVE-017. The dialog is remounted by the return navigation, so the
+  // initial state above is normally enough. This re-seeds it for the case
+  // where it is not — arriving while the component is already mounted —
+  // keyed on the resumed values so it never fights the operator's own later
+  // edits within one visit.
+  useEffect(() => {
+    if (!resumed) return
+    setDataStrategy(resumed.strategy)
+    setAdditionalDatasetVersionId(resumed.versionId ?? null)
+  }, [resumed?.strategy, resumed?.versionId])
 
   // MODEL-SERVE-017. Forwards whichever new-data strategy was chosen rather
   // than a hardcoded AUGMENT_DATA, so NEW_DATA_ONLY cannot silently submit as
@@ -77,6 +110,15 @@ export function ModelRetrainDialog({
       ? {
           strategy: dataStrategy,
           additionalDatasetVersionId,
+          // Spread so the keys are ABSENT rather than explicitly undefined
+          // when no window was chosen — the trigger schema is .strict() and
+          // both-or-neither.
+          ...(validationWindow
+            ? {
+                newValidationFrom: validationWindow.from,
+                newValidationTo: validationWindow.to,
+              }
+            : {}),
         }
       : undefined
 
@@ -100,24 +142,37 @@ export function ModelRetrainDialog({
 
   return (
     <Dialog open={open} onOpenChange={o => !o && !isRetraining && onClose()}>
-      <DialogContent className="flex max-h-[90vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+      {/* Two vertical grid rows — header, then body — at a DEFINITE height.
+          `h-[90vh]`, not `max-h-`: Radix's scroll viewport is `height: 100%`,
+          and a percentage against an indefinite height resolves to nothing,
+          so the dialog grew with its content instead of scrolling. That is
+          why expanding "Explore this data" or switching to Custom Finetune
+          pushed the tail off-screen with no way to reach it.
+          `minmax(0,1fr)` on the body row is the other half: a grid row's
+          default `auto` minimum refuses to shrink below content, which would
+          hand the scroll container an unbounded height again. */}
+      <DialogContent className="grid h-[90vh] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden p-0 sm:max-w-6xl">
         <DialogHeader className="border-b border-border p-6 pb-4">
           <DialogTitle>Retrain {model.name}</DialogTitle>
         </DialogHeader>
 
-        <ScrollArea className="min-h-0 flex-1">
+        <ScrollArea className="min-h-0">
           {/* Landscape: decisions on the left, read-only context on the
               right (base dataset + drift/PSI). Stacks below `md`. The right
               column exists only once an incumbent does — with none, there is
               no base dataset or monitoring to show, and an empty 17rem track
               would just squeeze the left. */}
+          {/* `min-h-0` on this grid and its columns, not just `min-w-0`: a
+              grid item's default `min-height: auto` refuses to shrink below
+              its content, which is the same trap the body row above solves
+              with `minmax(0,1fr)`. */}
           <div
             className={cn(
-              'grid gap-6 p-6',
+              'grid min-h-0 gap-6 p-6',
               incumbent !== null && 'md:grid-cols-[minmax(0,1fr)_17rem]',
             )}
           >
-            <div className="min-w-0 space-y-4">
+            <div className="min-h-0 min-w-0 space-y-4">
               {loading && (
                 <p className="text-xs text-muted-foreground">
                   Checking the current production version…
@@ -148,13 +203,16 @@ export function ModelRetrainDialog({
               {incumbent !== null && (
                 <RetrainDataStrategy
                   workspaceId={model.workspaceId}
+                  modelId={model.id}
                   incumbent={incumbent}
                   strategy={dataStrategy}
                   onStrategyChange={setDataStrategy}
                   additionalDatasetVersionId={additionalDatasetVersionId}
+                  onValidationWindowChange={setValidationWindow}
                   onAdditionalDatasetVersionChange={
                     setAdditionalDatasetVersionId
                   }
+                  initialDatasetId={resumed?.datasetId ?? null}
                   disabled={disabled}
                 />
               )}
@@ -216,7 +274,7 @@ export function ModelRetrainDialog({
             </div>
 
             {incumbent !== null && (
-              <aside className="min-w-0 space-y-4">
+              <aside className="min-h-0 min-w-0 space-y-4">
                 <RetrainBaseDataset incumbent={incumbent} />
                 <RetrainMonitoringContext model={model} />
               </aside>

@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 
 import asyncio
 import time
-from typing import Any
+from typing import Any, Optional
 
 import pandas as pd
 import pyarrow as pa
@@ -34,6 +34,8 @@ from intergrations.object_store import (
     HOLDOUT_PREDICTIONS_FILENAME,
     TIMESTAMP_COLUMN,
     VALIDATE_DATA_FILENAME,
+    VALIDATE_NEW_DATA_FILENAME,
+    VALIDATE_NEW_READY_FILENAME,
     VALIDATE_READY_FILENAME,
     VALIDATION_REPORT_FILENAME,
     ArtifactStats,
@@ -945,7 +947,24 @@ def combine_for_retrain(
             "schema-compatible for augmentation."
         )
 
-    assert_scaling_coverage(list(new_tags), scalers, scaling_params)
+    # Coverage is asserted over the tags that actually GET scaled — the same
+    # list handed to `to_model_ready` four lines below — never over every
+    # column in the frame.
+    #
+    # Reported from live use: a retrain refused with "Scaling refused:
+    # ['S204IBP.lab'] would scale without a recorded scalingParams entry",
+    # where that tag was the TARGET. `assert_scaling_coverage` reads a tag
+    # absent from `scaling` as defaulting to minmax, so a target with no
+    # recorded params — which is what a CORRECT spec looks like, since
+    # `_scalable_tags` keeps the target out of scaling entirely and this
+    # function already refuses outright when `target_scaled` is set — read as
+    # "would be scaled, with nothing recorded" and killed the whole retrain
+    # over a column the next line declines to scale.
+    assert_scaling_coverage(
+        _scalable_tags(new_engineered, request.target_y),
+        scalers,
+        scaling_params,
+    )
     new_engineered, dropped_bad_rows = drop_bad_feature_rows(
         new_engineered, tag_columns(new_engineered), exclude=request.target_y)
     new_scaled, _ = to_model_ready(
@@ -961,6 +980,60 @@ def combine_for_retrain(
     # `base_frozen` still commits below either way: a New-Data-Only candidate
     # is still scored on the incumbent's own frozen rows, which is what keeps
     # the RMSE comparison honest.
+    # The operator's own validation window, carved out of the NEW rows and
+    # removed from training. Cut AFTER scaling deliberately: scaling is
+    # per-column with the base's already-fitted params, so slicing before or
+    # after is numerically identical, and doing it here guarantees the
+    # holdout went through the exact same transform as the rows it will be
+    # compared against — there is no second code path to drift.
+    new_validation: Optional[pd.DataFrame] = None
+    if request.new_validation_from or request.new_validation_to:
+        if not (request.new_validation_from and request.new_validation_to):
+            raise ValueError(
+                "new_validation_from and new_validation_to must be supplied "
+                "together — a half-open validation window is refused rather "
+                "than guessed at."
+            )
+        v_from = _wall_clock(request.new_validation_from)
+        v_to = _wall_clock(request.new_validation_to)
+        if v_to < v_from:
+            raise ValueError(
+                f"Validation window ends at {v_to}, before it starts at "
+                f"{v_from}."
+            )
+        # Bounds are checked against the rows THIS call actually loaded,
+        # never against anything the caller asserted — the same discipline
+        # `new_start` above is derived with.
+        new_end = new_frame[TIMESTAMP_COLUMN].max()
+        if v_from < new_start or v_to > new_end:
+            raise ValueError(
+                f"Validation window [{v_from}, {v_to}] falls outside the new "
+                f"dataset's own range [{new_start}, {new_end}]."
+            )
+
+        in_window = (
+            (new_scaled[TIMESTAMP_COLUMN] >= v_from)
+            & (new_scaled[TIMESTAMP_COLUMN] <= v_to)
+        )
+        new_validation = (
+            new_scaled[in_window]
+            .sort_values(TIMESTAMP_COLUMN)
+            .reset_index(drop=True)
+        )
+        if len(new_validation) == 0:
+            raise ValueError(
+                f"No new-dataset rows fall inside the validation window "
+                f"[{v_from}, {v_to}] — nothing to validate on."
+            )
+        # THE leakage guard: these rows leave training entirely. A row may
+        # never be both trained on and validated on.
+        new_scaled = new_scaled[~in_window].reset_index(drop=True)
+        if len(new_scaled) == 0 and not request.combine:
+            raise ValueError(
+                "The validation window covers every new-dataset row, leaving "
+                "nothing to train on under the New Data Only strategy."
+            )
+
     train_parts = [base_train, new_scaled] if request.combine else [new_scaled]
     before_dedupe = sum(len(part) for part in train_parts)
     combined = pd.concat(train_parts, ignore_index=True)
@@ -999,6 +1072,21 @@ def combine_for_retrain(
     )
     payload["frozen_eval_checksum"] = frozen_stats.checksum
     payload["dedupe_dropped"] = dedupe_dropped
+    if new_validation is not None:
+        new_validation_stats = store.put_frame(
+            new_validation,
+            sidecar_key(stats.object_key, VALIDATE_NEW_DATA_FILENAME),
+            overwrite=request.overwrite,
+        )
+        payload["new_validation_row_count"] = len(new_validation)
+        payload["new_validation_checksum"] = new_validation_stats.checksum
+        # The measured first/last timestamps of the rows actually selected,
+        # not the bounds the caller asked for — the UI reports what the
+        # candidate was really scored on.
+        payload["new_validation_from"] = str(
+            new_validation[TIMESTAMP_COLUMN].min())
+        payload["new_validation_to"] = str(
+            new_validation[TIMESTAMP_COLUMN].max())
     # Reports rows that actually reached TRAINING, so New Data Only reports 0
     # base rows rather than the count of rows it deliberately left out.
     payload["base_train_row_count"] = len(base_train) if request.combine else 0
@@ -2288,7 +2376,9 @@ def verify_model_object(store: ObjectStore, body) -> dict[str, Any]:
 #: unpickle) and validate_ready.parquet (to score against). Only these two —
 #: still never the full run-scoped surface `run_predictions`/
 #: `get_run_manifest` each expose for their OWN one filename.
-_ALLOWED_RUN_OBJECT_PRESIGNS = frozenset({VALIDATE_READY_FILENAME, MODEL_FILENAME})
+_ALLOWED_RUN_OBJECT_PRESIGNS = frozenset(
+    {VALIDATE_READY_FILENAME, VALIDATE_NEW_READY_FILENAME, MODEL_FILENAME}
+)
 
 
 def presign_run_object(store: ObjectStore, body) -> dict[str, Any]:
@@ -2342,9 +2432,14 @@ def presign_run_object(store: ObjectStore, body) -> dict[str, Any]:
     # tagged it. This read is the first server-side touch afterwards — see
     # `tag_retention`, which swallows its own failures.
     store.tag_retention(key)
+    # Both holdout parquets get a real row count; only `model.joblib` does
+    # not (it is a pickled estimator, and `get_frame_metadata` is a parquet
+    # reader that would raise on it). Missing the new filename here would
+    # not error — it would hand back row_count=None, which the claim path
+    # reads as "no holdout", silently dropping the score.
     row_count = (
         store.get_frame_metadata(key)["row_count"]
-        if filename == VALIDATE_READY_FILENAME
+        if filename in (VALIDATE_READY_FILENAME, VALIDATE_NEW_READY_FILENAME)
         else None
     )
 

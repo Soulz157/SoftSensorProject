@@ -4,6 +4,9 @@ import {
   initDatasetWizardAtom,
   initDatasetWizardForEditAtom,
   resetDatasetWizardAtom,
+  dwFetchStateAtom,
+  dwFetchTagsAtom,
+  initDatasetWizardFromBaseRecipeAtom,
   dwEdaSampleTotalAtom,
   dwEdaWindowAtom,
   dwFeaturePreviewSampleAtom,
@@ -231,5 +234,105 @@ describe('initDatasetWizardAtom clears the draft-first server state group', () =
     })
     expect(edit.get(dwEdaWindowAtom)).toBeNull()
     expect(edit.get(dwEdaSampleTotalAtom)).toBeNull()
+  })
+})
+
+/**
+ * MODEL-SERVE-017. The FOURTH initializer. It composes
+ * `initDatasetWizardForEditAtom` to inherit a base dataset's recipe, which
+ * means it also inherits that seeder's assumption that the dataset's bytes
+ * already exist — and this session has none yet, it is about to fetch a
+ * window nothing has read.
+ *
+ * Symptom if this drifts: Step 2 shows a completed fetch over an empty row
+ * set, or a synthetic-rows banner in a session with no rows. Neither throws.
+ */
+describe('initDatasetWizardFromBaseRecipeAtom clears the same group', () => {
+  const BASE_DATASET = {
+    id: 'ds-base',
+    name: 'Reactor tags',
+    description: null,
+    workspaceId: 'ws-2',
+    sourceIds: [],
+    tags: ['TI-200'],
+    pipelineConfig: { ...EMPTY_PIPELINE_CONFIG, baseTags: ['TI-200'] },
+    fileUrl: null,
+    rowCount: 0,
+    missingPct: 0,
+    currentVersionId: null,
+    currentArtifactId: null,
+    currentArtifactType: null,
+    adoptedBronzeArtifactId: null,
+    createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:00:00Z',
+    createdBy: 'user-1',
+  }
+
+  function seedFromBase() {
+    const store = createStore()
+    // Dirty every atom in the group first, so a passing assertion proves the
+    // seeder cleared it rather than that it was never set.
+    store.set(
+      dwFeaturePreviewSampleAtom,
+      brandBoundedSample({
+        tags: ['TI-101'],
+        rows: [
+          {
+            timestamp: '2026-01-01T00:00:00Z',
+            cells: { 'TI-101': { value: 1, status: 'Good' } },
+          },
+        ],
+      }),
+    )
+    store.set(dwFeaturePreviewSampleStateAtom, 'ready')
+    store.set(dwBronzeWarmStateAtom, 'materializing')
+    store.set(dwDraftSyncStateAtom, { status: 'syncing' })
+    store.set(dwEdaWindowAtom, monthWindow(2025, 1))
+    store.set(dwEdaSampleTotalAtom, 5000)
+
+    store.set(initDatasetWizardFromBaseRecipeAtom, {
+      dataset: BASE_DATASET,
+      sources: [],
+      name: 'Reactor tags — Feb 2026',
+      cutTimestamp: '2026-01-16 00:00:00',
+    })
+    return store
+  }
+
+  it('clears the preview sample and its state', () => {
+    const store = seedFromBase()
+    expect(store.get(dwFeaturePreviewSampleAtom).tags).toEqual([])
+    expect(store.get(dwFeaturePreviewSampleAtom).rows).toEqual([])
+    expect(store.get(dwFeaturePreviewSampleStateAtom)).toBe('idle')
+  })
+
+  it('clears the warm/sync state — no fetch has run for this window', () => {
+    const store = seedFromBase()
+    expect(store.get(dwBronzeWarmStateAtom)).toBe('idle')
+    expect(store.get(dwDraftSyncStateAtom)).toEqual({ status: 'idle' })
+  })
+
+  it('reports fetch state IDLE, not the edit path’s "fetching"', () => {
+    // The one value that actually differs between the two parent seeders,
+    // and the reason this block is load-bearing rather than defensive. The
+    // edit seeder sets `{status: 'fetching'}` because
+    // `useDatasetEditHydration` starts loading the dataset's existing rows
+    // the moment the wizard mounts. Nothing hydrates a create session, so
+    // inheriting that value leaves Step 2 showing a fetch in progress that
+    // never finishes, over an empty row set — no error, no request, just a
+    // spinner.
+    const store = seedFromBase()
+    expect(store.get(dwFetchStateAtom)).toEqual({
+      status: 'idle',
+      progress: 0,
+    })
+    // Same reason: the edit path pre-fills the tags it is about to hydrate.
+    expect(store.get(dwFetchTagsAtom)).toBeNull()
+  })
+
+  it('clears the EDA window and sample total', () => {
+    const store = seedFromBase()
+    expect(store.get(dwEdaWindowAtom)).toBeNull()
+    expect(store.get(dwEdaSampleTotalAtom)).toBeNull()
   })
 })

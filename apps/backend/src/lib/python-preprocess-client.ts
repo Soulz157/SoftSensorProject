@@ -570,6 +570,19 @@ const CombineForRetrainSchema = z.object({
   dedupe_dropped: z.number().int().nonnegative(),
   base_train_row_count: z.number().int().nonnegative(),
   new_train_row_count: z.number().int().nonnegative(),
+  // The operator-defined new-data validation window, when one was asked
+  // for. Absent — never zero — when it was not: 0 rows held out is a real
+  // and different outcome from "no window requested", and the two must not
+  // read alike downstream.
+  new_validation_row_count: z
+    .number()
+    .int()
+    .nonnegative()
+    .nullable()
+    .optional(),
+  new_validation_checksum: z.string().nullable().optional(),
+  new_validation_from: z.string().nullable().optional(),
+  new_validation_to: z.string().nullable().optional(),
 });
 
 export type CombineForRetrainResult = z.infer<typeof CombineForRetrainSchema>;
@@ -588,6 +601,15 @@ export async function combineForRetrain(input: {
   target_key: string;
   target_y: string;
   cut_timestamp: string;
+  /**
+   * The operator's NEW-DATA validation window. Both bounds or neither —
+   * python refuses a half-open pair rather than guessing at it. Rows inside
+   * it are held out of training and committed as a second sidecar; the
+   * frozen incumbent-test slice is untouched, so `rmseDelta` keeps its
+   * meaning.
+   */
+  new_validation_from?: string;
+  new_validation_to?: string;
   overwrite?: boolean;
   /**
    * MODEL-SERVE-017. Omitted or true combines the base's training rows with

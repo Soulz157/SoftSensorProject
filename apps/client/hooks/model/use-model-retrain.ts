@@ -66,6 +66,9 @@ export interface UseModelRetrain {
     options?: {
       strategy?: 'KEEP_EXISTING' | 'AUGMENT_DATA' | 'NEW_DATA_ONLY'
       additionalDatasetVersionId?: string
+      /** Both or neither — the server refuses a half-open window. */
+      newValidationFrom?: string
+      newValidationTo?: string
     },
   ) => Promise<void>
   /** Clears the last error only — the job itself is server state and is
@@ -102,6 +105,13 @@ export function useModelRetrain({
   const [dismissedJobId, setDismissedJobId] = useState<string | null>(null)
   const idempotencyKeyRef = useRef<string | null>(null)
   const notifiedTerminalRef = useRef<string | null>(null)
+  // Holds the LATEST `onUpdated` without making the poll depend on its
+  // identity — see the note on the polling effect below for why that
+  // dependency silently stopped the poll from ever firing.
+  const onUpdatedRef = useRef(onUpdated)
+  useEffect(() => {
+    onUpdatedRef.current = onUpdated
+  }, [onUpdated])
 
   const modelId = model?.id ?? null
 
@@ -185,7 +195,7 @@ export function useModelRetrain({
               )
             }
           }
-          onUpdated?.()
+          onUpdatedRef.current?.()
         }
       } catch {
         // Transient poll miss — next tick retries; `job` keeps its last
@@ -194,7 +204,18 @@ export function useModelRetrain({
     }
     const id = setInterval(() => void tick(), POLL_MS)
     return () => clearInterval(id)
-  }, [modelId, jobId, jobLive, fetchLogs, model?.name, onUpdated])
+    // `onUpdated` is deliberately NOT a dependency; it is read through a ref
+    // above. Callers pass it inline (`models/[id]/page.tsx`: `onUpdated:
+    // refresh`, itself a bare arrow rebuilt every render), so depending on
+    // its identity re-ran this effect on EVERY render — clearing the
+    // interval and starting a fresh 2500ms one each time. The detail page
+    // re-renders faster than that, so the timer never elapsed and the poll
+    // never fired: the card sat on "Training" until the viewer reloaded.
+    //
+    // A ref rather than asking callers to memoize, because the hook should
+    // not be silently broken by an un-memoized callback — that failure is
+    // invisible at the call site.
+  }, [modelId, jobId, jobLive, fetchLogs, model?.name])
 
   const start = useCallback(
     async (
@@ -202,6 +223,8 @@ export function useModelRetrain({
       options?: {
         strategy?: 'KEEP_EXISTING' | 'AUGMENT_DATA' | 'NEW_DATA_ONLY'
         additionalDatasetVersionId?: string
+        newValidationFrom?: string
+        newValidationTo?: string
       },
     ) => {
       if (!modelId || jobLive) return
@@ -215,6 +238,8 @@ export function useModelRetrain({
           candidates,
           strategy: options?.strategy,
           additionalDatasetVersionId: options?.additionalDatasetVersionId,
+          newValidationFrom: options?.newValidationFrom,
+          newValidationTo: options?.newValidationTo,
         })
         // A fresh trigger (201) and an idempotent replay (200) return the
         // same job envelope — both handled identically.

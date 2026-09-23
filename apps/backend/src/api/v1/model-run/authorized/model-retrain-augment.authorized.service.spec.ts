@@ -1,4 +1,7 @@
-import { ModelRetrainAugmentAuthorizedService } from './model-retrain-augment.authorized.service';
+import {
+  AUGMENTED_VERSION_SUFFIX,
+  ModelRetrainAugmentAuthorizedService,
+} from './model-retrain-augment.authorized.service';
 import * as pythonClient from '@/lib/python-preprocess-client';
 
 /**
@@ -233,7 +236,15 @@ describe('ModelRetrainAugmentAuthorizedService', () => {
   });
 
   describe('buildCombinedArtifact', () => {
-    it('creates a GOLD row and a FINAL row sharing one runId, under the base dataset', async () => {
+    /**
+     * One harness for every buildCombinedArtifact case: the Python result is
+     * fixed, and the tx mock records what was written so each test can assert
+     * on rows rather than on call order. `versionFindFirst` is overridable so
+     * a test can stand in a different existing-version high-water mark.
+     */
+    const runBuildCombinedArtifact = async (
+      opts: { lastVersionNumber?: number | null } = {},
+    ) => {
       (pythonClient.combineForRetrain as jest.Mock).mockResolvedValue({
         object_key: 'dataset-base/artifacts/combined-1/data_gold.parquet',
         row_count: 18,
@@ -254,7 +265,10 @@ describe('ModelRetrainAugmentAuthorizedService', () => {
       });
 
       const created: Record<string, unknown>[] = [];
+      const versionsCreated: Record<string, unknown>[] = [];
+      const datasetUpdate = jest.fn();
       const prisma = {
+        dataset: { update: datasetUpdate },
         $transaction: jest
           .fn()
           .mockImplementation((fn: (tx: unknown) => Promise<unknown>) => {
@@ -269,6 +283,27 @@ describe('ModelRetrainAugmentAuthorizedService', () => {
                     },
                   ),
               },
+              // MODEL-SERVE-015-T06. Defaults to an existing version 3 on
+              // the base dataset, so the numbering assertion is a real max+1
+              // rather than trivially "1".
+              datasetVersion: {
+                findFirst: jest
+                  .fn()
+                  .mockResolvedValue(
+                    opts.lastVersionNumber === null
+                      ? null
+                      : { versionNumber: opts.lastVersionNumber ?? 3 },
+                  ),
+                create: jest
+                  .fn()
+                  .mockImplementation(
+                    (args: { data: Record<string, unknown> }) => {
+                      versionsCreated.push(args.data);
+                      return Promise.resolve({ id: 'version-combined-1' });
+                    },
+                  ),
+              },
+              dataset: { update: datasetUpdate },
             };
             return fn(tx);
           }),
@@ -287,9 +322,14 @@ describe('ModelRetrainAugmentAuthorizedService', () => {
       } as never;
 
       const result = await service.buildCombinedArtifact(ctx, USER);
+      const [gold, final] = created;
+      return { created, versionsCreated, datasetUpdate, result, gold, final };
+    };
+
+    it('creates a GOLD row and a FINAL row sharing one runId, under the base dataset', async () => {
+      const { created, result, gold, final } = await runBuildCombinedArtifact();
 
       expect(created).toHaveLength(2);
-      const [gold, final] = created;
       expect(gold.type).toBe('GOLD');
       expect(gold.datasetId).toBe('dataset-base');
       expect(gold.validationAlreadyScaled).toBe(true);
@@ -298,6 +338,51 @@ describe('ModelRetrainAugmentAuthorizedService', () => {
       // The exact fact findHoldoutArtifact depends on.
       expect(final.runId).toBe(gold.runId);
       expect(result.combinedFinalArtifactId).toBe(final.id);
+    });
+
+    it('registers the combined artifact as an explorable DatasetVersion under the base dataset', async () => {
+      const { versionsCreated, result, datasetUpdate, final } =
+        await runBuildCombinedArtifact();
+
+      expect(versionsCreated).toHaveLength(1);
+      const [version] = versionsCreated;
+
+      // MODEL-SERVE-015-T06 AC#1 — registered under the BASE dataset.
+      expect(version.datasetId).toBe('dataset-base');
+      // AC#2 — the naming convention, and the only combined-ness marker a
+      // client can read (listVersionsService does not select `lineage`).
+      expect(version.semanticVersion).toBe(`4.0.0${AUGMENTED_VERSION_SUFFIX}`);
+      // max(existing versionNumber) + 1, read inside the transaction.
+      expect(version.versionNumber).toBe(4);
+      // A version points at the FINAL artifact, never the GOLD — this is
+      // what makes the row resolve to servable bytes.
+      expect(version.artifactId).toBe(final.id);
+      expect(version.rowCount).toBe(18);
+      expect(version.status).toBe('DRAFT');
+      expect(result.combinedDatasetVersionId).toBe('version-combined-1');
+
+      // The decision this task was planned around: retrain must NOT repoint
+      // what the operator saved.
+      expect(datasetUpdate).not.toHaveBeenCalled();
+    });
+
+    it('leaves quality fields unset rather than fabricating them (no /validate runs on this path)', async () => {
+      const { versionsCreated } = await runBuildCombinedArtifact();
+      const [version] = versionsCreated;
+
+      expect(version.qualityScore).toBeUndefined();
+      expect(version.validationAdvisory).toBeUndefined();
+    });
+
+    it('numbers the version 1 when the base dataset has no versions yet', async () => {
+      const { versionsCreated } = await runBuildCombinedArtifact({
+        lastVersionNumber: null,
+      });
+
+      expect(versionsCreated[0].versionNumber).toBe(1);
+      expect(versionsCreated[0].semanticVersion).toBe(
+        `1.0.0${AUGMENTED_VERSION_SUFFIX}`,
+      );
     });
   });
 });

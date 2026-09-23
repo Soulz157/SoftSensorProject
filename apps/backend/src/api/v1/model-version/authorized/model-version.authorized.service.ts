@@ -325,6 +325,139 @@ export class ModelVersionAuthorizedService {
   }
 
   /**
+   * MODEL-SERVE-017-T01. Permanently remove a version the user has decided
+   * not to deploy.
+   *
+   * WHAT IT REFUSES, AND WHY EACH ONE IS A SERVER RULE RATHER THAN A UI
+   * ONE. The tab only offers the button on a STAGING row, but "not
+   * PRODUCTION" is two different populations and only one of them is safe:
+   *
+   * 1. PRODUCTION — is answering traffic right now. Deleting it is an
+   *    outage.
+   * 2. `promotedAt !== null` — has served at some point, so it is ARCHIVED,
+   *    and the most recently archived such row is EXACTLY what
+   *    `rollbackService` resolves as "the previous PRODUCTION version".
+   *    Deleting it silently re-points rollback at an older version with no
+   *    error anywhere; that is a correctness regression, not a tidy-up.
+   * 3. Any prediction job, prediction log or inference window pinned to it.
+   *    Those FKs are `NoAction` (see ModelVersion's own schema comment for
+   *    why they are not Restrict), so the delete would fail at the DB with
+   *    a constraint name instead of a sentence. Counted first so the
+   *    refusal can say what is holding the version.
+   *
+   * THE OBJECT STORAGE BYTES ARE LEFT ALONE. `modelObjectKey` and
+   * `goldObjectKey` are pinned copies of the SOURCE RUN's artifacts, not
+   * this row's private property — the ModelTrainingRun still points at
+   * them, and MODEL-SERVE-000-T07 found no GC policy in this repo to model
+   * a deletion path on. Dropping the row is the smallest change that is
+   * certainly correct; reclaiming bytes is a separate decision.
+   *
+   * `ModelCandidateJob.resultVersionId` is a bare String, not an FK, so a
+   * retrain job that minted this version keeps a dangling id. That read
+   * (`model-retrain.authorized.service.ts`) is already a `findUnique` whose
+   * null branch renders "no version yet", so it degrades to that rather
+   * than throwing — the honest answer once the version is gone.
+   */
+  async removeVersionService(
+    user: Auth.UserPayload,
+    modelId: string,
+    versionNumber: number,
+  ) {
+    await this.assertModelAccess(modelId, user);
+
+    const version = await this.prisma.modelVersion.findFirst({
+      where: { modelId, version: versionNumber },
+      select: { id: true, version: true, stage: true, promotedAt: true },
+    });
+    if (!version) {
+      throw new AppException({
+        statusCode: 404,
+        message: `Model version ${versionNumber} not found`,
+        type: 'ERROR',
+      });
+    }
+
+    if (version.stage === 'PRODUCTION') {
+      throw new AppException({
+        statusCode: 422,
+        message:
+          `Cannot remove v${version.version}: it is serving production ` +
+          'traffic. Promote another version first.',
+        type: 'ERROR',
+      });
+    }
+
+    if (version.promotedAt !== null) {
+      throw new AppException({
+        statusCode: 422,
+        message:
+          `Cannot remove v${version.version}: it has been in production ` +
+          'before and is kept as a rollback target.',
+        type: 'ERROR',
+      });
+    }
+
+    const [jobs, logs, windows] = await Promise.all([
+      this.prisma.predictionJob.count({
+        where: { modelVersionId: version.id },
+      }),
+      this.prisma.predictionLog.count({
+        where: { modelVersionId: version.id },
+      }),
+      this.prisma.inferenceWindow.count({
+        where: { modelVersionId: version.id },
+      }),
+    ]);
+    if (jobs > 0 || logs > 0 || windows > 0) {
+      const held = [
+        jobs > 0 ? `${jobs} prediction job(s)` : null,
+        logs > 0 ? `${logs} prediction log(s)` : null,
+        windows > 0 ? `${windows} inference window(s)` : null,
+      ]
+        .filter((part): part is string => part !== null)
+        .join(', ');
+      throw new AppException({
+        statusCode: 422,
+        message: `Cannot remove v${version.version}: ${held} still reference it.`,
+        type: 'ERROR',
+      });
+    }
+
+    // The checks above race a concurrent promote or a scheduler writing the
+    // first window. The FK is the real backstop; if it fires the row simply
+    // stays, which is the safe outcome, and the client sees a refusal
+    // rather than a phantom success.
+    try {
+      await this.prisma.modelVersion.delete({ where: { id: version.id } });
+    } catch (err) {
+      if (
+        err instanceof PrismaTypes.PrismaClientKnownRequestError &&
+        // P2003 (FK violation), P2014 (the delete would break a required
+        // relation — what Prisma raises for some shapes of the same race)
+        // and P2025 (the row went first). All three mean "the world moved",
+        // none of them means a bug worth a 500.
+        (err.code === 'P2003' || err.code === 'P2014' || err.code === 'P2025')
+      ) {
+        throw new AppException({
+          statusCode: 422,
+          message:
+            `Could not remove v${version.version} — it changed while the ` +
+            'request was in flight. Reload the versions list and retry.',
+          type: 'ERROR',
+        });
+      }
+      throw err;
+    }
+
+    return {
+      statusCode: 200,
+      message: `Version ${version.version} removed`,
+      type: 'SUCCESS' as const,
+      data: { id: version.id, version: version.version },
+    };
+  }
+
+  /**
    * T04. Rollback is promote pointed at the previous PRODUCTION version —
    * "previous" meaning the most recently ARCHIVED row for this model, per
    * `archivedAt` descending (the column `ModelVersion`'s own schema comment

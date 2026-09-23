@@ -69,4 +69,21 @@ export const modelVersionService = {
       )
     return res.data
   },
+
+  /**
+   * MODEL-SERVE-017. Discard a version that was never deployed. The server
+   * owns every rule about what "never deployed" means (it is not
+   * PRODUCTION, it has never BEEN production, and no job/log/window points
+   * at it) — this side only asks and quotes the refusal.
+   */
+  async remove(
+    modelId: string,
+    version: ModelVersionNumber,
+  ): Promise<{ id: string; version: number }> {
+    const res: ApiResponse<{ id: string; version: number }> = await fetchClient(
+      `/api/v1/authorized/model/${modelId}/versions/${version}`,
+      { method: 'DELETE' },
+    )
+    return res.data
+  },
 }

@@ -102,6 +102,24 @@ const saved = (currentArtifactId: string | null) => ({
   },
 })
 
+/**
+ * MODEL-SERVE-017. Save decides where the operator goes next, so the redirect
+ * has to be observable. The suite-wide mock in `vitest.setup.ts` hands out a
+ * FRESH `push` on every `useRouter()` call, which can never be asserted on —
+ * this file-local mock pins one.
+ */
+const { pushMock } = vi.hoisted(() => ({ pushMock: vi.fn() }))
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({
+    push: pushMock,
+    replace: vi.fn(),
+    back: vi.fn(),
+    prefetch: vi.fn(),
+  }),
+  usePathname: () => '/',
+  useSearchParams: () => new URLSearchParams(),
+}))
+
 let store: ReturnType<typeof createStore>
 
 beforeEach(() => {
@@ -317,6 +335,39 @@ describe('Step6ReviewSave — feature preset provenance', () => {
     }
     expect(body.pipelineConfig.featurePreset).toEqual(SUMMARY)
     expect(body.pipelineConfig.targetTag).toBe('U101FBP.lab')
+  })
+
+  // MODEL-SERVE-017. Save is where the retrain return trip actually happens.
+  it('returns to the model with the new dataset when a retrain sent the operator here', async () => {
+    sessionStorage.setItem(
+      'softsensor.retrain-handoff',
+      JSON.stringify({
+        modelId: 'model-9',
+        strategy: 'NEW_DATA_ONLY',
+        returnTo: '/models/model-9',
+      }),
+    )
+    createDataset.mockResolvedValue(saved('artifact-1'))
+
+    await clickSave()
+
+    await waitFor(() => expect(pushMock).toHaveBeenCalled())
+    const target = pushMock.mock.calls.at(-1)![0] as string
+    expect(target).toContain('/models/model-9')
+    expect(target).toContain('retrainStrategy=NEW_DATA_ONLY')
+    expect(target).toContain('retrainDatasetId=ds-1')
+    // Consumed, not merely read: a later unrelated save in the same session
+    // must go back to Data Studio as it always did.
+    expect(sessionStorage.getItem('softsensor.retrain-handoff')).toBeNull()
+  })
+
+  it('goes to Data Studio as usual when no retrain is waiting', async () => {
+    sessionStorage.clear()
+    createDataset.mockResolvedValue(saved('artifact-1'))
+
+    await clickSave()
+
+    await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/data-studio'))
   })
 
   it('omits both fields from the recipe when no preset was applied', async () => {

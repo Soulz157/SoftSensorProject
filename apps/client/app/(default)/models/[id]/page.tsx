@@ -1,7 +1,8 @@
 'use client'
 
-import { use, useEffect, useState } from 'react'
+import { use, useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
+import { useSearchParams } from 'next/navigation'
 import { useAtomValue } from 'jotai'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -155,9 +156,47 @@ export default function ModelDetailPage({
   >(null)
   const [editOpen, setEditOpen] = useState(false)
   const [retrainOpen, setRetrainOpen] = useState(false)
+  // MODEL-SERVE-017. Set when the Data Studio wizard sends the operator back
+  // after building a dataset for this retrain — the params name what to
+  // reopen with, so the dialog resumes instead of starting from scratch.
+  const searchParams = useSearchParams()
+  const returnedStrategy = searchParams.get('retrainStrategy')
+  const returnedDatasetId = searchParams.get('retrainDatasetId')
+  const returnedVersionId = searchParams.get('retrainVersionId')
+  // Narrowed to the two strategies that can carry a dataset. Anything else
+  // in the URL — a typo, an older build's value — is ignored rather than
+  // forwarded, so a hand-edited param cannot put the dialog in a state the
+  // server would reject.
+  const resumedStrategy: 'AUGMENT_DATA' | 'NEW_DATA_ONLY' | null =
+    returnedStrategy === 'AUGMENT_DATA' || returnedStrategy === 'NEW_DATA_ONLY'
+      ? returnedStrategy
+      : null
+  const resumedRetrain = resumedStrategy
+    ? {
+        strategy: resumedStrategy,
+        datasetId: returnedDatasetId,
+        versionId: returnedVersionId,
+      }
+    : null
+  useEffect(() => {
+    // Opens once on arrival. The operator can close it normally afterwards;
+    // this only fires again if the params themselves change.
+    if (
+      returnedStrategy === 'AUGMENT_DATA' ||
+      returnedStrategy === 'NEW_DATA_ONLY'
+    ) {
+      setRetrainOpen(true)
+    }
+  }, [returnedStrategy, returnedDatasetId, returnedVersionId])
   const [version, setVersion] = useState(0)
   const [monitoringKey, setMonitoringKey] = useState(0)
-  const refresh = () => setVersion(v => v + 1)
+  // Memoized because it is handed to hooks and children as a callback prop.
+  // A bare arrow here is a new identity every render, which is what stopped
+  // the retrain poll from ever firing (see `use-model-retrain.ts`). That
+  // hook now reads it through a ref and no longer depends on this, but a
+  // stable identity is the right shape for every other consumer too.
+  // `setVersion` is a setState function, so it is already stable.
+  const refresh = useCallback(() => setVersion(v => v + 1), [])
   const retrain = useModelRetrain({ model, onUpdated: refresh })
   const refreshModels = useRefreshModels()
   const [overrideReason, setOverrideReason] = useState('')
@@ -955,6 +994,7 @@ export default function ModelDetailPage({
         loading={retrain.loading}
         isRetraining={retrain.isRetraining}
         error={retrain.error}
+        resumed={resumedRetrain}
         onStart={(candidates, options) => {
           void retrain.start(candidates, options)
         }}

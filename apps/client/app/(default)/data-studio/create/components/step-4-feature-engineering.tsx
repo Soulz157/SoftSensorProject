@@ -16,6 +16,7 @@ import {
   dwFeaturePresetAtom,
   dwFeaturePreviewSampleStateAtom,
   dwHoldoutRangeAtom,
+  dwFromRetrainAtom,
   dwModeAtom,
   dwRawDatasetAtom,
   dwTargetTagAtom,
@@ -53,6 +54,7 @@ export function Step4FeatureEngineering({ nav }: Props) {
   const featurePreset = useAtomValue(dwFeaturePresetAtom)
   const targetTag = useAtomValue(dwTargetTagAtom)
   const holdoutRange = useAtomValue(dwHoldoutRangeAtom)
+  const fromRetrain = useAtomValue(dwFromRetrainAtom)
   const previewFetchState = useAtomValue(dwFeaturePreviewSampleStateAtom)
   const edaWindow = useEdaWindowControl()
   const mode = useAtomValue(dwModeAtom)
@@ -302,21 +304,30 @@ export function Step4FeatureEngineering({ nav }: Props) {
           </TabsContent>
         </div>
 
-        <ValidationHoldoutSection
-          disabled={
-            // 'refreshing' is the EDA period changing under a sample that is
-            // already loaded — unrelated to whether a holdout can be picked.
-            (previewFetchState !== 'ready' &&
-              previewFetchState !== 'refreshing') ||
-            warmState === 'pending' ||
-            !editModeArmed ||
-            !editRootIsPristine
-          }
-          disabledReason={holdoutDisabledReason}
-          featureBearing={editModeArmed}
-          status={warmState}
-          error={warmError}
-        />
+        {/* MODEL-SERVE-017. A dataset being built for a retrain gets no
+            holdout picker. The retrain scores its candidate on the BASE
+            artifact's own frozen test rows (`combine_for_retrain`'s
+            `base_frozen`), so a holdout carved here is never evaluated
+            against — while `_split_holdout` keeps only rows OUTSIDE the
+            window in the committed SILVER, so picking one silently costs
+            training rows and buys nothing. */}
+        {!fromRetrain && (
+          <ValidationHoldoutSection
+            disabled={
+              // 'refreshing' is the EDA period changing under a sample that is
+              // already loaded — unrelated to whether a holdout can be picked.
+              (previewFetchState !== 'ready' &&
+                previewFetchState !== 'refreshing') ||
+              warmState === 'pending' ||
+              !editModeArmed ||
+              !editRootIsPristine
+            }
+            disabledReason={holdoutDisabledReason}
+            featureBearing={editModeArmed}
+            status={warmState}
+            error={warmError}
+          />
+        )}
 
         <DataAnalysisCard
           dataset={featured}

@@ -35,6 +35,25 @@ export const VALIDATION_REPORT_FILENAME = 'validation_report.json';
 export const VALIDATE_DATA_FILENAME = 'validate_data.parquet';
 
 /**
+ * The SECOND validation holdout an augmented retrain may carve out of the
+ * NEW dataset over an operator-chosen window. Deliberately its own
+ * filename: beside a combined GOLD, `VALIDATE_DATA_FILENAME` holds the
+ * FROZEN incumbent-test slice that keeps `rmseDelta` comparable, and
+ * overwriting it would silently destroy that comparison. Mirrored from
+ * `VALIDATE_NEW_DATA_FILENAME` in object_store.py — change both.
+ */
+export const VALIDATE_NEW_DATA_FILENAME = 'validate_new_data.parquet';
+
+/**
+ * The run-scoped, model-ready copy of the above, written at claim time
+ * alongside `VALIDATE_READY_FILENAME` so one run can carry BOTH holdouts:
+ * the frozen slice it is compared to the incumbent on, and the new-data
+ * window it is reported on. Run-scoped and overwritten freely, exactly
+ * like its sibling.
+ */
+export const VALIDATE_NEW_READY_FILENAME = 'validate_new_ready.parquet';
+
+/**
  * MODEL-FLOW-016-T08. The model-ready holdout `prepare_holdout_for_run`/
  * `replay_holdout_for_run` write under a run's own prefix
  * (`tryReplayHoldout`, model-run.authorized.service.ts) — a run-scoped

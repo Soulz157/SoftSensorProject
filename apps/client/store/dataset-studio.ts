@@ -197,6 +197,44 @@ export const dwCustomIntervalAtom = atom<CustomInterval | null>(null)
  * to run its guards.
  */
 export const dwHoldoutRangeAtom = atom<CustomDateRange | null>(null)
+
+/**
+ * MODEL-SERVE-017. True while this wizard session is building a dataset that
+ * a retrain sent the operator here to create.
+ *
+ * It suppresses the validation holdout, which is not merely unnecessary for a
+ * retrain but actively harmful: `combine_for_retrain` evaluates the candidate
+ * on the BASE artifact's own frozen test rows (`base_frozen`), so a holdout
+ * carved out of the new dataset is never scored against — while
+ * `_split_holdout` keeps only rows OUTSIDE the holdout window in the
+ * committed SILVER ("the holdout genuinely leaves the training path"). The
+ * net effect of picking one here is silently fewer training rows and no
+ * evaluation benefit whatsoever.
+ *
+ * A session-scoped atom rather than a read of the sessionStorage handoff
+ * record: that record survives until Save consumes it, so an operator who
+ * wandered off and started an unrelated dataset would still get the holdout
+ * hidden. This is cleared by every other seeder, so it cannot leak.
+ */
+export const dwFromRetrainAtom = atom<boolean>(false)
+
+/**
+ * MODEL-SERVE-017. The incumbent's computed split boundary, carried into the
+ * wizard so Step 2's own fetch pickers can clamp to it.
+ *
+ * The window used to be picked in the retrain dialog, which meant choosing a
+ * date range twice — once there and again here. The pickers now live only in
+ * Step 2, but the RULE had to travel with them: `assertCompatible` refuses a
+ * dataset starting at or before this instant, because those rows are the
+ * frozen evaluation set the candidate is scored on. Without it the operator
+ * would build and save an entire dataset before the retrain told them the
+ * window was never allowed.
+ *
+ * Null outside a retrain session, and also within one whose source run
+ * recorded no boundary — the same case the server 422s on. The picker is
+ * then left unclamped and the server remains the guard.
+ */
+export const dwRetrainCutTimestampAtom = atom<string | null>(null)
 export const dwSourceFetchConfigsAtom = atom<Record<string, DataSourceConfig>>(
   {},
 )
@@ -599,6 +637,8 @@ export const initDatasetWizardAtom = atom(
     set(dwTimeRangeAtom, '1min')
     set(dwCustomDateRangeAtom, null)
     set(dwHoldoutRangeAtom, null)
+    set(dwFromRetrainAtom, false)
+    set(dwRetrainCutTimestampAtom, null)
     set(dwCustomIntervalAtom, null)
     set(dwSourceFetchConfigsAtom, {})
     set(dwFetchConfigAtom, { ...DEFAULT_FETCH_CONFIG })
@@ -685,6 +725,8 @@ export const resetDatasetWizardAtom = atom(null, (_get, set) => {
   set(dwTimeRangeAtom, '1min')
   set(dwCustomDateRangeAtom, null)
   set(dwHoldoutRangeAtom, null)
+  set(dwFromRetrainAtom, false)
+  set(dwRetrainCutTimestampAtom, null)
   set(dwCustomIntervalAtom, null)
   set(dwSourceFetchConfigsAtom, {})
   set(dwFetchConfigAtom, { ...DEFAULT_FETCH_CONFIG })
@@ -837,6 +879,8 @@ export const initDatasetWizardForEditAtom = atom(
     // would silently double-cut rows (`startFeaturesJob` has no guard of
     // its own; see that atom's own doc comment).
     set(dwHoldoutRangeAtom, config.holdoutDateRange ?? null)
+    set(dwFromRetrainAtom, false)
+    set(dwRetrainCutTimestampAtom, null)
     set(dwCustomIntervalAtom, config.customInterval)
     set(dwSourceFetchConfigsAtom, config.sourceFetchConfigs)
     // Fetch is locked in edit mode (raw query is rebuilt deterministically, not
@@ -908,5 +952,105 @@ export const initDatasetWizardForEditAtom = atom(
     // edit mode FIRST lands, not what is reachable via the step indicator.
     set(dwCurrentStepAtom, 3)
     set(dwHighestUnlockedAtom, DW_TOTAL_STEPS)
+  },
+)
+
+export interface InitDatasetWizardFromBaseRecipeSeed {
+  /** The model's base dataset — the recipe to copy, never the one edited. */
+  dataset: SavedDataset
+  sources: SavedDataSource[]
+  /** Name for the NEW sibling dataset. */
+  name: string
+  /**
+   * The incumbent's split boundary. New data must start strictly after it
+   * (`assertCompatible`), and Step 2's own From picker clamps to it — the
+   * window itself is chosen there, not before the handoff, so the operator
+   * picks a date range once instead of twice. Null when the source run
+   * recorded no boundary; the picker is then unclamped and the server is the
+   * guard.
+   */
+  cutTimestamp: string | null
+}
+
+/**
+ * MODEL-SERVE-017. Opens the wizard on a NEW dataset that inherits a base
+ * dataset's recipe but covers a DIFFERENT time range — the retrain flow's
+ * "fetch new data" handoff.
+ *
+ * It deliberately reuses `initDatasetWizardForEditAtom` to seed the recipe
+ * rather than re-listing the ~60 atoms that setter touches. A parallel copy
+ * would be the drifting second implementation this store has been bitten by
+ * before: a recipe field added to the edit path and forgotten here would
+ * silently produce a dataset built from a different recipe than the base,
+ * which `assertCompatible` then rejects with a tag mismatch the operator
+ * cannot explain.
+ *
+ * What it overrides afterwards is exactly what makes this a CREATE session
+ * for a sibling, not an edit of the base:
+ *  - `mode: 'create'` + no `editingDatasetId`, so Save mints a new Dataset
+ *    instead of a new version of the base (which would repoint the base's
+ *    `currentVersionId` at a slice holding only the new range).
+ *  - `mode: 'create'` also unlocks Step 1/2, which edit mode locks — the
+ *    whole point here is to fetch a range the base does not have.
+ *  - The raw rows are cleared: the base's rows belong to the base's window.
+ *  - Lands on Step 2 (Fetch Data), the first step with anything to do.
+ */
+export const initDatasetWizardFromBaseRecipeAtom = atom(
+  null,
+  (_get, set, seed: InitDatasetWizardFromBaseRecipeSeed) => {
+    set(initDatasetWizardForEditAtom, {
+      dataset: seed.dataset,
+      sources: seed.sources,
+    })
+
+    set(dwModeAtom, 'create')
+    // '' is this atom's own "no dataset being edited" value, not null — a
+    // create session that left a real id here would Save over the base.
+    set(dwEditingDatasetIdAtom, '')
+    set(dwEditingDatasetAtom, null)
+    set(dwNameAtom, seed.name)
+    set(dwDescriptionAtom, '')
+    // No window yet — Step 2's pickers are where it gets chosen, and the
+    // base's own range belongs to the base's data, not this one.
+    set(dwCustomDateRangeAtom, null)
+    // A holdout window chosen for the base's range is meaningless inside a
+    // different one, and a stale window silently splits the wrong rows.
+    set(dwHoldoutRangeAtom, null)
+    set(dwFromRetrainAtom, true)
+    set(dwRetrainCutTimestampAtom, seed.cutTimestamp ?? null)
+    set(dwRawDatasetAtom, EMPTY_DATASET)
+
+    // The edit seeder describes a dataset whose bytes already exist, so it
+    // leaves these describing REAL data. This session has none yet — it is
+    // about to fetch a window nothing has read. Every atom below is reset to
+    // exactly what `initDatasetWizardAtom` (the real create path) sets, and
+    // for the same reason its own comment gives: a stale value here shows a
+    // completed fetch over empty rows, or a synthetic-rows banner in a
+    // session with no rows — neither of which raises an error.
+    //
+    // Kept in lockstep with the create path by
+    // `dataset-studio-wizard-reset-parity.test.ts`, which exists because two
+    // hand-maintained seeders already drifted once.
+    set(dwHasInvalidTagsAtom, false)
+    set(dwFetchTagsAtom, null)
+    set(dwFetchStateAtom, { status: 'idle', progress: 0 })
+    set(dwBronzeWarmStateAtom, 'idle')
+    set(dwFeatureWarmStateAtom, 'idle')
+    set(dwFeatureArtifactStampAtom, null)
+    set(dwDraftSyncStateAtom, { status: 'idle' })
+    set(dwFeaturePreviewSampleAtom, brandBoundedSample({ tags: [], rows: [] }))
+    set(dwFeaturePreviewSampleStateAtom, 'idle')
+    set(dwEdaWindowAtom, null)
+    set(dwEdaSampleTotalAtom, null)
+    set(dwRowSourceAtom, null)
+    set(dwSyntheticReasonAtom, null)
+    set(dwSyntheticCauseAtom, null)
+    set(dwRowStageAtom, null)
+
+    set(dwCurrentStepAtom, 2)
+    // Only Step 2 is reachable: the recipe is inherited, but nothing past
+    // the fetch has been re-derived for THIS window. The edit seeder unlocks
+    // every step because its dataset already has bytes at each stage.
+    set(dwHighestUnlockedAtom, 2)
   },
 )

@@ -68,6 +68,7 @@ const INCUMBENT = {
   version: 3,
   algorithm: 'ridge' as const,
   baseDataset: null,
+  cutTimestamp: null,
 }
 
 function job(overrides: Partial<RetrainJob> = {}): RetrainJob {
@@ -131,6 +132,10 @@ function comparison(
       algorithm: 'ridge',
       metrics: { rmse: 0.75, r2: 0.95, mae: 0.3 },
       newRegimeMetrics: null,
+    newDataHoldoutMetrics: null,
+    newDataHoldoutRowCount: null,
+    newDataHoldoutFrom: null,
+    newDataHoldoutTo: null,
     },
     rmseDelta: -0.5,
     selectionMetric: 'rmse',
@@ -420,6 +425,59 @@ describe('RetrainProgress — result (T04/T06)', () => {
     expect(onApply).toHaveBeenCalledWith(4)
   })
 
+  it('reports the new-data holdout as its own figure, with no delta against the incumbent', () => {
+    render(
+      <RetrainProgress
+        job={job({
+          status: 'SUCCEEDED',
+          comparison: comparison({
+            candidate: {
+              runId: 'run-2',
+              versionId: 'version-4',
+              version: 4,
+              stage: 'STAGING',
+              algorithm: 'ridge',
+              metrics: { rmse: 0.75, r2: 0.95, mae: 0.3 },
+              newRegimeMetrics: null,
+              newDataHoldoutMetrics: { rmse: 0.42, r2: 0.88, mae: 0.31 },
+              newDataHoldoutRowCount: 720,
+              newDataHoldoutFrom: '2026-05-01T00:00:00.000Z',
+              newDataHoldoutTo: '2026-05-31T23:59:59.999Z',
+            },
+          }),
+        })}
+        phase="done"
+        logs={[]}
+      />,
+    )
+
+    expect(
+      screen.getByText(/Performance on the new data/i),
+    ).toBeInTheDocument()
+    expect(screen.getByText('0.4200')).toBeInTheDocument()
+    // States what it was measured on.
+    expect(screen.getByText(/720 rows/)).toBeInTheDocument()
+    // THE correctness assertion: the incumbent was never scored on these
+    // rows, so this figure must never be presented as a comparison.
+    expect(
+      screen.getByText(/Not compared against the current model/i),
+    ).toBeInTheDocument()
+  })
+
+  it('shows no new-data panel when the retrain carved out no window', () => {
+    render(
+      <RetrainProgress
+        job={job({ status: 'SUCCEEDED', comparison: comparison() })}
+        phase="done"
+        logs={[]}
+      />,
+    )
+
+    expect(
+      screen.queryByText(/Performance on the new data/i),
+    ).not.toBeInTheDocument()
+  })
+
   it('offers no Apply action before a version has been minted', () => {
     render(
       <RetrainProgress
@@ -434,6 +492,10 @@ describe('RetrainProgress — result (T04/T06)', () => {
               algorithm: 'ridge',
               metrics: { rmse: 0.75, r2: 0.95, mae: 0.3 },
               newRegimeMetrics: null,
+    newDataHoldoutMetrics: null,
+    newDataHoldoutRowCount: null,
+    newDataHoldoutFrom: null,
+    newDataHoldoutTo: null,
             },
           }),
         })}
@@ -462,6 +524,10 @@ describe('RetrainProgress — result (T04/T06)', () => {
               algorithm: 'ridge',
               metrics: { rmse: 0.75, r2: 0.95, mae: 0.3 },
               newRegimeMetrics: null,
+    newDataHoldoutMetrics: null,
+    newDataHoldoutRowCount: null,
+    newDataHoldoutFrom: null,
+    newDataHoldoutTo: null,
             },
           }),
         })}

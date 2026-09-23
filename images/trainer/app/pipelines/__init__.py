@@ -71,6 +71,9 @@ def run_training(context: RunContext, api: RunApi) -> int:
     holdout_metrics, holdout_predictions = _score_holdout_if_present(
         prepared, result, api
     )
+    new_data_holdout_metrics = _score_new_data_holdout_if_present(
+        prepared, result, api
+    )
     _publish(
         context,
         api,
@@ -79,6 +82,7 @@ def run_training(context: RunContext, api: RunApi) -> int:
         holdout_metrics,
         holdout_predictions,
         started,
+        new_data_holdout_metrics,
     )
     return 0
 
@@ -250,6 +254,64 @@ def _score_holdout_if_present(
         return None, None
 
 
+def _score_new_data_holdout_if_present(
+    prepared: PreparedRun, result: TrainingResult, api: RunApi
+) -> dict[str, Any] | None:
+    """The candidate's score on the operator-defined NEW-DATA validation
+    window, present only when an augmented retrain carved one out of the
+    newly merged dataset and claim() prepared it.
+
+    This is a SECOND, independent holdout beside the one above, and the
+    distinction is the whole point: `holdoutDataUrl` is the FROZEN
+    incumbent-test slice — all OLD rows — which is what makes `rmseDelta`
+    comparable against the incumbent. This one is all NEW rows, which the
+    incumbent was never scored on, so its figure is reported on its own and
+    must never be differenced against the incumbent's.
+
+    Scored with the SAME `score_holdout` as its sibling — same function,
+    different input — so the two numbers are computed identically and stay
+    comparable to each other.
+
+    Best-effort on its own terms: a failure here must not disturb the frozen
+    holdout's metrics or fail the run, so it carries its own try/except
+    rather than sharing one with the scoring above.
+
+    Only the aggregate is returned. The per-row frame is deliberately not
+    published: nothing renders a second holdout series today, and writing a
+    parquet nothing reads would be cost without a reader.
+    """
+    if not prepared.spec.get("newDataHoldoutUrl") or not result.holdout_eligible:
+        return None
+
+    try:
+        path, _ = download_verified(
+            prepared.spec["newDataHoldoutUrl"],
+            SCRATCH / "holdout_new_data.parquet",
+            prepared.spec["newDataHoldoutChecksum"],
+            "New-data holdout",
+        )
+        metrics, _ = score_holdout(
+            result.model,
+            pd.read_parquet(path),
+            prepared.target_y,
+            prepared.feature_cols,
+            # Nothing is dropped on this path: the window was cut from the
+            # already-cleaned, already-scaled frame the training rows came
+            # from, exactly like the frozen slice.
+            dropped_bad_features=None,
+            sequence_length=result.holdout_sequence_length,
+            log_fn=api.log,
+        )
+        api.log(
+            f"new-data holdout r2={metrics['r2']:.4f} — "
+            f"test r2 was {result.metrics['r2']:.4f}"
+        )
+        return metrics
+    except Exception as exc:  # noqa: BLE001 - best-effort, see docstring
+        api.log(f"New-data holdout scoring skipped: {exc}", "warn")
+        return None
+
+
 # ── 10. write, upload, complete ──────────────────────────────────────────────
 def _publish(
     context: RunContext,
@@ -259,6 +321,7 @@ def _publish(
     holdout_metrics: dict[str, Any] | None,
     holdout_predictions: pd.DataFrame | None,
     started: float,
+    new_data_holdout_metrics: dict[str, Any] | None = None,
 ) -> None:
     import joblib
 
@@ -379,6 +442,13 @@ def _publish(
             "status": "SUCCEEDED",
             "metrics": result.metrics,
             **({"holdoutMetrics": holdout_metrics} if holdout_metrics else {}),
+            # Reported on its own, never differenced against the incumbent:
+            # the incumbent was never scored on these rows.
+            **(
+                {"newDataHoldoutMetrics": new_data_holdout_metrics}
+                if new_data_holdout_metrics
+                else {}
+            ),
             "splitSpec": result.split_spec,
             "uploaded": uploaded,
         }

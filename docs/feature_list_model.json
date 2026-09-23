@@ -230,10 +230,7 @@
       "priority": 1,
       "status": "in_progress",
       "progress": 97,
-      "dependencies": [
-        "MODEL-SERVE-000",
-        "MODEL-FLOW-007"
-      ],
+      "dependencies": ["MODEL-SERVE-000", "MODEL-FLOW-007"],
       "description": "Give a Model a versioned, staged history so that promotion and rollback are row changes. Nothing here serves anything; this is the pointer everything downstream reads.",
       "tasks": [
         {
@@ -653,10 +650,7 @@
       "status": "completed",
       "progress": 100,
       "progress_note_2026_09_02": "V01-first vertical slice PLUS Stage 2 (image/CI) complete: packages/py-scaling extraction (T05), backend descriptor endpoint + loader (T02), apps/serving predict/health/cache-TTL (T03/T04/T07), Dockerfile + CI build+scan workflow (T01). V01 (no-skew), V04 (checksum refusal), and V02 (promote-under-load) all proven LIVE against real Postgres/MinIO/a real fitted model. The Dockerfile, its image, and the Trivy hard gate were all verified live with real local Docker/Trivy runs, not just written — including finding and fixing a real bug in the SHARED _build-image.yml workflow (push:false was unusable until this change) and resolving 4 real HIGH CVE findings with individual dated reasoning in .trivyignore, not blanket suppression. FEATURE COMPLETE: all 7 tasks and all 4 verifications closed. T06/V03 were the last, resolved 2026-09-02 by a premise correction taken with the user rather than by guessing — the sampling-interval clause asked for an axis this repo had already deliberately rejected one layer down (artifact_service.py's own lead-in check refuses in ROWS from the recipe, explicitly 'NOT re-derived from a duration/interval a caller would have to look up'), and no interval is recorded in feature_spec.json or Prisma to validate against. Implemented the row-depth guard that precedent established instead, sharing max_replay_lookback via softsensor_scaling so one implementation serves both the holdout replay and /predict. The retired clause is documented with the condition under which it should be un-retired (if the request contract ever grows timestamped history). NOTE FOR THE NEXT AUDIT: three of this feature's own tasks were corrected against the tree mid-implementation (T01/T02/T05's delta re-audit, then T06's premise), continuing this ledger's unbroken record of each pass finding its predecessor overstating or mis-framing the gap.",
-      "dependencies": [
-        "MODEL-SERVE-000",
-        "MODEL-SERVE-001"
-      ],
+      "dependencies": ["MODEL-SERVE-000", "MODEL-SERVE-001"],
       "description": "A long-running process that loads PRODUCTION versions from object storage and answers bounded synchronous prediction requests. One image, many models.",
       "tasks": [
         {
@@ -764,9 +758,7 @@
       "priority": 3,
       "status": "completed",
       "progress": 100,
-      "dependencies": [
-        "MODEL-SERVE-002"
-      ],
+      "dependencies": ["MODEL-SERVE-002"],
       "description": "Score a parquet input in object storage as an asynchronous job, and return the result by reference. This is the '/predict + /result' pair from the original question, split because they are two different operations.",
       "tasks": [
         {
@@ -838,10 +830,7 @@
       "status": "completed",
       "progress": 100,
       "blocked_on": "RESOLVED 2026-09-01 BY TRANSCRIPTION (MODEL-SERVE-000-T05 / upstream re-read) — status flipped blocked -> pending. ORIGINAL, PRESERVED: 'The same decision MODEL-FLOW-005 is blocked on — see MODEL-FLOW decisions.fine_tuning_undefined and this ledger's decisions.retrain_and_fine_tuning_are_one_question. Until retrain is defined (a fresh fit on a widened window? a hyperparameter search reusing the split? a warm start on a framework that supports one?), the tasks below describe a job whose work is unspecified.' Upstream decisions.fine_tuning_undefined resolved 2026-08-25 (user decision): fine-tuning = a hyperparameter search — one algorithm, one artifact, one split, N hyperparameter sets in sequence, best kept by RMSE. Transcribed into this ledger's decisions.retrain_is_blocked_on_the_same_definition_as_fine_tuning. MODEL-FLOW-005 was built on this definition and all 8 of its tasks are completed — it is a proven implementation pattern, not a speculative one. No engineering against MODEL-SERVE-004 has been done in this pass; only the block is lifted.",
-      "dependencies": [
-        "MODEL-SERVE-001",
-        "MODEL-FLOW-005"
-      ],
+      "dependencies": ["MODEL-SERVE-001", "MODEL-FLOW-005"],
       "description": "An endpoint that records the intent to retrain and returns. The work is done by the existing trainer image, spawned the way MODEL-FLOW-003-T04 already spawns it. A successful retrain produces a new ModelVersion at STAGING and promotes nothing.",
       "tasks": [
         {
@@ -925,9 +914,7 @@
       "priority": 5,
       "status": "completed",
       "progress": 100,
-      "dependencies": [
-        "MODEL-SERVE-002"
-      ],
+      "dependencies": ["MODEL-SERVE-002"],
       "description": "Record inputs and predictions so that a model going wrong is observable, and so that a future automatic retrain has a trigger that is a measurement rather than a calendar.",
       "tasks": [
         {
@@ -1013,11 +1000,7 @@
       "priority": 6,
       "status": "completed",
       "progress": 100,
-      "dependencies": [
-        "MODEL-SERVE-001",
-        "MODEL-FLOW-004",
-        "MODEL-FLOW-011"
-      ],
+      "dependencies": ["MODEL-SERVE-001", "MODEL-FLOW-004", "MODEL-FLOW-011"],
       "description": "Run a promoted model on a fixed cadence, writing one predictions parquet and one metrics document per time window, with per-run logs readable afterwards. This is the feature that makes 'deployed' mean something. It needs no serving process — see decisions.short_lived_containers_for_scheduled_inference.",
       "dependency_notes": {
         "MODEL-FLOW-004": "SATISFIED 2026-09-01 (MODEL-SERVE-000 re-audit). ORIGINAL: 'HARD, not conventional. Step 4 currently computes its own metrics client-side (see findings), so until it reads the run's real metrics there is no surface on which a metric registry or a monitoring series means anything. Building the schedule first would produce a correct monitoring record beside a screen showing unrelated numbers.' MODEL-FLOW-004 is now in_progress 90 with all 5 tasks completed; phase-5-evaluation.tsx reads real predictions via useDraftRunEvaluation/mpTrainingResultAtom, not a client-side computeFit. T08 can proceed.",
@@ -1202,9 +1185,7 @@
       "priority": 7,
       "status": "completed",
       "progress": 100,
-      "dependencies": [
-        "MODEL-SERVE-000"
-      ],
+      "dependencies": ["MODEL-SERVE-000"],
       "must_land_before": "MODEL-SERVE-006-T06. That task writes the first inference/ object; whichever layout is chosen, deciding after it lands turns a free choice into a migration.",
       "description": "Make an object's RETENTION CLASS legible to storage tooling, so that 'may be reclaimed' is not knowable only from application code. Moves no existing bytes.",
       "audit_note": "REVISED 2026-08-25 after reading apps/python/.../object_store.py. Three claims made when this feature was first drafted were wrong and are corrected in the findings below, not silently edited: the key layout (a), the cost of multi-bucket (b), and what a bucket lifecycle rule can actually express (c). The correction to (c) weakens this feature's original headline rationale, which is why T01 is now a decision to be made rather than a layout to implement.",
@@ -1314,11 +1295,7 @@
       "priority": 8,
       "status": "in_progress",
       "progress": 95,
-      "dependencies": [
-        "MODEL-SERVE-002",
-        "MODEL-SERVE-005",
-        "MODEL-SERVE-006"
-      ],
+      "dependencies": ["MODEL-SERVE-002", "MODEL-SERVE-005", "MODEL-SERVE-006"],
       "description": "The Actual-vs-Predict and Residual charts on the Monitoring tab are correctly empty, not broken: MODEL-SERVE-005-T03 feeds them only JOINED pairs, and a `.lab` target reports hours or days apart, so most windows hold zero pairs. The ask is a real-time comparison. This feature delivers the half that is physically available — a continuously predicted series, drift computed as inputs arrive, and a much shorter prediction cadence — and states plainly that the ACTUAL side cannot be denser than the lab, rather than fabricating one.",
       "placement_note": "FILED AS ITS OWN FEATURE, DELIBERATELY. The subject spans MODEL-SERVE-005-T03 (the truth join, InferenceWindowTruth), MODEL-SERVE-006 (InferenceWindow, the scheduler) and MODEL-SERVE-002 (synchronous /predict), all of which read completed/100. This ledger's convention for that is a task under MODEL-SERVE-001 with a placement pointer — but T09 through T23 each carry such a pointer apologising for sitting in a feature titled 'Model Version Registry', and this is larger than any of them. Same reasoning DS-LAKE-005B-D used when it refused to file a Python stats service inside a feature titled 'Frontend viewport migration'. NOTE ON NUMBERING: a two-axis deploy/monitoring status proposal earlier in this session drafted MODEL-SERVE-001-T24 through T30 and V18 through V22; if those landed, nothing here collides, but re-check before assuming any id is free.",
       "findings": [
@@ -1665,9 +1642,7 @@
       "priority": 10,
       "status": "pending",
       "progress": 0,
-      "dependencies": [
-        "MODEL-SERVE-006"
-      ],
+      "dependencies": ["MODEL-SERVE-006"],
       "description": "`fail()` writes status FAILED for EVERY cause, so a DNS resolution failure and an unresolvable target end the same way: terminally, with no attempt counter and no re-queue. A two-day historian outage therefore did not degrade the record, it permanently holed it — 45 windows that will never be re-attempted unless a human presses retry on each one. The data is recoverable; the automation is not.",
       "placement_note": "FILED AS ITS OWN FEATURE RATHER THAN A MODEL-SERVE-006 TASK, for one specific reason: 006 is status completed / progress 100, and appending a pending task to it would make that status a lie — the same objection this ledger's own feature-status rules state (never mark completed while work remains, and by symmetry never leave completed standing over new pending work). Same convention MODEL-SERVE-008 and 009 used when their subject spanned an already-closed feature. The SUBJECT is unambiguously 006's: `fail()` and `dispatchDue` both live in inference-window-scheduler.service.ts.",
       "findings": [
@@ -1746,10 +1721,7 @@
       "priority": 11,
       "status": "in_progress",
       "progress": 85,
-      "dependencies": [
-        "MODEL-SERVE-006",
-        "MODEL-SERVE-001"
-      ],
+      "dependencies": ["MODEL-SERVE-006", "MODEL-SERVE-001"],
       "description": "An operator watching a running model had no way to get a prediction NOW: windows are created and dispatched only by the scheduler sweep (INFERENCE_TICK_INTERVAL_MS, 5 min in this deployment), so the wait between wanting a reading and having one was up to a full tick on top of the window's own lag. This feature adds ONE affordance -- a Run Predict button on models/[id] -- that runs the SAME window the tick would have run, through the SAME dispatch path. It is a bypass of the WAIT, not of the rules: the schedule must exist, be ENABLED, and have a PRODUCTION version, exactly as the sweep requires. Chosen over the live-predict plane (LivePredictDriverService.scoreOne) deliberately, per the 2026-09-17 decision: the operator wants the full window artifact -- visible in Monitoring, Logs and health, retryable on failure -- not a chart point with no window row behind it. INCREMENT 2 (same day, user request): the window half answers in MINUTES, so the button changed nothing an operator could see. Run Predict now ALSO scores the live plane through the warm /predict, which is what puts a point on the Actual vs Predicted chart within seconds. The two halves are independent and reported separately -- a quiet source can leave the live half with no point while the window run is genuinely underway. Note what this does NOT do: only the PREDICTED series moves on click. LiveOverlayRow carries no actual and no residual by design (a dense predicted point has no lab counterpart), so the ACTUAL series still moves later, when ground truth joins on the window plane's own schedule.",
       "tasks": [
         {
@@ -2035,11 +2007,7 @@
       "priority": 12,
       "status": "in_progress",
       "progress": 97,
-      "dependencies": [
-        "MODEL-SERVE-001",
-        "MODEL-SERVE-005",
-        "MODEL-SERVE-011"
-      ],
+      "dependencies": ["MODEL-SERVE-001", "MODEL-SERVE-005", "MODEL-SERVE-011"],
       "description": "Every health signal watched the model's INPUTS or its plumbing; nothing graded whether the model was still RIGHT, so a model fetching cleanly from live instruments with un-drifted inputs rendered a green pill while predicting badly. Adds the output-error axis: the pooled live residual SD over joined truth pairs, measured against the run's own test-split residual SD, reported as Warning at 1-2x and Alert beyond 3x. Also collapses the separate Health pill into the Monitoring Status badge (normal/warning/alert/frozen/offline), which until now was driven by the hand-set prodStatus column and could read Normal beside a Health pill reading Alert.",
       "tasks": [
         {
@@ -2161,10 +2129,7 @@
       "priority": 13,
       "status": "completed",
       "progress": 100,
-      "dependencies": [
-        "MODEL-SERVE-006",
-        "MODEL-SERVE-001"
-      ],
+      "dependencies": ["MODEL-SERVE-006", "MODEL-SERVE-001"],
       "description": "The Edit dialog showed a PI Server picker and a Tag List built from MOCK_PI_SERVERS, with the selection held in local state that nothing ever sent to an API - a control that looked like it named the model's data source while naming nothing at all, and the real binding was visible nowhere in the product. The real binding is InferenceSchedule.sourceId + fetchConfig, resolved from the PINNED version's source dataset. This surfaces it by NAME and lets an operator re-point it. RELINK ONLY: no retrain is triggered, and the dialog says so before it writes - the model keeps the weights it was fitted with.",
       "tasks": [
         {
@@ -2233,11 +2198,7 @@
       "status": "in_progress",
       "progress": 95,
       "blocked_on": null,
-      "dependencies": [
-        "MODEL-SERVE-004",
-        "MODEL-SERVE-001",
-        "MODEL-FLOW-005"
-      ],
+      "dependencies": ["MODEL-SERVE-004", "MODEL-SERVE-001", "MODEL-FLOW-005"],
       "description": "Wire the Model Detail Retrain UI to the existing real retrain backend flow. The workflow is initiated from Models/[id], creates a retrain job backed by the existing ModelCandidateJob and trainer pipeline, tracks progress, exposes candidate evaluation results, and creates a new ModelVersion at STAGING without changing the current PRODUCTION version. The existing retrain backend contract and concurrency/idempotency behavior from MODEL-SERVE-004 are reused rather than reimplemented.",
       "tasks": [
         {
@@ -2412,11 +2373,9 @@
       "title": "Model Retrain: Data Augmentation Workflow",
       "priority": 15,
       "status": "in_progress",
-      "progress": 85,
+      "progress": 90,
       "blocked_on": null,
-      "dependencies": [
-        "MODEL-SERVE-014"
-      ],
+      "dependencies": ["MODEL-SERVE-014"],
       "description": "Extend the established real retrain workflow (MODEL-SERVE-014) to support Data Augmentation. This introduces a new execution path ('AUGMENT_DATA') allowing operators to combine existing production training data with a newly selected dataset to create an immutable Combined Artifact for retraining, while enforcing strict schema compatibility and preserving comparability of evaluation metrics.",
       "tasks": [
         {
@@ -2480,6 +2439,32 @@
             "The new ModelVersion (STAGING) retains references to both source datasets and the combined artifact."
           ],
           "progress": 70
+        },
+        {
+          "id": "MODEL-SERVE-015-T06",
+          "title": "Verify and Ensure Combined Dataset Explorability (Data Exploration UI)",
+          "status": "completed",
+          "progress": 100,
+          "detail": "Audit the `buildCombinedArtifact` transaction to ensure that the newly generated GOLD+FINAL artifacts are not only created but correctly registered as a full, explorable `DatasetVersion` under the Base Dataset. Ensure the new version applies the standard naming convention used for combined datasets. Verify that this new version is fully accessible via the Data Exploration UI, allowing operators to view the holistic combined dataset (base + new data) rather than just an opaque artifact consumed by the trainer.\n\nMODEL-SERVE-015-T06 IMPLEMENTATION NOTE: AUDIT CONFIRMED THE DEFECT WAS REAL. buildCombinedArtifact wrote exactly two rows (GOLD + its FINAL pointer-promotion) and ZERO DatasetVersion rows, and never touched Dataset.currentArtifactId — so the combined data was reachable by no browsing surface at all. Two facts narrowed the fix: (1) the explore endpoints resolve artifact-only and do NOT filter on tier (findArtifactSource / getArtifactMetadataService / getArtifactColumnStatsService all query datasetArtifact.findFirst({id, datasetId}) with no `type` clause), so the combined GOLD/FINAL were already servable by id; (2) artifactKey writes to `{baseDatasetId}/artifacts/{id}/...`, a saved-dataset prefix, so the known DS-LAKE-025 `drafts/` 404 trap does not apply. The gap was purely DISCOVERY.\n\nDONE (backend): a third write inside the EXISTING transaction registers the combined FINAL as a DatasetVersion under the base dataset — versionNumber = max+1 read inside the tx (mirroring the canonical Save path), semanticVersion `N.0.0+augmented`, artifactId = the FINAL (never the GOLD), status DRAFT, and a lineage JSON blob carrying strategy/base+new artifact ids/row counts/cutTimestamp. P2002 is caught and the numbering retried once, then surfaced as a 409 AppException naming the real cause, so a concurrent Save on the base dataset cannot fail a retrain with the Save path's misleading message. buildCombinedArtifact now also returns combinedDatasetVersionId.\n\nDECISIONS (user, 2026-09-23): marking lives on semanticVersion because DatasetVersion has NO name/label column and listVersionsService does not select `lineage` — the suffix is the only combined-ness signal a client can read. Dataset.currentArtifactId/currentVersionId are deliberately NOT repointed: a retrain must not mutate what the operator saved. Status DRAFT (DatasetStatus has no COMMITTED).\n\nDONE (client): a plain DatasetVersion row satisfied AC#1/AC#2 but NOT AC#3/AC#4 — verified that no UI browsed versions at all (the only two datasetVersionService.list consumers were the retrain picker and use-dataset-version-rows, which renders no list). So: new useDatasetVersions hook (hooks/dataset/) + DatasetVersionsList (data-studio/components/), mounted in dataset-detail-sheet.tsx and deliberately NOT gated on `hasArtifact` (that gate reads currentArtifactId, which this flow never sets — gating would hide the exact row this task surfaces). Each row reuses RetrainVersionEda verbatim (already store-agnostic) and relies on ITS OWN 'Explore this data' disclosure rather than adding an outer toggle — an outer collapse would have made the operator click twice to reach one panel, and RetrainVersionEda already fetches nothing until opened. A version with a null artifactId shows 'No stored data' instead of an Explore that would 404. featureCount/qualityScore render as em-dash rather than a fabricated 0.\n\nALSO FIXED (risk not in the original task): the new augmented version has a non-null artifactId, so it passed the retrain picker's committed filter and could be fed back as the NEXT retrain's 'new data', compounding augmentations with base rows recounted each round. retrain-data-strategy.tsx now excludes it via isAugmentedVersion() (lib/retrain-handoff.ts). The suffix constant is duplicated backend/client with cross-referencing comments rather than shared, because @softsensor/common pulls in NestJS+Fastify and is not safe in the Next.js bundle — KEEP THE TWO IN SYNC.\n\nVERIFIED: backend jest model-retrain-augment 13/13 passing (was 10 — +3 real new cases: version registration incl. artifactId=FINAL and currentArtifactId NOT written, quality fields left unset, versionNumber=1 when no prior versions). Client vitest retrain-handoff 13/13 (4 new isAugmentedVersion cases) and a NEW dataset-versions-list.test.tsx 5/5 (combined version is listed newest-first; each row's EDA panel is bound to THAT ROW'S own artifactId, not the dataset's currentArtifactId; Combined badge + em-dash featureCount; no explore panel when artifactId is null; a failed load is distinguishable from an empty list). Full backend src/api/v1/model-run: 183/184 — the 1 failure is the PRE-EXISTING RunTokenGuard/PrismaService DI-fixture error (my diff does not touch that controller, module or guard). Client suites 100 passed; the 1 failed suite is store/__tests__/useAtom.test.ts, a 0-line EMPTY file committed in 92a1f8d, untouched. tsc clean on every file touched.\n\nNOT VERIFIED: no live/e2e run — no authenticated session or running stack reachable from this agent session (same gap T01 and MODEL-SERVE-014-T10 recorded). Steps still owed before this can be called field-proven: trigger a real AUGMENT_DATA retrain, then confirm the `N.0.0+augmented` row appears in GET /versions with rowCount == combinedRowCount; that Explore on it renders rows spanning BOTH the base window and the new dataset's window plus column stats (this is AC#3/AC#4 — explorability, not listing); that the base dataset's currentArtifactId is unchanged; and that the augmented version is absent from the new-data picker on a second retrain.\n\nIMPACT ON T05: DatasetVersion.rowCount is exposed by listVersionsService and combinedRowCount was already on hand at mint time, so T05's stranded AC 'total training rows reflect the combined row count' is now reachable through the dataset surface. T05 left in_progress deliberately — re-verify that AC against this new surface rather than opening the separate follow-up its own note proposed. \n\nOPEN / DEFERRED: (1) buildCombinedArtifact now returns combinedDatasetVersionId but NOTHING consumes it yet — it was specified in the approved plan for a later caller to surface; it is dead surface until then. (2) No loaderJobs.enqueue is fired for this version, unlike Save Dataset's own version create. That is deliberate and commented at the call site: the loader seam (DS-LAKE-011) publishes a version to the serving-layer sink as a consequence of an operator SAVING, and this version is training provenance the retrain minted for itself — enqueueing it would serve data the operator never chose to serve. Revisit if a combined version is ever expected in the serving layer.",
+          "acceptance_criteria": [
+            "The combined artifact is explicitly registered as a new DatasetVersion under the Base Dataset's ID.",
+            "The new DatasetVersion adopts the standard naming convention for combined datasets.",
+            "The full combined dataset (rows from both base and new data) is successfully explorable via the existing Data Exploration UI.",
+            "Operators can view dataset statistics and preview rows of the combined data before or after the retrain job finishes."
+          ]
+        },
+        {
+          "id": "MODEL-SERVE-015-T07",
+          "title": "Operator-defined NEW-DATA validation holdout for retrain",
+          "status": "in_progress",
+          "progress": 95,
+          "detail": "When a retrain ingests a new dataset (AUGMENT_DATA / NEW_DATA_ONLY), every new row went into training and the candidate was scored only on the FROZEN incumbent-test slice — all OLD rows. Nothing measured performance on the new data. This carves an operator-defined window out of the new dataset, holds it out of training, and scores the candidate on it.\n\nDECISIONS (user, 2026-09-23): ADDITIONAL, never a replacement — the frozen set stays the comparison basis and rmseDelta is untouched. SCORE & REPORT ONLY — the fit is unchanged, same weights as today, no early stopping (none exists: chronological.py:56 passes eval_set for loss logging only), and candidate selection still ranks on run.metrics. ONE RUN, TWO HOLDOUTS. Operator defines the cutoff as a date range. Applies only to the two strategies that ingest new data; KEEP_EXISTING untouched.\n\nDONE (python): combine_for_retrain takes new_validation_from/to, slices the window out of the NEW rows AFTER scaling (numerically identical to slicing before, but guarantees one transform path), REMOVES those rows from the training frame — the leakage guard — and commits them to a SEPARATE sidecar VALIDATE_NEW_DATA_FILENAME='validate_new_data.parquet'. The frozen validate_data.parquet is never overwritten. Refusals: half-open window, reversed bounds, window outside the new dataset's REAL min/max (read off the loaded frame, never trusted from the caller), empty window, and 'covers every new row under New Data Only'.\n\nCAUGHT A LATENT SILENT NO-OP: presign_run_object's _ALLOWED_RUN_OBJECT_PRESIGNS would have REJECTED the new run-scoped key outright, and row_count was computed only for VALIDATE_READY_FILENAME — which would have returned row_count=None, read by the claim path as 'no holdout', silently dropping the score with no error anywhere. Both widened.\n\nDONE (prisma): ModelTrainingRun.newDataHoldoutMetrics/RowCount/From/To, all nullable. Migration 20260923120000_retrain_new_data_validation_holdout hand-written and applied BY HAND via psql (migrate dev is forbidden here), then `migrate resolve --applied`. NOTE: a second migration, 20260922090000_model_serve_001_t31_drop_drift_threshold_pct, is still PENDING and is DESTRUCTIVE (drops a column). `migrate deploy` would run it as a side effect — it was deliberately left untouched and is NOT mine to apply.\n\nDONE (backend): trigger DTO takes newValidationFrom/To (both-or-neither, new-data strategies only; real bounds are python's to check since only it loads the frame); threaded through assertCompatible -> AugmentContext -> combineForRetrain; the window's facts recorded in the artifact's operations JSON. claim()'s tryReplayHoldout prepares a SECOND run-scoped holdout via passthroughHoldoutForRun (already model-ready — re-scaling would double-scale it) and presigns it as newDataHoldoutUrl/Checksum/RowCount, in its OWN nested try/catch so it can never cost the run its frozen-eval score. complete() persists newDataHoldoutMetrics.\n\nDONE (trainer): _score_new_data_holdout_if_present scores the second holdout with the SAME holdout.py::score_holdout, own soft-fail, aggregate only (no per-row frame — nothing renders a second series). The fit, the split and eval_set are untouched.\n\nVERIFIED: python 914 passed / 74 skipped (4 new combine cases: leakage guard asserted on the FRAMES not the counts, frozen sidecar byte-identical with/without a window, holdout scaled with the base's pinned params, and every refusal committing nothing). Client: 331 passed across 39 files in every touched area, including 2 new cases asserting the new-data panel renders its own figure AND the 'Not compared against the current model' line, and that no panel appears when no window was carved. Backend model-run 183/184 — the 1 failure is the PRE-EXISTING RunTokenGuard/PrismaService DI-fixture error, untouched by this diff. DTO spec 5/5. tsc clean on all non-spec code.\n\nDONE (client): RetrainDataStrategy gains an opt-in 'Hold out part of the new data to validate on' checkbox plus a from/to date pair, shown only once a committed version is chosen. The window is emitted upward ONLY when both bounds are filled (a half-typed range would trip the server's both-or-neither refusal mid-edit), converted to ISO-8601 on the way out, and the end date is widened to 23:59:59.999 — a date input yields midnight, so an inclusive 'to' left at 00:00 would silently drop almost the whole final day the operator picked. Unchecking clears the range so a stale one cannot be submitted later. Threaded dialog -> StartRetrainOptions (spread, so the keys are ABSENT not undefined, since the trigger schema is .strict()) -> useModelRetrain -> service. buildComparison returns newDataHoldoutMetrics/RowCount/From/To (claim() persists the window's facts on the run; the metric arrives from the trainer via complete()), surfaced through comparisonView, and retrain-progress renders it as a STANDALONE panel with NO delta. \n\nNOT DONE / NOT VERIFIED: (1) TRAINER TESTS NOT RUN — no sklearn in any local venv. (3) THE TRAINER IMAGE IS NOT REBUILT. Nothing in CI builds images/trainer, so until it is manually rebuilt and its tag bumped the new holdout is computed, uploaded and presigned and then SILENTLY IGNORED by the running container. The e2e check that catches this is newDataHoldoutMetrics being non-null with a real RMSE — not the sidecar merely existing. (4) No live run of any kind. \n\nFULL CLIENT SUITE: 2086 passed / 26 failed. Every one of the 26 is under app/(default)/models/create/**/pipeline (the training WIZARD — core-config, feature-count-sweep, phase-3/4, chart-time-axis). NOT MINE and not caused by this diff: `git status` shows NO file under models/create is modified at all, so those tests fail against unmodified committed code. Nothing I touched is in their import graph.",
+          "acceptance_criteria": [
+            "Operator can define a validation date range over the newly merged dataset.",
+            "Rows in that range are held out of training and committed as their own sidecar.",
+            "The frozen evaluation set and rmseDelta are unchanged.",
+            "The candidate is scored on the new-data window and the figure is reported separately."
+          ]
         }
       ],
       "verification": [
@@ -2510,9 +2495,7 @@
       "priority": 16,
       "status": "completed",
       "progress": 100,
-      "dependencies": [
-        "MODEL-SERVE-001"
-      ],
+      "dependencies": ["MODEL-SERVE-001"],
       "description": "`ModelVersion.metrics` has carried the r2/mae/rmse snapshot taken at version-creation time since the registry shipped, and `promoteVersionService`/`rollbackService` have existed just as long — but NOTHING LISTS VERSIONS. The only version endpoints are POST promote and POST rollback, so a client can move production to a version it has no way to enumerate, and a user cannot answer 'did the retrain actually improve anything' without reading the database. The model detail page's Evaluation tab is not that answer either: `use-model-evaluation.ts` computes its metrics LIVE from applied lab points, which is a different question (how is production doing right now) from the frozen training-time score this feature surfaces. Both are legitimate; showing them without distinguishing them would not be.",
       "decisions": [
         {
@@ -2577,6 +2560,70 @@
         }
       ],
       "carried_forward": "NOT VERIFIED IN A BROWSER. Backend jest 32/32 across model-version, tsc at the pinned baselines (8 backend, 5 client), eslint clean on touched files. The table has not been rendered against a real multi-version model, and the promote path has not been exercised end to end from this surface."
+    },
+    {
+      "id": "MODEL-SERVE-017",
+      "title": "Remove a version the user decided not to deploy, from the Versions tab, behind a confirm",
+      "priority": 17,
+      "status": "completed",
+      "progress": 100,
+      "dependencies": ["MODEL-SERVE-016"],
+      "description": "MODEL-SERVE-016 made every version visible, which also made every ABANDONED version visible: a retrain that lost to the incumbent still mints a STAGING ModelVersion, and nothing has ever deleted one. The tab accumulates rows the user has already judged and cannot act on. The registry has no delete path at all — only promote and rollback — so 'not deployed' has to be defined before it can be offered, and it is narrower than 'not PRODUCTION'.",
+      "decisions": [
+        {
+          "id": "MODEL-SERVE-017-D01",
+          "decision": "Removable means STAGING and never-promoted, not merely 'not PRODUCTION'.",
+          "why": "An ARCHIVED version HAS served (promotedAt non-null), and the most recently archived such row is exactly what rollbackService resolves as 'the previous PRODUCTION version'. Deleting it re-points rollback at an older version with no error anywhere — a correctness regression disguised as a tidy-up. It also carries prediction jobs/logs/inference windows whose FKs are NoAction, so the delete would fail at the database with a constraint name rather than a sentence."
+        },
+        {
+          "id": "MODEL-SERVE-017-D02",
+          "decision": "Hard delete of the row; object-storage bytes are left alone.",
+          "why": "modelObjectKey/goldObjectKey are pinned copies of the SOURCE RUN's artifacts, not this row's private property — the ModelTrainingRun still points at them, and MODEL-SERVE-000-T07 found no GC policy in this repo to model a deletion path on. A soft-delete column was rejected as the larger change: every existing read (list, promote, rollback, the retrain comparison) would become responsible for filtering a state it has never had to consider."
+        },
+        {
+          "id": "MODEL-SERVE-017-D03",
+          "decision": "The server owns every removability rule; the client quotes its refusal verbatim.",
+          "why": "Same idiom as the promote r2 floor (MODEL-SERVE-001-T06). The versions list carries neither promotedAt nor any reference count, so a client-side rule would be a guess that drifts from the server's. The confirm names what is lost and states that inference is unaffected, per MODEL-SERVE-016-D02's standard."
+        }
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-017-T01",
+          "title": "DELETE /authorized/model/:modelId/versions/:version — removeVersionService",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "Reuses assertModelAccess (editor-level, same as promote). Refuses PRODUCTION, refuses promotedAt non-null, refuses when any PredictionJob/PredictionLog/InferenceWindow still points at the row, and maps a racing P2003/P2025 to a 422 rather than a 500.",
+          "result": "Added to the existing ModelVersionAuthorizedController/Service — no new module. Counts the three NoAction dependents first so the refusal names what holds the version ('4 inference window(s) still reference it'). ModelCandidateJob.resultVersionId is a bare String, not an FK; the retrain read is already a findUnique whose null branch renders 'no version yet', so it degrades to that."
+        },
+        {
+          "id": "MODEL-SERVE-017-T02",
+          "title": "Per-row Remove in the Versions tab, with a confirm and a server-quoted refusal dialog",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "Button rendered for STAGING rows only, per D01 — offering it where the only outcome is a refusal would misstate what the tab can do. destructive token on the confirm's action, per DESIGN_SYSTEM's button variant table; the row control stays ghost.",
+          "result": "hooks/model/use-model-remove-version.ts mirrors useModelPromote's shape (422 to a dialog, everything else to a toast) minus the override, since no refusal here is a threshold a reason can cross. Confirm states the version was never deployed, that deletion is permanent, and that the production version keeps serving."
+        }
+      ],
+      "acceptance_criteria": [
+        "A STAGING version that nothing references can be removed from the Versions tab and the table reflects it without a manual reload.",
+        "The PRODUCTION version offers no Remove control, and the server refuses one anyway.",
+        "A version that has ever been promoted cannot be removed, so rollback's target is preserved.",
+        "A refusal states which rows still hold the version, in the server's own words.",
+        "Removing a version leaves its source run and its object-storage artifacts intact."
+      ],
+      "verification": [
+        {
+          "id": "MODEL-SERVE-017-V01",
+          "description": "Unit: removeVersionService deletes an unreferenced STAGING row and refuses PRODUCTION, a once-promoted ARCHIVED row, a referenced row, a missing version and a VIEWER.",
+          "result": "PASS — model-version-remove.authorized.service.spec.ts, 6 cases, jest 6/6 (38/38 across model-version)."
+        },
+        {
+          "id": "MODEL-SERVE-017-V02",
+          "description": "Unit: the hook routes a 422 to the refusal dialog carrying the server's own sentence, everything else to a toast, refetches only on success, and settles busy after a refusal.",
+          "result": "PASS — hooks/model/__tests__/use-model-remove-version.test.tsx, 5 cases, vitest 5/5."
+        }
+      ],
+      "carried_forward": "NOT VERIFIED IN A BROWSER. Backend jest 38/38 across model-version, client vitest 5/5 on the new hook spec, tsc clean on every touched file (both apps still carry their pre-existing unrelated baseline errors). The delete has not been run against a real STAGING version, so the P2003/P2014/P2025 race branch and the object-storage-untouched claim are reasoned, not observed. The versions-tab COMPONENT has no test of its own — that the confirm closes on a refusal rather than stacking under the refusal dialog is verified by inspection only. An ARCHIVED version shows no Remove control and no explanation of why, so a user who considers an old archived version 'not deployed' cannot reach the refusal text that would tell them."
     }
   ],
   "global_definition_of_done": [

@@ -16,6 +16,7 @@ import {
 import { brandModelVersionNumber } from '@/lib/model-version-number'
 import { useModelVersions } from '@/hooks/model/use-model-versions'
 import { useModelPromote } from '@/hooks/model/use-model-promote'
+import { useModelRemoveVersion } from '@/hooks/model/use-model-remove-version'
 import type { ModelVersionRow } from '@/services/model-version'
 
 interface Props {
@@ -64,8 +65,13 @@ function StageChip({ stage }: { stage: ModelVersionRow['stage'] }) {
 export function VersionsTab({ modelId }: Props) {
   const { versions, loading, error, refetch } = useModelVersions(modelId)
   const [confirm, setConfirm] = useState<ModelVersionRow | null>(null)
+  const [removeTarget, setRemoveTarget] = useState<ModelVersionRow | null>(null)
   const promote = useModelPromote(() => {
     setConfirm(null)
+    void refetch()
+  })
+  const removal = useModelRemoveVersion(() => {
+    setRemoveTarget(null)
     void refetch()
   })
 
@@ -145,18 +151,39 @@ export function VersionsTab({ modelId }: Props) {
                 <td className="px-3 py-2 text-xs text-muted-foreground">
                   {new Date(v.createdAt).toLocaleDateString()}
                 </td>
-                <td className="px-3 py-2 text-right">
-                  {v.stage !== 'PRODUCTION' && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-7 text-xs"
-                      disabled={promote.busy}
-                      onClick={() => setConfirm(v)}
-                    >
-                      Make production
-                    </Button>
-                  )}
+                <td className="px-3 py-2">
+                  <div className="flex items-center justify-end gap-2">
+                    {v.stage !== 'PRODUCTION' && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs"
+                        disabled={promote.busy || removal.busy}
+                        onClick={() => setConfirm(v)}
+                      >
+                        Make production
+                      </Button>
+                    )}
+                    {/* STAGING only, not `!== 'PRODUCTION'`. An ARCHIVED
+                        version HAS served, so it is rollback's target and
+                        carries prediction history — the server refuses it,
+                        and offering a button whose only outcome is a
+                        refusal dialog would be a lie about what the tab can
+                        do. Ghost, not `destructive`: the red variant is for
+                        the confirm's own Remove, where the action is
+                        actually taken (DESIGN_SYSTEM button variants). */}
+                    {v.stage === 'STAGING' && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 text-xs text-muted-foreground hover:text-destructive"
+                        disabled={promote.busy || removal.busy}
+                        onClick={() => setRemoveTarget(v)}
+                      >
+                        Remove
+                      </Button>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}
@@ -204,6 +231,78 @@ export function VersionsTab({ modelId }: Props) {
             >
               {promote.busy ? 'Promoting…' : 'Make production'}
             </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* MODEL-SERVE-017. Same D02 standard as the promote confirm: name
+          what is lost and that nothing else changes, rather than a bare
+          "are you sure". Removal is irreversible — the row carries the
+          metrics this version was accepted with, and there is no undo. */}
+      <AlertDialog
+        open={removeTarget !== null}
+        onOpenChange={open => !open && setRemoveTarget(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Remove v{removeTarget?.version}?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {`v${removeTarget?.version ?? ''} has never been deployed. It will be deleted permanently, along with the training scores recorded for it. `}
+              {current
+                ? `v${current.version} keeps serving production — inference is unaffected.`
+                : 'No version is in production, so inference is unaffected.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={removal.busy}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              // `destructive` token, per DESIGN_SYSTEM's button table:
+              // delete / irreversible. This is the one control in the tab
+              // that destroys a row.
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={removal.busy}
+              onClick={event => {
+                // Held open WHILE the request is in flight (so the busy
+                // label is visible and a second click is impossible), then
+                // closed either way. NOT left open on refusal the way the
+                // promote confirm is: promote's refusal has a retry — type
+                // an override reason and resubmit the same version — so its
+                // confirm still has a job to do. This one does not. Leaving
+                // it mounted would stack two focus traps and return the
+                // user to a button whose only outcome is the same refusal.
+                event.preventDefault()
+                if (!removeTarget) return
+                void removal
+                  .remove(
+                    modelId,
+                    brandModelVersionNumber(removeTarget.version),
+                  )
+                  .finally(() => setRemoveTarget(null))
+              }}
+            >
+              {removal.busy ? 'Removing…' : 'Remove'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Quoted, not reworded — the server knows WHICH rows still point at
+          the version, and this side has never fetched them. */}
+      <AlertDialog
+        open={removal.refusal !== null}
+        onOpenChange={open => !open && removal.dismissRefusal()}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Removal refused</AlertDialogTitle>
+            <AlertDialogDescription>{removal.refusal}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Close</AlertDialogCancel>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

@@ -1511,6 +1511,22 @@ class CombineForRetrainRequest(BaseModel):
     # on identical rows. Defaults True so every existing caller keeps the
     # augmentation behaviour with no change.
     combine: bool = True
+    #: An operator-chosen window inside the NEW dataset, held out of
+    #: training and committed as a SECOND validation sidecar
+    #: (`validate_new_data.parquet`). Both bounds are inclusive and must be
+    #: supplied together — a half-open request is a caller bug, not a
+    #: defaultable intent, so it is refused rather than guessed at.
+    #:
+    #: This does NOT touch the frozen evaluation slice: that still comes
+    #: from the base's own test rows and remains the basis for `rmseDelta`.
+    #: This window exists to answer a different question — how the candidate
+    #: scores on the NEW data specifically — which the frozen set, being
+    #: entirely old rows, cannot answer.
+    #:
+    #: Rows inside the window are removed from the training frame. A row may
+    #: never be both trained on and validated on.
+    new_validation_from: Optional[str] = None
+    new_validation_to: Optional[str] = None
 
 
 class CombineForRetrainResponse(ArtifactStatsResponse):
@@ -1540,6 +1556,17 @@ class CombineForRetrainResponse(ArtifactStatsResponse):
     #: dedupe_dropped`.
     base_train_row_count: int
     new_train_row_count: int
+    #: The second holdout's own figures. None when the caller asked for no
+    #: new-data validation window — absent, never a zero, because 0 rows is
+    #: a real and different outcome from "not requested" and the two must
+    #: not read alike downstream.
+    new_validation_row_count: Optional[int] = None
+    new_validation_checksum: Optional[str] = None
+    #: Echoed back from the rows actually selected, not from the request —
+    #: the caller's bounds and the real data's first/last timestamps inside
+    #: them are different facts, and the UI reports what was measured.
+    new_validation_from: Optional[str] = None
+    new_validation_to: Optional[str] = None
 
 
 class ValidateRequest(BaseModel):

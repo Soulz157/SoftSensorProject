@@ -983,6 +983,27 @@ model ModelTrainingRun {
   /// checksum-drift discipline `claim()` already applies to the training
   /// artifact, applied here to the eval artifact instead.
   frozenEvalChecksum       String?
+  /// The candidate's score on the operator-defined NEW-DATA validation
+  /// window, when a retrain carved one out of the newly merged dataset.
+  ///
+  /// Deliberately a SEPARATE column from `holdoutMetrics` above, for the
+  /// same reason `holdoutMetrics` is separate from `metrics`: these answer
+  /// different questions and must not be blended. `holdoutMetrics` is the
+  /// FROZEN incumbent-test slice — all OLD rows — and is what makes
+  /// `rmseDelta` comparable. This column is all NEW rows, which the
+  /// incumbent was never scored on, so it must NEVER be differenced
+  /// against the incumbent's metrics: such a delta would be meaningless.
+  /// It is reported on its own, as "performance on the new data".
+  ///
+  /// Null for every run that requested no validation window, and for every
+  /// run predating this feature.
+  newDataHoldoutMetrics    Json?
+  /// Row count and the MEASURED first/last timestamps of the window
+  /// actually held out — not the bounds the operator asked for. Recorded so
+  /// the UI can state what the figure above was computed on.
+  newDataHoldoutRowCount   Int?
+  newDataHoldoutFrom       DateTime?
+  newDataHoldoutTo         DateTime?
   /// MODEL-FLOW-014-T06. The train/test split distribution panel's own
   /// response (SplitStatsResponse, apps/python schemas/preprocess.py),
   /// frozen at RUN CREATION — the record of what the user was actually

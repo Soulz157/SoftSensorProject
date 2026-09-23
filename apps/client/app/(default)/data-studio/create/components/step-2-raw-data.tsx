@@ -30,6 +30,7 @@ import { useSourceConnectionVerify } from '@/hooks/dataset/use-source-connection
 import { ConnectionVerifyPanel } from './source-configs/connection-verify-panel'
 import {
   dwBronzeWarmStateAtom,
+  dwRetrainCutTimestampAtom,
   dwCustomIntervalAtom,
   dwFetchConfigAtom,
   dwNameAtom,
@@ -133,8 +134,31 @@ export function Step2RawData({ nav }: Props) {
 
   const now = new Date()
   const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000)
-  const [customFrom, setCustomFrom] = useState(() =>
-    toDateTimeLocal(oneHourAgo),
+
+  // MODEL-SERVE-017. The earliest start a retrain-built dataset may have, as
+  // a `datetime-local` value. Formatted field by field in LOCAL time, never
+  // through `toISOString()` — the boundary arrives naive and space-separated
+  // ("2026-01-16 00:00:00", `str()` of a pandas Timestamp in `splits.py`) and
+  // is read as local, so rendering the clamp in UTC would put it hours off
+  // and let the picker offer times the server refuses.
+  const retrainCutTimestamp = useAtomValue(dwRetrainCutTimestampAtom)
+  const retrainMinStart = useMemo(() => {
+    if (!retrainCutTimestamp) return undefined
+    const ms = new Date(retrainCutTimestamp).getTime()
+    if (!Number.isFinite(ms)) return undefined
+    const d = new Date(ms + 60_000)
+    const pad = (n: number) => String(n).padStart(2, '0')
+    return (
+      `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+      `T${pad(d.getHours())}:${pad(d.getMinutes())}`
+    )
+  }, [retrainCutTimestamp])
+
+  // Defaults to one hour ago — EXCEPT in a retrain session, where that is
+  // almost always before the split boundary and would open the step on a
+  // window the server refuses. Computed above for exactly this reason.
+  const [customFrom, setCustomFrom] = useState(
+    () => retrainMinStart ?? toDateTimeLocal(oneHourAgo),
   )
   const [customTo, setCustomTo] = useState(() => toDateTimeLocal(now))
 
@@ -386,6 +410,14 @@ export function Step2RawData({ nav }: Props) {
               <DateTimePicker
                 id="mp-fetch-from"
                 value={customFrom}
+                // MODEL-SERVE-017. In a retrain-built dataset the start is
+                // clamped to the incumbent's split boundary: `assertCompatible`
+                // refuses data starting at or before it, because those rows
+                // are the frozen evaluation set the candidate is scored on.
+                // Clamping here is what lets the window be picked ONCE, in
+                // this step, instead of being collected in the retrain dialog
+                // first purely to enforce this rule.
+                min={retrainMinStart}
                 max={customTo}
                 disabled={isFetching}
                 onChange={handleCustomFromChange}

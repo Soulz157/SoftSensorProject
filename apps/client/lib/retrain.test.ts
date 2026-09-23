@@ -70,6 +70,10 @@ function comparison(
       algorithm: 'xgboost',
       metrics: { rmse: 0.5, r2: 0.95, mae: 0.3 },
       newRegimeMetrics: null,
+    newDataHoldoutMetrics: null,
+    newDataHoldoutRowCount: null,
+    newDataHoldoutFrom: null,
+    newDataHoldoutTo: null,
     },
     rmseDelta: -0.5,
     selectionMetric: 'rmse',
@@ -144,6 +148,10 @@ describe('comparisonView', () => {
       strategy: 'KEEP_EXISTING',
       evalSet: null,
       newRegimeMetrics: null,
+    newDataHoldoutMetrics: null,
+    newDataHoldoutRowCount: null,
+    newDataHoldoutFrom: null,
+    newDataHoldoutTo: null,
     })
   })
 

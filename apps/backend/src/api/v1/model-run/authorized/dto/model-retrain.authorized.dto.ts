@@ -83,8 +83,37 @@ export const TriggerRetrainSchema = z
     // discipline the rest of this DTO already applies to the incumbent's
     // own artifact.
     additionalDatasetVersionId: z.string().uuid().optional(),
+    // The operator's NEW-DATA validation window: a slice of the newly
+    // merged dataset held out of training and scored separately, so the
+    // retrain can report how the candidate does on the NEW data rather
+    // than only on the incumbent's old frozen rows.
+    //
+    // Bounds are NOT range-checked here. Only python, which loads the
+    // frame, can tell whether they fall inside the new dataset's real
+    // first/last timestamps — the same division of labour the existing
+    // `cut_timestamp`/`new_start` checks already follow. This layer
+    // enforces only what it can actually know: well-formed dates, both or
+    // neither, and only on a strategy that has new data to cut.
+    newValidationFrom: z.string().datetime().optional(),
+    newValidationTo: z.string().datetime().optional(),
   })
   .strict()
+  .refine(
+    (body) =>
+      (body.newValidationFrom === undefined) ===
+      (body.newValidationTo === undefined),
+    {
+      message:
+        'newValidationFrom and newValidationTo must be supplied together.',
+      path: ['newValidationTo'],
+    },
+  )
+  .refine((body) => usesNewData(body.strategy) || !body.newValidationFrom, {
+    message:
+      'A new-data validation window requires a strategy that ingests new ' +
+      "data ('AUGMENT_DATA' or 'NEW_DATA_ONLY').",
+    path: ['newValidationFrom'],
+  })
   .refine(
     (body) => !usesNewData(body.strategy) || !!body.additionalDatasetVersionId,
     {

@@ -108,6 +108,13 @@ export interface ComparisonView {
    *  `candidateMetrics` (the frozen-incumbent-test score `rmseDelta` is
    *  computed from). Null for a plain (014) retrain. */
   newRegimeMetrics: MetricTriple | null
+  /** The candidate's score on the operator's NEW-DATA validation window.
+   *  Reported on its own — never differenced against the incumbent, which
+   *  was never scored on these rows. */
+  newDataHoldoutMetrics: MetricTriple | null
+  newDataHoldoutRowCount: number | null
+  newDataHoldoutFrom: string | null
+  newDataHoldoutTo: string | null
 }
 
 export function comparisonView(
@@ -123,6 +130,10 @@ export function comparisonView(
     strategy: comparison.basis.strategy,
     evalSet: comparison.basis.evalSet,
     newRegimeMetrics: comparison.candidate.newRegimeMetrics,
+    newDataHoldoutMetrics: comparison.candidate.newDataHoldoutMetrics,
+    newDataHoldoutRowCount: comparison.candidate.newDataHoldoutRowCount,
+    newDataHoldoutFrom: comparison.candidate.newDataHoldoutFrom,
+    newDataHoldoutTo: comparison.candidate.newDataHoldoutTo,
   }
 }
 

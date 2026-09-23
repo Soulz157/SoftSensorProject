@@ -23,9 +23,31 @@ import {
  * `buildCombinedArtifact` (T03 — the actual merge, one Python call plus one
  * transaction).
  */
+/**
+ * MODEL-SERVE-015-T06. The suffix that marks a DatasetVersion as the output
+ * of an augmented retrain rather than an operator's own Save.
+ *
+ * It lives on `semanticVersion` because `DatasetVersion` has no name/label
+ * column, and because `listVersionsService` does not select `lineage` — so
+ * this string is the only combined-ness signal a client can actually read.
+ *
+ * MIRRORED in the client at `apps/client/lib/retrain-handoff.ts`. It is
+ * duplicated rather than shared because `@softsensor/common` depends on
+ * NestJS and Fastify and is not safe to pull into the Next.js bundle; keep
+ * the two in sync.
+ */
+export const AUGMENTED_VERSION_SUFFIX = '+augmented';
+
 @Injectable()
 export class ModelRetrainAugmentAuthorizedService {
   constructor(private readonly prisma: PrismaService) {}
+
+  private isUniqueViolation(err: unknown): boolean {
+    return (
+      err instanceof PrismaTypes.PrismaClientKnownRequestError &&
+      err.code === 'P2002'
+    );
+  }
 
   /**
    * MODEL-SERVE-015-T02. Resolves and validates everything an AUGMENT_DATA
@@ -44,6 +66,14 @@ export class ModelRetrainAugmentAuthorizedService {
       'goldArtifactId' | 'featureSpecKey' | 'targetY' | 'splitSpec'
     >,
     additionalDatasetVersionId: string,
+    /**
+     * The operator's NEW-DATA validation window, carried through onto the
+     * returned context. Not range-checked here: python is the layer that
+     * loads the frame and can compare these against the new dataset's real
+     * first/last timestamps, so it owns that refusal — exactly as it
+     * already owns the `new_start` vs `cut_timestamp` one.
+     */
+    newValidationWindow?: { from: string; to: string },
   ): Promise<AugmentContext> {
     const split = sourceRun.splitSpec as {
       method?: string;
@@ -232,6 +262,8 @@ export class ModelRetrainAugmentAuthorizedService {
       featureSpecKey: sourceRun.featureSpecKey,
       targetY: sourceRun.targetY,
       cutTimestamp,
+      newValidationFrom: newValidationWindow?.from,
+      newValidationTo: newValidationWindow?.to,
     };
   }
 
@@ -262,6 +294,7 @@ export class ModelRetrainAugmentAuthorizedService {
     combinedChecksum: string;
     combinedFeatureSpecKey: string | null;
     combinedRowCount: number;
+    combinedDatasetVersionId: string;
   }> {
     const combinedGoldArtifactId = randomUUID();
     // Base dataset's own id — never the new dataset's — matching the
@@ -281,6 +314,12 @@ export class ModelRetrainAugmentAuthorizedService {
       target_y: ctx.targetY,
       cut_timestamp: ctx.cutTimestamp,
       combine,
+      // Passed through as given. Python is the layer that can see the real
+      // frame, so it owns the bounds check against the new dataset's actual
+      // first/last timestamps — the same division of labour `new_start`
+      // already follows.
+      new_validation_from: ctx.newValidationFrom,
+      new_validation_to: ctx.newValidationTo,
     });
 
     const combinedFinalArtifactId = randomUUID();
@@ -301,62 +340,162 @@ export class ModelRetrainAugmentAuthorizedService {
         newTrainRowCount: combined.new_train_row_count,
         dedupeDropped: combined.dedupe_dropped,
         cutTimestamp: ctx.cutTimestamp,
+        // The new-data validation window's own facts, when one was carved
+        // out. `newValidationKey` is what `tryReplayHoldout` resolves at
+        // claim time to build the second holdout; the row counts and
+        // MEASURED boundaries are recorded so the UI can state what the
+        // score was computed on. All absent when no window was requested.
+        newValidationRowCount: combined.new_validation_row_count ?? null,
+        newValidationChecksum: combined.new_validation_checksum ?? null,
+        newValidationFrom: combined.new_validation_from ?? null,
+        newValidationTo: combined.new_validation_to ?? null,
       },
     ] as unknown as PrismaTypes.InputJsonValue;
 
-    await this.prisma.$transaction(async (tx) => {
-      await tx.datasetArtifact.create({
-        data: {
-          id: combinedGoldArtifactId,
-          datasetId: ctx.baseFinal.datasetId,
-          runId: sharedRunId,
-          parentArtifactId: ctx.baseFinal.id,
-          type: 'GOLD',
-          objectKey: combined.object_key,
-          checksum: combined.checksum,
-          rowCount: combined.row_count,
-          columnCount: combined.column_count,
-          missingPct: combined.missing_pct,
-          sizeBytes: BigInt(combined.size_bytes),
-          operations,
-          columnStatsKey: combined.column_stats_key ?? null,
-          featureSpecKey: combined.feature_spec_key ?? null,
-          validationRowCount: combined.validation_row_count ?? null,
-          validationHoldoutFrom: combined.validation_holdout_from
-            ? new Date(combined.validation_holdout_from)
-            : null,
-          validationMissingPct: combined.validation_missing_pct ?? null,
-          droppedBadRows: combined.dropped_bad_rows ?? null,
-          // MODEL-SERVE-015-T04. The one row this whole feature exists to
-          // set — see the column's own schema comment.
-          validationAlreadyScaled: true,
-          createdById: user.id,
-        },
+    // Deliberately NO `loaderJobs.enqueue` here, unlike Save Dataset's own
+    // version create. The loader seam (DS-LAKE-011) hands a version off to
+    // the serving-layer sink, which is a consequence of an operator SAVING a
+    // dataset. This version is training provenance the retrain minted for
+    // itself — publishing it to the serving layer would push data the
+    // operator never chose to serve.
+    //
+    // MODEL-SERVE-015-T06. The combined pair used to be minted outside the
+    // DatasetVersion registry entirely, which left it unreachable by every
+    // surface that browses a dataset (`listVersionsService` reads version
+    // rows only). Registering it here — in the SAME transaction that mints
+    // the artifacts — is what makes the combined data explorable, and is
+    // also what puts its row count on a readable surface (MODEL-SERVE-015-T05).
+    const mint = async (): Promise<string> =>
+      this.prisma.$transaction(async (tx) => {
+        await tx.datasetArtifact.create({
+          data: {
+            id: combinedGoldArtifactId,
+            datasetId: ctx.baseFinal.datasetId,
+            runId: sharedRunId,
+            parentArtifactId: ctx.baseFinal.id,
+            type: 'GOLD',
+            objectKey: combined.object_key,
+            checksum: combined.checksum,
+            rowCount: combined.row_count,
+            columnCount: combined.column_count,
+            missingPct: combined.missing_pct,
+            sizeBytes: BigInt(combined.size_bytes),
+            operations,
+            columnStatsKey: combined.column_stats_key ?? null,
+            featureSpecKey: combined.feature_spec_key ?? null,
+            validationRowCount: combined.validation_row_count ?? null,
+            validationHoldoutFrom: combined.validation_holdout_from
+              ? new Date(combined.validation_holdout_from)
+              : null,
+            validationMissingPct: combined.validation_missing_pct ?? null,
+            droppedBadRows: combined.dropped_bad_rows ?? null,
+            // MODEL-SERVE-015-T04. The one row this whole feature exists to
+            // set — see the column's own schema comment.
+            validationAlreadyScaled: true,
+            createdById: user.id,
+          },
+        });
+        // FINAL by pointer, never a byte copy — same discipline
+        // `promoteDraftArtifactToFinalService` documents on its own row.
+        // Deliberately no `/validate` re-run here (plan decision): both
+        // sources were already validated PASS as their own FINALs.
+        await tx.datasetArtifact.create({
+          data: {
+            id: combinedFinalArtifactId,
+            datasetId: ctx.baseFinal.datasetId,
+            runId: sharedRunId,
+            parentArtifactId: combinedGoldArtifactId,
+            type: 'FINAL',
+            objectKey: combined.object_key,
+            checksum: combined.checksum,
+            rowCount: combined.row_count,
+            columnCount: combined.column_count,
+            missingPct: combined.missing_pct,
+            sizeBytes: BigInt(combined.size_bytes),
+            operations: [],
+            columnStatsKey: combined.column_stats_key ?? null,
+            featureSpecKey: combined.feature_spec_key ?? null,
+            createdById: user.id,
+          },
+        });
+
+        // Version numbering read INSIDE the tx, mirroring the canonical Save
+        // path (`dataset-draft.authorized.service.ts`). `@@unique([datasetId,
+        // versionNumber])` is the backstop; the P2002 retry below is what
+        // keeps a concurrent Save on the base dataset from failing a retrain.
+        const last = await tx.datasetVersion.findFirst({
+          where: { datasetId: ctx.baseFinal.datasetId! },
+          orderBy: { versionNumber: 'desc' },
+          select: { versionNumber: true },
+        });
+        const versionNumber = (last?.versionNumber ?? 0) + 1;
+
+        const version = await tx.datasetVersion.create({
+          data: {
+            datasetId: ctx.baseFinal.datasetId!,
+            versionNumber,
+            // The ONLY marker of "this version is combined" that a client can
+            // read: `listVersionsService` does not select `lineage`, so the
+            // suffix on `semanticVersion` is what the retrain picker filters
+            // on to stop augmented output compounding into the next retrain.
+            semanticVersion: `${versionNumber}.0.0${AUGMENTED_VERSION_SUFFIX}`,
+            // Versions always point at the FINAL artifact in this codebase.
+            artifactId: combinedFinalArtifactId,
+            checksum: combined.checksum,
+            columnCount: combined.column_count,
+            rowCount: combined.row_count,
+            missingPct: combined.missing_pct,
+            sizeBytes: BigInt(combined.size_bytes),
+            // No `/validate` re-run happens on this path, so there is no
+            // report to source `featureCount`/`qualityScore`/
+            // `validationAdvisory` from. They stay at their defaults/null
+            // rather than being invented — a fabricated quality score on a
+            // real training artifact is worse than an absent one, and the
+            // versions list renders these as "—".
+            status: 'DRAFT',
+            lineage: {
+              strategy: 'AUGMENT_DATA',
+              baseArtifactId: ctx.baseFinal.id,
+              baseDatasetVersionId: ctx.baseDatasetVersionId,
+              newArtifactId: ctx.newFinal.id,
+              newDatasetVersionId: ctx.newDatasetVersionId,
+              combinedGoldArtifactId,
+              baseTrainRowCount: combined.base_train_row_count,
+              newTrainRowCount: combined.new_train_row_count,
+              dedupeDropped: combined.dedupe_dropped,
+              cutTimestamp: ctx.cutTimestamp,
+            },
+            createdById: user.id,
+          },
+          select: { id: true },
+        });
+
+        return version.id;
       });
-      // FINAL by pointer, never a byte copy — same discipline
-      // `promoteDraftArtifactToFinalService` documents on its own row.
-      // Deliberately no `/validate` re-run here (plan decision): both
-      // sources were already validated PASS as their own FINALs.
-      await tx.datasetArtifact.create({
-        data: {
-          id: combinedFinalArtifactId,
-          datasetId: ctx.baseFinal.datasetId,
-          runId: sharedRunId,
-          parentArtifactId: combinedGoldArtifactId,
-          type: 'FINAL',
-          objectKey: combined.object_key,
-          checksum: combined.checksum,
-          rowCount: combined.row_count,
-          columnCount: combined.column_count,
-          missingPct: combined.missing_pct,
-          sizeBytes: BigInt(combined.size_bytes),
-          operations: [],
-          columnStatsKey: combined.column_stats_key ?? null,
-          featureSpecKey: combined.feature_spec_key ?? null,
-          createdById: user.id,
-        },
-      });
-    });
+
+    let combinedDatasetVersionId: string;
+    try {
+      combinedDatasetVersionId = await mint();
+    } catch (err) {
+      // A concurrent Save on the base dataset can take the versionNumber
+      // between our read and our write. Retry once with a fresh read rather
+      // than surfacing the Save path's "another save is in progress" 409,
+      // which would be a misleading message for a retrain.
+      if (!this.isUniqueViolation(err)) throw err;
+      try {
+        combinedDatasetVersionId = await mint();
+      } catch (retryErr) {
+        if (!this.isUniqueViolation(retryErr)) throw retryErr;
+        throw new AppException({
+          statusCode: 409,
+          message:
+            'Could not register the combined dataset version — the base ' +
+            'dataset is being saved or versioned concurrently. Retry the ' +
+            'retrain.',
+          type: 'ERROR',
+        });
+      }
+    }
 
     return {
       combinedFinalArtifactId,
@@ -365,6 +504,7 @@ export class ModelRetrainAugmentAuthorizedService {
       combinedChecksum: combined.checksum,
       combinedFeatureSpecKey: combined.feature_spec_key ?? null,
       combinedRowCount: combined.row_count,
+      combinedDatasetVersionId,
     };
   }
 }
@@ -378,4 +518,12 @@ interface AugmentContext {
   featureSpecKey: string;
   targetY: string;
   cutTimestamp: string;
+  /**
+   * The operator's NEW-DATA validation window, when one was requested.
+   * Both bounds or neither. Rows inside it are held out of training and
+   * scored separately; the frozen incumbent-test slice that `rmseDelta`
+   * depends on is untouched.
+   */
+  newValidationFrom?: string;
+  newValidationTo?: string;
 }

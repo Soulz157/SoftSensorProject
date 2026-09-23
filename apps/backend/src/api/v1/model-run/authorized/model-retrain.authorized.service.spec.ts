@@ -190,6 +190,11 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
             versionId: 'version-base-1',
             versionNumber: 2,
           },
+          // MODEL-SERVE-017. Null here because this fixture's version row
+          // carries no source run — the same condition the real resolver
+          // treats as "no computed boundary", which leaves the range picker
+          // unclamped rather than inventing one.
+          cutTimestamp: null,
         },
         job: null,
       });

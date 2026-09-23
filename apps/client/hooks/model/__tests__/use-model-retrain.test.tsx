@@ -65,6 +65,7 @@ const INCUMBENT = {
   version: 3,
   algorithm: 'xgboost' as const,
   baseDataset: null,
+  cutTimestamp: null,
 }
 
 function currentState(
@@ -108,6 +109,50 @@ describe('useModelRetrain — restoring server state (T03/T07, V02)', () => {
     expect(result.current.job?.id).toBe('job-1')
     expect(result.current.isRetraining).toBe(true)
     expect(result.current.phase).toBe('training')
+  })
+
+  // Reported from live use: the retrain card sat on "Training" forever and
+  // only a page refresh revealed the result.
+  //
+  // The cause was the poll's own dependency list. `onUpdated` arrives from
+  // `models/[id]/page.tsx` as a bare `() => setVersion(v => v + 1)` — a new
+  // function identity on EVERY render — so each render tore the interval
+  // down and started a fresh 2500ms one. The detail page re-renders more
+  // often than that (monitoring, logs, its own polls), so the timer was
+  // perpetually reset and never once fired.
+  //
+  // This re-renders with a fresh callback on every pass, which is exactly
+  // what the page does, and asserts the poll still lands.
+  it('keeps polling even when the caller passes a new onUpdated each render', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    current.mockResolvedValue(ok(currentState({ job: job() })))
+    get.mockResolvedValue(
+      ok(
+        job({ status: 'SUCCEEDED', completedRuns: 4, resultVersionId: 'v-4' }),
+      ),
+    )
+
+    const { result, rerender } = renderHook(() =>
+      // Inline, unmemoized — the shape the page actually passes.
+      useModelRetrain({ model: MODEL, onUpdated: () => {} }),
+    )
+
+    await waitFor(() => expect(result.current.job?.id).toBe('job-1'))
+
+    // The shape that actually breaks it: re-renders arriving FASTER than the
+    // 2500ms period. One rerender followed by a long wait would let the
+    // fresh interval complete and prove nothing — the live page re-renders
+    // every few hundred ms, so the timer is reset before it can ever fire.
+    // Ten seconds of wall clock, nine of them consumed in sub-period slices.
+    for (let i = 0; i < 20; i += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500)
+      })
+      rerender()
+    }
+
+    expect(get).toHaveBeenCalled()
+    await waitFor(() => expect(result.current.job?.status).toBe('SUCCEEDED'))
   })
 
   it('reports the incumbent so the dialog can pre-flight, and stays idle with no job', async () => {
@@ -398,6 +443,10 @@ describe('useModelRetrain — polling to completion (T03, V03)', () => {
               algorithm: 'xgboost',
               metrics: { rmse: 0.5, r2: 0.95, mae: 0.3 },
               newRegimeMetrics: null,
+              newDataHoldoutMetrics: null,
+              newDataHoldoutRowCount: null,
+              newDataHoldoutFrom: null,
+              newDataHoldoutTo: null,
             },
             rmseDelta: -0.5,
             selectionMetric: 'rmse',

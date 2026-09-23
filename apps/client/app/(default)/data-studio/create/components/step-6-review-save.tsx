@@ -29,6 +29,7 @@ import type { PipelineConfig } from '@/lib/pipeline-config'
 import { datasetService } from '@/services/dataset'
 import { datasetVersionService } from '@/services/dataset-version'
 import { datasetDraftService } from '@/services/dataset-draft'
+import { consumeRetrainHandoff, retrainReturnUrl } from '@/lib/retrain-handoff'
 import { materializeBlocker } from '@/hooks/dataset/use-dataset-version-rows'
 import { useDatasetValidation } from '@/hooks/dataset/use-dataset-validation'
 import { useDatasetArtifactMetadata } from '@/hooks/dataset/artifact/use-dataset-artifact-metadata'
@@ -336,6 +337,12 @@ export function Step6ReviewSave({ nav }: Props) {
     if (!name.trim() || !workspaceId || validationBlocking) return
     setSaving(true)
 
+    // MODEL-SERVE-017. Filled by whichever save branch runs, and read once
+    // at the navigation tail — the two branches mint the dataset by
+    // different calls, so neither can own the redirect decision alone.
+    let savedDatasetId: string | null = null
+    let savedVersionId: string | null = null
+
     const pipelineConfig: PipelineConfig = {
       timeRange,
       customDateRange,
@@ -402,12 +409,20 @@ export function Step6ReviewSave({ nav }: Props) {
         // `finalArtifactId` points at), rather than trusting a
         // client-computed list `finalDataset` no longer even produces on
         // this path.
-        await datasetDraftService.save(draftId, {
+        // MODEL-SERVE-017. The response is captured rather than discarded:
+        // the retrain return trip needs the dataset and version this call
+        // just minted, and re-deriving them afterwards would mean guessing
+        // which of the workspace's datasets was the new one.
+        const savedDraft = await datasetDraftService.save(draftId, {
           name: name.trim(),
           description: description.trim() || undefined,
           pipelineConfig,
           fileUrl: null,
         })
+        savedDatasetId = savedDraft.data?.id ?? null
+        // This path's response names the version directly — it is the row
+        // `saveDraftAsDatasetService` just created.
+        savedVersionId = savedDraft.data?.versionId ?? null
         toast.success(
           mode === 'edit'
             ? `Dataset "${name.trim()}" updated`
@@ -450,11 +465,24 @@ export function Step6ReviewSave({ nav }: Props) {
         if (!res.data.currentArtifactId) {
           await storeRows(res.data.id, pipelineConfig)
         }
+        savedDatasetId = res.data.id
+        savedVersionId = res.data.currentVersionId ?? null
       }
 
       setSaved(true)
       resetWizard()
-      router.push('/data-studio')
+
+      // MODEL-SERVE-017. A retrain sent the operator here to build this
+      // dataset, so return them to that model with it selected instead of
+      // dropping them in Data Studio to find their own way back. Consumed
+      // (not peeked) so a later, unrelated save in the same session goes
+      // where it always did.
+      const handoff = consumeRetrainHandoff()
+      if (handoff && savedDatasetId) {
+        router.push(retrainReturnUrl(handoff, savedDatasetId, savedVersionId))
+      } else {
+        router.push('/data-studio')
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to save dataset')
     } finally {

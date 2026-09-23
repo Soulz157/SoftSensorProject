@@ -235,6 +235,50 @@ export function RetrainProgress({
             </div>
           )}
 
+          {/* The operator's NEW-DATA validation window: rows held out of
+              training entirely and scored on their own.
+
+              Presented as a standalone figure with NO delta, and that is a
+              correctness requirement rather than a layout choice: the
+              incumbent was never scored on these rows, so subtracting its
+              RMSE would produce something that looks like a comparison and
+              is not one. The only delta on this screen stays the frozen-set
+              one below. */}
+          {view.newDataHoldoutMetrics && (
+            <div className="space-y-1.5 rounded-md border border-border bg-muted/10 p-3">
+              <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                Performance on the new data (held out of training)
+              </p>
+              <div className="grid grid-cols-3 gap-2">
+                {METRICS.map(({ key, label }) => (
+                  <div key={key} className="flex flex-col gap-0.5">
+                    <p className="text-[10px] text-muted-foreground">{label}</p>
+                    <p className="text-sm font-medium tabular-nums text-foreground">
+                      {formatMetricValue(view.newDataHoldoutMetrics![key])}
+                    </p>
+                  </div>
+                ))}
+              </div>
+              {/* States what was MEASURED, not what was requested — the
+                  server echoes back the first/last timestamps of the rows
+                  actually held out. */}
+              {view.newDataHoldoutRowCount !== null && (
+                <p className="text-[10px] text-muted-foreground">
+                  {view.newDataHoldoutRowCount.toLocaleString()} rows
+                  {view.newDataHoldoutFrom && view.newDataHoldoutTo
+                    ? ` from ${new Date(
+                        view.newDataHoldoutFrom,
+                      ).toLocaleDateString()} to ${new Date(
+                        view.newDataHoldoutTo,
+                      ).toLocaleDateString()}`
+                    : ''}
+                  . Not compared against the current model, which was never
+                  scored on these rows.
+                </p>
+              )}
+            </div>
+          )}
+
           {/* MODEL-SERVE-014. The explicit decision — a retrain lands a
               STAGING version and stops, so putting v{candidateVersion} live
               is a separate act the operator takes, never a consequence of

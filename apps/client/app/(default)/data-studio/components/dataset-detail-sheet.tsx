@@ -48,6 +48,7 @@ import { useArtifactHoldout } from '@/hooks/dataset/artifact/use-artifact-holdou
 import { useArtifactFeatureSpec } from '@/hooks/dataset/artifact/use-artifact-feature-spec'
 import { useDatasetExport } from '@/hooks/dataset/use-dataset-export'
 import { DatasetCompareModal } from './dataset-compare-modal'
+import { DatasetVersionsList } from './dataset-versions-list'
 
 export interface DetailSource {
   name: string
@@ -502,6 +503,19 @@ export function DatasetDetailSheet({
                   </div>
                 </ScrollArea>
               </section>
+
+              {/*
+                MODEL-SERVE-015-T06. The dataset's saved versions, each
+                explorable on its own artifact.
+
+                Deliberately NOT gated on `hasArtifact`: everything below
+                reads `dataset.currentArtifactId`, but a version list must
+                stay independent of it. That is the whole point — an
+                augmented retrain registers a version under this dataset
+                without ever repointing `currentArtifactId`, so gating here
+                would hide exactly the row this task exists to surface.
+              */}
+              <DatasetVersionsList datasetId={datasetId} tags={tags} />
 
               {hasArtifact ? (
                 <>

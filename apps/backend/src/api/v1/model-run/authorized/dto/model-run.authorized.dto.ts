@@ -296,6 +296,19 @@ export const RunCompleteSchema = z
     // own replay failed — both leave training itself unaffected.
     holdoutMetrics: MetricsSchema.optional(),
 
+    // The candidate's score on the operator-defined NEW-DATA validation
+    // window, when an augmented retrain carved one out. A THIRD separate
+    // field, for the same reason `holdoutMetrics` is separate from
+    // `metrics`: `holdoutMetrics` is the frozen incumbent-test slice (all
+    // OLD rows) and is what underpins `rmseDelta`; this is all NEW rows,
+    // which the incumbent was never scored on. They must never be blended,
+    // and this one must never be differenced against the incumbent.
+    //
+    // Optional, and deliberately NOT required on SUCCEEDED: most runs have
+    // no such window, and a trainer image predating this feature will not
+    // send it at all.
+    newDataHoldoutMetrics: MetricsSchema.optional(),
+
     splitSpec: SplitSpecSchema.optional(),
 
     uploaded: z.array(RunUploadFilenameEnum).optional(),

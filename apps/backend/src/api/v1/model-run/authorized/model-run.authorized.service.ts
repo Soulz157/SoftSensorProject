@@ -8,6 +8,8 @@ import { PrismaService } from '@softsensor/prisma';
 import {
   sidecarKey,
   VALIDATE_DATA_FILENAME,
+  VALIDATE_NEW_DATA_FILENAME,
+  VALIDATE_NEW_READY_FILENAME,
   VALIDATE_READY_FILENAME,
 } from '@/lib/artifact-keys';
 import {
@@ -25,7 +27,10 @@ import {
   RESIDUAL_SD_METRIC_KEY,
 } from '@/lib/model-version-residual-sd';
 import { buildRunKey, resolveRunOwner, RunOwner } from '@/lib/model-run-owner';
-import { findHoldoutArtifact } from '@/lib/holdout-artifact';
+import {
+  findHoldoutArtifact,
+  readNewDataValidationWindow,
+} from '@/lib/holdout-artifact';
 import { RunCompleteDto } from './dto/model-run.authorized.dto';
 import { ModelCandidateJobAuthorizedService } from './model-candidate-job.authorized.service';
 
@@ -75,6 +80,9 @@ export class ModelRunAuthorizedService {
     holdoutArtifactChecksum: string;
     holdoutRowCount: number;
     holdoutDroppedBadRows: number | null;
+    newDataHoldoutUrl: string | null;
+    newDataHoldoutChecksum: string | null;
+    newDataHoldoutRowCount: number | null;
   } | null> {
     if (!run.featureSpecKey) return null;
 
@@ -86,6 +94,13 @@ export class ModelRunAuthorizedService {
       run.goldArtifactId,
     );
     if (!holdoutArtifact) return null;
+
+    // Read once, up front: both the claim-time persistence below and the
+    // second-holdout preparation further down need it, and it is a pure
+    // read of an already-fetched JSON column.
+    const newDataWindow = readNewDataValidationWindow(
+      holdoutArtifact.operations,
+    );
 
     try {
       // Derived from the artifact's own `objectKey` (the key actually
@@ -179,14 +194,74 @@ export class ModelRunAuthorizedService {
           frozenEvalChecksum: holdoutArtifact.validationAlreadyScaled
             ? holdoutPresigned.checksum
             : null,
+          // The window's own facts, recorded on the run so the retrain UI
+          // can state what the new-data figure was computed on without
+          // re-reading the artifact's operations blob. The METRIC itself
+          // arrives later, from the trainer, through complete().
+          newDataHoldoutRowCount: newDataWindow?.rowCount ?? null,
+          newDataHoldoutFrom: newDataWindow?.from ?? null,
+          newDataHoldoutTo: newDataWindow?.to ?? null,
         },
       });
+
+      // The SECOND holdout, when an augmented retrain carved an operator-
+      // defined window out of the new dataset. Prepared in its OWN nested
+      // try/catch so a failure here can never cost the run its frozen-eval
+      // score: that one is the comparability basis this whole retrain
+      // comparison rests on, this one is a supplementary figure, and they
+      // must not share a failure mode.
+      let newDataHoldout: {
+        url: string;
+        checksum: string;
+        rowCount: number;
+      } | null = null;
+      try {
+        if (newDataWindow) {
+          const newDataSourceKey = sidecarKey(
+            holdoutArtifact.objectKey,
+            VALIDATE_NEW_DATA_FILENAME,
+          );
+          const newDataTargetKey = buildRunKey(
+            owner,
+            run.id,
+            VALIDATE_NEW_READY_FILENAME,
+          );
+          // Already model-ready — it was cut from the same scaled frame the
+          // training rows came from — so it takes the passthrough path for
+          // exactly the reason the frozen slice does: transforming it again
+          // would double-scale it.
+          await passthroughHoldoutForRun({
+            source_key: newDataSourceKey,
+            target_key: newDataTargetKey,
+            overwrite: true,
+          });
+          const presigned = await presignRunObject({
+            source_key: newDataTargetKey,
+          });
+          if (presigned.row_count != null) {
+            newDataHoldout = {
+              url: presigned.data_url,
+              checksum: presigned.checksum,
+              rowCount: presigned.row_count,
+            };
+          }
+        }
+      } catch (err) {
+        this.log.warn(
+          `New-data holdout preparation skipped for run ${run.id}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
 
       return {
         holdoutDataUrl: holdoutPresigned.data_url,
         holdoutArtifactChecksum: holdoutPresigned.checksum,
         holdoutRowCount: holdoutPresigned.row_count,
         holdoutDroppedBadRows,
+        newDataHoldoutUrl: newDataHoldout?.url ?? null,
+        newDataHoldoutChecksum: newDataHoldout?.checksum ?? null,
+        newDataHoldoutRowCount: newDataHoldout?.rowCount ?? null,
       };
     } catch (err) {
       await this.appendLog(run.id, {
@@ -351,6 +426,11 @@ export class ModelRunAuthorizedService {
       // DS-LAKE-018-T05. Same shape as metrics, scored on the replayed raw
       // holdout — a SEPARATE column, never merged into metrics above.
       holdoutMetrics: dto.holdoutMetrics ?? undefined,
+      // Scored on the operator's new-data window. Kept apart from
+      // `holdoutMetrics` above deliberately — see that column's own schema
+      // comment: one is all old rows and underpins the incumbent
+      // comparison, this is all new rows and stands on its own.
+      newDataHoldoutMetrics: dto.newDataHoldoutMetrics ?? undefined,
       splitSpec: dto.splitSpec,
       modelKey: keyIf('model.joblib'),
       metricsKey: keyIf('metrics.json'),

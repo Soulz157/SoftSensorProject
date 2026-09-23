@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseIntPipe,
@@ -39,6 +40,20 @@ export class ModelVersionAuthorizedController {
     @Users() user: Auth.UserPayload,
   ) {
     return this.service.promoteVersionService(user, modelId, version, dto);
+  }
+
+  // MODEL-SERVE-017-T01. Discard a version that never served. DELETE, not a
+  // POST /discard, because the row really does go: there is no soft-delete
+  // column on ModelVersion and adding one would make every existing read
+  // (list, promote, rollback, the retrain comparison) responsible for
+  // filtering a state it has never had to consider.
+  @Delete('/versions/:version')
+  removeVersionController(
+    @Param('modelId') modelId: string,
+    @Param('version', ParseIntPipe) version: number,
+    @Users() user: Auth.UserPayload,
+  ) {
+    return this.service.removeVersionService(user, modelId, version);
   }
 
   @Post('/rollback')

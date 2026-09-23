@@ -71,6 +71,21 @@ export interface RetrainComparison {
      *  from `metrics` (which is the frozen-incumbent-test score `rmseDelta`
      *  is computed from). Null for a plain (014) retrain. */
     newRegimeMetrics: MetricTriple | null
+    /** The candidate's score on the operator-defined NEW-DATA validation
+     *  window, when a retrain carved one out. Null when no window was
+     *  requested, when the trainer image predates the feature, or when
+     *  scoring soft-failed.
+     *
+     *  MUST NOT be differenced against the incumbent: the incumbent was
+     *  never scored on these rows, so such a delta would be meaningless.
+     *  It stands on its own, beside `rmseDelta` rather than inside it. */
+    newDataHoldoutMetrics: MetricTriple | null
+    /** Rows in that window, and the MEASURED first/last timestamps of the
+     *  rows actually held out — not the bounds the operator asked for — so
+     *  the UI can state what the figure above was computed on. */
+    newDataHoldoutRowCount: number | null
+    newDataHoldoutFrom: string | null
+    newDataHoldoutTo: string | null
   }
   /** Negative = the candidate is better (lower RMSE). Null when the bases
    *  differ — see `basis.reason`. */
@@ -138,6 +153,14 @@ export interface RetrainIncumbent {
     versionId: string | null
     versionNumber: number | null
   } | null
+  /** MODEL-SERVE-017. The incumbent's own computed split boundary, from its
+   *  source run's `splitSpec`. New data must start strictly AFTER this — the
+   *  server refuses anything earlier (`assertCompatible`), because those rows
+   *  are the frozen evaluation set. Used to clamp the fetch range picker so
+   *  an impossible window is never offered. Null when the source run
+   *  recorded no boundary; the picker then goes unclamped and the server's
+   *  own 422 is the guard. */
+  cutTimestamp: string | null
 }
 
 export interface CurrentRetrainState {
@@ -164,6 +187,17 @@ export interface TriggerRetrainInput {
    *  `additionalDatasetVersionId` requirement as 'AUGMENT_DATA'. */
   strategy?: 'KEEP_EXISTING' | 'AUGMENT_DATA' | 'NEW_DATA_ONLY'
   additionalDatasetVersionId?: string
+  /** The operator's NEW-DATA validation window: a slice of the newly merged
+   *  dataset held out of training and scored on its own, so the retrain
+   *  reports how the candidate does on the NEW data and not only on the
+   *  incumbent's old frozen rows.
+   *
+   *  Both or neither — the server refuses a half-open pair rather than
+   *  guessing at it — and only on a strategy that ingests new data. The real
+   *  bounds check happens server-side, where the dataset's actual first/last
+   *  timestamps are known. ISO-8601. */
+  newValidationFrom?: string
+  newValidationTo?: string
 }
 
 /**
