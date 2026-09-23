@@ -1,4 +1,5 @@
 import type { DriftStatus, DriftThresholds } from './prediction-drift';
+import type { PsiStatus } from './prediction-psi';
 import type { ResidualSdStatus } from './residual-sd-health';
 
 /**
@@ -55,8 +56,28 @@ export type HealthReason =
   | 'NO_PREDICTIONS'
   | 'BAD_DATA'
   | 'SENSOR_FROZEN'
+  /** THE Z-AXIS. The live inputs' MEAN has moved away from the training
+   *  mean, in SD units — `lib/prediction-drift.ts`. Since T31 that is all
+   *  these two say: the tail-mass clause that once let a calm z raise
+   *  DRIFT_WARN is gone. */
   | 'DRIFT_CRITICAL'
   | 'DRIFT_WARN'
+  /**
+   * MODEL-SERVE-001-T32. THE DISTRIBUTION AXIS, deliberately NOT folded
+   * into `DRIFT_CRITICAL` — the same argument `RESIDUAL_SD_*` makes below,
+   * applied to the input side. A z-score is per-window and answers "has the
+   * operating point moved"; PSI is rolling-24 over frozen bin edges and
+   * answers "is the training population still representative". They can
+   * disagree in both directions: a bimodal population with an unchanged
+   * mean is PSI-CRITICAL at z = 0 (`prediction-psi.spec.ts` asserts exactly
+   * that pair), and a clean setpoint step is the reverse. One merged drift
+   * figure would be one metric wearing the other's name, so the badge names
+   * which fired. Only this one is a retrain signal.
+   *
+   * There is no `DRIFT_DIST_WARN`: PSI_WARN exists as a threshold but the
+   * product decision (2026-09-22) authorized the ALERT tier only.
+   */
+  | 'DRIFT_DIST_CRITICAL'
   /**
    * MODEL-SERVE-012. THE OUTPUT-ERROR CODES, and deliberately not folded
    * into `DRIFT_*`. Drift says the model's INPUTS have moved away from what
@@ -85,19 +106,23 @@ export interface ModelHealth {
 
 /**
  * `InferenceSchedule`'s own field names (schema.prisma, T09 Pass B) to
- * `prediction-drift.ts`'s `DriftThresholds` shape — the one place this
- * rename happens, so a caller never has to remember that `driftThresholdPct`
- * IS `outOfRangePct` under a different name chosen for the settings UI.
+ * `prediction-drift.ts`'s `DriftThresholds` shape.
+ *
+ * MODEL-SERVE-001-T31: this used to also map `driftThresholdPct` onto
+ * `outOfRangePct`, and that rename was most of this function's reason to
+ * exist. The z-score verdict is mean-shift only now, so the field has no
+ * consumer and the schedule column is retired with it. The mapping stays as
+ * a named boundary: the schedule row carries more than drift needs, and
+ * passing it through whole would make every schedule change a type change
+ * in `prediction-drift.ts`.
  */
 export function thresholdsFromSchedule(schedule: {
   warnSd: number;
   criticalSd: number;
-  driftThresholdPct: number;
 }): DriftThresholds {
   return {
     warnSd: schedule.warnSd,
     criticalSd: schedule.criticalSd,
-    outOfRangePct: schedule.driftThresholdPct,
   };
 }
 
@@ -146,6 +171,29 @@ export function classifyModelHealth(input: {
   enabled: boolean;
   driftMonitor: boolean;
   driftStatus: DriftStatus | null;
+  /**
+   * MODEL-SERVE-001-T32. `computePsi`'s verdict, passed in ALREADY DECIDED,
+   * same discipline as `driftStatus` and `residualSdStatus`. Null when the
+   * caller did not run PSI at all.
+   *
+   * `INSUFFICIENT_DATA` and `UNKNOWN` never raise anything here — they are
+   * PSI's own two "not enough to speak" values (a real reference but thin
+   * live volume, and no reference at all), and `prediction-psi.ts`'s
+   * SEVERITY order already guarantees neither masks a real verdict on
+   * another column.
+   */
+  psiStatus: PsiStatus | null;
+  /**
+   * T32. A SEPARATE gate from `driftEvidence` below, not a reuse of it.
+   * `driftEvidence` asks whether the Z-SCORE baseline exists (pooled
+   * featureStats + a non-empty `column_stats.json`). PSI asks a different
+   * question — is there a frozen `psiRefEdges` reference, and are there at
+   * least `binCount * PSI_MIN_SAMPLES_PER_BIN` live samples — and the two
+   * genuinely disagree for the same [from, to]. One flag covering both
+   * would let a model with a z-baseline and no PSI reference alarm on a
+   * verdict PSI never reached.
+   */
+  psiEvidence: boolean;
   /**
    * How many of the most recent terminal windows, counted back from the
    * newest, are FAILED. Three is the bar, matching the sample
@@ -275,6 +323,24 @@ export function classifyModelHealth(input: {
   if (input.driftMonitor && input.driftEvidence) {
     if (input.driftStatus === 'CRITICAL') {
       return { status: 'ALERT', reason: 'DRIFT_CRITICAL', frozenColumns };
+    }
+  }
+  // MODEL-SERVE-001-T32. BELOW the mean axis, above the output-error one.
+  // When both input axes fire the badge names the MEAN shift: it is the
+  // faster-moving signal and the one a plant operator can act on today,
+  // while a reshaped population is a retrain conversation. Above
+  // RESIDUAL_SD_CRITICAL for the reason MODEL-SERVE-012 already gives —
+  // drifted inputs EXPLAIN a widened error, so naming the upstream cause
+  // sends a reader somewhere fixable.
+  //
+  // Gated on `driftMonitor` exactly like the z-axis: that flag's own doc
+  // (see this module's header) defines it as governing whether the system
+  // watches the INPUT distribution, which is precisely what PSI measures.
+  // It defaults FALSE, so this alert is live only for schedules that opted
+  // in — recorded on T32 so the silence is not read as a defect later.
+  if (input.driftMonitor && input.psiEvidence) {
+    if (input.psiStatus === 'CRITICAL') {
+      return { status: 'ALERT', reason: 'DRIFT_DIST_CRITICAL', frozenColumns };
     }
   }
   // MODEL-SERVE-012. BELOW `DRIFT_CRITICAL` in the same tier, deliberately:

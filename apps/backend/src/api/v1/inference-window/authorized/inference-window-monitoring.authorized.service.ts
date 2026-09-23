@@ -240,7 +240,6 @@ export class InferenceWindowMonitoringService {
     const report = computeDrift(pooled, baseline, {
       warnSd: env.DRIFT_WARN_SD,
       criticalSd: env.DRIFT_CRITICAL_SD,
-      outOfRangePct: env.DRIFT_OUT_OF_RANGE_PCT,
     });
 
     return {
@@ -266,7 +265,6 @@ export class InferenceWindowMonitoringService {
           thresholds: {
             warnSd: env.DRIFT_WARN_SD,
             criticalSd: env.DRIFT_CRITICAL_SD,
-            outOfRangePct: env.DRIFT_OUT_OF_RANGE_PCT,
           },
         },
       },
@@ -319,7 +317,7 @@ export class InferenceWindowMonitoringService {
    * per `lib/model-health.ts`'s own doc comment. Reuses `computeDrift`
    * unchanged; the only thing this method changes from `getDriftReport`
    * above is WHERE the thresholds come from (this schedule's own
-   * warnSd/criticalSd/driftThresholdPct, `lib/model-health.ts`'s
+   * warnSd/criticalSd, `lib/model-health.ts`'s
    * `thresholdsFromSchedule`) rather than the system-wide env vars — the
    * existing Drift tab/report keeps reading those, untouched by this task.
    *
@@ -467,6 +465,46 @@ export class InferenceWindowMonitoringService {
         ? computeDrift(poolFeatureStats(statsRows), baseline, thresholds).status
         : null;
 
+    // MODEL-SERVE-001-T32. THE SECOND INPUT AXIS, resolved here rather than
+    // left to the report path. Until T32 `computePsi` ran ONLY inside
+    // `getPsiService` — the call that renders the PSI card — so every column
+    // could be PSI-CRITICAL while this method handed `classifyModelHealth` a
+    // `driftStatus` alone and the badge read Normal. PSI was decoration.
+    //
+    // Its OWN evidence gate, never `driftEvidence`: that flag asks whether
+    // the Z-SCORE baseline exists, and a model can hold one while carrying
+    // no frozen `psiRefEdges` reference at all (T17 confirmed live that
+    // today's specs carry none). The reference read is an HTTP round trip,
+    // so it is skipped entirely unless drift watching is on AND some window
+    // actually carried a histogram — the same "fetch only when there is
+    // something to compare" discipline the baseline above follows.
+    const healthHistogramRows = windows
+      // `!= null`, not `!== null` like the report path above: a window row
+      // can reach this method with the column ABSENT rather than null, and
+      // letting `undefined` through would fetch the PSI reference — an HTTP
+      // round trip — for a model with no histogram to compare it against.
+      .filter((w) => w.featureHistograms != null)
+      .map((w) => w.featureHistograms as unknown as FeatureHistogramMap);
+
+    const psiReference =
+      production && schedule.driftMonitor && healthHistogramRows.length > 0
+        ? await resolvePsiReference(production.goldObjectKey)
+        : {};
+    const psiEvidence =
+      healthHistogramRows.length > 0 && Object.keys(psiReference).length > 0;
+
+    // INSUFFICIENT_DATA and UNKNOWN reach `classifyModelHealth` as
+    // themselves and raise nothing there — `computePsi` publishes no numeric
+    // PSI below its sample floor, and this method must not turn that silence
+    // into either an alarm or a clean bill of health.
+    const psiStatus = psiEvidence
+      ? computePsi(poolHistograms(healthHistogramRows), psiReference, {
+          warn: env.PSI_WARN,
+          critical: env.PSI_CRITICAL,
+          minSamplesPerBin: env.PSI_MIN_SAMPLES_PER_BIN,
+        }).status
+      : null;
+
     // MODEL-SERVE-009-T03. EVIDENCE BESIDE THE BADGE, NOT A SECOND DETECTOR.
     // MODEL-SERVE-001-T29 still decides WHICH columns are frozen, by its own
     // three-window pooled range and its own five guards — untouched, along
@@ -561,6 +599,8 @@ export class InferenceWindowMonitoringService {
         driftMonitor: schedule.driftMonitor,
         driftStatus,
         driftEvidence,
+        psiStatus,
+        psiEvidence,
         frozenColumns,
         residualSdStatus: residualSd.status,
         ...bands,

@@ -2005,7 +2005,12 @@ model InferenceSchedule {
   warnSd            Float   @default(1.5)
   criticalSd        Float   @default(3.0)
   driftMonitor      Boolean @default(false)
-  driftThresholdPct Float   @default(10)
+  /// MODEL-SERVE-001-T31 dropped `driftThresholdPct Float @default(10)` from
+  /// here. It was the operator-facing name for the z-score verdict's
+  /// out-of-range clause, and that clause is gone: drift answers mean shift
+  /// only, PSI answers distribution shape. A knob nothing reads is worse
+  /// than no knob, so it was removed rather than kept as a display-only
+  /// field.
 
   /// MODEL-SERVE-001-T28. The monitoring axis's own bands, per schedule
   /// rather than in env, for the reason T14 MEASURED rather than assumed:

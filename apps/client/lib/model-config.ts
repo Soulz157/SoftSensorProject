@@ -23,8 +23,6 @@ export interface DeploymentConfig {
   /** Layer 2 (Critical) ±SD band; reaching it triggers auto-retrain. */
   criticalSd: number
   driftMonitor: boolean
-  /** Max allowed live-input deviation (%) before a Drift Alarm. */
-  driftThresholdPct: number
 }
 
 export interface ModelConfig {

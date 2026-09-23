@@ -26,13 +26,15 @@ import { MONITORING_STATUS_LABEL } from '@/lib/drift-status-style'
  *    tooltip explains the MEANING alone. A hardcoded 1.5/3.0 here would
  *    keep rendering confidently after someone moved DRIFT_WARN_SD.
  *
- * 2. NAME THE RULE THAT ACTUALLY FIRED. A drift column is WARN when
- *    `|z| >= warnSd` OR when `outOfRangePct >= threshold` — see
- *    `statusFor` in apps/backend/src/lib/prediction-drift.ts. A column at
- *    z = +0.30 with 12% out of range is WARN on the SECOND rule, and a
- *    tooltip reading "|z| above 1.5" there would be flatly false. So the
- *    predicate is re-evaluated per column against the published
- *    thresholds and every rule that fired is listed.
+ * 2. NAME THE RULE THAT ACTUALLY FIRED. MODEL-SERVE-001-T31 left drift
+ *    with exactly ONE numeric rule — `|z|` against warnSd/criticalSd (see
+ *    `statusFor` in apps/backend/src/lib/prediction-drift.ts). Until then a
+ *    second rule, `outOfRangePct >= threshold`, could raise a column to
+ *    WARN on its own, so this tooltip re-evaluated the whole predicate to
+ *    avoid reading "|z| above 1.5" at z = +0.30. That second rule is gone —
+ *    distribution drift is PSI's to report — but the per-column
+ *    re-evaluation stays: it is what keeps the quoted numbers the MEASURED
+ *    ones rather than a restatement of the status word.
  */
 
 /**
@@ -60,10 +62,6 @@ export interface StatusExplanation {
   criteria: string[]
 }
 
-function pct(value: number): string {
-  return `${value.toFixed(1)}%`
-}
-
 function abs(value: number, digits = 2): string {
   return Math.abs(value).toFixed(digits)
 }
@@ -83,7 +81,7 @@ const DRIFT_MEANING: Record<DriftStatus, string> = {
  * guessed.
  */
 export function explainDriftColumn(
-  col: Pick<DriftColumn, 'z' | 'outOfRangePct' | 'status' | 'reason'>,
+  col: Pick<DriftColumn, 'z' | 'status' | 'reason'>,
   thresholds: DriftReport['basis']['thresholds'],
 ): StatusExplanation {
   const meaning = col.reason
@@ -116,21 +114,6 @@ export function explainDriftColumn(
         `|z| ${abs(col.z)} < ${thresholds.warnSd}${CRITERIA_VERDICT_SEPARATOR}${MONITORING_STATUS_LABEL.OK}`,
       )
     }
-  }
-
-  if (col.outOfRangePct !== null) {
-    // The "(this rule never reaches CRITICAL)" suffix and the
-    // estimated-vs-counted note were both cut as too wordy for a tooltip.
-    // Both facts still hold: out-of-range can only raise a column to WARN
-    // (see `statusFor`), and the percentage is a parametric ESTIMATE
-    // (`estimateOutOfRangePct`), which the column header marks "(est.)".
-    // Do not re-add either here without being asked.
-    const breached = col.outOfRangePct >= thresholds.outOfRangePct
-    criteria.push(
-      breached
-        ? `out-of-range ${pct(col.outOfRangePct)} ≥ ${pct(thresholds.outOfRangePct)}${CRITERIA_VERDICT_SEPARATOR}WARN`
-        : `out-of-range ${pct(col.outOfRangePct)} < ${pct(thresholds.outOfRangePct)}${CRITERIA_VERDICT_SEPARATOR}${MONITORING_STATUS_LABEL.OK}`,
-    )
   }
 
   return { meaning, criteria }
@@ -175,12 +158,13 @@ const PSI_MEANING: Record<PsiStatus, string> = {
 }
 
 /**
- * Per-column PSI explanation. Unlike drift, PSI has exactly ONE numeric
- * rule — the index against warn/critical. No second predicate can raise
- * the status independently, so `outOfRangePct` is never quoted as a
- * criterion here: the backend deliberately keeps it out of `psi` (the
- * reference has no defined mass outside its own edges), and the tooltip
- * must not imply otherwise.
+ * Per-column PSI explanation. PSI has exactly ONE numeric rule — the index
+ * against warn/critical. `outOfRangePct` rides the same column but is never
+ * quoted as a criterion: the backend deliberately keeps it out of `psi`
+ * (the reference has no defined mass outside its own edges), so it is
+ * evidence beside the verdict, not part of it. The tooltip must not imply
+ * otherwise. (Since MODEL-SERVE-001-T31 drift is single-rule too — that is
+ * no longer what distinguishes these two cards; the METRIC is.)
  */
 export function explainPsiColumn(
   col: Pick<PsiColumn, 'psi' | 'status' | 'reason' | 'liveTotal' | 'bins'>,

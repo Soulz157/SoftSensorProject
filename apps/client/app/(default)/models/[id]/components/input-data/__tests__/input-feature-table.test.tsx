@@ -16,7 +16,6 @@ function row(over: Partial<InputFeatureRow> = {}): InputFeatureRow {
     driftStatus: 'UNKNOWN',
     driftReason: undefined,
     z: null,
-    outOfRangePct: null,
     piStatus: 'UNKNOWN',
     piReason: undefined,
     failingSources: undefined,
@@ -157,7 +156,7 @@ describe('InputFeatureTable (MODEL-SERVE-001-T12)', () => {
     render(
       <InputFeatureTable
         rows={[row({ column: 'TI010.PV', driftStatus: 'OK', z: 0.4 })]}
-        driftThresholds={{ warnSd: 1.5, criticalSd: 3, outOfRangePct: 10 }}
+        driftThresholds={{ warnSd: 1.5, criticalSd: 3 }}
       />,
     )
 

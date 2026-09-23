@@ -63,7 +63,6 @@ const DRIFT_REPORT = {
       trainMean: 0.4,
       trainStd: 0.25,
       z: 0.08,
-      outOfRangePct: 0,
       status: 'OK',
     },
   ],

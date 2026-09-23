@@ -485,6 +485,12 @@ export async function deriveDeployStatuses(
         driftMonitor: false,
         driftStatus: null,
         driftEvidence: false,
+        // MODEL-SERVE-001-T32. Same argument for the PSI axis, and the same
+        // wording deliberately: the reference read is another per-model
+        // round trip. `null`/`false` mean "this payload makes no
+        // DISTRIBUTION claim either", never "PSI said fine".
+        psiStatus: null,
+        psiEvidence: false,
         // T27's `missingPct` band is STILL the detail page's job alone: it
         // reads the NEWEST terminal window's own missingPct ("is the data
         // bad RIGHT NOW"), which this batched query has no per-model reason

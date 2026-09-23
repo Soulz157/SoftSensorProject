@@ -44,7 +44,6 @@ export type ColumnBaselineMap = Record<string, ColumnBaseline>;
 export interface DriftThresholds {
   warnSd: number;
   criticalSd: number;
-  outOfRangePct: number;
 }
 
 export type DriftStatus = 'OK' | 'WARN' | 'CRITICAL' | 'UNKNOWN';
@@ -59,10 +58,6 @@ export interface ColumnDrift {
   /** (liveMean - trainMean) / trainStd. Null when trainStd is null/<=0 —
    *  an unknown or degenerate baseline is never treated as "no drift". */
   z: number | null;
-  /** ESTIMATED, not counted — see the module doc and `estimateOutOfRangePct`.
-   *  Null when the baseline carries no p1/p99 (a legacy sidecar, or a
-   *  column with no Good cells at training time). */
-  outOfRangePct: number | null;
   status: DriftStatus;
   reason?: string;
 }
@@ -100,64 +95,23 @@ export function poolFeatureStats(inputs: FeatureStatsMap[]): FeatureStatsMap {
   return pooled;
 }
 
-/** Abramowitz & Stegun 7.1.26 — |error| <= 1.5e-7, plenty for a monitoring
- *  signal. No dependency pulled in for one function. */
-function erf(x: number): number {
-  const sign = x < 0 ? -1 : 1;
-  const ax = Math.abs(x);
-  const a1 = 0.254829592;
-  const a2 = -0.284496736;
-  const a3 = 1.421413741;
-  const a4 = -1.453152027;
-  const a5 = 1.061405429;
-  const p = 0.3275911;
-  const t = 1 / (1 + p * ax);
-  const y =
-    1 - ((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t * Math.exp(-ax * ax);
-  return sign * y;
-}
-
-function normalCdf(x: number, mean: number, std: number): number {
-  if (!(std > 0)) return x < mean ? 0 : x > mean ? 1 : 0.5;
-  return 0.5 * (1 + erf((x - mean) / (std * Math.SQRT2)));
-}
-
 /**
- * P(X < p1) + P(X > p99), estimated by modelling the LIVE population as
- * Normal(liveMean, liveStd) and evaluating it at the TRAINING baseline's
- * p1/p99 bounds. This is an ESTIMATE, not a per-value count: PredictionLog
- * stores sufficient statistics, not raw values, so an exact "share of live
- * values outside [p1,p99]" would need either every raw value (defeats the
- * point of aggregating) or a running histogram (not part of this schema).
- * `column_stats.json`'s own percentiles are computed empirically, not
- * parametrically — this estimate can disagree with a true empirical rate
- * for a skewed distribution, which is why the report always publishes
- * `z` (exact) alongside this (estimated), never this alone.
+ * MODEL-SERVE-001-T31. MEAN SHIFT ONLY. This verdict used to also fire on
+ * `outOfRangePct >= thresholds.outOfRangePct` — a tail-mass, i.e.
+ * DISTRIBUTION, signal, estimated by assuming the live population was Normal
+ * and evaluating it at the baseline's p1/p99. That made this card answer a
+ * question it answers badly and that `prediction-psi.ts` already answers
+ * properly from real bin counts, and it let a column with |z| ~ 0 wear a
+ * drift WARN. T13/T16 split the two metrics on screen; this splits the
+ * verdict itself. Distribution drift is PSI's to report, and PSI's alone.
  */
-export function estimateOutOfRangePct(
-  liveMean: number,
-  liveStd: number,
-  p1: number,
-  p99: number,
-): number {
-  const below = normalCdf(p1, liveMean, liveStd);
-  const above = 1 - normalCdf(p99, liveMean, liveStd);
-  return Math.max(0, Math.min(100, (below + above) * 100));
-}
-
 function statusFor(
   absZ: number | null,
-  outOfRangePct: number | null,
   thresholds: DriftThresholds,
 ): DriftStatus {
   if (absZ === null) return 'UNKNOWN';
   if (absZ >= thresholds.criticalSd) return 'CRITICAL';
-  if (
-    absZ >= thresholds.warnSd ||
-    (outOfRangePct !== null && outOfRangePct >= thresholds.outOfRangePct)
-  ) {
-    return 'WARN';
-  }
+  if (absZ >= thresholds.warnSd) return 'WARN';
   return 'OK';
 }
 
@@ -201,7 +155,6 @@ export function computeDrift(
         trainMean,
         trainStd,
         z: null,
-        outOfRangePct: null,
         status: 'UNKNOWN',
         reason: !base
           ? 'no training baseline for this column'
@@ -211,12 +164,6 @@ export function computeDrift(
     }
 
     const z = (liveMean - trainMean) / trainStd;
-    const p1 = base.percentiles?.p1;
-    const p99 = base.percentiles?.p99;
-    const outOfRangePct =
-      p1 !== undefined && p99 !== undefined
-        ? estimateOutOfRangePct(liveMean, liveStd, p1, p99)
-        : null;
 
     columns.push({
       column,
@@ -226,8 +173,7 @@ export function computeDrift(
       trainMean,
       trainStd,
       z,
-      outOfRangePct,
-      status: statusFor(Math.abs(z), outOfRangePct, thresholds),
+      status: statusFor(Math.abs(z), thresholds),
     });
   }
 
@@ -312,7 +258,7 @@ export function applyConsecutiveBreachRule(
     };
   }
 
-  const newest = buckets[buckets.length - 1]!;
+  const newest = buckets[buckets.length - 1];
   const columns: SustainedColumnDrift[] = newest.report.columns.map((col) => {
     const instantStatus = col.status;
 
@@ -334,7 +280,7 @@ export function applyConsecutiveBreachRule(
     let consecutive = 0;
     let since: string | null = null;
     for (let i = buckets.length - 1; i >= 0; i -= 1) {
-      const bucket = buckets[i]!;
+      const bucket = buckets[i];
       const match = bucket.report.columns.find((c) => c.column === col.column);
       if (!match || match.status === 'UNKNOWN') break;
       if (SEVERITY[match.status] < floor) break;

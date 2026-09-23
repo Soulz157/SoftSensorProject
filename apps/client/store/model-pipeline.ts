@@ -343,8 +343,6 @@ export const mpRetrainWarnSdAtom = atom<number>(1.5)
 export const mpRetrainCriticalSdAtom = atom<number>(3.0)
 /** Master toggle for input-sensor drift monitoring. */
 export const mpDriftMonitorAtom = atom<boolean>(false)
-/** Max allowed live-input deviation (%) from the training baseline before a Drift Alarm. */
-export const mpDriftThresholdPctAtom = atom<number>(10)
 
 export const mpCurrentStepAtom = atom<number>(1)
 export const mpHighestUnlockedAtom = atom<number>(1)
@@ -447,7 +445,6 @@ export const resetWizardAtom = atom(null, (_get, set) => {
   set(mpRetrainWarnSdAtom, 1.5)
   set(mpRetrainCriticalSdAtom, 3.0)
   set(mpDriftMonitorAtom, false)
-  set(mpDriftThresholdPctAtom, 10)
   set(mpModeAtom, 'create')
   set(mpEditModelIdAtom, '')
   set(mpCurrentStepAtom, 1)

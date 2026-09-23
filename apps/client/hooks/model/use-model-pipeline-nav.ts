@@ -31,7 +31,6 @@ import {
   mpRetrainWarnSdAtom,
   mpRetrainCriticalSdAtom,
   mpDriftMonitorAtom,
-  mpDriftThresholdPctAtom,
   mpServerDraftIdAtom,
   type Algorithm,
   type HyperparamValue,
@@ -75,7 +74,6 @@ export interface UsePipelineNavResult {
   warnSd: number
   criticalSd: number
   driftMonitor: boolean
-  driftThresholdPct: number
   goTo: (step: number) => void
   next: () => void
   back: () => void
@@ -85,7 +83,6 @@ export interface UsePipelineNavResult {
   setWarnSd: (sd: number) => void
   setCriticalSd: (sd: number) => void
   setDriftMonitor: (on: boolean) => void
-  setDriftThresholdPct: (pct: number) => void
   resetPipeline: () => void
 }
 
@@ -140,9 +137,6 @@ export function useModelPipelineNav(): UsePipelineNavResult {
   const [warnSd, setWarnSdAtom] = useAtom(mpRetrainWarnSdAtom)
   const [criticalSd, setCriticalSdAtom] = useAtom(mpRetrainCriticalSdAtom)
   const [driftMonitor, setDriftMonitorAtom] = useAtom(mpDriftMonitorAtom)
-  const [driftThresholdPct, setDriftThresholdPctAtom] = useAtom(
-    mpDriftThresholdPctAtom,
-  )
   const trainState = useAtomValue(mpTrainStateAtom)
   const setTrainState = useSetAtom(mpTrainStateAtom)
   const setCreatedModelId = useSetAtom(mpCreatedModelIdAtom)
@@ -268,14 +262,6 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     (on: boolean) => setDriftMonitorAtom(on),
     [setDriftMonitorAtom],
   )
-  const setDriftThresholdPct = useCallback(
-    (pct: number) =>
-      setDriftThresholdPctAtom(
-        Number.isNaN(pct) ? 0 : Math.min(100, Math.max(0, pct)),
-      ),
-    [setDriftThresholdPctAtom],
-  )
-
   const resetPipeline = useCallback(() => {
     setSelectedDatasetAtom(null)
     setAlgorithmAtom('ols')
@@ -305,7 +291,6 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     setWarnSdAtom(1.5)
     setCriticalSdAtom(3.0)
     setDriftMonitorAtom(false)
-    setDriftThresholdPctAtom(10)
     setHighestUnlocked(1)
     setCurrentStep(1)
     // Server-side ModelDraft id — fires on every workspace/plant change
@@ -333,7 +318,6 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     setWarnSdAtom,
     setCriticalSdAtom,
     setDriftMonitorAtom,
-    setDriftThresholdPctAtom,
     setHighestUnlocked,
     setCurrentStep,
     setServerDraftId,
@@ -360,7 +344,6 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     warnSd,
     criticalSd,
     driftMonitor,
-    driftThresholdPct,
     goTo,
     next,
     back,
@@ -370,7 +353,6 @@ export function useModelPipelineNav(): UsePipelineNavResult {
     setWarnSd,
     setCriticalSd,
     setDriftMonitor,
-    setDriftThresholdPct,
     resetPipeline,
   }
 }

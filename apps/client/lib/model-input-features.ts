@@ -26,7 +26,6 @@ export interface InputFeatureRow {
   driftStatus: DriftStatus
   driftReason?: string
   z: number | null
-  outOfRangePct: number | null
   /** MODEL-SERVE-001-T15. PI's OWN quality flag for this tag, read live —
    *  a different question from `driftStatus` ("has the distribution moved
    *  since training"), and the one this tab is actually for. `UNKNOWN`
@@ -210,7 +209,6 @@ export function buildInputFeatureRows({
       driftStatus: driftCol?.status ?? 'UNKNOWN',
       driftReason: driftCol?.reason,
       z: driftCol?.z ?? null,
-      outOfRangePct: driftCol?.outOfRangePct ?? null,
       piStatus: piCol?.status ?? 'UNKNOWN',
       piReason: piCol?.reason,
       failingSources: piCol?.failingSources,

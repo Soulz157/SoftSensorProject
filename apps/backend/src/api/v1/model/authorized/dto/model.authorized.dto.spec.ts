@@ -100,7 +100,6 @@ describe('ModelConfigSchema', () => {
       warnSd: 1.5,
       criticalSd: 3.0,
       driftMonitor: true,
-      driftThresholdPct: 10,
     };
     expect(DeploymentConfigSchema.parse(deployment)).toEqual(deployment);
     expect(ModelConfigSchema.parse({ deployment }).deployment).toEqual(

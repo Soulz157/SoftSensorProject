@@ -1,0 +1,22 @@
+-- MODEL-SERVE-001-T31. Retire the operator's "Drift alarm threshold (%)" knob.
+--
+-- DESTRUCTIVE, AND THE ONLY DESTRUCTIVE STEP IN T31. This drops the column
+-- and every value in it, in every row, permanently — re-adding the column
+-- later brings back the default, never the numbers that were here. Nothing
+-- reads those numbers as of T31: `InferenceSchedule.driftThresholdPct` fed
+-- exactly one thing, the `outOfRangePct` clause in `statusFor`
+-- (apps/backend/src/lib/prediction-drift.ts), and that clause is gone. The
+-- z-score verdict answers MEAN SHIFT only; distribution shift is PSI's to
+-- report, from real bin counts rather than a parametric tail estimate.
+--
+-- Every live row holds the schema default (10) — the field was surfaced in
+-- the deploy wizard, but its value only ever reached the deleted clause.
+--
+-- Generated with `prisma migrate diff --from-config-datasource --to-schema`,
+-- following this repo's by-hand convention (see
+-- 20260917040000_model_serve_009_tag_observation's own note on why
+-- `migrate dev` is not run against this database: schema drift makes it
+-- offer a reset, which would drop the dev database entirely).
+
+-- AlterTable
+ALTER TABLE "InferenceSchedule" DROP COLUMN "driftThresholdPct";

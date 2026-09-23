@@ -24,7 +24,6 @@ export const DeploymentConfigSchema = z
     warnSd: z.number().optional(),
     criticalSd: z.number().optional(),
     driftMonitor: z.boolean().optional(),
-    driftThresholdPct: z.number().optional(),
   })
   .strict();
 

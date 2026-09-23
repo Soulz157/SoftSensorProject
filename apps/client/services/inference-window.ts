@@ -18,7 +18,7 @@ interface ApiResponse<T> {
  * MODEL-SERVE-006-T09. The wizard's five deploy-step guardrails, under
  * their own names (store/model-pipeline.ts's mpAutoRetrainAtom/
  * mpRetrainWarnSdAtom/mpRetrainCriticalSdAtom/mpDriftMonitorAtom/
- * mpDriftThresholdPctAtom) — this is the ONE place they now persist.
+ * mpDriftMonitorAtom) — this is the ONE place they now persist.
  */
 /**
  * MODEL-SERVE-013-T03. One data source as the schedule surface sees it.
@@ -49,7 +49,6 @@ export interface InferenceSchedule {
   warnSd: number
   criticalSd: number
   driftMonitor: boolean
-  driftThresholdPct: number
   /**
    * MODEL-SERVE-001-T28. Operational health thresholds. API-settable and read
    * back by `getSchedule`, but with no editor yet — the wizard deliberately
@@ -89,9 +88,8 @@ export interface InferenceStatus {
    * MODEL-SERVE-001-T21. A SEPARATE axis from `deployStatus` above, never
    * collapsed into it — a model can be `running` (operationally up) while
    * its inputs drift, and a `stopped` model has no reading at all (`OFF`).
-   * `thresholds` is this schedule's OWN warnSd/criticalSd/driftThresholdPct
-   * (renamed `outOfRangePct`), not the system-wide env defaults the
-   * separate Drift tab still reads — null exactly when `status` is `OFF`
+   * `thresholds` is this schedule's OWN warnSd/criticalSd, not the
+   * system-wide env defaults the separate Drift tab still reads — null exactly when `status` is `OFF`
    * or `UNKNOWN`.
    */
   health: {
@@ -109,6 +107,7 @@ export interface InferenceStatus {
       | 'BAD_DATA'
       | 'SENSOR_FROZEN'
       | 'DRIFT_CRITICAL'
+      | 'DRIFT_DIST_CRITICAL'
       | 'DRIFT_WARN'
       /** MODEL-SERVE-012. The OUTPUT-ERROR codes: the model's own residual
        *  spread has widened against the error its run was accepted with.
@@ -154,7 +153,6 @@ export interface InferenceStatus {
     thresholds: {
       warnSd: number
       criticalSd: number
-      outOfRangePct: number
     } | null
   }
 }
@@ -510,7 +508,6 @@ export const inferenceWindowService = {
       warnSd?: number
       criticalSd?: number
       driftMonitor?: boolean
-      driftThresholdPct?: number
     },
   ): Promise<Partial<InferenceSchedule>> {
     const res: ApiResponse<Partial<InferenceSchedule>> = await fetchClient(

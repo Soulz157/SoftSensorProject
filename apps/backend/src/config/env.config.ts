@@ -163,9 +163,11 @@ export const env = {
   // field list) — not persisted per model in this pass (MODEL-SERVE-006-T09
   // is where those atoms get a real home); these are the system-wide
   // defaults every drift report uses until then.
+  // MODEL-SERVE-001-T31 removed DRIFT_OUT_OF_RANGE_PCT: the z-score verdict
+  // is mean-shift only now, so a tail-mass threshold has no reader here.
+  // The measured out-of-range share lives on the PSI report instead.
   DRIFT_WARN_SD: Number(process.env.DRIFT_WARN_SD ?? 1.5),
   DRIFT_CRITICAL_SD: Number(process.env.DRIFT_CRITICAL_SD ?? 3.0),
-  DRIFT_OUT_OF_RANGE_PCT: Number(process.env.DRIFT_OUT_OF_RANGE_PCT ?? 10),
 
   // MODEL-SERVE-001-T13. PSI thresholds — 0.1/0.25 are the CONVENTIONAL
   // credit-scoring cutoffs (commonly cited: <0.1 stable, 0.1-0.25 moderate

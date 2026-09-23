@@ -133,7 +133,6 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
           driftMonitor: false,
           warnSd: 1.5,
           criticalSd: 3.0,
-          driftThresholdPct: 10,
         }),
       },
     });
@@ -203,7 +202,6 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
           driftMonitor: false,
           warnSd: 1.5,
           criticalSd: 3.0,
-          driftThresholdPct: 10,
         }),
       },
       modelVersion: {
@@ -248,7 +246,6 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
           driftMonitor: true,
           warnSd: 1.5,
           criticalSd: 3.0,
-          driftThresholdPct: 10,
         }),
       },
       modelVersion: { findFirst: jest.fn().mockResolvedValue(null) },
@@ -259,7 +256,6 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
     expect(result.thresholds).toEqual({
       warnSd: 1.5,
       criticalSd: 3.0,
-      outOfRangePct: 10,
     });
   });
 
@@ -283,7 +279,6 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
           driftMonitor: true,
           warnSd: 1.5,
           criticalSd: 3.0,
-          driftThresholdPct: 10,
         }),
       },
       modelVersion: {
@@ -328,7 +323,6 @@ describe('InferenceWindowMonitoringService.getHealthStatus (MODEL-SERVE-001-T21)
           // PER-SCHEDULE threshold was actually used.
           warnSd: 0.5,
           criticalSd: 3.0,
-          driftThresholdPct: 10,
         }),
       },
       modelVersion: {
@@ -388,7 +382,6 @@ describe('InferenceWindowMonitoringService.getDriftReport', () => {
     expect(result.data.basis.thresholds).toEqual({
       warnSd: env.DRIFT_WARN_SD,
       criticalSd: env.DRIFT_CRITICAL_SD,
-      outOfRangePct: env.DRIFT_OUT_OF_RANGE_PCT,
     });
   });
 });

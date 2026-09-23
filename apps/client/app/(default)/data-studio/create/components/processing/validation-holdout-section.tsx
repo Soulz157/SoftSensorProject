@@ -1,11 +1,10 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useAtom, useAtomValue } from 'jotai'
 import { Check, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
 import { DateTimePicker, toDateTimeLocal } from '@/components/date-time-picker'
 import { describeHoldoutSelection } from '@/lib/holdout'
 import { resolveInterval } from '@/lib/dataset-fetch'
@@ -108,10 +107,9 @@ export function ValidationHoldoutSection({
     fetchConfig.summaryDuration.trim() ||
     resolveInterval(period, customInterval)
 
-  // Defaults OPEN even though no holdout is chosen yet (`holdoutRange` starts
-  // `null`) — only an explicit user toggle-off or a later atom resync (below)
-  // closes it.
-  const [enabled, setEnabled] = useState(true)
+  // Always open. The section used to hide behind a Switch, which read as a
+  // feature flag rather than an optional field — clearing the split is now
+  // the explicit Clear button below instead of a collapse.
   const [draftFrom, setDraftFrom] = useState(holdoutRange?.from ?? '')
   const [draftTo, setDraftTo] = useState(holdoutRange?.to ?? '')
 
@@ -120,19 +118,8 @@ export function ValidationHoldoutSection({
   // showing a stale draft the atom no longer holds. This effect only
   // syncs LOCAL draft state from the atom; it never writes the atom back,
   // so hydration/reset cannot itself schedule the parent's warm — only
-  // `applyHoldout`/`handleToggle` (real user actions) do that.
-  //
-  // `enabled` is skipped on the very first run: this same effect also fires
-  // on mount, and a fresh draft's `holdoutRange` is `null` there, which would
-  // immediately collapse the open-by-default state above. A later run (real
-  // hydration or reset) still syncs `enabled` normally.
-  const mountedRef = useRef(false)
+  // `applyHoldout`/`clearHoldout` (real user actions) do that.
   useEffect(() => {
-    if (mountedRef.current) {
-      setEnabled(holdoutRange !== null)
-    } else {
-      mountedRef.current = true
-    }
     setDraftFrom(holdoutRange?.from ?? '')
     setDraftTo(holdoutRange?.to ?? '')
   }, [holdoutRange])
@@ -170,13 +157,11 @@ export function ValidationHoldoutSection({
     }
   }
 
-  const handleToggle = (next: boolean) => {
-    setEnabled(next)
-    if (!next) {
-      setHoldoutRange(null)
-      setDraftFrom('')
-      setDraftTo('')
-    }
+  // Replaces the old toggle-off path: the only way back to "no holdout".
+  const clearHoldout = () => {
+    setHoldoutRange(null)
+    setDraftFrom('')
+    setDraftTo('')
   }
 
   const warmPending = warmStatus === 'pending'
@@ -196,101 +181,93 @@ export function ValidationHoldoutSection({
 
   return (
     <div className="mt-1 space-y-2 border-t border-border/60 pt-3">
-      <label className="flex items-center gap-2">
-        <Switch
-          checked={enabled}
-          onCheckedChange={handleToggle}
-          disabled={disabled || warmPending}
-          aria-label={
-            enabled ? 'Remove validation holdout' : 'Add validation holdout'
-          }
-        />
-        <span className="text-sm font-medium text-foreground">
-          Split Validation data (optional)
-        </span>
-        {/* Only for the toggle-OFF path, which has no Apply button of its
-            own; while the section is open the button below owns this state. */}
-        {warmPending && !enabled && (
-          <span className="text-[11px] text-muted-foreground">Applying…</span>
-        )}
-      </label>
+      <h3 className="text-sm font-medium text-foreground">
+        Split Validation data (optional)
+      </h3>
       {disabled && disabledReason && (
         <p className="text-[11px] text-muted-foreground">{disabledReason}</p>
       )}
-      {enabled && (
-        <>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="grid gap-1.5">
-              <Label htmlFor="mp-holdout-from" className="text-xs">
-                Start
-              </Label>
-              <DateTimePicker
-                id="mp-holdout-from"
-                value={draftFrom}
-                min={fetchFrom}
-                max={fetchTo}
-                disabled={disabled || warmPending}
-                onChange={setDraftFrom}
-              />
-            </div>
-            <div className="grid gap-1.5">
-              <Label htmlFor="mp-holdout-to" className="text-xs">
-                End
-              </Label>
-              <DateTimePicker
-                id="mp-holdout-to"
-                value={draftTo}
-                min={fetchFrom}
-                max={fetchTo}
-                disabled={disabled || warmPending}
-                onChange={setDraftTo}
-              />
-            </div>
-          </div>
-          {guard.refusals.map(msg => (
-            <p key={msg} className="text-[11px] text-destructive">
-              {msg}
-            </p>
-          ))}
-          {guard.warnings.map(msg => (
-            <p key={msg} className="text-[11px] text-muted-foreground">
-              {msg}
-            </p>
-          ))}
-          {warmError && (
-            <p className="text-[11px] text-destructive">{warmError}</p>
-          )}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="grid gap-1.5">
+          <Label htmlFor="mp-holdout-from" className="text-xs">
+            Start
+          </Label>
+          <DateTimePicker
+            id="mp-holdout-from"
+            value={draftFrom}
+            min={fetchFrom}
+            max={fetchTo}
+            disabled={disabled || warmPending}
+            onChange={setDraftFrom}
+          />
+        </div>
+        <div className="grid gap-1.5">
+          <Label htmlFor="mp-holdout-to" className="text-xs">
+            End
+          </Label>
+          <DateTimePicker
+            id="mp-holdout-to"
+            value={draftTo}
+            min={fetchFrom}
+            max={fetchTo}
+            disabled={disabled || warmPending}
+            onChange={setDraftTo}
+          />
+        </div>
+      </div>
+      {guard.refusals.map(msg => (
+        <p key={msg} className="text-[11px] text-destructive">
+          {msg}
+        </p>
+      ))}
+      {guard.warnings.map(msg => (
+        <p key={msg} className="text-[11px] text-muted-foreground">
+          {msg}
+        </p>
+      ))}
+      {warmError && <p className="text-[11px] text-destructive">{warmError}</p>}
 
-          <div className="flex items-center justify-end gap-2 pt-1">
-            {dirty && guard.refusals.length === 0 && !warmPending && (
-              // Says why the button is lit. Without it a user who edited a
-              // date and walked away has no signal that the split on the
-              // server is still the previous one.
-              <span className="text-[11px] text-muted-foreground">
-                Not applied yet
-              </span>
-            )}
-            <Button
-              size="sm"
-              className="h-7 gap-1.5 text-xs"
-              disabled={!canApply}
-              onClick={applyHoldout}
-            >
-              {warmPending ? (
-                <>
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  Applying…
-                </>
-              ) : (
-                <>
-                  <Check className="h-3.5 w-3.5" />
-                  Apply Split
-                </>
-              )}
-            </Button>
-          </div>
-        </>
-      )}
+      <div className="flex items-center justify-end gap-2 pt-1">
+        {dirty && guard.refusals.length === 0 && !warmPending && (
+          // Says why the button is lit. Without it a user who edited a
+          // date and walked away has no signal that the split on the
+          // server is still the previous one.
+          <span className="text-[11px] text-muted-foreground">
+            Not applied yet
+          </span>
+        )}
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-7 text-xs text-muted-foreground"
+          disabled={
+            disabled ||
+            warmPending ||
+            (holdoutRange === null && !draftFrom && !draftTo)
+          }
+          onClick={clearHoldout}
+        >
+          Clear
+        </Button>
+        <Button
+          size="sm"
+          className="h-7 gap-1.5 text-xs"
+          disabled={!canApply}
+          onClick={applyHoldout}
+        >
+          {warmPending ? (
+            <>
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              Applying…
+            </>
+          ) : (
+            <>
+              <Check className="h-3.5 w-3.5" />
+              Apply Split
+            </>
+          )}
+        </Button>
+      </div>
     </div>
   )
 }

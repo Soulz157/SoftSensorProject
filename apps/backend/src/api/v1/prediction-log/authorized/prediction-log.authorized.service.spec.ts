@@ -394,7 +394,6 @@ describe('PredictionLogAuthorizedService plane dispatch', () => {
     expect(result.data.basis.thresholds).toEqual({
       warnSd: env.DRIFT_WARN_SD,
       criticalSd: env.DRIFT_CRITICAL_SD,
-      outOfRangePct: env.DRIFT_OUT_OF_RANGE_PCT,
     });
   });
 });

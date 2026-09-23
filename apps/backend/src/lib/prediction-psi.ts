@@ -124,8 +124,11 @@ export interface ColumnPsi {
    *  PSI"). */
   psi: number | null;
   /** Live mass that fell OUTSIDE the trained edge range, as a percentage
-   *  of `liveTotal` — a REAL measured count (unlike `prediction-drift.ts`'s
-   *  `outOfRangePct`, which is a parametric ESTIMATE). Reported but never
+   *  of `liveTotal` — a REAL measured count, straight from the live
+   *  histogram's below/above bins. (MODEL-SERVE-001-T31: `prediction-drift`
+   *  once published a rival PARAMETRIC estimate of this same quantity, and
+   *  even let it raise a z-score WARN; it was deleted, and this is now the
+   *  only out-of-range figure in the app.) Reported but never
    *  folded into `psi` itself: the reference has no defined below/above
    *  mass at all (every training value is within its own derived edges by
    *  construction), so there is no expected% to compare it against. This
@@ -213,6 +216,24 @@ function psiForColumn(live: FeatureHistogram, ref: PsiReference): number {
   return psi;
 }
 
+/**
+ * MODEL-SERVE-001-T32. NO HYSTERESIS HERE, AND THAT IS A DECISION.
+ *
+ * The z-score has one: `applyConsecutiveBreachRule` (prediction-drift.ts,
+ * MODEL-SERVE-008-T03) requires N consecutive dense buckets to breach
+ * before the signal changes state, because its bands were chosen against
+ * HOURLY windows while a dense stream re-evaluates them far more often.
+ *
+ * PSI needs no equivalent: it is computed over a rolling-24 window of
+ * pooled histograms, so the smoothing the z-axis adds after the fact is
+ * already inside the measurement. A consecutive-breach rule on top would
+ * delay a real population shift by hours to suppress noise the pooling has
+ * already removed.
+ *
+ * The asymmetry is deliberate, not an oversight. Do not "fix" it by
+ * mirroring the drift rule; if that rolling window ever narrows, revisit
+ * this comment first.
+ */
 function statusFor(psi: number, thresholds: PsiThresholds): PsiStatus {
   if (psi >= thresholds.critical) return 'CRITICAL';
   if (psi >= thresholds.warn) return 'WARN';

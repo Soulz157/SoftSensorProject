@@ -123,7 +123,6 @@ export function InputFeatureTable({ rows, driftThresholds }: Props) {
                 explanation={explainDriftColumn(
                   {
                     z: row.z,
-                    outOfRangePct: row.outOfRangePct,
                     status: row.driftStatus,
                     reason: row.driftReason,
                   },

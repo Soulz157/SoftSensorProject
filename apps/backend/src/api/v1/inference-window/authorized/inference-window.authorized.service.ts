@@ -291,7 +291,6 @@ export class InferenceWindowAuthorizedService {
             warnSd: schedule.warnSd,
             criticalSd: schedule.criticalSd,
             driftMonitor: schedule.driftMonitor,
-            driftThresholdPct: schedule.driftThresholdPct,
             // MODEL-SERVE-001-T28. Echoed so a settings surface can read
             // back what it wrote. API-settable today with no editor yet —
             // see this task's own ledger note.
@@ -324,7 +323,6 @@ export class InferenceWindowAuthorizedService {
             warnSd: 1.5,
             criticalSd: 3.0,
             driftMonitor: false,
-            driftThresholdPct: 10,
             // T28, the SAME defaults the schema and the merge above use —
             // never a second, silently different set.
             missingPctWarn: 5,
@@ -636,7 +634,6 @@ export class InferenceWindowAuthorizedService {
         warnSd: true,
         criticalSd: true,
         driftMonitor: true,
-        driftThresholdPct: true,
         truthLagMinutes: true,
         truthToleranceMinutes: true,
         truthHorizonHours: true,
@@ -651,8 +648,6 @@ export class InferenceWindowAuthorizedService {
     const warnSd = dto.warnSd ?? existing?.warnSd ?? 1.5;
     const criticalSd = dto.criticalSd ?? existing?.criticalSd ?? 3.0;
     const driftMonitor = dto.driftMonitor ?? existing?.driftMonitor ?? false;
-    const driftThresholdPct =
-      dto.driftThresholdPct ?? existing?.driftThresholdPct ?? 10;
     // MODEL-SERVE-005-T03, merged the same way and for the same reason: a
     // partial update flipping one field must not reset the ground-truth
     // settings to their defaults behind the caller's back.
@@ -727,7 +722,7 @@ export class InferenceWindowAuthorizedService {
     // and this is load-bearing rather than tidy. This same method serves a
     // PARTIAL SETTINGS UPDATE on an already-running schedule (that is what
     // T09's merge logic above exists for). Probing on those calls would mean:
-    // operator nudges driftThresholdPct, PI blips for thirty seconds, the
+    // operator nudges warnSd, PI blips for thirty seconds, the
     // update is refused AND `preflightOk: false` is written to a row that
     // stays `enabled: true` and whose windows keep succeeding — pinning a
     // demonstrably working model to Failed forever, since only a later
@@ -783,7 +778,6 @@ export class InferenceWindowAuthorizedService {
         warnSd,
         criticalSd,
         driftMonitor,
-        driftThresholdPct,
         truthLagMinutes,
         truthToleranceMinutes,
         truthHorizonHours,
@@ -818,7 +812,6 @@ export class InferenceWindowAuthorizedService {
         warnSd,
         criticalSd,
         driftMonitor,
-        driftThresholdPct,
         truthLagMinutes,
         truthToleranceMinutes,
         truthHorizonHours,
@@ -866,7 +859,6 @@ export class InferenceWindowAuthorizedService {
         warnSd,
         criticalSd,
         driftMonitor,
-        driftThresholdPct,
       },
     };
   }

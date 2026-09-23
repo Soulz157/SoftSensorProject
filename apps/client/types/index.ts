@@ -107,6 +107,7 @@ export interface AIModel {
         | 'BAD_DATA'
         | 'SENSOR_FROZEN'
         | 'DRIFT_CRITICAL'
+        | 'DRIFT_DIST_CRITICAL'
         | 'DRIFT_WARN'
         /** MODEL-SERVE-012. The output-error codes — see the same union in
          *  `services/inference-window.ts` for why they are not DRIFT_*. */

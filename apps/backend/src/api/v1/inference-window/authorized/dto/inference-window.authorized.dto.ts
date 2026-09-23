@@ -28,7 +28,6 @@ export const PutInferenceScheduleSchema = z
     warnSd: z.number().positive().optional(),
     criticalSd: z.number().positive().optional(),
     driftMonitor: z.boolean().optional(),
-    driftThresholdPct: z.number().positive().max(100).optional(),
     // MODEL-SERVE-005-T03. The ground-truth half of the same lag trade.
     // `truthLagMinutes` is deliberately a much larger number than
     // `lagMinutes` above — feature freshness and lab latency are different
@@ -45,7 +44,7 @@ export const PutInferenceScheduleSchema = z
     missingPctAlert: z.number().nonnegative().max(100).optional(),
     skipStreakAlert: z.number().int().positive().max(100).optional(),
     frozenWindows: z.number().int().positive().max(24).optional(),
-    // NONNEGATIVE, not `.positive()` like its sibling driftThresholdPct: 0 is
+    // NONNEGATIVE, not `.positive()` like its sibling warnSd: 0 is
     // this field's own DEFAULT and its most meaningful value (exact
     // flatness), so `.positive()` would make the default unsettable.
     frozenTolerancePct: z.number().nonnegative().max(100).optional(),

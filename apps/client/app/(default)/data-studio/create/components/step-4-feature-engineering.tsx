@@ -26,7 +26,10 @@ import { useDatasetGoldWarm } from '@/hooks/dataset/use-dataset-gold-warm'
 import { useDatasetFeaturePreviewSample } from '@/hooks/dataset/use-dataset-feature-preview-sample'
 import { useEdaWindowControl } from '@/hooks/dataset/use-eda-window-control'
 import { ExtractionPanel } from './feature-engineering/extraction-panel'
-import { CreationPanel } from './feature-engineering/creation-panel'
+import {
+  CreationPanel,
+  type FormulaPatch,
+} from './feature-engineering/creation-panel'
 import { DataAnalysisCard } from './processing/data-analysis-card'
 import { ValidationHoldoutSection } from './processing/validation-holdout-section'
 import { PERIOD_TO_RANGE } from '@/store/model-pipeline'
@@ -170,18 +173,20 @@ export function Step4FeatureEngineering({ nav }: Props) {
     }
   }
 
-  const renameFeature = (id: string, newName: string) => {
+  // Name AND equation in one patch. The column-name remap below is
+  // conditional (an equation-only edit keeps the same column name) — the
+  // config write is NOT, or such an edit would be silently dropped.
+  const updateFeature = (id: string, patch: FormulaPatch) => {
     const cfg = featureConfigs.find(c => c.id === id)
     if (!cfg || cfg.kind !== 'formula') return
 
     const oldCol = featureColumnName(cfg)
-    const newCol = featureColumnName({ ...cfg, name: newName })
-    if (newCol === oldCol) return
+    const newCol = featureColumnName({ ...cfg, name: patch.name })
 
     setFeatureConfigs(prev =>
-      prev.map(c => (c.id === id ? { ...c, name: newName } : c)),
+      prev.map(c => (c.id === id ? { ...c, ...patch } : c)),
     )
-    if (selectedColumns !== null) {
+    if (newCol !== oldCol && selectedColumns !== null) {
       setSelectedColumns(
         selectedColumns.map(col => (col === oldCol ? newCol : col)),
       )
@@ -280,7 +285,7 @@ export function Step4FeatureEngineering({ nav }: Props) {
               features={featureConfigs}
               onAdd={addFeature}
               onRemove={removeFeature}
-              onRename={renameFeature}
+              onUpdate={updateFeature}
             />
           </TabsContent>
 

@@ -1,6 +1,5 @@
 import {
   computeDrift,
-  estimateOutOfRangePct,
   poolFeatureStats,
   type ColumnBaselineMap,
   type DriftThresholds,
@@ -13,7 +12,6 @@ import {
 const THRESHOLDS: DriftThresholds = {
   warnSd: 1.5,
   criticalSd: 3.0,
-  outOfRangePct: 10,
 };
 
 describe('poolFeatureStats', () => {
@@ -46,36 +44,6 @@ describe('poolFeatureStats', () => {
       { B: { n: 1, sum: 2, sumsq: 4, min: 2, max: 2 } },
     ]);
     expect(Object.keys(pooled).sort()).toEqual(['A', 'B']);
-  });
-});
-
-describe('estimateOutOfRangePct', () => {
-  it('is ~0 when the live distribution sits well inside the baseline range', () => {
-    // N(0.5, 0.05) against a [0.1, 0.9] baseline range — essentially all
-    // mass is inside, so both tails should be negligible.
-    const pct = estimateOutOfRangePct(0.5, 0.05, 0.1, 0.9);
-    expect(pct).toBeLessThan(0.01);
-  });
-
-  it('is ~100 when the live distribution sits entirely outside the range', () => {
-    // A tight live distribution centred FAR above the baseline's p99.
-    const pct = estimateOutOfRangePct(10, 0.1, 0.1, 0.9);
-    expect(pct).toBeGreaterThan(99);
-  });
-
-  it('is exactly 100 at a degenerate boundary where the range collapses to one point', () => {
-    // Live == N(0.5, 1), baseline range [0.5, 0.5] — half the normal mass
-    // lies below the (degenerate) lower bound, half above the (identical)
-    // upper bound, summing to 100% by construction — confirms the two
-    // tails are ADDED, not averaged.
-    const pct = estimateOutOfRangePct(0.5, 1, 0.5, 0.5);
-    expect(pct).toBeCloseTo(100, 5);
-  });
-
-  it('clamps into [0,100] rather than ever going negative or over 100', () => {
-    const pct = estimateOutOfRangePct(0, 1, -1000, 1000);
-    expect(pct).toBeGreaterThanOrEqual(0);
-    expect(pct).toBeLessThanOrEqual(100);
   });
 });
 
@@ -262,7 +230,6 @@ function col(
     trainMean: 0,
     trainStd: 1,
     z,
-    outOfRangePct: 0,
     status,
   };
 }

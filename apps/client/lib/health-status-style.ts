@@ -40,6 +40,12 @@ export const HEALTH_REASON_LABEL: Record<HealthReason, string> = {
   // wearing another's name.
   DRIFT_CRITICAL: 'input drift (critical)',
   DRIFT_WARN: 'input drift',
+  // MODEL-SERVE-001-T32. The SECOND input axis, labelled for what it
+  // measures rather than for its severity: the reader needs to know a
+  // population RESHAPED (retrain territory), not that another critical
+  // fired. Kept distinct from the z-score pair above for the same reason
+  // they are distinct from each other.
+  DRIFT_DIST_CRITICAL: 'input distribution shifted',
   // MODEL-SERVE-012. Named for the BAND the reader already sees on the
   // Residual chart, so the badge and the chart speak the same language. Two
   // codes rather than one for the same reason the drift pair is two: 1–2 SD

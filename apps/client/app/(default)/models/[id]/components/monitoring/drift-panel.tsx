@@ -116,9 +116,6 @@ export function DriftPanel({ report, loading, unavailableReason }: Props) {
             <tr>
               <th className="px-3 py-2 text-left font-medium">Column</th>
               <th className="px-3 py-2 text-right font-medium">z-score</th>
-              <th className="px-3 py-2 text-right font-medium">
-                Out-of-range (est.)
-              </th>
               {/* MODEL-SERVE-001-T17: the backend has always sent `col.n`;
                   this table never rendered it. Without it, a z-score pooled
                   from one 18-row window reads exactly as solid on screen as
@@ -135,11 +132,6 @@ export function DriftPanel({ report, loading, unavailableReason }: Props) {
                 <td className="px-3 py-2 font-mono">{col.column}</td>
                 <td className="px-3 py-2 text-right font-mono">
                   {col.z === null ? '—' : formatSigned(col.z)}
-                </td>
-                <td className="px-3 py-2 text-right font-mono">
-                  {col.outOfRangePct === null
-                    ? '—'
-                    : `${col.outOfRangePct.toFixed(1)}%`}
                 </td>
                 <td className="px-3 py-2 text-right font-mono">{col.n}</td>
                 <td className="px-3 py-2">

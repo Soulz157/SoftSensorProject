@@ -16,7 +16,6 @@ const DRIFT: DriftReport = {
       trainMean: 2.5,
       trainStd: 0.2,
       z: 2.6,
-      outOfRangePct: 1.2,
       status: 'WARN',
       reason: undefined,
     },

@@ -37,7 +37,6 @@ import {
   mpRetrainWarnSdAtom,
   mpRetrainCriticalSdAtom,
   mpDriftMonitorAtom,
-  mpDriftThresholdPctAtom,
   MP_TOTAL_STEPS,
   type WizardMode,
 } from '@/store/model-pipeline'
@@ -93,7 +92,6 @@ export function useModelWizardMode(): UseModelWizardModeResult {
   const setWarnSd = useSetAtom(mpRetrainWarnSdAtom)
   const setCriticalSd = useSetAtom(mpRetrainCriticalSdAtom)
   const setDriftMonitor = useSetAtom(mpDriftMonitorAtom)
-  const setDriftThresholdPct = useSetAtom(mpDriftThresholdPctAtom)
 
   const { resume } = useModelDraftResume()
 
@@ -163,7 +161,6 @@ export function useModelWizardMode(): UseModelWizardModeResult {
         setWarnSd(deploy?.warnSd ?? 1.5)
         setCriticalSd(deploy?.criticalSd ?? 3.0)
         setDriftMonitor(deploy?.driftMonitor ?? false)
-        setDriftThresholdPct(deploy?.driftThresholdPct ?? 10)
 
         const datasetId = config.datasetId || model.datasetId
         if (datasetId) {

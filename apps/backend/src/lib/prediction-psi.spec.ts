@@ -252,24 +252,24 @@ describe('computePsi', () => {
     const driftReport = computeDrift(liveStats, baseline, {
       warnSd: 1.5,
       criticalSd: 3.0,
-      outOfRangePct: 10,
     });
 
     const psiReport = computePsi(live, reference, THRESHOLDS);
 
-    // The demonstration, precisely: the Z-SCORE ITSELF stays at exactly 0
-    // (same mean as training — z is blind to shape by construction), while
-    // PSI rises to CRITICAL. Asserted against `z` directly, not against
-    // `computeDrift`'s bundled overall status — that status ALSO folds in
-    // a separate estimate (`outOfRangePct`, a parametric guess assuming
-    // the live population is itself normally distributed) which, measured
-    // here, happens to read WARN for this exact bimodal fixture via ITS
-    // own different, cruder mechanism (a bimodal population's std is wide
-    // enough to look tail-heavy against a normal model). That is real,
-    // separately-measured behaviour, not a flaw in this fixture — but it
-    // is a different signal from z, so asserting the bundled status here
-    // would misrepresent which metric is actually being contrasted.
+    // The demonstration, precisely: the Z-SCORE stays at exactly 0 (same
+    // mean as training — z is blind to shape by construction) while PSI
+    // rises to CRITICAL.
+    //
+    // MODEL-SERVE-001-T31 made this cleaner than it used to be. The drift
+    // report's own STATUS could not be asserted here before: it folded in
+    // `outOfRangePct`, a parametric estimate assuming the live population
+    // was itself normal, and this bimodal fixture's wide std read
+    // tail-heavy against that model — so the z-score card said WARN for a
+    // reason that had nothing to do with z. With that clause deleted the
+    // two metrics finally disagree cleanly, which is the whole point of
+    // running both: OK on mean, CRITICAL on shape.
     expect(driftReport.columns[0].z as number).toBeCloseTo(0, 10);
+    expect(driftReport.columns[0].status).toBe('OK');
     expect(psiReport.columns[0].psi as number).toBeGreaterThan(
       THRESHOLDS.critical,
     );

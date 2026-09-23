@@ -1,3 +1,12 @@
+'use client'
+
+import { Info } from 'lucide-react'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 import type { ColumnBins } from '@/services/model-monitoring'
 import { resolvePsiBins, resolvePsiOverflow } from '@/lib/psi-bins'
 
@@ -19,6 +28,16 @@ interface Props {
  * `liveTotal` (the column's full population) for `<lo`/`>hi`, vs.
  * `liveInRangeTotal` (bins only) for every bin row — the two must never be
  * silently mixed into one implied percentage base.
+ *
+ * The `Ref count` header carries its own tooltip. Reference counts are FLAT
+ * for a continuous tag — `quantile_edges`
+ * (packages/py-scaling/src/softsensor_scaling/psi.py) cuts bins at equal
+ * training population, so equal counts are the definition, not a symptom —
+ * and every tag binned from the same TRAIN split shows the same numbers,
+ * which reads as "the table is broken" to anyone who has not seen that
+ * function. The copy branches on `binMode` because the quantile claim is
+ * simply false for a categorical tag, whose counts are real per-value
+ * frequencies and legitimately uneven.
  */
 export function PsiBinTable({ bins, liveTotal }: Props) {
   const rows = resolvePsiBins(bins)
@@ -33,7 +52,54 @@ export function PsiBinTable({ bins, liveTotal }: Props) {
             <th className="px-3 py-2 text-left font-medium">Range</th>
             <th className="px-3 py-2 text-right font-medium">Reference %</th>
             <th className="px-3 py-2 text-right font-medium">Current %</th>
-            <th className="px-3 py-2 text-right font-medium">Ref count</th>
+            <th className="px-3 py-2 text-right font-medium">
+              {/* The reference column is FLAT BY CONSTRUCTION, which reads
+                  as a bug to anyone who has not seen `quantile_edges`
+                  (packages/py-scaling/src/softsensor_scaling/psi.py). The
+                  note lives on the header rather than in the footnote
+                  below because the question ("why is every number the
+                  same?") is asked while looking at THIS column, and the
+                  footnote is already carrying the two-denominators
+                  explanation — a second paragraph there would bury both. */}
+              <TooltipProvider delayDuration={100}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={e => e.stopPropagation()}
+                      className="inline-flex cursor-help items-center gap-1 rounded focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                    >
+                      Ref count
+                      <Info className="h-3 w-3 opacity-60" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent className="grid max-w-xs space-y-1.5 text-left">
+                    {bins.binMode === 'categorical' ? (
+                      <p className="text-xs leading-snug">
+                        Real per-value frequencies from the training split —
+                        this tag has too few distinct values to bin by quantile,
+                        so one bin is one value and these counts are genuinely
+                        uneven.
+                      </p>
+                    ) : (
+                      <p className="text-xs leading-snug">
+                        Equal on purpose. These are{' '}
+                        <span className="font-medium">quantile</span> bins cut
+                        from the training split, so each holds the same share of
+                        training rows by definition — Reference % sits near{' '}
+                        {(100 / Math.max(rows.length, 1)).toFixed(1)}% for the
+                        same reason.
+                      </p>
+                    )}
+                    <p className="text-xs leading-snug opacity-80">
+                      Either way the reference is frozen at training time and
+                      never re-fit, so the signal is Current moving away from it
+                      — not this column changing.
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            </th>
             <th className="px-3 py-2 text-right font-medium">Cur count</th>
           </tr>
         </thead>

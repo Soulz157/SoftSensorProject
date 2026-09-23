@@ -8,7 +8,7 @@ import {
 } from '@/lib/monitoring-status-explain'
 import type { DriftReport, PsiReport } from '@/services/model-monitoring'
 
-const DRIFT_THRESHOLDS = { warnSd: 1.5, criticalSd: 3.0, outOfRangePct: 10 }
+const DRIFT_THRESHOLDS = { warnSd: 1.5, criticalSd: 3.0 }
 const PSI_THRESHOLDS = { warn: 0.1, critical: 0.25, minSamplesPerBin: 20 }
 
 function driftReport(overrides: Partial<DriftReport> = {}): DriftReport {
@@ -59,7 +59,7 @@ describe('explainDriftColumn', () => {
   // still rendering a correct-looking line.
   it('separates condition from verdict with the exported separator', () => {
     const { criteria } = explainDriftColumn(
-      { z: 2.14, outOfRangePct: null, status: 'WARN' },
+      { z: 2.14, status: 'WARN' },
       DRIFT_THRESHOLDS,
     )
 
@@ -72,7 +72,7 @@ describe('explainDriftColumn', () => {
 
   it('names the z rule when z is what breached', () => {
     const { criteria } = explainDriftColumn(
-      { z: 2.14, outOfRangePct: 1, status: 'WARN' },
+      { z: 2.14, status: 'WARN' },
       DRIFT_THRESHOLDS,
     )
 
@@ -81,7 +81,7 @@ describe('explainDriftColumn', () => {
 
   it('names the CRITICAL line, not the warn line, past 3 SD', () => {
     const { criteria } = explainDriftColumn(
-      { z: -3.42, outOfRangePct: 0, status: 'CRITICAL' },
+      { z: -3.42, status: 'CRITICAL' },
       DRIFT_THRESHOLDS,
     )
 
@@ -90,13 +90,16 @@ describe('explainDriftColumn', () => {
     expect(criteria[0]).toBe('|z| 3.42 ≥ 3 → CRITICAL')
   })
 
-  // THE TRAP THIS MODULE EXISTS FOR. `statusFor` is
-  // `absZ >= warnSd || outOfRangePct >= threshold`, so a column can be
-  // WARN with a perfectly calm z. A tooltip blaming z here would state
-  // something the backend never concluded.
-  it('blames out-of-range, not z, when only out-of-range breached', () => {
+  // WAS "THE TRAP THIS MODULE EXISTS FOR": until MODEL-SERVE-001-T31,
+  // `statusFor` was `absZ >= warnSd || outOfRangePct >= threshold`, so a
+  // column could be WARN with a perfectly calm z and this test asserted the
+  // tooltip blamed out-of-range rather than z. That second rule is gone —
+  // tail mass is PSI's to report — so the assertion INVERTS: a calm z is
+  // simply Good, whatever the tail is doing, and drift never quotes an
+  // out-of-range line at all.
+  it('quotes z alone, and reads Good at a calm z', () => {
     const { criteria } = explainDriftColumn(
-      { z: 0.3, outOfRangePct: 12, status: 'WARN' },
+      { z: 0.3, status: 'OK' },
       DRIFT_THRESHOLDS,
     )
 
@@ -104,18 +107,16 @@ describe('explainDriftColumn', () => {
     // can badge it green — it used to read "(warn line)", which named a
     // threshold instead of stating the result.
     expect(criteria[0]).toBe('|z| 0.30 < 1.5 → Good')
-    expect(criteria[1]).toBe('out-of-range 12.0% ≥ 10.0% → WARN')
-    // Exactly two lines. The "(this rule never reaches CRITICAL)" suffix
-    // and the estimated-vs-counted note were cut as too wordy for a
-    // tooltip; this pins them out rather than letting either drift back.
-    expect(criteria).toHaveLength(2)
+    // Exactly one line now. Pins out both the deleted out-of-range criterion
+    // and the "(this rule never reaches CRITICAL)" suffix cut earlier.
+    expect(criteria).toHaveLength(1)
   })
 
   it('prints no criteria at all when the backend sent no thresholds', () => {
     // A backend deployed before `basis.thresholds` shipped. Inventing
     // 1.5/3.0 here would render a confident number nothing produced.
     const { meaning, criteria } = explainDriftColumn(
-      { z: 2.14, outOfRangePct: 12, status: 'WARN' },
+      { z: 2.14, status: 'WARN' },
       undefined,
     )
 
@@ -127,7 +128,6 @@ describe('explainDriftColumn', () => {
     const { meaning, criteria } = explainDriftColumn(
       {
         z: null,
-        outOfRangePct: null,
         status: 'UNKNOWN',
         reason: 'no training baseline for this column',
       },
@@ -154,7 +154,6 @@ describe('explainDriftReport', () => {
           trainMean: 0,
           trainStd: 1,
           z: 0.1,
-          outOfRangePct: 0,
           status: 'OK',
         },
         {
@@ -165,7 +164,6 @@ describe('explainDriftReport', () => {
           trainMean: 0,
           trainStd: 1,
           z: 4,
-          outOfRangePct: 0,
           status: 'CRITICAL',
         },
       ],

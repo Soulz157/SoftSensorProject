@@ -95,8 +95,6 @@ export function Phase6Deploy({ nav }: Props) {
     setCriticalSd,
     driftMonitor,
     setDriftMonitor,
-    driftThresholdPct,
-    setDriftThresholdPct,
   } = nav
 
   const savedLabel = mode === 'edit' ? 'Changes saved' : 'Model saved'
@@ -156,7 +154,6 @@ export function Phase6Deploy({ nav }: Props) {
           warnSd,
           criticalSd,
           driftMonitor,
-          driftThresholdPct,
         })
         toast.success(`${savedLabel} — deploying`)
       } catch (err) {
@@ -268,27 +265,6 @@ export function Phase6Deploy({ nav }: Props) {
             onCheckedChange={setDriftMonitor}
           />
         </div>
-
-        {driftMonitor && (
-          <div className="flex items-center justify-between gap-4 pl-4">
-            <Label
-              htmlFor="drift-threshold"
-              className="text-xs font-normal text-muted-foreground"
-            >
-              Drift alarm threshold (%)
-            </Label>
-            <Input
-              id="drift-threshold"
-              type="number"
-              min={0}
-              max={100}
-              step={1}
-              value={driftThresholdPct}
-              onChange={e => setDriftThresholdPct(Number(e.target.value))}
-              className="h-8 w-20 text-right"
-            />
-          </div>
-        )}
 
         <div className="flex items-center justify-between gap-4">
           <div className="space-y-0.5">

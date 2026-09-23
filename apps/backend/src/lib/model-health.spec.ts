@@ -23,6 +23,12 @@ const healthy = {
   // There IS evidence to judge drift on unless a test says otherwise —
   // the no-evidence case is its own describe block below.
   driftEvidence: true,
+  // MODEL-SERVE-001-T32. The PSI axis is SILENT by default, for the same
+  // reason residualSdStatus is UNKNOWN below: these tests are about the
+  // z-score and liveness tiers, and a PSI verdict here would let a second
+  // input axis answer for them. The DRIFT_DIST_CRITICAL cases opt in.
+  psiStatus: null,
+  psiEvidence: false,
   // MODEL-SERVE-012. UNKNOWN by default, NOT OK: these tests are about the
   // drift and liveness tiers, and a default of OK would let this axis answer
   // for them. UNKNOWN makes it silent, which is what "this test is not about
@@ -90,6 +96,92 @@ describe('classifyModelHealth (MODEL-SERVE-001-T21)', () => {
     expect(classifyModelHealth({ ...healthy, driftStatus: 'UNKNOWN' })).toEqual(
       { status: 'UNKNOWN', reason: null, frozenColumns: [] },
     );
+  });
+});
+
+describe('the distribution axis (MODEL-SERVE-001-T32)', () => {
+  const psiArmed = { ...healthy, psiEvidence: true } as const;
+
+  it('raises ALERT/DRIFT_DIST_CRITICAL when PSI is CRITICAL and z is calm', () => {
+    // THE DEFECT T32 CLOSES. Before this task PSI ran only on the report
+    // path, so this exact input — a reshaped input population with an
+    // unchanged mean, the bimodal case prediction-psi.spec.ts measures —
+    // reported Normal.
+    expect(
+      classifyModelHealth({
+        ...psiArmed,
+        driftStatus: 'OK',
+        psiStatus: 'CRITICAL',
+      }),
+    ).toEqual({
+      status: 'ALERT',
+      reason: 'DRIFT_DIST_CRITICAL',
+      frozenColumns: [],
+    });
+  });
+
+  it('lets the MEAN axis lead when both input axes fire', () => {
+    // Not a tie-break for its own sake: a mean shift is the faster-moving
+    // signal and the one an operator can act on today, while a reshaped
+    // population is a retrain conversation.
+    expect(
+      classifyModelHealth({
+        ...psiArmed,
+        driftStatus: 'CRITICAL',
+        psiStatus: 'CRITICAL',
+      }),
+    ).toEqual({
+      status: 'ALERT',
+      reason: 'DRIFT_CRITICAL',
+      frozenColumns: [],
+    });
+  });
+
+  it('outranks RESIDUAL_SD_CRITICAL, same ordering argument as the mean axis', () => {
+    expect(
+      classifyModelHealth({
+        ...psiArmed,
+        psiStatus: 'CRITICAL',
+        residualSdStatus: 'ALERT',
+      }),
+    ).toEqual({
+      status: 'ALERT',
+      reason: 'DRIFT_DIST_CRITICAL',
+      frozenColumns: [],
+    });
+  });
+
+  it('says nothing on INSUFFICIENT_DATA or UNKNOWN — thin evidence is not health, and not an alarm either', () => {
+    for (const psiStatus of ['INSUFFICIENT_DATA', 'UNKNOWN'] as const) {
+      expect(
+        classifyModelHealth({ ...psiArmed, psiStatus }).reason,
+      ).not.toBe('DRIFT_DIST_CRITICAL');
+    }
+  });
+
+  it('stays silent without its OWN evidence, even when the z-score baseline exists', () => {
+    // `driftEvidence` is true throughout `healthy` — the point of the
+    // separate flag is that a model can hold a z-score baseline while
+    // carrying no frozen psiRefEdges reference at all.
+    expect(
+      classifyModelHealth({
+        ...healthy,
+        psiEvidence: false,
+        psiStatus: 'CRITICAL',
+      }).reason,
+    ).not.toBe('DRIFT_DIST_CRITICAL');
+  });
+
+  it('is gated behind driftMonitor, like the mean axis', () => {
+    // Recorded rather than assumed: driftMonitor defaults FALSE, so this
+    // alert is live only for schedules that opted into drift watching.
+    expect(
+      classifyModelHealth({
+        ...psiArmed,
+        driftMonitor: false,
+        psiStatus: 'CRITICAL',
+      }).reason,
+    ).not.toBe('DRIFT_DIST_CRITICAL');
   });
 });
 
@@ -388,31 +480,21 @@ describe('drift never speaks without evidence (MODEL-SERVE-001-T27 rule 2)', () 
 });
 
 describe('thresholdsFromSchedule (MODEL-SERVE-001-T21)', () => {
-  it('renames driftThresholdPct to outOfRangePct, changing nothing else', () => {
-    expect(
-      thresholdsFromSchedule({
-        warnSd: 1.5,
-        criticalSd: 3.0,
-        driftThresholdPct: 10,
-      }),
-    ).toEqual({
+  // MODEL-SERVE-001-T31 deleted this function's original reason to exist —
+  // the driftThresholdPct -> outOfRangePct rename — along with the schedule
+  // column behind it. What is left to pin is that a per-schedule OVERRIDE
+  // reaches `computeDrift` unchanged, never the system defaults.
+  it('carries the schedule bands through untouched', () => {
+    expect(thresholdsFromSchedule({ warnSd: 1.5, criticalSd: 3.0 })).toEqual({
       warnSd: 1.5,
       criticalSd: 3.0,
-      outOfRangePct: 10,
     });
   });
 
   it('carries a per-schedule override through untouched, not the system default', () => {
-    expect(
-      thresholdsFromSchedule({
-        warnSd: 2.0,
-        criticalSd: 4.0,
-        driftThresholdPct: 25,
-      }),
-    ).toEqual({
+    expect(thresholdsFromSchedule({ warnSd: 2.0, criticalSd: 4.0 })).toEqual({
       warnSd: 2.0,
       criticalSd: 4.0,
-      outOfRangePct: 25,
     });
   });
 });

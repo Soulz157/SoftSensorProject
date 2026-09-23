@@ -487,7 +487,6 @@ describe('InferenceWindowAuthorizedService.putScheduleService — D5 enable-time
           warnSd: 1.5,
           criticalSd: 3.0,
           driftMonitor: false,
-          driftThresholdPct: 10,
           truthLagMinutes: 1440,
           truthToleranceMinutes: 30,
           truthHorizonHours: 168,
@@ -510,7 +509,7 @@ describe('InferenceWindowAuthorizedService.putScheduleService — D5 enable-time
 
     const result = await service.putScheduleService(
       'model-1',
-      { enabled: true, driftThresholdPct: 25 },
+      { enabled: true, warnSd: 2.5 },
       user,
     );
 
@@ -605,7 +604,6 @@ describe('InferenceWindowAuthorizedService.putScheduleService — D5 enable-time
           warnSd: 1.5,
           criticalSd: 3.0,
           driftMonitor: false,
-          driftThresholdPct: 10,
           truthLagMinutes: 1440,
           truthToleranceMinutes: 30,
           truthHorizonHours: 168,
@@ -655,7 +653,6 @@ describe('InferenceWindowAuthorizedService.putScheduleService — D5 enable-time
           warnSd: 1.5,
           criticalSd: 3.0,
           driftMonitor: false,
-          driftThresholdPct: 10,
           truthLagMinutes: 1440,
           truthToleranceMinutes: 30,
           truthHorizonHours: 168,
@@ -785,7 +782,6 @@ describe('InferenceWindowAuthorizedService.putScheduleService — D5 enable-time
           warnSd: 1.5,
           criticalSd: 3.0,
           driftMonitor: false,
-          driftThresholdPct: 10,
         }),
       },
     });
@@ -857,7 +853,6 @@ describe('InferenceWindowAuthorizedService.putScheduleService — D5 enable-time
           warnSd: 1.5,
           criticalSd: 3.0,
           driftMonitor: false,
-          driftThresholdPct: 10,
         }),
       },
     });
@@ -895,7 +890,6 @@ describe('InferenceWindowAuthorizedService.putScheduleService — D5 enable-time
           warnSd: 1.5,
           criticalSd: 3.0,
           driftMonitor: false,
-          driftThresholdPct: 10,
         }),
       },
     });
@@ -2489,7 +2483,6 @@ const SCHEDULE_ROW = {
   warnSd: 1.5,
   criticalSd: 3.0,
   driftMonitor: false,
-  driftThresholdPct: 10,
   missingPctWarn: 5,
   missingPctAlert: 20,
   skipStreakAlert: 3,

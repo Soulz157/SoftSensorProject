@@ -45,7 +45,6 @@ export interface DriftColumn {
   trainMean: number | null
   trainStd: number | null
   z: number | null
-  outOfRangePct: number | null
   status: DriftStatus
   reason?: string
 }
@@ -107,10 +106,6 @@ export interface DriftReport {
     thresholds?: {
       warnSd: number
       criticalSd: number
-      /** Percent, 0-100. Can raise a column to WARN but never to
-       *  CRITICAL — see `statusFor` in the backend's
-       *  lib/prediction-drift.ts. */
-      outOfRangePct: number
     }
   }
 }

@@ -316,7 +316,6 @@ export class PredictionLogAuthorizedService {
     const report = computeDrift(pooled, baseline, {
       warnSd: env.DRIFT_WARN_SD,
       criticalSd: env.DRIFT_CRITICAL_SD,
-      outOfRangePct: env.DRIFT_OUT_OF_RANGE_PCT,
     });
 
     return {
@@ -346,7 +345,6 @@ export class PredictionLogAuthorizedService {
           thresholds: {
             warnSd: env.DRIFT_WARN_SD,
             criticalSd: env.DRIFT_CRITICAL_SD,
-            outOfRangePct: env.DRIFT_OUT_OF_RANGE_PCT,
           },
         },
       },
@@ -421,7 +419,6 @@ export class PredictionLogAuthorizedService {
     const thresholds = {
       warnSd: env.DRIFT_WARN_SD,
       criticalSd: env.DRIFT_CRITICAL_SD,
-      outOfRangePct: env.DRIFT_OUT_OF_RANGE_PCT,
     };
 
     // One bucket per live cadence, so a "consecutive bucket" means one
