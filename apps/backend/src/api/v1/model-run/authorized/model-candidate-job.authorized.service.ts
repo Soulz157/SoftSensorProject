@@ -12,7 +12,11 @@ import {
   getRunLossHistory,
   getRunManifest,
 } from '@/lib/python-preprocess-client';
-import { tuningCandidatesFor, type DatasetSize } from '@/lib/tuning-grid';
+import {
+  distinctExtraVariants,
+  tuningCandidatesFor,
+  type DatasetSize,
+} from '@/lib/tuning-grid';
 import {
   buildModelVersionData,
   nextModelVersionNumber,
@@ -370,12 +374,33 @@ export class ModelCandidateJobAuthorizedService {
       hyperparameters: Record<string, unknown>;
     },
     size?: DatasetSize,
+    extraVariants: Array<Record<string, string | number | boolean | null>> = [],
   ): Array<{ algorithm: string; hyperparameters: Record<string, unknown> }> {
-    const variants = tuningCandidatesFor(
+    // `Candidate.hyperparameters` is `Record<string, unknown>` at this
+    // boundary, but `HyperparametersSchema` has already constrained every
+    // value to a scalar — asserted ONCE here rather than at each call below.
+    const baseHyperparameters = base.hyperparameters as Record<
+      string,
+      string | number | boolean | null
+    >;
+    const gridVariants = tuningCandidatesFor(
       base.algorithm,
-      base.hyperparameters as Record<string, string | number | boolean | null>,
+      baseHyperparameters,
       size,
     );
+    // MODEL-FLOW-026. The user's own rows are appended AFTER the curated
+    // shortlist, never in place of it, and are filtered against both the base
+    // and the grid so a hand-typed duplicate cannot buy a second identical
+    // fit. The retrain path passes none, so its behaviour is unchanged.
+    const variants = [
+      ...gridVariants,
+      ...distinctExtraVariants(
+        base.algorithm,
+        extraVariants,
+        baseHyperparameters,
+        gridVariants,
+      ),
+    ];
     if (variants.length === 0) {
       throw new AppException({
         statusCode: 400,
@@ -453,6 +478,10 @@ export class ModelCandidateJobAuthorizedService {
               rows: dto.sizedRowCount,
             },
           ),
+          // MODEL-FLOW-026. Step 3's hand-added variant rows. The DTO already
+          // refused them for any other `kind`, so this is the only place they
+          // can enter a job.
+          dto.extraVariants ?? [],
         )
       : dto.candidates;
 

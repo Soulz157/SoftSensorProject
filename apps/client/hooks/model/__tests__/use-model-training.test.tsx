@@ -11,6 +11,7 @@ import {
   mpAlgorithmsAtom,
   mpFindBestModelAtom,
   mpFindBestParamsAtom,
+  mpExtraVariantsAtom,
   mpTargetVariableAtom,
   mpSelectedDatasetAtom,
   mpServerDraftIdAtom,
@@ -145,6 +146,86 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
     )
     expect(modelDraftRunService.create).not.toHaveBeenCalled()
     expect(store.get(mpTrainStateAtom).status).toBe('training')
+  })
+
+  /**
+   * MODEL-FLOW-026. Step 3's hand-added variant rows ride along on the
+   * direct search and nowhere else — a SWEEP_THEN_TUNE job builds its tuning
+   * phase server-side from the job row, which carries no such list, and the
+   * DTO refuses the field there rather than promise a search that never runs.
+   */
+  it('sends the hand-added variants with a direct HYPERPARAMETER_SEARCH', async () => {
+    vi.mocked(modelDraftCandidateJobService.create).mockResolvedValue({
+      statusCode: 201,
+      message: 'ok',
+      type: 'SUCCESS',
+      data: { id: 'job-1' } as never,
+    })
+    vi.mocked(modelDraftCandidateJobService.get).mockResolvedValue({
+      statusCode: 200,
+      message: 'ok',
+      type: 'SUCCESS',
+      data: {
+        id: 'job-1',
+        status: 'RUNNING',
+        completedRuns: 0,
+        totalRuns: 6,
+        candidates: [],
+      } as never,
+    })
+    const { result } = renderTraining(s => {
+      s.set(mpFindBestParamsAtom, true)
+      s.set(mpAlgorithmsAtom, ['ridge'])
+      s.set(mpExtraVariantsAtom, {
+        ridge: [{ alpha: 7 }],
+        // Another algorithm's rows belong to that card, not this job.
+        svm: [{ C: 3 }],
+      })
+    })
+
+    await act(async () => {
+      result.current.start()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(modelDraftCandidateJobService.create).toHaveBeenCalledWith(
+      'draft-1',
+      expect.objectContaining({ extraVariants: [{ alpha: 7 }] }),
+    )
+  })
+
+  it('omits extraVariants entirely when the user added none', async () => {
+    vi.mocked(modelDraftCandidateJobService.create).mockResolvedValue({
+      statusCode: 201,
+      message: 'ok',
+      type: 'SUCCESS',
+      data: { id: 'job-1' } as never,
+    })
+    vi.mocked(modelDraftCandidateJobService.get).mockResolvedValue({
+      statusCode: 200,
+      message: 'ok',
+      type: 'SUCCESS',
+      data: {
+        id: 'job-1',
+        status: 'RUNNING',
+        completedRuns: 0,
+        totalRuns: 5,
+        candidates: [],
+      } as never,
+    })
+    const { result } = renderTraining(s => {
+      s.set(mpFindBestParamsAtom, true)
+      s.set(mpAlgorithmsAtom, ['ridge'])
+    })
+
+    await act(async () => {
+      result.current.start()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    const [, payload] = vi.mocked(modelDraftCandidateJobService.create).mock
+      .calls[0]!
+    expect(payload).not.toHaveProperty('extraVariants')
   })
 
   it('refuses Find Best Parameters with zero algorithms and no sweep', async () => {

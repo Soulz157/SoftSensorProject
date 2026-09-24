@@ -11,11 +11,21 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Checkbox } from '@/components/ui/checkbox'
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from '@/components/ui/accordion'
 import { Input } from '@/components/ui/input'
 import { useDatasets } from '@/hooks/dataset/use-datasets'
 import { datasetVersionService } from '@/services/dataset-version'
 import { isAugmentedVersion } from '@/lib/retrain-handoff'
+import {
+  dateBoundsFrom,
+  validationWindowError,
+} from '@/lib/retrain-validation-window'
+import { useArtifactMetadata } from '@/hooks/dataset/artifact/use-dataset-artifact-metadata'
 import type { DatasetVersion } from '@/services/dataset-version'
 import type { RetrainIncumbent } from '@/services/model-retrain'
 import { RetrainFetchNewData } from './retrain-fetch-new-data'
@@ -164,6 +174,21 @@ export function RetrainDataStrategy({
     [datasets, selectedDatasetId],
   )
 
+  // The first and last day the chosen version actually has data for — the
+  // guard on the validation window's date inputs. Read from the artifact's
+  // own metadata (the real min/max of its timestamp column), cached per
+  // artifact, so it costs one small request per version, not a row read.
+  const { metadata: versionMetadata } = useArtifactMetadata(
+    selectedVersion?.artifactId ? selectedDatasetId : null,
+    selectedVersion?.artifactId ?? null,
+  )
+  const dataBounds = useMemo(
+    () =>
+      dateBoundsFrom(versionMetadata?.startTime, versionMetadata?.endTime),
+    [versionMetadata],
+  )
+  const windowError = validationWindowError(windowFrom, windowTo, dataBounds)
+
   // Reported upward only once BOTH bounds exist. A half-typed range is not a
   // decision, and emitting it would trip the server's both-or-neither
   // refusal while the operator is still filling the second field.
@@ -172,7 +197,16 @@ export function RetrainDataStrategy({
   // midnight, so an inclusive "to 2026-05-31" that stayed at 00:00 would
   // silently exclude almost the whole final day the operator picked.
   useEffect(() => {
-    if (!validationWindowEnabled || !windowFrom || !windowTo) {
+    // An out-of-range or inverted window is NOT reported: the date inputs'
+    // own min/max only limit the picker, a typed date still gets through, and
+    // a window reaching past the last day of data would score validation on
+    // rows that do not exist.
+    if (
+      !validationWindowEnabled ||
+      !windowFrom ||
+      !windowTo ||
+      validationWindowError(windowFrom, windowTo, dataBounds) !== null
+    ) {
       onValidationWindowChange(null)
       return
     }
@@ -184,6 +218,7 @@ export function RetrainDataStrategy({
     validationWindowEnabled,
     windowFrom,
     windowTo,
+    dataBounds,
     onValidationWindowChange,
   ])
 
@@ -370,41 +405,46 @@ export function RetrainDataStrategy({
         )}
       </div>
 
-      {/* MODEL-SERVE-017. Only once a committed version is chosen — the card
-          reads THAT artifact, so there is nothing to show before one exists.
-          Collapsed by default: this dialog's job is the decision, and four
-          tabs of charts unfurled above the Start button would bury it. */}
-      {selectedVersion?.artifactId && (
-        <RetrainVersionEda
-          datasetId={selectedDatasetId}
-          artifactId={selectedVersion.artifactId}
-          tags={selectedDatasetTags}
-        />
-      )}
-
       {/* The new-data validation window. Offered only once a committed
           version is chosen, because it is a range INSIDE that dataset and
-          there is nothing to range over before one exists. */}
-      {selectedVersion?.artifactId && (
-        <div className="space-y-2 border-t border-border pt-3">
-          <label className="flex items-center gap-2 text-xs font-medium">
-            <Checkbox
-              checked={validationWindowEnabled}
-              disabled={disabled}
-              onCheckedChange={checked => {
-                const on = checked === true
-                setValidationWindowEnabled(on)
-                // Clearing on disable is the point: a stale range left in
-                // state would otherwise be submitted by a later trigger the
-                // operator thought they had turned off.
-                if (!on) onValidationWindowChange(null)
-              }}
-            />
-            Hold out part of the new data to validate on
-          </label>
+          there is nothing to range over before one exists.
 
-          {validationWindowEnabled && (
-            <>
+          Placed ABOVE "Explore this data": it is a decision that changes
+          what the retrain submits, and the EDA panel is reference material —
+          the decision reads first, the charts after.
+
+          An accordion rather than a checkbox, and OPEN MEANS ON: the window
+          is only submitted while the section is expanded. Collapsing it is
+          the old "untick" — it clears what was reported upward, because a
+          range the operator can no longer see must not be submitted by a
+          later trigger they thought had it turned off. The typed dates are
+          kept locally, so reopening restores them rather than making the
+          operator type both again. */}
+      {selectedVersion?.artifactId && (
+        <Accordion
+          type="single"
+          collapsible
+          value={validationWindowEnabled ? 'validation-window' : ''}
+          onValueChange={value => {
+            const on = value === 'validation-window'
+            setValidationWindowEnabled(on)
+            if (!on) onValidationWindowChange(null)
+          }}
+          className="border-t border-border pt-1"
+        >
+          <AccordionItem value="validation-window" className="border-b-0">
+            <AccordionTrigger
+              disabled={disabled}
+              className="items-center py-2 text-xs font-medium hover:no-underline"
+            >
+              <span className="flex flex-1 items-center gap-2">
+                Split Validation data from the new dataset
+                <span className="text-[10px] font-normal text-muted-foreground">
+                  {validationWindowEnabled ? 'On' : 'Off'}
+                </span>
+              </span>
+            </AccordionTrigger>
+            <AccordionContent className="space-y-2 pb-1">
               <p className="text-xs text-muted-foreground">
                 These rows are kept out of training and scored separately, so
                 you can see how the retrained model does on the new data. The
@@ -417,6 +457,9 @@ export function RetrainDataStrategy({
                   aria-label="Validation window start"
                   className="h-8 w-auto text-xs"
                   disabled={disabled}
+                  min={dataBounds?.min}
+                  max={windowTo || dataBounds?.max}
+                  aria-invalid={windowError !== null}
                   value={windowFrom}
                   onChange={e => setWindowFrom(e.target.value)}
                 />
@@ -426,13 +469,38 @@ export function RetrainDataStrategy({
                   aria-label="Validation window end"
                   className="h-8 w-auto text-xs"
                   disabled={disabled}
+                  min={windowFrom || dataBounds?.min}
+                  max={dataBounds?.max}
+                  aria-invalid={windowError !== null}
                   value={windowTo}
                   onChange={e => setWindowTo(e.target.value)}
                 />
               </div>
-            </>
-          )}
-        </div>
+              {dataBounds && (
+                <p className="text-[11px] text-muted-foreground">
+                  Data covers {dataBounds.min} to {dataBounds.max}.
+                </p>
+              )}
+              {windowError && (
+                <p role="alert" className="text-[11px] text-destructive">
+                  {windowError}
+                </p>
+              )}
+            </AccordionContent>
+          </AccordionItem>
+        </Accordion>
+      )}
+
+      {/* MODEL-SERVE-017. Only once a committed version is chosen — the card
+          reads THAT artifact, so there is nothing to show before one exists.
+          Collapsed by default: this dialog's job is the decision, and four
+          tabs of charts unfurled above the Start button would bury it. */}
+      {selectedVersion?.artifactId && (
+        <RetrainVersionEda
+          datasetId={selectedDatasetId}
+          artifactId={selectedVersion.artifactId}
+          tags={selectedDatasetTags}
+        />
       )}
     </div>
   )

@@ -79,8 +79,42 @@ export const CreateCandidateJobSchema = z
     // and null there is the honest answer rather than a blocked request.
     sizedRowCount: z.number().int().nonnegative().optional(),
     sizedDistinctLabelled: z.number().int().nonnegative().optional(),
+
+    // MODEL-FLOW-026. Hyperparameter sets the USER added by hand in Step 3's
+    // variant table, tried IN ADDITION to the curated TUNING_GRID shortlist
+    // rather than instead of it — the grid stays declared in exactly one
+    // place (tuning-grid.ts) and keeps its own TUNE_VARIANTS_PER_JOB cap;
+    // these are appended after it by `createJob`, which also drops any that
+    // the base or a grid variant already covers so a hand-typed duplicate
+    // cannot buy a second identical fit.
+    //
+    // HYPERPARAMETER_SEARCH ONLY, and refused otherwise below. A
+    // SWEEP_THEN_TUNE job builds its phase 2 in `advanceJobForRun` long
+    // after this request has returned, reading the JOB ROW — it cannot see a
+    // field that was never stored, and silently accepting one here would
+    // promise a search that never runs. Storing them would take a schema
+    // migration; that is a separate decision, not something to smuggle in
+    // behind an optional field.
+    //
+    // Capped at 8 for the same reason `candidates` is capped at 20: each
+    // entry is a CONTAINER spawn. Values are scalar-constrained by the same
+    // `HyperparametersSchema` every other hyperparameter record here uses,
+    // so this grants nothing a client could not already do by sending
+    // arbitrary hyperparameters on a candidate.
+    extraVariants: z.array(HyperparametersSchema).max(8).optional(),
   })
   .strict()
+  .refine(
+    (data) =>
+      data.extraVariants === undefined ||
+      data.extraVariants.length === 0 ||
+      data.kind === 'HYPERPARAMETER_SEARCH',
+    {
+      message:
+        'extraVariants is only supported for a HYPERPARAMETER_SEARCH — a sweep builds its tuning phase after the winner is known, from the job row.',
+      path: ['extraVariants'],
+    },
+  )
   .refine(
     (data) =>
       data.kind === 'HYPERPARAMETER_SEARCH' || data.candidates.length >= 2,

@@ -25,6 +25,7 @@ export function useTuningVariantCounts({
   algorithms,
   hyperparameters,
   perAlgorithmHyperparameters,
+  extraVariants,
   size,
 }: {
   enabled: boolean
@@ -33,6 +34,13 @@ export function useTuningVariantCounts({
   perAlgorithmHyperparameters: Partial<
     Record<Algorithm, Record<string, HyperparamValue>>
   >
+  /** MODEL-FLOW-026. The user's hand-added rows, which are EXTRA fits on top
+   *  of the curated shortlist — counted here so the runtime estimate prices
+   *  the job that will actually launch. An UPPER BOUND: a row equal to the
+   *  base or to a curated variant is dropped server-side, so the estimate
+   *  can over- but never under-state the work, the same direction every
+   *  other fallback in this hook errs in. */
+  extraVariants?: Partial<Record<Algorithm, Record<string, HyperparamValue>[]>>
   size: DatasetSize | undefined
 }): Partial<Record<Algorithm, number>> {
   // Grids are stored WITH the key they were fetched for, and read only while
@@ -78,17 +86,18 @@ export function useTuningVariantCounts({
     for (const a of algorithms) {
       const grid = grids[a]
       if (!grid) continue
-      counts[a] = previewVariants(
-        a,
-        grid.variants,
-        baseHyperparamsFor(
+      counts[a] =
+        previewVariants(
           a,
-          algorithms,
-          hyperparameters,
-          perAlgorithmHyperparameters,
-        ),
-        grid.maxVariantsPerJob,
-      ).shown.length
+          grid.variants,
+          baseHyperparamsFor(
+            a,
+            algorithms,
+            hyperparameters,
+            perAlgorithmHyperparameters,
+          ),
+          grid.maxVariantsPerJob,
+        ).shown.length + (extraVariants?.[a]?.length ?? 0)
     }
     return counts
   }, [
@@ -98,5 +107,6 @@ export function useTuningVariantCounts({
     key,
     hyperparameters,
     perAlgorithmHyperparameters,
+    extraVariants,
   ])
 }

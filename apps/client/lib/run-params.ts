@@ -13,6 +13,7 @@ import type { Algorithm, HyperparamValue } from '@/store/model-pipeline'
 import { HYPERPARAMS } from '@/lib/training-config'
 import type {
   ModelRunSplitSpec,
+  ModelRunStatus,
   ModelTrainingRun,
 } from '@/services/model-draft'
 
@@ -155,4 +156,88 @@ export function toApplyPatch(
   }
 
   return { hyperparameters, dropped }
+}
+
+/**
+ * Run list ordering for the Run Parameter Recall panel. The server returns
+ * `createdAt desc` (listDraftRunsService) and that stays the default — these
+ * are a READ-ONLY view preference over a copy of that list, so nothing about
+ * which run is "latest" may be derived from this order (the panel pins that
+ * by id against the unsorted array).
+ *
+ * A run has no user-supplied name: `name` here means the algorithm LABEL the
+ * card actually renders, compared with `localeCompare` so the order matches
+ * what is on screen rather than the raw enum key.
+ */
+export type RunSortKey = 'recent' | 'oldest' | 'name' | 'rmse' | 'status'
+
+export const RUN_SORT_LABELS: Record<RunSortKey, string> = {
+  recent: 'Newest first',
+  oldest: 'Oldest first',
+  name: 'Name (A–Z)',
+  rmse: 'Best RMSE',
+  status: 'Status',
+}
+
+/** Terminal-and-useful first, so a Status sort surfaces what can be compared
+ *  or applied rather than burying it under a failed run. */
+const STATUS_ORDER: Record<ModelRunStatus, number> = {
+  SUCCEEDED: 0,
+  RUNNING: 1,
+  QUEUED: 2,
+  FAILED: 3,
+  CANCELED: 4,
+}
+
+type SortableRun = Pick<
+  ModelTrainingRun,
+  'algorithm' | 'createdAt' | 'status' | 'metrics'
+>
+
+function rmseOf(run: SortableRun): number | null {
+  const value = run.metrics?.rmse
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+/**
+ * Sorts a COPY — `runs` is the array `useDraftRuns` hands every consumer,
+ * and Step 3 reads it in two components at once.
+ *
+ * `createdAt desc` is the tiebreak on every key, so equal names/metrics keep
+ * a stable, meaningful order instead of jittering between renders. A run
+ * with no RMSE (queued, running, failed) sorts last under `rmse` rather than
+ * pretending to a score.
+ */
+export function sortRuns<T extends SortableRun>(
+  runs: readonly T[],
+  key: RunSortKey,
+  labelOf: (algorithm: string) => string,
+): T[] {
+  const byRecency = (a: SortableRun, b: SortableRun) =>
+    b.createdAt.localeCompare(a.createdAt)
+
+  return [...runs].sort((a, b) => {
+    switch (key) {
+      case 'recent':
+        return byRecency(a, b)
+      case 'oldest':
+        return -byRecency(a, b)
+      case 'name': {
+        const cmp = labelOf(a.algorithm).localeCompare(labelOf(b.algorithm))
+        return cmp !== 0 ? cmp : byRecency(a, b)
+      }
+      case 'rmse': {
+        const x = rmseOf(a)
+        const y = rmseOf(b)
+        if (x === null && y === null) return byRecency(a, b)
+        if (x === null) return 1
+        if (y === null) return -1
+        return x !== y ? x - y : byRecency(a, b)
+      }
+      case 'status': {
+        const cmp = STATUS_ORDER[a.status] - STATUS_ORDER[b.status]
+        return cmp !== 0 ? cmp : byRecency(a, b)
+      }
+    }
+  })
 }

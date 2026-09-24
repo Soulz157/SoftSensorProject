@@ -22,6 +22,7 @@ import {
   mpFindBestParamsAtom,
   mpHyperparamsAtom,
   mpPerAlgorithmHyperparamsAtom,
+  mpExtraVariantsAtom,
   mpTrainTestSplitAtom,
   mpSplitStatsTagsAtom,
   mpSeedAtom,
@@ -129,6 +130,7 @@ export function useModelTraining({
   const perAlgorithmHyperparameters = useAtomValue(
     mpPerAlgorithmHyperparamsAtom,
   )
+  const extraVariants = useAtomValue(mpExtraVariantsAtom)
   const trainTestSplit = useAtomValue(mpTrainTestSplitAtom)
   const splitStatsTags = useAtomValue(mpSplitStatsTagsAtom)
   const seed = useAtomValue(mpSeedAtom)
@@ -514,6 +516,14 @@ export function useModelTraining({
               hyperparameters: hyperparametersFor(algorithm),
             },
           ],
+          // MODEL-FLOW-026. The rows the user added by hand in Step 3's
+          // variant table. Sent only on THIS branch: a SWEEP_THEN_TUNE job
+          // builds its tuning phase server-side after the winner is known,
+          // from the job row, so the server refuses the field there rather
+          // than accept a list it could never read back.
+          ...(extraVariants[algorithm]?.length
+            ? { extraVariants: extraVariants[algorithm] }
+            : {}),
           ...sizedFigures,
         })
 
@@ -627,6 +637,10 @@ export function useModelTraining({
     findBestParams,
     algorithms,
     hyperparameters,
+    // MODEL-FLOW-026. Without this the callback closes over the rows as they
+    // were when the algorithm list last changed, so a variant added just
+    // before Start Training would silently not be sent.
+    extraVariants,
     hyperparametersFor,
     trainTestSplit,
     nSplits,

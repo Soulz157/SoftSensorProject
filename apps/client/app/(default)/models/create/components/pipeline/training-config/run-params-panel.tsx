@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { useAtom, useAtomValue } from 'jotai'
 import {
   AlertTriangle,
+  ArrowUpDown,
   Ban,
   Braces,
   CheckCircle2,
@@ -37,7 +38,17 @@ import {
   classifyHyperparams,
   seedConsumedBy,
   splitPercentFromRun,
+  sortRuns,
+  RUN_SORT_LABELS,
+  type RunSortKey,
 } from '@/lib/run-params'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { METRIC_META } from '@/lib/model-metrics'
 import type {
   ModelRunStatus,
@@ -155,6 +166,15 @@ export function RunParamsPanel() {
    */
   const [compareRunIds, setCompareRunIds] = useAtom(mpCompareRunIdsAtom)
 
+  /**
+   * View preference only, so it stays local — nothing outside this panel
+   * reads the order (contrast `compareRunIds` above, lifted to an atom
+   * solely because Step 4 reads the same set). It reorders a COPY and
+   * nothing else: no refetch, no draft write, and no effect on the compare
+   * set, the footer count or which run Step 4 opens.
+   */
+  const [sortKey, setSortKey] = useState<RunSortKey>('recent')
+
   const toggleCompare = (run: ModelTrainingRunListItem) =>
     setCompareRunIds(prev => {
       const next = new Set(prev)
@@ -191,6 +211,8 @@ export function RunParamsPanel() {
   if (!draftId || loading) {
     return (
       <section className="space-y-2">
+        {/* Nothing to order yet — the control is deliberately absent here
+            rather than rendered disabled. */}
         <Header />
         <Skeleton className="h-16 w-full rounded-xl" />
       </section>
@@ -216,9 +238,48 @@ export function RunParamsPanel() {
     activeCompareIds.has(run.id),
   )
 
+  // "Latest" is a fact about the SERVER order (createdAt desc), not about
+  // this list's position, so it is pinned by id against the unsorted array —
+  // an index test would move the badge (and `RunCard`'s initial open state)
+  // onto whatever the chosen sort happens to put first.
+  const latestRunId = runs[0]?.id ?? null
+  const orderedRuns = sortRuns(
+    runs,
+    sortKey,
+    algorithm => ALGORITHM_LABELS[algorithm as Algorithm] ?? algorithm,
+  )
+
   return (
     <section className="space-y-2">
-      <Header />
+      <div className="flex items-center justify-between gap-2">
+        <Header />
+        {runs.length > 1 && (
+          <Select
+            value={sortKey}
+            onValueChange={value => setSortKey(value as RunSortKey)}
+          >
+            <SelectTrigger
+              size="sm"
+              aria-label="Sort training runs"
+              className="h-7 w-auto cursor-pointer gap-1 px-2 text-[11px]"
+            >
+              <ArrowUpDown className="h-3 w-3 text-muted-foreground" />
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end">
+              {(Object.keys(RUN_SORT_LABELS) as RunSortKey[]).map(key => (
+                <SelectItem
+                  key={key}
+                  value={key}
+                  className="cursor-pointer text-[11px]"
+                >
+                  {RUN_SORT_LABELS[key]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+      </div>
       {error && <EmptyPanel>Could not load training runs — {error}</EmptyPanel>}
       {!error && runs.length === 0 && (
         <EmptyPanel>
@@ -226,13 +287,14 @@ export function RunParamsPanel() {
         </EmptyPanel>
       )}
       {/* Server-ordered most-recent-first (listDraftRunsService orders by
-          createdAt desc) — index 0 is the latest. */}
+          createdAt desc); `sortKey` reorders a copy of that for display
+          only, which is why `latest` is matched by id above. */}
       {!error &&
-        runs.map((run, i) => (
+        orderedRuns.map(run => (
           <RunCard
             key={run.id}
             run={run}
-            latest={i === 0}
+            latest={run.id === latestRunId}
             currentAlgorithms={currentAlgorithms}
             datasetTags={selectedDataset ? selectedDataset.tags : null}
             isCompared={activeCompareIds.has(run.id)}
@@ -355,7 +417,10 @@ function RunCard({
   onToggleCompare: (run: ModelTrainingRunListItem) => void
 }) {
   // Initial state only, deliberately: a card the user opened stays open when
-  // a newer run arrives and takes `latest` away from it.
+  // a newer run arrives and takes `latest` away from it. The same holds for
+  // a SORT change — cards stay mounted, so reordering never slams a card the
+  // user opened shut, nor auto-opens whatever now sorts first. Don't promote
+  // this to an effect on `latest`.
   const [open, setOpen] = useState(latest)
   const panelId = `run-detail-${run.id}`
 

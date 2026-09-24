@@ -6,6 +6,7 @@ import {
   TUNING_GRID_OVERRIDES,
   TUNE_VARIANTS_PER_JOB,
   batchSizeBand,
+  distinctExtraVariants,
   sizeTierFor,
   tuningCandidatesFor,
   tuningVariantsFor,
@@ -480,5 +481,70 @@ describe('tuningCandidatesFor', () => {
         expect(Number(variant.batch_size)).toBeLessThanOrEqual(max);
       }
     });
+  });
+});
+
+/**
+ * MODEL-FLOW-026. Step 3's hand-added variant rows. The rule is the same one
+ * the grid obeys — never buy a fit that is already going to run — applied to
+ * a list the USER wrote, so every exclusion here is one the table above it
+ * must also be able to explain.
+ */
+describe('distinctExtraVariants', () => {
+  it('keeps a variant the base and the grid do not already cover', () => {
+    const grid = [{ alpha: 0.01 }];
+    expect(
+      distinctExtraVariants('ridge', [{ alpha: 7 }], { alpha: 1 }, grid),
+    ).toEqual([{ alpha: 7 }]);
+  });
+
+  it('drops one identical to the base — that fit already runs as candidate 1', () => {
+    expect(
+      distinctExtraVariants('ridge', [{ alpha: 1 }], { alpha: 1 }, []),
+    ).toEqual([]);
+  });
+
+  it('drops one the grid already tries', () => {
+    expect(
+      distinctExtraVariants('ridge', [{ alpha: 0.01 }], { alpha: 1 }, [
+        { alpha: 0.01 },
+      ]),
+    ).toEqual([]);
+  });
+
+  it('collapses two identical hand-typed rows to one', () => {
+    expect(
+      distinctExtraVariants(
+        'ridge',
+        [{ alpha: 7 }, { alpha: 7 }],
+        { alpha: 1 },
+        [],
+      ),
+    ).toEqual([{ alpha: 7 }]);
+  });
+
+  it('is not capped at TUNE_VARIANTS_PER_JOB — the cap bounds the curated list, not what the user asked for', () => {
+    const extras = [2, 3, 4, 5, 6].map((alpha) => ({ alpha }));
+    expect(
+      distinctExtraVariants('ridge', extras, { alpha: 1 }, []),
+    ).toHaveLength(5);
+    expect(extras.length).toBeGreaterThan(TUNE_VARIANTS_PER_JOB);
+  });
+
+  it('carries the base sequence_length onto an lstm variant, as tuningCandidatesFor does', () => {
+    expect(
+      distinctExtraVariants(
+        'lstm',
+        [{ epochs: 10, hidden_size: 16, batch_size: 32 }],
+        { epochs: 30, hidden_size: 32, batch_size: 128, sequence_length: 24 },
+        [],
+      ),
+    ).toEqual([
+      { epochs: 10, hidden_size: 16, batch_size: 32, sequence_length: 24 },
+    ]);
+  });
+
+  it('returns [] for no extras', () => {
+    expect(distinctExtraVariants('ridge', [], { alpha: 1 }, [])).toEqual([]);
   });
 });

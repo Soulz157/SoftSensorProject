@@ -130,6 +130,29 @@ export const mpHyperparamsAtom = atom<Record<string, HyperparamValue>>({})
 export const mpPerAlgorithmHyperparamsAtom = atom<
   Partial<Record<Algorithm, Record<string, HyperparamValue>>>
 >({})
+
+/**
+ * MODEL-FLOW-026. Hyperparameter sets the user ADDED BY HAND to Step 3's
+ * variant table ("+ Add"), per algorithm — tried in addition to the curated
+ * grid, never in place of it (`extraVariants` on the candidate-job DTO does
+ * the appending server-side, so the grid stays declared in one place).
+ *
+ * NOT part of the run-config draft, deliberately. `useRunConfigDraft`'s
+ * dirty/Apply cycle exists for values that change WHAT THE NEXT RUN IS —
+ * they relock the split, clear trainState and re-fetch /split-stats. A row
+ * added here changes only what a SEARCH additionally tries; it touches no
+ * split, no target and no committed configuration, so gating it behind Apply
+ * would make Start Training say "unapplied changes" over a list the run
+ * config cannot see. Read at launch by `use-model-training`.
+ *
+ * ONE ALGORITHM CAN BE TUNED PER JOB, but this is keyed by algorithm anyway:
+ * the rows belong to the card they were typed on, and a user who switches
+ * the selected algorithm and switches back should find their own rows, not
+ * someone else's list reinterpreted.
+ */
+export const mpExtraVariantsAtom = atom<
+  Partial<Record<Algorithm, Record<string, HyperparamValue>[]>>
+>({})
 /**
  * Evaluation metric recorded on the saved model. See `LOSS_OPTIONS` in
  * `lib/training-config`.
@@ -410,6 +433,9 @@ export const resetWizardAtom = atom(null, (_get, set) => {
   // `defaultHyperparams('ols')`; inlined to avoid a store → training-config cycle).
   set(mpHyperparamsAtom, { fit_intercept: true })
   set(mpPerAlgorithmHyperparamsAtom, {})
+  // MODEL-FLOW-026. Hand-added variant rows belong to the draft that was
+  // being configured; a fresh wizard must not inherit them.
+  set(mpExtraVariantsAtom, {})
   // MODEL-FLOW-019-T37. Was 'mse' — not a `LOSS_OPTIONS` member, so a reset
   // wizard rendered an empty Loss control. Same inlined literal as the atom's
   // own default above, held equal to `DEFAULT_LOSS_FUNCTION` by test.

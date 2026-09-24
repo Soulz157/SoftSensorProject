@@ -10,6 +10,13 @@ jest.mock('@/lib/tuning-grid');
 
 const mockedGetRunLossHistory = pythonClient.getRunLossHistory as jest.Mock;
 const mockedTuningCandidatesFor = tuningGrid.tuningCandidatesFor as jest.Mock;
+// MODEL-FLOW-026. Automocked to `undefined`, which `expandSearchCandidates`
+// spreads — every test that does not care about hand-added variants still
+// needs the empty list this default gives it. Its own filtering is covered
+// against the real implementation in `tuning-grid.spec.ts`.
+const mockedDistinctExtraVariants =
+  tuningGrid.distinctExtraVariants as jest.Mock;
+mockedDistinctExtraVariants.mockReturnValue([]);
 
 /**
  * MODEL-FLOW-005, generalized by MODEL-FLOW-013-T03. The create/get/retry
@@ -268,6 +275,7 @@ describe('ModelCandidateJobAuthorizedService', () => {
     // block would otherwise leak into `.not.toHaveBeenCalled()` assertions.
     beforeEach(() => {
       mockedTuningCandidatesFor.mockReset();
+      mockedDistinctExtraVariants.mockReset().mockReturnValue([]);
     });
 
     it('expands 1 candidate into base + curated variants, all phase 1', async () => {
@@ -305,6 +313,49 @@ describe('ModelCandidateJobAuthorizedService', () => {
         { algorithm: 'ridge', hyperparameters: { alpha: 1 }, phase: 1 },
         { algorithm: 'ridge', hyperparameters: { alpha: 0.01 }, phase: 1 },
         { algorithm: 'ridge', hyperparameters: { alpha: 10 }, phase: 1 },
+      ]);
+    });
+
+    /**
+     * MODEL-FLOW-026. Step 3's hand-added rows run AFTER the curated
+     * shortlist and in addition to it — the grid keeps its own cap, so the
+     * job grows rather than the shortlist shrinking. What survives the
+     * base/grid duplicate filter is `distinctExtraVariants`' own job, covered
+     * against the real implementation in `tuning-grid.spec.ts`; mocked here.
+     */
+    it('appends the hand-added variants after the curated ones', async () => {
+      mockedTuningCandidatesFor.mockReturnValue([{ alpha: 0.01 }]);
+      mockedDistinctExtraVariants.mockReturnValue([{ alpha: 7 }]);
+      const prisma = makePrisma();
+      const service = new ModelCandidateJobAuthorizedService(
+        prisma as never,
+        makeRunLaunch() as never,
+      );
+
+      await service.createJob(
+        'draft-1',
+        {
+          goldArtifactId: 'gold-1',
+          targetY: 'TI-101',
+          kind: 'HYPERPARAMETER_SEARCH',
+          candidates: [{ algorithm: 'ridge', hyperparameters: { alpha: 1 } }],
+          extraVariants: [{ alpha: 7 }],
+        } as never,
+        'user-1',
+        'ADMIN',
+      );
+
+      expect(mockedDistinctExtraVariants).toHaveBeenCalledWith(
+        'ridge',
+        [{ alpha: 7 }],
+        { alpha: 1 },
+        [{ alpha: 0.01 }],
+      );
+      const createCall = prisma.modelCandidateJob.create.mock.calls[0][0];
+      expect(createCall.data.candidates).toEqual([
+        { algorithm: 'ridge', hyperparameters: { alpha: 1 }, phase: 1 },
+        { algorithm: 'ridge', hyperparameters: { alpha: 0.01 }, phase: 1 },
+        { algorithm: 'ridge', hyperparameters: { alpha: 7 }, phase: 1 },
       ]);
     });
 
@@ -698,6 +749,7 @@ describe('ModelCandidateJobAuthorizedService', () => {
   describe('advanceJobForRun — SWEEP_THEN_TUNE phase transition (MODEL-FLOW-013-T11)', () => {
     beforeEach(() => {
       mockedTuningCandidatesFor.mockReset();
+      mockedDistinctExtraVariants.mockReset().mockReturnValue([]);
     });
 
     it('appends phase-2 candidates and launches the first when phase 1 exhausts', async () => {

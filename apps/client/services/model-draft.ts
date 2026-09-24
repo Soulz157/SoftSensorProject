@@ -686,6 +686,15 @@ export interface CreateCandidateJobInput {
    *  onto the Start Training path. */
   sizedRowCount?: number
   sizedDistinctLabelled?: number
+  /** MODEL-FLOW-026. Hyperparameter sets the user added by hand to Step 3's
+   *  variant table, appended server-side AFTER the curated TUNING_GRID
+   *  shortlist and filtered against it and the base, so a hand-typed
+   *  duplicate cannot buy a second identical fit.
+   *
+   *  HYPERPARAMETER_SEARCH ONLY — the server refuses it on any other `kind`,
+   *  because a SWEEP_THEN_TUNE job builds its tuning phase after the winner
+   *  is known, from the job row, and this field is not stored there. */
+  extraVariants?: Record<string, unknown>[]
 }
 
 /** One candidate's own outcome, resolved against its run row server-side

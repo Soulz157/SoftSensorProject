@@ -586,3 +586,42 @@ export function tuningCandidatesFor(
     .slice(0, TUNE_VARIANTS_PER_JOB)
     .map((variant) => ({ ...variant, ...carried }));
 }
+
+/**
+ * MODEL-FLOW-026. The user's own hand-added variants, filtered the same way
+ * the grid's are: anything the base already ran, or a grid variant already
+ * about to run, is dropped rather than bought a second identical fit. Two
+ * identical hand-typed rows collapse to one for the same reason.
+ *
+ * Deliberately NOT capped at `TUNE_VARIANTS_PER_JOB`: that cap bounds how
+ * much of a CURATED list one job spends, and the user asked for these
+ * specifically. The DTO's own `.max(8)` is what bounds them.
+ *
+ * `sequence_length` is carried onto each for lstm/gru exactly as
+ * `tuningCandidatesFor` carries it — a hand-added variant must be scored on
+ * the same rows as the base, and the client is not the place to remember
+ * that.
+ */
+export function distinctExtraVariants(
+  algorithm: string,
+  extras: HyperparamRecord[],
+  alreadyTried: HyperparamRecord,
+  gridVariants: HyperparamRecord[],
+): HyperparamRecord[] {
+  const carried: HyperparamRecord =
+    SEQUENCE_ALGORITHMS.has(algorithm) &&
+    typeof alreadyTried.sequence_length === 'number'
+      ? { sequence_length: alreadyTried.sequence_length }
+      : {};
+
+  const kept: HyperparamRecord[] = [];
+  for (const extra of extras) {
+    const variant = { ...extra, ...carried };
+    if (alreadyCovered(algorithm, variant, alreadyTried)) continue;
+    const seen = [...gridVariants, ...kept].some((other) =>
+      sameHyperparams(variant, other),
+    );
+    if (!seen) kept.push(variant);
+  }
+  return kept;
+}

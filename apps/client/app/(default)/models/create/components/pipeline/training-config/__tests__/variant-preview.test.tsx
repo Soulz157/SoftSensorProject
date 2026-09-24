@@ -9,6 +9,9 @@ import {
   tuningVariantsFor,
 } from '../../../../../../../../../backend/src/lib/tuning-grid'
 import { VariantPreview } from '../variant-preview'
+import userEvent from '@testing-library/user-event'
+import { Provider, createStore } from 'jotai'
+import { MAX_EXTRA_VARIANTS } from '@/hooks/model/use-extra-variants'
 
 vi.mock('@/hooks/model/use-tuning-grid', () => ({ useTuningGrid: vi.fn() }))
 import { useTuningGrid } from '@/hooks/model/use-tuning-grid'
@@ -203,5 +206,122 @@ describe('VariantPreview (MODEL-FLOW-025)', () => {
         name: `${ALGORITHM_LABELS.ridge} Hyperparameter Tuning`,
       }),
     ).toBeInTheDocument()
+  })
+})
+
+/**
+ * MODEL-FLOW-026. "+ Add" — a hyperparameter set the USER types, tried in
+ * addition to the curated shortlist. Each test gets its own jotai store:
+ * `mpExtraVariantsAtom` is module-global otherwise, and a row added in one
+ * case would show up as a pre-existing row in the next.
+ */
+describe('VariantPreview hand-added variants (MODEL-FLOW-026)', () => {
+  function renderAddable(
+    algorithm: Algorithm,
+    props: {
+      base?: Record<string, number | string | boolean | null>
+      mode?: 'direct' | 'sweep-then-tune'
+    } = {},
+  ) {
+    return render(
+      <Provider store={createStore()}>
+        <VariantPreview
+          algorithm={algorithm}
+          base={props.base ?? {}}
+          size={undefined}
+          mode={props.mode ?? 'direct'}
+        />
+      </Provider>,
+    )
+  }
+
+  const addButton = () => screen.getByRole('button', { name: /^add$/i })
+
+  it('adds a row seeded from the base, numbered on from the curated ones', async () => {
+    serve(gridFor('ridge'))
+    renderAddable('ridge', { base: { alpha: 1 } })
+    const before = bodyRows().length
+
+    await userEvent.click(addButton())
+
+    const rows = bodyRows()
+    expect(rows).toHaveLength(before + 1)
+    const added = rows[rows.length - 1]!
+    expect(within(added).getByText(String(before + 1))).toBeInTheDocument()
+    // Seeded from the base the card would launch with, not blank.
+    expect(within(added).getByRole('spinbutton')).toHaveValue(1)
+  })
+
+  it('counts added rows in the summary total', async () => {
+    serve(gridFor('ridge'))
+    renderAddable('ridge', { base: { alpha: 1 } })
+    const curated = bodyRows().length
+
+    await userEvent.click(addButton())
+
+    // Scoped to the disclosure summary: the same figure is also a row number
+    // in the table below it.
+    const summary = screen.getByText('Hyperparameter Tuning').closest('summary')
+    expect(summary).not.toBeNull()
+    expect(within(summary!).getByText(String(curated + 1))).toBeInTheDocument()
+  })
+
+  it('edits a cell of an added row without touching the curated ones', async () => {
+    serve(gridFor('ridge'))
+    renderAddable('ridge', { base: { alpha: 1 } })
+    await userEvent.click(addButton())
+
+    const input = screen.getByRole('spinbutton')
+    await userEvent.clear(input)
+    await userEvent.type(input, '7')
+
+    expect(input).toHaveValue(7)
+    // The curated rows are still plain text cells — exactly one editable cell
+    // exists, the one just added.
+    expect(screen.getAllByRole('spinbutton')).toHaveLength(1)
+  })
+
+  it('removes an added row', async () => {
+    serve(gridFor('ridge'))
+    renderAddable('ridge', { base: { alpha: 1 } })
+    const before = bodyRows().length
+    await userEvent.click(addButton())
+
+    await userEvent.click(
+      screen.getByRole('button', { name: /remove added variant 1/i }),
+    )
+
+    expect(bodyRows()).toHaveLength(before)
+  })
+
+  it('stops at the cap the server enforces', async () => {
+    serve(gridFor('ridge'))
+    renderAddable('ridge', { base: { alpha: 1 } })
+
+    for (let i = 0; i < MAX_EXTRA_VARIANTS; i++) {
+      await userEvent.click(addButton())
+    }
+
+    expect(addButton()).toBeDisabled()
+    expect(screen.getAllByRole('spinbutton')).toHaveLength(MAX_EXTRA_VARIANTS)
+  })
+
+  it('offers no Add with a sweep — the tuning phase is built after the winner is known', () => {
+    serve(gridFor('ridge'))
+    renderAddable('ridge', { base: { alpha: 1 }, mode: 'sweep-then-tune' })
+
+    expect(screen.queryByRole('button', { name: /^add$/i })).toBeNull()
+    expect(screen.getByText(/needs Find Best Model off/i)).toBeInTheDocument()
+  })
+
+  it('can still add when the base covers every curated variant', async () => {
+    // ols has exactly one variant; a base equal to it leaves the curated list
+    // empty — the row the user wants to add is the only thing left to try.
+    serve(gridFor('ols'))
+    renderAddable('ols', { base: { fit_intercept: false } })
+
+    await userEvent.click(addButton())
+
+    expect(bodyRows()).toHaveLength(1)
   })
 })

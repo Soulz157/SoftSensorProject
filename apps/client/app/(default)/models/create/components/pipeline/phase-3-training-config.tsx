@@ -11,6 +11,7 @@ import { useArtifactSplitStats } from '@/hooks/dataset/artifact/use-artifact-spl
 import { useDraftRuns } from '@/hooks/model/use-draft-runs'
 import type { UsePipelineNavResult } from '@/hooks/model/use-model-pipeline-nav'
 import {
+  mpExtraVariantsAtom,
   mpServerDraftIdAtom,
   mpSplitStatsTagsAtom,
 } from '@/store/model-pipeline'
@@ -36,6 +37,7 @@ export function Phase3TrainingConfig({ nav }: Props) {
   const tags = selectedDataset?.tags ?? []
 
   const splitStatsTags = useAtomValue(mpSplitStatsTagsAtom)
+  const extraVariants = useAtomValue(mpExtraVariantsAtom)
   const targetY = targetVariables.length === 1 ? targetVariables[0]! : null
   const hasSequenceAlgorithm = nav.algorithms.some(
     a => a === 'lstm' || a === 'gru',
@@ -84,6 +86,10 @@ export function Phase3TrainingConfig({ nav }: Props) {
     algorithms: draft.algorithms,
     hyperparameters: draft.hyperparameters,
     perAlgorithmHyperparameters: draft.perAlgorithmHyperparameters,
+    // MODEL-FLOW-026. Hand-added variants are extra fits, so the estimate
+    // must price them — read from the atom, not the draft, because they are
+    // not Apply-gated configuration (see `mpExtraVariantsAtom`).
+    extraVariants,
     size: datasetSize,
   })
 
