@@ -364,8 +364,63 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
   // 1.0.15, and the image is not pushed (same registry gap as every prior
   // bump), so only this build host has it. random_forest, mlp, grp, pls,
   // ols, lstm, gru receive no code change here and were not re-run.
+  //
+  // 1.0.16 (MODEL-SERVE-020-T06) — the Retrain tab's charts need the per-row
+  // series behind the operator's NEW-DATA window. `_score_new_data_holdout_if_
+  // present` used to return only the aggregate and discard the frame; it now
+  // returns both, and `_publish` uploads the frame as
+  // `new_data_holdout_predictions.parquet` (MIRRORS.md entry 9). ADDITIVE, so
+  // the bump is required for the reason 1.0.6 taught: on 1.0.15 the artifact is
+  // simply never uploaded, `complete()` records `newDataHoldoutPredictionsKey`
+  // NULL, and the tab states an honest absence while every layer of code is
+  // correct.
+  //
+  // VERIFIED IN-IMAGE BY BEHAVIOUR (the image ships no pytest): `docker run
+  // --entrypoint python` with PYTHONPATH=/workspace/images/trainer/app and a
+  // script mounted in — the REAL `_score_new_data_holdout_if_present` against
+  // a REAL fitted Ridge on a 24-row window returned (metrics, frame) with the
+  // {timestamp,y_true,y_pred} columns and y_pred equal to `model.predict`;
+  // (None, None) with no window and for a non-eligible (CV) run; and the frame
+  // reached `ArtifactSet` as a parquet under its own filename. The same
+  // import on 1.0.15 answers `hasattr(artifacts,
+  // 'NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME') == False`.
+  //
+  // NOT RE-VERIFIED: no full retrain has been launched against 1.0.16, so
+  // `_publish`'s upload of the new file and `complete()` recording the key are
+  // proven by their unit specs and source inspection, not by a live run. The
+  // image is not pushed (same registry gap as every prior bump), so only this
+  // build host has it.
+  //
+  // 1.0.17 (MODEL-SERVE-021-T03) — "New Data Only" now REPLACES the training
+  // data outright and carves no frozen slice of the incumbent's own rows, so
+  // `_score_new_data_holdout_if_present` now ALSO scores the current
+  // PRODUCTION model on the same window when claim() presigned one
+  // (`incumbentModelUrl`/`incumbentModelChecksum`/`incumbentFeatureColumns`),
+  // and `_publish` uploads its series as
+  // `incumbent_new_data_holdout_predictions.parquet` (MIRRORS.md entry 10).
+  // ADDITIVE, same reason as every prior bump: on 1.0.16 this key is simply
+  // never uploaded, `complete()` records `incumbentNewDataHoldoutPredictionsKey`
+  // NULL, and the Retrain tab states an honest absence while every layer of
+  // code is correct.
+  //
+  // VERIFIED IN-IMAGE BY BEHAVIOUR (the image ships no pytest): `docker run
+  // --entrypoint python` against a script mounted in that fits TWO real Ridge
+  // models on DIFFERENT synthetic data, calls the REAL
+  // `_score_new_data_holdout_if_present` with `download_verified` swapped for
+  // local paths (standing in for the presigned-URL fetch, itself covered
+  // elsewhere), and scores both on the SAME 40-row window. Candidate (fit on
+  // that exact data) scored r2=0.9979; incumbent (fit on unrelated data)
+  // scored r2=-1.876 on the SAME rows — proving two DISTINCT models were
+  // actually scored, not one model twice, and that both predictions frames
+  // share the {timestamp,y_true,y_pred} shape.
+  //
+  // NOT RE-VERIFIED: no full NEW_DATA_ONLY retrain has been launched against
+  // 1.0.17, so the presign/claim wiring upstream and `_publish`'s upload are
+  // proven by their unit specs and this behavioural check, not by a live run.
+  // The image is not pushed (same registry gap as every prior bump), so only
+  // this build host has it.
   private readonly imageRef =
-    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.15';
+    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.17';
   // private readonly network = process.env.TRAINING_NETWORK ?? 'dslake_default';
   private readonly network = 'monorepo_network';
   private readonly memoryBytes = Number(

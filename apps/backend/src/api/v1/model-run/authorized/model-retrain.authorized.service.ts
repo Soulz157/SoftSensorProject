@@ -61,6 +61,27 @@ export interface TrainingComposition {
   dedupeDropped: number | null;
   cutTimestamp: string | null;
   combinedRowCount: number | null;
+  /** What the candidate was actually FIT on, off its own recorded
+   *  `splitSpec` — as opposed to what the combined artifact CONTAINS. The
+   *  trainer re-splits the combined artifact chronologically by ratio, so the
+   *  newest rows (the new data) land in the test split; on every real job
+   *  checked, none of the new rows were in the fit. */
+  fitRowCount: number | null;
+  /** The instant the fit stops (the split's own cut). Rows at/after it were
+   *  used only for testing. */
+  fitUpTo: string | null;
+  /** True/false when the persisted facts settle whether ANY new-data row was
+   *  in the fit; null when they cannot (a job that recorded neither the new
+   *  data's start nor a fit boundary past the base cut). Never guessed. */
+  newDataUsedInFit: boolean | null;
+}
+
+/** `2025-11-06 19:00:00` (python's naive wall-clock str) or ISO -> epoch ms,
+ *  or null. Both are wall-clock in the same zone, so they compare directly. */
+function wallMs(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const ms = Date.parse(`${value.replace(' ', 'T').replace(/Z$/, '')}Z`);
+  return Number.isFinite(ms) ? ms : null;
 }
 
 /** The one entry `buildCombinedArtifact` writes onto the combined GOLD's
@@ -394,6 +415,9 @@ export class ModelRetrainAuthorizedService {
         dto.newValidationFrom && dto.newValidationTo
           ? { from: dto.newValidationFrom, to: dto.newValidationTo }
           : undefined,
+        // MODEL-SERVE-021. Which overlap rule applies — see
+        // `assertCompatible`'s own comment.
+        dto.strategy === 'NEW_DATA_ONLY' ? 'NEW_DATA_ONLY' : 'AUGMENT_DATA',
       );
       // MODEL-SERVE-017. Both new-data strategies run the IDENTICAL
       // compatibility gate — same tags, same target, and above all the
@@ -903,19 +927,32 @@ export class ModelRetrainAuthorizedService {
     // see `ModelTrainingRun.evalSetKind`'s own comment) and it must carry a
     // `frozenEvalChecksum` (proves the scoring actually ran, never soft-
     // failed to null).
-    // MODEL-SERVE-017. NEW_DATA_ONLY rests on the SAME amended rule: it
-    // trains on different rows again (all of them new, this time) and is
-    // scored on the incumbent's own frozen test rows. Gating this on
-    // AUGMENT_DATA alone would push every NEW_DATA_ONLY candidate down the
-    // old artifact-equality path, which it fails by construction — the
-    // result would read "not comparable" for a comparison that is in fact
-    // valid.
-    const isAugmented = usesNewData(job.retrainStrategy);
+    // MODEL-SERVE-021 NARROWS THIS BACK TO AUGMENT_DATA ONLY. MODEL-SERVE-017
+    // originally routed NEW_DATA_ONLY through this SAME frozen-slice rule —
+    // true while it was still scored on the incumbent's own frozen test
+    // rows. MODEL-SERVE-021 reverses that: NEW_DATA_ONLY now REPLACES the
+    // training data outright (confirmed zero rows in the frozen slice would
+    // even exist, since `combine_for_retrain` never carves one for this
+    // strategy any more), so comparability comes from a wholly different
+    // basis — see `isNewDataOnly` below — and `isAugmented` must go back to
+    // naming ONLY the strategy this frozen-slice logic still applies to, or
+    // it would push every NEW_DATA_ONLY candidate down a path whose
+    // `evalSetKind`/`frozenEvalChecksum` it can no longer ever satisfy.
+    const isAugmented = job.retrainStrategy === 'AUGMENT_DATA';
+    // MODEL-SERVE-021. Scored inside the candidate's OWN training container
+    // against the SAME operator-defined new-data window on both the
+    // candidate and the incumbent's own saved model (`claim()`'s
+    // `prepareNewDataOnlyComparison` presigns the incumbent; the trainer
+    // scores both — see MIRRORS.md entry 10). No frozen slice, no merged
+    // artifact: `combinedFinal`/`combinedArtifact` below are never fetched
+    // for this strategy, since `trainingComposition` describes a
+    // base+new MIX that a replace strategy never produces.
+    const isNewDataOnly = job.retrainStrategy === 'NEW_DATA_ONLY';
 
     // MODEL-SERVE-019-T03. The extra rows every figure's basis is built
     // from — read only, never mutated, and only fetched when the strategy
     // that needs them is actually running.
-    const [combinedArtifact, incumbentJob] = await Promise.all([
+    const [combinedFinal, incumbentJob] = await Promise.all([
       isAugmented && candidateRun?.goldArtifactId
         ? this.prisma.datasetArtifact.findUnique({
             where: { id: candidateRun.goldArtifactId },
@@ -928,6 +965,21 @@ export class ModelRetrainAuthorizedService {
           })
         : Promise.resolve(null),
     ]);
+    // MODEL-SERVE-020-T01 CORRECTION. A retrain candidate trains on the
+    // combined FINAL artifact (`ModelTrainingRun.goldArtifactId` is the FINAL
+    // id), but `buildCombinedArtifact` writes that FINAL row with
+    // `operations: []` and NO validation-slice columns — `operations[0]`
+    // (composition, cut/frozen-eval bounds, dropped rows) and
+    // `validationRowCount`/`validationHoldoutFrom` live on its GOLD PARENT.
+    // The first cut of this method read the FINAL directly, so on a real job
+    // every basis was unavailable and the D03 gate always saw
+    // `frozenEvalDroppedRows` as unrecorded — comparable=false for EVERY new
+    // retrain. Unit tests passed because their artifact mock ignored the id.
+    const combinedArtifact = combinedFinal?.parentArtifactId
+      ? await this.prisma.datasetArtifact.findUnique({
+          where: { id: combinedFinal.parentArtifactId },
+        })
+      : null;
     const combinedOps =
       (
         combinedArtifact?.operations as unknown as
@@ -952,6 +1004,26 @@ export class ModelRetrainAuthorizedService {
       mismatches.push(
         "the current production version's source run no longer exists",
       );
+    } else if (isNewDataOnly) {
+      // MODEL-SERVE-021. No frozen slice and no shared artifact to check —
+      // the only thing that makes this comparison valid is that BOTH sides
+      // were actually scored on the SAME validation window inside the
+      // candidate's own training container.
+      if (candidateRun.targetY !== incumbentRun.targetY) {
+        mismatches.push('different target');
+      }
+      if (!candidateRun.newDataHoldoutMetrics) {
+        mismatches.push(
+          'the new version has not been scored on the validation window yet',
+        );
+      } else if (!candidateRun.incumbentNewDataHoldoutMetrics) {
+        // Plain, no-jargon reason — covers both a genuine scoring failure
+        // and the lstm/gru scope gap (`claim()` never presigns an incumbent
+        // for a sequence algorithm; see MIRRORS.md entry 10).
+        mismatches.push(
+          'the current version could not be scored on the same validation window',
+        );
+      }
     } else if (isAugmented) {
       if (candidateRun.targetY !== incumbentRun.targetY) {
         mismatches.push('different target');
@@ -1014,18 +1086,32 @@ export class ModelRetrainAuthorizedService {
     // The incumbent's numbers come from the VERSION row, not from its run:
     // that snapshot is what promote's r2 floor checks and what serving
     // reports, and it must not drift under a run row nothing else is touching
-    // (ModelVersion.metrics' own schema comment).
-    const incumbentMetrics = metricTriple(incumbent.metrics);
+    // (ModelVersion.metrics' own schema comment). MODEL-SERVE-021 EXCEPTS
+    // NEW_DATA_ONLY: the version snapshot is the incumbent's score on ITS
+    // OWN historical test split, a different population from the shared
+    // validation window this strategy compares on — `incumbentNewDataHoldoutMetrics`
+    // is scored fresh, inside the candidate's own run, on that window.
+    const incumbentMetrics = isNewDataOnly
+      ? metricTriple(candidateRun?.incumbentNewDataHoldoutMetrics ?? null)
+      : metricTriple(incumbent.metrics);
     // AUGMENT_DATA compares against `holdoutMetrics` — the candidate's score
     // on the incumbent's OWN frozen test rows — never `metrics`, which is
     // the candidate's own test split over the COMBINED (mixed-regime) data
     // and answers a different question (T04's "report new dataset
     // evaluation separately", carried below as `newRegimeMetrics`).
+    // NEW_DATA_ONLY compares against `newDataHoldoutMetrics` — the
+    // candidate's score on the shared validation window, the only figure
+    // this strategy has that is comparable to the incumbent at all.
     const candidateMetrics = metricTriple(
-      isAugmented
-        ? (candidateRun?.holdoutMetrics ?? null)
-        : (candidateRun?.metrics ?? null),
+      isNewDataOnly
+        ? (candidateRun?.newDataHoldoutMetrics ?? null)
+        : isAugmented
+          ? (candidateRun?.holdoutMetrics ?? null)
+          : (candidateRun?.metrics ?? null),
     );
+    // Null for NEW_DATA_ONLY: there is no "combined, mixed-regime" data to
+    // report a second figure over — the candidate trained on the new
+    // dataset alone.
     const newRegimeMetrics = isAugmented
       ? metricTriple(candidateRun?.metrics ?? null)
       : null;
@@ -1107,8 +1193,54 @@ export class ModelRetrainAuthorizedService {
           unavailableReason: newDataWindowReason,
         }
       : null;
+    // MODEL-SERVE-021. The SAME frame as `newDataWindowBasis` above, but
+    // `usedFor: 'COMPARE_TO_PRODUCTION'` rather than `'REPORT_ONLY'` — for
+    // NEW_DATA_ONLY this window IS the comparison, not a figure reported
+    // beside one. Reused as BOTH `candidate.metricsBasis` and
+    // `incumbent.metricsBasis` below: the whole point of D01 is that both
+    // sides were scored on the identical rows, so one basis object
+    // describes both figures. No new `frame`/`usedFor` literal — both
+    // already exist on `EvalBasis` for other figures.
+    const newDataOnlyWindowBasis: EvalBasis | null = isNewDataOnly
+      ? {
+          frame: 'NEW_DATA_WINDOW',
+          from: candidateRun?.newDataHoldoutFrom?.toISOString() ?? null,
+          to: candidateRun?.newDataHoldoutTo?.toISOString() ?? null,
+          rowCount: candidateRun?.newDataHoldoutRowCount ?? null,
+          usedFor: 'COMPARE_TO_PRODUCTION',
+          unavailableReason: !candidateRun?.newDataHoldoutMetrics
+            ? 'the new version has not been scored on this window yet'
+            : !candidateRun?.incumbentNewDataHoldoutMetrics
+              ? 'the current version could not be scored on this window'
+              : null,
+        }
+      : null;
     // MODEL-SERVE-015-T05. The merged training composition, stranded until
     // now inside DatasetArtifact.operations with no reader on this surface.
+    // MODEL-SERVE-020. What the candidate was FIT on, from its own recorded
+    // split — not from the artifact's contents. The new rows are the newest,
+    // and the trainer splits chronologically, so they fall in the test split:
+    // `newDataUsedInFit` is what stops the tab describing the artifact as if it
+    // were the training set. The new data starts strictly after the base cut,
+    // so a fit that stops at/before that cut provably used none of it; a fit
+    // reaching past the new data's own start provably used some; anything
+    // between is unknown (an older job that never recorded that start).
+    const candidateSplit2 = candidateRun?.splitSpec as {
+      train_rows?: number;
+      cut_timestamp?: string;
+    } | null;
+    const fitUpTo = candidateSplit2?.cut_timestamp ?? null;
+    const fitMs = wallMs(fitUpTo);
+    const baseCutMs = wallMs(combinedOps?.cutTimestamp);
+    const newStartMs = wallMs(combinedOps?.frozenEvalTo);
+    const newDataUsedInFit =
+      fitMs === null
+        ? null
+        : baseCutMs !== null && fitMs <= baseCutMs
+          ? false
+          : newStartMs !== null
+            ? fitMs > newStartMs
+            : null;
     const trainingComposition: TrainingComposition | null =
       isAugmented && combinedOps
         ? {
@@ -1117,6 +1249,12 @@ export class ModelRetrainAuthorizedService {
             dedupeDropped: combinedOps.dedupeDropped ?? null,
             cutTimestamp: combinedOps.cutTimestamp ?? null,
             combinedRowCount: combinedArtifact?.rowCount ?? null,
+            fitRowCount:
+              typeof candidateSplit2?.train_rows === 'number'
+                ? candidateSplit2.train_rows
+                : null,
+            fitUpTo,
+            newDataUsedInFit,
           }
         : null;
 
@@ -1141,6 +1279,10 @@ export class ModelRetrainAuthorizedService {
           | 'KEEP_EXISTING'
           | 'AUGMENT_DATA'
           | 'NEW_DATA_ONLY',
+        // Null for NEW_DATA_ONLY: there is no frozen-slice `evalSetKind` any
+        // more (MODEL-SERVE-021) — its own basis is `newDataOnlyWindowBasis`
+        // above, carried on `incumbent.metricsBasis`/`candidate.metricsBasis`
+        // instead.
         evalSet: isAugmented
           ? ({
               kind: candidateRun?.evalSetKind ?? null,
@@ -1157,8 +1299,19 @@ export class ModelRetrainAuthorizedService {
         version: incumbent.version,
         stage: incumbent.stage,
         algorithm: incumbent.algorithm,
+        // MODEL-SERVE-020-T05. The run the current version was trained by —
+        // the Retrain tab reads its test predictions (Model-scoped route) to
+        // overlay the current version on the charts. Already resolved above
+        // (`incumbent.sourceRunId` is how `incumbentRun` is fetched).
+        sourceRunId: incumbent.sourceRunId,
         metrics: incumbentMetrics,
-        metricsBasis: incumbentTestBasis,
+        // MODEL-SERVE-021. NEW_DATA_ONLY's incumbent figure is scored on the
+        // shared validation window, not the incumbent's own historical test
+        // split — `incumbentTestBasis` would describe the wrong population
+        // for the number actually shown above.
+        metricsBasis: isNewDataOnly
+          ? newDataOnlyWindowBasis
+          : incumbentTestBasis,
       },
       candidate: {
         runId: candidateRun?.id ?? null,
@@ -1171,22 +1324,32 @@ export class ModelRetrainAuthorizedService {
         // `metricsBasis` is null for a KEEP_EXISTING (or legacy null-
         // strategy) job: that path predates this feature's "every figure
         // names its basis" requirement, and is display-only history from
-        // here on — never a target for D02's new labelling.
-        metricsBasis: frozenTestBasis,
+        // here on — never a target for D02's new labelling. MODEL-SERVE-021:
+        // NEW_DATA_ONLY's main figure is scored on the shared validation
+        // window (`newDataOnlyWindowBasis`), never `frozenTestBasis` — that
+        // basis describes a frozen slice this strategy no longer carves.
+        metricsBasis: isNewDataOnly ? newDataOnlyWindowBasis : frozenTestBasis,
         // MODEL-SERVE-015-T04. "Report new dataset evaluation separately" —
         // the candidate's OWN test-split score, over the COMBINED
         // (mixed-regime) data. Never used for `rmseDelta`; null for a plain
         // (014) retrain, where `metrics` above already carries this exact
-        // number and a second copy would just invite the two to drift.
+        // number and a second copy would just invite the two to drift. Also
+        // null for NEW_DATA_ONLY — there is no combined, mixed-regime data.
         newRegimeMetrics,
         newRegimeMetricsBasis: mergedTestBasis,
         // The operator's NEW-DATA validation window. Reported on its own
         // and deliberately NOT folded into `rmseDelta`: the incumbent was
         // never scored on these rows, so differencing the two would produce
         // a number that looks like a comparison and is not one.
-        newDataHoldoutMetrics: candidateRun?.newDataHoldoutMetrics
-          ? metricTriple(candidateRun.newDataHoldoutMetrics)
-          : null,
+        // MODEL-SERVE-021: null for NEW_DATA_ONLY — that exact figure is
+        // already the headline `metrics`/`metricsBasis` above for this
+        // strategy, and repeating it under a second name would just invite
+        // the two to drift apart. The raw window facts below stay populated
+        // either way; they describe the window, not a metric.
+        newDataHoldoutMetrics:
+          !isNewDataOnly && candidateRun?.newDataHoldoutMetrics
+            ? metricTriple(candidateRun.newDataHoldoutMetrics)
+            : null,
         newDataHoldoutRowCount: candidateRun?.newDataHoldoutRowCount ?? null,
         newDataHoldoutFrom:
           candidateRun?.newDataHoldoutFrom?.toISOString() ?? null,

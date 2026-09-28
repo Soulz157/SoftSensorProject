@@ -21,6 +21,7 @@ import {
   prepareHoldoutForRun,
   replayHoldoutForRun,
   runPredictions,
+  getRunManifest,
 } from '@/lib/python-preprocess-client';
 import {
   hasReferenceResidualSd,
@@ -33,6 +34,29 @@ import {
 } from '@/lib/holdout-artifact';
 import { RunCompleteDto } from './dto/model-run.authorized.dto';
 import { ModelCandidateJobAuthorizedService } from './model-candidate-job.authorized.service';
+
+/**
+ * MODEL-SERVE-021. `claim()` spreads exactly ONE of these two methods'
+ * results (`tryReplayHoldout` or `prepareNewDataOnlyComparison`, chosen by
+ * `job.retrainStrategy`) into its response. Both return types MUST be this
+ * SAME interface — not two structurally different object types unioned —
+ * or `claim()`'s inferred return type becomes a union of the whole response
+ * object rather than one shape with optional fields, and every field access
+ * on the result (this file's own callers, and every test) starts failing to
+ * typecheck for whichever branch that field is not literally present on.
+ */
+interface ClaimHoldoutFields {
+  holdoutDataUrl?: string;
+  holdoutArtifactChecksum?: string;
+  holdoutRowCount?: number;
+  holdoutDroppedBadRows?: number | null;
+  newDataHoldoutUrl?: string | null;
+  newDataHoldoutChecksum?: string | null;
+  newDataHoldoutRowCount?: number | null;
+  incumbentModelUrl?: string | null;
+  incumbentModelChecksum?: string | null;
+  incumbentFeatureColumns?: string[] | null;
+}
 
 @Injectable()
 export class ModelRunAuthorizedService {
@@ -75,15 +99,7 @@ export class ModelRunAuthorizedService {
       modelDraftId: string | null;
     },
     owner: RunOwner,
-  ): Promise<{
-    holdoutDataUrl: string;
-    holdoutArtifactChecksum: string;
-    holdoutRowCount: number;
-    holdoutDroppedBadRows: number | null;
-    newDataHoldoutUrl: string | null;
-    newDataHoldoutChecksum: string | null;
-    newDataHoldoutRowCount: number | null;
-  } | null> {
+  ): Promise<ClaimHoldoutFields | null> {
     if (!run.featureSpecKey) return null;
 
     // MODEL-FLOW-016-T07. Lookup extracted to a shared lib — the scoring
@@ -297,6 +313,198 @@ export class ModelRunAuthorizedService {
   }
 
   /** Everything the container needs, in one round trip. */
+  /**
+   * MODEL-SERVE-021. The comparison mechanism for a NEW_DATA_ONLY (replace)
+   * candidate — reversing MODEL-SERVE-017's frozen-slice comparison, which
+   * `combine_for_retrain` no longer carves for this strategy at all (see
+   * that function's own docstring). Comparability instead comes from
+   * scoring BOTH the candidate and the incumbent's own saved model on the
+   * SAME operator-defined validation window, inside the candidate's own
+   * training container — never by mutating the incumbent's own saved run.
+   *
+   * Deliberately NOT routed through `tryReplayHoldout`/`findHoldoutArtifact`:
+   * that resolver's own WHERE clause requires `validationRowCount: { not:
+   * null }`, and this strategy's combined GOLD always has it `null` (no
+   * frozen slice) — the resolver would correctly find nothing, and correctly
+   * so, since there is no frozen slice to find. The window's own facts
+   * instead come straight off the combined GOLD's `operations[0]`, read by
+   * following the run's own `goldArtifactId` (the combined FINAL) up to its
+   * `parentArtifactId` (the combined GOLD) — the same hop
+   * `buildComparison`'s own MODEL-SERVE-020-T01 fix reads.
+   *
+   * Best-effort end to end: any failure here logs and returns `null` rather
+   * than failing the run — a candidate that trains successfully must never
+   * be lost over a comparison that could not be prepared.
+   */
+  private async prepareNewDataOnlyComparison(
+    run: {
+      id: string;
+      goldArtifactId: string;
+      goldObjectKey: string;
+      featureSpecKey: string | null;
+    },
+    owner: RunOwner,
+    incumbentVersionId: string | null,
+  ): Promise<ClaimHoldoutFields | null> {
+    if (!run.featureSpecKey) return null;
+
+    try {
+      const final = await this.prisma.datasetArtifact.findUnique({
+        where: { id: run.goldArtifactId },
+        select: { parentArtifactId: true },
+      });
+      const gold = final?.parentArtifactId
+        ? await this.prisma.datasetArtifact.findUnique({
+            where: { id: final.parentArtifactId },
+            select: { operations: true },
+          })
+        : null;
+      const window = readNewDataValidationWindow(gold?.operations ?? null);
+      if (!window) {
+        // The DTO refuses a NEW_DATA_ONLY trigger with no window at all —
+        // reaching here with none means the artifact write itself never
+        // recorded it (a bug elsewhere), not an operator omission. Either
+        // way there is nothing to score, so no comparison is possible.
+        await this.appendLog(run.id, {
+          level: 'warn',
+          message:
+            'New Data Only comparison skipped: the combined artifact ' +
+            'recorded no validation window.',
+        });
+        return null;
+      }
+
+      const sourceKey = sidecarKey(
+        run.goldObjectKey,
+        VALIDATE_NEW_DATA_FILENAME,
+      );
+      const targetKey = buildRunKey(owner, run.id, VALIDATE_NEW_READY_FILENAME);
+      // Already model-ready (scaled with the base's pinned params at combine
+      // time) — a straight copy into the run's own prefix, never a re-scale.
+      await passthroughHoldoutForRun({
+        source_key: sourceKey,
+        target_key: targetKey,
+        overwrite: true,
+      });
+      const presigned = await presignRunObject({ source_key: targetKey });
+
+      // MODEL-SERVE-021. The CURRENT PRODUCTION model, scored by the SAME
+      // container on the SAME window — never a different container, never a
+      // number pulled from the incumbent's own saved (old) test split, and
+      // never written back to the incumbent's own row.
+      let incumbent: {
+        url: string;
+        checksum: string;
+        featureColumns: string[];
+      } | null = null;
+      if (incumbentVersionId) {
+        try {
+          const version = await this.prisma.modelVersion.findUnique({
+            where: { id: incumbentVersionId },
+            select: {
+              modelObjectKey: true,
+              modelChecksum: true,
+              algorithm: true,
+              sourceRunId: true,
+            },
+          });
+          // lstm/gru score a WINDOW of rows per prediction, and the window
+          // length is recorded nowhere this layer can read (the manifest
+          // carries feature_columns, not sequence_length) — scoring them
+          // correctly needs that number, so they are skipped rather than
+          // scored with a guessed one. The candidate's own figures are
+          // unaffected; only the incumbent side of this one comparison is
+          // absent, with a stated reason.
+          if (
+            version?.modelObjectKey &&
+            version.algorithm !== 'lstm' &&
+            version.algorithm !== 'gru'
+          ) {
+            const modelPresigned = await presignRunObject({
+              source_key: version.modelObjectKey,
+            });
+            const sourceRun = version.sourceRunId
+              ? await this.prisma.modelTrainingRun.findUnique({
+                  where: { id: version.sourceRunId },
+                  select: { manifestKey: true },
+                })
+              : null;
+            const manifest = sourceRun?.manifestKey
+              ? await getRunManifest(sourceRun.manifestKey)
+              : null;
+            if (manifest?.feature_columns?.length) {
+              incumbent = {
+                url: modelPresigned.data_url,
+                checksum: version.modelChecksum ?? modelPresigned.checksum,
+                featureColumns: manifest.feature_columns,
+              };
+            } else {
+              await this.appendLog(run.id, {
+                level: 'warn',
+                message:
+                  'Current version comparison skipped: its run manifest ' +
+                  'records no feature_columns (trained before that field ' +
+                  'existed).',
+              });
+            }
+          } else if (
+            version &&
+            (version.algorithm === 'lstm' || version.algorithm === 'gru')
+          ) {
+            await this.appendLog(run.id, {
+              level: 'warn',
+              message:
+                `Current version comparison skipped: ${version.algorithm} ` +
+                'scores a window of rows per prediction, and this feature ' +
+                'does not yet resolve the window length needed to do that ' +
+                'correctly.',
+            });
+          }
+        } catch (err) {
+          await this.appendLog(run.id, {
+            level: 'warn',
+            message:
+              'Current version comparison skipped: ' +
+              (err instanceof Error ? err.message : String(err)),
+          });
+        }
+      }
+
+      // MODEL-SERVE-021. Persisted here, mirroring `tryReplayHoldout`'s own
+      // "persisted here, not derived later" comment above: this is the one
+      // place that already knows the window's real bounds, and
+      // `buildComparison` has no other way to label the figure — its basis
+      // reads these three columns off the run, never the artifact's
+      // operations blob directly. Missing this write is exactly the kind of
+      // gap that leaves a real comparison unlabeled (019's own rule).
+      await this.prisma.modelTrainingRun.update({
+        where: { id: run.id },
+        data: {
+          newDataHoldoutRowCount: presigned.row_count ?? window.rowCount,
+          newDataHoldoutFrom: window.from,
+          newDataHoldoutTo: window.to,
+        },
+      });
+
+      return {
+        newDataHoldoutUrl: presigned.data_url,
+        newDataHoldoutChecksum: presigned.checksum,
+        newDataHoldoutRowCount: presigned.row_count ?? window.rowCount,
+        incumbentModelUrl: incumbent?.url ?? null,
+        incumbentModelChecksum: incumbent?.checksum ?? null,
+        incumbentFeatureColumns: incumbent?.featureColumns ?? null,
+      };
+    } catch (err) {
+      await this.appendLog(run.id, {
+        level: 'warn',
+        message:
+          `New Data Only comparison setup skipped for run ${run.id}: ` +
+          (err instanceof Error ? err.message : String(err)),
+      });
+      return null;
+    }
+  }
+
   async claim(runId: string) {
     const run = await this.prisma.modelTrainingRun.findUnique({
       where: { id: runId },
@@ -349,7 +557,25 @@ export class ModelRunAuthorizedService {
     // switches on.
     const isCvRun =
       (run.splitSpec as { method?: string } | null)?.method === 'cv_expanding';
-    const holdout = isCvRun ? null : await this.tryReplayHoldout(run, owner);
+    // MODEL-SERVE-021. A NEW_DATA_ONLY (replace) candidate takes a WHOLLY
+    // DIFFERENT comparison path — see `prepareNewDataOnlyComparison`'s own
+    // comment for why `tryReplayHoldout` (which requires a frozen slice this
+    // strategy no longer carves) cannot be reused for it.
+    const job = run.candidateJobId
+      ? await this.prisma.modelCandidateJob.findUnique({
+          where: { id: run.candidateJobId },
+          select: { retrainStrategy: true, sourceVersionId: true },
+        })
+      : null;
+    const holdout = isCvRun
+      ? null
+      : job?.retrainStrategy === 'NEW_DATA_ONLY'
+        ? await this.prepareNewDataOnlyComparison(
+            run,
+            owner,
+            job.sourceVersionId,
+          )
+        : await this.tryReplayHoldout(run, owner);
 
     return {
       runId: run.id,
@@ -431,6 +657,11 @@ export class ModelRunAuthorizedService {
       // comment: one is all old rows and underpins the incumbent
       // comparison, this is all new rows and stands on its own.
       newDataHoldoutMetrics: dto.newDataHoldoutMetrics ?? undefined,
+      // MODEL-SERVE-021. The current PRODUCTION model's score on that SAME
+      // window — see this column's own schema comment for why it is a
+      // fourth, never-blended field.
+      incumbentNewDataHoldoutMetrics:
+        dto.incumbentNewDataHoldoutMetrics ?? undefined,
       splitSpec: dto.splitSpec,
       modelKey: keyIf('model.joblib'),
       metricsKey: keyIf('metrics.json'),
@@ -474,6 +705,24 @@ export class ModelRunAuthorizedService {
       // checked still holds and is unaffected: `scoreCompleteService`'s narrow
       // update uses `undefined`, so a re-score cannot null this key either.
       holdoutPredictionsKey: keyIf('holdout_predictions.parquet'),
+      // MODEL-SERVE-020-T06. The candidate's per-row series on the operator's
+      // new-data window. null for every run with no such window, for a run
+      // from before this column, and — the one that bites — for a run trained
+      // by a trainer IMAGE that predates it: the artifact is simply never
+      // uploaded, `keyIf` records null, and the Retrain tab states an honest
+      // absence while every layer of code is correct (see the image-drift
+      // note beside TRAINING_IMAGE). Same ordering argument as the key above:
+      // training `complete()` runs once, before any scoring.
+      newDataHoldoutPredictionsKey: keyIf(
+        'new_data_holdout_predictions.parquet',
+      ),
+      // MODEL-SERVE-021. The current PRODUCTION model's per-row series on
+      // that SAME window — same null-means-not-recorded discipline as the
+      // key above, and the same ordering argument (complete() runs once,
+      // before any scoring).
+      incumbentNewDataHoldoutPredictionsKey: keyIf(
+        'incumbent_new_data_holdout_predictions.parquet',
+      ),
       finishedAt: new Date(),
       // Close the token with the run. Nothing legitimate needs it after
       // this point.

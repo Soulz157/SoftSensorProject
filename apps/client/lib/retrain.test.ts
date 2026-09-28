@@ -69,6 +69,7 @@ function comparison(
       version: 3,
       stage: 'PRODUCTION',
       algorithm: 'xgboost',
+      sourceRunId: 'run-incumbent',
       metrics: METRICS,
       metricsBasis: INCUMBENT_BASIS,
     },

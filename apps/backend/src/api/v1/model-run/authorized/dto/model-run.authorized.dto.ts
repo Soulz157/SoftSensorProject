@@ -170,6 +170,36 @@ export const RunPredictionsQuerySchema = z
   .object({ population: PredictionPopulationEnum.optional() })
   .strict();
 
+/**
+ * MODEL-SERVE-020-T04. The Model-scoped predictions route's populations: the
+ * draft route's two, plus `new_data_holdout` — the rows a retrain set aside
+ * from the new dataset. Kept as its OWN enum rather than widening
+ * `PredictionPopulationEnum`, which `predictionKeyFor` and the draft/batch
+ * routes switch on: a third value there would silently reach code that has no
+ * key to resolve for it.
+ *
+ * MODEL-SERVE-021 ADDS `current_new_data_holdout` — the CURRENT PRODUCTION
+ * version's own series on that SAME window, scored inside the candidate's
+ * training container for a NEW_DATA_ONLY (replace) retrain, which carves no
+ * frozen slice any more. Read off THIS candidate run's own
+ * `incumbentNewDataHoldoutPredictionsKey` — never the incumbent's OWN run
+ * row, which this scoring never touches.
+ */
+export const ModelRunPredictionPopulationEnum = z.enum([
+  'test',
+  'holdout',
+  'new_data_holdout',
+  'current_new_data_holdout',
+]);
+
+export type ModelRunPredictionPopulation = z.infer<
+  typeof ModelRunPredictionPopulationEnum
+>;
+
+export const ModelRunPredictionsQuerySchema = z
+  .object({ population: ModelRunPredictionPopulationEnum.optional() })
+  .strict();
+
 export const RunPredictionsBatchQuerySchema = z
   .object({
     // Comma-separated, not a repeated query key — same "no `qs` parser
@@ -309,6 +339,18 @@ export const RunCompleteSchema = z
     // send it at all.
     newDataHoldoutMetrics: MetricsSchema.optional(),
 
+    // MODEL-SERVE-021. The CURRENT PRODUCTION model's score on that SAME
+    // window — a FOURTH separate field, never blended with any of the three
+    // above: `metrics`/`holdoutMetrics` describe the candidate on rows the
+    // current version was never scored on, `newDataHoldoutMetrics` is the
+    // candidate on this window, and this is the CURRENT VERSION on this
+    // window — the only figure that gives `buildComparison` a like-for-like
+    // basis for a New Data Only (replace) retrain, which carves no frozen
+    // slice at all. Present only when `claim()` resolved a scorable current
+    // version (skipped for lstm/gru, or a version with no recorded
+    // feature_columns) and the trainer's own scoring succeeded.
+    incumbentNewDataHoldoutMetrics: MetricsSchema.optional(),
+
     splitSpec: SplitSpecSchema.optional(),
 
     uploaded: z.array(RunUploadFilenameEnum).optional(),
@@ -393,4 +435,7 @@ export class RunPredictionsBatchQueryDto extends createZodDto(
 ) {}
 export class RunPredictionsQueryDto extends createZodDto(
   RunPredictionsQuerySchema,
+) {}
+export class ModelRunPredictionsQueryDto extends createZodDto(
+  ModelRunPredictionsQuerySchema,
 ) {}

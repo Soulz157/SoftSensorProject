@@ -186,7 +186,27 @@ export function RetrainDataStrategy({
     () => dateBoundsFrom(versionMetadata?.startTime, versionMetadata?.endTime),
     [versionMetadata],
   )
-  const windowError = validationWindowError(windowFrom, windowTo, dataBounds)
+  // MODEL-SERVE-021-D03. For New data only the window must start ON OR AFTER
+  // the current version's own test data starts — before it, the current
+  // version would be "tested" on rows it trained on. Existing + new data has
+  // no such floor: its window sits inside the NEW dataset, which never
+  // overlaps the incumbent's own rows in the first place. `cutTimestamp` is
+  // the same naive wall-clock convention `dateBoundsFrom`'s own doc comment
+  // describes for `versionMetadata` — the first 10 characters are the day.
+  const cutDay = incumbent?.cutTimestamp?.match(/^\d{4}-\d{2}-\d{2}/)?.[0]
+  const effectiveBounds = useMemo(() => {
+    if (!dataBounds) return null
+    if (strategy !== 'NEW_DATA_ONLY' || !cutDay) return dataBounds
+    return {
+      min: cutDay > dataBounds.min ? cutDay : dataBounds.min,
+      max: dataBounds.max,
+    }
+  }, [dataBounds, strategy, cutDay])
+  const windowError = validationWindowError(
+    windowFrom,
+    windowTo,
+    effectiveBounds,
+  )
 
   // Reported upward only once BOTH bounds exist. A half-typed range is not a
   // decision, and emitting it would trip the server's both-or-neither
@@ -204,7 +224,7 @@ export function RetrainDataStrategy({
       !validationWindowEnabled ||
       !windowFrom ||
       !windowTo ||
-      validationWindowError(windowFrom, windowTo, dataBounds) !== null
+      validationWindowError(windowFrom, windowTo, effectiveBounds) !== null
     ) {
       onValidationWindowChange(null)
       return
@@ -217,7 +237,7 @@ export function RetrainDataStrategy({
     validationWindowEnabled,
     windowFrom,
     windowTo,
-    dataBounds,
+    effectiveBounds,
     onValidationWindowChange,
   ])
 
@@ -272,13 +292,22 @@ export function RetrainDataStrategy({
           )}
           {/* Stated once for the group rather than repeated inside each
               option's label. It is the fact that makes a comparison against
-              the current version trustworthy at all — especially for New
-              data only, where the candidate shares none of its training
-              rows — so it must be on screen, just not twice. */}
-          {retrainUsesNewData(strategy) && (
+              the current version trustworthy at all, so it must be on
+              screen, just not twice. The two strategies now differ here:
+              Existing + new data still has old rows to test the candidate
+              on; New data only replaces them, so the shared validation
+              window below is the ONLY way left to compare the two. */}
+          {strategy === 'AUGMENT_DATA' && (
             <p className="text-xs text-muted-foreground">
-              Either way the result is scored on the current version&apos;s own
-              test rows, so the comparison holds.
+              The result is scored on the current version&apos;s own test rows,
+              so the comparison holds.
+            </p>
+          )}
+          {strategy === 'NEW_DATA_ONLY' && (
+            <p className="text-xs text-muted-foreground">
+              This replaces the training data, so both versions are scored on
+              the validation window you set aside below — set one to compare
+              them.
             </p>
           )}
         </div>
@@ -415,8 +444,16 @@ export function RetrainDataStrategy({
       {selectedVersion?.artifactId && (
         <Accordion
           type="single"
-          collapsible
-          value={validationWindowEnabled ? 'validation-window' : ''}
+          // MODEL-SERVE-021-D02. New data only has no frozen slice any more —
+          // this window is the ONLY basis left to compare the two versions,
+          // so it cannot be collapsed away like it can for Existing + new
+          // data, where it is a genuinely optional extra figure.
+          collapsible={strategy !== 'NEW_DATA_ONLY'}
+          value={
+            strategy === 'NEW_DATA_ONLY' || validationWindowEnabled
+              ? 'validation-window'
+              : ''
+          }
           onValueChange={value => {
             const on = value === 'validation-window'
             setValidationWindowEnabled(on)
@@ -426,22 +463,36 @@ export function RetrainDataStrategy({
         >
           <AccordionItem value="validation-window" className="border-b-0">
             <AccordionTrigger
-              disabled={disabled}
+              disabled={disabled || strategy === 'NEW_DATA_ONLY'}
               className="items-center py-2 text-xs font-medium hover:no-underline"
             >
               <span className="flex flex-1 items-center gap-2">
                 Split Validation data from the new dataset
                 <span className="text-[10px] font-normal text-muted-foreground">
-                  {validationWindowEnabled ? 'On' : 'Off'}
+                  {strategy === 'NEW_DATA_ONLY'
+                    ? 'Required'
+                    : validationWindowEnabled
+                      ? 'On'
+                      : 'Off'}
                 </span>
               </span>
             </AccordionTrigger>
             <AccordionContent className="space-y-2 pb-1">
               <p className="text-xs text-muted-foreground">
-                These rows are kept out of training and scored separately, so
-                you can see how the retrained model does on the new data. The
-                comparison against the current model is unaffected — it is
-                scored on the same test data either way.
+                {strategy === 'NEW_DATA_ONLY' ? (
+                  <>
+                    These rows are kept out of training. Both the new version
+                    and the current version are scored on them, so this is what
+                    the comparison is based on.
+                  </>
+                ) : (
+                  <>
+                    These rows are kept out of training and scored separately,
+                    so you can see how the retrained model does on the new data.
+                    The comparison against the current model is unaffected — it
+                    is scored on the same test data either way.
+                  </>
+                )}
               </p>
               <div className="flex flex-wrap items-center gap-2">
                 <Input
@@ -449,8 +500,8 @@ export function RetrainDataStrategy({
                   aria-label="Validation window start"
                   className="h-8 w-auto text-xs"
                   disabled={disabled}
-                  min={dataBounds?.min}
-                  max={windowTo || dataBounds?.max}
+                  min={effectiveBounds?.min}
+                  max={windowTo || effectiveBounds?.max}
                   aria-invalid={windowError !== null}
                   value={windowFrom}
                   onChange={e => setWindowFrom(e.target.value)}
@@ -461,16 +512,23 @@ export function RetrainDataStrategy({
                   aria-label="Validation window end"
                   className="h-8 w-auto text-xs"
                   disabled={disabled}
-                  min={windowFrom || dataBounds?.min}
-                  max={dataBounds?.max}
+                  min={windowFrom || effectiveBounds?.min}
+                  max={effectiveBounds?.max}
                   aria-invalid={windowError !== null}
                   value={windowTo}
                   onChange={e => setWindowTo(e.target.value)}
                 />
               </div>
-              {dataBounds && (
+              {strategy === 'NEW_DATA_ONLY' && cutDay && (
                 <p className="text-[11px] text-muted-foreground">
-                  Data covers {dataBounds.min} to {dataBounds.max}.
+                  Must start on or after {cutDay} — the current version&apos;s
+                  own test data starts there, so it has to be scored on data it
+                  has never seen.
+                </p>
+              )}
+              {effectiveBounds && (
+                <p className="text-[11px] text-muted-foreground">
+                  Data covers {effectiveBounds.min} to {effectiveBounds.max}.
                 </p>
               )}
               {windowError && (

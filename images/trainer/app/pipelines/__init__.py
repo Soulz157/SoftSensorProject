@@ -38,6 +38,8 @@ from artifacts import (
     ArtifactSet,
     FEATURE_IMPORTANCE_FILENAME,
     HOLDOUT_PREDICTIONS_FILENAME,
+    INCUMBENT_NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
+    NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
     LOSS_HISTORY_FILENAME,
     MANIFEST_FILENAME,
     METRICS_FILENAME,
@@ -71,9 +73,12 @@ def run_training(context: RunContext, api: RunApi) -> int:
     holdout_metrics, holdout_predictions = _score_holdout_if_present(
         prepared, result, api
     )
-    new_data_holdout_metrics = _score_new_data_holdout_if_present(
-        prepared, result, api
-    )
+    (
+        new_data_holdout_metrics,
+        new_data_holdout_predictions,
+        incumbent_new_data_holdout_metrics,
+        incumbent_new_data_holdout_predictions,
+    ) = _score_new_data_holdout_if_present(prepared, result, api)
     _publish(
         context,
         api,
@@ -83,6 +88,9 @@ def run_training(context: RunContext, api: RunApi) -> int:
         holdout_predictions,
         started,
         new_data_holdout_metrics,
+        new_data_holdout_predictions,
+        incumbent_new_data_holdout_metrics,
+        incumbent_new_data_holdout_predictions,
     )
     return 0
 
@@ -256,7 +264,12 @@ def _score_holdout_if_present(
 
 def _score_new_data_holdout_if_present(
     prepared: PreparedRun, result: TrainingResult, api: RunApi
-) -> dict[str, Any] | None:
+) -> tuple[
+    dict[str, Any] | None,
+    pd.DataFrame | None,
+    dict[str, Any] | None,
+    pd.DataFrame | None,
+]:
     """The candidate's score on the operator-defined NEW-DATA validation
     window, present only when an augmented retrain carved one out of the
     newly merged dataset and claim() prepared it.
@@ -276,12 +289,28 @@ def _score_new_data_holdout_if_present(
     holdout's metrics or fail the run, so it carries its own try/except
     rather than sharing one with the scoring above.
 
-    Only the aggregate is returned. The per-row frame is deliberately not
-    published: nothing renders a second holdout series today, and writing a
-    parquet nothing reads would be cost without a reader.
+    MODEL-SERVE-020-T06. Returns the per-row frame beside the aggregate. It used
+    to be discarded ("nothing renders a second holdout series today"); the
+    Retrain tab's Actual vs Predicted and Residual charts now read it, so it is
+    published as `new_data_holdout_predictions.parquet`. `(None, None)` on every
+    path that scores nothing, so the two are present or absent together.
+
+    MODEL-SERVE-021-T03. Also scores the CURRENT version on this identical
+    window when claim() presigned one (`incumbentModelUrl`) — true only for
+    "New data only", which replaces the training set outright and so has no
+    frozen incumbent-test slice left to compare against; this window is the
+    only data both versions can be scored on. Same frame, same
+    `score_holdout`, but the incumbent's OWN feature columns
+    (`incumbentFeatureColumns`) — the two versions need not share a feature
+    set — and `sequence_length=None` always: the backend never presigns an
+    lstm/gru incumbent here (no `sequence_length` is recorded anywhere it can
+    read one from), so a presigned incumbent is guaranteed tabular. A failure
+    scoring the incumbent must never cost the candidate's own new-data
+    metrics above, so it has its own nested try/except and returns
+    `(None, None)` for just its own pair.
     """
     if not prepared.spec.get("newDataHoldoutUrl") or not result.holdout_eligible:
-        return None
+        return None, None, None, None
 
     try:
         path, _ = download_verified(
@@ -290,9 +319,10 @@ def _score_new_data_holdout_if_present(
             prepared.spec["newDataHoldoutChecksum"],
             "New-data holdout",
         )
-        metrics, _ = score_holdout(
+        window = pd.read_parquet(path)
+        metrics, predictions = score_holdout(
             result.model,
-            pd.read_parquet(path),
+            window,
             prepared.target_y,
             prepared.feature_cols,
             # Nothing is dropped on this path: the window was cut from the
@@ -306,10 +336,43 @@ def _score_new_data_holdout_if_present(
             f"new-data holdout r2={metrics['r2']:.4f} — "
             f"test r2 was {result.metrics['r2']:.4f}"
         )
-        return metrics
     except Exception as exc:  # noqa: BLE001 - best-effort, see docstring
         api.log(f"New-data holdout scoring skipped: {exc}", "warn")
-        return None
+        return None, None, None, None
+
+    incumbent_metrics: dict[str, Any] | None = None
+    incumbent_predictions: pd.DataFrame | None = None
+    if prepared.spec.get("incumbentModelUrl") and prepared.spec.get(
+        "incumbentFeatureColumns"
+    ):
+        try:
+            import joblib
+
+            incumbent_path, _ = download_verified(
+                prepared.spec["incumbentModelUrl"],
+                SCRATCH / "incumbent_model.joblib",
+                prepared.spec["incumbentModelChecksum"],
+                "Current version model",
+            )
+            incumbent_model = joblib.load(incumbent_path)
+            incumbent_metrics, incumbent_predictions = score_holdout(
+                incumbent_model,
+                window,
+                prepared.target_y,
+                prepared.spec["incumbentFeatureColumns"],
+                dropped_bad_features=None,
+                sequence_length=None,
+                log_fn=api.log,
+            )
+            api.log(
+                f"current-version new-data r2={incumbent_metrics['r2']:.4f} — "
+                f"candidate r2 was {metrics['r2']:.4f}"
+            )
+        except Exception as exc:  # noqa: BLE001 - best-effort, see docstring
+            api.log(f"Current-version new-data scoring skipped: {exc}", "warn")
+            incumbent_metrics, incumbent_predictions = None, None
+
+    return metrics, predictions, incumbent_metrics, incumbent_predictions
 
 
 # ── 10. write, upload, complete ──────────────────────────────────────────────
@@ -322,6 +385,9 @@ def _publish(
     holdout_predictions: pd.DataFrame | None,
     started: float,
     new_data_holdout_metrics: dict[str, Any] | None = None,
+    new_data_holdout_predictions: pd.DataFrame | None = None,
+    incumbent_new_data_holdout_metrics: dict[str, Any] | None = None,
+    incumbent_new_data_holdout_predictions: pd.DataFrame | None = None,
 ) -> None:
     import joblib
 
@@ -354,6 +420,32 @@ def _publish(
     if holdout_predictions is not None:
         artifacts.add_parquet(
             HOLDOUT_PREDICTIONS_FILENAME, holdout_predictions)
+
+    # MODEL-SERVE-020-T06. The retrain candidate's series on the operator's
+    # NEW-DATA window — a third population under its OWN filename, so it can
+    # never overwrite the test split or the frozen-slice holdout above. None
+    # for every run with no such window (every non-retrain run, a KEEP
+    # retrain) and whenever its scoring soft-failed: absent rather than empty,
+    # so `complete()` records newDataHoldoutPredictionsKey as NULL and the UI
+    # states an honest absence.
+    if new_data_holdout_predictions is not None:
+        artifacts.add_parquet(
+            NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
+            new_data_holdout_predictions,
+        )
+
+    # MODEL-SERVE-021-T03. The current PRODUCTION version's series on that
+    # SAME window — a fourth population under its OWN filename, so it can
+    # never overwrite the candidate's own new-data series above. None for
+    # every run that is not a "New data only" retrain, and whenever incumbent
+    # scoring soft-failed: absent rather than empty, so `complete()` records
+    # incumbentNewDataHoldoutPredictionsKey as NULL and the UI states an
+    # honest absence.
+    if incumbent_new_data_holdout_predictions is not None:
+        artifacts.add_parquet(
+            INCUMBENT_NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
+            incumbent_new_data_holdout_predictions,
+        )
 
     # Written only when a series was actually extracted — an estimator with no
     # iterations (or one that exceeded MAX_LOSS_HISTORY_POINTS) gets no artifact
@@ -447,6 +539,18 @@ def _publish(
             **(
                 {"newDataHoldoutMetrics": new_data_holdout_metrics}
                 if new_data_holdout_metrics
+                else {}
+            ),
+            # MODEL-SERVE-021-T03. The current version's OWN score on that
+            # same window — never merged into newDataHoldoutMetrics above,
+            # same reasoning as that field's own comment.
+            **(
+                {
+                    "incumbentNewDataHoldoutMetrics": (
+                        incumbent_new_data_holdout_metrics
+                    )
+                }
+                if incumbent_new_data_holdout_metrics
                 else {}
             ),
             "splitSpec": result.split_spec,

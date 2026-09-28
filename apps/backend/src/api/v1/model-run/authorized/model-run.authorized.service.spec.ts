@@ -374,6 +374,173 @@ describe('ModelRunAuthorizedService', () => {
     });
   });
 
+  describe('claim() — MODEL-SERVE-021 prepareNewDataOnlyComparison', () => {
+    it('copies the window from the GOLD key, presigns the incumbent, and persists the window facts on the run', async () => {
+      const run = { ...RUN_BASE, candidateJobId: 'job-1' };
+      const prisma = makePrisma({ run });
+      (prisma as Record<string, unknown>).modelCandidateJob = {
+        findUnique: jest.fn().mockResolvedValue({
+          retrainStrategy: 'NEW_DATA_ONLY',
+          sourceVersionId: 'version-1',
+        }),
+      };
+      (prisma as Record<string, unknown>).modelVersion = {
+        findUnique: jest.fn().mockResolvedValue({
+          modelObjectKey: 'models/model-1/runs/run-incumbent/model.joblib',
+          modelChecksum: 'incumbent-sha',
+          algorithm: 'ridge',
+          sourceRunId: 'run-incumbent',
+        }),
+      };
+      // Two DIFFERENT rows behind one mock, keyed by id — `final` (the
+      // candidate's own goldArtifactId) resolves to its GOLD parent; the
+      // GOLD row is what actually carries `operations[0]`'s window facts
+      // (MODEL-SERVE-020-T01's own FINAL-vs-GOLD correction).
+      prisma.datasetArtifact.findUnique = jest
+        .fn()
+        .mockImplementation((args: { where: { id: string } }) => {
+          if (args.where.id === run.goldArtifactId) {
+            return Promise.resolve({ parentArtifactId: 'gold-parent-1' });
+          }
+          if (args.where.id === 'gold-parent-1') {
+            return Promise.resolve({
+              operations: [
+                {
+                  newValidationRowCount: 30,
+                  newValidationFrom: '2026-11-06T19:00:00Z',
+                  newValidationTo: '2026-11-10T19:00:00Z',
+                },
+              ],
+            });
+          }
+          return Promise.resolve(null);
+        });
+      prisma.modelTrainingRun.findUnique = jest
+        .fn()
+        // claim()'s own initial run fetch.
+        .mockResolvedValueOnce(run)
+        // The incumbent's own source run, resolved for its manifestKey.
+        .mockResolvedValueOnce({ manifestKey: 'manifest-key-1' });
+      (pythonClient.getRunManifest as jest.Mock).mockResolvedValue({
+        feature_columns: ['a', 'b'],
+      });
+      (pythonClient.passthroughHoldoutForRun as jest.Mock).mockResolvedValue(
+        {},
+      );
+      mockedPresignRunObject
+        .mockResolvedValueOnce({
+          data_url: 'https://minio.example/new-data-window-signed',
+          sidecar_urls: {},
+          checksum: 'window-checksum',
+          row_count: 30,
+          expires_at: '2026-01-01T00:00:00Z',
+        })
+        .mockResolvedValueOnce({
+          data_url: 'https://minio.example/incumbent-model-signed',
+          sidecar_urls: {},
+          checksum: 'incumbent-model-checksum',
+          row_count: null,
+          expires_at: '2026-01-01T00:00:00Z',
+        });
+
+      const service = new ModelRunAuthorizedService(
+        prisma as never,
+        { advanceJobForRun: jest.fn() } as never,
+      );
+
+      const result = await service.claim('run-1');
+
+      // The window copy reads from the GOLD's own key, never re-derived from
+      // a different artifact — verified equal to the FINAL's own key on
+      // every real retrain job (model-retrain-augment's "FINAL by pointer,
+      // never a byte copy" comment).
+      expect(pythonClient.passthroughHoldoutForRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source_key: 'ds-1/artifacts/gold-1/validate_new_data.parquet',
+        }),
+      );
+      expect(result.newDataHoldoutUrl).toBe(
+        'https://minio.example/new-data-window-signed',
+      );
+      expect(result.incumbentModelUrl).toBe(
+        'https://minio.example/incumbent-model-signed',
+      );
+      expect(result.incumbentFeatureColumns).toEqual(['a', 'b']);
+
+      // The window's own facts, persisted on the run so `buildComparison`
+      // can label the figure — missing this write leaves it unlabeled
+      // forever (019's own "every figure names its basis" rule).
+      expect(prisma.modelTrainingRun.update).toHaveBeenCalledWith({
+        where: { id: 'run-1' },
+        data: {
+          newDataHoldoutRowCount: 30,
+          newDataHoldoutFrom: new Date('2026-11-06T19:00:00Z'),
+          newDataHoldoutTo: new Date('2026-11-10T19:00:00Z'),
+        },
+      });
+    });
+
+    it('skips the incumbent side for lstm/gru without failing the candidate side', async () => {
+      const run = { ...RUN_BASE, candidateJobId: 'job-1' };
+      const prisma = makePrisma({ run });
+      (prisma as Record<string, unknown>).modelCandidateJob = {
+        findUnique: jest.fn().mockResolvedValue({
+          retrainStrategy: 'NEW_DATA_ONLY',
+          sourceVersionId: 'version-1',
+        }),
+      };
+      (prisma as Record<string, unknown>).modelVersion = {
+        findUnique: jest.fn().mockResolvedValue({
+          modelObjectKey: 'models/model-1/runs/run-incumbent/model.joblib',
+          modelChecksum: 'incumbent-sha',
+          algorithm: 'lstm',
+          sourceRunId: 'run-incumbent',
+        }),
+      };
+      prisma.datasetArtifact.findUnique = jest
+        .fn()
+        .mockImplementation((args: { where: { id: string } }) => {
+          if (args.where.id === run.goldArtifactId) {
+            return Promise.resolve({ parentArtifactId: 'gold-parent-1' });
+          }
+          return Promise.resolve({
+            operations: [
+              {
+                newValidationRowCount: 30,
+                newValidationFrom: '2026-11-06T19:00:00Z',
+                newValidationTo: '2026-11-10T19:00:00Z',
+              },
+            ],
+          });
+        });
+      (pythonClient.passthroughHoldoutForRun as jest.Mock).mockResolvedValue(
+        {},
+      );
+      mockedPresignRunObject.mockResolvedValueOnce({
+        data_url: 'https://minio.example/new-data-window-signed',
+        sidecar_urls: {},
+        checksum: 'window-checksum',
+        row_count: 30,
+        expires_at: '2026-01-01T00:00:00Z',
+      });
+
+      const service = new ModelRunAuthorizedService(
+        prisma as never,
+        { advanceJobForRun: jest.fn() } as never,
+      );
+
+      const result = await service.claim('run-1');
+
+      expect(result.newDataHoldoutUrl).toBe(
+        'https://minio.example/new-data-window-signed',
+      );
+      expect(result.incumbentModelUrl).toBeNull();
+      // Never a SECOND presign call — an lstm/gru incumbent is skipped
+      // before ever presigning its model object.
+      expect(mockedPresignRunObject).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('complete()', () => {
     it('persists holdoutMetrics as a field separate from metrics', async () => {
       const prisma = makePrisma();
@@ -497,6 +664,53 @@ describe('ModelRunAuthorizedService', () => {
       } as never);
       const [updateCall2] = prisma2.modelTrainingRun.update.mock.calls;
       expect(updateCall2[0].data.holdoutPredictionsKey).toBeNull();
+    });
+
+    it('MODEL-SERVE-020-T06: records newDataHoldoutPredictionsKey when the container uploads the new-data series, null otherwise — and never touches the other two series', async () => {
+      // The trainer used to score the operator's new-data window and DISCARD
+      // the per-row frame; only the aggregate survived. Now the frame is
+      // uploaded under its own filename, and complete() must record it in its
+      // own column — a third population, a third key, never one slot shared
+      // with the test split or the frozen-slice holdout.
+      const prisma = makePrisma();
+      const service = new ModelRunAuthorizedService(
+        prisma as never,
+        { advanceJobForRun: jest.fn() } as never,
+      );
+      await service.complete('run-1', {
+        status: 'SUCCEEDED',
+        uploaded: [
+          'model.joblib',
+          'predictions.parquet',
+          'holdout_predictions.parquet',
+          'new_data_holdout_predictions.parquet',
+        ],
+      } as never);
+      const [call] = prisma.modelTrainingRun.update.mock.calls;
+      expect(call[0].data.newDataHoldoutPredictionsKey).toBe(
+        'drafts/draft-1/runs/run-1/new_data_holdout_predictions.parquet',
+      );
+      expect(call[0].data.predictionsKey).toBe(
+        'drafts/draft-1/runs/run-1/predictions.parquet',
+      );
+      expect(call[0].data.holdoutPredictionsKey).toBe(
+        'drafts/draft-1/runs/run-1/holdout_predictions.parquet',
+      );
+
+      // Absent — a run with no window, or a trainer IMAGE that predates the
+      // artifact (it is simply never uploaded) — records null: an honest
+      // absence, not a stale value and not undefined.
+      const prisma2 = makePrisma();
+      const service2 = new ModelRunAuthorizedService(
+        prisma2 as never,
+        { advanceJobForRun: jest.fn() } as never,
+      );
+      await service2.complete('run-1', {
+        status: 'SUCCEEDED',
+        uploaded: ['model.joblib', 'predictions.parquet'],
+      } as never);
+      const [call2] = prisma2.modelTrainingRun.update.mock.calls;
+      expect(call2[0].data.newDataHoldoutPredictionsKey).toBeNull();
     });
 
     it('MODEL-FLOW-023-T10: sets permutationImportanceKey when permutation_importance.json is uploaded, null otherwise', async () => {

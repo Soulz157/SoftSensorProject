@@ -434,6 +434,7 @@ describe('useModelRetrain — polling to completion (T03, V03)', () => {
               version: 3,
               stage: 'PRODUCTION',
               algorithm: 'xgboost',
+              sourceRunId: 'run-incumbent',
               metrics: { rmse: 1, r2: 0.9, mae: 0.5 },
               metricsBasis: {
                 frame: 'INCUMBENT_TEST_SPLIT',

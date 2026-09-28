@@ -52,6 +52,33 @@ FEATURE_IMPORTANCE_FILENAME = "feature_importance.json"
 # (HOLDOUT_PREDICTIONS_FILENAME, also gates _ALLOWED_RUN_UPLOADS) and
 # artifact-keys.ts — change all three. See MIRRORS.md entry 8.
 HOLDOUT_PREDICTIONS_FILENAME = "holdout_predictions.parquet"
+# MODEL-SERVE-020-T06. The per-row series ({timestamp,y_true,y_pred}) a retrain
+# candidate produced on the operator's NEW-DATA window. Until this constant the
+# window was scored and the frame DISCARDED — only the aggregate reached
+# `newDataHoldoutMetrics` — because nothing rendered a second holdout series.
+# The Retrain tab's charts now do. Its OWN filename: a third population, never
+# predictions.parquet (the test split) or holdout_predictions.parquet (the
+# current version's frozen test slice). Mirrored in apps/python's
+# object_store.py (NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME, also gates
+# _ALLOWED_RUN_UPLOADS and _READABLE_PREDICTION_FILENAMES) and artifact-keys.ts
+# — change all three. See MIRRORS.md entry 9.
+NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME = "new_data_holdout_predictions.parquet"
+# MODEL-SERVE-021-T03. The current version's OWN predictions on that same
+# new-data window, scored inside this container against the model the claim
+# presigned (`incumbentModelUrl`/`incumbentModelChecksum`/
+# `incumbentFeatureColumns`). "New data only" replaces the training set, so
+# there is no frozen slice to compare against — this file plus
+# `new_data_holdout_predictions.parquet` are the only two series the Retrain
+# tab has to compare the two versions. Its OWN filename: never
+# new_data_holdout_predictions.parquet (the candidate's series on the same
+# rows) or holdout_predictions.parquet (a frozen-slice comparison that does
+# not exist for this strategy). Mirrored in apps/python's object_store.py
+# (INCUMBENT_NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME, also gates
+# _ALLOWED_RUN_UPLOADS and _READABLE_PREDICTION_FILENAMES) and
+# artifact-keys.ts — change all three. See MIRRORS.md entry 10.
+INCUMBENT_NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME = (
+    "incumbent_new_data_holdout_predictions.parquet"
+)
 # MODEL-FLOW-023-T03/T10. A SECOND artifact, never a widened
 # feature_importance.json — importance.py's own finding 6 is explicit that
 # the two methods cannot share one file (a signed permutation drop and an

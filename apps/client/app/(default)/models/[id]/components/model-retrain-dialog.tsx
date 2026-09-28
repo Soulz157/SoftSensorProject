@@ -143,9 +143,22 @@ export function ModelRetrainDialog({
   const noIncumbent = !loading && error === null && incumbent === null
   const disabled = isRetraining || loading || incumbent === null
   // AUGMENT_DATA chosen but no version picked yet — a retrain still trains
-  // nothing without one.
+  // nothing without one. MODEL-SERVE-021-D02: NEW_DATA_ONLY also needs the
+  // validation window — it replaces the training data outright and carves no
+  // frozen slice any more, so that window is the ONLY way left to compare
+  // the two versions, and the DTO refuses the trigger outright without one.
   const augmentIncomplete =
-    retrainUsesNewData(dataStrategy) && !additionalDatasetVersionId
+    retrainUsesNewData(dataStrategy) &&
+    (!additionalDatasetVersionId ||
+      (dataStrategy === 'NEW_DATA_ONLY' && !validationWindow))
+  // Names the SPECIFIC missing piece rather than a generic sentence: for New
+  // data only, dataset/version can both be chosen and Start is still
+  // disabled on the window alone, which "choose a dataset and version" would
+  // describe wrongly.
+  const startBlockedReason =
+    dataStrategy === 'NEW_DATA_ONLY' && additionalDatasetVersionId
+      ? 'Set the validation window above to start a retrain.'
+      : 'Choose a dataset and version above to start a retrain.'
 
   return (
     <Dialog open={open} onOpenChange={o => !o && !isRetraining && onClose()}>
@@ -255,7 +268,7 @@ export function ModelRetrainDialog({
                       instead of leaving a greyed-out button unexplained. */}
                   {augmentIncomplete && !disabled && (
                     <p className="text-xs text-muted-foreground">
-                      Choose a dataset and version above to start a retrain.
+                      {startBlockedReason}
                     </p>
                   )}
                 </TabsContent>
@@ -285,7 +298,7 @@ export function ModelRetrainDialog({
                   </Button>
                   {augmentIncomplete && !disabled && (
                     <p className="text-xs text-muted-foreground">
-                      Choose a dataset and version above to start a retrain.
+                      {startBlockedReason}
                     </p>
                   )}
                 </TabsContent>

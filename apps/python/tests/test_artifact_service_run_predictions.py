@@ -154,6 +154,28 @@ def test_accepts_a_model_scoped_key_too() -> None:
     assert result["row_count"] == 4
 
 
+def test_reads_the_new_data_holdout_series_under_a_model_scoped_key() -> None:
+    """MODEL-SERVE-020-T06. The retrain candidate's per-row series on the
+    operator's NEW-DATA window is a THIRD population with its own filename, and
+    it must be readable, not merely uploadable: python has a write allow-list
+    (`_ALLOWED_RUN_UPLOADS`) AND a separate read allow-list
+    (`_READABLE_PREDICTION_FILENAMES`), and widening only the first leaves an
+    artifact that uploads fine and is then refused here by name."""
+    from intergrations.object_store import NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME
+
+    assert NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME in artifact_service._ALLOWED_RUN_UPLOADS
+    assert (
+        NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME
+        in artifact_service._READABLE_PREDICTION_FILENAMES
+    )
+    key = f"models/m1/runs/r1/{NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME}"
+    store = RecordingStore({key: predictions_frame()})
+    result = artifact_service.run_predictions(
+        store, ModelRunPredictionsRequest(source_key=key)
+    )
+    assert result["row_count"] == 4
+
+
 def test_refuses_a_frame_missing_a_required_column() -> None:
     bad = predictions_frame().drop(columns=["y_pred"])
     store = RecordingStore({RUN_KEY: bad})

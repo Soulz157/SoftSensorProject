@@ -572,7 +572,11 @@ const CombineForRetrainSchema = z.object({
   validation_holdout_from: z.string().nullable().optional(),
   validation_missing_pct: z.number().nullable().optional(),
   dropped_bad_rows: z.number().int().nonnegative().nullable().optional(),
-  frozen_eval_checksum: z.string().min(1),
+  // MODEL-SERVE-021. `null` for a New Data Only (replace) candidate — that
+  // strategy carves no frozen slice at all any more. Not read anywhere
+  // downstream beyond this schema's own declaration (confirmed by grep
+  // before this change) — a `null` here costs nothing.
+  frozen_eval_checksum: z.string().min(1).nullable(),
   dedupe_dropped: z.number().int().nonnegative(),
   base_train_row_count: z.number().int().nonnegative(),
   new_train_row_count: z.number().int().nonnegative(),

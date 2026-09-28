@@ -68,12 +68,24 @@ export class ModelRetrainAugmentAuthorizedService {
     additionalDatasetVersionId: string,
     /**
      * The operator's NEW-DATA validation window, carried through onto the
-     * returned context. Not range-checked here: python is the layer that
-     * loads the frame and can compare these against the new dataset's real
-     * first/last timestamps, so it owns that refusal — exactly as it
-     * already owns the `new_start` vs `cut_timestamp` one.
+     * returned context. Not range-checked here against the new dataset's own
+     * bounds: python is the layer that loads the frame and can compare
+     * these against its real first/last timestamps, so it owns that
+     * refusal — exactly as it already owns the `new_start` vs
+     * `cut_timestamp` one for AUGMENT_DATA. The window-vs-`cutTimestamp`
+     * check (D03, below) IS made here too, as a fast pre-flight — python
+     * re-checks it authoritatively against the real data either way.
      */
     newValidationWindow?: { from: string; to: string },
+    /**
+     * MODEL-SERVE-021. Which strategy is asking — the ONE thing that
+     * changes below is whether the new dataset must start strictly after
+     * `cutTimestamp` (AUGMENT_DATA, unchanged) or may overlap it freely
+     * because the new dataset REPLACES the training data outright
+     * (NEW_DATA_ONLY, reversing MODEL-SERVE-017's own rule). Defaults to
+     * `'AUGMENT_DATA'` so every existing caller keeps today's behaviour.
+     */
+    strategy: 'AUGMENT_DATA' | 'NEW_DATA_ONLY' = 'AUGMENT_DATA',
   ): Promise<AugmentContext> {
     const split = sourceRun.splitSpec as {
       method?: string;
@@ -234,7 +246,15 @@ export class ModelRetrainAugmentAuthorizedService {
         type: 'ERROR',
       });
     }
+    // MODEL-SERVE-021. AUGMENT_DATA trains on the OLD and NEW rows together,
+    // so the new dataset overlapping the incumbent's own data would mean
+    // training on some rows twice under two different transforms — refused,
+    // unchanged. NEW_DATA_ONLY REPLACES the training data outright: nothing
+    // of the incumbent's own rows ever reaches training, so overlap is not
+    // merely safe, it is the exact request an operator makes when the new
+    // dataset covers the period the incumbent was trained on.
     if (
+      strategy === 'AUGMENT_DATA' &&
       new Date(newMeta.start_time).getTime() <= new Date(cutTimestamp).getTime()
     ) {
       throw new AppException({
@@ -245,6 +265,28 @@ export class ModelRetrainAugmentAuthorizedService {
           `starts (${cutTimestamp}) — there would be nothing left to test ` +
           'the new version on. Pick a dataset whose data begins after ' +
           "this model's own test data starts.",
+        type: 'ERROR',
+      });
+    }
+    // MODEL-SERVE-021-D03. NEW_DATA_ONLY's own guard, in place of the one
+    // above: the validation window (required for this strategy — the DTO's
+    // own refinement) must start on/after `cutTimestamp`, or the incumbent
+    // would be "tested" on rows it was itself trained on. A fast pre-flight
+    // — python re-checks this authoritatively against the new dataset's own
+    // real bounds, which this layer cannot see.
+    if (
+      strategy === 'NEW_DATA_ONLY' &&
+      newValidationWindow &&
+      new Date(newValidationWindow.from).getTime() <
+        new Date(cutTimestamp).getTime()
+    ) {
+      throw new AppException({
+        statusCode: 422,
+        message:
+          `The validation window starts at ${newValidationWindow.from}, ` +
+          `before this model's own test data starts (${cutTimestamp}) — ` +
+          'pick a window on or after that date so both versions are ' +
+          'scored on data neither has trained on.',
         type: 'ERROR',
       });
     }

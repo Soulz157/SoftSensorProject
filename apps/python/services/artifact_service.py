@@ -32,6 +32,8 @@ from intergrations.object_store import (
     FEATURE_IMPORTANCE_FILENAME,
     PERMUTATION_IMPORTANCE_FILENAME,
     HOLDOUT_PREDICTIONS_FILENAME,
+    NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
+    INCUMBENT_NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
     TIMESTAMP_COLUMN,
     VALIDATE_DATA_FILENAME,
     VALIDATE_NEW_DATA_FILENAME,
@@ -146,6 +148,14 @@ _ALLOWED_RUN_UPLOADS = frozenset(
         # score-mode only — never predictions.parquet, which a non-CV run's
         # test split already occupies.
         HOLDOUT_PREDICTIONS_FILENAME,
+        # MODEL-SERVE-020-T06. The retrain candidate's per-row series on the
+        # operator's new-data window — its own filename, never one of the two
+        # above (a different population).
+        NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
+        # MODEL-SERVE-021. The CURRENT PRODUCTION model's series on that SAME
+        # window — a third population, own filename, never overwriting either
+        # of the above.
+        INCUMBENT_NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
     }
 )
 
@@ -159,7 +169,15 @@ _ALLOWED_RUN_UPLOADS = frozenset(
 #: WRITE side alone would have left the new artifact uploadable and then
 #: unreadable, refused right here by name.
 _READABLE_PREDICTION_FILENAMES = frozenset(
-    {PREDICTIONS_FILENAME, HOLDOUT_PREDICTIONS_FILENAME}
+    {
+        PREDICTIONS_FILENAME,
+        HOLDOUT_PREDICTIONS_FILENAME,
+        # MODEL-SERVE-020-T06. Same {timestamp, y_true, y_pred} shape — see the
+        # note above on why widening the write side alone is not enough.
+        NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
+        # MODEL-SERVE-021. Same shape again, a third population.
+        INCUMBENT_NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME,
+    }
 )
 
 
@@ -851,15 +869,17 @@ def combine_for_retrain(
        from `replay_holdout_for_run`/`prepare_holdout_for_run`'s own
        `fitted_params=` calls).
     4. `base_train` and the newly-scaled rows are concatenated, deduplicated
-       — UNLESS `combine` is False (MODEL-SERVE-017's "New Data Only"
-       strategy), in which case `base_train` is dropped here and the newly
-       scaled rows stand alone as the training frame. Steps 1-3 and 5 are
-       identical either way; in particular the frozen-eval slice below still
-       comes from the BASE's own test rows, which is what keeps a
-       New-Data-Only candidate scorable against the incumbent. The rest of
-       this step reads as written once the frame is chosen: deduplicated
-       on `timestamp` keeping the LAST row (the new dataset's, since it was
-       appended after `base_train` — "new wins"), and sorted.
+       — UNLESS `combine` is False, in which case (MODEL-SERVE-021) the base
+       is never loaded at all and the newly scaled rows, cut to those
+       strictly BEFORE the operator's validation window, stand alone as the
+       training frame. Steps 1-3 no longer run for this strategy (there is
+       no base data to freeze or compare tags against beyond the recipe's
+       own expected columns) — see the `if request.combine` branch near the
+       top of the function body. The rest of this step reads as written once
+       the frame is chosen: deduplicated on `timestamp` keeping the LAST row
+       (irrelevant when `combine` is False — the frame is one dataset's own
+       rows and nothing else — kept for the AUGMENT_DATA path, where it is
+       "new wins"), and sorted.
     5. The combined frame commits as a new GOLD; the re-cut frozen-eval
        slice commits as its `validate_data.parquet` sidecar, in the same
        call, via `_commit`'s existing `validation_row_count`/
@@ -872,56 +892,112 @@ def combine_for_retrain(
     started = time.perf_counter()
     cut_ts = _wall_clock(request.cut_timestamp)
 
-    base = store.get_frame(request.base_data_key)
-    assert_frame_is_usable(base)
-    base_train = base[base[TIMESTAMP_COLUMN] < cut_ts].reset_index(drop=True)
-    base_frozen_raw = (
-        base[base[TIMESTAMP_COLUMN] >= cut_ts]
-        .sort_values(TIMESTAMP_COLUMN)
-        .reset_index(drop=True)
-    )
-    if len(base_frozen_raw) == 0:
-        # MODEL-SERVE-019. This ValueError's `detail` reaches the operator
-        # verbatim through the dialog's error banner (postToPython ->
-        # AppException.message) — plain wording, no "incumbent"/"frozen".
-        raise ValueError(
-            f"No rows exist at or after {cut_ts} in this model's own "
-            "training data — there is no test data left to compare a "
-            "retrained version against."
-        )
+    # MODEL-SERVE-021. `combine=False` ("New Data Only") REPLACES the
+    # training data outright rather than augmenting the incumbent's own
+    # frozen test window — the whole point being that an operator can pick a
+    # dataset that overlaps the incumbent's own data, including its test
+    # split, which the AUGMENT_DATA path can never allow (that path trains on
+    # BOTH the old and new rows together, so old-and-new overlapping would be
+    # a real duplicate; this path trains on the new rows ALONE, so there is
+    # nothing to duplicate). Comparability no longer comes from a shared
+    # frozen slice of the BASE's own rows — there isn't one, base is never
+    # loaded at all below — it comes from scoring both the candidate and the
+    # incumbent's own saved model on the SAME new-data validation window,
+    # which is why that window is REQUIRED for this strategy (enforced here;
+    # the backend's own DTO refuses earlier for the common case).
+    if not request.combine:
+        if not (request.new_validation_from and request.new_validation_to):
+            raise ValueError(
+                "New Data Only requires a validation window — both "
+                "new_validation_from and new_validation_to must be supplied, "
+                "so the new version and the current version can be scored "
+                "on the same new-data rows."
+            )
 
-    new_frame = store.get_frame(request.new_data_key)
-    assert_frame_is_usable(new_frame)
-    new_start = new_frame[TIMESTAMP_COLUMN].min()
-    if new_start <= cut_ts:
-        raise ValueError(
-            f"New dataset starts at {new_start}, at or before this model's "
-            f"own test data starts ({cut_ts}) — there would be nothing left "
-            "to test the new version on. Pick a dataset whose data begins "
-            "after this model's own test data starts."
-        )
+        new_frame = store.get_frame(request.new_data_key)
+        assert_frame_is_usable(new_frame)
+        new_start = new_frame[TIMESTAMP_COLUMN].min()
+        new_end = new_frame[TIMESTAMP_COLUMN].max()
 
-    base_frozen = base_frozen_raw[
-        base_frozen_raw[TIMESTAMP_COLUMN] < new_start
-    ].reset_index(drop=True)
-    # MODEL-SERVE-019-D03. How many of the incumbent's own frozen rows were
-    # cut off by the new dataset's start — 0 means the candidate is scored
-    # on the SAME row extent the incumbent's own test split covers (both
-    # unmasked; a downstream label mask, if any, excludes the same physical
-    # rows from both sides equally). This is what the comparison gates on,
-    # rather than comparing this ARTIFACT's unmasked row count against a
-    # different LABELLED row count computed by a different service
-    # (build_split_stats masks on the target's Good rows first) — those two
-    # counts describe different populations and would almost never agree on
-    # a sparse target, which very nearly shipped as a permanent refusal.
-    frozen_eval_dropped_rows = len(base_frozen_raw) - len(base_frozen)
-    if len(base_frozen) == 0:
-        raise ValueError(
-            f"Every row in this model's own test data (at or after "
-            f"{cut_ts}) falls at or after the new dataset's own start "
-            f"({new_start}) — there would be no test data left to compare "
-            "a retrained version against."
+        v_from = _wall_clock(request.new_validation_from)
+        v_to = _wall_clock(request.new_validation_to)
+        if v_to < v_from:
+            raise ValueError(
+                f"Validation window ends at {v_to}, before it starts at "
+                f"{v_from}."
+            )
+        if v_from < new_start or v_to > new_end:
+            raise ValueError(
+                f"Validation window [{v_from}, {v_to}] falls outside the "
+                f"new dataset's own range [{new_start}, {new_end}]."
+            )
+        # MODEL-SERVE-021-D03. The window must start on or after the point
+        # the incumbent's own training stopped — never inside rows the
+        # incumbent was itself trained on — or scoring the incumbent there
+        # would not measure what it does on genuinely unseen data.
+        if v_from < cut_ts:
+            raise ValueError(
+                f"Validation window starts at {v_from}, before this model's "
+                f"own test data starts ({cut_ts}) — pick a window on or "
+                "after that date so both versions are scored on data "
+                "neither has trained on."
+            )
+
+        base_frozen = None
+        frozen_eval_dropped_rows = None
+    else:
+        base = store.get_frame(request.base_data_key)
+        assert_frame_is_usable(base)
+        base_train = base[base[TIMESTAMP_COLUMN] < cut_ts].reset_index(drop=True)
+        base_frozen_raw = (
+            base[base[TIMESTAMP_COLUMN] >= cut_ts]
+            .sort_values(TIMESTAMP_COLUMN)
+            .reset_index(drop=True)
         )
+        if len(base_frozen_raw) == 0:
+            # MODEL-SERVE-019. This ValueError's `detail` reaches the
+            # operator verbatim through the dialog's error banner
+            # (postToPython -> AppException.message) — plain wording, no
+            # "incumbent"/"frozen".
+            raise ValueError(
+                f"No rows exist at or after {cut_ts} in this model's own "
+                "training data — there is no test data left to compare a "
+                "retrained version against."
+            )
+
+        new_frame = store.get_frame(request.new_data_key)
+        assert_frame_is_usable(new_frame)
+        new_start = new_frame[TIMESTAMP_COLUMN].min()
+        if new_start <= cut_ts:
+            raise ValueError(
+                f"New dataset starts at {new_start}, at or before this "
+                f"model's own test data starts ({cut_ts}) — there would be "
+                "nothing left to test the new version on. Pick a dataset "
+                "whose data begins after this model's own test data starts."
+            )
+
+        base_frozen = base_frozen_raw[
+            base_frozen_raw[TIMESTAMP_COLUMN] < new_start
+        ].reset_index(drop=True)
+        # MODEL-SERVE-019-D03. How many of the incumbent's own frozen rows
+        # were cut off by the new dataset's start — 0 means the candidate is
+        # scored on the SAME row extent the incumbent's own test split
+        # covers (both unmasked; a downstream label mask, if any, excludes
+        # the same physical rows from both sides equally). This is what the
+        # comparison gates on, rather than comparing this ARTIFACT's
+        # unmasked row count against a different LABELLED row count computed
+        # by a different service (build_split_stats masks on the target's
+        # Good rows first) — those two counts describe different
+        # populations and would almost never agree on a sparse target,
+        # which very nearly shipped as a permanent refusal.
+        frozen_eval_dropped_rows = len(base_frozen_raw) - len(base_frozen)
+        if len(base_frozen) == 0:
+            raise ValueError(
+                f"Every row in this model's own test data (at or after "
+                f"{cut_ts}) falls at or after the new dataset's own start "
+                f"({new_start}) — there would be no test data left to "
+                "compare a retrained version against."
+            )
 
     spec = store.get_json(request.base_feature_spec_key)
     if spec.get("target_scaled"):
@@ -951,9 +1027,22 @@ def combine_for_retrain(
     new_engineered = apply_features(new_frame, step_configs, skipped=skipped_columns)
     new_engineered = select_columns(new_engineered, effective_selected)
 
-    base_tags = set(tag_columns(base_train))
+    # MODEL-SERVE-021. `combine=False` never loads `base`'s own data (nothing
+    # of it reaches training or the frozen slice), so there is no `base_train`
+    # frame to compare tags against. `effective_selected` — the base recipe's
+    # own expected column set, force-kept target included — is the same
+    # cross-check without the load: `select_columns` above silently DROPS a
+    # column it does not find rather than erroring, so a new dataset missing
+    # a required raw tag would otherwise reach `to_model_ready` with a column
+    # quietly absent. `None` means "keep everything" (the TS identity spec),
+    # which has no fixed expected set to check against.
+    base_tags = (
+        set(tag_columns(base_train))
+        if request.combine
+        else (set(effective_selected) if effective_selected is not None else None)
+    )
     new_tags = set(tag_columns(new_engineered))
-    if base_tags != new_tags:
+    if base_tags is not None and base_tags != new_tags:
         only_base = sorted(base_tags - new_tags)
         only_new = sorted(new_tags - base_tags)
         raise ValueError(
@@ -988,14 +1077,19 @@ def combine_for_retrain(
         scalers, fitted_params=scaling_params,
     )
 
-    # MODEL-SERVE-017. `combine=False` is the "New Data Only" strategy: the
-    # base's train-side rows are left out and the candidate trains on the new
-    # data alone. Everything above this line is deliberately shared — the same
-    # recipe, the same never-re-fit scalers, the same refusals — because the
-    # ONLY difference between the two strategies is which rows reach training.
-    # `base_frozen` still commits below either way: a New-Data-Only candidate
-    # is still scored on the incumbent's own frozen rows, which is what keeps
-    # the RMSE comparison honest.
+    # MODEL-SERVE-017 / MODEL-SERVE-021. `combine=False` is the "New Data
+    # Only" strategy: the base is never loaded and the candidate trains on
+    # the new data alone (minus its own validation window — see D03 below).
+    # Everything from here to the window handling stays the same feature
+    # engineering/scaling path as AUGMENT_DATA — the same recipe, the same
+    # never-re-fit scalers — because the two strategies still prepare the NEW
+    # rows identically; only which rows reach TRAINING differs. There is no
+    # frozen slice for this strategy any more (MODEL-SERVE-021 reversed
+    # MODEL-SERVE-017's "still scored on the incumbent's own frozen rows"):
+    # comparability now comes from scoring both the candidate and the
+    # incumbent's own saved model on this SAME validation window, in the
+    # trainer container (`claim()`/`pipelines/__init__.py`), never from a
+    # slice of the base's own data.
     # The operator's own validation window, carved out of the NEW rows and
     # removed from training. Cut AFTER scaling deliberately: scaling is
     # per-column with the base's already-fitted params, so slicing before or
@@ -1044,11 +1138,24 @@ def combine_for_retrain(
         # THE leakage guard: these rows leave training entirely. A row may
         # never be both trained on and validated on.
         new_scaled = new_scaled[~in_window].reset_index(drop=True)
-        if len(new_scaled) == 0 and not request.combine:
-            raise ValueError(
-                "The validation window covers every new-dataset row, leaving "
-                "nothing to train on under the New Data Only strategy."
-            )
+        if not request.combine:
+            # MODEL-SERVE-021-D03. Train ONLY on rows strictly BEFORE the
+            # window starts — never on rows that come after it. AUGMENT_DATA
+            # keeps every non-window row (before and after); this strategy
+            # trains on a dataset the operator may have picked BECAUSE it
+            # overlaps the incumbent's own data, so "after the window" can
+            # be exactly the rows the window exists to test against, and
+            # training on them would be forecasting with the answer key.
+            new_scaled = new_scaled[
+                new_scaled[TIMESTAMP_COLUMN] < v_from
+            ].reset_index(drop=True)
+            if len(new_scaled) == 0:
+                raise ValueError(
+                    "No new-dataset rows fall before the validation window — "
+                    "nothing to train the new version on under New Data "
+                    "Only. Pick a window later in the dataset, leaving rows "
+                    "before it to train on."
+                )
 
     train_parts = [base_train, new_scaled] if request.combine else [new_scaled]
     before_dedupe = sum(len(part) for part in train_parts)
@@ -1070,9 +1177,18 @@ def combine_for_retrain(
         operations=[],
         parent_frame=base_train if request.combine else None,
     )
-    frozen_key = sidecar_key(stats.object_key, VALIDATE_DATA_FILENAME)
-    frozen_stats = store.put_frame(
-        base_frozen, frozen_key, overwrite=request.overwrite)
+    # MODEL-SERVE-021. `combine=False` carves NO frozen slice — `base_frozen`
+    # is `None`, there is nothing of the base's own rows in this candidate's
+    # story at all, and writing an empty/absent sidecar here would leave a
+    # `validate_data.parquet` describing a comparison basis that no longer
+    # exists. `frozen_eval_checksum` is `None` on the payload; the backend's
+    # own schema for it is nullable (nothing downstream reads it besides that
+    # schema declaration).
+    frozen_stats = None
+    if base_frozen is not None:
+        frozen_key = sidecar_key(stats.object_key, VALIDATE_DATA_FILENAME)
+        frozen_stats = store.put_frame(
+            base_frozen, frozen_key, overwrite=request.overwrite)
 
     payload = _commit(
         store, stats, started,
@@ -1081,12 +1197,16 @@ def combine_for_retrain(
         column_stats=column_stats,
         feature_spec=spec,
         skipped_features=skipped_columns,
-        validation_row_count=len(base_frozen),
-        validation_holdout_from=str(cut_ts),
-        validation_missing_pct=missing_pct(base_frozen),
+        validation_row_count=len(base_frozen) if base_frozen is not None else None,
+        validation_holdout_from=str(cut_ts) if base_frozen is not None else None,
+        validation_missing_pct=(
+            missing_pct(base_frozen) if base_frozen is not None else None
+        ),
         dropped_bad_rows=dropped_bad_rows,
     )
-    payload["frozen_eval_checksum"] = frozen_stats.checksum
+    payload["frozen_eval_checksum"] = (
+        frozen_stats.checksum if frozen_stats is not None else None
+    )
     payload["dedupe_dropped"] = dedupe_dropped
     if new_validation is not None:
         new_validation_stats = store.put_frame(

@@ -71,7 +71,7 @@ import type { AIModel } from '@/types'
 import { ModelEvaluation } from '../evaluation/components/model-evaluation'
 import { ModelUpsertDialog } from '../views/components/model-upsert-dialog'
 import { ModelRetrainDialog } from './components/model-retrain-dialog'
-import { RetrainProgress } from './components/retrain-progress'
+import { RetrainTab } from './components/retrain-tab'
 import { InputDataTab } from './components/input-data-tab'
 import { ModelMonitoringTab } from './components/monitoring/model-monitoring-tab'
 import { WindowLogsTab } from './components/window-logs-tab'
@@ -156,6 +156,10 @@ export default function ModelDetailPage({
   >(null)
   const [editOpen, setEditOpen] = useState(false)
   const [retrainOpen, setRetrainOpen] = useState(false)
+  // MODEL-SERVE-020. Controlled so the Data Studio return handoff can land on
+  // the Retrain tab: the dialog it reopens belongs to that tab now, and an
+  // operator returning mid-retrain must not find it open over another one.
+  const [activeTab, setActiveTab] = useState('input')
   // MODEL-SERVE-017. Set when the Data Studio wizard sends the operator back
   // after building a dataset for this retrain — the params name what to
   // reopen with, so the dialog resumes instead of starting from scratch.
@@ -185,6 +189,7 @@ export default function ModelDetailPage({
       returnedStrategy === 'AUGMENT_DATA' ||
       returnedStrategy === 'NEW_DATA_ONLY'
     ) {
+      setActiveTab('retrain')
       setRetrainOpen(true)
     }
   }, [returnedStrategy, returnedDatasetId, returnedVersionId])
@@ -657,15 +662,6 @@ export default function ModelDetailPage({
                 </Link>
               </Button>
             )}
-            <Button
-              variant="outline"
-              size="sm"
-              className="gap-1.5"
-              onClick={() => setRetrainOpen(true)}
-            >
-              <RefreshCw className="h-4 w-4" />
-              Retrain
-            </Button>
           </div>
         </div>
 
@@ -679,20 +675,6 @@ export default function ModelDetailPage({
             </span>
           </div>
         )}
-
-        {/* Retrain progress (stage boxes + eval metrics) */}
-        <RetrainProgress
-          job={retrain.dismissed ? null : retrain.job}
-          phase={retrain.dismissed ? 'idle' : retrain.phase}
-          logs={retrain.logs}
-          onDismiss={retrain.dismiss}
-          applying={promote.busy}
-          onApplyToProduction={version => {
-            // The SAME promote flow the header's own Promote button uses —
-            // including its 422 override dialog, already mounted below.
-            void promote.promote(model.id, version)
-          }}
-        />
 
         {/* Stat cards */}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -831,7 +813,11 @@ export default function ModelDetailPage({
         </div>
 
         {/* Tabs */}
-        <Tabs defaultValue="input" className="flex w-full flex-col">
+        <Tabs
+          value={activeTab}
+          onValueChange={setActiveTab}
+          className="flex w-full flex-col"
+        >
           <div className="mb-4 flex w-full items-center overflow-x-auto pb-1">
             <TabsList className="inline-flex h-10 w-max items-center justify-start p-1">
               <TabsTrigger
@@ -869,6 +855,16 @@ export default function ModelDetailPage({
               >
                 <GitBranch className="h-4 w-4 shrink-0" />
                 <span>Versions</span>
+              </TabsTrigger>
+
+              {/* MODEL-SERVE-020. Retrain lives beside Versions because a
+                  retrain's result IS a new version to compare and promote. */}
+              <TabsTrigger
+                value="retrain"
+                className="flex items-center gap-2 px-4"
+              >
+                <RefreshCw className="h-4 w-4 shrink-0" />
+                <span>Retrain</span>
               </TabsTrigger>
 
               <TabsTrigger
@@ -966,6 +962,28 @@ export default function ModelDetailPage({
           {/* ── Versions ── */}
           <TabsContent value="versions" className="mt-4">
             <VersionsTab modelId={model.id} />
+          </TabsContent>
+
+          {/* ── Retrain ── MODEL-SERVE-020 */}
+          <TabsContent value="retrain" className="mt-4">
+            <RetrainTab
+              modelId={model.id}
+              // Not the per-viewer `dismissed` pair the old panel used: that was
+              // a way to close a panel sitting above the whole page. Here the
+              // finished result IS the tab's content — hiding it would leave an
+              // empty tab with no way to bring it back.
+              job={retrain.job}
+              phase={retrain.phase}
+              logs={retrain.logs}
+              isRetraining={retrain.isRetraining}
+              onStartRetrain={() => setRetrainOpen(true)}
+              applying={promote.busy}
+              onApplyToProduction={version => {
+                // The SAME promote flow the header's own Promote button uses
+                // — including its 422 override dialog, already mounted below.
+                void promote.promote(model.id, version)
+              }}
+            />
           </TabsContent>
 
           {/* ── Logs ── */}

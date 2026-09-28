@@ -3,6 +3,11 @@ import {
   brandModelVersionNumber,
   type ModelVersionNumber,
 } from '@/lib/model-version-number'
+import {
+  toRunPredictions,
+  type RunPredictions,
+  type RunPredictionsWire,
+} from '@/services/model-draft'
 import type {
   CandidateInput,
   CandidateResult,
@@ -62,6 +67,14 @@ export interface TrainingComposition {
   dedupeDropped: number | null
   cutTimestamp: string | null
   combinedRowCount: number | null
+  /** What the candidate was actually FIT on (its own recorded split), as
+   *  opposed to what the combined data CONTAINS above. The newest rows — the
+   *  new data — fall in the test split, so these can differ sharply. */
+  fitRowCount: number | null
+  fitUpTo: string | null
+  /** True/false when the persisted facts settle whether any new-data row was
+   *  in the fit; null when they cannot. Never guessed. */
+  newDataUsedInFit: boolean | null
 }
 
 export interface RetrainComparison {
@@ -90,6 +103,9 @@ export interface RetrainComparison {
     version: number
     stage: string
     algorithm: string
+    /** MODEL-SERVE-020-T05. The run the current version was trained by —
+     *  what the Retrain tab's charts read its test predictions from. */
+    sourceRunId: string
     metrics: MetricTriple
     metricsBasis: EvalBasis
   }
@@ -333,4 +349,38 @@ export const modelRunLogsService = {
       `/api/v1/authorized/model/${modelId}/runs/${encodeURIComponent(runId)}`,
       { method: 'GET' },
     ),
+}
+
+/**
+ * MODEL-SERVE-020-T04/T05. Which per-row series to read for a retrain run:
+ * `test` is the run's own test split (for the current version, its full test
+ * data), `holdout` the slice the new version is scored on against the current
+ * version's test data, `new_data_holdout` the rows set aside from the new
+ * dataset. MODEL-SERVE-021 adds `current_new_data_holdout` — the CURRENT
+ * version's OWN series on that same window, present only for a NEW_DATA_ONLY
+ * (replace) retrain, read off the CANDIDATE run (never the current version's
+ * own run — that scoring never touches it). Mirrors the backend's
+ * `ModelRunPredictionPopulationEnum`.
+ */
+export type RetrainPredictionPopulation =
+  | 'test'
+  | 'holdout'
+  | 'new_data_holdout'
+  | 'current_new_data_holdout'
+
+/** A Model-owned run's per-row predictions. A 404 (thrown as `ApiError` by
+ *  `fetchClient`) carries the server's own reason naming which population is
+ *  missing — surface that message, never a generic one. */
+export const modelRunPredictionsService = {
+  get: async (
+    modelId: string,
+    runId: string,
+    population: RetrainPredictionPopulation,
+  ): Promise<ApiResponse<RunPredictions>> => {
+    const res: ApiResponse<RunPredictionsWire> = await fetchClient(
+      `/api/v1/authorized/model/${modelId}/runs/${encodeURIComponent(runId)}/predictions?population=${population}`,
+      { method: 'GET' },
+    )
+    return { ...res, data: toRunPredictions(res.data) }
+  },
 }

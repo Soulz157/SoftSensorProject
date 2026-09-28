@@ -38,9 +38,22 @@ export const RetrainStrategyEnum = z.enum([
   // incumbent's own training rows out. This overturns the recorded decision
   // `retrain_is_blocked_on_the_same_definition_as_fine_tuning` ("not a
   // retrain on different/widened data"), at the user's explicit request on
-  // 2026-09-23. It stays comparable because the candidate is still scored on
-  // the incumbent's own frozen test rows — the new data must start strictly
-  // after the incumbent's cut timestamp, so those rows never reach training.
+  // 2026-09-23.
+  //
+  // MODEL-SERVE-021 REVERSES how it stays comparable. It used to be scored
+  // on the incumbent's own frozen test rows, which is why the new dataset
+  // had to start strictly after the incumbent's cut timestamp — the same
+  // rule AUGMENT_DATA still follows. This strategy now REPLACES the
+  // training data outright: the new dataset may overlap the incumbent's own
+  // data freely (an operator's real request — the new dataset covers the
+  // SAME period the incumbent trained on). Comparability instead comes from
+  // scoring BOTH the candidate and the incumbent's own saved model on the
+  // SAME operator-defined validation window (in the training container —
+  // see `claim()`'s own comment), which is why `newValidationFrom/To` is now
+  // REQUIRED for this strategy (enforced below) rather than optional, and
+  // why the window must start on/after the incumbent's own cut timestamp
+  // (python's own check, since only it can see the real data) — never
+  // before it, or the incumbent would be "tested" on rows it trained on.
   'NEW_DATA_ONLY',
 ]);
 
@@ -120,6 +133,20 @@ export const TriggerRetrainSchema = z
       "data ('AUGMENT_DATA' or 'NEW_DATA_ONLY').",
     path: ['newValidationFrom'],
   })
+  .refine(
+    (body) => body.strategy !== 'NEW_DATA_ONLY' || !!body.newValidationFrom,
+    {
+      // MODEL-SERVE-021-D02. Unlike AUGMENT_DATA, where the window is
+      // optional (the frozen-slice comparison still works without one),
+      // NEW_DATA_ONLY carves no frozen slice at all any more — a window is
+      // the ONLY basis left for comparing the two versions.
+      message:
+        "strategy 'NEW_DATA_ONLY' requires newValidationFrom/newValidationTo " +
+        '— it replaces the training data outright, so the current and new ' +
+        'versions are compared on this window instead of a frozen slice.',
+      path: ['newValidationFrom'],
+    },
+  )
   .refine(
     (body) => !usesNewData(body.strategy) || !!body.additionalDatasetVersionId,
     {

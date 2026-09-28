@@ -1294,6 +1294,29 @@ PERMUTATION_IMPORTANCE_FILENAME = "permutation_importance.json"
 # name) and artifact-keys.ts — change all three, and also add to
 # _ALLOWED_RUN_UPLOADS below. See images/trainer/app/MIRRORS.md entry 8.
 HOLDOUT_PREDICTIONS_FILENAME = "holdout_predictions.parquet"
+# MODEL-SERVE-020-T06. The per-row series a retrain candidate produced on the
+# operator's NEW-DATA window ({timestamp,y_true,y_pred}) — the aggregate always
+# reached `newDataHoldoutMetrics`, the frame used to be discarded. Its OWN
+# filename: it describes a different population from BOTH predictions.parquet
+# (the test split) and holdout_predictions.parquet (the current version's
+# frozen test slice), and neither may be overwritten or read as the other.
+# Mirrored in images/trainer/app/artifacts.py (same name) and artifact-keys.ts
+# — change all three, and also add to _ALLOWED_RUN_UPLOADS and
+# _READABLE_PREDICTION_FILENAMES in services/artifact_service.py. See
+# images/trainer/app/MIRRORS.md entry 9.
+NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME = "new_data_holdout_predictions.parquet"
+# MODEL-SERVE-021. The CURRENT PRODUCTION model's score on that SAME window —
+# scored by the candidate's own training container (New Data Only replace
+# mode carves no frozen slice any more, so this is the only comparison basis
+# left) and uploaded under its own filename so it can never be confused with
+# or overwrite the candidate's own series above. Mirrored in
+# images/trainer/app/artifacts.py (same name) and artifact-keys.ts — change
+# all three, and also add to _ALLOWED_RUN_UPLOADS and
+# _READABLE_PREDICTION_FILENAMES in services/artifact_service.py. See
+# images/trainer/app/MIRRORS.md entry 10.
+INCUMBENT_NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME = (
+    "incumbent_new_data_holdout_predictions.parquet"
+)
 # MODEL-FLOW-016-T08. The model-ready validation holdout `tryReplayHoldout`
 # (model-run.authorized.service.ts) writes under a run's own prefix, via
 # `prepare_holdout_for_run`/`replay_holdout_for_run` — NOT one of train.py's

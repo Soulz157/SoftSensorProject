@@ -170,30 +170,31 @@ def test_frozen_eval_dropped_rows_counts_what_the_new_dataset_cut_off() -> None:
     assert result["frozen_eval_dropped_rows"] == 8
 
 
-def test_new_data_only_trains_on_new_rows_but_keeps_the_base_frozen_window() -> None:
-    """MODEL-SERVE-017. `combine=False` is the "New Data Only" strategy.
+def test_new_data_only_replaces_the_dataset_and_trains_only_before_the_window() -> None:
+    """MODEL-SERVE-021. `combine=False` ("New Data Only") REPLACES the
+    training data — this REVERSES MODEL-SERVE-017's "still scored on the
+    incumbent's own frozen rows": there is no frozen slice any more, and the
+    new dataset may freely overlap (even start before) the incumbent's own
+    data, which is the whole point of a replacement.
 
-    Two things must hold at once, and they pull in opposite directions:
-    the base's TRAIN rows must be absent from the written artifact, while
-    the base's FROZEN rows must still be written to the sidecar — dropping
-    those too would leave a New-Data-Only candidate with nothing to be
-    scored against the incumbent on, which is the whole basis of the
-    comparison.
-
-    The new rows must also still be scaled with the BASE's recorded params,
-    exactly as in the combine case: `combine=False` changes which rows are
-    trained on, never the feature space they live in.
+    Three things must hold:
+      1. `base_data_key` is NEVER LOADED — proven here by pointing it at a
+         key the store does not even contain; if the base were read this
+         test would raise `KeyError` before ever reaching the assertions.
+      2. The written training frame contains ONLY new rows strictly BEFORE
+         the validation window — never the window itself (the leakage
+         guard, shared with AUGMENT_DATA) and never rows AFTER it either
+         (D03, new to this strategy: real forecasting never trains on the
+         future of what it is tested on).
+      3. No frozen sidecar is written at all.
     """
-    base = _daily_frame(20)
-    base["PT-201"] = [float(i) for i in range(20)]
-    base["PT-201__status"] = base["TI-101__status"]
-    new = _daily_frame(5)
-    new["timestamp"] = pd.Timestamp("2026-01-26") + pd.to_timedelta(range(5), unit="D")
-    new["PT-201"] = [100.0, 101.0, 102.0, 103.0, 104.0]
+    new = _daily_frame(10)
+    new["timestamp"] = pd.Timestamp("2026-01-10") + pd.to_timedelta(range(10), unit="D")
+    new["PT-201"] = [float(100 + i) for i in range(10)]
     new["PT-201__status"] = new["TI-101__status"]
 
     store = RecordingStore({
-        "base-ds/artifacts/final-1/data.parquet": base,
+        # base_data_key deliberately absent from the store — see assertion 1.
         "new-ds/artifacts/silver-1/data_silver.parquet": new,
     })
     _seed_feature_spec(
@@ -210,36 +211,103 @@ def test_new_data_only_trains_on_new_rows_but_keeps_the_base_frozen_window() -> 
     result = artifact_service.combine_for_retrain(
         store,
         CombineForRetrainRequest(
-            base_data_key="base-ds/artifacts/final-1/data.parquet",
+            base_data_key="base-ds/artifacts/final-1/data.parquet",  # never read
             base_feature_spec_key="base-ds/artifacts/final-1/feature_spec.json",
             new_data_key="new-ds/artifacts/silver-1/data_silver.parquet",
             target_key="base-ds/artifacts/newonly-1/data_gold.parquet",
             target_y="TI-101",
+            # The incumbent's own test data starts 2026-01-16 — BEFORE the
+            # new dataset even ends (01-19). AUGMENT_DATA would refuse this
+            # outright; New Data Only (replace) accepts it.
             cut_timestamp="2026-01-16",
             combine=False,
+            # Window inside the new dataset, on/after cut_ts: 01-16..01-17.
+            new_validation_from="2026-01-16",
+            new_validation_to="2026-01-17",
         ),
     )
 
     written = store.objects["base-ds/artifacts/newonly-1/data_gold.parquet"]
-    # The new rows ALONE — 15 base train rows deliberately left out.
-    assert len(written) == 5
-    assert written["timestamp"].min() == pd.Timestamp("2026-01-26")
+    # Rows 01-10..01-15 (6 rows) are strictly before the window — trained on.
+    # Rows 01-18..01-19 (2 rows), AFTER the window, are EXCLUDED (D03) even
+    # though they are not part of the window itself.
+    assert len(written) == 6
+    assert written["timestamp"].max() == pd.Timestamp("2026-01-15")
 
-    # Still the base's recorded params (min=0, max=19), not re-fit on
-    # [100,104] — identical to the combine case's expectation.
-    expected = [round(v / 19.0, 3) for v in [100.0, 101.0, 102.0, 103.0, 104.0]]
+    held_out = store.objects[
+        "base-ds/artifacts/newonly-1/validate_new_data.parquet"]
+    assert sorted(held_out["timestamp"].tolist()) == [
+        pd.Timestamp("2026-01-16"), pd.Timestamp("2026-01-17"),
+    ]
+
+    # Still the base's recorded params (min=0, max=19), not re-fit on the
+    # new dataset's own [100,109] range.
+    expected = [round((100 + i) / 19.0, 3) for i in range(6)]
     assert sorted(written["PT-201"].tolist()) == sorted(expected)
 
-    # The frozen evaluation slice is the BASE's own test rows, unchanged —
-    # this is what the candidate gets scored on.
-    frozen = store.objects["base-ds/artifacts/newonly-1/validate_data.parquet"]
-    assert sorted(frozen["TI-101"].tolist()) == [15.0, 16.0, 17.0, 18.0, 19.0]
+    # No frozen slice for this strategy any more.
+    assert "base-ds/artifacts/newonly-1/validate_data.parquet" not in store.objects
+    assert result["frozen_eval_checksum"] is None
+    assert result["validation_row_count"] is None
 
-    assert result["validation_row_count"] == 5
-    assert result["frozen_eval_checksum"]
-    # Reports rows that actually reached training, so no base rows did.
     assert result["base_train_row_count"] == 0
-    assert result["new_train_row_count"] == 5
+    assert result["new_train_row_count"] == 6
+    assert result["new_validation_row_count"] == 2
+
+
+def test_new_data_only_requires_a_validation_window() -> None:
+    """MODEL-SERVE-021-D02. No frozen slice exists for this strategy any
+    more, so a window is the ONLY basis for comparing the two versions —
+    required, not optional."""
+    new = _daily_frame(5)
+    new["timestamp"] = pd.Timestamp("2026-01-20") + pd.to_timedelta(range(5), unit="D")
+    store = RecordingStore({
+        "new-ds/artifacts/silver-1/data_silver.parquet": new,
+    })
+    _seed_feature_spec(store, "base-ds/artifacts/final-1/feature_spec.json")
+
+    with pytest.raises(ValueError, match="requires a validation window"):
+        artifact_service.combine_for_retrain(
+            store,
+            CombineForRetrainRequest(
+                base_data_key="base-ds/artifacts/final-1/data.parquet",
+                base_feature_spec_key="base-ds/artifacts/final-1/feature_spec.json",
+                new_data_key="new-ds/artifacts/silver-1/data_silver.parquet",
+                target_key="base-ds/artifacts/newonly-1/data_gold.parquet",
+                target_y="TI-101",
+                cut_timestamp="2026-01-16",
+                combine=False,
+            ),
+        )
+
+
+def test_new_data_only_refuses_a_window_before_the_incumbents_cut() -> None:
+    """MODEL-SERVE-021-D03. The window must start on/after the point the
+    incumbent's own training stopped, or scoring the incumbent there would
+    not measure genuinely unseen data."""
+    new = _daily_frame(10)
+    new["timestamp"] = pd.Timestamp("2026-01-10") + pd.to_timedelta(range(10), unit="D")
+    store = RecordingStore({
+        "new-ds/artifacts/silver-1/data_silver.parquet": new,
+    })
+    _seed_feature_spec(store, "base-ds/artifacts/final-1/feature_spec.json")
+
+    with pytest.raises(ValueError, match="before this model's own test data starts"):
+        artifact_service.combine_for_retrain(
+            store,
+            CombineForRetrainRequest(
+                base_data_key="base-ds/artifacts/final-1/data.parquet",
+                base_feature_spec_key="base-ds/artifacts/final-1/feature_spec.json",
+                new_data_key="new-ds/artifacts/silver-1/data_silver.parquet",
+                target_key="base-ds/artifacts/newonly-1/data_gold.parquet",
+                target_y="TI-101",
+                cut_timestamp="2026-01-16",
+                combine=False,
+                # Window starts 01-12 — before cut_ts 01-16.
+                new_validation_from="2026-01-12",
+                new_validation_to="2026-01-13",
+            ),
+        )
 
 
 def test_combine_allows_a_spec_that_never_recorded_params_for_the_target() -> None:
@@ -631,8 +699,12 @@ def test_new_validation_window_refusals() -> None:
         )
 
     # Covers every new row under New Data Only — nothing left to train on.
+    # (The fixture's new dataset starts 2026-01-26, after cut_ts 01-16, so
+    # D03's window-vs-cut check passes; this is purely the "window ate every
+    # row" case, which MODEL-SERVE-021's "train only before the window"
+    # restriction now produces identically to before it.)
     store = _window_store()
-    with pytest.raises(ValueError, match="nothing to train on"):
+    with pytest.raises(ValueError, match="nothing to train"):
         _combine_with_window(
             store,
             combine=False,

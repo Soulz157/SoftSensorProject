@@ -75,7 +75,7 @@ describe('describeUsedFor', () => {
 })
 
 describe('describeTrainingComposition', () => {
-  it('AUGMENT_DATA: existing + new + dropped rows', () => {
+  it('AUGMENT_DATA with no recorded fit: describes what the data CONTAINS, not what was trained on', () => {
     const text = describeTrainingComposition(
       'AUGMENT_DATA',
       {
@@ -84,11 +84,14 @@ describe('describeTrainingComposition', () => {
         dedupeDropped: 3,
         cutTimestamp: '2026-06-01T00:00:00Z',
         combinedRowCount: 97,
+        fitRowCount: null,
+        fitUpTo: null,
+        newDataUsedInFit: null,
       },
       'Reactor tags v4',
     )
     expect(text).toBe(
-      'Trained on: existing data up to 2026-06-01 (80 rows) + Reactor tags v4 (20 rows), 3 repeated rows removed',
+      'Built from: existing data up to 2026-06-01 (80 rows) + Reactor tags v4 (20 rows), 3 repeated rows removed',
     )
   })
 
@@ -101,13 +104,16 @@ describe('describeTrainingComposition', () => {
         dedupeDropped: 0,
         cutTimestamp: '2026-06-01T00:00:00Z',
         combinedRowCount: 100,
+        fitRowCount: null,
+        fitUpTo: null,
+        newDataUsedInFit: null,
       },
       'Reactor tags v4',
     )
     expect(text).not.toContain('removed')
   })
 
-  it('NEW_DATA_ONLY: the new dataset alone', () => {
+  it('NEW_DATA_ONLY with no recorded fit: the new dataset alone, as what it was built from', () => {
     const text = describeTrainingComposition(
       'NEW_DATA_ONLY',
       {
@@ -116,10 +122,83 @@ describe('describeTrainingComposition', () => {
         dedupeDropped: 0,
         cutTimestamp: '2026-06-01T00:00:00Z',
         combinedRowCount: 20,
+        fitRowCount: null,
+        fitUpTo: null,
+        newDataUsedInFit: null,
       },
       'Reactor tags v4',
     )
-    expect(text).toBe('Trained on: Reactor tags v4 only (20 rows)')
+    expect(text).toBe('Built from: Reactor tags v4 only (20 rows)')
+  })
+
+  it('with a recorded fit, states what the model was FIT on — not what the artifact contains', () => {
+    const base = {
+      baseTrainRowCount: 3091,
+      newTrainRowCount: 24,
+      dedupeDropped: 0,
+      cutTimestamp: '2025-11-06 19:00:00',
+      combinedRowCount: 3115,
+    }
+    // The real 5-of-5 case: the fit stops at 2025-09-29, all 24 new rows are
+    // in the test split.
+    expect(
+      describeTrainingComposition(
+        'AUGMENT_DATA',
+        {
+          ...base,
+          fitRowCount: 2180,
+          fitUpTo: '2025-09-29 20:00:00',
+          newDataUsedInFit: false,
+        },
+        'the new dataset',
+      ),
+    ).toBe(
+      'Trained on: 2,180 rows up to 2025-09-29. None of the new data was used to train it \u2014 it was used only for testing',
+    )
+    // New data in the fit: no warning, just the fit.
+    expect(
+      describeTrainingComposition(
+        'AUGMENT_DATA',
+        {
+          ...base,
+          fitRowCount: 3100,
+          fitUpTo: '2025-11-20 00:00:00',
+          newDataUsedInFit: true,
+        },
+        'the new dataset',
+      ),
+    ).toBe('Trained on: 3,100 rows up to 2025-11-20')
+    // Unknown: states the fit, claims nothing about the new data either way.
+    expect(
+      describeTrainingComposition(
+        'AUGMENT_DATA',
+        {
+          ...base,
+          fitRowCount: 3100,
+          fitUpTo: '2025-11-20 00:00:00',
+          newDataUsedInFit: null,
+        },
+        'the new dataset',
+      ),
+    ).toBe('Trained on: 3,100 rows up to 2025-11-20')
+  })
+
+  it('never says “trained on” about the combined data when no fit was recorded', () => {
+    const text = describeTrainingComposition(
+      'AUGMENT_DATA',
+      {
+        baseTrainRowCount: 80,
+        newTrainRowCount: 20,
+        dedupeDropped: 0,
+        cutTimestamp: '2026-06-01T00:00:00Z',
+        combinedRowCount: 100,
+        fitRowCount: null,
+        fitUpTo: null,
+        newDataUsedInFit: null,
+      },
+      'ds',
+    )
+    expect(text).not.toMatch(/trained on/i)
   })
 
   it('returns null rather than a fabricated line when never recorded', () => {

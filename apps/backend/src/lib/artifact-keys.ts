@@ -139,6 +139,21 @@ export const RUN_UPLOAD_FILENAMES = [
   // images/trainer/app/artifacts.py — change all three. See
   // images/trainer/app/MIRRORS.md entry 8.
   'holdout_predictions.parquet',
+  // MODEL-SERVE-020-T06. The retrain candidate's per-row series on the
+  // operator's NEW-DATA window — its own filename, a different population from
+  // both predictions.parquet and holdout_predictions.parquet. Mirrored from
+  // NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME in object_store.py and
+  // images/trainer/app/artifacts.py — change all three. See
+  // images/trainer/app/MIRRORS.md entry 9.
+  'new_data_holdout_predictions.parquet',
+  // MODEL-SERVE-021. The CURRENT PRODUCTION model's per-row series on the
+  // SAME window — scored by the candidate's own training container so the
+  // two are comparable, and uploaded under its own filename for the same
+  // "never overwrite a different population" reason the sibling above has.
+  // Mirrored from an equivalent constant in object_store.py and
+  // images/trainer/app/artifacts.py — change all three. See
+  // images/trainer/app/MIRRORS.md entry 10.
+  'incumbent_new_data_holdout_predictions.parquet',
 ] as const;
 
 /**

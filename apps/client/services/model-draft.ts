@@ -538,7 +538,7 @@ export interface RunPredictions {
 
 /** Wire shape is snake_case (the python service's own convention) — mapped
  *  once here so every other caller works in the client's camelCase. */
-interface RunPredictionsWire {
+export interface RunPredictionsWire {
   source_key: string
   row_count: number
   residual_sd: number
@@ -552,7 +552,7 @@ interface RunPredictionsWire {
   target_scaled: boolean | null
 }
 
-function toRunPredictions(wire: RunPredictionsWire): RunPredictions {
+export function toRunPredictions(wire: RunPredictionsWire): RunPredictions {
   return {
     sourceKey: wire.source_key,
     rowCount: wire.row_count,

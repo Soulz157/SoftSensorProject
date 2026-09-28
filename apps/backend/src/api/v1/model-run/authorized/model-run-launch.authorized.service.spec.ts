@@ -1019,3 +1019,226 @@ describe('ModelRunLaunchAuthorizedService.launchDraftRun — cross-validation ru
     expect(prisma.datasetArtifact.findFirst).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * MODEL-SERVE-020-T04. `getRunPredictionsService` — the Model-scoped twin of
+ * the draft route above, for the Retrain tab's charts. A retrain candidate is
+ * owned by the Model (`modelDraftId` null), so the draft route's
+ * `modelDraftId = draftId` filter can never find it.
+ */
+describe('ModelRunLaunchAuthorizedService.getRunPredictionsService', () => {
+  const MODEL = { id: 'model-1', workspaceId: 'ws-1' };
+  const RUN = {
+    status: 'SUCCEEDED',
+    cvFoldsKey: null,
+    predictionsKey: 'models/model-1/runs/run-1/predictions.parquet',
+    holdoutPredictionsKey:
+      'models/model-1/runs/run-1/holdout_predictions.parquet',
+    manifestKey: 'models/model-1/runs/run-1/run_manifest.json',
+  };
+  const PREDICTIONS = {
+    source_key: RUN.holdoutPredictionsKey,
+    row_count: 1,
+    residual_sd: 0.1,
+    residual_rmse_check: 0.1,
+    y_true_min: 1,
+    y_true_max: 1,
+    y_pred_min: 1.1,
+    y_pred_max: 1.1,
+    points: [{ timestamp: '2026-01-01 00:00:00', y_true: 1, y_pred: 1.1 }],
+    derived_from_target: [],
+    target_scaled: false,
+  };
+
+  function makePrisma(
+    overrides: {
+      model?: Record<string, unknown> | null;
+      run?: Record<string, unknown> | null;
+      member?: Record<string, unknown> | null;
+    } = {},
+  ) {
+    return {
+      model: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue(
+            overrides.model === undefined ? MODEL : overrides.model,
+          ),
+      },
+      workspace: { findFirst: jest.fn().mockResolvedValue(null) },
+      workspaceMember: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValue(
+            overrides.member === undefined
+              ? { role: 'VIEWER' }
+              : overrides.member,
+          ),
+      },
+      modelTrainingRun: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValue(overrides.run === undefined ? RUN : overrides.run),
+      },
+    };
+  }
+
+  function makeService(prisma: ReturnType<typeof makePrisma>) {
+    return new ModelRunLaunchAuthorizedService(prisma as never, {} as never);
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockedRunPredictions.mockResolvedValue(PREDICTIONS);
+  });
+
+  it('refuses (404) when the model does not exist', async () => {
+    const service = makeService(makePrisma({ model: null }));
+    await expect(
+      service.getRunPredictionsService('model-1', 'run-1', 'u1', 'ADMIN'),
+    ).rejects.toThrow(NotFoundException);
+    expect(mockedRunPredictions).not.toHaveBeenCalled();
+  });
+
+  it('looks the run up by id AND modelId, so another model’s run is a 404', async () => {
+    const prisma = makePrisma({ run: null });
+    const service = makeService(prisma);
+    await expect(
+      service.getRunPredictionsService(
+        'model-1',
+        'run-of-model-2',
+        'u1',
+        'ADMIN',
+      ),
+    ).rejects.toThrow(NotFoundException);
+    expect(prisma.modelTrainingRun.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'run-of-model-2', modelId: 'model-1' },
+      }),
+    );
+    expect(mockedRunPredictions).not.toHaveBeenCalled();
+  });
+
+  it('lets a workspace VIEWER read, and refuses a non-member', async () => {
+    const viewer = makeService(makePrisma({ member: { role: 'VIEWER' } }));
+    await expect(
+      viewer.getRunPredictionsService('model-1', 'run-1', 'u1', 'USER'),
+    ).resolves.toMatchObject({ statusCode: 200 });
+
+    const stranger = makeService(makePrisma({ member: null }));
+    await expect(
+      stranger.getRunPredictionsService('model-1', 'run-1', 'u2', 'USER'),
+    ).rejects.toThrow('Forbidden');
+  });
+
+  it('refuses (404) a run that has not SUCCEEDED, naming its status', async () => {
+    const service = makeService(
+      makePrisma({ run: { ...RUN, status: 'RUNNING' } }),
+    );
+    await expect(
+      service.getRunPredictionsService('model-1', 'run-1', 'u1', 'ADMIN'),
+    ).rejects.toThrow('RUNNING');
+  });
+
+  it('defaults to the test split and passes the run’s own keys to python', async () => {
+    const service = makeService(makePrisma());
+    const res = await service.getRunPredictionsService(
+      'model-1',
+      'run-1',
+      'u1',
+      'ADMIN',
+    );
+    expect(mockedRunPredictions).toHaveBeenCalledWith({
+      source_key: RUN.predictionsKey,
+      manifest_key: RUN.manifestKey,
+    });
+    expect(res.data).toEqual(PREDICTIONS);
+  });
+
+  it('reads the holdout series for population=holdout', async () => {
+    const service = makeService(makePrisma());
+    await service.getRunPredictionsService(
+      'model-1',
+      'run-1',
+      'u1',
+      'ADMIN',
+      'holdout',
+    );
+    expect(mockedRunPredictions).toHaveBeenCalledWith({
+      source_key: RUN.holdoutPredictionsKey,
+      manifest_key: RUN.manifestKey,
+    });
+  });
+
+  it('names the missing population when the run recorded none', async () => {
+    const service = makeService(
+      makePrisma({ run: { ...RUN, holdoutPredictionsKey: null } }),
+    );
+    await expect(
+      service.getRunPredictionsService(
+        'model-1',
+        'run-1',
+        'u1',
+        'ADMIN',
+        'holdout',
+      ),
+    ).rejects.toThrow('test data the current version was scored on');
+    expect(mockedRunPredictions).not.toHaveBeenCalled();
+  });
+
+  it('answers new_data_holdout with a 404 that says why — never an empty 200', async () => {
+    const service = makeService(makePrisma());
+    await expect(
+      service.getRunPredictionsService(
+        'model-1',
+        'run-1',
+        'u1',
+        'ADMIN',
+        'new_data_holdout',
+      ),
+    ).rejects.toThrow('new data set aside');
+    expect(mockedRunPredictions).not.toHaveBeenCalled();
+  });
+
+  it('reads the new-data series from the run’s own newDataHoldoutPredictionsKey', async () => {
+    const key =
+      'models/model-1/runs/run-1/new_data_holdout_predictions.parquet';
+    const service = makeService(
+      makePrisma({ run: { ...RUN, newDataHoldoutPredictionsKey: key } }),
+    );
+    const res = await service.getRunPredictionsService(
+      'model-1',
+      'run-1',
+      'u1',
+      'ADMIN',
+      'new_data_holdout',
+    );
+    expect(mockedRunPredictions).toHaveBeenCalledWith({
+      source_key: key,
+      manifest_key: RUN.manifestKey,
+    });
+    expect(res.data).toEqual(PREDICTIONS);
+  });
+
+  it('refuses the new-data series of a run that has not SUCCEEDED, naming its status', async () => {
+    const service = makeService(
+      makePrisma({
+        run: {
+          ...RUN,
+          status: 'RUNNING',
+          newDataHoldoutPredictionsKey: 'k',
+        },
+      }),
+    );
+    await expect(
+      service.getRunPredictionsService(
+        'model-1',
+        'run-1',
+        'u1',
+        'ADMIN',
+        'new_data_holdout',
+      ),
+    ).rejects.toThrow('RUNNING');
+    expect(mockedRunPredictions).not.toHaveBeenCalled();
+  });
+});

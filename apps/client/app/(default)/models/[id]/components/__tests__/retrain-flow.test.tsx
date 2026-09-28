@@ -123,6 +123,7 @@ function comparison(
       version: 3,
       stage: 'PRODUCTION',
       algorithm: 'ridge',
+      sourceRunId: 'run-incumbent',
       metrics: { rmse: 1.25, r2: 0.9, mae: 0.5 },
       metricsBasis: {
         frame: 'INCUMBENT_TEST_SPLIT',
@@ -732,6 +733,9 @@ describe('RetrainProgress — result (T04/T06)', () => {
                 dedupeDropped: 2,
                 cutTimestamp: '2026-06-01T00:00:00Z',
                 combinedRowCount: 98,
+                fitRowCount: null,
+                fitUpTo: null,
+                newDataUsedInFit: null,
               },
             },
             incumbent: {
@@ -739,6 +743,7 @@ describe('RetrainProgress — result (T04/T06)', () => {
               version: 3,
               stage: 'PRODUCTION',
               algorithm: 'ridge',
+              sourceRunId: 'run-incumbent',
               metrics: { rmse: 1.25, r2: 0.9, mae: 0.5 },
               metricsBasis: { ...FULL_BASIS, frame: 'INCUMBENT_TEST_SPLIT' },
             },

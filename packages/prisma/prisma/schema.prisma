@@ -1004,6 +1004,32 @@ model ModelTrainingRun {
   newDataHoldoutRowCount   Int?
   newDataHoldoutFrom       DateTime?
   newDataHoldoutTo         DateTime?
+  /// MODEL-SERVE-020-T06. Object key of the per-row series
+  /// `{timestamp,y_true,y_pred}` the candidate produced on the new-data window
+  /// above — `new_data_holdout_predictions.parquet`. Until this column the
+  /// trainer scored that window and DISCARDED the frame (only the aggregate
+  /// reached `newDataHoldoutMetrics`), so the Retrain tab's charts had nothing
+  /// to draw for it. Nullable, and null means "no series recorded": a run with
+  /// no window, a run from before this column, a trainer image that predates
+  /// it (an additive artifact fails silently until the image is rebuilt), or
+  /// the window's scoring soft-failing. Never reconstructed on read.
+  newDataHoldoutPredictionsKey String?
+  /// MODEL-SERVE-021. The CURRENT PRODUCTION model's score on the SAME
+  /// window above — never blended with `newDataHoldoutMetrics` (the
+  /// candidate's own score on it). This is what makes a New Data Only
+  /// (replace) retrain comparable at all: that strategy carves no frozen
+  /// slice any more (see `combine_for_retrain`'s own docstring), so scoring
+  /// both versions on one shared window, inside the candidate's own
+  /// training container, is the only basis left. Null for every run that is
+  /// not a NEW_DATA_ONLY candidate, for one whose incumbent could not be
+  /// resolved (lstm/gru, or a version recording no feature_columns — see
+  /// `prepareNewDataOnlyComparison`'s own comment), or whose scoring
+  /// soft-failed. Never written back onto the incumbent's OWN row.
+  incumbentNewDataHoldoutMetrics    Json?
+  /// Object key of the per-row series the SAME scoring produced for the
+  /// current version, mirroring `newDataHoldoutPredictionsKey`'s own
+  /// null-means-not-recorded discipline.
+  incumbentNewDataHoldoutPredictionsKey String?
   /// MODEL-FLOW-014-T06. The train/test split distribution panel's own
   /// response (SplitStatsResponse, apps/python schemas/preprocess.py),
   /// frozen at RUN CREATION — the record of what the user was actually

@@ -100,6 +100,19 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
     ],
   };
 
+  // The row a retrain candidate actually trains on (MODEL-SERVE-020-T01): the
+  // combined FINAL — no operations, no validation columns, a pointer up to
+  // the GOLD that carries them. Mirrors buildCombinedArtifact's FINAL write.
+  const COMBINED_FINAL = {
+    id: 'combined-final-1',
+    type: 'FINAL',
+    parentArtifactId: 'combined-gold-1',
+    rowCount: 140,
+    operations: [],
+    validationRowCount: null,
+    validationHoldoutFrom: null,
+  };
+
   function makePrisma(
     overrides: {
       liveJob?: Record<string, unknown> | null;
@@ -175,14 +188,25 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
       // MODEL-SERVE-019-T03. Only reached for a new-data strategy
       // (`isAugmented`); `frozenEvalDroppedRows: 0` in COMBINED_ARTIFACT_BASE
       // holds the D03 gate comparable unless a test overrides it.
+      // ID-AWARE on purpose: a candidate run's goldArtifactId is the combined
+      // FINAL, whose `operations` is [] and whose validation columns are
+      // null — the real data lives on its GOLD PARENT. An earlier version of
+      // this mock returned one object for any id, which is exactly why a
+      // read of the wrong row (the FINAL) passed every test while making
+      // every live comparison non-comparable (MODEL-SERVE-020-T01).
       datasetArtifact: {
-        findUnique: jest
-          .fn()
-          .mockResolvedValue(
-            overrides.combinedArtifact === undefined
-              ? COMBINED_ARTIFACT_BASE
-              : overrides.combinedArtifact,
-          ),
+        findUnique: jest.fn().mockImplementation(({ where }) => {
+          if (where.id === 'combined-final-1')
+            return Promise.resolve(COMBINED_FINAL);
+          if (where.id === 'combined-gold-1') {
+            return Promise.resolve(
+              overrides.combinedArtifact === undefined
+                ? COMBINED_ARTIFACT_BASE
+                : overrides.combinedArtifact,
+            );
+          }
+          return Promise.resolve(null);
+        }),
       },
       // MODEL-SERVE-015-T01. getCurrentRetrainJobService's own base-dataset
       // resolution — irrelevant to every pre-015 test here, so a fixed
@@ -429,20 +453,24 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
     });
   });
 
-  describe('buildComparison — MODEL-SERVE-017 NEW_DATA_ONLY basis', () => {
-    it('is comparable on the same frozen-eval rule as AUGMENT_DATA, and reports its own strategy', async () => {
-      // The regression this guards: NEW_DATA_ONLY's training artifact
-      // differs from the incumbent's by construction, so if it fell through
-      // to the old artifact-equality path it would read "not comparable"
-      // for a comparison that is genuinely valid — the candidate was scored
-      // on the incumbent's own frozen test rows.
-      const finished = {
-        ...JOB_BASE,
-        status: 'SUCCEEDED',
-        resultVersionId: 'version-4',
-        bestRunId: 'run-candidate',
-        retrainStrategy: 'NEW_DATA_ONLY',
-      };
+  describe('buildComparison — MODEL-SERVE-021 NEW_DATA_ONLY basis', () => {
+    // MODEL-SERVE-021 REVERSES MODEL-SERVE-017's own rule: NEW_DATA_ONLY no
+    // longer carves a frozen slice of the incumbent's own rows (it REPLACES
+    // the training data outright, so there is nothing of the incumbent's own
+    // rows left to freeze). Comparability instead comes from scoring BOTH
+    // the candidate and the incumbent's own saved model, inside the
+    // candidate's training container, on the SAME operator-defined
+    // validation window — `newDataHoldoutMetrics` / `incumbentNewDataHoldoutMetrics`
+    // on the candidate run, never `evalSetKind`/`frozenEvalChecksum`.
+    const finished = {
+      ...JOB_BASE,
+      status: 'SUCCEEDED',
+      resultVersionId: 'version-4',
+      bestRunId: 'run-candidate',
+      retrainStrategy: 'NEW_DATA_ONLY',
+    };
+
+    it('is comparable when both versions were scored on the shared validation window, and reports its own strategy', async () => {
       const prisma = makePrisma({
         liveJob: finished,
         resultVersion: { version: 4, stage: 'STAGING' },
@@ -451,12 +479,14 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
           'run-candidate': {
             ...RUN_BASE,
             id: 'run-candidate',
-            goldArtifactId: 'new-only-gold-1',
+            goldArtifactId: 'combined-final-1',
             artifactChecksum: 'new-only-sha',
-            evalSetKind: 'FROZEN_INCUMBENT_TEST',
-            frozenEvalChecksum: 'frozen-sha',
-            holdoutMetrics: { rmse: 0.9, r2: 0.85, mae: 0.4 },
             metrics: { rmse: 5.0, r2: -2.0, mae: 3.0 },
+            newDataHoldoutMetrics: { rmse: 0.9, r2: 0.85, mae: 0.4 },
+            incumbentNewDataHoldoutMetrics: { rmse: 1.25, r2: 0.8, mae: 0.5 },
+            newDataHoldoutRowCount: 30,
+            newDataHoldoutFrom: new Date('2026-11-06T19:00:00Z'),
+            newDataHoldoutTo: new Date('2026-11-10T19:00:00Z'),
           },
         },
       });
@@ -473,11 +503,92 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
       // Its OWN strategy — never reported as AUGMENT_DATA, which would tell
       // the reader the candidate also trained on the incumbent's rows.
       expect(comparison?.basis.strategy).toBe('NEW_DATA_ONLY');
-      expect(comparison?.basis.evalSet).toEqual({
-        kind: 'FROZEN_INCUMBENT_TEST',
-        checksum: 'frozen-sha',
+      // No frozen slice any more — never a stale FROZEN_INCUMBENT_TEST kind.
+      expect(comparison?.basis.evalSet).toBeNull();
+      expect(comparison?.basis.trainingComposition).toBeNull();
+      // Both figures come off the SAME shared window, never the incumbent's
+      // own historical test split or the candidate's plain test metrics.
+      expect(comparison?.candidate.metrics).toEqual({
+        rmse: 0.9,
+        r2: 0.85,
+        mae: 0.4,
       });
+      expect(comparison?.incumbent.metrics).toEqual({
+        rmse: 1.25,
+        r2: 0.8,
+        mae: 0.5,
+      });
+      expect(comparison?.candidate.metricsBasis?.frame).toBe('NEW_DATA_WINDOW');
+      expect(comparison?.candidate.metricsBasis?.usedFor).toBe(
+        'COMPARE_TO_PRODUCTION',
+      );
+      expect(comparison?.incumbent.metricsBasis?.frame).toBe('NEW_DATA_WINDOW');
+      // Never duplicated under the standalone "report only" field.
+      expect(comparison?.candidate.newDataHoldoutMetrics).toBeNull();
       expect(comparison?.rmseDelta).toBeCloseTo(0.9 - 1.25);
+    });
+
+    it('is not comparable when the current version could not be scored on the same window (e.g. lstm/gru, no recorded sequence_length)', async () => {
+      const prisma = makePrisma({
+        liveJob: finished,
+        resultVersion: { version: 4, stage: 'STAGING' },
+        runsById: {
+          'run-incumbent': RUN_BASE,
+          'run-candidate': {
+            ...RUN_BASE,
+            id: 'run-candidate',
+            goldArtifactId: 'combined-final-1',
+            artifactChecksum: 'new-only-sha',
+            newDataHoldoutMetrics: { rmse: 0.9, r2: 0.85, mae: 0.4 },
+            incumbentNewDataHoldoutMetrics: null,
+          },
+        },
+      });
+      const service = new ModelRetrainAuthorizedService(
+        prisma as never,
+        makeCandidateJobs(finished) as never,
+        {} as never,
+      );
+
+      const res = await service.getCurrentRetrainJobService('model-1', ADMIN);
+      const comparison = res.data?.job?.comparison;
+
+      expect(comparison?.basis.comparable).toBe(false);
+      expect(comparison?.basis.reason).toContain(
+        'the current version could not be scored on the same validation window',
+      );
+      expect(comparison?.rmseDelta).toBeNull();
+    });
+
+    it('is not comparable when the candidate has not been scored on the window yet', async () => {
+      const prisma = makePrisma({
+        liveJob: finished,
+        resultVersion: { version: 4, stage: 'STAGING' },
+        runsById: {
+          'run-incumbent': RUN_BASE,
+          'run-candidate': {
+            ...RUN_BASE,
+            id: 'run-candidate',
+            goldArtifactId: 'combined-final-1',
+            artifactChecksum: 'new-only-sha',
+            newDataHoldoutMetrics: null,
+            incumbentNewDataHoldoutMetrics: null,
+          },
+        },
+      });
+      const service = new ModelRetrainAuthorizedService(
+        prisma as never,
+        makeCandidateJobs(finished) as never,
+        {} as never,
+      );
+
+      const res = await service.getCurrentRetrainJobService('model-1', ADMIN);
+      const comparison = res.data?.job?.comparison;
+
+      expect(comparison?.basis.comparable).toBe(false);
+      expect(comparison?.basis.reason).toContain(
+        'the new version has not been scored on the validation window yet',
+      );
     });
   });
 
@@ -500,7 +611,7 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
             id: 'run-candidate',
             // A DIFFERENT artifact/checksum — the whole point of the
             // amendment: this must not fail comparability on its own.
-            goldArtifactId: 'combined-gold-1',
+            goldArtifactId: 'combined-final-1',
             artifactChecksum: 'combined-sha',
             evalSetKind: 'FROZEN_INCUMBENT_TEST',
             frozenEvalChecksum: 'frozen-sha',
@@ -546,7 +657,7 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
           'run-candidate': {
             ...RUN_BASE,
             id: 'run-candidate',
-            goldArtifactId: 'combined-gold-1',
+            goldArtifactId: 'combined-final-1',
             evalSetKind: null,
             frozenEvalChecksum: null,
             holdoutMetrics: null,
@@ -633,7 +744,7 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
           'run-candidate': {
             ...RUN_BASE,
             id: 'run-candidate',
-            goldArtifactId: 'combined-gold-1',
+            goldArtifactId: 'combined-final-1',
             evalSetKind: 'FROZEN_INCUMBENT_TEST',
             frozenEvalChecksum: 'frozen-sha',
             holdoutMetrics: { rmse: 0.9, r2: 0.85, mae: 0.4 },
@@ -686,7 +797,7 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
           'run-candidate': {
             ...RUN_BASE,
             id: 'run-candidate',
-            goldArtifactId: 'combined-gold-1',
+            goldArtifactId: 'combined-final-1',
             evalSetKind: 'FROZEN_INCUMBENT_TEST',
             frozenEvalChecksum: 'frozen-sha',
             holdoutMetrics: { rmse: 0.9, r2: 0.85, mae: 0.4 },
@@ -734,7 +845,7 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
           'run-candidate': {
             ...RUN_BASE,
             id: 'run-candidate',
-            goldArtifactId: 'combined-gold-1',
+            goldArtifactId: 'combined-final-1',
             evalSetKind: 'FROZEN_INCUMBENT_TEST',
             frozenEvalChecksum: 'frozen-sha',
             holdoutMetrics: { rmse: 0.9, r2: 0.85, mae: 0.4 },
@@ -761,6 +872,100 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
       expect(comparison?.incumbent.metricsBasis?.rowCount).toBeNull();
     });
 
+    /**
+     * MODEL-SERVE-020. The real defect this pins: the trainer re-splits the
+     * combined artifact chronologically, so the newest rows — the new data —
+     * land in the TEST split and never in the fit. `trainingComposition`
+     * describes what the candidate was FIT on, off its own recorded split.
+     */
+    describe('what the candidate was fit on', () => {
+      function fitOf(
+        splitSpec: Record<string, unknown>,
+        ops: Record<string, unknown> = {},
+      ) {
+        const finished = {
+          ...JOB_BASE,
+          status: 'SUCCEEDED',
+          resultVersionId: 'version-4',
+          bestRunId: 'run-candidate',
+          retrainStrategy: 'AUGMENT_DATA',
+        };
+        const prisma = makePrisma({
+          liveJob: finished,
+          resultVersion: { version: 4, stage: 'STAGING' },
+          runsById: {
+            'run-incumbent': RUN_BASE,
+            'run-candidate': {
+              ...RUN_BASE,
+              id: 'run-candidate',
+              goldArtifactId: 'combined-final-1',
+              evalSetKind: 'FROZEN_INCUMBENT_TEST',
+              frozenEvalChecksum: 'f',
+              holdoutMetrics: { rmse: 0.9, r2: 0.85, mae: 0.4 },
+              metrics: { rmse: 5, r2: -2, mae: 3 },
+              splitSpec,
+            },
+          },
+          combinedArtifact: {
+            ...COMBINED_ARTIFACT_BASE,
+            operations: [{ ...COMBINED_ARTIFACT_BASE.operations[0], ...ops }],
+          },
+        });
+        const service = new ModelRetrainAuthorizedService(
+          prisma as never,
+          makeCandidateJobs(finished) as never,
+          {} as never,
+        );
+        return service
+          .getCurrentRetrainJobService('model-1', ADMIN)
+          .then((r) => r.data?.job?.comparison?.basis.trainingComposition);
+      }
+
+      it('says NO new data was in the fit when the fit stops before the base cut (the real 5-of-5 case)', async () => {
+        const tc = await fitOf(
+          {
+            method: 'chronological',
+            ratio: 0.7,
+            train_rows: 2180,
+            cut_timestamp: '2025-09-29 20:00:00',
+          },
+          { cutTimestamp: '2025-11-06 19:00:00', frozenEvalTo: null },
+        );
+        expect(tc?.fitRowCount).toBe(2180);
+        expect(tc?.fitUpTo).toBe('2025-09-29 20:00:00');
+        expect(tc?.newDataUsedInFit).toBe(false);
+      });
+
+      it('says new data WAS in the fit when the fit reaches past the new data’s own start', async () => {
+        const tc = await fitOf(
+          {
+            method: 'chronological',
+            ratio: 0.7,
+            train_rows: 16,
+            cut_timestamp: '2025-11-20 00:00:00',
+          },
+          {
+            cutTimestamp: '2025-11-06 19:00:00',
+            frozenEvalTo: '2025-11-17 14:00:00',
+          },
+        );
+        expect(tc?.newDataUsedInFit).toBe(true);
+      });
+
+      it('says unknown — never a guess — when the persisted facts cannot settle it', async () => {
+        const tc = await fitOf(
+          {
+            method: 'chronological',
+            ratio: 0.7,
+            train_rows: 16,
+            cut_timestamp: '2025-11-20 00:00:00',
+          },
+          { cutTimestamp: '2025-11-06 19:00:00', frozenEvalTo: null },
+        );
+        expect(tc?.newDataUsedInFit).toBeNull();
+      });
+    });
+
     it('populates each figure basis from persisted rows when the comparison holds', async () => {
       const finished = {
         ...JOB_BASE,
@@ -781,7 +986,7 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
           'run-candidate': {
             ...RUN_BASE,
             id: 'run-candidate',
-            goldArtifactId: 'combined-gold-1',
+            goldArtifactId: 'combined-final-1',
             evalSetKind: 'FROZEN_INCUMBENT_TEST',
             frozenEvalChecksum: 'frozen-sha',
             holdoutMetrics: { rmse: 0.9, r2: 0.85, mae: 0.4 },
@@ -803,6 +1008,8 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
       const comparison = res.data?.job?.comparison;
 
       expect(comparison?.basis.comparable).toBe(true);
+      // MODEL-SERVE-020-T05: the charts need the current version's own run.
+      expect(comparison?.incumbent.sourceRunId).toBe('run-incumbent');
       expect(comparison?.incumbent.metricsBasis).toEqual({
         frame: 'INCUMBENT_TEST_SPLIT',
         from: '2026-06-01T00:00:00Z',
@@ -841,6 +1048,10 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
         dedupeDropped: 0,
         cutTimestamp: '2026-06-01T00:00:00Z',
         combinedRowCount: 140,
+        // The candidate run in this fixture records no split of its own.
+        fitRowCount: null,
+        fitUpTo: null,
+        newDataUsedInFit: null,
       });
     });
   });

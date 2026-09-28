@@ -13,7 +13,10 @@ import {
   type PredictionPopulation,
 } from '@/lib/run-prediction-source';
 import { PrismaService } from '@softsensor/prisma';
-import { CreateTrainingRunDto } from './dto/model-run.authorized.dto';
+import {
+  CreateTrainingRunDto,
+  type ModelRunPredictionPopulation,
+} from './dto/model-run.authorized.dto';
 import {
   fetchArtifactMetadata,
   getRunCvFolds,
@@ -26,6 +29,14 @@ import { postToPython, PYTHON_TIMEOUT } from '@/lib/python-client';
 import { PythonSplitStatsSchema } from '../../dataset-version/authorized/dto/dataset-version.authorized.dto';
 import { AppException } from '@softsensor/common';
 import { TrainningContainerAuthorizedService } from '../../trainning-container/authorized/trainning-container.authorized.service';
+
+/** MODEL-SERVE-020-T04. How the Model predictions route names a population in
+ *  the refusal the Retrain tab shows verbatim. `holdout` is the new version's
+ *  series on the current version's test data. */
+const MODEL_POPULATION_LABEL: Record<PredictionPopulation, string> = {
+  test: 'test data',
+  holdout: 'test data the current version was scored on',
+};
 
 /** Anything longer than this and the token, not the run, is the risk. */
 const RUN_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
@@ -766,6 +777,128 @@ export class ModelRunLaunchAuthorizedService {
       },
     });
     if (!run) throw new NotFoundException('Training run not found');
+    return this.readRunSeries(run, population);
+  }
+
+  /**
+   * MODEL-SERVE-020-T04. Model-scoped twin of `getDraftRunPredictionsService`
+   * — a retrain candidate is owned by the Model (`modelDraftId` null), so the
+   * draft route's `modelDraftId = draftId` filter can never find it and the
+   * Retrain tab's charts had no way to read a series.
+   *
+   * The run is looked up by `{id, modelId}` together, so a runId belonging to
+   * ANOTHER model is a plain 404 — never a series read across models. Access
+   * is the same read-level workspace check `getRunService` already applies
+   * (a viewer may read; only triggering a retrain needs editor).
+   *
+   * `new_data_holdout` is the rows a retrain set aside from the new dataset.
+   * Nothing persists that series yet (the trainer discards the per-row frame —
+   * MODEL-SERVE-020-T06), so it answers 404 with that reason rather than an
+   * empty 200 that a chart would draw as if it were data.
+   */
+  async getRunPredictionsService(
+    modelId: string,
+    runId: string,
+    userId: string,
+    role: string,
+    population: ModelRunPredictionPopulation = 'test',
+  ) {
+    await this.assertModelAccess(modelId, userId, role);
+    const run = await this.prisma.modelTrainingRun.findFirst({
+      where: { id: runId, modelId },
+      select: {
+        status: true,
+        cvFoldsKey: true,
+        predictionsKey: true,
+        holdoutPredictionsKey: true,
+        newDataHoldoutPredictionsKey: true,
+        incumbentNewDataHoldoutPredictionsKey: true,
+        manifestKey: true,
+      },
+    });
+    if (!run) throw new NotFoundException('Training run not found');
+    if (population === 'new_data_holdout') {
+      // Its own column, not a `predictionKeyFor` branch: that function is the
+      // draft/batch routes' rule and has no notion of a retrain's window.
+      if (run.status !== 'SUCCEEDED') {
+        throw new AppException({
+          statusCode: 404,
+          message: `Training run has not succeeded (status: ${run.status}); no predictions to show.`,
+          type: 'ERROR',
+        });
+      }
+      if (!run.newDataHoldoutPredictionsKey) {
+        throw new AppException({
+          statusCode: 404,
+          message:
+            'No predictions were recorded for the new data set aside in this ' +
+            'retrain.',
+          type: 'ERROR',
+        });
+      }
+      return this.readPredictions(
+        run.newDataHoldoutPredictionsKey,
+        run.manifestKey,
+      );
+    }
+    // MODEL-SERVE-021. The current PRODUCTION version's OWN series on the
+    // SAME window above — scored inside THIS candidate run's training
+    // container (see `prepareNewDataOnlyComparison`/the trainer's
+    // `_score_new_data_holdout_if_present`), read off this same run row.
+    // Absent for every run that is not a NEW_DATA_ONLY candidate, one whose
+    // incumbent could not be resolved (lstm/gru, or a version recording no
+    // feature_columns), or whose scoring soft-failed — honest absence, never
+    // an empty 200 a chart would draw as if it were data.
+    if (population === 'current_new_data_holdout') {
+      if (run.status !== 'SUCCEEDED') {
+        throw new AppException({
+          statusCode: 404,
+          message: `Training run has not succeeded (status: ${run.status}); no predictions to show.`,
+          type: 'ERROR',
+        });
+      }
+      if (!run.incumbentNewDataHoldoutPredictionsKey) {
+        throw new AppException({
+          statusCode: 404,
+          message:
+            'The current version could not be scored on the same validation ' +
+            'window for this retrain.',
+          type: 'ERROR',
+        });
+      }
+      return this.readPredictions(
+        run.incumbentNewDataHoldoutPredictionsKey,
+        run.manifestKey,
+      );
+    }
+    return this.readRunSeries(
+      run,
+      population,
+      MODEL_POPULATION_LABEL[population],
+    );
+  }
+
+  /**
+   * The read both predictions routes share: refuse a run that has not
+   * SUCCEEDED, resolve which key holds `population`, and parse it. One place
+   * for the refusal wording, so the draft and Model routes cannot drift.
+   */
+  private async readRunSeries(
+    run: {
+      status: string;
+      cvFoldsKey: string | null;
+      predictionsKey: string | null;
+      holdoutPredictionsKey: string | null;
+      manifestKey: string | null;
+    },
+    population: PredictionPopulation,
+    /** Plain words for the refusal. Omitted, the message keeps the draft
+     *  route's raw `test`/`holdout` wording (the wizard's own vocabulary,
+     *  unchanged); the Model route passes this because its message reaches
+     *  the Retrain tab verbatim and operator-facing copy never says
+     *  "holdout". */
+    populationLabel?: string,
+  ) {
     if (run.status !== 'SUCCEEDED') {
       throw new AppException({
         statusCode: 404,
@@ -781,14 +914,21 @@ export class ModelRunLaunchAuthorizedService {
     if (!sourceKey) {
       throw new AppException({
         statusCode: 404,
-        message: `Training run succeeded but recorded no ${population} predictions artifact.`,
+        message: populationLabel
+          ? `Training run succeeded but recorded no predictions for the ${populationLabel}.`
+          : `Training run succeeded but recorded no ${population} predictions artifact.`,
         type: 'ERROR',
       });
     }
 
+    return this.readPredictions(sourceKey, run.manifestKey);
+  }
+
+  /** Parse one predictions object and wrap it in the routes' envelope. */
+  private async readPredictions(sourceKey: string, manifestKey: string | null) {
     const predictions = await runPredictions({
       source_key: sourceKey,
-      manifest_key: run.manifestKey,
+      manifest_key: manifestKey,
     });
 
     return {

@@ -1,4 +1,9 @@
-import { RunCompleteSchema, SplitSpecSchema } from './model-run.authorized.dto';
+import {
+  ModelRunPredictionsQuerySchema,
+  RunCompleteSchema,
+  RunUploadUrlsSchema,
+  SplitSpecSchema,
+} from './model-run.authorized.dto';
 
 /**
  * MODEL-FLOW-016-T03/V07. `SplitSpecSchema` gained a third
@@ -106,5 +111,56 @@ describe('SplitSpecSchema — cv_expanding variant', () => {
       ],
     });
     expect(result.success).toBe(true);
+  });
+});
+
+/**
+ * MODEL-SERVE-020-T06. A trainer image that WRITES the new-data series is
+ * useless if the API refuses to mint its upload URL or to accept it in
+ * `uploaded` — the container's upload would fail (or, worse, be silently
+ * dropped) on a request nothing in the trainer's own tests can reach. Both
+ * schemas derive from RUN_UPLOAD_FILENAMES, so this pins that one list.
+ */
+describe('new_data_holdout_predictions.parquet — the API admits the artifact', () => {
+  it('mints an upload URL for it', () => {
+    const r = RunUploadUrlsSchema.safeParse({
+      filenames: ['model.joblib', 'new_data_holdout_predictions.parquet'],
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it('accepts it in a completed run’s `uploaded`', () => {
+    const r = RunCompleteSchema.safeParse({
+      status: 'SUCCEEDED',
+      uploaded: ['model.joblib', 'new_data_holdout_predictions.parquet'],
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it('still refuses a filename that is not a run output', () => {
+    const r = RunUploadUrlsSchema.safeParse({ filenames: ['../../secret'] });
+    expect(r.success).toBe(false);
+  });
+});
+
+describe('ModelRunPredictionsQuerySchema (MODEL-SERVE-020-T04)', () => {
+  it.each(['test', 'holdout', 'new_data_holdout'])(
+    'accepts %s',
+    (population) => {
+      expect(
+        ModelRunPredictionsQuerySchema.safeParse({ population }).success,
+      ).toBe(true);
+    },
+  );
+
+  it('defaults to nothing (the service defaults to test) and refuses anything else', () => {
+    expect(ModelRunPredictionsQuerySchema.safeParse({}).success).toBe(true);
+    expect(
+      ModelRunPredictionsQuerySchema.safeParse({ population: 'train' }).success,
+    ).toBe(false);
+    expect(
+      ModelRunPredictionsQuerySchema.safeParse({ population: 'test', x: 1 })
+        .success,
+    ).toBe(false);
   });
 });

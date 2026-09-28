@@ -181,6 +181,71 @@ admitted this filename, so that task needed no allow-list change.
 
 ---
 
+## 9. `NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME = "new_data_holdout_predictions.parquet"`
+
+| Copy        | Location                                                                                                                                                                                |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| this image  | `artifacts.py`                                                                                                                                                                          |
+| apps/python | `object_store.py` (`NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME`), also gates `_ALLOWED_RUN_UPLOADS` AND `_READABLE_PREDICTION_FILENAMES` in `services/artifact_service.py` (two allow-lists) |
+| API (TS)    | `artifact-keys.ts` (`RUN_UPLOAD_FILENAMES`); the key is recorded by `complete()` into `ModelTrainingRun.newDataHoldoutPredictionsKey`                                                   |
+
+MODEL-SERVE-020-T06. "Three copies, not two" like entries 4, 7 and 8 — plus a
+fourth place that is easy to miss: python has a WRITE allow-list and a separate
+READ allow-list, and widening only the first leaves the artifact uploadable and
+then unreadable (`run_predictions` refuses the name). Both must admit it.
+
+Its own filename, a THIRD population: `predictions.parquet` is the run's test
+split, `holdout_predictions.parquet` its score on the current version's frozen
+test slice, and this is its score on the rows the operator set aside from the
+NEW dataset. Same `{timestamp,y_true,y_pred}` shape, different rows — nothing
+may overwrite one with another.
+
+**Image rebuild required.** This is an ADDITIVE artifact: a trainer image that
+predates it does not crash, it simply never uploads the file, `complete()`
+records NULL, and the Retrain tab states an honest absence while every layer of
+code is correct. Nothing in CI builds `images/trainer`, so this reaches a run
+only via a manual `docker build` + the pinned-tag bump in
+`trainning-container.authorized.service.ts`.
+
+---
+
+## 10. `INCUMBENT_NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME = "incumbent_new_data_holdout_predictions.parquet"`
+
+| Copy        | Location                                                                                                                                                                                          |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| this image  | `artifacts.py`                                                                                                                                                                                    |
+| apps/python | `object_store.py` (`INCUMBENT_NEW_DATA_HOLDOUT_PREDICTIONS_FILENAME`), also gates `_ALLOWED_RUN_UPLOADS` AND `_READABLE_PREDICTION_FILENAMES` in `services/artifact_service.py` (two allow-lists) |
+| API (TS)    | `artifact-keys.ts` (`RUN_UPLOAD_FILENAMES`); the key is recorded by `complete()` into `ModelTrainingRun.incumbentNewDataHoldoutPredictionsKey`                                                    |
+
+MODEL-SERVE-021-T03. Same three-copy-plus-two-allow-list shape as entry 9 —
+widening only the write allow-list leaves this artifact uploadable and then
+unreadable.
+
+Its own filename, a FOURTH population, scored only for a "New data only"
+retrain (the strategy that replaces the training set outright and so has no
+frozen incumbent-test slice — see entry 9's "THIRD population" note for the
+other three): this is the CURRENT production version's score on the identical
+new-data window entry 9 scores the candidate on. Same
+`{timestamp,y_true,y_pred}` shape as its three siblings, different model,
+same rows — the whole point is that the two are directly comparable.
+
+Scored INSIDE this container, not by re-running the current version's own
+saved job: `pipelines/__init__.py`'s `_score_new_data_holdout_if_present`
+downloads the current version's model object (`incumbentModelUrl`, checksum-
+verified) and its own feature columns (`incumbentFeatureColumns`, read off its
+run manifest by the backend) only when the backend presigned them — true only
+for "New data only". Never for lstm/gru: no `sequence_length` is recorded
+anywhere the backend can read one from for an arbitrary saved version, so the
+backend never presigns an incumbent for a sequence algorithm and this file is
+simply absent on that run (honest absence, not a wrong number).
+
+**Image rebuild required**, same as entry 9: an ADDITIVE artifact, absent
+rather than crashing on a trainer image that predates it. Reaches a run only
+via a manual `docker build` + the pinned-tag bump in
+`trainning-container.authorized.service.ts`.
+
+---
+
 ## Long-term
 
 The right fix is a shared wheel containing `labelled_mask`, the fold plan, and

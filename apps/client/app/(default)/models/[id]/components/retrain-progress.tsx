@@ -1,15 +1,7 @@
 'use client'
 
-import {
-  AlertTriangle,
-  ArrowUpCircle,
-  CheckCircle2,
-  Loader2,
-  X,
-} from 'lucide-react'
-import { Button } from '@/components/ui/button'
+import { AlertTriangle, CheckCircle2, Loader2, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { formatMetricValue } from '@/lib/model-evaluation'
 import {
   RETRAIN_STAGES,
   comparisonView,
@@ -17,21 +9,12 @@ import {
   type RetrainPhase,
 } from '@/lib/retrain'
 import {
-  describeEvalBasis,
-  describeTrainingComposition,
-  describeUsedFor,
-} from '@/lib/retrain-basis'
-import {
   promotableCandidateVersion,
   type RetrainJob,
 } from '@/services/model-retrain'
 import type { ModelVersionNumber } from '@/lib/model-version-number'
-
-const METRICS: { key: 'rmse' | 'r2' | 'mae'; label: string }[] = [
-  { key: 'rmse', label: 'RMSE' },
-  { key: 'r2', label: 'R²' },
-  { key: 'mae', label: 'MAE' },
-]
+import { RetrainCompareSection } from './retrain-compare-section'
+import { RetrainNewDataSection } from './retrain-new-data-section'
 
 /**
  * MODEL-SERVE-014. Was driven by a local `setTimeout` sequence and
@@ -154,228 +137,20 @@ export function RetrainProgress({
         </div>
       )}
 
-      {/* Result */}
+      {/* Result. MODEL-SERVE-020-T03: sections 1 and 2 of the Retrain tab
+          live in their own components; this file keeps the stage boxes,
+          logs and failure banner it always owned. */}
       {phase === 'done' && view && (
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <p className="text-xs font-medium text-muted-foreground">
-              Evaluation
-            </p>
-            {job.comparison?.candidate.version != null && (
-              <span className="rounded-full bg-blue-500/10 px-2 py-0.5 text-[10px] font-semibold text-blue-700 dark:text-blue-300">
-                v{candidateVersion} — STAGING
-              </span>
-            )}
-          </div>
-
-          {/* MODEL-SERVE-019-T04. The training-data line — states what was
-              actually trained on, with real row counts, never just the
-              strategy name. NEW_DATA_ONLY needs this MORE than AUGMENT_DATA
-              does, not less: a candidate that dropped the current version's
-              training rows is the one whose basis a reader is most likely to
-              misread. */}
-          {(view.strategy === 'AUGMENT_DATA' ||
-            view.strategy === 'NEW_DATA_ONLY') && (
-            <p className="text-xs text-muted-foreground">
-              {describeTrainingComposition(
-                view.strategy,
-                view.trainingComposition,
-                'the new dataset',
-              ) ??
-                (view.strategy === 'AUGMENT_DATA'
-                  ? 'Trained on: existing + new dataset'
-                  : 'Trained on: the new dataset only')}
-              . Compared against{' '}
-              <span className="font-medium text-foreground">
-                current v{currentVersion}&apos;s own test data
-              </span>
-              {view.evalSet?.kind !== 'FROZEN_INCUMBENT_TEST' &&
-                ' (not yet scored on that set)'}
-              .
-            </p>
-          )}
-
-          {!view.comparable && view.reason && (
-            <p className="text-xs text-muted-foreground">
-              Not directly comparable to current v{currentVersion}:{' '}
-              {view.reason}
-            </p>
-          )}
-
-          {/* MODEL-SERVE-019-D02/T04. Every metric panel names its own basis
-              — frame, range and row count — and which role it plays
-              (COMPARE_TO_PRODUCTION here). A candidate whose basis was never
-              recorded (a job created before this feature) shows no label
-              rather than a fabricated one. */}
-          {view.candidateMetricsBasis && (
-            <p className="text-[10px] text-muted-foreground">
-              {describeEvalBasis(
-                view.candidateMetricsBasis,
-                currentVersion !== null ? `v${currentVersion}` : null,
-              )}
-              {' · '}
-              {describeUsedFor(view.candidateMetricsBasis.usedFor)}
-            </p>
-          )}
-          <div className="grid grid-cols-3 gap-2">
-            {METRICS.map(({ key, label }) => (
-              <div
-                key={key}
-                className="flex flex-col gap-1 rounded-md bg-muted/30 p-3"
-              >
-                <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                  {label}
-                </p>
-                <p className="text-lg font-semibold tabular-nums text-foreground">
-                  {formatMetricValue(view.candidateMetrics[key])}
-                </p>
-                <p className="text-[10px] text-muted-foreground">
-                  current v{currentVersion}{' '}
-                  {formatMetricValue(view.incumbentMetrics[key])}
-                </p>
-              </div>
-            ))}
-          </div>
-          {/* MODEL-SERVE-019 AC3. The current version's OWN figure names its
-              basis too — not only the candidate's. Always present (unlike
-              the candidate's basis fields, which are null for a legacy job):
-              buildComparison always resolves this one. */}
-          <p className="text-[10px] text-muted-foreground">
-            {describeEvalBasis(
-              view.incumbentMetricsBasis,
-              currentVersion !== null ? `v${currentVersion}` : null,
-            )}
-          </p>
-
-          {/* MODEL-SERVE-015-T04. "Report new dataset evaluation
-              separately" — the candidate's OWN test split over the combined
-              (mixed-regime) data. Never folded into the grid above, which is
-              the frozen-incumbent-test score the delta below is computed
-              from. */}
-          {view.newRegimeMetrics && (
-            <div className="space-y-1.5 rounded-md border border-border bg-muted/10 p-3">
-              <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                {view.newRegimeMetricsBasis
-                  ? describeEvalBasis(
-                      view.newRegimeMetricsBasis,
-                      currentVersion !== null ? `v${currentVersion}` : null,
-                    )
-                  : 'Its own test data (existing + new)'}
-              </p>
-              {view.newRegimeMetricsBasis && (
-                <p className="text-[10px] text-muted-foreground">
-                  {describeUsedFor(view.newRegimeMetricsBasis.usedFor)}
-                </p>
-              )}
-              <div className="grid grid-cols-3 gap-2">
-                {METRICS.map(({ key, label }) => (
-                  <div key={key} className="flex flex-col gap-0.5">
-                    <p className="text-[10px] text-muted-foreground">{label}</p>
-                    <p className="text-sm font-medium tabular-nums text-foreground">
-                      {formatMetricValue(view.newRegimeMetrics![key])}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* The operator's NEW-DATA validation window: rows held out of
-              training entirely and scored on their own.
-
-              Presented as a standalone figure with NO delta, and that is a
-              correctness requirement rather than a layout choice: the
-              incumbent was never scored on these rows, so subtracting its
-              RMSE would produce something that looks like a comparison and
-              is not one. The only delta on this screen stays the frozen-set
-              one below. */}
-          {(view.newDataHoldoutMetrics || view.newDataHoldoutBasis) && (
-            <div className="space-y-1.5 rounded-md border border-border bg-muted/10 p-3">
-              <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                Performance on the new data (held out of training)
-              </p>
-              {view.newDataHoldoutMetrics ? (
-                <>
-                  <div className="grid grid-cols-3 gap-2">
-                    {METRICS.map(({ key, label }) => (
-                      <div key={key} className="flex flex-col gap-0.5">
-                        <p className="text-[10px] text-muted-foreground">
-                          {label}
-                        </p>
-                        <p className="text-sm font-medium tabular-nums text-foreground">
-                          {formatMetricValue(view.newDataHoldoutMetrics![key])}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                  {/* States what was MEASURED, not what was requested — the
-                      server echoes back the first/last timestamps of the
-                      rows actually held out. */}
-                  {view.newDataHoldoutRowCount !== null && (
-                    <p className="text-[10px] text-muted-foreground">
-                      {view.newDataHoldoutRowCount.toLocaleString()} rows
-                      {view.newDataHoldoutFrom && view.newDataHoldoutTo
-                        ? ` from ${new Date(
-                            view.newDataHoldoutFrom,
-                          ).toLocaleDateString()} to ${new Date(
-                            view.newDataHoldoutTo,
-                          ).toLocaleDateString()}`
-                        : ''}
-                      . Not compared against the current model, which was never
-                      scored on these rows.
-                    </p>
-                  )}
-                </>
-              ) : (
-                // MODEL-SERVE-019-D02. A window was set aside but not yet
-                // scored (or scoring soft-failed) — states why instead of
-                // hiding the panel or rendering a 0.
-                <p className="text-[10px] text-muted-foreground">
-                  {view.newDataHoldoutBasis?.unavailableReason ??
-                    'Not recorded for this retrain'}
-                </p>
-              )}
-            </div>
-          )}
-
-          {/* MODEL-SERVE-014. The explicit decision — a retrain lands a
-              STAGING version and stops, so putting v{candidateVersion} live
-              is a separate act the operator takes, never a consequence of
-              the job finishing. Promotion itself (including the r2-floor
-              override path) is the SAME `useModelPromote` flow the page's
-              own Promote button uses; this is a second entry point to it,
-              not a second implementation. */}
-          {promotable !== null && onApplyToProduction && (
-            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/20 p-3">
-              <p className="text-[11px] text-muted-foreground">
-                Keep current v{currentVersion} in production, or put v
-                {candidateVersion} live.
-              </p>
-              <Button
-                size="sm"
-                className="gap-1.5"
-                disabled={applying}
-                onClick={() => onApplyToProduction(promotable)}
-              >
-                <ArrowUpCircle className="h-4 w-4" />
-                {applying
-                  ? 'Applying…'
-                  : `Apply v${candidateVersion} to Production`}
-              </Button>
-            </div>
-          )}
-
-          {view.comparable && view.rmseDelta !== null && (
-            <p className="text-xs text-muted-foreground">
-              RMSE {view.rmseDelta < 0 ? 'improved' : 'regressed'} by{' '}
-              <span className="font-medium text-foreground">
-                {Math.abs(view.rmseDelta).toFixed(4)}
-              </span>{' '}
-              vs. current v{currentVersion}. This candidate was saved as STAGING
-              — current v{currentVersion} stays in production until you apply
-              it.
-            </p>
-          )}
+        <div className="space-y-6">
+          <RetrainCompareSection
+            view={view}
+            currentVersion={currentVersion}
+            candidateVersion={candidateVersion}
+            promotable={promotable}
+            onApplyToProduction={onApplyToProduction}
+            applying={applying}
+          />
+          <RetrainNewDataSection view={view} />
         </div>
       )}
     </div>
