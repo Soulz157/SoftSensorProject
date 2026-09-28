@@ -340,7 +340,11 @@ export default function ModelDetailPage({
     }
   }, [id, workspaces, version])
 
-  if (loading) {
+  // The loading shell only for the FIRST load. A background refetch (the
+  // `version` bump after a retrain/promote, or any write to workspacesAtom)
+  // used to swap the whole page for it, unmounting the open retrain dialog
+  // and silently discarding the operator's strategy, dataset and version.
+  if (loading && !model) {
     return <LoadingModelPage />
   }
 

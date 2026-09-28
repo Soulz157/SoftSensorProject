@@ -66,6 +66,8 @@ const INCUMBENT = {
   algorithm: 'xgboost' as const,
   baseDataset: null,
   cutTimestamp: null,
+  hyperparameters: null,
+  trainTestSplit: null,
 }
 
 function currentState(

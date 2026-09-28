@@ -69,6 +69,8 @@ export interface UseModelRetrain {
       /** Both or neither — the server refuses a half-open window. */
       newValidationFrom?: string
       newValidationTo?: string
+      /** Custom Finetune's own train ratio; omitted = the current version's. */
+      trainTestSplit?: number
     },
   ) => Promise<void>
   /** Clears the last error only — the job itself is server state and is
@@ -225,6 +227,7 @@ export function useModelRetrain({
         additionalDatasetVersionId?: string
         newValidationFrom?: string
         newValidationTo?: string
+        trainTestSplit?: number
       },
     ) => {
       if (!modelId || jobLive) return
@@ -249,6 +252,7 @@ export function useModelRetrain({
           additionalDatasetVersionId: options.additionalDatasetVersionId,
           newValidationFrom: options.newValidationFrom,
           newValidationTo: options.newValidationTo,
+          trainTestSplit: options.trainTestSplit,
         })
         // A fresh trigger (201) and an idempotent replay (200) return the
         // same job envelope — both handled identically.

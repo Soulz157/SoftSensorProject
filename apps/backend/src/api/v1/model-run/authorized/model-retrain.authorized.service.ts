@@ -350,6 +350,10 @@ export class ModelRetrainAuthorizedService {
     }
 
     const split = this.resolveSplit(sourceRun.splitSpec, incumbent.version);
+    // Custom Finetune may name its own ratio; otherwise the current
+    // version's is reused. `resolveSplit` still runs first either way — it is
+    // also what refuses a cross-validated incumbent.
+    const trainRatio = dto.trainTestSplit ?? split.ratio;
 
     // MODEL-SERVE-015/019. Idempotent-retry fast-path: a retry must not
     // re-run `assertCompatible`/re-combine a second time (AUGMENT_DATA/
@@ -513,7 +517,7 @@ export class ModelRetrainAuthorizedService {
                 sizedDistinctLabelled: inheritedSize.distinctLabelled ?? null,
               }
             : {}),
-          trainTestSplit: split.ratio,
+          trainTestSplit: trainRatio,
           kind: 'HYPERPARAMETER_SEARCH',
           candidates: candidatesJson,
           totalRuns: candidates.length,
@@ -574,7 +578,7 @@ export class ModelRetrainAuthorizedService {
         job.id,
         augmentedArtifact.combinedObjectKey,
         sourceRun.targetY,
-        split.ratio,
+        trainRatio,
       );
     }
 
@@ -746,8 +750,11 @@ export class ModelRetrainAuthorizedService {
         algorithm: true,
         goldArtifactId: true,
         sourceDatasetId: true,
+        // Custom Finetune's hyperparameter table starts from these.
+        hyperparameters: true,
         // MODEL-SERVE-017. Carries the computed split boundary out to the
-        // dialog — see `cutTimestamp` below.
+        // dialog — see `cutTimestamp` below. Also the ratio Custom Finetune
+        // prefills its split control with.
         sourceRun: { select: { splitSpec: true } },
       },
     });
@@ -760,12 +767,23 @@ export class ModelRetrainAuthorizedService {
     // no boundary, which is the same condition `assertCompatible` itself
     // 422s on; the dialog then falls back to an unclamped picker and lets
     // the server speak.
-    const cutTimestamp =
-      (
-        incumbentVersion?.sourceRun?.splitSpec as {
-          cut_timestamp?: string;
-        } | null
-      )?.cut_timestamp ?? null;
+    const splitSpec = incumbentVersion?.sourceRun?.splitSpec as {
+      method?: string;
+      ratio?: unknown;
+      cut_timestamp?: string;
+    } | null;
+    const cutTimestamp = splitSpec?.cut_timestamp ?? null;
+    // The ratio a retrain reuses when Custom Finetune names none. Null for a
+    // cross-validated version (no single ratio — `resolveSplit` refuses it
+    // at trigger time anyway) or an unreadable one; the form then falls back
+    // to its own default.
+    const trainTestSplit =
+      splitSpec?.method !== 'cv_expanding' &&
+      typeof splitSpec?.ratio === 'number' &&
+      splitSpec.ratio > 0 &&
+      splitSpec.ratio < 1
+        ? splitSpec.ratio
+        : null;
     // MODEL-SERVE-015-T01. The base dataset a data-augmentation retrain
     // would merge NEW data with — resolved off the incumbent's OWN pinned
     // artifact (`goldArtifactId`, one hop off the version, itself one hop
@@ -800,6 +818,11 @@ export class ModelRetrainAuthorizedService {
           algorithm: incumbentVersion.algorithm,
           baseDataset,
           cutTimestamp,
+          hyperparameters: (incumbentVersion.hyperparameters ?? null) as Record<
+            string,
+            unknown
+          > | null,
+          trainTestSplit,
         }
       : null;
 

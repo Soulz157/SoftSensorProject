@@ -17,6 +17,8 @@ import type { AIModel } from '@/types'
 import { CustomFinetuneForm } from './custom-finetune-form'
 import { RetrainMonitoringContext } from './retrain-monitoring-context'
 import { cn } from '@/lib/utils'
+import { splitPercentFrom } from '@/lib/retrain-finetune'
+import type { HyperparamValue } from '@/store/model-pipeline'
 import {
   RetrainBaseDataset,
   RetrainDataStrategy,
@@ -32,6 +34,9 @@ export interface StartRetrainOptions {
   /** Both or neither — the server refuses a half-open window. ISO-8601. */
   newValidationFrom?: string
   newValidationTo?: string
+  /** Custom Finetune's own train ratio (0.5–0.95). Omitted = the current
+   *  version's ratio, reused server-side (Auto Finetune never sends one). */
+  trainTestSplit?: number
 }
 
 export function ModelRetrainDialog({
@@ -75,8 +80,14 @@ export function ModelRetrainDialog({
 }) {
   const [hyperparameters, setHyperparameters] = useState<Record<
     string,
-    unknown
+    HyperparamValue
   > | null>(null)
+  // Custom Finetune's train share, in percent. Null until the operator
+  // touches it, so it follows the current version's own ratio — which
+  // arrives after this dialog mounts — instead of freezing the default.
+  const [trainSplitChoice, setTrainSplitChoice] = useState<number | null>(null)
+  const trainSplit =
+    trainSplitChoice ?? splitPercentFrom(incumbent?.trainTestSplit ?? null)
   // MODEL-SERVE-019. Defaults to 'AUGMENT_DATA' — 'KEEP_EXISTING' is no
   // longer offered (D01). Reset whenever the dialog (re)opens for a
   // different model — a strategy chosen for one model must never leak into
@@ -93,6 +104,9 @@ export function ModelRetrainDialog({
   const [additionalDatasetVersionId, setAdditionalDatasetVersionId] = useState<
     string | null
   >(resumed?.versionId ?? null)
+  // New data only + a version that ends before the current version's cut:
+  // no validation window can exist in it, so Start can never enable.
+  const [windowImpossible, setWindowImpossible] = useState(false)
 
   // MODEL-SERVE-017. The dialog is remounted by the return navigation, so the
   // initial state above is normally enough. This re-seeds it for the case
@@ -155,10 +169,11 @@ export function ModelRetrainDialog({
   // data only, dataset/version can both be chosen and Start is still
   // disabled on the window alone, which "choose a dataset and version" would
   // describe wrongly.
-  const startBlockedReason =
-    dataStrategy === 'NEW_DATA_ONLY' && additionalDatasetVersionId
-      ? 'Set the validation window above to start a retrain.'
-      : 'Choose a dataset and version above to start a retrain.'
+  const startBlockedReason = !additionalDatasetVersionId
+    ? 'Choose a dataset and version above to start a retrain.'
+    : dataStrategy === 'NEW_DATA_ONLY' && windowImpossible
+      ? 'This version has no data after the current version’s test start — choose a later dataset to start a retrain.'
+      : 'Set the validation window above to start a retrain.'
 
   return (
     <Dialog open={open} onOpenChange={o => !o && !isRetraining && onClose()}>
@@ -229,6 +244,7 @@ export function ModelRetrainDialog({
                   onStrategyChange={setDataStrategy}
                   additionalDatasetVersionId={additionalDatasetVersionId}
                   onValidationWindowChange={setValidationWindow}
+                  onWindowImpossibleChange={setWindowImpossible}
                   onAdditionalDatasetVersionChange={
                     setAdditionalDatasetVersionId
                   }
@@ -276,18 +292,24 @@ export function ModelRetrainDialog({
                 <TabsContent value="custom" className="space-y-4 pt-4">
                   <CustomFinetuneForm
                     algorithm={incumbent?.algorithm ?? null}
+                    incumbentHyperparameters={
+                      incumbent?.hyperparameters ?? null
+                    }
                     hyperparameters={hyperparameters}
                     onChange={setHyperparameters}
+                    trainSplit={trainSplit}
+                    onTrainSplitChange={setTrainSplitChoice}
                     disabled={disabled}
                     modelId={model.id}
                   />
                   <Button
                     className="w-full gap-2"
                     onClick={() => {
-                      if (!incumbent || !hyperparameters) return
+                      if (!incumbent || !hyperparameters || !startOptions)
+                        return
                       onStart(
                         [{ algorithm: incumbent.algorithm, hyperparameters }],
-                        startOptions,
+                        { ...startOptions, trainTestSplit: trainSplit / 100 },
                       )
                       onClose()
                     }}

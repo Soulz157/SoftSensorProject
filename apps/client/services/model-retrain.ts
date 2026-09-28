@@ -220,6 +220,12 @@ export interface RetrainIncumbent {
    *  recorded no boundary; the picker then goes unclamped and the server's
    *  own 422 is the guard. */
   cutTimestamp: string | null
+  /** The version's own hyperparameters — Custom Finetune's table opens on
+   *  these. Null when the version recorded none. */
+  hyperparameters: Record<string, unknown> | null
+  /** The train ratio a retrain reuses unless Custom Finetune names its own
+   *  (0–1). Null for a cross-validated or unreadable split. */
+  trainTestSplit: number | null
 }
 
 export interface CurrentRetrainState {
@@ -257,6 +263,9 @@ export interface TriggerRetrainInput {
    *  timestamps are known. ISO-8601. */
   newValidationFrom?: string
   newValidationTo?: string
+  /** Custom Finetune's own train ratio (0.5–0.95). Omitted = the current
+   *  version's ratio, reused server-side. */
+  trainTestSplit?: number
 }
 
 /**

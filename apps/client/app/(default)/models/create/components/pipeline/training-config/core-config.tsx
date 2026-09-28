@@ -272,7 +272,9 @@ function SeedControl({
 
 const SPLIT_PRESETS = [90, 80, 70, 60, 50] as const
 
-function TrainTestSplit({
+// Exported for Custom Finetune (the retrain dialog), which reuses this
+// control as-is rather than keeping a second split picker.
+export function TrainTestSplit({
   trainTestSplit,
   onSplitChange,
 }: {

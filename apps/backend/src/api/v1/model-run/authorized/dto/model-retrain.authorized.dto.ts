@@ -115,6 +115,15 @@ export const TriggerRetrainSchema = z
     // neither, and only on a strategy that has new data to cut.
     newValidationFrom: z.string().datetime().optional(),
     newValidationTo: z.string().datetime().optional(),
+
+    // Custom Finetune's own train/test ratio. Omitted = the current
+    // version's ratio, reused verbatim (the normal path). Safe to change on
+    // both new-data strategies: neither compares on this split —
+    // AUGMENT_DATA scores the candidate on the current version's FROZEN test
+    // rows and NEW_DATA_ONLY on the shared validation window — and only the
+    // retired KEEP_EXISTING basis checked split equality. Same bounds as
+    // CreateCandidateJobSchema's.
+    trainTestSplit: z.number().min(0.5).max(0.95).optional(),
   })
   .strict()
   .refine(

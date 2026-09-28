@@ -69,6 +69,8 @@ const INCUMBENT = {
   algorithm: 'ridge' as const,
   baseDataset: null,
   cutTimestamp: null,
+  hyperparameters: null,
+  trainTestSplit: null,
 }
 
 function job(overrides: Partial<RetrainJob> = {}): RetrainJob {
@@ -338,7 +340,7 @@ describe('ModelRetrainDialog — pre-flight (T08)', () => {
     expect(onStart).not.toHaveBeenCalled()
   })
 
-  it('pins a Custom Finetune candidate to the incumbent algorithm and a real grid variant', async () => {
+  it('pins a Custom Finetune candidate to the incumbent algorithm', async () => {
     const user = userEvent.setup()
     const onStart = vi.fn()
     render(
@@ -356,10 +358,12 @@ describe('ModelRetrainDialog — pre-flight (T08)', () => {
 
     await user.click(screen.getByRole('tab', { name: /Custom Finetune/i }))
     // The algorithm is shown, not chosen — it is the incumbent's own.
-    expect(await screen.findByText('ridge')).toBeInTheDocument()
+    expect(
+      await screen.findByText(/same as the current version/),
+    ).toBeInTheDocument()
 
-    // MODEL-SERVE-019-D01. Custom Finetune pins hyperparameters correctly
-    // (proven above), but Start stays disabled without a chosen dataset —
+    // MODEL-SERVE-019-D01. Custom Finetune pins the algorithm (proven
+    // above), but Start stays disabled without a chosen dataset —
     // this file's `useDatasets` mock returns none, so a full "picks a
     // dataset then starts" round trip is covered live/manually, not here.
     expect(

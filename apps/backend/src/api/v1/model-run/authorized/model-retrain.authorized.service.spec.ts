@@ -269,9 +269,57 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
           // treats as "no computed boundary", which leaves the range picker
           // unclamped rather than inventing one.
           cutTimestamp: null,
+          // Custom Finetune prefills its table and split from these.
+          hyperparameters: { alpha: 1 },
+          trainTestSplit: null,
         },
         job: null,
       });
+    });
+
+    it("exposes the current version's own train/test ratio for Custom Finetune to prefill", async () => {
+      const prisma = makePrisma({
+        productionVersion: {
+          ...INCUMBENT_VERSION,
+          sourceRun: {
+            splitSpec: {
+              method: 'chronological',
+              ratio: 0.7,
+              cut_timestamp: '2025-11-06 00:00:00',
+            },
+          },
+        },
+      });
+      const service = new ModelRetrainAuthorizedService(
+        prisma as never,
+        makeCandidateJobs(JOB_BASE) as never,
+        {} as never,
+      );
+
+      const res = await service.getCurrentRetrainJobService('model-1', ADMIN);
+
+      expect(res.data.incumbent).toMatchObject({
+        trainTestSplit: 0.7,
+        cutTimestamp: '2025-11-06 00:00:00',
+      });
+    });
+
+    it('reports no ratio for a cross-validated version — it has no single one to reuse', async () => {
+      const prisma = makePrisma({
+        productionVersion: {
+          ...INCUMBENT_VERSION,
+          sourceRun: { splitSpec: { method: 'cv_expanding', n_splits: 5 } },
+        },
+      });
+      const service = new ModelRetrainAuthorizedService(
+        prisma as never,
+        makeCandidateJobs(JOB_BASE) as never,
+        {} as never,
+      );
+
+      const res = await service.getCurrentRetrainJobService('model-1', ADMIN);
+
+      expect(res.data.incumbent?.trainTestSplit).toBeNull();
     });
 
     it('reports a null incumbent when no PRODUCTION version exists — never invents one', async () => {
@@ -1170,6 +1218,39 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
         ]
       )[0].data;
       expect(data).not.toHaveProperty('sizedRowCount');
+    });
+
+    it("reuses the current version's train/test ratio when the request names none", async () => {
+      const { prisma, service } = setup({ withSourceJob: true });
+
+      await service.triggerRetrainService('model-1', {} as never, ADMIN);
+
+      const data = (
+        prisma.modelCandidateJob.create.mock.calls[0] as [
+          { data: Record<string, unknown> },
+        ]
+      )[0].data;
+      expect(data.trainTestSplit).toBe(0.8);
+    });
+
+    it('trains on the ratio Custom Finetune asked for, when one is given', async () => {
+      const { prisma, service } = setup({ withSourceJob: true });
+
+      await service.triggerRetrainService(
+        'model-1',
+        {
+          candidates: [{ algorithm: 'ridge', hyperparameters: { alpha: 3 } }],
+          trainTestSplit: 0.7,
+        } as never,
+        ADMIN,
+      );
+
+      const data = (
+        prisma.modelCandidateJob.create.mock.calls[0] as [
+          { data: Record<string, unknown> },
+        ]
+      )[0].data;
+      expect(data.trainTestSplit).toBe(0.7);
     });
 
     it('still carries the figures forward for a CUSTOM candidate list, without expanding or looking up features', async () => {

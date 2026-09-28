@@ -17,12 +17,15 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from '@/components/ui/accordion'
-import { Input } from '@/components/ui/input'
 import { useDatasets } from '@/hooks/dataset/use-datasets'
 import { datasetVersionService } from '@/services/dataset-version'
 import { isAugmentedVersion } from '@/lib/retrain-handoff'
 import {
-  dateBoundsFrom,
+  formatStamp,
+  isEmptyRange,
+  stampToIso,
+  timeBoundsFrom,
+  toStamp,
   validationWindowError,
 } from '@/lib/retrain-validation-window'
 import { useArtifactMetadata } from '@/hooks/dataset/artifact/use-dataset-artifact-metadata'
@@ -30,6 +33,7 @@ import type { DatasetVersion } from '@/services/dataset-version'
 import type { RetrainIncumbent } from '@/services/model-retrain'
 import { RetrainFetchNewData } from './retrain-fetch-new-data'
 import { RetrainVersionEda } from './retrain-version-eda'
+import { RetrainValidationDayPicker } from './retrain-validation-day-picker'
 
 export type RetrainDataStrategy =
   | 'KEEP_EXISTING'
@@ -81,6 +85,7 @@ export function RetrainDataStrategy({
   onAdditionalDatasetVersionChange,
   initialDatasetId,
   onValidationWindowChange,
+  onWindowImpossibleChange,
   disabled,
 }: {
   workspaceId: string
@@ -110,6 +115,13 @@ export function RetrainDataStrategy({
   onValidationWindowChange: (
     window: { from: string; to: string } | null,
   ) => void
+  /**
+   * True when "New data only" is chosen and the picked version has no day on
+   * or after the current version's cut, so NO validation window can exist in
+   * it. Lets the parent say that, instead of asking for a window the operator
+   * cannot pick.
+   */
+  onWindowImpossibleChange?: (impossible: boolean) => void
   disabled?: boolean
 }) {
   const { datasets, loading: datasetsLoading } = useDatasets(workspaceId)
@@ -120,10 +132,9 @@ export function RetrainDataStrategy({
   const [versions, setVersions] = useState<DatasetVersion[]>([])
   const [versionsLoading, setVersionsLoading] = useState(false)
   const [validationWindowEnabled, setValidationWindowEnabled] = useState(false)
-  // Held as the raw `yyyy-MM-dd` the date inputs produce, and converted to
-  // ISO-8601 only on the way out — keeping the input's own value format as
-  // the source of truth avoids a round-trip that can shift the day across a
-  // timezone boundary.
+  // Held as naive `yyyy-MM-ddTHH:mm` wall-clock stamps and converted to
+  // ISO-8601 only on the way out (`stampToIso`) — never through a Date, which
+  // could shift the day across a timezone boundary.
   const [windowFrom, setWindowFrom] = useState('')
   const [windowTo, setWindowTo] = useState('')
 
@@ -174,16 +185,18 @@ export function RetrainDataStrategy({
     [datasets, selectedDatasetId],
   )
 
-  // The first and last day the chosen version actually has data for — the
-  // guard on the validation window's date inputs. Read from the artifact's
-  // own metadata (the real min/max of its timestamp column), cached per
-  // artifact, so it costs one small request per version, not a row read.
+  // The first and last READING the chosen version has, to the minute — the
+  // guard on the validation window. Read from the artifact's own metadata
+  // (the real min/max of its timestamp column), cached per artifact, so it
+  // costs one small request per version, not a row read. The time of day
+  // matters: python refuses a window that starts before the first reading
+  // or ends after the last, and a dataset rarely starts at midnight.
   const { metadata: versionMetadata } = useArtifactMetadata(
     selectedVersion?.artifactId ? selectedDatasetId : null,
     selectedVersion?.artifactId ?? null,
   )
   const dataBounds = useMemo(
-    () => dateBoundsFrom(versionMetadata?.startTime, versionMetadata?.endTime),
+    () => timeBoundsFrom(versionMetadata?.startTime, versionMetadata?.endTime),
     [versionMetadata],
   )
   // MODEL-SERVE-021-D03. For New data only the window must start ON OR AFTER
@@ -191,37 +204,55 @@ export function RetrainDataStrategy({
   // version would be "tested" on rows it trained on. Existing + new data has
   // no such floor: its window sits inside the NEW dataset, which never
   // overlaps the incumbent's own rows in the first place. `cutTimestamp` is
-  // the same naive wall-clock convention `dateBoundsFrom`'s own doc comment
-  // describes for `versionMetadata` — the first 10 characters are the day.
-  const cutDay = incumbent?.cutTimestamp?.match(/^\d{4}-\d{2}-\d{2}/)?.[0]
+  // the same naive wall clock as `versionMetadata`; rounded UP to the minute
+  // because python refuses `from < cut` on the exact instant.
+  const cutStamp = toStamp(incumbent?.cutTimestamp, 'up')
   const effectiveBounds = useMemo(() => {
     if (!dataBounds) return null
-    if (strategy !== 'NEW_DATA_ONLY' || !cutDay) return dataBounds
+    if (strategy !== 'NEW_DATA_ONLY' || !cutStamp) return dataBounds
     return {
-      min: cutDay > dataBounds.min ? cutDay : dataBounds.min,
+      min: cutStamp > dataBounds.min ? cutStamp : dataBounds.min,
       max: dataBounds.max,
     }
-  }, [dataBounds, strategy, cutDay])
+  }, [dataBounds, strategy, cutStamp])
   const windowError = validationWindowError(
     windowFrom,
     windowTo,
     effectiveBounds,
   )
+  // The version ends before the cut: every day it holds is one the current
+  // version trained on, so there is no day a New-data-only window may use.
+  const windowImpossible =
+    strategy === 'NEW_DATA_ONLY' &&
+    !!selectedVersion &&
+    isEmptyRange(effectiveBounds)
+
+  useEffect(() => {
+    onWindowImpossibleChange?.(windowImpossible)
+  }, [windowImpossible, onWindowImpossibleChange])
 
   // Reported upward only once BOTH bounds exist. A half-typed range is not a
   // decision, and emitting it would trip the server's both-or-neither
   // refusal while the operator is still filling the second field.
   //
-  // The end date is widened to the END of that day: a date input yields
-  // midnight, so an inclusive "to 2026-05-31" that stayed at 00:00 would
-  // silently exclude almost the whole final day the operator picked.
+  // Both ends go out minute-exact, as picked. This used to widen whole days
+  // to 00:00 / 23:59:59.999, which python refused whenever the data started
+  // or ended part-way through a day ("falls outside the new dataset's own
+  // range"). A picked end day now defaults to 23:59 clamped to the last
+  // reading instead, so it still covers the whole final day of data.
+  //
+  // New data only has the section forced OPEN (it is required there), but
+  // that is a controlled `value`, so `onValueChange` never fires and
+  // `validationWindowEnabled` stays false. Reading that flag alone meant a
+  // New-data-only window was never reported, and Start could never enable.
+  const windowOn = strategy === 'NEW_DATA_ONLY' || validationWindowEnabled
   useEffect(() => {
     // An out-of-range or inverted window is NOT reported: the date inputs'
     // own min/max only limit the picker, a typed date still gets through, and
     // a window reaching past the last day of data would score validation on
     // rows that do not exist.
     if (
-      !validationWindowEnabled ||
+      !windowOn ||
       !windowFrom ||
       !windowTo ||
       validationWindowError(windowFrom, windowTo, effectiveBounds) !== null
@@ -230,11 +261,11 @@ export function RetrainDataStrategy({
       return
     }
     onValidationWindowChange({
-      from: new Date(`${windowFrom}T00:00:00.000Z`).toISOString(),
-      to: new Date(`${windowTo}T23:59:59.999Z`).toISOString(),
+      from: stampToIso(windowFrom),
+      to: stampToIso(windowTo),
     })
   }, [
-    validationWindowEnabled,
+    windowOn,
     windowFrom,
     windowTo,
     effectiveBounds,
@@ -494,44 +525,68 @@ export function RetrainDataStrategy({
                   </>
                 )}
               </p>
+              {/* Calendars, not native date inputs: a native picker hides
+                  every month outside min/max, so the months before the cut
+                  vanished and read as a picker that would not scroll. These
+                  page across the whole of the data and grey out only the
+                  days that cannot be picked. */}
               <div className="flex flex-wrap items-center gap-2">
-                <Input
-                  type="date"
-                  aria-label="Validation window start"
-                  className="h-8 w-auto text-xs"
-                  disabled={disabled}
-                  min={effectiveBounds?.min}
-                  max={windowTo || effectiveBounds?.max}
-                  aria-invalid={windowError !== null}
+                <RetrainValidationDayPicker
+                  label="Validation window start"
                   value={windowFrom}
-                  onChange={e => setWindowFrom(e.target.value)}
+                  defaultTime="00:00"
+                  onChange={setWindowFrom}
+                  dataBounds={dataBounds}
+                  allowed={{
+                    min: effectiveBounds?.min,
+                    max: windowTo || effectiveBounds?.max,
+                  }}
+                  disabled={disabled || windowImpossible}
+                  invalid={windowError !== null}
                 />
                 <span className="text-xs text-muted-foreground">to</span>
-                <Input
-                  type="date"
-                  aria-label="Validation window end"
-                  className="h-8 w-auto text-xs"
-                  disabled={disabled}
-                  min={windowFrom || effectiveBounds?.min}
-                  max={effectiveBounds?.max}
-                  aria-invalid={windowError !== null}
+                <RetrainValidationDayPicker
+                  label="Validation window end"
                   value={windowTo}
-                  onChange={e => setWindowTo(e.target.value)}
+                  defaultTime="23:59"
+                  onChange={setWindowTo}
+                  dataBounds={dataBounds}
+                  allowed={{
+                    min: windowFrom || effectiveBounds?.min,
+                    max: effectiveBounds?.max,
+                  }}
+                  disabled={disabled || windowImpossible}
+                  invalid={windowError !== null}
                 />
               </div>
-              {strategy === 'NEW_DATA_ONLY' && cutDay && (
+              {strategy === 'NEW_DATA_ONLY' && cutStamp && (
                 <p className="text-[11px] text-muted-foreground">
-                  Must start on or after {cutDay} — the current version&apos;s
+                  Must start on or after {formatStamp(cutStamp)} — the current version&apos;s
                   own test data starts there, so it has to be scored on data it
                   has never seen.
                 </p>
               )}
-              {effectiveBounds && (
+              {/* The data's REAL range. This used to print the clamped
+                  range under this label, which made the cut look like the
+                  end of the data. */}
+              {dataBounds && (
                 <p className="text-[11px] text-muted-foreground">
-                  Data covers {effectiveBounds.min} to {effectiveBounds.max}.
+                  Data covers {formatStamp(dataBounds.min)} to{' '}
+                  {formatStamp(dataBounds.max)}.
+                  {effectiveBounds &&
+                    !windowImpossible &&
+                    effectiveBounds.min !== dataBounds.min &&
+                    ` Pickable: ${formatStamp(effectiveBounds.min)} to ${formatStamp(effectiveBounds.max)}.`}
                 </p>
               )}
-              {windowError && (
+              {windowImpossible && (
+                <p role="alert" className="text-[11px] text-destructive">
+                  This version has no data on or after {cutStamp && formatStamp(cutStamp)}, so it
+                  can&apos;t be used for New data only. Pick a dataset that runs
+                  past {cutStamp && formatStamp(cutStamp)}, or choose Existing + new data.
+                </p>
+              )}
+              {windowError && !windowImpossible && (
                 <p role="alert" className="text-[11px] text-destructive">
                   {windowError}
                 </p>

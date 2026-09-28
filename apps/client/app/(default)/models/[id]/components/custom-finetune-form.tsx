@@ -2,94 +2,109 @@
 
 import { useEffect, useState } from 'react'
 import { Label } from '@/components/ui/label'
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
-import { Skeleton } from '@/components/ui/skeleton'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { tuningGridService } from '@/services/tuning-grid'
+import { isAlgorithm } from '@/lib/model-draft-hydration'
+import {
+  finetuneStartingHyperparams,
+  variantAsHyperparams,
+} from '@/lib/retrain-finetune'
+import { ALGORITHM_LABELS, type HyperparamValue } from '@/store/model-pipeline'
+import { DynamicHyperparameters } from '@/app/(default)/models/create/components/pipeline/training-config/dynamic-hyperparameters'
+import { TrainTestSplit } from '@/app/(default)/models/create/components/pipeline/training-config/core-config'
 
 /**
- * MODEL-SERVE-014. Was a 5-value algorithm picker + testSplit slider over a
- * client-invented `RegressionModel`/`RetrainConfig` — neither survives
- * against the real backend contract: `TriggerRetrainSchema` reads split off
- * the incumbent server-side (never accepted from the request), and the real
- * `TrainingAlgorithmEnum` has 12 values, not 5. A retrain candidate's
- * algorithm is pinned to the incumbent's own (the comparison this feature
- * publishes needs a shared basis) — so "Custom" now means picking ONE of
- * the incumbent algorithm's own curated hyperparameter variants
- * (`tuningGridService`, the SAME shortlist Find Best Parameters searches —
- * never a second copy declared client-side), not typing raw numbers with no
- * real range metadata behind them.
+ * Custom Finetune: the model wizard's own train/test split control and
+ * hyperparameter table, reused as-is, for the current version's algorithm.
+ *
+ * The algorithm stays pinned to the current version's — the comparison this
+ * retrain publishes needs a shared basis. The table opens on the current
+ * version's own hyperparameters (over the full defaults), and the curated
+ * variants Find Best Parameters searches (`tuningGridService`, sized to this
+ * model via `modelId`) are offered as a "Fill from" shortcut above it rather
+ * than as the only choices.
+ *
+ * The split is safe to change here: neither new-data strategy compares on it
+ * (Existing + new data is scored on the current version's frozen test rows,
+ * New data only on the validation window), so it only decides how much of
+ * the training data is held back as this candidate's own test set.
  */
 export function CustomFinetuneForm({
   algorithm,
+  incumbentHyperparameters,
   hyperparameters,
   onChange,
+  trainSplit,
+  onTrainSplitChange,
   disabled,
   modelId,
 }: {
-  /** The incumbent PRODUCTION version's algorithm — null while it has not
+  /** The current PRODUCTION version's algorithm — null while it has not
    *  loaded yet (`useModelRetrain().incumbent`). */
   algorithm: string | null
-  hyperparameters: Record<string, unknown> | null
-  onChange: (hyperparameters: Record<string, unknown>) => void
+  /** The current version's own hyperparameters, the table's starting point. */
+  incumbentHyperparameters: Record<string, unknown> | null
+  hyperparameters: Record<string, HyperparamValue> | null
+  onChange: (hyperparameters: Record<string, HyperparamValue>) => void
+  /** Train share as a percent (50–95), the wizard control's own unit. */
+  trainSplit: number
+  onTrainSplitChange: (percent: number) => void
   disabled?: boolean
-  /**
-   * MODEL-FLOW-024. The Model being retrained. With it the server sizes the
-   * variant list to that Model's own data — the same figures an automatic
-   * retrain inherits — so this list matches what Auto Finetune would try.
-   * Without it (or with a Model that has nothing to inherit) the list is the
-   * general one, as before.
-   */
+  /** MODEL-FLOW-024. Sizes the curated variants to this model's own data. */
   modelId?: string
 }) {
+  const knownAlgorithm = algorithm && isAlgorithm(algorithm) ? algorithm : null
   const [variants, setVariants] = useState<
-    Array<Record<string, string | number | boolean | null>>
+    Array<Record<string, HyperparamValue>>
   >([])
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [variantsError, setVariantsError] = useState<string | null>(null)
   const [sized, setSized] = useState(false)
 
+  // Opens on the current version's own values — once, the first time the
+  // algorithm is known, so an operator's edits are never overwritten.
   useEffect(() => {
-    if (!algorithm) {
-      setVariants([])
-      setSized(false)
-      return
+    if (knownAlgorithm && !hyperparameters) {
+      onChange(
+        finetuneStartingHyperparams(knownAlgorithm, incumbentHyperparameters),
+      )
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [knownAlgorithm])
+
+  useEffect(() => {
+    if (!knownAlgorithm) return
     let ignore = false
-    setLoading(true)
-    setError(null)
     void (async () => {
       try {
         // Unwrapped — this endpoint returns the DTO directly, with no
         // `{data}` envelope (see `tuningGridService`'s own note).
-        const grid = await tuningGridService.get(algorithm, undefined, modelId)
+        const grid = await tuningGridService.get(
+          knownAlgorithm,
+          undefined,
+          modelId,
+        )
         if (ignore) return
         setVariants(grid.variants)
         setSized(grid.sized)
-        // Default to the first variant so the dialog's submit button is
-        // immediately actionable rather than starting on an empty selection.
-        if (grid.variants.length > 0 && !hyperparameters) {
-          onChange(grid.variants[0]!)
-        }
       } catch (err) {
-        if (ignore) return
-        // The server's OWN message (e.g. 'No tuning grid for "lstm" — it may
-        // not support Find Best Parameters.'), never a generic line that
-        // hides which of several causes actually fired — the same mistake
-        // the no-PRODUCTION-version banner made before it was corrected.
-        setError(
-          err instanceof Error
-            ? err.message
-            : 'Could not load hyperparameter variants for this algorithm',
-        )
-      } finally {
-        if (!ignore) setLoading(false)
+        // The shortcut is optional — the table works without it — so its
+        // failure is stated beside it, never in place of the form.
+        if (!ignore)
+          setVariantsError(
+            err instanceof Error ? err.message : 'Could not load variants',
+          )
       }
     })()
     return () => {
       ignore = true
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [algorithm, modelId])
+  }, [knownAlgorithm, modelId])
 
   if (!algorithm) {
     return (
@@ -99,76 +114,86 @@ export function CustomFinetuneForm({
     )
   }
 
-  if (loading) {
-    return (
-      <div className="space-y-2">
-        <Skeleton className="h-4 w-32" />
-        <Skeleton className="h-16 w-full" />
-        <Skeleton className="h-16 w-full" />
-      </div>
-    )
-  }
-
-  if (error) {
-    return <p className="text-sm text-destructive">{error}</p>
-  }
-
-  if (variants.length === 0) {
+  if (!knownAlgorithm) {
     return (
       <p className="text-sm text-muted-foreground">
-        No curated hyperparameter variants exist for {algorithm} yet — use Auto
-        Finetune instead.
+        {algorithm} has no editable hyperparameters here — use Auto Finetune
+        instead.
       </p>
     )
   }
 
-  const selectedIndex = hyperparameters
-    ? variants.findIndex(
-        v => JSON.stringify(v) === JSON.stringify(hyperparameters),
-      )
-    : -1
-
   return (
-    <div className="space-y-3">
+    // A native fieldset disables every control inside it — inputs, checkboxes
+    // and the select triggers — without the shared table growing a prop.
+    <fieldset disabled={disabled} className="min-w-0 space-y-4">
       <div className="space-y-1">
         <Label>Algorithm</Label>
-        <p className="text-sm text-muted-foreground">{algorithm}</p>
+        <p className="text-sm text-muted-foreground">
+          {ALGORITHM_LABELS[knownAlgorithm]} · same as the current version
+        </p>
       </div>
 
+      <TrainTestSplit
+        trainTestSplit={trainSplit}
+        onSplitChange={onTrainSplitChange}
+      />
+
       <div className="space-y-1.5">
-        <Label>Hyperparameter variant</Label>
+        <Label className="text-xs font-medium">Fill from a variant</Label>
         {/* MODEL-FLOW-024. Said only when the list really differs from the
-            general one (`sized`, read off array identity server-side), so a
-            reader who compares it with another model's list is told why. */}
+            general one (`sized`, read off array identity server-side). */}
         {sized && (
           <p className="text-[10px] leading-tight text-muted-foreground">
             Sized to this model’s own data, so these differ from the general
             list.
           </p>
         )}
-        <RadioGroup
-          value={selectedIndex >= 0 ? String(selectedIndex) : undefined}
-          onValueChange={v => {
-            const variant = variants[Number(v)]
-            if (variant) onChange(variant)
-          }}
-          disabled={disabled}
-        >
-          {variants.map((variant, i) => (
-            <label
-              key={i}
-              className="flex cursor-pointer items-start gap-2.5 rounded-md border border-border p-2.5 text-xs has-[[data-checked]]:border-primary has-[[data-checked]]:bg-primary/5"
-            >
-              <RadioGroupItem value={String(i)} className="mt-0.5" />
-              <span className="font-mono text-[11px] leading-relaxed text-muted-foreground">
-                {Object.entries(variant)
-                  .map(([k, v]) => `${k}=${v}`)
-                  .join(', ')}
-              </span>
-            </label>
-          ))}
-        </RadioGroup>
+        {variantsError ? (
+          <p className="text-xs text-muted-foreground">{variantsError}</p>
+        ) : (
+          <Select
+            value=""
+            onValueChange={v => {
+              const variant = variants[Number(v)]
+              if (variant)
+                onChange(variantAsHyperparams(knownAlgorithm, variant))
+            }}
+            disabled={disabled || variants.length === 0}
+          >
+            <SelectTrigger className="h-9 w-full text-xs">
+              <SelectValue
+                placeholder={
+                  variants.length === 0
+                    ? 'No curated variants'
+                    : 'Pick one to fill the table below'
+                }
+              />
+            </SelectTrigger>
+            <SelectContent>
+              {variants.map((variant, i) => (
+                <SelectItem key={i} value={String(i)}>
+                  <span className="font-mono text-[11px]">
+                    {Object.entries(variant)
+                      .map(([k, v]) => `${k}=${v}`)
+                      .join(', ')}
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
       </div>
-    </div>
+
+      {hyperparameters && (
+        <DynamicHyperparameters
+          algorithm={knownAlgorithm}
+          hyperparameters={hyperparameters}
+          onChange={(key, value) =>
+            onChange({ ...hyperparameters, [key]: value })
+          }
+        />
+      )}
+    </fieldset>
   )
 }
