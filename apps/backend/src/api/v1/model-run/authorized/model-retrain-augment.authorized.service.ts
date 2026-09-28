@@ -86,13 +86,17 @@ export class ModelRetrainAugmentAuthorizedService {
     // re-cut the frozen evaluation window against.
     const cutTimestamp = split?.cut_timestamp;
     if (!cutTimestamp) {
+      // MODEL-SERVE-019. Both remaining strategies need this boundary — a
+      // model that lacks one can no longer be retrained at all (D01 removed
+      // the one path, "Keep Existing", that never needed it). The message
+      // used to point back at that removed path ("Retrain without
+      // augmentation"); it now says plainly that neither option here works.
       throw new AppException({
         statusCode: 422,
         message:
-          "The incumbent's source run records no computed split boundary " +
-          '(cut_timestamp) — data augmentation needs one to freeze an ' +
-          'evaluation window. Retrain without augmentation, or train a new ' +
-          'model in the wizard.',
+          "This model's own training run records no test-split boundary, " +
+          'so a retrain has nothing to compare a new version against. ' +
+          'Train a new model in the wizard instead.',
         type: 'ERROR',
       });
     }
@@ -101,10 +105,9 @@ export class ModelRetrainAugmentAuthorizedService {
       throw new AppException({
         statusCode: 422,
         message:
-          "The incumbent's training artifact has no recorded feature " +
-          'recipe (feature_spec.json) — there is nothing to reuse on the ' +
-          'new dataset. Data augmentation requires a version trained with ' +
-          'a feature-engineered artifact.',
+          "This model's training data has no recorded feature recipe, so " +
+          'there is nothing to reuse on the new dataset. Train a new ' +
+          'model in the wizard instead.',
         type: 'ERROR',
       });
     }
@@ -118,8 +121,8 @@ export class ModelRetrainAugmentAuthorizedService {
       throw new AppException({
         statusCode: 422,
         message:
-          "The incumbent's training artifact is not a committed FINAL " +
-          'dataset artifact — cannot resolve a base dataset to combine.',
+          "This model's own training data is not a committed dataset " +
+          'artifact — there is nothing to combine the new data with.',
         type: 'ERROR',
       });
     }
@@ -215,10 +218,11 @@ export class ModelRetrainAugmentAuthorizedService {
       throw new AppException({
         statusCode: 422,
         message:
-          'The incumbent and the selected dataset disagree on feature ' +
-          `columns — only in the incumbent: ${onlyBase.join(', ') || 'none'}; ` +
-          `only in the new dataset: ${onlyNew.join(', ') || 'none'}. The ` +
-          'two datasets are not schema-compatible for augmentation.',
+          "This model's own training data and the selected dataset " +
+          `disagree on columns — only in the model's own data: ` +
+          `${onlyBase.join(', ') || 'none'}; only in the new dataset: ` +
+          `${onlyNew.join(', ') || 'none'}. The two datasets must share the ` +
+          'same columns to be combined.',
         type: 'ERROR',
       });
     }
@@ -237,10 +241,10 @@ export class ModelRetrainAugmentAuthorizedService {
         statusCode: 422,
         message:
           `Dataset version ${newVersion.versionNumber} starts at ` +
-          `${newMeta.start_time}, at or before the incumbent's own test ` +
-          `window start (${cutTimestamp}) — no uncontaminated frozen ` +
-          'evaluation window exists. Pick a dataset whose data begins ' +
-          "after the incumbent's own split boundary.",
+          `${newMeta.start_time}, at or before this model's own test data ` +
+          `starts (${cutTimestamp}) — there would be nothing left to test ` +
+          'the new version on. Pick a dataset whose data begins after ' +
+          "this model's own test data starts.",
         type: 'ERROR',
       });
     }
@@ -349,6 +353,14 @@ export class ModelRetrainAugmentAuthorizedService {
         newValidationChecksum: combined.new_validation_checksum ?? null,
         newValidationFrom: combined.new_validation_from ?? null,
         newValidationTo: combined.new_validation_to ?? null,
+        // MODEL-SERVE-019. `frozenEvalTo` closes the frozen-eval-slice range
+        // (`[cutTimestamp, frozenEvalTo)`) that `buildComparison` labels the
+        // candidate's FROZEN_INCUMBENT_TEST figure with; `combinedEndTime` is
+        // the combined frame's true tail, used to label the candidate's own
+        // MERGED_TEST_SPLIT figure. Both persisted, never re-derived.
+        frozenEvalTo: combined.frozen_eval_to ?? null,
+        combinedEndTime: combined.combined_end_time ?? null,
+        frozenEvalDroppedRows: combined.frozen_eval_dropped_rows ?? null,
       },
     ] as unknown as PrismaTypes.InputJsonValue;
 
@@ -454,7 +466,10 @@ export class ModelRetrainAugmentAuthorizedService {
             // versions list renders these as "—".
             status: 'DRAFT',
             lineage: {
-              strategy: 'AUGMENT_DATA',
+              // MODEL-SERVE-019. Was hardcoded to 'AUGMENT_DATA' even under
+              // `combine=false` (NEW_DATA_ONLY) — the version's own lineage
+              // then claimed a strategy it did not run.
+              strategy: combine ? 'AUGMENT_DATA' : 'NEW_DATA_ONLY',
               baseArtifactId: ctx.baseFinal.id,
               baseDatasetVersionId: ctx.baseDatasetVersionId,
               newArtifactId: ctx.newFinal.id,

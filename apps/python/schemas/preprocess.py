@@ -970,6 +970,15 @@ class InferenceWindowMaterializeResponse(BaseModel):
     #: `PredictionLog.featureStats`. `None` exactly when no feature column
     #: had a usable `scalingParams` entry to scale with.
     feature_stats: dict[str, dict[str, float]] | None = None
+    #: MODEL-SERVE-018-T01. The TARGET tag's `{n, sum, sumsq, min, max}` in
+    #: RAW units (the target is never scaled in GOLD). Kept out of
+    #: `feature_stats` so model health never reads it. `None` when there is
+    #: no target_column, the target was not fetched, or the spec is
+    #: `target_scaled`.
+    target_stats: dict[str, float] | None = None
+    #: MODEL-SERVE-018-T01. The TARGET tag's `{counts, below, above}` against
+    #: its frozen `psiRefEdges`. `None` when there is no reference for it.
+    target_histogram: dict[str, Any] | None = None
     #: MODEL-SERVE-009-T02. Per-tag `{last_value, last_status, observed_at}`
     #: as of THIS fetch, read from the frame BEFORE `drop_bad_feature_rows`
     #: — the only point where a Bad cell is still visible. `last_status` is

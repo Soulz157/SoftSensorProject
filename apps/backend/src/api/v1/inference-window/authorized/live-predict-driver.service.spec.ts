@@ -81,6 +81,8 @@ function materialized(rows: number) {
     missing_pct: 0,
     feature_histograms: null,
     feature_stats: null,
+    target_stats: null,
+    target_histogram: null,
     // MODEL-SERVE-009-T02 added this to the materialize contract. The
     // driver ignores it (the SCHEDULER owns the TagObservation write), but
     // the fixture carries it because the type requires it — a fixture short

@@ -113,11 +113,61 @@ def test_combine_keeps_base_rows_untouched_and_scales_only_new_rows() -> None:
     assert result["base_train_row_count"] == 15
     assert result["new_train_row_count"] == 5
     assert result["dedupe_dropped"] == 0
+    # MODEL-SERVE-019. The frozen slice's own upper bound (new_start, day26)
+    # and the combined frame's true tail (the new dataset's last row, day30)
+    # — neither was reported before this feature.
+    assert result["frozen_eval_to"] == "2026-01-26 00:00:00"
+    assert result["combined_end_time"] == "2026-01-30 00:00:00"
+    # MODEL-SERVE-019-D03. The new dataset starts well after the frozen
+    # slice's own tail (day20 vs day26), so nothing was cut off it.
+    assert result["frozen_eval_dropped_rows"] == 0
     # The copied recipe, not a re-derived one — same feature_spec.json the
     # base artifact recorded.
     assert result["feature_spec_key"] == (
         "base-ds/artifacts/combined-1/feature_spec.json"
     )
+
+
+def test_frozen_eval_dropped_rows_counts_what_the_new_dataset_cut_off() -> None:
+    """MODEL-SERVE-019-D03. `new_start` only has to fall AFTER `cut_timestamp`
+    — it can still land in the MIDDLE of the base's own frozen tail, cutting
+    some of those rows out of `base_frozen`. `frozen_eval_dropped_rows` is
+    what lets `buildComparison` refuse a delta in exactly that case, without
+    comparing this artifact's row count against a different service's
+    LABELLED row count (a comparison of different populations that would
+    refuse on nearly every real, sparsely-labelled target).
+    """
+    base = _daily_frame(30)  # day0 (2026-01-01) .. day29 (2026-01-30)
+    new = _daily_frame(5)
+    # day22 (2026-01-23) .. day26 (2026-01-27) — inside the frozen tail
+    # (day16..day29), not at its start.
+    new["timestamp"] = pd.Timestamp("2026-01-23") + pd.to_timedelta(range(5), unit="D")
+
+    store = RecordingStore({
+        "base-ds/artifacts/final-1/data.parquet": base,
+        "new-ds/artifacts/silver-1/data_silver.parquet": new,
+    })
+    _seed_feature_spec(store, "base-ds/artifacts/final-1/feature_spec.json")
+
+    result = artifact_service.combine_for_retrain(
+        store,
+        CombineForRetrainRequest(
+            base_data_key="base-ds/artifacts/final-1/data.parquet",
+            base_feature_spec_key="base-ds/artifacts/final-1/feature_spec.json",
+            new_data_key="new-ds/artifacts/silver-1/data_silver.parquet",
+            target_key="base-ds/artifacts/combined-2/data_gold.parquet",
+            target_y="TI-101",
+            # day16 (2026-01-17) — base_frozen_raw = day16-29 (14 rows).
+            cut_timestamp="2026-01-17",
+        ),
+    )
+
+    # base_frozen = day16-21 (6 rows, ts < new_start=day22) — 8 of the 14
+    # frozen-tail rows were cut off by the new dataset's start.
+    frozen = store.objects["base-ds/artifacts/combined-2/validate_data.parquet"]
+    assert len(frozen) == 6
+    assert result["validation_row_count"] == 6
+    assert result["frozen_eval_dropped_rows"] == 8
 
 
 def test_new_data_only_trains_on_new_rows_but_keeps_the_base_frozen_window() -> None:
@@ -321,7 +371,7 @@ def test_combine_refuses_when_new_dataset_overlaps_the_frozen_window() -> None:
     })
     _seed_feature_spec(store, "base-ds/artifacts/final-1/feature_spec.json")
 
-    with pytest.raises(ValueError, match="uncontaminated"):
+    with pytest.raises(ValueError, match="nothing left to test"):
         artifact_service.combine_for_retrain(
             store,
             CombineForRetrainRequest(

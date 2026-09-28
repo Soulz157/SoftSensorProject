@@ -215,6 +215,12 @@ const InferenceWindowMaterializeSchema = z.object({
     .record(z.string(), WindowFeatureHistogramSchema)
     .nullable(),
   feature_stats: z.record(z.string(), WindowColumnAggregateSchema).nullable(),
+  // MODEL-SERVE-018-T01. The TARGET tag's own aggregate (RAW units) and
+  // histogram — separate from the feature maps so model health never reads
+  // them. `.default(null)` so a python process that predates the field still
+  // parses; the window then just records no target.
+  target_stats: WindowColumnAggregateSchema.nullable().default(null),
+  target_histogram: WindowFeatureHistogramSchema.nullable().default(null),
   // MODEL-SERVE-009-T02. Per-tag state as of THIS fetch, read before
   // `drop_bad_feature_rows` — the only point where a Bad cell is still
   // visible (after it, every surviving row is Good by construction, which
@@ -583,6 +589,18 @@ const CombineForRetrainSchema = z.object({
   new_validation_checksum: z.string().nullable().optional(),
   new_validation_from: z.string().nullable().optional(),
   new_validation_to: z.string().nullable().optional(),
+  // MODEL-SERVE-019. The frozen slice's upper bound (`[cut_timestamp,
+  // frozen_eval_to)`) and the combined frame's true tail — both needed to
+  // label a figure's time range from persisted facts rather than
+  // re-deriving them client-side.
+  frozen_eval_to: z.string().nullable().optional(),
+  combined_end_time: z.string().nullable().optional(),
+  // MODEL-SERVE-019-D03. Rows cut off the incumbent's own frozen tail by the
+  // new dataset's start — 0 means the frozen slice covers the SAME row
+  // extent the incumbent's own test split does. Never compared against a
+  // labelled row count computed elsewhere (see this field's own note at its
+  // origin in artifact_service.combine_for_retrain).
+  frozen_eval_dropped_rows: z.number().int().nonnegative().optional(),
 });
 
 export type CombineForRetrainResult = z.infer<typeof CombineForRetrainSchema>;

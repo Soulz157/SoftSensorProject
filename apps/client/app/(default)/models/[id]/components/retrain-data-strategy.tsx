@@ -183,8 +183,7 @@ export function RetrainDataStrategy({
     selectedVersion?.artifactId ?? null,
   )
   const dataBounds = useMemo(
-    () =>
-      dateBoundsFrom(versionMetadata?.startTime, versionMetadata?.endTime),
+    () => dateBoundsFrom(versionMetadata?.startTime, versionMetadata?.endTime),
     [versionMetadata],
   )
   const windowError = validationWindowError(windowFrom, windowTo, dataBounds)
@@ -231,31 +230,21 @@ export function RetrainDataStrategy({
       <div className="space-y-3 rounded-md border border-border p-3">
         <div className="space-y-1.5">
           <Label>Training data</Label>
+          {/* MODEL-SERVE-019-D01/T02. "Keep Existing Data" is removed — a
+              retrain always ingests new data now. Both remaining options
+              need a base dataset to add to/replace; when the current
+              version has none, neither can be chosen (see the message
+              below, in place of a silently disabled group). */}
           <RadioGroup
             value={strategy}
             onValueChange={v => onStrategyChange(v as RetrainDataStrategy)}
-            disabled={disabled || !incumbent}
+            disabled={disabled || !incumbent || !incumbent.baseDataset}
           >
             <label className="flex cursor-pointer items-start gap-2.5 rounded-md border border-border p-2.5 text-xs has-[[data-checked]]:border-primary has-[[data-checked]]:bg-primary/5">
-              <RadioGroupItem value="KEEP_EXISTING" className="mt-0.5" />
+              <RadioGroupItem value="AUGMENT_DATA" className="mt-0.5" />
               <span>
                 <span className="block font-medium text-foreground">
-                  Keep Existing Data
-                </span>
-                <span className="block text-muted-foreground">
-                  The current version’s own training data.
-                </span>
-              </span>
-            </label>
-            <label className="flex cursor-pointer items-start gap-2.5 rounded-md border border-border p-2.5 text-xs has-[[data-checked]]:border-primary has-[[data-checked]]:bg-primary/5">
-              <RadioGroupItem
-                value="AUGMENT_DATA"
-                className="mt-0.5"
-                disabled={!incumbent?.baseDataset}
-              />
-              <span>
-                <span className="block font-medium text-foreground">
-                  Keep Existing + New Data
+                  Existing + new data
                 </span>
                 <span className="block text-muted-foreground">
                   Existing training data plus a new dataset.
@@ -263,14 +252,10 @@ export function RetrainDataStrategy({
               </span>
             </label>
             <label className="flex cursor-pointer items-start gap-2.5 rounded-md border border-border p-2.5 text-xs has-[[data-checked]]:border-primary has-[[data-checked]]:bg-primary/5">
-              <RadioGroupItem
-                value="NEW_DATA_ONLY"
-                className="mt-0.5"
-                disabled={!incumbent?.baseDataset}
-              />
+              <RadioGroupItem value="NEW_DATA_ONLY" className="mt-0.5" />
               <span>
                 <span className="block font-medium text-foreground">
-                  New Data Only
+                  New data only
                 </span>
                 <span className="block text-muted-foreground">
                   The new dataset alone, without the existing data.
@@ -278,11 +263,18 @@ export function RetrainDataStrategy({
               </span>
             </label>
           </RadioGroup>
+          {incumbent && !incumbent.baseDataset && (
+            <p className="text-xs text-muted-foreground">
+              This model&apos;s existing training data could not be found, so a
+              retrain has nothing to add new data to. Train a new model in the
+              wizard instead.
+            </p>
+          )}
           {/* Stated once for the group rather than repeated inside each
               option's label. It is the fact that makes a comparison against
               the current version trustworthy at all — especially for New
-              Data Only, where the candidate shares none of its training
-              rows — so it must be on screen, just not three times. */}
+              data only, where the candidate shares none of its training
+              rows — so it must be on screen, just not twice. */}
           {retrainUsesNewData(strategy) && (
             <p className="text-xs text-muted-foreground">
               Either way the result is scored on the current version&apos;s own
@@ -448,8 +440,8 @@ export function RetrainDataStrategy({
               <p className="text-xs text-muted-foreground">
                 These rows are kept out of training and scored separately, so
                 you can see how the retrained model does on the new data. The
-                comparison against the current model is unaffected — it stays on
-                the same frozen rows either way.
+                comparison against the current model is unaffected — it is
+                scored on the same test data either way.
               </p>
               <div className="flex flex-wrap items-center gap-2">
                 <Input
@@ -541,8 +533,8 @@ export function RetrainBaseDataset({
         </div>
       ) : (
         <p className="text-xs text-destructive">
-          The incumbent&apos;s training data could not be resolved — data
-          augmentation is unavailable for this model.
+          The current version&apos;s training data could not be found, so a
+          retrain has nothing to add new data to.
         </p>
       )}
     </div>

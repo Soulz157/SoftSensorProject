@@ -14,6 +14,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { brandModelVersionNumber } from '@/lib/model-version-number'
+import { legacyStrategyLabel } from '@/lib/retrain-basis'
 import { useModelVersions } from '@/hooks/model/use-model-versions'
 import { useModelPromote } from '@/hooks/model/use-model-promote'
 import { useModelRemoveVersion } from '@/hooks/model/use-model-remove-version'
@@ -135,7 +136,7 @@ export function VersionsTab({ modelId }: Props) {
                       no placeholder. */}
                   {v.retrainStrategy && (
                     <span className="ml-1 text-xs opacity-70">
-                      · {v.retrainStrategy.toLowerCase().replace(/_/g, ' ')}
+                      · {legacyStrategyLabel(v.retrainStrategy)}
                     </span>
                   )}
                 </td>

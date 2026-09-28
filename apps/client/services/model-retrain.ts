@@ -32,6 +32,38 @@ type MetricTriple = {
   mae: number | null
 }
 
+/**
+ * MODEL-SERVE-019-T03/D02. The evaluation basis a single metric figure was
+ * computed on — never render a figure without its own `*Basis`. `from`/`to`/
+ * `rowCount` come from persisted rows; any can be null alongside
+ * `unavailableReason`. `frame`/`usedFor` are internal codes: map them to
+ * plain text in `lib/retrain-basis.ts` — never render them raw (no
+ * "incumbent"/"frozen"/"basis" on screen, see that module's own note).
+ */
+export interface EvalBasis {
+  frame:
+    | 'MERGED_TEST_SPLIT'
+    | 'FROZEN_INCUMBENT_TEST'
+    | 'NEW_DATA_WINDOW'
+    | 'INCUMBENT_TEST_SPLIT'
+  from: string | null
+  to: string | null
+  rowCount: number | null
+  usedFor: 'RANK_CANDIDATES' | 'COMPARE_TO_PRODUCTION' | 'REPORT_ONLY'
+  unavailableReason: string | null
+}
+
+/** MODEL-SERVE-015-T05/019-T03. The merged training composition — closes
+ *  015-T05's stranded "combined row count" acceptance criterion. Null for
+ *  KEEP_EXISTING, which never combines anything. */
+export interface TrainingComposition {
+  baseTrainRowCount: number | null
+  newTrainRowCount: number | null
+  dedupeDropped: number | null
+  cutTimestamp: string | null
+  combinedRowCount: number | null
+}
+
 export interface RetrainComparison {
   basis: {
     goldArtifactId: string | null
@@ -42,14 +74,16 @@ export interface RetrainComparison {
     reason: string | null
     /** MODEL-SERVE-015. Which invariant `comparable` is proving —
      *  'KEEP_EXISTING' means one shared artifact/checksum/split;
-     *  'AUGMENT_DATA' means the candidate was scored on the incumbent's own
-     *  frozen test rows regardless of what it trained on. State this
-     *  alongside a delta — "comparable" does not mean one universal thing. */
+     *  'AUGMENT_DATA'/'NEW_DATA_ONLY' means the candidate was scored on the
+     *  current production version's own test rows regardless of what it
+     *  trained on. State this alongside a delta — "comparable" does not
+     *  mean one universal thing. Internal code — never rendered raw. */
     strategy: 'KEEP_EXISTING' | 'AUGMENT_DATA' | 'NEW_DATA_ONLY'
-    /** Non-null only for an AUGMENT_DATA job. `kind` mirrors the backend's
+    /** Non-null only for a new-data strategy. `kind` mirrors the backend's
      *  `ModelTrainingRun.evalSetKind` — null means the candidate has not
-     *  been scored against the frozen set yet. */
+     *  been scored against that basis yet. */
     evalSet: { kind: string | null; checksum: string | null } | null
+    trainingComposition: TrainingComposition | null
   }
   incumbent: {
     versionId: string
@@ -57,6 +91,7 @@ export interface RetrainComparison {
     stage: string
     algorithm: string
     metrics: MetricTriple
+    metricsBasis: EvalBasis
   }
   candidate: {
     runId: string | null
@@ -66,11 +101,16 @@ export interface RetrainComparison {
     stage: string | null
     algorithm: string | null
     metrics: MetricTriple
-    /** MODEL-SERVE-015-T04. AUGMENT_DATA only — the candidate's OWN test
-     *  split over the COMBINED (mixed-regime) data, reported separately
-     *  from `metrics` (which is the frozen-incumbent-test score `rmseDelta`
-     *  is computed from). Null for a plain (014) retrain. */
+    /** Null for a KEEP_EXISTING (or legacy) job — that path predates the
+     *  "every figure names its basis" requirement and is display-only
+     *  history from here on. */
+    metricsBasis: EvalBasis | null
+    /** MODEL-SERVE-015-T04. A new-data strategy only — the candidate's OWN
+     *  test split over the COMBINED (existing + new) data, reported
+     *  separately from `metrics` (the figure `rmseDelta` is computed from).
+     *  Null for a plain (014) retrain. */
     newRegimeMetrics: MetricTriple | null
+    newRegimeMetricsBasis: EvalBasis | null
     /** The candidate's score on the operator-defined NEW-DATA validation
      *  window, when a retrain carved one out. Null when no window was
      *  requested, when the trainer image predates the feature, or when
@@ -86,6 +126,7 @@ export interface RetrainComparison {
     newDataHoldoutRowCount: number | null
     newDataHoldoutFrom: string | null
     newDataHoldoutTo: string | null
+    newDataHoldoutBasis: EvalBasis | null
   }
   /** Negative = the candidate is better (lower RMSE). Null when the bases
    *  differ — see `basis.reason`. */
@@ -123,8 +164,10 @@ export interface RetrainJob {
   finishedAt: string | null
   candidates: CandidateResult[]
   comparison: RetrainComparison | null
-  /** MODEL-SERVE-015. Null for every plain (014) retrain job. */
-  retrainStrategy: 'AUGMENT_DATA' | null
+  /** MODEL-SERVE-015/017. Null for every plain (014) or KEEP_EXISTING
+   *  retrain job. MODEL-SERVE-019 was missing 'NEW_DATA_ONLY' here — a job
+   *  created under that strategy typed as impossible. */
+  retrainStrategy: 'AUGMENT_DATA' | 'NEW_DATA_ONLY' | null
   baseDatasetVersionId: string | null
   additionalDatasetVersionId: string | null
   combinedArtifactId: string | null
@@ -178,14 +221,14 @@ export interface TriggerRetrainInput {
    *  algorithm (see `custom-finetune-form.tsx`'s own note on why the
    *  algorithm picker was dropped). */
   candidates?: CandidateInput[]
-  /** MODEL-SERVE-015-T01. Omitted = 'KEEP_EXISTING' (the 014 default) —
-   *  every pre-015 caller is unaffected. 'AUGMENT_DATA' requires
-   *  `additionalDatasetVersionId`; the server's own `.strict()` schema
-   *  refuses one without the other. */
-  /** MODEL-SERVE-017. 'NEW_DATA_ONLY' trains on the selected dataset ALONE,
-   *  leaving the incumbent's own rows out; it carries the same
-   *  `additionalDatasetVersionId` requirement as 'AUGMENT_DATA'. */
-  strategy?: 'KEEP_EXISTING' | 'AUGMENT_DATA' | 'NEW_DATA_ONLY'
+  /** MODEL-SERVE-019. REQUIRED — this REVISES 015-T01's own note, which
+   *  defaulted an omitted field to 'KEEP_EXISTING' server-side. A retrain
+   *  now always ingests new data: 'AUGMENT_DATA' or 'NEW_DATA_ONLY', each
+   *  requiring `additionalDatasetVersionId` (the server's own `.strict()`
+   *  schema refuses one without the other). 'KEEP_EXISTING' stays a valid
+   *  value ONLY for replaying an old job by `idempotencyKey` — sending it on
+   *  a fresh request is refused with 422. */
+  strategy: 'KEEP_EXISTING' | 'AUGMENT_DATA' | 'NEW_DATA_ONLY'
   additionalDatasetVersionId?: string
   /** The operator's NEW-DATA validation window: a slice of the newly merged
    *  dataset held out of training and scored on its own, so the retrain

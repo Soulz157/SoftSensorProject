@@ -64,6 +64,40 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
     splitSpec: { method: 'chronological', ratio: 0.8 },
     algorithm: 'ridge',
     metrics: { rmse: 1.25, r2: 0.9, mae: 0.5 },
+    // The incumbent's own basis label ONLY (D03's gate no longer reads
+    // this — see COMBINED_ARTIFACT_BASE's own comment for why comparing it
+    // against validationRowCount was wrong: different populations).
+    splitStats: {
+      cut_timestamp: '2026-06-01T00:00:00Z',
+      test_labelled_rows: 40,
+    },
+  };
+
+  // MODEL-SERVE-019. The combined GOLD artifact `buildComparison` reads for
+  // a new-data strategy's FROZEN_INCUMBENT_TEST/MERGED_TEST_SPLIT bases.
+  //
+  // D03's gate reads `operations[0].frozenEvalDroppedRows`, never
+  // `validationRowCount` against the incumbent's `test_labelled_rows` — an
+  // early version of this feature compared those two, and they describe
+  // DIFFERENT populations (this artifact's unmasked row count vs. a
+  // different service's labelled-only count), which would have refused the
+  // delta on nearly every real model regardless of whether the slice
+  // actually matched. `frozenEvalDroppedRows: 0` means the frozen slice
+  // covers the SAME row extent the incumbent's own test split does.
+  const COMBINED_ARTIFACT_BASE = {
+    validationRowCount: 40,
+    rowCount: 140,
+    operations: [
+      {
+        cutTimestamp: '2026-06-01T00:00:00Z',
+        frozenEvalTo: '2026-07-01T00:00:00Z',
+        combinedEndTime: '2026-08-01T00:00:00Z',
+        frozenEvalDroppedRows: 0,
+        baseTrainRowCount: 80,
+        newTrainRowCount: 20,
+        dedupeDropped: 0,
+      },
+    ],
   };
 
   function makePrisma(
@@ -74,6 +108,10 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
       versionById?: Record<string, unknown> | null;
       resultVersion?: Record<string, unknown> | null;
       runsById?: Record<string, Record<string, unknown> | null>;
+      // MODEL-SERVE-019. The combined GOLD artifact behind a new-data
+      // strategy's FROZEN_INCUMBENT_TEST/MERGED_TEST_SPLIT bases; `null`
+      // exercises "not recorded" rather than a fetch failure.
+      combinedArtifact?: Record<string, unknown> | null;
     } = {},
   ) {
     const jobFindFirst = jest
@@ -133,6 +171,18 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
           const runs = overrides.runsById ?? { 'run-incumbent': RUN_BASE };
           return Promise.resolve(runs[where.id as string] ?? null);
         }),
+      },
+      // MODEL-SERVE-019-T03. Only reached for a new-data strategy
+      // (`isAugmented`); `frozenEvalDroppedRows: 0` in COMBINED_ARTIFACT_BASE
+      // holds the D03 gate comparable unless a test overrides it.
+      datasetArtifact: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue(
+            overrides.combinedArtifact === undefined
+              ? COMBINED_ARTIFACT_BASE
+              : overrides.combinedArtifact,
+          ),
       },
       // MODEL-SERVE-015-T01. getCurrentRetrainJobService's own base-dataset
       // resolution — irrelevant to every pre-015 test here, so a fixed
@@ -514,7 +564,11 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
       const comparison = res.data?.job?.comparison;
 
       expect(comparison?.basis.comparable).toBe(false);
-      expect(comparison?.basis.reason).toContain('frozen test rows');
+      // MODEL-SERVE-019. Reworded jargon-free (no "incumbent"/"frozen") —
+      // the client displays this string verbatim.
+      expect(comparison?.basis.reason).toContain(
+        "not yet scored on the current production version's own test data",
+      );
       expect(comparison?.rmseDelta).toBeNull();
       // The new-regime number is still visible, never blanked.
       expect(comparison?.candidate.newRegimeMetrics?.rmse).toBe(5.0);
@@ -551,6 +605,243 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
       expect(comparison?.basis.strategy).toBe('KEEP_EXISTING');
       expect(comparison?.basis.evalSet).toBeNull();
       expect(comparison?.candidate.newRegimeMetrics).toBeNull();
+    });
+
+    /**
+     * MODEL-SERVE-019-D03. The candidate is scored on a RE-CUT frozen slice
+     * that can be a strict subset of the incumbent's own full test split —
+     * a raw delta across mismatched rows is refused rather than published.
+     * Gated on `frozenEvalDroppedRows` (rows the new dataset's start cut off
+     * the incumbent's own frozen tail), NOT on comparing this artifact's
+     * unmasked row count against the incumbent's LABELLED row count — an
+     * earlier version of this gate did that, and the two counts describe
+     * different populations (would refuse on nearly every real model).
+     */
+    it('refuses the delta when the new dataset cuts into the frozen slice', async () => {
+      const finished = {
+        ...JOB_BASE,
+        status: 'SUCCEEDED',
+        resultVersionId: 'version-4',
+        bestRunId: 'run-candidate',
+        retrainStrategy: 'AUGMENT_DATA',
+      };
+      const prisma = makePrisma({
+        liveJob: finished,
+        resultVersion: { version: 4, stage: 'STAGING' },
+        runsById: {
+          'run-incumbent': RUN_BASE,
+          'run-candidate': {
+            ...RUN_BASE,
+            id: 'run-candidate',
+            goldArtifactId: 'combined-gold-1',
+            evalSetKind: 'FROZEN_INCUMBENT_TEST',
+            frozenEvalChecksum: 'frozen-sha',
+            holdoutMetrics: { rmse: 0.9, r2: 0.85, mae: 0.4 },
+            metrics: { rmse: 5.0, r2: -2.0, mae: 3.0 },
+          },
+        },
+        // 15 of the incumbent's own frozen rows fell at/after the new
+        // dataset's start and were cut from the slice.
+        combinedArtifact: {
+          ...COMBINED_ARTIFACT_BASE,
+          operations: [
+            {
+              ...COMBINED_ARTIFACT_BASE.operations[0],
+              frozenEvalDroppedRows: 15,
+            },
+          ],
+        },
+      });
+      const service = new ModelRetrainAuthorizedService(
+        prisma as never,
+        makeCandidateJobs(finished) as never,
+        {} as never,
+      );
+
+      const res = await service.getCurrentRetrainJobService('model-1', ADMIN);
+      const comparison = res.data?.job?.comparison;
+
+      expect(comparison?.basis.comparable).toBe(false);
+      expect(comparison?.basis.reason).toContain('fewer rows');
+      expect(comparison?.basis.reason).toContain('15');
+      expect(comparison?.rmseDelta).toBeNull();
+      // Both raw numbers survive — an incomparable basis is not a blank.
+      expect(comparison?.candidate.metrics.rmse).toBe(0.9);
+      expect(comparison?.incumbent.metrics.rmse).toBe(1.25);
+    });
+
+    it('refuses the delta when frozenEvalDroppedRows was never recorded (a retrain from before this check)', async () => {
+      const finished = {
+        ...JOB_BASE,
+        status: 'SUCCEEDED',
+        resultVersionId: 'version-4',
+        bestRunId: 'run-candidate',
+        retrainStrategy: 'AUGMENT_DATA',
+      };
+      const prisma = makePrisma({
+        liveJob: finished,
+        resultVersion: { version: 4, stage: 'STAGING' },
+        runsById: {
+          'run-incumbent': RUN_BASE,
+          'run-candidate': {
+            ...RUN_BASE,
+            id: 'run-candidate',
+            goldArtifactId: 'combined-gold-1',
+            evalSetKind: 'FROZEN_INCUMBENT_TEST',
+            frozenEvalChecksum: 'frozen-sha',
+            holdoutMetrics: { rmse: 0.9, r2: 0.85, mae: 0.4 },
+            metrics: { rmse: 5.0, r2: -2.0, mae: 3.0 },
+          },
+        },
+        combinedArtifact: {
+          ...COMBINED_ARTIFACT_BASE,
+          operations: [
+            {
+              ...COMBINED_ARTIFACT_BASE.operations[0],
+              frozenEvalDroppedRows: undefined,
+            },
+          ],
+        },
+      });
+      const service = new ModelRetrainAuthorizedService(
+        prisma as never,
+        makeCandidateJobs(finished) as never,
+        {} as never,
+      );
+
+      const res = await service.getCurrentRetrainJobService('model-1', ADMIN);
+      const comparison = res.data?.job?.comparison;
+
+      expect(comparison?.basis.comparable).toBe(false);
+      expect(comparison?.basis.reason).toContain('not recorded whether');
+      expect(comparison?.rmseDelta).toBeNull();
+    });
+
+    it("still shows the incumbent's own basis label even though it plays no part in the D03 gate", async () => {
+      const finished = {
+        ...JOB_BASE,
+        status: 'SUCCEEDED',
+        resultVersionId: 'version-4',
+        bestRunId: 'run-candidate',
+        retrainStrategy: 'AUGMENT_DATA',
+      };
+      const prisma = makePrisma({
+        liveJob: finished,
+        resultVersion: { version: 4, stage: 'STAGING' },
+        runsById: {
+          // A legacy incumbent run recorded before splitStats existed.
+          'run-incumbent': { ...RUN_BASE, splitStats: null },
+          'run-candidate': {
+            ...RUN_BASE,
+            id: 'run-candidate',
+            goldArtifactId: 'combined-gold-1',
+            evalSetKind: 'FROZEN_INCUMBENT_TEST',
+            frozenEvalChecksum: 'frozen-sha',
+            holdoutMetrics: { rmse: 0.9, r2: 0.85, mae: 0.4 },
+            metrics: { rmse: 5.0, r2: -2.0, mae: 3.0 },
+          },
+        },
+      });
+      const service = new ModelRetrainAuthorizedService(
+        prisma as never,
+        makeCandidateJobs(finished) as never,
+        {} as never,
+      );
+
+      const res = await service.getCurrentRetrainJobService('model-1', ADMIN);
+      const comparison = res.data?.job?.comparison;
+
+      // The default fixture's frozenEvalDroppedRows: 0 still holds this
+      // comparable — the incumbent's OWN missing splitStats no longer gates
+      // the delta, it only leaves the display-only basis label empty.
+      expect(comparison?.basis.comparable).toBe(true);
+      expect(
+        comparison?.incumbent.metricsBasis?.unavailableReason,
+      ).toBeTruthy();
+      expect(comparison?.incumbent.metricsBasis?.rowCount).toBeNull();
+    });
+
+    it('populates each figure basis from persisted rows when the comparison holds', async () => {
+      const finished = {
+        ...JOB_BASE,
+        status: 'SUCCEEDED',
+        resultVersionId: 'version-4',
+        bestRunId: 'run-candidate',
+        retrainStrategy: 'AUGMENT_DATA',
+        splitStats: {
+          cut_timestamp: '2026-06-15T00:00:00Z',
+          test_labelled_rows: 30,
+        },
+      };
+      const prisma = makePrisma({
+        liveJob: finished,
+        resultVersion: { version: 4, stage: 'STAGING' },
+        runsById: {
+          'run-incumbent': RUN_BASE,
+          'run-candidate': {
+            ...RUN_BASE,
+            id: 'run-candidate',
+            goldArtifactId: 'combined-gold-1',
+            evalSetKind: 'FROZEN_INCUMBENT_TEST',
+            frozenEvalChecksum: 'frozen-sha',
+            holdoutMetrics: { rmse: 0.9, r2: 0.85, mae: 0.4 },
+            metrics: { rmse: 5.0, r2: -2.0, mae: 3.0 },
+            newDataHoldoutMetrics: { rmse: 1.1, r2: 0.5, mae: 0.6 },
+            newDataHoldoutRowCount: 10,
+            newDataHoldoutFrom: new Date('2026-07-01T00:00:00Z'),
+            newDataHoldoutTo: new Date('2026-07-15T00:00:00Z'),
+          },
+        },
+      });
+      const service = new ModelRetrainAuthorizedService(
+        prisma as never,
+        makeCandidateJobs(finished) as never,
+        {} as never,
+      );
+
+      const res = await service.getCurrentRetrainJobService('model-1', ADMIN);
+      const comparison = res.data?.job?.comparison;
+
+      expect(comparison?.basis.comparable).toBe(true);
+      expect(comparison?.incumbent.metricsBasis).toEqual({
+        frame: 'INCUMBENT_TEST_SPLIT',
+        from: '2026-06-01T00:00:00Z',
+        to: null,
+        rowCount: 40,
+        usedFor: 'COMPARE_TO_PRODUCTION',
+        unavailableReason: null,
+      });
+      expect(comparison?.candidate.metricsBasis).toEqual({
+        frame: 'FROZEN_INCUMBENT_TEST',
+        from: '2026-06-01T00:00:00Z',
+        to: '2026-07-01T00:00:00Z',
+        rowCount: 40,
+        usedFor: 'COMPARE_TO_PRODUCTION',
+        unavailableReason: null,
+      });
+      expect(comparison?.candidate.newRegimeMetricsBasis).toEqual({
+        frame: 'MERGED_TEST_SPLIT',
+        from: '2026-06-15T00:00:00Z',
+        to: '2026-08-01T00:00:00Z',
+        rowCount: 30,
+        usedFor: 'RANK_CANDIDATES',
+        unavailableReason: null,
+      });
+      expect(comparison?.candidate.newDataHoldoutBasis).toEqual({
+        frame: 'NEW_DATA_WINDOW',
+        from: '2026-07-01T00:00:00.000Z',
+        to: '2026-07-15T00:00:00.000Z',
+        rowCount: 10,
+        usedFor: 'REPORT_ONLY',
+        unavailableReason: null,
+      });
+      expect(comparison?.basis.trainingComposition).toEqual({
+        baseTrainRowCount: 80,
+        newTrainRowCount: 20,
+        dedupeDropped: 0,
+        cutTimestamp: '2026-06-01T00:00:00Z',
+        combinedRowCount: 140,
+      });
     });
   });
 
@@ -756,5 +1047,64 @@ describe('ModelRetrainAuthorizedService — MODEL-SERVE-014 additions', () => {
       ).rejects.toThrow();
       expect(prisma.modelVersion.findFirst).not.toHaveBeenCalled();
     });
+  });
+
+  /**
+   * MODEL-SERVE-019-D01. Keep Existing Data is removed as a CHOICE for a new
+   * trigger, but the enum value and the idempotency replay path both stay —
+   * a retry of an old KEEP_EXISTING job must still return that job.
+   */
+  describe('triggerRetrainService — MODEL-SERVE-019 Keep Existing removal', () => {
+    it('refuses a new KEEP_EXISTING request with 422', async () => {
+      const prisma = makePrisma();
+      const service = new ModelRetrainAuthorizedService(
+        prisma as never,
+        makeCandidateJobs(JOB_BASE) as never,
+        {} as never,
+      );
+
+      await expect(
+        service.triggerRetrainService(
+          'model-1',
+          { strategy: 'KEEP_EXISTING' } as never,
+          ADMIN,
+        ),
+      ).rejects.toMatchObject({ statusCode: 422 });
+      // Refused BEFORE a job row is created.
+      expect(prisma.modelCandidateJob.create).not.toHaveBeenCalled();
+    });
+
+    it('replays an existing KEEP_EXISTING job by idempotencyKey instead of refusing', async () => {
+      const existing = { ...JOB_BASE, id: 'old-keep-job', status: 'RUNNING' };
+      const prisma = makePrisma();
+      prisma.modelCandidateJob.findFirst = jest
+        .fn()
+        .mockResolvedValue(existing);
+      const service = new ModelRetrainAuthorizedService(
+        prisma as never,
+        makeCandidateJobs(JOB_BASE) as never,
+        {} as never,
+      );
+
+      const res = await service.triggerRetrainService(
+        'model-1',
+        { strategy: 'KEEP_EXISTING', idempotencyKey: 'retry-1' } as never,
+        ADMIN,
+      );
+
+      expect(res.statusCode).toBe(200);
+      expect(res.data.jobId).toBe('old-keep-job');
+      expect(prisma.modelCandidateJob.create).not.toHaveBeenCalled();
+    });
+
+    // NOTE: an absent `strategy` (`dto.strategy === undefined`) is NOT
+    // refused by this service check — `strategy` being required is enforced
+    // at the DTO/zod boundary (`TriggerRetrainSchema`), not repeated here.
+    // The pre-existing `triggerRetrainService — sized search` tests above
+    // call the service directly with `{} as never`, bypassing that DTO
+    // layer entirely to exercise sizing logic unrelated to strategy — they
+    // rely on exactly this: an absent strategy takes the same code path a
+    // KEEP_EXISTING job always did (no augmentation), which is what makes
+    // them still valid regression tests of the sizing behaviour.
   });
 });

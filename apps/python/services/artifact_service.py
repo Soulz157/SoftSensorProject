@@ -881,9 +881,13 @@ def combine_for_retrain(
         .reset_index(drop=True)
     )
     if len(base_frozen_raw) == 0:
+        # MODEL-SERVE-019. This ValueError's `detail` reaches the operator
+        # verbatim through the dialog's error banner (postToPython ->
+        # AppException.message) — plain wording, no "incumbent"/"frozen".
         raise ValueError(
-            f"No base rows at or after cut_timestamp {cut_ts} — the "
-            "incumbent's own test split is empty; nothing to freeze."
+            f"No rows exist at or after {cut_ts} in this model's own "
+            "training data — there is no test data left to compare a "
+            "retrained version against."
         )
 
     new_frame = store.get_frame(request.new_data_key)
@@ -891,20 +895,32 @@ def combine_for_retrain(
     new_start = new_frame[TIMESTAMP_COLUMN].min()
     if new_start <= cut_ts:
         raise ValueError(
-            f"New dataset starts at {new_start}, at or before the "
-            f"incumbent's test window start {cut_ts} — no uncontaminated "
-            "frozen evaluation window exists. Pick a dataset whose data "
-            "begins after the incumbent's own split boundary."
+            f"New dataset starts at {new_start}, at or before this model's "
+            f"own test data starts ({cut_ts}) — there would be nothing left "
+            "to test the new version on. Pick a dataset whose data begins "
+            "after this model's own test data starts."
         )
 
     base_frozen = base_frozen_raw[
         base_frozen_raw[TIMESTAMP_COLUMN] < new_start
     ].reset_index(drop=True)
+    # MODEL-SERVE-019-D03. How many of the incumbent's own frozen rows were
+    # cut off by the new dataset's start — 0 means the candidate is scored
+    # on the SAME row extent the incumbent's own test split covers (both
+    # unmasked; a downstream label mask, if any, excludes the same physical
+    # rows from both sides equally). This is what the comparison gates on,
+    # rather than comparing this ARTIFACT's unmasked row count against a
+    # different LABELLED row count computed by a different service
+    # (build_split_stats masks on the target's Good rows first) — those two
+    # counts describe different populations and would almost never agree on
+    # a sparse target, which very nearly shipped as a permanent refusal.
+    frozen_eval_dropped_rows = len(base_frozen_raw) - len(base_frozen)
     if len(base_frozen) == 0:
         raise ValueError(
-            f"Every base row at or after cut_timestamp {cut_ts} falls at or "
-            f"after the new dataset's own start {new_start} — the re-cut "
-            "frozen evaluation window is empty."
+            f"Every row in this model's own test data (at or after "
+            f"{cut_ts}) falls at or after the new dataset's own start "
+            f"({new_start}) — there would be no test data left to compare "
+            "a retrained version against."
         )
 
     spec = store.get_json(request.base_feature_spec_key)
@@ -1091,6 +1107,13 @@ def combine_for_retrain(
     # base rows rather than the count of rows it deliberately left out.
     payload["base_train_row_count"] = len(base_train) if request.combine else 0
     payload["new_train_row_count"] = len(new_scaled)
+    # MODEL-SERVE-019. The frozen slice's own upper bound (it never had one
+    # on the wire before — only its lower bound `cut_timestamp` was) and the
+    # combined frame's true tail, so the backend can label a figure's time
+    # range from persisted facts instead of re-deriving it client-side.
+    payload["frozen_eval_to"] = str(new_start)
+    payload["combined_end_time"] = str(combined[TIMESTAMP_COLUMN].max())
+    payload["frozen_eval_dropped_rows"] = frozen_eval_dropped_rows
     return payload
 
 

@@ -5,12 +5,14 @@ import { env } from '@/config/env.config';
 import {
   computeDrift,
   poolFeatureStats,
+  type ColumnAggregate,
   type FeatureStatsMap,
 } from '@/lib/prediction-drift';
 import {
   computePsi,
   poolHistograms,
   PSI_EPSILON,
+  type FeatureHistogram,
   type FeatureHistogramMap,
 } from '@/lib/prediction-psi';
 import {
@@ -30,6 +32,7 @@ import { isStale } from '@/lib/deploy-status';
 // MODEL-SERVE-001-T29. The frozen-tag detector, pure and co-located with its
 // own spec like the other 13 modules in lib/.
 import { detectFrozenColumns } from '@/lib/sensor-frozen';
+import { computeTargetDrift, computeTargetPsi } from '@/lib/target-monitoring';
 import {
   classifyResidualSd,
   truthPoolSince,
@@ -120,6 +123,9 @@ export class InferenceWindowMonitoringService {
   ) {
     const production = await this.prisma.modelVersion.findFirst({
       where: { modelId, stage: 'PRODUCTION' },
+      // MODEL-SERVE-018. The target tag's name, for the display-only target
+      // row in the drift/PSI reports.
+      include: { sourceRun: { select: { targetY: true } } },
     });
     if (!production) {
       throw new AppException({
@@ -153,6 +159,8 @@ export class InferenceWindowMonitoringService {
         missingPct: true,
         featureHistograms: true,
         featureStats: true,
+        targetStats: true,
+        targetHistogram: true,
       },
     });
 
@@ -237,10 +245,20 @@ export class InferenceWindowMonitoringService {
       statsRows.map((s) => s as unknown as FeatureStatsMap),
     );
     const baseline = await resolveColumnBaseline(production.goldObjectKey);
-    const report = computeDrift(pooled, baseline, {
+    const thresholds = {
       warnSd: env.DRIFT_WARN_SD,
       criticalSd: env.DRIFT_CRITICAL_SD,
-    });
+    };
+    const report = computeDrift(pooled, baseline, thresholds);
+    // MODEL-SERVE-018. Computed apart from `report`, so it can never move
+    // `report.status` (display-only, MODEL-SERVE-018-D01).
+    const targetColumn = production.sourceRun.targetY || null;
+    const target = computeTargetDrift(
+      targetColumn,
+      windows.map((w) => w.targetStats as unknown as ColumnAggregate | null),
+      baseline,
+      thresholds,
+    );
 
     return {
       statusCode: 200,
@@ -248,6 +266,8 @@ export class InferenceWindowMonitoringService {
       type: 'SUCCESS' as const,
       data: {
         ...report,
+        targetColumn,
+        target,
         basis: {
           ...this.basisOf(production, windows, from, to),
           // The honest "actually contributed" count, mirroring the
@@ -286,11 +306,22 @@ export class InferenceWindowMonitoringService {
       histogramRows.map((h) => h as unknown as FeatureHistogramMap),
     );
     const reference = await resolvePsiReference(production.goldObjectKey);
-    const report = computePsi(pooled, reference, {
+    const thresholds = {
       warn: env.PSI_WARN,
       critical: env.PSI_CRITICAL,
       minSamplesPerBin: env.PSI_MIN_SAMPLES_PER_BIN,
-    });
+    };
+    const report = computePsi(pooled, reference, thresholds);
+    // MODEL-SERVE-018. Same separation as getDriftReport's target.
+    const targetColumn = production.sourceRun.targetY || null;
+    const target = computeTargetPsi(
+      targetColumn,
+      windows.map(
+        (w) => w.targetHistogram as unknown as FeatureHistogram | null,
+      ),
+      reference,
+      thresholds,
+    );
 
     return {
       statusCode: 200,
@@ -298,6 +329,8 @@ export class InferenceWindowMonitoringService {
       type: 'SUCCESS' as const,
       data: {
         ...report,
+        targetColumn,
+        target,
         basis: {
           ...this.basisOf(production, windows, from, to),
           histogramRequests: histogramRows.length,

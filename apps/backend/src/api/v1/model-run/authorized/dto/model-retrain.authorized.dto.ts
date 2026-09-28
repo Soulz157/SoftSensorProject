@@ -71,11 +71,17 @@ export const TriggerRetrainSchema = z
     // derived from the incumbent (the normal path).
     candidates: z.array(CandidateSchema).min(1).max(20).optional(),
 
-    // MODEL-SERVE-015-T01. Defaults to the 014 behavior — every existing
-    // caller (no field sent) is unaffected. `AUGMENT_DATA` requires
-    // `additionalDatasetVersionId`; the reverse is also enforced below so a
-    // caller cannot send one without the other and get silently ignored.
-    strategy: RetrainStrategyEnum.optional().default('KEEP_EXISTING'),
+    // MODEL-SERVE-019. REQUIRED, no default — this REVISES 015-T01's own
+    // comment, which defaulted an omitted field to 'KEEP_EXISTING' so every
+    // pre-015 caller kept working unchanged. The user asked to remove that
+    // path: a retrain now always ingests new data. `'KEEP_EXISTING'` stays
+    // IN THE ENUM (never deleted — historical jobs/versions still store it,
+    // and `usesNewData`/comparison reads must keep recognizing it) but the
+    // trigger service (`triggerRetrainService`) refuses a NEW request that
+    // names it, AFTER the idempotency replay lookup — a retry of an old
+    // KEEP_EXISTING job by its idempotencyKey must still return that job,
+    // not a 422 for a strategy nobody chose on this call.
+    strategy: RetrainStrategyEnum,
 
     // The operator-selected DatasetVersion to merge with the incumbent's own
     // training data. A DatasetVersion id, not an artifact id — the same

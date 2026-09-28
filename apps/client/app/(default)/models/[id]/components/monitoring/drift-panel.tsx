@@ -5,7 +5,13 @@ import {
   explainDriftColumn,
   explainDriftReport,
 } from '@/lib/monitoring-status-explain'
+import {
+  explainTargetDrift,
+  unrecordedTargetColumn,
+  withTargetFirst,
+} from '@/lib/monitoring-target-row'
 import { StatusBadgeWithExplanation } from './status-badge-with-explanation'
+import { TargetBadge } from './target-badge'
 
 interface Props {
   report: DriftReport | null
@@ -96,6 +102,7 @@ export function DriftPanel({ report, loading, unavailableReason }: Props) {
   // both planes already (see MonitoringBasis's own doc comment); only the
   // unit noun differs.
   const unitLabel = onWindowPlane ? 'window' : 'sampled request'
+  const unrecordedColumn = unrecordedTargetColumn(report)
 
   return (
     <div className="space-y-3">
@@ -127,28 +134,56 @@ export function DriftPanel({ report, loading, unavailableReason }: Props) {
             </tr>
           </thead>
           <tbody>
-            {report.columns.map(col => (
-              <tr key={col.column} className="border-t border-border">
-                <td className="px-3 py-2 font-mono">{col.column}</td>
-                <td className="px-3 py-2 text-right font-mono">
-                  {col.z === null ? '—' : formatSigned(col.z)}
+            {unrecordedColumn && (
+              <tr className="border-t border-border text-muted-foreground">
+                <td className="px-3 py-2 font-mono">
+                  <span className="inline-flex items-center gap-1.5">
+                    {unrecordedColumn}
+                    <TargetBadge />
+                  </span>
                 </td>
-                <td className="px-3 py-2 text-right font-mono">{col.n}</td>
-                <td className="px-3 py-2">
-                  {/* `col.reason` is no longer a native `title` — it is
+                <td colSpan={3} className="px-3 py-2 italic">
+                  Not recorded in this range — only windows materialized after
+                  target tracking shipped carry it.
+                </td>
+              </tr>
+            )}
+            {/* MODEL-SERVE-018: the target (y), when present, is pinned
+                first. It comes from `report.target`, never `columns`, so
+                the header badge above is still a features-only verdict. */}
+            {withTargetFirst(report.columns, report.target).map(
+              ({ row: col, isTarget }) => (
+                <tr
+                  key={isTarget ? `target:${col.column}` : col.column}
+                  className="border-t border-border"
+                >
+                  <td className="px-3 py-2 font-mono">
+                    <span className="inline-flex items-center gap-1.5">
+                      {col.column}
+                      {isTarget && <TargetBadge />}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono">
+                    {col.z === null ? '—' : formatSigned(col.z)}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono">{col.n}</td>
+                  <td className="px-3 py-2">
+                    {/* `col.reason` is no longer a native `title` — it is
                       folded into the tooltip body by `explainDriftColumn`,
                       alongside the measured-vs-threshold lines a `title`
                       could never render. */}
-                  <StatusBadgeWithExplanation
-                    status={col.status}
-                    explanation={explainDriftColumn(
-                      col,
-                      report.basis.thresholds,
-                    )}
-                  />
-                </td>
-              </tr>
-            ))}
+                    <StatusBadgeWithExplanation
+                      status={col.status}
+                      explanation={
+                        isTarget
+                          ? explainTargetDrift(col, report.basis.thresholds)
+                          : explainDriftColumn(col, report.basis.thresholds)
+                      }
+                    />
+                  </td>
+                </tr>
+              ),
+            )}
           </tbody>
         </table>
       </div>

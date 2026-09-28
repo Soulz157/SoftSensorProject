@@ -58,13 +58,13 @@ export interface UseModelRetrain {
   error: string | null
   /** `candidates` omitted = Auto Finetune (server expands the incumbent's
    *  own algorithm through the curated tuning grid). Present = Custom
-   *  Finetune's one candidate. MODEL-SERVE-015: `options.strategy` omitted
-   *  = 'KEEP_EXISTING' (014's own behavior, unaffected); 'AUGMENT_DATA'
-   *  requires `options.additionalDatasetVersionId`. */
+   *  Finetune's one candidate. MODEL-SERVE-019: `options.strategy` is now
+   *  REQUIRED — a retrain always ingests new data; 'AUGMENT_DATA'/
+   *  'NEW_DATA_ONLY' both require `options.additionalDatasetVersionId`. */
   start: (
     candidates?: CandidateInput[],
     options?: {
-      strategy?: 'KEEP_EXISTING' | 'AUGMENT_DATA' | 'NEW_DATA_ONLY'
+      strategy: 'KEEP_EXISTING' | 'AUGMENT_DATA' | 'NEW_DATA_ONLY'
       additionalDatasetVersionId?: string
       /** Both or neither — the server refuses a half-open window. */
       newValidationFrom?: string
@@ -221,13 +221,22 @@ export function useModelRetrain({
     async (
       candidates?: CandidateInput[],
       options?: {
-        strategy?: 'KEEP_EXISTING' | 'AUGMENT_DATA' | 'NEW_DATA_ONLY'
+        strategy: 'KEEP_EXISTING' | 'AUGMENT_DATA' | 'NEW_DATA_ONLY'
         additionalDatasetVersionId?: string
         newValidationFrom?: string
         newValidationTo?: string
       },
     ) => {
       if (!modelId || jobLive) return
+      // MODEL-SERVE-019. A retrain always ingests new data now — refused
+      // client-side rather than sending a request the server's own required
+      // `strategy` field would 400 on. Every real caller (the dialog) always
+      // supplies this; reaching here without it is a caller bug, not a user
+      // action, so it is reported the same way a validation refusal is.
+      if (!options?.strategy) {
+        setError('A retrain requires a data strategy.')
+        return
+      }
       if (!idempotencyKeyRef.current) {
         idempotencyKeyRef.current = newIdempotencyKey()
       }
@@ -236,10 +245,10 @@ export function useModelRetrain({
         const res = await modelRetrainService.trigger(modelId, {
           idempotencyKey: idempotencyKeyRef.current,
           candidates,
-          strategy: options?.strategy,
-          additionalDatasetVersionId: options?.additionalDatasetVersionId,
-          newValidationFrom: options?.newValidationFrom,
-          newValidationTo: options?.newValidationTo,
+          strategy: options.strategy,
+          additionalDatasetVersionId: options.additionalDatasetVersionId,
+          newValidationFrom: options.newValidationFrom,
+          newValidationTo: options.newValidationTo,
         })
         // A fresh trigger (201) and an idempotent replay (200) return the
         // same job envelope — both handled identically.

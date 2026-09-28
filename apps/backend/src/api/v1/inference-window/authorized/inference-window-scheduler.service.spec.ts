@@ -1,6 +1,7 @@
 import { InferenceWindowSchedulerService } from './inference-window-scheduler.service';
 import { materializeInferenceWindow } from '@/lib/python-preprocess-client';
 import { env } from '@/config/env.config';
+import { PrismaTypes } from '@softsensor/prisma';
 
 jest.mock('@/lib/python-preprocess-client');
 jest.mock('@/lib/crypto', () => ({
@@ -342,6 +343,65 @@ describe('InferenceWindowSchedulerService.dispatchOne (MODEL-SERVE-006-T05)', ()
     const updates = prisma.inferenceWindow.update.mock.calls;
     const finalUpdate = updates[updates.length - 1][0];
     expect(finalUpdate.data.status).toBe('SKIPPED');
+  });
+
+  // MODEL-SERVE-018. The target's aggregates land in their OWN columns (never
+  // inside featureStats/featureHistograms), and a null is written as DbNull.
+  it('persists targetStats/targetHistogram apart from the feature maps', async () => {
+    const targetStats = { n: 3, sum: 30, sumsq: 302, min: 9, max: 11 };
+    (materializeInferenceWindow as jest.Mock).mockResolvedValue({
+      object_key:
+        'inference/model-1/version-1/dt=2026-09-10/hour=08/input.parquet',
+      row_count: 60,
+      scored_rows: env.INFERENCE_MIN_ROWS - 1,
+      missing_pct: 0,
+      checksum: 'abc',
+      feature_histograms: null,
+      feature_stats: { tag_a: { n: 3, sum: 3, sumsq: 3, min: 1, max: 1 } },
+      target_stats: targetStats,
+      target_histogram: null,
+      tag_observations: {},
+    });
+    const prisma = buildPrisma({
+      inferenceWindow: {
+        findUnique: jest.fn().mockResolvedValue(baseWindow),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      inferenceSchedule: {
+        findUnique: jest.fn().mockResolvedValue({
+          modelId: 'model-1',
+          sourceId: 'source-1',
+          fetchConfig: { intervalTime: '1m' },
+          minRows: env.INFERENCE_MIN_ROWS,
+        }),
+      },
+      modelVersion: {
+        findUniqueOrThrow: jest
+          .fn()
+          .mockResolvedValue({ featureSpecKey: 'spec-key' }),
+      },
+      dataSource: {
+        findUnique: jest.fn().mockResolvedValue({
+          type: 'sql',
+          host: 'h',
+          username: 'u',
+          dbName: 'd',
+          secretCiphertext: 'enc',
+          config: { driver: 'postgres', port: 5432, table: 't' },
+        }),
+      },
+    });
+    const service = makeService(prisma, buildRunner());
+    await (service as unknown as { dispatchOne(id: string): Promise<void> })[
+      'dispatchOne'
+    ]('w1');
+
+    const inputWrite = prisma.inferenceWindow.update.mock.calls
+      .map((c: [{ data: Record<string, unknown> }]) => c[0].data)
+      .find((d: Record<string, unknown>) => 'inputKey' in d);
+    expect(inputWrite?.targetStats).toEqual(targetStats);
+    expect(inputWrite?.targetHistogram).toBe(PrismaTypes.DbNull);
+    expect(Object.keys(inputWrite?.featureStats as object)).toEqual(['tag_a']);
   });
 
   /**

@@ -9,7 +9,13 @@ import {
   explainPsiColumn,
   explainPsiReport,
 } from '@/lib/monitoring-status-explain'
+import {
+  explainTargetPsi,
+  unrecordedTargetColumn,
+  withTargetFirst,
+} from '@/lib/monitoring-target-row'
 import { StatusBadgeWithExplanation } from '../status-badge-with-explanation'
+import { TargetBadge } from '../target-badge'
 import { PsiBinChart } from './psi-bin-chart'
 import { PsiBinTable } from './psi-bin-table'
 
@@ -128,6 +134,7 @@ export function PsiPanel({ report, loading, unavailableReason }: Props) {
   // right numbers on both planes.
   const unitLabel = onWindowPlane ? 'window' : 'sampled request'
   const unitLabelShort = onWindowPlane ? 'windows' : 'reqs'
+  const unrecordedColumn = unrecordedTargetColumn(report)
 
   return (
     <div className="space-y-3">
@@ -157,30 +164,51 @@ export function PsiPanel({ report, loading, unavailableReason }: Props) {
             </tr>
           </thead>
           <tbody>
-            {report.columns.map(col => {
-              const canExpand =
-                col.bins !== null && col.status !== 'INSUFFICIENT_DATA'
-              const isOpen = expandedColumn === col.column
+            {unrecordedColumn && (
+              <tr className="border-t border-border text-muted-foreground">
+                <td className="px-3 py-2 font-mono">
+                  <span className="inline-flex items-center gap-1.5">
+                    {unrecordedColumn}
+                    <TargetBadge />
+                  </span>
+                </td>
+                <td colSpan={COLUMN_COUNT - 1} className="px-3 py-2 italic">
+                  Not recorded in this range — needs a PSI reference for the
+                  target (models trained before PSI bins have none) and windows
+                  materialized after target tracking shipped.
+                </td>
+              </tr>
+            )}
+            {/* MODEL-SERVE-018: target (y) pinned first — from
+                `report.target`, never `columns`, so the header badge stays
+                a features-only verdict. */}
+            {withTargetFirst(report.columns, report.target).map(
+              ({ row: col, isTarget }) => {
+                const canExpand =
+                  col.bins !== null && col.status !== 'INSUFFICIENT_DATA'
+                const isOpen = expandedColumn === col.column
 
-              return (
-                <PsiRow
-                  key={col.column}
-                  col={col}
-                  canExpand={canExpand}
-                  isOpen={isOpen}
-                  windowLabel={windowLabel}
-                  histogramRequests={report.basis.histogramRequests}
-                  sampleRequests={report.basis.sampleRequests}
-                  unitLabelShort={unitLabelShort}
-                  thresholds={report.basis.thresholds}
-                  onToggle={() =>
-                    setExpandedColumn(c =>
-                      c === col.column ? null : col.column,
-                    )
-                  }
-                />
-              )
-            })}
+                return (
+                  <PsiRow
+                    key={isTarget ? `target:${col.column}` : col.column}
+                    col={col}
+                    isTarget={isTarget}
+                    canExpand={canExpand}
+                    isOpen={isOpen}
+                    windowLabel={windowLabel}
+                    histogramRequests={report.basis.histogramRequests}
+                    sampleRequests={report.basis.sampleRequests}
+                    unitLabelShort={unitLabelShort}
+                    thresholds={report.basis.thresholds}
+                    onToggle={() =>
+                      setExpandedColumn(c =>
+                        c === col.column ? null : col.column,
+                      )
+                    }
+                  />
+                )
+              },
+            )}
           </tbody>
         </table>
       </div>
@@ -203,6 +231,7 @@ export function PsiPanel({ report, loading, unavailableReason }: Props) {
 
 function PsiRow({
   col,
+  isTarget,
   canExpand,
   isOpen,
   windowLabel,
@@ -213,6 +242,8 @@ function PsiRow({
   onToggle,
 }: {
   col: PsiColumn
+  /** MODEL-SERVE-018. The pinned target (y) row. */
+  isTarget: boolean
   canExpand: boolean
   isOpen: boolean
   windowLabel: string
@@ -245,6 +276,7 @@ function PsiRow({
                 <ChevronRight className="h-3 w-3 text-muted-foreground" />
               ))}
             {col.column}
+            {isTarget && <TargetBadge />}
           </span>
         </td>
         <td className="px-3 py-2 text-right font-mono">
@@ -256,7 +288,11 @@ function PsiRow({
               measured-vs-threshold line a `title` could not render. */}
           <StatusBadgeWithExplanation
             status={col.status}
-            explanation={explainPsiColumn(col, thresholds)}
+            explanation={
+              isTarget
+                ? explainTargetPsi(col, thresholds)
+                : explainPsiColumn(col, thresholds)
+            }
           />
           {/* First-class INSUFFICIENT_DATA readout — rows-vs-floor, never a
               bare badge with no shape to it. T13: publish "insufficient

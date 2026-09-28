@@ -6,6 +6,8 @@ import { ModelRetrainAugmentAuthorizedService } from './model-retrain-augment.au
 import type { TriggerRetrainDto } from './dto/model-retrain.authorized.dto';
 import { usesNewData } from './dto/model-retrain.authorized.dto';
 import type { DatasetSize } from '@/lib/tuning-grid';
+import { postToPython, PYTHON_TIMEOUT } from '@/lib/python-client';
+import { PythonSplitStatsSchema } from '../../dataset-version/authorized/dto/dataset-version.authorized.dto';
 
 /** The split a retrain reuses. `chronological` carries the ratio the
  *  incumbent was actually fitted on; `cv_expanding` is refused (see
@@ -24,6 +26,63 @@ export interface MetricTriple {
   rmse: number | null;
   r2: number | null;
   mae: number | null;
+}
+
+/**
+ * MODEL-SERVE-019-T03/D02. The evaluation basis a single metric figure was
+ * computed on, published BESIDE that figure — never a number alone. `from`/
+ * `to`/`rowCount` are read from persisted rows only (never reconstructed);
+ * any one of them can be `null` alongside a stated `unavailableReason` when
+ * the fact was never recorded (a job created before this feature, or a
+ * freeze call that failed). `usedFor` names what the figure actually does —
+ * ranks candidates, is compared against the current production version, or
+ * is reported on its own — so the UI states that role rather than implying
+ * every figure means the same thing.
+ */
+export interface EvalBasis {
+  frame:
+    | 'MERGED_TEST_SPLIT'
+    | 'FROZEN_INCUMBENT_TEST'
+    | 'NEW_DATA_WINDOW'
+    | 'INCUMBENT_TEST_SPLIT';
+  from: string | null;
+  to: string | null;
+  rowCount: number | null;
+  usedFor: 'RANK_CANDIDATES' | 'COMPARE_TO_PRODUCTION' | 'REPORT_ONLY';
+  unavailableReason: string | null;
+}
+
+/** The merged training composition MODEL-SERVE-015-T05 left stranded: the
+ *  combined artifact's own row counts, read off `DatasetArtifact.operations`
+ *  and `DatasetArtifact.rowCount` — never recomputed client-side. */
+export interface TrainingComposition {
+  baseTrainRowCount: number | null;
+  newTrainRowCount: number | null;
+  dedupeDropped: number | null;
+  cutTimestamp: string | null;
+  combinedRowCount: number | null;
+}
+
+/** The one entry `buildCombinedArtifact` writes onto the combined GOLD's
+ *  `operations` column — untyped Json on the row, narrowed here rather than
+ *  re-validated, the same convention `splitSpec`/`incumbentSplit` already
+ *  use on this file's other Json columns. */
+interface CombineOperationsEntry {
+  cutTimestamp?: string | null;
+  frozenEvalTo?: string | null;
+  combinedEndTime?: string | null;
+  frozenEvalDroppedRows?: number | null;
+  baseTrainRowCount?: number | null;
+  newTrainRowCount?: number | null;
+  dedupeDropped?: number | null;
+  newValidationRowCount?: number | null;
+}
+
+/** `PythonSplitStatsSchema`'s own shape, narrowed to the two fields this
+ *  file reads off it — a run's or a job's frozen test-split basis. */
+interface RunSplitStatsShape {
+  cut_timestamp?: string | null;
+  test_labelled_rows?: number | null;
 }
 
 function readMetric(metrics: unknown, key: string): number | null {
@@ -271,14 +330,18 @@ export class ModelRetrainAuthorizedService {
 
     const split = this.resolveSplit(sourceRun.splitSpec, incumbent.version);
 
-    // MODEL-SERVE-015. AUGMENT_DATA fast-path: an idempotent retry must not
-    // re-run `assertCompatible`/re-combine a second time before reaching the
-    // DB's own idempotency check below — that check only fires AFTER a
-    // wasted Python round trip and a wasted DatasetArtifact pair. Checked
-    // here, before any augmentation work, exactly like a real idempotent-
-    // POST short-circuit; the DB check remains the authoritative backstop
-    // for a genuine race between two concurrent requests.
-    if (usesNewData(dto.strategy) && dto.idempotencyKey) {
+    // MODEL-SERVE-015/019. Idempotent-retry fast-path: a retry must not
+    // re-run `assertCompatible`/re-combine a second time (AUGMENT_DATA/
+    // NEW_DATA_ONLY) or fail the new-data-required refusal below
+    // (KEEP_EXISTING) before reaching the DB's own idempotency check — that
+    // check only fires AFTER a wasted Python round trip. MODEL-SERVE-019
+    // widened this from "new-data strategies only" to ANY strategy: a retry
+    // of an old KEEP_EXISTING job by its idempotencyKey must still return
+    // that job, never a 422 for a strategy this call never chose. Checked
+    // here, before any augmentation work or the refusal, exactly like a real
+    // idempotent-POST short-circuit; the DB check remains the authoritative
+    // backstop for a genuine race between two concurrent requests.
+    if (dto.idempotencyKey) {
       const existing = await this.prisma.modelCandidateJob.findFirst({
         where: { modelId, idempotencyKey: dto.idempotencyKey },
       });
@@ -290,6 +353,24 @@ export class ModelRetrainAuthorizedService {
           data: this.triggerView(existing),
         };
       }
+    }
+
+    // MODEL-SERVE-019-D01. Keep Existing Data is removed: a NEW retrain
+    // always ingests new data. Refused in the SERVICE, not in zod — a zod
+    // refusal would reject the idempotency replay above before it ever ran.
+    // `'KEEP_EXISTING'` stays a valid enum value (historical rows still read
+    // it; `usesNewData` still recognizes it) — it is simply no longer an
+    // accepted CHOICE for a new trigger. Reverses the definition
+    // `decisions.fine_tuning_undefined` gave MODEL-SERVE-004.
+    if (dto.strategy === 'KEEP_EXISTING') {
+      throw new AppException({
+        statusCode: 422,
+        message:
+          'A retrain requires a new dataset — choose "Existing + new data" ' +
+          'or "New data only". Retraining on the same data with no new ' +
+          'rows is no longer supported.',
+        type: 'ERROR',
+      });
     }
 
     // MODEL-SERVE-015. The AUGMENT_DATA path's own training artifact — a
@@ -461,6 +542,18 @@ export class ModelRetrainAuthorizedService {
       throw err;
     }
 
+    // MODEL-SERVE-019. Job-level split stats, new-data strategies only (see
+    // `freezeJobSplitStats`'s own comment). Fire-and-forget, after the job
+    // row is durable — never inside this request path.
+    if (augmentedArtifact) {
+      this.freezeJobSplitStats(
+        job.id,
+        augmentedArtifact.combinedObjectKey,
+        sourceRun.targetY,
+        split.ratio,
+      );
+    }
+
     try {
       const firstRun = await this.candidateJobs.launchForJob(
         job,
@@ -520,7 +613,7 @@ export class ModelRetrainAuthorizedService {
         statusCode: 422,
         message:
           `Version ${version} was fitted with expanding-window cross-` +
-          "validation. Retrain reuses the incumbent's own split, and a CV " +
+          'validation. Retrain reuses that same split, and a CV ' +
           'retrain is not implemented — retrain from a chronologically ' +
           'split version, or train a new model in the wizard.',
         type: 'ERROR',
@@ -542,6 +635,50 @@ export class ModelRetrainAuthorizedService {
       });
     }
     return { method: 'chronological', ratio };
+  }
+
+  /**
+   * MODEL-SERVE-019. The MERGED_TEST_SPLIT figure's own row count and time
+   * range, frozen ONCE PER JOB — mirrors `freezeSplitStats`
+   * (`model-run-launch.authorized.service.ts`) exactly: fire-and-forget,
+   * called AFTER the job row is durable, never inside the trigger request
+   * path (this same `/split-stats` call already runs at
+   * `PYTHON_TIMEOUT.metadata` = 300,000ms there). A failure logs and leaves
+   * `splitStats` null — the same honest-legacy-null pattern, and it can
+   * never fail a retrain that has already started.
+   *
+   * Only called for a new-data strategy: KEEP_EXISTING trains on the
+   * incumbent's own unchanged artifact, whose test split is already the
+   * figure `ModelVersion.metrics`/the incumbent's own run describe — a
+   * second read of the identical answer.
+   */
+  private freezeJobSplitStats(
+    jobId: string,
+    objectKey: string,
+    targetY: string,
+    ratio: number,
+  ): void {
+    void postToPython(
+      '/v1/preprocess/split-stats',
+      {
+        source_key: objectKey,
+        tags: [targetY],
+        target_y: targetY,
+        split_ratio: ratio,
+      },
+      PYTHON_TIMEOUT.metadata,
+    )
+      .then(async (raw) => {
+        const splitStats = PythonSplitStatsSchema.parse(raw);
+        await this.prisma.modelCandidateJob.update({
+          where: { id: jobId },
+          data: { splitStats },
+        });
+      })
+      .catch((err) => {
+        const reason = err instanceof Error ? err.message : String(err);
+        this.log.warn(`freezeJobSplitStats failed for job ${jobId}: ${reason}`);
+      });
   }
 
   /** The trigger response: ids and state only. Deliberately not the whole
@@ -774,21 +911,86 @@ export class ModelRetrainAuthorizedService {
     // result would read "not comparable" for a comparison that is in fact
     // valid.
     const isAugmented = usesNewData(job.retrainStrategy);
+
+    // MODEL-SERVE-019-T03. The extra rows every figure's basis is built
+    // from — read only, never mutated, and only fetched when the strategy
+    // that needs them is actually running.
+    const [combinedArtifact, incumbentJob] = await Promise.all([
+      isAugmented && candidateRun?.goldArtifactId
+        ? this.prisma.datasetArtifact.findUnique({
+            where: { id: candidateRun.goldArtifactId },
+          })
+        : Promise.resolve(null),
+      incumbentRun?.candidateJobId
+        ? this.prisma.modelCandidateJob.findUnique({
+            where: { id: incumbentRun.candidateJobId },
+            select: { splitStats: true },
+          })
+        : Promise.resolve(null),
+    ]);
+    const combinedOps =
+      (
+        combinedArtifact?.operations as unknown as
+          | CombineOperationsEntry[]
+          | null
+      )?.[0] ?? null;
+    // A single-run launch freezes `splitStats` on the RUN itself; a
+    // candidate run never does (see that column's own schema comment), so
+    // the incumbent's JOB is the fallback source when its run was itself
+    // one candidate among several.
+    const incumbentSplitStats =
+      (incumbentRun?.splitStats as RunSplitStatsShape | null) ??
+      (incumbentJob?.splitStats as RunSplitStatsShape | null) ??
+      null;
+    const candidateSplitStats =
+      (job.splitStats as RunSplitStatsShape | null) ?? null;
+
     const mismatches: string[] = [];
     if (!candidateRun) {
       mismatches.push('no candidate has produced a result yet');
     } else if (!incumbentRun) {
-      mismatches.push("the incumbent's source run no longer exists");
+      mismatches.push(
+        "the current production version's source run no longer exists",
+      );
     } else if (isAugmented) {
       if (candidateRun.targetY !== incumbentRun.targetY) {
         mismatches.push('different target');
       }
       if (candidateRun.evalSetKind !== 'FROZEN_INCUMBENT_TEST') {
         mismatches.push(
-          "candidate not yet scored on the incumbent's frozen test rows",
+          "not yet scored on the current production version's own test data",
         );
       } else if (!candidateRun.frozenEvalChecksum) {
-        mismatches.push('frozen evaluation checksum missing');
+        mismatches.push(
+          "the current production version's test data could not be verified (missing checksum)",
+        );
+      } else {
+        // MODEL-SERVE-019-D03. The candidate is scored on a RE-CUT slice
+        // [cutTimestamp, new-data start) — a subset of the production
+        // version's own full test split whenever the new dataset starts
+        // before that split's own tail. `frozenEvalDroppedRows` (persisted
+        // by combine_for_retrain) counts exactly how many rows were cut off
+        // that tail; 0 means the frozen slice covers the SAME row extent
+        // the production version's own test split does, both unmasked.
+        //
+        // NOT gated on comparing this artifact's `validationRowCount`
+        // (unmasked) against the production run's own `test_labelled_rows`
+        // (masked to the target's Good rows by `build_split_stats`) — those
+        // two counts describe different populations and would disagree on
+        // any sparse target regardless of whether the slice actually
+        // matches, which would have refused the delta on nearly every real
+        // model. `incumbentSplitStats` stays for DISPLAY (the basis label)
+        // only, never for this gate.
+        const droppedRows = combinedOps?.frozenEvalDroppedRows ?? null;
+        if (droppedRows === null) {
+          mismatches.push(
+            'not recorded whether the current production version was tested on the same rows (this retrain predates that check)',
+          );
+        } else if (droppedRows > 0) {
+          mismatches.push(
+            `tested on fewer rows than the current production version's own test data (${droppedRows.toLocaleString()} row${droppedRows === 1 ? '' : 's'} not covered)`,
+          );
+        }
       }
     } else {
       if (candidateRun.goldArtifactId !== incumbentRun.goldArtifactId) {
@@ -844,6 +1046,80 @@ export class ModelRetrainAuthorizedService {
         })
       : null;
 
+    // MODEL-SERVE-019-T03/D02. One EvalBasis per figure, built from the
+    // persisted rows fetched above — never reconstructed, never guessed.
+    // `null` only for a figure the current strategy does not produce
+    // (KEEP_EXISTING, still rendered for historical jobs) or a run whose
+    // basis predates this feature.
+    const incumbentTestBasis: EvalBasis = {
+      frame: 'INCUMBENT_TEST_SPLIT',
+      from: incumbentSplitStats?.cut_timestamp ?? null,
+      // `PythonSplitStatsSchema` carries no upper bound for the test side —
+      // only its row count and the cut that starts it. Left null rather than
+      // guessed at.
+      to: null,
+      rowCount: incumbentSplitStats?.test_labelled_rows ?? null,
+      usedFor: 'COMPARE_TO_PRODUCTION',
+      unavailableReason: incumbentSplitStats
+        ? null
+        : "not recorded for the current production version's own run",
+    };
+    const frozenTestBasis: EvalBasis | null = isAugmented
+      ? {
+          frame: 'FROZEN_INCUMBENT_TEST',
+          from: combinedOps?.cutTimestamp ?? null,
+          to: combinedOps?.frozenEvalTo ?? null,
+          rowCount: combinedArtifact?.validationRowCount ?? null,
+          usedFor: 'COMPARE_TO_PRODUCTION',
+          unavailableReason:
+            combinedArtifact?.validationRowCount != null
+              ? null
+              : 'not recorded for this retrain',
+        }
+      : null;
+    const mergedTestBasis: EvalBasis | null = isAugmented
+      ? {
+          frame: 'MERGED_TEST_SPLIT',
+          from: candidateSplitStats?.cut_timestamp ?? null,
+          to: combinedOps?.combinedEndTime ?? null,
+          rowCount: candidateSplitStats?.test_labelled_rows ?? null,
+          usedFor: 'RANK_CANDIDATES',
+          unavailableReason: candidateSplitStats
+            ? null
+            : 'not recorded for this retrain (created before this figure was tracked, or the recording call failed)',
+        }
+      : null;
+    const newDataWindowReason: string | null =
+      candidateRun?.newDataHoldoutMetrics
+        ? null
+        : candidateRun?.newDataHoldoutRowCount == null
+          ? combinedOps?.newValidationRowCount
+            ? 'set aside, but not yet scored'
+            : 'no new-data window was set aside for this retrain'
+          : 'set aside, but the trainer did not score it';
+    const newDataWindowBasis: EvalBasis | null = isAugmented
+      ? {
+          frame: 'NEW_DATA_WINDOW',
+          from: candidateRun?.newDataHoldoutFrom?.toISOString() ?? null,
+          to: candidateRun?.newDataHoldoutTo?.toISOString() ?? null,
+          rowCount: candidateRun?.newDataHoldoutRowCount ?? null,
+          usedFor: 'REPORT_ONLY',
+          unavailableReason: newDataWindowReason,
+        }
+      : null;
+    // MODEL-SERVE-015-T05. The merged training composition, stranded until
+    // now inside DatasetArtifact.operations with no reader on this surface.
+    const trainingComposition: TrainingComposition | null =
+      isAugmented && combinedOps
+        ? {
+            baseTrainRowCount: combinedOps.baseTrainRowCount ?? null,
+            newTrainRowCount: combinedOps.newTrainRowCount ?? null,
+            dedupeDropped: combinedOps.dedupeDropped ?? null,
+            cutTimestamp: combinedOps.cutTimestamp ?? null,
+            combinedRowCount: combinedArtifact?.rowCount ?? null,
+          }
+        : null;
+
     return {
       // The BASIS both sides were scored on, published beside the numbers —
       // never a delta presented alone.
@@ -871,6 +1147,10 @@ export class ModelRetrainAuthorizedService {
               checksum: candidateRun?.frozenEvalChecksum ?? null,
             } as const)
           : null,
+        // MODEL-SERVE-019-T03. Closes 015-T05's stranded "combined row
+        // count" acceptance criterion — null for KEEP_EXISTING, which never
+        // combines anything.
+        trainingComposition,
       },
       incumbent: {
         versionId: incumbent.id,
@@ -878,6 +1158,7 @@ export class ModelRetrainAuthorizedService {
         stage: incumbent.stage,
         algorithm: incumbent.algorithm,
         metrics: incumbentMetrics,
+        metricsBasis: incumbentTestBasis,
       },
       candidate: {
         runId: candidateRun?.id ?? null,
@@ -887,12 +1168,18 @@ export class ModelRetrainAuthorizedService {
         stage: candidateVersion?.stage ?? null,
         algorithm: candidateRun?.algorithm ?? null,
         metrics: candidateMetrics,
+        // `metricsBasis` is null for a KEEP_EXISTING (or legacy null-
+        // strategy) job: that path predates this feature's "every figure
+        // names its basis" requirement, and is display-only history from
+        // here on — never a target for D02's new labelling.
+        metricsBasis: frozenTestBasis,
         // MODEL-SERVE-015-T04. "Report new dataset evaluation separately" —
         // the candidate's OWN test-split score, over the COMBINED
         // (mixed-regime) data. Never used for `rmseDelta`; null for a plain
         // (014) retrain, where `metrics` above already carries this exact
         // number and a second copy would just invite the two to drift.
         newRegimeMetrics,
+        newRegimeMetricsBasis: mergedTestBasis,
         // The operator's NEW-DATA validation window. Reported on its own
         // and deliberately NOT folded into `rmseDelta`: the incumbent was
         // never scored on these rows, so differencing the two would produce
@@ -904,6 +1191,7 @@ export class ModelRetrainAuthorizedService {
         newDataHoldoutFrom:
           candidateRun?.newDataHoldoutFrom?.toISOString() ?? null,
         newDataHoldoutTo: candidateRun?.newDataHoldoutTo?.toISOString() ?? null,
+        newDataHoldoutBasis: newDataWindowBasis,
       },
       // Negative = the candidate is better (lower RMSE). Null whenever the
       // bases differ — both raw numbers above are still present.

@@ -218,7 +218,7 @@ describe('ModelRetrainAugmentAuthorizedService', () => {
       ).rejects.toMatchObject(
         expect.objectContaining({
           statusCode: 422,
-          message: expect.stringContaining('uncontaminated'),
+          message: expect.stringContaining('nothing left to test'),
         }),
       );
     });

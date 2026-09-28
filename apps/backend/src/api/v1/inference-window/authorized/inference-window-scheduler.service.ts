@@ -405,6 +405,16 @@ export class InferenceWindowSchedulerService
           materialized.feature_stats === null
             ? PrismaTypes.DbNull
             : materialized.feature_stats,
+        // MODEL-SERVE-018. Own columns, never keys of the feature maps —
+        // target drift is display-only (MODEL-SERVE-018-D01/D02).
+        targetStats:
+          materialized.target_stats === null
+            ? PrismaTypes.DbNull
+            : materialized.target_stats,
+        targetHistogram:
+          materialized.target_histogram === null
+            ? PrismaTypes.DbNull
+            : materialized.target_histogram,
       },
     });
 

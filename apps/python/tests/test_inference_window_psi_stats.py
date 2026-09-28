@@ -235,3 +235,79 @@ def test_tag_observations_is_empty_on_an_empty_frame():
     from services.inference_window_service import _tag_observations
 
     assert _tag_observations(pd.DataFrame(), ["TI202.PV"]) == {}
+
+
+class TestTargetAggregates:
+    """MODEL-SERVE-018-T01. The target's display-only drift/PSI inputs."""
+
+    SPEC = {
+        "psiRefEdges": {"Y": [0.0, 5.0, 10.0]},
+        "psiBinCount": {"Y": 2},
+        "psiBinMode": {"Y": "continuous"},
+    }
+
+    def test_raw_stats_and_histogram_for_the_target(self):
+        from services.inference_window_service import _target_aggregates
+
+        f = frame(["T1", "Y"], [{"T1": 1.0, "Y": 2.0}, {"T1": 1.0, "Y": 7.0}])
+
+        stats, hist = _target_aggregates(f, "Y", self.SPEC)
+
+        # RAW units — no scaler is applied to the target.
+        assert stats == {"n": 2, "sum": 9.0, "sumsq": 53.0, "min": 2.0, "max": 7.0}
+        assert hist == {"counts": [1, 1], "below": 0, "above": 0}
+
+    def test_excludes_bad_target_cells(self):
+        from intergrations.object_store import STATUS_BAD
+        from services.inference_window_service import _target_aggregates
+
+        f = frame(["Y"], [{"Y": 2.0}, {"Y": 7.0}, {"Y": 9.0}])
+        f.loc[2, "Y__status"] = STATUS_BAD
+
+        stats, hist = _target_aggregates(f, "Y", self.SPEC)
+
+        assert stats is not None and stats["n"] == 2 and stats["max"] == 7.0
+        assert hist == {"counts": [1, 1], "below": 0, "above": 0}
+
+    def test_none_without_a_target_column_or_when_not_fetched(self):
+        from services.inference_window_service import _target_aggregates
+
+        f = frame(["T1"], [{"T1": 1.0}])
+
+        assert _target_aggregates(f, None, self.SPEC) == (None, None)
+        assert _target_aggregates(f, "Y", self.SPEC) == (None, None)
+
+    def test_scaled_target_yields_no_stats_but_still_a_histogram(self):
+        from services.inference_window_service import _target_aggregates
+
+        f = frame(["Y"], [{"Y": 2.0}])
+
+        stats, hist = _target_aggregates(f, "Y", {**self.SPEC, "target_scaled": True})
+
+        assert stats is None
+        assert hist == {"counts": [1, 0], "below": 0, "above": 0}
+
+    def test_no_psi_reference_yields_no_histogram(self):
+        from services.inference_window_service import _target_aggregates
+
+        f = frame(["Y"], [{"Y": 2.0}])
+
+        stats, hist = _target_aggregates(f, "Y", {"psiRefEdges": {"Y": [0.0, 1.0]}})
+
+        assert stats is not None and stats["n"] == 1
+        assert hist is None
+
+    def test_target_never_leaks_into_feature_maps(self):
+        spec = {
+            "psiRefEdges": {"T1": [0.0, 5.0], **self.SPEC["psiRefEdges"]},
+            "psiBinCount": {"T1": 1, "Y": 2},
+            "psiBinMode": {"T1": "continuous", "Y": "continuous"},
+            "scaling": [{"tag": "T1", "method": "none"}],
+        }
+        f = frame(["T1", "Y"], [{"T1": 1.0, "Y": 2.0}])
+
+        hist = _psi_histograms(f, ["T1"], spec)
+        stats = _scaled_feature_stats(f, ["T1"], spec)
+
+        assert hist is not None and set(hist) == {"T1"}
+        assert stats is not None and set(stats) == {"T1"}

@@ -2624,6 +2624,207 @@
         }
       ],
       "carried_forward": "NOT VERIFIED IN A BROWSER. Backend jest 38/38 across model-version, client vitest 5/5 on the new hook spec, tsc clean on every touched file (both apps still carry their pre-existing unrelated baseline errors). The delete has not been run against a real STAGING version, so the P2003/P2014/P2025 race branch and the object-storage-untouched claim are reasoned, not observed. The versions-tab COMPONENT has no test of its own — that the confirm closes on a refusal rather than stacking under the refusal dialog is verified by inspection only. An ARCHIVED version shows no Remove control and no explanation of why, so a user who considers an old archived version 'not deployed' cannot reach the refusal text that would tell them."
+    },
+    {
+      "id": "MODEL-SERVE-018",
+      "title": "Target tag (y) in the Monitoring tab's z-score and PSI cards, display-only",
+      "priority": 18,
+      "status": "in_progress",
+      "progress": 85,
+      "dependencies": ["MODEL-SERVE-001", "MODEL-SERVE-005"],
+      "description": "The Monitoring tab's Distribution Drift (z-score) and PSI cards only ever list feature tags (X). The target tag (y) is never shown, even though both baselines already cover it: column_stats.json carries the target (see the prediction-drift.ts computeDrift doc comment), and feature_spec.json psiRefEdges is built over tag_columns(result) (artifact_service.py:1195), which includes the target. The gap is upstream. inference_window_service.py narrows the frame with select_columns(frame, feature_columns) before _psi_histograms/_scaled_feature_stats run, so no window ever stores target statistics. This feature computes target aggregates per window and surfaces them as a pinned row in both cards.",
+      "decisions": [
+        {
+          "id": "MODEL-SERVE-018-D01",
+          "decision": "Display only: target drift/PSI never changes the report-level status, model health, or the PSI retrain suggestion.",
+          "why": "User's call, 2026-09-24. Drift in y is label/concept shift, not the input drift that DRIFT_* / DRIFT_DIST_* and the retrain alert describe (model-health.ts: 'Drift says the model's INPUTS have moved')."
+        },
+        {
+          "id": "MODEL-SERVE-018-D02",
+          "decision": "Target aggregates are stored in their own columns (InferenceWindow.targetStats / targetHistogram) and returned as a separate `target` field, never merged into featureStats/featureHistograms.",
+          "why": "deploy-status.ts and model-health read featureStats directly. Merging the target into that map would silently pull it into health; keeping the fields separate keeps D01 true by construction rather than by an exclusion filter every reader has to remember."
+        },
+        {
+          "id": "MODEL-SERVE-018-D03",
+          "decision": "The target z-score is computed in RAW units.",
+          "why": "The target is never scaled in GOLD (_scalable_tags excludes it; a target_scaled spec is refused elsewhere), so its column_stats baseline is raw. Scaling it live would compare different units. A target_scaled spec yields null."
+        },
+        {
+          "id": "MODEL-SERVE-018-D04",
+          "decision": "Layout: pinned first row in the existing tables, with a neutral 'Target (y)' badge.",
+          "why": "User's call, 2026-09-24. The badge stays neutral per the status-colour reservation; only the row's own status pill uses the existing drift/PSI colours."
+        },
+        {
+          "id": "MODEL-SERVE-018-D05",
+          "decision": "Window plane only. The /predict plane returns target: null.",
+          "why": "A /predict payload carries features, not y, so there is nothing to aggregate there."
+        },
+        {
+          "id": "MODEL-SERVE-018-D06",
+          "decision": "When a model has a target but the report carries no verdict for it, the table shows a muted 'Not recorded in this range' row instead of hiding the target.",
+          "why": "Hiding it makes 'target configured, no data yet' (pre-feature windows, a pre-T13 spec with no PSI bins) look identical to 'feature broken'. The target row's tooltips use target-specific sentences rather than the shared 'this input…' wording, which is false for y."
+        }
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-018-T01",
+          "title": "Python: target_stats + target_histogram in the materialize-window response",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "inference_window_service.py. Computed before select_columns, with good_values as the Good-cell filter. Stats are raw _column_aggregate; the histogram is bucket_histogram against psiRefEdges[target]. Both are null when there is no target_column, when target_scaled is set, or when the psi reference is missing. Tests go in test_inference_window_psi_stats.py.",
+          "result": "inference_window_service._target_aggregates, called before select_columns. The response and the pydantic model gain target_stats/target_histogram. pytest tests/test_inference_window_psi_stats.py: 21/21, 6 of them new (TestTargetAggregates)."
+        },
+        {
+          "id": "MODEL-SERVE-018-T02",
+          "title": "Prisma: InferenceWindow.targetStats Json? + targetHistogram Json?",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "Hand-written migration SQL via migrate diff, applied by hand. Never migrate dev (the drift would offer a reset). Then db:generate.",
+          "result": "Migration 20260924100000_model_serve_018_target_monitoring (2 nullable JSONB columns). Checked the columns were absent first, applied the SQL by hand with psql, then ran migrate resolve --applied, prisma generate, and tsc --build of packages/prisma. migrate dev was NOT run."
+        },
+        {
+          "id": "MODEL-SERVE-018-T03",
+          "title": "Backend: persist in the scheduler; add `target` + `targetColumn` to the window-plane drift and PSI reports",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "inference-window-scheduler.service.ts writes the two new columns. inference-window-monitoring.authorized.service.ts pools them with poolFeatureStats/poolHistograms and runs computeDrift/computePsi separately; the target name comes from sourceRun.targetY. report.status and columns are unchanged. The /predict branch returns target: null.",
+          "result": "New lib/target-monitoring.ts (computeTargetDrift/computeTargetPsi) reuses computeDrift/computePsi on a single-column pool. The scheduler persists both columns, and the zod materialize schema uses .nullable().default(null). The window-plane reports return target + targetColumn from sourceRun.targetY; the /predict plane returns null. jest: inference-window + prediction-log + drift/psi/model-health 228/228, 3 of them new cases in the monitoring spec (a CRITICAL target leaves status and columns identical). Scheduler spec: added 'persists targetStats/targetHistogram apart from the feature maps' (22/22)."
+        },
+        {
+          "id": "MODEL-SERVE-018-T04",
+          "title": "Client: pinned Target (y) row in DriftPanel and PsiPanel",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "services/model-monitoring.ts types. The row derivation lives in lib/. The PSI target row keeps expand-to-bins. A tooltip says the target is not counted in model status.",
+          "result": "lib/monitoring-target-row.ts: withTargetFirst, unrecordedTargetColumn, explainTargetDrift/explainTargetPsi (target-specific wording plus a not-counted note; the criteria reuse explainDriftColumn/explainPsiColumn). Adds a neutral TargetBadge (outline Badge). DriftPanel/PsiPanel pin the row first, keep PSI expand-to-bins, and render the muted not-recorded row. vitest 60/60 across 6 files; new: target-row.test.tsx (7) and lib/__tests__/monitoring-target-row.test.ts (5). eslint clean; tsc: no errors in touched files (the remaining errors are pre-existing, in dataset-compare-modal.tsx and model-evaluation.test.ts)."
+        },
+        {
+          "id": "MODEL-SERVE-018-T05",
+          "title": "Verify end to end",
+          "status": "in_progress",
+          "progress": 50,
+          "scope_note": "pytest, jest, vitest (with case counts), check-types. Live: a new scheduled window carries targetStats and the card shows the row. Caveat: the target is a sparse lab tag and InferenceWindowTruth is n=0 locally, so a live target may be all-Bad, giving n=0 and UNKNOWN. If that happens, record it rather than claiming verification.",
+          "result": "Unit/type/lint verified (see T01-T04). Premise checked against real MinIO specs: every post-T13 feature_spec (22 edges) contains target_y S204IBP.lab in psiRefEdges/psiBinCount/psiBinMode, and column_stats.json contains the target. The older specs (0bc9ffe8, 66173c35, 3849dfa3) have NO psiRefEdges at all, so the target PSI row is null there, as are the feature PSI rows. NOT VERIFIED LIVE: no dev services were running, and no scheduled window has been materialized since this change, so no InferenceWindow row yet carries targetStats/targetHistogram and the card has not been seen in a browser. TagObservation (2026-09-24): every scheduled model already fetches its target and last saw it Good (status 0): 8c2affc6 and 85b35299 on S204IBP.lab, 3991c43f on S204FBP.lab. So the fetch is not the blocker. PRODUCTION specs: 85b35299 has target PSI edges, so it gets both rows. 8c2affc6 and 3991c43f are pre-T13 (0 edges), so they get a z-score target row and a PSI 'Not recorded' row until they are retrained. Services must be restarted (python + backend; the Prisma client/dist were rebuilt), and only windows materialized after the restart carry the target."
+        }
+      ],
+      "acceptance_criteria": [
+        "A window materialized after this feature carries targetStats (raw units) and targetHistogram (reference bins) for the model's target tag whenever the spec permits.",
+        "GET drift/psi on the window plane returns `target` (a ColumnDrift/ColumnPsi or null) and `targetColumn`.",
+        "Report-level status, model health, and the PSI retrain suggestion are byte-identical with and without a target, even when the target is CRITICAL.",
+        "Both cards render the target as the first row with a neutral 'Target (y)' badge. A known target with no verdict renders a muted 'Not recorded in this range' row. A report with no targetColumn (the /predict plane, or an older backend) renders no target row.",
+        "The target never enters feature_columns, featureStats, or featureHistograms."
+      ],
+      "verification": [
+        {
+          "item": "Python target aggregates (raw stats, Bad cells excluded, null cases, no leak into feature maps)",
+          "result": "PASS: pytest 21/21 (6 new)."
+        },
+        {
+          "item": "Report status unchanged by a CRITICAL target",
+          "result": "PASS: jest monitoring spec, 'a CRITICAL target never raises the report status (display-only)'."
+        },
+        {
+          "item": "Scheduler writes the target to its own columns (DbNull for null)",
+          "result": "PASS: jest scheduler spec 22/22."
+        },
+        {
+          "item": "Pinned Target (y) row, neutral badge, header verdict features-only, muted not-recorded row, target tooltip wording",
+          "result": "PASS: vitest target-row.test.tsx 7/7 and monitoring-target-row.test.ts 5/5."
+        },
+        {
+          "item": "Target present in real baselines",
+          "result": "PASS for post-T13 specs (MinIO read). Pre-T13 specs have no PSI reference for any tag."
+        },
+        {
+          "item": "Live: a new window carries targetStats and the card renders it",
+          "result": "NOT VERIFIED: requires a scheduled window tick with backend and python running."
+        }
+      ],
+      "carried_forward": "Windows created before this feature have null target columns and there is no backfill, so the row appears only once new windows exist in the selected range."
+    },
+    {
+      "id": "MODEL-SERVE-019",
+      "title": "Retrain always ingests new data: drop Keep Existing, and label every metric with the data it was computed on",
+      "priority": 19,
+      "status": "in_progress",
+      "progress": 85,
+      "dependencies": ["MODEL-SERVE-014", "MODEL-SERVE-015"],
+      "description": "The Retrain dialog offers three strategies: Keep Existing Data, Existing + New Data, and New Data Only. The user asked to remove Keep Existing, leaving only the two strategies that ingest new data. A retrain on Existing + New already produces up to three figures from three different frames: run.metrics (test split of the MERGED artifact, used to rank candidates), holdoutMetrics (FROZEN_INCUMBENT_TEST, old data only, used for rmseDelta), and newDataHoldoutMetrics (the operator's new-data window). None of them is labelled with its source frame, so a reader cannot tell whether a figure reflects the merged data. This feature removes the option and makes every figure name its data.",
+      "decisions": [
+        {
+          "id": "MODEL-SERVE-019-D01",
+          "decision": "Keep Existing Data is removed from the Retrain UI. A retrain now requires a committed new dataset.",
+          "why": "User request 2026-09-28. This REVISES the definition MODEL-SERVE-004 transcribed from decisions.fine_tuning_undefined (retrain = hyperparameter search over the SAME artifact/split). Record the reversal against that decision; do not silently diverge from it.",
+          "resolved": "UI + DTO refuse (user's explicit choice over UI-only). TriggerRetrainSchema.strategy lost its 'KEEP_EXISTING' default and is now required; the enum keeps the value. The refusal (422) lives in ModelRetrainAuthorizedService.triggerRetrainService, AFTER the idempotency-key replay lookup (widened from new-data-strategies-only to ANY strategy) so a retry of an old KEEP_EXISTING job by its key still returns that job rather than 422ing. Historical jobs/versions with retrainStrategy KEEP_EXISTING or null still read and render (versions-tab.tsx, buildComparison's pre-existing artifact-equality path — both untouched)."
+        },
+        {
+          "id": "MODEL-SERVE-019-D02",
+          "decision": "No metric is rendered without a label naming its frame, its time range and its row count. A null figure states WHY it is null.",
+          "why": "Three figures computed on three frames, shown unlabelled, is the one-name-two-metrics defect MODEL-SERVE-001-T16 refused. A null newDataHoldoutMetrics currently means either 'no window was carved' or 'the trainer image predates T07'. These are different facts."
+        },
+        {
+          "id": "MODEL-SERVE-019-D03",
+          "decision": "rmseDelta is refused (comparable=false, reason stated) when the new dataset's start cut rows off the incumbent's own frozen test tail (frozenEvalDroppedRows > 0), or when that count was never recorded (a retrain from before this check). Both raw figures stay visible, each with its own rows and range label.",
+          "implemented_as": "GATED ON frozenEvalDroppedRows (python combine_for_retrain: len(base_frozen_raw) - len(base_frozen), persisted in DatasetArtifact.operations[0]). 0 means the frozen slice covers the SAME unmasked row extent as the incumbent's own test split. A first implementation compared the combined artifact's validationRowCount against the incumbent's splitStats.test_labelled_rows; advisor review caught that those are different populations (unmasked artifact rows vs build_split_stats' labelled-only rows) and would have refused the delta on nearly every real sparse-target model, so it was replaced before shipping. The incumbent's splitStats now feeds only the DISPLAY label (incumbent.metricsBasis), never the gate. No time-range comparison is made: PythonSplitStatsSchema carries no upper bound for the test side, so the incumbent's range cannot be compared.",
+          "why": "Audit showed the candidate is scored on [incumbent cut, new-data start) while the incumbent figure comes from its full original test split, so the two sides can cover different rows. This REVISES the 2026-09-23 decision to leave rmseDelta untouched, which assumed the delta was like-for-like. Same rule as MODEL-SERVE-004-T05: never present a delta across incomparable bases.",
+          "rejected": {
+            "Label only, keep delta": "Publishes a number known to be across different rows; a label beside it does not stop it being read as a comparison.",
+            "Label + warn, keep delta": "Same defect with a softer caveat."
+          },
+          "follow_up": "Score the incumbent model on the SAME frozen slice so the delta is comparable by construction rather than by coincidence of counts."
+        }
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-019-T01",
+          "title": "AUDIT FIRST: which frame produces each figure, per strategy",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "Five reads, answered from the tree and one real run rather than from this ledger. (1) run.metrics under AUGMENT_DATA: confirm it is the combined GOLD's chronological test split, and measure how much of that split is NEW data. Since T02 forces the new dataset to start after cut_timestamp, the tail is expected to be mostly new rows. Measure it rather than assume it. (2) Under NEW_DATA_ONLY: is evalSetKind still FROZEN_INCUMBENT_TEST, and does rmseDelta mean anything when the candidate never trained on the incumbent's regime? (3) Which figure actually ranks candidates, run.metrics or holdoutMetrics? T07 says run.metrics. Confirm from advanceJobForRun. (4) Which trainer image tag is running, and does it score newDataHoldout? (T07 recorded that it does not until rebuilt.) (5) Everything KEEP_EXISTING touches: DTO, retrain-data-strategy.tsx's default, Auto/Custom tabs, idempotency replays of old KEEP_EXISTING jobs.",
+          "result": "(1) Confirmed: advanceJobForRun ranks on run.metrics.rmse. (3) Confirmed. (2) NEW_DATA_ONLY rests on the same FROZEN_INCUMBENT_TEST rule as AUGMENT_DATA (model-retrain.authorized.service.ts comment, MODEL-SERVE-017). (4) Trainer 1.0.15 (built 2026-09-28, contains e23ceb5/015-T07) DOES score newDataHoldout, but the live DB has 11 AUGMENT_DATA runs and 0 with newDataHoldoutMetrics set -- the live score has never actually happened. (5) KEEP_EXISTING touched: dto strategy default, service idempotency fast-path condition, retrain-data-strategy.tsx radios/default, model-retrain-dialog.tsx default state, RetrainJob.retrainStrategy client type (missing NEW_DATA_ONLY), versions-tab.tsx label. EXTRA FINDINGS beyond the five reads: (a) the candidate's frozen slice is scored on [cut_timestamp, new_start) -- a re-cut that can be a STRICT SUBSET of the incumbent's own full test split, so rmseDelta could difference mismatched row counts (-> new decision D03). (b) frozenEvalChecksum is checked for presence only, never matched against anything, despite the schema comment implying otherwise (schema.prisma ModelTrainingRun.frozenEvalChecksum) -- recorded, left unfixed, out of this feature's scope. (c) the combined DatasetVersion's lineage.strategy was hardcoded to 'AUGMENT_DATA' even under NEW_DATA_ONLY (model-retrain-augment.authorized.service.ts) -- fixed as a one-line bug alongside this feature. (d) no run/job row persisted the merged test split's own row count or time range (ModelCandidateJob.splitStats did not exist) -- T03 needed a new nullable JSONB column. MEASURED (read-only, MinIO): the combined GOLD of job b4d02c96 (AUGMENT_DATA, target S204IBP.lab) has 3,115 rows, 935 of them (30.0%) at/after cut_timestamp 2025-09-29 20:00; at ratio 0.8 its chronological test split is 623 rows starting 2025-10-12 20:00 and 100.0% of them are new-data rows -- so run.metrics under AUGMENT_DATA is, in practice, a score on NEW data only, which is exactly why it must be labelled as such. BLAST RADIUS of removing Keep Existing (SQL): 3 PRODUCTION versions on this system, 0 lacking a cut_timestamp, 0 lacking a featureSpecKey -- no current model loses the ability to retrain; a future one lacking either now gets a plain 'train a new model in the wizard' message instead of the old dead-end 'retrain without augmentation'."
+        },
+        {
+          "id": "MODEL-SERVE-019-T02",
+          "title": "Remove Keep Existing Data from the Retrain dialog",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "RetrainDataStrategy: two options only, and no preselected dataset. Start stays disabled until a committed dataset version is chosen, with a sentence explaining why rather than a greyed-out button. The augmented-version exclusion (isAugmentedVersion) must stay. Backend change follows D01's open decision. Historical jobs and versions still render their stored strategy label.",
+          "result": "retrain-data-strategy.tsx: KEEP_EXISTING radio removed, group disabled when the version has no base dataset (with an explanatory sentence, no more silent disable), isAugmentedVersion filter untouched. model-retrain-dialog.tsx: default strategy 'AUGMENT_DATA', startOptions.strategy always populated, an explanatory sentence appears under each disabled Start button once a dataset/version has not been chosen. Backend: TriggerRetrainSchema.strategy required (no default); triggerRetrainService refuses KEEP_EXISTING with 422 AFTER the (now strategy-agnostic) idempotency replay lookup, so an old KEEP_EXISTING job's retry by key still returns 200 with that job. use-model-retrain.ts mirrors the required-strategy contract and refuses client-side (no request sent) when a caller omits it. versions-tab.tsx and buildComparison's legacy artifact-equality path are untouched, so historical KEEP_EXISTING/null jobs and versions keep rendering. Backend jest: 39/39 in model-retrain.authorized.service.spec.ts (3 new D01 cases: refuse, replay-by-key, and a documented note on why the pre-existing sized-search tests calling the service with `{}` still pass -- an absent strategy is not itself refused, only an explicit KEEP_EXISTING new trigger is). Client vitest: 108/108 across the 10 retrain-touched files."
+        },
+        {
+          "id": "MODEL-SERVE-019-T03",
+          "title": "Expose the evaluation basis of every figure through RetrainComparison",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "Per figure: {frame: MERGED_TEST_SPLIT | FROZEN_INCUMBENT_TEST | NEW_DATA_WINDOW, from, to, rowCount, artifactId/checksum, usedFor: RANK_CANDIDATES | COMPARE_TO_PRODUCTION | REPORT_ONLY}. Also the merged training composition: base_train_row_count, new_train_row_count, dedupe_dropped, which today sit only in DatasetArtifact.operations. This closes MODEL-SERVE-015-T05's stranded 'combined row count' AC. Read these from persisted run/artifact rows, never reconstructed client-side (MODEL-SERVE-014-T09's rule).",
+          "result": "New EvalBasis type (frame/from/to/rowCount/usedFor/unavailableReason) attached per figure: incumbent.metricsBasis (INCUMBENT_TEST_SPLIT), candidate.metricsBasis (FROZEN_INCUMBENT_TEST), candidate.newRegimeMetricsBasis (MERGED_TEST_SPLIT), candidate.newDataHoldoutBasis (NEW_DATA_WINDOW); basis.trainingComposition closes 015-T05. Storage, all additive, no destructive migration: (a) new nullable JSONB column ModelCandidateJob.splitStats, hand-written migration 20260928101500_model_serve_019_job_split_stats, applied by psql + `migrate resolve --applied` + `prisma generate` (migrate dev/deploy NOT run; the still-pending destructive 20260922090000 migration was left untouched). Frozen once per new-data job via a new freezeJobSplitStats, mirroring model-run-launch.authorized.service.ts's freezeSplitStats fire-and-forget pattern. (b) two new fields added to combine_for_retrain's response and persisted into DatasetArtifact.operations (no new column): frozen_eval_to (the frozen slice's own upper bound, new_start) and combined_end_time (the combined frame's true tail) -- both were previously undocumented as absent. D03 IMPLEMENTED (corrected after advisor review, see D03.implemented_as): buildComparison refuses comparable when operations[0].frozenEvalDroppedRows > 0 or is unrecorded, via a new frozen_eval_dropped_rows field on combine_for_retrain -- NOT by comparing validationRowCount against the incumbent's labelled test_labelled_rows (different populations). Both raw figures stay visible either way. Copy rule (user, same session): no 'incumbent/frozen/holdout/regime/dedupe/evalSet/basis' in any user-facing string; buildComparison's own `reason` strings were rewritten plain, and a jargon-regex test exists client-side. Backend jest: 40/40 in the two retrain specs (new: dropped-rows refusal, never-recorded refusal, incumbent-splitStats-null-does-not-gate, full-basis-population). Python pytest: 13/13 in test_artifact_service_combine_for_retrain.py (new: frozen_eval_to / combined_end_time / frozen_eval_dropped_rows assertions against the real fixture dates, plus a dedicated dropped=8 case where new data starts inside the frozen tail). User-facing error strings that reach the dialog banner verbatim (assertCompatible, resolveSplit, and combine_for_retrain's ValueErrors) were reworded jargon-free, with two tests re-pointed at the new wording."
+        },
+        {
+          "id": "MODEL-SERVE-019-T04",
+          "title": "Label the Retrain progress and result views",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "(a) A training-data line: 'Trained on: existing data up to <cut> (N rows) + <new dataset> (M rows), K duplicates dropped' for AUGMENT, and 'Trained on: <new dataset> only (M rows)' for NEW_DATA_ONLY. (b) Three separate metric panels, each carrying its frame, range and row count. Mark which panel ranked the candidates ('Candidate selected by RMSE on this set') and which produced the delta against production. (c) A null figure gets its reason: no window carved / trainer image does not score it yet / not comparable, with the backend's own reason. (d) Use the neutral palette, not status red/amber.",
+          "result": "New pure module apps/client/lib/retrain-basis.ts (describeEvalBasis, describeUsedFor, describeTrainingComposition, legacyStrategyLabel) -- every frame/usedFor code maps to plain text, real version numbers used where known, no enum name ever reaches the DOM. retrain-progress.tsx: the training-data line now reads from trainingComposition (falls back to a plain sentence when null, e.g. a pre-019 job); each metric panel (current-vs-candidate grid, the combined-data panel, the new-data-window panel) renders its own basis line and used-for phrase; the new-data-window panel now renders a reason (not just hidden) when a window was set aside but not yet scored, closing a D02 gap the original scope_note undersold. versions-tab.tsx's raw enum text replaced with legacyStrategyLabel. Palette untouched (neutral bg-muted/border-border throughout; the pre-existing amber no-PRODUCTION banner and STAGING blue chip are unrelated to this feature and were left alone). Client vitest: retrain-basis.test.ts 11/11 (new, includes a jargon-regex sweep across every frame), full retrain-touched suite 108/108."
+        },
+        {
+          "id": "MODEL-SERVE-019-T05",
+          "title": "Verify",
+          "status": "in_progress",
+          "progress": 60,
+          "scope_note": "Unit: no Keep Existing option renders. Start is disabled with no dataset selected. Every metric panel renders its label, and a panel with no basis renders no number. A historical KEEP_EXISTING job still renders. Live (still outstanding since MODEL-SERVE-014-T10 / 015-V01): one real AUGMENT retrain, asserting that the labelled row counts match the combined DatasetVersion.rowCount and that the labelled ranges match the stored cut_timestamp and window.",
+          "result": "DONE: every unit item above, verified by the case counts recorded on T02/T03/T04 (backend jest 40/40 in the two retrain specs, python pytest 13/13, client vitest retrain-flow 24/24 incl. a rendered-DOM jargon sweep over a fully-populated AUGMENT result, 108+ across the retrain-touched files, retrain-basis.test.ts 11/11). The current version's own figure now also renders its basis line (AC3 was previously met only for the candidate's figures), plus `pnpm check-types`/eslint clean on every touched file in both apps (pre-existing baseline errors/lint failures remain, in files this feature never touches -- confirmed by diffing the failing paths against `git status`). NOT VERIFIED LIVE, same gap MODEL-SERVE-014-T10/015-V01 already carried forward: no real AUGMENT_DATA/NEW_DATA_ONLY retrain has been run against trainer 1.0.15 since this change (needs backend+python services running and a real dataset pair); the freezeJobSplitStats call, the frozen_eval_to/combined_end_time fields, and the D03 row-count gate are therefore reasoned from fixtures and the python unit fixture's real dates, not observed end-to-end against a live job."
+        }
+      ],
+      "acceptance_criteria": [
+        "The Retrain dialog offers exactly two strategies: Existing + New Data, and New Data Only.",
+        "A retrain cannot start without a committed new dataset version.",
+        "Every metric shown during and after a retrain names the dataset it was computed on, its time range, and its row count.",
+        "The view states which figure ranked the candidates and which one was compared against production.",
+        "The merged training composition (existing rows, new rows, duplicates dropped) is shown for Existing + New.",
+        "A missing figure states why it is missing and never renders as 0.",
+        "Jobs and versions created with Keep Existing before this change still render correctly."
+      ]
     }
   ],
   "global_definition_of_done": [

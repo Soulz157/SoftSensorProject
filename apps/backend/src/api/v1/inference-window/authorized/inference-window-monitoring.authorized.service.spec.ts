@@ -66,12 +66,23 @@ const PRODUCTION_VERSION = {
   version: 3,
   goldArtifactId: 'gold-1',
   goldObjectKey: 'models/model-1/versions/v1/gold/data.parquet',
+  sourceRun: { targetY: 'y_lab' },
 };
 
 const COLUMN_STATS_RESPONSE = {
   source_key: PRODUCTION_VERSION.goldObjectKey,
   column_stats_key: 'models/model-1/versions/v1/gold/column_stats.json',
   stats: {
+    y_lab: {
+      tag: 'y_lab',
+      coverage: 1,
+      null_pct: 0,
+      outlier_count: 0,
+      mean: 50,
+      std: 5,
+      percentiles: { p1: 40, p99: 60 },
+      cleaned: true,
+    },
     tag_a: {
       tag: 'tag_a',
       coverage: 1,
@@ -383,5 +394,90 @@ describe('InferenceWindowMonitoringService.getDriftReport', () => {
       warnSd: env.DRIFT_WARN_SD,
       criticalSd: env.DRIFT_CRITICAL_SD,
     });
+  });
+});
+
+describe('InferenceWindowMonitoringService target row (MODEL-SERVE-018)', () => {
+  function prismaWith(windows: Array<Record<string, unknown>>) {
+    return buildPrisma({
+      modelVersion: {
+        findFirst: jest.fn().mockResolvedValue(PRODUCTION_VERSION),
+      },
+      inferenceWindow: {
+        findMany: jest.fn().mockResolvedValue(windows),
+        findFirst: jest.fn().mockResolvedValue({ windowStart: new Date() }),
+      },
+    });
+  }
+  const WINDOW = {
+    windowStart: new Date(),
+    status: 'SUCCEEDED',
+    inputRows: 10,
+    featureStats: {
+      tag_a: { n: 10, sum: 100, sumsq: 1040, min: 8, max: 12 },
+    },
+  };
+
+  it('returns the target drift apart from the feature columns', async () => {
+    mockedPostToPython.mockResolvedValue(COLUMN_STATS_RESPONSE);
+    // live mean 51 vs train 50 +/- 5 -> z = 0.2
+    const service = makeService(
+      prismaWith([
+        {
+          ...WINDOW,
+          targetStats: { n: 2, sum: 102, sumsq: 5202, min: 51, max: 51 },
+        },
+      ]),
+    );
+
+    const { data } = await service.getDriftReport(
+      'model-1',
+      '2026-01-01T00:00:00.000Z',
+      '2026-01-01T01:00:00.000Z',
+    );
+
+    expect(data.targetColumn).toBe('y_lab');
+    expect(data.target?.column).toBe('y_lab');
+    expect(data.target?.z).toBeCloseTo(0.2);
+    expect(data.columns.map((c) => c.column)).toEqual(['tag_a']);
+  });
+
+  it('a CRITICAL target never raises the report status (display-only)', async () => {
+    mockedPostToPython.mockResolvedValue(COLUMN_STATS_RESPONSE);
+    const without = await makeService(
+      prismaWith([{ ...WINDOW, targetStats: null }]),
+    ).getDriftReport('model-1', '2026-01-01', '2026-01-02');
+    // live mean 100 vs train 50 +/- 5 -> z = 10
+    const withTarget = await makeService(
+      prismaWith([
+        {
+          ...WINDOW,
+          targetStats: { n: 1, sum: 100, sumsq: 10000, min: 100, max: 100 },
+        },
+      ]),
+    ).getDriftReport('model-1', '2026-01-01', '2026-01-02');
+
+    expect(withTarget.data.target?.status).toBe('CRITICAL');
+    expect(withTarget.data.status).toBe(without.data.status);
+    expect(withTarget.data.columns).toEqual(without.data.columns);
+    expect(without.data.target).toBeNull();
+  });
+
+  it('PSI target is null when no window carries a target histogram', async () => {
+    mockedPostToPython.mockRejectedValue(new Error('no spec'));
+    const service = makeService(
+      prismaWith([
+        { ...WINDOW, featureHistograms: null, targetHistogram: null },
+      ]),
+    );
+
+    const { data } = await service.getPsiReport(
+      'model-1',
+      '2026-01-01',
+      '2026-01-02',
+    );
+
+    expect(data.targetColumn).toBe('y_lab');
+    expect(data.target).toBeNull();
   });
 });

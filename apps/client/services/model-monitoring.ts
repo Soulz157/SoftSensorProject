@@ -82,6 +82,12 @@ export interface MonitoringBasis {
 export interface DriftReport {
   status: DriftStatus
   columns: DriftColumn[]
+  /** MODEL-SERVE-018. The model's TARGET tag (y), computed apart from
+   *  `columns` — display-only, never part of `status`. Null/absent on the
+   *  /predict plane, on an older backend, and when no window in range
+   *  recorded the target. */
+  targetColumn?: string | null
+  target?: DriftColumn | null
   basis: MonitoringBasis & {
     modelVersionId: string
     version: number
@@ -185,6 +191,9 @@ export interface PsiColumn {
 export interface PsiReport {
   status: PsiStatus
   columns: PsiColumn[]
+  /** MODEL-SERVE-018. Same contract as `DriftReport.target`. */
+  targetColumn?: string | null
+  target?: PsiColumn | null
   basis: MonitoringBasis & {
     modelVersionId: string
     version: number

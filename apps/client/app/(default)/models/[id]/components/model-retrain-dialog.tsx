@@ -25,7 +25,9 @@ import {
 } from './retrain-data-strategy'
 
 export interface StartRetrainOptions {
-  strategy?: RetrainDataStrategyValue
+  /** MODEL-SERVE-019. Always sent now — a retrain always ingests new data.
+   *  Was optional (server defaulted an absent value to 'KEEP_EXISTING'). */
+  strategy: RetrainDataStrategyValue
   additionalDatasetVersionId?: string
   /** Both or neither — the server refuses a half-open window. ISO-8601. */
   newValidationFrom?: string
@@ -75,11 +77,12 @@ export function ModelRetrainDialog({
     string,
     unknown
   > | null>(null)
-  // MODEL-SERVE-015-T01. Reset to the 014 default whenever the dialog
-  // (re)opens for a different model — a strategy chosen for one model must
-  // never leak into the next dialog open.
+  // MODEL-SERVE-019. Defaults to 'AUGMENT_DATA' — 'KEEP_EXISTING' is no
+  // longer offered (D01). Reset whenever the dialog (re)opens for a
+  // different model — a strategy chosen for one model must never leak into
+  // the next dialog open.
   const [dataStrategy, setDataStrategy] = useState<RetrainDataStrategyValue>(
-    resumed?.strategy ?? 'KEEP_EXISTING',
+    resumed?.strategy ?? 'AUGMENT_DATA',
   )
   // Null until the operator has filled in BOTH bounds; the strategy
   // component owns that rule so a half-typed range never reaches here.
@@ -102,11 +105,15 @@ export function ModelRetrainDialog({
     setAdditionalDatasetVersionId(resumed.versionId ?? null)
   }, [resumed?.strategy, resumed?.versionId])
 
-  // MODEL-SERVE-017. Forwards whichever new-data strategy was chosen rather
-  // than a hardcoded AUGMENT_DATA, so NEW_DATA_ONLY cannot silently submit as
-  // an augmentation and train on rows the operator asked to leave out.
+  // MODEL-SERVE-017/019. Forwards whichever new-data strategy was chosen
+  // rather than a hardcoded AUGMENT_DATA, so NEW_DATA_ONLY cannot silently
+  // submit as an augmentation and train on rows the operator asked to leave
+  // out. `strategy` is now ALWAYS present (MODEL-SERVE-019 — the server no
+  // longer defaults an absent value); `additionalDatasetVersionId` still
+  // gates the whole object, since Start stays disabled without one anyway
+  // (`augmentIncomplete` below) and there is nothing valid to submit yet.
   const startOptions: StartRetrainOptions | undefined =
-    retrainUsesNewData(dataStrategy) && additionalDatasetVersionId
+    additionalDatasetVersionId
       ? {
           strategy: dataStrategy,
           additionalDatasetVersionId,
@@ -244,6 +251,13 @@ export function ModelRetrainDialog({
                     <Sparkles className="h-4 w-4" />
                     {isRetraining ? 'Retraining…' : 'Start Auto Finetune'}
                   </Button>
+                  {/* MODEL-SERVE-019-T02. Explains WHY Start is disabled
+                      instead of leaving a greyed-out button unexplained. */}
+                  {augmentIncomplete && !disabled && (
+                    <p className="text-xs text-muted-foreground">
+                      Choose a dataset and version above to start a retrain.
+                    </p>
+                  )}
                 </TabsContent>
 
                 <TabsContent value="custom" className="space-y-4 pt-4">
@@ -269,6 +283,11 @@ export function ModelRetrainDialog({
                     <Wand2 className="h-4 w-4" />
                     {isRetraining ? 'Retraining…' : 'Start Custom Finetune'}
                   </Button>
+                  {augmentIncomplete && !disabled && (
+                    <p className="text-xs text-muted-foreground">
+                      Choose a dataset and version above to start a retrain.
+                    </p>
+                  )}
                 </TabsContent>
               </Tabs>
             </div>

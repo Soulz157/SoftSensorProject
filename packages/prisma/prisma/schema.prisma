@@ -1417,6 +1417,25 @@ model ModelCandidateJob {
   sizedRowCount         Int?
   sizedDistinctLabelled Int?
 
+  /// MODEL-SERVE-019. The test split's own row count and time range over
+  /// this job's training artifact — `PythonSplitStatsSchema`'s response,
+  /// frozen ONCE PER JOB, out of band, right after the row exists (mirrors
+  /// `freezeSplitStats`'s own fire-and-forget shape on ModelTrainingRun,
+  /// never inside the trigger request path). Every candidate run under this
+  /// job shares one answer, so it is captured here rather than N times on
+  /// each ModelTrainingRun (`ModelTrainingRun.splitStats`'s own comment
+  /// records exactly this "N redundant reads" reasoning for why a candidate
+  /// run stores null on purpose).
+  ///
+  /// Populated only for a job that ingests new data (`retrainStrategy` is
+  /// 'AUGMENT_DATA' or 'NEW_DATA_ONLY') — this is what backs the
+  /// "candidate's own test data (existing + new)" figure a new-data retrain
+  /// shows, which otherwise has no persisted range. Null means "not
+  /// recorded for this job": a job created before this column, a
+  /// KEEP_EXISTING/draft-owned job (never populated), or the freeze call
+  /// itself failing — never reconstructed on read.
+  splitStats Json?
+
   kind ModelCandidateJobKind @default(HYPERPARAMETER_SEARCH)
 
   /// Ordered array of `{algorithm, hyperparameters, phase}`. Index
@@ -1706,6 +1725,17 @@ model InferenceWindow {
   /// wrong transform DS-LAKE-018-T02 exists to prevent, one layer over).
   /// SET REGARDLESS OF `status`, same reasoning as `featureHistograms`.
   featureStats Json?
+
+  /// MODEL-SERVE-018. The model's TARGET tag (y) — `{n, sum, sumsq, min,
+  /// max}` in RAW units (the target is never scaled in GOLD) and
+  /// `{counts, below, above}` against its frozen `psiRefEdges`. Separate
+  /// columns, never keys of `featureStats`/`featureHistograms`, so model
+  /// health and the drift/PSI report status (which read those maps) never
+  /// see the target: target drift is display-only (MODEL-SERVE-018-D01/D02).
+  /// Null on every window written before this feature, and whenever the
+  /// target was not fetched or has no reference.
+  targetStats     Json?
+  targetHistogram Json?
 
   /// Digest, never a tag — same discipline as ModelTrainingRun.imageDigest.
   /// Null until a container is spawned (a SKIPPED window never runs one).
@@ -2020,12 +2050,12 @@ model InferenceSchedule {
   /// deployment` (lib/model-config.ts's DeploymentConfig) is a SEPARATE,
   /// pre-existing, still-dead snapshot field this feature deliberately does
   /// not touch or duplicate into.
-  autoRetrain       Boolean @default(false)
+  autoRetrain  Boolean @default(false)
   /// Invariant enforced client-side (use-model-pipeline-nav.ts's clamped
   /// setters) and re-checked server-side at write: warnSd < criticalSd.
-  warnSd            Float   @default(1.5)
-  criticalSd        Float   @default(3.0)
-  driftMonitor      Boolean @default(false)
+  warnSd       Float   @default(1.5)
+  criticalSd   Float   @default(3.0)
+  driftMonitor Boolean @default(false)
   /// MODEL-SERVE-001-T31 dropped `driftThresholdPct Float @default(10)` from
   /// here. It was the operator-facing name for the z-score verdict's
   /// out-of-range clause, and that clause is gone: drift answers mean shift

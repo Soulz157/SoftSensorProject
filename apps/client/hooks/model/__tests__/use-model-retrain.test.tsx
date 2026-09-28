@@ -251,7 +251,7 @@ describe('useModelRetrain — closing the section (per-viewer)', () => {
     expect(result.current.dismissed).toBe(true)
 
     await act(async () => {
-      await result.current.start()
+      await result.current.start(undefined, { strategy: 'AUGMENT_DATA' })
     })
     expect(result.current.dismissed).toBe(false)
   })
@@ -266,7 +266,7 @@ describe('useModelRetrain — triggering (T02, V05)', () => {
     await waitFor(() => expect(result.current.loading).toBe(false))
 
     await act(async () => {
-      await result.current.start()
+      await result.current.start(undefined, { strategy: 'AUGMENT_DATA' })
     })
 
     expect(trigger).toHaveBeenCalledTimes(1)
@@ -292,7 +292,7 @@ describe('useModelRetrain — triggering (T02, V05)', () => {
       { algorithm: 'xgboost' as const, hyperparameters: { alpha: 1 } },
     ]
     await act(async () => {
-      await result.current.start(candidates)
+      await result.current.start(candidates, { strategy: 'AUGMENT_DATA' })
     })
 
     const [, body] = trigger.mock.calls[0] as [string, { candidates?: unknown }]
@@ -311,7 +311,7 @@ describe('useModelRetrain — triggering (T02, V05)', () => {
     await waitFor(() => expect(result.current.loading).toBe(false))
 
     await act(async () => {
-      await result.current.start()
+      await result.current.start(undefined, { strategy: 'AUGMENT_DATA' })
     })
 
     expect(result.current.job?.id).toBe('original-job')
@@ -325,7 +325,7 @@ describe('useModelRetrain — triggering (T02, V05)', () => {
     await waitFor(() => expect(result.current.isRetraining).toBe(true))
 
     await act(async () => {
-      await result.current.start()
+      await result.current.start(undefined, { strategy: 'AUGMENT_DATA' })
     })
 
     expect(trigger).not.toHaveBeenCalled()
@@ -348,7 +348,7 @@ describe('useModelRetrain — errors and conflict (T07/T08)', () => {
     await waitFor(() => expect(result.current.loading).toBe(false))
 
     await act(async () => {
-      await result.current.start()
+      await result.current.start(undefined, { strategy: 'AUGMENT_DATA' })
     })
 
     // The id came from the second `current()` read, not from the prose.
@@ -370,7 +370,7 @@ describe('useModelRetrain — errors and conflict (T07/T08)', () => {
     await waitFor(() => expect(result.current.loading).toBe(false))
 
     await act(async () => {
-      await result.current.start()
+      await result.current.start(undefined, { strategy: 'AUGMENT_DATA' })
     })
 
     expect(result.current.error).toBe(
@@ -427,6 +427,7 @@ describe('useModelRetrain — polling to completion (T03, V03)', () => {
               reason: null,
               strategy: 'KEEP_EXISTING',
               evalSet: null,
+              trainingComposition: null,
             },
             incumbent: {
               versionId: 'version-1',
@@ -434,6 +435,14 @@ describe('useModelRetrain — polling to completion (T03, V03)', () => {
               stage: 'PRODUCTION',
               algorithm: 'xgboost',
               metrics: { rmse: 1, r2: 0.9, mae: 0.5 },
+              metricsBasis: {
+                frame: 'INCUMBENT_TEST_SPLIT',
+                from: null,
+                to: null,
+                rowCount: null,
+                usedFor: 'COMPARE_TO_PRODUCTION',
+                unavailableReason: 'not recorded',
+              },
             },
             candidate: {
               runId: 'run-2',
@@ -442,11 +451,14 @@ describe('useModelRetrain — polling to completion (T03, V03)', () => {
               stage: 'STAGING',
               algorithm: 'xgboost',
               metrics: { rmse: 0.5, r2: 0.95, mae: 0.3 },
+              metricsBasis: null,
               newRegimeMetrics: null,
+              newRegimeMetricsBasis: null,
               newDataHoldoutMetrics: null,
               newDataHoldoutRowCount: null,
               newDataHoldoutFrom: null,
               newDataHoldoutTo: null,
+              newDataHoldoutBasis: null,
             },
             rmseDelta: -0.5,
             selectionMetric: 'rmse',

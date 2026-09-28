@@ -203,6 +203,49 @@ def _scaled_feature_stats(
     } or None
 
 
+def _target_aggregates(
+    frame: pd.DataFrame, target_column: str | None, spec: Mapping[str, Any]
+) -> tuple[dict[str, float] | None, dict[str, Any] | None]:
+    """MODEL-SERVE-018-T01. `(target_stats, target_histogram)` for the
+    model's TARGET tag — display-only drift/PSI for y, kept out of
+    `feature_stats`/`feature_histograms` so nothing that reads those maps
+    (model health, the report-level status) ever sees the target
+    (MODEL-SERVE-018-D02).
+
+    Must be called BEFORE `select_columns` narrows the target away. Uses
+    `good_values` as its own Good-cell filter, since `drop_bad_feature_rows`
+    only ever looks at feature cells.
+
+    Stats are RAW units, not scaled: the target is never scaled in GOLD
+    (`artifact_service._scalable_tags` excludes it), so its
+    `column_stats.json` baseline is raw too. A `target_scaled` spec is the
+    one case where that stops being true — stats are `None` then, the same
+    refusal `replay_holdout_for_run` makes. The histogram follows
+    `_psi_histograms`'s rule: `None` unless all three reference fields exist.
+    """
+    if not target_column or target_column not in frame.columns:
+        return None, None
+
+    values = good_values(frame, target_column)
+    values = values[pd.notna(values)]
+
+    stats = (
+        None
+        if spec.get("target_scaled")
+        else _column_aggregate(pd.Series(values, dtype="float64"))
+    )
+
+    edges = (spec.get("psiRefEdges") or {}).get(target_column)
+    bin_count = (spec.get("psiBinCount") or {}).get(target_column)
+    bin_mode = (spec.get("psiBinMode") or {}).get(target_column)
+    histogram = (
+        bucket_histogram(values, edges, bin_mode)
+        if edges and bin_count is not None and bin_mode is not None
+        else None
+    )
+    return stats, histogram
+
+
 def _tag_observations(
     frame: pd.DataFrame,
     feature_columns: list[str],
@@ -408,6 +451,12 @@ def materialize_window(
         ],
     )
 
+    # MODEL-SERVE-018-T01. Same "before select_columns" constraint as
+    # `_tag_observations` above — the target is narrowed away next line.
+    target_stats, target_histogram = _target_aggregates(
+        frame, request.target_column, spec
+    )
+
     frame = select_columns(frame, request.feature_columns)
 
     row_count = len(frame)
@@ -455,5 +504,7 @@ def materialize_window(
         "checksum": stats.checksum,
         "feature_histograms": feature_histograms,
         "feature_stats": feature_stats,
+        "target_stats": target_stats,
+        "target_histogram": target_histogram,
         "tag_observations": tag_observations,
     }

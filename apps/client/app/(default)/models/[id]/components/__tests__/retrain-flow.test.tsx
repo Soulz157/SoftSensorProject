@@ -116,6 +116,7 @@ function comparison(
       reason: null,
       strategy: 'KEEP_EXISTING',
       evalSet: null,
+      trainingComposition: null,
     },
     incumbent: {
       versionId: 'version-1',
@@ -123,6 +124,15 @@ function comparison(
       stage: 'PRODUCTION',
       algorithm: 'ridge',
       metrics: { rmse: 1.25, r2: 0.9, mae: 0.5 },
+      metricsBasis: {
+        frame: 'INCUMBENT_TEST_SPLIT',
+        from: null,
+        to: null,
+        rowCount: null,
+        usedFor: 'COMPARE_TO_PRODUCTION',
+        unavailableReason:
+          'not recorded for the current production version’s own run',
+      },
     },
     candidate: {
       runId: 'run-2',
@@ -131,11 +141,14 @@ function comparison(
       stage: 'STAGING',
       algorithm: 'ridge',
       metrics: { rmse: 0.75, r2: 0.95, mae: 0.3 },
+      metricsBasis: null,
       newRegimeMetrics: null,
-    newDataHoldoutMetrics: null,
-    newDataHoldoutRowCount: null,
-    newDataHoldoutFrom: null,
-    newDataHoldoutTo: null,
+      newRegimeMetricsBasis: null,
+      newDataHoldoutMetrics: null,
+      newDataHoldoutRowCount: null,
+      newDataHoldoutFrom: null,
+      newDataHoldoutTo: null,
+      newDataHoldoutBasis: null,
     },
     rmseDelta: -0.5,
     selectionMetric: 'rmse',
@@ -251,8 +264,13 @@ describe('ModelRetrainDialog — pre-flight (T08)', () => {
     expect(screen.getByText('Retrain job not found')).toBeInTheDocument()
   })
 
-  it('starts an Auto Finetune with no candidates — the server expands the grid', async () => {
-    const user = userEvent.setup()
+  // MODEL-SERVE-019-D01. Keep Existing Data is removed — a retrain always
+  // ingests new data now, and Start stays disabled until a dataset is
+  // chosen (AC: "A retrain cannot start without a committed new dataset
+  // version"). This REPLACES the old "starts with no candidates" test,
+  // which exercised the now-removed KEEP_EXISTING default (Start was
+  // enabled with nothing chosen at all).
+  it('Start Auto Finetune stays disabled until a dataset version is chosen', async () => {
     const onStart = vi.fn()
     render(
       <ModelRetrainDialog
@@ -267,15 +285,16 @@ describe('ModelRetrainDialog — pre-flight (T08)', () => {
       />,
     )
 
-    await user.click(
+    expect(
       screen.getByRole('button', { name: /Start Auto Finetune/i }),
-    )
-    expect(onStart).toHaveBeenCalledWith(undefined, undefined)
+    ).toBeDisabled()
+    expect(onStart).not.toHaveBeenCalled()
   })
 
-  // MODEL-SERVE-017. The operator's first decision is what the training data
-  // IS; picking where it comes from is the second, separate step.
-  it('offers New Data Only beside the two existing strategies, and blocks start until a dataset is chosen', async () => {
+  // MODEL-SERVE-017/019. The operator's first decision is what the training
+  // data IS ("Existing + new data" or "New data only"); picking where it
+  // comes from is the second, separate step.
+  it('offers only the two new-data strategies, and blocks start until a dataset is chosen', async () => {
     const user = userEvent.setup()
     const onStart = vi.fn()
     render(
@@ -302,11 +321,12 @@ describe('ModelRetrainDialog — pre-flight (T08)', () => {
       />,
     )
 
-    expect(screen.getByText('Keep Existing Data')).toBeInTheDocument()
-    expect(screen.getByText('Keep Existing + New Data')).toBeInTheDocument()
-    expect(screen.getByText('New Data Only')).toBeInTheDocument()
+    // Keep Existing Data is gone — exactly two strategies remain.
+    expect(screen.queryByText(/Keep Existing Data/i)).not.toBeInTheDocument()
+    expect(screen.getByText('Existing + new data')).toBeInTheDocument()
+    expect(screen.getByText('New data only')).toBeInTheDocument()
 
-    await user.click(screen.getByRole('radio', { name: /New Data Only/i }))
+    await user.click(screen.getByRole('radio', { name: /New data only/i }))
 
     // Chosen but no dataset picked yet — starting now would submit a
     // strategy the server refuses (its .strict() schema requires the id),
@@ -337,13 +357,14 @@ describe('ModelRetrainDialog — pre-flight (T08)', () => {
     // The algorithm is shown, not chosen — it is the incumbent's own.
     expect(await screen.findByText('ridge')).toBeInTheDocument()
 
-    await user.click(
+    // MODEL-SERVE-019-D01. Custom Finetune pins hyperparameters correctly
+    // (proven above), but Start stays disabled without a chosen dataset —
+    // this file's `useDatasets` mock returns none, so a full "picks a
+    // dataset then starts" round trip is covered live/manually, not here.
+    expect(
       screen.getByRole('button', { name: /Start Custom Finetune/i }),
-    )
-    expect(onStart).toHaveBeenCalledWith(
-      [{ algorithm: 'ridge', hyperparameters: { alpha: 0.01 } }],
-      undefined,
-    )
+    ).toBeDisabled()
+    expect(onStart).not.toHaveBeenCalled()
   })
 })
 
@@ -438,11 +459,14 @@ describe('RetrainProgress — result (T04/T06)', () => {
               stage: 'STAGING',
               algorithm: 'ridge',
               metrics: { rmse: 0.75, r2: 0.95, mae: 0.3 },
+              metricsBasis: null,
               newRegimeMetrics: null,
+              newRegimeMetricsBasis: null,
               newDataHoldoutMetrics: { rmse: 0.42, r2: 0.88, mae: 0.31 },
               newDataHoldoutRowCount: 720,
               newDataHoldoutFrom: '2026-05-01T00:00:00.000Z',
               newDataHoldoutTo: '2026-05-31T23:59:59.999Z',
+              newDataHoldoutBasis: null,
             },
           }),
         })}
@@ -451,9 +475,7 @@ describe('RetrainProgress — result (T04/T06)', () => {
       />,
     )
 
-    expect(
-      screen.getByText(/Performance on the new data/i),
-    ).toBeInTheDocument()
+    expect(screen.getByText(/Performance on the new data/i)).toBeInTheDocument()
     expect(screen.getByText('0.4200')).toBeInTheDocument()
     // States what it was measured on.
     expect(screen.getByText(/720 rows/)).toBeInTheDocument()
@@ -491,11 +513,14 @@ describe('RetrainProgress — result (T04/T06)', () => {
               stage: null,
               algorithm: 'ridge',
               metrics: { rmse: 0.75, r2: 0.95, mae: 0.3 },
+              metricsBasis: null,
               newRegimeMetrics: null,
-    newDataHoldoutMetrics: null,
-    newDataHoldoutRowCount: null,
-    newDataHoldoutFrom: null,
-    newDataHoldoutTo: null,
+              newRegimeMetricsBasis: null,
+              newDataHoldoutMetrics: null,
+              newDataHoldoutRowCount: null,
+              newDataHoldoutFrom: null,
+              newDataHoldoutTo: null,
+              newDataHoldoutBasis: null,
             },
           }),
         })}
@@ -523,11 +548,14 @@ describe('RetrainProgress — result (T04/T06)', () => {
               stage: 'PRODUCTION',
               algorithm: 'ridge',
               metrics: { rmse: 0.75, r2: 0.95, mae: 0.3 },
+              metricsBasis: null,
               newRegimeMetrics: null,
-    newDataHoldoutMetrics: null,
-    newDataHoldoutRowCount: null,
-    newDataHoldoutFrom: null,
-    newDataHoldoutTo: null,
+              newRegimeMetricsBasis: null,
+              newDataHoldoutMetrics: null,
+              newDataHoldoutRowCount: null,
+              newDataHoldoutFrom: null,
+              newDataHoldoutTo: null,
+              newDataHoldoutBasis: null,
             },
           }),
         })}
@@ -649,6 +677,7 @@ describe('RetrainProgress — result (T04/T06)', () => {
               reason: 'different training artifact',
               strategy: 'KEEP_EXISTING',
               evalSet: null,
+              trainingComposition: null,
             },
             rmseDelta: null,
           }),
@@ -663,5 +692,91 @@ describe('RetrainProgress — result (T04/T06)', () => {
     // Both raw metric triples stay on screen even with no delta.
     expect(screen.getByText('0.7500')).toBeInTheDocument()
     expect(screen.getByText('current v3 1.2500')).toBeInTheDocument()
+  })
+
+  // MODEL-SERVE-019. User rule (2026-09-28): none of these words ever reach
+  // the screen — every one is internal vocabulary that has a plain-language
+  // mapping in lib/retrain-basis.ts. Rendered against a FULLY populated
+  // AUGMENT_DATA comparison (every basis filled in), the case most likely to
+  // leak an unmapped code straight onto the page.
+  it('renders no internal jargon for a fully-populated AUGMENT_DATA result', () => {
+    const FULL_BASIS = {
+      frame: 'FROZEN_INCUMBENT_TEST' as const,
+      from: '2026-06-01T00:00:00Z',
+      to: '2026-07-01T00:00:00Z',
+      rowCount: 40,
+      usedFor: 'COMPARE_TO_PRODUCTION' as const,
+      unavailableReason: null,
+    }
+    const { container } = render(
+      <RetrainProgress
+        job={job({
+          status: 'SUCCEEDED',
+          retrainStrategy: 'AUGMENT_DATA',
+          comparison: comparison({
+            basis: {
+              goldArtifactId: 'gold-1',
+              artifactChecksum: 'sha-1',
+              targetY: 'TI-101',
+              split: { method: 'chronological', ratio: 0.8 },
+              comparable: true,
+              reason: null,
+              strategy: 'AUGMENT_DATA',
+              evalSet: {
+                kind: 'FROZEN_INCUMBENT_TEST',
+                checksum: 'frozen-sha',
+              },
+              trainingComposition: {
+                baseTrainRowCount: 80,
+                newTrainRowCount: 20,
+                dedupeDropped: 2,
+                cutTimestamp: '2026-06-01T00:00:00Z',
+                combinedRowCount: 98,
+              },
+            },
+            incumbent: {
+              versionId: 'version-1',
+              version: 3,
+              stage: 'PRODUCTION',
+              algorithm: 'ridge',
+              metrics: { rmse: 1.25, r2: 0.9, mae: 0.5 },
+              metricsBasis: { ...FULL_BASIS, frame: 'INCUMBENT_TEST_SPLIT' },
+            },
+            candidate: {
+              runId: 'run-2',
+              versionId: 'version-4',
+              version: 4,
+              stage: 'STAGING',
+              algorithm: 'ridge',
+              metrics: { rmse: 0.75, r2: 0.95, mae: 0.3 },
+              metricsBasis: FULL_BASIS,
+              newRegimeMetrics: { rmse: 5.0, r2: -2.0, mae: 3.0 },
+              newRegimeMetricsBasis: {
+                ...FULL_BASIS,
+                frame: 'MERGED_TEST_SPLIT',
+                usedFor: 'RANK_CANDIDATES',
+              },
+              newDataHoldoutMetrics: { rmse: 1.1, r2: 0.5, mae: 0.6 },
+              newDataHoldoutRowCount: 10,
+              newDataHoldoutFrom: '2026-07-01T00:00:00.000Z',
+              newDataHoldoutTo: '2026-07-15T00:00:00.000Z',
+              newDataHoldoutBasis: {
+                ...FULL_BASIS,
+                frame: 'NEW_DATA_WINDOW',
+                usedFor: 'REPORT_ONLY',
+              },
+            },
+          }),
+        })}
+        phase="done"
+        logs={[]}
+        onApplyToProduction={vi.fn()}
+      />,
+    )
+
+    const text = container.textContent ?? ''
+    expect(text).not.toMatch(
+      /incumbent|frozen|holdout|regime|evalSet|dedupe|merged test split/i,
+    )
   })
 })

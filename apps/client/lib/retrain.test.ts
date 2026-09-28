@@ -40,6 +40,14 @@ function job(overrides: Partial<RetrainJob> = {}): RetrainJob {
 }
 
 const METRICS = { rmse: 1, r2: 0.9, mae: 0.5 }
+const INCUMBENT_BASIS = {
+  frame: 'INCUMBENT_TEST_SPLIT' as const,
+  from: null,
+  to: null,
+  rowCount: null,
+  usedFor: 'COMPARE_TO_PRODUCTION' as const,
+  unavailableReason: 'not recorded',
+}
 
 function comparison(
   overrides: Partial<RetrainComparison> = {},
@@ -54,6 +62,7 @@ function comparison(
       reason: null,
       strategy: 'KEEP_EXISTING',
       evalSet: null,
+      trainingComposition: null,
     },
     incumbent: {
       versionId: 'version-1',
@@ -61,6 +70,7 @@ function comparison(
       stage: 'PRODUCTION',
       algorithm: 'xgboost',
       metrics: METRICS,
+      metricsBasis: INCUMBENT_BASIS,
     },
     candidate: {
       runId: 'run-1',
@@ -69,11 +79,14 @@ function comparison(
       stage: null,
       algorithm: 'xgboost',
       metrics: { rmse: 0.5, r2: 0.95, mae: 0.3 },
+      metricsBasis: null,
       newRegimeMetrics: null,
+      newRegimeMetricsBasis: null,
     newDataHoldoutMetrics: null,
     newDataHoldoutRowCount: null,
     newDataHoldoutFrom: null,
     newDataHoldoutTo: null,
+    newDataHoldoutBasis: null,
     },
     rmseDelta: -0.5,
     selectionMetric: 'rmse',
@@ -148,10 +161,15 @@ describe('comparisonView', () => {
       strategy: 'KEEP_EXISTING',
       evalSet: null,
       newRegimeMetrics: null,
-    newDataHoldoutMetrics: null,
-    newDataHoldoutRowCount: null,
-    newDataHoldoutFrom: null,
-    newDataHoldoutTo: null,
+      newDataHoldoutMetrics: null,
+      newDataHoldoutRowCount: null,
+      newDataHoldoutFrom: null,
+      newDataHoldoutTo: null,
+      incumbentMetricsBasis: INCUMBENT_BASIS,
+      candidateMetricsBasis: null,
+      newRegimeMetricsBasis: null,
+      newDataHoldoutBasis: null,
+      trainingComposition: null,
     })
   })
 
@@ -167,6 +185,7 @@ describe('comparisonView', () => {
           reason: 'different training artifact',
           strategy: 'KEEP_EXISTING',
           evalSet: null,
+          trainingComposition: null,
         },
         rmseDelta: null,
       }),

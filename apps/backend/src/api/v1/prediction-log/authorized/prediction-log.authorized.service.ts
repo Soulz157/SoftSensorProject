@@ -324,6 +324,9 @@ export class PredictionLogAuthorizedService {
       type: 'SUCCESS' as const,
       data: {
         ...report,
+        // MODEL-SERVE-018-D05. A /predict payload carries no y.
+        targetColumn: null,
+        target: null,
         basis: {
           modelVersionId: production.id,
           version: production.version,
@@ -550,6 +553,9 @@ export class PredictionLogAuthorizedService {
       type: 'SUCCESS' as const,
       data: {
         ...report,
+        // MODEL-SERVE-018-D05. A /predict payload carries no y.
+        targetColumn: null,
+        target: null,
         basis: {
           modelVersionId: production.id,
           version: production.version,

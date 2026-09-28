@@ -17,6 +17,11 @@ import {
   type RetrainPhase,
 } from '@/lib/retrain'
 import {
+  describeEvalBasis,
+  describeTrainingComposition,
+  describeUsedFor,
+} from '@/lib/retrain-basis'
+import {
   promotableCandidateVersion,
   type RetrainJob,
 } from '@/services/model-retrain'
@@ -163,21 +168,26 @@ export function RetrainProgress({
             )}
           </div>
 
-          {/* MODEL-SERVE-017. NEW_DATA_ONLY needs this line MORE than
-              AUGMENT_DATA does, not less: a candidate that dropped the
-              incumbent's training rows is the one whose basis a reader is
-              most likely to misread. Gating on AUGMENT_DATA alone left it
-              silent on exactly that case. */}
+          {/* MODEL-SERVE-019-T04. The training-data line — states what was
+              actually trained on, with real row counts, never just the
+              strategy name. NEW_DATA_ONLY needs this MORE than AUGMENT_DATA
+              does, not less: a candidate that dropped the current version's
+              training rows is the one whose basis a reader is most likely to
+              misread. */}
           {(view.strategy === 'AUGMENT_DATA' ||
             view.strategy === 'NEW_DATA_ONLY') && (
             <p className="text-xs text-muted-foreground">
-              Training data:{' '}
-              {view.strategy === 'AUGMENT_DATA'
-                ? 'existing + new dataset'
-                : 'new dataset only — the existing training data was not used'}
-              . Compared on the{' '}
+              {describeTrainingComposition(
+                view.strategy,
+                view.trainingComposition,
+                'the new dataset',
+              ) ??
+                (view.strategy === 'AUGMENT_DATA'
+                  ? 'Trained on: existing + new dataset'
+                  : 'Trained on: the new dataset only')}
+              . Compared against{' '}
               <span className="font-medium text-foreground">
-                incumbent&apos;s own frozen test rows
+                current v{currentVersion}&apos;s own test data
               </span>
               {view.evalSet?.kind !== 'FROZEN_INCUMBENT_TEST' &&
                 ' (not yet scored on that set)'}
@@ -192,6 +202,21 @@ export function RetrainProgress({
             </p>
           )}
 
+          {/* MODEL-SERVE-019-D02/T04. Every metric panel names its own basis
+              — frame, range and row count — and which role it plays
+              (COMPARE_TO_PRODUCTION here). A candidate whose basis was never
+              recorded (a job created before this feature) shows no label
+              rather than a fabricated one. */}
+          {view.candidateMetricsBasis && (
+            <p className="text-[10px] text-muted-foreground">
+              {describeEvalBasis(
+                view.candidateMetricsBasis,
+                currentVersion !== null ? `v${currentVersion}` : null,
+              )}
+              {' · '}
+              {describeUsedFor(view.candidateMetricsBasis.usedFor)}
+            </p>
+          )}
           <div className="grid grid-cols-3 gap-2">
             {METRICS.map(({ key, label }) => (
               <div
@@ -211,6 +236,16 @@ export function RetrainProgress({
               </div>
             ))}
           </div>
+          {/* MODEL-SERVE-019 AC3. The current version's OWN figure names its
+              basis too — not only the candidate's. Always present (unlike
+              the candidate's basis fields, which are null for a legacy job):
+              buildComparison always resolves this one. */}
+          <p className="text-[10px] text-muted-foreground">
+            {describeEvalBasis(
+              view.incumbentMetricsBasis,
+              currentVersion !== null ? `v${currentVersion}` : null,
+            )}
+          </p>
 
           {/* MODEL-SERVE-015-T04. "Report new dataset evaluation
               separately" — the candidate's OWN test split over the combined
@@ -220,8 +255,18 @@ export function RetrainProgress({
           {view.newRegimeMetrics && (
             <div className="space-y-1.5 rounded-md border border-border bg-muted/10 p-3">
               <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                New-regime evaluation (combined data&apos;s own test split)
+                {view.newRegimeMetricsBasis
+                  ? describeEvalBasis(
+                      view.newRegimeMetricsBasis,
+                      currentVersion !== null ? `v${currentVersion}` : null,
+                    )
+                  : 'Its own test data (existing + new)'}
               </p>
+              {view.newRegimeMetricsBasis && (
+                <p className="text-[10px] text-muted-foreground">
+                  {describeUsedFor(view.newRegimeMetricsBasis.usedFor)}
+                </p>
+              )}
               <div className="grid grid-cols-3 gap-2">
                 {METRICS.map(({ key, label }) => (
                   <div key={key} className="flex flex-col gap-0.5">
@@ -244,36 +289,50 @@ export function RetrainProgress({
               RMSE would produce something that looks like a comparison and
               is not one. The only delta on this screen stays the frozen-set
               one below. */}
-          {view.newDataHoldoutMetrics && (
+          {(view.newDataHoldoutMetrics || view.newDataHoldoutBasis) && (
             <div className="space-y-1.5 rounded-md border border-border bg-muted/10 p-3">
               <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                 Performance on the new data (held out of training)
               </p>
-              <div className="grid grid-cols-3 gap-2">
-                {METRICS.map(({ key, label }) => (
-                  <div key={key} className="flex flex-col gap-0.5">
-                    <p className="text-[10px] text-muted-foreground">{label}</p>
-                    <p className="text-sm font-medium tabular-nums text-foreground">
-                      {formatMetricValue(view.newDataHoldoutMetrics![key])}
-                    </p>
+              {view.newDataHoldoutMetrics ? (
+                <>
+                  <div className="grid grid-cols-3 gap-2">
+                    {METRICS.map(({ key, label }) => (
+                      <div key={key} className="flex flex-col gap-0.5">
+                        <p className="text-[10px] text-muted-foreground">
+                          {label}
+                        </p>
+                        <p className="text-sm font-medium tabular-nums text-foreground">
+                          {formatMetricValue(view.newDataHoldoutMetrics![key])}
+                        </p>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-              {/* States what was MEASURED, not what was requested — the
-                  server echoes back the first/last timestamps of the rows
-                  actually held out. */}
-              {view.newDataHoldoutRowCount !== null && (
+                  {/* States what was MEASURED, not what was requested — the
+                      server echoes back the first/last timestamps of the
+                      rows actually held out. */}
+                  {view.newDataHoldoutRowCount !== null && (
+                    <p className="text-[10px] text-muted-foreground">
+                      {view.newDataHoldoutRowCount.toLocaleString()} rows
+                      {view.newDataHoldoutFrom && view.newDataHoldoutTo
+                        ? ` from ${new Date(
+                            view.newDataHoldoutFrom,
+                          ).toLocaleDateString()} to ${new Date(
+                            view.newDataHoldoutTo,
+                          ).toLocaleDateString()}`
+                        : ''}
+                      . Not compared against the current model, which was never
+                      scored on these rows.
+                    </p>
+                  )}
+                </>
+              ) : (
+                // MODEL-SERVE-019-D02. A window was set aside but not yet
+                // scored (or scoring soft-failed) — states why instead of
+                // hiding the panel or rendering a 0.
                 <p className="text-[10px] text-muted-foreground">
-                  {view.newDataHoldoutRowCount.toLocaleString()} rows
-                  {view.newDataHoldoutFrom && view.newDataHoldoutTo
-                    ? ` from ${new Date(
-                        view.newDataHoldoutFrom,
-                      ).toLocaleDateString()} to ${new Date(
-                        view.newDataHoldoutTo,
-                      ).toLocaleDateString()}`
-                    : ''}
-                  . Not compared against the current model, which was never
-                  scored on these rows.
+                  {view.newDataHoldoutBasis?.unavailableReason ??
+                    'Not recorded for this retrain'}
                 </p>
               )}
             </div>

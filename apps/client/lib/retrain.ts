@@ -14,7 +14,12 @@
  * (`services/model-retrain.ts`) returned by MODEL-SERVE-004's backend.
  */
 
-import type { RetrainComparison, RetrainJob } from '@/services/model-retrain'
+import type {
+  EvalBasis,
+  RetrainComparison,
+  RetrainJob,
+  TrainingComposition,
+} from '@/services/model-retrain'
 
 /** Ordered stage boxes shown in the retrain progress UI — unchanged shape
  *  from the old simulation's `RETRAIN_STAGES`, now driven by job status
@@ -115,6 +120,14 @@ export interface ComparisonView {
   newDataHoldoutRowCount: number | null
   newDataHoldoutFrom: string | null
   newDataHoldoutTo: string | null
+  // MODEL-SERVE-019-T03/D02. Every figure's own evaluation basis — never
+  // render a metric without its `*Basis` beside it (`lib/retrain-basis.ts`
+  // turns these into plain on-screen text).
+  incumbentMetricsBasis: EvalBasis
+  candidateMetricsBasis: EvalBasis | null
+  newRegimeMetricsBasis: EvalBasis | null
+  newDataHoldoutBasis: EvalBasis | null
+  trainingComposition: TrainingComposition | null
 }
 
 export function comparisonView(
@@ -134,6 +147,11 @@ export function comparisonView(
     newDataHoldoutRowCount: comparison.candidate.newDataHoldoutRowCount,
     newDataHoldoutFrom: comparison.candidate.newDataHoldoutFrom,
     newDataHoldoutTo: comparison.candidate.newDataHoldoutTo,
+    incumbentMetricsBasis: comparison.incumbent.metricsBasis,
+    candidateMetricsBasis: comparison.candidate.metricsBasis,
+    newRegimeMetricsBasis: comparison.candidate.newRegimeMetricsBasis,
+    newDataHoldoutBasis: comparison.candidate.newDataHoldoutBasis,
+    trainingComposition: comparison.basis.trainingComposition,
   }
 }
 
