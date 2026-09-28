@@ -336,6 +336,47 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
         note: 'tree depth; the dominant overfitting control for this estimator',
       },
     },
+    {
+      kind: 'number',
+      key: 'subsample',
+      label: 'Subsample',
+      defaultValue: 1.0,
+      step: 0.05,
+      min: 0.1,
+      max: 1,
+      suggestedRange: {
+        min: 0.5,
+        max: 1,
+        note: 'fraction of rows sampled per tree; below 1 adds randomness against overfitting',
+      },
+    },
+    {
+      kind: 'number',
+      key: 'colsample_bytree',
+      label: 'Colsample by tree',
+      defaultValue: 1.0,
+      step: 0.05,
+      min: 0.1,
+      max: 1,
+      suggestedRange: {
+        min: 0.5,
+        max: 1,
+        note: 'fraction of columns sampled per tree',
+      },
+    },
+    {
+      kind: 'number',
+      key: 'min_child_weight',
+      label: 'Min child weight',
+      defaultValue: 1,
+      step: 1,
+      min: 0,
+      suggestedRange: {
+        min: 1,
+        max: 10,
+        note: 'minimum summed Hessian a leaf needs to keep splitting',
+      },
+    },
   ],
   random_forest: [
     {

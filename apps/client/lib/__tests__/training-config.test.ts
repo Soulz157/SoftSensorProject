@@ -46,7 +46,15 @@ describe('defaultHyperparams', () => {
       'min_samples_split',
     ],
     lightgbm: ['learning_rate', 'num_leaves', 'boosting_type'],
-    xgboost: ['n_estimators', 'learning_rate', 'max_depth'],
+    // MODEL-FLOW-027: the three capacity knobs joined the original three.
+    xgboost: [
+      'n_estimators',
+      'learning_rate',
+      'max_depth',
+      'subsample',
+      'colsample_bytree',
+      'min_child_weight',
+    ],
     // MODEL-FLOW-009-T03: sequence_length added alongside the existing
     // three — build_windows (images/trainer/train.py) reads it once
     // MODEL-FLOW-009-T04 wires the windowing pipeline into main().

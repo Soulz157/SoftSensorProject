@@ -305,10 +305,18 @@ def build_model(
         # MODEL-FLOW-013-T05's loss-history recording, never consulted for
         # early stopping (none is configured, so it never changes when
         # training stops or what the fitted model is).
+        # MODEL-FLOW-027. subsample/colsample_bytree are row/column
+        # sub-sampling fractions in (0, 1]; min_child_weight is the minimum
+        # summed Hessian a leaf needs to keep splitting — xgboost's own
+        # capacity floor, analogous to sklearn's min_samples_leaf but scored
+        # on gradient statistics rather than a raw row count.
         return xgboost.XGBRegressor(
             n_estimators=int(hyperparameters.get("n_estimators", 100)),
             learning_rate=float(hyperparameters.get("learning_rate", 0.1)),
             max_depth=int(hyperparameters.get("max_depth", 6)),
+            subsample=float(hyperparameters.get("subsample", 1.0)),
+            colsample_bytree=float(hyperparameters.get("colsample_bytree", 1.0)),
+            min_child_weight=float(hyperparameters.get("min_child_weight", 1)),
             random_state=seed,
             eval_metric="rmse",
         )

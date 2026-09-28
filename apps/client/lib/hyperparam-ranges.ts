@@ -161,6 +161,10 @@ export const TIER_BANDS: Partial<Record<Algorithm, Record<string, TierBands>>> =
       n_estimators: { tiny: [30, 150], small: [50, 300], large: [200, 1000] },
       learning_rate: { tiny: [0.03, 0.3], small: [0.03, 0.3] },
       max_depth: { tiny: [2, 4], small: [2, 6], large: [4, 12] },
+      // MODEL-FLOW-027. Opposite direction like MODEL-FLOW-026's
+      // min_samples_*: a bigger dataset needs a SMALLER Hessian floor to
+      // keep splitting past noise.
+      min_child_weight: { tiny: [2, 20], small: [1, 10], large: [1, 5] },
     },
   }
 

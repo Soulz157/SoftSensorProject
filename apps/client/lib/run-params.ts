@@ -48,7 +48,14 @@ export const CONSUMED_HYPERPARAM_KEYS: Record<Algorithm, string[]> = {
     'min_samples_split',
   ],
   lightgbm: ['learning_rate', 'num_leaves', 'boosting_type'],
-  xgboost: ['n_estimators', 'learning_rate', 'max_depth'],
+  xgboost: [
+    'n_estimators',
+    'learning_rate',
+    'max_depth',
+    'subsample',
+    'colsample_bytree',
+    'min_child_weight',
+  ],
   lstm: ['hidden_size', 'epochs', 'batch_size', 'sequence_length'],
   gru: ['hidden_size', 'epochs', 'batch_size', 'sequence_length'],
 }
