@@ -123,6 +123,11 @@ export const TIER_BANDS: Partial<Record<Algorithm, Record<string, TierBands>>> =
       },
       n_estimators: { tiny: [30, 150], small: [50, 300], large: [200, 800] },
       num_leaves: { tiny: [3, 15], small: [4, 31], large: [15, 127] },
+      max_depth: { tiny: [2, 5], small: [3, 8], large: [6, 16] },
+      // MODEL-FLOW-027. Opposite direction like MODEL-FLOW-026's
+      // min_samples_*: a bigger dataset needs a SMALLER row floor per leaf.
+      min_samples_leaf: { tiny: [10, 100], small: [5, 50], large: [5, 30] },
+      l2_regularization: { tiny: [0.1, 30], small: [0, 10], large: [0, 1] },
     },
     svm: {
       C: { tiny: [0.01, 10], small: [0.03, 30], large: [0.3, 300] },

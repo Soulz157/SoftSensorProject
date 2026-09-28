@@ -159,6 +159,43 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
         note: 'max_leaf_nodes; higher fits finer structure, overfits sooner',
       },
     },
+    {
+      kind: 'nullable-number',
+      key: 'max_depth',
+      label: 'Max depth',
+      defaultValue: null,
+      suggestedRange: {
+        min: 3,
+        max: 12,
+        note: 'unlimited lets leaf-wise growth run past num_leaves alone',
+      },
+    },
+    {
+      kind: 'number',
+      key: 'min_samples_leaf',
+      label: 'Min samples per leaf',
+      defaultValue: 20,
+      step: 1,
+      min: 1,
+      suggestedRange: {
+        min: 5,
+        max: 50,
+        note: 'raise it to stop leaves that memorise a handful of rows',
+      },
+    },
+    {
+      kind: 'number',
+      key: 'l2_regularization',
+      label: 'L2 regularization',
+      defaultValue: 0,
+      step: 0.1,
+      min: 0,
+      suggestedRange: {
+        min: 0,
+        max: 10,
+        note: 'shrinkage on leaf values; higher = more conservative splits',
+      },
+    },
   ],
   svm: [
     {

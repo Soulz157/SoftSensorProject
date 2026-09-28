@@ -172,10 +172,20 @@ def build_model(
     from sklearn.svm import SVR
 
     if algorithm in ("hgb", "hist_gradient_boosting"):
+        # MODEL-FLOW-027. `max_depth` is the same nullable-number shape as
+        # random_forest's and lightgbm's (None = unlimited, sklearn's own
+        # default) — unlike lightgbm's -1 sentinel, HistGradientBoosting
+        # actually accepts None here, so no coercion is needed.
+        max_depth = hyperparameters.get("max_depth")
         return HistGradientBoostingRegressor(
             learning_rate=float(hyperparameters.get("learning_rate", 0.1)),
             max_iter=int(hyperparameters.get("n_estimators", 200)),
             max_leaf_nodes=int(hyperparameters.get("num_leaves", 31)),
+            max_depth=int(max_depth) if max_depth is not None else None,
+            min_samples_leaf=int(hyperparameters.get("min_samples_leaf", 20)),
+            l2_regularization=float(
+                hyperparameters.get("l2_regularization", 0.0)
+            ),
             random_state=seed,
         )
     if algorithm == "ridge":

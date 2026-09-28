@@ -32,7 +32,15 @@ describe('defaultHyperparams', () => {
   const expectedKeys: Record<Algorithm, string[]> = {
     ols: ['fit_intercept'],
     ridge: ['alpha'],
-    hist_gradient_boosting: ['learning_rate', 'n_estimators', 'num_leaves'],
+    // MODEL-FLOW-027: the three capacity knobs joined the original three.
+    hist_gradient_boosting: [
+      'learning_rate',
+      'n_estimators',
+      'num_leaves',
+      'max_depth',
+      'min_samples_leaf',
+      'l2_regularization',
+    ],
     svm: ['C', 'kernel', 'epsilon'],
     mlp: ['hidden_layer_sizes', 'alpha', 'max_iter'],
     grp: ['alpha', 'n_restarts_optimizer'],
