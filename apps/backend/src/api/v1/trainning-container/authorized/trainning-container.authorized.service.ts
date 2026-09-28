@@ -331,8 +331,41 @@ export class TrainningContainerAuthorizedService implements OnModuleInit {
   // LOCALLY on the build machine only. `resolveDigest` inspects the local
   // image first, so this default is correct where it was built and fails
   // LOUDLY at boot elsewhere rather than silently running old code.
+  //
+  // 1.0.15 (MODEL-FLOW-027) — `build_model` gains capacity knobs for the
+  // five algorithms MODEL-FLOW-026 left out: xgboost (subsample,
+  // colsample_bytree, min_child_weight), lightgbm (n_estimators, max_depth,
+  // min_child_samples), hist_gradient_boosting (max_depth, min_samples_leaf,
+  // l2_regularization), ridge (fit_intercept, solver — reversing the prior
+  // "random_state dropped" design: sag/saga now receive it), svm (tol,
+  // max_iter). ADDITIVE: every key keeps its library default, so a run
+  // launched with the old payload builds a bit-identical estimator. The bump
+  // is still required for the same reason as 1.0.14 — on 1.0.14 these new
+  // keys reach the container and are SILENTLY IGNORED.
+  //
+  // VERIFIED IN-IMAGE BY BEHAVIOUR: `docker run --entrypoint bash` with the
+  // test directory mounted plus `pip install pytest` — 69 passed (all
+  // inherited; this change adds no Python test). Each new knob was then
+  // proven to reach its estimator by fitting a 400-row synthetic frame at
+  // seed 42: pushing xgboost's subsample/colsample_bytree/min_child_weight,
+  // lightgbm's n_estimators/max_depth/min_child_samples,
+  // hist_gradient_boosting's max_depth/min_samples_leaf/l2_regularization,
+  // ridge's fit_intercept, and svm's tol/max_iter each changed the fitted
+  // model's predictions from the library-default fit. The two nullable
+  // knobs (lightgbm/svm's max_iter-shaped fields, mapped to -1;
+  // hist_gradient_boosting's max_depth, which stays None) reproduce the
+  // default BIT-IDENTICALLY when passed null, proving neither path is
+  // coerced through int(). ridge's seed reversal was proven directly:
+  // solver=sag/saga gives identical predictions across two fits at the SAME
+  // seed and different predictions across two different seeds — the seed
+  // reaches the estimator now, where before this feature it never did.
+  //
+  // NOT RE-VERIFIED: no run has been launched through the wizard UI against
+  // 1.0.15, and the image is not pushed (same registry gap as every prior
+  // bump), so only this build host has it. random_forest, mlp, grp, pls,
+  // ols, lstm, gru receive no code change here and were not re-run.
   private readonly imageRef =
-    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.14';
+    process.env.TRAINING_IMAGE ?? 'scgc/soft-sensor-trainer:1.0.15';
   // private readonly network = process.env.TRAINING_NETWORK ?? 'dslake_default';
   private readonly network = 'monorepo_network';
   private readonly memoryBytes = Number(
