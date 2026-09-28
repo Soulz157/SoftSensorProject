@@ -444,6 +444,19 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
   lightgbm: [
     {
       kind: 'number',
+      key: 'n_estimators',
+      label: 'N-estimators',
+      defaultValue: 100,
+      step: 10,
+      min: 1,
+      suggestedRange: {
+        min: 100,
+        max: 500,
+        note: 'boosting rounds; pairs with learning_rate',
+      },
+    },
+    {
+      kind: 'number',
       key: 'learning_rate',
       label: 'Learning rate',
       defaultValue: 0.1,
@@ -466,6 +479,30 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
         min: 15,
         max: 63,
         note: 'leaf-wise growth: the main capacity control, not depth',
+      },
+    },
+    {
+      kind: 'nullable-number',
+      key: 'max_depth',
+      label: 'Max depth',
+      defaultValue: null,
+      suggestedRange: {
+        min: 3,
+        max: 12,
+        note: 'unlimited (-1) lets leaf-wise growth run past num_leaves alone',
+      },
+    },
+    {
+      kind: 'number',
+      key: 'min_child_samples',
+      label: 'Min child samples',
+      defaultValue: 20,
+      step: 1,
+      min: 1,
+      suggestedRange: {
+        min: 5,
+        max: 50,
+        note: 'minimum rows in a leaf; raise it to stop leaves that memorise a handful of rows',
       },
     },
     {

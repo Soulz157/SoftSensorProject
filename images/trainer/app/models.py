@@ -290,9 +290,19 @@ def build_model(
                                "data_sample_strategy": "goss"}
         else:
             boosting_kwargs = {"boosting_type": ui_boosting_type}
+        # MODEL-FLOW-027. `max_depth` is the same nullable-number shape as
+        # random_forest's (null = -1, lightgbm's own "unlimited"): None must
+        # be coerced to -1 here, never passed through, since LGBMRegressor
+        # takes -1 as a literal int, not None. `min_child_samples` is
+        # lightgbm's per-leaf row floor, the same role as sklearn's
+        # min_samples_leaf.
+        max_depth = hyperparameters.get("max_depth")
         return lightgbm.LGBMRegressor(
+            n_estimators=int(hyperparameters.get("n_estimators", 100)),
             learning_rate=float(hyperparameters.get("learning_rate", 0.1)),
             num_leaves=int(hyperparameters.get("num_leaves", 31)),
+            max_depth=int(max_depth) if max_depth is not None else -1,
+            min_child_samples=int(hyperparameters.get("min_child_samples", 20)),
             random_state=seed,
             **boosting_kwargs,
         )

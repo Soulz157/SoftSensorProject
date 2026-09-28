@@ -150,12 +150,17 @@ export const TIER_BANDS: Partial<Record<Algorithm, Record<string, TierBands>>> =
       min_samples_split: { tiny: [4, 60], small: [2, 40], large: [2, 20] },
     },
     lightgbm: {
+      n_estimators: { tiny: [30, 150], small: [50, 300], large: [200, 1000] },
       learning_rate: {
         tiny: [0.03, 0.3],
         small: [0.03, 0.3],
         large: [0.01, 0.2],
       },
       num_leaves: { tiny: [3, 15], small: [5, 31], large: [31, 255] },
+      max_depth: { tiny: [2, 5], small: [3, 8], large: [6, 16] },
+      // MODEL-FLOW-027. Opposite direction like MODEL-FLOW-026's
+      // min_samples_*: a bigger dataset needs a SMALLER row floor per leaf.
+      min_child_samples: { tiny: [10, 100], small: [5, 50], large: [5, 30] },
     },
     xgboost: {
       n_estimators: { tiny: [30, 150], small: [50, 300], large: [200, 1000] },

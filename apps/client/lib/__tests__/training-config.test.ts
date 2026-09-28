@@ -45,7 +45,15 @@ describe('defaultHyperparams', () => {
       'min_samples_leaf',
       'min_samples_split',
     ],
-    lightgbm: ['learning_rate', 'num_leaves', 'boosting_type'],
+    // MODEL-FLOW-027: the three capacity knobs joined the original three.
+    lightgbm: [
+      'learning_rate',
+      'num_leaves',
+      'boosting_type',
+      'n_estimators',
+      'max_depth',
+      'min_child_samples',
+    ],
     // MODEL-FLOW-027: the three capacity knobs joined the original three.
     xgboost: [
       'n_estimators',

@@ -47,7 +47,14 @@ export const CONSUMED_HYPERPARAM_KEYS: Record<Algorithm, string[]> = {
     'min_samples_leaf',
     'min_samples_split',
   ],
-  lightgbm: ['learning_rate', 'num_leaves', 'boosting_type'],
+  lightgbm: [
+    'learning_rate',
+    'num_leaves',
+    'boosting_type',
+    'n_estimators',
+    'max_depth',
+    'min_child_samples',
+  ],
   xgboost: [
     'n_estimators',
     'learning_rate',
