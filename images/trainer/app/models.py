@@ -239,10 +239,16 @@ def build_model(
                 "has the largest raw magnitude.",
                 "warn",
             )
+        # MODEL-FLOW-027. `max_iter` is the same nullable-number shape as
+        # lightgbm's max_depth (null = -1, SVR's own "no limit" sentinel):
+        # None must be coerced to the literal int -1, never passed through.
+        max_iter = hyperparameters.get("max_iter")
         return SVR(
             C=float(hyperparameters.get("C", 1.0)),
             kernel=str(hyperparameters.get("kernel", "rbf")),
             epsilon=float(hyperparameters.get("epsilon", 0.1)),
+            tol=float(hyperparameters.get("tol", 0.001)),
+            max_iter=int(max_iter) if max_iter is not None else -1,
         )
     if algorithm == "mlp":
         # UI sends a scalar hidden layer size (training-config.ts:80-105);

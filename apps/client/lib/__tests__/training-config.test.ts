@@ -42,7 +42,8 @@ describe('defaultHyperparams', () => {
       'min_samples_leaf',
       'l2_regularization',
     ],
-    svm: ['C', 'kernel', 'epsilon'],
+    // MODEL-FLOW-027: tol/max_iter joined the original three.
+    svm: ['C', 'kernel', 'epsilon', 'tol', 'max_iter'],
     mlp: ['hidden_layer_sizes', 'alpha', 'max_iter'],
     grp: ['alpha', 'n_restarts_optimizer'],
     pls: ['n_components', 'max_iter'],

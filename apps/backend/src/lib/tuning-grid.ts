@@ -100,11 +100,14 @@ export const TUNING_GRID: Record<string, HyperparamRecord[]> = {
       l2_regularization: 5,
     },
   ],
+  // MODEL-FLOW-027. tol/max_iter are constants across every variant here —
+  // this grid tunes C/kernel/epsilon only; the catalogue's other two svm
+  // fields are not size-tiered or searched.
   svm: [
-    { C: 0.1, kernel: 'rbf', epsilon: 0.1 },
-    { C: 10, kernel: 'rbf', epsilon: 0.01 },
-    { C: 1, kernel: 'linear', epsilon: 0.1 },
-    { C: 100, kernel: 'poly', epsilon: 0.05 },
+    { C: 0.1, kernel: 'rbf', epsilon: 0.1, tol: 0.001, max_iter: null },
+    { C: 10, kernel: 'rbf', epsilon: 0.01, tol: 0.001, max_iter: null },
+    { C: 1, kernel: 'linear', epsilon: 0.1, tol: 0.001, max_iter: null },
+    { C: 100, kernel: 'poly', epsilon: 0.05, tol: 0.001, max_iter: null },
   ],
   mlp: [
     { hidden_layer_sizes: 50, alpha: 0.0001, max_iter: 500 },
@@ -354,10 +357,10 @@ export const TUNING_GRID_OVERRIDES: Record<
       },
     ],
     svm: [
-      { C: 0.03, kernel: 'rbf', epsilon: 0.1 },
-      { C: 0.3, kernel: 'rbf', epsilon: 0.05 },
-      { C: 3, kernel: 'rbf', epsilon: 0.01 },
-      { C: 0.1, kernel: 'linear', epsilon: 0.1 },
+      { C: 0.03, kernel: 'rbf', epsilon: 0.1, tol: 0.001, max_iter: null },
+      { C: 0.3, kernel: 'rbf', epsilon: 0.05, tol: 0.001, max_iter: null },
+      { C: 3, kernel: 'rbf', epsilon: 0.01, tol: 0.001, max_iter: null },
+      { C: 0.1, kernel: 'linear', epsilon: 0.1, tol: 0.001, max_iter: null },
     ],
     mlp: [
       { hidden_layer_sizes: 16, alpha: 0.01, max_iter: 500 },
@@ -506,10 +509,10 @@ export const TUNING_GRID_OVERRIDES: Record<
       },
     ],
     svm: [
-      { C: 0.1, kernel: 'rbf', epsilon: 0.1 },
-      { C: 1, kernel: 'rbf', epsilon: 0.05 },
-      { C: 10, kernel: 'rbf', epsilon: 0.01 },
-      { C: 1, kernel: 'linear', epsilon: 0.1 },
+      { C: 0.1, kernel: 'rbf', epsilon: 0.1, tol: 0.001, max_iter: null },
+      { C: 1, kernel: 'rbf', epsilon: 0.05, tol: 0.001, max_iter: null },
+      { C: 10, kernel: 'rbf', epsilon: 0.01, tol: 0.001, max_iter: null },
+      { C: 1, kernel: 'linear', epsilon: 0.1, tol: 0.001, max_iter: null },
     ],
     mlp: [
       { hidden_layer_sizes: 32, alpha: 0.001, max_iter: 500 },
@@ -658,10 +661,10 @@ export const TUNING_GRID_OVERRIDES: Record<
       },
     ],
     svm: [
-      { C: 1, kernel: 'rbf', epsilon: 0.1 },
-      { C: 30, kernel: 'rbf', epsilon: 0.01 },
-      { C: 3, kernel: 'linear', epsilon: 0.1 },
-      { C: 300, kernel: 'poly', epsilon: 0.05 },
+      { C: 1, kernel: 'rbf', epsilon: 0.1, tol: 0.001, max_iter: null },
+      { C: 30, kernel: 'rbf', epsilon: 0.01, tol: 0.001, max_iter: null },
+      { C: 3, kernel: 'linear', epsilon: 0.1, tol: 0.001, max_iter: null },
+      { C: 300, kernel: 'poly', epsilon: 0.05, tol: 0.001, max_iter: null },
     ],
     mlp: [
       { hidden_layer_sizes: 200, alpha: 0.00001, max_iter: 500 },

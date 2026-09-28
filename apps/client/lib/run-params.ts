@@ -43,7 +43,7 @@ export const CONSUMED_HYPERPARAM_KEYS: Record<Algorithm, string[]> = {
     'min_samples_leaf',
     'l2_regularization',
   ],
-  svm: ['C', 'kernel', 'epsilon'],
+  svm: ['C', 'kernel', 'epsilon', 'tol', 'max_iter'],
   mlp: ['hidden_layer_sizes', 'alpha', 'max_iter'],
   grp: ['alpha', 'n_restarts_optimizer'],
   pls: ['n_components', 'max_iter'],

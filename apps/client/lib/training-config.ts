@@ -261,6 +261,30 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
         note: 'width of the no-penalty tube around the prediction',
       },
     },
+    {
+      kind: 'number',
+      key: 'tol',
+      label: 'Tolerance',
+      defaultValue: 0.001,
+      step: 0.0001,
+      min: 0,
+      suggestedRange: {
+        min: 0.0001,
+        max: 0.01,
+        note: 'stopping criterion; smaller keeps optimising longer',
+      },
+    },
+    {
+      kind: 'nullable-number',
+      key: 'max_iter',
+      label: 'Max iterations',
+      defaultValue: null,
+      suggestedRange: {
+        min: 1000,
+        max: 100000,
+        note: 'solver iteration cap; unlimited runs until tol is met',
+      },
+    },
   ],
   mlp: [
     {
