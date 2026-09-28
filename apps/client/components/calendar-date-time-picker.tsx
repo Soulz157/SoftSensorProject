@@ -18,26 +18,30 @@ import {
   dateToDay,
   dayToDate,
   formatStamp,
-  type DateBounds,
-} from '@/lib/retrain-validation-window'
+  type StampBounds,
+} from '@/lib/date-stamp'
 
 /**
- * One end of the retrain validation window: a calendar for the day plus a
- * time of day, as a single `yyyy-MM-ddTHH:mm` stamp.
+ * One end of a date-time window over a dataset: a calendar for the day plus
+ * a time of day, as a single `yyyy-MM-ddTHH:mm` stamp. The standard picker
+ * for any range bounded by real data — see DESIGN_SYSTEM.md, "Date-time
+ * range over data".
  *
  * A calendar, not a native `<input type="date">`: the native picker HIDES
- * every month outside its `min`/`max`, so for "New data only" (clamped to the
- * current version's cut) the dataset's earlier months could not even be paged
- * to. Here navigation spans the whole of the data and only the days outside
+ * every month outside its `min`/`max`, so a range clamped to part of the
+ * data (the retrain dialog's cut, for one) made the data's earlier months
+ * unreachable, which read as a picker that would not scroll. Here navigation
+ * spans the whole of the data (`dataBounds`) and only the days outside
  * `allowed` are greyed out.
  *
- * With a time, not a day alone: python checks the window against the data's
- * real first and last READING, so a dataset running 14:00 -> 13:00 next day
- * refused a whole-day window (00:00 -> 23:59:59). Picking a day starts at
- * `defaultTime` clamped into `allowed`, so the start lands on the first
- * reading and the end on the last without the operator touching the time.
+ * With a time, not a day alone: a server that checks a window against the
+ * data's real first and last READING refuses a whole-day window whenever the
+ * data starts or ends part-way through a day. Picking a day starts at
+ * `defaultTime` clamped into `allowed`, so a start lands on the first reading
+ * and an end on the last without the user touching the time.
  */
-export function RetrainValidationDayPicker({
+export function CalendarDateTimePicker({
+  id,
   label,
   value,
   onChange,
@@ -46,14 +50,17 @@ export function RetrainValidationDayPicker({
   defaultTime,
   disabled,
   invalid,
+  className,
 }: {
+  /** For a visible `<Label htmlFor>` beside the trigger. */
+  id?: string
   /** Accessible name, e.g. "Validation window start". */
   label: string
   /** `yyyy-MM-ddTHH:mm`, or '' when nothing is chosen yet. */
   value: string
   onChange: (stamp: string) => void
   /** The data's real first/last reading — how far the calendar can page. */
-  dataBounds: DateBounds | null
+  dataBounds: StampBounds | null
   /** The pickable instants. Either end may be absent. */
   allowed: { min?: string; max?: string }
   /** Time given to a freshly picked day, before clamping: '00:00' for a
@@ -61,6 +68,8 @@ export function RetrainValidationDayPicker({
   defaultTime: string
   disabled?: boolean
   invalid?: boolean
+  /** Trigger width etc. — e.g. `w-full` in a form grid. */
+  className?: string
 }) {
   const [open, setOpen] = useState(false)
   const timeId = useId()
@@ -78,7 +87,7 @@ export function RetrainValidationDayPicker({
     ...(maxDay ? [{ after: maxDay }] : []),
   ]
   // The time spinner's own limits, only on a day a bound falls on. The
-  // parent's validation is still the guard — a typed time gets through.
+  // caller's validation is still the guard — a typed time gets through.
   const timeMin =
     allowed.min && allowed.min.startsWith(day)
       ? allowed.min.slice(11)
@@ -92,6 +101,7 @@ export function RetrainValidationDayPicker({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button
+          id={id}
           type="button"
           variant="outline"
           aria-label={label}
@@ -100,6 +110,7 @@ export function RetrainValidationDayPicker({
           className={cn(
             'h-8 justify-start gap-2 px-2.5 text-xs font-normal tabular-nums',
             !value && 'text-muted-foreground',
+            className,
           )}
         >
           <CalendarIcon className="h-3.5 w-3.5 shrink-0" />
@@ -111,15 +122,15 @@ export function RetrainValidationDayPicker({
           mode="single"
           captionLayout="dropdown"
           selected={selected}
-          // Open on the chosen day, else the first pickable one — for "New
-          // data only" that is the cut, not the start of the data.
+          // Open on the chosen day, else the first pickable one — which may
+          // be later than the first day of data when `allowed` is narrower.
           defaultMonth={selected ?? minDay ?? firstDataDay ?? undefined}
           startMonth={firstDataDay ?? undefined}
           endMonth={lastDataDay ?? undefined}
           disabled={disabledDays}
           onSelect={date => {
             if (!date) return
-            // A re-picked day keeps the operator's own time, else the default.
+            // A re-picked day keeps the user's own time, else the default.
             onChange(clampStamp(dateToDay(date), time || defaultTime, allowed))
           }}
         />

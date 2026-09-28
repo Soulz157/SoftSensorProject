@@ -443,6 +443,34 @@ toast.error('Something went wrong')
 </div>
 ```
 
+### Date-time range over data
+
+Any start/end window picked **inside a dataset's real time span** (validation holdouts, retrain validation windows) uses `CalendarDateTimePicker` (`components/calendar-date-time-picker.tsx`): an outline trigger showing `yyyy-MM-dd HH:mm`, opening a popover with the shadcn `Calendar` (month/year dropdowns), a `Time` input and a **Done** button.
+
+```tsx
+<CalendarDateTimePicker
+  id="holdout-from" // pairs with a visible <Label htmlFor>
+  label="Validation holdout start" // accessible name
+  value={from} // 'yyyy-MM-ddTHH:mm' or ''
+  onChange={setFrom}
+  dataBounds={{ min: dataStart, max: dataEnd }} // how far the calendar pages
+  allowed={{ min: floor, max: to || dataEnd }} // what can be picked
+  defaultTime="00:00" // '23:59' for an end
+  invalid={error !== null}
+/>
+```
+
+Rules:
+
+- **Never a native `<input type="date">` / `datetime-local` for these.** The native picker hides every month outside `min`/`max`, so a range clamped to part of the data looks like a picker that won't scroll. The calendar pages across the whole of `dataBounds` and greys out only the days outside `allowed`.
+- **Always carry the time.** Servers check a window against the data's real first/last reading, so a whole-day window (00:00–23:59:59) is refused when the data starts or ends mid-day. Picking a day applies `defaultTime` (`00:00` start, `23:59` end) then clamps it into `allowed`, so two picked days are already a valid window.
+- **Narrow each end by the other**: start's `allowed.max` is the chosen end, end's `allowed.min` is the chosen start.
+- **Values are naive `yyyy-MM-ddTHH:mm` stamps**, compared as strings and never round-tripped through `Date` (helpers in `lib/date-stamp.ts`). Convert to ISO only at the API edge.
+- **State both ranges when they differ**: `Data covers A to B.` plus `Pickable: C to D.` in `text-[11px] text-muted-foreground`; an impossible range (`min > max`) gets one `text-destructive` sentence saying why and what to do, and the triggers disable.
+- The picker's `min`/`max` are guidance, not validation — the caller's own check (and the server) remain the guard, shown inline in `text-[11px] text-destructive`.
+
+The older five-select `DateTimePicker` (`components/date-time-picker.tsx`) remains for free-form fetch ranges that are not bounded by an existing dataset.
+
 ---
 
 ## 9. Dark Mode

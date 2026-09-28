@@ -15,12 +15,19 @@
  * `${stamp}:00.000Z`, and python's `_wall_clock` drops the `Z` again, so no
  * timezone conversion happens on either side of the comparison.
  */
-export interface DateBounds {
-  /** First instant a window may start, `yyyy-MM-ddTHH:mm`. */
-  min: string
-  /** Last instant a window may end, `yyyy-MM-ddTHH:mm`. */
-  max: string
-}
+import { formatStamp, type StampBounds } from './date-stamp'
+
+// The generic stamp helpers moved to `lib/date-stamp.ts` once a second
+// picker needed them; re-exported so this module's callers are unchanged.
+export {
+  clampStamp,
+  dateToDay,
+  dayToDate,
+  formatStamp,
+} from './date-stamp'
+
+/** The window's `[first, last]` allowed instants. */
+export type DateBounds = StampBounds
 
 const TIMESTAMP =
   /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?/
@@ -68,57 +75,9 @@ export function timeBoundsFrom(
   return min && max ? { min, max } : null
 }
 
-/** A stamp as the operator reads it: `yyyy-MM-dd HH:mm`. */
-export function formatStamp(stamp: string): string {
-  return stamp.replace('T', ' ')
-}
-
 /** The stamp as the ISO-8601 string the trigger DTO takes (naive, `Z`). */
 export function stampToIso(stamp: string): string {
   return `${stamp}:00.000Z`
-}
-
-/**
- * `day` at `time`, pulled inside `bounds` when it falls outside them. Used
- * when a day is picked: the start defaults to 00:00 and the end to 23:59, and
- * clamping turns those into the real first/last reading on a partial day —
- * so picking two days alone already yields a window the server accepts.
- */
-export function clampStamp(
-  day: string,
-  time: string,
-  bounds: { min?: string; max?: string },
-): string {
-  const stamp = `${day}T${time}`
-  if (bounds.min && stamp < bounds.min) return bounds.min
-  if (bounds.max && stamp > bounds.max) return bounds.max
-  return stamp
-}
-
-/**
- * A `yyyy-MM-dd` day as a LOCAL-midnight Date, for the calendar picker, or
- * `null` when it is empty or not a real day. Local, not UTC: the calendar
- * renders local days, and `new Date('2026-01-01')` would parse as UTC
- * midnight and show as the previous day anywhere west of Greenwich.
- */
-export function dayToDate(day: string): Date | null {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day)
-  if (!m) return null
-  const [y, mo, d] = [Number(m[1]), Number(m[2]) - 1, Number(m[3])]
-  const date = new Date(y, mo, d)
-  // Rejects rollover ("2026-13-45" would otherwise become a 2027 date).
-  return date.getFullYear() === y &&
-    date.getMonth() === mo &&
-    date.getDate() === d
-    ? date
-    : null
-}
-
-/** The inverse of `dayToDate`: a Date's LOCAL calendar day as `yyyy-MM-dd`. */
-export function dateToDay(date: Date): string {
-  const mm = String(date.getMonth() + 1).padStart(2, '0')
-  const dd = String(date.getDate()).padStart(2, '0')
-  return `${date.getFullYear()}-${mm}-${dd}`
 }
 
 /**

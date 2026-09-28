@@ -5,7 +5,8 @@ import { useAtom, useAtomValue } from 'jotai'
 import { Check, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
-import { DateTimePicker, toDateTimeLocal } from '@/components/date-time-picker'
+import { toDateTimeLocal } from '@/components/date-time-picker'
+import { CalendarDateTimePicker } from '@/components/calendar-date-time-picker'
 import { describeHoldoutSelection } from '@/lib/holdout'
 import { resolveInterval } from '@/lib/dataset-fetch'
 import {
@@ -28,7 +29,7 @@ import type { Dataset } from '@/lib/preprocessing'
  * sorted ascending by timestamp (`mergeDataset`, lib/dataset-fetch.ts), so
  * the first/last row are the true bounds. Round-tripped through `Date` so
  * whatever timestamp string shape the source produced normalises to the
- * same "YYYY-MM-DDTHH:MM" `DateTimePicker` expects.
+ * same "YYYY-MM-DDTHH:MM" stamp `CalendarDateTimePicker` expects.
  */
 function deriveRawWindow(raw: Dataset): CustomDateRange | null {
   const first = raw.rows[0]
@@ -103,6 +104,10 @@ export function ValidationHoldoutSection({
   const rawWindow = deriveRawWindow(raw)
   const fetchFrom = rawWindow?.from ?? ''
   const fetchTo = rawWindow?.to ?? ''
+  // The calendar pages across the whole fetched window; a day outside it is
+  // greyed rather than hidden (DESIGN_SYSTEM.md, "Date-time range over data").
+  const dataBounds =
+    fetchFrom && fetchTo ? { min: fetchFrom, max: fetchTo } : null
   const interval =
     fetchConfig.summaryDuration.trim() ||
     resolveInterval(period, customInterval)
@@ -192,26 +197,34 @@ export function ValidationHoldoutSection({
           <Label htmlFor="mp-holdout-from" className="text-xs">
             Start
           </Label>
-          <DateTimePicker
+          <CalendarDateTimePicker
             id="mp-holdout-from"
+            label="Validation holdout start"
             value={draftFrom}
-            min={fetchFrom}
-            max={fetchTo}
-            disabled={disabled || warmPending}
             onChange={setDraftFrom}
+            dataBounds={dataBounds}
+            allowed={{ min: fetchFrom, max: draftTo || fetchTo }}
+            defaultTime="00:00"
+            disabled={disabled || warmPending}
+            invalid={guard.refusals.length > 0}
+            className="w-full"
           />
         </div>
         <div className="grid gap-1.5">
           <Label htmlFor="mp-holdout-to" className="text-xs">
             End
           </Label>
-          <DateTimePicker
+          <CalendarDateTimePicker
             id="mp-holdout-to"
+            label="Validation holdout end"
             value={draftTo}
-            min={fetchFrom}
-            max={fetchTo}
-            disabled={disabled || warmPending}
             onChange={setDraftTo}
+            dataBounds={dataBounds}
+            allowed={{ min: draftFrom || fetchFrom, max: fetchTo }}
+            defaultTime="23:59"
+            disabled={disabled || warmPending}
+            invalid={guard.refusals.length > 0}
+            className="w-full"
           />
         </div>
       </div>

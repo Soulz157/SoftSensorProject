@@ -33,7 +33,7 @@ import type { DatasetVersion } from '@/services/dataset-version'
 import type { RetrainIncumbent } from '@/services/model-retrain'
 import { RetrainFetchNewData } from './retrain-fetch-new-data'
 import { RetrainVersionEda } from './retrain-version-eda'
-import { RetrainValidationDayPicker } from './retrain-validation-day-picker'
+import { CalendarDateTimePicker } from '@/components/calendar-date-time-picker'
 
 export type RetrainDataStrategy =
   | 'KEEP_EXISTING'
@@ -531,7 +531,7 @@ export function RetrainDataStrategy({
                   page across the whole of the data and grey out only the
                   days that cannot be picked. */}
               <div className="flex flex-wrap items-center gap-2">
-                <RetrainValidationDayPicker
+                <CalendarDateTimePicker
                   label="Validation window start"
                   value={windowFrom}
                   defaultTime="00:00"
@@ -545,7 +545,7 @@ export function RetrainDataStrategy({
                   invalid={windowError !== null}
                 />
                 <span className="text-xs text-muted-foreground">to</span>
-                <RetrainValidationDayPicker
+                <CalendarDateTimePicker
                   label="Validation window end"
                   value={windowTo}
                   defaultTime="23:59"
