@@ -3947,16 +3947,37 @@
       "id": "MODEL-FLOW-027",
       "title": "The remaining five additive algorithms get their capacity knobs",
       "priority": "medium",
-      "status": "in_progress",
-      "progress": 5,
+      "status": "completed",
+      "progress": 100,
       "dependencies": ["MODEL-FLOW-026"],
       "description": "The other five algorithms from the 2026-09-23 audit, same five-layer pattern MODEL-FLOW-026 established: xgboost (subsample, colsample_bytree, min_child_weight), lightgbm (n_estimators, max_depth, min_child_samples), hist_gradient_boosting (max_depth, min_samples_leaf, l2_regularization), ridge (fit_intercept, solver), svm (tol, max_iter). Field lists are proposals, to be confirmed against each library's signature. One algorithm per commit; a red exact-equality test cannot say which algorithm broke. Needs one more trainer rebuild at the end.",
       "userDecisions": [
-        "OUT OF SCOPE, EACH NEEDS ITS OWN DESIGN (2026-09-23): mlp (hidden_layer_sizes is a scalar wrapped to a 1-tuple; multi-layer is a type change), lstm/gru (architecture hardcoded, fixed Adam/MSE — knobs need constructor params), svm degree/gamma (kernel-conditional, needs a new catalogue kind), grp and pls (no size-tier bands by design), ols (one boolean)."
+        "OUT OF SCOPE, EACH NEEDS ITS OWN DESIGN (2026-09-23): mlp (hidden_layer_sizes is a scalar wrapped to a 1-tuple; multi-layer is a type change), lstm/gru (architecture hardcoded, fixed Adam/MSE — knobs need constructor params), svm degree/gamma (kernel-conditional, needs a new catalogue kind), grp and pls (no size-tier bands by design), ols (one boolean).",
+        "RIDGE SOLVER OPTIONS (2026-09-28): all sklearn 1.5.2 Ridge solvers except lbfgs (auto, svd, cholesky, lsqr, sparse_cg, sag, saga) — lbfgs raises unless positive=True, which this catalogue never sets. sag/saga are the only two that consult random_state, which REVERSES the prior 'random_state dropped, inert' design: ridge now always forwards random_state=seed and joins SEED_CONSUMING_ALGORITHMS. Every test asserting the old ridge-drops-seed behaviour (run-params.test.ts's two cases, core-config's 'ignored by' hint pairing, run-params-panel's seed chip, use-model-training/use-tuning-variant-counts fixtures) was updated to the reversal rather than left red."
       ],
       "findings": [
         "Order matters: bands FIRST, then grid values, because T05 and the MODEL-FLOW-024 assertions require every tier's variant values to sit inside that tier's band.",
-        "Watch the checkbox alignment when adding ridge's fit_intercept — dynamic-hyperparameters.tsx gives the checkbox case a hand-tuned pt-6 to line up with a labelled Input sibling, which misaligns beside a field that carries a RangeHint."
+        "Watch the checkbox alignment when adding ridge's fit_intercept — dynamic-hyperparameters.tsx gives the checkbox case a hand-tuned pt-6 to line up with a labelled Input sibling, which misaligns beside a field that carries a RangeHint. FIXED: self-start on the checkbox wrapper pins it to the grid cell's top instead of the stretched cell's centre.",
+        "min_child_weight (xgboost), min_child_samples (lightgbm), min_samples_leaf (hist_gradient_boosting) all run the tier bands OPPOSITE direction, same as MODEL-FLOW-026's min_samples_*: they are floors against overfitting to noise, so a bigger dataset wants a SMALLER floor.",
+        "Two nullable-number shapes beyond random_forest's: lightgbm's max_depth and svm's max_iter both map null to their library's own sentinel (-1), never None — a coercion trap distinct from hist_gradient_boosting's max_depth, which (like random_forest's) accepts None directly.",
+        "PRE-EXISTING, NOT FROM THIS WORK: core-config.test.tsx's 7 'Seed control' test cases were already red before any MODEL-FLOW-027 commit (confirmed via a diff against eb9a0e8, the pre-work HEAD) — CoreConfig defines a SeedControl function but never renders it in its return tree, dead code unrelated to hyperparameter catalogues. Also pre-existing and untouched by any of this feature's commits: model-run.authorized.controller.spec.ts fails on a RunTokenGuard/PrismaService DI wiring gap.",
+        "LOCAL REBUILD, NO REGISTRY FIX (same as MODEL-FLOW-026). Trainer image bumped 1.0.14 -> 1.0.15, built and verified on this build host only; the broken scgc/ push credential stays out of scope."
+      ],
+      "acceptanceCriteria": [
+        "All 15 new fields (3 per algorithm x 5) render in Step 2 for their algorithm and carry no 'unused' badge.",
+        "lightgbm's max_depth and svm's max_iter offer the unlimited toggle and send null, not -1.",
+        "Find Best Parameters variants include every new key at every size tier, each capacity-dial value inside that tier's band; ridge/svm's non-capacity fields (fit_intercept/solver, tol/max_iter) are constants across variants.",
+        "ridge now shows in the run-params panel as a seed-consuming algorithm, matching the trainer's random_state=seed forward."
+      ],
+      "verification": [
+        "backend jest src/lib/tuning-grid.spec.ts + tuning-grid.authorized.service.spec.ts — 92 passed (was 78 at MODEL-FLOW-026 close).",
+        "backend jest src/api/v1/trainning-container — 13 passed after the image bump.",
+        "client vitest run-params + training-config-grid-agreement + hyperparam-ranges + training-config + tuning-preview + variant-preview + algorithm-stack + use-model-training + use-tuning-variant-counts + use-apply-run-params + use-tuning-grid + run-params-panel + automl-toggles — 588 passed.",
+        "Trainer image 1.0.15 built from the repo root; 69 Python tests passed inside it (docker run --entrypoint bash, all inherited, no new Python test added).",
+        "IN-IMAGE BEHAVIOURAL PROOF on a 400-row synthetic frame at seed 42: pushing xgboost's subsample/colsample_bytree/min_child_weight, lightgbm's n_estimators/max_depth/min_child_samples, hist_gradient_boosting's max_depth/min_samples_leaf/l2_regularization, ridge's fit_intercept, and svm's tol/max_iter each changed the fitted model's predictions from the library-default fit. lightgbm's max_depth=null and svm's max_iter=null each reproduce the default bit-identically (proving the nullable path is not coerced through int()); so does hist_gradient_boosting's max_depth=null. ridge's seed reversal was proven directly: solver=sag/saga gives identical predictions across two fits at the SAME seed and different predictions across two DIFFERENT seeds.",
+        "pnpm check-types: no new errors in any touched file (spot-checked via grep against the tsc output); pre-existing reds noted at MODEL-FLOW-026 close were not re-verified line-for-line.",
+        "NOT DONE: no run has been launched through the wizard UI against 1.0.15, and the image is not pushed, so only this build host has it. The ridge checkbox-alignment CSS fix (self-start) was not visually confirmed in a running dev server — unit/DOM tests do not render real layout.",
+        "SCOPE OF THE IMAGE BUMP: imageRef 1.0.14 -> 1.0.15 changes the container EVERY algorithm trains in, but the behavioural proof above covers only the five algorithms this feature touched. random_forest, mlp, grp, pls, ols, lstm, gru receive no code change and were not re-run."
       ]
     }
   ],
