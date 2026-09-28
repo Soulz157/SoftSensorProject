@@ -150,7 +150,13 @@ function HyperparamControl({
     case 'checkbox': {
       const checked = typeof value === 'boolean' ? value : field.defaultValue
       return (
-        <div className="flex items-center gap-2 pt-6">
+        // MODEL-FLOW-027. `self-start` pins this to the top of its grid
+        // cell: the grid's default `align-items: stretch` otherwise stretches
+        // this cell to the row's tallest sibling (an Input+RangeHint pair,
+        // e.g. ridge's alpha beside fit_intercept), and `items-center` would
+        // then center the checkbox+label within that stretched cell instead
+        // of lining it up with the Input row above the sibling's hint text.
+        <div className="flex items-center gap-2 self-start pt-6">
           <Checkbox
             id={field.key}
             checked={checked}

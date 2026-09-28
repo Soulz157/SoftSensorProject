@@ -31,7 +31,8 @@ describe('defaultHyperparams', () => {
 
   const expectedKeys: Record<Algorithm, string[]> = {
     ols: ['fit_intercept'],
-    ridge: ['alpha'],
+    // MODEL-FLOW-027: fit_intercept/solver joined the original alpha.
+    ridge: ['alpha', 'fit_intercept', 'solver'],
     // MODEL-FLOW-027: the three capacity knobs joined the original three.
     hist_gradient_boosting: [
       'learning_rate',
@@ -95,7 +96,11 @@ describe('defaultHyperparams', () => {
     // build_model didn't implement. This pins the catalogue side of the fix.
     expect(ALGORITHMS).toContain('ridge')
     expect(ALGORITHMS).toContain('hist_gradient_boosting')
-    expect(defaultHyperparams('ridge')).toEqual({ alpha: 1.0 })
+    expect(defaultHyperparams('ridge')).toEqual({
+      alpha: 1.0,
+      fit_intercept: true,
+      solver: 'auto',
+    })
   })
 
   it('returns an empty record for an unknown/legacy algorithm rather than throwing', () => {

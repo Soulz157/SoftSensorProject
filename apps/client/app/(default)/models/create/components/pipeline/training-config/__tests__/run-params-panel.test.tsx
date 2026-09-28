@@ -498,15 +498,13 @@ describe('RunParamsPanel (MODEL-FLOW-012)', () => {
     )
   })
 
-  it('shows the seed chip MARKED unused for ridge, which train.py never passes random_state to', () => {
+  it('shows the seed chip with NO unused marker for ridge — MODEL-FLOW-027 reversal, sag/saga now consume it', () => {
     renderPanel([run({ algorithm: 'ridge', seed: 4242 })])
     const chip = screen.getByText('seed 4242').closest('span[title]')
-    expect(chip).toHaveTextContent('unused')
-    // The marker alone would not say WHY. The title names the estimator, the
-    // same sentence the unconsumed-hyperparameter chips carry.
+    expect(chip).not.toHaveTextContent('unused')
     expect(chip).toHaveAttribute(
       'title',
-      'Ridge Regression does not read the seed — it had no effect on the fit.',
+      'Estimator seed — this algorithm consumes it.',
     )
   })
 })

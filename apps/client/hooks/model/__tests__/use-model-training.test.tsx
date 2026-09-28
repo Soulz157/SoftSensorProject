@@ -141,7 +141,16 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
       expect.objectContaining({
         kind: 'HYPERPARAMETER_SEARCH',
         targetY: 'TI-101',
-        candidates: [{ algorithm: 'ridge', hyperparameters: { alpha: 1.0 } }],
+        candidates: [
+          {
+            algorithm: 'ridge',
+            hyperparameters: {
+              alpha: 1.0,
+              fit_intercept: true,
+              solver: 'auto',
+            },
+          },
+        ],
       }),
     )
     expect(modelDraftRunService.create).not.toHaveBeenCalled()
@@ -294,7 +303,14 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
         targetY: 'TI-101',
         candidates: [
           { algorithm: 'ols', hyperparameters: { fit_intercept: true } },
-          { algorithm: 'ridge', hyperparameters: { alpha: 1.0 } },
+          {
+            algorithm: 'ridge',
+            hyperparameters: {
+              alpha: 1.0,
+              fit_intercept: true,
+              solver: 'auto',
+            },
+          },
         ],
       }),
     )
@@ -340,7 +356,14 @@ describe('useModelTraining — MODEL-FLOW-013-T07/T11', () => {
         kind: 'ALGORITHM_SWEEP',
         candidates: [
           { algorithm: 'ols', hyperparameters: { fit_intercept: true } },
-          { algorithm: 'ridge', hyperparameters: { alpha: 0.037 } },
+          {
+            algorithm: 'ridge',
+            hyperparameters: {
+              alpha: 0.037,
+              fit_intercept: true,
+              solver: 'auto',
+            },
+          },
           expect.objectContaining({ algorithm: 'xgboost' }),
         ],
       }),

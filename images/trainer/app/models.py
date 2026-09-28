@@ -189,9 +189,24 @@ def build_model(
             random_state=seed,
         )
     if algorithm == "ridge":
-        # random_state dropped: Ridge only consults it for solver='sag'/'saga',
-        # neither of which is reachable here — it was inert, not load-bearing.
-        return Ridge(alpha=float(hyperparameters.get("alpha", 1.0)))
+        # MODEL-FLOW-027. `solver='lbfgs'` is deliberately absent from the
+        # UI's options — it raises unless `positive=True`, which this branch
+        # never sets — so every solver the catalogue can send is one Ridge
+        # actually accepts. `sag`/`saga` are the only two that consult
+        # `random_state` (for their stochastic row order); the other five
+        # ignore it, same inert-until-used shape GaussianProcessRegressor's
+        # `random_state` already has for a kernel with no randomness in it.
+        # random_state is therefore passed unconditionally rather than only
+        # for sag/saga — passing it to a solver that ignores it is harmless,
+        # and a conditional kwarg here would be the one branch in this file
+        # that reads its own `hyperparameters` twice to decide its own
+        # signature.
+        return Ridge(
+            alpha=float(hyperparameters.get("alpha", 1.0)),
+            fit_intercept=bool(hyperparameters.get("fit_intercept", True)),
+            solver=str(hyperparameters.get("solver", "auto")),
+            random_state=seed,
+        )
     if algorithm == "ols":
         # `fit_intercept` is the UI's only ols knob (training-config.ts:42-49)
         # and was previously collected, validated, and echoed into

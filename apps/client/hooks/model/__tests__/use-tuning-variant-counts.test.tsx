@@ -12,9 +12,18 @@ import { useTuningVariantCounts } from '../use-tuning-variant-counts'
 
 type Props = Parameters<typeof useTuningVariantCounts>[0]
 
+// MODEL-FLOW-027: ridge variants now carry fit_intercept/solver alongside
+// alpha — the base built from `hyperparameters` merges in ridge's own
+// defaults for those two fields, so a variant missing them would never be
+// recognised as already covered.
 const ridgeGrid: TuningGridResponse = {
   algorithm: 'ridge',
-  variants: [{ alpha: 3 }, { alpha: 10 }, { alpha: 30 }, { alpha: 100 }],
+  variants: [
+    { alpha: 3, fit_intercept: true, solver: 'auto' },
+    { alpha: 10, fit_intercept: true, solver: 'auto' },
+    { alpha: 30, fit_intercept: true, solver: 'auto' },
+    { alpha: 100, fit_intercept: true, solver: 'auto' },
+  ],
   maxVariantsPerJob: 4,
   tier: 'medium',
   sized: false,

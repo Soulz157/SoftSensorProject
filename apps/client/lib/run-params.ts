@@ -34,7 +34,7 @@ import type {
  */
 export const CONSUMED_HYPERPARAM_KEYS: Record<Algorithm, string[]> = {
   ols: ['fit_intercept'],
-  ridge: ['alpha'],
+  ridge: ['alpha', 'fit_intercept', 'solver'],
   hist_gradient_boosting: [
     'learning_rate',
     'n_estimators',
@@ -76,14 +76,17 @@ export const CONSUMED_HYPERPARAM_KEYS: Record<Algorithm, string[]> = {
 
 /**
  * `seed` is generated and recorded on every run (model-run-launch.authorized
- * .service.ts). `train.py` forwards it to 8 of the 12 algorithms —
- * ridge/ols/svm/pls never see it. Six as `random_state=seed` (the sklearn/
+ * .service.ts). `train.py` forwards it to 9 of the 12 algorithms —
+ * ols/svm/pls never see it. Seven as `random_state=seed` (the sklearn/
  * lightgbm/xgboost convention); `lstm`/`gru` as `seed=seed` on
  * `SequenceRegressor` instead (MODEL-FLOW-014-T07 CORRECTION — the prior
  * six-algorithm list predates MODEL-FLOW-009-T04's windowing pipeline and
- * was stale). A bare seed value is more misleading here than an unconsumed
- * hyperparameter, since it is present on every run regardless of whether it
- * did anything.
+ * was stale). MODEL-FLOW-027 added ridge: it always receives
+ * `random_state=seed` now, though only its `sag`/`saga` solvers actually
+ * consult it — the other five ignore it, same inert-until-used shape
+ * `random_state` already has for grp's kernel. A bare seed value is more
+ * misleading here than an unconsumed hyperparameter, since it is present on
+ * every run regardless of whether it did anything.
  */
 export const SEED_CONSUMING_ALGORITHMS: Algorithm[] = [
   'hist_gradient_boosting',
@@ -92,6 +95,7 @@ export const SEED_CONSUMING_ALGORITHMS: Algorithm[] = [
   'random_forest',
   'lightgbm',
   'xgboost',
+  'ridge',
   'lstm',
   'gru',
 ]

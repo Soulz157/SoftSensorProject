@@ -57,7 +57,15 @@ const SEQUENCE_VARIANTS: HyperparamRecord[] = [
 
 export const TUNING_GRID: Record<string, HyperparamRecord[]> = {
   ols: [{ fit_intercept: false }],
-  ridge: [{ alpha: 0.01 }, { alpha: 0.1 }, { alpha: 10 }, { alpha: 100 }],
+  // MODEL-FLOW-027. fit_intercept/solver are constants across every variant
+  // here — this grid tunes alpha only; the catalogue's other two ridge
+  // fields are not size-tiered or searched.
+  ridge: [
+    { alpha: 0.01, fit_intercept: true, solver: 'auto' },
+    { alpha: 0.1, fit_intercept: true, solver: 'auto' },
+    { alpha: 10, fit_intercept: true, solver: 'auto' },
+    { alpha: 100, fit_intercept: true, solver: 'auto' },
+  ],
   hist_gradient_boosting: [
     {
       learning_rate: 0.05,
@@ -305,7 +313,12 @@ export const TUNING_GRID_OVERRIDES: Record<
   Record<string, HyperparamRecord[]>
 > = {
   tiny: {
-    ridge: [{ alpha: 3 }, { alpha: 10 }, { alpha: 30 }, { alpha: 100 }],
+    ridge: [
+      { alpha: 3, fit_intercept: true, solver: 'auto' },
+      { alpha: 10, fit_intercept: true, solver: 'auto' },
+      { alpha: 30, fit_intercept: true, solver: 'auto' },
+      { alpha: 100, fit_intercept: true, solver: 'auto' },
+    ],
     hist_gradient_boosting: [
       {
         learning_rate: 0.05,
@@ -452,7 +465,12 @@ export const TUNING_GRID_OVERRIDES: Record<
     ],
   },
   small: {
-    ridge: [{ alpha: 0.3 }, { alpha: 3 }, { alpha: 10 }, { alpha: 30 }],
+    ridge: [
+      { alpha: 0.3, fit_intercept: true, solver: 'auto' },
+      { alpha: 3, fit_intercept: true, solver: 'auto' },
+      { alpha: 10, fit_intercept: true, solver: 'auto' },
+      { alpha: 30, fit_intercept: true, solver: 'auto' },
+    ],
     hist_gradient_boosting: [
       {
         learning_rate: 0.05,
@@ -599,7 +617,12 @@ export const TUNING_GRID_OVERRIDES: Record<
     ],
   },
   large: {
-    ridge: [{ alpha: 0.001 }, { alpha: 0.01 }, { alpha: 0.1 }, { alpha: 10 }],
+    ridge: [
+      { alpha: 0.001, fit_intercept: true, solver: 'auto' },
+      { alpha: 0.01, fit_intercept: true, solver: 'auto' },
+      { alpha: 0.1, fit_intercept: true, solver: 'auto' },
+      { alpha: 10, fit_intercept: true, solver: 'auto' },
+    ],
     hist_gradient_boosting: [
       {
         learning_rate: 0.05,

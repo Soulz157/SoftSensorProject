@@ -248,22 +248,25 @@ describe('SEED_CONSUMING_ALGORITHMS matches images/trainer/app/models.py, read l
     expect([...SEED_CONSUMING_ALGORITHMS].sort()).toEqual([...actual].sort())
   })
 
-  it('ridge explicitly drops random_state — a documented refusal, not merely an unmentioned field', () => {
+  it('ridge explicitly forwards random_state — MODEL-FLOW-027 reversal, sag/saga are the consumers', () => {
     const headers = headerIndices(buildModelBody)
     const ridge = headers.find(h => h.algorithm === 'ridge')
     expect(ridge).toBeDefined()
     const ridgeBlock = blockFor(buildModelBody, headers, ridge!.index)
-    expect(ridgeBlock).toMatch(/random_state dropped/)
-    expect(actual.has('ridge')).toBe(false)
+    expect(ridgeBlock).toMatch(/random_state=seed/)
+    expect(actual.has('ridge')).toBe(true)
   })
 })
 
 describe('seedConsumedBy', () => {
-  it('is false for ridge/ols/svm/pls — train.py never passes random_state to them', () => {
-    expect(seedConsumedBy('ridge')).toBe(false)
+  it('is false for ols/svm/pls — train.py never passes random_state to them', () => {
     expect(seedConsumedBy('ols')).toBe(false)
     expect(seedConsumedBy('svm')).toBe(false)
     expect(seedConsumedBy('pls')).toBe(false)
+  })
+
+  it('is true for ridge — MODEL-FLOW-027 always forwards random_state, though only sag/saga consult it', () => {
+    expect(seedConsumedBy('ridge')).toBe(true)
   })
 
   it('is true for an estimator that receives random_state=seed', () => {

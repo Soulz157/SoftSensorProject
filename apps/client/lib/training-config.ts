@@ -113,6 +113,31 @@ export const HYPERPARAMS: Record<Algorithm, HyperparamField[]> = {
         note: 'higher = stronger L2 shrinkage toward zero',
       },
     },
+    {
+      kind: 'checkbox',
+      key: 'fit_intercept',
+      label: 'Fit intercept',
+      defaultValue: true,
+    },
+    {
+      kind: 'select',
+      key: 'solver',
+      label: 'Solver',
+      defaultValue: 'auto',
+      // MODEL-FLOW-027. `lbfgs` deliberately excluded: sklearn raises unless
+      // `positive=True`, which this catalogue never sets, so every option
+      // here is one Ridge actually accepts. `sag`/`saga` are the two that
+      // consult the run's seed (models.py's ridge branch).
+      options: [
+        { value: 'auto', label: 'auto' },
+        { value: 'svd', label: 'svd' },
+        { value: 'cholesky', label: 'cholesky' },
+        { value: 'lsqr', label: 'lsqr' },
+        { value: 'sparse_cg', label: 'sparse_cg' },
+        { value: 'sag', label: 'sag' },
+        { value: 'saga', label: 'saga' },
+      ],
+    },
   ],
   // Key names match `xgboost`/`lightgbm` below on purpose, not `max_iter` /
   // `max_leaf_nodes` (the estimator's real kwargs) — train.py's

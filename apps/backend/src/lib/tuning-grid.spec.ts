@@ -367,7 +367,14 @@ describe('tuningVariantsFor', () => {
 
 describe('tuningCandidatesFor', () => {
   it('excludes a variant identical to what already ran', () => {
-    const result = tuningCandidatesFor('ridge', { alpha: 0.1 });
+    // MODEL-FLOW-027: ridge variants now carry fit_intercept/solver
+    // alongside alpha, so alreadyTried must be the full record to match by
+    // whole-record equality.
+    const result = tuningCandidatesFor('ridge', {
+      alpha: 0.1,
+      fit_intercept: true,
+      solver: 'auto',
+    });
     expect(result.some((v) => v.alpha === 0.1)).toBe(false);
   });
 
@@ -387,14 +394,22 @@ describe('tuningCandidatesFor', () => {
 
   it('keeps the original whole-record comparison for tabular algorithms: a base with an extra key does not cover a variant', () => {
     // Pinned to PRESERVE pre-existing behaviour, not to endorse it. Comparing
-    // on the variant's keys alone (which lstm/gru need) would exclude
-    // { alpha: 0.01 } here, silently narrowing what a retrain search tries for
-    // a base that carries a key the grid does not name.
+    // on the variant's keys alone (which lstm/gru need) would exclude the
+    // matching variant here, silently narrowing what a retrain search tries
+    // for a base that carries a key the grid does not name. MODEL-FLOW-027:
+    // ridge variants now carry fit_intercept/solver too, so the "extra key"
+    // this base needs beyond a full variant record is a fourth, made-up one.
     const result = tuningCandidatesFor('ridge', {
       alpha: 0.01,
       fit_intercept: true,
+      solver: 'auto',
+      unrelated_extra_key: true,
     });
-    expect(result).toContainEqual({ alpha: 0.01 });
+    expect(result).toContainEqual({
+      alpha: 0.01,
+      fit_intercept: true,
+      solver: 'auto',
+    });
   });
 
   it('with no size figure is what it was before sizing existed', () => {
