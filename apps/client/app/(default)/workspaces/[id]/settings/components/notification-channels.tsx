@@ -276,13 +276,17 @@ export function NotificationChannels({ workspaceId }: Props) {
                             )}
                           </Button>
                         </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem onClick={() => handleTest(channel)}>
+                        <DropdownMenuContent align="end" className="w-full">
+                          <DropdownMenuItem
+                            onClick={() => handleTest(channel)}
+                            className="cursor-pointer"
+                          >
                             <Send className="h-3.5 w-3.5" />
                             Send test notification
                           </DropdownMenuItem>
                           <DropdownMenuItem
                             onClick={() => setHistoryChannel(channel)}
+                            className="cursor-pointer"
                           >
                             <History className="h-3.5 w-3.5" />
                             Delivery history
@@ -292,11 +296,12 @@ export function NotificationChannels({ workspaceId }: Props) {
                               <DropdownMenuSeparator />
                               <DropdownMenuItem
                                 onClick={() => openEdit(channel)}
+                                className="cursor-pointer"
                               >
                                 Edit
                               </DropdownMenuItem>
                               <DropdownMenuItem
-                                className="text-destructive focus:text-destructive"
+                                className="text-destructive focus:text-destructive cursor-pointer"
                                 onClick={() => handleDelete(channel)}
                               >
                                 Delete

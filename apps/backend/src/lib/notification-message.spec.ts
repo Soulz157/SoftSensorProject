@@ -8,6 +8,37 @@ import {
 const PRESIGNED =
   'https://minio.local/bucket/key?X-Amz-Signature=abcd1234&X-Amz-Credential=secret';
 
+describe('buildNotificationMessage timestamp formatting', () => {
+  it('renders "Date Month Year time UTC", not the raw ISO string', () => {
+    const msg = buildNotificationMessage({
+      modelId: 'model-1',
+      modelName: 'Reactor Temp',
+      workspaceName: 'Plant A',
+      axis: 'MONITORING',
+      title: 'test',
+      detail: 'normal -> alert',
+      severity: 'CRITICAL',
+      at: new Date('2026-09-29T06:23:21.724Z'),
+    });
+    expect(msg.bodyText).toContain('29 September 2026 06:23:21 UTC');
+    expect(msg.bodyText).not.toContain('2026-09-29T06:23:21');
+  });
+
+  it('zero-pads a single-digit hour/minute/second', () => {
+    const msg = buildNotificationMessage({
+      modelId: 'model-1',
+      modelName: 'M',
+      workspaceName: 'W',
+      axis: null,
+      title: 't',
+      detail: 'd',
+      severity: 'INFO',
+      at: new Date('2026-01-05T03:04:09.000Z'),
+    });
+    expect(msg.bodyText).toContain('5 January 2026 03:04:09 UTC');
+  });
+});
+
 describe('buildNotificationMessage redaction (MODEL-SERVE-022 V02)', () => {
   it('redacts a presigned URL carried in rawDetailSuffix', () => {
     const msg = buildNotificationMessage({

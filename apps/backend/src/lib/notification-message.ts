@@ -43,12 +43,39 @@ export interface RenderedMessage {
   modelUrl: string;
 }
 
+const MONTH_NAMES = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
+
 /** Wall-clock time in UTC — no plant-local timezone field exists on Model,
  *  Workspace or WorkspacePlant today (checked at T01), so plant-local
  *  cannot be shown without inventing one; UTC is the honest single value
- *  available. */
+ *  available.
+ *
+ * Rendered as "29 September 2026 06:23:21 UTC" rather than the raw ISO
+ * string — a reader opening this from a phone notification or a Teams
+ * card should not have to parse `2026-09-29T06:23:21.724Z` themselves.
+ * Uses the UTC getters directly (no date library added for one function —
+ * this codebase has no date-formatting dependency in the backend). */
 function formatTimestamp(at: Date): string {
-  return `${at.toISOString()} UTC`;
+  const day = at.getUTCDate();
+  const month = MONTH_NAMES[at.getUTCMonth()];
+  const year = at.getUTCFullYear();
+  const hh = String(at.getUTCHours()).padStart(2, '0');
+  const mm = String(at.getUTCMinutes()).padStart(2, '0');
+  const ss = String(at.getUTCSeconds()).padStart(2, '0');
+  return `${day} ${month} ${year} ${hh}:${mm}:${ss} UTC`;
 }
 
 export function buildNotificationMessage(
