@@ -46,7 +46,6 @@ import {
   StopCircle,
   Terminal,
   User,
-  Waves,
   WifiOff,
   XCircle,
   Zap,
@@ -159,11 +158,31 @@ export default function ModelDetailPage({
   // MODEL-SERVE-020. Controlled so the Data Studio return handoff can land on
   // the Retrain tab: the dialog it reopens belongs to that tab now, and an
   // operator returning mid-retrain must not find it open over another one.
-  const [activeTab, setActiveTab] = useState('input')
+  //
+  // MODEL-SERVE-022-T08. Also seeded from `?tab=` on first render — the
+  // navbar bell links to `models/[id]?tab=<tab>` so a clicked event opens on
+  // the tab that explains it. Validated against the known tab ids so a
+  // stale or hand-edited param falls back to the existing default rather
+  // than handing Tabs a value with no matching trigger.
+  const KNOWN_TABS = [
+    'input',
+    'monitoring',
+    'evaluation',
+    'versions',
+    'retrain',
+    'logs',
+    'history',
+  ] as const
+  const searchParams = useSearchParams()
+  const requestedTab = searchParams.get('tab')
+  const [activeTab, setActiveTab] = useState(
+    requestedTab && (KNOWN_TABS as readonly string[]).includes(requestedTab)
+      ? requestedTab
+      : 'input',
+  )
   // MODEL-SERVE-017. Set when the Data Studio wizard sends the operator back
   // after building a dataset for this retrain — the params name what to
   // reopen with, so the dialog resumes instead of starting from scratch.
-  const searchParams = useSearchParams()
   const returnedStrategy = searchParams.get('retrainStrategy')
   const returnedDatasetId = searchParams.get('retrainDatasetId')
   const returnedVersionId = searchParams.get('retrainVersionId')
@@ -183,8 +202,6 @@ export default function ModelDetailPage({
       }
     : null
   useEffect(() => {
-    // Opens once on arrival. The operator can close it normally afterwards;
-    // this only fires again if the params themselves change.
     if (
       returnedStrategy === 'AUGMENT_DATA' ||
       returnedStrategy === 'NEW_DATA_ONLY'

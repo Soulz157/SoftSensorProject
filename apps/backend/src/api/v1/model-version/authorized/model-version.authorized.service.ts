@@ -1,8 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService, PrismaTypes } from '@softsensor/prisma';
 import { AppException } from '@softsensor/common';
 import { verifyModelObject } from '@/lib/python-preprocess-client';
 import { isPromotable } from '@/lib/model-version-transitions';
+import { NotificationOutboxService } from '@/api/v1/notification/core/notification-outbox.service';
 import type {
   PromoteVersionDto,
   RollbackModelDto,
@@ -34,7 +35,66 @@ function extractR2(metrics: unknown): number | null {
  */
 @Injectable()
 export class ModelVersionAuthorizedService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly log = new Logger(ModelVersionAuthorizedService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    // MODEL-SERVE-022-T03. Hooked at the TWO CALLERS below, never inside
+    // the shared private `promote()` — a rollback funnels through
+    // `promote()` too (T04's own doc comment), and notifying there would
+    // label every rollback VERSION_PROMOTED.
+    private readonly notifications: NotificationOutboxService,
+  ) {}
+
+  /** Best-effort VERSION_PROMOTED/ROLLED_BACK notification — never thrown
+   *  on, and never called for the "already PRODUCTION" idempotent no-op
+   *  (nothing actually changed). */
+  private async notifyPromotion(
+    modelId: string,
+    event: 'VERSION_PROMOTED' | 'ROLLED_BACK',
+    versionId: string,
+    versionNumber: number,
+    overrideReason: string | undefined,
+  ): Promise<void> {
+    // MODEL-SERVE-022. The whole body is guarded — see
+    // `InferenceWindowAuthorizedService.notifyDeployEvent`'s own comment
+    // for why a fire-and-forget (`void`) caller needs this at the SOURCE,
+    // not only inside `enqueueDiscrete`.
+    try {
+      const model = await this.prisma.model.findUnique({
+        where: { id: modelId },
+        select: {
+          name: true,
+          workspace: { select: { id: true, name: true } },
+        },
+      });
+      if (!model?.workspace) return;
+      const now = new Date();
+      await this.notifications.enqueueDiscrete({
+        workspaceId: model.workspace.id,
+        modelId,
+        modelName: model.name,
+        workspaceName: model.workspace.name,
+        axis: null,
+        event,
+        severity: 'INFO',
+        title: `${model.name}: v${versionNumber} ${event === 'VERSION_PROMOTED' ? 'promoted' : 'rolled back'}`,
+        detail:
+          event === 'VERSION_PROMOTED'
+            ? `Promoted to PRODUCTION: v${versionNumber}`
+            : `Rolled back to PRODUCTION: v${versionNumber}`,
+        rawDetailSuffix: overrideReason
+          ? `r2-floor override: ${overrideReason}`
+          : null,
+        at: now,
+        eventKeySeed: `${versionId}:${now.getTime()}`,
+      });
+    } catch (err) {
+      this.log.warn(
+        `notifyPromotion(${event}) failed for model ${modelId}: ${(err as Error).message}`,
+      );
+    }
+  }
 
   // ── access ───────────────────────────────────────────────────────────────
 
@@ -313,12 +373,22 @@ export class ModelVersionAuthorizedService {
     }
 
     const promoted = await this.promote(modelId, version, user, dto.override);
+    const wasNoOp =
+      promoted.stage === version.stage && version.stage === 'PRODUCTION';
+    if (!wasNoOp) {
+      void this.notifyPromotion(
+        modelId,
+        'VERSION_PROMOTED',
+        version.id,
+        version.version,
+        dto.override?.reason,
+      );
+    }
     return {
       statusCode: 200,
-      message:
-        promoted.stage === version.stage && version.stage === 'PRODUCTION'
-          ? 'Version is already PRODUCTION'
-          : 'Version promoted to PRODUCTION',
+      message: wasNoOp
+        ? 'Version is already PRODUCTION'
+        : 'Version promoted to PRODUCTION',
       type: 'SUCCESS' as const,
       data: promoted,
     };
@@ -495,6 +565,16 @@ export class ModelVersionAuthorizedService {
     }
 
     const promoted = await this.promote(modelId, previous, user, dto.override);
+    // `previous` is always ARCHIVED going in (the query above filters on
+    // it), so `promote()`'s "already PRODUCTION" no-op branch is
+    // unreachable here — every rollback that reaches this line is real.
+    void this.notifyPromotion(
+      modelId,
+      'ROLLED_BACK',
+      previous.id,
+      previous.version,
+      dto.override?.reason,
+    );
     return {
       statusCode: 200,
       message: `Rolled back to version ${previous.version}`,

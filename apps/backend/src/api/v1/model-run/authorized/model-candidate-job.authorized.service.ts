@@ -22,6 +22,7 @@ import {
   nextModelVersionNumber,
 } from '@/lib/model-version-from-run';
 import { findHoldoutArtifact } from '@/lib/holdout-artifact';
+import { NotificationOutboxService } from '@/api/v1/notification/core/notification-outbox.service';
 
 /**
  * MODEL-FLOW-019-T02. A metric's SOURCE travels with its value, on the wire
@@ -138,7 +139,56 @@ export class ModelCandidateJobAuthorizedService {
     // that an earlier shape (the method on the score service, resolved
     // lazily through ModuleRef) could not escape.
     private readonly autoScore: ModelRunAutoScoreAuthorizedService,
+    // MODEL-SERVE-022-T03. RETRAIN_SUCCEEDED/RETRAIN_FAILED — MODEL-OWNED
+    // jobs only (see `notifyRetrainTerminal`'s own guard). A draft-owned
+    // (non-retrain) job's terminal status shares this same code, so every
+    // call site below checks `job.modelId` before notifying.
+    private readonly notifications: NotificationOutboxService,
   ) {}
+
+  /** Best-effort. `modelId` is nullable because this same terminal-status
+   *  code path is shared by draft-owned (non-retrain) jobs, which must
+   *  never notify — the caller passes `null` for those and this is a
+   *  silent no-op, never a thrown error. */
+  private async notifyRetrainTerminal(
+    modelId: string | null,
+    outcome: 'RETRAIN_SUCCEEDED' | 'RETRAIN_FAILED',
+    detail: string,
+    versionNumber?: number,
+  ): Promise<void> {
+    if (!modelId) return;
+    // MODEL-SERVE-022. The whole body is guarded — see
+    // `InferenceWindowAuthorizedService.notifyDeployEvent`'s own comment
+    // for why a fire-and-forget (`void`) caller needs this at the SOURCE.
+    try {
+      const model = await this.prisma.model.findUnique({
+        where: { id: modelId },
+        select: {
+          name: true,
+          workspace: { select: { id: true, name: true } },
+        },
+      });
+      if (!model?.workspace) return;
+      const now = new Date();
+      await this.notifications.enqueueDiscrete({
+        workspaceId: model.workspace.id,
+        modelId,
+        modelName: model.name,
+        workspaceName: model.workspace.name,
+        axis: null,
+        event: outcome,
+        severity: outcome === 'RETRAIN_FAILED' ? 'WARNING' : 'INFO',
+        title: `${model.name}: retrain ${outcome === 'RETRAIN_SUCCEEDED' ? 'succeeded' : 'failed'}${versionNumber ? ` — v${versionNumber} staged` : ''}`,
+        detail,
+        at: now,
+        eventKeySeed: `${outcome}:${now.getTime()}`,
+      });
+    } catch (err) {
+      this.log.warn(
+        `notifyRetrainTerminal(${outcome}) failed for model ${modelId}: ${(err as Error).message}`,
+      );
+    }
+  }
 
   /**
    * MODEL-FLOW-019-T39. Score every candidate of a finished job against the
@@ -572,14 +622,16 @@ export class ModelCandidateJobAuthorizedService {
       // way to advance. Marking FAILED also frees the partial unique index
       // immediately, so a bad first candidate does not block the user from
       // starting over.
+      const reason = `Could not launch the first run: ${(err as Error).message}`;
       await this.prisma.modelCandidateJob.update({
         where: { id: job.id },
         data: {
           status: 'FAILED',
-          failureReason: `Could not launch the first run: ${(err as Error).message}`,
+          failureReason: reason,
           finishedAt: new Date(),
         },
       });
+      void this.notifyRetrainTerminal(job.modelId, 'RETRAIN_FAILED', reason);
       throw err;
     }
   }
@@ -619,6 +671,9 @@ export class ModelCandidateJobAuthorizedService {
       // future scope, not built here — this ledger's own precedent is to
       // record a deferral rather than build speculative flexibility nobody
       // asked for.
+      const reason =
+        `Candidate ${job.completedRuns + 1} of ${job.totalRuns} ` +
+        `${run.status.toLowerCase()}${run.failureReason ? `: ${run.failureReason}` : '.'}`;
       await this.prisma.modelCandidateJob.updateMany({
         where: {
           id: jobId,
@@ -627,12 +682,11 @@ export class ModelCandidateJobAuthorizedService {
         },
         data: {
           status: 'FAILED',
-          failureReason:
-            `Candidate ${job.completedRuns + 1} of ${job.totalRuns} ` +
-            `${run.status.toLowerCase()}${run.failureReason ? `: ${run.failureReason}` : '.'}`,
+          failureReason: reason,
           finishedAt: new Date(),
         },
       });
+      void this.notifyRetrainTerminal(job.modelId, 'RETRAIN_FAILED', reason);
       return;
     }
 
@@ -659,6 +713,7 @@ export class ModelCandidateJobAuthorizedService {
           `candidate job ${job.id}: could not launch candidate ${completedRuns + 1} of ${candidates.length}`,
           err,
         );
+        const reason = `Could not launch candidate ${completedRuns + 1} of ${candidates.length}: ${(err as Error).message}`;
         await this.prisma.modelCandidateJob.updateMany({
           where: {
             id: jobId,
@@ -667,12 +722,13 @@ export class ModelCandidateJobAuthorizedService {
           },
           data: {
             status: 'FAILED',
-            failureReason: `Could not launch candidate ${completedRuns + 1} of ${candidates.length}: ${(err as Error).message}`,
+            failureReason: reason,
             finishedAt: new Date(),
             completedRuns,
             ...(isBetter ? { bestRunId: run.id, bestRmse: rmse } : {}),
           },
         });
+        void this.notifyRetrainTerminal(job.modelId, 'RETRAIN_FAILED', reason);
         return;
       }
       await this.prisma.modelCandidateJob.updateMany({
@@ -761,6 +817,11 @@ export class ModelCandidateJobAuthorizedService {
               bestRmse: finalBestRmse,
             },
           });
+          void this.notifyRetrainTerminal(
+            job.modelId,
+            'RETRAIN_FAILED',
+            `Could not launch tuning candidate 1 of ${phase2Candidates.length}: ${(err as Error).message}`,
+          );
           return;
         }
 
@@ -895,16 +956,14 @@ export class ModelCandidateJobAuthorizedService {
     // caller polling this job must be able to tell "your retrain produced
     // nothing" from "your retrain produced version N".
     if (!winner || !winner.modelKey) {
+      const reason = winner
+        ? `Winning run ${winner.id} recorded no model artifact; nothing to version.`
+        : 'No candidate produced a usable result; nothing to version.';
       await this.prisma.modelCandidateJob.updateMany({
         where: swapWhere,
-        data: {
-          ...terminal,
-          status: 'FAILED',
-          failureReason: winner
-            ? `Winning run ${winner.id} recorded no model artifact; nothing to version.`
-            : 'No candidate produced a usable result; nothing to version.',
-        },
+        data: { ...terminal, status: 'FAILED', failureReason: reason },
       });
+      void this.notifyRetrainTerminal(job.modelId, 'RETRAIN_FAILED', reason);
       return;
     }
 
@@ -925,6 +984,12 @@ export class ModelCandidateJobAuthorizedService {
     }
     const modelObjectKey = winner.modelKey;
 
+    // MODEL-SERVE-022-T03. Set inside the transaction (only on the branch
+    // that actually mints/adopts a version), read after it commits — the
+    // notification itself stays OUTSIDE this transaction (best-effort,
+    // D04), so it must not depend on anything the transaction rolled back.
+    let notifyVersionNumber: number | undefined;
+
     await this.prisma.$transaction(async (tx) => {
       const swapped = await tx.modelCandidateJob.updateMany({
         where: swapWhere,
@@ -936,36 +1001,50 @@ export class ModelCandidateJobAuthorizedService {
 
       const existing = await tx.modelVersion.findUnique({
         where: { sourceRunId: winner.id },
-        select: { id: true },
+        select: { id: true, version: true },
       });
       const versionId =
         existing?.id ??
         (
-          await tx.modelVersion.create({
-            data: {
-              ...buildModelVersionData({
-                modelId: job.modelId,
-                version: await nextModelVersionNumber(tx, job.modelId),
-                run: winner,
-                modelObjectKey,
-                modelChecksum,
-                frameworkVersions,
-              }),
-              // MODEL-SERVE-015-T05. Copied off the winning candidate's
-              // job, not re-derived — null for every plain (014) retrain
-              // and for Save Model (buildModelVersionData's other caller,
-              // which never touches this field).
-              retrainStrategy: job.retrainStrategy,
-            },
-            select: { id: true },
-          })
+          await (async () => {
+            const versionNumber = await nextModelVersionNumber(tx, job.modelId);
+            notifyVersionNumber = versionNumber;
+            return tx.modelVersion.create({
+              data: {
+                ...buildModelVersionData({
+                  modelId: job.modelId,
+                  version: versionNumber,
+                  run: winner,
+                  modelObjectKey,
+                  modelChecksum,
+                  frameworkVersions,
+                }),
+                // MODEL-SERVE-015-T05. Copied off the winning candidate's
+                // job, not re-derived — null for every plain (014) retrain
+                // and for Save Model (buildModelVersionData's other caller,
+                // which never touches this field).
+                retrainStrategy: job.retrainStrategy,
+              },
+              select: { id: true },
+            });
+          })()
         ).id;
+      notifyVersionNumber ??= existing?.version;
 
       await tx.modelCandidateJob.update({
         where: { id: job.id },
         data: { resultVersionId: versionId },
       });
     });
+
+    if (notifyVersionNumber !== undefined) {
+      void this.notifyRetrainTerminal(
+        job.modelId,
+        'RETRAIN_SUCCEEDED',
+        `Retrain succeeded from run ${winner.id}.`,
+        notifyVersionNumber,
+      );
+    }
   }
 
   /**

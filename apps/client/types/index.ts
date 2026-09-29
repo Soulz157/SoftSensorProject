@@ -352,6 +352,71 @@ export interface WorkspaceMember {
   }
 }
 
+// MODEL-SERVE-022. Wire shapes match the backend's own literals
+// (apps/backend/src/lib/notification-events.ts, prisma schema enums) —
+// keep in sync rather than widening to `string`.
+export type NotificationChannelKind = 'TEAMS_WORKFLOW' | 'EMAIL'
+export type NotificationSeverity = 'INFO' | 'WARNING' | 'CRITICAL'
+export type NotificationDeliveryStatus =
+  | 'PENDING'
+  | 'SENDING'
+  | 'SENT'
+  | 'FAILED'
+export type NotificationAxis = 'DEPLOY' | 'MONITORING'
+
+export interface NotificationChannel {
+  id: string
+  kind: NotificationChannelKind
+  name: string
+  enabled: boolean
+  minSeverity: NotificationSeverity
+  events: string[]
+  cooldownMinutes: number
+  mutedModelIds: string[]
+  recipientUserIds: string[]
+  /** The stored Teams URL is never returned in full after save — only
+   *  whether one is configured (TEAMS_WORKFLOW channels only). */
+  hasTarget: boolean
+}
+
+export interface NotificationDelivery {
+  id: string
+  channelId: string
+  modelId: string | null
+  axis: NotificationAxis | null
+  event: string
+  severity: NotificationSeverity
+  status: NotificationDeliveryStatus
+  attempts: number
+  lastError: string | null
+  sentAt: string | null
+  createdAt: string
+  payload: { title: string; bodyText: string; modelUrl: string }
+}
+
+// MODEL-SERVE-022-T07/T08. One row from the navbar bell's feed
+// (GET authorized/notifications) — the SAME NotificationEvent row Teams/
+// e-mail deliveries reference (D10), never a client-side derivation.
+export interface NotificationEventItem {
+  id: string
+  modelId: string
+  modelName: string
+  axis: NotificationAxis | null
+  kind: string
+  severity: NotificationSeverity
+  /** The five-word vocabulary (normal/warning/alert/offline/frozen),
+   *  server-computed (D09) — null for a discrete event with no axis
+   *  reading. */
+  fromStatus: string | null
+  toStatus: string | null
+  /** Raw HealthReason code — label it client-side via the SHARED
+   *  HEALTH_REASON_LABEL map (lib/health-status-style.ts), never a second
+   *  copy (D02). */
+  reason: string | null
+  createdAt: string
+  unread: boolean
+}
+
 export interface AdminWorkspace {
   id: string
   name: string

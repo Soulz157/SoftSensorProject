@@ -15,9 +15,10 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { SettingsSidebar } from './components/settings-sidebar'
 import { WorkspaceInfo } from './components/workspace-info'
 import { WorkspaceMembers } from './components/workspace-member'
+import { NotificationChannels } from './components/notification-channels'
 import { useWorkspace } from '@/hooks/workspace/use-workspace-by'
 
-export type SettingsTab = 'info' | 'members'
+export type SettingsTab = 'info' | 'members' | 'notifications'
 
 export default function WorkspaceSettingsPage({
   params,
@@ -114,6 +115,9 @@ px-4 py-2 rounded-md bg-primary text-white hover:bg-primary/90"
               <WorkspaceInfo workspace={workspace} loading={wsLoading} />
             )}
             {activeTab === 'members' && <WorkspaceMembers workspaceId={id} />}
+            {activeTab === 'notifications' && (
+              <NotificationChannels workspaceId={id} />
+            )}
           </div>
         </div>
       </div>

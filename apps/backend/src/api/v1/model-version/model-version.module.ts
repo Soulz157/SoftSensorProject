@@ -6,13 +6,18 @@ import { ModelInputSchemaAuthorizedService } from './authorized/model-input-sche
 import { ModelInputStatusAuthorizedController } from './authorized/model-input-status.authorized.controller';
 import { ModelInputStatusAuthorizedService } from './authorized/model-input-status.authorized.service';
 import { DataSourceModule } from '@/api/v1/data-source/data-source.module';
+import { NotificationCoreModule } from '@/api/v1/notification/core/notification-core.module';
 
 @Module({
   // MODEL-SERVE-001-T15. `DataSourceConnectService` is reused rather than
   // re-implemented: it already resolves a saved source, refuses a non-PI
   // one, and decrypts its credentials. Duplicating that here would mean a
   // second copy of secret handling.
-  imports: [DataSourceModule],
+  //
+  // MODEL-SERVE-022. `NotificationCoreModule` for the promote/rollback
+  // VERSION_PROMOTED/ROLLED_BACK discrete events — a leaf module, so no
+  // cycle risk (see its own doc comment).
+  imports: [DataSourceModule, NotificationCoreModule],
   controllers: [
     ModelVersionAuthorizedController,
     ModelInputSchemaAuthorizedController,

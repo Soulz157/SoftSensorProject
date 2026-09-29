@@ -1,6 +1,6 @@
 'use client'
 
-import { Info, Users } from 'lucide-react'
+import { Bell, Info, Users } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { SettingsTab } from '../page'
 import { Button } from '@/components/ui/button'
@@ -52,6 +52,11 @@ export function SettingsSidebar({
       id: 'members' as SettingsTab,
       label: 'Members/Team',
       icon: <Users className="h-4 w-4" />,
+    },
+    {
+      id: 'notifications' as SettingsTab,
+      label: 'Notifications',
+      icon: <Bell className="h-4 w-4" />,
     },
   ]
 

@@ -3105,6 +3105,268 @@
         "An lstm/gru current version gets a candidate-only comparison with a stated reason, never a wrong or guessed incumbent figure.",
         "AUGMENT_DATA's own trigger rules, comparison basis, and chart behaviour are byte-identical to before this feature."
       ]
+    },
+    {
+      "id": "MODEL-SERVE-022",
+      "title": "Notifications: Teams Workflow or e-mail on every deploy and monitoring transition",
+      "priority": 22,
+      "status": "completed",
+      "progress": 100,
+      "dependencies": [
+        "MODEL-SERVE-001",
+        "MODEL-SERVE-009",
+        "MODEL-SERVE-012",
+        "MODEL-SERVE-014"
+      ],
+      "description": "Operators learn that a model is drifting, frozen, unreachable or failing preflight only by opening the app. This feature sends a notification when a model's DEPLOY or MONITORING state CHANGES, and on discrete lifecycle events (promote, rollback, retrain finished), to a Microsoft Teams channel through a Workflows webhook or to e-mail, chosen per channel by the user. It adds no classifier. It watches the two that already exist (classifyDeployStatus and classifyModelHealth via monitoringStatusFromHealth) and notifies on transitions, never on levels.",
+      "findings": [
+        "STATUS IS DERIVED AT READ TIME AND NO TRANSITION IS STORED ANYWHERE. classifyDeployStatus (001-T12/T26) and classifyModelHealth (001-T21/T27, 012-T04) are pure functions over current rows. A notifier that evaluates a level each sweep re-sends the same alert every sweep. Transition detection needs a persisted last-notified state per (model, axis).",
+        "THE TWO AXES ARE ALREADY SEPARATE AND MUST STAY SEPARATE IN NOTIFICATIONS. Deploy: stopped / initializing / running / error, where error is reachable ONLY from a failed preflight since 001-T26 (fetch faults and staleness moved to the monitoring axis). Monitoring: OFF / UNKNOWN / OK / WARN / ALERT / FROZEN with reason codes SOURCE_UNREACHABLE, STALE, NO_PREDICTIONS, BAD_DATA, DRIFT_WARN, DRIFT_CRITICAL, DRIFT_DIST_CRITICAL, RESIDUAL_SD_WARN, RESIDUAL_SD_CRITICAL, SENSOR_FROZEN. CRITICAL remains in the union but is no longer produced (001-T27). Re-read the reason list from lib/model-health.ts at implementation time; reasons have been added several times.",
+        "THE LIST PATH CARRIES A PARTIAL VERDICT. deriveDeployStatuses (2 + E queries, E = enabled schedules) carries liveness plus the residual-SD verdict (012-T08) but NOT drift, PSI, missingPct or frozen columns, and its OFF means 'no fault, no claim', never 'healthy' (001 status_note). DRIFT_*, DRIFT_DIST_CRITICAL, BAD_DATA and SENSOR_FROZEN are only produced by getHealthStatus, one per model with a baseline read. The evaluator must call getHealthStatus for enabled schedules and must not treat a list-path OFF as recovery.",
+        "SEVERAL ALERT PATHS CANNOT FIRE ON THIS DEPLOYMENT TODAY, WHICH IS NOT A NOTIFIER DEFECT. RESIDUAL_SD_* needs at least MIN_RESIDUAL_SD_PAIRS (30) joined truth pairs, and every InferenceWindowTruth row here has n = 0 (012 findings). DRIFT_DIST_CRITICAL needs psiRefEdges, which pre-T13 specs lack (001-T32). DRIFT_* is gated behind driftMonitor, which defaults to false. Record this on the settings screen so silence is not read as a broken notifier.",
+        "failureReason AND CONNECTOR TEXT CAN CARRY A PRESIGNED URL (001-T09, T10). Anything leaving the system in a notification goes through lib/redact-urls.ts. A notification is a new sink for the same text; per 001-T10's generalised lesson, every sink must be redacted, not only the first one found.",
+        "A TEAMS WORKFLOWS WEBHOOK URL IS A BEARER CAPABILITY: whoever holds it can post to the channel. Treat it like DataSource credentials, which the backend already encrypts and decrypts server-side (tagsCurrentById). Reuse that helper; do not add a second encryption scheme."
+      ],
+      "decisions": [
+        {
+          "id": "MODEL-SERVE-022-D01",
+          "decision": "Notify on TRANSITIONS of (axis, status, reason), never on levels. A change of reason under the same status is a transition (ALERT/STALE -> ALERT/SOURCE_UNREACHABLE sends a reader somewhere else). For FROZEN, only newly added columns are a transition; a column that stays frozen sends nothing further.",
+          "why": "Level-based sending turns a one-day outage into 96 identical messages at a 15-minute sweep, and muted channels are the outcome."
+        },
+        {
+          "id": "MODEL-SERVE-022-D02",
+          "decision": "The evaluator reuses deriveDeployStatuses, getHealthStatus and monitoringStatusFromHealth. It computes no status of its own, and its message wording uses the same five-word vocabulary and HEALTH_REASON_LABEL the Model Detail badge and the Alerts page use.",
+          "why": "001-T12's one-decider rule. A notification that disagrees with the badge on screen is worse than none."
+        },
+        {
+          "id": "MODEL-SERVE-022-D03",
+          "decision": "UNKNOWN and OFF never trigger 'Recovered'. The first evaluation of a model only records state and sends nothing. Recovery is sent only when the previous notified state was WARN, ALERT or FROZEN and the new one is OK.",
+          "why": "001-T27: UNKNOWN never folds into OK. A 'recovered' message for a model that merely lost its evidence claims health nobody measured."
+        },
+        {
+          "id": "MODEL-SERVE-022-D04",
+          "decision": "Delivery goes through an outbox table (NotificationDelivery) drained by its own setInterval(...).unref() sweep, with attempts, geometric backoff and a terminal FAILED. No queue infrastructure is added.",
+          "why": "Same pattern as the truth sweeper (005-T03) and the live-predict driver (008-T02). A slow SMTP server or an unreachable Teams endpoint must never delay the scheduler tick or the evaluator, and a delivery failure must be visible rather than lost in a log."
+        },
+        {
+          "id": "MODEL-SERVE-022-D05",
+          "decision": "Teams uses a Power Automate / Teams Workflows 'webhook request received' URL carrying an Adaptive Card payload, not the legacy Office 365 incoming-webhook connector.",
+          "why": "Microsoft is moving off O365 Connectors. Workflows is the supported path and accepts Adaptive Cards."
+        },
+        {
+          "id": "MODEL-SERVE-022-D06",
+          "decision": "Notifications are informational. They gate nothing: no promote is blocked, no schedule is paused, no retrain is triggered.",
+          "why": "Consistent with 001-T21's recorded decision that the health axis is informational, and 001-T19's refusal of an auto-pause circuit breaker. Adding a side effect here would reverse those decisions through a new door."
+        },
+        {
+          "id": "MODEL-SERVE-022-D07",
+          "decision": "DEVIATION FROM T02'S OWN SCHEMA SKETCH, recorded rather than silently taken: `NotificationRule` is folded into `NotificationChannel` (columns `events String[]`, `mutedModelIds String[]`) instead of being its own table. One row per channel carries everything a channel needs; a channel with no rule table has nothing a separate table would express that the columns do not.",
+          "why": "Smallest solution consistent with the architecture (CLAUDE.md section 12): the ledger's own sketch never gave NotificationRule a reason to support more than one rule per channel, and Postgres text[] columns are exactly as queryable as a join table for 'is this event/model in the list' at this scale."
+        },
+        {
+          "id": "MODEL-SERVE-022-D08",
+          "decision": "The sweep evaluator (T03) watches the MONITORING axis only (via `getHealthStatus`, per-model). The DEPLOY axis's only reachable transition into 'error' is a failed preflight, and the only OFF<->ON transitions are the enable/disable press — both are single write sites, not something a sweep needs to infer from `deriveDeployStatuses`. All deploy-axis events (PREFLIGHT_FAILED, MODEL_STARTED, MODEL_STOPPED) are therefore enqueued directly from those write sites (see T03), never derived by the sweep. `deriveDeployStatuses` IS still called once per sweep to get the DeployStatus argument `monitoringStatusFromHealth`'s server copy needs to render the five-word vocabulary correctly (advisor-caught: without it, every message reads 'offline').",
+          "why": "Avoids a sweep re-deriving state a write site already knows precisely, and avoids the double-send risk of two paths racing to notify the same transition."
+        },
+        {
+          "id": "MODEL-SERVE-022-D09",
+          "decision": "`monitoringStatusFromHealth` (apps/client/lib/model-status.ts) and `HEALTH_REASON_LABEL` (apps/client/lib/health-status-style.ts) are CLIENT-ONLY — T01's audit found no server copy. The backend gets its own pinned copies (`lib/notification-monitoring-status.ts`, `lib/notification-health-reason-label.ts`), each headed with a 'keep in sync with apps/client/lib/X' comment and a spec pinning every case, rather than importing across the app boundary (not possible: separate deployables) or inventing a third vocabulary.",
+          "why": "D02's one-decider rule still has to hold across a process boundary the client/server split makes unavoidable — same arrangement 015-T06 used for its augmented-version suffix."
+        },
+        {
+          "id": "MODEL-SERVE-022-D10",
+          "decision": "An IN_APP channel surfaces the same events in navbar-notification.tsx. Every transition and discrete event is written ONCE to NotificationEvent by the evaluator (T03) or the write site; Teams, e-mail and the navbar all read from that one row. The navbar never derives notifications from the models list itself.",
+          "why": "User request 2026-09-29. One source of truth for 'what happened': a navbar computing its own events from buildAlerts would disagree with the Teams message about the same model, the two-sources-of-truth defect 001-T09 had to close for deployStatus."
+        },
+        {
+          "id": "MODEL-SERVE-022-D11",
+          "decision": "The navbar bell shows WHAT CHANGED (an event feed with read/unread per user). The Alerts page keeps showing WHAT IS WRONG NOW (current levels from buildAlerts). The bell's badge counts UNREAD EVENTS, never current alerts.",
+          "why": "They answer different questions. A badge counting current alerts would duplicate the nav alert count 001-T30 already ships, and one number meaning two things is the one-name-two-metrics defect 001-T16 refused."
+        }
+      ],
+      "openDecisions": [
+        "SCOPE: is a channel configured per WORKSPACE (with per-model mute) or per MODEL? Recommended: workspace channels plus per-model opt-out. Per-model configuration does not scale past a handful of models.",
+        "E-MAIL RECIPIENTS: workspace members only, or any address? Arbitrary addresses make the app an open relay for whoever has editor access. Recommended: members, plus an admin-approved external list.",
+        "E-MAIL TRANSPORT: audit whether the backend already sends mail (password reset, invites). Reuse that transport if it exists. Do not add a second SMTP configuration.",
+        "DIGEST: send immediately, or batch non-critical events into an hourly digest? Recommended: Alert/preflight failure immediate; Warning/Frozen/Info immediate by default with an opt-in digest per channel. STILL OPEN — not decided this pass, see below.",
+        "FLAPPING: a status toggling every sweep. Recommended: a per-channel cooldown (no second message for the same model and axis within N minutes unless severity rises), stated on the settings screen. STILL OPEN — schema carries `cooldownMinutes` for a future pass; NO suppression logic is implemented this pass (see T03 finding), because it directly conflicts with acceptance criterion 3 (a reason change under the same status must still send) and with D03's recovery rule if a cooldown window silently swallowed a WARN/ALERT->OK transition. Default is 0 (no-op) until a real design closes this.",
+        "RESOLVED 2026-09-29 (explicit user decision, asked via AskUserQuestion, not a ledger recommendation): SCOPE = workspace channels, per-channel per-model mute list (`NotificationChannel.mutedModelIds`). RECIPIENTS = workspace members only (`NotificationChannel.recipientUserIds`, resolved to e-mails at send time; no admin-approved external list this pass — narrower than the ledger's own recommendation, deliberately, until a real need for it appears). EDIT PERMISSION (not one of the ledger's original open questions, asked anyway since the API needed an answer): OWNER only, matching the EXISTING `assertIsOwner` convention in `workspace.authorized.service.ts` verbatim (that helper does not special-case ADMIN either, at any of its 3 existing call sites — this stays consistent with precedent rather than inventing a bypass).",
+        "WHAT navbar-notification.tsx SHOWS TODAY decides replace-or-coexist. If it already reads use-alert-count (current alerts), either (a) keep that count on the Alerts nav item and make the bell the event feed, or (b) show both in the bell as two labelled sections. Recommended: (a). Decide after T07's audit, not before.",
+        "WHO SEES AN IN-APP EVENT: every member of the model's workspace by default, or only users who opted in? Recommended: every member with read access to the model (the same rule getRunService uses), with a per-user per-model mute. Teams/e-mail channel configuration does not gate in-app delivery.",
+        "RESOLVED 2026-09-29 (T07 audit + explicit user decisions, AskUserQuestion): REPLACE-OR-COEXIST = (a) — navbar-notification.tsx's mock is fully replaced by the event feed; the navbar pill and sidebar Alerts badge are untouched (see T07 audit_findings). AUDIENCE = every user who can READ the model (assertHasAccess's rule: ADMIN/owner/any member incl. VIEWER), independent of any Teams/e-mail channel configuration. PER-USER MUTE = build now (NotificationUserMute, per (userId, modelId)), not deferred. RETENTION = 90 days, via its own sweep (see T02 addendum)."
+      ],
+      "event_catalogue": [
+        {
+          "event": "MONITORING_ALERT",
+          "source": "classifyModelHealth ALERT (SOURCE_UNREACHABLE, STALE, NO_PREDICTIONS, DRIFT_CRITICAL, DRIFT_DIST_CRITICAL, RESIDUAL_SD_CRITICAL, and BAD_DATA at its alert tier)",
+          "severity": "critical",
+          "default_on": true
+        },
+        {
+          "event": "MONITORING_WARNING",
+          "source": "classifyModelHealth WARN (DRIFT_WARN, RESIDUAL_SD_WARN, BAD_DATA at its warning tier)",
+          "severity": "warning",
+          "default_on": true
+        },
+        {
+          "event": "SENSOR_FROZEN",
+          "source": "classifyModelHealth FROZEN, with frozenColumns and frozenSince.flatMinutes (009-T03)",
+          "severity": "warning",
+          "default_on": true
+        },
+        {
+          "event": "MONITORING_RECOVERED",
+          "source": "WARN/ALERT/FROZEN -> OK, per D03",
+          "severity": "info",
+          "default_on": true
+        },
+        {
+          "event": "PREFLIGHT_FAILED",
+          "source": "putScheduleService preflight refusal (001-T25), deploy axis error",
+          "severity": "critical",
+          "default_on": true
+        },
+        {
+          "event": "MODEL_STARTED / MODEL_STOPPED",
+          "source": "schedule enabled OFF->ON / ON->OFF",
+          "severity": "info",
+          "default_on": false
+        },
+        {
+          "event": "VERSION_PROMOTED / ROLLED_BACK",
+          "source": "ModelVersionAuthorizedService.promote(), including the r2-floor override reason when one was recorded",
+          "severity": "info",
+          "default_on": false
+        },
+        {
+          "event": "RETRAIN_SUCCEEDED / RETRAIN_FAILED",
+          "source": "ModelCandidateJob terminal status (completeModelOwnedJob), with the STAGING version number and the comparison's comparable flag",
+          "severity": "info / warning",
+          "default_on": false
+        }
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-022-T01",
+          "title": "AUDIT FIRST: mail transport, credential encryption helper, reason list, and the cost of getHealthStatus per sweep",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "(1) Is there an existing mailer in apps/backend? (2) Which helper encrypts DataSource credentials? The webhook URL uses the same one. (3) Measure getHealthStatus latency per model against the real enabled-schedule count, to size the sweep interval and a per-sweep bound. (4) Read the reason list and severity tiers from lib/model-health.ts, not from this ledger. (5) Confirm where each discrete event is written (promote(), completeModelOwnedJob, putScheduleService's preflight refusal and the OFF->ON / ON->OFF transitions) so the notifier hooks those write sites rather than re-deriving them.",
+          "audit_findings": "(1) YES: @nestjs-modules/mailer + nodemailer, `MailerModule.forRoot` in app.module.ts:39-52 (global — no import needed elsewhere), SMTP_HOST/PORT/USER/PASSWORD/FROM env, only current caller `MailAuthorizedService.sendPasswordResetEmail`. Root .env.example lacked SMTP_* vars — added. (2) `encryptSecret`/`decryptSecret`, apps/backend/src/lib/crypto.ts:74,95, AES-256-GCM, DATASOURCE_ENCRYPTION_KEY (32B base64/hex), stored format `v1:<iv>:<tag>:<ct>`. Reused verbatim for the Teams webhook URL. (3) Not separately latency-measured live (no production traffic to measure against); sized instead from the existing code shape: getHealthStatus is schedule findUnique + resolveProductionWindows (2 queries) + tagObservation findMany + inferenceWindowTruth findMany + two artifact reads cached by goldObjectKey (~6-8 queries/model, artifact reads free on cache hit) — same cost the Model Detail page already pays per load, bounded here by NOTIFY_EVAL_MAX_PER_SWEEP (default 50) rather than a measured number. (4) Reason/status unions read directly from lib/model-health.ts (not copied from this ledger's own summary, which predates 2 later edits) — 10 reasons, CRITICAL in the status union but never produced (confirmed, see D09). (5) All 4 write sites located with exact file:line, hooked in T03/T04 rather than re-derived: promoteVersionService (model-version.authorized.service.ts:297) / rollbackService (:466) both funnel through the same private `promote()` at :99 — hooked at the TWO CALLERS, not inside `promote()` itself, so a rollback is never mislabeled VERSION_PROMOTED (advisor-caught). completeModelOwnedJob (model-candidate-job.authorized.service.ts:865) is the model-owned SUCCEEDED/FAILED path; the other 3 FAILED writes in that file (createJob catch :578, advanceJobForRun candidate-failed :629, launch-failure :669/:756) are shared with DRAFT-owned (non-retrain) jobs and are gated on `job.modelId` truthy before notifying. Preflight refusal: inference-window.authorized.service.ts:756 (before the throw, keyed by modelId since a first-time enable's row does not exist yet at :743). Start/stop: :845 (`!wasEnabled`, after stampDeployed) / early-return disable branch ~:538 (before return)."
+        },
+        {
+          "id": "MODEL-SERVE-022-T02",
+          "title": "Schema: NotificationChannel, ModelAlertState, NotificationDelivery",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "NotificationChannel {workspaceId, kind: TEAMS_WORKFLOW|EMAIL, name, encryptedTarget, recipientUserIds[], enabled, minSeverity, events[], cooldownMinutes, mutedModelIds[]} — NotificationRule folded in per D07. ModelAlertState {modelId, axis, status, reason, frozenColumns, updatedAt}: one current row per (model, axis) @@id, updated in place, never history. NotificationDelivery {channelId, modelId, axis, event, severity, eventKey UNIQUE per channel, payload (pre-redacted), status, attempts, nextAttemptAt, lastError}. MIGRATION: hand-written via `prisma migrate diff` taken from HEAD's committed schema (git show HEAD:...) rather than the live dev DB — the live DB is missing the already-pending, unrelated destructive migration 20260922090000 (drops driftThresholdPct), and diffing from the live DB would have silently bundled that DROP COLUMN into this feature's migration (advisor-caught). Applied by hand with psql, recorded with `migrate resolve --applied`. 20260922090000 is left exactly as pending as it already was — out of scope for this feature. VERIFIED LIVE 2026-09-29: prisma validate OK; migrate diff taken from git-show HEAD (not live DB) confirmed zero DROP/ALTER on existing tables; applied via psql against local soft_sensor_db; `migrate resolve --applied` recorded it; `migrate status` re-checked after — only the pre-existing, unrelated 20260922090000 remains pending, untouched. `pnpm db:generate` + `pnpm --filter @softsensor/prisma build` both succeeded.",
+          "scope_note_addendum_2026_09_29": "Add NotificationEvent {id, workspaceId, modelId, axis, kind, severity, fromStatus, toStatus, reason, payload (redacted), createdAt} — ONE row per transition or discrete event, the single source every channel reads. NotificationDelivery gains eventId (FK) and stays for Teams/e-mail only; in-app needs no outbox because nothing is sent. Per-user read state: NotificationRead {userId, eventId, readAt} or a per-user lastReadAt watermark — pick the watermark unless T07's audit finds a need to mark individual events read, since one row per user is cheaper than one per user per event. Events are history in Postgres, so bound them: a retention sweep (e.g. 90 days) in the same change, per MODEL-SERVE-008-T02's rule that a rate and its retention are decided together. VERIFIED LIVE 2026-09-29: added NotificationEvent (workspaceId/modelId/axis?/kind/severity/fromStatus?/toStatus?/reason?/payload/dedupeKey unique/createdAt), NotificationReadMarker (userId @id watermark — picked over a per-event table since nothing in T07's audit needed per-event read state), NotificationUserMute ({userId,modelId} composite id, separate from NotificationChannel.mutedModelIds which mutes a whole channel), and NotificationDelivery.eventId (nullable FK, null only for a test-send). Migration diffed from a schema snapshot taken BEFORE this edit (not the live DB, same discipline as T02's own migration) — confirmed the diff SQL contains exactly one ALTER (add nullable eventId column) and 3 CREATE TABLEs, zero DROP/renamed columns. Applied via psql, `migrate resolve --applied`, `migrate status` re-checked — only the pre-existing unrelated 20260922090000 remains pending. `pnpm --filter @softsensor/prisma build` succeeded."
+        },
+        {
+          "id": "MODEL-SERVE-022-T03",
+          "title": "Transition evaluator sweep",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "Own setInterval(...).unref() (NOTIFY_EVAL_INTERVAL_MS, <=0 disables), lives in InferenceWindowModule (already owns InferenceWindowMonitoringService). Per D08, watches MONITORING axis only via getHealthStatus for enabled schedules (bounded NOTIFY_EVAL_MAX_PER_SWEEP), plus one deriveDeployStatuses batch call per sweep for the DeployStatus argument the message vocabulary needs. Diffs against ModelAlertState (lib/notification-transition.ts, pure), writes the new state + enqueues matching-channel deliveries in ONE $transaction per model. Discrete events enqueue from their write sites (T01 findings), fire-and-forget (`void`, try/catch, never blocks or fails the triggering request). NOT IMPLEMENTED THIS PASS, left in openDecisions: cooldown suppression logic — `cooldownMinutes` is stored but unread; see the FLAPPING openDecision for why (conflicts with acceptance criterion 3 as written). VERIFIED LIVE 2026-09-29: a real crash was found and fixed while running tests against a real jest run (not hypothetical) — the three fire-and-forget notify* helpers (notifyDeployEvent, notifyPromotion, notifyRetrainTerminal) threw an unhandled rejection when `model.workspace` was absent, crashing the whole jest worker process for inference-window.authorized.service.spec.ts and model-candidate-job.authorized.service.spec.ts. Fixed by wrapping each helper's FULL body in try/catch (not just enqueueDiscrete's own, which is unreachable by a throw before it). Full backend suite before/after: crash-fixed run is 1179/1188 passing across 89 suites, 9 pre-existing failures confirmed by git diff to be untouched files (nodes/auth/plan/workspace/workspace-plant/model-run controller specs missing providers in ad-hoc TestingModule.compile() calls) — none in files this feature touches. `pnpm --filter backend build` (nest build) succeeds. `pnpm --filter backend check-types`/`lint` are clean on every file this feature added or edited; remaining tsc errors are pre-existing and confirmed via `git show HEAD` to predate this session (e.g. model-candidate-job.authorized.service.spec.ts already called its class's 3-required-arg constructor with 2 args at HEAD, before this feature's 4th arg)."
+        },
+        {
+          "id": "MODEL-SERVE-022-T04",
+          "title": "Channel senders: Teams Workflow (Adaptive Card) and e-mail",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "One message builder (lib/notification-message.ts), two renderers (Teams Adaptive Card in the Workflows envelope; HTML+text e-mail via the existing MailerService). Reason through server-side HEALTH_REASON_LABEL copy (D09), frozen tags with flatMinutes, failureReason through redactUrls, payload redacted BEFORE being stored (the delivery row is itself a sink, per V02). AbortSignal.timeout on the Teams fetch and a race-timeout wrapper on mailerService.sendMail. A non-2xx Teams response is a delivery failure. Delivery drain sweep (NOTIFY_DELIVERY_INTERVAL_MS) with geometric backoff and a terminal FAILED carrying lastError. Minimal channel API added (POST/GET/PATCH/DELETE notification-channel + POST .../test + GET .../deliveries), OWNER-only (assertIsOwner copy, D-user-permission), recipientUserIds validated against real workspace members. Full settings UI is T05, not this pass. VERIFIED: 37 new unit tests across 5 files, all passing (notification-transition.spec.ts x14, notification-message.spec.ts x8, notification-monitoring-status.spec.ts x4, notification-outbox.service.spec.ts x6, notification-delivery.service.spec.ts x5 -> confirmed together 11 for the two core service specs). V01 (transitions incl. the literal-D03 first-eval-sends- nothing reading, recorded as a resolved tension with the ledger's own V01 wording -- see verification note), V02 (redaction, incl. the stored-payload sink case) and V03-supporting parity (server pin vs client vocabulary, case by case) all have real, passing, non-trivial assertions -- not smoke tests. V04 (transaction atomicity) is asserted by code structure (evaluateOne's write + enqueue are the only two statements inside one $transaction callback) and is NOT proven by a live rollback test this pass -- that needs a real Postgres instance to force a mid-transaction throw, deferred to T06. V05/V06 (live Teams/PI) are explicitly deferred to T06 per the run-scope decision."
+        },
+        {
+          "id": "MODEL-SERVE-022-T05",
+          "title": "Settings UI: channels, event selection, test message, delivery history",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "Per workspace: add a channel (Teams Workflow URL or e-mail recipients), minimum severity, events (defaults per event_catalogue), cooldown, per-model mute. 'Send test notification' goes through the real sender and shows the real result. The stored URL is shown masked and never returned in full after save. A delivery history per channel with the last error, so 'we never got the alert' is answerable. State on the screen which alerts cannot fire yet and why (the findings[3] conditions), so silence is not read as a broken notifier. Neutral palette for everything except the severity chips, which reuse the existing monitoring palette. BUILT AS A TAB in the existing workspace Settings page (settings/page.tsx's SettingsTab union widened to include 'notifications', settings-sidebar.tsx got the 3rd tab entry) rather than a new top-level route — the ledger's own ask ('per workspace: add a channel...') and this codebase's own settings-tab convention both pointed the same way, and it reuses the Settings shell (breadcrumb, header, sidebar+content layout) that already exists rather than duplicating it. New: types/index.ts (NotificationChannel/Delivery wire types), services/notification.ts, hooks/notification/use-notification-channels.ts (mirrors useWorkspaceMembers's reducer shape), lib/notification-event-labels.ts + lib/notification-severity-style.ts (reuses DESIGN_SYSTEM.md §5's existing red/amber/zinc classes, no new status color invented, per §11's own rule), and 3 components under settings/components/: notification-channels.tsx (list + owner-gated add/edit/delete, test-send, the 'why some alerts can't fire yet' static info box the scope_note asked for), notification-channel-form-dialog.tsx (create+edit, masked target field, real member/model pickers via useWorkspaceMembers/useWorkspaceModels), notification-delivery-history-dialog.tsx (paginated, via the existing usePaginatedFetch hook). OWNER-gated exactly like the server (assertIsOwner) and like every other mutating action on this same settings page. VERIFIED LIVE 2026-09-29: a real react-hooks/set-state-in-effect lint error was found and fixed (the form dialog originally synced props into state via useEffect on open; refactored to mount a keyed inner form component instead, so state is computed once from props at mount, never synced after the fact) — `pnpm --filter client lint` (no --fix; safe to run repo-wide) is clean on every file this task touched. `pnpm --filter client check-types` shows ZERO errors in any file this task touched; the only remaining errors are 3 pre-existing ones in data-studio/model-evaluation.test.ts (confirmed via git diff to be untouched by this session). `next build` bundles this code successfully ('Compiled successfully') but the build's own tsc pass then fails on that SAME pre-existing dataset-compare-modal.tsx error, which blocks a full production build right now for reasons unrelated to this feature — recorded here rather than worked around, since fixing an unrelated file is out of this feature's scope. 3 new passing vitest cases (notification-event-labels.test.ts) for the one non-trivial pure-logic path (unrecognised-event fallback); the dialogs/list component themselves have no interaction tests this pass (time-boxed to server-mirroring type/lint/build verification, matching the run-scope decision)."
+        },
+        {
+          "id": "MODEL-SERVE-022-T06",
+          "title": "Verify",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "See verification. Give case counts per file for jest and vitest, and confirm a non-zero count per file. STATIC/UNIT PORTION DONE: see T03/T04/T05's own scope_notes for the full backend (37 tests, build clean) and frontend (3 tests, lint/typecheck clean, 'Compiled successfully') evidence gathered this pass. BLOCKED ON LIVE VERIFICATION (V05/V06), which needs things this session cannot provide: (1) a real Microsoft Teams Workflow URL to point a channel at and a human to confirm the card renders correctly in an actual Teams channel; (2) forcing the PI source unreachable for V06's 3-window sequence, which per 001-V12/008-T01 is intermittent on this deployment already, not something to be induced on demand. ALSO NOT DONE: V03's full end-to-end fixture (needs a wired NestJS testing module or a live DB) and V04's live rollback proof (needs a real Postgres to force a mid-transaction throw) — both currently rest on structural code-reading, recorded honestly as such in V03/V04's own status. DECISION NEEDED TO CONTINUE: either (a) the user provides a real Teams Workflow URL and accepts a PI-outage window opportunistically for V06, or (b) V03/V04/V05/V06 are accepted as structurally-verified-only for this deployment and the feature is marked complete on that basis — this is the user's call, not a guess this session should make. RESOLVED 2026-09-29 (explicit user decision, asked via AskUserQuestion): accept structural-only verification and close the feature on that basis. V03/V04/V05/V06 remain exactly as their own status entries describe — code-structure-verified, not live-proven — and that is the SHIP DECISION, not an oversight. If a real Teams Workflow URL or a genuine PI outage window becomes available later, V05/V06 can still be run against the exact same code path (NotificationChannelAuthorizedService.sendTestMessageService for V05; the evaluator's normal sweep for V06) with no further engineering."
+        },
+        {
+          "id": "MODEL-SERVE-022-T07",
+          "title": "AUDIT navbar-notification.tsx, then back it with the event feed",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "FIRST read navbar-notification.tsx and its hooks: what it fetches today, whether it reads use-alert-count or buildAlerts, whether it polls, and what a click does. Record the answer here before changing it, and resolve the replace-or-coexist openDecision against what is actually there. THEN: GET /authorized/notifications?cursor=&limit= (events for models the caller can read, newest first) and GET /authorized/notifications/unread-count, plus POST /authorized/notifications/read (advance the watermark, or mark ids). Access is resolved server-side per model, the same rule getRunService uses; an event for a model the user cannot read is never returned. Payload text already went through redactUrls at write time (D02 of T04), so the read path returns it as stored. BACKEND VERIFIED LIVE 2026-09-29: NotificationOutboxService.enqueueInTx now writes NotificationEvent UNCONDITIONALLY (before the channel lookup), reusing the existing eventKey string as NotificationEvent.dedupeKey (D10: one string, two uniqueness guarantees, not two) — deliveries then link back via eventId. Evaluator passes fromStatus/toStatus (via monitoringStatusFromHealth, the SAME server pin D09 already established) and the raw reason code. New: notification-feed.authorized.service.ts (list/unread-count/mark-read/mutes, ONE shared eventWhere() helper per V08's own requirement), its controller at authorized/notifications (not workspace-scoped: a feed spans every workspace a user reads, matching the global Alerts page's own cross-workspace shape), notification-retention.service.ts (90-day sweep, own .unref() timer). 25 new real passing tests: 15 in notification-outbox.service.spec.ts (6 new V07 cases: shared eventId across channels, event written with zero channels, replay never overwrites via update:{}, fromStatus/toStatus/reason pass-through) + 10 in the new notification-feed.authorized.service.spec.ts (V08: ADMIN vs member workspace filter shapes, mute exclusion identical in list+count, watermark counts/never regresses, per-user isolation, mute requires read access). Full backend suite: 1193/1202 passing across 90 suites — same 9 pre-existing failures as the prior pass (confirmed via git diff: none in files this task touched), +25 over the prior 1179/1188 baseline (exactly the new tests added). `pnpm --filter backend build` (nest build) and `check-types`/`lint` are clean on every file this task added or edited; every remaining tsc error was independently confirmed pre-existing by line/file match against the untouched-file list.",
+          "audit_findings": "DONE 2026-09-29. navbar-notification.tsx (components/layout/navbar/components/) is 100% MOCK: imports a static `notifications` array from navbar/config.tsx:5 (4 fake items, literal '2 min ago' timestamps, fake workspace names), no fetch/hook/poll of any kind, items have no onClick/href — clicking does nothing but close the menu. Unread badge counts the mock array (config.tsx:21). Mounted navbar/index.tsx:73, only when session?.user exists. REPLACE-OR-COEXIST RESOLVED: (a), per the openDecision's own recommendation — nothing reads use-alert-count or buildAlerts today in this component, so there is no existing current-alert behavior to preserve here. Those two current-alert surfaces (navbar status pill navbar/index.tsx:41-67 via useAlerts/buildAlerts, and the sidebar Alerts badge via hooks/workspace/use-alert-count.ts) are UNTOUCHED — D11 keeps them answering 'what is wrong now', separate from the bell's 'what changed'. READ ACCESS: assertHasAccess (model-run-launch.authorized.service.ts:56-77, duplicated in model.authorized.service.ts:133) is the read rule — ADMIN, workspace owner, or ANY workspaceMember including VIEWER. This is the rule the feed/count/mute endpoints use, NOT the stricter assertCanEdit (which 403s VIEWER) that channel-management already uses. Workspace-list where-clause for a user: workspace.authorized.service.ts:116-126 (ADMIN sees all non-deleted; else ownerId=user OR members.some(userId), any role). TAB ROUTING: models/[id]/page.tsx:161 activeTab is local useState('input'), no ?tab= param read on load — only a retrainStrategy param (via a useEffect, :184-192) force-switches to the retrain tab. Tab ids confirmed: input, monitoring, evaluation, versions, retrain, logs, history. T08 must ADD a ?tab= initializer without touching the existing retrainStrategy effect, and this file already carries the user's own uncommitted edits (git status) — read fresh immediately before editing, smallest possible diff. RELATIVE TIME: no shared helper exists; the established pattern is inline `formatDistanceToNow(date, { addSuffix: true })` from date-fns (e.g. workspace-card.tsx:170) — reused as-is in T08, no new helper."
+        },
+        {
+          "id": "MODEL-SERVE-022-T08",
+          "title": "Navbar bell: unread badge, event list, and a link to the model",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "hooks/notifications/use-notifications.ts owns the fetch; the component stays a thin shell. Each item: model name, old -> new status in the five-word vocabulary, reason via the shared HEALTH_REASON_LABEL, relative time, and a link to models/[id] opening the tab that explains it (Monitoring for health events, Retrain for retrain events, Versions for promote/rollback). Opening the list marks what was seen as read. Unread badge counts events, never current alerts (D08). Refresh: on window focus and on opening the bell, plus an interval no shorter than the evaluator's sweep interval — 001-T09's rule that anything faster than the tick is load with no information. Severity chips reuse the existing monitoring palette; everything else neutral. Empty state says there is nothing new rather than rendering an empty popover. BUILT 2026-09-29. models/[id]/page.tsx's activeTab now also seeds from ?tab= (validated against the 7 known tab ids; falls back to the existing 'input' default) — smallest possible diff into the user's own uncommitted edits to this file, the existing retrainStrategy effect left untouched. services/notification.ts gained notificationFeedService (list/unread-count/read/mutes, matching T07's controller exactly); types/index.ts gained NotificationEventItem; lib/notification-event-link.ts is the pure kind->tab map (monitoring-axis events + PREFLIGHT_FAILED/MODEL_STARTED/STOPPED -> monitoring, RETRAIN_* -> retrain, VERSION_PROMOTED/ROLLED_BACK -> versions, unknown -> input); hooks/notifications/use-notifications.ts owns the fetch (refresh on window focus + bell-open + a poll interval read from the SERVER's own pollIntervalMs, never hardcoded — 001-T09's rule). navbar-notification.tsx's mock (notifications/getNotificationIcon in navbar/config.tsx, NotificationItem in navbar/types) was DELETED, not left dead — grep-confirmed no other consumer — and replaced by a thin shell over the hook: unread badge (99+ cap), reason via the SHARED formatHealthReason (D02, never a second copy), severity chip reusing lib/notification-severity-style.ts, relative time via the existing date-fns formatDistanceToNow idiom, a Link to the right tab, a per-item mute button, and an empty state ('Nothing new.'). Opening the bell loads items AND marks them read in one action, matching the ledger's own 'opening the list marks what was seen as read.' VERIFIED LIVE 2026-09-29: a real react-hooks/set-state-in-effect violation was found and fixed in use-notifications.ts's mount/poll effect — the first fix attempt (wrapping the outer useCallback in void) did NOT clear it; the real fix was giving the effect its OWN local poll() closure instead of calling the hook-level refreshCount from inside it, the same idiom the codebase's own use-paginated-fetch.ts mount effect already uses. `pnpm --filter client lint` is clean on every file this task touched (confirmed twice, before and after the fix). `check-types` shows ZERO errors in any touched file — the sole remaining error is the same pre-existing dataset-compare-modal.tsx one from T05, confirmed again via git diff to be untouched. `next build` reports 'Compiled successfully' for this feature's own code; the repo-wide build's OWN tsc pass still fails on that same pre-existing unrelated file, which was already true before this task and is out of this feature's scope to fix. 5 new passing vitest cases (notification-event-link.test.ts, V09's kind-to-tab coverage incl. the unknown-kind fallback). Full client vitest: 2209/2235 passing across 154 files — the SAME 26 pre-existing failures as the prior pass (confirmed by file-name diff against the prior baseline and by git diff showing none of those files touched this session), +8 over the prior 2201/2227 (5 new notification-event-link cases + net movement in an unrelated dynamic suite)."
+        }
+      ],
+      "acceptance_criteria": [
+        "A user can choose Teams Workflow, e-mail, or both per workspace channel, and choose which events each receives.",
+        "A model entering Alert, Warning or Sensor Frozen sends one notification per channel, with its reason in the same wording the Model Detail badge uses.",
+        "A model staying in the same state sends nothing further; a new frozen column or a changed reason sends one more.",
+        "Recovery is sent only after a real Warning, Alert or Sensor Frozen, never after UNKNOWN, OFF or on a first evaluation.",
+        "A preflight refusal, and (when enabled) promote, rollback and retrain completion each send one notification from the write that caused them.",
+        "No notification body contains a presigned URL, and the webhook URL never appears in a log or in any API response.",
+        "A failed delivery is retried, and after the retry limit it is visible in the channel's delivery history with its error.",
+        "A notification outage never delays the scheduler, the evaluator, or any user request, and never fails the action that triggered it.",
+        "Every transition and discrete event that reaches Teams or e-mail also appears in the navbar bell for users who can read that model, from the same stored event.",
+        "The bell's badge counts unread events and never duplicates the current-alert count on the Alerts nav item.",
+        "Clicking a bell item opens models/[id] on the tab that explains the event, and marks it read.",
+        "A user never sees an event for a model they cannot read."
+      ],
+      "verification": [
+        {
+          "id": "MODEL-SERVE-022-V01",
+          "status": "completed",
+          "description": "Unit: an unchanged state across N sweeps enqueues exactly one delivery. A reason change under ALERT enqueues a second. UNKNOWN -> OK, OFF -> OK and a first evaluation -> OK enqueue nothing. A frozen column that stays frozen enqueues nothing; a newly frozen column enqueues one. DONE 2026-09-29: notification-transition.spec.ts, 14 real passing cases. NOTE ON WORDING: this description's phrase 'an unchanged state across N sweeps enqueues exactly one delivery' is satisfied by reading D03 literally (baseline-then-transition-then-repeat), not by a first-evaluation send -- see that test's own in-file comment and D03/T03's scope_note for the resolved tension between D03's explicit words and this line's looser phrasing."
+        },
+        {
+          "id": "MODEL-SERVE-022-V02",
+          "status": "completed",
+          "description": "Unit: a failureReason containing an X-Amz-Signature URL is redacted in both the Teams card and the e-mail body, and the stored delivery payload is redacted too (a delivery row is itself a sink). DONE 2026-09-29: notification-message.spec.ts, 8 real passing cases, including the stored-payload-is-itself-a-sink case (JSON round-trip check)."
+        },
+        {
+          "id": "MODEL-SERVE-022-V03",
+          "status": "pending",
+          "description": "Unit: the evaluator uses the same classifier as the badge. For a fixture, the notified status equals monitoringStatusFromHealth(getStatusService().health). A list-path OFF never produces a recovery. PARTIALLY DONE 2026-09-29: notification-monitoring-status.spec.ts pins the SERVER copy of monitoringStatusFromHealth to the client's own vocabulary case by case (4 real passing cases), and confirms a list-path OFF never reads as 'normal'. NOT YET DONE: an end-to-end fixture proving the EVALUATOR's notified status literally equals a live getStatusService().health call's own output (needs a wired-up NestJS testing module or a real DB) -- left for T06."
+        },
+        {
+          "id": "MODEL-SERVE-022-V04",
+          "status": "pending",
+          "description": "Unit: the transition write and the delivery enqueue commit together. A throw between them leaves neither, so a retried sweep sends the transition exactly once. PARTIALLY DONE 2026-09-29: verified BY CODE STRUCTURE -- NotificationEvaluatorService.evaluateOne's ModelAlertState upsert and the outbox enqueue are the only two statements inside one prisma.$transaction callback, so a throw between them rolls back both by Postgres's own transaction semantics. NOT a live-proven rollback test against a real Postgres instance (needs one to force a mid-transaction throw) -- left for T06."
+        },
+        {
+          "id": "MODEL-SERVE-022-V05",
+          "status": "pending",
+          "description": "Live: a real Teams Workflow receives a test card and a real alert. Point the channel at a dead endpoint and confirm retries, then a terminal FAILED with lastError in the history. NOT RUN 2026-09-29 — closed structural-only per user decision (T06's own note); no real Teams Workflow URL was available this session."
+        },
+        {
+          "id": "MODEL-SERVE-022-V06",
+          "status": "pending",
+          "description": "Live: make the PI source unreachable for three windows and confirm exactly one SOURCE_UNREACHABLE notification, then one recovery after the source returns and a window succeeds. PI reachability on this deployment is intermittent (001-V12, 008-T01), so this may run on its own schedule. NOT RUN 2026-09-29 — closed structural-only per user decision (T06's own note); PI reachability is intermittent on this deployment, not inducible on demand."
+        },
+        {
+          "id": "MODEL-SERVE-022-V07",
+          "status": "completed",
+          "description": "Unit: one transition writes ONE NotificationEvent, and the Teams delivery and the navbar feed both reference that same row. A test that checks each channel separately cannot tell one source from two. DONE 2026-09-29: 6 new passing cases in notification-outbox.service.spec.ts (see T07 scope_note)."
+        },
+        {
+          "id": "MODEL-SERVE-022-V08",
+          "status": "completed",
+          "description": "Unit: a user without read access to a model gets no event for it from the list or the unread count; marking read lowers the count only for that user; a second user's count is unchanged. DONE 2026-09-29: 10 new passing cases in notification-feed.authorized.service.spec.ts (see T07 scope_note)."
+        },
+        {
+          "id": "MODEL-SERVE-022-V09",
+          "status": "completed",
+          "description": "Unit (client): the bell renders the reason label and links to the right tab per event kind; the badge shows unread events, not current alerts; the list refetches on focus and never faster than the configured interval. DONE 2026-09-29 (kind-to-tab mapping only, via notification-event-link.test.ts, 5 real passing cases): the pure link-building logic is unit-tested. NOT DONE: an RTL render test of the bell component itself asserting the reason label/badge/refetch-on-focus behavior end-to-end — left for a future pass, same time-boxing decision T05 recorded for its own dialog components."
+        }
+      ]
     }
   ],
   "global_definition_of_done": [

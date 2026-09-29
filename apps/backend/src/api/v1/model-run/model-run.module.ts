@@ -17,9 +17,12 @@ import { ModelRetrainAuthorizedService } from './authorized/model-retrain.author
 import { ModelRetrainAugmentAuthorizedService } from './authorized/model-retrain-augment.authorized.service';
 import { TuningGridAuthorizedController } from './authorized/tuning-grid.authorized.controller';
 import { TuningGridAuthorizedService } from './authorized/tuning-grid.authorized.service';
+import { NotificationCoreModule } from '@/api/v1/notification/core/notification-core.module';
 
 @Module({
-  imports: [TrainningContainerModule],
+  // MODEL-SERVE-022. `NotificationCoreModule` for RETRAIN_SUCCEEDED/
+  // RETRAIN_FAILED (model-owned jobs only) — a leaf module, no cycle risk.
+  imports: [TrainningContainerModule, NotificationCoreModule],
   controllers: [
     ModelRunAuthorizedController,
     ModelRunLaunchAuthorizedController,

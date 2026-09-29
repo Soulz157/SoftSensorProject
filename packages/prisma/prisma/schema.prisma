@@ -47,6 +47,45 @@ enum WorkspaceRole {
   VIEWER
 }
 
+/// MODEL-SERVE-022. Which channel kind a `NotificationChannel` row sends
+/// through. Teams uses a Workflows ("webhook request received") URL, not the
+/// legacy O365 incoming-webhook connector — D05.
+enum NotificationChannelKind {
+  TEAMS_WORKFLOW
+  EMAIL
+}
+
+/// MODEL-SERVE-022. A channel's `minSeverity` floor and an event's own
+/// severity, both graded against this one order. Matches the ledger's own
+/// event_catalogue severities (critical/warning/info) under names that don't
+/// collide with `HealthStatus`'s WARN/ALERT — these grade a NOTIFICATION,
+/// never a health axis.
+enum NotificationSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+/// MODEL-SERVE-022-D04. The outbox row's own lifecycle — drained by
+/// `NotificationDeliveryService`'s sweep, same shape every other sweep in
+/// this codebase uses (attempts + geometric backoff + a terminal state).
+enum NotificationDeliveryStatus {
+  PENDING
+  SENDING
+  SENT
+  FAILED
+}
+
+/// MODEL-SERVE-022. Which axis a `ModelAlertState` row or a
+/// `NotificationDelivery` row is about. Mirrors the two-axis contract
+/// `lib/deploy-status.ts`/`lib/model-health.ts` already establish — see
+/// MODEL-SERVE-022-D08 for why only MONITORING is ever written by the sweep;
+/// DEPLOY-axis events are one-shot, enqueued straight from their write sites.
+enum AlertAxis {
+  DEPLOY
+  MONITORING
+}
+
 model User {
   id            String         @id @default(uuid())
   email         String         @unique
@@ -81,6 +120,11 @@ model User {
   promotedModelVersions ModelVersion[]
   predictionJobs        PredictionJob[]
   inferenceSchedules    InferenceSchedule[]
+  notificationChannels  NotificationChannel[]
+  /// MODEL-SERVE-022-T07. At most one row per user — see
+  /// NotificationReadMarker's own doc comment.
+  notificationReadMarker NotificationReadMarker?
+  notificationUserMutes  NotificationUserMute[]
 }
 
 model Account {
@@ -120,6 +164,10 @@ model Workspace {
   datasetDrafts DatasetDraft[]
   modelDrafts   ModelDraft[]
   presetImports FeaturePresetImport[]
+  /// MODEL-SERVE-022-D07. Channels configured, per workspace, per D-scope
+  /// (workspace channels + per-channel per-model mute, not per-model channels).
+  notificationChannels NotificationChannel[]
+  notificationEvents   NotificationEvent[]
 
   @@index([ownerId])
 }
@@ -190,6 +238,12 @@ model Model {
   inferenceWindows  InferenceWindow[]
   inferenceSchedule InferenceSchedule?
   tagObservations   TagObservation[]
+  /// MODEL-SERVE-022. Current notified state per axis — at most one DEPLOY
+  /// and one MONITORING row per model, upserted in place, never a history
+  /// table (see ModelAlertState's own doc comment).
+  alertStates       ModelAlertState[]
+  notificationEvents    NotificationEvent[]
+  notificationUserMutes NotificationUserMute[]
 
   @@unique([workspaceId, name])
   @@index([workspaceId])
@@ -2183,4 +2237,214 @@ model InferenceSchedule {
   updatedAt DateTime @updatedAt
 
   @@index([enabled])
+}
+
+/// MODEL-SERVE-022. One row per configured channel. `NotificationRule` from
+/// the ledger's own sketch is folded in here (D07): `events` and
+/// `mutedModelIds` ARE the rule, so a channel with no separate rule table
+/// has nothing a join would express that these columns do not.
+model NotificationChannel {
+  id String @id @default(uuid())
+
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  kind NotificationChannelKind
+  name String
+
+  /// The Teams Workflows URL (TEAMS_WORKFLOW) — a BEARER CAPABILITY, treated
+  /// exactly like a DataSource secret: `encryptSecret`/`decryptSecret`
+  /// (lib/crypto.ts), never a second encryption scheme (D-audit finding).
+  /// Null/unused for an EMAIL channel.
+  encryptedTarget String?
+
+  /// EMAIL only. Workspace member user ids, resolved to e-mail addresses at
+  /// SEND time (never stored as addresses) — membership can change, and a
+  /// removed member must stop receiving mail without an extra write here.
+  /// Per D-user-decision: members only this pass, no external-address list.
+  recipientUserIds String[]
+
+  enabled     Boolean              @default(true)
+  minSeverity NotificationSeverity @default(WARNING)
+  /// Event kind strings from the ledger's own event_catalogue (e.g.
+  /// "MONITORING_ALERT", "PREFLIGHT_FAILED"). Not a Prisma enum: the
+  /// catalogue is expected to grow, and a schema migration per new event
+  /// kind is exactly the friction a string column avoids.
+  events String[]
+
+  /// STORED BUT UNREAD THIS PASS (D-openDecisions FLAPPING, T03 finding):
+  /// cooldown/flapping suppression is left undecided rather than shipped
+  /// half-designed against this pass's own acceptance criteria. Default 0.
+  cooldownMinutes Int @default(0)
+  /// Model ids this channel never notifies for, regardless of severity.
+  mutedModelIds String[]
+
+  createdBy   User   @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  createdById String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  deliveries NotificationDelivery[]
+
+  @@index([workspaceId])
+}
+
+/// MODEL-SERVE-022. THE CURRENT NOTIFIED STATE, one row per (model, axis),
+/// UPDATED IN PLACE — never a history table. Same rule MODEL-SERVE-009-D01
+/// already applies to per-tag last-seen state: this answers "what did we
+/// last tell a channel about this model's axis", not "what has this model's
+/// history been" (InferenceWindow/InferenceWindowLog already own that).
+model ModelAlertState {
+  modelId String
+  model   Model     @relation(fields: [modelId], references: [id], onDelete: Cascade)
+  axis    AlertAxis
+
+  /// The health axis's own status vocabulary (lib/model-health.ts's
+  /// HealthStatus, stored as its wire string) — OFF/UNKNOWN/OK/WARN/
+  /// CRITICAL/ALERT/FROZEN. Only ever MONITORING rows are written by the
+  /// sweep (D08); a DEPLOY row is reserved for a future pass that needs one.
+  status        String
+  reason        String?
+  frozenColumns String[]
+
+  updatedAt DateTime @updatedAt
+
+  @@id([modelId, axis])
+}
+
+/// MODEL-SERVE-022-D04. The outbox. One row per (channel, transition),
+/// drained by its own sweep — same pattern the truth sweeper and the
+/// live-predict driver already use, so an unreachable Teams endpoint or a
+/// slow SMTP server can never delay the scheduler tick or the evaluator.
+model NotificationDelivery {
+  id String @id @default(uuid())
+
+  channelId String
+  channel   NotificationChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  /// Nullable: a "send test notification" delivery has no real model behind
+  /// it. Every transition/discrete-event delivery sets this.
+  modelId String?
+  axis    AlertAxis?
+
+  /// Event kind string (event_catalogue) and its own severity at enqueue
+  /// time — a channel's minSeverity may change later; the delivery keeps
+  /// what it was actually graded against.
+  event    String
+  severity NotificationSeverity
+
+  /// UNIQUE PER CHANNEL: model + axis + transition + a time bucket, built by
+  /// the enqueuer — see lib/notification-transition.ts. Guarantees a
+  /// retried evaluator pass, or a retried write-site call, cannot enqueue
+  /// the same transition twice for the same channel.
+  eventKey String
+
+  /// The FULLY RENDERED, ALREADY-REDACTED message content (title, body,
+  /// card/e-mail fields) — redacted BEFORE this row is written, never after:
+  /// this row is itself a sink for whatever failureReason/preflightReason
+  /// text it carries (V02).
+  payload Json
+
+  status        NotificationDeliveryStatus @default(PENDING)
+  attempts      Int                        @default(0)
+  nextAttemptAt DateTime                   @default(now())
+  lastError     String?
+  sentAt        DateTime?
+
+  createdAt DateTime @default(now())
+
+  /// MODEL-SERVE-022-T07/D10. The single row this delivery came from — every
+  /// transition/discrete-event delivery sets this (D10: Teams, e-mail and the
+  /// navbar bell all read from the ONE `NotificationEvent` row an evaluator
+  /// or write site wrote). Null only for a "send test notification" delivery,
+  /// which has no real event behind it (unchanged from T04).
+  eventId          String?
+  notificationEvent NotificationEvent? @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([channelId, eventKey])
+  @@index([status, nextAttemptAt])
+  @@index([channelId, createdAt])
+}
+
+/// MODEL-SERVE-022-T07/D10. THE SINGLE SOURCE OF TRUTH for "what happened" —
+/// written ONCE by the evaluator (transitions) or a write site (discrete
+/// events), independent of how many channels exist or whether any are
+/// configured at all: an event exists even with zero NotificationChannel
+/// rows in the workspace, because the in-app feed is unconditional (T07
+/// audit_findings). `NotificationDelivery.eventId` points back here for
+/// Teams/e-mail; the navbar bell reads THIS table directly and sends
+/// nothing.
+///
+/// `dedupeKey` is the SAME uniqueness the evaluator already computes for
+/// `NotificationDelivery.eventKey` (model + axis + transition + time, or the
+/// discrete event's own row id) — one write per real occurrence, replay-safe
+/// via `skipDuplicates`, matching D01/D04's own guarantees one level up.
+model NotificationEvent {
+  id String @id @default(uuid())
+
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  modelId String
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  axis     AlertAxis?
+  kind     String
+  severity NotificationSeverity
+
+  /// The five-word vocabulary (normal/warning/alert/offline/frozen), computed
+  /// SERVER-SIDE via `lib/notification-monitoring-status.ts` (D09) — never
+  /// re-derived client-side, per D02's one-decider rule. Null for a discrete
+  /// event with no axis reading (VERSION_PROMOTED, RETRAIN_*).
+  fromStatus String?
+  toStatus   String?
+
+  /// The raw HealthReason code (e.g. SOURCE_UNREACHABLE) — the CLIENT labels
+  /// it via the existing shared HEALTH_REASON_LABEL map, the same convention
+  /// T04/T05 already established; this table never stores a display string.
+  reason String?
+
+  /// The SAME already-redacted payload NotificationDelivery stores — this
+  /// row is a sink too (V02's own rule: every sink gets the same guarantee).
+  payload Json
+
+  dedupeKey String @unique
+
+  createdAt DateTime @default(now())
+
+  deliveries NotificationDelivery[]
+
+  @@index([workspaceId, createdAt])
+  @@index([modelId, createdAt])
+  @@index([createdAt])
+}
+
+/// MODEL-SERVE-022-T07. Per-user READ WATERMARK — a single row per user,
+/// never one row per (user, event): T02's own addendum picked this over a
+/// per-event NotificationRead table specifically because nothing in T07's
+/// audit found a need to mark individual events read (opening the bell marks
+/// everything up to `lastReadAt` as seen, matching the ledger's own "opening
+/// the list marks what was seen as read").
+model NotificationReadMarker {
+  userId String @id
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  lastReadAt DateTime @default(now())
+}
+
+/// MODEL-SERVE-022-T07. Per-user, per-model mute for the IN-APP feed only —
+/// a SEPARATE control from `NotificationChannel.mutedModelIds` (which mutes
+/// a WORKSPACE CHANNEL for everyone). Muting the bell for one model must
+/// never touch, or be touched by, a channel's own mute list.
+model NotificationUserMute {
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  modelId String
+  model   Model  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@id([userId, modelId])
 }

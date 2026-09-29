@@ -263,4 +263,43 @@ export const env = {
   INFERENCE_TRUTH_RETRY_BACKOFF_MINUTES: Number(
     process.env.INFERENCE_TRUTH_RETRY_BACKOFF_MINUTES ?? 180,
   ),
+
+  // MODEL-SERVE-022. The transition-evaluator sweep — same `<= 0` disables
+  // / `.unref()` shape every other sweep here uses. Bounded per sweep by
+  // NOTIFY_EVAL_MAX_PER_SWEEP (T01: getHealthStatus is ~6-8 queries/model,
+  // the same cost the Model Detail page already pays per load; this bounds
+  // what one sweep can cost when many schedules are enabled at once).
+  NOTIFY_EVAL_INTERVAL_MS: Number(
+    process.env.NOTIFY_EVAL_INTERVAL_MS ?? 300_000,
+  ),
+  NOTIFY_EVAL_MAX_PER_SWEEP: Number(
+    process.env.NOTIFY_EVAL_MAX_PER_SWEEP ?? 50,
+  ),
+  // The delivery drain sweep — separate interval from the evaluator above,
+  // same reason the truth sweeper and the scheduler tick are separate: one
+  // sweep enqueues facts, a different one spends network time sending them,
+  // so a slow SMTP server or a dead Teams endpoint never delays the other.
+  NOTIFY_DELIVERY_INTERVAL_MS: Number(
+    process.env.NOTIFY_DELIVERY_INTERVAL_MS ?? 30_000,
+  ),
+  NOTIFY_DELIVERY_MAX_ATTEMPTS: Number(
+    process.env.NOTIFY_DELIVERY_MAX_ATTEMPTS ?? 5,
+  ),
+  NOTIFY_SEND_TIMEOUT_MS: Number(process.env.NOTIFY_SEND_TIMEOUT_MS ?? 10_000),
+
+  // The link a notification points at (models/[id]) — the first env var this
+  // codebase has needed for "where does the frontend live", since every
+  // prior backend->client reference was a relative path rendered client-side.
+  CLIENT_APP_URL: process.env.CLIENT_APP_URL ?? 'http://localhost:3000',
+
+  // MODEL-SERVE-022-T02-addendum. NotificationEvent retention — user
+  // decision 2026-09-29: 90 days. Own sweep, `<= 0` disables (retention
+  // days `<= 0` also skips the delete, belt-and-braces against a
+  // misconfigured 0 wiping every event on the next tick).
+  NOTIFY_EVENT_RETENTION_DAYS: Number(
+    process.env.NOTIFY_EVENT_RETENTION_DAYS ?? 90,
+  ),
+  NOTIFY_RETENTION_SWEEP_INTERVAL_MS: Number(
+    process.env.NOTIFY_RETENTION_SWEEP_INTERVAL_MS ?? 6 * 60 * 60 * 1000,
+  ),
 };

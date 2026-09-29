@@ -10,6 +10,8 @@ import { InferenceWindowMonitoringService } from './authorized/inference-window-
 import { LivePredictDriverService } from './authorized/live-predict-driver.service';
 import { InferenceWindowTokenGuard } from '@/guards/inference-window-token.guard';
 import { ModelVersionModule } from '../model-version/model-version.module';
+import { NotificationCoreModule } from '../notification/core/notification-core.module';
+import { NotificationEvaluatorService } from './authorized/notification-evaluator.service';
 
 /**
  * MODEL-SERVE-006. `TrainningContainerModule` for `spawn`/`containerExists`;
@@ -25,7 +27,18 @@ import { ModelVersionModule } from '../model-version/model-version.module';
  * module nowhere in code.
  */
 @Module({
-  imports: [TrainningContainerModule, ModelServingModule, ModelVersionModule],
+  imports: [
+    TrainningContainerModule,
+    ModelServingModule,
+    ModelVersionModule,
+    // MODEL-SERVE-022. A leaf module (no feature-module imports of its
+    // own) — see NotificationCoreModule's own doc comment for why the
+    // evaluator lives HERE rather than in the notification package: it
+    // needs InferenceWindowMonitoringService, and this module already owns
+    // that service, so importing the core module here (rather than the
+    // reverse) keeps the dependency graph acyclic.
+    NotificationCoreModule,
+  ],
   controllers: [
     InferenceWindowAuthorizedController,
     InferenceWindowCallbackAuthorizedController,
@@ -47,6 +60,10 @@ import { ModelVersionModule } from '../model-version/model-version.module';
     // `asFetchConfig`/`resolveSource`, which are public precisely so a
     // second copy of the source mapping cannot drift from the first.
     LivePredictDriverService,
+    // MODEL-SERVE-022-T03. Its OWN sweep, watching the MONITORING axis
+    // only (D08) — the scheduler tick still inserts and reconciles and
+    // nothing else.
+    NotificationEvaluatorService,
   ],
   // MODEL-SERVE-001-T17. First export this module has needed — Prediction
   // LogModule imports this module to read the window-plane drift/PSI

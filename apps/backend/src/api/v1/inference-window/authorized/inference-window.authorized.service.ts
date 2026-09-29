@@ -31,6 +31,7 @@ import {
 } from './live-predict-driver.service';
 import { InferenceWindowMonitoringService } from './inference-window-monitoring.authorized.service';
 import { ModelInputStatusAuthorizedService } from '../../model-version/authorized/model-input-status.authorized.service';
+import { NotificationOutboxService } from '../../notification/core/notification-outbox.service';
 import type {
   BackfillInferenceWindowsDto,
   InferenceTruthRangeQueryDto,
@@ -147,7 +148,57 @@ export class InferenceWindowAuthorizedService {
     // scheduler edge is: this driver's constructor takes Prisma, the
     // scheduler and the serving descriptor service, and never this one.
     private readonly livePredict: LivePredictDriverService,
+    // MODEL-SERVE-022-T03. Same module (NotificationCoreModule is imported
+    // by InferenceWindowModule, see its own doc comment) — the DEPLOY
+    // axis's three write-site events (PREFLIGHT_FAILED, MODEL_STARTED,
+    // MODEL_STOPPED) enqueue from here rather than being derived by the
+    // sweep (D08).
+    private readonly notifications: NotificationOutboxService,
   ) {}
+
+  /** Common fields every discrete DEPLOY-axis notification needs — kept in
+   *  one place so the three call sites below cannot drift on workspace/model
+   *  name resolution. Best-effort: `enqueueDiscrete` never throws. */
+  private async notifyDeployEvent(
+    modelId: string,
+    event: 'PREFLIGHT_FAILED' | 'MODEL_STARTED' | 'MODEL_STOPPED',
+    detail: string,
+    rawDetailSuffix?: string | null,
+  ): Promise<void> {
+    // MODEL-SERVE-022. The WHOLE body is guarded, not just the enqueue —
+    // this is called fire-and-forget (`void`) from three call sites, so
+    // ANY throw here (including this method's own `model.findUnique`,
+    // before `enqueueDiscrete`'s own try/catch is ever reached) would be an
+    // unhandled rejection. Caught live: a test fixture returning a model
+    // row with no `workspace` crashed the whole process under exactly this
+    // shape before this guard existed.
+    try {
+      const model = await this.prisma.model.findUnique({
+        where: { id: modelId },
+        select: { name: true, workspace: { select: { id: true, name: true } } },
+      });
+      if (!model?.workspace) return;
+      const now = new Date();
+      await this.notifications.enqueueDiscrete({
+        workspaceId: model.workspace.id,
+        modelId,
+        modelName: model.name,
+        workspaceName: model.workspace.name,
+        axis: 'DEPLOY',
+        event,
+        severity: event === 'PREFLIGHT_FAILED' ? 'CRITICAL' : 'INFO',
+        title: `${model.name}: ${event.replace(/_/g, ' ').toLowerCase()}`,
+        detail,
+        rawDetailSuffix,
+        at: now,
+        eventKeySeed: `${event}:${now.getTime()}`,
+      });
+    } catch (err) {
+      this.log.warn(
+        `notifyDeployEvent(${event}) failed for model ${modelId}: ${(err as Error).message}`,
+      );
+    }
+  }
 
   // ── access ───────────────────────────────────────────────────────────────
 
@@ -536,6 +587,14 @@ export class InferenceWindowAuthorizedService {
           },
         }),
       ]);
+      // MODEL-SERVE-022. Best-effort, after the durable disable above —
+      // ON->OFF is one of the two DEPLOY-axis transitions this feature
+      // covers straight from the write site (D08).
+      void this.notifyDeployEvent(
+        modelId,
+        'MODEL_STOPPED',
+        'running -> stopped',
+      );
       return {
         statusCode: 200,
         message: `Schedule disabled (${canceled.count} queued window(s) canceled)${
@@ -753,6 +812,17 @@ export class InferenceWindowAuthorizedService {
       this.log.warn(
         `preflight refused enable for model ${modelId} via source ${sourceId}: ${preflight.reason}`,
       );
+      // MODEL-SERVE-022. Keyed by modelId, not scheduleId — on a FIRST
+      // enable `existing` is null and no row is written above (T25's own
+      // rule), so a schedule id is not always available here. Enqueued
+      // BEFORE the throw below (best-effort; never blocks or reverses the
+      // refusal).
+      void this.notifyDeployEvent(
+        modelId,
+        'PREFLIGHT_FAILED',
+        'running -> error (preflight failed)',
+        preflight.reason,
+      );
       throw new AppException({
         statusCode: 422,
         // The connector's OWN TEXT, verbatim. V09 exists precisely because a
@@ -844,6 +914,13 @@ export class InferenceWindowAuthorizedService {
     // was last edited.
     if (!wasEnabled) {
       await this.stampDeployed(modelId, user.id);
+      // MODEL-SERVE-022. The other OFF->ON DEPLOY-axis event (D08).
+      // Best-effort, after the durable enable above.
+      void this.notifyDeployEvent(
+        modelId,
+        'MODEL_STARTED',
+        'stopped -> running',
+      );
     }
 
     return {

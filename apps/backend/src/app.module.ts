@@ -31,6 +31,7 @@ import { PredictionJobModule } from './api/v1/prediction-job/prediction-job.modu
 import { PredictionLogModule } from './api/v1/prediction-log/prediction-log.module';
 import { InferenceWindowModule } from './api/v1/inference-window/inference-window.module';
 import { MetricRegistryModule } from './api/v1/metric-registry/metric-registry.module';
+import { NotificationModule } from './api/v1/notification/notification.module';
 
 @Module({
   imports: [
@@ -79,6 +80,7 @@ import { MetricRegistryModule } from './api/v1/metric-registry/metric-registry.m
     PredictionJobModule,
     InferenceWindowModule,
     MetricRegistryModule,
+    NotificationModule,
     PredictionLogModule,
   ],
   providers: [

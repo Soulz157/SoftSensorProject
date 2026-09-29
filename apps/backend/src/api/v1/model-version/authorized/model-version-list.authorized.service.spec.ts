@@ -17,7 +17,12 @@ function makeService(versions: unknown[]) {
   };
   return {
     prisma,
-    service: new ModelVersionAuthorizedService(prisma as never),
+    // MODEL-SERVE-022-T03. `listVersionsService` never notifies — a plain
+    // mock is enough, no assertion here touches it.
+    service: new ModelVersionAuthorizedService(
+      prisma as never,
+      { enqueueDiscrete: jest.fn() } as never,
+    ),
   };
 }
 

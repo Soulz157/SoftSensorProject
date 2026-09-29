@@ -146,6 +146,17 @@ function buildLivePredict(overrides = {}) {
   };
 }
 
+/** MODEL-SERVE-022-T03. Best-effort by construction — a fresh jest.fn() is
+ *  enough for every case here, none of which asserts on notification
+ *  enqueue behavior (that lives in this feature's own specs). */
+function buildNotifications(overrides = {}) {
+  return {
+    enqueueDiscrete: jest.fn().mockResolvedValue(undefined),
+    enqueueInTx: jest.fn().mockResolvedValue(undefined),
+    ...overrides,
+  };
+}
+
 function makeService(
   prisma: ReturnType<typeof buildPrisma>,
   descriptor: ReturnType<typeof buildDescriptor> = buildDescriptor(),
@@ -154,6 +165,7 @@ function makeService(
   inputStatus: ReturnType<typeof buildInputStatus> = buildInputStatus(),
   scheduler: ReturnType<typeof buildScheduler> = buildScheduler(),
   livePredict: ReturnType<typeof buildLivePredict> = buildLivePredict(),
+  notifications: ReturnType<typeof buildNotifications> = buildNotifications(),
 ) {
   return new InferenceWindowAuthorizedService(
     prisma as unknown as ConstructorParameters<
@@ -177,6 +189,9 @@ function makeService(
     livePredict as unknown as ConstructorParameters<
       typeof InferenceWindowAuthorizedService
     >[6],
+    notifications as unknown as ConstructorParameters<
+      typeof InferenceWindowAuthorizedService
+    >[7],
   );
 }
 
