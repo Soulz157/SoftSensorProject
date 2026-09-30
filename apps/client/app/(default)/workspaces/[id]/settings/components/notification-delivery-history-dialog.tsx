@@ -69,13 +69,13 @@ export function NotificationDeliveryHistoryDialog({
         if (!next) setPage(1)
       }}
     >
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="w-full sm:max-w-5xl">
         <DialogHeader>
           <DialogTitle>Delivery history — {channel.name}</DialogTitle>
         </DialogHeader>
 
         <div className="rounded-md border border-border overflow-hidden">
-          <Table>
+          <Table className="w-full">
             <TableHeader>
               <TableRow>
                 <TableHead>Event</TableHead>
@@ -129,10 +129,7 @@ export function NotificationDeliveryHistoryDialog({
                     <TableCell className="text-xs text-muted-foreground">
                       {new Date(d.sentAt ?? d.createdAt).toLocaleString()}
                     </TableCell>
-                    <TableCell
-                      className="max-w-[220px] truncate text-xs text-destructive"
-                      title={d.lastError ?? undefined}
-                    >
+                    <TableCell className="w-full min-w-[240px] whitespace-normal break-words text-xs text-destructive">
                       {d.lastError ?? '—'}
                     </TableCell>
                   </TableRow>

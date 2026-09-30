@@ -172,10 +172,6 @@ def build_model(
     from sklearn.svm import SVR
 
     if algorithm in ("hgb", "hist_gradient_boosting"):
-        # MODEL-FLOW-027. `max_depth` is the same nullable-number shape as
-        # random_forest's and lightgbm's (None = unlimited, sklearn's own
-        # default) — unlike lightgbm's -1 sentinel, HistGradientBoosting
-        # actually accepts None here, so no coercion is needed.
         max_depth = hyperparameters.get("max_depth")
         return HistGradientBoostingRegressor(
             learning_rate=float(hyperparameters.get("learning_rate", 0.1)),
@@ -189,18 +185,6 @@ def build_model(
             random_state=seed,
         )
     if algorithm == "ridge":
-        # MODEL-FLOW-027. `solver='lbfgs'` is deliberately absent from the
-        # UI's options — it raises unless `positive=True`, which this branch
-        # never sets — so every solver the catalogue can send is one Ridge
-        # actually accepts. `sag`/`saga` are the only two that consult
-        # `random_state` (for their stochastic row order); the other five
-        # ignore it, same inert-until-used shape GaussianProcessRegressor's
-        # `random_state` already has for a kernel with no randomness in it.
-        # random_state is therefore passed unconditionally rather than only
-        # for sag/saga — passing it to a solver that ignores it is harmless,
-        # and a conditional kwarg here would be the one branch in this file
-        # that reads its own `hyperparameters` twice to decide its own
-        # signature.
         return Ridge(
             alpha=float(hyperparameters.get("alpha", 1.0)),
             fit_intercept=bool(hyperparameters.get("fit_intercept", True)),
@@ -208,28 +192,10 @@ def build_model(
             random_state=seed,
         )
     if algorithm == "ols":
-        # `fit_intercept` is the UI's only ols knob (training-config.ts:42-49)
-        # and was previously collected, validated, and echoed into
-        # run_manifest.json while LinearRegression() silently ignored it.
         return LinearRegression(
             fit_intercept=bool(hyperparameters.get("fit_intercept", True))
         )
     if algorithm == "svm":
-        # feature_spec's scaling record is written by the pipeline
-        # (feature_spec_service.py) but otherwise never read by this trainer
-        # — only the target's scaling is gated, upstream. SVR is the one
-        # algorithm sensitive enough to unscaled inputs that its absence is
-        # worth naming. Not fatal: the user may want to see exactly that
-        # result.
-        #
-        # DS-LAKE-028-T03. This branched on `feature_spec["scaling"]` being
-        # non-empty, which made the warning FALSE on 21 of the 22 specs that
-        # exist: before DS-LAKE-028-T02 that field held the user's EXPLICIT
-        # config only, and the common path configures nothing while
-        # to_model_ready min-max scales every tag at the default. So the
-        # trainer told the user their input was unscaled about frames that
-        # were fully scaled. See _inputs_are_scaled for why the resolution
-        # cannot be "read the new field instead".
         if not _inputs_are_scaled(feature_spec) and log_fn:
             log_fn(
                 "SVR is scale-sensitive (superlinear in samples, kernel "
@@ -239,9 +205,6 @@ def build_model(
                 "has the largest raw magnitude.",
                 "warn",
             )
-        # MODEL-FLOW-027. `max_iter` is the same nullable-number shape as
-        # lightgbm's max_depth (null = -1, SVR's own "no limit" sentinel):
-        # None must be coerced to the literal int -1, never passed through.
         max_iter = hyperparameters.get("max_iter")
         return SVR(
             C=float(hyperparameters.get("C", 1.0)),
@@ -251,8 +214,6 @@ def build_model(
             max_iter=int(max_iter) if max_iter is not None else -1,
         )
     if algorithm == "mlp":
-        # UI sends a scalar hidden layer size (training-config.ts:80-105);
-        # MLPRegressor wants a tuple of layer sizes.
         hidden = int(hyperparameters.get("hidden_layer_sizes", 100))
         return MLPRegressor(
             hidden_layer_sizes=(hidden,),
@@ -278,25 +239,13 @@ def build_model(
             random_state=seed,
         )
     if algorithm == "pls":
-        # No manual clamp on n_components vs. feature count: sklearn already
-        # raises a clear ValueError ("`n_components` upper bound is N")
-        # which the top-level handler reports verbatim as failureReason — as
-        # actionable as anything we'd write here, so it is left to surface
-        # unmodified.
         return PLSRegression(
             n_components=int(hyperparameters.get("n_components", 2)),
             max_iter=int(hyperparameters.get("max_iter", 500)),
         )
     if algorithm == "random_forest":
-        # `max_depth` is a nullable-numberx in the UI (null = unlimited
-        # depth, training-config.ts:176-181) — None must stay None, never
-        # be coerced through int().
         max_depth = hyperparameters.get("max_depth")
-        # `max_leaf_nodes` is the same nullable shape (null = unlimited leaves).
         max_leaf_nodes = hyperparameters.get("max_leaf_nodes")
-        # MODEL-FLOW-026. sklearn also accepts a float in (0,1) for both
-        # `min_samples_*` (a fraction of n), but the UI exposes the integer
-        # count only, so int() here is not lossy for anything the form can send.
         return RandomForestRegressor(
             n_estimators=int(hyperparameters.get("n_estimators", 100)),
             max_depth=int(max_depth) if max_depth is not None else None,
@@ -310,63 +259,38 @@ def build_model(
     if algorithm == "lightgbm":
         import lightgbm
 
-        # lightgbm 4.x moved goss from a boosting_type value to its own
-        # data_sample_strategy param; passing boosting_type='goss' still
-        # works (verified against the pinned 4.5.0) but prints a
-        # "backwards compatibility" warning on every fit. Map it explicitly
-        # instead of letting a deprecation path run silently on every run.
         ui_boosting_type = str(hyperparameters.get("boosting_type", "gbdt"))
         if ui_boosting_type == "goss":
             boosting_kwargs = {"boosting_type": "gbdt",
                                "data_sample_strategy": "goss"}
         else:
             boosting_kwargs = {"boosting_type": ui_boosting_type}
-        # MODEL-FLOW-027. `max_depth` is the same nullable-number shape as
-        # random_forest's (null = -1, lightgbm's own "unlimited"): None must
-        # be coerced to -1 here, never passed through, since LGBMRegressor
-        # takes -1 as a literal int, not None. `min_child_samples` is
-        # lightgbm's per-leaf row floor, the same role as sklearn's
-        # min_samples_leaf.
         max_depth = hyperparameters.get("max_depth")
         return lightgbm.LGBMRegressor(
             n_estimators=int(hyperparameters.get("n_estimators", 100)),
             learning_rate=float(hyperparameters.get("learning_rate", 0.1)),
             num_leaves=int(hyperparameters.get("num_leaves", 31)),
             max_depth=int(max_depth) if max_depth is not None else -1,
-            min_child_samples=int(hyperparameters.get("min_child_samples", 20)),
+            min_child_samples=int(
+                hyperparameters.get("min_child_samples", 20)),
             random_state=seed,
             **boosting_kwargs,
         )
     if algorithm == "xgboost":
         import xgboost
 
-        # eval_metric set HERE, not at .fit() time: xgboost's sklearn API
-        # (pinned 2.1.2) deprecates passing eval_metric to .fit(), warning
-        # to set it in the constructor instead — this is purely for
-        # MODEL-FLOW-013-T05's loss-history recording, never consulted for
-        # early stopping (none is configured, so it never changes when
-        # training stops or what the fitted model is).
-        # MODEL-FLOW-027. subsample/colsample_bytree are row/column
-        # sub-sampling fractions in (0, 1]; min_child_weight is the minimum
-        # summed Hessian a leaf needs to keep splitting — xgboost's own
-        # capacity floor, analogous to sklearn's min_samples_leaf but scored
-        # on gradient statistics rather than a raw row count.
         return xgboost.XGBRegressor(
             n_estimators=int(hyperparameters.get("n_estimators", 100)),
             learning_rate=float(hyperparameters.get("learning_rate", 0.1)),
             max_depth=int(hyperparameters.get("max_depth", 6)),
             subsample=float(hyperparameters.get("subsample", 1.0)),
-            colsample_bytree=float(hyperparameters.get("colsample_bytree", 1.0)),
+            colsample_bytree=float(
+                hyperparameters.get("colsample_bytree", 1.0)),
             min_child_weight=float(hyperparameters.get("min_child_weight", 1)),
             random_state=seed,
             eval_metric="rmse",
         )
     if algorithm in SEQUENCE_ALGORITHMS:
-        # MODEL-FLOW-009-T04. Windowing and splitting have already run by the
-        # time this is called — this branch only constructs the estimator, the
-        # same division of labour every other branch here has. n_train_rows is
-        # a WINDOW count here, the same enforcement discipline the grp branch
-        # above applies to GPR_MAX_TRAIN_ROWS.
         if n_train_rows > LSTM_MAX_TRAIN_WINDOWS:
             raise RuntimeError(
                 f"{n_train_rows} training windows exceeds the measured "

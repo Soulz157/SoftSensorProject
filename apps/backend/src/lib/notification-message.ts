@@ -44,18 +44,18 @@ export interface RenderedMessage {
 }
 
 const MONTH_NAMES = [
-  'January',
-  'February',
-  'March',
-  'April',
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
   'May',
-  'June',
-  'July',
-  'August',
-  'September',
-  'October',
-  'November',
-  'December',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
 ];
 
 /** Wall-clock time in UTC — no plant-local timezone field exists on Model,
@@ -63,7 +63,7 @@ const MONTH_NAMES = [
  *  cannot be shown without inventing one; UTC is the honest single value
  *  available.
  *
- * Rendered as "29 September 2026 06:23:21 UTC" rather than the raw ISO
+ * Rendered as "29 Sep 2026 06:23 UTC" rather than the raw ISO
  * string — a reader opening this from a phone notification or a Teams
  * card should not have to parse `2026-09-29T06:23:21.724Z` themselves.
  * Uses the UTC getters directly (no date library added for one function —
@@ -74,8 +74,7 @@ function formatTimestamp(at: Date): string {
   const year = at.getUTCFullYear();
   const hh = String(at.getUTCHours()).padStart(2, '0');
   const mm = String(at.getUTCMinutes()).padStart(2, '0');
-  const ss = String(at.getUTCSeconds()).padStart(2, '0');
-  return `${day} ${month} ${year} ${hh}:${mm}:${ss} UTC`;
+  return `${day} ${month} ${year} ${hh}:${mm} UTC`;
 }
 
 export function buildNotificationMessage(
@@ -85,12 +84,13 @@ export function buildNotificationMessage(
     ? `${env.CLIENT_APP_URL}/models/${input.modelId}`
     : env.CLIENT_APP_URL;
   const lines: string[] = [
-    `${input.workspaceName} / ${input.modelName}`,
-    input.detail,
+    `Workspace: ${input.workspaceName}`,
+    `Model: ${input.modelName}`,
+    `Detail: ${input.detail}`,
   ];
 
   if (input.rawDetailSuffix) {
-    lines.push(redactUrls(input.rawDetailSuffix));
+    lines.push(`Reason: ${redactUrls(input.rawDetailSuffix)}`);
   }
 
   if (input.frozenColumns && input.frozenColumns.length > 0) {
@@ -104,7 +104,7 @@ export function buildNotificationMessage(
     lines.push(`Frozen: ${cols}`);
   }
 
-  lines.push(formatTimestamp(input.at));
+  lines.push(`Timestamp: ${formatTimestamp(input.at)}`);
   lines.push(modelUrl);
 
   return {
