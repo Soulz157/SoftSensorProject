@@ -104,23 +104,23 @@ model User {
   authLogs      AuthLog[]
   workspaceLogs WorkspaceLog[]
 
-  subscriptions         Subscription[]
-  passwordResetTokens   PasswordResetToken[]
-  workspaceMembers      WorkspaceMember[]
-  dataSources           DataSource[]
-  datasets              Dataset[]
-  datasetVersions       DatasetVersion[]
-  datasetArtifacts      DatasetArtifact[]
-  datasetDrafts         DatasetDraft[]
-  modelDrafts           ModelDraft[]
-  modelCandidateJobs    ModelCandidateJob[]
-  preprocessingJobs     PreprocessingJob[]
-  presetImports         FeaturePresetImport[]
-  loaderJobs            LoaderJob[]
-  promotedModelVersions ModelVersion[]
-  predictionJobs        PredictionJob[]
-  inferenceSchedules    InferenceSchedule[]
-  notificationChannels  NotificationChannel[]
+  subscriptions          Subscription[]
+  passwordResetTokens    PasswordResetToken[]
+  workspaceMembers       WorkspaceMember[]
+  dataSources            DataSource[]
+  datasets               Dataset[]
+  datasetVersions        DatasetVersion[]
+  datasetArtifacts       DatasetArtifact[]
+  datasetDrafts          DatasetDraft[]
+  modelDrafts            ModelDraft[]
+  modelCandidateJobs     ModelCandidateJob[]
+  preprocessingJobs      PreprocessingJob[]
+  presetImports          FeaturePresetImport[]
+  loaderJobs             LoaderJob[]
+  promotedModelVersions  ModelVersion[]
+  predictionJobs         PredictionJob[]
+  inferenceSchedules     InferenceSchedule[]
+  notificationChannels   NotificationChannel[]
   /// MODEL-SERVE-022-T07. At most one row per user — see
   /// NotificationReadMarker's own doc comment.
   notificationReadMarker NotificationReadMarker?
@@ -143,28 +143,27 @@ model Account {
 }
 
 model Workspace {
-  id            String                @id @default(uuid())
-  ownerId       String
-  owner         User                  @relation(fields: [ownerId], references: [id])
-  name          String
-  icon          String
-  color         String
-  description   String?
-  thumbnailUrl  String?
-  createdAt     DateTime              @default(now())
-  updatedAt     DateTime              @updatedAt
-  deletedAt     DateTime?
-  logs          WorkspaceLog[]
-  members       WorkspaceMember[]
-  nodes         Nodes[]
-  models        Model[]
-  edges         Edge[]
-  plans         WorkspacePlant[]
-  datasets      Dataset[]
-  dataSources   DataSource[]
-  datasetDrafts DatasetDraft[]
-  modelDrafts   ModelDraft[]
-  presetImports FeaturePresetImport[]
+  id                   String                @id @default(uuid())
+  ownerId              String
+  owner                User                  @relation(fields: [ownerId], references: [id])
+  name                 String
+  icon                 String
+  color                String
+  description          String?
+  thumbnailUrl         String?
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  deletedAt            DateTime?
+  logs                 WorkspaceLog[]
+  members              WorkspaceMember[]
+  nodes                Nodes[]
+  models               Model[]
+  plans                WorkspacePlant[]
+  datasets             Dataset[]
+  dataSources          DataSource[]
+  datasetDrafts        DatasetDraft[]
+  modelDrafts          ModelDraft[]
+  presetImports        FeaturePresetImport[]
   /// MODEL-SERVE-022-D07. Channels configured, per workspace, per D-scope
   /// (workspace channels + per-channel per-model mute, not per-model channels).
   notificationChannels NotificationChannel[]
@@ -220,29 +219,29 @@ model WorkspaceMember {
 }
 
 model Model {
-  id                String              @id @default(uuid())
-  workspaceId       String
-  workspace         Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  name              String
-  data              Json?
-  createdAt         DateTime            @default(now())
-  updatedAt         DateTime            @updatedAt
-  nodes             Nodes?              @relation(fields: [nodesId], references: [id])
-  nodesId           String?
-  dataset           Dataset?            @relation(fields: [datasetId], references: [id])
-  datasetId         String?
-  modelTrainingRuns ModelTrainingRun[]
-  versions          ModelVersion[]
-  predictionJobs    PredictionJob[]
-  candidateJobs     ModelCandidateJob[]
-  predictionLogs    PredictionLog[]
-  inferenceWindows  InferenceWindow[]
-  inferenceSchedule InferenceSchedule?
-  tagObservations   TagObservation[]
+  id                    String                 @id @default(uuid())
+  workspaceId           String
+  workspace             Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  name                  String
+  data                  Json?
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  nodes                 Nodes?                 @relation(fields: [nodesId], references: [id])
+  nodesId               String?
+  dataset               Dataset?               @relation(fields: [datasetId], references: [id])
+  datasetId             String?
+  modelTrainingRuns     ModelTrainingRun[]
+  versions              ModelVersion[]
+  predictionJobs        PredictionJob[]
+  candidateJobs         ModelCandidateJob[]
+  predictionLogs        PredictionLog[]
+  inferenceWindows      InferenceWindow[]
+  inferenceSchedule     InferenceSchedule?
+  tagObservations       TagObservation[]
   /// MODEL-SERVE-022. Current notified state per axis — at most one DEPLOY
   /// and one MONITORING row per model, upserted in place, never a history
   /// table (see ModelAlertState's own doc comment).
-  alertStates       ModelAlertState[]
+  alertStates           ModelAlertState[]
   notificationEvents    NotificationEvent[]
   notificationUserMutes NotificationUserMute[]
 
@@ -339,16 +338,16 @@ model PasswordResetToken {
 }
 
 model DataSource {
-  id               String   @id @default(uuid())
+  id               String     @id @default(uuid())
   name             String
   type             String
-  host             String   @default("")
-  username         String   @default("")
-  secretCiphertext String   @default("")
-  dbName           String   @default("")
-  status           String   @default("connected")
+  host             String     @default("")
+  username         String     @default("")
+  secretCiphertext String     @default("")
+  dbName           String     @default("")
+  status           String     @default("connected")
   config           Json?
-  createdBy        User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  createdBy        User       @relation(fields: [createdById], references: [id], onDelete: Cascade)
   createdById      String
   /// Workspace the source is shared with. Members (owner or WorkspaceMember)
   /// can list it and run queries through it with the stored credentials;
@@ -358,8 +357,8 @@ model DataSource {
   /// private rather than disappearing with its credentials.
   workspaceId      String?
   workspace        Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
 
   @@index([createdById])
   @@index([workspaceId])
@@ -787,20 +786,6 @@ model FeaturePreset {
   @@index([importId])
 }
 
-model Edge {
-  id           String    @id @default(uuid())
-  workspaceId  String
-  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  sourceId     String
-  targetId     String
-  sourceHandle String?
-  targetHandle String?
-  createdAt    DateTime  @default(now())
-
-  @@unique([workspaceId, sourceId, targetId, sourceHandle, targetHandle])
-  @@index([workspaceId])
-}
-
 enum ModelDraftStatus {
   ACTIVE
   /// Set when a run owned by this draft completes SUCCEEDED
@@ -950,10 +935,10 @@ model ModelTrainingRun {
   /// a non-zero exit code the runner observed.
   failureReason String?
 
-  modelKey                 String?
-  metricsKey               String?
-  manifestKey              String?
-  predictionsKey           String?
+  modelKey                              String?
+  metricsKey                            String?
+  manifestKey                           String?
+  predictionsKey                        String?
   /// MODEL-FLOW-019-T20. A NON-CV SUCCEEDED run's own holdout series
   /// ({timestamp,y_true,y_pred} over the dataset's raw validation holdout)
   /// — deliberately a SEPARATE column from `predictionsKey`, never the same
@@ -975,14 +960,14 @@ model ModelTrainingRun {
   /// whose inline holdout scoring soft-failed, and any pre-T26 run never
   /// backfilled. Not cleared on a re-score failure, so a prior successful
   /// score is not lost by a later attempt that fails.
-  holdoutPredictionsKey    String?
+  holdoutPredictionsKey                 String?
   /// MODEL-FLOW-013-T05. Set only for the algorithms train.py can extract a
   /// real iteration-by-iteration loss trajectory from (mlp, lightgbm,
   /// xgboost, hist_gradient_boosting) — null for a closed-form algorithm
   /// (ols/ridge/pls/grp/svm/random_forest), which never writes this
   /// artifact, and null for a series that exceeded MAX_LOSS_HISTORY_POINTS
   /// (soft-skipped, not a training failure).
-  lossHistoryKey           String?
+  lossHistoryKey                        String?
   /// MODEL-FLOW-016-T04. Per-fold CV metrics (cv_folds.json) — set only for
   /// a CV run (splitSpec.method === "cv_expanding"); null for every other
   /// run, the same honest-legacy-null pattern MODEL-FLOW-010-T06 established
@@ -990,7 +975,7 @@ model ModelTrainingRun {
   /// capped (MIN_LABELS_PER_FOLD, split_stats_service.py / train.py) before
   /// a fold ever fits, so an oversized artifact is unreachable — no
   /// redundant size guard needed on this column.
-  cvFoldsKey               String?
+  cvFoldsKey                            String?
   /// MODEL-FLOW-019-T09. Per-feature importance (feature_importance.json) —
   /// set only for the algorithms images/trainer/app/importance.py can read
   /// a real quantity from (random_forest/lightgbm/xgboost via
@@ -1003,7 +988,7 @@ model ModelTrainingRun {
   /// this run"; never reconstructed on read (that would mean loading
   /// model.joblib outside the trainer image, MODEL-FLOW-016-T07's own
   /// finding that apps/python has no sklearn/joblib at all).
-  featureImportanceKey     String?
+  featureImportanceKey                  String?
   /// MODEL-FLOW-023-T10. Population-scored importance
   /// (permutation_importance.json) — set only for lstm/gru today (the one
   /// strategy that populates `TrainingResult.permutation_population`,
@@ -1012,13 +997,13 @@ model ModelTrainingRun {
   /// artifact, never a widened `featureImportanceKey` — a signed
   /// population-scored drop and an always-non-negative fit-internal value
   /// answer different questions (importance.py's own finding).
-  permutationImportanceKey String?
+  permutationImportanceKey              String?
   /// Denormalised from metrics.json for list/sort without an object read —
   /// the same reasoning DatasetArtifact uses for rowCount and missingPct.
   /// MODEL-FLOW-013-T04 added train_r2/train_mae/train_rmse keys alongside
   /// the existing test-split r2/mae/rmse — no schema change needed, this
   /// column is untyped Json.
-  metrics                  Json?
+  metrics                               Json?
   /// DS-LAKE-018-T05. The SAME shape as `metrics` (r2/mae/rmse/row counts),
   /// scored on the replayed RAW validation holdout instead of the
   /// chronological test split. Deliberately a SEPARATE column, never merged
@@ -1028,7 +1013,7 @@ model ModelTrainingRun {
   /// no holdout (validationRowCount was never set) or the replay failed —
   /// both cases leave training itself unaffected (see model-run.authorized.
   /// service.ts's claim()).
-  holdoutMetrics           Json?
+  holdoutMetrics                        Json?
   /// MODEL-SERVE-015-T04. What `holdoutMetrics` above was actually scored
   /// against — nullable, and null for every run predating this feature
   /// (DATASET_HOLDOUT is the implicit legacy meaning). `DATASET_HOLDOUT`:
@@ -1039,14 +1024,14 @@ model ModelTrainingRun {
   /// `buildComparison` in model-retrain.authorized.service.ts, which
   /// requires this discriminant (not just artifact/checksum equality) to
   /// mark an augmented retrain `comparable`.
-  evalSetKind              ModelEvalSetKind?
+  evalSetKind                           ModelEvalSetKind?
   /// sha256 of the frozen-eval parquet the candidate was actually scored
   /// against, set only alongside `evalSetKind: FROZEN_INCUMBENT_TEST`.
   /// `buildComparison` checks this against the incumbent's own derived
   /// frozen-eval checksum before publishing an `rmseDelta` — the same
   /// checksum-drift discipline `claim()` already applies to the training
   /// artifact, applied here to the eval artifact instead.
-  frozenEvalChecksum       String?
+  frozenEvalChecksum                    String?
   /// The candidate's score on the operator-defined NEW-DATA validation
   /// window, when a retrain carved one out of the newly merged dataset.
   ///
@@ -1061,13 +1046,13 @@ model ModelTrainingRun {
   ///
   /// Null for every run that requested no validation window, and for every
   /// run predating this feature.
-  newDataHoldoutMetrics    Json?
+  newDataHoldoutMetrics                 Json?
   /// Row count and the MEASURED first/last timestamps of the window
   /// actually held out — not the bounds the operator asked for. Recorded so
   /// the UI can state what the figure above was computed on.
-  newDataHoldoutRowCount   Int?
-  newDataHoldoutFrom       DateTime?
-  newDataHoldoutTo         DateTime?
+  newDataHoldoutRowCount                Int?
+  newDataHoldoutFrom                    DateTime?
+  newDataHoldoutTo                      DateTime?
   /// MODEL-SERVE-020-T06. Object key of the per-row series
   /// `{timestamp,y_true,y_pred}` the candidate produced on the new-data window
   /// above — `new_data_holdout_predictions.parquet`. Until this column the
@@ -1077,7 +1062,7 @@ model ModelTrainingRun {
   /// no window, a run from before this column, a trainer image that predates
   /// it (an additive artifact fails silently until the image is rebuilt), or
   /// the window's scoring soft-failing. Never reconstructed on read.
-  newDataHoldoutPredictionsKey String?
+  newDataHoldoutPredictionsKey          String?
   /// MODEL-SERVE-021. The CURRENT PRODUCTION model's score on the SAME
   /// window above — never blended with `newDataHoldoutMetrics` (the
   /// candidate's own score on it). This is what makes a New Data Only
@@ -1089,7 +1074,7 @@ model ModelTrainingRun {
   /// resolved (lstm/gru, or a version recording no feature_columns — see
   /// `prepareNewDataOnlyComparison`'s own comment), or whose scoring
   /// soft-failed. Never written back onto the incumbent's OWN row.
-  incumbentNewDataHoldoutMetrics    Json?
+  incumbentNewDataHoldoutMetrics        Json?
   /// Object key of the per-row series the SAME scoring produced for the
   /// current version, mirroring `newDataHoldoutPredictionsKey`'s own
   /// null-means-not-recorded discipline.
@@ -1110,7 +1095,7 @@ model ModelTrainingRun {
   /// on purpose (N candidates sharing one split is N redundant artifact
   /// reads for an identical answer; a candidate's provenance belongs to its
   /// job, not to this column).
-  splitStats               Json?
+  splitStats                            Json?
 
   createdAt  DateTime  @default(now())
   startedAt  DateTime?
@@ -2280,18 +2265,18 @@ model NotificationChannel {
   /// "MONITORING_ALERT", "PREFLIGHT_FAILED"). Not a Prisma enum: the
   /// catalogue is expected to grow, and a schema migration per new event
   /// kind is exactly the friction a string column avoids.
-  events String[]
+  events      String[]
 
   /// STORED BUT UNREAD THIS PASS (D-openDecisions FLAPPING, T03 finding):
   /// cooldown/flapping suppression is left undecided rather than shipped
   /// half-designed against this pass's own acceptance criteria. Default 0.
-  cooldownMinutes Int @default(0)
+  cooldownMinutes Int      @default(0)
   /// Model ids this channel notifies for — an explicit ALLOW-list (user's
   /// call, 2026-10-01; replaced the old `mutedModelIds` exclude list). Empty
   /// means the channel sends for NO model; the form refuses to save it empty
   /// and offers "Select all". A model created later is not included until it
   /// is selected.
-  focusModelIds String[] @default([])
+  focusModelIds   String[] @default([])
 
   createdBy   User   @relation(fields: [createdById], references: [id], onDelete: Cascade)
   createdById String
@@ -2373,7 +2358,7 @@ model NotificationDelivery {
   /// navbar bell all read from the ONE `NotificationEvent` row an evaluator
   /// or write site wrote). Null only for a "send test notification" delivery,
   /// which has no real event behind it (unchanged from T04).
-  eventId          String?
+  eventId           String?
   notificationEvent NotificationEvent? @relation(fields: [eventId], references: [id], onDelete: Cascade)
 
   @@unique([channelId, eventKey])

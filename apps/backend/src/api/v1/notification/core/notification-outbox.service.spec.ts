@@ -59,7 +59,7 @@ describe('NotificationOutboxService.enqueueInTx (MODEL-SERVE-022-T03/T07)', () =
     expect(tx.notificationDelivery.createMany).not.toHaveBeenCalled();
   });
 
-  it('filters by event membership and per-model mute at the QUERY level', async () => {
+  it('filters by event membership and the focus allow-list at the QUERY level', async () => {
     const tx = buildTx([{ id: 'ch-1', minSeverity: 'INFO' }]);
     const outbox = new NotificationOutboxService({} as never);
     await outbox.enqueueInTx(tx as never, baseParams);
@@ -68,7 +68,7 @@ describe('NotificationOutboxService.enqueueInTx (MODEL-SERVE-022-T03/T07)', () =
         workspaceId: 'ws-1',
         enabled: true,
         events: { has: 'MONITORING_ALERT' },
-        NOT: { mutedModelIds: { has: 'model-1' } },
+        focusModelIds: { has: 'model-1' },
       },
     });
   });

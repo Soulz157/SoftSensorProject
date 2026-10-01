@@ -6,7 +6,6 @@ import {
   ChevronRight,
   Layers,
   Database,
-  Network,
   SlidersHorizontal,
   TriangleAlert,
   X,
@@ -266,12 +265,6 @@ export function SidebarWorkspaces({
                   icon: <Layers className="h-3.5 w-3.5 shrink-0" />,
                   label: 'Overview',
                   exact: true,
-                },
-                {
-                  href: `/workspaces/${currentWorkspace.id}/canvas`,
-                  icon: <Network className="h-3.5 w-3.5 shrink-0" />,
-                  label: 'Pipeline',
-                  exact: false,
                 },
                 {
                   href: `/analytics/${currentWorkspace.id}`,

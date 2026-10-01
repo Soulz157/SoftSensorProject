@@ -7,7 +7,6 @@ import { writeFile, mkdir } from 'fs/promises';
 import { extname, join } from 'path';
 import type { FastifyRequest } from 'fastify';
 import type {
-  EdgeItemDto,
   GetLogsQueryDto,
   InviteMemberDto,
   UpdateMemberRoleDto,
@@ -395,50 +394,6 @@ export class WorkspaceAuthorizedService {
       message: 'Member role updated',
       type: 'SUCCESS' as const,
       data: updated,
-    };
-  }
-
-  async listEdges(workspaceId: string, userId: string, userRole: string) {
-    await this.assertHasAccess(workspaceId, userId, userRole);
-
-    const edges = await this.prisma.edge.findMany({
-      where: { workspaceId },
-      orderBy: { createdAt: 'asc' },
-    });
-
-    return {
-      statusCode: 200,
-      message: 'Edges fetched successfully',
-      type: 'SUCCESS' as const,
-      data: edges,
-    };
-  }
-
-  async replaceEdges(
-    workspaceId: string,
-    userId: string,
-    userRole: string,
-    edges: EdgeItemDto[],
-  ) {
-    await this.assertHasAccess(workspaceId, userId, userRole);
-
-    await this.prisma.$transaction([
-      this.prisma.edge.deleteMany({ where: { workspaceId } }),
-      this.prisma.edge.createMany({
-        data: edges.map((e) => ({ ...e, workspaceId })),
-      }),
-    ]);
-
-    const result = await this.prisma.edge.findMany({
-      where: { workspaceId },
-      orderBy: { createdAt: 'asc' },
-    });
-
-    return {
-      statusCode: 200,
-      message: 'Edges replaced successfully',
-      type: 'SUCCESS' as const,
-      data: result,
     };
   }
 

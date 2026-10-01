@@ -91,6 +91,27 @@ export class NotificationChannelAuthorizedService {
     }
   }
 
+  /** Focus models must be models of THIS workspace — a foreign or stale id
+   *  would make the channel silently miss events it looks configured for. */
+  private async assertFocusModelsInWorkspace(
+    workspaceId: string,
+    focusModelIds: string[],
+  ) {
+    const found = await this.prisma.model.findMany({
+      where: { workspaceId, id: { in: focusModelIds } },
+      select: { id: true },
+    });
+    const known = new Set(found.map((m) => m.id));
+    const invalid = focusModelIds.filter((id) => !known.has(id));
+    if (invalid.length > 0) {
+      throw new AppException({
+        statusCode: 422,
+        message: `focusModelIds includes models that are not in this workspace: ${invalid.join(', ')}`,
+        type: 'ERROR',
+      });
+    }
+  }
+
   /** D-user-decision: e-mail recipients are workspace members only. Owner
    *  counts as a member for this purpose (they always have access). */
   private async assertRecipientsAreMembers(
@@ -151,7 +172,7 @@ export class NotificationChannelAuthorizedService {
           minSeverity: c.minSeverity,
           events: c.events,
           cooldownMinutes: c.cooldownMinutes,
-          mutedModelIds: c.mutedModelIds,
+          focusModelIds: c.focusModelIds,
           recipientUserIds: c.recipientUserIds,
           ...this.mask(c),
         })),
@@ -166,6 +187,7 @@ export class NotificationChannelAuthorizedService {
     user: Auth.UserPayload,
   ) {
     await this.assertIsOwner(workspaceId, user.id);
+    await this.assertFocusModelsInWorkspace(workspaceId, dto.focusModelIds);
     if (dto.kind === 'EMAIL' && dto.recipientUserIds) {
       await this.assertRecipientsAreMembers(workspaceId, dto.recipientUserIds);
     }
@@ -183,7 +205,7 @@ export class NotificationChannelAuthorizedService {
         minSeverity: dto.minSeverity ?? 'WARNING',
         events: dto.events ?? DEFAULT_ON_EVENT_KINDS,
         cooldownMinutes: dto.cooldownMinutes ?? 0,
-        mutedModelIds: dto.mutedModelIds ?? [],
+        focusModelIds: dto.focusModelIds,
         createdById: user.id,
       },
     });
@@ -212,6 +234,9 @@ export class NotificationChannelAuthorizedService {
         type: 'ERROR',
       });
     }
+    if (dto.focusModelIds) {
+      await this.assertFocusModelsInWorkspace(workspaceId, dto.focusModelIds);
+    }
     if (dto.recipientUserIds) {
       await this.assertRecipientsAreMembers(workspaceId, dto.recipientUserIds);
     }
@@ -239,7 +264,7 @@ export class NotificationChannelAuthorizedService {
         minSeverity: dto.minSeverity,
         events: dto.events,
         cooldownMinutes: dto.cooldownMinutes,
-        mutedModelIds: dto.mutedModelIds,
+        focusModelIds: dto.focusModelIds,
       },
     });
     return {

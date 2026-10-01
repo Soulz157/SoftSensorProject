@@ -191,8 +191,6 @@ Canonical example: `apps/backend/src/api/v1/auth/admin/auth.admin.service.ts`.
 | POST   | `/api/v1/authorized/workspace`                   | create workspace                                                  |
 | PATCH  | `/api/v1/authorized/workspace/:id`               | update workspace                                                  |
 | DELETE | `/api/v1/authorized/workspace/:id`               | delete workspace                                                  |
-| GET    | `/api/v1/authorized/workspace/:id/edges`         | list canvas edges for workspace                                   |
-| PUT    | `/api/v1/authorized/workspace/:id/edges`         | replace all edges (full replace, not patch)                       |
 | GET    | `/api/v1/admin/workspace`                        | admin list workspaces (paginated)                                 |
 | GET    | `/api/v1/admin/workspace/:id`                    | admin get workspace by id                                         |
 | POST   | `/api/v1/admin/workspace/create`                 | admin create workspace                                            |
@@ -335,7 +333,7 @@ apps/client/
 │   └── utils.ts                      # cn()
 ├── services/
 │   ├── auth.ts                       # authService.register, logout
-│   ├── canvas.ts                     # getNodes(), createNode(), updateNode(), deleteNode(), getEdges(), replaceEdges()
+│   ├── canvas.ts                     # getNodes(), createNode(), updateNode(), deleteNode() — equipment nodes (the workspace canvas page and edges were removed, MODEL-SERVE-025)
 │   ├── plan.ts                       # planService.listPlans(), mySubscription(), downgrade()
 │   ├── profile.ts / user.ts
 │   ├── workspace.ts                  # getAllWorkspaces(), getWorkspaceById(), CRUD

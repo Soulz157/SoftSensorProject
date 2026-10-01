@@ -91,3 +91,24 @@ describe('NotificationChannelAuthorizedService — writes stay owner-only', () =
     expect(prisma.notificationChannel.delete).not.toHaveBeenCalled();
   });
 });
+
+describe('NotificationChannelAuthorizedService — focus models (MODEL-SERVE-022-D-FOCUS)', () => {
+  it('refuses a focus model that is not in the workspace with a 422', async () => {
+    const { service, prisma } = build('OWNER');
+    (prisma as unknown as { model: unknown }).model = {
+      findMany: jest.fn().mockResolvedValue([{ id: 'm-in' }]),
+    };
+    await expect(
+      service.createChannelService(
+        'ws-1',
+        {
+          kind: 'TEAMS_WORKFLOW',
+          name: 'Ops',
+          target: 'https://example.com/hook',
+          focusModelIds: ['m-in', 'm-foreign'],
+        } as never,
+        user as never,
+      ),
+    ).rejects.toMatchObject({ statusCode: 422 });
+  });
+});

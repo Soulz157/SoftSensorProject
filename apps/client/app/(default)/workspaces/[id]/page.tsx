@@ -6,5 +6,7 @@ export default async function WorkspacePage({
   params: Promise<{ id: string }>
 }) {
   const { id } = await params
-  redirect(`/workspaces/${id}/canvas`)
+  // MODEL-SERVE-025. The workspace canvas was removed; a bare workspace URL
+  // opens its plant overview, the sidebar's own "Overview" entry.
+  redirect(`/plants/${id}`)
 }

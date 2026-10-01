@@ -287,7 +287,7 @@ export function TagCorrelationChart({
       )}
 
       {top.length > 0 ? (
-        <ScrollArea className="w-full rounded-md [&>[data-radix-scroll-area-viewport]]:max-h-90">
+        <ScrollArea className="w-full rounded-md *:data-radix-scroll-area-viewport:max-h-90">
           <div className="space-y-1.5 p-2">
             {top.map(pair => {
               const { bg, fg } = correlationColors(pair.r)

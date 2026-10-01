@@ -7,7 +7,6 @@ import {
   Param,
   Patch,
   Post,
-  Put,
   Query,
   Req,
   UseGuards,
@@ -18,7 +17,6 @@ import { WorkspaceAuthorizedService } from './workspace.authorized.service';
 import {
   GetLogsQueryDto,
   InviteMemberDto,
-  ReplaceEdgesDto,
   UpdateMemberRoleDto,
 } from './dto/workspace.authorized.dto';
 import { JwtAccessGuard } from '@/guards/jwt-access.guard';
@@ -62,29 +60,6 @@ export class WorkspaceAuthorizedController {
       id,
       user.id,
       user.role,
-    );
-  }
-
-  @Get('/:id/edges')
-  @HttpCode(200)
-  @ApiOperation({ summary: 'List edges in a workspace' })
-  async listEdges(@Param('id') id: string, @Users() user: Auth.UserPayload) {
-    return this.workspaceAuthorizedService.listEdges(id, user.id, user.role);
-  }
-
-  @Put('/:id/edges')
-  @HttpCode(200)
-  @ApiOperation({ summary: 'Replace all edges in a workspace' })
-  async replaceEdges(
-    @Param('id') id: string,
-    @Users() user: Auth.UserPayload,
-    @Body() body: ReplaceEdgesDto,
-  ) {
-    return this.workspaceAuthorizedService.replaceEdges(
-      id,
-      user.id,
-      user.role,
-      body.edges,
     );
   }
 

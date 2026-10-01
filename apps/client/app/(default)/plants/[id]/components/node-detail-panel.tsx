@@ -8,11 +8,23 @@ import {
   ArrowRight,
   CheckCircle2,
   Cpu,
-  ExternalLink,
-  Settings2,
+  Pencil,
   Siren,
+  Trash2,
   X,
 } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
 import { cn } from '@/lib/utils'
 import type { CanvasNode } from '@/services/canvas'
 import type { WorkspacePlant } from '@/types'
@@ -79,6 +91,8 @@ interface NodeDetailPanelProps {
   workspaceId: string | null
   onDrillDown?: (planId: string) => void
   onEditClick?: (node: CanvasNode) => void
+  /** Called after the user confirms. MODEL-SERVE-025-D02. */
+  onDeleteClick?: (node: CanvasNode) => void
   onClose: () => void
 }
 
@@ -140,6 +154,7 @@ export function NodeDetailPanel({
   workspaceId,
   onDrillDown,
   onEditClick,
+  onDeleteClick,
   onClose,
 }: NodeDetailPanelProps) {
   if (viewMode === 'plants') {
@@ -213,10 +228,11 @@ export function NodeDetailPanel({
                   .map(n => {
                     const st = n.data.status as NodeStatus
                     return (
-                      <Link
+                      <button
                         key={n.id}
-                        href={`/workspaces/${workspaceId}/canvas`}
-                        className="group flex items-center gap-2.5 rounded-md px-2 py-2 transition-colors hover:bg-accent/50"
+                        type="button"
+                        onClick={() => onDrillDown?.(plan.id)}
+                        className="group flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2 py-2 text-left transition-colors hover:bg-accent/50"
                       >
                         <span
                           className={cn(
@@ -245,18 +261,19 @@ export function NodeDetailPanel({
                           {formatStatus(st)}
                         </span>
                         <ArrowRight className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
-                      </Link>
+                      </button>
                     )
                   })}
               </div>
               {planNodes.length > MAX_PREVIEW && (
-                <Link
-                  href={`/workspaces/${workspaceId}/canvas`}
-                  className="mt-2 flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+                <button
+                  type="button"
+                  onClick={() => onDrillDown?.(plan.id)}
+                  className="mt-2 flex cursor-pointer items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
                 >
                   View all {planNodes.length} equipment
                   <ArrowRight className="h-3 w-3" />
-                </Link>
+                </button>
               )}
             </div>
           )}
@@ -277,15 +294,6 @@ export function NodeDetailPanel({
           <PrimaryPanelButton onClick={() => onDrillDown?.(plan.id)}>
             View Equipment
           </PrimaryPanelButton>
-          {workspaceId && (
-            <Link
-              href={`/workspaces/${workspaceId}/canvas`}
-              className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-muted/20 px-3 py-2 text-center text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-            >
-              View Pipeline
-              <ExternalLink className="h-3.5 w-3.5" />
-            </Link>
-          )}
         </div>
       </div>
     )
@@ -316,16 +324,6 @@ export function NodeDetailPanel({
             </>
           }
         />
-        {onEditClick && (
-          <button
-            type="button"
-            onClick={() => onEditClick(node)}
-            className="absolute top-3 right-10 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            title="Edit Device Settings"
-          >
-            <Settings2 className="h-4 w-4" />
-          </button>
-        )}
 
         <div className="mt-4 rounded-lg border border-border bg-background/50 p-3">
           <div className="mb-2 flex items-center justify-between gap-2">
@@ -436,14 +434,51 @@ export function NodeDetailPanel({
       </div>
 
       <div className="shrink-0 space-y-2 border-t border-border bg-card/80 px-4 py-4">
-        {workspaceId && (
-          <Link
-            href={`/workspaces/${workspaceId}/canvas?nodeId=${node.id}`}
-            className="flex w-full items-center justify-center gap-2 rounded-md bg-primary px-3 py-2.5 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90"
-          >
-            View Pipeline
-            <ExternalLink className="h-4 w-4" />
-          </Link>
+        {/* MODEL-SERVE-025-D02. Edit and Delete live here now that the
+            workspace canvas is gone. */}
+        {(onEditClick || onDeleteClick) && (
+          <div className="flex gap-2">
+            {onEditClick && (
+              <Button
+                className="flex-1 gap-1.5"
+                size="sm"
+                onClick={() => onEditClick(node)}
+              >
+                <Pencil className="h-3.5 w-3.5" />
+                Edit
+              </Button>
+            )}
+            {onDeleteClick && (
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button variant="outline" size="sm" className="gap-1.5">
+                    <Trash2 className="h-3.5 w-3.5" />
+                    Delete
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>
+                      Delete &ldquo;{node.data.name}&rdquo;?
+                    </AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This equipment is removed from its plant. Models placed on
+                      it lose that placement. This cannot be undone.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                      onClick={() => onDeleteClick(node)}
+                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                    >
+                      Delete
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            )}
+          </div>
         )}
         <button
           type="button"

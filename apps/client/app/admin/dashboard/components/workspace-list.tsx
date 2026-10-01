@@ -15,7 +15,6 @@ import {
   AlertCircle,
   RefreshCw,
   Activity,
-  Network,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { Workspace } from '@/types/dashboard'
@@ -217,15 +216,6 @@ export function WorkspaceList({
                             className="cursor-pointer h-8 text-xs text-muted-foreground hover:text-foreground"
                           >
                             View Details
-                          </Button>
-                        </Link>
-                        <Link href={`/workspaces/${workspace.id}/canvas`}>
-                          <Button
-                            size="sm"
-                            className="cursor-pointer h-8 gap-1.5 text-xs bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm"
-                          >
-                            <Network className="h-3.5 w-3.5" />
-                            Process Pipeline
                           </Button>
                         </Link>
                       </span>

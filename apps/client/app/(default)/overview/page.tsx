@@ -174,7 +174,6 @@ export default function PlantsPage() {
               nodes={selectedNodes}
               onClose={dismiss}
               onViewWorkspace={id => router.push(`/plants/${id}`)}
-              onOpenPipeEditor={id => router.push(`/workspaces/${id}/canvas`)}
               onViewAlerts={() => router.push('/alerts')}
               onOpenSettings={id => router.push(`/workspaces/${id}/settings`)}
             />

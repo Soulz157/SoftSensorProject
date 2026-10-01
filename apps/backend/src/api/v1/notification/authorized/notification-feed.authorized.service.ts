@@ -21,8 +21,8 @@ const MAX_LIMIT = 50;
  * `assertCanEdit` this feature's own channel-management API uses. A
  * per-user, per-model `NotificationUserMute` row removes that model's
  * events from BOTH the list and the unread count for that user only —
- * a separate control from `NotificationChannel.mutedModelIds`, which mutes
- * a channel for everyone.
+ * a separate control from `NotificationChannel.focusModelIds`, which picks
+ * the models a channel sends for, for everyone.
  */
 @Injectable()
 export class NotificationFeedAuthorizedService {

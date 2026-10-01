@@ -3187,6 +3187,11 @@
           "id": "MODEL-SERVE-022-D-STAFF-READ",
           "decision": "STAFF members may VIEW their own workspace's notification channels and delivery history. Every mutating route (create, edit, delete, test-send) stays owner-only. VIEWER still sees neither, because channel rows name recipients and targets. The in-app bell feed already admitted every member and is unchanged.",
           "why": "User request 2026-10-01: 'allow staff role in workspace to see notification in own workspace'. The block was the two read routes calling assertIsOwner, so a STAFF member opening Settings → Notifications got a 403."
+        },
+        {
+          "id": "MODEL-SERVE-022-D-FOCUS",
+          "decision": "A channel's model filter is an explicit FOCUS allow-list (`focusModelIds`), replacing the `mutedModelIds` exclude list. The channel sends only for selected models; an empty list sends nothing, so the form requires at least one and offers Select all / Clear. A model created later is not included until it is selected. The migration backfills each existing channel with all of its workspace's models minus any previously muted, so behaviour is unchanged on the day it ships.",
+          "why": "User request 2026-10-01 ('Select Focus noti model for this notification event'). For empty-focus behaviour the user answered 'add button to select all', read as an explicit list with Select all."
         }
       ],
       "openDecisions": [
@@ -3316,6 +3321,13 @@
           "status": "completed",
           "progress": 100,
           "result": "notification-channel.authorized.service.ts: new assertCanView (owner, or member role OWNER/STAFF; ADMIN not special-cased, matching assertIsOwner's convention) used by listChannelsService and listDeliveriesService; mutations keep assertIsOwner. Client notification-channels.tsx: 'Send test notification' is now owner-only like Edit/Delete (the server refuses it for staff); Add channel was already owner-gated and delivery history is open. New notification-channel.authorized.service.spec.ts, 7 cases: OWNER/STAFF/owner-without-member-row list ok, STAFF delivery history ok, VIEWER/non-member 403, STAFF delete 403 with no write. Notification suites 32/32. tsc is at its baselines (client 4, backend 61), and eslint is clean."
+        },
+        {
+          "id": "MODEL-SERVE-022-T-FOCUS",
+          "title": "Muted models → Focus models (allow-list + Select all)",
+          "status": "completed",
+          "progress": 100,
+          "result": "Migration 20261001120000_model_serve_022_focus_models was hand-written (diff trimmed: the unrelated InferenceSchedule.driftThresholdPct drop was excluded), applied in one transaction and marked applied. It ADDs focusModelIds, backfills each channel with its workspace's models minus muted ones, then DROPs mutedModelIds. Local: the 'Test' channel was backfilled with all 12 workspace models. The prisma client was regenerated and dist rebuilt with tsc --build (the backend imports dist). Backend: the DTO requires focusModelIds .min(1) on create and keeps it optional-but-non-empty on update; the service adds assertFocusModelsInWorkspace (422 for a foreign id); the outbox filter is `focusModelIds: { has: modelId }`. Client: new settings/components/focus-model-select.tsx (search, Select all, Clear, 'All models (N)' / 'N of M models'); the form defaults a new channel to all models, blocks Save and shows a destructive hint when empty; type and service renamed. Tests: outbox spec updated, plus a 422 case (notification suites 33/33) and focus-model-select.test.tsx 3/3. tsc is at its baselines (backend 61, client 4)."
         }
       ],
       "acceptance_criteria": [
@@ -3535,6 +3547,75 @@
         }
       ],
       "progress_note": "Backend and client are implemented and tested. Held below 100 because V03, a live pass where Alerts, Overview, the sidebar and the plant views agree for one alerting model, has not run: the dev stack is down."
+    },
+    {
+      "id": "MODEL-SERVE-025",
+      "title": "Remove the workspace canvas page and the Edge table; equipment Edit/Delete move to the plant panel",
+      "priority": 25,
+      "status": "in_progress",
+      "progress": 90,
+      "dependencies": [],
+      "description": "The workspace canvas page (/workspaces/[id]/canvas) and its Edge table (pipeline connections, 2 rows locally) are unused per the user. But the canvas is also the only place equipment can be edited (name, type, status) or deleted; the plant page can only add equipment.",
+      "decisions": [
+        {
+          "id": "MODEL-SERVE-025-D01",
+          "decision": "Delete the canvas route, its components, the canvas-only hooks/store, the backend edges routes/service/DTOs and the Edge model, and drop the Edge table (2 rows) by migration. Every link to the canvas is removed or retargeted. Node APIs and the CanvasNode type stay, because plants/overview/models use them.",
+          "why": "User request 2026-10-01; the Edge drop with its data was confirmed explicitly."
+        },
+        {
+          "id": "MODEL-SERVE-025-D02",
+          "decision": "Equipment Edit (name, type, status) and Delete (with confirm) move into the plant page's equipment detail panel, reusing the existing add/edit form, so no capability is lost.",
+          "why": "User's answer 2026-10-01: 'Move Edit + Delete to plant panel'."
+        }
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-025-T01",
+          "title": "Backend + schema + migration: drop Edge",
+          "status": "completed",
+          "progress": 100,
+          "result": "Removed GET/PUT /authorized/workspace/:id/edges (controller + service listEdges/replaceEdges + EdgeItem/ReplaceEdges DTOs) and the Edge model plus the Workspace.edges relation. Migration 20261001130000_model_serve_025_drop_edge was hand-written (diff trimmed: the unrelated driftThresholdPct drop was excluded). The 2 Edge rows were exported to the session scratchpad (edge-backup.csv), then the migration was applied in one transaction and marked applied; to_regclass('Edge') is null. The client was regenerated (zod generator ~22 min) and dist rebuilt. docs/CODEBASE.md: the edges routes were dropped and the services/canvas.ts line updated."
+        },
+        {
+          "id": "MODEL-SERVE-025-T02",
+          "title": "Client: delete canvas route and canvas-only code; remove links",
+          "status": "completed",
+          "progress": 100,
+          "result": "git rm: app/(default)/workspaces/[id]/canvas/ (page, error, loading, 5 components, 1 test), hooks/canvas/use-canvas.ts, hooks/canvas/use-canas-edit.ts, store/canvas.ts. services/canvas.ts keeps the node APIs and drops CanvasEdge/EdgeItem/getEdges/replaceEdges. Links removed or retargeted: /workspaces/[id] now redirects to /plants/[id] (was the canvas); sidebar 'Pipeline' item, admin 'Process Pipeline' button, Overview 'Open Pipeline Editor', plant card 'Process Pipeline', breadcrumb 'Pipeline Editor', and the panel's 'View Pipeline' buttons are gone; the panel's equipment list and 'View all' now drill into the plant. `next typegen` was rerun so .next route types no longer name the deleted page."
+        },
+        {
+          "id": "MODEL-SERVE-025-T03",
+          "title": "Plant panel: equipment Edit + Delete",
+          "status": "completed",
+          "progress": 100,
+          "result": "add-equipment-dialog.tsx is now one Add/Edit form (edit adds Status, labelled through STATUS_META, so 'alarm' reads 'Alert'), mounted keyed per node. EquipmentFormValues lives in services/canvas.ts. use-plant-controller adds editingNodeId plus handleEditEquipment (updateNode, toast), handleDeleteEquipment (deleteNode, toast, clears the selection) and open/close handlers. NodeDetailPanel's footer has Edit and a Delete behind an AlertDialog confirm (the unused header gear was removed); the page passes onEditClick/onDeleteClick and renders the edit dialog. REVIEW FIX found on the way: the plant grid card still painted warning/offline red 'Abnormal' (missed in MODEL-SERVE-024), so it now goes through isNodeAbnormal."
+        },
+        {
+          "id": "MODEL-SERVE-025-T04",
+          "title": "Checks",
+          "status": "completed",
+          "progress": 100,
+          "result": "Client: tsc is at its baseline of 4; vitest plants/overview/workspaces/admin/layout/alerts 10 files 112/112, including the updated node-detail-panel test (no /canvas links; Edit calls back; Delete only after the confirm). eslint is clean on touched files apart from pre-existing items (the controller's set-state-in-effect error and the admin `Map` unused warning, both present at HEAD). Backend: tsc is at its baseline of 61; workspace + notification jest 49 passed, with the same 3 suites / 2 tests failing as at HEAD (workspace-plant Nest DI boilerplate + ApiBearerAuth mock)."
+        }
+      ],
+      "acceptance_criteria": [
+        "No route, link or API for the canvas or edges remains; the Edge table is gone.",
+        "Equipment can be added, edited (name/type/status) and deleted from the plant page."
+      ],
+      "verification": [
+        {
+          "id": "MODEL-SERVE-025-V01",
+          "description": "tsc/eslint/tests on both apps; psql shows no Edge table.",
+          "status": "completed",
+          "result": "PASS — see T04"
+        },
+        {
+          "id": "MODEL-SERVE-025-V02",
+          "description": "Live: edit and delete a node from the plant panel.",
+          "status": "pending"
+        }
+      ],
+      "progress_note": "Implemented and checked. Held below 100 because V02, a live edit and delete of a node from the plant panel, has not run: the dev stack is down."
     }
   ],
   "global_definition_of_done": [

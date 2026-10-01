@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { notificationService } from '@/services/notification'
+import { FocusModelSelect } from './focus-model-select'
 import { notificationEventLabel } from '@/lib/notification-event-labels'
 import type {
   NotificationChannel,
@@ -91,8 +92,10 @@ function NotificationChannelForm({
   const [cooldownMinutes, setCooldownMinutes] = useState(
     channel?.cooldownMinutes ?? 0,
   )
-  const [mutedModelIds, setMutedModelIds] = useState<string[]>(
-    channel?.mutedModelIds ?? [],
+  // MODEL-SERVE-022-D-FOCUS. A new channel starts on every model; an edited
+  // one keeps exactly what it had.
+  const [focusModelIds, setFocusModelIds] = useState<string[]>(
+    channel?.focusModelIds ?? models.map(m => m.id),
   )
   const [saving, setSaving] = useState(false)
 
@@ -113,6 +116,10 @@ function NotificationChannelForm({
       toast.error('Select at least one recipient')
       return
     }
+    if (focusModelIds.length === 0) {
+      toast.error('Select at least one model, or Select all')
+      return
+    }
     setSaving(true)
     try {
       if (isEdit) {
@@ -123,7 +130,7 @@ function NotificationChannelForm({
           minSeverity,
           events,
           cooldownMinutes,
-          mutedModelIds,
+          focusModelIds,
         })
         toast.success('Channel updated')
       } else {
@@ -135,7 +142,7 @@ function NotificationChannelForm({
           minSeverity,
           events,
           cooldownMinutes,
-          mutedModelIds,
+          focusModelIds,
         })
         toast.success('Channel created')
       }
@@ -306,31 +313,28 @@ function NotificationChannelForm({
           </p>
         </div>
 
-        {models.length > 0 && (
-          <div className="space-y-1.5">
-            <label className="text-sm font-medium text-foreground">
-              Mute for these models
-            </label>
-            <div className="max-h-32 space-y-1 overflow-y-auto rounded-md border border-border p-2">
-              {models.map(m => (
-                <label
-                  key={m.id}
-                  className="flex items-center gap-2 text-sm text-foreground"
-                >
-                  <input
-                    type="checkbox"
-                    checked={mutedModelIds.includes(m.id)}
-                    onChange={() =>
-                      toggle(mutedModelIds, m.id, setMutedModelIds)
-                    }
-                    disabled={saving}
-                  />
-                  {m.name}
-                </label>
-              ))}
-            </div>
-          </div>
-        )}
+        <div className="space-y-1.5">
+          <label className="text-sm font-medium text-foreground">
+            Focus models
+          </label>
+          <FocusModelSelect
+            models={models}
+            selected={focusModelIds}
+            onChange={setFocusModelIds}
+            disabled={saving}
+          />
+          <p
+            className={
+              focusModelIds.length === 0
+                ? 'text-[11px] text-destructive'
+                : 'text-[11px] text-muted-foreground'
+            }
+          >
+            {focusModelIds.length === 0
+              ? 'Select at least one model — this channel sends nothing for unselected models.'
+              : 'Only these models trigger this channel. A model added later must be selected here.'}
+          </p>
+        </div>
       </div>
 
       <DialogFooter>
@@ -341,7 +345,10 @@ function NotificationChannelForm({
         >
           Cancel
         </Button>
-        <Button onClick={handleSave} disabled={saving}>
+        <Button
+          onClick={handleSave}
+          disabled={saving || focusModelIds.length === 0}
+        >
           {saving && <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />}
           {isEdit ? 'Save changes' : 'Add channel'}
         </Button>

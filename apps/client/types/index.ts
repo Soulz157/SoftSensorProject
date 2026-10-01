@@ -380,7 +380,8 @@ export interface NotificationChannel {
   minSeverity: NotificationSeverity
   events: string[]
   cooldownMinutes: number
-  mutedModelIds: string[]
+  /** MODEL-SERVE-022-D-FOCUS. Models this channel sends for (allow-list). */
+  focusModelIds: string[]
   recipientUserIds: string[]
   /** The stored Teams URL is never returned in full after save — only
    *  whether one is configured (TEAMS_WORKFLOW channels only). */

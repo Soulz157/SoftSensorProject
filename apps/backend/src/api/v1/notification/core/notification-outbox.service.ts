@@ -133,7 +133,9 @@ export class NotificationOutboxService {
         workspaceId: params.workspaceId,
         enabled: true,
         events: { has: params.event },
-        NOT: { mutedModelIds: { has: params.modelId } },
+        // Explicit allow-list (MODEL-SERVE-022-D-FOCUS): only channels that
+        // selected this model.
+        focusModelIds: { has: params.modelId },
       },
     });
     const eligible = channels.filter(

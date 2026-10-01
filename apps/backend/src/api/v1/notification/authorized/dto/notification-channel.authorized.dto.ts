@@ -24,7 +24,11 @@ export const CreateNotificationChannelSchema = z
     minSeverity: z.enum(['INFO', 'WARNING', 'CRITICAL']).optional(),
     events: z.array(eventKind).optional(),
     cooldownMinutes: z.number().int().nonnegative().max(1440).optional(),
-    mutedModelIds: z.array(z.string().trim().min(1)).optional(),
+    /** Models this channel notifies for — an explicit allow-list; at least
+     *  one. Required on create, optional on update (but never emptied). */
+    focusModelIds: z.array(z.string().trim().min(1)).min(1, {
+      message: 'Select at least one model for this channel.',
+    }),
   })
   .strict()
   .refine((dto) => dto.kind !== 'TEAMS_WORKFLOW' || !!dto.target, {
@@ -61,7 +65,10 @@ export const UpdateNotificationChannelSchema = z
     minSeverity: z.enum(['INFO', 'WARNING', 'CRITICAL']).optional(),
     events: z.array(eventKind).optional(),
     cooldownMinutes: z.number().int().nonnegative().max(1440).optional(),
-    mutedModelIds: z.array(z.string().trim().min(1)).optional(),
+    focusModelIds: z
+      .array(z.string().trim().min(1))
+      .min(1, { message: 'Select at least one model for this channel.' })
+      .optional(),
   })
   .strict();
 

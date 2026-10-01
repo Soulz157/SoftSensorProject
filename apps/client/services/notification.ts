@@ -27,7 +27,7 @@ export interface NotificationChannelInput {
   minSeverity?: NotificationSeverity
   events?: string[]
   cooldownMinutes?: number
-  mutedModelIds?: string[]
+  focusModelIds?: string[]
 }
 
 const base = (workspaceId: string) =>

@@ -24,7 +24,6 @@ interface OverviewDetailPanelProps {
   nodes: CanvasNode[]
   onClose: () => void
   onViewWorkspace: (id: string) => void
-  onOpenPipeEditor: (id: string) => void
   onViewAlerts: () => void
   onOpenSettings: (id: string) => void
 }
@@ -58,7 +57,6 @@ function PanelContent({
   nodes,
   onClose,
   onViewWorkspace,
-  onOpenPipeEditor,
   onViewAlerts,
   onOpenSettings,
 }: OverviewDetailPanelProps & { workspace: Workspace }) {
@@ -204,15 +202,6 @@ function PanelContent({
           onClick={() => onViewWorkspace(workspace.id)}
         >
           View Plant
-          <ArrowRight aria-hidden="true" className="h-3 w-3 shrink-0" />
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          className="w-full gap-2"
-          onClick={() => onOpenPipeEditor(workspace.id)}
-        >
-          Open Pipeline Editor
           <ArrowRight aria-hidden="true" className="h-3 w-3 shrink-0" />
         </Button>
         <Button

@@ -9,6 +9,10 @@ export interface NodeData {
   y: number
 }
 
+/** The editable part of a piece of equipment — the plant page's Add/Edit
+ *  form (MODEL-SERVE-025-D02). */
+export type EquipmentFormValues = Pick<NodeData, 'name' | 'type' | 'status'>
+
 export interface CanvasModel {
   id: string
   name: string
@@ -24,23 +28,6 @@ export interface CanvasNode {
   models: CanvasModel[]
   createdAt: string
   updatedAt: string
-}
-
-export interface CanvasEdge {
-  id: string
-  workspaceId: string
-  sourceId: string
-  targetId: string
-  sourceHandle: string | null
-  targetHandle: string | null
-  createdAt: string
-}
-
-export interface EdgeItem {
-  sourceId: string
-  targetId: string
-  sourceHandle?: string
-  targetHandle?: string
 }
 
 export async function getNodes(
@@ -90,26 +77,4 @@ export async function deleteNode(nodeId: string): Promise<void> {
     method: 'DELETE',
     body: JSON.stringify({ nodeId }),
   })
-}
-
-export async function getEdges(workspaceId: string): Promise<CanvasEdge[]> {
-  const res: { data: CanvasEdge[] } = await fetchClient(
-    `/api/v1/authorized/workspace/${workspaceId}/edges`,
-    { method: 'GET' },
-  )
-  return res.data
-}
-
-export async function replaceEdges(
-  workspaceId: string,
-  edges: EdgeItem[],
-): Promise<CanvasEdge[]> {
-  const res: { data: CanvasEdge[] } = await fetchClient(
-    `/api/v1/authorized/workspace/${workspaceId}/edges`,
-    {
-      method: 'PUT',
-      body: JSON.stringify({ edges }),
-    },
-  )
-  return res.data
 }
