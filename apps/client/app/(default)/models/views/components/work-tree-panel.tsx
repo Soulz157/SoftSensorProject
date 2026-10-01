@@ -1,5 +1,6 @@
 'use client'
 import { useMemo, useState } from 'react'
+import { isAbnormal } from '@/lib/overview-status'
 import { useAtomValue } from 'jotai'
 import {
   Building2,
@@ -325,9 +326,9 @@ export function WorkTreePanel({
                                         <span
                                           className={cn(
                                             'h-1.5 w-1.5 shrink-0 rounded-full',
-                                            node.status === 'normal'
-                                              ? 'bg-green-500'
-                                              : 'bg-red-500',
+                                            isAbnormal(node.status)
+                                              ? 'bg-red-500'
+                                              : 'bg-green-500',
                                           )}
                                         />
                                         <span

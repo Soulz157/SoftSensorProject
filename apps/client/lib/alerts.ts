@@ -3,21 +3,23 @@ import type { Workspace, WorkspacePlant } from '@/types'
 import type { ModelWithWorkspace } from '@/hooks/use-all-models'
 import { failedDeploys, monitoringAlerts } from '@/lib/model-status'
 import { NODE_BADGE, NODE_DOT } from '@/constants/status'
+import { formatHealthReason } from '@/lib/health-status-style'
 
 /**
- * MODEL-SERVE-001-T30. `monitoring` is a SEPARATE value, never a reuse of
- * `failed`. They mean different things and send a reader to different places:
- * `failed` is "the schedule is not dispatching" (ALERT_STATUS_LABEL.failed is
- * "Deploy Failed"), `monitoring` is "it IS dispatching and what comes back is
- * wrong". T22 recorded the `failed` vocabulary as not-to-be-renamed; this
- * extends it rather than overloading it.
+ * MODEL-SERVE-024-D01. FOUR statuses, one vocabulary for the badge, KPI cards
+ * and filter:
+ *   - `alert`   — equipment ALARM and model monitoring ALERT, merged: both
+ *                 mean "this is wrong now and needs action".
+ *   - `failed`  — Deploy Failed: the schedule is not dispatching. Kept apart
+ *                 from `alert` because the fix is different (the deploy, not
+ *                 the data); its vocabulary stays frozen per MODEL-SERVE-001-T22.
+ *   - `warning` — equipment warning, and model monitoring WARN (input drift,
+ *                 residual 1–2SD) or FROZEN (tag not moving).
+ *   - `offline` — equipment offline.
+ * The node wire value `'alarm'` is NOT renamed (it is stored canvas data);
+ * `buildAlerts` maps it to `alert` at read time.
  */
-export type AlertStatus =
-  | 'failed'
-  | 'monitoring'
-  | 'alarm'
-  | 'offline'
-  | 'warning'
+export type AlertStatus = 'alert' | 'failed' | 'warning' | 'offline'
 export type AlertNodeType =
   | 'sensor'
   | 'machine'
@@ -25,14 +27,6 @@ export type AlertNodeType =
   | 'model'
   | 'gateway'
   | 'unknown'
-
-export const AlertClass: Record<AlertStatus, string> = {
-  alarm: 'bg-red-500/10 text-red-500',
-  offline: 'bg-zinc-500/10 text-zinc-500',
-  warning: 'bg-amber-500/10 text-amber-500',
-  failed: 'bg-red-500/10 text-red-600',
-  monitoring: 'bg-amber-500/10 text-amber-600',
-}
 
 export interface AlertRow {
   id: string
@@ -45,6 +39,14 @@ export interface AlertRow {
   typeLabel: string
   typeName: string
   status: AlertStatus
+  /**
+   * MODEL-SERVE-024-D04. The row's one-line detail in ONE format,
+   * `Source: reason` — "Monitoring: No inference window", "Deploy: <error>",
+   * "Sensor: Alert". Built by `buildAlerts`, rendered as-is.
+   */
+  detail: string
+  /** The operator's own free-text note on the model (`statusDetail`), shown
+   * under `detail` when present. Null on node rows. */
   detailError: string | null
   /**
    * MODEL-SERVE-001-T23. The REAL failure cause — the most recent FAILED
@@ -76,64 +78,104 @@ export interface AlertRow {
   timestamp: string
 }
 
-/** Severity order (lower = more severe) — drives the default sort. */
-export const ALERT_STATUS_PRIORITY: Record<AlertStatus, number> = {
-  failed: 0,
-  // Below a dead deploy, above a node alarm: a model that is dispatching but
-  // reading wrong is a real fault, and a stopped one is a bigger fault.
-  monitoring: 1,
-  alarm: 2,
-  offline: 3,
-  warning: 4,
-}
-
-export const ALERT_STATUS_LABEL: Record<AlertStatus, string> = {
-  failed: 'Deploy Failed',
-  monitoring: 'Monitoring Alert',
-  alarm: 'Alarm',
-  offline: 'Offline',
-  warning: 'Warning',
-}
-
 /**
- * Status visual tokens. Reuses the shared node maps (`constants/status.ts`),
- * extended only for the model-only `failed` value (red, like an alarm).
+ * MODEL-SERVE-024-D01. THE one table: label, badge text, dot, pulse and sort
+ * order per status. The badge, KPI cards and filter all read from here (via
+ * the maps below), so a status can no longer be worded or coloured two ways.
+ * Red is reserved for the two Abnormal statuses, amber for Warning, grey for
+ * Offline — workspace/plant status colours (DESIGN_SYSTEM.md §5).
  */
-export const ALERT_STATUS_BADGE: Record<AlertStatus, string> = {
-  failed: 'text-destructive',
-  // AMBER, not the destructive red: red is the DEPLOY-failure vocabulary
-  // (§5, docs/DESIGN_SYSTEM.md). Two different faults rendering identically
-  // is the "two contradictory verdicts in one view" defect T22 had to fix.
-  monitoring: NODE_BADGE.warning ?? '',
-  alarm: NODE_BADGE.alarm ?? '',
-  offline: NODE_BADGE.offline ?? '',
-  warning: NODE_BADGE.warning ?? '',
+export const ALERT_STATUS_META: Record<
+  AlertStatus,
+  {
+    label: string
+    /** Plural for count cards ("Alerts"). */
+    plural: string
+    badge: string
+    dot: string
+    pulse: boolean
+    /** Lower = more severe — drives the default sort. */
+    priority: number
+    /** MODEL-SERVE-024-D02: counts toward Abnormal on plant/workspace. */
+    abnormal: boolean
+  }
+> = {
+  failed: {
+    label: 'Deploy Failed',
+    plural: 'Deploy Failed',
+    badge: 'text-destructive',
+    dot: 'bg-destructive',
+    pulse: true,
+    priority: 0,
+    abnormal: true,
+  },
+  alert: {
+    label: 'Alert',
+    plural: 'Alerts',
+    badge: NODE_BADGE.alarm ?? 'text-destructive',
+    dot: NODE_DOT.alarm ?? 'bg-destructive',
+    pulse: true,
+    priority: 1,
+    abnormal: true,
+  },
+  offline: {
+    label: 'Offline',
+    plural: 'Offline',
+    badge: NODE_BADGE.offline ?? '',
+    dot: NODE_DOT.offline ?? '',
+    pulse: false,
+    priority: 2,
+    abnormal: false,
+  },
+  warning: {
+    label: 'Warning',
+    plural: 'Warnings',
+    badge: NODE_BADGE.warning ?? '',
+    dot: NODE_DOT.warning ?? '',
+    pulse: false,
+    priority: 3,
+    abnormal: false,
+  },
 }
 
-export const ALERT_STATUS_DOT: Record<AlertStatus, string> = {
-  failed: 'bg-destructive',
-  monitoring: NODE_DOT.warning ?? '',
-  alarm: NODE_DOT.alarm ?? '',
-  offline: NODE_DOT.offline ?? '',
-  warning: NODE_DOT.warning ?? '',
+function metaMap<T>(pick: (m: (typeof ALERT_STATUS_META)[AlertStatus]) => T) {
+  return Object.fromEntries(
+    (Object.keys(ALERT_STATUS_META) as AlertStatus[]).map(k => [
+      k,
+      pick(ALERT_STATUS_META[k]),
+    ]),
+  ) as Record<AlertStatus, T>
 }
 
-/** Statuses that get a pulsing dot — the most urgent (Von Restorff). */
-export const ALERT_STATUS_PULSE: Record<AlertStatus, boolean> = {
-  failed: true,
-  // No pulse: a stale schedule wants attention, not alarm. Reserve the
-  // motion for the two states that mean something is DOWN.
-  monitoring: false,
-  alarm: true,
-  offline: false,
-  warning: false,
+export const ALERT_STATUS_PRIORITY = metaMap(m => m.priority)
+export const ALERT_STATUS_LABEL = metaMap(m => m.label)
+export const ALERT_STATUS_BADGE = metaMap(m => m.badge)
+export const ALERT_STATUS_DOT = metaMap(m => m.dot)
+/** Statuses that get a pulsing dot — the two Abnormal ones (Von Restorff). */
+export const ALERT_STATUS_PULSE = metaMap(m => m.pulse)
+
+/** Display order for filters and count cards: most severe first. */
+export const ALERT_STATUS_ORDER: AlertStatus[] = (
+  Object.keys(ALERT_STATUS_META) as AlertStatus[]
+).sort((a, b) => ALERT_STATUS_PRIORITY[a] - ALERT_STATUS_PRIORITY[b])
+
+/** Node wire status → alert status. Only the three non-normal node states
+ * become rows; `'alarm'` (stored canvas value) reads as `alert`. */
+const NODE_TO_ALERT: Record<string, AlertStatus> = {
+  alarm: 'alert',
+  warning: 'warning',
+  offline: 'offline',
 }
 
-const NODE_ALERT_STATUSES: ReadonlySet<string> = new Set([
-  'alarm',
-  'offline',
-  'warning',
-])
+/** Model monitoring status (off the list payload) → alert status, or null
+ * when it raises nothing. FROZEN reads Warning (MODEL-SERVE-024, user's call). */
+export function monitoringToAlertStatus(
+  status: string | null | undefined,
+): AlertStatus | null {
+  if (status === 'ALERT' || status === 'CRITICAL') return 'alert'
+  if (status === 'WARN' || status === 'FROZEN') return 'warning'
+  return null
+}
 
 function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1)
@@ -180,7 +222,7 @@ interface BuildAlertsArgs {
 
 /**
  * Pure assembly of the unified alert list. Default-sorted by severity
- * (failed → alarm → offline → warning).
+ * (failed → alert → offline → warning).
  */
 export function buildAlerts({
   workspaces,
@@ -202,8 +244,8 @@ export function buildAlerts({
   for (const workspace of workspaces) {
     const nodes = nodesByWorkspaceId[workspace.id] ?? []
     for (const node of nodes) {
-      if (!NODE_ALERT_STATUSES.has(node.data.status)) continue
-      const status = node.data.status as AlertStatus
+      const status = NODE_TO_ALERT[node.data.status]
+      if (!status) continue
       rows.push({
         id: node.id,
         kind: 'node',
@@ -216,6 +258,7 @@ export function buildAlerts({
         typeLabel: deriveNodeTypeLabel(node.data.type, status),
         typeName: capitalize(node.data.type),
         status,
+        detail: `${capitalize(node.data.type)}: ${ALERT_STATUS_LABEL[status]}`,
         detailError: null,
         // Equipment rows have no deploy to fail — this field is the model
         // plane's, and a node alert is a different kind of event entirely.
@@ -256,6 +299,11 @@ export function buildAlerts({
       typeLabel: ALERT_STATUS_LABEL.failed,
       typeName: 'Model',
       status: 'failed',
+      // A deploy fails only when the source check at Start is refused
+      // (MODEL-SERVE-001-T26). `lastFailure` is the newest FAILED inference
+      // WINDOW — a different event — so it is NOT put behind "Deploy:"; it
+      // stays in the expanded Failure Reason section, as before.
+      detail: 'Deploy: Source check refused at start',
       detailError: model.data?.statusDetail ?? null,
       failureReason: lastFailure?.reason ?? null,
       monitoringReason: null,
@@ -284,6 +332,9 @@ export function buildAlerts({
   // two rows.
   for (const model of monitoringAlerts(models)) {
     const monitoring = model.data?.monitoring ?? null
+    // MODEL-SERVE-024-D01: ALERT reads Alert; WARN and FROZEN read Warning.
+    const status = monitoringToAlertStatus(monitoring?.status)
+    if (!status) continue
     const nodeData = model.nodes?.data as { name?: string } | undefined
     const equipmentName = model.nodes
       ? (nodeData?.name ?? 'Unknown Node')
@@ -310,9 +361,13 @@ export function buildAlerts({
       workspaceName:
         model.workspaceName ?? workspaceNameById.get(model.workspaceId) ?? '—',
       plantName,
-      typeLabel: ALERT_STATUS_LABEL.monitoring,
+      typeLabel: ALERT_STATUS_LABEL[status],
       typeName: 'Model',
-      status: 'monitoring',
+      status,
+      detail: `Monitoring: ${
+        formatHealthReason(monitoring?.reason ?? null) ??
+        ALERT_STATUS_LABEL[status]
+      }`,
       detailError: model.data?.statusDetail ?? null,
       // The OTHER axis's value stays null here — a monitoring alert has no
       // FAILED window reason, and borrowing one would name the wrong cause.
@@ -405,22 +460,10 @@ export function typeOptions(rows: AlertRow[]): string[] {
   )
 }
 
-export interface AlertCounts {
-  failed: number
-  monitoring: number
-  alarm: number
-  offline: number
-  warning: number
-}
+export type AlertCounts = Record<AlertStatus, number>
 
 export function countByStatus(rows: AlertRow[]): AlertCounts {
-  const counts: AlertCounts = {
-    failed: 0,
-    monitoring: 0,
-    alarm: 0,
-    offline: 0,
-    warning: 0,
-  }
+  const counts: AlertCounts = { alert: 0, failed: 0, warning: 0, offline: 0 }
   for (const r of rows) counts[r.status]++
   return counts
 }

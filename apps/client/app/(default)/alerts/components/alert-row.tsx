@@ -131,13 +131,17 @@ export function AlertRow({ row }: { row: AlertRowData }) {
         </TableCell>
 
         <TableCell className="min-w-0 max-w-xs">
-          {row.detailError ? (
+          {/* MODEL-SERVE-024-D04. One format, `Source: reason`, for every
+              row; the operator's own note (statusDetail) sits under it. */}
+          <TruncatedText
+            text={row.detail}
+            className="text-sm text-foreground"
+          />
+          {row.detailError && (
             <TruncatedText
               text={row.detailError}
-              className="text-sm text-muted-foreground"
+              className="text-xs text-muted-foreground"
             />
-          ) : (
-            <span className="text-sm text-muted-foreground/40">—</span>
           )}
         </TableCell>
 

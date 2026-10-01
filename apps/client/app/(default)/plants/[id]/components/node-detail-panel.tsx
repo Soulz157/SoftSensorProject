@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import { isAbnormal } from '@/lib/overview-status'
 import type { ReactNode } from 'react'
 import {
   Activity,
@@ -346,7 +347,7 @@ export function NodeDetailPanel({
               className={cn(
                 'h-2 w-2 rounded-full',
                 STATUS_DOT[status],
-                status !== 'normal' && 'animate-pulse',
+                isAbnormal(status) && 'animate-pulse',
               )}
             />
             Semantic status from live node data

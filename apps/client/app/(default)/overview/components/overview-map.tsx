@@ -17,7 +17,6 @@ import {
   type BinaryStatus,
   BINARY_STATUS_META,
   deriveStatus,
-  deriveSystemStatus,
 } from '@/lib/overview-status'
 import { useMapViewport } from '@/hooks/canvas/use-map-viewport'
 import { failedDeploys } from '@/lib/model-status'
@@ -129,17 +128,13 @@ export function PlantsMap({
     ? { bg: 'radial-gradient(ellipse at 50% 40%, #0e1520 0%, #080a0f 80%)' }
     : { bg: 'radial-gradient(ellipse at 50% 40%, #f0f4f8 0%, #dce8f0 80%)' }
 
-  const { hasOffline } = useMemo(
-    () => deriveSystemStatus(nodesByWorkspace),
-    [nodesByWorkspace],
-  )
-
   const { data: hoveredModelsRaw } = useModels(hoveredId ?? '')
   const hoveredFailedCount = failedDeploys(hoveredModelsRaw ?? []).length
 
   const totalAbnormal = abnormalNodeIds?.size ?? 0
-  const overallBinary: BinaryStatus =
-    totalAbnormal > 0 || hasOffline ? 'abnormal' : 'normal'
+  // MODEL-SERVE-024-D02: Abnormal only for an alerting node or an abnormal
+  // model (`abnormalNodeIds`). Offline equipment no longer turns it red.
+  const overallBinary: BinaryStatus = totalAbnormal > 0 ? 'abnormal' : 'normal'
   const overallColor = BINARY_STATUS_META[overallBinary].color
   const overallTextColor = isDark
     ? overallColor
@@ -367,13 +362,10 @@ export function PlantsMap({
             const nodes = nodesByWorkspace[ws.id] ?? []
             const nodeStatus =
               (ws.status as NodeStatus | undefined) ?? deriveStatus(nodes)
+            // MODEL-SERVE-024-D02: an abnormal model (failed deploy or
+            // monitoring ALERT) makes the workspace Abnormal, i.e. 'alarm'.
             const failedCount = failedDeploysByWorkspace?.[ws.id] ?? 0
-            const status: NodeStatus =
-              failedCount > 0 &&
-              nodeStatus !== 'alarm' &&
-              nodeStatus !== 'offline'
-                ? 'warning'
-                : nodeStatus
+            const status: NodeStatus = failedCount > 0 ? 'alarm' : nodeStatus
             const isSelected = selectedWorkspaceId === ws.id
             const isHovered = hoveredId === ws.id
             const isFiltered =
@@ -439,9 +431,7 @@ export function PlantsMap({
                   status={status}
                   nodeStatuses={nodes.map(n => {
                     const base = n.data.status as NodeStatus
-                    return (failedByNodeId?.[n.id] ?? 0) > 0 && base !== 'alarm'
-                      ? 'warning'
-                      : base
+                    return (failedByNodeId?.[n.id] ?? 0) > 0 ? 'alarm' : base
                   })}
                   workspaceColor={ws.color ?? 'blue'}
                   name={ws.name}
@@ -464,13 +454,10 @@ export function PlantsMap({
             const nodes = nodesByWorkspace[ws.id] ?? []
             const nodeStatus =
               (ws.status as NodeStatus | undefined) ?? deriveStatus(nodes)
+            // MODEL-SERVE-024-D02: an abnormal model (failed deploy or
+            // monitoring ALERT) makes the workspace Abnormal, i.e. 'alarm'.
             const failedCount = failedDeploysByWorkspace?.[ws.id] ?? 0
-            const status: NodeStatus =
-              failedCount > 0 &&
-              nodeStatus !== 'alarm' &&
-              nodeStatus !== 'offline'
-                ? 'warning'
-                : nodeStatus
+            const status: NodeStatus = failedCount > 0 ? 'alarm' : nodeStatus
             const isFiltered =
               highlightedIds !== undefined && !highlightedIds.has(ws.id)
 
@@ -490,9 +477,7 @@ export function PlantsMap({
                   status={status}
                   nodeStatuses={nodes.map(n => {
                     const base = n.data.status as NodeStatus
-                    return (failedByNodeId?.[n.id] ?? 0) > 0 && base !== 'alarm'
-                      ? 'warning'
-                      : base
+                    return (failedByNodeId?.[n.id] ?? 0) > 0 ? 'alarm' : base
                   })}
                   name={ws.name}
                   isDark={isDark}

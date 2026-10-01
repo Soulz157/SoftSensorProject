@@ -4,13 +4,7 @@ import Link from 'next/link'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
-import {
-  BrainCircuit,
-  Clock,
-  Database,
-  Factory,
-  BarChart3,
-} from 'lucide-react'
+import { BrainCircuit, Clock, Database, Factory, BarChart3 } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { workspaceIcons, workspaceColors } from '@/store/workspace'
 import { cn } from '@/lib/utils'
@@ -86,7 +80,15 @@ function CountStat({
  */
 export type WorkspaceCardData = Workspace & { status: NodeStatus }
 
-export function WorkspaceCard({ workspace }: { workspace: WorkspaceCardData }) {
+export function WorkspaceCard({
+  workspace,
+  abnormalModels = 0,
+}: {
+  workspace: WorkspaceCardData
+  /** Models in this workspace that make it Abnormal (failed deploy or
+   * monitoring ALERT) — MODEL-SERVE-024-D02. */
+  abnormalModels?: number
+}) {
   const selectedColor = workspaceColors.find(
     item => item.id === workspace.color,
   )
@@ -97,7 +99,8 @@ export function WorkspaceCard({ workspace }: { workspace: WorkspaceCardData }) {
   // request of its own. Collapsed to binary per lib/overview-status.ts, which
   // names Workspace explicitly, so this card cannot disagree with the
   // analytics table or the admin list about the same workspace.
-  const wsBinary = toBinaryStatus(workspace.status)
+  const wsBinary =
+    abnormalModels > 0 ? 'abnormal' : toBinaryStatus(workspace.status)
   const wsMeta = BINARY_STATUS_META[wsBinary]
 
   return (

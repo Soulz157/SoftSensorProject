@@ -11,6 +11,8 @@ import {
 } from '@/components/ui/breadcrumb'
 import { Activity, BrainCircuit, Plus } from 'lucide-react'
 import { useWorkspaces } from '@/hooks/workspace/use-workspaces'
+import { useAllModels } from '@/hooks/use-all-models'
+import { abnormalModelCountByWorkspace } from '@/lib/model-status'
 import { CreateWorkspaceDialog } from '@/components/create-workspace'
 import {
   WorkspaceCard,
@@ -19,6 +21,11 @@ import {
 
 export default function WorkspacesPage() {
   const { workspaces, loading: workspacesLoading } = useWorkspaces()
+  // MODEL-SERVE-024-D02: a workspace is Abnormal for an alerting node OR an
+  // abnormal model (failed deploy / monitoring ALERT) — the same rule the
+  // sidebar and Overview apply, so the card cannot read green beside them.
+  const { models } = useAllModels()
+  const abnormalModelsByWorkspace = abnormalModelCountByWorkspace(models ?? [])
   const [isOpen, setIsOpen] = useState(false)
 
   // A count the payload does not carry is UNKNOWN, so the total is unknown
@@ -118,6 +125,7 @@ export default function WorkspacesPage() {
               <WorkspaceCard
                 key={workspace.id}
                 workspace={workspace}
+                abnormalModels={abnormalModelsByWorkspace[workspace.id] ?? 0}
               />
             ))}
           </div>

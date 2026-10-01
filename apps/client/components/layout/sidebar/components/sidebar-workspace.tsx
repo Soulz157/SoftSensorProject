@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { isAbnormal } from '@/lib/overview-status'
 import {
   Building2,
   ChevronDown,
@@ -48,6 +49,17 @@ interface SidebarWorkspacesProps {
 const ITEM_HEIGHT = 40
 const MAX_VISIBLE = 5
 
+/** Equipment rows a workspace's alerts page lists: alert, warning and
+ * offline nodes. An older server sends only `alarmCount`, which then already
+ * covered all three. */
+function workspaceNodeAlertCount(ws: {
+  alarmCount?: number
+  warningCount?: number
+  offlineCount?: number
+}): number {
+  return (ws.alarmCount ?? 0) + (ws.warningCount ?? 0) + (ws.offlineCount ?? 0)
+}
+
 export function SidebarWorkspaces({
   onCreateWorkspace,
   isCollapsed,
@@ -56,8 +68,7 @@ export function SidebarWorkspaces({
 }: SidebarWorkspacesProps) {
   const {
     workspaces,
-    failedByWorkspace,
-    monitoringByWorkspace,
+    abnormalModelsByWorkspace,
     activeWorkspace,
     setActiveWorkspace,
     workspaceOpen,
@@ -174,9 +185,8 @@ export function SidebarWorkspaces({
                           />
                         )}
                         {isCollapsed &&
-                          (ws.status !== 'normal' ||
-                            (failedByWorkspace[ws.id] ?? 0) > 0 ||
-                            (monitoringByWorkspace[ws.id] ?? 0) > 0) && (
+                          (isAbnormal(ws.status) ||
+                            (abnormalModelsByWorkspace[ws.id] ?? 0) > 0) && (
                             <span
                               className={cn(
                                 'absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full ring-1 ring-sidebar',
@@ -193,9 +203,8 @@ export function SidebarWorkspaces({
                           <span
                             className={cn(
                               'h-2 w-2 shrink-0 rounded-full',
-                              ws.status !== 'normal' ||
-                                (failedByWorkspace[ws.id] ?? 0) > 0 ||
-                                (monitoringByWorkspace[ws.id] ?? 0) > 0
+                              isAbnormal(ws.status) ||
+                                (abnormalModelsByWorkspace[ws.id] ?? 0) > 0
                                 ? 'bg-red-500'
                                 : 'bg-green-500',
                             )}
@@ -298,7 +307,10 @@ export function SidebarWorkspaces({
                 )
               })}
 
-              {(currentWorkspace.alarmCount ?? 0) > 0 && (
+              {/* The workspace alerts page lists alert, warning and offline
+                  equipment, so the link counts all three (MODEL-SERVE-024-D05:
+                  `alarmCount` alone is alert nodes only now). */}
+              {workspaceNodeAlertCount(currentWorkspace) > 0 && (
                 <Link
                   href={`/workspaces/${currentWorkspace.id}/alerts`}
                   onClick={onClose}
@@ -313,7 +325,7 @@ export function SidebarWorkspaces({
                   <span className="truncate">Alerts</span>
                   <span className="ml-auto flex items-center gap-1.5 rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-600 dark:border dark:border-red-500/20 dark:bg-red-500/15 dark:text-red-400">
                     <TriangleAlert className="h-3.5 w-3.5 animate-pulse" />
-                    {currentWorkspace.alarmCount}
+                    {workspaceNodeAlertCount(currentWorkspace)}
                   </span>
                 </Link>
               )}

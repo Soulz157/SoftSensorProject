@@ -4,7 +4,7 @@ import { NodeStatus } from '@/store/status-colors'
 import { useDashboardData } from '../use-dashboard-data'
 import { createNode } from '@/services/canvas'
 import { useModels } from '../workspace/use-models'
-import { failedDeploys } from '@/lib/model-status'
+import { abnormalModelCountByNodeId, failedDeploys } from '@/lib/model-status'
 
 type ViewMode = 'plants' | 'equipment'
 type DisplayMode = 'map' | 'grid'
@@ -38,6 +38,13 @@ export function usePlantsController(
           .map(m => m.nodesId)
           .filter((id): id is string => id !== null),
       ),
+    [modelsRaw],
+  )
+  // MODEL-SERVE-024-D02. Equipment carrying an abnormal model (failed deploy
+  // or monitoring ALERT) — Abnormal on the plant map even when the node's own
+  // status is normal.
+  const abnormalModelNodeIds = useMemo(
+    () => new Set(Object.keys(abnormalModelCountByNodeId(modelsRaw ?? []))),
     [modelsRaw],
   )
 
@@ -206,6 +213,7 @@ export function usePlantsController(
       warningCount,
       deployFailedCount,
       failedNodeIds,
+      abnormalModelNodeIds,
     },
     setters: {
       setDisplayMode,

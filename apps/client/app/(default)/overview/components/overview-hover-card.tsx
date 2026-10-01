@@ -1,6 +1,7 @@
 'use client'
 
 import type { CSSProperties } from 'react'
+import { isAbnormal } from '@/lib/overview-status'
 import Image from 'next/image'
 import { AlertTriangle, Building2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -168,7 +169,7 @@ export function OverviewHoverCard({
                       <div className="space-y-0.5 border-l border-border/40 pl-2">
                         {shown.map(eq => {
                           const eqModels = eq.models.filter(
-                            m => m.deployFailed || m.status !== 'normal',
+                            m => m.deployFailed || isAbnormal(m.status),
                           )
                           return (
                             <div key={eq.id}>

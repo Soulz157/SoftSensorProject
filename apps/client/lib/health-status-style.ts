@@ -31,7 +31,9 @@ export type HealthReason = NonNullable<
  */
 export const HEALTH_REASON_LABEL: Record<HealthReason, string> = {
   SOURCE_UNREACHABLE: 'source unreachable',
-  STALE: 'no recent windows',
+  // MODEL-SERVE-024-D04: named for what the reader checks — no inference
+  // window has landed recently.
+  STALE: 'no inference window',
   NO_PREDICTIONS: 'no predictions',
   BAD_DATA: 'bad input data',
   SENSOR_FROZEN: 'tag not moving',

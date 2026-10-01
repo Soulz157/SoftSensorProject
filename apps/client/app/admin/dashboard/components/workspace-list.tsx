@@ -1,6 +1,7 @@
 'use client'
 
 import React from 'react'
+import { isAbnormal } from '@/lib/overview-status'
 import Link from 'next/link'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -57,11 +58,12 @@ export function WorkspaceList({
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-3 md:grid-cols-2">
           {workspaces.map(workspace => {
             const nodes = nodesByWorkspace[workspace.id] ?? []
-            // Equipment status is binary: Normal vs Abnormal (any non-normal).
-            const activeCount = nodes.filter(
-              n => n.data.status === 'normal',
+            // Equipment status is binary through THE one rule
+            // (MODEL-SERVE-024-D02): Abnormal only for an alerting node.
+            const abnormalCount = nodes.filter(n =>
+              isAbnormal(n.data.status),
             ).length
-            const abnormalCount = nodes.length - activeCount
+            const activeCount = nodes.length - abnormalCount
             const hasFailedDeploy = nodes.some(n =>
               (n.models ?? []).some(m => m.data?.deployStatus === 'error'),
             )

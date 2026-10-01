@@ -3182,6 +3182,11 @@
           "id": "MODEL-SERVE-022-D11",
           "decision": "The navbar bell shows WHAT CHANGED (an event feed with read/unread per user). The Alerts page keeps showing WHAT IS WRONG NOW (current levels from buildAlerts). The bell's badge counts UNREAD EVENTS, never current alerts.",
           "why": "They answer different questions. A badge counting current alerts would duplicate the nav alert count 001-T30 already ships, and one number meaning two things is the one-name-two-metrics defect 001-T16 refused."
+        },
+        {
+          "id": "MODEL-SERVE-022-D-STAFF-READ",
+          "decision": "STAFF members may VIEW their own workspace's notification channels and delivery history. Every mutating route (create, edit, delete, test-send) stays owner-only. VIEWER still sees neither, because channel rows name recipients and targets. The in-app bell feed already admitted every member and is unchanged.",
+          "why": "User request 2026-10-01: 'allow staff role in workspace to see notification in own workspace'. The block was the two read routes calling assertIsOwner, so a STAFF member opening Settings → Notifications got a 403."
         }
       ],
       "openDecisions": [
@@ -3304,6 +3309,13 @@
           "status": "completed",
           "progress": 100,
           "scope_note": "hooks/notifications/use-notifications.ts owns the fetch; the component stays a thin shell. Each item: model name, old -> new status in the five-word vocabulary, reason via the shared HEALTH_REASON_LABEL, relative time, and a link to models/[id] opening the tab that explains it (Monitoring for health events, Retrain for retrain events, Versions for promote/rollback). Opening the list marks what was seen as read. Unread badge counts events, never current alerts (D08). Refresh: on window focus and on opening the bell, plus an interval no shorter than the evaluator's sweep interval — 001-T09's rule that anything faster than the tick is load with no information. Severity chips reuse the existing monitoring palette; everything else neutral. Empty state says there is nothing new rather than rendering an empty popover. BUILT 2026-09-29. models/[id]/page.tsx's activeTab now also seeds from ?tab= (validated against the 7 known tab ids; falls back to the existing 'input' default) — smallest possible diff into the user's own uncommitted edits to this file, the existing retrainStrategy effect left untouched. services/notification.ts gained notificationFeedService (list/unread-count/read/mutes, matching T07's controller exactly); types/index.ts gained NotificationEventItem; lib/notification-event-link.ts is the pure kind->tab map (monitoring-axis events + PREFLIGHT_FAILED/MODEL_STARTED/STOPPED -> monitoring, RETRAIN_* -> retrain, VERSION_PROMOTED/ROLLED_BACK -> versions, unknown -> input); hooks/notifications/use-notifications.ts owns the fetch (refresh on window focus + bell-open + a poll interval read from the SERVER's own pollIntervalMs, never hardcoded — 001-T09's rule). navbar-notification.tsx's mock (notifications/getNotificationIcon in navbar/config.tsx, NotificationItem in navbar/types) was DELETED, not left dead — grep-confirmed no other consumer — and replaced by a thin shell over the hook: unread badge (99+ cap), reason via the SHARED formatHealthReason (D02, never a second copy), severity chip reusing lib/notification-severity-style.ts, relative time via the existing date-fns formatDistanceToNow idiom, a Link to the right tab, a per-item mute button, and an empty state ('Nothing new.'). Opening the bell loads items AND marks them read in one action, matching the ledger's own 'opening the list marks what was seen as read.' VERIFIED LIVE 2026-09-29: a real react-hooks/set-state-in-effect violation was found and fixed in use-notifications.ts's mount/poll effect — the first fix attempt (wrapping the outer useCallback in void) did NOT clear it; the real fix was giving the effect its OWN local poll() closure instead of calling the hook-level refreshCount from inside it, the same idiom the codebase's own use-paginated-fetch.ts mount effect already uses. `pnpm --filter client lint` is clean on every file this task touched (confirmed twice, before and after the fix). `check-types` shows ZERO errors in any touched file — the sole remaining error is the same pre-existing dataset-compare-modal.tsx one from T05, confirmed again via git diff to be untouched. `next build` reports 'Compiled successfully' for this feature's own code; the repo-wide build's OWN tsc pass still fails on that same pre-existing unrelated file, which was already true before this task and is out of this feature's scope to fix. 5 new passing vitest cases (notification-event-link.test.ts, V09's kind-to-tab coverage incl. the unknown-kind fallback). Full client vitest: 2209/2235 passing across 154 files — the SAME 26 pre-existing failures as the prior pass (confirmed by file-name diff against the prior baseline and by git diff showing none of those files touched this session), +8 over the prior 2201/2227 (5 new notification-event-link cases + net movement in an unrelated dynamic suite)."
+        },
+        {
+          "id": "MODEL-SERVE-022-T-STAFF-READ",
+          "title": "Staff can view workspace notifications",
+          "status": "completed",
+          "progress": 100,
+          "result": "notification-channel.authorized.service.ts: new assertCanView (owner, or member role OWNER/STAFF; ADMIN not special-cased, matching assertIsOwner's convention) used by listChannelsService and listDeliveriesService; mutations keep assertIsOwner. Client notification-channels.tsx: 'Send test notification' is now owner-only like Edit/Delete (the server refuses it for staff); Add channel was already owner-gated and delivery history is open. New notification-channel.authorized.service.spec.ts, 7 cases: OWNER/STAFF/owner-without-member-row list ok, STAFF delivery history ok, VIEWER/non-member 403, STAFF delete 403 with no write. Notification suites 32/32. tsc is at its baselines (client 4, backend 61), and eslint is clean."
         }
       ],
       "acceptance_criteria": [
@@ -3424,6 +3436,105 @@
           "status": "pending"
         }
       ]
+    },
+    {
+      "id": "MODEL-SERVE-024",
+      "title": "One status vocabulary: Alert / Deploy Failed / Warning / Offline, and one Normal/Abnormal rule for plant and workspace",
+      "priority": 24,
+      "status": "in_progress",
+      "progress": 90,
+      "dependencies": [
+        "MODEL-SERVE-001",
+        "MODEL-SERVE-012"
+      ],
+      "description": "The Alerts page shows five statuses (Deploy Failed, Monitoring Alert, Alarm, Offline, Warning), and the labels, colours and pulse differ across the badge, KPI cards and filter. Plant and workspace Normal/Abnormal is decided in about ten places by `status !== 'normal'`, and the server's workspace/plant roll-up counts warning and offline nodes as abnormal. The overview tree maps a deploy failure to 'warning' and a monitoring alert to 'alarm'. On top of that, DRIFT_WARN/DRIFT_CRITICAL never reach the Alerts page, plant or workspace, because the models list skips drift.",
+      "decisions": [
+        {
+          "id": "MODEL-SERVE-024-D01",
+          "decision": "Alert statuses become FOUR: `alert` (node alarm + model monitoring ALERT, merged), `failed` (Deploy Failed, unchanged), `warning` (node warning + model monitoring WARN + FROZEN), and `offline` (node offline). The label 'Alert' replaces both 'Alarm' and 'Monitoring Alert' on the badge, KPI and filter, with one label per status everywhere. The node wire value 'alarm' is NOT renamed: it is canvas data the server stores. Mapping happens at read time.",
+          "why": "User's call 2026-10-01: alarm and monitoring alert are the same thing; warning comes from drift warn; FROZEN goes to Warning (answered). The deploy vocabulary stays frozen per MODEL-SERVE-001-T22."
+        },
+        {
+          "id": "MODEL-SERVE-024-D02",
+          "decision": "Normal/Abnormal for plant, workspace and equipment: ABNORMAL iff any `alert` or `failed` in scope; warning and offline read Normal, but still list on the Alerts page. One pure rule (`lib/overview-status.ts` `toBinaryStatus`, plus a model-aware roll-up) replaces the scattered `status !== 'normal'` checks. The server's workspace/plant `status` roll-up gets the same rule. REFINED at implementation: the server's workspace/plant `status` stays the WORST of the four node states (what the 4-state views colour by), and the Normal/Abnormal rule is applied where it is read (`toBinaryStatus`: abnormal iff 'alarm', plus the model-side failed/ALERT fold). Changing the wire value would have broken every 4-state reader for no gain.",
+          "why": "User's call 2026-10-01 ('Alert + Deploy Failed')."
+        },
+        {
+          "id": "MODEL-SERVE-024-D03",
+          "decision": "The models list computes the z-score drift verdict (DRIFT_WARN/DRIFT_CRITICAL) per enabled model with driftMonitor on, over the SAME sample as the detail page: the PRODUCTION version's newest 24 windows, pooled, with the schedule's warnSd/criticalSd. The baseline comes from resolveColumnBaseline, which is already cached and already read for frozen detection. PSI (DRIFT_DIST_CRITICAL) stays detail-only, because it needs a separate reference HTTP read per model.",
+          "why": "User's call 2026-10-01 ('compute drift in the list'). Using the same sample as the detail page keeps the list and the detail page from disagreeing about the same model."
+        },
+        {
+          "id": "MODEL-SERVE-024-D04",
+          "decision": "Row detail uses ONE format, `Source: reason`. Model monitoring rows read 'Monitoring: <reason>', with STALE relabelled 'No inference window'. Deploy rows read 'Deploy: <failure reason>'. Node rows read '<Type>: <status>' (e.g. 'Sensor: Alert').",
+          "why": "User's call 2026-10-01."
+        },
+        {
+          "id": "MODEL-SERVE-024-D05",
+          "decision": "Workspace/plant `alarmCount` counts ALARM nodes only, matching Abnormal. New additive `warningCount` and `offlineCount` fields carry the rest, so the bell total and the plant page lose nothing.",
+          "why": "Asked on 2026-10-01 and left open by the user ('go ahead'). Additive fields break no client and keep every count recoverable."
+        }
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-024-T01",
+          "title": "Backend: drift in deriveDeployStatuses + workspace/plant roll-up rule",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "deploy-status.ts: for driftMonitor schedules with a PRODUCTION version, findMany of that version's newest 24 windows (featureStats) → poolFeatureStats → computeDrift(…, thresholdsFromSchedule) → pass driftMonitor/driftStatus/driftEvidence into classifyModelHealth. workspace + workspace-plant services: status = 'alarm' only when an alarm node exists, else 'normal'. Keep alarmCount = alarm nodes only, and decide whether warning/offline counts stay as separate fields. Jest for both.",
+          "result": "deploy-status.ts: the schedule SELECT gains driftMonitor. For each enabled model with driftMonitor and a PRODUCTION version, resolveListDrift() reads that version's newest 24 windows (DRIFT_WINDOW_TAKE = the detail page's PRODUCTION_WINDOW_TAKE), pools featureStats, reads resolveColumnBaseline (cached) and runs computeDrift with thresholdsFromSchedule. Dark-ship gate: no stats or an empty baseline gives no claim. classifyModelHealth now gets the real driftMonitor/driftStatus/driftEvidence; PSI stays off on the list. Stale comments were updated. New src/lib/node-summary.ts (deriveNodeSummary) replaces identical private copies in the workspace and workspace-plant services: alarmCount counts alarm only, warningCount/offlineCount are added, status stays worst-of-4, and the empty-plan literal carries the new fields. Jest: deploy-status.spec 36/36 (+4 drift cases: WARN, CRITICAL, off = no query, empty baseline = no claim); node-summary.spec 3/3. The workspace/workspace-plant suites show the same 3 failed suites / 2 failed tests as clean HEAD (Nest DI 'should be defined' boilerplate and an ApiBearerAuth mock error), confirmed in a detached worktree. tsc is at its baseline of 61, all in untouched specs."
+        },
+        {
+          "id": "MODEL-SERVE-024-T02",
+          "title": "Client: one status module",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "lib/alerts.ts: AlertStatus = alert|failed|warning|offline; buildAlerts maps node alarm→alert, model monitoring ALERT→alert, WARN/FROZEN→warning; one STATUS table (label, colour, dot, pulse, icon, priority) feeds the badge, KPI cards and filter; the unused AlertClass is deleted. formatAlertDetail() produces 'Source: reason'. HEALTH_REASON_LABEL.STALE → 'no inference window'. The models/views 'monitoring' pill keeps its own labels (not in scope).",
+          "result": "lib/alerts.ts: AlertStatus = alert|failed|warning|offline. A single ALERT_STATUS_META table (label, plural, badge, dot, pulse, priority, abnormal) now feeds the derived ALERT_STATUS_PRIORITY/LABEL/BADGE/DOT/PULSE maps and the new ALERT_STATUS_ORDER; the unused AlertClass map was deleted. NODE_TO_ALERT maps the stored 'alarm' to alert at read time, and monitoringToAlertStatus() maps ALERT/CRITICAL to alert and WARN/FROZEN to warning. AlertRow.detail ('Source: reason') is built in buildAlerts. countByStatus/AlertCounts are 4-key. The KPI cards and toolbar filter derive labels/order from the table (KPI keeps only per-status icon/tint). alert-row renders `detail`, with the operator's statusDetail beneath it. health-status-style: STALE is relabelled 'no inference window'. The workspace alerts page uses the shared labels (Alert/Warning/Offline) with matching colours instead of an all-red 'Abnormal'. types: Workspace/plan gain warningCount/offlineCount; useAlertCount sums all three node counts (an older server's alarmCount already covered them). lib/alerts.test.ts 31/31, with 7 expectations renamed to the new vocabulary and 4 new cases (ALERT/WARN/FROZEN mapping, drift warn/critical, the detail format, four statuses with abnormal only for failed+alert). tsc is at its baseline of 4. REVIEW FIX: Deploy Failed rows read 'Deploy: Source check refused at start'. A deploy fails only on a refused preflight (MODEL-SERVE-001-T26), while lastFailure is the newest FAILED inference window, a different event, so it is no longer shown behind 'Deploy:'. It stays in the expanded Failure Reason section."
+        },
+        {
+          "id": "MODEL-SERVE-024-T03",
+          "title": "Client: Normal/Abnormal everywhere through one rule",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "overview-status.ts toBinaryStatus: abnormal iff 'alarm'. A model-aware helper is abnormal iff deploy failed OR monitoring ALERT. Rewire overview-tree normalizeModelStatus (failed → alarm, ALERT → alarm, WARN/FROZEN → warning), overview map/asset tree/hover card/detail panel, sidebar-workspace + use-sidebar dot, workspace-card, the plants page + node-detail-panel + isometric-map, the admin dashboard and the work-tree-panel to the shared helper instead of inline `!== 'normal'`. use-alert-count counts the 4-status list.",
+          "result": "ONE rule. lib/overview-status.ts toBinaryStatus returns abnormal iff 'alarm' (was: anything not normal); the new isAbnormal() is for conditions, and STATUS_META.alarm reads 'Alert'. lib/model-status.ts adds isModelAbnormal (failed deploy OR monitoring ALERT/CRITICAL), abnormalModelCountByWorkspace and abnormalModelCountByNodeId. lib/overview-tree.ts normalizeModelStatus maps a failed deploy to 'alarm' (was 'warning'), and abnormalEquipment filters with isAbnormal. Rewired to the rule: overview page (abnormal model counts; abnormalNodeIds keeps only node rows with status 'alert'; the workspace roll-up no longer counts warning nodes), overview-map (an abnormal model makes a workspace or node 'alarm', and the HUD no longer turns red for offline-only), overview-detail-panel (Abnormal = alert nodes + abnormal models), overview-asset-tree, overview-hover-card, use-sidebar + sidebar-workspace (isAbnormal(ws.status) OR an abnormal model), plants page + node-detail-panel pulse, isometric-map binary, admin workspace-list and the models work-tree-panel. Left as 4-state on purpose: the admin dashboard's active/warning/error tiles, plant list dot colours, and the overview-status deriveStatus/STATUS_META colours. REVIEW FIXES: (1) The model fold now also reaches the workspace cards (workspaces/page.tsx passes abnormalModelCountByWorkspace via a new `abnormalModels` prop) and the plant views (use-plant-controller builds abnormalModelNodeIds; the isometric map uses node colour, zone counts and the overall HUD, and the equipment grid cards pulse, all through the new isNodeAbnormal / countBinary(nodes, ids) / deriveBinaryStatus(nodes, ids)). countBinary itself still tested `!== 'normal'` and now uses the rule. (2) An alarmCount audit: the plant panel's 'Alerts' tile and navbar isHealthy now mean alerting nodes, which matches Abnormal. The sidebar's workspace 'Alerts' link opens a page listing all three node states, so its badge sums alarm+warning+offline. DELIBERATELY NOT FOLDED: the analytics 'Pipeline by Workspace' Health column is a seeded mock of batch success (lib/pipeline-metrics.ts statusFromSuccess), not workspace status; the admin dashboard's active/warning/error tiles, the plant list's 4-state dot colours and the node-detail plan chip are 4-state displays, not Normal/Abnormal."
+        },
+        {
+          "id": "MODEL-SERVE-024-T04",
+          "title": "Tests + checks",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "lib/alerts tests updated to 4 statuses plus the detail format; overview-status/overview-tree tests for the binary rule; backend jest for drift in the list and the roll-up; tsc, eslint against HEAD, vitest related, and the backend dataset/model suites.",
+          "result": "Client: `vitest related` on the 23 changed modules gives 10 files, 97 passed and 2 failed. The 2 failures are model-detail-dialog 'Data Frozen' tests already failing at HEAD earlier this session; the module they cover is untouched, and model-status.ts changed only by addition. 7 old-rule expectations were updated to the new rule: overview-tree (failed deploy -> alarm; abnormalEquipment lists only alerting equipment; WARN/FROZEN map to warning but make 0 equipment abnormal) and workspace-card (warning/offline read Normal). lib/alerts.test.ts 31/31. tsc is at its baseline of 4, and eslint is unchanged against HEAD on every changed client file. Backend: deploy-status + node-summary specs 39/39, tsc at its baseline of 61, eslint 0 on every changed backend file. After review fixes: new lib/__tests__/abnormal-rule.test.ts (5 cases: binary rule, isModelAbnormal, plant fold), `vitest related` on 26 changed modules gives 97 passed + the same 2 pre-existing model-detail-dialog failures, tsc 4, eslint unchanged against HEAD on all 26."
+        }
+      ],
+      "acceptance_criteria": [
+        "Alerts page badge, KPI and filter use the same four labels: Alert, Deploy Failed, Warning, Offline.",
+        "A model with DRIFT_WARN shows as Warning on the Alerts page; DRIFT_CRITICAL shows as Alert.",
+        "Plant, workspace and equipment read Abnormal only for Alert or Deploy Failed in every Normal/Abnormal view (Overview map/tree/hover/detail, sidebar, workspace cards, plant map + cards, admin workspace list, models work tree). The analytics pipeline Health column is a mock of batch success, not workspace status, and is out of scope.",
+        "Row detail reads 'Source: reason'; a STALE model reads 'Monitoring: No inference window'."
+      ],
+      "verification": [
+        {
+          "id": "MODEL-SERVE-024-V01",
+          "description": "Backend jest: list drift equals the detail drift on the same fixture; roll-up ignores warning/offline nodes.",
+          "status": "completed",
+          "result": "PASS — deploy-status.spec drift cases (4) + node-summary.spec (3)"
+        },
+        {
+          "id": "MODEL-SERVE-024-V02",
+          "description": "Client unit: status mapping, the binary rule, the detail format.",
+          "status": "completed",
+          "result": "PASS — alerts.test 31/31, overview-tree, workspace-card"
+        },
+        {
+          "id": "MODEL-SERVE-024-V03",
+          "description": "Live: Alerts, Overview, sidebar and plant views agree for one alerting model.",
+          "status": "pending"
+        }
+      ],
+      "progress_note": "Backend and client are implemented and tested. Held below 100 because V03, a live pass where Alerts, Overview, the sidebar and the plant views agree for one alerting model, has not run: the dev stack is down."
     }
   ],
   "global_definition_of_done": [

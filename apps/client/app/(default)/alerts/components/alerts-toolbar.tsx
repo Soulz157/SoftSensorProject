@@ -12,21 +12,16 @@ import {
 } from '@/components/ui/select'
 import {
   ALERT_STATUS_LABEL,
+  ALERT_STATUS_ORDER,
   EMPTY_FILTERS,
   type AlertFilters,
   type AlertStatus,
 } from '@/lib/alerts'
 import { AlertDateRangeFilter } from './alert-date-range-filter'
 
-const STATUS_FILTER_ORDER: AlertStatus[] = [
-  'failed',
-  // MODEL-SERVE-001-T30. Omitting a status here makes it unfilterable —
-  // the rows render but cannot be isolated, which is worse than absent.
-  'monitoring',
-  'alarm',
-  'offline',
-  'warning',
-]
+// MODEL-SERVE-024-D01. Every status, from the shared table — a status left
+// out here would render rows that cannot be isolated.
+const STATUS_FILTER_ORDER: AlertStatus[] = ALERT_STATUS_ORDER
 
 export function AlertsToolbar({
   filters,

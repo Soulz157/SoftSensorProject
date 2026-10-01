@@ -986,3 +986,130 @@ describe('deriveDeployStatuses — frozen detection (MODEL-SERVE-001-T30)', () =
     );
   });
 });
+
+describe('deriveDeployStatuses — z-score drift on the list (MODEL-SERVE-024-D03)', () => {
+  afterEach(() => {
+    mockedResolveColumnBaseline.mockReset();
+  });
+
+  const SCHEDULE = {
+    modelId: 'm1',
+    enabled: true,
+    cadenceMinutes: 60,
+    lagMinutes: 15,
+    preflightOk: true,
+    skipStreakAlert: 3,
+    missingPctWarn: 5,
+    missingPctAlert: 20,
+    warnSd: 1.5,
+    criticalSd: 3.0,
+    frozenWindows: 3,
+    frozenTolerancePct: 0,
+    driftMonitor: true,
+  };
+  const PRODUCTION_VERSION = {
+    id: 'v1',
+    modelId: 'm1',
+    metrics: null,
+    goldObjectKey: 'models/m1/versions/v1/gold/data.parquet',
+  };
+  const BASELINE = {
+    tag_a: { mean: 10, std: 2, percentiles: { p1: 4, p99: 16 } },
+  };
+
+  /** A production window whose pooled tag_a mean is `mean` (z = (mean-10)/2). */
+  const window = (mean: number) => ({
+    featureStats: {
+      tag_a: {
+        n: 10,
+        sum: mean * 10,
+        sumsq: 10 * (mean * mean + 1),
+        min: mean - 2,
+        max: mean + 2,
+      },
+    },
+  });
+
+  /** `findMany` serves two queries: the recent-terminal one (no
+   * `modelVersionId`, left empty so frozen detection stays silent) and the
+   * drift sample (scoped to the production version). */
+  function buildPrisma(
+    driftWindows: unknown[],
+    schedule: Record<string, unknown> = SCHEDULE,
+  ) {
+    const findMany = jest.fn((args: { where?: { modelVersionId?: string } }) =>
+      Promise.resolve(args.where?.modelVersionId ? driftWindows : []),
+    );
+    return {
+      prisma: {
+        inferenceSchedule: {
+          findMany: jest.fn().mockResolvedValue([schedule]),
+        },
+        inferenceWindow: {
+          groupBy: jest
+            .fn()
+            .mockResolvedValue([
+              { modelId: 'm1', _max: { windowStart: new Date() } },
+            ]),
+          findMany,
+        },
+        modelVersion: {
+          findMany: jest.fn().mockResolvedValue([PRODUCTION_VERSION]),
+        },
+        inferenceWindowTruth: { groupBy: jest.fn().mockResolvedValue([]) },
+      } as unknown as Parameters<typeof deriveDeployStatuses>[0],
+      findMany,
+    };
+  }
+
+  it('grades the production version’s newest 24 windows and reports DRIFT_WARN as WARN', async () => {
+    mockedResolveColumnBaseline.mockResolvedValue(BASELINE);
+    const { prisma, findMany } = buildPrisma([window(14), window(14)]);
+
+    const result = await deriveDeployStatuses(prisma, ['m1']);
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { modelVersionId: 'v1' },
+        take: 24,
+      }),
+    );
+    expect(result.m1?.monitoring.status).toBe('WARN');
+    expect(result.m1?.monitoring.reason).toBe('DRIFT_WARN');
+  });
+
+  it('reports DRIFT_CRITICAL as ALERT', async () => {
+    mockedResolveColumnBaseline.mockResolvedValue(BASELINE);
+    const { prisma } = buildPrisma([window(17)]);
+
+    const result = await deriveDeployStatuses(prisma, ['m1']);
+
+    expect(result.m1?.monitoring.status).toBe('ALERT');
+    expect(result.m1?.monitoring.reason).toBe('DRIFT_CRITICAL');
+  });
+
+  it('makes no drift claim and no extra query when drift watching is off', async () => {
+    mockedResolveColumnBaseline.mockResolvedValue(BASELINE);
+    const { prisma, findMany } = buildPrisma([window(17)], {
+      ...SCHEDULE,
+      driftMonitor: false,
+    });
+
+    const result = await deriveDeployStatuses(prisma, ['m1']);
+
+    expect(findMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({ where: { modelVersionId: 'v1' } }),
+    );
+    expect(result.m1?.monitoring.reason).toBeNull();
+  });
+
+  it('treats an empty baseline as no evidence, never as no drift', async () => {
+    mockedResolveColumnBaseline.mockResolvedValue({});
+    const { prisma } = buildPrisma([window(17)]);
+
+    const result = await deriveDeployStatuses(prisma, ['m1']);
+
+    expect(result.m1?.monitoring.reason).toBeNull();
+    expect(result.m1?.monitoring.status).not.toBe('OK');
+  });
+});

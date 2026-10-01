@@ -4,7 +4,11 @@ import { redactUrls } from '@/lib/redact-urls';
 // MODEL-SERVE-001-T26. The monitoring classifier, called from the list path
 // so both axes are derived by ONE implementation each. Acyclic: model-health
 // imports nothing from this module (it names it only in a comment).
-import { classifyModelHealth, type ModelHealth } from '@/lib/model-health';
+import {
+  classifyModelHealth,
+  thresholdsFromSchedule,
+  type ModelHealth,
+} from '@/lib/model-health';
 // MODEL-SERVE-012-T08. The output-error classifier and its horizon, called
 // rather than reimplemented, so the list and the detail page grade a model by
 // one rule over one sample. Acyclic: neither module imports this one.
@@ -24,7 +28,25 @@ import { detectFrozenColumns } from '@/lib/sensor-frozen';
 // comment. Without that cache this read would be an uncached HTTP round trip
 // to apps/python per enabled model, on every Alerts/Overview/sidebar load.
 import { resolveColumnBaseline } from '@/lib/artifact-baseline';
-import type { FeatureStatsMap } from '@/lib/prediction-drift';
+import {
+  computeDrift,
+  poolFeatureStats,
+  type FeatureStatsMap,
+} from '@/lib/prediction-drift';
+
+/**
+ * MODEL-SERVE-024-D03. The window sample the list's drift verdict is graded
+ * over — THE SAME as the detail page's `resolveProductionWindows` take, so the
+ * list and the detail page can never disagree about one model's drift.
+ */
+const DRIFT_WINDOW_TAKE = 24;
+
+type DriftVerdict = {
+  driftStatus: ReturnType<typeof computeDrift>['status'] | null;
+  driftEvidence: boolean;
+};
+
+const NO_DRIFT: DriftVerdict = { driftStatus: null, driftEvidence: false };
 
 /**
  * MODEL-SERVE-006-T12. Per decisions.deploy_status_currently_asserts_
@@ -193,15 +215,12 @@ export interface DeployState {
   /**
    * MODEL-SERVE-001-T26/T30. The MONITORING axis for the list payload, so
    * the Alerts page and the workspace failure counts keep seeing fetch
-   * faults after they stopped reaching `status`. Drift is deliberately NOT
-   * evaluated here — a drift VERDICT needs `warnSd`/`criticalSd` thresholds
-   * this payload does not carry for that purpose, and reusing the frozen
-   * detection's baseline call to also compute one would be a second
-   * classifier decision this batched path was never asked to make. Frozen
-   * detection IS evaluated here (T30): it reuses the SAME baseline read,
-   * costing nothing extra once that call is already made for the window
-   * query below. `OFF` on this path therefore means "no LIVE fault or
-   * frozen tag, and no drift claim", never "healthy".
+   * faults after they stopped reaching `status`. Frozen detection is
+   * evaluated here (T30), and since MODEL-SERVE-024-D03 so is the z-score
+   * drift verdict, for schedules with `driftMonitor` on, over the detail
+   * page's own sample and thresholds. PSI is NOT (it needs a separate
+   * reference read per model). `OFF` on this path therefore means "no LIVE
+   * fault, frozen tag or z-score drift, and no PSI claim", never "healthy".
    */
   monitoring: ModelHealth;
 }
@@ -265,6 +284,9 @@ export async function deriveDeployStatuses(
       // page does, never a second set of defaults that could disagree.
       frozenWindows: true,
       frozenTolerancePct: true,
+      // MODEL-SERVE-024-D03. Drift is graded on the list only for schedules
+      // that opted in, exactly as the detail page gates it.
+      driftMonitor: true,
     },
   });
   if (schedules.length === 0) return result;
@@ -321,9 +343,26 @@ export async function deriveDeployStatuses(
   // as `lastFailure`/`consecutiveFailures` — one Promise.all over enabled
   // models, not a second one.
   const frozenColumnsByModel = new Map<string, string[]>();
+  // MODEL-SERVE-024-D03. The z-score drift verdict per enabled model, so a
+  // DRIFT_WARN/DRIFT_CRITICAL reaches the Alerts page, plant and workspace
+  // instead of living only on the detail page. PSI stays detail-only: it
+  // needs a separate reference read per model.
+  const driftByModel = new Map<string, DriftVerdict>();
   await Promise.all(
     enabledIds.map(async (modelId) => {
       const schedule = scheduleByModel.get(modelId)!;
+      const productionForDrift = versionByModel.get(modelId);
+      if (schedule.driftMonitor && productionForDrift) {
+        driftByModel.set(
+          modelId,
+          await resolveListDrift(
+            prisma,
+            productionForDrift.id,
+            productionForDrift.goldObjectKey,
+            thresholdsFromSchedule(schedule),
+          ),
+        );
+      }
       // `take` widened from a flat 3 to whatever `frozenWindows` needs, the
       // same `Math.max(3, ...)` shape T27/T28 already used for
       // `skipStreakAlert` on the single-model path (resolveLivenessFaults) —
@@ -478,16 +517,17 @@ export async function deriveDeployStatuses(
       // keeps the signal from disappearing in the meantime.
       monitoring: classifyModelHealth({
         enabled: schedule.enabled,
-        // Drift is NOT evaluated on the list path — it needs a baseline read
-        // per model, which is exactly the per-model request this batched
-        // derivation exists to avoid. `false` here means "this payload makes
-        // no drift claim", and the detail page's own read still does.
-        driftMonitor: false,
-        driftStatus: null,
-        driftEvidence: false,
-        // MODEL-SERVE-001-T32. Same argument for the PSI axis, and the same
-        // wording deliberately: the reference read is another per-model
-        // round trip. `null`/`false` mean "this payload makes no
+        // MODEL-SERVE-024-D03. Computed above over the detail page's own
+        // sample (PRODUCTION version, newest 24 windows) and thresholds, for
+        // opted-in schedules. Off, or no evidence, is "no drift claim".
+        driftMonitor: schedule.driftMonitor,
+        driftStatus: (driftByModel.get(schedule.modelId) ?? NO_DRIFT)
+          .driftStatus,
+        driftEvidence: (driftByModel.get(schedule.modelId) ?? NO_DRIFT)
+          .driftEvidence,
+        // MODEL-SERVE-001-T32. NOT evaluated on the list path: the PSI
+        // reference read is a per-model HTTP round trip, which this batched
+        // derivation exists to avoid. `null`/`false` mean "this payload makes no
         // DISTRIBUTION claim either", never "PSI said fine".
         psiStatus: null,
         psiEvidence: false,
@@ -528,6 +568,40 @@ export async function deriveDeployStatuses(
   }
 
   return result;
+}
+
+/**
+ * MODEL-SERVE-024-D03. The detail page's drift verdict, computed for the list:
+ * the PRODUCTION version's newest `DRIFT_WINDOW_TAKE` windows, pooled, against
+ * the gold artifact's column baseline (cached by key, so the frozen detection
+ * above has usually already paid for it). The same dark-ship gate as the
+ * detail page: no window stats or an empty baseline is NO evidence, and no
+ * evidence is never read as "no drift".
+ */
+async function resolveListDrift(
+  prisma: PrismaService,
+  productionVersionId: string,
+  goldObjectKey: string,
+  thresholds: ReturnType<typeof thresholdsFromSchedule>,
+): Promise<DriftVerdict> {
+  const windows = await prisma.inferenceWindow.findMany({
+    where: { modelVersionId: productionVersionId },
+    orderBy: { windowStart: 'desc' },
+    take: DRIFT_WINDOW_TAKE,
+    select: { featureStats: true },
+  });
+  const statsRows = windows
+    .map((w) => w.featureStats)
+    .filter((s): s is NonNullable<typeof s> => s !== null)
+    .map((s) => s as unknown as FeatureStatsMap);
+  if (statsRows.length === 0) return NO_DRIFT;
+  const baseline = await resolveColumnBaseline(goldObjectKey);
+  if (Object.keys(baseline).length === 0) return NO_DRIFT;
+  return {
+    driftStatus: computeDrift(poolFeatureStats(statsRows), baseline, thresholds)
+      .status,
+    driftEvidence: true,
+  };
 }
 
 /**

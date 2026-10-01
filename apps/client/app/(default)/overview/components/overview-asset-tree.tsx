@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { isAbnormal } from '@/lib/overview-status'
 import Link from 'next/link'
 import {
   AlertTriangle,
@@ -43,9 +44,9 @@ function truncateModelName(name: string, maxLength = MODEL_NAME_MAX_LENGTH) {
 function getAbnormalIds(tree: ReturnType<typeof buildOverviewTree>): string[] {
   const ids: string[] = []
   for (const plant of tree) {
-    if (plant.status !== 'normal') ids.push(plant.id)
+    if (isAbnormal(plant.status)) ids.push(plant.id)
     for (const node of plant.nodes) {
-      if (node.status !== 'normal') ids.push(node.id)
+      if (isAbnormal(node.status)) ids.push(node.id)
     }
   }
   return ids
@@ -74,26 +75,25 @@ function StatusTag({
   binary?: boolean
 }) {
   if (binary) {
-    const isAbnormal = status !== 'normal'
+    const abnormal = isAbnormal(status)
     return (
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
         <span
           className={cn(
             'h-2 w-2 shrink-0 rounded-full',
-            isAbnormal ? 'bg-red-500' : 'bg-green-500',
-            isAbnormal &&
-              'ring-4 ring-destructive/20 motion-safe:animate-pulse',
+            abnormal ? 'bg-red-500' : 'bg-green-500',
+            abnormal && 'ring-4 ring-destructive/20 motion-safe:animate-pulse',
           )}
         />
         <span
           className={cn(
             'text-[10px] font-semibold',
-            isAbnormal
+            abnormal
               ? 'text-red-700 dark:text-red-400'
               : 'text-green-700 dark:text-green-400',
           )}
         >
-          {isAbnormal ? 'Abnormal' : 'Normal'}
+          {abnormal ? 'Abnormal' : 'Normal'}
         </span>
       </span>
     )

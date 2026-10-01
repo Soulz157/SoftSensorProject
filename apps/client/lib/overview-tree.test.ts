@@ -79,7 +79,9 @@ describe('abnormalEquipment', () => {
     )
     expect(out).toHaveLength(1)
     expect(out[0]!.name).toBe('Pump 02')
-    expect(out[0]!.status).toBe('warning') // failed deploy → warning rollup
+    // MODEL-SERVE-024-D02: a failed deploy is Abnormal, so it rolls up as
+    // 'alarm' (read "Alert"); it used to roll up as 'warning'.
+    expect(out[0]!.status).toBe('alarm')
     const failed = out[0]!.models.find(m => m.id === 'm1')
     expect(failed?.deployFailed).toBe(true)
   })
@@ -94,12 +96,18 @@ describe('abnormalEquipment', () => {
     expect(out[0]!.models[0]!.deployFailed).toBe(true)
   })
 
-  it('sorts alarm before warning', () => {
+  it('lists only Abnormal (alerting) equipment — warning and offline read Normal', () => {
+    // MODEL-SERVE-024-D02. Warning/offline equipment still raises a row on
+    // the Alerts page, but it is not Abnormal, so the hover card omits it.
     const out = abnormalEquipment(
-      [node('n1', 'warning', 'Warn'), node('n2', 'alarm', 'Alarm')],
+      [
+        node('n1', 'warning', 'Warn'),
+        node('n2', 'alarm', 'Alarm'),
+        node('n3', 'offline', 'Off'),
+      ],
       [],
     )
-    expect(out.map(n => n.status)).toEqual(['alarm', 'warning'])
+    expect(out.map(n => n.status)).toEqual(['alarm'])
   })
 })
 
@@ -162,8 +170,9 @@ describe('normalizeModelStatus — a running model is never offline on the map',
     expect(normalizeModelStatus(listModel('running', 'FROZEN'))).toBe(
       'warning',
     )
-    // A failed deploy outranks everything and is checked first.
-    expect(normalizeModelStatus(listModel('error', 'OFF'))).toBe('warning')
+    // A failed deploy outranks everything, is checked first, and is Abnormal
+    // (MODEL-SERVE-024-D02), so it maps to 'alarm'.
+    expect(normalizeModelStatus(listModel('error', 'OFF'))).toBe('alarm')
   })
 })
 
@@ -204,17 +213,17 @@ describe('monitoringReason reaches the hover card (MODEL-SERVE-012-T13)', () => 
   })
 })
 
-describe('overview parity with the Alerts page (MODEL-SERVE-012-T13)', () => {
-  // `hasMonitoringAlert` raises on ALERT | WARN | FROZEN. Anything it raises
-  // must make its equipment abnormal here, or the two surfaces disagree
-  // about the same model — which is the whole defect this pins.
+describe('overview parity with the Alerts page (MODEL-SERVE-012-T13, MODEL-SERVE-024)', () => {
+  // The two surfaces must agree about the same model. Since MODEL-SERVE-024
+  // that means: an ALERT is an Alert row on the Alerts page AND Abnormal
+  // equipment here; a WARN/FROZEN is a Warning row there AND Normal here.
   it.each([
-    ['ALERT', 'alarm'],
-    ['WARN', 'warning'],
-    ['FROZEN', 'warning'],
+    ['ALERT', 'alarm', 1],
+    ['WARN', 'warning', 0],
+    ['FROZEN', 'warning', 0],
   ] as const)(
-    'a %s model makes its equipment abnormal',
-    (status, expected) => {
+    'a %s model maps to %s and makes %i equipment abnormal',
+    (status, expected, abnormalRows) => {
       const m: AIModel = {
         ...model('m-1', 'M1', { nodesId: 'n1' }),
         data: {
@@ -229,7 +238,9 @@ describe('overview parity with the Alerts page (MODEL-SERVE-012-T13)', () => {
 
       expect(normalizeModelStatus(m)).toBe(expected)
       // The equipment row the hover card actually renders.
-      expect(abnormalEquipment([node('n1', 'normal')], [m])).toHaveLength(1)
+      expect(abnormalEquipment([node('n1', 'normal')], [m])).toHaveLength(
+        abnormalRows,
+      )
     },
   )
 

@@ -4,10 +4,8 @@ import { useRouter } from 'next/navigation'
 import { usePlantsData } from '@/hooks/plants/use-plants-data'
 import { useAllModels } from '@/hooks/use-all-models'
 import {
-  failedDeploys,
-  failedCountByNodeId,
-  monitoringAlerts,
-  monitoringCountByNodeId,
+  abnormalModelCountByNodeId,
+  abnormalModelCountByWorkspace,
 } from '@/lib/model-status'
 
 import { useWorkspaceFilter } from '@/hooks/workspace/use-workspace-filter'
@@ -29,61 +27,25 @@ export default function PlantsPage() {
   const { models } = useAllModels()
   const { alerts, loading: alertsLoading } = useAlerts()
 
-  const failedDeploysByWorkspace = useMemo(() => {
-    if (!models) return {}
-    const map: Record<string, number> = {}
-    for (const m of failedDeploys(models)) {
-      map[m.workspaceId] = (map[m.workspaceId] ?? 0) + 1
-    }
-    // MODEL-SERVE-001-T30. Monitoring alerts fold into the SAME map here,
-    // unlike the sidebar's two separate maps, because this one feeds a single
-    // "models needing attention" figure on the map. Since T26 a dead source
-    // reaches only this second loop — without it the Overview map stays blind
-    // to the exact failure class that task moved off the deploy axis.
-    for (const m of monitoringAlerts(models)) {
-      map[m.workspaceId] = (map[m.workspaceId] ?? 0) + 1
-    }
-    return map
-  }, [models])
+  // MODEL-SERVE-024-D02. Models that make their workspace / equipment
+  // Abnormal: a failed deploy or a monitoring ALERT (`isModelAbnormal`). A
+  // monitoring WARN/FROZEN still raises a Warning row on the Alerts page but
+  // turns nothing red here. (Prop names kept for the map's existing API.)
+  const failedDeploysByWorkspace = useMemo(
+    () => (models ? abnormalModelCountByWorkspace(models) : {}),
+    [models],
+  )
+  const failedByNodeId = useMemo(
+    () => (models ? abnormalModelCountByNodeId(models) : {}),
+    [models],
+  )
 
-  /**
-   * MODEL-SERVE-012. BOTH model axes per node, summed — not just the deploy
-   * one.
-   *
-   * THE BUG THIS FIXES: the workspace figure above already folded
-   * `monitoringAlerts` in, but this node-level map read `failedCountByNodeId`
-   * alone. So a model alerting on the MONITORING axis (dead source, bad data,
-   * frozen tag, widened residual spread) left its node's dot on the tower
-   * name badge GREEN, while the same model raised a row on the Alerts page.
-   * The deploy half worked, which is why it read as live rather than broken.
-   *
-   * Summed rather than merged: the two axes are counted separately by design
-   * (see `monitoringCountByWorkspace`), and a model can legitimately be in
-   * both, but this map feeds one "models needing attention here" figure whose
-   * only question is whether the count is above zero.
-   */
-  const failedByNodeId = useMemo(() => {
-    if (!models) return {}
-    const deployFaults = failedCountByNodeId(models)
-    const monitoringFaults = monitoringCountByNodeId(models)
-    const out: Record<string, number> = { ...deployFaults }
-    for (const [nodeId, count] of Object.entries(monitoringFaults)) {
-      out[nodeId] = (out[nodeId] ?? 0) + count
-    }
-    return out
-  }, [models])
-
-  // Same two signals the navbar's alert count is built from (buildAlerts:
-  // node hardware status in {alarm,offline,warning} + failed model
-  // deploys) — BUG FIX: `AlertRow` has no `nodeId` field (node-kind rows
-  // carry the node id as `id`), and `CanvasNode` has no top-level `status`
-  // (it's `data.status`). Both were always `undefined`, so this Set was
-  // always empty and every workspace/tower rendered 'normal' regardless of
-  // real alerts — the mismatch against the navbar/sidebar alert counts.
   const abnormalNodeIds = useMemo(() => {
     const ids = new Set<string>()
     for (const a of alerts) {
-      if (a.kind === 'node') ids.add(a.id)
+      // Only an equipment ALERT is Abnormal — a warning or offline node is
+      // listed on the Alerts page but stays Normal here (MODEL-SERVE-024-D02).
+      if (a.kind === 'node' && a.status === 'alert') ids.add(a.id)
     }
     for (const nodeId of Object.keys(failedByNodeId)) {
       ids.add(nodeId)
@@ -104,10 +66,7 @@ export default function PlantsPage() {
       workspaces.map(ws => {
         const nodes = nodesByWorkspace[ws.id] ?? []
         const hasAlarm = nodes.some(
-          n =>
-            n.data.status === 'alarm' ||
-            n.data.status === 'warning' ||
-            abnormalNodeIds.has(n.id),
+          n => n.data.status === 'alarm' || abnormalNodeIds.has(n.id),
         )
         const allOffline =
           nodes.length > 0 && nodes.every(n => n.data.status === 'offline')

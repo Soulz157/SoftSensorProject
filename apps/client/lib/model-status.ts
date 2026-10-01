@@ -238,3 +238,40 @@ export function deployVerdict(models: AIModel[]): DeployVerdict {
   if (counts.stopped > 0) return { kind: 'stopped', count: counts.stopped }
   return { kind: 'all-running', count: counts.running }
 }
+
+/**
+ * MODEL-SERVE-024-D02. THE model side of the one Normal/Abnormal rule: a model
+ * makes its equipment, plant and workspace Abnormal only for a failed deploy
+ * or a monitoring ALERT. A monitoring WARN or FROZEN (drift warn, residual
+ * 1–2SD, tag not moving) still lists on the Alerts page as Warning, but turns
+ * nothing red — the same line `toBinaryStatus` draws for equipment.
+ */
+export function isModelAbnormal(m: AIModel): boolean {
+  if (isDeployFailed(m)) return true
+  const status = m.data?.monitoring?.status
+  return status === 'ALERT' || status === 'CRITICAL'
+}
+
+/** Abnormal models per `workspaceId` (see `isModelAbnormal`). */
+export function abnormalModelCountByWorkspace(
+  models: AIModel[],
+): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const m of models) {
+    if (!isModelAbnormal(m)) continue
+    out[m.workspaceId] = (out[m.workspaceId] ?? 0) + 1
+  }
+  return out
+}
+
+/** Abnormal models per `nodesId`; models not placed on a node are absent. */
+export function abnormalModelCountByNodeId(
+  models: AIModel[],
+): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const m of models) {
+    if (!m.nodesId || !isModelAbnormal(m)) continue
+    out[m.nodesId] = (out[m.nodesId] ?? 0) + 1
+  }
+  return out
+}

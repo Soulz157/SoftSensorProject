@@ -15,7 +15,11 @@ import {
 } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { useTheme } from 'next-themes'
-import { countBinary, deriveBinaryStatus } from '@/lib/overview-status'
+import {
+  countBinary,
+  isNodeAbnormal,
+  deriveBinaryStatus,
+} from '@/lib/overview-status'
 
 const VIEWPORT_W = 700
 const VIEWPORT_H = 420
@@ -43,6 +47,8 @@ interface IsometricMapProps {
   onZoneSelect?: (zoneId: string) => void
   onZoneDoubleClick?: (zoneId: string) => void
   viewMode?: 'plants' | 'equipment'
+  /** MODEL-SERVE-024-D02. Equipment with an abnormal model on it. */
+  abnormalModelNodeIds?: ReadonlySet<string>
 }
 
 export function IsometricMap({
@@ -56,6 +62,7 @@ export function IsometricMap({
   onZoneSelect,
   onZoneDoubleClick,
   viewMode,
+  abnormalModelNodeIds,
 }: IsometricMapProps) {
   const { resolvedTheme, setTheme } = useTheme()
   const isDark = resolvedTheme !== 'light'
@@ -92,8 +99,8 @@ export function IsometricMap({
 
   const equipmentNodes = workspaceNodes ?? nodes
   const totalEquipment = equipmentNodes.length
-  const statusCounts = countBinary(equipmentNodes)
-  const overallBinary = deriveBinaryStatus(equipmentNodes)
+  const statusCounts = countBinary(equipmentNodes, abnormalModelNodeIds)
+  const overallBinary = deriveBinaryStatus(equipmentNodes, abnormalModelNodeIds)
   const abnormalCount = statusCounts.abnormal
   const overallHealth = overallBinary === 'abnormal' ? 'ABNORMAL' : 'NORMAL'
   const healthColor =
@@ -235,7 +242,10 @@ export function IsometricMap({
                 const isSelected = selectedZoneId === zone.id
                 const isHovered = hoveredZoneId === zone.id
 
-                const zoneCounts = countBinary(mappedNodes.map(m => m.node))
+                const zoneCounts = countBinary(
+                  mappedNodes.map(m => m.node),
+                  abnormalModelNodeIds,
+                )
                 const zoneAbnormal = zoneCounts.abnormal
 
                 const zoneStatusText =
@@ -325,10 +335,13 @@ export function IsometricMap({
                         key={node.id}
                         type={node.data.type}
                         icon={node.data.icon}
-                        // Binary display: collapse any abnormal state to `alarm`
-                        // (red + pulse), normal stays green. SVGs unchanged.
+                        // Binary display through THE one rule
+                        // (MODEL-SERVE-024-D02): only an alerting node is red
+                        // + pulse; warning/offline read normal. SVGs unchanged.
                         status={
-                          node.data.status === 'normal' ? 'normal' : 'alarm'
+                          isNodeAbnormal(node, abnormalModelNodeIds)
+                            ? 'alarm'
+                            : 'normal'
                         }
                         label={node.data.name}
                         isoX={isoX}

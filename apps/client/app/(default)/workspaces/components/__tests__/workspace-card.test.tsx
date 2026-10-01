@@ -40,11 +40,13 @@ describe('WorkspaceCard', () => {
   // -------------------------------------------------------------------------
   describe('V01 status badge', () => {
     // Every value the wire enum actually carries, not just the two binary ones.
+    // MODEL-SERVE-024-D02: only an alerting workspace is Abnormal; warning
+    // and offline read Normal (they still list on the Alerts page).
     const cases: Array<[NodeStatus, 'normal' | 'abnormal']> = [
       ['normal', 'normal'],
-      ['warning', 'abnormal'],
+      ['warning', 'normal'],
       ['alarm', 'abnormal'],
-      ['offline', 'abnormal'],
+      ['offline', 'normal'],
     ]
 
     it.each(cases)(

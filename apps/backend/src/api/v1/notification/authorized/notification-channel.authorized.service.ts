@@ -17,7 +17,9 @@ import type {
  * MODEL-SERVE-022-T04. Minimal channel API for this pass — the full
  * settings UI (event defaults per row, delivery-history filters, "why can't
  * this alert fire yet" copy) is T05, not built here. Every mutating route
- * is OWNER-only (D-user-decision, 2026-09-29): `assertIsOwner` below is a
+ * is OWNER-only (D-user-decision, 2026-09-29); the two READ routes (list
+ * channels, delivery history) also admit STAFF (`assertCanView`, 2026-10-01).
+ * `assertIsOwner` below is a
  * COPY of `workspace.authorized.service.ts`'s own private helper, verbatim
  * down to not special-casing ADMIN — this codebase's own existing
  * convention at all 3 of that helper's call sites, followed rather than a
@@ -51,6 +53,39 @@ export class NotificationChannelAuthorizedService {
       throw new AppException({
         statusCode: 403,
         message: 'Only workspace owners can perform this action',
+        type: 'ERROR',
+      });
+    }
+  }
+
+  /**
+   * READ access to a workspace's channels and delivery history: the owner, or
+   * a member with role OWNER or STAFF (user's call, 2026-10-01 — staff see
+   * their own workspace's notifications). VIEWER stays out: channel rows name
+   * recipients and targets. Every MUTATING route keeps `assertIsOwner`. Same
+   * not-special-casing-ADMIN convention as `assertIsOwner` above.
+   */
+  private async assertCanView(workspaceId: string, userId: string) {
+    const workspace = await this.prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { ownerId: true },
+    });
+    if (!workspace) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Workspace not found',
+        type: 'ERROR',
+      });
+    }
+    if (workspace.ownerId === userId) return;
+    const member = await this.prisma.workspaceMember.findUnique({
+      where: { workspaceId_userId: { workspaceId, userId } },
+      select: { role: true },
+    });
+    if (!member || (member.role !== 'OWNER' && member.role !== 'STAFF')) {
+      throw new AppException({
+        statusCode: 403,
+        message: 'Only workspace owners and staff can view notifications',
         type: 'ERROR',
       });
     }
@@ -98,7 +133,7 @@ export class NotificationChannelAuthorizedService {
   }
 
   async listChannelsService(workspaceId: string, user: Auth.UserPayload) {
-    await this.assertIsOwner(workspaceId, user.id);
+    await this.assertCanView(workspaceId, user.id);
     const channels = await this.prisma.notificationChannel.findMany({
       where: { workspaceId },
       orderBy: { createdAt: 'asc' },
@@ -310,7 +345,7 @@ export class NotificationChannelAuthorizedService {
     page: number,
     limit: number,
   ) {
-    await this.assertIsOwner(workspaceId, user.id);
+    await this.assertCanView(workspaceId, user.id);
     const channel = await this.prisma.notificationChannel.findFirst({
       where: { id: channelId, workspaceId },
       select: { id: true },

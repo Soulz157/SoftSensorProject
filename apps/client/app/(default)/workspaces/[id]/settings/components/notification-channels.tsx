@@ -277,13 +277,18 @@ export function NotificationChannels({ workspaceId }: Props) {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="w-full">
-                          <DropdownMenuItem
-                            onClick={() => handleTest(channel)}
-                            className="cursor-pointer"
-                          >
-                            <Send className="h-3.5 w-3.5" />
-                            Send test notification
-                          </DropdownMenuItem>
+                          {/* Owner-only, like Edit/Delete: the server
+                              refuses a test send from staff, who may only
+                              VIEW channels and delivery history. */}
+                          {isOwner && (
+                            <DropdownMenuItem
+                              onClick={() => handleTest(channel)}
+                              className="cursor-pointer"
+                            >
+                              <Send className="h-3.5 w-3.5" />
+                              Send test notification
+                            </DropdownMenuItem>
+                          )}
                           <DropdownMenuItem
                             onClick={() => setHistoryChannel(channel)}
                             className="cursor-pointer"

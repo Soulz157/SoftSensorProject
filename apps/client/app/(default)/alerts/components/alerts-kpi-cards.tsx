@@ -1,46 +1,37 @@
-import { AlertCircle, AlertTriangle, Box, Power, Waves } from 'lucide-react'
+import { AlertCircle, AlertTriangle, Box, Power } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
-import type { AlertCounts } from '@/lib/alerts'
+import {
+  ALERT_STATUS_META,
+  ALERT_STATUS_ORDER,
+  type AlertCounts,
+  type AlertStatus,
+} from '@/lib/alerts'
 
-const KPI_DEFS = [
-  {
-    key: 'alarm' as const,
-    label: 'Alarms',
-    icon: AlertCircle,
-    text: 'text-red-500',
-    bg: 'bg-red-500/10',
-  },
-  {
-    key: 'failed' as const,
-    label: 'Deploy Failed',
-    icon: Box,
-    text: 'text-red-600',
-    bg: 'bg-red-500/10',
-  },
-  {
-    // MODEL-SERVE-001-T30. `Waves` + amber, matching the monitoring axis's
-    // own badge — NOT the red the two deploy-side cards above use.
-    key: 'monitoring' as const,
-    label: 'Monitoring',
-    icon: Waves,
-    text: 'text-amber-600',
-    bg: 'bg-amber-500/10',
-  },
-  {
-    key: 'warning' as const,
-    label: 'Warnings',
+/**
+ * MODEL-SERVE-024-D01. Label and order come from `ALERT_STATUS_META` — the
+ * same table the badge and filter read — so a card can no longer word a
+ * status differently from the row it counts. Only the card's own visuals
+ * (icon, tint) live here; they follow the status's colour family.
+ */
+const KPI_VISUAL: Record<
+  AlertStatus,
+  { icon: typeof AlertCircle; text: string; bg: string }
+> = {
+  failed: { icon: Box, text: 'text-red-600', bg: 'bg-red-500/10' },
+  alert: { icon: AlertCircle, text: 'text-red-500', bg: 'bg-red-500/10' },
+  offline: { icon: Power, text: 'text-zinc-500', bg: 'bg-zinc-500/10' },
+  warning: {
     icon: AlertTriangle,
     text: 'text-amber-500',
     bg: 'bg-amber-500/10',
   },
-  {
-    key: 'offline' as const,
-    label: 'Offline',
-    icon: Power,
-    text: 'text-zinc-500',
-    bg: 'bg-zinc-500/10',
-  },
-]
+}
+
+const KPI_DEFS = ALERT_STATUS_ORDER.map(key => ({
+  key,
+  label: ALERT_STATUS_META[key].plural,
+  ...KPI_VISUAL[key],
+}))
 
 /** Compact KPI grid — always reflects global counts, unaffected by tab/toolbar filters. */
 export function AlertsKpiCards({ counts }: { counts: AlertCounts }) {

@@ -160,7 +160,11 @@ export interface WorkspacePlant {
   color?: string
   description?: string
   nodeCount?: number
+  /** MODEL-SERVE-024-D05: ALARM nodes only (it counted every non-normal node
+   * before). Warning/offline nodes are in the two fields below. */
   alarmCount?: number
+  warningCount?: number
+  offlineCount?: number
   status?: 'normal' | 'warning' | 'alarm' | 'offline'
   createdAt: string
   updatedAt: string
@@ -190,7 +194,11 @@ export interface Workspace {
   plantsCount?: number | null
   datasetsCount?: number | null
   nodeCount?: number
+  /** MODEL-SERVE-024-D05: ALARM nodes only (it counted every non-normal node
+   * before). Warning/offline nodes are in the two fields below. */
   alarmCount?: number
+  warningCount?: number
+  offlineCount?: number
   /**
    * Operating state, derived server-side by `deriveNodeSummary`. REQUIRED: an
    * absent status is read as `abnormal` by `toBinaryStatus`, which would paint

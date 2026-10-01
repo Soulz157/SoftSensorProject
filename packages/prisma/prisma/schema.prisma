@@ -2286,8 +2286,12 @@ model NotificationChannel {
   /// cooldown/flapping suppression is left undecided rather than shipped
   /// half-designed against this pass's own acceptance criteria. Default 0.
   cooldownMinutes Int @default(0)
-  /// Model ids this channel never notifies for, regardless of severity.
-  mutedModelIds String[]
+  /// Model ids this channel notifies for — an explicit ALLOW-list (user's
+  /// call, 2026-10-01; replaced the old `mutedModelIds` exclude list). Empty
+  /// means the channel sends for NO model; the form refuses to save it empty
+  /// and offers "Select all". A model created later is not included until it
+  /// is selected.
+  focusModelIds String[] @default([])
 
   createdBy   User   @relation(fields: [createdById], references: [id], onDelete: Cascade)
   createdById String

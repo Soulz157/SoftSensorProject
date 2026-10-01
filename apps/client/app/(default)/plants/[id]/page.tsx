@@ -1,6 +1,7 @@
 'use client'
 
 import React, { use, memo, useEffect, useRef } from 'react'
+import { isNodeAbnormal } from '@/lib/overview-status'
 import {
   ChevronLeft,
   ChevronRight,
@@ -49,12 +50,15 @@ const EquipmentGridView = memo(function EquipmentGridView({
   onNodeClick,
   workspaceId,
   failedNodeIds,
+  abnormalModelNodeIds,
 }: {
   nodes: CanvasNode[]
   selectedNodeId: string | null
   onNodeClick: (nodeId: string) => void
   workspaceId: string | null
   failedNodeIds: Set<string>
+  /** MODEL-SERVE-024-D02. Equipment carrying an abnormal model. */
+  abnormalModelNodeIds: ReadonlySet<string>
 }) {
   if (nodes.length === 0) {
     return (
@@ -102,7 +106,7 @@ const EquipmentGridView = memo(function EquipmentGridView({
                     className={cn(
                       'mt-1 h-2.5 w-2.5 shrink-0 rounded-full shadow-sm',
                       STATUS_DOT[status],
-                      status !== 'normal' &&
+                      isNodeAbnormal(node, abnormalModelNodeIds) &&
                         'animate-pulse ring-2 ring-red-500/30',
                     )}
                   />
@@ -341,6 +345,7 @@ export default function PlantsPage({ params, searchParams }: PlantsPageProps) {
               onZoneDoubleClick={handlers.handleDrillDown}
               onNodeClick={handlers.handleNodeClick}
               viewMode={state.viewMode}
+              abnormalModelNodeIds={data.abnormalModelNodeIds}
             />
           ) : (
             <EquipmentGridView
@@ -349,6 +354,7 @@ export default function PlantsPage({ params, searchParams }: PlantsPageProps) {
               onNodeClick={handlers.handleNodeClick}
               workspaceId={state.activeWorkspaceId}
               failedNodeIds={data.failedNodeIds}
+              abnormalModelNodeIds={data.abnormalModelNodeIds}
             />
           )}
         </main>

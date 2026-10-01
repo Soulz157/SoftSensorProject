@@ -7,8 +7,15 @@ import { failedDeploys, monitoringAlerts } from '@/lib/model-status'
 export function useAlertCount(): number {
   const workspaces = useAtomValue(workspacesAtom)
   const { models } = useAllModels()
-  const alarmCount = workspaces.reduce(
-    (sum, ws) => sum + (ws.alarmCount ?? 0),
+  // Every equipment row the Alerts page lists: alert, warning and offline
+  // nodes. MODEL-SERVE-024-D05 split the server's count three ways; an older
+  // server sends only `alarmCount`, which then already covered all three.
+  const nodeCount = workspaces.reduce(
+    (sum, ws) =>
+      sum +
+      (ws.alarmCount ?? 0) +
+      (ws.warningCount ?? 0) +
+      (ws.offlineCount ?? 0),
     0,
   )
   const failedCount = failedDeploys(models ?? []).length
@@ -17,5 +24,5 @@ export function useAlertCount(): number {
   // source lands only in this second term. Without it the nav badge undercounts
   // exactly the failure class T26 moved.
   const monitoringCount = monitoringAlerts(models ?? []).length
-  return alarmCount + failedCount + monitoringCount
+  return nodeCount + failedCount + monitoringCount
 }

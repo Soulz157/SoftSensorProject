@@ -10,6 +10,10 @@ import {
   groupByWorkspace,
   sortAlerts,
   EMPTY_FILTERS,
+  ALERT_STATUS_LABEL,
+  ALERT_STATUS_META,
+  ALERT_STATUS_ORDER,
+  monitoringToAlertStatus,
 } from './alerts'
 
 const WS_ID = 'ws-1'
@@ -171,7 +175,7 @@ describe('buildAlerts — the monitoring axis (MODEL-SERVE-001-T30/V22)', () => 
     })
 
     expect(rows).toHaveLength(1)
-    expect(rows[0]!.status).toBe('monitoring')
+    expect(rows[0]!.status).toBe('alert')
     // The reason is CARRIED, not inferred: SOURCE_UNREACHABLE sends a reader
     // to the connector, STALE to the scheduler. A row reading only
     // "Monitoring Alert" would send them to both.
@@ -201,7 +205,8 @@ describe('buildAlerts — the monitoring axis (MODEL-SERVE-001-T30/V22)', () => 
     })
 
     expect(rows).toHaveLength(1)
-    expect(rows[0]!.status).toBe('monitoring')
+    // MODEL-SERVE-024-D01: a WARN reads Warning, not Alert.
+    expect(rows[0]!.status).toBe('warning')
     expect(rows[0]!.monitoringReason).toBe('RESIDUAL_SD_WARN')
     // The model is DISPATCHING fine — this is not the deploy axis.
     expect(rows[0]!.status).not.toBe('failed')
@@ -259,7 +264,7 @@ describe('buildAlerts — the monitoring axis (MODEL-SERVE-001-T30/V22)', () => 
     expect(rows).toHaveLength(2)
     const ids = rows.map(r => r.id)
     expect(new Set(ids).size).toBe(2)
-    expect(rows.map(r => r.status).sort()).toEqual(['failed', 'monitoring'])
+    expect(rows.map(r => r.status).sort()).toEqual(['alert', 'failed'])
   })
 
   /**
@@ -303,9 +308,9 @@ describe('buildAlerts — the monitoring axis (MODEL-SERVE-001-T30/V22)', () => 
     expect(rows).toHaveLength(0)
   })
 
-  /** Severity: a monitoring alert outranks a node alarm, and a dead deploy
-   *  outranks it. Sorting is what puts the worst thing on screen first. */
-  it('sorts below a failed deploy and above a node alarm', () => {
+  /** MODEL-SERVE-024-D01. A monitoring alert and a node alarm are ONE
+   *  status now (Alert), both below a dead deploy. */
+  it('merges a monitoring alert and a node alarm into Alert, below a failed deploy', () => {
     const rows = buildAlerts({
       ...base,
       nodesByWorkspaceId: {
@@ -320,7 +325,7 @@ describe('buildAlerts — the monitoring axis (MODEL-SERVE-001-T30/V22)', () => 
         }),
       ],
     })
-    expect(rows.map(r => r.status)).toEqual(['failed', 'monitoring', 'alarm'])
+    expect(rows.map(r => r.status)).toEqual(['failed', 'alert', 'alert'])
   })
 })
 
@@ -364,7 +369,7 @@ describe('buildAlerts', () => {
     })
     expect(row!.plantName).toBe('Plant 1')
     expect(formatLocation(row!)).toBe('Repco > Plant 1')
-    expect(row!.typeLabel).toBe('Sensor Alarm')
+    expect(row!.typeLabel).toBe('Sensor Alert')
     expect(row!.typeName).toBe('Sensor')
     expect(row!.modelName).toBeNull()
     expect(row!.detailError).toBeNull()
@@ -428,7 +433,7 @@ describe('buildAlerts', () => {
       },
       models: [failedModel('m1', 'Failed Model')],
     })
-    expect(rows.map(r => r.status)).toEqual(['failed', 'alarm', 'warning'])
+    expect(rows.map(r => r.status)).toEqual(['failed', 'alert', 'warning'])
   })
 })
 
@@ -635,7 +640,7 @@ describe('groupByWorkspace', () => {
     // even though 'Alpha' < 'Zebra' would also win alphabetically — the
     // severity ordering must be the primary key, not just alphabetical luck.
     expect(groups[0]!.workspaceName).toBe('Alpha Plant')
-    expect(groups[0]!.rows.map(r => r.status)).toEqual(['alarm', 'warning'])
+    expect(groups[0]!.rows.map(r => r.status)).toEqual(['alert', 'warning'])
     expect(groups[1]!.workspaceName).toBe('Zebra Plant')
   })
 
@@ -655,5 +660,68 @@ describe('groupByWorkspace', () => {
       'Alpha Plant',
       'Zebra Plant',
     ])
+  })
+})
+
+/** MODEL-SERVE-024 — one status vocabulary and one detail format. */
+describe('MODEL-SERVE-024 status vocabulary', () => {
+  const base = {
+    workspaces: [workspace()],
+    plantsByWorkspaceId: { [WS_ID]: [plant(PLANT_A, 'Plant 1')] },
+    nodesByWorkspaceId: { [WS_ID]: [] },
+  }
+  const mon = (status: 'ALERT' | 'WARN' | 'FROZEN', reason: string) =>
+    monitoringModel('m', 'Model', {
+      status,
+      reason,
+      frozenColumns: [],
+    } as never)
+
+  it('maps monitoring ALERT to Alert, WARN and FROZEN to Warning', () => {
+    expect(monitoringToAlertStatus('ALERT')).toBe('alert')
+    expect(monitoringToAlertStatus('WARN')).toBe('warning')
+    expect(monitoringToAlertStatus('FROZEN')).toBe('warning')
+    expect(monitoringToAlertStatus('OK')).toBeNull()
+    expect(monitoringToAlertStatus(undefined)).toBeNull()
+  })
+
+  it('reads input drift warn as Warning and drift critical as Alert', () => {
+    const warn = buildAlerts({ ...base, models: [mon('WARN', 'DRIFT_WARN')] })
+    const crit = buildAlerts({
+      ...base,
+      models: [mon('ALERT', 'DRIFT_CRITICAL')],
+    })
+    expect(warn[0]!.status).toBe('warning')
+    expect(crit[0]!.status).toBe('alert')
+  })
+
+  it('writes every row detail as `Source: reason`', () => {
+    const rows = buildAlerts({
+      ...base,
+      nodesByWorkspaceId: {
+        [WS_ID]: [node('n1', PLANT_A, { status: 'alarm', name: 'Reactor A' })],
+      },
+      models: [failedModel('m-f', 'Dead Deploy'), mon('ALERT', 'STALE')],
+    })
+    const byStatus = (st: string, kind: string) =>
+      rows.find(r => r.status === st && r.kind === kind)!.detail
+    expect(byStatus('alert', 'model')).toBe('Monitoring: No inference window')
+    expect(byStatus('alert', 'node')).toBe('Sensor: Alert')
+    expect(byStatus('failed', 'model')).toBe(
+      'Deploy: Source check refused at start',
+    )
+  })
+
+  it('has four statuses, Abnormal only for Alert and Deploy Failed', () => {
+    expect(ALERT_STATUS_ORDER).toEqual([
+      'failed',
+      'alert',
+      'offline',
+      'warning',
+    ])
+    expect(
+      ALERT_STATUS_ORDER.filter(s => ALERT_STATUS_META[s].abnormal),
+    ).toEqual(['failed', 'alert'])
+    expect(ALERT_STATUS_LABEL.alert).toBe('Alert')
   })
 })

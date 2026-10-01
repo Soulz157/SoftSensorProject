@@ -1,4 +1,5 @@
 import type { CanvasNode } from '@/services/canvas'
+import { isAbnormal } from '@/lib/overview-status'
 import type { AIModel, WorkspacePlant } from '@/types'
 import type { NodeStatus } from '@/store/status-colors'
 import type { HealthReason } from '@/lib/health-status-style'
@@ -43,11 +44,14 @@ export interface OverviewTreePlant {
 const UNASSIGNED_ID = '__unassigned__'
 
 // Map a model's effective production status onto the canonical NodeStatus scale
-// used by every tree row. A failed deploy is treated as 'warning' so it beats
-// 'normal' in worstStatus and the red trail bubbles up to Equipment and Plant.
+// used by every tree row. MODEL-SERVE-024-D02: the two Abnormal model faults —
+// a failed deploy and a monitoring ALERT — map to 'alarm' (read "Alert"), so
+// they turn their equipment, plant and workspace Abnormal through the same
+// `toBinaryStatus` rule a node alarm does. A failed deploy used to map to
+// 'warning', which the binary rule no longer counts as Abnormal.
 // (NODE_STATUS_PRIORITY: offline=3 > normal=2, so offline never beats normal.)
 export function normalizeModelStatus(m: AIModel): NodeStatus {
-  if (isDeployFailed(m)) return 'warning'
+  if (isDeployFailed(m)) return 'alarm'
   const s = monitoringStatus(m)
   if (s === 'alert') return 'alarm'
   // A FROZEN MODEL IS ABNORMAL, NOT ABSENT.
@@ -203,14 +207,18 @@ export function abnormalEquipment(
   nodes: CanvasNode[],
   models: AIModel[],
 ): OverviewTreeNode[] {
-  return buildOverviewTree([], nodes, models)
-    .flatMap(p => p.nodes)
-    .filter(n => n.status !== 'normal')
-    .sort(
-      (a, b) =>
-        (NODE_STATUS_PRIORITY[a.status] ?? 3) -
-        (NODE_STATUS_PRIORITY[b.status] ?? 3),
-    )
+  return (
+    buildOverviewTree([], nodes, models)
+      .flatMap(p => p.nodes)
+      // MODEL-SERVE-024-D02: Abnormal only — an alerting node, or one whose
+      // model failed or raised a monitoring ALERT (both map to 'alarm').
+      .filter(n => isAbnormal(n.status))
+      .sort(
+        (a, b) =>
+          (NODE_STATUS_PRIORITY[a.status] ?? 3) -
+          (NODE_STATUS_PRIORITY[b.status] ?? 3),
+      )
+  )
 }
 
 export interface FailedModelPath {
