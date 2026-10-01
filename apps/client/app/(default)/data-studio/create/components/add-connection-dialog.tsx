@@ -33,6 +33,14 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { useWorkspaces } from '@/hooks/workspace/use-workspaces'
 import type {
   SavedDataSource,
   DataSourceKind,
@@ -73,7 +81,12 @@ interface NewSourceForm {
   password: string
   dbName: string
   config: DataSourceConfig
+  /** null = private to the creator. */
+  workspaceId: string | null
 }
+
+/** Radix Select has no empty value — this stands for "not shared". */
+const PRIVATE_VALUE = '__private__'
 
 const EMPTY_FORM: NewSourceForm = {
   name: '',
@@ -83,6 +96,7 @@ const EMPTY_FORM: NewSourceForm = {
   password: '',
   dbName: '',
   config: {},
+  workspaceId: null,
 }
 
 type TestState = 'idle' | 'testing' | 'ok' | 'failed'
@@ -101,6 +115,7 @@ interface Props {
     username: string
     dbName: string
     config?: DataSourceConfig | null
+    workspaceId?: string | null
   }
 }
 
@@ -117,13 +132,21 @@ export function AddConnectionDialog({
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState<NewSourceForm>(() => {
     if (isEdit && initialData) {
-      return { ...initialData, password: '', config: initialData.config ?? {} }
+      return {
+          ...initialData,
+          password: '',
+          config: initialData.config ?? {},
+          workspaceId: initialData.workspaceId ?? null,
+        }
     }
     return EMPTY_FORM
   })
   const [testState, setTestState] = useState<TestState>('idle')
   const [testMessage, setTestMessage] = useState('')
   const [confirmOpen, setConfirmOpen] = useState(false)
+  // The workspace list is already loaded app-wide (sidebar); read it without
+  // firing another request every time this dialog mounts.
+  const { workspaces } = useWorkspaces({ enabled: false })
 
   // Re-seed the form whenever the dialog opens. The useState initializer only
   // runs on first mount, but this dialog instance is persistently mounted and
@@ -134,7 +157,12 @@ export function AddConnectionDialog({
     if (!open) return
     setForm(
       isEdit && initialData
-        ? { ...initialData, password: '', config: initialData.config ?? {} }
+        ? {
+          ...initialData,
+          password: '',
+          config: initialData.config ?? {},
+          workspaceId: initialData.workspaceId ?? null,
+        }
         : EMPTY_FORM,
     )
     setCsvFile(null)
@@ -195,6 +223,7 @@ export function AddConnectionDialog({
           username: form.username.trim(),
           dbName: form.dbName.trim(),
           config: form.config,
+          workspaceId: form.workspaceId,
           ...(form.password.trim() !== '' && {
             password: form.password.trim(),
           }),
@@ -209,6 +238,7 @@ export function AddConnectionDialog({
           password: form.password.trim(),
           dbName: form.dbName.trim(),
           config: form.config,
+          workspaceId: form.workspaceId,
         })
         onSave(res.data)
       }
@@ -237,6 +267,34 @@ export function AddConnectionDialog({
                 onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
                 autoComplete="off"
               />
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="mp-fp-workspace">Share with workspace</Label>
+              <Select
+                value={form.workspaceId ?? PRIVATE_VALUE}
+                onValueChange={v =>
+                  setForm(f => ({
+                    ...f,
+                    workspaceId: v === PRIVATE_VALUE ? null : v,
+                  }))
+                }
+              >
+                <SelectTrigger id="mp-fp-workspace" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={PRIVATE_VALUE}>Only me</SelectItem>
+                  {workspaces.map(w => (
+                    <SelectItem key={w.id} value={w.id}>
+                      {w.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Workspace members can use this connection to browse tags and
+                pull data. Only you can edit or delete it.
+              </p>
             </div>
             <div className="grid gap-1.5">
               <Label>Source type</Label>

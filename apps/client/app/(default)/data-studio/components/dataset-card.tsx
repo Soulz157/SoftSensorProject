@@ -58,6 +58,9 @@ export function DatasetCard({
   onRename,
   onDelete,
 }: Props) {
+  // Edit/rename/delete are creator-only server-side; a teammate's dataset is
+  // view + duplicate. `undefined` (not from the API) means our own.
+  const canManage = d.canManage !== false
   // Real artifact footer, not a synthetic reconstruction (DS-LAKE-013) — the
   // card and its own detail sheet must report the same span for the same
   // dataset, which only holds if both read the same source.
@@ -162,10 +165,15 @@ export function DatasetCard({
             <Braces className="mr-2 h-3.5 w-3.5" />
             View Config
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={onEditPipeline} className="cursor-pointer">
-            <Wand2 className="mr-2 h-3.5 w-3.5" />
-            Edit
-          </DropdownMenuItem>
+          {canManage && (
+            <DropdownMenuItem
+              onClick={onEditPipeline}
+              className="cursor-pointer"
+            >
+              <Wand2 className="mr-2 h-3.5 w-3.5" />
+              Edit
+            </DropdownMenuItem>
+          )}
 
           <DropdownMenuSeparator />
 
@@ -174,18 +182,22 @@ export function DatasetCard({
             <Copy className="mr-2 h-3.5 w-3.5" />
             Duplicate
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={onRename} className="cursor-pointer">
-            <Pencil className="mr-2 h-3.5 w-3.5" />
-            Rename
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            variant="destructive"
-            onClick={onDelete}
-            className="cursor-pointer"
-          >
-            <Trash2 className="mr-2 h-3.5 w-3.5" />
-            Delete
-          </DropdownMenuItem>
+          {canManage && (
+            <>
+              <DropdownMenuItem onClick={onRename} className="cursor-pointer">
+                <Pencil className="mr-2 h-3.5 w-3.5" />
+                Rename
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                variant="destructive"
+                onClick={onDelete}
+                className="cursor-pointer"
+              >
+                <Trash2 className="mr-2 h-3.5 w-3.5" />
+                Delete
+              </DropdownMenuItem>
+            </>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
     </div>

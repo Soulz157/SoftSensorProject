@@ -161,6 +161,7 @@ model Workspace {
   edges         Edge[]
   plans         WorkspacePlant[]
   datasets      Dataset[]
+  dataSources   DataSource[]
   datasetDrafts DatasetDraft[]
   modelDrafts   ModelDraft[]
   presetImports FeaturePresetImport[]
@@ -349,10 +350,19 @@ model DataSource {
   config           Json?
   createdBy        User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
   createdById      String
+  /// Workspace the source is shared with. Members (owner or WorkspaceMember)
+  /// can list it and run queries through it with the stored credentials;
+  /// edit/delete stay with `createdById`. Null = private to the creator
+  /// (every source before this column, unless the backfill found a dataset
+  /// using it). SetNull on workspace delete: the source falls back to
+  /// private rather than disappearing with its credentials.
+  workspaceId      String?
+  workspace        Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
   @@index([createdById])
+  @@index([workspaceId])
 }
 
 model Dataset {

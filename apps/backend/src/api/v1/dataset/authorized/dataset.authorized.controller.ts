@@ -29,13 +29,13 @@ export class DatasetAuthorizedController {
   @Get('/')
   @HttpCode(200)
   @ApiOperation({
-    summary: 'List datasets for the current user (by workspace)',
+    summary: 'List datasets in workspaces the current user belongs to',
   })
   async listDatasetController(
     @Users() user: Auth.UserPayload,
     @Query('workspaceId') workspaceId?: string,
   ) {
-    return this.service.listDatasetService(user.id, workspaceId);
+    return this.service.listDatasetService(user, workspaceId);
   }
 
   @Get('/:id')
@@ -45,7 +45,7 @@ export class DatasetAuthorizedController {
     @Users() user: Auth.UserPayload,
     @Param('id') id: string,
   ) {
-    return this.service.getDatasetService(user.id, id);
+    return this.service.getDatasetService(user, id);
   }
 
   @Post('/')

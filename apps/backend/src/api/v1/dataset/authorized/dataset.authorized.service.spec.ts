@@ -1,9 +1,11 @@
 import { DatasetAuthorizedService } from './dataset.authorized.service';
 
+const USER = { id: 'user-1', role: 'USER' } as Auth.UserPayload;
+
 function makePrisma(datasetOverrides: Record<string, unknown> = {}) {
   return {
     dataset: {
-      findUnique: jest.fn().mockResolvedValue({
+      findFirst: jest.fn().mockResolvedValue({
         id: 'ds-1',
         name: 'ds',
         description: null,
@@ -20,6 +22,7 @@ function makePrisma(datasetOverrides: Record<string, unknown> = {}) {
         artifacts: [],
         createdAt: new Date('2026-01-01'),
         updatedAt: new Date('2026-01-01'),
+        createdById: 'user-1',
         createdBy: { firstName: 'A', lastName: 'B' },
         ...datasetOverrides,
       }),
@@ -32,7 +35,7 @@ describe('DatasetAuthorizedService — adoptedBronzeArtifactId (DS-LAKE-017-T03)
     const prisma = makePrisma({ artifacts: [{ id: 'bronze-1' }] });
     const service = new DatasetAuthorizedService(prisma as never);
 
-    const res = await service.getDatasetService('user-1', 'ds-1');
+    const res = await service.getDatasetService(USER, 'ds-1');
 
     expect(res.data.adoptedBronzeArtifactId).toBe('bronze-1');
     // currentArtifactId stays FINAL-only — ONE POINTER, NOT TWO (T01).
@@ -43,7 +46,7 @@ describe('DatasetAuthorizedService — adoptedBronzeArtifactId (DS-LAKE-017-T03)
     const prisma = makePrisma({ artifacts: [] });
     const service = new DatasetAuthorizedService(prisma as never);
 
-    const res = await service.getDatasetService('user-1', 'ds-1');
+    const res = await service.getDatasetService(USER, 'ds-1');
 
     expect(res.data.adoptedBronzeArtifactId).toBeNull();
   });
@@ -52,9 +55,9 @@ describe('DatasetAuthorizedService — adoptedBronzeArtifactId (DS-LAKE-017-T03)
     const prisma = makePrisma();
     const service = new DatasetAuthorizedService(prisma as never);
 
-    await service.getDatasetService('user-1', 'ds-1');
+    await service.getDatasetService(USER, 'ds-1');
 
-    expect(prisma.dataset.findUnique).toHaveBeenCalledWith(
+    expect(prisma.dataset.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         select: expect.objectContaining({
           artifacts: {
@@ -65,6 +68,70 @@ describe('DatasetAuthorizedService — adoptedBronzeArtifactId (DS-LAKE-017-T03)
         }),
       }),
     );
+  });
+});
+
+describe('DatasetAuthorizedService — workspace-wide read access', () => {
+  const memberScope = {
+    workspace: {
+      deletedAt: null,
+      OR: [
+        { ownerId: 'user-1' },
+        { members: { some: { userId: 'user-1' } } },
+      ],
+    },
+  };
+
+  it('get scopes by workspace owner-or-member, not by creator', async () => {
+    const prisma = makePrisma();
+    const service = new DatasetAuthorizedService(prisma as never);
+
+    await service.getDatasetService(USER, 'ds-1');
+
+    const where = prisma.dataset.findFirst.mock.calls[0][0].where;
+    expect(where).toEqual({ id: 'ds-1', ...memberScope });
+    expect(where).not.toHaveProperty('createdById');
+  });
+
+  it('list returns teammates\' datasets in the requested workspace', async () => {
+    const findMany = jest.fn().mockResolvedValue([]);
+    const service = new DatasetAuthorizedService({
+      dataset: { findMany },
+    } as never);
+
+    await service.listDatasetService(USER, 'ws-1');
+
+    expect(findMany.mock.calls[0][0].where).toEqual({
+      ...memberScope,
+      workspaceId: 'ws-1',
+    });
+  });
+
+  it('ADMIN bypasses membership but still excludes deleted workspaces', async () => {
+    const prisma = makePrisma();
+    const service = new DatasetAuthorizedService(prisma as never);
+
+    await service.getDatasetService(
+      { id: 'admin-1', role: 'ADMIN' } as Auth.UserPayload,
+      'ds-1',
+    );
+
+    expect(prisma.dataset.findFirst.mock.calls[0][0].where).toEqual({
+      id: 'ds-1',
+      workspace: { deletedAt: null },
+    });
+  });
+
+  it('canManage is true only for the creator', async () => {
+    const own = await new DatasetAuthorizedService(
+      makePrisma() as never,
+    ).getDatasetService(USER, 'ds-1');
+    const teammates = await new DatasetAuthorizedService(
+      makePrisma({ createdById: 'someone-else' }) as never,
+    ).getDatasetService(USER, 'ds-1');
+
+    expect(own.data.canManage).toBe(true);
+    expect(teammates.data.canManage).toBe(false);
   });
 });
 

@@ -63,4 +63,9 @@ export interface SavedDataset {
   createdAt: string
   updatedAt: string
   createdBy: string
+  /** True only for the dataset's creator. Workspace members can view and
+   *  train on a teammate's dataset, but edit/rename/delete stay with the
+   *  creator server-side. Optional: a dataset object built client-side
+   *  (not from the API) is the caller's own. */
+  canManage?: boolean
 }

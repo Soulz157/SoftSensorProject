@@ -156,6 +156,7 @@ export function SourceFetchConfigCard({
             username: source.username,
             dbName: source.dbName,
             config: source.config,
+            workspaceId: source.workspaceId ?? null,
           }}
           onSave={onSourceUpdate}
         />

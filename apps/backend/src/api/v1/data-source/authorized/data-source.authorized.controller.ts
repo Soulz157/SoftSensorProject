@@ -7,6 +7,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -38,9 +39,15 @@ export class DataSourceAuthorizedController {
 
   @Get('/')
   @HttpCode(200)
-  @ApiOperation({ summary: 'List all data sources for the current user' })
-  async listDataSourceController(@Users() user: Auth.UserPayload) {
-    return this.service.listDataSourceService(user.id);
+  @ApiOperation({
+    summary:
+      'List data sources the current user created or that are shared with their workspaces',
+  })
+  async listDataSourceController(
+    @Users() user: Auth.UserPayload,
+    @Query('workspaceId') workspaceId?: string,
+  ) {
+    return this.service.listDataSourceService(user.id, workspaceId);
   }
 
   @Post('/')

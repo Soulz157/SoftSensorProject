@@ -13,6 +13,8 @@ export interface CreateDataSourceInput {
   password: string
   dbName: string
   config?: DataSourceConfig
+  /** null = private to the creator. */
+  workspaceId?: string | null
 }
 
 export interface ResolvedTagItem {

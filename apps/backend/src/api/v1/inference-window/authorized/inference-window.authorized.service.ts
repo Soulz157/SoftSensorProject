@@ -187,7 +187,9 @@ export class InferenceWindowAuthorizedService {
         axis: 'DEPLOY',
         event,
         severity: event === 'PREFLIGHT_FAILED' ? 'CRITICAL' : 'INFO',
-        title: `${model.name}: ${event.replace(/_/g, ' ').toLowerCase()}`,
+        // The wire code stays PREFLIGHT_FAILED (persisted on events and
+        // channel subscriptions); only the wording a user reads changes.
+        title: `${model.name}: ${event === 'PREFLIGHT_FAILED' ? 'deploy failed' : event.replace(/_/g, ' ').toLowerCase()}`,
         detail,
         rawDetailSuffix,
         at: now,
@@ -820,7 +822,7 @@ export class InferenceWindowAuthorizedService {
       void this.notifyDeployEvent(
         modelId,
         'PREFLIGHT_FAILED',
-        'running -> error (preflight failed)',
+        'running -> error (deploy failed)',
         preflight.reason,
       );
       throw new AppException({

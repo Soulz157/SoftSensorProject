@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '@softsensor/prisma';
 import { AppException } from '@softsensor/common';
 import { decryptSecret } from '@/lib/crypto';
+import { dataSourceAccessWhere } from '@/lib/data-source-access';
 import { postToPython, PYTHON_TIMEOUT } from '@/lib/python-client';
 import type {
   AdHocSourceDto,
@@ -91,8 +92,13 @@ export class DataSourceConnectService {
     userId: string,
     id: string,
   ): Promise<ResolvedSource> {
-    const row = await this.prisma.dataSource.findUnique({ where: { id } });
-    if (!row || row.createdById !== userId) {
+    // Creator OR a member of the workspace the source is shared with — the
+    // same rule the list endpoint uses, so every source a user can see is one
+    // they can query through (with the creator's stored credentials).
+    const row = await this.prisma.dataSource.findFirst({
+      where: { id, ...dataSourceAccessWhere(userId) },
+    });
+    if (!row) {
       throw new AppException({
         statusCode: 404,
         message: 'Data source not found',

@@ -12,7 +12,7 @@ export const NOTIFICATION_EVENT_LABEL: Record<string, string> = {
   MONITORING_WARNING: 'Monitoring: Warning',
   SENSOR_FROZEN: 'Sensor frozen',
   MONITORING_RECOVERED: 'Monitoring: Recovered',
-  PREFLIGHT_FAILED: 'Preflight failed (can’t start)',
+  PREFLIGHT_FAILED: 'Deploy failed (can’t start)',
   MODEL_STARTED: 'Model started',
   MODEL_STOPPED: 'Model stopped',
   VERSION_PROMOTED: 'Version promoted',

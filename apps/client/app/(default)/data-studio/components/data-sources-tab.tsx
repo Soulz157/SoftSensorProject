@@ -82,8 +82,18 @@ export function DataSourcesTab({
               source={source}
               selected={false}
               onSelect={() => {}}
-              onEdit={() => onEditSource(source)}
-              onDelete={() => setDeleteTarget(source)}
+              // Shared from a teammate: usable, but edit/delete are the
+              // creator's (the API 404s them for anyone else).
+              onEdit={
+                source.canManage === false
+                  ? undefined
+                  : () => onEditSource(source)
+              }
+              onDelete={
+                source.canManage === false
+                  ? undefined
+                  : () => setDeleteTarget(source)
+              }
               multiple={false}
             />
           ))}

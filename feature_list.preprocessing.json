@@ -4206,7 +4206,108 @@
         }
       ],
       "carried_forward": "NOT VERIFIED IN A BROWSER. Backend jest 7/7 on the dataset service spec, client vitest 64/64 across data-studio, tsc at the pinned baselines (8 backend, 5 client), eslint clean on touched files. The dialog's rendering of a non-empty dependents list has not been seen against a real API response."
+    },
+    {
+  "id": "DS-LAKE-031",
+  "title": "EDA card: monthly compare for Histogram/Box Plot, and Top Relationships that filter by tag and open as a scatter plot",
+  "priority": 31,
+  "status": "in_progress",
+  "progress": 90,
+  "progress_note": "All three tasks implemented and unit-tested. Held below 100 because V04 (a live browser pass against a real multi-month artifact) has not been run.",
+  "dependencies": [
+    "DS-LAKE-005B-D",
+    "DS-LAKE-026"
+  ],
+  "description": "DataAnalysisCard (Step 3.1 EDA, also Step 4 and the model wizard's Dataset Review) could compare several TAGS over one period, and filter the whole card to one month, but could not put the same tag's months side by side. Its correlation tab listed only pairs above |r| 0.8, with no way to ask 'what relates to THIS tag', and a pair could not be opened as a scatter plot.",
+  "decisions": [
+    {
+      "id": "DS-LAKE-031-D01",
+      "decision": "Monthly compare is a MODE of the existing Histogram/Box Plot tabs ('By tag' | 'By month'), not a new tab.",
+      "why": "The user asked for the same charts with the filter changed from tags to month-year. The mode is shared by both tabs so switching between them keeps the comparison. The toggle is hidden when the artifact spans fewer than two months."
+    },
+    {
+      "id": "DS-LAKE-031-D02",
+      "decision": "One tag at a time, picked from the sidebar's active tags that exist in the artifact; up to 5 months, one request per month, merged client-side.",
+      "why": "The endpoints take one window per request, so no backend change is needed. The cap matches the 5-colour chart palette and MAX_COMPARE. Merging follows DS-LAKE-026's mergeHistogramSides precedent: the shared histogram domain is recomputed from the months' own min/max. A month that fails or has no Good readings is named in the caption, not silently dropped."
+    },
+    {
+      "id": "DS-LAKE-031-D03",
+      "decision": "Month colour is fixed by the month's position in the picked list, even if an earlier month has no data.",
+      "why": "The popover's swatch is the legend key; the chart must draw each month in the colour the popover shows."
+    },
+    {
+      "id": "DS-LAKE-031-D04",
+      "decision": "Focusing a tag in Top Relationships lists EVERY other resolved tag by |r|, with no threshold; unfocused keeps today's strong-pairs-only list.",
+      "why": "Once a user has picked a tag to investigate, 'no relationship' is also an answer. Weak pairs are styled neutral, strong pairs keep the existing highlight."
+    },
+    {
+      "id": "DS-LAKE-031-D05",
+      "decision": "Clicking a pair opens the Scatter tab with the focused tag on Y and its partner on X.",
+      "why": "The focused tag is the one being explained. The card sets both axis picks outright rather than via pickX/pickY, whose swap rule would fire against the previous axes. The compare modal renders the same chart without onSelectPair, so its rows stay static."
     }
+  ],
+  "findings": [
+    "The correlation matrix is server-resolved and capped (topK, near-constant filter, DS-LAKE-005B-D-T05a/b), so the focus select can only offer tags the matrix resolved — a sidebar tag missing from it was excluded server-side, not by this feature.",
+    "Histogram curve heights are counts (density * n * binWidth), so a month with more Good readings draws taller. Stated in the monthly caption rather than normalised, matching the compare modal.",
+    "The header's Period filter does not apply in monthly mode — the compared months are the periods. Stated in the caption.",
+    "While monthly mode shows, the tag-compare histogram/boxplot hooks receive an empty tag list and idle, and the monthly hooks fire only for the visible tab, so the mode costs no hidden requests."
+  ],
+  "tasks": [
+    {
+      "id": "DS-LAKE-031-T01",
+      "title": "Monthly compare: lib/monthly-compare.ts, hooks/dataset/use-monthly-compare.ts, CompareMonthsPopover, card wiring",
+      "status": "completed",
+      "progress": 100,
+      "result": "Pure month selection/merge helpers; useMonthlyHistograms/useMonthlyBoxplots route through the SAME leg the card already chose (draft vs dataset) and ride useDebouncedAbortableRequest (debounce, abort-on-supersede, cache keyed on leg+ids+tag+months), using Promise.allSettled so one failed month does not fail the comparison."
+    },
+    {
+      "id": "DS-LAKE-031-T02",
+      "title": "Top Relationships: focus-tag filter and click-to-scatter",
+      "status": "completed",
+      "progress": 100,
+      "result": "correlationsWith() in lib/data-quality.ts (drops non-finite r). TagCorrelationChart gains a tag Select and an optional onSelectPair; rows render as buttons only when it is supplied."
+    },
+    {
+      "id": "DS-LAKE-031-T03",
+      "title": "Tests and checks",
+      "status": "completed",
+      "progress": 100,
+      "result": "lib/monthly-compare.test.ts (13 cases) and chart/__tests__/tag-correlation-chart.test.tsx (3 cases) pass. Client tsc: only the 4 pre-existing errors (dataset-compare-modal.tsx x3, model-evaluation.test.ts). eslint clean on every touched file. Full vitest: 27 failed / 2224 passed vs untouched baseline 27 failed / 2208 passed — same failures, none in data-studio."
+    }
+  ],
+  "acceptance_criteria": [
+    "Histogram and Box Plot can switch between comparing tags and comparing months of one tag.",
+    "The month picker offers every month the artifact spans and caps at 5.",
+    "The tag in monthly mode is chosen from the sidebar's active tags, one at a time.",
+    "Top Relationships can be filtered to one tag, listing all of its partners by |r|.",
+    "Clicking a pair opens the Scatter tab with that pair on the axes."
+  ],
+  "verification": [
+    {
+      "id": "DS-LAKE-031-V01",
+      "description": "Merge helpers: month labels, recomputed domain, missing months named, colour tied to position.",
+      "status": "completed",
+      "result": "lib/monthly-compare.test.ts"
+    },
+    {
+      "id": "DS-LAKE-031-V02",
+      "description": "correlationsWith orders by |r|, keeps weak pairs, drops non-finite r.",
+      "status": "completed",
+      "result": "lib/monthly-compare.test.ts"
+    },
+    {
+      "id": "DS-LAKE-031-V03",
+      "description": "Clicking a strong pair calls onSelectPair with oriented axes; rows static without it.",
+      "status": "completed",
+      "result": "tag-correlation-chart.test.tsx"
+    },
+    {
+      "id": "DS-LAKE-031-V04",
+      "description": "Live browser pass: monthly histogram and box plot for a real multi-month artifact on both the draft leg (create) and the dataset leg (edit); focus a tag, click a pair, land on Scatter.",
+      "status": "pending"
+    }
+  ]
+}
   ],
   "deferred": [
     "TimescaleDB provisioning — image swap, extension, hypertables, retention and continuous aggregates. Nothing of this exists today and adding it is new infrastructure requiring an explicit decision (CLAUDE.md §3).",

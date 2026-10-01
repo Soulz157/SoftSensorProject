@@ -23,6 +23,7 @@ import { useNotifications } from '@/hooks/notifications/use-notifications'
 import { formatHealthReason } from '@/lib/health-status-style'
 import { NOTIFICATION_SEVERITY_CLASS } from '@/lib/notification-severity-style'
 import { notificationEventHref } from '@/lib/notification-event-link'
+import { notificationEventLabel } from '@/lib/notification-event-labels'
 import type { NotificationEventItem } from '@/types'
 
 /** MODEL-SERVE-022-D11: "warning -> alert (reason)", or just the level for
@@ -36,7 +37,7 @@ function eventDetail(item: NotificationEventItem): string {
         ? `${item.fromStatus} -> ${item.toStatus}`
         : item.toStatus
   if (arrow && reason) return `${arrow} (${reason})`
-  return arrow ?? reason ?? item.kind.replace(/_/g, ' ').toLowerCase()
+  return arrow ?? reason ?? notificationEventLabel(item.kind)
 }
 
 /**

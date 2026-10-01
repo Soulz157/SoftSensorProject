@@ -6,6 +6,7 @@ import {
 } from '@softsensor/prisma';
 import { AppException } from '@softsensor/common';
 import { encryptSecret } from '@/lib/crypto';
+import { dataSourceAccessWhere } from '@/lib/data-source-access';
 import type {
   CreateDataSourceDto,
   UpdateDataSourceDto,
@@ -19,13 +20,16 @@ type DataSourceWithUser = PrismaModels.DataSourceModel & {
 export class DataSourceAuthorizedService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private mapToResponse(item: DataSourceWithUser) {
+  private mapToResponse(item: DataSourceWithUser, userId: string) {
+    const canManage = item.createdById === userId;
     return {
       id: item.id,
       name: item.name,
       type: item.type,
       host: item.host,
-      username: item.username,
+      // A teammate can query through a shared source but never sees its
+      // login — only the creator (who can edit it) gets the username back.
+      username: canManage ? item.username : '',
       dbName: item.dbName,
       config: item.config ?? null,
       status: item.status,
@@ -34,7 +38,28 @@ export class DataSourceAuthorizedService {
         [item.createdBy.firstName, item.createdBy.lastName]
           .filter(Boolean)
           .join(' ') || 'Unknown',
+      workspaceId: item.workspaceId,
+      canManage,
     };
+  }
+
+  /** A source can only be shared into a workspace the caller belongs to. */
+  private async assertWorkspaceMember(workspaceId: string, userId: string) {
+    const workspace = await this.prisma.workspace.findFirst({
+      where: {
+        id: workspaceId,
+        deletedAt: null,
+        OR: [{ ownerId: userId }, { members: { some: { userId } } }],
+      },
+      select: { id: true },
+    });
+    if (!workspace) {
+      throw new AppException({
+        statusCode: 404,
+        message: 'Workspace not found',
+        type: 'ERROR',
+      });
+    }
   }
 
   private toJsonInput(
@@ -45,9 +70,12 @@ export class DataSourceAuthorizedService {
       : (config as PrismaTypes.InputJsonValue);
   }
 
-  async listDataSourceService(userId: string) {
+  async listDataSourceService(userId: string, workspaceId?: string) {
     const items = await this.prisma.dataSource.findMany({
-      where: { createdById: userId },
+      where: {
+        ...dataSourceAccessWhere(userId),
+        ...(workspaceId && { workspaceId }),
+      },
       include: { createdBy: { select: { firstName: true, lastName: true } } },
       orderBy: { createdAt: 'desc' },
     });
@@ -55,11 +83,14 @@ export class DataSourceAuthorizedService {
       statusCode: 200,
       message: 'Data sources fetched successfully',
       type: 'SUCCESS' as const,
-      data: items.map((item) => this.mapToResponse(item)),
+      data: items.map((item) => this.mapToResponse(item, userId)),
     };
   }
 
   async createDataSourceService(userId: string, dto: CreateDataSourceDto) {
+    if (dto.workspaceId) {
+      await this.assertWorkspaceMember(dto.workspaceId, userId);
+    }
     const item = await this.prisma.dataSource.create({
       data: {
         name: dto.name,
@@ -72,6 +103,7 @@ export class DataSourceAuthorizedService {
         config: this.toJsonInput(dto.config),
         status: 'connected',
         createdById: userId,
+        workspaceId: dto.workspaceId ?? null,
       },
       include: { createdBy: { select: { firstName: true, lastName: true } } },
     });
@@ -79,7 +111,7 @@ export class DataSourceAuthorizedService {
       statusCode: 201,
       message: 'Data source created successfully',
       type: 'SUCCESS' as const,
-      data: this.mapToResponse(item),
+      data: this.mapToResponse(item, userId),
     };
   }
 
@@ -95,6 +127,9 @@ export class DataSourceAuthorizedService {
         message: 'Data source not found',
         type: 'ERROR',
       });
+    }
+    if (dto.workspaceId) {
+      await this.assertWorkspaceMember(dto.workspaceId, userId);
     }
     const item = await this.prisma.dataSource.update({
       where: { id },
@@ -113,6 +148,10 @@ export class DataSourceAuthorizedService {
         ...(dto.config !== undefined && {
           config: this.toJsonInput(dto.config),
         }),
+        // null = stop sharing (private to the creator again).
+        ...(dto.workspaceId !== undefined && {
+          workspaceId: dto.workspaceId,
+        }),
       },
       include: { createdBy: { select: { firstName: true, lastName: true } } },
     });
@@ -120,7 +159,7 @@ export class DataSourceAuthorizedService {
       statusCode: 200,
       message: 'Data source updated successfully',
       type: 'SUCCESS' as const,
-      data: this.mapToResponse(item),
+      data: this.mapToResponse(item, userId),
     };
   }
 

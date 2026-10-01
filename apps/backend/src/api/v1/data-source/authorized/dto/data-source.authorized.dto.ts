@@ -14,6 +14,9 @@ export const CreateDataSourceSchema = z.object({
   // Non-secret, type-specific connection fields (sql: port/driver;
   // rest: baseUrl/endpoint/method/authType/apiKeyName/headers).
   config: z.record(z.string(), z.unknown()).optional(),
+  // Workspace to share the source with; null/omitted = private to the
+  // creator. Members can list it and query through it, never edit it.
+  workspaceId: z.string().uuid().nullable().optional(),
 });
 
 export const UpdateDataSourceSchema = CreateDataSourceSchema.partial();

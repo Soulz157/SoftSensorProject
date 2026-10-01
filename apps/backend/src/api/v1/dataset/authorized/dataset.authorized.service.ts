@@ -51,6 +51,7 @@ const datasetSelect = {
   },
   createdAt: true,
   updatedAt: true,
+  createdById: true,
   createdBy: {
     select: { firstName: true, lastName: true },
   },
@@ -82,7 +83,7 @@ export interface DatasetDependentModel {
 export class DatasetAuthorizedService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private mapToResponse(item: DatasetResponsePayload) {
+  private mapToResponse(item: DatasetResponsePayload, userId: string) {
     return {
       id: item.id,
       name: item.name,
@@ -116,6 +117,32 @@ export class DatasetAuthorizedService {
         [item.createdBy.firstName, item.createdBy.lastName]
           .filter(Boolean)
           .join(' ') || 'Unknown',
+      // Reads are workspace-wide; update/rename/delete stay with the creator
+      // (see `updateDatasetService`/`deleteDatasetService`). Sent so the card
+      // can hide actions a teammate would only get a 404 from.
+      canManage: item.createdById === userId,
+    };
+  }
+
+  /**
+   * Owner-or-member of the dataset's (non-deleted) workspace, ADMIN bypassing
+   * membership — the same rule `DatasetVersionAuthorizedService
+   * .assertDatasetAccess` already applies to versions, so a teammate who can
+   * read a dataset's versions can also see the dataset itself.
+   */
+  private workspaceReadWhere(user: Auth.UserPayload): Prisma.DatasetWhereInput {
+    return {
+      workspace: {
+        deletedAt: null,
+        ...(user.role === 'ADMIN'
+          ? {}
+          : {
+              OR: [
+                { ownerId: user.id },
+                { members: { some: { userId: user.id } } },
+              ],
+            }),
+      },
     };
   }
 
@@ -145,10 +172,10 @@ export class DatasetAuthorizedService {
     }
   }
 
-  async listDatasetService(userId: string, workspaceId?: string) {
+  async listDatasetService(user: Auth.UserPayload, workspaceId?: string) {
     const items = await this.prisma.dataset.findMany({
       where: {
-        createdById: userId,
+        ...this.workspaceReadWhere(user),
         ...(workspaceId && { workspaceId }),
       },
       select: datasetSelect,
@@ -158,13 +185,13 @@ export class DatasetAuthorizedService {
       statusCode: 200,
       message: 'Datasets fetched successfully',
       type: 'SUCCESS' as const,
-      data: items.map((item) => this.mapToResponse(item)),
+      data: items.map((item) => this.mapToResponse(item, user.id)),
     };
   }
 
-  async getDatasetService(userId: string, id: string) {
-    const item = await this.prisma.dataset.findUnique({
-      where: { id, createdById: userId },
+  async getDatasetService(user: Auth.UserPayload, id: string) {
+    const item = await this.prisma.dataset.findFirst({
+      where: { id, ...this.workspaceReadWhere(user) },
       select: datasetSelect,
     });
 
@@ -179,7 +206,7 @@ export class DatasetAuthorizedService {
       statusCode: 200,
       message: 'Dataset fetched successfully',
       type: 'SUCCESS' as const,
-      data: this.mapToResponse(item),
+      data: this.mapToResponse(item, user.id),
     };
   }
 
@@ -204,7 +231,7 @@ export class DatasetAuthorizedService {
       statusCode: 201,
       message: 'Dataset created successfully',
       type: 'SUCCESS' as const,
-      data: this.mapToResponse(item),
+      data: this.mapToResponse(item, user.id),
     };
   }
 
@@ -245,7 +272,7 @@ export class DatasetAuthorizedService {
       statusCode: 200,
       message: 'Dataset updated successfully',
       type: 'SUCCESS' as const,
-      data: this.mapToResponse(item),
+      data: this.mapToResponse(item, user.id),
     };
   }
 
