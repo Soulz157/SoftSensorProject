@@ -32,6 +32,8 @@ import { useDatasetTagSelection } from '@/hooks/dataset/use-dataset-tag-selectio
 import { useDatasetDraftPipeline } from '@/hooks/dataset/use-dataset-draft-pipeline'
 import { useDatasetCleaningScaleCommit } from '@/hooks/dataset/use-dataset-cleaning-scale-commit'
 import { ImputationDetailPanel } from './processing/imputation/imputation-detail-panel'
+import { rowStampBounds } from '@/lib/date-stamp'
+import { CleaningTagSelect } from './processing/imputation/cleaning-tag-select'
 import { CleaningTagBadges } from './processing/imputation/cleaning-tag-badges'
 import { ProcessingActionFooter } from './processing/processing-action-footer'
 import { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipeline-nav'
@@ -119,6 +121,9 @@ export function Step5DataCleaning({ nav }: Props) {
 
   const cropped = base
 
+  // DS-LAKE-032. How far the step-window calendars can page.
+  const dataBounds = useMemo(() => rowStampBounds(base.rows), [base])
+
   useDatasetTagSelection(base)
 
   const setHighestUnlocked = useSetAtom(dwHighestUnlockedAtom)
@@ -193,6 +198,11 @@ export function Step5DataCleaning({ nav }: Props) {
   const presetRangeStale = useAtomValue(dwPresetRangeStaleAtom)
   const tagUnits = useAtomValue(dwTagUnitsAtom)
   const targetTag = useAtomValue(dwTargetTagAtom)
+  // Mirrors the sidebar's `cleanableTags` (dataset-tag-sidebar.tsx).
+  const cleanableTags = useMemo(
+    () => base.tags.filter(t => t !== targetTag),
+    [base.tags, targetTag],
+  )
   // DS-LAKE-023: part of the recipe signature `commitCleaningScale` checks
   // against `dwFeatureArtifactStampAtom` before committing — see that
   // hook's own doc comment for why the holdout must be included.
@@ -357,6 +367,19 @@ export function Step5DataCleaning({ nav }: Props) {
               relock()
             }}
           />
+          {/* DS-LAKE-032-D06. Same atom as the sidebar's cleaning boxes, and
+              the same candidates (`cleanableTags`: every tag but the target),
+              so either control drives the header below. Outside the
+              conditional: it is how an empty batch gets filled from here. */}
+          <CleaningTagSelect
+            candidates={cleanableTags}
+            selected={cleaningTags}
+            cleanedTags={cleanedTags}
+            onChange={next => {
+              setCleaningTags(next)
+              relock()
+            }}
+          />
           {cleaningTags.length > 0 ? (
             <div className="space-y-4">
               {dirty && (
@@ -377,6 +400,7 @@ export function Step5DataCleaning({ nav }: Props) {
                 isolatedTag={isolatedTag}
                 onIsolate={setRawIsolated}
                 quality={isolatedQuality}
+                dataBounds={dataBounds}
               />
 
               {/* T01 hybrid: server-verified check, ONLY visible when the
@@ -432,7 +456,7 @@ export function Step5DataCleaning({ nav }: Props) {
             </div>
           ) : (
             <div className="flex h-64 items-center justify-center rounded-xl border border-dashed border-border text-sm text-muted-foreground">
-              Select one or more tags in the sidebar to start cleaning.
+              Select tags above or in the sidebar to start cleaning.
             </div>
           )}
         </div>

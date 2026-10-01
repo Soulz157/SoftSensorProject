@@ -41,9 +41,18 @@ import { tagDistribution } from '@/lib/data-quality'
 import { CHART_MAX_POINTS, downsampleRows } from '@/lib/downsample'
 import {
   describePreviewWindow,
+  monthOptions,
   windowLabel,
   type EdaWindowControl,
 } from '@/lib/time-window'
+import {
+  allMonths,
+  defaultMonthKeys,
+  mergeMonthlyBoxplots,
+  mergeMonthlyHistograms,
+  MAX_MONTHS,
+  monthlyPending,
+} from '@/lib/monthly-compare'
 import type { TimeRange } from '@/lib/mock-readings'
 import {
   dwDraftIdAtom,
@@ -66,6 +75,11 @@ import { useDatasetCorrelation } from '@/hooks/dataset/use-dataset-correlation'
 import { SegmentedToggle } from '@/components/segmented-toggle'
 import { useDatasetTagSelection } from '@/hooks/dataset/use-dataset-tag-selection'
 import { useCompareTags } from '@/hooks/dataset/use-compare-tags'
+import {
+  useMonthlyBoxplots,
+  useMonthlyHistograms,
+  type ArtifactLeg,
+} from '@/hooks/dataset/use-monthly-compare'
 import { RawTrendChart } from '../chart/raw-data-chart'
 import { RawReadingsTable } from '../raw-readings-table'
 import { TagHistogramChart } from '../chart/tag-histogram-chart'
@@ -73,6 +87,7 @@ import { TagBoxplotChart } from '../chart/tag-boxplot-chart'
 import { TagScatterChart } from '../chart/tag-scatter-chart'
 import { TagCorrelationChart } from '../chart/tag-correlation-chart'
 import { CompareTagsPopover } from './compare-tags-popover'
+import { CompareMonthsPopover } from './compare-months-popover'
 import { MonthWindowSelect } from './month-window-select'
 import { FeatureTransformDialog } from '../feature-engineering/transformation-panel'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -137,6 +152,12 @@ type TabStatus = 'no-tags' | 'pending' | 'loading' | 'ready' | 'unavailable'
 /** Stable empty ref — a fresh `{}` each render would re-run every memo below. */
 const NO_SCALERS: Record<string, ScalerMethod> = {}
 
+/** Stable empty tag list — what the tag-compare hooks get in monthly mode,
+ * which makes them idle rather than fetch a chart nobody is shown. */
+const NO_TAGS: string[] = []
+
+type CompareMode = 'tag' | 'month'
+
 function fmt(n: number): string {
   return n.toLocaleString(undefined, { maximumFractionDigits: 2 })
 }
@@ -190,6 +211,54 @@ function AxisSelect({
         </SelectContent>
       </Select>
     </div>
+  )
+}
+
+/**
+ * DS-LAKE-031. What a monthly comparison is computed on, stated plainly:
+ * which months, that the header's Period filter does not apply (the months
+ * ARE the periods), that histogram heights are counts (a month with more Good
+ * readings draws taller — not normalised, same as the compare modal), and any
+ * picked month that contributed nothing.
+ */
+function MonthlyCaption({
+  tag,
+  months,
+  missing,
+  error,
+  periodFilterShown,
+  countsNote = false,
+  spanMonths = null,
+}: {
+  tag: string | null
+  months: string[]
+  missing: string[]
+  error: string | null
+  periodFilterShown: boolean
+  countsNote?: boolean
+  /** "All months" scope: how many months the artifact spans, to say when
+   * only the latest `MAX_ALL_MONTHS` of them are shown. */
+  spanMonths?: number | null
+}) {
+  return (
+    <p className="mb-3 text-[11px] text-muted-foreground">
+      <span className="font-mono">{tag}</span> across{' '}
+      {months.length > MAX_MONTHS
+        ? `${months.length} months, ${months[0]} – ${months[months.length - 1]}`
+        : months.join(', ')}
+      , computed on the saved artifact one month at a time — crop and outlier
+      rules below are not reflected here yet.
+      {spanMonths !== null &&
+        spanMonths > months.length &&
+        ` Only the latest ${months.length} of ${spanMonths} months are compared.`}
+      {periodFilterShown && ' The Period filter above does not apply here.'}
+      {countsNote &&
+        ' Heights are counts, so a month with more Good readings draws taller.'}
+      {error
+        ? ` Could not load any month: ${error}.`
+        : missing.length > 0 &&
+          ` No usable readings for ${missing.join(', ')}.`}
+    </p>
   )
 }
 
@@ -316,17 +385,124 @@ export function DataAnalysisCard({
             ? 'loading'
             : 'ready'
 
+  const [tab, setTab] = useState('line')
+
+  // DS-LAKE-031-D01. Histogram and Box Plot compare either several TAGS over
+  // one period, or several MONTHS of one tag. One mode for both tabs, so
+  // switching between them keeps the comparison; the toggle only shows when
+  // the artifact spans at least two months.
+  const availableMonths = useMemo(
+    () => monthOptions(analysisMetadata?.startTime, analysisMetadata?.endTime),
+    [analysisMetadata?.startTime, analysisMetadata?.endTime],
+  )
+  const canCompareMonths = availableMonths.length >= 2
+  const [compareModePick, setCompareMode] = useState<CompareMode>('tag')
+  const monthly = canCompareMonths && compareModePick === 'month'
+
+  // D02: one tag at a time, from the sidebar tags the artifact actually has.
+  const [monthTagPick, setMonthTagPick] = useState<string | null>(null)
+  const monthTag = useMemo(() => {
+    if (monthTagPick && artifactTags.includes(monthTagPick)) return monthTagPick
+    const focused = focusedTag[0]
+    if (focused && artifactTags.includes(focused)) return focused
+    return artifactTags[0] ?? null
+  }, [monthTagPick, focusedTag, artifactTags])
+
+  // `null` = never touched: the latest two months. Kept in calendar order so
+  // the chart, the caption and the popover list all read oldest → newest.
+  const [monthKeysPick, setMonthKeysPick] = useState<string[] | null>(null)
+  // "All months" is a scope, not a pick: it overrides the checklist without
+  // erasing it, so turning it off returns to the months picked before.
+  const [compareAllMonths, setCompareAllMonths] = useState(false)
+  const pickedMonths = useMemo(() => {
+    if (compareAllMonths) return allMonths(availableMonths)
+    const keys = new Set(monthKeysPick ?? defaultMonthKeys(availableMonths))
+    return availableMonths.filter(m => keys.has(m.key))
+  }, [compareAllMonths, monthKeysPick, availableMonths])
+  const pickedMonthKeys = useMemo(
+    () => pickedMonths.map(m => m.key),
+    [pickedMonths],
+  )
+  const toggleMonth = (key: string) => {
+    if (pickedMonthKeys.includes(key)) {
+      // Never down to zero: an empty pick would land on the charts' 'no-tags'
+      // copy, which talks about tags, not months.
+      if (pickedMonthKeys.length <= 1) return
+      setMonthKeysPick(pickedMonthKeys.filter(k => k !== key))
+    } else if (pickedMonthKeys.length < MAX_MONTHS) {
+      setMonthKeysPick([...pickedMonthKeys, key])
+    }
+  }
+
+  const leg: ArtifactLeg = useDatasetLeg
+    ? { kind: 'dataset', datasetId: dsId, artifactId: dsArtifactId }
+    : { kind: 'draft', draftId: dfId, artifactId: dfArtifactId }
+  const monthlyHist = useMonthlyHistograms(
+    leg,
+    monthTag,
+    pickedMonths,
+    monthly && tab === 'histogram',
+  )
+  const monthlyBox = useMonthlyBoxplots(
+    leg,
+    monthTag,
+    pickedMonths,
+    monthly && tab === 'boxplot',
+  )
+  const mergedHist = useMemo(
+    () =>
+      monthlyHist.results && monthTag
+        ? mergeMonthlyHistograms(monthlyHist.results, monthTag)
+        : null,
+    [monthlyHist.results, monthTag],
+  )
+  const mergedBox = useMemo(
+    () =>
+      monthlyBox.results && monthTag
+        ? mergeMonthlyBoxplots(monthlyBox.results, monthTag)
+        : null,
+    [monthlyBox.results, monthTag],
+  )
+  const histStyleMap = mergedHist?.styleMap
+  const boxStyleMap = mergedBox?.styleMap
+  const histSeriesStyle = useMemo(
+    () =>
+      histStyleMap
+        ? (series: string) =>
+            histStyleMap.get(series) ?? { color: 'var(--muted-foreground)' }
+        : undefined,
+    [histStyleMap],
+  )
+  const boxSeriesStyle = useMemo(
+    () =>
+      boxStyleMap
+        ? (series: string) =>
+            boxStyleMap.get(series) ?? { color: 'var(--muted-foreground)' }
+        : undefined,
+    [boxStyleMap],
+  )
+  const monthlyReady = Boolean(monthTag && pickedMonths.length > 0)
+  const monthlyHistStatus = statusFor(monthlyReady, monthlyPending(monthlyHist))
+  const monthlyBoxStatus = statusFor(monthlyReady, monthlyPending(monthlyBox))
+  // When no month produced anything (all failed, or none had readings) the
+  // chart still gets the TAG, so its insufficient-data message names it
+  // instead of rendering "…for " with a blank.
+  const monthlyFallbackTags = monthTag ? [monthTag] : NO_TAGS
+
+  // In monthly mode the tag-compare hooks get no tags and idle.
+  const tagCompareTags = monthly ? NO_TAGS : compareTags
+
   const draftHist = useDatasetHistogram(
     dfId,
     dfArtifactId,
-    compareTags,
+    tagCompareTags,
     undefined,
     timeWindow,
   )
   const dsHist = useArtifactHistogram(
     dsId,
     dsArtifactId,
-    compareTags,
+    tagCompareTags,
     undefined,
     timeWindow,
   )
@@ -338,7 +514,7 @@ export function DataAnalysisCard({
   const draftBox = useDatasetBoxplot(
     dfId,
     dfArtifactId,
-    compareTags,
+    tagCompareTags,
     undefined,
     undefined,
     timeWindow,
@@ -346,7 +522,7 @@ export function DataAnalysisCard({
   const dsBox = useArtifactBoxplot(
     dsId,
     dsArtifactId,
-    compareTags,
+    tagCompareTags,
     undefined,
     timeWindow,
   )
@@ -445,7 +621,15 @@ export function DataAnalysisCard({
   )
 
   const pendingFeatureCount = activeTags.length - artifactTags.length
-  const [tab, setTab] = useState('line')
+
+  // DS-LAKE-031-D05. Opening a Top Relationships pair as a scatter plot sets
+  // both axes OUTRIGHT — `pickX`/`pickY`'s swap rule compares against the
+  // PREVIOUS axes and would scramble a pair that overlaps them.
+  const openPairAsScatter = ({ x, y }: { x: string; y: string }) => {
+    setXPick(x)
+    setYPick(y)
+    setTab('scatter')
+  }
   const [scaledView, setScaledView] = useState(false)
   const [isViewAll, setIsViewAll] = useState(false)
 
@@ -576,14 +760,39 @@ export function DataAnalysisCard({
         </TabsList>
 
         {(tab === 'histogram' || tab === 'boxplot') && (
-          <div className="mb-3 flex justify-end">
-            <CompareTagsPopover
-              activeTags={activeTags}
-              compareTags={compareTags}
-              toggle={toggle}
-              atCap={atCap}
-              colorForTag={colorForTag}
-            />
+          <div className="mb-3 flex flex-wrap items-center justify-end gap-3">
+            {canCompareMonths && (
+              <SegmentedToggle
+                ariaLabel="Compare tags or months"
+                value={monthly ? 'month' : 'tag'}
+                onChange={setCompareMode}
+                options={[
+                  { value: 'tag', label: 'By tag' },
+                  { value: 'month', label: 'By month' },
+                ]}
+              />
+            )}
+            {monthly ? (
+              <CompareMonthsPopover
+                tags={artifactTags}
+                tag={monthTag}
+                onTagChange={setMonthTagPick}
+                colorForTag={colorForTag}
+                months={availableMonths}
+                picked={pickedMonthKeys}
+                toggleMonth={toggleMonth}
+                allMonths={compareAllMonths}
+                onAllMonthsChange={setCompareAllMonths}
+              />
+            ) : (
+              <CompareTagsPopover
+                activeTags={activeTags}
+                compareTags={compareTags}
+                toggle={toggle}
+                atCap={atCap}
+                colorForTag={colorForTag}
+              />
+            )}
           </div>
         )}
         {tab === 'scatter' && (
@@ -690,30 +899,89 @@ export function DataAnalysisCard({
             />
           </TabsContent>
           <TabsContent value="histogram" className="mt-0">
-            {histogramStatus === 'ready' && (
-              <p className="mb-3 text-[11px] text-muted-foreground">
-                Computed on the saved artifact{serverScope} — crop and outlier
-                rules below are not reflected here yet.
-              </p>
+            {monthly ? (
+              <>
+                {monthlyHistStatus === 'ready' && (
+                  <MonthlyCaption
+                    tag={monthTag}
+                    months={pickedMonths.map(m => m.label)}
+                    spanMonths={
+                      compareAllMonths ? availableMonths.length : null
+                    }
+                    missing={mergedHist?.missing ?? []}
+                    error={monthlyHist.error}
+                    periodFilterShown={Boolean(edaWindow)}
+                    countsNote
+                  />
+                )}
+                <TagHistogramChart
+                  data={mergedHist?.result ?? null}
+                  tags={
+                    mergedHist?.tags.length
+                      ? mergedHist.tags
+                      : monthlyFallbackTags
+                  }
+                  status={monthlyHistStatus}
+                  seriesStyle={histSeriesStyle}
+                />
+              </>
+            ) : (
+              <>
+                {histogramStatus === 'ready' && (
+                  <p className="mb-3 text-[11px] text-muted-foreground">
+                    Computed on the saved artifact{serverScope} — crop and
+                    outlier rules below are not reflected here yet.
+                  </p>
+                )}
+                <TagHistogramChart
+                  data={histogram}
+                  tags={compareTags}
+                  status={histogramStatus}
+                />
+              </>
             )}
-            <TagHistogramChart
-              data={histogram}
-              tags={compareTags}
-              status={histogramStatus}
-            />
           </TabsContent>
           <TabsContent value="boxplot" className="mt-0">
-            {boxplotStatus === 'ready' && (
-              <p className="mb-3 text-[11px] text-muted-foreground">
-                Computed on the saved artifact{serverScope} — crop and outlier
-                rules below are not reflected here yet.
-              </p>
+            {monthly ? (
+              <>
+                {monthlyBoxStatus === 'ready' && (
+                  <MonthlyCaption
+                    tag={monthTag}
+                    months={pickedMonths.map(m => m.label)}
+                    spanMonths={
+                      compareAllMonths ? availableMonths.length : null
+                    }
+                    missing={mergedBox?.missing ?? []}
+                    error={monthlyBox.error}
+                    periodFilterShown={Boolean(edaWindow)}
+                  />
+                )}
+                <TagBoxplotChart
+                  data={mergedBox?.result ?? null}
+                  tags={
+                    mergedBox?.tags.length
+                      ? mergedBox.tags
+                      : monthlyFallbackTags
+                  }
+                  status={monthlyBoxStatus}
+                  seriesStyle={boxSeriesStyle}
+                />
+              </>
+            ) : (
+              <>
+                {boxplotStatus === 'ready' && (
+                  <p className="mb-3 text-[11px] text-muted-foreground">
+                    Computed on the saved artifact{serverScope} — crop and
+                    outlier rules below are not reflected here yet.
+                  </p>
+                )}
+                <TagBoxplotChart
+                  data={boxplot}
+                  tags={compareTags}
+                  status={boxplotStatus}
+                />
+              </>
             )}
-            <TagBoxplotChart
-              data={boxplot}
-              tags={compareTags}
-              status={boxplotStatus}
-            />
           </TabsContent>
           <TabsContent value="scatter" className="mt-0">
             {scatterStatus === 'ready' && (
@@ -748,6 +1016,7 @@ export function DataAnalysisCard({
             <TagCorrelationChart
               data={correlation}
               status={correlationStatus}
+              onSelectPair={openPairAsScatter}
             />
           </TabsContent>
         </div>

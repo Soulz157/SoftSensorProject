@@ -272,6 +272,9 @@ export interface DraftBoxplotResult {
 export interface DraftScatterPoint {
   x: number
   y: number
+  /** DS-LAKE-034. Naive wall-clock time of the reading; absent from older
+   * responses. */
+  t?: string
 }
 
 /**

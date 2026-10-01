@@ -56,3 +56,50 @@ describe('toCleaningOperations', () => {
     expect(toCleaningOperations([], ['TI-101'])).toEqual([])
   })
 })
+
+/** DS-LAKE-032-T02 / V02 — per-step tag scope and the time window on the
+ * wire. */
+describe('toCleaningOperations — DS-LAKE-032 scope and window', () => {
+  it('sends a scoped step only to the batch tags it names', () => {
+    const steps: CleaningStep[] = [
+      { uid: 's', category: 'outliers', method: 'clip', param: 9, tags: ['B'] },
+    ]
+    expect(toCleaningOperations(steps, ['A', 'B'])).toEqual([
+      { type: 'clip', tags: ['B'], param: 9 },
+    ])
+  })
+
+  it('drops a step whose scope no longer meets the batch — never sends empty tags', () => {
+    const steps: CleaningStep[] = [
+      { uid: 's', category: 'outliers', method: 'clip', param: 9, tags: ['Z'] },
+      { uid: 't', category: 'missing', method: 'drop' },
+    ]
+    expect(toCleaningOperations(steps, ['A', 'B'])).toEqual([
+      { type: 'drop', tags: ['A', 'B'] },
+    ])
+  })
+
+  it('passes the window as inclusive server wall-clock bounds', () => {
+    const steps: CleaningStep[] = [
+      {
+        uid: 's',
+        category: 'outliers',
+        method: 'crop',
+        paramLow: 1,
+        param: 2,
+        startTime: '2026-01-01T06:00',
+        endTime: '2026-01-03T17:30',
+      },
+    ]
+    expect(toCleaningOperations(steps, ['A'])).toEqual([
+      {
+        type: 'crop',
+        tags: ['A'],
+        paramLow: 1,
+        param: 2,
+        startTime: '2026-01-01 06:00:00',
+        endTime: '2026-01-03 17:30:59.999999',
+      },
+    ])
+  })
+})

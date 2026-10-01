@@ -2,7 +2,14 @@
 
 import { useMemo } from 'react'
 import { nanoid } from 'nanoid'
-import { Filter, Plus, Sigma, Trash2, TriangleAlert } from 'lucide-react'
+import {
+  Filter,
+  MoveHorizontal,
+  Plus,
+  Sigma,
+  Trash2,
+  TriangleAlert,
+} from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -16,13 +23,17 @@ import {
 } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { DateTimePicker, toDateTimeLocal } from '@/components/date-time-picker'
+import { CalendarDateTimePicker } from '@/components/calendar-date-time-picker'
+import {
+  snapStampIndex,
+  stampFromTimestamp,
+  wallClockKey,
+} from '@/lib/date-stamp'
 import { cn } from '@/lib/utils'
 import type { CutoffOp } from '@/types/cutoff'
 import type { Dataset } from '@/lib/preprocessing'
 import {
   clipImpact,
-  nearestTimestampIndex,
   statisticalMatchCount,
   type ConditionalRule,
   type CropRange,
@@ -37,6 +48,10 @@ import {
 import type { PresetRangeCandidate } from '@/store/dataset-studio'
 
 const OPS: CutoffOp[] = ['>', '>=', '<', '<=', '==', '!=']
+/** DS-LAKE-032-D09. Ops allowed on either side of a range rule, so it always
+ * reads as an interval: `low <= TAG < high`. */
+const RANGE_OPS = ['<', '<='] as const
+type RangeOp = (typeof RANGE_OPS)[number]
 const METHODS: { value: StatisticalMethod; label: string }[] = [
   { value: 'zscore', label: 'Z-Score' },
   { value: 'stddev', label: 'Std Dev' },
@@ -208,7 +223,7 @@ function PresetRangeRow({
     ])
   }
 
- const refused =
+  const refused =
     reconciliation.verdict === 'unknown-unit' ||
     reconciliation.verdict === 'tag-unit-unknown'
   const unitMismatch = refused || reconciliation.verdict === 'converted'
@@ -224,7 +239,7 @@ function PresetRangeRow({
         <span className="font-mono text-[11px] text-muted-foreground">
           {candidate.quotedRange}
         </span>
-               {reconciliation.verdict === 'converted' && reconciliation.applied && (
+        {reconciliation.verdict === 'converted' && reconciliation.applied && (
           <span className="text-[11px] text-muted-foreground">
             → applied {reconciliation.applied.min ?? '−∞'} to{' '}
             {reconciliation.applied.max ?? '+∞'} {tagUnit}
@@ -254,7 +269,7 @@ function PresetRangeRow({
           />
         </div>
       </div>
-          {refused && (
+      {refused && (
         <p className="flex items-start gap-1 text-[11px] text-muted-foreground">
           <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" />
           {reconciliation.verdict === 'tag-unit-unknown'
@@ -439,12 +454,15 @@ function ActionToggle({
 }
 
 /**
- * Keep-inside time crop, edited via two `DateTimePicker`s and bound to the
- * shared `cropRange` (same state the crop slider + chart inputs drive, so all
- * three stay in sync). A picked datetime is snapped onto the nearest *raw* row
- * timestamp so `precleanse`'s lexical `>=`/`<=` compare stays correct and the
- * window can be widened back to the full span. Selecting the full span clears
- * the crop (`null`), mirroring the slider.
+ * Keep-inside time crop — the ONE time crop in this step (DS-LAKE-032-D07;
+ * the duplicate under "Data Cut-Off & Cleansing" was removed). Bound to the
+ * shared `cropRange`, the same state the crop slider drives, so both stay in
+ * sync. Edited with `CalendarDateTimePicker`, the design-system picker for a
+ * date-time range over data. A picked stamp is snapped onto a real raw
+ * timestamp (`snapStampIndex`: a start keeps the first reading at or after
+ * it, an end the last at or before it) so `precleanse`'s lexical `>=`/`<=`
+ * compare stays correct. Selecting the full span clears the crop (`null`),
+ * mirroring the slider.
  */
 function TimeCropInputs({
   rawTimestamps,
@@ -461,17 +479,32 @@ function TimeCropInputs({
   const fromIso = cropRange?.from ?? minIso
   const toIso = cropRange?.to ?? maxIso
 
-  const toLocal = (iso?: string) => (iso ? toDateTimeLocal(new Date(iso)) : '')
+  const dataBounds = useMemo(
+    () =>
+      minIso && maxIso
+        ? { min: stampFromTimestamp(minIso), max: stampFromTimestamp(maxIso) }
+        : null,
+    [minIso, maxIso],
+  )
+  const fromStamp = fromIso ? stampFromTimestamp(fromIso) : ''
+  const toStamp = toIso ? stampFromTimestamp(toIso) : ''
 
-  const commit = (edge: 'from' | 'to', local: string) => {
-    if (!local || rawTimestamps.length === 0 || !minIso || !maxIso) return
-    const ms = new Date(local).getTime()
-    if (Number.isNaN(ms)) return
-    const snapped = rawTimestamps[nearestTimestampIndex(rawTimestamps, ms)]!
+  const commit = (edge: 'from' | 'to', stamp: string) => {
+    if (!stamp || rawTimestamps.length === 0 || !minIso || !maxIso) return
+    const index = snapStampIndex(
+      rawTimestamps,
+      stamp,
+      edge === 'from' ? 'start' : 'end',
+    )
+    const snapped = rawTimestamps[index]
+    if (!snapped) return
     const nextFrom = edge === 'from' ? snapped : (fromIso ?? minIso)
     const nextTo = edge === 'to' ? snapped : (toIso ?? maxIso)
-    // Backstop — the pickers' min/max should already block an inverted range.
-    if (new Date(nextFrom).getTime() > new Date(nextTo).getTime()) return
+    // Backstop — each picker's `allowed` should already block an inverted
+    // range. Compared as wall-clock keys, not list positions: the bound NOT
+    // being edited may be a crop restored from a saved config, written in a
+    // different form than the re-fetched rows, and would not be found.
+    if (wallClockKey(nextFrom) > wallClockKey(nextTo)) return
     // Full span → clear the crop, matching the slider's "no crop" state.
     if (nextFrom === minIso && nextTo === maxIso) {
       onCropChange(null)
@@ -501,22 +534,31 @@ function TimeCropInputs({
       <div className="grid grid-cols-2 gap-2">
         <div className="space-y-1">
           <span className="text-[11px] text-muted-foreground">Start</span>
-          <DateTimePicker
-            value={toLocal(fromIso)}
+          <CalendarDateTimePicker
+            label="Time crop start"
+            value={fromStamp}
             onChange={v => commit('from', v)}
-            min={toLocal(minIso)}
-            max={toLocal(toIso)}
+            dataBounds={dataBounds}
+            allowed={{ min: dataBounds?.min, max: toStamp || dataBounds?.max }}
+            defaultTime="00:00"
             disabled={disabled}
+            className="w-full"
           />
         </div>
         <div className="space-y-1">
           <span className="text-[11px] text-muted-foreground">End</span>
-          <DateTimePicker
-            value={toLocal(toIso)}
+          <CalendarDateTimePicker
+            label="Time crop end"
+            value={toStamp}
             onChange={v => commit('to', v)}
-            min={toLocal(fromIso)}
-            max={toLocal(maxIso)}
+            dataBounds={dataBounds}
+            allowed={{
+              min: fromStamp || dataBounds?.min,
+              max: dataBounds?.max,
+            }}
+            defaultTime="23:59"
             disabled={disabled}
+            className="w-full"
           />
         </div>
       </div>
@@ -568,6 +610,23 @@ export function OutlierRemovalPanel({
     onConditionalChange(
       conditionalRules.map(r => (r.id === id ? { ...r, ...patch } : r)),
     )
+  // DS-LAKE-032-D09. Turning range on adds an empty lower bound and pulls the
+  // right-hand op into `<`/`<=` so the rule reads as an interval; turning it
+  // off DELETES `lower` (not `undefined`) so the rule is exactly a legacy one.
+  const toggleRange = (rule: ConditionalRule) => {
+    if (rule.lower) {
+      const { lower: _lower, ...rest } = rule
+      void _lower
+      onConditionalChange(
+        conditionalRules.map(r => (r.id === rule.id ? rest : r)),
+      )
+      return
+    }
+    updateConditional(rule.id, {
+      lower: { value: '', op: '<=' },
+      op: (RANGE_OPS as readonly CutoffOp[]).includes(rule.op) ? rule.op : '<',
+    })
+  }
   const removeConditional = (id: string) =>
     onConditionalChange(conditionalRules.filter(r => r.id !== id))
 
@@ -631,7 +690,9 @@ export function OutlierRemovalPanel({
           {shownConditional.length === 0 && (
             <p className="py-1 text-xs text-muted-foreground">
               No rules — add one to cut readings by a value condition (e.g.{' '}
-              <span className="font-mono">Value &gt; 1000</span>).
+              <span className="font-mono">Value &gt; 1000</span>), or turn on
+              Range for an interval (e.g.{' '}
+              <span className="font-mono">200 &lt;= Value &lt; 500</span>).
             </p>
           )}
           {shownConditional.map(rule => (
@@ -642,6 +703,55 @@ export function OutlierRemovalPanel({
                 !rule.enabled && 'opacity-60',
               )}
             >
+              {rule.lower && (
+                <>
+                  <Input
+                    type="number"
+                    step="any"
+                    placeholder="Low"
+                    aria-label="Range lower value"
+                    value={rule.lower.value}
+                    onChange={e =>
+                      updateConditional(rule.id, {
+                        lower: {
+                          op: rule.lower!.op,
+                          value:
+                            e.target.value === ''
+                              ? ''
+                              : parseFloat(e.target.value),
+                        },
+                      })
+                    }
+                    className="h-7 w-24 font-mono text-xs"
+                  />
+                  <Select
+                    value={rule.lower.op}
+                    onValueChange={v =>
+                      updateConditional(rule.id, {
+                        lower: { value: rule.lower!.value, op: v as RangeOp },
+                      })
+                    }
+                  >
+                    <SelectTrigger
+                      aria-label="Range lower operator"
+                      className="h-7 w-16 font-mono text-xs"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {RANGE_OPS.map(op => (
+                        <SelectItem
+                          key={op}
+                          value={op}
+                          className="font-mono text-xs"
+                        >
+                          {op}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </>
+              )}
               {scopeTag ? (
                 <span className="flex h-7 w-36 items-center rounded-md bg-muted px-2.5 font-mono text-xs text-foreground">
                   {rule.tag}
@@ -677,7 +787,7 @@ export function OutlierRemovalPanel({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {OPS.map(op => (
+                  {(rule.lower ? RANGE_OPS : OPS).map(op => (
                     <SelectItem
                       key={op}
                       value={op}
@@ -691,7 +801,7 @@ export function OutlierRemovalPanel({
               <Input
                 type="number"
                 step="any"
-                placeholder="Value"
+                placeholder={rule.lower ? 'High' : 'Value'}
                 value={rule.value}
                 onChange={e =>
                   updateConditional(rule.id, {
@@ -701,6 +811,28 @@ export function OutlierRemovalPanel({
                 }
                 className="h-7 w-24 font-mono text-xs"
               />
+              {/* DS-LAKE-032-D09: hand-authored rules only. A preset row's
+                  meaning is read back as a single op/value by `activeBounds`
+                  and by the SD&TA in-sync signature, so a lower bound there
+                  would change what the rule cuts without either noticing. */}
+              {!rule.source && (
+                <Button
+                  type="button"
+                  variant={rule.lower ? 'secondary' : 'ghost'}
+                  size="sm"
+                  aria-pressed={Boolean(rule.lower)}
+                  title={
+                    rule.lower
+                      ? 'Back to a single comparison'
+                      : 'Make this a range, e.g. 200 <= tag < 500'
+                  }
+                  onClick={() => toggleRange(rule)}
+                  className="h-7 gap-1 px-2 text-[11px]"
+                >
+                  <MoveHorizontal className="h-3.5 w-3.5" />
+                  Range
+                </Button>
+              )}
               <ActionToggle
                 value={rule.action}
                 onChange={a => updateConditional(rule.id, { action: a })}

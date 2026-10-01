@@ -78,6 +78,12 @@ interface Fixture {
   expected: Dataset
 }
 
+/** DS-LAKE-032. Rows 5–30 of the grid on the Bangkok wall clock. */
+const PARITY_WINDOW = {
+  startTime: '2026-06-22T07:05',
+  endTime: '2026-06-22T07:30',
+}
+
 function step(
   method: CleaningStep['method'],
   category: CleaningStep['category'],
@@ -248,6 +254,32 @@ function buildFixtures(): Fixture[] {
       step('exclude', 'outliers', { param: 50 }),
     ]),
     pipelineCase('exclude_no_bounds_is_noop', [step('exclude', 'outliers')]),
+
+    // ── DS-LAKE-032: time window and per-step tag scope ────────────────────
+    // The grid's stamps are ISO `Z` (00:00Z–00:39Z), which both engines read
+    // on the Bangkok wall clock: 07:00–07:39. The window spans rows 5–30, so
+    // it holds the row-9 and row-27 extremes and leaves rows on both sides
+    // untouched — the bit that proves the window is honoured at all.
+    pipelineCase('clip_windowed', [
+      step('clip', 'outliers', { paramLow: 0, param: 100, ...PARITY_WINDOW }),
+    ]),
+    pipelineCase(
+      'crop_windowed',
+      [step('crop', 'outliers', { paramLow: 0, param: 100, ...PARITY_WINDOW })],
+      ['TI-101'],
+    ),
+    pipelineCase('exclude_windowed', [
+      step('exclude', 'outliers', {
+        paramLow: 0,
+        param: 100,
+        ...PARITY_WINDOW,
+      }),
+    ]),
+    // Every tag carries the pipeline, but the step names ONE tag — the other
+    // three must come through unclipped.
+    pipelineCase('clip_tag_scoped', [
+      step('clip', 'outliers', { paramLow: 0, param: 100, tags: ['TI-101'] }),
+    ]),
 
     // ── smoothing ────────────────────────────────────────────────────────
     pipelineCase('smooth_moving_avg_default', [

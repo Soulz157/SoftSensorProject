@@ -396,11 +396,24 @@ def _to_operations(pipeline: list[dict[str, Any]], tags: list[str]) -> list[dict
     ever drifts from this, this test is what catches it."""
     ops = []
     for step in pipeline:
-        op: dict[str, Any] = {"type": step["method"], "tags": tags}
+        # DS-LAKE-032-D03: a scoped step reaches only the batch tags it names,
+        # and an empty intersection is skipped rather than sent as "all".
+        scope = step.get("tags")
+        op_tags = [t for t in tags if t in scope] if scope is not None else tags
+        if not op_tags:
+            continue
+        op: dict[str, Any] = {"type": step["method"], "tags": op_tags}
         if "param" in step:
             op["param"] = step["param"]
         if "paramLow" in step:
             op["paramLow"] = step["paramLow"]
+        # DS-LAKE-032-D04: `serverStamp` — minute-precision picker stamp to
+        # the server's wall clock, the end pushed to the last instant of its
+        # minute.
+        if step.get("startTime"):
+            op["startTime"] = step["startTime"].replace("T", " ")[:16] + ":00"
+        if step.get("endTime"):
+            op["endTime"] = step["endTime"].replace("T", " ")[:16] + ":59.999999"
         ops.append(op)
     return ops
 

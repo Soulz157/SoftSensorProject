@@ -4208,106 +4208,478 @@
       "carried_forward": "NOT VERIFIED IN A BROWSER. Backend jest 7/7 on the dataset service spec, client vitest 64/64 across data-studio, tsc at the pinned baselines (8 backend, 5 client), eslint clean on touched files. The dialog's rendering of a non-empty dependents list has not been seen against a real API response."
     },
     {
-  "id": "DS-LAKE-031",
-  "title": "EDA card: monthly compare for Histogram/Box Plot, and Top Relationships that filter by tag and open as a scatter plot",
-  "priority": 31,
-  "status": "in_progress",
-  "progress": 90,
-  "progress_note": "All three tasks implemented and unit-tested. Held below 100 because V04 (a live browser pass against a real multi-month artifact) has not been run.",
-  "dependencies": [
-    "DS-LAKE-005B-D",
-    "DS-LAKE-026"
-  ],
-  "description": "DataAnalysisCard (Step 3.1 EDA, also Step 4 and the model wizard's Dataset Review) could compare several TAGS over one period, and filter the whole card to one month, but could not put the same tag's months side by side. Its correlation tab listed only pairs above |r| 0.8, with no way to ask 'what relates to THIS tag', and a pair could not be opened as a scatter plot.",
-  "decisions": [
-    {
-      "id": "DS-LAKE-031-D01",
-      "decision": "Monthly compare is a MODE of the existing Histogram/Box Plot tabs ('By tag' | 'By month'), not a new tab.",
-      "why": "The user asked for the same charts with the filter changed from tags to month-year. The mode is shared by both tabs so switching between them keeps the comparison. The toggle is hidden when the artifact spans fewer than two months."
+      "id": "DS-LAKE-031",
+      "title": "EDA card: monthly compare for Histogram/Box Plot, and Top Relationships that filter by tag and open as a scatter plot",
+      "priority": 31,
+      "status": "in_progress",
+      "progress": 90,
+      "progress_note": "Rebuilt 2026-10-01 after an audit found the earlier 'completed' tasks had never been committed (no trace in tree, commits, branches, stash, worktrees, dangling blobs, session transcripts or editor history — only this ledger entry was in 2ec52fc). All three tasks are now implemented and unit-tested. Held below 100 because V04, a live browser pass, has not run: client, backend and python were all down at the time.",
+      "dependencies": [
+        "DS-LAKE-005B-D",
+        "DS-LAKE-026"
+      ],
+      "description": "DataAnalysisCard (Step 3.1 EDA, also Step 4 and the model wizard's Dataset Review) could compare several TAGS over one period, and filter the whole card to one month, but could not put the same tag's months side by side. Its correlation tab listed only pairs above |r| 0.8, with no way to ask 'what relates to THIS tag', and a pair could not be opened as a scatter plot.",
+      "decisions": [
+        {
+          "id": "DS-LAKE-031-D01",
+          "decision": "Monthly compare is a MODE of the existing Histogram/Box Plot tabs ('By tag' | 'By month'), not a new tab.",
+          "why": "The user asked for the same charts with the filter changed from tags to month-year. The mode is shared by both tabs so switching between them keeps the comparison. The toggle is hidden when the artifact spans fewer than two months."
+        },
+        {
+          "id": "DS-LAKE-031-D02",
+          "decision": "One tag at a time, picked from the sidebar's active tags that exist in the artifact; up to 5 months, one request per month, merged client-side.",
+          "why": "The endpoints take one window per request, so no backend change is needed. The cap matches the 5-colour chart palette and MAX_COMPARE. Merging follows DS-LAKE-026's mergeHistogramSides precedent: the shared histogram domain is recomputed from the months' own min/max. A month that fails or has no Good readings is named in the caption, not silently dropped."
+        },
+        {
+          "id": "DS-LAKE-031-D03",
+          "decision": "Month colour is fixed by the month's position in the picked list, even if an earlier month has no data.",
+          "why": "The popover's swatch is the legend key; the chart must draw each month in the colour the popover shows."
+        },
+        {
+          "id": "DS-LAKE-031-D04",
+          "decision": "Focusing a tag in Top Relationships lists EVERY other resolved tag by |r|, with no threshold; unfocused keeps today's strong-pairs-only list.",
+          "why": "Once a user has picked a tag to investigate, 'no relationship' is also an answer. Weak pairs are styled neutral, strong pairs keep the existing highlight."
+        },
+        {
+          "id": "DS-LAKE-031-D05",
+          "decision": "Clicking a pair opens the Scatter tab with the focused tag on Y and its partner on X.",
+          "why": "The focused tag is the one being explained. The card sets both axis picks outright rather than via pickX/pickY, whose swap rule would fire against the previous axes. The compare modal renders the same chart without onSelectPair, so its rows stay static."
+        },
+        {
+          "id": "DS-LAKE-031-D06",
+          "decision": "An 'All months' option in the month picker compares every month the artifact spans, capped at the latest 24 (MAX_ALL_MONTHS). It overrides the 5-month cap from D02 without erasing the manual picks. Requests run at most 4 at a time. Above 5 months the colours follow a sequential ramp from --chart-4 to --chart-5 (teal to blue to purple, oldest to newest).",
+          "why": "User request 2026-10-01: 'add option in compare month with compare all month'. The 24-month cap is a safety limit on request count and chart readability, and the caption says when it applies. The ramp avoids the reserved red/amber hues, and because months are ordered, a sequential ramp reads as time."
+        },
+        {
+          "id": "DS-LAKE-031-D07",
+          "decision": "The full heatmap gets an order toggle: 'Current order' (the server's column order, which is its variability ranking, and the default) or 'Cluster similar tags'. Cluster order is computed client-side by agglomerative clustering with AVERAGE linkage on the distance 1 - |r|, read off as the dendrogram's leaf order. The order is deterministic: ties go to the lowest index, and the lower-index cluster is always placed on the left.",
+          "why": "User request 2026-10-01: 'add another option in Heatmap with Order Column that we use right now and add cluster similar tags'. Clustering ignores the sign of r because a strong negative pair moves together as tightly as a strong positive one; the colour still shows the sign. It runs client-side because the matrix is already capped server-side, so O(n^3) is trivial and no backend change is needed. The Top Relationships list is unaffected."
+        }
+      ],
+      "findings": [
+        "The correlation matrix is server-resolved and capped (topK, near-constant filter, DS-LAKE-005B-D-T05a/b), so the focus select can only offer tags the matrix resolved — a sidebar tag missing from it was excluded server-side, not by this feature.",
+        "Histogram curve heights are counts (density * n * binWidth), so a month with more Good readings draws taller. Stated in the monthly caption rather than normalised, matching the compare modal.",
+        "The header's Period filter does not apply in monthly mode — the compared months are the periods. Stated in the caption.",
+        "While monthly mode shows, the tag-compare histogram/boxplot hooks receive an empty tag list and idle, and the monthly hooks fire only for the visible tab, so the mode costs no hidden requests.",
+        "2026-10-01: implementation described by T01-T03 was never committed and could not be recovered; rebuilt from D01-D05. See progress_note."
+      ],
+      "tasks": [
+        {
+          "id": "DS-LAKE-031-T01",
+          "title": "Monthly compare: lib/monthly-compare.ts, hooks/dataset/use-monthly-compare.ts, CompareMonthsPopover, card wiring",
+          "status": "completed",
+          "progress": 100,
+          "result": "lib/monthly-compare.ts (MAX_MONTHS, monthColor by picked position, mergeMonthlyHistograms with recomputed domain, mergeMonthlyBoxplots, defaultMonthKeys = latest two). hooks/dataset/use-monthly-compare.ts takes the card's own ArtifactLeg (draft vs dataset), sends one request per month through useDebouncedAbortableRequest with Promise.allSettled, and rejects only when every month fails, so a total failure is never cached. A partial failure is cached under the 30s TTL. processing/compare-months-popover.tsx has a tag Select and a month checklist capped at 5 whose swatches use the chart colour. The card has a By tag / By month SegmentedToggle, shown only when the artifact spans 2 or more months. In monthly mode the tag hooks receive NO_TAGS and the monthly hooks run only for the visible tab. MonthlyCaption states which months are shown, that the Period filter does not apply, that heights are counts, and which months are missing. Months are kept in calendar order. Series are named by month label ('Jan 2026'), which is safe because colour comes from seriesStyle and the chart only falls back to resolveTagMeta. Review fix: monthlyPending() treats the debounce window (no result, no error yet) as loading, so the chart is never 'ready' with nothing to draw. When no month contributes, the chart is given [monthTag] so its insufficient-data message names the tag. The last picked month cannot be unticked."
+        },
+        {
+          "id": "DS-LAKE-031-T02",
+          "title": "Top Relationships: focus-tag filter and click-to-scatter",
+          "status": "completed",
+          "progress": 100,
+          "result": "correlationsWith() in lib/data-quality.ts puts the focus tag in `a`, sorts by |r|, applies no threshold, and drops a non-finite r. TagCorrelationChart has a focus Select ('All tags — strong pairs only' + data.tags). The focus is DERIVED, so a pick that is no longer resolved reads as no focus without a reset effect. Weak pairs are shown in a neutral muted style. With the optional onSelectPair, rows are buttons that send {x: b, y: a}. The card passes openPairAsScatter, which sets setXPick/setYPick directly and then switches to the scatter tab. The compare modal passes nothing, so its rows stay static."
+        },
+        {
+          "id": "DS-LAKE-031-T03",
+          "title": "Tests and checks",
+          "status": "completed",
+          "progress": 100,
+          "result": "vitest: lib/monthly-compare.test.ts 11 cases + chart/__tests__/tag-correlation-chart.test.tsx 3 cases, all collected and passing. `vitest related` on every changed module: 12 files / 137 tests pass, so the 23 failures under app/(default)/models do not reach the changed code even transitively. Client tsc: only the 4 pre-existing errors (dataset-compare-modal.tsx x3, model-evaluation.test.ts). eslint clean on every touched file."
+        },
+        {
+          "id": "DS-LAKE-031-T04",
+          "title": "Compare all months",
+          "status": "completed",
+          "progress": 100,
+          "result": "lib/monthly-compare.ts gains allMonths(), MAX_ALL_MONTHS=24, settleWithConcurrency(), and monthColor(position, total) with a color-mix ramp when total > 5. The hook fetches at most 4 months at a time. The popover gets an 'All months (N)' checkbox: the month rows lock, and the trigger reads 'All (N)'. The card gets a compareAllMonths scope, and its caption summarises more than 5 months as a range and states when the 24-month cap applies. Tests: lib/monthly-compare.test.ts now has 14 cases, and the data-studio suite passes 88/88. tsc is at its baseline of 4 errors, and eslint is clean."
+        },
+        {
+          "id": "DS-LAKE-031-T05",
+          "title": "Heatmap order: current | cluster similar tags",
+          "status": "completed",
+          "progress": 100,
+          "result": "New lib/correlation-order.ts provides clusterOrder() (average linkage via the Lance-Williams update, NaN treated as unrelated, n <= 2 left as identity) and reorderMatrix(). TagCorrelationChart shows a SegmentedToggle when the heatmap is open and has more than 2 tags, with a caption in cluster mode. The clustered view is computed only while the heatmap is open in cluster mode. Tests: lib/correlation-order.test.ts has 6 cases, and a new chart case checks that the default keeps the server order and that clustering reorders A,B,C,D to A,C,B,D. vitest related: 7 files, 51/51 pass. tsc is at its baseline of 4 errors, and eslint is clean."
+        }
+      ],
+      "acceptance_criteria": [
+        "Histogram and Box Plot can switch between comparing tags and comparing months of one tag.",
+        "The month picker offers every month the artifact spans and caps at 5.",
+        "The tag in monthly mode is chosen from the sidebar's active tags, one at a time.",
+        "Top Relationships can be filtered to one tag, listing all of its partners by |r|.",
+        "Clicking a pair opens the Scatter tab with that pair on the axes.",
+        "Histogram and Box Plot in month mode can compare all months at once, up to the latest 24.",
+        "The full heatmap can switch between the current column order and a clustered order that groups correlated tags."
+      ],
+      "verification": [
+        {
+          "id": "DS-LAKE-031-V01",
+          "description": "Merge helpers: month labels, recomputed domain, missing months named, colour tied to position.",
+          "status": "completed",
+          "result": "PASS — lib/monthly-compare.test.ts (domain, missing named, colour by position, latest-two default)."
+        },
+        {
+          "id": "DS-LAKE-031-V02",
+          "description": "correlationsWith orders by |r|, keeps weak pairs, drops non-finite r.",
+          "status": "completed",
+          "result": "PASS — lib/monthly-compare.test.ts (correlationsWith order, weak kept, NaN dropped, unknown tag empty)."
+        },
+        {
+          "id": "DS-LAKE-031-V03",
+          "description": "Clicking a strong pair calls onSelectPair with oriented axes; rows static without it.",
+          "status": "completed",
+          "result": "PASS — tag-correlation-chart.test.tsx (click → {x:B,y:A}; static rows without prop; unfocused strong-only)."
+        },
+        {
+          "id": "DS-LAKE-031-V04",
+          "description": "Live browser pass: monthly histogram and box plot for a real multi-month artifact on both the draft leg (create) and the dataset leg (edit); focus a tag, click a pair, land on Scatter.",
+          "status": "pending"
+        }
+      ]
     },
     {
-      "id": "DS-LAKE-031-D02",
-      "decision": "One tag at a time, picked from the sidebar's active tags that exist in the artifact; up to 5 months, one request per month, merged client-side.",
-      "why": "The endpoints take one window per request, so no backend change is needed. The cap matches the 5-colour chart palette and MAX_COMPARE. Merging follows DS-LAKE-026's mergeHistogramSides precedent: the shared histogram domain is recomputed from the months' own min/max. A month that fails or has no Good readings is named in the caption, not silently dropped."
+      "id": "DS-LAKE-032",
+      "title": "Data Cleaning: per-step tag scope (multi-select) and a date-time window on Clip Bounds / Crop to Range / Exclude Range",
+      "priority": 32,
+      "status": "in_progress",
+      "progress": 90,
+      "dependencies": [
+        "DS-LAKE-022"
+      ],
+      "description": "Step 5 (Data Cleaning) builds ONE shared pipeline (`draft`) and applies every step to every tag in the batch (`draftMap` in step-5-data-cleaning.tsx copies the same steps to each of the `cleaningTags`). Two consequences: one batch cannot clean different tags differently, and Clip Bounds / Crop to Range / Exclude Range act on the WHOLE series, so a user cannot clip or remove values only during a known period such as a shutdown or a calibration window. The steps run in the browser (`applyCleaningStep`, lib/preprocessing.ts) and again on the server (`cleaning_service.py`'s `_op_clip`/`_op_crop`/`_op_exclude`, reached through `toCleaningOperations` in lib/cleaning-op-mapper.ts, the NestJS zod `CleaningOperationSchema` and the python `CleaningOperation` schema), so both engines must change together.",
+      "decisions": [
+        {
+          "id": "DS-LAKE-032-D01",
+          "decision": "The tag multi-select is PER STEP, not per batch. Each step in the Strategy Stack gets its own tag multi-select. `CleaningStep.tags` is optional: absent means every tag in the batch, which is how every existing step behaves.",
+          "why": "User's call 2026-10-01, chosen over a panel-level batch selector. Absent-means-all keeps every saved recipe valid without a migration, and means a tag added to the batch later is included automatically."
+        },
+        {
+          "id": "DS-LAKE-032-D02",
+          "decision": "The date-time window LIMITS the step and does not replace its value bounds. Clip, Crop and Exclude keep Min/Max and gain an optional Start/End. Only readings inside the window are touched, and the window is inclusive at both ends. An empty window means the whole data, as today.",
+          "why": "User's call 2026-10-01, chosen over making Crop/Exclude time-based. Note what this means for Crop: inside the window, rows outside the value band are dropped; outside the window, nothing is dropped."
+        },
+        {
+          "id": "DS-LAKE-032-D03",
+          "decision": "A server operation's tags are the INTERSECTION of the batch tags and `step.tags`. An operation whose intersection is empty is not sent.",
+          "why": "`apply_operations` already scopes by `tags`, so per-step scoping needs no new server concept, only a correct mapper. Sending an empty `tags` would mean ALL tags to python (`tags or ['*']`), which inverts the user's intent."
+        },
+        {
+          "id": "DS-LAKE-032-D04",
+          "decision": "Window bounds are naive wall-clock stamps. They are compared as wall clock on both sides, never through a UTC conversion.",
+          "why": "The artifact timestamp column is tz-naive Bangkok wall clock (lib/time-window.ts, frame_service.py). A UTC round-trip would shift the window by 7 hours."
+        },
+        {
+          "id": "DS-LAKE-032-D05",
+          "decision": "The window uses the existing `CalendarDateTimePicker` (components/calendar-date-time-picker.tsx), with `dataBounds` taken from the loaded rows.",
+          "why": "DESIGN_SYSTEM.md names it as the standard picker for a date-time range over data; validation-holdout-section.tsx and retrain-data-strategy.tsx already use it."
+        },
+        {
+          "id": "DS-LAKE-032-D06",
+          "decision": "REVERSES D01's UI. The per-step tag selector is removed. One batch tag multi-select sits ABOVE the 'Cleaning Pipeline · N tags selected' header, and it writes the same dwCleaningTagsAtom as the sidebar, so the two stay in sync both ways. Steps apply to every batch tag again. The engine/transport/python support for `step.tags` stays: it is harmless, already parity-tested, and keeps any step saved with a scope working, although such a scope can no longer be edited.",
+          "why": "User's call 2026-10-01: the header ('N tags selected', 'Step preview shown for …') depends on the sidebar selection, so the selector belongs next to that header. Asked with two options, and the user chose to move the selector and remove the per-step one."
+        },
+        {
+          "id": "DS-LAKE-032-D07",
+          "decision": "One Time Crop. The duplicate in 'Data Cut-Off & Cleansing' (DataCroppingChart's CropTimeInputs block) is removed, and the one in 'Data Cutting & Outlier Removal' (OutlierRemovalPanel) is kept and switched from DateTimePicker to CalendarDateTimePicker.",
+          "why": "User's request 2026-10-01. Both already wrote the same `cropRange` (CutOffSection passes the same cropRange/onCropChange to both), so this removes a duplicate control with no state change. CalendarDateTimePicker is the design-system standard for a date-time range over data."
+        },
+        {
+          "id": "DS-LAKE-032-D08",
+          "decision": "The before/after preview's 'Isolate:' row of pill buttons becomes a single Select. Each option shows the tag's chart colour dot, and the Select is still hidden with fewer than 2 tags.",
+          "why": "User request 2026-10-01. A wide batch made the pill row wrap over several lines above the chart; a Select stays one line however many tags are in the batch."
+        },
+        {
+          "id": "DS-LAKE-032-D09",
+          "decision": "A conditional cut-off rule may take an optional LOWER bound, giving the form `200 <= TAG < 500`. Stored as `ConditionalRule.lower?: { value: number | ''; op: '<' | '<=' }`; existing rules have no `lower` and behave exactly as before. With a lower bound, the right-hand op is limited to < or <=, so the rule always reads as an interval. A lower bound with an empty value makes the rule incomplete, so it is skipped, the same as an empty right-hand value today.",
+          "why": "User request 2026-10-01. Optional-field extension needs no migration and keeps every saved pipelineConfig valid. Conditional rules are evaluated only in the browser (lib/precleanse.ts `precleanse`; python has no conditional path and the precleanse parity fixtures are skipped by design), so the change is client-only. Preset-authored rules (sdta / preset-range) never set `lower`, so their single-op readers (activeBounds, presetCutSignature) are unaffected. Evidence 2026-10-01: `git grep -nE \"conditionalRules|conditional_rules|\\\"conditional\\\"|'conditional'\"` over apps/python, apps/backend, packages (fixtures aside) and images returns nothing. The only evaluator is lib/precleanse.ts, and both browser replay paths (lib/pipeline-config.ts, use-dataset-pipeline-nav) call it."
+        }
+      ],
+      "findings": [
+        "The NestJS `CleaningOperationSchema` is a plain `z.object`, which STRIPS unknown keys. Without schema changes, `startTime`/`endTime` would vanish silently before reaching python, and the server would clean the whole series while the browser preview showed a window.",
+        "The python ops receive only the value and status arrays, not timestamps. The window has to arrive as a boolean mask computed in `preprocess_pipelines` from TIMESTAMP_COLUMN.",
+        "Parity fixtures (packages/parity-fixtures/*.json) are generated from the client engine and replayed by python. New windowed and tag-scoped cases must be added there, or the two engines can drift with nothing to show it.",
+        "`toCleaningOperationsFromRecord` groups tags by a deep-equal pipeline. `step.tags` is part of that equality, which is correct, but the intersection from D03 must be applied after grouping.",
+        "Recipe persistence was checked: no client path rebuilds a step field by field (the only `paramLow` hits are the panel, the mapper and the op type), dwCleaningPipelinesAtom is hydrated with whole step objects (store/dataset-studio.ts), and both pipelineConfig DTOs are z.record(z.string(), z.unknown()). So tags/startTime/endTime survive save, reopen-in-Edit and replay.",
+        "Step-window dataBounds come from the featured frame built on dwRawDatasetAtom, which is the full fetched frame and the same source the validation-holdout picker uses, not a bounded preview page.",
+        "Windows are ABSOLUTE dates. A retrain or recipe replay on newer data that does not overlap a step's window leaves that step with nothing to touch, so it changes nothing. This is by design (D02), but it must be stated to users."
+      ],
+      "tasks": [
+        {
+          "id": "DS-LAKE-032-T01",
+          "title": "Engine (client): CleaningStep.tags / startTime / endTime, and applyCleaningStep honours both",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "lib/preprocessing.ts. Skip a step for a tag not in `step.tags`. Clip, crop and exclude skip rows outside [startTime, endTime], and other methods ignore the window. Add a pure `inWindow(timestamp, step)` helper that compares wall clock. Unit tests.",
+          "result": "CleaningStep gains tags/startTime/endTime. Exported inStepWindow() compares wall clock at minute precision, restating offset stamps via toWallClock, inclusive at both ends with the end covering its whole minute. Exported stepAppliesToTag(). preprocessPipelines skips out-of-scope tags; clip/crop/exclude skip rows outside the window. lib/__tests__/cleaning-step-scope.test.ts: 9 cases."
+        },
+        {
+          "id": "DS-LAKE-032-T02",
+          "title": "Mapper + transport: op tags = intersection, startTime/endTime pass through",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "lib/cleaning-op-mapper.ts (D03). Backend dataset-version DTO `CleaningOperationSchema` gets optional `startTime`/`endTime` strings. Python schemas/preprocess.py gets the same fields plus `to_step`. Mapper tests.",
+          "result": "toCleaningOperations sends each step's tags as its intersection with the batch, skips a step whose intersection is empty, and converts startTime/endTime with serverStamp (start ':00', end ':59.999999'), exported as MappedCleaningOperation. CleaningOperationInput gets startTime/endTime. The NestJS CleaningOperationSchema gets startTime/endTime z.string().optional(); dto spec 2/2 (V04). The python CleaningOperation gets start_time/end_time aliased to startTime/endTime and emitted by to_step. Mapper tests: 7/7 in cleaning-op-mapper.test.ts."
+        },
+        {
+          "id": "DS-LAKE-032-T03",
+          "title": "Engine (python): window mask for clip/crop/exclude",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "cleaning_service.py: `_build_step` carries startTime/endTime; `preprocess_pipelines` builds a mask from TIMESTAMP_COLUMN; the three ops skip masked-out indices. Same both-bounds-unset no-op guard. pytest.",
+          "result": "cleaning_service.py: _WINDOWED_OPS, _window_bound (accepts the picker stamp and the server stamp, extends a minute-only end through its minute, refuses a tz-aware bound), and _step_window (mask from TIMESTAMP_COLUMN, restating a tz-aware column on Asia/Bangkok to match toWallClock). preprocess_pipelines honours step['tags'] and passes window= only to clip/crop/exclude. _build_step carries startTime/endTime. tests/test_cleaning_window.py: 8 cases."
+        },
+        {
+          "id": "DS-LAKE-032-T04",
+          "title": "Parity fixtures for tag-scoped and windowed steps",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "Add clip/crop/exclude windowed cases and one tag-scoped case to the client fixture generator, regenerate packages/parity-fixtures, and run the python parity test.",
+          "result": "New fixtures clip_windowed, crop_windowed, exclude_windowed and clip_tag_scoped, with PARITY_WINDOW = 07:05-07:30 Bangkok, i.e. rows 5-30 of the Z-stamped grid. They change 30, 109, 70 and 2 cells (crop drops 40 to 38 rows). tests/test_parity.py's _to_operations mirror of the TS mapper was updated to the same intersection and serverStamp rules; it was stale and failed 3 cases until then. Python result: 314 passed, 0 failed. All 4 new cases pass test_matches_client_output; 3 pass the apply_operations path, and crop_windowed skips it by design because its pipeline differs per tag."
+        },
+        {
+          "id": "DS-LAKE-032-T05",
+          "title": "UI: per-step tag multi-select and date-time window in the Strategy Stack",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "imputation-detail-panel.tsx. Each step card gets a tag multi-select popover, a CompareTagsPopover-style checklist built from `cleaningTags`, labelled 'All tags' when unset. Clip/Crop/Exclude cards get Start/End CalendarDateTimePicker pickers with a clear button. The add-step confirm copy changes from 'applies to all N tags' to name the scope. step-5-data-cleaning.tsx passes dataBounds. No components/ui edits.",
+          "result": "New processing/imputation/step-tag-scope.tsx: a popover checklist built from cleaningTags. Unset (undefined) reads 'All tags', and ticking every tag returns it to undefined rather than a copied list. The last tag cannot be cleared, and a partial scope shows 'N of M tags'. New step-time-window.tsx: two CalendarDateTimePicker pickers whose allowed ranges stop the window inverting, a clear button, and 'Whole series' when empty. imputation-detail-panel.tsx: ToolkitItem.windowed is set on clip/crop/exclude, and every step card shows the tag scope, with the window shown only on windowed steps. patchStep delegates to the pure lib/preprocessing.ts patchCleaningStep, which DELETES keys set to undefined (2 cases in cleaning-step-scope.test.ts) so JSON-based pipelineEq and grouping treat an unscoped step exactly like a legacy one. The confirm copy now says a step starts on all tags and can be narrowed. lib/date-stamp.ts gains stampFromTimestamp/rowStampBounds (wall clock via toWallClock); step-5 passes dataBounds. Tests: __tests__/step-tag-scope.test.tsx, 8 cases. The planned Strategy Stack label suffix was NOT added: each card's own controls already state the scope ('N of M tags') and the window dates, so a suffix would repeat them."
+        },
+        {
+          "id": "DS-LAKE-032-T06",
+          "title": "Checks",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "Client: tsc at the 4-error baseline, eslint, and `vitest related` on the changed modules with case counts. Backend: jest for the DTO. Python: pytest for cleaning_service and parity.",
+          "result": "Client: tsc is at its baseline of 4 errors (none in touched files). eslint: the only errors are the 2 react-hooks/set-state-in-effect errors in step-5-data-cleaning.tsx, both present at HEAD (verified by linting the HEAD copy), plus the pre-existing scaleColumn unused warning. `vitest related` on the changed modules: 459 passed, 13 failed, and all 13 are in models/ test files (chart-time-axis, phase-3-evaluation, phase-4-model-selection, core-config) that were already failing before DS-LAKE-032. A detached-HEAD worktree baseline gives the identical result on those 4 files: 13 failed / 91 passed on clean HEAD and in the working tree. Backend: jest 186/186 across the dataset-version and dataset-draft suites. Backend tsc has 61 errors, all in untouched spec files. Python: pytest 314 passed, 0 failed. ruff on the touched files matches HEAD, except UP045 on the two new Optional[] fields in schemas/preprocess.py, kept to match that model's existing Optional convention. Second round (T07–T10): `vitest related` on the 8 changed modules: 33 files, 296/296 pass. tsc is at its baseline of 4. eslint shows no new findings on any touched file (each compared with its HEAD copy). After review fixes: `vitest related` 33 files, 301/301; tsc 4; eslint matches HEAD on every touched file."
+        },
+        {
+          "id": "DS-LAKE-032-T07",
+          "title": "Batch tag multi-select above the Cleaning Pipeline header; remove per-step selector",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "New processing/imputation/cleaning-tag-select.tsx with search, select-all/clear and a Cleaned marker. Candidates = base.tags minus targetTag, matching the sidebar's cleanableTags. It writes setCleaningTags + relock exactly like the sidebar. Rendered in step-5 whether or not tags are selected, so an empty batch can be filled from it. Delete step-tag-scope.tsx and its usage.",
+          "result": "processing/imputation/cleaning-tag-select.tsx: a popover with search, Select all / Clear, a Cleaned marker, a 'N of M selected' trigger, and picks kept in candidate order. step-5 renders it above ImputationDetailPanel and outside the cleaningTags>0 conditional, writing setCleaningTags + relock like the sidebar. Candidates = base.tags minus targetTag (the sidebar's cleanableTags). step-tag-scope.tsx and its usage were deleted; the confirm copy is back to 'applies to all N tags' plus a window hint on windowed steps. Tests: __tests__/cleaning-tag-select.test.tsx, 6 selector cases."
+        },
+        {
+          "id": "DS-LAKE-032-T08",
+          "title": "Merge the two Time Crop controls into Data Cutting & Outlier Removal, using CalendarDateTimePicker",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "data-cropping-chart.tsx: drop the 'Method 2: Time Crop' block and CropTimeInputs. outlier-removal-panel.tsx: CalendarDateTimePicker with stamps via stampFromTimestamp and a pure snap of a picked stamp back to a real raw timestamp (start = first reading at or after it, end = last reading at or before it). Keep the clear-on-full-span rule.",
+          "result": "data-cropping-chart.tsx: the 'Method 2: Time Crop' block and CropTimeInputs (104 lines) were removed, along with their now-unused imports. outlier-removal-panel.tsx TimeCropInputs now uses two CalendarDateTimePicker pickers (dataBounds from raw timestamps via stampFromTimestamp, allowed ranges block inversion). A pick snaps through the new lib/date-stamp.ts snapStampIndex: a start keeps the first reading at or after the stamp, an end keeps the last at or before it, minute-inclusive. The full span still clears the crop. snapStampIndex has 4 cases in cleaning-tag-select.test.tsx. eslint: data-cropping-chart went from 3 errors at HEAD to 2 now, outlier-removal-panel stayed at 0. tsc is at its baseline of 4. Review fix: the inversion backstop originally compared rawTimestamps.indexOf(), which returns -1 for a crop restored from a saved config in a different string form (ISO Z vs naive). That would have silently dropped every Start pick. It now compares the new lib/date-stamp.ts wallClockKey(), with 2 cases in cleaning-tag-select.test.tsx."
+        },
+        {
+          "id": "DS-LAKE-032-T09",
+          "title": "Isolate: pill row → Select in the before/after preview",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "processing/imputation/imputation-trend-chart.tsx. shadcn Select, with options = tags and a colour dot through chartColorVar(resolveTagMeta(tag).chartIndex). Same onIsolate contract.",
+          "result": "imputation-trend-chart.tsx: the 'Isolate:' pill row is now a shadcn Select (aria-label 'Isolate tag'), with options carrying the tag's chartColorVar dot. Still hidden below 2 tags, same onIsolate contract; the now-unused cn import was removed. eslint matches HEAD: 2 pre-existing set-state-in-effect errors."
+        },
+        {
+          "id": "DS-LAKE-032-T10",
+          "title": "Conditional cut-off: two-operator range rule (200 <= tag < 500)",
+          "status": "completed",
+          "progress": 100,
+          "scope_note": "lib/precleanse.ts: ConditionalRule.lower plus an exported matchesConditionalRule() used by the precleanse loop. outlier-removal-panel.tsx row: a 'Range' toggle adds or removes the lower bound, shown as [value][< | <=] TAG [< | <=][value]. The empty-state hint mentions the range form. Unit tests for the evaluator: inclusive and exclusive ends, an incomplete lower bound is skipped, and no-lower behaviour is unchanged.",
+          "result": "lib/precleanse.ts: ConditionalRule.lower?: {value, op: '<'|'<='} and an exported matchesConditionalRule(). That is now the precleanse loop's only check: an incomplete lower bound is skipped, and a rule without a lower bound is unchanged. outlier-removal-panel.tsx: a 'Range' toggle on each conditional row. Turning it on adds {value:'', op:'<='} and coerces the right-hand op into < / <=; turning it off DELETES `lower`. The row reads [Low][< | <=] TAG [< | <=][High], and the empty-state hint shows the range example. lib/__tests__/conditional-range-rule.test.ts: 6 cases (inclusive/exclusive ends, incomplete lower, legacy single-op, precleanse drop_row end to end). Review fix: the Range toggle renders only when `!rule.source`. A preset row (sdta / preset-range) is read back as a single op/value by activeBounds and by the SD&TA in-sync signature, so a lower bound there would change what the rule cuts unnoticed. That is what makes D09's claim hold. 3 UI cases in __tests__/outlier-removal-panel.test.tsx: on, off-deletes-lower, no toggle on an sdta row."
+        }
+      ],
+      "acceptance_criteria": [
+        "Each cleaning step can be limited to a subset of the batch's tags; unset means all tags, and existing recipes behave unchanged.",
+        "Clip Bounds, Crop to Range and Exclude Range accept an optional Start/End date-time and only affect readings inside it.",
+        "The browser preview and the server clean produce identical results for tag-scoped and windowed steps (parity fixtures).",
+        "A step whose tag scope no longer intersects the batch is not sent to the server.",
+        "The before/after preview isolates a tag through a Select, not a pill row.",
+        "A conditional cut-off rule can be written as `low <= TAG < high` and cuts only readings inside that interval."
+      ],
+      "verification": [
+        {
+          "id": "DS-LAKE-032-V01",
+          "description": "Unit: applyCleaningStep skips out-of-scope tags and out-of-window rows for clip/crop/exclude.",
+          "status": "completed",
+          "result": "PASS — cleaning-step-scope.test.ts 9 cases"
+        },
+        {
+          "id": "DS-LAKE-032-V02",
+          "description": "Unit: mapper intersects tags, drops empty ops, passes startTime/endTime.",
+          "status": "completed",
+          "result": "PASS — cleaning-op-mapper.test.ts 7/7"
+        },
+        {
+          "id": "DS-LAKE-032-V03",
+          "description": "Parity: the python engine reproduces the new client fixtures exactly.",
+          "status": "completed",
+          "result": "PASS — 4 new fixtures, both python paths"
+        },
+        {
+          "id": "DS-LAKE-032-V04",
+          "description": "Backend: CleaningOperationSchema keeps startTime/endTime (not stripped).",
+          "status": "completed",
+          "result": "PASS — dataset-version.authorized.dto.spec.ts 2/2"
+        },
+        {
+          "id": "DS-LAKE-032-V05",
+          "description": "Live browser: scope a Clip to one tag inside a window, preview it, save, and confirm the server-cleaned artifact matches.",
+          "status": "pending"
+        }
+      ],
+      "progress_note": "T01–T10 are implemented and checked. Held below 100 because V05, the live browser pass, has not run: the dev stack is down. Also to verify in the browser: the batch selector and the sidebar staying in sync, the single Time Crop in Data Cutting & Outlier Removal, the Isolate Select, and a Range conditional rule."
     },
     {
-      "id": "DS-LAKE-031-D03",
-      "decision": "Month colour is fixed by the month's position in the picked list, even if an earlier month has no data.",
-      "why": "The popover's swatch is the legend key; the chart must draw each month in the colour the popover shows."
-    },
-    {
-      "id": "DS-LAKE-031-D04",
-      "decision": "Focusing a tag in Top Relationships lists EVERY other resolved tag by |r|, with no threshold; unfocused keeps today's strong-pairs-only list.",
-      "why": "Once a user has picked a tag to investigate, 'no relationship' is also an answer. Weak pairs are styled neutral, strong pairs keep the existing highlight."
-    },
-    {
-      "id": "DS-LAKE-031-D05",
-      "decision": "Clicking a pair opens the Scatter tab with the focused tag on Y and its partner on X.",
-      "why": "The focused tag is the one being explained. The card sets both axis picks outright rather than via pickX/pickY, whose swap rule would fire against the previous axes. The compare modal renders the same chart without onSelectPair, so its rows stay static."
-    }
-  ],
-  "findings": [
-    "The correlation matrix is server-resolved and capped (topK, near-constant filter, DS-LAKE-005B-D-T05a/b), so the focus select can only offer tags the matrix resolved — a sidebar tag missing from it was excluded server-side, not by this feature.",
-    "Histogram curve heights are counts (density * n * binWidth), so a month with more Good readings draws taller. Stated in the monthly caption rather than normalised, matching the compare modal.",
-    "The header's Period filter does not apply in monthly mode — the compared months are the periods. Stated in the caption.",
-    "While monthly mode shows, the tag-compare histogram/boxplot hooks receive an empty tag list and idle, and the monthly hooks fire only for the visible tab, so the mode costs no hidden requests."
-  ],
-  "tasks": [
-    {
-      "id": "DS-LAKE-031-T01",
-      "title": "Monthly compare: lib/monthly-compare.ts, hooks/dataset/use-monthly-compare.ts, CompareMonthsPopover, card wiring",
+      "id": "DS-LAKE-033",
+      "title": "Step 2 fetch progress bar preloads while a batch is in flight",
+      "priority": 33,
       "status": "completed",
       "progress": 100,
-      "result": "Pure month selection/merge helpers; useMonthlyHistograms/useMonthlyBoxplots route through the SAME leg the card already chose (draft vs dataset) and ride useDebouncedAbortableRequest (debounce, abort-on-supersede, cache keyed on leg+ids+tag+months), using Promise.allSettled so one failed month does not fail the comparison."
+      "dependencies": [],
+      "description": "useDatasetStudioFetch moves `progress` only when a whole tag batch lands (completedBatches / totalBatches). A fetch of one batch, the common case for a small tag list, therefore sat at 0% until it jumped to 100% and read as stuck.",
+      "decisions": [
+        {
+          "id": "DS-LAKE-033-D01",
+          "decision": "Display-only preload, real progress untouched. PRELOAD_DELAY_MS (500) after each step starts, the bar runs ahead to preloadProgress(): 66% of the batches in flight (at most FETCH_CONCURRENCY = 4), never past 99. It never steps back within a run, the preload is keyed to the run's startedAt, and when the run is not active the bar shows real progress exactly.",
+          "why": "User request 2026-10-01, following their own pattern `setTimeout(() => setProgress(66), 500)`. Keeping it out of dwFetchProgressAtom means error, cancel and done still report exactly what landed."
+        }
+      ],
+      "tasks": [
+        {
+          "id": "DS-LAKE-033-T01",
+          "title": "preloadProgress + usePreloadedProgress, wired into step-2-raw-data.tsx",
+          "status": "completed",
+          "progress": 100,
+          "result": "lib/dataset-fetch.ts gains FETCH_CONCURRENCY, PRELOAD_FRACTION and preloadProgress(); useDatasetStudioFetch's runPool uses FETCH_CONCURRENCY instead of a literal 4. New hooks/dataset/use-preloaded-progress.ts. Step 2's Progress bar and % label read the shown value; the shadcn Progress indicator's existing transition-all animates the jump. hooks/__tests__/use-preloaded-progress.test.tsx: 8 cases (66 for one batch, the 4-in-flight cap, never 100 early, delay, no step-back, inactive returns real progress, a new run resets)."
+        }
+      ],
+      "acceptance_criteria": [
+        "A one-batch fetch shows progress before it completes.",
+        "The bar never moves backwards during a run and reads real progress after done, error or cancel."
+      ],
+      "verification": [
+        {
+          "id": "DS-LAKE-033-V01",
+          "description": "Unit: hook and helper.",
+          "status": "completed",
+          "result": "PASS — 8/8"
+        },
+        {
+          "id": "DS-LAKE-033-V02",
+          "description": "Live browser: fetch a small tag list and watch the bar move before the batch lands.",
+          "status": "pending"
+        }
+      ],
+      "carried_forward": "Not seen in a browser (dev stack down). tsc is at its baseline of 4, and eslint on the touched files matches HEAD."
     },
     {
-      "id": "DS-LAKE-031-T02",
-      "title": "Top Relationships: focus-tag filter and click-to-scatter",
+      "id": "DS-LAKE-034",
+      "title": "Review & Save shows the EDA card on GOLD; scatter points coloured by time (month, or year beyond 12 months)",
+      "priority": 34,
+      "status": "in_progress",
+      "progress": 90,
+      "dependencies": [
+        "DS-LAKE-005B-D",
+        "DS-LAKE-031"
+      ],
+      "description": "Step 6 (Review & Save) shows tiles and a validation report but not the data itself, so the user cannot look at the final GOLD frame before committing it. Separately, the scatter plot draws every point in one colour, so a relationship that drifted over the dataset's months (process change, sensor drift) is invisible. The server's sampled points carry only x/y.",
+      "decisions": [
+        {
+          "id": "DS-LAKE-034-D01",
+          "decision": "Step 6 mounts the existing DataAnalysisCard as the LAST section, in default (draft-atom) mode, which already routes its server tabs to `goldArtifactId ?? draftArtifactId`. Its row sample comes from a new draft-leg twin of useArtifactRows that pages the SAME artifact, bounded by previewRowLimit(columns). showTransforms is false because review must not write scaler config. It renders only on the draft save path (draft + gate artifact).",
+          "why": "User request 2026-10-01. Reusing the card keeps the four server tabs, monthly compare and the correlation tools identical to Steps 3.1 and 4. The draft /rows route cannot project tags, so the row limit is sized from the artifact's own column count rather than a flat number."
+        },
+        {
+          "id": "DS-LAKE-034-D02",
+          "decision": "Each sampled scatter point carries its timestamp `t` (naive wall clock), added as an optional field. The client colours points by calendar MONTH, or by YEAR once the points span more than 12 months, on a sequential teal-to-purple ramp (--chart-4 to --chart-5, never red/amber) with a colour bar giving the first and last labels. Points without `t` (an older server) keep the single colour.",
+          "why": "User request 2026-10-01: datasets are at least 6 months, and more than a year should scale per year. The buckets cover the whole span continuously, empty months included, so a colour always means the same time. Grouping into one Scatter series per bucket keeps the tooltip and legend simple."
+        }
+      ],
+      "tasks": [
+        {
+          "id": "DS-LAKE-034-T01",
+          "title": "python: scatter points carry `t`",
+          "status": "completed",
+          "progress": 100,
+          "result": "scatter_service.py: _good_mask() is shared by _good_pairs() and the new _point_stamps(), so each point's `t` comes from the SAME row as its x/y after the Good filter. `t` is formatted 'YYYY-MM-DD HH:MM:SS' (naive wall clock, no tz conversion). schemas ScatterPoint.t: Optional[str]. Chart parity already excludes `points`. pytest: test_scatter_service + test_chart_parity 47 passed, including the new case where a Bad row is dropped and `t` stays paired."
+        },
+        {
+          "id": "DS-LAKE-034-T02",
+          "title": "client: lib/scatter-time.ts buckets + ramp; TagScatterChart colours by bucket + colour bar",
+          "status": "completed",
+          "progress": 100,
+          "result": "New lib/scatter-time.ts: sequentialRampColor() (--chart-4 to --chart-5 via color-mix; monthly-compare's monthColor >5 branch now reuses it) and timeBuckets(). timeBuckets() reads only each stamp's leading YYYY-MM, covers every month from the first point to the last via monthOptions(), switches to per-year past MONTHLY_BUCKET_LIMIT = 12, and returns null without stamps. TagScatterChart: one Scatter series per bucket that has points, plus a trailing neutral 'No timestamp' series, and a TimeColorBar showing the unit and the first/last labels. With no stamps it keeps the old single --chart-2 cloud. DraftScatterPoint.t?: string. lib/scatter-time.test.ts: 8 cases."
+        },
+        {
+          "id": "DS-LAKE-034-T03",
+          "title": "Step 6: DataAnalysisCard on GOLD via a draft-artifact rows hook",
+          "status": "completed",
+          "progress": 100,
+          "result": "New hooks/dataset/use-draft-artifact-sample.ts, the draft-leg twin of useArtifactRows. It sizes the row limit with previewRowLimit(columnCount) because draft /rows cannot project tags, and keys each page to `draftId|artifactId` so a rotated GOLD never shows old rows. step-6-review-save.tsx: the last section mounts DataAnalysisCard (default draft mode, showTransforms=false, range = PERIOD_TO_RANGE[timeRange]) over validation.gateArtifactId, which equals the card's own goldArtifactId ?? draftArtifactId. It renders only on the draft save path and not while goldNotReady. The heading reads 'GOLD data to be saved', or 'Cleaned data…' with no feature recipe. The step-6 test suite now stubs the card (its charts need window.matchMedia, which jsdom lacks; the stub records which rows it gets) and adds 2 cases: shown over the commit artifact, hidden while waiting on GOLD. Suite 37/37; hook test 4/4."
+        },
+        {
+          "id": "DS-LAKE-034-T04",
+          "title": "Checks",
+          "status": "completed",
+          "progress": 100,
+          "result": "`vitest related` on the 6 changed client modules: 22 files, 194/194. tsc is at its baseline of 4. eslint matches HEAD on modified files, and new files are clean. Python: ruff matches HEAD on scatter_service and the test; schemas/preprocess.py gains 3 UP045 findings on the new Optional[] fields, matching that file's existing convention."
+        }
+      ],
+      "acceptance_criteria": [
+        "Review & Save ends with the EDA card reading the GOLD artifact.",
+        "Scatter points are coloured by month, or by year when the data spans more than 12 months, with a colour bar."
+      ],
+      "verification": [
+        {
+          "id": "DS-LAKE-034-V01",
+          "description": "pytest: points carry t in the Good-pair order.",
+          "status": "completed",
+          "result": "PASS — test_scatter_points_carry_their_own_timestamp"
+        },
+        {
+          "id": "DS-LAKE-034-V02",
+          "description": "Unit: bucketing switches month to year past 12 months, and buckets are continuous.",
+          "status": "completed",
+          "result": "PASS — lib/scatter-time.test.ts 8/8"
+        },
+        {
+          "id": "DS-LAKE-034-V03",
+          "description": "Live browser on a 6+ month and a 1+ year dataset.",
+          "status": "pending"
+        }
+      ],
+      "progress_note": "Implemented and tested in python and client. Held below 100 because V03 (a live browser pass on a 6-month and a 1-year dataset) has not run: the dev stack is down. The python service also needs a restart to start sending `t`; until then the chart falls back to one colour, by design."
+    },
+    {
+      "id": "DS-LAKE-035",
+      "title": "Step 2 Interval Start/End use CalendarDateTimePicker",
+      "priority": 35,
       "status": "completed",
       "progress": 100,
-      "result": "correlationsWith() in lib/data-quality.ts (drops non-finite r). TagCorrelationChart gains a tag Select and an optional onSelectPair; rows render as buttons only when it is supplied."
-    },
-    {
-      "id": "DS-LAKE-031-T03",
-      "title": "Tests and checks",
-      "status": "completed",
-      "progress": 100,
-      "result": "lib/monthly-compare.test.ts (13 cases) and chart/__tests__/tag-correlation-chart.test.tsx (3 cases) pass. Client tsc: only the 4 pre-existing errors (dataset-compare-modal.tsx x3, model-evaluation.test.ts). eslint clean on every touched file. Full vitest: 27 failed / 2224 passed vs untouched baseline 27 failed / 2208 passed — same failures, none in data-studio."
+      "dependencies": [],
+      "description": "Step 2's fetch-window Start/End were the native DateTimePicker, the last date-range control in the dataset wizard not on the design-system CalendarDateTimePicker (DESIGN_SYSTEM.md, 'Date-time range over data').",
+      "decisions": [
+        {
+          "id": "DS-LAKE-035-D01",
+          "decision": "Both pickers use CalendarDateTimePicker with the same stamp format (toDateTimeLocal's yyyy-MM-ddTHH:mm), so nav.setCustomRange and every downstream reader are unchanged. allowed: Start keeps the MODEL-SERVE-017 retrain floor and stops at End; End runs from Start to now. dataBounds (how far the calendar pages) is the retrain floor, or FETCH_CALENDAR_YEARS = 10 years back, up to now.",
+          "why": "User request 2026-10-01. Nothing is fetched yet at this step, so there is no first reading to bound the calendar by; ten years is a paging reach, not a validation rule, because `allowed` and the server stay the guards."
+        }
+      ],
+      "tasks": [
+        {
+          "id": "DS-LAKE-035-T01",
+          "title": "Swap pickers",
+          "status": "completed",
+          "progress": 100,
+          "result": "step-2-raw-data.tsx: the DateTimePicker import was replaced (toDateTimeLocal kept), with labels 'Fetch window start' / 'Fetch window end', defaultTime 00:00 / 23:59 (an end picked on today clamps to now through `allowed`), and className w-full. tsc is at its baseline of 4, eslint is clean. No Step 2 render test exists, so this is verified by the type check, not a test."
+        }
+      ],
+      "acceptance_criteria": [
+        "Step 2's Interval Start/End are calendar date-time pickers."
+      ],
+      "verification": [
+        {
+          "id": "DS-LAKE-035-V01",
+          "description": "Live: pick a start and end, fetch, and confirm the request window.",
+          "status": "pending"
+        }
+      ]
     }
-  ],
-  "acceptance_criteria": [
-    "Histogram and Box Plot can switch between comparing tags and comparing months of one tag.",
-    "The month picker offers every month the artifact spans and caps at 5.",
-    "The tag in monthly mode is chosen from the sidebar's active tags, one at a time.",
-    "Top Relationships can be filtered to one tag, listing all of its partners by |r|.",
-    "Clicking a pair opens the Scatter tab with that pair on the axes."
-  ],
-  "verification": [
-    {
-      "id": "DS-LAKE-031-V01",
-      "description": "Merge helpers: month labels, recomputed domain, missing months named, colour tied to position.",
-      "status": "completed",
-      "result": "lib/monthly-compare.test.ts"
-    },
-    {
-      "id": "DS-LAKE-031-V02",
-      "description": "correlationsWith orders by |r|, keeps weak pairs, drops non-finite r.",
-      "status": "completed",
-      "result": "lib/monthly-compare.test.ts"
-    },
-    {
-      "id": "DS-LAKE-031-V03",
-      "description": "Clicking a strong pair calls onSelectPair with oriented axes; rows static without it.",
-      "status": "completed",
-      "result": "tag-correlation-chart.test.tsx"
-    },
-    {
-      "id": "DS-LAKE-031-V04",
-      "description": "Live browser pass: monthly histogram and box plot for a real multi-month artifact on both the draft leg (create) and the dataset leg (edit); focus a tag, click a pair, land on Scatter.",
-      "status": "pending"
-    }
-  ]
-}
   ],
   "deferred": [
     "TimescaleDB provisioning — image swap, extension, hypertables, retention and continuous aggregates. Nothing of this exists today and adding it is new infrastructure requiring an explicit decision (CLAUDE.md §3).",

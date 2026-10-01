@@ -24,7 +24,11 @@ import {
 } from '@/components/ui/chart'
 import { regressionSegment } from '@/lib/preprocessing'
 import { tagMeta } from '@/lib/mock-readings'
-import type { DraftScatterResult } from '@/services/dataset-draft'
+import type {
+  DraftScatterPoint,
+  DraftScatterResult,
+} from '@/services/dataset-draft'
+import { timeBuckets, type TimeBuckets } from '@/lib/scatter-time'
 import { useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 
@@ -77,6 +81,62 @@ function fmt(n: number): string {
   return n.toLocaleString(undefined, { maximumFractionDigits: 2 })
 }
 
+/** DS-LAKE-034-D02. The cloud split into one series per time bucket, oldest
+ * first, so each draws in its own ramp colour. Points without a usable stamp
+ * fall into a trailing neutral series rather than vanishing. */
+function seriesByTime(
+  points: DraftScatterPoint[],
+  scale: TimeBuckets,
+): { key: string; label: string; color: string; points: DraftScatterPoint[] }[] {
+  const byKey = new Map<string, DraftScatterPoint[]>()
+  const undated: DraftScatterPoint[] = []
+  for (const p of points) {
+    const key = scale.keyOf(p.t)
+    if (key === null) {
+      undated.push(p)
+      continue
+    }
+    const list = byKey.get(key)
+    if (list) list.push(p)
+    else byKey.set(key, [p])
+  }
+  const series = scale.buckets
+    .filter(b => byKey.has(b.key))
+    .map(b => ({ ...b, points: byKey.get(b.key)! }))
+  if (undated.length > 0) {
+    series.push({
+      key: 'undated',
+      label: 'No timestamp',
+      color: 'var(--muted-foreground)',
+      points: undated,
+    })
+  }
+  return series
+}
+
+/** Horizontal colour bar for the time scale: the ramp, with the first and
+ * last bucket named and the unit stated, so a colour reads as a date. */
+function TimeColorBar({ scale }: { scale: TimeBuckets }) {
+  const first = scale.buckets[0]
+  const last = scale.buckets[scale.buckets.length - 1]
+  if (!first || !last) return null
+  const gradient = `linear-gradient(to right, ${scale.buckets
+    .map(b => b.color)
+    .join(', ')})`
+  return (
+    <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+      <span>Colour by {scale.unit}</span>
+      <span className="font-mono tabular-nums">{first.label}</span>
+      <span
+        aria-hidden
+        className="h-2 w-40 rounded-full ring-1 ring-foreground/10"
+        style={{ background: first === last ? first.color : gradient }}
+      />
+      <span className="font-mono tabular-nums">{last.label}</span>
+    </div>
+  )
+}
+
 export function TagScatterChart({ data, xTag, yTag, status }: Props) {
   const xMeta = tagMeta(xTag)
   const yMeta = tagMeta(yTag)
@@ -108,6 +168,16 @@ export function TagScatterChart({ data, xTag, yTag, status }: Props) {
   }, [data])
 
   const bounds = zoom ?? extent
+
+  // `null` (no stamps, e.g. an older server) keeps the single-colour cloud.
+  const timeScale = useMemo(
+    () => (data ? timeBuckets(data.points.map(p => p.t)) : null),
+    [data],
+  )
+  const timeSeries = useMemo(
+    () => (data && timeScale ? seriesByTime(data.points, timeScale) : null),
+    [data, timeScale],
+  )
 
   const zoomBy = (factor: number) => {
     if (!bounds) return
@@ -258,6 +328,8 @@ export function TagScatterChart({ data, xTag, yTag, status }: Props) {
         </div>
       </div>
 
+      {timeScale && <TimeColorBar scale={timeScale} />}
+
       {zoom && (
         // States BOTH limits, because either alone would mislead: the fit is
         // not recomputed for the visible window, and no extra points arrive
@@ -330,11 +402,23 @@ export function TagScatterChart({ data, xTag, yTag, status }: Props) {
           </YAxis>
           <ZAxis range={[50, 50]} />
           <ChartTooltip cursor={false} content={<ChartTooltipContent />} />
-          <Scatter
-            data={data.points}
-            fill="var(--chart-2)"
-            isAnimationActive={false}
-          />
+          {timeSeries ? (
+            timeSeries.map(series => (
+              <Scatter
+                key={series.key}
+                name={series.label}
+                data={series.points}
+                fill={series.color}
+                isAnimationActive={false}
+              />
+            ))
+          ) : (
+            <Scatter
+              data={data.points}
+              fill="var(--chart-2)"
+              isAnimationActive={false}
+            />
+          )}
           {segment && (
             <ReferenceLine
               ifOverflow="extendDomain"

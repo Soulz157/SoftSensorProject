@@ -57,13 +57,27 @@ const validateArtifact = vi.fn()
 const finalizeArtifact = vi.fn()
 const saveDraft = vi.fn()
 const fetchMetadata = vi.fn()
+const fetchRows = vi.fn()
 vi.mock('@/services/dataset-draft', () => ({
   datasetDraftService: {
     validate: (...args: unknown[]) => validateArtifact(...args),
     finalize: (...args: unknown[]) => finalizeArtifact(...args),
     save: (...args: unknown[]) => saveDraft(...args),
     metadata: (...args: unknown[]) => fetchMetadata(...args),
+    rows: (...args: unknown[]) => fetchRows(...args),
   },
+}))
+
+/**
+ * DS-LAKE-034. The analysis card is its own tested component with its own
+ * server hooks and charts (which need browser APIs jsdom lacks). This suite
+ * is about Save, so the card is a stub that only records WHICH rows it was
+ * handed — enough to prove where it appears and what it shows.
+ */
+vi.mock('../processing/data-analysis-card', () => ({
+  DataAnalysisCard: ({ dataset }: { dataset: { tags: string[] } }) => (
+    <div data-testid="analysis-card">{dataset.tags.join(',')}</div>
+  ),
 }))
 
 const toastWarning = vi.fn()
@@ -155,6 +169,9 @@ beforeEach(() => {
   // state rather than staying `pending` — same reasoning as `validateArtifact`'s
   // own default PASS above. Individual tests override this when the
   // metadata VALUE itself is what's under test.
+  fetchRows.mockResolvedValue({
+    data: { totalRowCount: 0, offset: 0, tags: [], rows: [] },
+  })
   fetchMetadata.mockResolvedValue({
     data: {
       id: 'final-1',
@@ -775,6 +792,48 @@ describe('Step6ReviewSave — artifact-adoption save (DS-LAKE-005B-B-T01, Step 5
     expect(
       screen.getByRole('button', { name: /save dataset/i }),
     ).toBeInTheDocument()
+  })
+
+  it('DS-LAKE-034: ends with the analysis card over the artifact Save will commit', async () => {
+    withGateArtifact()
+    fetchRows.mockResolvedValue({
+      data: {
+        totalRowCount: 10,
+        offset: 0,
+        tags: ['TI-101'],
+        rows: [],
+      },
+    })
+
+    render(
+      <Provider store={store}>
+        <Step6ReviewSave nav={nav} />
+      </Provider>,
+    )
+
+    const card = await screen.findByTestId('analysis-card')
+    await waitFor(() => expect(card).toHaveTextContent('TI-101'))
+    expect(fetchRows).toHaveBeenCalledWith(
+      'draft-1',
+      'silver-1',
+      expect.objectContaining({ offset: 0 }),
+    )
+  })
+
+  it('DS-LAKE-034: hides the card while a feature recipe still waits on GOLD', async () => {
+    withGateArtifact()
+    store.set(dwFeatureConfigsAtom, [
+      { id: 'f1', kind: 'lag', tag: 'TI-101', k: 1 },
+    ] as never)
+
+    render(
+      <Provider store={store}>
+        <Step6ReviewSave nav={nav} />
+      </Provider>,
+    )
+
+    await screen.findByRole('button', { name: /save dataset/i })
+    expect(screen.queryByTestId('analysis-card')).not.toBeInTheDocument()
   })
 
   it('blocks Save when a feature recipe exists but GOLD has not been produced yet', async () => {

@@ -320,6 +320,11 @@ export default function ModelDetailPage({
             ? 'Failed to start.'
             : 'Failed to update deploy status',
       )
+      // The same refresh trio as success: the header badge and Start/Stop
+      // must show the server's state after a refusal, not the last read.
+      refreshModels()
+      refresh()
+      refetchInferenceStatus()
     } finally {
       setIsToggling(false)
     }

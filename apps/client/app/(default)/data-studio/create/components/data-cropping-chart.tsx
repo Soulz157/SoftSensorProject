@@ -5,7 +5,6 @@ import {
   Scissors,
   RotateCcw,
   MousePointerSquareDashed,
-  CalendarClock,
   Eraser,
   Crop,
   ChevronsDownUp,
@@ -28,7 +27,6 @@ import {
 } from '@/components/ui/chart'
 import { toChartRows, type Dataset } from '@/lib/preprocessing'
 import {
-  nearestTimestampIndex,
   clipImpact,
   percentileBounds,
   type CropRange,
@@ -37,7 +35,6 @@ import {
   type ClipImpact,
   type RangeExclusion,
 } from '@/lib/precleanse'
-import { DateTimePicker, toDateTimeLocal } from '@/components/date-time-picker'
 import {
   AlertDialog,
   AlertDialogContent,
@@ -107,110 +104,6 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v))
 }
 
-// ── Component สำหรับช่อง Input Start/End Date ──
-function CropTimeInputs({
-  timestamps,
-  startIdx,
-  endIdx,
-  disabled,
-  onCommit,
-}: {
-  timestamps: string[]
-  startIdx: number
-  endIdx: number
-  disabled: boolean
-  onCommit: (next: [number, number]) => void
-}) {
-  const lastIdx = Math.max(0, timestamps.length - 1)
-
-  const committedStart = timestamps[startIdx]
-    ? toDateTimeLocal(new Date(timestamps[startIdx]!))
-    : ''
-  const committedEnd = timestamps[endIdx]
-    ? toDateTimeLocal(new Date(timestamps[endIdx]!))
-    : ''
-  const minBound = timestamps[0]
-    ? toDateTimeLocal(new Date(timestamps[0]!))
-    : undefined
-  const maxBound = timestamps[lastIdx]
-    ? toDateTimeLocal(new Date(timestamps[lastIdx]!))
-    : undefined
-
-  const [startDraft, setStartDraft] = useState(committedStart)
-  const [endDraft, setEndDraft] = useState(committedEnd)
-  const [invalid, setInvalid] = useState(false)
-
-  useEffect(() => {
-    setStartDraft(committedStart)
-    setEndDraft(committedEnd)
-    setInvalid(false)
-  }, [committedStart, committedEnd])
-
-  const handleChange = (edge: 0 | 1, raw: string) => {
-    if (edge === 0) setStartDraft(raw)
-    else setEndDraft(raw)
-
-    if (!raw) {
-      setInvalid(false)
-      return
-    }
-    const ms = new Date(raw).getTime()
-    if (Number.isNaN(ms)) return
-
-    const snapped = nearestTimestampIndex(timestamps, ms)
-    const next: [number, number] =
-      edge === 0 ? [snapped, endIdx] : [startIdx, snapped]
-
-    if (next[0] > next[1]) {
-      setInvalid(true)
-      return
-    }
-    setInvalid(false)
-    onCommit(next)
-  }
-
-  const inputCls = cn(
-    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-    'disabled:cursor-not-allowed disabled:opacity-50',
-    invalid && 'border-destructive focus-visible:ring-destructive',
-  )
-
-  return (
-    <div className="mt-3 grid grid-cols-2 gap-2 border-t border-border/60 pt-3">
-      <label className="space-y-1">
-        <span className="text-[11px] font-medium text-muted-foreground">
-          Start Time
-        </span>
-        <DateTimePicker
-          value={startDraft}
-          min={minBound}
-          max={maxBound}
-          disabled={disabled}
-          onChange={e => handleChange(0, e)}
-          className={inputCls}
-        />
-      </label>
-      <label className="space-y-1">
-        <span className="text-[11px] font-medium text-muted-foreground">
-          End Time
-        </span>
-        <DateTimePicker
-          value={endDraft}
-          min={minBound}
-          max={maxBound}
-          disabled={disabled}
-          onChange={e => handleChange(1, e)}
-          className={inputCls}
-        />
-      </label>
-      {invalid && (
-        <p className="col-span-2 text-[11px] text-destructive">
-          Start time must be on or before End time.
-        </p>
-      )}
-    </div>
-  )
-}
 
 interface DragSelection {
   startIdx: number
@@ -901,24 +794,6 @@ export function DataCroppingChart({
             )}
           </LineChart>
         </ChartContainer>
-      </div>
-
-      {/* ── Method 2: Time Crop (absolute timestamp range) ── */}
-      <div className="border-t border-border/60 px-1 pt-3">
-        <div className="mb-1 flex flex-wrap items-center gap-2">
-          <CalendarClock className="h-3.5 w-3.5 text-primary" />
-          <h3 className="text-xs font-semibold text-foreground">Time Crop</h3>
-          <span className="text-[11px] text-muted-foreground">
-            Crop strictly by an absolute start / end timestamp.
-          </span>
-        </div>
-        <CropTimeInputs
-          timestamps={timestamps}
-          startIdx={startIdx}
-          endIdx={endIdx}
-          disabled={disabled}
-          onCommit={setRange01}
-        />
       </div>
 
       <AlertDialog

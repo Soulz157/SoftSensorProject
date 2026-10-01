@@ -3,8 +3,17 @@
 import { useState, type CSSProperties } from 'react'
 import { ChevronDown, GitCompareArrows, Grid3x3 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { topCorrelations } from '@/lib/data-quality'
+import { correlationsWith, topCorrelations } from '@/lib/data-quality'
+import { clusterOrder, reorderMatrix } from '@/lib/correlation-order'
+import { SegmentedToggle } from '@/components/segmented-toggle'
 import type { DraftCorrelationResult } from '@/services/dataset-draft'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import {
   Tooltip,
   TooltipContent,
@@ -49,7 +58,21 @@ interface Props {
   status: 'no-tags' | 'pending' | 'loading' | 'ready' | 'unavailable'
   /** |r| threshold for the "strong" highlight. Defaults to 0.8. */
   threshold?: number
+  /**
+   * DS-LAKE-031-D05. Supplied → each Top Relationships row is a button that
+   * hands back the pair oriented for a scatter plot: the focused tag (the one
+   * being explained) on Y, its partner on X; with no focus, `a` on Y. Left
+   * off (the compare modal), rows stay static.
+   */
+  onSelectPair?: (pair: { x: string; y: string }) => void
 }
+
+/** DS-LAKE-031-D07. `current` is the server's own column order (its
+ * variability ranking); `cluster` groups correlated tags together. */
+type HeatmapOrder = 'current' | 'cluster'
+
+/** Select value for "no focus" — Radix Select forbids an empty-string item. */
+const ALL_TAGS = '__all__'
 
 const COLOR_STOPS: Array<[number, [number, number, number]]> = [
   [0.0, [103, 0, 31]], // #67001F (Correlation -1.0)
@@ -110,8 +133,15 @@ function fmtR(r: number): string {
   return `${r >= 0 ? '+' : ''}${r.toFixed(2)}`
 }
 
-export function TagCorrelationChart({ data, status, threshold = 0.8 }: Props) {
+export function TagCorrelationChart({
+  data,
+  status,
+  threshold = 0.8,
+  onSelectPair,
+}: Props) {
   const [open, setOpen] = useState(false)
+  const [focusPick, setFocusPick] = useState<string | null>(null)
+  const [heatmapOrder, setHeatmapOrder] = useState<HeatmapOrder>('current')
 
   if (status === 'no-tags') {
     return (
@@ -170,7 +200,19 @@ export function TagCorrelationChart({ data, status, threshold = 0.8 }: Props) {
     )
   }
 
-  const top = topCorrelations(data, threshold)
+  // Derived, not reset in an effect: a pick the server no longer resolved
+  // (tag set changed, near-constant filter) simply reads as no focus.
+  const focus = focusPick && data.tags.includes(focusPick) ? focusPick : null
+  // DS-LAKE-031-D07. Computed only while the heatmap is open in cluster
+  // mode — cheap at the server's capped column count, and not memoised
+  // because the status early-returns above sit before any hook could.
+  const heatmap =
+    open && heatmapOrder === 'cluster'
+      ? reorderMatrix(data, clusterOrder(data))
+      : data
+  const top = focus
+    ? correlationsWith(data, focus)
+    : topCorrelations(data, threshold)
 
   return (
     <div className="space-y-3">
@@ -203,25 +245,61 @@ export function TagCorrelationChart({ data, status, threshold = 0.8 }: Props) {
         </div>
       </div>
 
-      <div className="flex items-center justify-between pt-1">
+      <div className="flex flex-wrap items-center gap-2 pt-1">
         <h3 className="text-xs font-semibold text-foreground">
           Top Relationships
         </h3>
         <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-semibold text-foreground">
           {top.length} pair{top.length !== 1 ? 's' : ''}
         </span>
+        <Select
+          value={focus ?? ALL_TAGS}
+          onValueChange={v => setFocusPick(v === ALL_TAGS ? null : v)}
+        >
+          <SelectTrigger
+            aria-label="Filter relationships by tag"
+            className="ml-auto h-8 w-55 cursor-pointer font-mono text-xs"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL_TAGS} className="cursor-pointer text-xs">
+              All tags
+            </SelectItem>
+            {data.tags.map(t => (
+              <SelectItem
+                key={t}
+                value={t}
+                className="cursor-pointer font-mono text-xs"
+              >
+                {t}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
+
+      {focus && (
+        <p className="text-[11px] text-muted-foreground">
+          Every tag paired with <span className="font-mono">{focus}</span>, by
+          |r|. Pairs below ±{threshold.toFixed(2)} are shown plainly.
+        </p>
+      )}
 
       {top.length > 0 ? (
         <ScrollArea className="w-full rounded-md [&>[data-radix-scroll-area-viewport]]:max-h-90">
           <div className="space-y-1.5 p-2">
             {top.map(pair => {
               const { bg, fg } = correlationColors(pair.r)
-              return (
-                <div
-                  key={`${pair.a}-${pair.b}`}
-                  className="flex items-center justify-between gap-3 rounded-lg bg-primary/5 px-3 py-2 ring-1 ring-primary/20"
-                >
+              const strong = Math.abs(pair.r) >= threshold
+              const rowClass = cn(
+                'flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left',
+                strong
+                  ? 'bg-primary/5 ring-1 ring-primary/20'
+                  : 'bg-muted/40 ring-1 ring-border',
+              )
+              const content = (
+                <>
                   <div className="flex min-w-0 items-center gap-2 font-mono text-xs">
                     <span className="truncate text-foreground">{pair.a}</span>
                     <span className="text-muted-foreground">↔</span>
@@ -233,6 +311,25 @@ export function TagCorrelationChart({ data, status, threshold = 0.8 }: Props) {
                   >
                     {fmtR(pair.r)}
                   </span>
+                </>
+              )
+              const key = `${pair.a}-${pair.b}`
+              return onSelectPair ? (
+                <button
+                  key={key}
+                  type="button"
+                  title={`Open ${pair.a} vs ${pair.b} as a scatter plot`}
+                  onClick={() => onSelectPair({ x: pair.b, y: pair.a })}
+                  className={cn(
+                    rowClass,
+                    'cursor-pointer transition-colors hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
+                  )}
+                >
+                  {content}
+                </button>
+              ) : (
+                <div key={key} className={rowClass}>
+                  {content}
                 </div>
               )
             })}
@@ -240,7 +337,9 @@ export function TagCorrelationChart({ data, status, threshold = 0.8 }: Props) {
         </ScrollArea>
       ) : (
         <p className="text-xs text-muted-foreground">
-          No tag pair reaches ±{threshold.toFixed(2)} correlation.
+          {focus
+            ? `No other tag has a usable correlation with ${focus}.`
+            : `No tag pair reaches ±${threshold.toFixed(2)} correlation.`}
         </p>
       )}
 
@@ -260,6 +359,26 @@ export function TagCorrelationChart({ data, status, threshold = 0.8 }: Props) {
         />
       </button>
 
+      {open && data.tags.length > 2 && (
+        <div className="flex flex-wrap items-center gap-3">
+          <SegmentedToggle
+            ariaLabel="Heatmap column order"
+            value={heatmapOrder}
+            onChange={setHeatmapOrder}
+            options={[
+              { value: 'current', label: 'Current order' },
+              { value: 'cluster', label: 'Cluster similar tags' },
+            ]}
+          />
+          {heatmapOrder === 'cluster' && (
+            <p className="text-[11px] text-muted-foreground">
+              Grouped by |r| — tags that move together sit next to each other.
+              Sign is ignored for grouping; the colour still shows it.
+            </p>
+          )}
+        </div>
+      )}
+
       {open && (
         <TooltipProvider delayDuration={100}>
           <div className="relative isolate max-h-96 overflow-auto rounded-md border border-border">
@@ -270,7 +389,7 @@ export function TagCorrelationChart({ data, status, threshold = 0.8 }: Props) {
                     style={{ position: 'sticky', left: 0, top: 0, zIndex: 30 }}
                     className="bg-card p-1"
                   />
-                  {data.tags.map(t => (
+                  {heatmap.tags.map(t => (
                     <TableHead
                       key={t}
                       style={{ position: 'sticky', top: 0, zIndex: 20 }}
@@ -294,7 +413,7 @@ export function TagCorrelationChart({ data, status, threshold = 0.8 }: Props) {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {data.tags.map((rowTag, i) => (
+                {heatmap.tags.map((rowTag, i) => (
                   <TableRow
                     key={rowTag}
                     className="border-none hover:bg-transparent"
@@ -317,8 +436,8 @@ export function TagCorrelationChart({ data, status, threshold = 0.8 }: Props) {
                         </TooltipContent>
                       </Tooltip>
                     </TableHead>
-                    {data.tags.map((colTag, j) => {
-                      const r = data.matrix[i]?.[j] ?? 0
+                    {heatmap.tags.map((colTag, j) => {
+                      const r = heatmap.matrix[i]?.[j] ?? 0
                       const displayValue = i === j ? 1.0 : r
                       const strong = i !== j && Math.abs(r) >= threshold
                       return (

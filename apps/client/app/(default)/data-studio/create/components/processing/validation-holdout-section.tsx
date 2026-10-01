@@ -48,8 +48,8 @@ function deriveRawWindow(raw: Dataset): CustomDateRange | null {
  * authored on it, which is what makes the holdout feature-bearing.
  *
  * Owns its own atom read/write, same convention as before the move: no
- * drag-selection state exists to keep in sync with, unlike
- * `CropTimeInputs`. Also owns the fetch-window and interval derivation that
+ * drag-selection state exists to keep in sync with, unlike the Time Crop
+ * (`TimeCropInputs`, outlier-removal-panel.tsx). Also owns the fetch-window and interval derivation that
  * used to be Step 2 local state (`customFrom`/`customTo`/
  * `effectiveInterval`) — gone by the time this component mounts, so it
  * reads the same underlying atoms directly instead.

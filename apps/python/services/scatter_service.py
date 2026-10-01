@@ -58,12 +58,25 @@ def _good_pairs(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Rows where BOTH tags are Good — see this module's own
     ADR-DS-LAKE-005B-D-scatter-status-filter docstring above."""
+    mask = _good_mask(frame, x_tag, y_tag)
     x_values = frame[x_tag].to_numpy(dtype="float64", copy=False)
     y_values = frame[y_tag].to_numpy(dtype="float64", copy=False)
+    return x_values[mask], y_values[mask]
+
+
+def _good_mask(frame: pd.DataFrame, x_tag: str, y_tag: str) -> np.ndarray:
     x_status = frame[status_column(x_tag)].to_numpy(copy=False)
     y_status = frame[status_column(y_tag)].to_numpy(copy=False)
-    mask = (x_status == STATUS_GOOD) & (y_status == STATUS_GOOD)
-    return x_values[mask], y_values[mask]
+    return (x_status == STATUS_GOOD) & (y_status == STATUS_GOOD)
+
+
+def _point_stamps(frame: pd.DataFrame, mask: np.ndarray) -> list[str]:
+    """DS-LAKE-034-D02. Each Good pair's timestamp, in the SAME order as
+    `_good_pairs`, as a naive wall-clock string (`YYYY-MM-DD HH:MM:SS`) — the
+    artifact column is already Bangkok wall clock, and the client buckets on
+    its leading `YYYY-MM` without any timezone conversion."""
+    times = pd.to_datetime(frame[TIMESTAMP_COLUMN]).to_numpy()[mask]
+    return [str(pd.Timestamp(t).strftime("%Y-%m-%d %H:%M:%S")) for t in times]
 
 
 def _linear_regression(x: np.ndarray, y: np.ndarray) -> dict[str, float]:
@@ -128,6 +141,7 @@ def build_scatter(store: ObjectStore, request: ScatterRequest) -> dict[str, Any]
     )
 
     x_values, y_values = _good_pairs(after, request.x_tag, request.y_tag)
+    stamps = _point_stamps(after, _good_mask(after, request.x_tag, request.y_tag))
     n = int(x_values.size)
 
     if n < 2:
@@ -136,7 +150,9 @@ def build_scatter(store: ObjectStore, request: ScatterRequest) -> dict[str, Any]
         # degenerate shape, never a crash.
         regression = _linear_regression(x_values, y_values)
         points = (
-            [{"x": float(x_values[0]), "y": float(y_values[0])}] if n == 1 else []
+            [{"x": float(x_values[0]), "y": float(y_values[0]), "t": stamps[0]}]
+            if n == 1
+            else []
         )
         return {
             "source_key": request.source_key,
@@ -151,7 +167,8 @@ def build_scatter(store: ObjectStore, request: ScatterRequest) -> dict[str, Any]
     regression = _linear_regression(x_values, y_values)
     sample = grid_bin_indices(x_values, y_values, request.max_points)
     points = [
-        {"x": float(x_values[i]), "y": float(y_values[i])} for i in sample.indices
+        {"x": float(x_values[i]), "y": float(y_values[i]), "t": stamps[i]}
+        for i in sample.indices
     ]
 
     return {

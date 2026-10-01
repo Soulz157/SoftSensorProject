@@ -306,3 +306,30 @@ export function piFetchInputError(
   if (!source) return { ok: false, error: 'No PI source selected.' }
   return { ok: true, source }
 }
+
+/** Batches fetched at once — `runPool`'s width in `useDatasetStudioFetch`. */
+export const FETCH_CONCURRENCY = 4
+
+/** How far into the in-flight share the bar may run ahead before a batch
+ * lands. Never 1: the bar must not read "done" before anything is. */
+export const PRELOAD_FRACTION = 0.66
+
+/**
+ * Where the progress bar may PRELOAD to while a fetch is running. Real
+ * progress only moves when a whole batch lands, so a single-batch fetch sat
+ * at 0% until it jumped to 100%, reading as stuck. The bar may run ahead by
+ * `PRELOAD_FRACTION` of the batches currently in flight (at most
+ * `FETCH_CONCURRENCY`), never past 99, and never below real progress. With
+ * one batch that is 0 → 66 → 100.
+ */
+export function preloadProgress(
+  completedBatches: number,
+  totalBatches: number,
+): number {
+  if (totalBatches <= 0) return 0
+  const done = Math.min(completedBatches, totalBatches)
+  const inFlight = Math.min(FETCH_CONCURRENCY, totalBatches - done)
+  if (inFlight <= 0) return 100
+  const ahead = ((done + inFlight * PRELOAD_FRACTION) / totalBatches) * 100
+  return Math.min(99, Math.round(ahead))
+}

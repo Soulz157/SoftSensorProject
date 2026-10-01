@@ -465,6 +465,26 @@ export function topCorrelations(
 }
 
 /**
+ * DS-LAKE-031-D04. Every partner of `tag`, strongest |r| first, with NO
+ * threshold — once a user has picked a tag to investigate, a weak pair is
+ * also an answer. `a` is always `tag`. A non-finite r (a server NaN arrives
+ * as JSON null) is dropped rather than ranked as 0. Empty when `tag` is not
+ * in the matrix.
+ */
+export function correlationsWith(m: CorrelationMatrix, tag: string): TagPair[] {
+  const i = m.tags.indexOf(tag)
+  if (i < 0) return []
+  const pairs: TagPair[] = []
+  for (let j = 0; j < m.tags.length; j++) {
+    if (j === i) continue
+    const r = m.matrix[i]?.[j]
+    if (typeof r !== 'number' || !Number.isFinite(r)) continue
+    pairs.push({ a: tag, b: m.tags[j]!, r })
+  }
+  return pairs.sort((p, q) => Math.abs(q.r) - Math.abs(p.r))
+}
+
+/**
  * The tag most correlated (by |Pearson r|) with `tag`, excluding itself.
  * Unlike `topCorrelations` (only pairs ≥ threshold), this always returns the
  * argmax partner regardless of strength — used to pick a sensible default

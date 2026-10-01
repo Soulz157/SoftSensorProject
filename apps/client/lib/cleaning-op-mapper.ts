@@ -1,5 +1,26 @@
 import type { CleaningStep, TagPipeline } from '@/lib/preprocessing'
 
+/** The server request shape one step becomes. */
+export interface MappedCleaningOperation {
+  type: string
+  tags: string[]
+  param?: number
+  paramLow?: number
+  startTime?: string
+  endTime?: string
+}
+
+/**
+ * DS-LAKE-032-D04. Picker stamp (`yyyy-MM-ddTHH:mm`) → the server's naive
+ * wall-clock string. The end is pushed to the last instant of its minute so
+ * the server's inclusive bound matches the browser's minute-inclusive
+ * `inStepWindow` — same convention as `monthWindow`'s `23:59:59.999999`.
+ */
+function serverStamp(stamp: string, edge: 'start' | 'end'): string {
+  const minute = stamp.replace('T', ' ').slice(0, 16)
+  return edge === 'start' ? `${minute}:00` : `${minute}:59.999999`
+}
+
 /**
  * Map the wizard's local `CleaningStep[]` pipeline onto the server's
  * `CleaningOperation` request shape (DS-LAKE-005 — Step 3 Apply → draft clean
@@ -20,18 +41,26 @@ import type { CleaningStep, TagPipeline } from '@/lib/preprocessing'
 export function toCleaningOperations(
   steps: CleaningStep[],
   tags: string[],
-): {
-  type: string
-  tags: string[]
-  param?: number
-  paramLow?: number
-}[] {
-  return steps.map(step => ({
-    type: step.method,
-    tags,
-    ...(step.param !== undefined && { param: step.param }),
-    ...(step.paramLow !== undefined && { paramLow: step.paramLow }),
-  }))
+): MappedCleaningOperation[] {
+  return steps.flatMap(step => {
+    // DS-LAKE-032-D03. A step scoped to some tags reaches only those still in
+    // this batch. An EMPTY intersection is skipped, never sent: python reads
+    // an empty `tags` as every tag, the exact opposite of what was asked.
+    const opTags = step.tags ? tags.filter(t => step.tags!.includes(t)) : tags
+    if (opTags.length === 0) return []
+    return [
+      {
+        type: step.method,
+        tags: opTags,
+        ...(step.param !== undefined && { param: step.param }),
+        ...(step.paramLow !== undefined && { paramLow: step.paramLow }),
+        ...(step.startTime && {
+          startTime: serverStamp(step.startTime, 'start'),
+        }),
+        ...(step.endTime && { endTime: serverStamp(step.endTime, 'end') }),
+      },
+    ]
+  })
 }
 
 /**
@@ -54,12 +83,7 @@ export function toCleaningOperations(
  */
 export function toCleaningOperationsFromRecord(
   pipelines: Record<string, TagPipeline>,
-): {
-  type: string
-  tags: string[]
-  param?: number
-  paramLow?: number
-}[] {
+): MappedCleaningOperation[] {
   const groups = new Map<string, { steps: TagPipeline; tags: string[] }>()
   for (const [tag, steps] of Object.entries(pipelines)) {
     if (steps.length === 0) continue

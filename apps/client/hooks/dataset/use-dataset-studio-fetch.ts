@@ -4,6 +4,7 @@ import { dataSourceService } from '@/services/data-sources'
 import {
   applyConstantOverlay,
   chunkTags,
+  FETCH_CONCURRENCY,
   mergeDataset,
   piFetchInputError,
   piResponseToDataset,
@@ -157,7 +158,7 @@ export function useDatasetStudioFetch(): UseDatasetStudioFetchResult {
 
       await runPool(
         batches,
-        4,
+        FETCH_CONCURRENCY,
         async batch => {
           if (controller.signal.aborted) return
 

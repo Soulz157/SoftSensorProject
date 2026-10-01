@@ -104,6 +104,10 @@ class CleaningOperation(BaseModel):
     min: Optional[float] = Field(None, description="clip lower bound")
     max: Optional[float] = Field(None, description="clip upper bound")
 
+    # DS-LAKE-032. Inclusive naive wall-clock window for clip/crop/exclude.
+    start_time: Optional[str] = Field(None, alias="startTime")
+    end_time: Optional[str] = Field(None, alias="endTime")
+
     model_config = {"populate_by_name": True}
 
     def to_step(self) -> dict[str, Any]:
@@ -124,6 +128,10 @@ class CleaningOperation(BaseModel):
                 payload[name] = found
         if self.param_low is not None:
             payload["paramLow"] = self.param_low
+        if self.start_time is not None:
+            payload["startTime"] = self.start_time
+        if self.end_time is not None:
+            payload["endTime"] = self.end_time
         return payload
 
 
@@ -2410,6 +2418,9 @@ class ScatterRequest(BaseModel):
 class ScatterPoint(BaseModel):
     x: float
     y: float
+    #: DS-LAKE-034. The reading's naive wall-clock time, so the client can
+    #: colour the cloud by month/year. Optional: older responses omit it.
+    t: Optional[str] = None
 
 
 class ScatterResponse(BaseModel):

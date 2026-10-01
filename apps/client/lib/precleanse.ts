@@ -82,6 +82,15 @@ export interface ConditionalRule {
   value: number | ''
   action: OutlierAction
   enabled: boolean
+  /**
+   * DS-LAKE-032-D09. Optional lower bound, turning the rule into an interval
+   * read left to right: `lower.value lower.op TAG op value` — e.g.
+   * `200 <= TAG < 500`. Absent = the single comparison `TAG op value`, which
+   * is every rule saved before this field existed. A lower bound whose value
+   * is still empty makes the rule incomplete, and it is skipped exactly like
+   * an empty `value`.
+   */
+  lower?: { value: number | ''; op: '<' | '<=' }
   /** Who authored this rule. Absent = added by hand in the Cut-Off sidebar. */
   source?: 'sdta' | 'preset-range'
   /**
@@ -397,6 +406,26 @@ function matchesConditional(
   }
 }
 
+/**
+ * DS-LAKE-032-D09. Whether `value` is cut by `rule`: its right-hand
+ * comparison and, when present, its lower bound. `false` for an incomplete
+ * rule (an empty value on either side), so a rule never acts while it is
+ * still being typed.
+ */
+export function matchesConditionalRule(
+  value: number,
+  rule: Pick<ConditionalRule, 'op' | 'value' | 'lower'>,
+): boolean {
+  if (rule.value === '') return false
+  if (rule.lower) {
+    if (rule.lower.value === '') return false
+    const low = rule.lower.value
+    const aboveLow = rule.lower.op === '<' ? low < value : low <= value
+    if (!aboveLow) return false
+  }
+  return matchesConditional(value, rule.op, rule.value)
+}
+
 function isStatisticalOutlier(
   value: number,
   mean: number,
@@ -612,12 +641,12 @@ function runPipeline(
 
   for (const rule of cfg.conditional) {
     if (!rule.enabled || rule.value === '') continue
-    const target = rule.value
+    if (rule.lower && rule.lower.value === '') continue
     for (let i = 0; i < out.length; i++) {
       const row = out[i]!
       const cell = row.cells[rule.tag]
       if (!cell) continue
-      if (!matchesConditional(cell.value, rule.op, target)) continue
+      if (!matchesConditionalRule(cell.value, rule)) continue
       if (cell.status === 'Good') counts.conditional++
       if (rule.action === 'drop_row') {
         if (!dropRows.has(i)) counts.conditionalRows++

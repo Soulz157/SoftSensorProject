@@ -91,6 +91,22 @@
       "engine": "preprocessPipelines"
     },
     {
+      "name": "clip_windowed",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "crop_windowed",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "exclude_windowed",
+      "engine": "preprocessPipelines"
+    },
+    {
+      "name": "clip_tag_scoped",
+      "engine": "preprocessPipelines"
+    },
+    {
       "name": "smooth_moving_avg_default",
       "engine": "preprocessPipelines"
     },

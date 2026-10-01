@@ -16,11 +16,17 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from '@/components/ui/chart'
-import { cn } from '@/lib/utils'
 import { resolveTagMeta, chartColorVar } from '@/lib/mock-readings'
 import { formatDayMonth } from '@/lib/chart-format'
 import type { TagFillPreviewRow } from '@/lib/preprocessing'
 import { SegmentedToggle } from '@/components/segmented-toggle'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 
 interface Props {
   rows: TagFillPreviewRow[]
@@ -242,38 +248,42 @@ export function ImputationTrendChart({
         />
       </div>
 
-      {/* Isolate legend — pick which selected tag's before/after to show. */}
+      {/* DS-LAKE-032-D08. Which selected tag's before/after to show — a
+          Select rather than a pill row, so a wide batch stays one line. */}
       {tags.length > 1 && (
-        <div className="flex flex-wrap items-center gap-1.5">
+        <div className="flex items-center gap-2">
           <span className="text-[11px] font-medium text-muted-foreground">
             Isolate:
           </span>
-          {tags.map(tag => {
-            const active = tag === isolatedTag
-            return (
-              <button
-                key={tag}
-                type="button"
-                onClick={() => onIsolate(tag)}
-                className={cn(
-                  'inline-flex cursor-pointer items-center gap-1.5 rounded-full border px-2 py-0.5 font-mono text-[11px] transition-colors',
-                  active
-                    ? 'border-primary bg-primary/10 text-foreground'
-                    : 'border-border text-muted-foreground hover:bg-muted',
-                )}
-              >
-                <span
-                  className="h-2 w-2 rounded-full"
-                  style={{
-                    backgroundColor: chartColorVar(
-                      resolveTagMeta(tag).chartIndex,
-                    ),
-                  }}
-                />
-                {tag}
-              </button>
-            )
-          })}
+          <Select value={isolatedTag} onValueChange={onIsolate}>
+            <SelectTrigger
+              aria-label="Isolate tag"
+              className="h-8 w-60 cursor-pointer font-mono text-xs"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {tags.map(tag => (
+                <SelectItem
+                  key={tag}
+                  value={tag}
+                  className="cursor-pointer font-mono text-xs"
+                >
+                  <span className="flex items-center gap-2">
+                    <span
+                      className="h-2 w-2 shrink-0 rounded-full"
+                      style={{
+                        backgroundColor: chartColorVar(
+                          resolveTagMeta(tag).chartIndex,
+                        ),
+                      }}
+                    />
+                    {tag}
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       )}
 

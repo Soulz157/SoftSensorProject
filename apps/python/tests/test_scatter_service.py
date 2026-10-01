@@ -205,3 +205,28 @@ def test_scatter_service_never_writes():
     store = _NoWriteStore(frame)
     with pytest.raises(AssertionError, match="read-only"):
         store.put_frame
+
+
+def test_scatter_points_carry_their_own_timestamp() -> None:
+    """DS-LAKE-034-T01. Each point's `t` is the timestamp of the SAME row its
+    x/y came from, after the Good-pair filter drops rows — so a colour by
+    month can never be shifted onto a neighbouring reading."""
+    frame = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(
+                ["2026-01-15 08:00:00", "2026-02-15 08:00:00", "2026-03-15 08:00:00"]
+            ),
+            "TI-101": [1.0, 2.0, 3.0],
+            "TI-101__status": pd.array(
+                [STATUS_GOOD, STATUS_BAD, STATUS_GOOD], dtype="int8"
+            ),
+            "VI-202": [10.0, 20.0, 30.0],
+            "VI-202__status": pd.array([STATUS_GOOD] * 3, dtype="int8"),
+        }
+    )
+    response = build_scatter(
+        _NoWriteStore(frame),
+        ScatterRequest(source_key="k", x_tag="TI-101", y_tag="VI-202"),
+    )
+    by_x = {p["x"]: p["t"] for p in response["points"]}
+    assert by_x == {1.0: "2026-01-15 08:00:00", 3.0: "2026-03-15 08:00:00"}

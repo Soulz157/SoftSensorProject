@@ -229,6 +229,10 @@ export interface CleaningOperationInput {
   value?: number
   min?: number
   max?: number
+  /** DS-LAKE-032. Inclusive wall-clock window (`YYYY-MM-DD HH:MM:SS`) for
+   * clip/crop/exclude; other operations ignore it. */
+  startTime?: string
+  endTime?: string
 }
 
 const base = (datasetId: string) =>

@@ -36,15 +36,18 @@ import {
 
 import { tagSeverity, type TagQuality } from '@/lib/data-quality'
 import { resolveTagMeta } from '@/lib/mock-readings'
-import type {
-  CleaningCategory,
-  CleaningMethod,
-  CleaningStep,
-  TagFillPreviewRow,
+import {
+  patchCleaningStep,
+  type CleaningCategory,
+  type CleaningMethod,
+  type CleaningStep,
+  type TagFillPreviewRow,
 } from '@/lib/preprocessing'
 import { BadDataBreakdown } from '../../bad-data-breakdown'
 import { ImputationTrendChart } from './imputation-trend-chart'
 import { ImputationComparisonHistogram } from './imputation-comparison-histogram'
+import { StepTimeWindow } from './step-time-window'
+import type { StampBounds } from '@/lib/date-stamp'
 
 interface Props {
   pipeline: CleaningStep[]
@@ -57,6 +60,8 @@ interface Props {
   isolatedTag: string
   onIsolate: (tag: string) => void
   quality?: TagQuality
+  /** DS-LAKE-032. First/last loaded reading, for the step window pickers. */
+  dataBounds: StampBounds | null
 }
 
 interface ToolkitItem {
@@ -69,6 +74,8 @@ interface ToolkitItem {
   paramLowLabel?: string
   defaultParam?: number
   defaultParamLow?: number
+  /** DS-LAKE-032-D02. Takes an optional Start/End time window. */
+  windowed?: true
 }
 
 const CATEGORY_ICONS: Record<CleaningCategory, React.ElementType> = {
@@ -112,6 +119,7 @@ const TOOLKIT: Record<CleaningCategory, ToolkitItem[]> = {
       // adding the step never silently flattens the series to zero.
       method: 'clip',
       label: 'Clip Bounds',
+      windowed: true,
       icon: Scissors,
       paramLowLabel: 'Min',
       paramLabel: 'Max',
@@ -123,6 +131,7 @@ const TOOLKIT: Record<CleaningCategory, ToolkitItem[]> = {
       // crop keeps it, exclude removes it.
       method: 'crop',
       label: 'Crop to Range',
+      windowed: true,
       icon: Crop,
       paramLowLabel: 'Min',
       paramLabel: 'Max',
@@ -130,6 +139,7 @@ const TOOLKIT: Record<CleaningCategory, ToolkitItem[]> = {
     {
       method: 'exclude',
       label: 'Exclude Range',
+      windowed: true,
       icon: Ban,
       paramLowLabel: 'Min',
       paramLabel: 'Max',
@@ -176,6 +186,7 @@ export function ImputationDetailPanel({
   isolatedTag,
   onIsolate,
   quality,
+  dataBounds,
 }: Props) {
   const label = resolveTagMeta(isolatedTag)?.label || 'Sensor Data'
   const severity = quality ? tagSeverity(quality) : 'clean'
@@ -211,6 +222,19 @@ export function ImputationDetailPanel({
   const setParam = (uid: string, key: 'param' | 'paramLow', val: number) => {
     onPipelineChange(
       pipeline.map(step => (step.uid === uid ? { ...step, [key]: val } : step)),
+    )
+  }
+
+  // DS-LAKE-032. Scope and window patches — see `patchCleaningStep` for why a
+  // cleared value is deleted rather than stored.
+  const patchStep = (
+    uid: string,
+    patch: Parameters<typeof patchCleaningStep>[1],
+  ) => {
+    onPipelineChange(
+      pipeline.map(step =>
+        step.uid === uid ? patchCleaningStep(step, patch) : step,
+      ),
     )
   }
 
@@ -410,6 +434,19 @@ export function ImputationDetailPanel({
                           )}
                         </div>
                       )}
+
+                      <div className="flex flex-col gap-2 pl-9">
+                        {item?.windowed && (
+                          <StepTimeWindow
+                            startTime={step.startTime}
+                            endTime={step.endTime}
+                            dataBounds={dataBounds}
+                            onChange={({ startTime, endTime }) =>
+                              patchStep(step.uid, { startTime, endTime })
+                            }
+                          />
+                        )}
+                      </div>
                     </div>
                   )
                 })
@@ -498,6 +535,8 @@ export function ImputationDetailPanel({
               This step joins the shared cleaning pipeline and applies to all{' '}
               {cleaningTags.length} {cleaningTags.length === 1 ? 'tag' : 'tags'}{' '}
               selected.
+              {pending?.item.windowed &&
+                ' You can limit it to a time window once it is added.'}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

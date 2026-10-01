@@ -41,6 +41,12 @@ export const CleaningOperationSchema = z.object({
   value: z.number().optional(),
   min: z.number().optional(),
   max: z.number().optional(),
+  // DS-LAKE-032. Inclusive naive wall-clock window for clip/crop/exclude.
+  // Must be declared: `z.object` strips unknown keys, so leaving these out
+  // would silently clean the whole series while the browser previewed only
+  // the window.
+  startTime: z.string().optional(),
+  endTime: z.string().optional(),
 });
 
 export type CleaningOperation = z.infer<typeof CleaningOperationSchema>;

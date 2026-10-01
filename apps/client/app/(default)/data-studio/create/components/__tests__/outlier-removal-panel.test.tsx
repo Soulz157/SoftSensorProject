@@ -249,3 +249,57 @@ describe('OutlierRemovalPanel — Preset range cutoff', () => {
     expect(screen.getByText(/target tag isn't chosen/i)).toBeInTheDocument()
   })
 })
+
+/** DS-LAKE-032-T10 / D09 — the Range toggle on conditional rules. */
+describe('OutlierRemovalPanel — conditional Range rule', () => {
+  const rule = (extra: Partial<ConditionalRule> = {}): ConditionalRule => ({
+    id: 'r1',
+    tag: 'TI-101',
+    op: '>',
+    value: 500,
+    action: 'mark',
+    enabled: true,
+    ...extra,
+  })
+
+  it('turning Range on adds an empty <= lower bound and pulls op into < / <=', async () => {
+    const onConditionalChange = vi.fn()
+    render(
+      <OutlierRemovalPanel
+        {...baseProps({ conditionalRules: [rule()], onConditionalChange })}
+      />,
+    )
+    await userEvent.click(screen.getByRole('button', { name: /range/i }))
+    const [next] = onConditionalChange.mock.calls[0]![0] as ConditionalRule[]
+    expect(next!.lower).toEqual({ value: '', op: '<=' })
+    expect(next!.op).toBe('<')
+  })
+
+  it('turning Range off deletes `lower`, leaving a plain single-op rule', async () => {
+    const onConditionalChange = vi.fn()
+    render(
+      <OutlierRemovalPanel
+        {...baseProps({
+          conditionalRules: [
+            rule({ op: '<', lower: { value: 200, op: '<=' } }),
+          ],
+          onConditionalChange,
+        })}
+      />,
+    )
+    await userEvent.click(screen.getByRole('button', { name: /range/i }))
+    const [next] = onConditionalChange.mock.calls[0]![0] as ConditionalRule[]
+    expect('lower' in next!).toBe(false)
+  })
+
+  it('offers no Range toggle on a preset-authored rule', () => {
+    render(
+      <OutlierRemovalPanel
+        {...baseProps({
+          conditionalRules: [rule({ source: 'sdta' })],
+        })}
+      />,
+    )
+    expect(screen.queryByRole('button', { name: /range/i })).toBeNull()
+  })
+})

@@ -18,9 +18,11 @@ import {
 } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { DateTimePicker, toDateTimeLocal } from '@/components/date-time-picker'
+import { toDateTimeLocal } from '@/components/date-time-picker'
+import { CalendarDateTimePicker } from '@/components/calendar-date-time-picker'
 import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
+import { usePreloadedProgress } from '@/hooks/dataset/use-preloaded-progress'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 import { useCsvMaterialize } from '@/hooks/dataset/use-csv-materialize'
@@ -61,6 +63,10 @@ import {
   defaultConfigForKind,
 } from './source-configs/source-fetch-config-card'
 import { UseDatasetPipelineNavResult } from '@/hooks/dataset/use-dataset-pipeline-nav'
+
+/** How many years back the Interval calendars can page before any data is
+ * fetched (there is no first reading to bound them by yet). */
+const FETCH_CALENDAR_YEARS = 10
 
 const PERIOD_LABELS: Record<FetchPeriod, string> = {
   '1min': 'Every 1 min',
@@ -162,9 +168,30 @@ export function Step2RawData({ nav }: Props) {
   )
   const [customTo, setCustomTo] = useState(() => toDateTimeLocal(now))
 
+  // How far the Interval calendars page. Nothing is fetched yet, so there is
+  // no first reading to bound by: the retrain split floor when there is one,
+  // else `FETCH_CALENDAR_YEARS` back, up to now. `allowed` below still decides
+  // what can be picked; this only sets the month/year dropdown's reach.
+  const nowStamp = toDateTimeLocal(now)
+  const earliestFetch = new Date(now)
+  earliestFetch.setFullYear(earliestFetch.getFullYear() - FETCH_CALENDAR_YEARS)
+  const fetchCalendarBounds = {
+    min: retrainMinStart ?? toDateTimeLocal(earliestFetch),
+    max: nowStamp,
+  }
+
   const locked = nav.isEditLocked
   const isFetching = fetch.status === 'fetching'
   const isDone = fetch.status === 'done'
+  // Real progress moves only when a whole batch lands; the bar runs ahead
+  // while a batch is in flight so a one-batch fetch is not stuck at 0%.
+  const shownProgress = usePreloadedProgress({
+    active: isFetching,
+    progress: fetch.progress,
+    completedBatches: fetch.detail.completedBatches,
+    totalBatches: fetch.detail.totalBatches,
+    runStartedAt: fetch.detail.startedAt,
+  })
   // DS-LAKE-015-T04: `fetch.status === 'done'` only means the CLIENT-side
   // batches landed — `useDatasetBronzeWarm`'s background materialize (fired
   // from inside `useDatasetStudioFetch` right after this same 'done'
@@ -407,8 +434,9 @@ export function Step2RawData({ nav }: Props) {
               <Label htmlFor="mp-fetch-from" className="text-xs">
                 Start
               </Label>
-              <DateTimePicker
+              <CalendarDateTimePicker
                 id="mp-fetch-from"
+                label="Fetch window start"
                 value={customFrom}
                 // MODEL-SERVE-017. In a retrain-built dataset the start is
                 // clamped to the incumbent's split boundary: `assertCompatible`
@@ -417,23 +445,28 @@ export function Step2RawData({ nav }: Props) {
                 // Clamping here is what lets the window be picked ONCE, in
                 // this step, instead of being collected in the retrain dialog
                 // first purely to enforce this rule.
-                min={retrainMinStart}
-                max={customTo}
+                allowed={{ min: retrainMinStart, max: customTo }}
+                dataBounds={fetchCalendarBounds}
+                defaultTime="00:00"
                 disabled={isFetching}
                 onChange={handleCustomFromChange}
+                className="w-full"
               />
             </div>
             <div className="grid gap-1.5">
               <Label htmlFor="mp-fetch-to" className="text-xs">
                 End
               </Label>
-              <DateTimePicker
+              <CalendarDateTimePicker
                 id="mp-fetch-to"
+                label="Fetch window end"
                 value={customTo}
-                min={customFrom}
-                max={toDateTimeLocal(now)}
+                allowed={{ min: customFrom, max: nowStamp }}
+                dataBounds={fetchCalendarBounds}
+                defaultTime="23:59"
                 disabled={isFetching}
                 onChange={handleCustomToChange}
+                className="w-full"
               />
             </div>
           </div>
@@ -617,12 +650,12 @@ export function Step2RawData({ nav }: Props) {
               edited. The clock sits on the same row so elapsed time reads as
               part of the bar. */}
           <div className="flex items-center gap-3">
-            <Progress value={fetch.progress} className="flex-1" />
+            <Progress value={shownProgress} className="flex-1" />
             {fetch.detail.startedAt !== null && (
               <FetchElapsed startedAt={fetch.detail.startedAt} />
             )}
             <span className="font-mono text-xs tabular-nums text-muted-foreground">
-              {Math.round(fetch.progress)}%
+              {Math.round(shownProgress)}%
             </span>
           </div>
           {/* Show partial rows as batches land; skeleton only before the first. */}

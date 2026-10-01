@@ -10,6 +10,64 @@
  * midnight, because that is what the calendar renders.
  */
 
+import { toWallClock } from '@/lib/time-window'
+
+/**
+ * DS-LAKE-032. A row timestamp (naive wall clock, or ISO with an offset) as a
+ * stamp on the artifact's wall clock, seconds dropped. `''` for an empty one.
+ */
+export function stampFromTimestamp(timestamp: string): string {
+  if (!timestamp) return ''
+  return toWallClock(timestamp).replace(' ', 'T').slice(0, 16)
+}
+
+/**
+ * DS-LAKE-032. The picker's `dataBounds` for a time-ordered row list: its
+ * first and last reading. `null` when there are no rows.
+ */
+export function rowStampBounds(
+  rows: readonly { timestamp: string }[],
+): StampBounds | null {
+  const first = rows[0]?.timestamp
+  const last = rows[rows.length - 1]?.timestamp
+  if (!first || !last) return null
+  return { min: stampFromTimestamp(first), max: stampFromTimestamp(last) }
+}
+
+/**
+ * DS-LAKE-032-D07. A timestamp as a sortable wall-clock key
+ * (`YYYY-MM-DD HH:MM:SS[.fff]`), whatever form it arrived in — naive with a
+ * `T` or a space, or ISO with an offset. Two keys compare correctly as
+ * strings, so a crop bound restored from a saved config can be ordered
+ * against a freshly fetched row even when the two were written differently.
+ */
+export function wallClockKey(timestamp: string): string {
+  return toWallClock(timestamp).replace('T', ' ')
+}
+
+/**
+ * DS-LAKE-032-D07. The index of the real reading a picked crop bound lands
+ * on, in a time-ordered `timestamps` list. A START keeps the first reading at
+ * or after the stamp; an END keeps the last reading at or before it (minute
+ * precision, so an end of 12:00 keeps 12:00:30). A crop therefore never
+ * reaches past what the user picked. A stamp beyond every reading clamps to
+ * the nearest end. `-1` only for an empty list.
+ */
+export function snapStampIndex(
+  timestamps: readonly string[],
+  stamp: string,
+  edge: 'start' | 'end',
+): number {
+  if (timestamps.length === 0) return -1
+  const at = (i: number) => stampFromTimestamp(timestamps[i]!)
+  if (edge === 'start') {
+    for (let i = 0; i < timestamps.length; i++) if (at(i) >= stamp) return i
+    return timestamps.length - 1
+  }
+  for (let i = timestamps.length - 1; i >= 0; i--) if (at(i) <= stamp) return i
+  return 0
+}
+
 /** An inclusive `[min, max]` range of stamps. */
 export interface StampBounds {
   /** First allowed instant, `yyyy-MM-ddTHH:mm`. */

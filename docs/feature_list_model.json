@@ -3367,6 +3367,63 @@
           "description": "Unit (client): the bell renders the reason label and links to the right tab per event kind; the badge shows unread events, not current alerts; the list refetches on focus and never faster than the configured interval. DONE 2026-09-29 (kind-to-tab mapping only, via notification-event-link.test.ts, 5 real passing cases): the pure link-building logic is unit-tested. NOT DONE: an RTL render test of the bell component itself asserting the reason label/badge/refetch-on-focus behavior end-to-end — left for a future pass, same time-boxing decision T05 recorded for its own dialog components."
         }
       ]
+    },
+    {
+      "id": "MODEL-SERVE-023",
+      "title": "Models list: deploy Switch → Start/Stop action buttons; a refused Start no longer sticks ON",
+      "priority": 23,
+      "status": "completed",
+      "progress": 100,
+      "dependencies": [
+        "MODEL-SERVE-001"
+      ],
+      "description": "models/views/components/model-table.tsx flipped an optimistic `optimisticStates[id] = next` at press and rolled it back only if onToggleDeploy THREW. The views page's handleToggleDeploy catches its own failure (it toasts the server's reason) and never rethrows, so a refused Start showed the error toast while the switch stayed ON. Nothing refetched, and because the optimistic override was never cleared even after success, it could also hide later status changes. models/[id]/page.tsx likewise refetched nothing on failure.",
+      "decisions": [
+        {
+          "id": "MODEL-SERVE-023-D01",
+          "decision": "The Switch becomes Start/Stop Buttons, matching the model detail page header: Stop is outline with StopCircle, Start is the default variant with Play, size sm, with a Loader2 spinner while in flight. The optimistic state is REMOVED: the row shows a spinner and then renders the refetched model. Both handlers now refetch on failure as well as success.",
+          "why": "User request 2026-10-01 (design-system action button, and a failed toggle must refetch to the failed/off state). The MODEL-SERVE-001-T19 rule is kept: Start versus Stop follows `enabled` (the setting), never `deployStatus` (the derived badge)."
+        },
+        {
+          "id": "MODEL-SERVE-023-D02",
+          "decision": "While a Start is in flight, the list row's deploy badge reads Initializing (the existing badge, with a spinning icon). Once the call resolves, the row shows the refetched server status again. The server's own classification is NOT changed: a schedule whose preflight passed is still Running from the press (MODEL-SERVE-001-T26), and only an unprobed one derives `initializing` on the server.",
+          "why": "User request 2026-10-01: pressing Start should show Initializing. The Start request runs the source preflight and can take seconds, and with the optimistic flip removed (D01) the badge sat on Offline the whole time. Keeping it transitional means the badge never claims a state the server has not reported once the call is done."
+        }
+      ],
+      "tasks": [
+        {
+          "id": "MODEL-SERVE-023-T01",
+          "title": "Buttons + no optimistic state + refetch on failure",
+          "status": "completed",
+          "progress": 100,
+          "result": "model-table.tsx: Switch import, optimisticStates and its comment removed; Start/Stop buttons keep the aria-labels `Start <name>` / `Stop <name>`, and Stop is still disabled while initializing. views/page.tsx catch: refreshModels() + await refetch(). [id]/page.tsx catch: refreshModels(), refresh(), refetchInferenceStatus(). model-table.test.tsx moved from switch roles to button roles and adds the refused-Start case: Start is offered again once the handler resolves without enabling the model. 5/5 pass. vitest related: 11 files, 131/131. tsc is at its baseline of 4, and eslint matches HEAD."
+        },
+        {
+          "id": "MODEL-SERVE-023-T02",
+          "title": "Initializing badge during an in-flight Start",
+          "status": "completed",
+          "progress": 100,
+          "result": "model-table.tsx: mutatingId became mutating {id, next}, and deployKey is 'initializing' while that row's Start is in flight. Covered by a test: Initializing appears during the call, and once it resolves the Offline count returns to its prior value. 6/6 pass. tsc is at its baseline of 4, eslint is clean."
+        }
+      ],
+      "acceptance_criteria": [
+        "The deploy control is a design-system Start/Stop button.",
+        "After a refused Start the row reads stopped/failed from the server, not ON.",
+        "Pressing Start shows Initializing until the call resolves."
+      ],
+      "verification": [
+        {
+          "id": "MODEL-SERVE-023-V01",
+          "description": "Unit: binding plus the refused-Start case.",
+          "status": "completed",
+          "result": "PASS — model-table.test.tsx 5/5"
+        },
+        {
+          "id": "MODEL-SERVE-023-V02",
+          "description": "Live: Start a model the server refuses (e.g. no PRODUCTION version) and confirm the toast plus the row reverting.",
+          "status": "pending"
+        }
+      ]
     }
   ],
   "global_definition_of_done": [

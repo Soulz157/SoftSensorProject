@@ -33,6 +33,9 @@ import { consumeRetrainHandoff, retrainReturnUrl } from '@/lib/retrain-handoff'
 import { materializeBlocker } from '@/hooks/dataset/use-dataset-version-rows'
 import { useDatasetValidation } from '@/hooks/dataset/use-dataset-validation'
 import { useDatasetArtifactMetadata } from '@/hooks/dataset/artifact/use-dataset-artifact-metadata'
+import { useDraftArtifactSample } from '@/hooks/dataset/use-draft-artifact-sample'
+import { PERIOD_TO_RANGE } from '@/store/model-pipeline'
+import { DataAnalysisCard } from './processing/data-analysis-card'
 import { toPiTime } from '@/lib/dataset-fetch'
 import {
   dwNameAtom,
@@ -207,6 +210,16 @@ export function Step6ReviewSave({ nav }: Props) {
   const { metadata } = useDatasetArtifactMetadata(
     isDraftSavePath ? validation.draftId : null,
     metadataArtifactId,
+  )
+  // DS-LAKE-034. Row page of the artifact the analysis card below reads.
+  // Sized from its own column count when the tiles' metadata is for that same
+  // artifact; otherwise the hook's default width.
+  const goldSample = useDraftArtifactSample(
+    isDraftSavePath ? validation.draftId : null,
+    isDraftSavePath ? validation.gateArtifactId : null,
+    metadataArtifactId === validation.gateArtifactId
+      ? (metadata?.tags.length ?? null)
+      : null,
   )
 
   // DS-LAKE-008-T03. Same recipe fields `finalDataset` itself already
@@ -668,12 +681,27 @@ export function Step6ReviewSave({ nav }: Props) {
           </>
         )}
       </Button>
-      {/* DS-LAKE-008-T02. Stated on the control, not a toast — the reason
-          disappears the instant validation.status stops blocking. */}
       {validationBlockReason && !saving && !saved && (
         <p className="-mt-3 text-center text-xs text-muted-foreground">
           {validationBlockReason}
         </p>
+      )}
+
+      {/* DS-LAKE-034-D01. The frame being saved, last on the page. The card
+          reads `goldArtifactId ?? draftArtifactId` on its own (default draft
+          mode) — the same artifact as `validation.gateArtifactId` — and
+          `goldSample` pages that same artifact, so every tab shows one frame.
+          Hidden while a feature recipe still waits on GOLD: the gate would
+          fall back to SILVER, which is not what Save will commit (and Save is
+          blocked for exactly that window). Read-only here: no transforms. */}
+      {isDraftSavePath && !goldNotReady && (
+        <section className="space-y-2">
+          <DataAnalysisCard
+            dataset={goldSample.sample}
+            range={PERIOD_TO_RANGE[timeRange]}
+            showTransforms={false}
+          />
+        </section>
       )}
     </div>
   )

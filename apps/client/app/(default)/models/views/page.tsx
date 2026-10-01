@@ -169,6 +169,12 @@ export default function ModelsPage() {
             ? 'Failed to start.'
             : 'Failed to update deploy status',
       )
+      // Refetch on failure too: the row must show what the server holds (a
+      // refused Start leaves it stopped, a failing schedule reads Failed),
+      // not the press. This handler never rethrows, so the table cannot do
+      // this itself.
+      refreshModels()
+      await refetch()
     }
   }
 
